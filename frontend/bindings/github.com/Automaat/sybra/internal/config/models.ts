@@ -66,6 +66,14 @@ export class AgentDefaults {
     "turnMultiplier": number;
 
     /**
+     * MaxSubagentEvents caps forked-subagent assistant events (CLAUDE_CODE_FORK_SUBAGENT
+     * parent_tool_use_id turns) per run, independent of MaxAssistantEvents which
+     * only counts top-level turns. 0 disables the ceiling. A breach hard-stops
+     * the run outright — there is no auto-continue/human-escalation path.
+     */
+    "maxSubagentEvents": number;
+
+    /**
      * RequirePermissions sets the default permission requirement for agents.
      * nil means not configured (falls back to true — safe default).
      * Set to false in config to opt all tasks into skip-permissions mode.
@@ -320,6 +328,9 @@ export class AgentDefaults {
         if (!("turnMultiplier" in $$source)) {
             this["turnMultiplier"] = 0;
         }
+        if (!("maxSubagentEvents" in $$source)) {
+            this["maxSubagentEvents"] = 0;
+        }
         if (!("requirePermissions" in $$source)) {
             this["requirePermissions"] = null;
         }
@@ -400,30 +411,30 @@ export class AgentDefaults {
      * Creates a new AgentDefaults instance from a string or object.
      */
     static createFrom($$source: any = {}): AgentDefaults {
-        const $$createField29_0 = $$createType0;
-        const $$createField30_0 = $$createType1;
-        const $$createField31_0 = $$createType2;
-        const $$createField32_0 = $$createType3;
-        const $$createField33_0 = $$createType4;
-        const $$createField34_0 = $$createType5;
+        const $$createField30_0 = $$createType0;
+        const $$createField31_0 = $$createType1;
+        const $$createField32_0 = $$createType2;
+        const $$createField33_0 = $$createType3;
+        const $$createField34_0 = $$createType4;
+        const $$createField35_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("roleEffort" in $$parsedSource) {
-            $$parsedSource["roleEffort"] = $$createField29_0($$parsedSource["roleEffort"]);
+            $$parsedSource["roleEffort"] = $$createField30_0($$parsedSource["roleEffort"]);
         }
         if ("playwrightMcp" in $$parsedSource) {
-            $$parsedSource["playwrightMcp"] = $$createField30_0($$parsedSource["playwrightMcp"]);
+            $$parsedSource["playwrightMcp"] = $$createField31_0($$parsedSource["playwrightMcp"]);
         }
         if ("k8sJobs" in $$parsedSource) {
-            $$parsedSource["k8sJobs"] = $$createField31_0($$parsedSource["k8sJobs"]);
+            $$parsedSource["k8sJobs"] = $$createField32_0($$parsedSource["k8sJobs"]);
         }
         if ("queue" in $$parsedSource) {
-            $$parsedSource["queue"] = $$createField32_0($$parsedSource["queue"]);
+            $$parsedSource["queue"] = $$createField33_0($$parsedSource["queue"]);
         }
         if ("classReservations" in $$parsedSource) {
-            $$parsedSource["classReservations"] = $$createField33_0($$parsedSource["classReservations"]);
+            $$parsedSource["classReservations"] = $$createField34_0($$parsedSource["classReservations"]);
         }
         if ("evidence" in $$parsedSource) {
-            $$parsedSource["evidence"] = $$createField34_0($$parsedSource["evidence"]);
+            $$parsedSource["evidence"] = $$createField35_0($$parsedSource["evidence"]);
         }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
     }

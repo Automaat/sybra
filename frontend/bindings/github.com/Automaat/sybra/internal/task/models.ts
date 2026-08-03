@@ -596,6 +596,7 @@ export class Task {
     "statusChangedAt": string;
     "assignedNode"?: string;
     "nodeOverride"?: string;
+    "assignmentRev"?: number;
     "generation"?: number;
     "mirrorRev"?: number;
     "mirrorUpdatedAt"?: string | null;
@@ -623,6 +624,15 @@ export class Task {
      */
     "planDrafts"?: { [_ in string]?: string };
     "filePath": string;
+
+    /**
+     * Degraded marks a synthetic, read-only board entry created for a task file
+     * that could not be parsed. It is never persisted and must never be
+     * dispatched or mirrored; fixing the source file makes the entry disappear
+     * on the next List.
+     */
+    "degraded"?: boolean;
+    "parseError"?: string;
 
     /**
      * TamperFlagged reports whether this task is parked at human-required
@@ -722,7 +732,7 @@ export class Task {
         const $$createField43_0 = $$createType7;
         const $$createField44_0 = $$createType9;
         const $$createField45_0 = $$createType11;
-        const $$createField62_0 = $$createType12;
+        const $$createField63_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -752,7 +762,7 @@ export class Task {
             $$parsedSource["workflow"] = $$createField45_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField62_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField63_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }

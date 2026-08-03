@@ -23,6 +23,7 @@ type followerPushStub struct {
 	live     task.Task
 	assigned []task.Task
 	blessed  int
+	dispatch int
 }
 
 func (f *followerPushStub) server(t *testing.T) *httptest.Server {
@@ -58,6 +59,37 @@ func (f *followerPushStub) server(t *testing.T) *httptest.Server {
 			updated := f.live
 			f.mu.Unlock()
 			_ = json.NewEncoder(w).Encode(updated)
+		case "/api/TaskService/UpdateTask":
+			var args []json.RawMessage
+			_ = json.Unmarshal(body, &args)
+			if len(args) != 2 {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			var updates map[string]any
+			_ = json.Unmarshal(args[1], &updates)
+			status, _ := updates["status"].(string)
+			f.mu.Lock()
+			f.live.Status = task.Status(status)
+			updated := f.live
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(updated)
+		case "/api/TaskService/DispatchFromHumanRequired":
+			var args []json.RawMessage
+			_ = json.Unmarshal(body, &args)
+			var target string
+			if len(args) > 1 {
+				_ = json.Unmarshal(args[1], &target)
+			}
+			f.mu.Lock()
+			f.dispatch++
+			f.live.Status = task.Status(target)
+			if len(args) > 2 {
+				_ = json.Unmarshal(args[2], &f.live.StatusReason)
+			}
+			updated := f.live
+			f.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(updated)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -65,6 +97,91 @@ func (f *followerPushStub) server(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+func TestDispatchFromHumanRequiredForwardsToAssignedFollower(t *testing.T) {
+	stub := &followerPushStub{live: task.Task{ID: "task-human", Status: task.StatusHumanRequired, ProjectID: "owner/pet", AssignedNode: "pet-box"}}
+	srv := stub.server(t)
+	cfg := &config.Config{Cluster: config.ClusterConfig{Role: config.ClusterRoleLeader, Followers: []config.Follower{{Name: "pet-box", Endpoints: []string{srv.URL}, Homes: []string{"owner/pet"}}}}}
+	roster, err := clusterlead.NewRoster(cfg, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaderTasks := newTaskManagerForMonitorCluster(t)
+	if _, _, err := leaderTasks.Put(stub.live); err != nil {
+		t.Fatal(err)
+	}
+	// The remote branch returns before local agent/workflow checks; this is
+	// intentional because the follower is authoritative for those checks.
+	svc := &TaskService{tasks: leaderTasks, cfg: cfg, assigner: clusterlead.NewAssigner(cfg, leaderTasks, roster, func(string) bool { return false }, nil, discardLogger()), logger: discardLogger(), wg: &sync.WaitGroup{}}
+	got, err := svc.DispatchFromHumanRequired("task-human", "done", "completed remotely")
+	if err != nil {
+		t.Fatalf("DispatchFromHumanRequired: %v", err)
+	}
+	stub.mu.Lock()
+	calls := stub.dispatch
+	follower := stub.live
+	stub.mu.Unlock()
+	if calls != 1 || got.Status != task.StatusDone || follower.Status != task.StatusDone {
+		t.Fatalf("dispatch/status = %d/%q/%q, want 1/done/done", calls, got.Status, follower.Status)
+	}
+}
+
+func TestUpdateTaskForwardsStatusToAssignedFollowerBeforeLeaderMirror(t *testing.T) {
+	stub := &followerPushStub{live: task.Task{ID: "task-status", Status: task.StatusInProgress, ProjectID: "owner/pet", AssignedNode: "pet-box"}}
+	srv := stub.server(t)
+	cfg := &config.Config{Cluster: config.ClusterConfig{Role: config.ClusterRoleLeader, Followers: []config.Follower{{Name: "pet-box", Endpoints: []string{srv.URL}, Homes: []string{"owner/pet"}}}}}
+	roster, err := clusterlead.NewRoster(cfg, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaderTasks := newTaskManagerForMonitorCluster(t)
+	if _, _, err := leaderTasks.Put(stub.live); err != nil {
+		t.Fatal(err)
+	}
+	svc := &TaskService{tasks: leaderTasks, cfg: cfg, assigner: clusterlead.NewAssigner(cfg, leaderTasks, roster, func(string) bool { return false }, nil, discardLogger()), logger: discardLogger(), wg: &sync.WaitGroup{}}
+
+	if _, err := svc.UpdateTask("task-status", map[string]any{"status": string(task.StatusInReview)}); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+	got, err := leaderTasks.Get("task-status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInReview || stub.live.Status != task.StatusInReview {
+		t.Fatalf("leader/follower status = %q/%q, want in-review", got.Status, stub.live.Status)
+	}
+}
+
+func TestUpdateTaskKeepsLeaderMirrorWhenAssignedFollowerRejectsStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/TaskService/UpdateTask" {
+			http.Error(w, "running agent", http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	cfg := &config.Config{Cluster: config.ClusterConfig{Role: config.ClusterRoleLeader, Followers: []config.Follower{{Name: "pet-box", Endpoints: []string{srv.URL}, Homes: []string{"owner/pet"}}}}}
+	roster, err := clusterlead.NewRoster(cfg, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaderTasks := newTaskManagerForMonitorCluster(t)
+	if _, _, err := leaderTasks.Put(task.Task{ID: "task-reject", Status: task.StatusInProgress, ProjectID: "owner/pet", AssignedNode: "pet-box"}); err != nil {
+		t.Fatal(err)
+	}
+	svc := &TaskService{tasks: leaderTasks, cfg: cfg, assigner: clusterlead.NewAssigner(cfg, leaderTasks, roster, func(string) bool { return false }, nil, discardLogger()), logger: discardLogger(), wg: &sync.WaitGroup{}}
+	if _, err := svc.UpdateTask("task-reject", map[string]any{"status": string(task.StatusInReview)}); err == nil {
+		t.Fatal("UpdateTask error = nil, want follower rejection")
+	}
+	got, err := leaderTasks.Get("task-reject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("leader status = %q, want unchanged in-progress", got.Status)
+	}
 }
 
 func (f *followerPushStub) blessCount() int {

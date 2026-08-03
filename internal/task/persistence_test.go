@@ -127,6 +127,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		UpdatedAt:       now,
 		AssignedNode:    "pet-box",
 		NodeOverride:    "gpu-box",
+		AssignmentRev:   3,
 		Generation:      2,
 		MirrorRev:       7,
 		MirrorUpdatedAt: &completedAt,
@@ -210,7 +211,7 @@ func TestPersistenceTypesHaveYAMLTags(t *testing.T) {
 
 func taskSidecarField(name string) bool {
 	switch name {
-	case "Body", "Plan", "PlanContract", "PlanCritique", "PlanResearch", "PlanDecisions", "PlanBrief", "CodeReview", "PlanDrafts", "FilePath", "TamperFlagged":
+	case "Body", "Plan", "PlanContract", "PlanCritique", "PlanResearch", "PlanDecisions", "PlanBrief", "CodeReview", "PlanDrafts", "FilePath", "TamperFlagged", "Degraded", "ParseError":
 		return true
 	default:
 		return false
@@ -391,6 +392,8 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.AssignedNode = "pet-box"
 	case "NodeOverride":
 		task.NodeOverride = "gpu-box"
+	case "AssignmentRev":
+		task.AssignmentRev = 3
 	case "Generation":
 		task.Generation = 2
 	case "MirrorRev":

@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,5 +95,168 @@ func TestBuildReadProfile_RequiresSandboxHome(t *testing.T) {
 	// Falling back to the system temp dir is what leaks; an empty home must fail the run closed instead.
 	if _, err := buildReadProfile("/tmp/base.sb", []string{"/usr"}, ""); err == nil {
 		t.Fatal("buildReadProfile accepted an empty sandbox home")
+	}
+}
+
+// A RunConfig.ReadOnlyDir run legitimately has no writable worktree, so
+// injectReadOnlyProcessSandbox passes an empty one. Templating that straight
+// into the profile made sandbox-exec refuse to launch with
+// "empty subpath pattern", which surfaced as an agent that produced no output
+// at all rather than as a sandbox failure.
+func TestWrapInvocation_NoEmptyProfileParams(t *testing.T) {
+	tests := []struct {
+		name string
+		spec sandboxSpec
+	}{
+		{
+			name: "read-only dir run has no worktree",
+			spec: sandboxSpec{
+				mode:        "enforce",
+				worktree:    "", // what injectReadOnlyProcessSandbox passes
+				sandboxHome: "/data/home",
+				tmp:         "/tmp",
+				sharedCache: "/data/cache",
+				readOnlyDir: "/opt/src",
+			},
+		},
+		{
+			name: "every optional root absent",
+			spec: sandboxSpec{mode: "enforce"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, args := wrapInvocation("claude", []string{"-p", "hi"}, &RunConfig{sandbox: tc.spec})
+			for i := range len(args) - 1 {
+				if args[i] != "-D" {
+					continue
+				}
+				name, value, ok := strings.Cut(args[i+1], "=")
+				if !ok {
+					t.Fatalf("malformed -D arg %q", args[i+1])
+				}
+				if strings.TrimSpace(value) == "" {
+					t.Errorf("param %s is empty; sandbox-exec rejects an empty subpath and refuses to launch", name)
+				}
+			}
+		})
+	}
+}
+
+// The substitute must stay inert: an unused writable root must not alias the
+// sentinel used for unused deny rules.
+func TestUnusedRootSentinelsAreDistinct(t *testing.T) {
+	if unusedWritableRootSentinel == unusedReadOnlyDirSentinel {
+		t.Fatal("an unused allow root aliases an unused deny root")
+	}
+}
+
+// codex's in-process app-server creates a directory under the macOS per-user
+// application-data root at startup. Without a write grant there it dies with
+// "failed to initialize in-process app-server client: Operation not
+// permitted" before producing any output, which surfaced downstream as a
+// missing skill-conformance receipt rather than as a sandbox denial.
+func TestWrapInvocation_GrantsAppSupportRoot(t *testing.T) {
+	const appSupport = "/Users/u/Library/Application Support"
+	cfg := &RunConfig{sandbox: sandboxSpec{
+		mode:        "enforce",
+		worktree:    "/data/wt",
+		sandboxHome: "/data/home",
+		tmp:         "/tmp",
+		sharedCache: "/data/cache",
+		appSupport:  appSupport,
+	}}
+
+	_, args := wrapInvocation("codex", []string{"exec"}, cfg)
+
+	var got string
+	for i := range len(args) - 1 {
+		if args[i] == "-D" {
+			if name, value, ok := strings.Cut(args[i+1], "="); ok && name == "APP_SUPPORT" {
+				got = value
+			}
+		}
+	}
+	if got != appSupport {
+		t.Fatalf("APP_SUPPORT = %q, want %q", got, appSupport)
+	}
+}
+
+// The embedded profile must actually reference the param, or the -D value is
+// inert and the grant silently does nothing.
+func TestSandboxProfile_ReferencesAppSupport(t *testing.T) {
+	if !strings.Contains(string(agentSandboxProfile), `(subpath (param "APP_SUPPORT"))`) {
+		t.Fatal("profile has no APP_SUPPORT write rule, so the resolved root grants nothing")
+	}
+}
+
+// Claude Code writes per-session working files under /tmp/claude-<uid>. On
+// darwin that is outside the tmp root, since os.TempDir() is $TMPDIR
+// (/var/folders/.../T) while /tmp resolves to /private/tmp — so every such
+// write failed EPERM and the agent retried an impossible mkdir instead of
+// progressing.
+func TestClaudeScratchRoot_IsExactlyTheTmpScratchpad(t *testing.T) {
+	got := claudeScratchRoot()
+	if got == "" {
+		t.Fatal("no scratchpad root resolved; Claude Code writes would be denied")
+	}
+	// Pinned to the exact path, not merely "contains claude-<uid>": a
+	// uid-scoped path under $TMPDIR would satisfy a looser check while
+	// leaving the real /tmp scratchpad denied, which is the bug this fixes.
+	want := filepath.Join("/tmp", fmt.Sprintf("claude-%d", os.Getuid()))
+	wantResolved := filepath.Join("/private/tmp", fmt.Sprintf("claude-%d", os.Getuid()))
+	if got != want && got != wantResolved {
+		t.Fatalf("scratchpad root = %q, want %q (or its resolved form %q)", got, want, wantResolved)
+	}
+	// Granting /tmp wholesale would hand agents a world-writable directory
+	// shared with every process on the host.
+	for _, tooWide := range []string{"/tmp", "/private/tmp", "/private/var/tmp"} {
+		if got == tooWide {
+			t.Fatalf("scratchpad root is %q, which grants all of tmp", got)
+		}
+	}
+}
+
+// /tmp is world-writable, so any local process can pre-create the scratchpad
+// path as a symlink. Following it would grant a writable root outside /tmp and
+// defeat the boundary the sandbox exists to enforce.
+func TestResolveScratchRoot_RefusesSymlink(t *testing.T) {
+	base := t.TempDir()
+	link := filepath.Join(base, "scratch-link")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if got := resolveScratchRoot(link); got != "" {
+		t.Fatalf("resolveScratchRoot() = %q via a symlink; must refuse rather than grant outside the intended root", got)
+	}
+}
+
+func TestResolveScratchRoot_AcceptsRealDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "scratch")
+
+	got := resolveScratchRoot(root)
+
+	if got != root && got != filepath.Join("/private", root) {
+		t.Fatalf("resolveScratchRoot() = %q, want the created directory %q", got, root)
+	}
+}
+
+func TestSandboxProfile_ReferencesClaudeScratch(t *testing.T) {
+	if !strings.Contains(string(agentSandboxProfile), `(subpath (param "CLAUDE_SCRATCH"))`) {
+		t.Fatal("profile has no CLAUDE_SCRATCH rule, so the resolved root grants nothing")
+	}
+}
+
+// Denying writes to the device sinks broke essentially all tooling: every
+// `>/dev/null` redirect failed, which took out git with "fatal: could not
+// open '/dev/null' for reading and writing". Writing to them is a no-op by
+// definition, so the grant adds no blast radius.
+func TestSandboxProfile_AllowsDeviceSinks(t *testing.T) {
+	profile := string(agentSandboxProfile)
+	for _, dev := range []string{`(literal "/dev/null")`, `(literal "/dev/zero")`} {
+		if !strings.Contains(profile, dev) {
+			t.Errorf("profile does not permit writes to %s; every >/dev/null redirect fails without it", dev)
+		}
 	}
 }

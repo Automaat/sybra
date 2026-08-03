@@ -382,3 +382,54 @@ func TestCheckBareCloneHealth_StillDetectsMissingReachableObject(t *testing.T) {
 		t.Fatal("health gate passed with the HEAD commit object deleted")
 	}
 }
+
+// The index parses fine here but names a blob the object database no longer
+// has — the shape behind the "recovery commit: invalid object <sha> for
+// <path>" checkpoint failures. ls-files alone reports it healthy, so
+// rebuildWorktreeIndexes used to early-return and repair nothing.
+func TestCheckWorktreeIndexes_DetectsIndexNamingMissingObject(t *testing.T) {
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+	branch, err := DefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("fetch origin: %v", err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	if err := CreateWorktree(context.Background(), bare, wtPath, "obj-task", "origin/"+branch); err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(wtPath, "staged.txt"), []byte("staged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "add", "staged.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	shaOut, err := exec.Command("git", "-C", wtPath, "rev-parse", ":staged.txt").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha := strings.TrimSpace(string(shaOut))
+	loose := filepath.Join(bare, "objects", sha[:2], sha[2:])
+	if _, statErr := os.Stat(loose); statErr != nil {
+		t.Skipf("staged blob is not a loose object: %v", statErr)
+	}
+	if err := os.Remove(loose); err != nil {
+		t.Fatal(err)
+	}
+
+	// Guard: if ls-files started failing here, this test would pass for the
+	// wrong reason and stop covering the write-tree probe.
+	if err := runQuietGit(context.Background(), wtPath, "ls-files"); err != nil {
+		t.Fatalf("ls-files already fails, so this no longer isolates the write-tree probe: %v", err)
+	}
+	if err := CheckWorktreeIndexes(context.Background(), bare); err == nil {
+		t.Fatal("index naming a missing object reported healthy")
+	}
+}

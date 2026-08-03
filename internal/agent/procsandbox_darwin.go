@@ -102,6 +102,23 @@ func sandboxRootOr(root, fallback string) string {
 	return root
 }
 
+// unusedWritableRootSentinel stands in for a writable root that this run
+// legitimately has none of — WORKTREE on a RunConfig.ReadOnlyDir run, where
+// injectReadOnlyProcessSandbox deliberately passes an empty worktree so Dir is
+// never writable.
+//
+// The profile references every param unconditionally, and sandbox-exec rejects
+// an empty pattern with "sandbox-exec: empty subpath pattern" and refuses to
+// launch. That surfaced as the agent producing no output at all — a 36-byte
+// stderr and a workflow that blamed missing sidecars — rather than as a
+// sandbox error, so it must be impossible to reach rather than merely fixed at
+// the one site that hit it.
+//
+// A reserved, never-written path keeps the allow rule inert. Distinct from
+// unusedReadOnlyDirSentinel so an unused *allow* root can never alias an
+// unused *deny* root.
+const unusedWritableRootSentinel = "/private/var/empty/sybra-sandbox-unused-writable"
+
 // unusedReadOnlyDirSentinel is READONLY_DIR's value on every run that isn't
 // RunConfig.ReadOnlyDir: the profile's READONLY_DIR deny rule is
 // unconditional, so it always needs a value, and this one is a fixed,
@@ -171,24 +188,34 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		return name, args
 	}
 	home := cfg.sandbox.sandboxHome
-	wrapped := make([]string, 0, len(args)+21)
-	wrapped = append(wrapped,
-		"-f", cfg.sandbox.profilePath,
-		"-D", "WORKTREE="+cfg.sandbox.worktree,
-		"-D", "SANDBOX_HOME="+home,
-		"-D", "TMP="+cfg.sandbox.tmp,
-		"-D", "SHARED_CACHE="+cfg.sandbox.sharedCache,
-		"-D", "CLAUDE_STATE="+sandboxRootOr(cfg.sandbox.claudeState, home),
-		"-D", "CODEX_STATE="+sandboxRootOr(cfg.sandbox.codexState, home),
-		"-D", "COPILOT_STATE="+sandboxRootOr(cfg.sandbox.copilotState, home),
-		"-D", "OPENCODE_STATE="+sandboxRootOr(cfg.sandbox.opencodeState, home),
-		"-D", "TOOL_CACHE="+sandboxRootOr(cfg.sandbox.toolCache, home),
-		"-D", "READONLY_DIR="+sandboxRootOr(cfg.sandbox.readOnlyDir, unusedReadOnlyDirSentinel),
-		"-D", "STATE_DENY_1="+sandboxRootOr(stateDenyAt(cfg.sandbox.stateDenied, 0), unusedReadOnlyDirSentinel),
-		"-D", "STATE_DENY_2="+sandboxRootOr(stateDenyAt(cfg.sandbox.stateDenied, 1), unusedReadOnlyDirSentinel),
-		"-D", "STATE_DENY_3="+sandboxRootOr(stateDenyAt(cfg.sandbox.stateDenied, 2), unusedReadOnlyDirSentinel),
-		name,
-	)
+	params := [][2]string{
+		{"WORKTREE", cfg.sandbox.worktree},
+		{"SANDBOX_HOME", home},
+		{"TMP", cfg.sandbox.tmp},
+		{"SHARED_CACHE", cfg.sandbox.sharedCache},
+		{"CLAUDE_STATE", sandboxRootOr(cfg.sandbox.claudeState, home)},
+		{"CODEX_STATE", sandboxRootOr(cfg.sandbox.codexState, home)},
+		{"COPILOT_STATE", sandboxRootOr(cfg.sandbox.copilotState, home)},
+		{"OPENCODE_STATE", sandboxRootOr(cfg.sandbox.opencodeState, home)},
+		{"TOOL_CACHE", sandboxRootOr(cfg.sandbox.toolCache, home)},
+		{"APP_SUPPORT", cfg.sandbox.appSupport},
+		{"CLAUDE_SCRATCH", cfg.sandbox.claudeScratch},
+		{"READONLY_DIR", sandboxRootOr(cfg.sandbox.readOnlyDir, unusedReadOnlyDirSentinel)},
+		{"STATE_DENY_1", sandboxRootOr(stateDenyAt(cfg.sandbox.stateDenied, 0), unusedReadOnlyDirSentinel)},
+		{"STATE_DENY_2", sandboxRootOr(stateDenyAt(cfg.sandbox.stateDenied, 1), unusedReadOnlyDirSentinel)},
+		{"STATE_DENY_3", sandboxRootOr(stateDenyAt(cfg.sandbox.stateDenied, 2), unusedReadOnlyDirSentinel)},
+	}
+	wrapped := make([]string, 0, len(args)+2*len(params)+3)
+	wrapped = append(wrapped, "-f", cfg.sandbox.profilePath)
+	for _, p := range params {
+		// Every param is templated into an unconditional (subpath (param ...))
+		// rule, and seatbelt rejects an empty pattern outright — see
+		// unusedWritableRootSentinel. Substituting here is the single
+		// chokepoint that keeps a legitimately-absent root from producing a
+		// malformed profile.
+		wrapped = append(wrapped, "-D", p[0]+"="+sandboxRootOr(p[1], unusedWritableRootSentinel))
+	}
+	wrapped = append(wrapped, name)
 	wrapped = append(wrapped, args...)
 	return sandboxExecPath, wrapped
 }

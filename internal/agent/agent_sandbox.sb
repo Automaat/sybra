@@ -19,7 +19,24 @@
   (subpath (param "CODEX_STATE"))
   (subpath (param "COPILOT_STATE"))
   (subpath (param "OPENCODE_STATE"))
-  (subpath (param "TOOL_CACHE")))
+  (subpath (param "TOOL_CACHE"))
+  ;; APP_SUPPORT is the macOS per-user application-data root. codex's
+  ;; in-process app-server creates its own directory there at startup, so it
+  ;; needs write on the parent; a codex-named subpath alone was measured to
+  ;; fail. Unused slots resolve to a never-written sentinel.
+  (subpath (param "APP_SUPPORT"))
+  ;; CLAUDE_SCRATCH is Claude Code's per-user scratchpad root
+  ;; (/tmp/claude-<uid>). Granted narrowly rather than opening /tmp, which is
+  ;; world-writable and shared with every process on the host.
+  (subpath (param "CLAUDE_SCRATCH")))
+;; Device sinks. Writing to these is a no-op by definition, so allowing them
+;; adds no blast radius, but denying them breaks essentially all tooling:
+;; every `>/dev/null` redirect fails, which took out git with
+;; "fatal: could not open '/dev/null' for reading and writing".
+;; Linux is unaffected — bwrap's --dev mounts a fresh writable /dev.
+(allow file-write*
+  (literal "/dev/null")
+  (literal "/dev/zero"))
 ;; READONLY_DIR re-denies writes for a run whose Dir must stay read-only
 ;; (RunConfig.ReadOnlyDir) even though it sits inside one of the allowed
 ;; roots above (TMP in particular is the whole system temp dir, so a

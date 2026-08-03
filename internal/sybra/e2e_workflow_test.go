@@ -308,6 +308,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
 	t.Setenv("FAKE_CLAUDE_SCENARIO", scenario)
 	t.Setenv("FAKE_CODEX_SCENARIO", scenario)
+	unsetGitFixtureEnv(t)
 
 	// Use os.MkdirTemp instead of t.TempDir to avoid cleanup races with
 	// background goroutines (agent processes, sybra-cli writes).
@@ -457,6 +458,30 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	})
 
 	return env
+}
+
+func unsetGitFixtureEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"GIT_DIR",
+		"GIT_WORK_TREE",
+		"GIT_COMMON_DIR",
+		"GIT_INDEX_FILE",
+		"GIT_OBJECT_DIRECTORY",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	} {
+		value, had := os.LookupEnv(key)
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatalf("unset %s: %v", key, err)
+		}
+		t.Cleanup(func() {
+			if !had {
+				_ = os.Unsetenv(key)
+				return
+			}
+			_ = os.Setenv(key, value)
+		})
+	}
 }
 
 // waitFor polls a condition with timeout. The timeout is scaled by
@@ -971,6 +996,64 @@ func TestE2E_HeadlessAgent_CostHardStopRetriesBoundedPath(t *testing.T) {
 		}
 		return tk.Workflow.CurrentStep != "triage"
 	})
+}
+
+// TestE2E_HeadlessAgent_CostHardStopPreemptsMidStream verifies the mid-stream
+// live-cost ceiling: the fake claude "high_cost_mid_stream" scenario reports
+// no total_cost_usd anywhere and emits a single assistant event whose own
+// usage block alone prices well over MaxCostUSD, followed by a result line
+// that must never be reached. Only the pre-emptive live estimate (not the
+// terminal-result cost check) can stop a run like this.
+func TestE2E_HeadlessAgent_CostHardStopPreemptsMidStream(t *testing.T) {
+	env := setupE2EMulti(t, []string{"high_cost_mid_stream", "triage"})
+	env.agents.SetGuardrails(agent.Guardrails{MaxCostUSD: 1.0})
+
+	h := completion.New(completion.Config{
+		Logger:         e2eLogger(t),
+		Tasks:          env.tasks,
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(t), AgentChecker: env.agents.HasRunningAgentForTask}),
+		WorkflowEngine: env.engine,
+	})
+	env.onAgentComplete = h.OnComplete
+
+	created, err := env.tasks.Create("cost mid-stream pre-empt task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "mid-stream cost-preempted triage retries through failed-completion path", func() bool {
+		tk, err := env.tasks.Get(created.ID)
+		if err != nil || tk.Workflow == nil {
+			return false
+		}
+		return tk.Workflow.CurrentStep != "triage"
+	})
+
+	// Step movement alone does not prove the live pre-emption fired: the
+	// high_cost_mid_stream scenario's trailing result reports a trivial cost, so
+	// a run that ignored the mid-stream usage would complete triage *successfully*
+	// and advance the step identically. Assert the discriminating signal — that a
+	// triage run was hard-stopped with the cost escalation reason, forcing the
+	// bounded failed-completion retry that dispatched the second ("triage")
+	// scenario. Only the mid-stream live estimate can set this here.
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var costStopped bool
+	for _, run := range tk.AgentRuns {
+		if run.EscalationReason == agent.EscalationReasonCost {
+			costStopped = true
+			break
+		}
+	}
+	if !costStopped {
+		t.Fatalf("no AgentRun recorded EscalationReason=%q — mid-stream live-cost pre-emption never fired; runs=%+v",
+			agent.EscalationReasonCost, tk.AgentRuns)
+	}
 }
 
 // TestE2E_HeadlessAgent_StopCompletedAgent_AdvancesWorkflow verifies that
@@ -4347,6 +4430,7 @@ func runCmd(t *testing.T, dir, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
+	scrubGitFixtureEnv(cmd)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%s %v failed: %v\n%s", name, args, err, string(out))
 	}
@@ -4356,11 +4440,46 @@ func readCommandOutput(t *testing.T, dir, name string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
+	scrubGitFixtureEnv(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s %v failed: %v\n%s", name, args, err, string(out))
 	}
 	return string(out)
+}
+
+func scrubGitFixtureEnv(cmd *exec.Cmd) {
+	if filepath.Base(cmd.Path) != "git" {
+		return
+	}
+	cmd.Env = os.Environ()
+	cmd.Env = withoutEnvKeys(cmd.Env,
+		"GIT_DIR",
+		"GIT_WORK_TREE",
+		"GIT_COMMON_DIR",
+		"GIT_INDEX_FILE",
+		"GIT_OBJECT_DIRECTORY",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	)
+}
+
+func withoutEnvKeys(env []string, keys ...string) []string {
+	if len(env) == 0 || len(keys) == 0 {
+		return env
+	}
+	blocked := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		blocked[key] = struct{}{}
+	}
+	filtered := env[:0]
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if _, skip := blocked[name]; skip {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	return filtered
 }
 
 func initRepoWithOriginMain(t *testing.T, dir string) {

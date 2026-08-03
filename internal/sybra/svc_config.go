@@ -33,6 +33,10 @@ type ConfigService struct {
 	logger         *slog.Logger
 	policy         func() limits.Policy
 	applyRuntime   func(config.Config) error
+	// publishConfig atomically exposes a successfully applied immutable
+	// snapshot to App runtime readers. It is set by App wiring; standalone
+	// ConfigService tests intentionally leave it nil.
+	publishConfig func(*config.Config)
 	// reapplyRouting re-merges the persisted routing overlay on top of the
 	// freshly hot-reloaded base A/B config and fans it back out to every
 	// selection site. Called after an ab_testing hot change so a base edit
@@ -354,7 +358,12 @@ func (s *ConfigService) mutateLocked(candidate *config.Config, persist func() er
 		}
 		return result, &configMutationError{result: result, cause: err}
 	}
-	*s.cfg = *nextActive
+	// Do not overwrite the shared object: lock-free App readers retain old
+	// snapshots while a reload publishes this complete replacement.
+	s.cfg = nextActive
+	if s.publishConfig != nil {
+		s.publishConfig(nextActive)
+	}
 	s.persisted = cloneConfig(candidate)
 	if slices.Contains(result.Applied, "ab_testing") && s.applyABTestingBase != nil {
 		s.applyABTestingBase(nextActive.ABTesting)
@@ -440,6 +449,7 @@ func (s *ConfigService) applyAgentGuardrails(cfg config.Config) {
 			TurnCostFraction:        cfg.Agent.TurnCostFraction,
 			TurnMultiplier:          cfg.Agent.TurnMultiplier,
 			CheckpointOnTurnCeiling: cfg.CheckpointOnTurnCeilingEnabled(),
+			MaxSubagentEvents:       cfg.Agent.MaxSubagentEvents,
 		})
 	}
 	s.applyWorkflowGuardrails(cfg)

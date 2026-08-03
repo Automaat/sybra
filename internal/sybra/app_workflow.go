@@ -544,6 +544,7 @@ func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 			TestFailureFingerprint: runs[i].TestFailureFingerprint,
 			HeadSHA:                runs[i].HeadSHA,
 			FinalCommitSource:      runs[i].FinalCommitSource,
+			SubagentCallCount:      runs[i].SubagentCallCount,
 		}
 	}
 	return out

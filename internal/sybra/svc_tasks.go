@@ -47,6 +47,7 @@ type TaskService struct {
 	logger         *slog.Logger
 	audit          *audit.Logger
 	cfg            *config.Config
+	currentConfig  func() *config.Config
 	// projects and intervention back recordInterventionOnUnblock only; nil in
 	// tests that don't exercise the human-required unblock path (the method
 	// guards on both being non-nil before doing anything).
@@ -84,6 +85,17 @@ type TaskService struct {
 	// Initial async enrichment is not gated; this only prevents a permanently
 	// broken stub from spending GitHub calls on every reconcile tick.
 	enrichRetryCooldown sync.Map
+	// followerStatusMu serializes each follower RPC with the corresponding
+	// leader mirror write, preventing concurrent UI transitions from applying
+	// remote and local statuses in opposite orders.
+	followerStatusMu sync.Mutex
+}
+
+func (s *TaskService) config() *config.Config {
+	if s.currentConfig != nil {
+		return s.currentConfig()
+	}
+	return s.cfg
 }
 
 const enrichPendingRetryCooldown = time.Hour
@@ -163,6 +175,11 @@ func (s *TaskService) ListTasksForNode(node string) ([]task.Task, error) {
 	out := all[:0]
 	for i := range all {
 		t := all[i]
+		// Degraded entries deliberately exist only on the local board. They do
+		// not name a valid task payload and must not be replicated to a leader.
+		if t.Degraded {
+			continue
+		}
 		if t.AssignedNode != node && t.AssignedNode != "" {
 			continue
 		}
@@ -299,11 +316,12 @@ func (s *TaskService) ListTaskArtifacts(taskID string) ([]TaskArtifactDTO, error
 
 func (s *TaskService) GetTaskSetupLog(taskID string) (TaskSetupLogDTO, error) {
 	dto := TaskSetupLogDTO{TaskID: taskID}
-	if s.cfg == nil || s.cfg.Logging.Dir == "" {
+	cfg := s.config()
+	if cfg == nil || cfg.Logging.Dir == "" {
 		return dto, nil
 	}
-	path := filepath.Join(s.cfg.Logging.Dir, "worktrees", taskID+"-setup.log")
-	root := filepath.Join(s.cfg.Logging.Dir, "worktrees")
+	path := filepath.Join(cfg.Logging.Dir, "worktrees", taskID+"-setup.log")
+	root := filepath.Join(cfg.Logging.Dir, "worktrees")
 	cleanRoot := filepath.Clean(root) + string(filepath.Separator)
 	cleanPath := filepath.Clean(path)
 	if !strings.HasPrefix(cleanPath, cleanRoot) {
@@ -327,7 +345,8 @@ func (s *TaskService) GetTaskSetupLog(taskID string) (TaskSetupLogDTO, error) {
 }
 
 func (s *TaskService) ListTaskAuditEvents(taskID string, days int) ([]TaskAuditEventDTO, error) {
-	if s.cfg == nil || s.cfg.Logging.Dir == "" {
+	cfg := s.config()
+	if cfg == nil || cfg.Logging.Dir == "" {
 		return []TaskAuditEventDTO{}, nil
 	}
 	if days <= 0 || days > 90 {
@@ -335,7 +354,7 @@ func (s *TaskService) ListTaskAuditEvents(taskID string, days int) ([]TaskAuditE
 	}
 	until := time.Now().UTC().Add(time.Minute)
 	since := until.AddDate(0, 0, -days)
-	events, err := audit.Read(s.cfg.AuditDir(), audit.Query{
+	events, err := audit.Read(cfg.AuditDir(), audit.Query{
 		Since:  since,
 		Until:  until,
 		TaskID: taskID,
@@ -420,16 +439,36 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 	// the leader mirror, so the board cannot claim the task resumed when the
 	// worker rejected or never received the transition.
 	if s.assigner != nil {
+		s.followerStatusMu.Lock()
+		defer s.followerStatusMu.Unlock()
 		current, err := s.tasks.Get(taskID)
 		if err != nil {
 			return task.Task{}, err
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), fieldPushTimeout)
+		ctx, cancel := context.WithTimeout(s.recoveryCtx(), fieldPushTimeout)
 		defer cancel()
-		if _, forwarded, err := s.assigner.BlessTampering(ctx, current); err != nil {
+		remote, forwarded, err := s.assigner.BlessTampering(ctx, current)
+		if err != nil {
 			return task.Task{}, err
 		} else if forwarded {
+			result, _, putErr := s.tasks.PutFn(taskID, func(local task.Task) (task.Task, error) {
+				if local.AssignedNode != current.AssignedNode || local.AssignmentRev != current.AssignmentRev {
+					return task.Task{}, conflictError("task ownership changed while follower tamper blessing was in flight")
+				}
+				merged, ok := clusterlead.Merge(local, remote)
+				if !ok {
+					return local, nil
+				}
+				if !slices.Contains(merged.Tags, workflow.TamperBlessedTag) {
+					merged.Tags = append(merged.Tags, workflow.TamperBlessedTag)
+				}
+				return merged, nil
+			})
+			if putErr != nil {
+				return task.Task{}, putErr
+			}
 			s.logger.Info("cluster.task.tamper_bless.forwarded", "task_id", taskID, "node", current.AssignedNode)
+			return result, nil
 		}
 	}
 	var (
@@ -641,6 +680,9 @@ func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 // it touches disk; a malformed task is rejected with a 400 rather than
 // corrupting the board.
 func (s *TaskService) AssignTask(t task.Task) error {
+	if t.Degraded {
+		return validationError("assigned task must not be degraded")
+	}
 	if err := task.ValidateID(t.ID); err != nil {
 		return validationError(err.Error())
 	}
@@ -652,6 +694,11 @@ func (s *TaskService) AssignTask(t task.Task) error {
 	}
 	if t.AgentMode != "" {
 		if _, err := task.ValidateAgentMode(t.AgentMode); err != nil {
+			return validationError(err.Error())
+		}
+	}
+	if t.Slug != "" {
+		if err := task.ValidateSlug(t.Slug); err != nil {
 			return validationError(err.Error())
 		}
 	}
@@ -840,7 +887,7 @@ func (s *TaskService) startCreatedWorkflow(t task.Task) {
 	if s.workflowEngine == nil || t.Status != task.StatusTodo {
 		return
 	}
-	if s.cfg != nil && !s.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local {
+	if cfg := s.config(); cfg != nil && !cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local {
 		return
 	}
 	// pr-fix / ordinary existing-PR tasks are driven outside task.created.
@@ -884,6 +931,8 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	}
 
 	if status, ok := updates["status"].(string); ok {
+		s.followerStatusMu.Lock()
+		defer s.followerStatusMu.Unlock()
 		// Reject status regressions while an agent is running on this task.
 		// Moving back to todo/new/done/cancelled while an agent is active loses in-flight work.
 		agentBlockedStatuses := map[string]bool{
@@ -902,6 +951,41 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 				cur.Workflow.State != workflow.ExecFailed {
 				return cur, conflictError(fmt.Sprintf("cannot move to testing: task has active workflow %q (state=%s)",
 					cur.Workflow.WorkflowID, cur.Workflow.State))
+			}
+		}
+		// A follower owns its task's live agents and workflow. Validate this
+		// local request first, then forward before changing the leader mirror so
+		// a rejected remote transition cannot silently revert a success response.
+		if s.assigner != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), fieldPushTimeout)
+			defer cancel()
+			remoteUpdates := map[string]any{"status": status}
+			if statusReason, hasReason := updates["status_reason"]; hasReason {
+				remoteUpdates["status_reason"] = statusReason
+			}
+			remote, forwarded, forwardErr := s.assigner.UpdateTaskStatus(ctx, cur, remoteUpdates)
+			if forwardErr != nil {
+				return cur, forwardErr
+			} else if forwarded {
+				// Merge the follower's returned execution snapshot, including its
+				// clock watermark, instead of rebuilding just status locally. A
+				// delayed mirror poll from before this RPC is then stale by
+				// construction and cannot undo the accepted transition.
+				t, _, putErr := s.tasks.PutFn(id, func(local task.Task) (task.Task, error) {
+					if local.AssignedNode != cur.AssignedNode || local.AssignmentRev != cur.AssignmentRev {
+						return task.Task{}, conflictError("task ownership changed while follower status update was in flight")
+					}
+					merged, ok := clusterlead.Merge(local, remote)
+					if !ok {
+						return local, nil
+					}
+					return merged, nil
+				})
+				if putErr != nil {
+					return cur, putErr
+				}
+				s.logger.Info("cluster.task.status_update.forwarded", "task_id", id, "node", cur.AssignedNode, "status", status)
+				return t, nil
 			}
 		}
 	}
@@ -1108,6 +1192,35 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 	if spec.requiresPR && cur.PRNumber == 0 {
 		return task.Task{}, conflictError(fmt.Sprintf("cannot dispatch to %q: task has no linked PR", target))
 	}
+	if s.assigner != nil {
+		s.followerStatusMu.Lock()
+		ctx, cancel := context.WithTimeout(s.recoveryCtx(), fieldPushTimeout)
+		remote, forwarded, forwardErr := s.assigner.DispatchFromHumanRequired(ctx, cur, target, reason)
+		cancel()
+		if forwardErr != nil {
+			s.followerStatusMu.Unlock()
+			return task.Task{}, forwardErr
+		}
+		if forwarded {
+			local, _, localErr := s.tasks.PutFn(id, func(current task.Task) (task.Task, error) {
+				if current.AssignedNode != cur.AssignedNode || current.AssignmentRev != cur.AssignmentRev {
+					return task.Task{}, conflictError("task ownership changed while follower dispatch was in flight")
+				}
+				merged, ok := clusterlead.Merge(current, remote)
+				if !ok {
+					return current, nil
+				}
+				return merged, nil
+			})
+			s.followerStatusMu.Unlock()
+			if localErr != nil {
+				return task.Task{}, localErr
+			}
+			s.logDispatchAudit(id, target, string(cur.Status), reason, "forwarded")
+			return local, nil
+		}
+		s.followerStatusMu.Unlock()
+	}
 	hasRunning := s.agents.HasRunningAgentForTask(id)
 	if exceptAgentID != "" {
 		hasRunning = s.agents.HasOtherRunningAgentForTask(id, exceptAgentID)
@@ -1223,7 +1336,7 @@ func (s *TaskService) recordInterventionOnUnblock(cur task.Task, target, reason,
 	if exceptAgentID != "" {
 		class = intervention.OperatorActionAutoRecovery
 	}
-	intervention.Capture(s.intervention, s.cfg, s.projects, s.audit, s.logger, cur, target, reason, class)
+	intervention.Capture(s.intervention, s.config(), s.projects, s.audit, s.logger, cur, target, reason, class)
 }
 
 // logDispatchAudit records a human-required dispatch attempt and its outcome
@@ -1522,7 +1635,8 @@ func (s *TaskService) enrichPendingRetryCoolingDown(taskID string) bool {
 // auto-expanded on the manual-create path. Read live (not wired-once) so a
 // config reload toggling umbrella.enabled takes effect without re-wiring.
 func (s *TaskService) umbrellaExpansionEnabled() bool {
-	return s.cfg != nil && s.cfg.Umbrella.Enabled && s.umbrellaExpand != nil
+	cfg := s.config()
+	return cfg != nil && cfg.Umbrella.Enabled && s.umbrellaExpand != nil
 }
 
 // expandUmbrellaStub expands a manually-created stub whose URL resolved to a

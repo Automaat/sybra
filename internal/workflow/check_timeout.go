@@ -12,6 +12,11 @@ import (
 // genuine hang into an effectively unbounded wait.
 const verifyTimeoutScaleCeiling int64 = 8
 
+// verifyTimeoutScaleCeilingLoad is the load-per-CPU at which scaling saturates.
+// Tests that must exercise the widest budget stub this rather than an arbitrary
+// value, so a change to the ceiling keeps them in step.
+const verifyTimeoutScaleCeilingLoad = float64(verifyTimeoutScaleCeiling)
+
 var workflowCheckLoadPerCPU = pressure.CurrentLoadPerCPU
 
 // resolveWorkflowCheckTimeout derives the effective timeout budget for
