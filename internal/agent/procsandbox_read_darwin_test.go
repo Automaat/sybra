@@ -218,3 +218,16 @@ func TestSandboxProfile_ReferencesClaudeScratch(t *testing.T) {
 		t.Fatal("profile has no CLAUDE_SCRATCH rule, so the resolved root grants nothing")
 	}
 }
+
+// Denying writes to the device sinks broke essentially all tooling: every
+// `>/dev/null` redirect failed, which took out git with "fatal: could not
+// open '/dev/null' for reading and writing". Writing to them is a no-op by
+// definition, so the grant adds no blast radius.
+func TestSandboxProfile_AllowsDeviceSinks(t *testing.T) {
+	profile := string(agentSandboxProfile)
+	for _, dev := range []string{`(literal "/dev/null")`, `(literal "/dev/zero")`} {
+		if !strings.Contains(profile, dev) {
+			t.Errorf("profile does not permit writes to %s; every >/dev/null redirect fails without it", dev)
+		}
+	}
+}
