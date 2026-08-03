@@ -1311,10 +1311,24 @@ func BranchPushed(ctx context.Context, worktreePath, branch string) bool {
 }
 
 func refreshTrackingRef(ctx context.Context, worktreePath, remote, branch string) error {
+	return refreshTrackingRefWithFetch(ctx, worktreePath, remote, branch, func(refspec string) error {
+		return runNetworkGit(ctx, worktreePath, fetchEnv(), "fetch", remote, refspec)
+	})
+}
+
+// refreshTrackingRefWithFetch keeps the shared-bare locking policy testable
+// without making the regression depend on a local git fetch's timing.
+func refreshTrackingRefWithFetch(ctx context.Context, worktreePath, remote, branch string, fetch func(refspec string) error) error {
 	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
-	fetchErr := withNetworkRetry(ctx, func() error {
-		return withLockRetry(func() error {
-			return runNetworkGit(ctx, worktreePath, fetchEnv(), "fetch", remote, refspec)
+	barePath, err := gitCommonDir(ctx, worktreePath)
+	if err != nil {
+		return err
+	}
+	fetchErr := withBareRepoLock(barePath, func() error {
+		return withNetworkRetry(ctx, func() error {
+			return withLockRetry(func() error {
+				return fetch(refspec)
+			})
 		})
 	})
 	if fetchErr != nil && !strings.Contains(fetchErr.Error(), "couldn't find remote ref") {
