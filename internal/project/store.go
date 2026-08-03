@@ -131,7 +131,7 @@ func (s *Store) Create(rawURL string, ptype ProjectType) (Project, error) {
 	if err := s.cloneBare(ctx, p.URL, clonePath); err != nil {
 		_ = os.RemoveAll(clonePath)
 		if markErr := s.markCloneError(p); markErr != nil {
-			return Project{}, fmt.Errorf("clone: %w (mark error: %v)", err, markErr)
+			return Project{}, fmt.Errorf("clone: %w (mark error: %w)", err, markErr)
 		}
 		return Project{}, fmt.Errorf("clone: %w", err)
 	}
