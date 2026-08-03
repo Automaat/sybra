@@ -4040,6 +4040,9 @@ steps:
 	// its reroute claim. The reroute must re-read rather than write stale back.
 	completed := stale
 	completed.Workflow = stale.Workflow.Clone()
+	if completed.Workflow == nil {
+		t.Fatal("stale workflow clone is nil")
+	}
 	completed.Workflow.CurrentStep = "review_plan"
 	completed.Workflow.ClearAgentRoute("agent-1")
 	tasks.Put(completed)
