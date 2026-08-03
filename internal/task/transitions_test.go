@@ -240,3 +240,31 @@ func TestApplyStatusEffect_RejectsIllegalTransition(t *testing.T) {
 		t.Fatalf("ApplyStatusEffect err = %v, want ErrIllegalTransition", err)
 	}
 }
+
+// branch-conflict-fix must move a task back to in-progress to run its fix
+// agent. Observed on the server: a divergence at ready-review dispatched
+// recovery, the transition was rejected, and the task escalated to a human
+// with "branch diverged … needs manual conflict resolution" — a message about
+// git for what was actually the state machine refusing the move.
+func TestTransitions_RecoveryCanReturnToInProgress(t *testing.T) {
+	// Statuses are listed literally, never derived from allowedTransitions:
+	// a test driven by the table it pins passes whatever that table becomes.
+	for _, from := range []Status{
+		StatusPlanning, StatusPlanReview, StatusReadyReview,
+		StatusInReview, StatusTesting, StatusReadyPR, StatusHumanRequired,
+	} {
+		if !allowedTransitions[from][StatusInProgress] {
+			t.Errorf("%s -> in-progress is refused; a task stranded there cannot be recovered by an agent", from)
+		}
+	}
+}
+
+// Terminal statuses must stay terminal — the recovery route above must not
+// have opened a way back out of a finished task.
+func TestTransitions_TerminalStaysTerminal(t *testing.T) {
+	for _, from := range []Status{StatusDone, StatusCancelled} {
+		if allowedTransitions[from][StatusInProgress] {
+			t.Errorf("%s -> in-progress is allowed; a finished task must not resume", from)
+		}
+	}
+}

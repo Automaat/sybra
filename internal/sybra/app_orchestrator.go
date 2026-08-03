@@ -203,6 +203,19 @@ func (a *App) queueDrainPass(ctx context.Context) {
 		return
 	}
 	a.reconcileRunnableBoardTasks(ctx)
+	// A repair pass, not a dispatch decision, so it rides the slower recovery
+	// tick rather than the fast one. Lists once here rather than inside the
+	// pass, so the recovery tick does not pay for a second full store scan.
+	if a.tasks != nil {
+		tasks, err := a.tasks.List()
+		if err != nil {
+			// Logged rather than swallowed: a silent skip here leaves tasks
+			// stranded exactly as before, with nothing in the log to say why.
+			a.logger.Warn("umbrella.gate.stale-tag-scan", "err", err)
+		} else {
+			a.clearGateTagOnHandedOffChildren(tasks)
+		}
+	}
 	if a.workflowEngine != nil {
 		var workflowRecovery workflowRecoveryLoop = a.workflowEngine
 		workflowRecovery.ReplayPersistedEffects()
