@@ -1741,15 +1741,22 @@ func watchdogRewardHackingRetryKey(stepID string) string {
 	return watchdogRewardHackingRetryVarPrefix + stepID
 }
 
-// clearWatchdogRewardHackingRetry drops the per-step reward-hacking retry
-// counter once that step's run completes cleanly. Without this, a later,
-// unrelated round of the same step ID would inherit an already-exhausted
-// counter and escalate immediately instead of getting its own bounded retry.
-func clearWatchdogRewardHackingRetry(wf *Execution, stepID string) {
+// clearWatchdogRetryCounters drops every per-step watchdog retry counter once
+// the step completes cleanly. A later workflow round may legitimately re-enter
+// the same step ID, and must start with a fresh consecutive-failure budget.
+func clearWatchdogRetryCounters(wf *Execution, stepID string) {
 	if wf == nil || wf.Variables == nil || stepID == "" {
 		return
 	}
-	delete(wf.Variables, watchdogRewardHackingRetryKey(stepID))
+	for _, key := range []string{
+		watchdogRewardHackingRetryKey(stepID),
+		watchdogHangRetryKey(stepID),
+		watchdogStopRetryKey(stepID),
+		watchdogRateLimitRetryKey(stepID),
+		watchdogZeroOutputFreshRetryKey(stepID),
+	} {
+		delete(wf.Variables, key)
+	}
 }
 
 // buildRewardHackingFixReviewReaskNote builds the steer prepended to a
