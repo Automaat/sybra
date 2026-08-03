@@ -173,11 +173,17 @@ func TestRefreshTrackingRefWaitsForBareRepoLock(t *testing.T) {
 	}()
 	<-locked
 
+	fetchStarted := make(chan struct{})
 	fetched := make(chan error, 1)
-	go func() { fetched <- refreshTrackingRef(context.Background(), wt, "origin", branch) }()
+	go func() {
+		fetched <- refreshTrackingRefWithFetch(context.Background(), wt, "origin", branch, func(string) error {
+			close(fetchStarted)
+			return nil
+		})
+	}()
 	select {
-	case err := <-fetched:
-		t.Fatalf("tracking fetch completed while bare lock held: %v", err)
+	case <-fetchStarted:
+		t.Fatal("tracking fetch started while bare lock held")
 	case <-time.After(100 * time.Millisecond):
 	}
 	close(release)
