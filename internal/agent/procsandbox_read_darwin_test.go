@@ -96,3 +96,56 @@ func TestBuildReadProfile_RequiresSandboxHome(t *testing.T) {
 		t.Fatal("buildReadProfile accepted an empty sandbox home")
 	}
 }
+
+// A RunConfig.ReadOnlyDir run legitimately has no writable worktree, so
+// injectReadOnlyProcessSandbox passes an empty one. Templating that straight
+// into the profile made sandbox-exec refuse to launch with
+// "empty subpath pattern", which surfaced as an agent that produced no output
+// at all rather than as a sandbox failure.
+func TestWrapInvocation_NoEmptyProfileParams(t *testing.T) {
+	tests := []struct {
+		name string
+		spec sandboxSpec
+	}{
+		{
+			name: "read-only dir run has no worktree",
+			spec: sandboxSpec{
+				mode:        "enforce",
+				worktree:    "", // what injectReadOnlyProcessSandbox passes
+				sandboxHome: "/data/home",
+				tmp:         "/tmp",
+				sharedCache: "/data/cache",
+				readOnlyDir: "/opt/src",
+			},
+		},
+		{
+			name: "every optional root absent",
+			spec: sandboxSpec{mode: "enforce"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, args := wrapInvocation("claude", []string{"-p", "hi"}, &RunConfig{sandbox: tc.spec})
+			for i := range len(args) - 1 {
+				if args[i] != "-D" {
+					continue
+				}
+				name, value, ok := strings.Cut(args[i+1], "=")
+				if !ok {
+					t.Fatalf("malformed -D arg %q", args[i+1])
+				}
+				if strings.TrimSpace(value) == "" {
+					t.Errorf("param %s is empty; sandbox-exec rejects an empty subpath and refuses to launch", name)
+				}
+			}
+		})
+	}
+}
+
+// The substitute must stay inert: an unused writable root must not alias the
+// sentinel used for unused deny rules.
+func TestUnusedRootSentinelsAreDistinct(t *testing.T) {
+	if unusedWritableRootSentinel == unusedReadOnlyDirSentinel {
+		t.Fatal("an unused allow root aliases an unused deny root")
+	}
+}
