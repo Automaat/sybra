@@ -245,6 +245,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 				e.agents.StopAgentsForTask(taskID, step.Config.Role)
 			} else {
 				wfExec.State = ExecWaiting
+				wfExec.SetVar(watchdogReaskDeliveredKey(step.ID), "1")
 				e.logger.Info("workflow.reuse-agent", "task_id", taskID, "step", step.ID, "agent_id", agentID)
 				return e.tasks.SetWorkflow(taskID, wfExec)
 			}

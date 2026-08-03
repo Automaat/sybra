@@ -168,7 +168,7 @@ func (e *Engine) pruneStaleAgentRoutes(taskID string, step *Step) {
 	if taskID == "" || step == nil {
 		return
 	}
-	if e.completionInFlight(taskID) || e.agents.HasRunningAgent(taskID) || e.agents.IsDispatching(taskID) {
+	if e.completionInFlight(taskID) || e.resumeDispatching(taskID) || e.agents.HasRunningAgent(taskID) || e.agents.IsDispatching(taskID) {
 		return
 	}
 	t, err := e.tasks.GetTask(taskID)
@@ -265,6 +265,20 @@ func (e *Engine) deferStartedAgentRoute(taskID, stepID, agentID string, err erro
 	e.logger.Warn("workflow.agent-route.defer",
 		"task_id", taskID, "step", stepID, "agent_id", agentID, "err", err)
 	return errWorkflowYield
+}
+
+func (e *Engine) hasPendingAgentRouteForStep(taskID string, step *Step) bool {
+	if step == nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for key, routedStepID := range e.pendingRoutes {
+		if strings.HasPrefix(key, taskID+"\x00") && routeMatchesStep(step, routedStepID) {
+			return true
+		}
+	}
+	return false
 }
 
 func clearAgentRouteFromWorkflow(wf *Execution, agentID string) bool {
