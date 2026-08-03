@@ -15,7 +15,18 @@ import (
 )
 
 var prFixSentinelRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_RESULT:\s*([a-z_-]+)\s*$`)
-var prFixReasonRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_REASON:\s*(.+?)\s*$`)
+
+// prFixReasonLineRe locates where a SYBRA_PR_FIX_REASON: value begins. It is
+// intentionally a prefix match, not a single-line capture: a real diagnosis
+// is routinely more than one line, and `$` in (?m) mode ends at the next
+// newline, so a capturing group here would silently drop everything past
+// line 1 — see sentinelReason for how the value's end is actually found.
+var prFixReasonLineRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_REASON:\s*`)
+
+// prFixSentinelKeyRe matches the start of any SYBRA_PR_FIX_* sentinel line,
+// used to find where a multi-line REASON value ends: at the next sentinel
+// line, or end of output if there is none.
+var prFixSentinelKeyRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_(?:RESULT|REASON|FAILING_TEST):`)
 
 // prFixFailingTestRe matches each repeated SYBRA_PR_FIX_FAILING_TEST: line a
 // pr-fix agent emits alongside a human-required verdict for non-merge test
@@ -567,13 +578,22 @@ func classifyPRFixResult(output string) (verdict PRFixVerdict, reason string) {
 }
 
 // Empty when the agent gave no reason; only human-required defaults its text. EXC:FILE011:load-bearing-invariant
+// sentinelReason returns the last SYBRA_PR_FIX_REASON: value, spanning as
+// many lines as the agent wrote — the value ends at the next SYBRA_PR_FIX_*
+// sentinel line, or at the end of output if there is none. RE2 has no
+// lookahead, so the end boundary is found with a second, separate search
+// rather than a single capturing regex.
 func sentinelReason(output string) string {
-	matches := prFixReasonRe.FindAllStringSubmatch(output, -1)
-	if len(matches) == 0 {
+	starts := prFixReasonLineRe.FindAllStringIndex(output, -1)
+	if len(starts) == 0 {
 		return ""
 	}
-	m := matches[len(matches)-1]
-	return strings.TrimSpace(m[1])
+	valueStart := starts[len(starts)-1][1]
+	value := output[valueStart:]
+	if end := prFixSentinelKeyRe.FindStringIndex(value); end != nil {
+		value = value[:end[0]]
+	}
+	return strings.TrimSpace(value)
 }
 
 func extractPRFixReason(output string) string {
