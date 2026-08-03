@@ -2078,3 +2078,56 @@ func TestPrepareForTask_BootstrapFailureBlocks(t *testing.T) {
 		t.Errorf("error does not carry bootstrap command text: %v", err)
 	}
 }
+
+// healOrRecreate wipes a worktree it considers unusable. Remove and
+// CleanupOrphaned already refuse when the worktree holds commits origin has
+// never seen (#2593), but both recreate paths deleted unconditionally — and a
+// worktree can be healthy yet on an unexpected branch, which is exactly the
+// state a merge or conflict resolution leaves behind.
+func TestManager_RefuseRecreateWithUnpushedWork(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
+
+	wt := filepath.Join(dir, "unpushed-work")
+	makePushedGitDir(t, wt)
+	if err := os.WriteFile(filepath.Join(wt, "f.txt"), []byte("merge resolution"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wt, "git", "add", "-A")
+	mustRunInDir(t, wt, "git", "commit", "-q", "-m", "resolve conflict")
+
+	// branch-mismatch only: the unrepairable path stays unguarded by design,
+	// since a broken worktree has no dependably-readable state to preserve.
+	err = m.refuseRecreateWithUnpushedWork(context.Background(), "t1", wt, "branch-mismatch")
+
+	if err == nil {
+		t.Fatal("recreate allowed on a worktree holding commits origin never saw; that discards the agent's work")
+	}
+	if _, statErr := os.Stat(filepath.Join(wt, "f.txt")); statErr != nil {
+		t.Fatalf("worktree contents gone: %v", statErr)
+	}
+}
+
+// A worktree whose work already reached origin is safe to recreate — the
+// guard must not block ordinary recovery.
+func TestManager_AllowsRecreateWhenPushed(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
+
+	wt := filepath.Join(dir, "pushed-work")
+	makePushedGitDir(t, wt)
+
+	if err := m.refuseRecreateWithUnpushedWork(context.Background(), "t1", wt, "branch-mismatch"); err != nil {
+		t.Fatalf("guard blocked recreate of a fully-pushed worktree: %v", err)
+	}
+}
