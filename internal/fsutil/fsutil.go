@@ -14,9 +14,12 @@ import (
 var ErrLockUnsupported = errors.New("fsutil: cross-process file locking is not supported on this platform")
 
 // AtomicWrite writes data to path via a temp file + rename to prevent
-// partial reads from concurrent goroutines. The temp file is removed on
-// every error path — including a failed rename into a read-only target
-// directory — so repeated write failures don't fill the disk with orphans.
+// partial reads from concurrent goroutines. It syncs the completed temp file
+// before renaming and syncs the containing directory afterwards, so Unix
+// filesystems persist both the new data and the name replacement across a
+// power loss. The temp file is removed on every pre-rename error path —
+// including a failed rename into a read-only target directory — so repeated
+// write failures don't fill the disk with orphans.
 //
 // The rename preserves whatever mode the temp file has, which os.CreateTemp
 // sets to 0600 regardless of the target's existing permissions. To avoid
@@ -36,23 +39,28 @@ func AtomicWrite(path string, data []byte) error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-
 	if info, err := os.Stat(path); err == nil {
-		if err := os.Chmod(tmp, info.Mode().Perm()); err != nil {
+		if err := f.Chmod(info.Mode().Perm()); err != nil {
+			_ = f.Close()
 			_ = os.Remove(tmp)
 			return err
 		}
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
 	}
 
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
-	return nil
+	return syncDir(dir)
 }
 
 // RemoveAllForce removes path and everything under it, tolerating read-only
