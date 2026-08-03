@@ -152,6 +152,24 @@ func TestHandleWatchdogHangRetry_RunTestPrioritizesManualTestSurface(t *testing.
 	}
 }
 
+func TestHandleWatchdogStopRetry_TestRunnerUsesTestingGuidance(t *testing.T) {
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(newTestStore(t), tasks, agents, discardLogger())
+	wf := &Execution{WorkflowID: "testing-task", CurrentStep: "run_test", State: ExecWaiting, Variables: map[string]string{}, StartedAt: time.Now().UTC()}
+	tasks.Put(TaskInfo{ID: "t1", Status: "human-required", StatusReason: "watchdog: loop stop: repeated test", AgentMode: "headless", Workflow: wf})
+	ti := TaskInfo{ID: "t1", Status: "human-required", StatusReason: "watchdog: loop stop: repeated test", AgentMode: "headless", Workflow: wf}
+	if engine.handleWatchdogStopRetry(&ti, &Step{ID: "run_test", Type: StepRunAgent, Config: StepConfig{Role: testRunnerRole}}) {
+		t.Fatal("armed retry should continue to normal dispatch")
+	}
+	if agents.CallCount() != 0 || wf.Variables[watchdogStopRetryKey("run_test")] != "1" {
+		t.Fatalf("retry did not arm correctly: calls=%d vars=%v", agents.CallCount(), wf.Variables)
+	}
+	if wf.Variables[testingReaskNoteVar] == "" || wf.Variables[watchdogReaskNoteVar] != "" {
+		t.Fatalf("guidance routing = %v, want testing-only note", wf.Variables)
+	}
+}
+
 func TestHandleWatchdogHangRetry_NonReadyPRStillRetries(t *testing.T) {
 	t.Parallel()
 	tasks := newMemTasks()
@@ -516,8 +534,12 @@ steps:
 		CurrentStep: "fix_review",
 		State:       ExecWaiting,
 		Variables: map[string]string{
-			// Budget already spent by an earlier reward-hacking retry round.
-			watchdogRewardHackingRetryKey("fix_review"): "1",
+			// Budgets already spent by earlier watchdog retry rounds.
+			watchdogRewardHackingRetryKey("fix_review"):   "1",
+			watchdogHangRetryKey("fix_review"):            "1",
+			watchdogStopRetryKey("fix_review"):            "1",
+			watchdogRateLimitRetryKey("fix_review"):       "1",
+			watchdogZeroOutputFreshRetryKey("fix_review"): "1",
 		},
 		StartedAt: time.Now().UTC(),
 	}
@@ -531,8 +553,16 @@ steps:
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if _, ok := fresh.Workflow.Variables[watchdogRewardHackingRetryKey("fix_review")]; ok {
-		t.Fatal("reward-hacking retry counter should be cleared after a clean fix_review completion")
+	for _, key := range []string{
+		watchdogRewardHackingRetryKey("fix_review"),
+		watchdogHangRetryKey("fix_review"),
+		watchdogStopRetryKey("fix_review"),
+		watchdogRateLimitRetryKey("fix_review"),
+		watchdogZeroOutputFreshRetryKey("fix_review"),
+	} {
+		if _, ok := fresh.Workflow.Variables[key]; ok {
+			t.Fatalf("watchdog retry counter %q should be cleared after a clean completion", key)
+		}
 	}
 
 	// A reward_hacking stop on a later round of the same step must retry

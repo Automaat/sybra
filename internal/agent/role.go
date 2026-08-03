@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/roleeffort"
 )
 
 // Role identifies the purpose of an agent run.
@@ -30,20 +32,68 @@ const (
 	RoleTestFix Role = "test-fix"
 )
 
+// allRoles is the single source of truth for the role set. Package-level so
+// IsKnown — called on every dispatch through ResolveRunRole — stays
+// allocation-free; AllRoles hands out a copy so no caller can mutate it.
+var allRoles = []Role{
+	RoleTriage, RolePlan, RolePlanCritic, RoleEval, RoleLoop, RoleMonitor,
+	RoleOrchestrator, RolePRFix, RoleReview, RoleFixReview, RoleTestRunner,
+	RoleImplementation, RoleHumanReview, RoleTestFix,
+}
+
+// AllRoles lists every known Role. IsKnown is derived from the same list, so
+// adding a Role constant to it is what makes the role dispatchable — and what
+// makes the reasoning-effort coverage test notice it.
+func AllRoles() []Role {
+	return slices.Clone(allRoles)
+}
+
 func (r Role) IsKnown() bool {
+	return slices.Contains(allRoles, r)
+}
+
+// AgentName returns the prefixed name used when launching an agent
+// (e.g. "triage:My Task Title").
+func (r Role) AgentName(title string) string { return string(r) + ":" + title }
+
+// JudgesWithoutWriting reports whether the role inspects a worktree it must
+// not modify. These roles reuse the *same* per-task worktree as the
+// implementer, so a writable tree lets a reviewer quietly fix what it was
+// asked to judge — and a tool allowlist cannot express the restriction,
+// because every role has Bash and `sed -i`, a shell redirect or `git checkout`
+// reach the same files. The restriction is therefore enforced at the OS level
+// via RunConfig.ReadOnlyDir, which also covers grandchildren.
+//
+// test-runner is deliberately excluded: building and running tests legitimately
+// writes into the tree, so it stays governed by the diff-based tamper gate.
+// human-review is excluded too — despite its name it authors code, commits and
+// pushes, which is its own unresolved question (see #2791).
+func (r Role) JudgesWithoutWriting() bool {
 	switch r {
-	case RoleTriage, RolePlan, RolePlanCritic, RoleEval, RoleLoop, RoleMonitor, RoleOrchestrator,
-		RolePRFix, RoleReview, RoleFixReview, RoleTestRunner, RoleImplementation,
-		RoleHumanReview, RoleTestFix:
+	case RoleReview, RolePlan, RolePlanCritic, RoleEval:
 		return true
 	default:
 		return false
 	}
 }
 
-// AgentName returns the prefixed name used when launching an agent
-// (e.g. "triage:My Task Title").
-func (r Role) AgentName(title string) string { return string(r) + ":" + title }
+// DiagnosesBlockedTask reports whether the role is dispatched *because* a
+// task is in a state that otherwise means "no agent should be running" —
+// human-required, or terminal.
+//
+// Both status reapers (watchdog.reapTaskAgentForStatus and
+// App.releaseTaskAgents) stop agents whose task reaches such a status. These
+// roles are the exception: killing them for the very condition they were sent
+// to resolve leaves the task stuck and the detector re-dispatching on its next
+// cycle, which is a livelock that costs a full agent run each pass.
+func (r Role) DiagnosesBlockedTask() bool {
+	switch r {
+	case RoleHumanReview, RoleMonitor:
+		return true
+	default:
+		return false
+	}
+}
 
 // AuthorsCode reports whether the role produces code commits and may therefore
 // be primed with the task's NOTES.md working memory. Only these roles inherit
@@ -242,19 +292,14 @@ func errUnknownRolePrefix(name string) error {
 }
 
 // DefaultReasoningEffort returns the built-in per-role reasoning-effort
-// baseline used when neither an experiment assignment nor the task itself
-// pins a level (see RunConfig.ReasoningEffort). System/verifier roles that
-// mostly classify or check pre-existing work default to "low"; the
-// code-authoring roles that most benefit from deeper reasoning default to
-// "high". Everything else falls back to DefaultReasoningEffort ("medium")
-// via the empty return.
+// baseline used when neither an experiment assignment, the operator's
+// agent.role_effort map, nor the task itself pins a level (see
+// RunConfig.ReasoningEffort). Roles with no opinion return "" and fall back to
+// DefaultReasoningEffort ("medium").
+//
+// The table lives in internal/roleeffort so internal/abtest can share it
+// without importing this package (that direction cycles through
+// internal/config).
 func (r Role) DefaultReasoningEffort() string {
-	switch r {
-	case RoleTriage, RoleEval, RolePlanCritic, RoleHumanReview, RoleMonitor:
-		return "low"
-	case RoleImplementation, RoleFixReview, RolePRFix, RoleTestFix:
-		return "high"
-	default:
-		return ""
-	}
+	return roleeffort.ForRole(string(r))
 }

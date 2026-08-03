@@ -40,28 +40,19 @@ sybra/
 ├── main_other.go            # No-op stub for non-darwin
 ├── go.mod / go.sum
 ├── internal/
-│   ├── task/                # YAML frontmatter + markdown task CRUD
-│   │   ├── model.go         # Task struct, Status enum
-│   │   ├── parser.go        # Frontmatter parse/marshal
-│   │   └── store.go         # Filesystem-backed store
-│   ├── artifact/            # Per-task harness artifact store (~/.sybra/artifacts/<task-id>/)
-│   │   ├── model.go         # Meta struct, Kind enum, Artifact write request
-│   │   └── store.go         # Put/Append/List/Read/Delete/Reindex
-│   ├── agent/               # Agent lifecycle management
-│   │   ├── model.go         # Agent struct, State enum, StreamEvent
-│   │   ├── manager.go       # Start/stop/list agents
-│   │   └── runner_headless.go # claude -p NDJSON stream parser
-│   ├── project/             # GitHub repo mirror + git worktree management
-│   │   ├── model.go         # Project struct
-│   │   ├── store.go         # YAML-backed project store
-│   │   └── git.go           # Clone, worktree, fetch operations
-│   ├── watcher/
-│   │   └── watcher.go       # fsnotify on tasks/ dir, debounced
-│   └── github/
-│       └── interface.go     # Future: GitHub issue sync interface
+│   ├── agent/               # Provider runners, approvals, recovery, OS sandboxing
+│   ├── artifact/            # Per-task artifact store (~/.sybra/artifacts/<task-id>/)
+│   ├── config/              # YAML config, defaults, validation, docs generation
+│   ├── github/              # Live GitHub integration surface (issues, PRs, checks, reviews)
+│   ├── harnessevolution/    # CLI-driven proposal mining from persisted self-monitor reports
+│   ├── selfmonitor/         # In-process report pipeline persisted for CLI/GUI reuse
+│   ├── sybra/               # App wiring, Wails/HTTP services, orchestrator, automation loops
+│   ├── task/                # Task model, parsing, manager/store, planning/review metadata
+│   ├── workflow/            # Workflow engine, builtin YAMLs, verification/tamper/evidence gates
+│   └── ...                  # ~80 internal packages total; inspect `internal/` directly
 ├── cmd/
-│   └── sybra-cli/         # CLI for task CRUD (used by Claude Code skills)
-│       └── main.go
+│   ├── sybra-cli/           # Multi-command CLI (tasks, projects, PRs, selfmonitor, harness-evolution)
+│   └── sybra-server/        # Headless HTTP/server entrypoint
 ├── .claude/
 │   └── skills/              # Claude Code skills (auto-copied to ~/.sybra/skills on start)
 │       ├── sybra-tasks.md # Task CRUD skill
@@ -275,10 +266,28 @@ into an unexported `RunConfig.sandbox` spec:
   explicit `enforce` posture, never the default rollout posture. This is
   why `report` is safe to ship as the default.
 - `enforce`: wraps the spawn and fails the run closed if the host sandbox
-  mechanism or profile/setup is unavailable. The server runs this posture now
-  (`agent.sandbox_mode: enforce` via Linux `bwrap`), so the real operator
-  board under `~/.sybra` and deploy checkout `/opt/sybra/src` stay read-only
-  to agents.
+  mechanism or profile/setup is unavailable. It is **never** reached by
+  leaving the key unset — the built-in default is `report`, so every
+  deployment that wants containment must set `agent.sandbox_mode: enforce`
+  explicitly. Under it the real operator board under `~/.sybra` and the
+  deploy checkout `/opt/sybra/src` stay read-only to agents.
+
+Do not record which posture a given deployment runs here — that claim drifts
+silently and this section already carried a false one for months. Read it from
+the host instead. The postures are distinguishable only by their log line and
+by whether setup failures abort the run, never by observable agent behaviour on
+a healthy host, so a config that quietly resolves to `report` looks exactly
+like a contained one. Grep the app log (`~/.sybra/logs/sybra.log`, or
+`/data/sybra/home/logs/sybra.log` on the server) — **not** the systemd journal,
+which carries only build and start output:
+
+- `agent.sandbox.enforce` — spawn wrapped.
+- `agent.sandbox.report` — spawn **not** wrapped; allowlist logged only.
+- `agent.sandbox.report.unavailable` — `report` that fell back to unwrapped
+  because `bwrap`/`sandbox-exec` was missing.
+- *neither line for a run* — resolved `off`, via config or the per-task
+  `sandbox: false` escape hatch; `injectProcessSandbox` returns before it logs
+  anything. Absence of both is the widest-blast-radius case, not the quiet one.
 
 The escape hatch's use is operator-visible: `agentorch.logSandboxEscapeHatch`
 logs a warning and records `audit.EventAgentSandboxDisabled`.
@@ -334,7 +343,7 @@ Sybra runs headless as a **systemd service** (not Docker) directly on the LXC, d
 - **Runtime:** `systemd` unit `sybra` runs `sybra-server` directly (no container). `ExecStartPre=/opt/sybra/bin/sybra-build.sh` rebuilds the web bundle + Go binary from `/opt/sybra/src` (a git checkout on `main`) into `/opt/sybra/build`; `ExecStart` runs it via `mise exec`. Toolchain (go/node) + `claude`/`codex` CLIs are host-installed via `mise` for the `sybra` user.
 - **Data:** `/data/sybra/home` ⇄ `~sybra/.sybra` (symlink), `/data/sybra/{claude,codex,klaudiush}` ⇄ the sybra user's `~/.claude`, `~/.codex`, `~/.config/klaudiush`. Tasks, config, projects, worktrees, and the agent registry live under `/data/sybra/home` and survive any restart/redeploy.
 - **Lossless redeploy:** the unit sets `KillMode=process`, so a restart signals only `sybra-server`; the detached (`setsid`) agent subprocesses keep running and are re-adopted by `ReattachAll` on the next start (no interrupted turn). `Restart=on-failure` + `RestartForceExitStatus=42` + `TimeoutStopSec=45` mean a crash or a hung shutdown always self-recovers.
-- **Auto-deploy:** `auto_update` (config `enabled: true`, `mode: auto`, `repo_dir: /opt/sybra/src`) polls `origin/main` every 5 min, `git merge --ff-only`, then requests a restart (exit 42) → `ExecStartPre` rebuilds → lossless restart. `sybra-build.sh` keeps the last-good build on a failed build, so a broken `main` never downs the service (it does **not** gate on CI-green — see `deploy/README.md`).
+- **Auto-deploy:** `auto_update` (config `enabled: true`, `mode: auto`, `repo_dir: /opt/sybra/src`) polls `origin/main` every 5 min, requires configured `required_checks` to be green, `git merge --ff-only`s the approved SHA, then requests a restart (exit 42) → `ExecStartPre` rebuilds → lossless restart. Restarts are coalesced by `auto_update.coalesce_seconds` (default 1h), so bursts of green merges do not flap the service. `sybra-build.sh` keeps the last-good build on a failed candidate, so a broken build never downs the service.
 - **Exposure:** local `:8080` → Traefik → `synapse.mskalski.dev` (Cloudflare DNS+TLS). ACL-locked to LAN, Cloudflare Tunnel, Tailscale CIDRs.
 - **Deploy:** `ansible/playbooks/setup-sybra-lxc.yml` (provision LXC), `ansible/playbooks/deploy-sybra.yml` (provision toolchain, install unit + scripts, render config, `systemctl restart`).
 - **Klaudiush hooks:** enabled in both Claude Code `settings.json` and Codex `config.toml` (`codex_hooks = true`) for event monitoring.
@@ -346,10 +355,10 @@ ssh root@192.168.20.219 "systemctl status sybra"                     # service s
 ssh root@192.168.20.219 "journalctl -u sybra -n 100 --no-pager"      # unit journal (build + start)
 ssh root@192.168.20.219 "tail -100 /data/sybra/home/logs/sybra.log"  # sybra-server app logs
 ssh root@192.168.20.219 "ls /data/sybra/home/tasks/"                 # task files
-ssh root@192.168.20.219 "sudo -u sybra env -i bash -lc 'cd /opt/sybra/src && mise exec -- go run ./cmd/sybra-cli list'"  # CLI (sybra-build.sh only builds sybra-server; run the CLI from source)
+ssh root@192.168.20.219 "sudo -u sybra /opt/sybra/build/sybra-cli list"      # built CLI from the active candidate
 ```
 
-Deploying = merge to `main` (auto-deploys within ~5 min) or `systemctl restart sybra` (rebuilds current `/opt/sybra/src` HEAD). To pin/rollback: `git -C /opt/sybra/src checkout <sha>` then restart (autoupdate's ff-only check pauses while off `main`).
+Deploying = merge to `main` (auto-deploy polls within ~5 min, then restarts once CI-green + coalesce gates allow it) or `systemctl restart sybra` (rebuilds current `/opt/sybra/src` HEAD). To pin/rollback: `git -C /opt/sybra/src checkout <sha>` then restart (autoupdate's ff-only check pauses while off `main`).
 
 **Toolchain on the server host.** The LXC has `mise` (+ go/node and the `claude`/`codex` CLIs) installed for the `sybra` user, but no per-project language tools. Every project declares its own bootstrap, resolved from two layers per worktree:
 
@@ -524,7 +533,7 @@ Frontend must build before Go compilation due to `//go:embed all:frontend/dist`:
 - ❌ Storing agent state in files — agents are in-memory only, tasks are file-backed
 - ❌ Using `allowed_tools: []` without understanding the fallback is governed by `agent.require_permissions`/`agent.headless_permission_mode`, not always `--dangerously-skip-permissions` — see the permission-flag precedence under Agent Execution Modes
 - ❌ Adding a new auto-task source without (a) an `Enabled bool` toggle in its config block and (b) `cfg.AllowsProjectType(...)` filtering if the source is project-scoped — both are required so users running Sybra on multiple machines can route work without duplication
-- ❌ Adding a new pipeline status/stage without a matching handoff entry point — every stage a task can sit at must be directly reachable via `sybra-cli handoff --stage <name>`. That means: add the stage to `handoffStageTags` (`cmd/sybra-cli/main.go`) mapping it to a `handoff-<name>` tag, and add a `simple-task-handoff-<name>.yaml` builtin that flips a fresh task straight to that status while adopting its `worktree_dir`. Without this you cannot inject a task at the new stage to test/demo it in isolation (e.g. `--stage testing` → `simple-task-handoff-testing.yaml` → status `testing`)
+- ❌ Adding a new pipeline status/stage without a matching handoff entry point — every stage a task can sit at must be directly reachable via `sybra-cli handoff --stage <name>`. That means: add the stage to `handoffStageRegistry` (`cmd/sybra-cli/main.go`) mapping it to the right `handoff*` tags, and add a matching variant to the single handoff template at `internal/workflow/builtin/simple-task-handoff.yaml` so a fresh task flips straight to that status while adopting its `worktree_dir`. Without this you cannot inject a task at the new stage to test/demo it in isolation (e.g. `--stage testing` → generated `simple-task-handoff-testing` → status `testing`)
 - ❌ Baking project toolchains into the server host or `Dockerfile` — the server host has `mise` only (the darwin `Dockerfile` is CI/legacy, not the deploy path). Language-specific tools belong in each project's **Setup commands** (see Server Deployment section). New projects in new languages never require any host/image change.
 - ❌ Treating `go build .` (desktop) as a server-context commit gate — Wails v3 needs GTK/webkit on Linux (not installed server-side) and desktop is darwin-only/CI-owned. Use `mise run build:server` for server-side verification.
 - ❌ Pasting, linking, or paraphrasing work-repo content (URLs, branches, SHAs, ticket IDs, snippets, logs, customer names) into sybra issues/PRs/tasks/commits — see **Work-Data Confidentiality** at the top. Any new auto-source that ingests external content must filter work-repo content at the source, not in post-processing.

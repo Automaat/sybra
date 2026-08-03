@@ -10,7 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/roleeffort"
 	"github.com/Automaat/sybra/internal/stats"
+	"github.com/Automaat/sybra/internal/toolledger"
 )
 
 // NOTE on concurrency: Agent has distinct mutexes.
@@ -51,7 +53,13 @@ func (s State) IsTerminal() bool {
 	return s == StateStopped
 }
 
-const DefaultReasoningEffort = "medium"
+// DefaultReasoningEffort is the level a run dispatches with when neither the
+// caller, the operator's agent.role_effort override, nor the role's own
+// baseline pins one. Defined as roleeffort.Global rather than a literal so it
+// cannot drift from the copy internal/abtest resolves omitted variant efforts
+// against (that package cannot import this one — the dependency cycles through
+// internal/config).
+const DefaultReasoningEffort = roleeffort.Global
 
 type Agent struct {
 	ID                       string  `json:"id"`
@@ -143,6 +151,26 @@ type Agent struct {
 	// observed during the run.
 	SubagentCallCount int `json:"subagentCallCount,omitempty"`
 	loops             loopDetector
+
+	// live* accumulate this turn's token usage from assistant-event `usage`
+	// blocks (see ClaudeMessage.InputTokens etc), reset by ResetLiveUsage at
+	// every terminal result. They exist so a mid-stream cost ceiling
+	// (maybeEnforceLiveCostCeiling) can bank an estimate before the terminal
+	// result event reports the provider's own cumulative usage/cost — without
+	// them the live estimate would stay at the last banked result for the
+	// whole in-flight turn, blind to a turn that alone blows the ceiling.
+	liveInputTokens              int
+	liveOutputTokens             int
+	liveCacheCreationInputTokens int
+	liveCacheReadInputTokens     int
+	// subagentTurnCount counts assistant events with a non-empty
+	// parent_tool_use_id (forked subagent turns), independent of TurnCount
+	// which only counts top-level turns.
+	subagentTurnCount int
+	// budgetSteerSent latches once maybeEnforceLiveCostCeiling has queued its
+	// one-shot converge-and-wrap-up steer message, so a run sitting at or
+	// above the steer threshold for many turns is only nudged once.
+	budgetSteerSent bool
 	// MaxTurns is the per-agent turn limit override; zero means use global guardrail.
 	MaxTurns int `json:"maxTurns,omitempty"`
 	// oneShot marks workflow-owned interactive runs that must complete after
@@ -274,6 +302,11 @@ type Agent struct {
 	// permissionDenials accumulates auto-mode classifier denial records
 	// observed during the run. Flushed to audit in OnComplete.
 	permissionDenials []PermissionDenial
+	// recordToolCall receives every tool call this agent makes, whatever the
+	// permission posture. Late-bound by the Manager; nil in tests and on
+	// agents constructed without a ledger, which the nil-receiver Log
+	// tolerates.
+	recordToolCall func(toolledger.Record)
 	// toolUsesByID keeps recent tool_use metadata long enough to correlate a
 	// malformed tool_result back to the original tool name + input.
 	toolUsesByID map[string]trackedToolUse
@@ -486,7 +519,7 @@ func fromRecord(r Record) *Agent {
 	if requestedModel == "" {
 		requestedModel = r.Model
 	}
-	return &Agent{
+	a := &Agent{
 		ID:                      r.ID,
 		TaskID:                  r.TaskID,
 		Name:                    r.Name,
@@ -531,6 +564,10 @@ func fromRecord(r Record) *Agent {
 		unrenderedSkills:        slices.Clone(r.UnrenderedSkills),
 		detached:                true,
 	}
+	if r.Mode == "headless" {
+		a.escalationCh = make(chan bool, 1)
+	}
+	return a
 }
 
 // SetState atomically updates the agent state.
@@ -649,6 +686,13 @@ func (a *Agent) GetExitErr() error {
 func (a *Agent) SetLogPath(p string) {
 	a.mu.Lock()
 	a.LogPath = p
+	a.mu.Unlock()
+}
+
+// SetCommand records the command used to run the agent.
+func (a *Agent) SetCommand(command string) {
+	a.mu.Lock()
+	a.Command = command
 	a.mu.Unlock()
 }
 
@@ -846,6 +890,7 @@ func (a *Agent) BankEstimatedCost() float64 {
 		CostUSD:         a.CostUSD,
 		InputTokens:     a.InputTokens,
 		OutputTokens:    a.OutputTokens,
+		CacheCreate:     a.CacheCreationInputTokens,
 		CacheRead:       a.CacheReadInputTokens,
 		ReasoningTokens: a.ReasoningTokens,
 		PremiumRequests: a.PremiumRequests,
@@ -853,6 +898,76 @@ func (a *Agent) BankEstimatedCost() float64 {
 	})
 	a.CostUSD = max(a.CostUSD, estimated)
 	return a.CostUSD
+}
+
+// AddLiveUsage accumulates one assistant event's own token usage into the
+// in-flight-turn counters LiveCostEstimateUSD reads. No-op-equivalent for a
+// provider/event that reports no per-event usage (all args 0).
+func (a *Agent) AddLiveUsage(input, output, cacheCreate, cacheRead int) {
+	a.mu.Lock()
+	a.liveInputTokens += input
+	a.liveOutputTokens += output
+	a.liveCacheCreationInputTokens += cacheCreate
+	a.liveCacheReadInputTokens += cacheRead
+	a.mu.Unlock()
+}
+
+// ResetLiveUsage clears the in-flight-turn usage counters. Call once a
+// terminal result event has banked its own totals into CostUSD/InputTokens/
+// etc (AddResultStats/AddCacheStats/BankEstimatedCost), so the live estimate
+// tracks only the next turn's usage rather than double-counting a turn
+// already reflected in the banked totals.
+func (a *Agent) ResetLiveUsage() {
+	a.mu.Lock()
+	a.liveInputTokens = 0
+	a.liveOutputTokens = 0
+	a.liveCacheCreationInputTokens = 0
+	a.liveCacheReadInputTokens = 0
+	a.mu.Unlock()
+}
+
+// LiveCostEstimateUSD returns the run's last-banked cost plus an estimate of
+// the current in-flight turn's usage — a mid-stream approximation of what the
+// next terminal result would report, used to pre-empt a run before it lands a
+// breach that is already paid for (see BankEstimatedCost's own doc for why
+// providers can't report cost mid-turn).
+func (a *Agent) LiveCostEstimateUSD() float64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	liveEstimate := stats.EstimateAgentCost(stats.AgentUsage{
+		Provider:        a.Provider,
+		Model:           a.Model,
+		CostUSD:         0,
+		InputTokens:     a.liveInputTokens,
+		OutputTokens:    a.liveOutputTokens,
+		CacheCreate:     a.liveCacheCreationInputTokens,
+		CacheRead:       a.liveCacheReadInputTokens,
+		ReasoningTokens: 0,
+		StartedAt:       a.StartedAt,
+	})
+	return a.CostUSD + liveEstimate
+}
+
+// IncSubagentTurnCount increments the forked-subagent turn counter and
+// returns the new value. Counts assistant events carrying a non-empty
+// parent_tool_use_id, independent of the top-level TurnCount guardrail.
+func (a *Agent) IncSubagentTurnCount() int {
+	a.mu.Lock()
+	a.subagentTurnCount++
+	n := a.subagentTurnCount
+	a.mu.Unlock()
+	return n
+}
+
+// MarkBudgetSteerSent latches the one-shot converge steer sent and reports
+// whether it had already been sent before this call — callers send the steer
+// message only when this returns false.
+func (a *Agent) MarkBudgetSteerSent() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	already := a.budgetSteerSent
+	a.budgetSteerSent = true
+	return already
 }
 
 // AddPremiumRequests merges Copilot premium-request usage into the totals.
@@ -888,21 +1003,27 @@ func (a *Agent) EnqueuePrompt(text string) {
 	a.mu.Unlock()
 }
 
-// TryEnqueuePrompt appends text to the pending queue iff its current length
-// is below max, checking and appending under a single lock acquisition.
+// TryEnqueuePrompt appends text to the pending queue iff the run has not begun
+// finalizing and its current queue length is below max. All three checks and
+// the append share one lock acquisition, so a steer accepted by this method
+// cannot race a terminal boundary into a queue that will never be drained.
 // Callers that check PendingPromptCount() and then call EnqueuePrompt() as
 // two separate steps leave a TOCTOU window: concurrent callers can each pass
 // the check while the queue is below max and all append, overshooting the
 // cap the check was meant to enforce. Returns the queue length after the
-// call and whether the prompt was enqueued.
-func (a *Agent) TryEnqueuePrompt(text string, limit int) (queueLen int, enqueued bool) {
+// call, whether the prompt was enqueued, and whether finalization caused a
+// rejection (rather than the queue limit).
+func (a *Agent) TryEnqueuePrompt(text string, limit int) (queueLen int, enqueued, finalizing bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.finalizing {
+		return len(a.convo.pendingPrompts), false, true
+	}
 	if len(a.convo.pendingPrompts) >= limit {
-		return len(a.convo.pendingPrompts), false
+		return len(a.convo.pendingPrompts), false, false
 	}
 	a.convo.pendingPrompts = append(a.convo.pendingPrompts, text)
-	return len(a.convo.pendingPrompts), true
+	return len(a.convo.pendingPrompts), true, false
 }
 
 // PopPendingPrompt returns the next queued prompt and a flag indicating
@@ -916,6 +1037,24 @@ func (a *Agent) PopPendingPrompt() (string, bool) {
 	next := a.convo.pendingPrompts[0]
 	a.convo.pendingPrompts = a.convo.pendingPrompts[1:]
 	return next, true
+}
+
+// PopPendingPromptOrBeginFinalizing atomically reserves the next pending
+// prompt or, when there is none, permanently prevents any later enqueue. The
+// latter transition must share the queue lock with TryEnqueuePrompt: otherwise
+// a message can be accepted after the empty-pop check but before stdin closes.
+func (a *Agent) PopPendingPromptOrBeginFinalizing() (string, bool) {
+	a.mu.Lock()
+	if len(a.convo.pendingPrompts) > 0 {
+		next := a.convo.pendingPrompts[0]
+		a.convo.pendingPrompts = a.convo.pendingPrompts[1:]
+		a.mu.Unlock()
+		return next, true
+	}
+	a.finalizing = true
+	a.mu.Unlock()
+	a.refreshCanSteer()
+	return "", false
 }
 
 // PendingPromptCount returns the size of the pending prompt queue.
@@ -1045,6 +1184,12 @@ const EscalationReasonCost = "cost"
 
 // EscalationReasonTurns marks a run stopped at the turn ceiling awaiting a human.
 const EscalationReasonTurns = "turns"
+
+// EscalationReasonSubagentTurns marks a run hard-stopped for breaching the
+// separate forked-subagent turn ceiling (MaxSubagentEvents). Unlike
+// EscalationReasonTurns this never waits on a human decision — a fork
+// subagent fan-out that runs away is stopped outright.
+const EscalationReasonSubagentTurns = "subagent_turns"
 
 // EscalationReasonCheckpoint marks a run whose work was committed at the turn
 // ceiling and which must be rescheduled onto a fresh agent. Never overwrite it:
@@ -1440,6 +1585,27 @@ func bufferedResultEvent(events []StreamEvent) (found, isError bool) {
 	return found, isError
 }
 
+// resultBeforeOnlyForkOutput accepts a terminal result followed only by forked
+// child events or background-task bookkeeping. Top-level events after a result
+// otherwise delimit a new retry attempt and must not let reattach finalize the
+// prior attempt.
+func resultBeforeOnlyForkOutput(events []StreamEvent) (found, isError bool) {
+	for i := range slices.Backward(events) {
+		e := events[i]
+		if e.parentToolUseID != "" {
+			continue
+		}
+		if e.Type == "system" && e.Subtype == "background_tasks_changed" {
+			continue
+		}
+		if e.Type == "result" {
+			return true, resultSubtypeIsError(e.Subtype) || e.ErrorType != "" || e.ErrorStatus != 0
+		}
+		return false, false
+	}
+	return false, false
+}
+
 // backgroundTaskGrace is the extra idle time granted to a post-result-hang
 // guard (runner_headless.go's postResultGrace, watchdog's completedHangGrace)
 // while the agent has outstanding CLI background bash tasks. Bounded rather
@@ -1627,6 +1793,7 @@ func (a *Agent) applyStreamEventState(ev StreamEvent) {
 	}
 	for i := range ev.toolUses {
 		a.RememberToolUse(ev.toolUses[i].ID, ev.toolUses[i].Name, ev.toolUses[i].Input)
+		a.ledgerToolCall(ev.toolUses[i].ID, ev.toolUses[i].Name, ev.toolUses[i].Input, ev.Timestamp)
 		if ev.toolUses[i].Name != "Bash" {
 			continue
 		}
@@ -1806,12 +1973,15 @@ type RunConfig struct {
 	// model when the primary is overloaded. Empty means inherit the manager's
 	// default; the flag is omitted only when the manager default is also empty.
 	FallbackModel string
-	// ReasoningEffort sets the agent's reasoning effort for this run
-	// (low/medium/high/xhigh). Empty is resolved to DefaultReasoningEffort by
-	// Manager.Run for every provider before command construction. Lower-level
-	// command builders still omit the provider flag when handed an empty value
-	// directly. Codex uses `-c model_reasoning_effort=`; claude and copilot use
-	// `--effort`.
+	// ReasoningEffort pins the agent's reasoning effort for this run
+	// (low/medium/high/xhigh), overriding every baseline. Empty is the normal
+	// case: Manager.Run resolves it for every provider before command
+	// construction, preferring the operator's agent.role_effort override, then
+	// the role's built-in baseline (Role.DefaultReasoningEffort), then
+	// DefaultReasoningEffort. Set it only for an effort an experiment
+	// assignment or the task itself pinned. Lower-level command builders still
+	// omit the provider flag when handed an empty value directly. Codex uses
+	// `-c model_reasoning_effort=`; claude and copilot use `--effort`.
 	ReasoningEffort string
 	// RequestedSkill names a workflow-owned skill invocation the dispatcher
 	// expects to run. Empty leaves ad-hoc prompt skill mentions untouched; set
@@ -1872,7 +2042,12 @@ type RunConfig struct {
 	// (agentorch.ResolveSandboxMode) from the task's Sandbox toggle merged
 	// with config.DefaultSandboxMode(). Empty is treated as "report" by
 	// Manager.injectProcessSandbox.
-	SandboxMode           string
+	SandboxMode string
+	// SandboxReadMode overrides the read-visibility posture for this run.
+	// Empty falls back to the manager default, which is "off" unless an
+	// operator opted in. Honoured only when SandboxMode resolves to
+	// "enforce" — an unwrapped spawn has nothing to restrict reads on.
+	SandboxReadMode       string
 	PlaywrightMCPEligible bool
 	// PlaywrightMCPOutputDir is the per-task directory the Playwright MCP
 	// server writes screenshots/console logs to. Set by the workflow
@@ -1963,4 +2138,48 @@ func (a *Agent) GetError() (kind, msg string) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.ErrorKind, a.ErrorMsg
+}
+
+// SetToolCallRecorder late-binds the ledger sink. Called by the Manager once
+// per agent; a nil sink leaves recording off.
+func (a *Agent) SetToolCallRecorder(fn func(toolledger.Record)) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.recordToolCall = fn
+	a.mu.Unlock()
+}
+
+// ledgerToolCall records one observed tool call. Reads the identity fields
+// under the same lock the rest of the stream path uses, so a concurrent
+// role/provider update cannot tear the record.
+func (a *Agent) ledgerToolCall(toolUseID, name string, input map[string]any, ts time.Time) {
+	if a == nil {
+		return
+	}
+	a.mu.RLock()
+	fn := a.recordToolCall
+	rec := toolledger.Record{
+		Timestamp: ts,
+		AgentID:   a.ID,
+		TaskID:    a.TaskID,
+		Role:      string(a.Role),
+		Provider:  a.Provider,
+		Tool:      name,
+		ToolUseID: toolUseID,
+		Input:     input,
+	}
+	a.mu.RUnlock()
+	if fn == nil {
+		return
+	}
+	// Resolve the role only after unlocking: EffectiveRole takes the same
+	// lock, and a legacy agent carries no Role field — it is derived from the
+	// agent name — so reading the field alone silently drops the role from
+	// exactly the records where it is least obvious.
+	if rec.Role == "" {
+		rec.Role = string(a.EffectiveRole())
+	}
+	fn(rec)
 }

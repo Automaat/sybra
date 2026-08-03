@@ -549,6 +549,14 @@ export class Task {
     "sandbox"?: boolean | null;
 
     /**
+     * SandboxOffReason explains why Sandbox is false. Disabling the sandbox
+     * hands a task's agents unrestricted write access to the host, so the
+     * audit trail needs to say why rather than only that it happened.
+     * Meaningful only alongside Sandbox=false; ignored otherwise.
+     */
+    "sandboxOffReason"?: string;
+
+    /**
      * ReasoningEffort sets the reasoning level for this task's agents
      * (low/medium/high/xhigh). Empty = model default. Applied across providers:
      * codex via -c model_reasoning_effort=<v>, claude and copilot via --effort.
@@ -588,6 +596,7 @@ export class Task {
     "statusChangedAt": string;
     "assignedNode"?: string;
     "nodeOverride"?: string;
+    "assignmentRev"?: number;
     "generation"?: number;
     "mirrorRev"?: number;
     "mirrorUpdatedAt"?: string | null;
@@ -615,6 +624,15 @@ export class Task {
      */
     "planDrafts"?: { [_ in string]?: string };
     "filePath": string;
+
+    /**
+     * Degraded marks a synthetic, read-only board entry created for a task file
+     * that could not be parsed. It is never persisted and must never be
+     * dispatched or mirrored; fixing the source file makes the entry disappear
+     * on the next List.
+     */
+    "degraded"?: boolean;
+    "parseError"?: string;
 
     /**
      * TamperFlagged reports whether this task is parked at human-required
@@ -710,11 +728,11 @@ export class Task {
         const $$createField14_0 = $$createType1;
         const $$createField19_0 = $$createType0;
         const $$createField20_0 = $$createType3;
-        const $$createField41_0 = $$createType5;
-        const $$createField42_0 = $$createType7;
-        const $$createField43_0 = $$createType9;
-        const $$createField44_0 = $$createType11;
-        const $$createField61_0 = $$createType12;
+        const $$createField42_0 = $$createType5;
+        const $$createField43_0 = $$createType7;
+        const $$createField44_0 = $$createType9;
+        const $$createField45_0 = $$createType11;
+        const $$createField63_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -732,19 +750,19 @@ export class Task {
             $$parsedSource["dependsOnConditions"] = $$createField20_0($$parsedSource["dependsOnConditions"]);
         }
         if ("attachments" in $$parsedSource) {
-            $$parsedSource["attachments"] = $$createField41_0($$parsedSource["attachments"]);
+            $$parsedSource["attachments"] = $$createField42_0($$parsedSource["attachments"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField42_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField43_0($$parsedSource["agentRuns"]);
         }
         if ("effectLog" in $$parsedSource) {
-            $$parsedSource["effectLog"] = $$createField43_0($$parsedSource["effectLog"]);
+            $$parsedSource["effectLog"] = $$createField44_0($$parsedSource["effectLog"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField44_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField45_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField61_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField63_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -814,6 +832,7 @@ export class Update {
     "MaxTurns": number | null;
     "ForkSubagent": boolean | null;
     "Sandbox": boolean | null;
+    "SandboxOffReason": string | null;
     "ReasoningEffort": string | null;
     "Outcome": string | null;
     "MergeCommit": string | null;
@@ -946,6 +965,9 @@ export class Update {
         if (!("Sandbox" in $$source)) {
             this["Sandbox"] = null;
         }
+        if (!("SandboxOffReason" in $$source)) {
+            this["SandboxOffReason"] = null;
+        }
         if (!("ReasoningEffort" in $$source)) {
             this["ReasoningEffort"] = null;
         }
@@ -977,8 +999,8 @@ export class Update {
         const $$createField8_0 = $$createType15;
         const $$createField12_0 = $$createType14;
         const $$createField30_0 = $$createType16;
-        const $$createField45_0 = $$createType17;
-        const $$createField46_0 = $$createType18;
+        const $$createField46_0 = $$createType17;
+        const $$createField47_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("Blocker" in $$parsedSource) {
             $$parsedSource["Blocker"] = $$createField4_0($$parsedSource["Blocker"]);
@@ -996,10 +1018,10 @@ export class Update {
             $$parsedSource["Workflow"] = $$createField30_0($$parsedSource["Workflow"]);
         }
         if ("Attachments" in $$parsedSource) {
-            $$parsedSource["Attachments"] = $$createField45_0($$parsedSource["Attachments"]);
+            $$parsedSource["Attachments"] = $$createField46_0($$parsedSource["Attachments"]);
         }
         if ("EffectLog" in $$parsedSource) {
-            $$parsedSource["EffectLog"] = $$createField46_0($$parsedSource["EffectLog"]);
+            $$parsedSource["EffectLog"] = $$createField47_0($$parsedSource["EffectLog"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }

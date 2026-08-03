@@ -16,10 +16,12 @@ import (
 
 const probeTimeout = 10 * time.Second
 
-// minCodexVersion is the lowest codex CLI version that ships the default model
-// (gpt-5.5). Older CLIs reject `--model gpt-5.5` at exec time, so the probe
-// surfaces a warning instead of letting every default run fail silently.
-const minCodexVersion = "0.142.2"
+// minCodexVersion is the lowest codex CLI version whose bundled model
+// selections are the gpt-5.6 family Sybra now maps every tier onto (0.145.0
+// migrated them off gpt-5.4; earlier 5.6 mentions are Bedrock-only). Older
+// CLIs reject `--model gpt-5.6-*` at exec time, so the probe surfaces a
+// warning instead of letting every run fail silently.
+const minCodexVersion = "0.145.0"
 
 var codexVersionRe = regexp.MustCompile(`\d+\.\d+(?:\.\d+)*`)
 
@@ -72,12 +74,9 @@ func ProbeCodex(ctx context.Context) (Status, error) {
 		// Reuse cctx so the login and version probes share one probeTimeout
 		// budget rather than allowing ProbeCodex to run for up to 2× of it.
 		if v := probeCodexVersion(cctx); v != "" && !codexVersionAtLeast(v, minCodexVersion) {
-			warning := fmt.Sprintf("codex %s is older than %s; the default model gpt-5.5 requires %s+ — upgrade codex or pin an older model", v, minCodexVersion, minCodexVersion)
-			if st.Detail != "" {
-				st.Detail += " — " + warning
-			} else {
-				st.Detail = warning
-			}
+			st.Healthy = false
+			st.Reason = "cli_too_old"
+			st.Detail = fmt.Sprintf("codex %s is older than %s; the gpt-5.6 models require %s+ — upgrade codex or disable the provider", v, minCodexVersion, minCodexVersion)
 		}
 	}
 	return st, perr

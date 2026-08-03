@@ -20,19 +20,19 @@ const (
 var models = map[Tier]map[string]string{
 	SuperCheap: {
 		"claude":   "haiku",
-		"codex":    "gpt-5.4-mini",
+		"codex":    "gpt-5.6-luna",
 		"copilot":  "gpt-5-mini",
 		"opencode": "openrouter/qwen/qwen3-32b",
 	},
 	Cheap: {
 		"claude":   "sonnet",
-		"codex":    "gpt-5.4",
+		"codex":    "gpt-5.6-terra",
 		"copilot":  "claude-sonnet-4.6",
 		"opencode": "openrouter/deepseek/deepseek-v4-flash",
 	},
 	Expensive: {
 		"claude":   "opus",
-		"codex":    "gpt-5.5",
+		"codex":    "gpt-5.6-sol",
 		"copilot":  "gemini-3.1-pro-preview",
 		"opencode": "openrouter/z-ai/glm-5.2",
 	},
@@ -42,6 +42,17 @@ var tierAliases = map[Tier]string{
 	SuperCheap: "haiku",
 	Cheap:      "sonnet",
 	Expensive:  "opus",
+}
+
+var aliasToTier = map[string]Tier{
+	"":            Cheap,
+	"cheap":       Cheap,
+	"expensive":   Expensive,
+	"haiku":       SuperCheap,
+	"opus":        Expensive,
+	"sonnet":      Cheap,
+	"super_cheap": SuperCheap,
+	"supercheap":  SuperCheap,
 }
 
 // Models returns a defensive copy of the provider model map for tier.
@@ -70,12 +81,13 @@ func Alias(tier Tier) string {
 // provider model IDs back to its neutral capability tier.
 func InferTier(model string) (Tier, bool) {
 	trimmed := strings.ToLower(strings.TrimSpace(model))
-	switch trimmed {
-	case "", "sonnet":
-		return Cheap, true
-	case "haiku":
-		return SuperCheap, true
-	case "opus":
+	if tier, ok := aliasToTier[trimmed]; ok {
+		return tier, true
+	}
+	if trimmed == "gpt-5.6" {
+		// Codex's bare generation alias resolves to Sol. Matched exactly here
+		// rather than by Contains below, where it would also swallow the
+		// -terra and -luna slugs and misclassify them as Expensive.
 		return Expensive, true
 	}
 	for tier, row := range models {
@@ -85,17 +97,22 @@ func InferTier(model string) (Tier, bool) {
 			}
 		}
 	}
+	// The retired gpt-5.4/5.5 slugs stay matched so historical run records and
+	// hand-pinned task YAML still classify into a tier.
 	switch {
 	case strings.Contains(trimmed, "haiku"),
+		strings.Contains(trimmed, "gpt-5.6-luna"),
 		strings.Contains(trimmed, "gpt-5.4-mini"),
 		strings.Contains(trimmed, "qwen3-32b"):
 		return SuperCheap, true
 	case strings.Contains(trimmed, "opus"),
+		strings.Contains(trimmed, "gpt-5.6-sol"),
 		strings.Contains(trimmed, "gpt-5.5"),
 		strings.Contains(trimmed, "gemini-3.1-pro"),
 		strings.Contains(trimmed, "glm-5.2"):
 		return Expensive, true
 	case strings.Contains(trimmed, "sonnet"),
+		strings.Contains(trimmed, "gpt-5.6-terra"),
 		strings.Contains(trimmed, "gpt-5.4"),
 		strings.Contains(trimmed, "deepseek-v4-flash"):
 		return Cheap, true
@@ -108,15 +125,8 @@ func InferTier(model string) (Tier, bool) {
 // provider model. The boolean is false when model is already provider-specific
 // and should pass through unchanged.
 func NormalizeAlias(provider, model string) (string, bool) {
-	var tier Tier
-	switch strings.TrimSpace(model) {
-	case "", "sonnet":
-		tier = Cheap
-	case "haiku":
-		tier = SuperCheap
-	case "opus":
-		tier = Expensive
-	default:
+	tier, ok := aliasToTier[strings.ToLower(strings.TrimSpace(model))]
+	if !ok {
 		return model, false
 	}
 	resolved := Model(tier, provider)

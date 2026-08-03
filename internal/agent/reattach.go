@@ -142,7 +142,7 @@ func (m *Manager) finalizeIfCompleted(r Record) bool {
 	if mt, ok := logActivityTime(r.LogPath); ok {
 		a.SetLastEventAt(mt)
 	}
-	found, isError := a.lastHeadlessResult()
+	found, isError := resultBeforeOnlyForkOutput(a.Output())
 	if !found {
 		return false
 	}
@@ -209,17 +209,7 @@ func (m *Manager) reattachHeadless(ctx context.Context, a *Agent, startOffset in
 		}
 	}
 
-	// If the run already emitted its terminal result while the app was down, it
-	// is parked at a steer turn boundary that no live tailer ever processed —
-	// rehydrateFromLog replays the result's stats but not the drain/close
-	// boundary that handleHeadlessResult runs live. Replicate that boundary now,
-	// before tailing: with nothing queued at reattach, drainOrCloseHeadlessSteer
-	// closes stdin so the child sees EOF and exits like an unsteered one-shot,
-	// instead of hanging (or accepting a post-reattach steer that would queue
-	// forever with no further result to flush it).
-	if found, _ := a.lastHeadlessResult(); found {
-		m.drainOrCloseHeadlessSteer(a)
-	}
+	m.reconcileReattachedHeadlessTerminalResult(a)
 	procDone := make(chan struct{})
 	go watchPID(ctx, a.GetPID(), procStart, procDone)
 
@@ -232,7 +222,7 @@ func (m *Manager) reattachHeadless(ctx context.Context, a *Agent, startOffset in
 	}
 
 	outputs := a.Output()
-	if found, isError := lastHeadlessResultEvent(outputs); !found {
+	if found, isError := resultBeforeOnlyForkOutput(outputs); !found {
 		a.SetExitErr(errReattachedGone)
 	} else if isError {
 		if err := resultStreamError(outputs); err != nil {
@@ -249,6 +239,22 @@ func (m *Manager) reattachHeadless(ctx context.Context, a *Agent, startOffset in
 	m.emit(events.AgentState(a.ID), a)
 	m.fireComplete(ctx, a, a.GetExitErr() == nil)
 	m.markAgentDone(ctx, a)
+}
+
+// reconcileReattachedHeadlessTerminalResult applies the terminal stdin
+// boundary that was missed while the app was down. Error results deliberately
+// retain queued steers for a retry; only a clean result may flush one into the
+// still-live child.
+func (m *Manager) reconcileReattachedHeadlessTerminalResult(a *Agent) {
+	found, isError := resultBeforeOnlyForkOutput(a.Output())
+	if !found {
+		return
+	}
+	if isError {
+		m.closeHeadlessSteerAfterError(a)
+		return
+	}
+	m.drainOrCloseHeadlessSteer(a)
 }
 
 // watchPID closes done when the process exits or is replaced by a PID-reuse

@@ -236,3 +236,45 @@ func startLockFileHolder(t *testing.T, path string) (cmd *exec.Cmd, release func
 		}
 	}
 }
+
+func TestLockFileWithin_TimesOutWhenHeld(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "store.json")
+
+	unlock, err := LockFile(path)
+	if err != nil {
+		t.Fatalf("LockFile: %v", err)
+	}
+	t.Cleanup(func() { _ = unlock() })
+
+	start := time.Now()
+	_, err = LockFileWithin(path, 30*time.Millisecond)
+	if !errors.Is(err, ErrLockTimeout) {
+		t.Fatalf("LockFileWithin error = %v, want ErrLockTimeout", err)
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("LockFileWithin took %s, want bounded wait", elapsed)
+	}
+}
+
+func TestLockFileWithin_RetriesUntilReleased(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "store.json")
+
+	unlock, err := LockFile(path)
+	if err != nil {
+		t.Fatalf("LockFile: %v", err)
+	}
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_ = unlock()
+	}()
+
+	unlock2, err := LockFileWithin(path, time.Second)
+	if err != nil {
+		t.Fatalf("LockFileWithin: %v", err)
+	}
+	if err := unlock2(); err != nil {
+		t.Fatalf("unlock: %v", err)
+	}
+}

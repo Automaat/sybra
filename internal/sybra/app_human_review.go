@@ -45,6 +45,8 @@ const (
 	humanReviewMaxPerTaskPerWindow = 2
 )
 
+var errHumanReviewTagAlreadyPresent = errors.New("human review tag already present")
+
 type humanReviewAgentRunner interface {
 	ApplyABVariant(cfg agent.RunConfig, ab abtest.Config, taskID, role string) agent.RunConfig
 	Run(cfg agent.RunConfig) (*agent.Agent, error)
@@ -319,14 +321,18 @@ func (h *humanReviewHandler) spawnReviewConfig(t task.Task, taskID, prompt, dir 
 		model = opts.Model
 	}
 	cfg := agent.RunConfig{
-		TaskID:                 taskID,
-		Name:                   agent.RoleHumanReview.AgentName(t.Title),
-		Role:                   agent.RoleHumanReview,
-		Mode:                   "headless",
-		Provider:               strings.TrimSpace(opts.Provider),
-		Model:                  model,
-		Prompt:                 prompt,
-		Dir:                    dir,
+		TaskID:   taskID,
+		Name:     agent.RoleHumanReview.AgentName(t.Title),
+		Role:     agent.RoleHumanReview,
+		Mode:     "headless",
+		Provider: strings.TrimSpace(opts.Provider),
+		Model:    model,
+		Prompt:   prompt,
+		Dir:      dir,
+		// An effort the operator pinned on the task outranks the role
+		// baseline the Manager would otherwise resolve; empty stays empty so
+		// the Manager applies agent.role_effort and then the baseline.
+		ReasoningEffort:        t.ReasoningEffort,
 		ReadOnlyDir:            readOnlyDir,
 		RequirePermissions:     false,
 		OneShot:                true,
@@ -742,15 +748,16 @@ func (h *humanReviewHandler) ensureTaskTag(taskID, tag string) error {
 	if tag == "" {
 		return nil
 	}
-	cur, err := h.tasks.Get(taskID)
-	if err != nil {
-		return err
-	}
-	if slices.Contains(cur.Tags, tag) {
+	_, err := h.tasks.UpdateFn(taskID, func(cur task.Task) (task.Update, error) {
+		if slices.Contains(cur.Tags, tag) {
+			return task.Update{}, errHumanReviewTagAlreadyPresent
+		}
+		tags := append(append([]string{}, cur.Tags...), tag)
+		return task.Update{Tags: task.Ptr(tags)}, nil
+	})
+	if errors.Is(err, errHumanReviewTagAlreadyPresent) {
 		return nil
 	}
-	tags := append(append([]string{}, cur.Tags...), tag)
-	_, err = h.tasks.Update(taskID, task.Update{Tags: task.Ptr(tags)})
 	return err
 }
 
@@ -1340,13 +1347,8 @@ func (h *humanReviewHandler) appendNote(taskID, header, body string) bool {
 	if strings.TrimSpace(body) == "" {
 		return false
 	}
-	t, err := h.tasks.Get(taskID)
-	if err != nil {
-		h.logger.Error("human-review.append.task-get", "task_id", taskID, "err", err)
-		return false
-	}
-	newBody := appendSection(t.Body, header, body)
-	if _, err := h.tasks.Update(taskID, task.Update{Body: &newBody}); err != nil {
+	content := appendSection("", header, body)
+	if _, err := h.tasks.AppendBody(taskID, content); err != nil {
 		h.logger.Error("human-review.append.task-update", "task_id", taskID, "err", err)
 		return false
 	}

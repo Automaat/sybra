@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // LockFile is unimplemented on non-unix platforms (flock has no direct
@@ -19,6 +20,11 @@ func LockFile(_ string) (func() error, error) {
 
 // LockFileContext is unimplemented on non-unix platforms; see LockFile.
 func LockFileContext(_ context.Context, _ string) (func() error, error) {
+	return nil, fmt.Errorf("%w", ErrLockUnsupported)
+}
+
+// LockFileWithin is unimplemented on non-unix platforms; see LockFile.
+func LockFileWithin(_ string, _ time.Duration) (func() error, error) {
 	return nil, fmt.Errorf("%w", ErrLockUnsupported)
 }
 

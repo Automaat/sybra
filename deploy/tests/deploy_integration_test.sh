@@ -99,6 +99,7 @@ bump_commit() {
 
 run_build() { timeout 90 bash "$DEPLOY_BIN/sybra-build.sh"; }
 run_healthcheck() { timeout 30 bash "$DEPLOY_BIN/sybra-healthcheck.sh"; }
+run_repair_src() { timeout 30 bash "$DEPLOY_BIN/sybra-repair-src.sh"; }
 
 # start_fake_server backgrounds the just-built candidate's server binary on a
 # scenario-local port and waits for it to accept connections. Prints the pid.
@@ -291,6 +292,18 @@ scenario_successful_activation() {
   assert_eq "success: release promoted to last-good" "$cur" "$(last_good_target)"
 }
 
+scenario_repair_src_preflight() {
+  local root="$1"
+  new_env "$root"
+  export SYBRA_REPAIR_ALLOW_ANY_SRC=1
+  export SYBRA_SERVICE_USER="$(id -un)"
+  export SYBRA_SERVICE_GROUP="$(id -gn)"
+
+  run_repair_src >"$root/repair.log" 2>&1
+  assert_eq "repair-src: exits 0 for isolated checkout" "0" "$?"
+  assert_contains "repair-src: logs ownership status" "$(cat "$root/repair.log")" "source ownership"
+}
+
 scenario_health_check_failure() {
   local root="$1"
   new_env "$root"
@@ -387,6 +400,7 @@ main() {
   scenario_build_failure "$TMPBASE/build-failure"
   scenario_build_failure_persistent "$TMPBASE/build-failure-persistent"
   scenario_lock_contention "$TMPBASE/lock-contention"
+  scenario_repair_src_preflight "$TMPBASE/repair-src"
   scenario_successful_activation "$TMPBASE/success"
   scenario_health_check_failure "$TMPBASE/health-failure"
   scenario_rollback_preserves_quarantine "$TMPBASE/rollback-quarantine"

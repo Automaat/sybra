@@ -378,6 +378,16 @@ func (c *Checker) setStatusLocked(name string, next Status, fromProbe bool) (Sta
 	}
 	var flip bool
 	if fromProbe {
+		// Copilot and OpenCode probes only execute `--version`; unlike the
+		// Claude/Codex auth-status probes, that proves liveness but says nothing
+		// about credentials. Do not let it resurrect a provider a real run just
+		// reported as logged out.
+		if next.Healthy && prev.Reason == "logged_out" && livenessOnlyProbe(name) {
+			// Keep the auth failure authoritative, while still recording that the
+			// liveness probe completed successfully for diagnostics/UI freshness.
+			prev.LastCheck = next.LastCheck
+			return *prev, false
+		}
 		// Active probes overwrite unconditionally, but preserve an in-flight
 		// rate-limit window when the probe still reports healthy — the window
 		// should be cleared by clearExpiredRateLimits or a newer passive signal.
@@ -409,6 +419,10 @@ func (c *Checker) setStatusLocked(name string, next Status, fromProbe bool) (Sta
 	}
 	snapshot := *prev
 	return snapshot, flip
+}
+
+func livenessOnlyProbe(provider string) bool {
+	return provider == "copilot" || provider == "opencode"
 }
 
 func statusChanged(a, b *Status) bool {

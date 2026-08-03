@@ -64,6 +64,22 @@ func LockFileContext(ctx context.Context, path string) (func() error, error) {
 	return unlock, nil
 }
 
+// LockFileWithin is LockFile with a caller-supplied timeout and the same
+// retryable timeout semantics/errors as LockFile and LockFileContext.
+func LockFileWithin(path string, timeout time.Duration) (func() error, error) {
+	lockPath := path + ".lock"
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open lock file: %w", err)
+	}
+	unlock, err := acquireLockUntil(f, lockPath, time.Now().Add(timeout), true)
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return unlock, nil
+}
+
 // ErrLocked is returned by TryLockPath when another process already holds
 // the lock. Callers can use errors.Is to distinguish "already running" from
 // other open/flock failures (permissions, missing directory, ...).

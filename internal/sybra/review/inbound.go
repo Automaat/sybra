@@ -134,13 +134,17 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 	) + reviewHoldFixSuffix(r.cfg)
 
 	ag, err := r.agents.Run(agent.RunConfig{
-		TaskID:                 t.ID,
-		Name:                   agent.RoleFixReview.AgentName(t.Title),
-		Role:                   agent.RoleFixReview,
-		Mode:                   "headless",
-		Prompt:                 prompt,
-		Dir:                    dir,
-		Model:                  "opus",
+		TaskID: t.ID,
+		Name:   agent.RoleFixReview.AgentName(t.Title),
+		Role:   agent.RoleFixReview,
+		Mode:   "headless",
+		Prompt: prompt,
+		Dir:    dir,
+		Model:  "opus",
+		// An effort the operator pinned on the task outranks the role
+		// baseline the Manager would otherwise resolve; empty stays empty so
+		// the Manager applies agent.role_effort and then the baseline.
+		ReasoningEffort:        t.ReasoningEffort,
 		HeadlessPermissionMode: posture,
 		// MaxTurns intentionally not inherited: fix-review agents need
 		// enough turns to fetch the PR, apply fixes, and commit.
@@ -247,13 +251,17 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 // fetch the PR, run the skill, and write findings.
 func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.RunConfig {
 	return agent.RunConfig{
-		TaskID:                 t.ID,
-		Name:                   agent.RoleReview.AgentName(t.Title),
-		Role:                   agent.RoleReview,
-		Mode:                   "headless",
-		Prompt:                 prompt,
-		Dir:                    dir,
-		Model:                  "opus",
+		TaskID: t.ID,
+		Name:   agent.RoleReview.AgentName(t.Title),
+		Role:   agent.RoleReview,
+		Mode:   "headless",
+		Prompt: prompt,
+		Dir:    dir,
+		Model:  "opus",
+		// An effort the operator pinned on the task outranks the role
+		// baseline the Manager would otherwise resolve; empty stays empty so
+		// the Manager applies agent.role_effort and then the baseline.
+		ReasoningEffort:        t.ReasoningEffort,
 		HeadlessPermissionMode: posture,
 	}
 }
@@ -721,6 +729,11 @@ func latestReviewRunStoppedByCostGuardrail(t *task.Task) bool {
 	return false
 }
 
+// defaultManualReviewReason explains the manual review phase on the board.
+// Without it a task parked by computeReviewPhase carries no status reason at
+// all, so the operator sees a needs-you badge with no stated cause.
+const defaultManualReviewReason = "no automated review exists for this PR yet — review it, or reopen the task to let an agent draft one"
+
 // applyReviewPhase persists only the fields that changed. Status is set only
 // when the result names one and it differs (so an unchanged status never
 // clears a triage-authored reason); the reason follows a status or phase change.
@@ -742,8 +755,22 @@ func (r *Handler) applyReviewPhase(t *task.Task, res reviewPhaseResult) {
 	if phaseChanged {
 		u.ReviewPhase = task.Ptr(res.Phase)
 	}
-	if res.Reason != "" && (statusChanged || phaseChanged) {
-		u.StatusReason = task.Ptr(res.Reason)
+	reason := res.Reason
+	// A phase that asserts human-required but names no reason (manual) leaves
+	// the board showing "needs you" with nothing said, which is
+	// indistinguishable from a bug.
+	//
+	// The empty reason exists so an existing triage/reconciliation blocker
+	// survives — but that only holds while the status is unchanged, since a
+	// transition clears the reason regardless. So fill on a transition (where
+	// nothing is preserved either way) or when the reason is genuinely blank,
+	// and leave an existing reason alone on a phase-only update.
+	if reason == "" && res.Status == task.StatusHumanRequired &&
+		(statusChanged || strings.TrimSpace(t.StatusReason) == "") {
+		reason = defaultManualReviewReason
+	}
+	if reason != "" && (statusChanged || phaseChanged) {
+		u.StatusReason = task.Ptr(reason)
 	}
 
 	prev := t.ReviewPhase

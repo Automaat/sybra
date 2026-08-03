@@ -272,11 +272,12 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 		return
 	}
 
-	if ag.EffectiveRole() == agent.RoleFixReview && exitErr == nil {
+	stall := classifyStall(ag, exitErr)
+	if ag.EffectiveRole() == agent.RoleFixReview && exitErr == nil && !stall.Stalled {
 		h.handleFixReviewCompletion(ag)
 	}
 
-	if !h.notifyWorkflowEngine(ag, resultContent, exitErr) {
+	if !h.notifyWorkflowEngine(ag, resultContent, exitErr, stall) {
 		return
 	}
 
@@ -510,11 +511,10 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 // process, but its work already finished cleanly via a terminal result event
 // — treating it as a stall would silently re-queue already-completed work
 // instead of finalizing it.
-func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, exitErr error) bool {
+func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, exitErr error, stall stallDisposition) bool {
 	if h.workflowEngine == nil {
 		return true
 	}
-	stall := classifyStall(ag, exitErr)
 	if stall.Stalled {
 		h.logger.Warn("agent.completion.stall",
 			"task_id", ag.TaskID, "agent_id", ag.ID,
@@ -565,13 +565,16 @@ func classifyStall(ag *agent.Agent, exitErr error) stallDisposition {
 		ToolUseAborted:  isToolUseAbortedRun(ag),
 		UserInterrupted: isUserInterruptedRun(ag),
 	}
-	// Cost guardrails intentionally hard-stop the subprocess, but they are a
-	// budget failure, not an infra stall. Let them flow through the bounded
-	// failed-completion path instead of ClearAgentStep/ResumeStalled.
+	// Cost and forked-subagent-turn guardrails intentionally hard-stop the
+	// subprocess, but they are a budget/runaway failure, not an infra stall.
+	// Let them flow through the bounded failed-completion path instead of
+	// ClearAgentStep/ResumeStalled — otherwise the runaway workflow step is
+	// silently re-dispatched on the next sweep, defeating the ceiling.
 	costStopped := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCost
+	subagentTurnsStopped := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonSubagentTurns
 	checkpointFailed := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpointFailed
 	out.CheckpointStopped = ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpoint
-	out.StopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped && !checkpointFailed && !out.CheckpointStopped
+	out.StopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped && !subagentTurnsStopped && !checkpointFailed && !out.CheckpointStopped
 	out.Stalled = isSignalKill(exitErr) || out.StopStalled || out.RateLimited || out.MalformedTool || out.ToolUseAborted || out.UserInterrupted || out.CheckpointStopped
 	return out
 }
@@ -948,6 +951,7 @@ func estimatedRunCost(ag *agent.Agent, cost, premiumRequests float64) float64 {
 		CostUSD:         cost,
 		InputTokens:     ag.GetInputTokens(),
 		OutputTokens:    ag.GetOutputTokens(),
+		CacheCreate:     ag.GetCacheCreationInputTokens(),
 		CacheRead:       ag.GetCacheReadInputTokens(),
 		ReasoningTokens: ag.GetReasoningTokens(),
 		PremiumRequests: premiumRequests,

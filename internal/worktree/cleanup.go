@@ -4,9 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
+	"time"
 
+	"github.com/Automaat/sybra/internal/cleanup"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -83,6 +87,7 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 	for i := range tasks {
 		active[tasks[i].DirName()] = &tasks[i]
 	}
+	observedProtected := make(map[string]bool)
 
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -102,7 +107,7 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 		}
 
 		if project.HasUnpushedCommits(ctx, wtPath) {
-			m.logger.Warn("worktree.orphan-cleanup.unpushed-commits", "path", wtPath)
+			m.observeProtectedWorktree(ctx, wtPath, taskIDFromWorktreeDir(name), observedProtected)
 			continue
 		}
 
@@ -125,6 +130,7 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 		}
 		m.logger.Info("worktree.orphan-cleaned", "path", wtPath)
 	}
+	m.resolveProtectedWorktrees(observedProtected)
 
 	// Prune dangling admin entries across all projects.
 	if m.projects == nil {
@@ -139,6 +145,88 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 			m.logger.Warn("worktree.prune", "project", projects[i].ID, "err", err)
 		}
 	}
+}
+
+func (m *Manager) observeProtectedWorktree(ctx context.Context, path, taskID string, observed map[string]bool) {
+	if m.protected == nil {
+		m.logger.Warn("worktree.orphan-cleanup.protected", "event", "legacy", "task_id", taskID, "path", path)
+		return
+	}
+	obs := cleanup.Observation{
+		Kind:          cleanup.ResourceWorktree,
+		TaskID:        taskID,
+		Path:          path,
+		Reason:        cleanup.ReasonUnpushedCommits,
+		ObservedHead:  worktreeHead(ctx, path),
+		ObservedState: worktreeObservedState(ctx, path),
+		BytesRetained: worktreeDirSize(path),
+	}
+	finding, event, err := m.protected.Observe(obs)
+	if err != nil {
+		m.logger.Warn("worktree.orphan-cleanup.protected.observe", "path", path, "err", err)
+		return
+	}
+	observed[finding.ID] = true
+	if !event.ShouldLog() {
+		return
+	}
+	m.logger.Warn("worktree.orphan-cleanup.protected",
+		"event", event,
+		"task_id", taskID,
+		"path", path,
+		"head", finding.ObservedHead,
+		"state", finding.ObservedState,
+		"bytes_retained", finding.BytesRetained)
+}
+
+func (m *Manager) resolveProtectedWorktrees(observed map[string]bool) {
+	if m.protected == nil {
+		return
+	}
+	if err := m.protected.ResolveMissing(cleanup.ResourceWorktree, observed); err != nil {
+		m.logger.Warn("worktree.orphan-cleanup.protected.resolve", "err", err)
+	}
+}
+
+func worktreeHead(ctx context.Context, path string) string {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func worktreeObservedState(ctx context.Context, path string) string {
+	dirty, err := project.IsWorktreeDirty(ctx, path)
+	if err != nil {
+		return "dirty=unknown"
+	}
+	return fmt.Sprintf("dirty=%t", dirty)
+}
+
+func worktreeDirSize(path string) int64 {
+	size, err := dirSize(path)
+	if err != nil {
+		return 0
+	}
+	return size
+}
+
+func dirSize(path string) (int64, error) {
+	var total int64
+	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	return total, err
 }
 
 // HasUnpushedCommits reports whether taskID's own worktree holds commits not
@@ -221,6 +309,31 @@ func (m *Manager) RepairAll(ctx context.Context) {
 	}
 }
 
+// refuseRecreateWithUnpushedWork stops healOrRecreate from wiping a worktree
+// that still holds commits origin has never seen.
+//
+// Remove and CleanupOrphaned already refuse in that case (#2593), but the
+// branch-mismatch recreate path deleted unconditionally. A worktree can be
+// healthy yet on an unexpected branch — precisely the state a merge or
+// conflict resolution leaves — and wiping it discards work an agent already
+// did and verified, with the only record being the original push failure.
+//
+// Scoped to that path on purpose. The unrepairable path stays unguarded: a
+// broken worktree's commits are not reliably readable, so there is nothing
+// dependable to preserve, and refusing there would wedge the task with no
+// route forward.
+//
+// Failing loudly is the point: the task surfaces a real error a human can act
+// on while the commits still exist, rather than the work disappearing and the
+// task reporting only why the push was blocked.
+func (m *Manager) refuseRecreateWithUnpushedWork(ctx context.Context, taskID, wtPath, reason string) error {
+	if !project.HasUnpushedCommits(ctx, wtPath) {
+		return nil
+	}
+	m.logger.Error("worktree.recreate.unpushed-commits", "task_id", taskID, "path", wtPath, "reason", reason)
+	return fmt.Errorf("refusing to recreate %s worktree %s: it holds commits that never reached origin", reason, wtPath)
+}
+
 // healOrRecreate ensures the worktree at wtPath has resolvable git metadata
 // and sits on wantBranch. Returns (true, nil) if the worktree is usable on
 // return, (false, nil) if it was wiped and the caller should re-create it, or
@@ -232,8 +345,10 @@ func (m *Manager) healOrRecreate(ctx context.Context, taskID, clonePath, wtPath,
 		return true, nil
 	}
 	if healthy {
+		if err := m.refuseRecreateWithUnpushedWork(ctx, taskID, wtPath, "branch-mismatch"); err != nil {
+			return false, err
+		}
 		m.logger.Warn("worktree.branch-mismatch-recreate", "task_id", taskID, "path", wtPath, "branch", wantBranch)
-		m.logger.Warn("worktree.unrepairable-recreate", "task_id", taskID, "path", wtPath)
 		_ = project.RemoveWorktree(ctx, clonePath, wtPath)
 		if err := os.RemoveAll(wtPath); err != nil {
 			return false, fmt.Errorf("remove mismatched-branch worktree %s: %w", wtPath, err)
@@ -249,6 +364,11 @@ func (m *Manager) healOrRecreate(ctx context.Context, taskID, clonePath, wtPath,
 		m.logger.Info("worktree.repaired", "task_id", taskID, "path", wtPath)
 		return true, nil
 	}
+	// Deliberately unguarded, unlike the branch-mismatch path above: this
+	// worktree is broken, so its commits are not reliably readable and there
+	// is no usable state to preserve. Refusing here would wedge the task
+	// forever with no route forward, trading a recoverable loss for a
+	// permanent stall.
 	m.logger.Warn("worktree.unrepairable-recreate", "task_id", taskID, "path", wtPath)
 	_ = project.RemoveWorktree(ctx, clonePath, wtPath)
 	if err := os.RemoveAll(wtPath); err != nil {

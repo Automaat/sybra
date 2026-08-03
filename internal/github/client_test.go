@@ -23,11 +23,13 @@ type sequenceExecer struct {
 	outputs [][]byte
 	errs    []error
 	calls   int
+	args    [][]string
 }
 
-func (s *sequenceExecer) run(_ ...string) ([]byte, error) {
+func (s *sequenceExecer) run(args ...string) ([]byte, error) {
 	i := s.calls
 	s.calls++
+	s.args = append(s.args, append([]string(nil), args...))
 	if i >= len(s.outputs) {
 		return nil, fmt.Errorf("unexpected call %d", i+1)
 	}

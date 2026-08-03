@@ -683,7 +683,7 @@ describe('Settings', () => {
   it('switches model options when provider changes to codex', async () => {
     mockGetSettings.mockResolvedValue(baseSettings())
     mockGetCodexModels.mockResolvedValue([
-      { slug: 'gpt-5.4', display_name: 'GPT-5.4' },
+      { slug: 'gpt-5.6-terra', display_name: 'GPT-5.6 Terra' },
     ])
     render(Settings)
     await vi.waitFor(() => screen.getByRole('button', { name: 'Defaults' }))
@@ -691,7 +691,7 @@ describe('Settings', () => {
     const providerSelect = screen.getByLabelText('Agent type') as HTMLSelectElement
     await fireEvent.change(providerSelect, { target: { value: 'codex' } })
     await vi.waitFor(() => {
-      expect(screen.getByText('GPT-5.4')).toBeDefined()
+      expect(screen.getByText('GPT-5.6 Terra')).toBeDefined()
     })
   })
 

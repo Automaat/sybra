@@ -34,6 +34,11 @@ jobs:
           # destructive task cleanup without it (#1576).
           touch "$SYBRA_HOME/.sybra-e2e-home"
           cat > "$SYBRA_HOME/config.yaml" <<EOF
+          agent:
+            # sybra-server refuses to start without an explicit posture. "off"
+            # is correct here: this job only screenshots the UI and starts no
+            # agent subprocess.
+            sandbox_mode: "off"
           server:
             auth_token: e2e-test-token
           EOF

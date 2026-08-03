@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/abtest"
@@ -779,6 +780,48 @@ func TestReloadFromDisk_ReadersSeeWholePersistedSnapshots(t *testing.T) {
 	}
 }
 
+func TestMutateLocked_PublishesImmutableAppSnapshot(t *testing.T) {
+	initial := config.DefaultConfig()
+	app := NewApp(slog.New(slog.DiscardHandler), new(slog.LevelVar), initial)
+	svc := &ConfigService{
+		cfg:       initial,
+		persisted: cloneConfig(initial),
+		publishConfig: func(next *config.Config) {
+			app.activeCfg.Store(next)
+		},
+	}
+
+	var readers sync.WaitGroup
+	done := make(chan struct{})
+	readers.Go(func() {
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				_ = app.currentConfig().Cluster.Followers
+			}
+		}
+	})
+
+	next := cloneConfig(initial)
+	next.Logging.Level = "debug"
+	svc.mu.Lock()
+	_, err := svc.mutateLocked(next, nil)
+	svc.mu.Unlock()
+	close(done)
+	readers.Wait()
+	if err != nil {
+		t.Fatalf("mutateLocked: %v", err)
+	}
+	if got := app.currentConfig(); got != svc.cfg {
+		t.Fatal("App did not receive the published config snapshot")
+	}
+	if app.cfg == svc.cfg {
+		t.Fatal("hot reload mutated the construction-time config snapshot")
+	}
+}
+
 func TestSaveRawConfig_RestoresLastKnownGoodOnHotApplyFailure(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
 	writeConfigYAML(t, cfgPath, svc.cfg)
@@ -827,9 +870,12 @@ func TestReloadFromDisk_ABTestingPreservesRoutingOverlay(t *testing.T) {
 		MinSamplesPerVariant: 20,
 		Experiments: []abtest.Experiment{{
 			ID: "exp",
+			// Model is required by variant validation; config.Load drops
+			// experiments that would fail selection-time validation, so an
+			// underspecified fixture would not survive the reload.
 			Variants: []abtest.Variant{
-				{ID: "v1", Provider: "claude", Weight: 1},
-				{ID: "v2", Provider: "codex", Weight: 1},
+				{ID: "v1", Provider: "claude", Model: "opus", Weight: 1},
+				{ID: "v2", Provider: "codex", Model: "gpt-5.5", Weight: 1},
 			},
 		}},
 	}

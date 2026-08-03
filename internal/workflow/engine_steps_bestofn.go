@@ -172,13 +172,7 @@ func (e *Engine) spawnBestOfNAttempt(taskID string, step *Step, wfExec *Executio
 	if status == nil {
 		return fmt.Errorf("best-of-n attempt %q has no status", attemptID)
 	}
-	mode := step.Config.Mode
-	if mode == "" || mode == "interactive" {
-		// Attempts must terminate on their own so the parent can advance —
-		// same rationale as spawnParallelChild's oneShot=false headless-only
-		// requirement.
-		mode = "headless"
-	}
+	mode := resolveRunAgentMode(step.Config.Mode, parentCtx)
 	if admit, reason := e.agents.AdmitDispatch(taskID, step.Config.Role, mode); !admit {
 		return fmt.Errorf("%w: %s", ErrResourcePressure, reason)
 	}
@@ -190,10 +184,7 @@ func (e *Engine) spawnBestOfNAttempt(taskID string, step *Step, wfExec *Executio
 	status.Branch = branch
 
 	attemptCtx := parentCtx
-	model := step.Config.Model
-	if model == "" {
-		model = "sonnet"
-	}
+	model := resolveRunAgentModel(step.Config.Model, attemptCtx)
 	provider := status.Provider
 	if provider == "" {
 		provider = resolveProvider(step.Config.Provider, wfExec, e.agents.DefaultProvider(), attemptCtx.Task)

@@ -1,6 +1,7 @@
 package review
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/task"
@@ -45,4 +46,80 @@ func TestStartFixReviewAgentSkipsWhenDispatchClaimHeld(t *testing.T) {
 	if len(fresh.AgentRuns) != 0 {
 		t.Fatalf("AgentRuns = %d, want 0: a fix-review agent must not start while another dispatch claim is held", len(fresh.AgentRuns))
 	}
+}
+
+// A manual-phase park asserts human-required as a "needs you" signal but names
+// no reason, so the board showed a needs-you badge with nothing said — which
+// reads as a bug rather than a handoff.
+func TestApplyReviewPhase_ManualParkExplainsItself(t *testing.T) {
+	h, tasks := newOutboundTestHandler(t)
+	tk := mustReviewTask(t, tasks, "Review PR")
+
+	h.applyReviewPhase(&tk, reviewPhaseResult{
+		Phase:  ReviewPhaseManual,
+		Status: task.StatusHumanRequired,
+	})
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if strings.TrimSpace(got.StatusReason) == "" {
+		t.Fatal("manual park left the board with a needs-you badge and no reason")
+	}
+}
+
+// On a phase-only update the blank-fill must not overwrite a reason triage or
+// reconciliation set — that is why computeReviewPhase returns an empty reason.
+// (On a status transition the reason is cleared regardless, so there is
+// nothing to preserve and the default is filled in instead.)
+func TestApplyReviewPhase_ManualParkKeepsExistingReason(t *testing.T) {
+	h, tasks := newOutboundTestHandler(t)
+	tk := mustReviewTask(t, tasks, "Review PR keep")
+	const existing = "blocked on an upstream release"
+	// Park first, so applyReviewPhase sees an unchanged status and this is a
+	// phase-only update — the case where preservation is meant to hold.
+	if _, err := tasks.Apply(task.TransitionIntent{
+		TaskID: tk.ID, ToStatus: task.StatusHumanRequired, Actor: "test",
+		Extra: task.Update{StatusReason: task.Ptr(existing)}, OperatorOverride: true,
+	}); err != nil {
+		t.Fatalf("seed park: %v", err)
+	}
+	seeded, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if seeded.StatusReason != existing {
+		t.Fatalf("seed did not persist: StatusReason = %q", seeded.StatusReason)
+	}
+
+	h.applyReviewPhase(&seeded, reviewPhaseResult{
+		Phase:  ReviewPhaseManual,
+		Status: task.StatusHumanRequired,
+	})
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.StatusReason != existing {
+		t.Fatalf("StatusReason = %q, want the pre-existing %q preserved", got.StatusReason, existing)
+	}
+}
+
+func mustReviewTask(t *testing.T, tasks *task.Manager, title string) task.Task {
+	t.Helper()
+	created, err := tasks.Create(title, "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := tasks.Update(created.ID, task.Update{
+		ProjectID: task.Ptr("Automaat/sybra"),
+		PRNumber:  task.Ptr(127),
+		Tags:      &[]string{"review"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return updated
 }

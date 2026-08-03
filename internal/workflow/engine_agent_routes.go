@@ -3,6 +3,7 @@ package workflow
 import (
 	"slices"
 	"strings"
+	"sync"
 )
 
 // routeStepPending reports whether the task's current step is still inside its
@@ -92,6 +93,117 @@ func (e *Engine) clearAgentStep(taskID, agentID string) {
 	_ = e.tasks.SetWorkflow(taskID, t.Workflow)
 }
 
+// enterCompletion marks taskID as having a completion in flight and returns the
+// matching release. It brackets the window HandleAgentComplete opens between
+// "the agent has finished" and "the engine has routed that completion", which
+// is exactly the window a persisted AgentRoute used to stand in for. Callers
+// outside the agent manager (recovery's lost-callback bridge) drive completions
+// for agents the manager no longer reports as running, so liveness alone cannot
+// describe that window — without this marker, pruneStaleAgentRoutes would read
+// the route as orphaned and let ResumeStalled dispatch a duplicate.
+//
+// Counted rather than a set: a parallel step can have several children
+// completing at once, and the last one out must be the one that clears the mark.
+func (e *Engine) enterCompletion(taskID string) func() {
+	if taskID == "" {
+		return func() {}
+	}
+	e.mu.Lock()
+	if e.completing == nil {
+		e.completing = make(map[string]int)
+	}
+	e.completing[taskID]++
+	e.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			if n := e.completing[taskID]; n > 1 {
+				e.completing[taskID] = n - 1
+			} else {
+				delete(e.completing, taskID)
+			}
+		})
+	}
+}
+
+func (e *Engine) completionInFlight(taskID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.completing[taskID] > 0
+}
+
+// routeMatchesStep reports whether a persisted AgentRoute target belongs to
+// step — directly, as a parallel child, or as a best_of_n attempt.
+func routeMatchesStep(step *Step, routedStepID string) bool {
+	if step == nil {
+		return false
+	}
+	return routedStepID == step.ID || parallelHasChild(step, routedStepID) || bestOfNStepMatches(step, routedStepID)
+}
+
+// pruneStaleAgentRoutes drops persisted AgentRoutes for step whose agent no
+// longer exists in any form: not running, not dispatching, and with no
+// completion in flight.
+//
+// Such a route is unrecoverable on its own. Routes are only ever cleared by an
+// agent-completion path, so a route that outlived its agent has nothing left to
+// clear it, and tryMarkResumeDispatching reads it as "agent-pending-completion"
+// on every tick — the task then stalls permanently with no error, no status
+// change, and no escalation (#2824). Clearing it here is what makes the wedge
+// recoverable; the WARN is what makes it visible.
+//
+// Liveness is task-scoped rather than agent-scoped on purpose: any running
+// agent for the task means the route may still be legitimately owned, so this
+// declines to prune. That errs toward the old (skip) behaviour, never toward
+// duplicate dispatch.
+//
+// IsDispatching is consulted separately from HasRunningAgent rather than
+// assumed to be covered by it: the AgentLauncher contract does not promise
+// that a held dispatch claim reads as "running", and tryMarkResumeDispatching
+// already treats the two as independent signals.
+func (e *Engine) pruneStaleAgentRoutes(taskID string, step *Step) {
+	if taskID == "" || step == nil {
+		return
+	}
+	if e.completionInFlight(taskID) || e.resumeDispatching(taskID) || e.agents.HasRunningAgent(taskID) || e.agents.IsDispatching(taskID) {
+		return
+	}
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil || t.Workflow == nil || len(t.Workflow.AgentRoutes) == 0 {
+		return
+	}
+	stale := make([]string, 0, len(t.Workflow.AgentRoutes))
+	for agentID, routedStepID := range t.Workflow.AgentRoutes {
+		if routeMatchesStep(step, routedStepID) {
+			stale = append(stale, agentID)
+		}
+	}
+	if len(stale) == 0 {
+		return
+	}
+	// Map iteration order is random; sort so the emitted WARNs are stable.
+	slices.Sort(stale)
+	for _, agentID := range stale {
+		e.logger.Warn("workflow.resume-stalled.stale-route",
+			"task_id", taskID, "step", step.ID, "agent_id", agentID,
+			"route_step", t.Workflow.AgentRoutes[agentID])
+		clearAgentRouteFromWorkflow(t.Workflow, agentID)
+	}
+	if err := e.tasks.SetWorkflow(taskID, t.Workflow); err != nil {
+		e.logger.Warn("workflow.resume-stalled.stale-route.clear",
+			"task_id", taskID, "step", step.ID, "err", err)
+		return
+	}
+	e.mu.Lock()
+	for _, agentID := range stale {
+		e.clearPendingAgentStepLocked(taskID, agentID)
+	}
+	e.mu.Unlock()
+}
+
 func pendingAgentRouteKey(taskID, agentID string) string {
 	return taskID + "\x00" + agentID
 }
@@ -153,6 +265,20 @@ func (e *Engine) deferStartedAgentRoute(taskID, stepID, agentID string, err erro
 	e.logger.Warn("workflow.agent-route.defer",
 		"task_id", taskID, "step", stepID, "agent_id", agentID, "err", err)
 	return errWorkflowYield
+}
+
+func (e *Engine) hasPendingAgentRouteForStep(taskID string, step *Step) bool {
+	if step == nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for key, routedStepID := range e.pendingRoutes {
+		if strings.HasPrefix(key, taskID+"\x00") && routeMatchesStep(step, routedStepID) {
+			return true
+		}
+	}
+	return false
 }
 
 func clearAgentRouteFromWorkflow(wf *Execution, agentID string) bool {

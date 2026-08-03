@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/enrichment"
 	"github.com/Automaat/sybra/internal/promptlab"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
@@ -21,7 +22,7 @@ const (
 	// expanded, not implemented. The enrich step clears it and then dispatches.
 	// CLI-created URL tasks use plain Create (no marker), so they keep going
 	// through task.created → triage, which fetches the title itself.
-	enrichPendingTag = "enrich-pending"
+	enrichPendingTag = enrichment.PendingTag
 	// umbrellaDuplicateTag marks a stub whose umbrellaExpand succeeded (a real
 	// tracker + gated children already exist elsewhere) but whose own DeleteTask
 	// cleanup failed. It is deliberately distinct from TaskTypeUmbrella: this

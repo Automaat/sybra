@@ -20,9 +20,17 @@ type renovateCoordinator struct {
 	logger                *slog.Logger
 	emit                  func(string, any)
 	cfg                   *config.Config
+	currentConfig         func() *config.Config
 	allowsProjectType     func(project.ProjectType) bool
 	handler               *poll.RenovateHandler
 	monitorTransientFails int
+}
+
+func (c *renovateCoordinator) config() *config.Config {
+	if c.currentConfig != nil {
+		return c.currentConfig()
+	}
+	return c.cfg
 }
 
 func newRenovateCoordinator(
@@ -42,13 +50,15 @@ func newRenovateCoordinator(
 }
 
 func (c *renovateCoordinator) init() {
-	if !c.cfg.Renovate.Enabled {
+	cfg := c.config()
+	if !cfg.Renovate.Enabled {
 		return
 	}
 	c.monitorTransientFails = 0
-	c.handler = poll.NewRenovateHandler(c.projects, c.logger, c.emit, &c.cfg.Renovate, c.allowsProjectType)
-	c.handler.SetIntervals(c.cfg.GitHub.RenovateFast(), c.cfg.GitHub.RenovateSlow())
-	c.logger.Info("renovate.enabled", "author", c.cfg.Renovate.Author)
+	c.handler = poll.NewRenovateHandler(c.projects, c.logger, c.emit, &cfg.Renovate, c.allowsProjectType)
+	c.handler.SetConfigSource(func() *config.RenovateConfig { return &c.config().Renovate })
+	c.handler.SetIntervals(cfg.GitHub.RenovateFast(), cfg.GitHub.RenovateSlow())
+	c.logger.Info("renovate.enabled", "author", cfg.Renovate.Author)
 }
 
 func (c *renovateCoordinator) poller() *poll.RenovateHandler {
@@ -84,7 +94,7 @@ func (c *renovateCoordinator) prsForMonitor() []github.PullRequest {
 	if c.handler != nil && c.handler.AuthCircuitOpen() {
 		return nil
 	}
-	rps, err := github.FetchRenovatePRs(context.Background(), c.cfg.Renovate.Author, repos)
+	rps, err := github.FetchRenovatePRs(context.Background(), c.config().Renovate.Author, repos)
 	if err != nil {
 		c.recordMonitorFetchError(err)
 		return nil
@@ -128,7 +138,8 @@ func (c *renovateCoordinator) resetMonitorFetchErrors() {
 }
 
 func (a *App) initRenovate(emit func(string, any)) {
-	a.renovate = newRenovateCoordinator(a.projects, a.logger, emit, a.cfg, a.allowsProjectType)
+	a.renovate = newRenovateCoordinator(a.projects, a.logger, emit, a.currentConfig(), a.allowsProjectType)
+	a.renovate.currentConfig = a.currentConfig
 	a.renovate.init()
 }
 
