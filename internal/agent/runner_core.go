@@ -97,6 +97,14 @@ type sandboxSpec struct {
 	copilotState  string
 	opencodeState string
 	toolCache     string
+	// appSupport is the macOS per-user application-data root
+	// (~/Library/Application Support). The codex CLI's in-process app-server
+	// creates its own directory there at startup, which needs write on the
+	// parent — granting only a codex-named subpath fails, measured. Without
+	// it codex dies immediately under enforce with "failed to initialize
+	// in-process app-server client: Operation not permitted". Empty off
+	// darwin, where no such path exists.
+	appSupport string
 
 	// readRoots, when non-empty, switches the wrapper from "everything is
 	// readable" to deny-by-default reads over exactly these roots (#2781).
@@ -118,6 +126,7 @@ func (s sandboxSpec) writeRoots() []string {
 	roots := []string{
 		s.worktree, s.sandboxHome, s.tmp, s.sharedCache,
 		s.claudeState, s.codexState, s.copilotState, s.opencodeState, s.toolCache,
+		s.appSupport,
 		s.gitAdminDir, s.gitCommonDir, s.gitWorktrees, s.gitObjectDir,
 		s.gitOverlayObjectDir, s.gitOverlayRefDir, s.gitOverlayLogDir,
 		s.gitOverlayRemoteRefDir, s.gitOverlayRemoteLogDir,

@@ -149,3 +149,42 @@ func TestUnusedRootSentinelsAreDistinct(t *testing.T) {
 		t.Fatal("an unused allow root aliases an unused deny root")
 	}
 }
+
+// codex's in-process app-server creates a directory under the macOS per-user
+// application-data root at startup. Without a write grant there it dies with
+// "failed to initialize in-process app-server client: Operation not
+// permitted" before producing any output, which surfaced downstream as a
+// missing skill-conformance receipt rather than as a sandbox denial.
+func TestWrapInvocation_GrantsAppSupportRoot(t *testing.T) {
+	const appSupport = "/Users/u/Library/Application Support"
+	cfg := &RunConfig{sandbox: sandboxSpec{
+		mode:        "enforce",
+		worktree:    "/data/wt",
+		sandboxHome: "/data/home",
+		tmp:         "/tmp",
+		sharedCache: "/data/cache",
+		appSupport:  appSupport,
+	}}
+
+	_, args := wrapInvocation("codex", []string{"exec"}, cfg)
+
+	var got string
+	for i := range len(args) - 1 {
+		if args[i] == "-D" {
+			if name, value, ok := strings.Cut(args[i+1], "="); ok && name == "APP_SUPPORT" {
+				got = value
+			}
+		}
+	}
+	if got != appSupport {
+		t.Fatalf("APP_SUPPORT = %q, want %q", got, appSupport)
+	}
+}
+
+// The embedded profile must actually reference the param, or the -D value is
+// inert and the grant silently does nothing.
+func TestSandboxProfile_ReferencesAppSupport(t *testing.T) {
+	if !strings.Contains(string(agentSandboxProfile), `(subpath (param "APP_SUPPORT"))`) {
+		t.Fatal("profile has no APP_SUPPORT write rule, so the resolved root grants nothing")
+	}
+}
