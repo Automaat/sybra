@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -61,5 +62,28 @@ func TestResultBeforeOnlyForkOutput(t *testing.T) {
 	}
 	if found, _ := resultBeforeOnlyForkOutput([]StreamEvent{{Type: "result"}, {Type: "init"}}); found {
 		t.Fatal("top-level retry event must hide prior result")
+	}
+}
+
+func TestReattachErrorResultPreservesQueuedSteer(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "reattach-error-steer", TaskID: "task-1", Mode: "headless", Provider: "claude"}
+	r, w := io.Pipe()
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	a.EnqueuePrompt("preserve across retry")
+	a.AppendOutput(StreamEvent{Type: "result", Subtype: "error", ErrorType: "overloaded_error"})
+
+	m.reconcileReattachedHeadlessTerminalResult(a)
+	if got := a.PendingPromptCount(); got != 1 {
+		t.Fatalf("PendingPromptCount = %d, want preserved queued steer", got)
+	}
+	if !a.isFinalizing() {
+		t.Fatal("reattached error result must reject new messages")
+	}
+	if a.convo.hasStdinPipe() {
+		t.Fatal("reattached error result must close the stale stdin")
 	}
 }

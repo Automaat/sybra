@@ -3113,6 +3113,70 @@ func TestHeadlessUnsteeredClosesAndCompletes(t *testing.T) {
 	}
 }
 
+// TestHeadlessErrorResultPreservesQueuedSteer verifies that a provider error
+// never flushes an operator's follow-up into the failed terminal turn. The
+// queued prompt survives for a retry while the old stdin closes.
+func TestHeadlessErrorResultPreservesQueuedSteer(t *testing.T) {
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "error-steer", TaskID: "task-1", Mode: "headless", Provider: "claude"}
+	r, w := io.Pipe()
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	a.EnqueuePrompt("retry this instruction")
+
+	resultLine := []byte(`{"type":"result","subtype":"error","error_type":"overloaded_error"}`)
+	var lastEmit time.Time
+	if stop := m.processHeadlessLine(context.Background(), a, resultLine, &lastEmit, providerByName("claude")); stop {
+		t.Fatal("error result must not request an unrelated guardrail stop")
+	}
+	if got := a.PendingPromptCount(); got != 1 {
+		t.Fatalf("PendingPromptCount = %d, want preserved queued steer", got)
+	}
+	if !a.isFinalizing() {
+		t.Fatal("agent must reject new messages after terminal error")
+	}
+	if a.convo.hasStdinPipe() {
+		t.Fatal("failed turn stdin must be closed")
+	}
+}
+
+// TestHeadlessSteerTerminalBoundarySerializes races the two operations that
+// formerly had an acknowledgement-loss window: a terminal empty-queue check
+// and a concurrent steer enqueue. Every accepted enqueue must be reserved by
+// the boundary; otherwise the boundary must finalize first and reject it.
+func TestHeadlessSteerTerminalBoundarySerializes(t *testing.T) {
+	for range 1000 {
+		a := &Agent{ID: "terminal-race", Mode: "headless", Provider: "claude"}
+		a.mu.Lock()
+		type enqueueResult struct {
+			enqueued   bool
+			finalizing bool
+		}
+		dequeued := make(chan bool, 1)
+		enqueued := make(chan enqueueResult, 1)
+		go func() {
+			_, ok := a.PopPendingPromptOrBeginFinalizing()
+			dequeued <- ok
+		}()
+		go func() {
+			_, ok, finalizing := a.TryEnqueuePrompt("operator instruction", MaxPendingHeadlessSteerPrompts)
+			enqueued <- enqueueResult{enqueued: ok, finalizing: finalizing}
+		}()
+		a.mu.Unlock()
+
+		gotDequeue := <-dequeued
+		gotEnqueue := <-enqueued
+		if gotEnqueue.enqueued != gotDequeue {
+			t.Fatalf("enqueue accepted=%v, boundary dequeued=%v: accepted steer was lost", gotEnqueue.enqueued, gotDequeue)
+		}
+		if !gotEnqueue.enqueued && !gotEnqueue.finalizing {
+			t.Fatal("enqueue rejected without queue limit or finalization")
+		}
+	}
+}
+
 func TestProcessHeadlessLine_ResultWaitsForBackgroundTasksThenStopsWhenCleared(t *testing.T) {
 	m := newParseTestManager(t)
 	a := &Agent{ID: "bg-close", TaskID: "t", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC()}

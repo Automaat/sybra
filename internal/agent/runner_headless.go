@@ -1223,11 +1223,15 @@ func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event Stre
 		}
 	}
 
-	m.drainOrCloseHeadlessSteer(a)
 	if resultSubtypeIsError(event.Subtype) || event.ErrorType != "" || event.ErrorStatus != 0 {
+		// A queued steer belongs to the next successful turn, not to this failed
+		// result. Preserve it for the runner's retry while closing this stdin and
+		// rejecting any new input that cannot be delivered by this process.
+		m.closeHeadlessSteerAfterError(a)
 		a.ClearPostResultWait()
 		return true
 	}
+	m.drainOrCloseHeadlessSteer(a)
 	if !shouldTrackPostResultWait(a) {
 		a.ClearPostResultWait()
 		return true
@@ -1267,9 +1271,8 @@ func (m *Manager) drainOrCloseHeadlessSteer(a *Agent) {
 	if !a.convo.hasStdinPipe() {
 		return
 	}
-	next, ok := a.PopPendingPrompt()
+	next, ok := a.PopPendingPromptOrBeginFinalizing()
 	if !ok {
-		a.setFinalizing(true)
 		a.convo.closeStdinPipe()
 		return
 	}
@@ -1302,6 +1305,19 @@ func (m *Manager) drainOrCloseHeadlessSteer(a *Agent) {
 	m.logger.Info("agent.headless.steer.flushed", "id", a.ID, "remaining", a.PendingPromptCount())
 }
 
+// closeHeadlessSteerAfterError stops the failed stdin turn without consuming
+// queued follow-ups. A retry starts a fresh stdin transport and can deliver
+// those prompts in order; a new message is rejected rather than falsely
+// acknowledged after the terminal error has already arrived.
+func (m *Manager) closeHeadlessSteerAfterError(a *Agent) {
+	if !a.convo.hasStdinPipe() {
+		return
+	}
+	a.setFinalizing(true)
+	m.saveRegistry(m.ctx, a)
+	a.convo.closeStdinPipe()
+}
+
 // sendHeadlessSteerMessage queues a follow-up message for a steerable
 // headless claude run. Unlike the conversational turn boundary
 // (advanceClaudeTurn), there is no idle state to write into directly — a
@@ -1310,11 +1326,11 @@ func (m *Manager) drainOrCloseHeadlessSteer(a *Agent) {
 // Rejects once the run has begun finalizing (its stdin is being closed for
 // good) so a message is never silently queued for a process that is exiting.
 func (m *Manager) sendHeadlessSteerMessage(a *Agent, text string) error {
-	if a.isFinalizing() {
-		return conflictError(fmt.Sprintf("agent %s is finalizing and can no longer accept messages", a.ID))
-	}
-	queueLen, enqueued := a.TryEnqueuePrompt(text, MaxPendingHeadlessSteerPrompts)
+	queueLen, enqueued, finalizing := a.TryEnqueuePrompt(text, MaxPendingHeadlessSteerPrompts)
 	if !enqueued {
+		if finalizing {
+			return conflictError(fmt.Sprintf("agent %s is finalizing and can no longer accept messages", a.ID))
+		}
 		return conflictError(fmt.Sprintf("agent %s has too many pending steer messages (%d max)", a.ID, MaxPendingHeadlessSteerPrompts))
 	}
 	m.saveRegistry(m.ctx, a)
