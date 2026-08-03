@@ -19,7 +19,12 @@
   (subpath (param "CODEX_STATE"))
   (subpath (param "COPILOT_STATE"))
   (subpath (param "OPENCODE_STATE"))
-  (subpath (param "TOOL_CACHE")))
+  (subpath (param "TOOL_CACHE"))
+  ;; APP_SUPPORT is the macOS per-user application-data root. codex's
+  ;; in-process app-server creates its own directory there at startup, so it
+  ;; needs write on the parent; a codex-named subpath alone was measured to
+  ;; fail. Unused slots resolve to a never-written sentinel.
+  (subpath (param "APP_SUPPORT")))
 ;; READONLY_DIR re-denies writes for a run whose Dir must stay read-only
 ;; (RunConfig.ReadOnlyDir) even though it sits inside one of the allowed
 ;; roots above (TMP in particular is the whole system temp dir, so a

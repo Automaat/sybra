@@ -699,6 +699,7 @@ func enforceSpec(
 		copilotState:  agentStateRoot(".copilot", sandboxHome),
 		opencodeState: agentStateRoot(filepath.Join(".local", "share", "opencode"), sandboxHome),
 		toolCache:     agentStateRoot(".cache", sandboxHome),
+		appSupport:    providerAppSupportRoot(),
 	}
 }
 
@@ -954,6 +955,26 @@ func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 		add(p)
 	}
 	return dedupeRoots(roots...)
+}
+
+// providerAppSupportRoot returns the macOS per-user application-data root, or
+// "" where it does not exist (Linux, or a home that has none).
+//
+// Granted because the codex CLI's in-process app-server creates a directory
+// under it at startup. Narrower grants were measured and do not work: naming
+// a codex-specific subpath still fails, because creating that subdirectory
+// requires write on the parent.
+func providerAppSupportRoot() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	root := filepath.Join(home, "Library", "Application Support")
+	canon, err := canonicalizeRoot(root)
+	if err != nil {
+		return ""
+	}
+	return canon
 }
 
 func agentStateRoot(sub, fallback string) string {

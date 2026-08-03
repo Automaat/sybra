@@ -87,6 +87,7 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		cfg.sandbox.copilotState,
 		cfg.sandbox.opencodeState,
 		cfg.sandbox.toolCache,
+		cfg.sandbox.appSupport,
 	)
 	roots = dedupeRoots(append(roots, cfg.sandbox.gitShared...)...)
 	for _, root := range roots {
