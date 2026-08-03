@@ -137,6 +137,7 @@ func (s *Store) Create(rawURL string, ptype ProjectType) (Project, error) {
 	}
 	if err := s.publishClone(p, clonePath); err != nil {
 		_ = os.RemoveAll(clonePath)
+		_ = s.markCloneError(p)
 		return Project{}, fmt.Errorf("mark ready: %w", err)
 	}
 	return s.Get(p.ID)
@@ -220,6 +221,22 @@ func (s *Store) publishClone(started Project, tempPath string) error {
 // same project generation. An older clone must not mark a re-created project
 // as errored.
 func (s *Store) markCloneError(started Project) error {
+	return s.markCloneStatus(started, ProjectStatusError)
+}
+
+// MarkReadyFor records a successful asynchronous clone only if the metadata
+// record that started it has not been deleted or replaced.
+func (s *Store) MarkReadyFor(started Project) error {
+	return s.markCloneStatus(started, ProjectStatusReady)
+}
+
+// MarkErrorFor records a failed asynchronous clone only if the metadata
+// record that started it has not been deleted or replaced.
+func (s *Store) MarkErrorFor(started Project) error {
+	return s.markCloneError(started)
+}
+
+func (s *Store) markCloneStatus(started Project, status ProjectStatus) error {
 	unlock, err := s.lock(started.ID)
 	if err != nil {
 		return err
@@ -233,7 +250,7 @@ func (s *Store) markCloneError(started Project) error {
 	if p.CloneGeneration != started.CloneGeneration {
 		return errors.New("clone superseded by a newer project record")
 	}
-	p.Status = ProjectStatusError
+	p.Status = status
 	p.CloneGeneration = ""
 	p.UpdatedAt = time.Now().UTC()
 	return s.writeFile(p)

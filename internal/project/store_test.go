@@ -294,6 +294,35 @@ func TestStoreCreateDeleteDuringCloneLeavesNoClone(t *testing.T) {
 	}
 }
 
+func TestStoreMarkReadyForDoesNotCompleteRecreatedProject(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := store.CreateMeta("https://github.com/owner/repo", ProjectTypePet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(started.ID); err != nil {
+		t.Fatal(err)
+	}
+	recreated, err := store.CreateMeta("https://github.com/owner/repo", ProjectTypePet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkReadyFor(started); err == nil {
+		t.Fatal("stale completion marked the re-created project ready")
+	}
+	got, err := store.Get(recreated.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != ProjectStatusCloning || got.CloneGeneration != recreated.CloneGeneration {
+		t.Errorf("re-created project changed after stale completion: %+v", got)
+	}
+}
+
 func TestStoreDefaultTypeOnRead(t *testing.T) {
 	store, err := NewStore(t.TempDir(), t.TempDir())
 	if err != nil {
