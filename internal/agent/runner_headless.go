@@ -267,7 +267,7 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 		cmd.Env = append(os.Environ(), inv.env...)
 		cmd.Env = append(cmd.Env, cfg.ExtraEnv...)
 	}
-	a.Command = inv.command
+	a.SetCommand(inv.command)
 
 	stdout, pipeErr := cmd.StdoutPipe()
 	if pipeErr != nil {
@@ -439,7 +439,7 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 		cmd.Env = append(os.Environ(), invokeEnv...)
 		cmd.Env = append(cmd.Env, cfg.ExtraEnv...)
 	}
-	a.Command = command
+	a.SetCommand(command)
 	cmd.Stdout = outFile
 
 	// Steerable claude runs get an O_RDWR FIFO stdin, exactly like a detached

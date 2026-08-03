@@ -689,6 +689,13 @@ func (a *Agent) SetLogPath(p string) {
 	a.mu.Unlock()
 }
 
+// SetCommand records the command used to run the agent.
+func (a *Agent) SetCommand(command string) {
+	a.mu.Lock()
+	a.Command = command
+	a.mu.Unlock()
+}
+
 // SetSessionID records the provider session ID.
 func (a *Agent) SetSessionID(id string) {
 	a.mu.Lock()
