@@ -1465,6 +1465,7 @@ func (a *App) initAgentConfig() {
 		TurnCostFraction:        a.cfg.Agent.TurnCostFraction,
 		TurnMultiplier:          a.cfg.Agent.TurnMultiplier,
 		CheckpointOnTurnCeiling: a.cfg.CheckpointOnTurnCeilingEnabled(),
+		MaxSubagentEvents:       a.cfg.Agent.MaxSubagentEvents,
 	})
 }
 

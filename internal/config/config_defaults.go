@@ -721,6 +721,17 @@ func defaultSeedConfig() *Config {
 			MaxTurns:         150,
 			MaxCheckpoints:   DefaultMaxCheckpoints,
 			DispatchJitterMs: 1000,
+			// MaxTaskCostUSD bounds cumulative spend across every retry a task
+			// ever gets, closing the gap where each individual run stays under
+			// MaxCostUSD but the task's total spend balloons unbounded across
+			// retries. 4x the per-run ceiling: generous enough for a few retries,
+			// still a real backstop instead of the previous disabled (0) default.
+			MaxTaskCostUSD: 20.0,
+			// MaxSubagentEvents bounds forked-subagent (CLAUDE_CODE_FORK_SUBAGENT)
+			// turns separately from the top-level MaxTurns ceiling — a runaway
+			// Task-tool fan-out can emit far more subagent turns than a normal
+			// top-level conversation would ever need.
+			MaxSubagentEvents: 500,
 		},
 		Notification: NotificationConfig{
 			Desktop: true,

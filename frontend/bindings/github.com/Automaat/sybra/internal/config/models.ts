@@ -66,6 +66,14 @@ export class AgentDefaults {
     "turnMultiplier": number;
 
     /**
+     * MaxSubagentEvents caps forked-subagent assistant events (CLAUDE_CODE_FORK_SUBAGENT
+     * parent_tool_use_id turns) per run, independent of MaxAssistantEvents which
+     * only counts top-level turns. 0 disables the ceiling. A breach hard-stops
+     * the run outright — there is no auto-continue/human-escalation path.
+     */
+    "maxSubagentEvents": number;
+
+    /**
      * RequirePermissions sets the default permission requirement for agents.
      * nil means not configured (falls back to true — safe default).
      * Set to false in config to opt all tasks into skip-permissions mode.
@@ -319,6 +327,9 @@ export class AgentDefaults {
         }
         if (!("turnMultiplier" in $$source)) {
             this["turnMultiplier"] = 0;
+        }
+        if (!("maxSubagentEvents" in $$source)) {
+            this["maxSubagentEvents"] = 0;
         }
         if (!("requirePermissions" in $$source)) {
             this["requirePermissions"] = null;

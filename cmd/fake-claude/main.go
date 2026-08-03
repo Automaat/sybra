@@ -173,6 +173,7 @@ var scenarioHandlers = map[string]func(string){
 	"success":                          func(string) { runSuccess() },
 	"no_receipt":                       func(string) { runSuccessNoReceipt() },
 	"high_cost":                        func(string) { runHighCost() },
+	"high_cost_mid_stream":             func(string) { runHighCostMidStream() },
 	"write_sidecar_success":            runWriteSidecarSuccess,
 	"write_sidecar_success_no_receipt": runWriteSidecarSuccessNoReceipt,
 	"revise_plan_sidecars":             runRevisePlanSidecars,
@@ -863,6 +864,28 @@ func runHighCost() {
 	event := resultEvent("over budget")
 	event["total_cost_usd"] = 11.0
 	emit(event)
+}
+
+// runHighCostMidStream emits an assistant event whose own usage block alone
+// prices well over any reasonable MaxCostUSD, with no total_cost_usd anywhere
+// — proving the mid-stream live-cost ceiling (not the terminal-result cost
+// check) is what stops the run. A trailing result line must never be reached
+// if the pre-emption works.
+func runHighCostMidStream() {
+	emitSystem()
+	emit(map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{"type": "text", "text": "working on it"},
+			},
+			"usage": map[string]any{
+				"input_tokens":  5000000,
+				"output_tokens": 0,
+			},
+		},
+	})
+	emitResult("should never complete")
 }
 
 func runMalformedToolCallOnce() {
