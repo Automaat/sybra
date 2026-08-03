@@ -1224,3 +1224,67 @@ func SortAnomalyKinds(k []AnomalyKind) {
 		}
 	}
 }
+
+// The Aug 1–3 stall: queued work, nothing running, spare capacity, and every
+// monitor tick reporting in_progress=0 todo=12 without escalating. The
+// existing bottleneck detector could not see it — its dwell comes from the
+// last hour of audit events, and a stalled board emits none.
+func TestDetect_BoardStalled(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	stale := now.Add(-6 * time.Hour)
+
+	tests := []struct {
+		name  string
+		tasks []task.Task
+		live  []liveAgent
+		want  bool
+	}{
+		{
+			name:  "queued work with nothing running and no agents",
+			tasks: []task.Task{{ID: "a", Status: task.StatusTodo, StatusChangedAt: stale}},
+			want:  true,
+		},
+		{
+			name: "work is running",
+			tasks: []task.Task{
+				{ID: "a", Status: task.StatusTodo, StatusChangedAt: stale},
+				{ID: "b", Status: task.StatusInProgress, StatusChangedAt: stale},
+			},
+			want: false,
+		},
+		{
+			name:  "an agent is live even though no task reads in-progress",
+			tasks: []task.Task{{ID: "a", Status: task.StatusTodo, StatusChangedAt: stale}},
+			live:  []liveAgent{{}},
+			want:  false,
+		},
+		{
+			name:  "queue is fresh",
+			tasks: []task.Task{{ID: "a", Status: task.StatusTodo, StatusChangedAt: now.Add(-2 * time.Minute)}},
+			want:  false,
+		},
+		{
+			name:  "empty board",
+			tasks: nil,
+			want:  false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := Detect(DetectInput{Now: now, Tasks: tc.tasks, LiveAgents: tc.live})
+
+			got := false
+			for _, a := range rep.Anomalies {
+				if a.Kind == KindBoardStalled {
+					got = true
+					if a.RequiresLLM {
+						t.Error("board-stall anomaly requires an LLM dispatch; acting on it must not depend on the dispatch path suspected of being broken")
+					}
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("board_stalled detected = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

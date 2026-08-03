@@ -41,6 +41,7 @@ func Detect(in DetectInput) Report {
 		Counts:      countByStatus(in.Tasks),
 	}
 	report.Anomalies = append(report.Anomalies, detectBoardWide(in, report.Counts)...)
+	report.Anomalies = append(report.Anomalies, detectBoardStalled(in, report.Counts)...)
 	report.Anomalies = append(report.Anomalies, detectPerTask(in)...)
 	report.Anomalies = append(report.Anomalies, detectFromAudit(in)...)
 	return report
@@ -93,6 +94,70 @@ func detectBoardWide(in DetectInput, counts Counts) []Anomaly {
 		Evidence:    ev,
 		DetectedAt:  in.Now,
 	}}
+}
+
+// defaultStallBudgetHours is how long queued work may sit with nothing running
+// before the board counts as stalled. Deliberately short: the failure this
+// catches is total, so waiting out a 12-hour bottleneck budget means noticing
+// a dead board the next day.
+const defaultStallBudgetHours = 1.0
+
+// detectBoardStalled reports a board with queued work, nothing running, and
+// spare capacity — the shape of a dispatcher that has stopped dispatching.
+//
+// This reads task state rather than audit events on purpose. KindBottleneck
+// derives its dwell from HourSummary.StatusBottlenecks, which is built from
+// the last hour of audit events — so a board that has genuinely stopped
+// produces no events, and the detector meant to notice is blind precisely
+// when it matters. Measured: a stall ran from 2026-08-01 to 2026-08-03,
+// reporting in_progress=0 todo=12 on every tick, and nothing escalated.
+//
+// RequiresLLM is false for the same reason: acting on this must not depend on
+// the dispatch path that is the thing suspected of being broken.
+func detectBoardStalled(in DetectInput, counts Counts) []Anomaly {
+	if counts.Todo == 0 || counts.InProgress > 0 || len(in.LiveAgents) > 0 {
+		return nil
+	}
+	budget := stallBudgetHours(in.Cfg)
+	oldest := 0.0
+	for i := range in.Tasks {
+		t := &in.Tasks[i]
+		if t.Status != task.StatusTodo || t.StatusChangedAt.IsZero() {
+			continue
+		}
+		if !projectAllowed(in.AllowsProject, t.ProjectID) {
+			continue
+		}
+		if h := in.Now.Sub(t.StatusChangedAt).Hours(); h > oldest {
+			oldest = h
+		}
+	}
+	if oldest <= budget {
+		return nil
+	}
+	ev := map[string]any{
+		"todo":          counts.Todo,
+		"in_progress":   counts.InProgress,
+		"oldest_todo_h": oldest,
+		"budget_h":      budget,
+	}
+	return []Anomaly{{
+		Kind:        KindBoardStalled,
+		Severity:    SeverityError,
+		RequiresLLM: false,
+		Fingerprint: Fingerprint(KindBoardStalled, "", ev),
+		Evidence:    ev,
+		DetectedAt:  in.Now,
+	}}
+}
+
+// stallBudgetHours reuses the todo bottleneck budget when an operator has set
+// one, rather than adding a second knob for the same idea.
+func stallBudgetHours(cfg config.MonitorConfig) float64 {
+	if v, ok := cfg.BottleneckHours["todo"]; ok && v > 0 {
+		return v
+	}
+	return defaultStallBudgetHours
 }
 
 func detectPerTask(in DetectInput) []Anomaly {
