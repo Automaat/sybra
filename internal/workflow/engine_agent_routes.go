@@ -168,7 +168,7 @@ func (e *Engine) pruneStaleAgentRoutes(taskID string, step *Step) {
 	if taskID == "" || step == nil {
 		return
 	}
-	if e.completionInFlight(taskID) || e.agents.HasRunningAgent(taskID) || e.agents.IsDispatching(taskID) {
+	if e.completionInFlight(taskID) || e.resumeDispatching(taskID) || e.agents.HasRunningAgent(taskID) || e.agents.IsDispatching(taskID) {
 		return
 	}
 	t, err := e.tasks.GetTask(taskID)
