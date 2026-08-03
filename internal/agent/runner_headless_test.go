@@ -3177,6 +3177,49 @@ func TestHeadlessSteerTerminalBoundarySerializes(t *testing.T) {
 	}
 }
 
+func TestSurviveFIFOChildO_RDWRDoesNotSeeParentCloseAsEOF(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "survive.stdin")
+	if err := makeFIFO(path); err != nil {
+		t.Fatalf("makeFIFO: %v", err)
+	}
+	parent, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open parent FIFO: %v", err)
+	}
+	child, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		_ = parent.Close()
+		t.Fatalf("open child FIFO: %v", err)
+	}
+	t.Cleanup(func() { _ = child.Close() })
+	if err := parent.Close(); err != nil {
+		t.Fatalf("close parent FIFO: %v", err)
+	}
+
+	read := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 1)
+		_, err := child.Read(buf)
+		read <- err
+	}()
+	select {
+	case err := <-read:
+		t.Fatalf("child read returned after parent close: %v, want it to remain open", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	if _, err := child.WriteString("x"); err != nil {
+		t.Fatalf("write through surviving child FIFO: %v", err)
+	}
+	select {
+	case err := <-read:
+		if err != nil {
+			t.Fatalf("child read after write: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("child FIFO read did not receive data")
+	}
+}
+
 func TestProcessHeadlessLine_ResultWaitsForBackgroundTasksThenStopsWhenCleared(t *testing.T) {
 	m := newParseTestManager(t)
 	a := &Agent{ID: "bg-close", TaskID: "t", Mode: "headless", Provider: "claude", StartedAt: time.Now().UTC()}
