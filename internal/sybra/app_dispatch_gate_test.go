@@ -197,6 +197,79 @@ func TestStatusHook_WaitForStatus_RefusesDuringStartupRecovery(t *testing.T) {
 	if got.Workflow == nil || got.Workflow.CurrentStep == "plan" {
 		t.Fatalf("workflow = %+v after status-hook event once recovery cleared, want advanced past step 'plan'", got.Workflow)
 	}
+
+	// Suppressed is not dropped: the blocked task's awaited status is still the
+	// persisted one, so the replay run after the gate clears must advance it.
+	// Nothing else would — agent completion deliberately skips wait_for_status
+	// steps and board reconciliation skips tasks with an active workflow.
+	app.replayDeferredStatusChanges()
+	got, err = app.tasks.Get(blocked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.CurrentStep == "plan" {
+		t.Fatalf("workflow = %+v after replaying deferred status changes, want advanced past step 'plan'", got.Workflow)
+	}
+}
+
+// TestReplayDeferredStatusChanges_UsesCurrentStatus pins the coalescing rule:
+// the replay re-reads the task's persisted status instead of replaying the
+// status recorded at suppression time, so a step waiting on a status the task
+// has since left is not advanced by a stale event.
+func TestReplayDeferredStatusChanges_UsesCurrentStatus(t *testing.T) {
+	app := setupApp(t)
+
+	wfDir := t.TempDir()
+	wfStore, err := workflow.NewStore(wfDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wfDir, "test-status-hook.yaml"), []byte(waitForStatusWorkflowYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app.workflowEngine = workflow.NewEngine(
+		wfStore,
+		&taskAdapter{tasks: app.tasks},
+		&agentAdapter{agents: app.agents, agentOrch: app.agentOrch, tasks: app.tasks},
+		app.logger,
+	)
+	app.initStatusHook()
+
+	created, err := app.tasks.Create("status hook replay test", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{
+		"status": "planning",
+		"workflow": &workflow.Execution{
+			WorkflowID:  "test-status-hook",
+			CurrentStep: "plan",
+			State:       workflow.ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	}); err != nil {
+		t.Fatalf("UpdateMap: %v", err)
+	}
+
+	app.startupRecoveryPending.Store(true)
+	if _, err := app.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusPlanReview)}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	// Moved on again inside the window: the awaited plan-review no longer holds.
+	if _, err := app.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	app.startupRecoveryPending.Store(false)
+	app.replayDeferredStatusChanges()
+
+	got, err := app.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.CurrentStep != "plan" {
+		t.Fatalf("workflow = %+v after replay, want still parked at step 'plan' (task left the awaited status)", got.Workflow)
+	}
 }
 
 // TestAppStartup_ClearsStartupRecoveryPending pins the wiring: Startup arms

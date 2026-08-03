@@ -170,11 +170,24 @@ type App struct {
 	// (#2752). Zero value (unset) reports "not pending", so an App built
 	// without going through Startup (tests, direct construction) dispatches
 	// exactly as it did before this gate existed. Cleared once
-	// RunStartupCleanup returns, followed by a nudgeDispatch so any task that
-	// changed status during the window gets picked up immediately by the
-	// board-wide reconcileRunnableBoardTasks sweep instead of waiting for
+	// RunStartupCleanup returns, followed by replayDeferredStatusChanges (for
+	// the workflow status events the window suppressed) and a nudgeDispatch so
+	// any task that changed status during the window gets picked up immediately
+	// by the board-wide reconcileRunnableBoardTasks sweep instead of waiting for
 	// the next dispatch tick.
 	startupRecoveryPending atomic.Bool
+	// deferredStatusChanges buffers the tasks whose status change was observed
+	// while startupRecoveryPending was set, so the suppressed
+	// workflowEngine.HandleStatusChange can be replayed once reattach finishes.
+	// Without the replay a run_agent step parked on wait_for_status never sees
+	// its awaited status again: agent completion deliberately does not advance
+	// such a step, board reconciliation skips tasks with an active workflow, and
+	// ResumeStalled re-runs the agent instead of comparing the persisted status
+	// to WaitForStatus. A set, not a queue — replay reads each task's current
+	// persisted status, which coalesces several transitions in the window down
+	// to the one that is still true.
+	deferredStatusMu      sync.Mutex
+	deferredStatusChanges map[string]struct{}
 	// maintenanceCleanupRunning prevents slow git cleanup from stacking across
 	// maintenance ticks. Cleanup itself runs outside the orchestrator loop.
 	maintenanceCleanupRunning atomic.Bool
@@ -421,6 +434,10 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 		// not dispatched — see startupRecoveryPending) is picked up by the
 		// board-wide reconcile sweep right away instead of the next tick.
 		a.startupRecoveryPending.Store(false)
+		// Replay before the nudge: board reconciliation skips a task whose
+		// workflow is still active, so a step parked on wait_for_status has to
+		// be advanced by the deferred event itself, not by the sweep.
+		a.replayDeferredStatusChanges() //nolint:contextcheck // same engine chain as initStatusHook, which binds its own e.ctx; see Startup's contextcheck note
 		a.nudgeDispatch()
 		lm.StartManagers(schedulerCtx, emit)
 		lm.StartPollers(schedulerCtx, emit, issuesFetcher)

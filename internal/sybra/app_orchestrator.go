@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -127,6 +128,54 @@ func (a *App) runsOrchestratorBrain() bool {
 // startupRecoveryPending's doc comment for why this window matters.
 func (a *App) startupRecoveryDone() bool {
 	return !a.startupRecoveryPending.Load()
+}
+
+// deferStatusChange records a status change the startup gate suppressed so
+// replayDeferredStatusChanges can re-deliver it once reattach finishes.
+func (a *App) deferStatusChange(taskID string) {
+	if taskID == "" {
+		return
+	}
+	a.deferredStatusMu.Lock()
+	if a.deferredStatusChanges == nil {
+		a.deferredStatusChanges = make(map[string]struct{})
+	}
+	a.deferredStatusChanges[taskID] = struct{}{}
+	a.deferredStatusMu.Unlock()
+	// The gate can clear between the hook's check and this record, after the
+	// drain already ran — replay right away rather than strand the event until
+	// the next restart. The drain empties the set under the same lock, so at
+	// most one caller ever delivers a given entry.
+	if a.startupRecoveryDone() {
+		a.replayDeferredStatusChanges()
+	}
+}
+
+// replayDeferredStatusChanges re-delivers the status changes suppressed during
+// startup recovery, using each task's *current* persisted status rather than
+// the status recorded at suppression time: a task that moved several times in
+// the window only needs the transition that still holds, and a step waiting on
+// a status it already passed must not be advanced by a stale event.
+func (a *App) replayDeferredStatusChanges() {
+	a.deferredStatusMu.Lock()
+	pending := a.deferredStatusChanges
+	a.deferredStatusChanges = nil
+	a.deferredStatusMu.Unlock()
+	if len(pending) == 0 || a.workflowEngine == nil {
+		return
+	}
+	for _, taskID := range slices.Sorted(maps.Keys(pending)) {
+		t, err := a.tasks.Get(taskID)
+		if err != nil {
+			a.logger.Warn("app.status-hook.replay.get", "task_id", taskID, "err", err)
+			continue
+		}
+		if !a.runsTaskLocally(t) {
+			continue
+		}
+		a.logger.Info("app.status-hook.replay", "task_id", taskID, "status", string(t.Status))
+		a.workflowEngine.HandleStatusChange(taskID, string(t.Status))
+	}
 }
 
 const clusterHealthProbeInterval = 30 * time.Second

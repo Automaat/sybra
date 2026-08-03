@@ -682,9 +682,15 @@ func (a *App) initStatusHook() {
 		// startupRecoveryDone: a step's completion can itself fire a
 		// dispatch (e.g. maybeRecoverHumanRequiredAlreadyFixedOnMain), and
 		// HasRunningAgentForTask reads an empty registry until reattach
-		// finishes — see startupRecoveryPending's doc comment (#2752).
-		if local && a.workflowEngine != nil && a.startupRecoveryDone() {
-			a.workflowEngine.HandleStatusChange(taskID, to)
+		// finishes — see startupRecoveryPending's doc comment (#2752). Deferred
+		// rather than dropped: nothing else re-delivers a wait_for_status match,
+		// so a suppressed event would park the step until an operator intervenes.
+		if local && a.workflowEngine != nil {
+			if a.startupRecoveryDone() {
+				a.workflowEngine.HandleStatusChange(taskID, to)
+			} else {
+				a.deferStatusChange(taskID)
+			}
 		}
 		// HandleStatusChange may reroute a human-required self-escalation back
 		// into the PR flow (missing live-PR blocker recovery). When it does the
