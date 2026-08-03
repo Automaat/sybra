@@ -848,3 +848,89 @@ func TestFirstHealthyProvider_ExcludesAndFiltersUnhealthy(t *testing.T) {
 		t.Errorf("got %q, want none (only healthy candidate is excluded)", got)
 	}
 }
+
+// A branch name with multiple path segments (e.g. "fix/issue/2967/slug")
+// nests several directories deep under refs/heads/ — only the file's own
+// basename must be joined onto branchRefDir/branchLogDir, not the full
+// branch name, or the computed grant would double up the nested segments.
+func TestGitBranchSingleFiles_MultiSegmentBranchName(t *testing.T) {
+	roots := gitSandboxRoots{
+		branchRef:    "refs/heads/fix/issue/2967/darwin-git-admin-dir",
+		branchRefDir: "/data/clones/repo.git/refs/heads/fix/issue/2967",
+		branchLogDir: "/data/clones/repo.git/logs/refs/heads/fix/issue/2967",
+	}
+
+	refFile, refLockFile, logFile, logLockFile := gitBranchSingleFiles(roots)
+
+	wantRef := "/data/clones/repo.git/refs/heads/fix/issue/2967/darwin-git-admin-dir"
+	wantLog := "/data/clones/repo.git/logs/refs/heads/fix/issue/2967/darwin-git-admin-dir"
+	if refFile != wantRef {
+		t.Errorf("refFile = %q, want %q", refFile, wantRef)
+	}
+	if refLockFile != wantRef+".lock" {
+		t.Errorf("refLockFile = %q, want %q", refLockFile, wantRef+".lock")
+	}
+	if logFile != wantLog {
+		t.Errorf("logFile = %q, want %q", logFile, wantLog)
+	}
+	if logLockFile != wantLog+".lock" {
+		t.Errorf("logLockFile = %q, want %q", logLockFile, wantLog+".lock")
+	}
+}
+
+// Two sibling tasks with branches nesting under the same parent segment
+// (both under refs/heads/fix/) resolve to distinct single-file grants — the
+// isolation property the whole literal-not-subpath design depends on.
+func TestGitBranchSingleFiles_SiblingBranchesUnderSameParentDiffer(t *testing.T) {
+	a := gitSandboxRoots{
+		branchRef:    "refs/heads/fix/task-a",
+		branchRefDir: "/data/clones/repo.git/refs/heads/fix",
+		branchLogDir: "/data/clones/repo.git/logs/refs/heads/fix",
+	}
+	b := gitSandboxRoots{
+		branchRef:    "refs/heads/fix/task-b",
+		branchRefDir: "/data/clones/repo.git/refs/heads/fix",
+		branchLogDir: "/data/clones/repo.git/logs/refs/heads/fix",
+	}
+
+	aRef, aRefLock, aLog, aLogLock := gitBranchSingleFiles(a)
+	bRef, bRefLock, bLog, bLogLock := gitBranchSingleFiles(b)
+
+	if aRef == bRef || aRefLock == bRefLock || aLog == bLog || aLogLock == bLogLock {
+		t.Fatalf("sibling branches under the same parent dir must resolve to distinct files: a=%v b=%v",
+			[]string{aRef, aRefLock, aLog, aLogLock}, []string{bRef, bRefLock, bLog, bLogLock})
+	}
+	if aRefLock == bRef || aRef == bRefLock {
+		t.Fatalf("a branch's ref/lock must not collide with the sibling's own files")
+	}
+}
+
+func TestGitBranchSingleFiles_EmptyOnDetachedHead(t *testing.T) {
+	refFile, refLockFile, logFile, logLockFile := gitBranchSingleFiles(gitSandboxRoots{})
+	if refFile != "" || refLockFile != "" || logFile != "" || logLockFile != "" {
+		t.Fatalf("detached HEAD must produce no branch-file grants, got %q %q %q %q",
+			refFile, refLockFile, logFile, logLockFile)
+	}
+}
+
+func TestGitCommonDirSingleFiles_DerivesAllHousekeepingPaths(t *testing.T) {
+	files := gitCommonDirSingleFiles(gitSandboxRoots{commonDir: "/data/clones/repo.git"})
+
+	want := gitCommonDirFiles{
+		packedRefs:     "/data/clones/repo.git/packed-refs",
+		packedRefsNew:  "/data/clones/repo.git/packed-refs.new",
+		packedRefsLock: "/data/clones/repo.git/packed-refs.lock",
+		gcPid:          "/data/clones/repo.git/gc.pid",
+		gcPidLock:      "/data/clones/repo.git/gc.pid.lock",
+		infoDir:        "/data/clones/repo.git/info",
+	}
+	if files != want {
+		t.Fatalf("gitCommonDirSingleFiles() = %+v, want %+v", files, want)
+	}
+}
+
+func TestGitCommonDirSingleFiles_EmptyWithoutCommonDir(t *testing.T) {
+	if got := (gitCommonDirSingleFiles(gitSandboxRoots{})); got != (gitCommonDirFiles{}) {
+		t.Fatalf("gitCommonDirSingleFiles() = %+v, want zero value", got)
+	}
+}

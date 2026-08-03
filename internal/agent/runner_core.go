@@ -87,9 +87,24 @@ type sandboxSpec struct {
 	// Linux avoids that exposure with a bind-mounted overlay instead; Seatbelt
 	// has no filesystem-view mechanism to do the same, so darwin narrows the
 	// grant to the one file per root instead.
-	gitBranchRefFile       string
-	gitBranchRefLockFile   string
-	gitBranchLogFile       string
+	gitBranchRefFile     string
+	gitBranchRefLockFile string
+	gitBranchLogFile     string
+	// gitBranchLogLockFile: `git reflog expire` (part of `git gc`) locks the
+	// reflog the same way a commit locks the ref itself.
+	gitBranchLogLockFile string
+	// gitPackedRefsFile/gitPackedRefsNewFile/gitPackedRefsLockFile/
+	// gitGCPidFile/gitGCPidLockFile: single files under gitCommonDir, all
+	// touched by git's post-fetch maintenance or an explicit git gc.
+	gitPackedRefsFile     string
+	gitPackedRefsNewFile  string
+	gitPackedRefsLockFile string
+	gitGCPidFile          string
+	gitGCPidLockFile      string
+	// gitInfoDir (gitCommonDir/info) is a whole-subpath grant, not named
+	// literals: update_info_file() stages info/refs via xmkstemp(), a
+	// randomly-suffixed temp name no literal grant can predict.
+	gitInfoDir             string
 	gitRemoteRefDir        string
 	gitRemoteLogDir        string
 	gitTagRefDir           string
@@ -146,13 +161,15 @@ func (s sandboxSpec) writeRoots() []string {
 		s.worktree, s.sandboxHome, s.tmp, s.sharedCache,
 		s.claudeState, s.codexState, s.copilotState, s.opencodeState, s.toolCache,
 		s.appSupport, s.claudeScratch,
-		s.gitAdminDir, s.gitCommonDir, s.gitWorktrees, s.gitObjectDir,
+		s.gitAdminDir, s.gitCommonDir, s.gitWorktrees, s.gitObjectDir, s.gitInfoDir,
 		s.gitOverlayObjectDir, s.gitOverlayRefDir, s.gitOverlayLogDir,
 		s.gitOverlayRemoteRefDir, s.gitOverlayRemoteLogDir,
 		s.gitOverlayTagRefDir, s.gitOverlayTagLogDir,
 		s.gitBranchRefDir, s.gitBranchLogDir, s.gitRemoteRefDir,
 		s.gitRemoteLogDir, s.gitTagRefDir, s.gitTagLogDir,
-		s.gitBranchRefFile, s.gitBranchRefLockFile, s.gitBranchLogFile,
+		s.gitBranchRefFile, s.gitBranchRefLockFile, s.gitBranchLogFile, s.gitBranchLogLockFile,
+		s.gitPackedRefsFile, s.gitPackedRefsNewFile, s.gitPackedRefsLockFile,
+		s.gitGCPidFile, s.gitGCPidLockFile,
 	}
 	roots = append(roots, s.gitMetadata...)
 	roots = append(roots, s.gitShared...)

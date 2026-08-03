@@ -110,6 +110,34 @@ func TestSandboxEnforce_FullGitWorkflowSucceeds(t *testing.T) {
 	}
 }
 
+// TestSandboxEnforce_GCAndPackRefsSucceeds reproduces the housekeeping gap
+// found in a second-pass review of the fetch/merge/add/commit fix above: an
+// explicit `git gc` (and the `git pack-refs --all` it runs internally) also
+// touches packed-refs(.new/.lock), gc.pid(.lock), the branch's own reflog
+// lock, and regenerates info/refs via a randomly-suffixed xmkstemp() temp
+// file — none of which the fetch/merge/commit path above exercises. Every
+// one of those needed its own grant; this failed with "Operation not
+// permitted" at each step until all were added.
+func TestSandboxEnforce_GCAndPackRefsSucceeds(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
+	}
+	_, wt := setupLinkedWorktree(t)
+	cfg := buildEnforceCfg(t, wt)
+
+	script := "cd " + wt + " && git fetch origin 2>&1 && git gc 2>&1 && git pack-refs --all 2>&1; echo EXIT=$?"
+	cmd := newProviderCmd(context.Background(), cfg, false, "sh", "-c", script)
+	out, _ := cmd.CombinedOutput()
+	got := string(out)
+
+	if strings.Contains(got, "Operation not permitted") {
+		t.Errorf("git gc/pack-refs hit EPERM under sandbox: %s", got)
+	}
+	if !strings.Contains(got, "EXIT=0") {
+		t.Errorf("git gc/pack-refs did not exit cleanly: %s", got)
+	}
+}
+
 // TestSandboxEnforce_GitAdminDirIsolatedFromSiblingWorktree proves the
 // per-task grant does not widen into a sibling task's own worktree admin
 // dir sharing the same bare clone — the isolation property the narrow,
@@ -132,5 +160,30 @@ func TestSandboxEnforce_GitAdminDirIsolatedFromSiblingWorktree(t *testing.T) {
 
 	if strings.Contains(got, "LEAK") || !strings.Contains(got, "DENIED") {
 		t.Errorf("write to a sibling worktree's admin dir must be kernel-denied: %q", got)
+	}
+}
+
+// TestSandboxEnforce_SiblingBranchRefFileIsolated proves the branch-ref
+// literal grant does not widen into a sibling task's own branch ref, even
+// when both branches nest under the same parent path segment (both live
+// under refs/heads/fix/) — the isolation property GIT_BRANCH_REF_FILE's
+// literal-not-subpath design (see agent_sandbox.sb) exists to guarantee.
+func TestSandboxEnforce_SiblingBranchRefFileIsolated(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
+	}
+	bare, wt := setupLinkedWorktree(t)
+	cfg := buildEnforceCfg(t, wt)
+
+	runGitOrFatal(t, bare, "branch", "fix/sibling-branch", "main")
+	siblingRefFile := filepath.Join(bare, "refs", "heads", "fix", "sibling-branch")
+
+	script := "(echo tampered > " + siblingRefFile + " 2>/dev/null && echo LEAK) || echo DENIED"
+	cmd := newProviderCmd(context.Background(), cfg, false, "sh", "-c", script)
+	out, _ := cmd.CombinedOutput()
+	got := string(out)
+
+	if strings.Contains(got, "LEAK") || !strings.Contains(got, "DENIED") {
+		t.Errorf("write to a sibling branch's own ref file must be kernel-denied: %q", got)
 	}
 }

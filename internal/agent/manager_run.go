@@ -656,7 +656,8 @@ func enforceSpec(
 	gitRoots gitSandboxRoots,
 	gitOverlay gitSandboxOverlay,
 ) sandboxSpec {
-	branchRefFile, branchRefLockFile, branchLogFile := gitBranchSingleFiles(gitRoots)
+	branchRefFile, branchRefLockFile, branchLogFile, branchLogLockFile := gitBranchSingleFiles(gitRoots)
+	commonFiles := gitCommonDirSingleFiles(gitRoots)
 	return sandboxSpec{
 		mode:                   "enforce",
 		worktree:               worktree,
@@ -678,6 +679,13 @@ func enforceSpec(
 		gitBranchRefFile:       branchRefFile,
 		gitBranchRefLockFile:   branchRefLockFile,
 		gitBranchLogFile:       branchLogFile,
+		gitBranchLogLockFile:   branchLogLockFile,
+		gitPackedRefsFile:      commonFiles.packedRefs,
+		gitPackedRefsNewFile:   commonFiles.packedRefsNew,
+		gitPackedRefsLockFile:  commonFiles.packedRefsLock,
+		gitGCPidFile:           commonFiles.gcPid,
+		gitGCPidLockFile:       commonFiles.gcPidLock,
+		gitInfoDir:             commonFiles.infoDir,
 		gitRemoteRefDir:        gitRoots.remoteRefDir,
 		gitRemoteLogDir:        gitRoots.remoteLogDir,
 		gitTagRefDir:           gitRoots.tagRefDir,
@@ -709,16 +717,54 @@ func enforceSpec(
 }
 
 // gitBranchSingleFiles derives the exact, single-file absolute paths for the
-// current branch's ref, its lock, and its reflog from roots' already-resolved
-// directories — narrow enough to grant directly on darwin (see sandboxSpec's
-// gitBranchRefFile doc). Empty on a detached HEAD, matching roots.branchRef.
-func gitBranchSingleFiles(roots gitSandboxRoots) (refFile, refLockFile, logFile string) {
+// current branch's ref, its lock, and its reflog (plus the reflog's own lock
+// — `git reflog expire`, part of `git gc`, locks it same as the ref) from
+// roots' already-resolved directories — narrow enough to grant directly on
+// darwin (see sandboxSpec's gitBranchRefFile doc). Empty on a detached HEAD,
+// matching roots.branchRef.
+func gitBranchSingleFiles(roots gitSandboxRoots) (refFile, refLockFile, logFile, logLockFile string) {
 	if roots.branchRef == "" || roots.branchRefDir == "" || roots.branchLogDir == "" {
-		return "", "", ""
+		return "", "", "", ""
 	}
 	name := filepath.Base(roots.branchRef)
 	refFile = filepath.Join(roots.branchRefDir, name)
-	return refFile, refFile + ".lock", filepath.Join(roots.branchLogDir, name)
+	logFile = filepath.Join(roots.branchLogDir, name)
+	return refFile, refFile + ".lock", logFile, logFile + ".lock"
+}
+
+// gitCommonDirFiles holds the shared bare clone's top-level housekeeping
+// files — outside refs/heads, refs/remotes, refs/tags, objects, and
+// worktrees/<name>, so none of the other grants cover them. infoDir is a
+// directory, not a file: update_info_file() (wrapper.c) stages its rewrite
+// through xmkstemp(), a randomly-suffixed temp name no literal grant can
+// predict, so info/ needs a subpath grant rather than named-file literals.
+type gitCommonDirFiles struct {
+	packedRefs, packedRefsNew, packedRefsLock string
+	gcPid, gcPidLock                          string
+	infoDir                                   string
+}
+
+// gitCommonDirSingleFiles derives gitCommonDirFiles' paths from the bare
+// clone root. git's default post-fetch maintenance (`git maintenance run
+// --auto --detach`) touches packed-refs.lock on every fetch; an explicit
+// git gc/pack-refs additionally stages packed-refs.new (git's
+// write-then-rename pattern) before renaming it over packed-refs, and (via
+// repack.updateServerInfo, on by default) rewrites info/refs and
+// info/packs for the dumb-HTTP transport.
+func gitCommonDirSingleFiles(roots gitSandboxRoots) gitCommonDirFiles {
+	if roots.commonDir == "" {
+		return gitCommonDirFiles{}
+	}
+	packedRefs := filepath.Join(roots.commonDir, "packed-refs")
+	gcPid := filepath.Join(roots.commonDir, "gc.pid")
+	return gitCommonDirFiles{
+		packedRefs:     packedRefs,
+		packedRefsNew:  packedRefs + ".new",
+		packedRefsLock: packedRefs + ".lock",
+		gcPid:          gcPid,
+		gcPidLock:      gcPid + ".lock",
+		infoDir:        filepath.Join(roots.commonDir, "info"),
+	}
 }
 
 func injectSandboxGitEnv(cfg *RunConfig, roots gitSandboxRoots, overlay gitSandboxOverlay) error {
