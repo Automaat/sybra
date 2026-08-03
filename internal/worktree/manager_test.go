@@ -2081,9 +2081,13 @@ func TestPrepareForTask_BootstrapFailureBlocks(t *testing.T) {
 
 // healOrRecreate wipes a worktree it considers unusable. Remove and
 // CleanupOrphaned already refuse when the worktree holds commits origin has
-// never seen (#2593), but both recreate paths deleted unconditionally — and a
-// worktree can be healthy yet on an unexpected branch, which is exactly the
-// state a merge or conflict resolution leaves behind.
+// never seen (#2593); the branch-mismatch recreate path used to delete
+// regardless, which is what this pins. A worktree can be healthy yet on an
+// unexpected branch — exactly the state a merge or conflict resolution leaves
+// behind — so its commits are readable and worth preserving.
+//
+// The unrepairable recreate path is still unguarded, by design: see
+// refuseRecreateWithUnpushedWork.
 func TestManager_RefuseRecreateWithUnpushedWork(t *testing.T) {
 	dir := t.TempDir()
 	tasksDir := t.TempDir()
