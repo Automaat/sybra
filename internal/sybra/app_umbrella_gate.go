@@ -652,8 +652,6 @@ func isWorkflowOwnedBlock(t *task.Task) bool {
 	return t.Blocker.Actor == blocker.ActorWorkflow
 }
 
-// isRunningChild reports whether a child status occupies a parallelism slot —
-// i.e. it has been released and is somewhere in the pipeline but not finished.
 // clearGateTagOnHandedOffChildren strips the gating tag from a child that has
 // already run an implementation agent.
 //
@@ -668,14 +666,7 @@ func isWorkflowOwnedBlock(t *task.Task) bool {
 // Clearing the tag is the narrow fix: it hands the child back to the normal
 // dispatcher at exactly the point the gate stopped owning it, and is a no-op
 // for children the gate is still legitimately holding or the workflow parked.
-func (a *App) clearGateTagOnHandedOffChildren() {
-	if a.tasks == nil {
-		return
-	}
-	tasks, err := a.tasks.List()
-	if err != nil {
-		return
-	}
+func (a *App) clearGateTagOnHandedOffChildren(tasks []task.Task) {
 	for i := range tasks {
 		t := &tasks[i]
 		if t.UmbrellaIssue == "" || !slices.Contains(t.Tags, umbrellaGatedTag) {
@@ -700,6 +691,8 @@ func (a *App) clearGateTagOnHandedOffChildren() {
 	}
 }
 
+// isRunningChild reports whether a child status occupies a parallelism slot —
+// i.e. it has been released and is somewhere in the pipeline but not finished.
 func isRunningChild(s task.Status) bool {
 	switch s {
 	case task.StatusBlocked, task.StatusNew, task.StatusHumanRequired, task.StatusDone, task.StatusCancelled:

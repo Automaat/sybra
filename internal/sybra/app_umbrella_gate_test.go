@@ -1947,7 +1947,7 @@ func TestReleaseUnblockedChildren_ClearsStaleGateTagAfterHandoff(t *testing.T) {
 		t.Fatalf("record implementation run: %v", err)
 	}
 
-	app.clearGateTagOnHandedOffChildren()
+	app.clearGateTagOnHandedOffChildren(mustList(t, m))
 
 	got, err := m.Get(child.ID)
 	if err != nil {
@@ -1970,7 +1970,7 @@ func TestReleaseUnblockedChildren_KeepsGateTagBeforeHandoff(t *testing.T) {
 		[]string{"https://github.com/Automaat/sybra/issues/999"}, task.StatusTodo)
 
 	app.releaseUnblockedChildren(context.Background())
-	app.clearGateTagOnHandedOffChildren()
+	app.clearGateTagOnHandedOffChildren(mustList(t, m))
 
 	got, err := m.Get(blocked.ID)
 	if err != nil {
@@ -1997,10 +1997,19 @@ func TestClearGateTag_LeavesBlockedChildAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app.clearGateTagOnHandedOffChildren()
+	app.clearGateTagOnHandedOffChildren(mustList(t, m))
 
 	got := mustTask(t, m, child.ID)
 	if !slices.Contains(got.Tags, umbrella.GatedTag) {
 		t.Fatal("blocked child lost its gate tag; work the workflow stopped on purpose would be re-released")
 	}
+}
+
+func mustList(t *testing.T, m *task.Manager) []task.Task {
+	t.Helper()
+	tasks, err := m.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tasks
 }
