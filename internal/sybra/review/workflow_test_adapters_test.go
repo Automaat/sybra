@@ -153,6 +153,19 @@ func (a *taskAdapter) SetStatusAndWorkflow(id, status, reason string, wf *workfl
 	return err
 }
 
+func (a *taskAdapter) SetBlockerAndWorkflow(id, status, reason string, state blocker.State, wf *workflow.Execution) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	u := task.Update{Status: &st, Blocker: &state, Workflow: &wf}
+	if reason != "" {
+		u.StatusReason = &reason
+	}
+	_, err = a.tasks.Update(id, u)
+	return err
+}
+
 func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
 	var result workflow.EffectClaimResult
 	var fenceErr error

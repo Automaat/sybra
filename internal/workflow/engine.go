@@ -139,6 +139,10 @@ type TaskProvider interface {
 	// versa). reason == "" leaves the task's current StatusReason
 	// untouched.
 	SetStatusAndWorkflow(id, status, reason string, wf *Execution) error
+	// SetBlockerAndWorkflow is SetStatusAndWorkflow's counterpart for callers
+	// escalating to a blocked status with a workflow-owned blocker.State —
+	// same single-write atomicity guarantee, blocker included.
+	SetBlockerAndWorkflow(id, status, reason string, state blocker.State, wf *Execution) error
 	ClaimWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
 	CompleteWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
 	// ConsumeSupervisorSteer prepends a pending watchdog headless-nudge steer to

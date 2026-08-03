@@ -1841,9 +1841,6 @@ func (e *Engine) handleWatchdogRateLimitRetry(t *TaskInfo, step *Step) bool {
 				// next dispatch stops resuming this poisoned session. See sybra#2542.
 				t.Workflow.StartedAt = time.Now().UTC()
 			}
-			if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
-				e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)
-			}
 			var escalateErr error
 			if targetStatus == "blocked" {
 				// Zero-output startup exhaustion parks the task in the same
@@ -1855,13 +1852,13 @@ func (e *Engine) handleWatchdogRateLimitRetry(t *TaskInfo, step *Step) bool {
 				// child deep into implementation must never be mistaken for a
 				// fresh, never-released one and re-released into a brand-new
 				// triage cycle that discards its in-flight workflow (#2538).
-				escalateErr = e.tasks.UpdateTaskBlocker(t.ID, targetStatus, reason, blocker.State{
+				escalateErr = e.tasks.SetBlockerAndWorkflow(t.ID, targetStatus, reason, blocker.State{
 					Kind:      blocker.KindWatchdogRateLimitExhausted,
 					Actor:     blocker.ActorWorkflow,
 					Exhausted: true,
-				})
+				}, t.Workflow)
 			} else {
-				escalateErr = e.tasks.UpdateTaskStatus(t.ID, targetStatus, reason)
+				escalateErr = e.tasks.SetStatusAndWorkflow(t.ID, targetStatus, reason, t.Workflow)
 			}
 			if escalateErr != nil {
 				e.logger.Error("workflow.watchdog-rate-limit.escalate", "task_id", t.ID, "step", step.ID, "err", escalateErr)
@@ -2204,6 +2201,7 @@ func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err
 	// isDeferredNotFailed excludes resource-pressure defers the same way: they
 	// surface a status_reason (unlike the fully-silent transient sentinels)
 	// but must never accumulate toward the breaker.
+	var wfToPersist *Execution
 	if wf != nil && stepID != "" && !isTransientCapacityError(err) && !isDeferredNotFailed(err) {
 		attempts, trip := recordCircuitBreakerFailure(wf, stepID, time.Now())
 		if trip {
@@ -2227,14 +2225,17 @@ func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err
 			e.logger.Warn("workflow.circuit-breaker.tripped",
 				"task_id", taskID, "step", stepID, "attempts", attempts)
 		}
-		if setErr := e.tasks.SetWorkflow(taskID, wf); setErr != nil {
-			e.logger.Error("workflow.circuit-breaker.persist", "task_id", taskID, "step", stepID, "err", setErr)
-		}
+		wfToPersist = wf
 	}
 	var uErr error
-	if failure.Blocker.IsZero() {
+	switch {
+	case wfToPersist != nil && failure.Blocker.IsZero():
+		uErr = e.tasks.SetStatusAndWorkflow(taskID, target, failure.Reason, wfToPersist)
+	case wfToPersist != nil:
+		uErr = e.tasks.SetBlockerAndWorkflow(taskID, target, failure.Reason, failure.Blocker, wfToPersist)
+	case failure.Blocker.IsZero():
 		uErr = e.tasks.UpdateTaskStatus(taskID, target, failure.Reason)
-	} else {
+	default:
 		uErr = e.tasks.UpdateTaskBlocker(taskID, target, failure.Reason, failure.Blocker)
 	}
 	if uErr != nil {

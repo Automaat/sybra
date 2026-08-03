@@ -347,6 +347,34 @@ func (a *taskAdapter) SetStatusAndWorkflow(id, status, reason string, wf *workfl
 	return err
 }
 
+// SetBlockerAndWorkflow persists a task's Status/StatusReason/Blocker and
+// Workflow in a single store write, the blocker-path counterpart to
+// SetStatusAndWorkflow — closing the same crash window for callers that
+// escalate to a blocked status (via a workflow-owned blocker.State) alongside
+// a workflow mutation (see #2749).
+func (a *taskAdapter) SetBlockerAndWorkflow(id, status, reason string, state blocker.State, wf *workflow.Execution) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	reason = a.normalizeHumanRequiredReason(id, st, reason)
+	var reasonPtr *string
+	if reason != "" {
+		reasonPtr = &reason
+	}
+	_, err = a.tasks.Apply(task.TransitionIntent{
+		TaskID:   id,
+		ToStatus: st,
+		Actor:    "workflow.engine.set_blocker_and_workflow",
+		Extra: task.Update{
+			Blocker:      &state,
+			StatusReason: reasonPtr,
+			Workflow:     &wf,
+		},
+	})
+	return err
+}
+
 func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
 	var result workflow.EffectClaimResult
 	var fenceErr error

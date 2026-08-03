@@ -1038,20 +1038,17 @@ func (e *Engine) blockRetryExhaustedTriageIfNeeded(taskID string, step *Step, wf
 	if reason == "" {
 		return false, nil
 	}
-	if err := e.tasks.UpdateTaskBlocker(taskID, "blocked", reason, blocker.State{
+	now := time.Now().UTC()
+	wfExec.State = ExecFailed
+	wfExec.CompletedAt = &now
+	wfExec.CurrentStep = ""
+	return true, e.tasks.SetBlockerAndWorkflow(taskID, "blocked", reason, blocker.State{
 		Kind:       blocker.KindTriageRetryExhausted,
 		Actor:      blocker.ActorWorkflow,
 		Code:       "triage_retryable",
 		NextAction: "wait_for_operator_reclassify",
 		Exhausted:  true,
-	}); err != nil {
-		return true, err
-	}
-	now := time.Now().UTC()
-	wfExec.State = ExecFailed
-	wfExec.CompletedAt = &now
-	wfExec.CurrentStep = ""
-	return true, e.tasks.SetWorkflow(taskID, wfExec)
+	}, wfExec)
 }
 
 func (e *Engine) blockRetryExhaustedPlanningIfNeeded(taskID string, def *Definition, step *Step, wfExec *Execution, output string, attempts int) (bool, error) {
