@@ -1,6 +1,7 @@
 package task
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -181,8 +182,9 @@ func IsSidecarFile(base string) bool {
 
 // List returns every task under the store's directory, in directory-read
 // order (unspecified — sort by CreatedAt/UpdatedAt if you need an order).
-// A task with a parse error is logged and skipped rather than failing the
-// whole call. Results are served from an in-memory cache invalidated on any
+// A task with a parse error is represented as a non-dispatchable, degraded
+// Human Required entry rather than silently disappearing from the board.
+// Results are served from an in-memory cache invalidated on any
 // Create/Update/Delete; callers do not need to worry about staleness within
 // a single process.
 func (s *Store) List() ([]Task, error) {
@@ -217,7 +219,8 @@ func (s *Store) List() ([]Task, error) {
 	for _, p := range taskPaths {
 		t, err := Parse(p)
 		if err != nil {
-			slog.Default().Warn("task.parse.skip", "file", filepath.Base(p), "err", err)
+			slog.Default().Warn("task.parse.degraded", "file", filepath.Base(p), "err", err)
+			tasks = append(tasks, degradedTask(p, err))
 			parseErr = true
 			continue
 		}
@@ -244,6 +247,35 @@ func (s *Store) List() ([]Task, error) {
 		}
 	}
 	return tasks, nil
+}
+
+// degradedTask exposes an unreadable task file without trusting any of its
+// frontmatter. The generated ID is deterministic for its filename but cannot
+// address a real task file, making the entry read-only by construction.
+func degradedTask(path string, parseErr error) Task {
+	base := filepath.Base(path)
+	sum := sha256.Sum256([]byte(base))
+	id := fmt.Sprintf("unreadable-%x", sum[:8])
+	modified := time.Time{}
+	if info, err := os.Stat(path); err == nil {
+		modified = info.ModTime().UTC()
+	}
+	reason := fmt.Sprintf("Task file %q cannot be parsed; repair it on disk to restore the task.", base)
+	return Task{
+		ID:              id,
+		Slug:            "unreadable-task",
+		Title:           "Unreadable task file: " + base,
+		Status:          StatusHumanRequired,
+		AgentMode:       AgentModeHeadless,
+		StatusReason:    reason,
+		Body:            reason,
+		CreatedAt:       modified,
+		UpdatedAt:       modified,
+		StatusChangedAt: modified,
+		FilePath:        path,
+		Degraded:        true,
+		ParseError:      parseErr.Error(),
+	}
 }
 
 // sidecarIndex holds sidecar contents loaded in a single ReadDir pass,
@@ -620,6 +652,9 @@ func (s *Store) PutFn(id string, fn func(cur Task) (Task, error)) (saved, previo
 
 // putLocked is Put after the caller has acquired lockTask(t.ID).
 func (s *Store) putLocked(t Task) (Task, error) {
+	if err := validateWriteTask(t); err != nil {
+		return Task{}, err
+	}
 	now := time.Now().UTC()
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = now
@@ -680,6 +715,23 @@ func (s *Store) putLocked(t Task) (Task, error) {
 	}
 	s.storeTaskCache(t)
 	return t, nil
+}
+
+// validateWriteTask enforces the values Parse rejects on every write path,
+// including PutFn, which reaches putLocked directly while holding its task
+// lock. Empty values retain the legacy compatibility accepted by Parse.
+func validateWriteTask(t Task) error {
+	if t.Slug != "" {
+		if err := ValidateSlug(t.Slug); err != nil {
+			return err
+		}
+	}
+	if t.AgentMode != "" {
+		if _, err := ValidateAgentMode(t.AgentMode); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // taskFiles returns the basenames of every sidecar file this store owns for

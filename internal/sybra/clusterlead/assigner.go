@@ -97,7 +97,7 @@ func (a *Assigner) Tick(ctx context.Context) {
 	}
 	for i := range tasks {
 		t := tasks[i]
-		if task.IsTerminalStatus(t.Status) || t.Status == task.StatusBlocked {
+		if t.Degraded || task.IsTerminalStatus(t.Status) || t.Status == task.StatusBlocked {
 			continue
 		}
 		home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)
@@ -256,6 +256,9 @@ func (a *Assigner) DispatchFromHumanRequired(ctx context.Context, t task.Task, t
 }
 
 func (a *Assigner) route(ctx context.Context, t task.Task, force bool) (routed bool, err error) {
+	if t.Degraded {
+		return false, nil
+	}
 	unlock := a.lockOwnership(t.ID)
 	defer unlock()
 	home := a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride)

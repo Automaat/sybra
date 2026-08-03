@@ -1396,7 +1396,7 @@ func TestStoreCreateDefaultMode(t *testing.T) {
 	}
 }
 
-func TestStoreListSkipsMalformed(t *testing.T) {
+func TestStoreListSurfacesMalformedAsDegraded(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	store, err := NewStore(dir)
@@ -1417,8 +1417,23 @@ func TestStoreListSkipsMalformed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tasks) != 1 {
-		t.Errorf("got %d tasks, want 1 (should skip malformed)", len(tasks))
+	if len(tasks) != 2 {
+		t.Fatalf("got %d tasks, want 2 (valid task plus degraded entry)", len(tasks))
+	}
+	var degraded *Task
+	for i := range tasks {
+		if tasks[i].Degraded {
+			degraded = &tasks[i]
+		}
+	}
+	if degraded == nil {
+		t.Fatal("malformed file was not surfaced as degraded")
+	}
+	if degraded.Status != StatusHumanRequired {
+		t.Errorf("degraded status = %q, want %q", degraded.Status, StatusHumanRequired)
+	}
+	if degraded.ParseError == "" || degraded.FilePath != filepath.Join(dir, "bad.md") {
+		t.Errorf("degraded entry = %+v, want parse error and source path", *degraded)
 	}
 }
 
@@ -2517,14 +2532,17 @@ func TestStoreGet_PathTraversalSlugRejected(t *testing.T) {
 		t.Fatal("Store.Get with path-traversal slug: expected error, got nil")
 	}
 
-	// List must also skip the malformed file (it logs and continues).
+	// List must surface the malformed file without returning its unsafe slug.
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	for _, task := range tasks {
-		if task.ID == tk.ID {
-			t.Errorf("malformed-slug task appeared in List: slug=%q", task.Slug)
+	for _, listed := range tasks {
+		if listed.ID == tk.ID {
+			t.Errorf("malformed-slug task appeared as real task: slug=%q", listed.Slug)
+		}
+		if listed.Degraded && listed.ParseError == "" {
+			t.Error("degraded malformed-slug task lacks parse error")
 		}
 	}
 }

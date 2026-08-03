@@ -175,6 +175,11 @@ func (s *TaskService) ListTasksForNode(node string) ([]task.Task, error) {
 	out := all[:0]
 	for i := range all {
 		t := all[i]
+		// Degraded entries deliberately exist only on the local board. They do
+		// not name a valid task payload and must not be replicated to a leader.
+		if t.Degraded {
+			continue
+		}
 		if t.AssignedNode != node && t.AssignedNode != "" {
 			continue
 		}
@@ -675,6 +680,9 @@ func (s *TaskService) CreateTask(title, body, mode string) (task.Task, error) {
 // it touches disk; a malformed task is rejected with a 400 rather than
 // corrupting the board.
 func (s *TaskService) AssignTask(t task.Task) error {
+	if t.Degraded {
+		return validationError("assigned task must not be degraded")
+	}
 	if err := task.ValidateID(t.ID); err != nil {
 		return validationError(err.Error())
 	}
@@ -686,6 +694,11 @@ func (s *TaskService) AssignTask(t task.Task) error {
 	}
 	if t.AgentMode != "" {
 		if _, err := task.ValidateAgentMode(t.AgentMode); err != nil {
+			return validationError(err.Error())
+		}
+	}
+	if t.Slug != "" {
+		if err := task.ValidateSlug(t.Slug); err != nil {
 			return validationError(err.Error())
 		}
 	}
