@@ -272,16 +272,36 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 		return
 	}
 
-	if ag.EffectiveRole() == agent.RoleFixReview && exitErr == nil {
+	// Resolved before any routing side effect below: a parked adoption may
+	// only persist its run and clear the workflow step. handleFixReviewCompletion
+	// in particular pushes the survivor's branch (and under review-hold rewrites
+	// the task's status), which must not happen behind a human's or the
+	// monitor's deliberate parking.
+	parked, parkedAdoption := h.parkedAdoption(ag)
+
+	if !parkedAdoption && ag.EffectiveRole() == agent.RoleFixReview && exitErr == nil {
 		h.handleFixReviewCompletion(ag)
 	}
 
-	if !h.notifyWorkflowEngine(ag, resultContent, exitErr) {
-		return
-	}
-
-	if ag.EffectiveRole() == agent.RoleTestRunner {
-		h.importEvidenceForAgent(ag)
+	if parkedAdoption {
+		// Reattach adopted this survivor over a parked/terminal task status to
+		// save its uncommitted work (see agent.ParksLiveAgent). Its result is
+		// already persisted above, but the workflow engine gates advancement on
+		// Workflow.State alone — letting it advance here would run the next
+		// step (e.g. set_ready_review) and drag a task a human or the monitor
+		// deliberately parked back into the pipeline.
+		h.logger.Warn("agent.completion.parked-adoption",
+			"task_id", ag.TaskID, "agent_id", ag.ID, "task_status", parked)
+		if h.workflowEngine != nil {
+			h.workflowEngine.ClearAgentStep(ag.TaskID, ag.ID)
+		}
+	} else {
+		if !h.notifyWorkflowEngine(ag, resultContent, exitErr) {
+			return
+		}
+		if ag.EffectiveRole() == agent.RoleTestRunner {
+			h.importEvidenceForAgent(ag)
+		}
 	}
 
 	// Worktree and sandbox cleanup for terminal tasks (after engine
@@ -294,6 +314,31 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 			go h.sandboxes.Remove(ag.TaskID)
 		}
 	}
+}
+
+// parkedAdoption reports whether ag is a survivor that reattach adopted over a
+// parked/terminal task status AND whose task is still parked, meaning its
+// completion must not advance the workflow. Returns the blocking status for
+// logging.
+//
+// The live status is re-read rather than trusting the reattach-time snapshot:
+// a human who parked the task while the app was down may since have put it
+// back in flight, in which case this is an ordinary completion and has to
+// advance normally. A task that cannot be read at all is treated as still
+// parked — advancing on an unknown status is the unsafe direction.
+func (h *Handler) parkedAdoption(ag *agent.Agent) (string, bool) {
+	parked := ag.AdoptedParkedStatus()
+	if parked == "" {
+		return "", false
+	}
+	t, err := h.tasks.Get(ag.TaskID)
+	if err != nil {
+		return parked, true
+	}
+	if !agent.ParksLiveAgent(string(t.Status)) {
+		return "", false
+	}
+	return string(t.Status), true
 }
 
 func terminalResultContent(ag *agent.Agent) string {

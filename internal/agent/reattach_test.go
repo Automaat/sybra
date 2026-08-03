@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -27,6 +28,23 @@ func assertAccountingInvariant(t *testing.T, m *Manager) {
 	sum, liveCount := invariantSnapshot(m)
 	if sum != liveCount {
 		t.Fatalf("sum(liveByProvider)=%d != liveCount=%d", sum, liveCount)
+	}
+}
+
+// drainAdoptedSurvivor kills an adopted survivor's process and waits for the
+// manager to observe it, so the tailer/watchPID goroutines ReattachAll spawned
+// exit before the test returns. Without it the package's goroutine-leak check
+// races t.Cleanup's kill and reports the still-running pair as a leak.
+func drainAdoptedSurvivor(t *testing.T, m *Manager, cmd *exec.Cmd) {
+	t.Helper()
+	_ = cmd.Process.Kill()
+	deadline := time.After(5 * time.Second)
+	for m.RunningCount() > 0 {
+		select {
+		case <-deadline:
+			t.Fatalf("adopted survivor did not drain; liveCount=%d", m.RunningCount())
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
 
@@ -375,6 +393,7 @@ func TestReattachAdoptsHealthySurvivor(t *testing.T) {
 		t.Fatalf("liveCount = %d, want 1", m.RunningCount())
 	}
 	assertAccountingInvariant(t, m)
+	drainAdoptedSurvivor(t, m, cmd)
 }
 
 // writeStaleLog writes an empty NDJSON log for id under dir/agents and
@@ -412,6 +431,123 @@ func writeFreshLog(t *testing.T, dir, id string) string {
 	return p
 }
 
+// writeLogWithLines writes an NDJSON log for id under dir/agents containing
+// lines, and backdates its mtime by silentFor so reattachProgressing sees a
+// log that has been quiet for exactly that long.
+func writeLogWithLines(t *testing.T, dir, id string, silentFor time.Duration, lines ...string) string {
+	t.Helper()
+	agentsLogDir := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agentsLogDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(agentsLogDir, id+".ndjson")
+	var body strings.Builder
+	for _, l := range lines {
+		body.WriteString(l + "\n")
+	}
+	if err := os.WriteFile(p, []byte(body.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mt := time.Now().Add(-silentFor)
+	if err := os.Chtimes(p, mt, mt); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// TestReattachKeepsSurvivorSilentInsideToolCall covers the one shape of log
+// silence a healthy agent produces indefinitely: it is blocked inside a tool
+// call (a build, a test suite) that emits no NDJSON until it returns. Log
+// mtime alone must not condemn such a survivor to a SIGINT that throws away
+// the in-progress work — only silence with no pending tool call, or silence
+// past reattachToolCallGrace, counts as stuck.
+func TestReattachKeepsSurvivorSilentInsideToolCall(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+
+	prevPoll := reattachPIDPoll.Load()
+	reattachPIDPoll.Store((20 * time.Millisecond).Nanoseconds())
+	t.Cleanup(func() { reattachPIDPoll.Store(prevPoll) })
+
+	prevGrace := stopSIGINTGrace
+	stopSIGINTGrace = 50 * time.Millisecond
+	t.Cleanup(func() { stopSIGINTGrace = prevGrace })
+
+	const (
+		pendingToolCall = `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu-1","name":"Bash","input":{"command":"go test ./..."}}]}}`
+		toolResult      = `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu-1","content":"ok"}]}}`
+	)
+
+	tests := []struct {
+		name        string
+		lines       []string
+		silentFor   time.Duration
+		wantAdopted bool
+	}{
+		{
+			name:        "mid tool call past stuck window is adopted",
+			lines:       []string{pendingToolCall},
+			silentFor:   3 * reattachStuckAfter,
+			wantAdopted: true,
+		},
+		{
+			name:        "tool already returned is reaped",
+			lines:       []string{pendingToolCall, toolResult},
+			silentFor:   3 * reattachStuckAfter,
+			wantAdopted: false,
+		},
+		{
+			name:        "mid tool call past the tool-call grace is reaped",
+			lines:       []string{pendingToolCall},
+			silentFor:   reattachToolCallGrace + time.Hour,
+			wantAdopted: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			logDir := t.TempDir()
+			regDir := t.TempDir()
+			m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
+				SurviveRestartDir: regDir,
+				OnComplete:        func(*Agent) {},
+				// Parked while the app was down — the status that used to reap
+				// unconditionally, and still does for a genuinely stuck survivor.
+				TaskStatus: func(string) (string, bool) { return "human-required", true },
+			})
+
+			cmd := exec.Command("sleep", "30")
+			if err := cmd.Start(); err != nil {
+				t.Fatalf("start helper process: %v", err)
+			}
+			t.Cleanup(func() { _ = cmd.Process.Kill() })
+			go func() { _ = cmd.Wait() }()
+
+			if err := m.reg.Save(Record{
+				ID: "s1", TaskID: "task-x", Mode: "headless", Provider: "claude",
+				PID: cmd.Process.Pid, StartedAt: time.Now().UTC(),
+				LogPath:       writeLogWithLines(t, logDir, "s1", tc.silentFor, tc.lines...),
+				ProcStartedAt: processStartString(context.Background(), cmd.Process.Pid),
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			reattached := m.ReattachAll()
+			want := 0
+			if tc.wantAdopted {
+				want = 1
+			}
+			if len(reattached) != want {
+				t.Fatalf("ReattachAll adopted %d survivors, want %d", len(reattached), want)
+			}
+			if m.RunningCount() != want {
+				t.Fatalf("liveCount = %d, want %d", m.RunningCount(), want)
+			}
+			assertAccountingInvariant(t, m)
+			drainAdoptedSurvivor(t, m, cmd)
+		})
+	}
+}
+
 // TestReattachAdoptsParkedOrOldProgressingSurvivor is the core regression
 // coverage for the reattach fix: a healthy (progressing) survivor must be
 // adopted, not killed, whether its task was parked while the app was down or
@@ -440,16 +576,28 @@ func TestReattachAdoptsParkedOrOldProgressingSurvivor(t *testing.T) {
 		name      string
 		startedAt time.Time
 		status    string
+		// wantParked is the status the adopted agent must carry forward so
+		// completion routing can suppress workflow advancement — empty when
+		// the task was never parked and the run should advance normally.
+		wantParked string
 	}{
 		{
-			name:      "parked (todo) task, healthy survivor",
-			startedAt: time.Now().UTC(),
-			status:    "todo",
+			name:       "parked (todo) task, healthy survivor",
+			startedAt:  time.Now().UTC(),
+			status:     "todo",
+			wantParked: "todo",
 		},
 		{
-			name:      "parked (human-required) task, healthy survivor",
-			startedAt: time.Now().UTC(),
-			status:    "human-required",
+			name:       "parked (human-required) task, healthy survivor",
+			startedAt:  time.Now().UTC(),
+			status:     "human-required",
+			wantParked: "human-required",
+		},
+		{
+			name:       "parked (done) task, healthy survivor",
+			startedAt:  time.Now().UTC(),
+			status:     "done",
+			wantParked: "done",
 		},
 		{
 			name:      "past wall-clock deadline, still progressing",
@@ -487,6 +635,9 @@ func TestReattachAdoptsParkedOrOldProgressingSurvivor(t *testing.T) {
 			if m.RunningCount() != 1 {
 				t.Fatalf("liveCount = %d, want 1", m.RunningCount())
 			}
+			if got := reattached[0].AdoptedParkedStatus(); got != tc.wantParked {
+				t.Fatalf("AdoptedParkedStatus = %q, want %q (completion routing keys workflow suppression off this)", got, tc.wantParked)
+			}
 			recs, err := m.reg.List()
 			if err != nil {
 				t.Fatal(err)
@@ -495,19 +646,7 @@ func TestReattachAdoptsParkedOrOldProgressingSurvivor(t *testing.T) {
 				t.Fatalf("expected adopted survivor's record to remain, got %d", len(recs))
 			}
 			assertAccountingInvariant(t, m)
-
-			// Drain before the subtest ends so the tailer/watchPID goroutines
-			// spawned by ReattachAll exit deterministically instead of racing
-			// t.Cleanup's process kill against the package's goroutine-leak check.
-			_ = cmd.Process.Kill()
-			deadline := time.After(5 * time.Second)
-			for m.RunningCount() > 0 {
-				select {
-				case <-deadline:
-					t.Fatalf("adopted survivor did not drain; liveCount=%d", m.RunningCount())
-				case <-time.After(10 * time.Millisecond):
-				}
-			}
+			drainAdoptedSurvivor(t, m, cmd)
 		})
 	}
 }
