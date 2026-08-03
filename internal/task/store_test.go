@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -68,6 +69,204 @@ func TestStoreCreate(t *testing.T) {
 
 	if _, err := os.Stat(task.FilePath); err != nil {
 		t.Errorf("file not written: %v", err)
+	}
+}
+
+func TestStoreCreate_RetriesIDCollisionWithoutOverwriting(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := Task{
+		ID:         "deadbeef",
+		Title:      "original task",
+		Slug:       "original-task",
+		Status:     StatusTodo,
+		Generation: 1,
+		AgentMode:  AgentModeHeadless,
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	originalData, err := Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPath := filepath.Join(store.Dir(), original.ID+".md")
+	if err := os.WriteFile(originalPath, originalData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ids := []string{"deadbeef", "cafebabe"}
+	store.newTaskID = func() string {
+		id := ids[0]
+		ids = ids[1:]
+		return id
+	}
+	created, err := store.Create("new task", "new body", AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.ID != "cafebabe" {
+		t.Fatalf("created ID = %q, want collision retry ID cafebabe", created.ID)
+	}
+	got, err := os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, originalData) {
+		t.Fatal("collision replaced the original task file")
+	}
+}
+
+func TestStoreCreateFull_RetriesBeforeWritingSidecars(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := Task{
+		ID:         "deadbeef",
+		Title:      "original task",
+		Slug:       "original-task",
+		Status:     StatusTodo,
+		Generation: 1,
+		AgentMode:  AgentModeHeadless,
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	originalData, err := Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPath := filepath.Join(store.Dir(), original.ID+".md")
+	if err := os.WriteFile(originalPath, originalData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Plans().Write(original.ID, "original plan"); err != nil {
+		t.Fatal(err)
+	}
+
+	ids := []string{"deadbeef", "cafebabe"}
+	store.newTaskID = func() string {
+		id := ids[0]
+		ids = ids[1:]
+		return id
+	}
+	plan := "new plan"
+	created, err := store.CreateFull("new task", "new body", AgentModeHeadless, Update{Plan: &plan})
+	if err != nil {
+		t.Fatalf("CreateFull: %v", err)
+	}
+	if created.ID != "cafebabe" {
+		t.Fatalf("created ID = %q, want collision retry ID cafebabe", created.ID)
+	}
+	got, err := os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, originalData) {
+		t.Fatal("collision replaced the original task file")
+	}
+	originalPlan, err := store.Plans().Read(original.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if originalPlan != "original plan" {
+		t.Fatalf("original sidecar = %q, want unchanged original plan", originalPlan)
+	}
+	newPlan, err := store.Plans().Read(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newPlan != plan {
+		t.Fatalf("new sidecar = %q, want %q", newPlan, plan)
+	}
+}
+
+func TestStoreCreate_DoesNotReuseIDWithOrphanedSidecars(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Plans().Write("deadbeef", "interrupted creation plan"); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{"deadbeef", "cafebabe"}
+	store.newTaskID = func() string {
+		id := ids[0]
+		ids = ids[1:]
+		return id
+	}
+	created, err := store.Create("new task", "new body", AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.ID != "cafebabe" {
+		t.Fatalf("created ID = %q, want retry ID cafebabe", created.ID)
+	}
+	plan, err := store.Plans().Read("deadbeef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan != "interrupted creation plan" {
+		t.Fatalf("orphaned sidecar = %q, want preserved contents", plan)
+	}
+}
+
+func TestStoreLockNewTask_SymlinkAliasSharesReservation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink setup requires elevated Windows privileges")
+	}
+	root := t.TempDir()
+	realDir := filepath.Join(root, "tasks")
+	realStore, err := NewStore(realDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasDir := filepath.Join(root, "tasks-alias")
+	if err := os.Symlink(realDir, aliasDir); err != nil {
+		t.Fatal(err)
+	}
+	alias, err := NewStore(aliasDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	unlock, err := realStore.lockNewTask("deadbeef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			unlock()
+		}
+	}()
+	acquired := make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() {
+		otherUnlock, err := alias.lockNewTask("deadbeef")
+		if err != nil {
+			errCh <- err
+			return
+		}
+		close(acquired)
+		otherUnlock()
+	}()
+	select {
+	case <-acquired:
+		t.Fatal("symlink-alias store acquired an already-held creation reservation")
+	case err := <-errCh:
+		t.Fatalf("symlink-alias reservation: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlock()
+	released = true
+	select {
+	case <-acquired:
+	case err := <-errCh:
+		t.Fatalf("symlink-alias reservation: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("symlink-alias store did not acquire reservation after release")
 	}
 }
 

@@ -63,6 +63,46 @@ func AtomicWrite(path string, data []byte) error {
 	return syncDir(dir)
 }
 
+// AtomicWriteNew writes data to a previously absent path without ever
+// replacing an existing file. Like AtomicWrite, readers see either no file or
+// the complete, synced contents. It returns an error satisfying
+// errors.Is(err, fs.ErrExist) when another writer has already created path.
+//
+// os.Link provides the exclusive publish operation: linking the completed
+// temporary file to path fails if path exists, unlike os.Rename which replaces
+// its destination. The temporary file and destination are in the same
+// directory, so the link is atomic and cannot cross filesystems.
+func AtomicWriteNew(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Link(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Remove(tmp); err != nil {
+		return err
+	}
+	return syncDir(dir)
+}
+
 // RemoveAllForce removes path and everything under it, tolerating read-only
 // files and directories (e.g. Go module cache entries, which ship 0444/0555
 // permissions). It tries a plain os.RemoveAll first; on failure it walks the
