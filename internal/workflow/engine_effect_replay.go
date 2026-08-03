@@ -161,7 +161,7 @@ func (e *Engine) replayPendingEffect(t *TaskInfo, step *Step, def *Definition) b
 	cleanupWorkflow := e.workflowForPostDispatchCleanup(fresh.ID)
 	e.clearTransientFetchRetry(fresh.ID, cleanupWorkflow, step.ID)
 	e.clearCircuitBreakerOnSuccess(fresh.ID, cleanupWorkflow, step.ID)
-	e.clearWatchdogReaskNote(fresh.ID, cleanupWorkflow)
+	e.clearDeliveredWatchdogReaskNote(fresh.ID, step, cleanupWorkflow)
 	return true
 }
 
