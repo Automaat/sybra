@@ -44,4 +44,19 @@ describe('TaskStatusBanner', () => {
     // A status_reason elevates an otherwise-quiet sub-state to the warm banner.
     expect(container.querySelector('[role="status"]')?.className).toMatch(/border-warning/)
   })
+
+  // Backend status_reason is no longer capped at 200 chars (see issue #2953),
+  // so a long multi-paragraph diagnosis can now reach this banner. It must
+  // clamp visually (not push the layout out) while still exposing the full
+  // text via the native title tooltip — never silently drop any of it.
+  it('clamps a long status reason but keeps the full text via title', () => {
+    const longReason = 'Root cause investigation.'.repeat(30)
+    const { container } = render(TaskStatusBanner, {
+      props: { task: task({ status: 'human-required', statusReason: longReason }) },
+    })
+    const reasonEl = screen.getByTitle(longReason)
+    expect(reasonEl.textContent).toBe(longReason)
+    expect(reasonEl.className).toMatch(/line-clamp-3/)
+    expect(container.querySelector('[role="status"]')).not.toBeNull()
+  })
 })

@@ -3933,6 +3933,141 @@ steps:
 	}
 }
 
+func TestResumeStalled_DoesNotRerouteConditionWhileDispatchClaimed(t *testing.T) {
+	store := newInlineTestStore(t, "condition-reroute-claimed", `
+id: condition-reroute-claimed
+steps:
+  - id: maybe_critique
+    type: condition
+    next:
+      - when:
+          field: task.tags
+          operator: not_contains
+          value: nocritic
+        goto: critique_plan
+      - goto: review_plan
+  - id: critique_plan
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      prompt: critique
+    next:
+      - goto: review_plan
+  - id: review_plan
+    type: wait_human
+    config:
+      status: plan-review
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	now := time.Now().UTC()
+	tasks.Put(TaskInfo{
+		ID: "t1", Status: "planning", Tags: []string{"nocritic"},
+		Workflow: &Execution{
+			WorkflowID: "condition-reroute-claimed", CurrentStep: "critique_plan", State: ExecWaiting,
+			StepHistory: []StepRecord{{StepID: "maybe_critique", Status: "completed", StartedAt: now, EndedAt: now}},
+			AgentRoutes: map[string]string{"agent-1": "critique_plan"},
+		},
+	})
+
+	// This models recovery's lost-callback bridge: the manager no longer sees
+	// the agent, but HandleAgentComplete has already claimed the task while it
+	// advances the persisted route.
+	engine.mu.Lock()
+	engine.dispatching["t1"] = struct{}{}
+	engine.mu.Unlock()
+	defer engine.clearResumeDispatching("t1")
+
+	engine.ResumeStalled()
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Workflow.CurrentStep != "critique_plan" {
+		t.Fatalf("CurrentStep = %q, want critique_plan while completion owns dispatch", ti.Workflow.CurrentStep)
+	}
+	if _, ok := ti.Workflow.AgentRoute("agent-1"); !ok {
+		t.Fatal("condition reroute cleared the completing agent route")
+	}
+	if agents.CallCount() != 0 {
+		t.Fatalf("agent starts = %d, want 0", agents.CallCount())
+	}
+}
+
+func TestResumeStalled_ConditionRerouteDoesNotOverwriteFreshCompletion(t *testing.T) {
+	store := newInlineTestStore(t, "condition-reroute-fresh", `
+id: condition-reroute-fresh
+steps:
+  - id: maybe_critique
+    type: condition
+    next:
+      - when:
+          field: task.tags
+          operator: not_contains
+          value: nocritic
+        goto: critique_plan
+      - goto: review_plan
+  - id: critique_plan
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      prompt: critique
+    next:
+      - goto: review_plan
+  - id: review_plan
+    type: wait_human
+    config:
+      status: plan-review
+`)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	now := time.Now().UTC()
+	stale := TaskInfo{
+		ID: "t1", Status: "planning", Tags: []string{"nocritic"},
+		Workflow: &Execution{
+			WorkflowID: "condition-reroute-fresh", CurrentStep: "critique_plan", State: ExecWaiting,
+			StepHistory: []StepRecord{{StepID: "maybe_critique", Status: "completed", StartedAt: now, EndedAt: now}},
+			AgentRoutes: map[string]string{"agent-1": "critique_plan"},
+		},
+	}
+	tasks.Put(stale)
+
+	// A recovered completion advances after ResumeStalled read stale but before
+	// its reroute claim. The reroute must re-read rather than write stale back.
+	completed := stale
+	completed.Workflow = stale.Workflow.Clone()
+	if completed.Workflow == nil {
+		t.Fatal("stale workflow clone is nil")
+	}
+	completed.Workflow.CurrentStep = "review_plan"
+	completed.Workflow.ClearAgentRoute("agent-1")
+	tasks.Put(completed)
+
+	def, err := store.Get("condition-reroute-fresh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := def.StepByID("critique_plan")
+	if step == nil {
+		t.Fatal("critique_plan step missing")
+	}
+	if !engine.resumeStalledRerouteStaleConditionBranch(&stale, &def, step) {
+		t.Fatal("stale reroute was not consumed")
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow.CurrentStep != "review_plan" {
+		t.Fatalf("CurrentStep = %q, want completion's review_plan", got.Workflow.CurrentStep)
+	}
+}
+
 func TestResumeStalled_RunAgent(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -4442,6 +4577,31 @@ func TestResumeStalled_WatchdogRateLimitPoolBusyDoesNotBurnRetryBudget(t *testin
 	}
 	if got.Workflow.State == ExecFailed {
 		t.Fatal("pool-busy parks must not exhaust the watchdog retry budget")
+	}
+}
+
+func TestResumeStalled_WatchdogHangPoolBusyRetainsReaskNote(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetFailSpawn(ErrAgentPoolBusy)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{
+		ID: "t1", Status: "in-progress", StatusReason: "watchdog hang: no stream activity", AgentMode: "headless",
+		Workflow: &Execution{WorkflowID: "test-simple", CurrentStep: "implement", State: ExecWaiting, Variables: map[string]string{}, StartedAt: time.Now().UTC()},
+	})
+
+	engine.ResumeStalled()
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if note := got.Workflow.Variables[watchdogReaskNoteVar]; note == "" {
+		t.Fatal("pool-busy park cleared watchdog guidance before an agent started")
+	}
+	if retry := got.Workflow.Variables[watchdogHangRetryKey("implement")]; retry != "1" {
+		t.Fatalf("hang retry = %q, want 1", retry)
 	}
 }
 
@@ -10692,7 +10852,7 @@ func TestExecEvaluate_LastAgentFailedFlipsHumanRequired(t *testing.T) {
 	}
 }
 
-func TestExecEvaluate_LastAgentFailedTruncatesLongReason(t *testing.T) {
+func TestExecEvaluate_LastAgentFailedKeepsFullReason(t *testing.T) {
 	long := strings.Repeat("x", 500)
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
@@ -10707,11 +10867,11 @@ func TestExecEvaluate_LastAgentFailedTruncatesLongReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := tasks.Reason("t1")
-	if !strings.Contains(got, "(truncated)") {
-		t.Errorf("reason missing truncation marker: %q", got)
+	if strings.Contains(got, "(truncated)") {
+		t.Errorf("reason should not be truncated: %q", got)
 	}
-	if len(got) >= len(long) {
-		t.Errorf("reason not truncated: %d chars", len(got))
+	if got != long {
+		t.Errorf("reason = %d chars, want the full %d-char output preserved", len(got), len(long))
 	}
 }
 
