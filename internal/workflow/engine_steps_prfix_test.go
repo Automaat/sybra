@@ -117,6 +117,21 @@ func TestClassifyPRFixResult(t *testing.T) {
 			wantReason: "pr-fix agent requested human review: " + strings.Repeat("investigation detail. ", 20) +
 				"As instructed, I ran git rebase --abort. This task requires human review.",
 		},
+		{
+			// Regression: the free-text fallback used to read only the first
+			// non-empty line via firstNonEmptyLine, so a multi-line narrative
+			// with the actual root cause on a later line — and the trigger
+			// phrase only at the very end — silently dropped everything but
+			// line 1. The full multi-line narrative must survive.
+			name: "legacy free-text reason with root cause on a later line survives in full",
+			output: "I looked into this PR failure.\n" +
+				"The root cause is a sandbox limitation unrelated to this diff.\n" +
+				"This task requires human review.\n",
+			wantVerdict: PRFixHuman,
+			wantReason: "pr-fix agent requested human review: I looked into this PR failure.\n" +
+				"The root cause is a sandbox limitation unrelated to this diff.\n" +
+				"This task requires human review.",
+		},
 	}
 
 	for _, tc := range cases {

@@ -560,7 +560,7 @@ func classifyPRFixResult(output string) (verdict PRFixVerdict, reason string) {
 	}
 	for _, phrase := range humanPhrases {
 		if strings.Contains(lower, phrase) {
-			return PRFixHuman, "pr-fix agent requested human review: " + firstNonEmptyLine(output)
+			return PRFixHuman, "pr-fix agent requested human review: " + strings.TrimSpace(output)
 		}
 	}
 	return PRFixContinue, ""
@@ -594,14 +594,4 @@ func extractPRFixFailingTests(output string) []string {
 		}
 	}
 	return tests
-}
-
-func firstNonEmptyLine(s string) string {
-	for line := range strings.Lines(s) {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			return line
-		}
-	}
-	return ""
 }

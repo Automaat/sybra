@@ -1250,8 +1250,8 @@ func ownedByNpm(dir string) bool {
 // that passes on any attempt moves on. A non-nil err means the suite could not
 // even be prepared/run cleanly (ctx timeout/cancel or isolated-cache prep
 // failure) and is never retried — the budget is already spent; the caller
-// decides the policy. Output streams into a fixed-size tail buffer so a flood
-// of stdout/stderr cannot exhaust memory.
+// decides the policy. Output streams into a fixed-size head+tail buffer (see
+// boundedTail) so a flood of stdout/stderr cannot exhaust memory.
 func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, cmds []string) (failedCmd, output string, err error) {
 	tail := &boundedTail{max: verifyChecksMaxOutput}
 	cmdEnv, err := verifyCommandEnv(ctx, taskID, wtPath, cmds...)
@@ -1294,21 +1294,51 @@ func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, c
 	return "", tail.String(), nil
 }
 
-// boundedTail is a concurrency-safe io.Writer that retains only the last `max`
-// bytes written. os/exec writes stdout and stderr from separate goroutines when
-// they share a non-*os.File writer, so Write must be guarded.
+// boundedTail is a concurrency-safe io.Writer that retains only `max` bytes
+// total, so a flood of stdout/stderr cannot exhaust memory. os/exec writes
+// stdout and stderr from separate goroutines when they share a non-*os.File
+// writer, so Write must be guarded.
+//
+// It keeps the first half and the last half of the stream rather than a plain
+// tail: `go test ./internal/...` across ~80 packages reports the failing
+// package near where it fails, then keeps emitting `ok` lines for every
+// package that finishes afterward — a tail-only buffer reliably evicts the
+// one line (`--- FAIL: TestXxx`) a human needs to diagnose the run.
 type boundedTail struct {
-	mu  sync.Mutex
-	max int
-	buf []byte
+	mu         sync.Mutex
+	max        int
+	buf        []byte // accumulates here until total exceeds max
+	head       []byte // frozen first-half once truncation begins
+	tail       []byte // rolling last-half once truncation begins
+	total      int
+	truncating bool
 }
 
 func (b *boundedTail) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.buf = append(b.buf, p...)
-	if len(b.buf) > b.max {
-		b.buf = b.buf[len(b.buf)-b.max:]
+	b.total += len(p)
+	if !b.truncating {
+		b.buf = append(b.buf, p...)
+		if len(b.buf) <= b.max {
+			return len(p), nil
+		}
+		b.truncating = true
+		half := min(b.max/2, len(b.buf))
+		b.head = append([]byte(nil), b.buf[:half]...)
+		rest := b.buf[half:]
+		tailCap := b.max - len(b.head)
+		if len(rest) > tailCap {
+			rest = rest[len(rest)-tailCap:]
+		}
+		b.tail = append([]byte(nil), rest...)
+		b.buf = nil
+		return len(p), nil
+	}
+	tailCap := b.max - len(b.head)
+	b.tail = append(b.tail, p...)
+	if len(b.tail) > tailCap {
+		b.tail = b.tail[len(b.tail)-tailCap:]
 	}
 	return len(p), nil
 }
@@ -1316,7 +1346,11 @@ func (b *boundedTail) Write(p []byte) (int, error) {
 func (b *boundedTail) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return string(b.buf)
+	if !b.truncating {
+		return string(b.buf)
+	}
+	elided := b.total - len(b.head) - len(b.tail)
+	return string(b.head) + fmt.Sprintf("\n...(%d bytes elided)...\n", elided) + string(b.tail)
 }
 
 // tailString returns the last n bytes of s, prefixed with an elision marker
