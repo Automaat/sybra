@@ -140,8 +140,11 @@ func (lm *LifecycleManager) StartPollers(ctx context.Context, emit func(string, 
 }
 
 // appTokenRefreshInterval is how often the GitHub App installation token is
-// renewed. Tokens last ~1h; refreshing well inside that keeps gh authenticated.
-const appTokenRefreshInterval = 30 * time.Minute
+// renewed. It must be materially shorter than appTokenRenewBefore (5m): a
+// 30-minute ticker phase-locks hourly tokens to their expiry boundary, and an
+// equal cadence leaves no retry opportunity when the first early mint fails.
+// Two-minute ticks provide at least two attempts while the old token is valid.
+const appTokenRefreshInterval = 2 * time.Minute
 
 // appAuthMintTimeout bounds the synchronous startup mint attempt
 // (mintAppTokenBeforeRecovery) so a mint outage degrades to ambient gh
