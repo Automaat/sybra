@@ -115,7 +115,10 @@ const defaultStallBudgetHours = 1.0
 // RequiresLLM is false for the same reason: acting on this must not depend on
 // the dispatch path that is the thing suspected of being broken.
 func detectBoardStalled(in DetectInput, counts Counts) []Anomaly {
-	if counts.Todo == 0 || counts.InProgress > 0 || len(in.LiveAgents) > 0 {
+	// Running, not merely present: LiveAgents carries entries with
+	// Running=false, and counting those would suppress the anomaly while
+	// nothing is actually executing — the exact condition this detects.
+	if counts.Todo == 0 || counts.InProgress > 0 || anyAgentRunning(in.LiveAgents) {
 		return nil
 	}
 	budget := stallBudgetHours(in.Cfg)
@@ -149,6 +152,15 @@ func detectBoardStalled(in DetectInput, counts Counts) []Anomaly {
 		Evidence:    ev,
 		DetectedAt:  in.Now,
 	}}
+}
+
+func anyAgentRunning(agents []liveAgent) bool {
+	for i := range agents {
+		if agents[i].Running {
+			return true
+		}
+	}
+	return false
 }
 
 // stallBudgetHours reuses the todo bottleneck budget when an operator has set

@@ -1255,8 +1255,14 @@ func TestDetect_BoardStalled(t *testing.T) {
 		{
 			name:  "an agent is live even though no task reads in-progress",
 			tasks: []task.Task{{ID: "a", Status: task.StatusTodo, StatusChangedAt: stale}},
-			live:  []liveAgent{{}},
+			live:  []liveAgent{{TaskID: "b", Running: true}},
 			want:  false,
+		},
+		{
+			name:  "a known-but-stopped agent must not mask the stall",
+			tasks: []task.Task{{ID: "a", Status: task.StatusTodo, StatusChangedAt: stale}},
+			live:  []liveAgent{{TaskID: "b", Running: false}},
+			want:  true,
 		},
 		{
 			name:  "queue is fresh",

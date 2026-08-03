@@ -47,6 +47,7 @@ func AllAnomalyKinds() []AnomalyKind {
 		KindLostAgent,
 		KindFailureSpike,
 		KindBottleneck,
+		KindBoardStalled,
 		KindClusterDrift,
 	}
 }
