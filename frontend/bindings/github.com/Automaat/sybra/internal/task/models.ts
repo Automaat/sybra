@@ -626,6 +626,15 @@ export class Task {
     "filePath": string;
 
     /**
+     * Degraded marks a synthetic, read-only board entry created for a task file
+     * that could not be parsed. It is never persisted and must never be
+     * dispatched or mirrored; fixing the source file makes the entry disappear
+     * on the next List.
+     */
+    "degraded"?: boolean;
+    "parseError"?: string;
+
+    /**
      * TamperFlagged reports whether this task is parked at human-required
      * pending a tamper bless. Derived from Status/StatusReason (never
      * persisted) so the frontend doesn't need to duplicate
