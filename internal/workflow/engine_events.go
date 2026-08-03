@@ -813,6 +813,13 @@ func (e *Engine) clearResumeDispatching(taskID string) {
 	e.mu.Unlock()
 }
 
+func (e *Engine) resumeDispatching(taskID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, ok := e.dispatching[taskID]
+	return ok
+}
+
 // RescheduleCheckpointedAgent immediately re-drives the current run_agent step
 // after a durable turn-ceiling checkpoint handoff, bounded by a persisted
 // per-step checkpoint counter.
@@ -1393,8 +1400,42 @@ func (e *Engine) resumeStalledRerouteStaleConditionBranch(t *TaskInfo, def *Defi
 	if nextID == step.ID {
 		return false
 	}
+	// The reroute replaces the current step and re-executes the condition, so it
+	// must participate in the same claim protocol as every other ResumeStalled
+	// dispatch. In particular, recovery can be routing a completion after the
+	// manager has stopped reporting its agent as running. Without this claim,
+	// the reroute can erase that agent's route before its completion advances it.
+	reason, acquired := e.tryMarkResumeDispatching(t.ID, step)
+	if !acquired {
+		e.resumeSkip.Log(e.logger, "workflow.resume-stalled.condition-reroute.skip", t.ID,
+			reason+"|"+step.ID,
+			"task_id", t.ID, "reason", reason, "step", step.ID)
+		return true
+	}
+	defer e.clearResumeDispatching(t.ID)
+	fresh, abort := e.resolveFreshTaskForResume(t, step, def)
+	if abort {
+		return true
+	}
 
-	wf := t.Workflow.Clone()
+	// The completion which previously owned this step may have advanced it
+	// between the first condition evaluation and our claim. Recompute from the
+	// fresh execution snapshot so a stale reroute cannot overwrite that advance.
+	condition = latestConditionPredecessor(def, fresh.Workflow, step.ID)
+	if condition == nil {
+		return false
+	}
+	nextID, err = ResolveTransition(condition.Next, e.transitionFields(fresh, fresh.Workflow))
+	if err != nil {
+		e.logger.Warn("workflow.resume-stalled.condition-reroute.transition",
+			"task_id", fresh.ID, "condition", condition.ID, "step", step.ID, "err", err)
+		return false
+	}
+	if nextID == step.ID {
+		return false
+	}
+
+	wf := fresh.Workflow.Clone()
 	if wf == nil {
 		e.logger.Warn("workflow.resume-stalled.condition-reroute.clone",
 			"task_id", t.ID, "condition", condition.ID, "step", step.ID)
@@ -1405,20 +1446,20 @@ func (e *Engine) resumeStalledRerouteStaleConditionBranch(t *TaskInfo, def *Defi
 	wf.CompletedAt = nil
 	wf.ClearStepRecords(condition.ID)
 	wf.ClearStepRecords(step.ID)
-	if err := e.tasks.SetWorkflow(t.ID, wf); err != nil {
+	if err := e.tasks.SetWorkflow(fresh.ID, wf); err != nil {
 		e.logger.Warn("workflow.resume-stalled.condition-reroute.persist",
-			"task_id", t.ID, "condition", condition.ID, "step", step.ID, "err", err)
+			"task_id", fresh.ID, "condition", condition.ID, "step", step.ID, "err", err)
 		return true
 	}
 
 	e.logger.Info("workflow.resume-stalled.condition-reroute",
-		"task_id", t.ID, "condition", condition.ID, "from", step.ID, "to", nextID)
-	comp, rErr := e.executeSteps(t.ID, def, condition, wf)
+		"task_id", fresh.ID, "condition", condition.ID, "from", step.ID, "to", nextID)
+	comp, rErr := e.executeSteps(fresh.ID, def, condition, wf)
 	rErr = normalizeExecuteStepsErr(rErr)
 	e.fireComplete(comp)
-	e.resumeError.Log(e.logger, "workflow.resume-stalled.condition-reroute.exec", t.ID, rErr, "task_id", t.ID)
+	e.resumeError.Log(e.logger, "workflow.resume-stalled.condition-reroute.exec", fresh.ID, rErr, "task_id", fresh.ID)
 	if rErr != nil {
-		e.surfaceStartFailure(t.ID, t.Status, rErr, wf, condition.ID)
+		e.surfaceStartFailure(fresh.ID, fresh.Status, rErr, wf, condition.ID)
 	}
 	return true
 }
