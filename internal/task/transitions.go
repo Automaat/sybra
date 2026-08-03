@@ -77,8 +77,14 @@ var allowedTransitions = map[Status]map[Status]bool{
 		StatusCancelled:     true,
 	},
 	StatusReadyReview: {
-		StatusInReview:      true,
-		StatusTesting:       true,
+		StatusInReview: true,
+		StatusTesting:  true,
+		// Recovery needs a route back to in-progress to run its fix agent.
+		// Without it a branch that diverges while the task sits here cannot be
+		// auto-resolved: branch-conflict-fix dispatches, the transition is
+		// rejected, and the task escalates to a human with a message about
+		// git rather than about the state machine that refused it.
+		StatusInProgress:    true,
 		StatusHumanRequired: true,
 		StatusBlocked:       true,
 		StatusDone:          true,
@@ -103,7 +109,10 @@ var allowedTransitions = map[Status]map[Status]bool{
 		StatusCancelled:     true,
 	},
 	StatusReadyPR: {
-		StatusInReview:      true,
+		StatusInReview: true,
+		// Same recovery route as ready-review: a divergence discovered at the
+		// PR-opening stage must be fixable by an agent rather than parked.
+		StatusInProgress:    true,
 		StatusHumanRequired: true,
 		StatusBlocked:       true,
 		StatusDone:          true,

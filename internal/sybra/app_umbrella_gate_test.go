@@ -1928,3 +1928,79 @@ func TestUmbrellaGroundingWired(t *testing.T) {
 		})
 	}
 }
+
+// Once a child has run an implementation agent the gate has handed it off:
+// Awaiting excludes it via hasStartedImplementation, so the gate will never
+// release it again. The tag it left behind still makes skipTaskCreatedWorkflow
+// refuse the child, and ResumeStalled skips a terminal workflow — so nothing
+// owns the task and it sits in todo forever.
+func TestReleaseUnblockedChildren_ClearsStaleGateTagAfterHandoff(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/300"
+	mkTracker(t, m, umb, 1)
+
+	child := mkChild(t, m, "handed-off", "Automaat/sybra#31", umb, nil, task.StatusTodo)
+	if err := m.AddRun(child.ID, task.AgentRun{
+		AgentID: "a1", Role: string(agent.RoleImplementation), Mode: "headless", State: "stopped",
+	}); err != nil {
+		t.Fatalf("record implementation run: %v", err)
+	}
+
+	app.clearGateTagOnHandedOffChildren()
+
+	got, err := m.Get(child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(got.Tags, umbrella.GatedTag) {
+		t.Fatal("child that already ran implementation still carries the gate tag; the normal dispatcher will keep refusing it")
+	}
+}
+
+// A child the gate is still legitimately holding must keep its tag — the
+// reconciliation must not release work whose dependencies are unmet.
+func TestReleaseUnblockedChildren_KeepsGateTagBeforeHandoff(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/301"
+	mkTracker(t, m, umb, 1)
+
+	blocked := mkChild(t, m, "still-gated", "Automaat/sybra#32", umb,
+		[]string{"https://github.com/Automaat/sybra/issues/999"}, task.StatusTodo)
+
+	app.releaseUnblockedChildren(context.Background())
+	app.clearGateTagOnHandedOffChildren()
+
+	got, err := m.Get(blocked.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Tags, umbrella.GatedTag) {
+		t.Fatal("child with an unmet dependency lost its gate tag; it would dispatch before its prerequisite")
+	}
+}
+
+// A child parked `blocked` with implementation history was stopped on purpose
+// (watchdog exhaustion, sybra#2538) and its tag marks it as not the gate's to
+// release. The stale-tag pass must leave it alone.
+func TestClearGateTag_LeavesBlockedChildAlone(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/302"
+	mkTracker(t, m, umb, 5)
+
+	child := mkChild(t, m, "watchdog-blocked", "Automaat/sybra#33", umb, nil, task.StatusBlocked)
+	if err := m.AddRun(child.ID, task.AgentRun{
+		AgentID: "a1", Role: string(agent.RoleImplementation),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	app.clearGateTagOnHandedOffChildren()
+
+	got := mustTask(t, m, child.ID)
+	if !slices.Contains(got.Tags, umbrella.GatedTag) {
+		t.Fatal("blocked child lost its gate tag; work the workflow stopped on purpose would be re-released")
+	}
+}

@@ -654,6 +654,52 @@ func isWorkflowOwnedBlock(t *task.Task) bool {
 
 // isRunningChild reports whether a child status occupies a parallelism slot —
 // i.e. it has been released and is somewhere in the pipeline but not finished.
+// clearGateTagOnHandedOffChildren strips the gating tag from a child that has
+// already run an implementation agent.
+//
+// Once implementation starts, the umbrella gate has handed the child to its
+// own workflow: Awaiting excludes it via hasStartedImplementation, so the gate
+// will never release it again. But the tag it left behind still makes
+// skipTaskCreatedWorkflow refuse the child, and ResumeStalled skips a terminal
+// workflow — so nothing owns the task and it sits in todo forever. Measured on
+// the server: six children stranded this way since 2026-08-01, none of them
+// waiting on an unmet dependency.
+//
+// Clearing the tag is the narrow fix: it hands the child back to the normal
+// dispatcher at exactly the point the gate stopped owning it, and is a no-op
+// for children the gate is still legitimately holding or the workflow parked.
+func (a *App) clearGateTagOnHandedOffChildren() {
+	if a.tasks == nil {
+		return
+	}
+	tasks, err := a.tasks.List()
+	if err != nil {
+		return
+	}
+	for i := range tasks {
+		t := &tasks[i]
+		if t.UmbrellaIssue == "" || !slices.Contains(t.Tags, umbrellaGatedTag) {
+			continue
+		}
+		// todo only. A child parked `blocked` with implementation history was
+		// put there deliberately by the workflow (watchdog exhaustion,
+		// sybra#2538) and its tag is what marks it as not the gate's to
+		// release — clearing it there would re-release work that was stopped
+		// on purpose. A gated child sitting in todo has no such owner.
+		if t.Status != task.StatusTodo || !hasStartedImplementation(t) {
+			continue
+		}
+		newTags := slices.DeleteFunc(slices.Clone(t.Tags), func(s string) bool {
+			return s == umbrellaGatedTag
+		})
+		if _, err := a.tasks.Update(t.ID, task.Update{Tags: &newTags}); err != nil {
+			a.logger.Warn("umbrella.gate.stale-tag-clear", "task_id", t.ID, "err", err)
+			continue
+		}
+		a.logger.Info("umbrella.gate.stale-tag-cleared", "task_id", t.ID, "umbrella", t.UmbrellaIssue)
+	}
+}
+
 func isRunningChild(s task.Status) bool {
 	switch s {
 	case task.StatusBlocked, task.StatusNew, task.StatusHumanRequired, task.StatusDone, task.StatusCancelled:

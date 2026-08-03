@@ -203,6 +203,10 @@ func (a *App) queueDrainPass(ctx context.Context) {
 		return
 	}
 	a.reconcileRunnableBoardTasks(ctx)
+	// A repair pass, not a dispatch decision, so it rides the slower recovery
+	// tick rather than the fast one — it costs a full task list, which has no
+	// place in the hot path.
+	a.clearGateTagOnHandedOffChildren()
 	if a.workflowEngine != nil {
 		var workflowRecovery workflowRecoveryLoop = a.workflowEngine
 		workflowRecovery.ReplayPersistedEffects()
