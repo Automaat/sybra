@@ -1401,8 +1401,9 @@ func (a *Agent) lastHeadlessResult() (found, isError bool) {
 }
 
 func lastHeadlessResultEvent(events []StreamEvent) (found, isError bool) {
-	for _, ev := range slices.Backward(events) {
-		if isPostResultBookkeepingEvent(ev) {
+	for i := range slices.Backward(events) {
+		ev := &events[i]
+		if isPostResultBookkeepingEvent(*ev) {
 			continue
 		}
 		if ev.Type != "result" {
