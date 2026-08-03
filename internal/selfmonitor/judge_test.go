@@ -4,18 +4,18 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/Automaat/sybra/internal/health"
 	"github.com/Automaat/sybra/internal/task"
 )
 
 func TestJudgeJobSpecBoundsEachProviderAttempt(t *testing.T) {
-	spec := judgeJobSpec("claude-haiku-4-5-20251001")
-	if got, want := spec.AttemptTimeout, 2*time.Minute; got != want {
+	const model = "claude-haiku-4-5-20251001"
+	spec := judgeJobSpec(model)
+	if got, want := spec.AttemptTimeout, judgeAttemptTimeout; got != want {
 		t.Errorf("AttemptTimeout = %s, want %s", got, want)
 	}
-	if got, want := spec.Tier, selfMonitorTier("claude-haiku-4-5-20251001"); got != want {
+	if got, want := spec.Tier, selfMonitorTier(model); got != want {
 		t.Errorf("Tier = %v, want %v", got, want)
 	}
 }
