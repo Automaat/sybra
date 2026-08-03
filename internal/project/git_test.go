@@ -283,7 +283,7 @@ func TestFetchRemoteBranchTimesOutNetworkGit(t *testing.T) {
 
 	bin := t.TempDir()
 	git := filepath.Join(bin, "git")
-	if err := os.WriteFile(git, []byte("#!/bin/sh\nexec sleep 1\n"), 0o755); err != nil {
+	if err := os.WriteFile(git, []byte("#!/bin/sh\nexec sleep 10\n"), 0o755); err != nil {
 		t.Fatalf("write fake git: %v", err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -293,10 +293,19 @@ func TestFetchRemoteBranchTimesOutNetworkGit(t *testing.T) {
 	if err == nil {
 		t.Fatal("FetchRemoteBranch succeeded with a hung git process")
 	}
-	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+	if elapsed := time.Since(started); elapsed > hungGitReturnCeiling {
 		t.Fatalf("FetchRemoteBranch returned after %s, want bounded network timeout", elapsed)
 	}
 }
+
+// hungGitReturnCeiling bounds how long a remote git call may take to return
+// once its network timeout has fired. It is deliberately far below the fake
+// git's sleep and far above the timeout itself: the assertion's power comes
+// from that gap (5s ceiling vs a 10s sleep), not from a tight wall-clock bound.
+// The previous 500ms ceiling against a 1s sleep left too little room: returning
+// under suite load took seconds, so a correctly-bounded timeout still failed
+// the test (#2896).
+const hungGitReturnCeiling = 5 * time.Second
 
 func TestRemoteGitOperationsTimeOut(t *testing.T) {
 	oldTimeout := networkGitTimeout
@@ -313,7 +322,7 @@ func TestRemoteGitOperationsTimeOut(t *testing.T) {
 	// pushLocked resolves the shared git dir before it starts the remote
 	// transport. Preserve only that local rev-parse call, then hang every
 	// remote operation the test exercises.
-	fakeGit := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = rev-parse ]; then exec %q \"$@\"; fi\nexec sleep 1\n", realGit)
+	fakeGit := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = rev-parse ]; then exec %q \"$@\"; fi\nexec sleep 10\n", realGit)
 	if err := os.WriteFile(git, []byte(fakeGit), 0o755); err != nil {
 		t.Fatalf("write fake git: %v", err)
 	}
@@ -349,7 +358,7 @@ func TestRemoteGitOperationsTimeOut(t *testing.T) {
 			if err := tt.run(); err == nil {
 				t.Fatal("remote git operation succeeded with a hung git process")
 			}
-			if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+			if elapsed := time.Since(started); elapsed > hungGitReturnCeiling {
 				t.Fatalf("remote git operation returned after %s, want bounded network timeout", elapsed)
 			}
 		})
@@ -363,7 +372,7 @@ func TestExecGitPushProbeTimesOut(t *testing.T) {
 
 	bin := t.TempDir()
 	git := filepath.Join(bin, "git")
-	if err := os.WriteFile(git, []byte("#!/bin/sh\nexec sleep 1\n"), 0o755); err != nil {
+	if err := os.WriteFile(git, []byte("#!/bin/sh\nexec sleep 10\n"), 0o755); err != nil {
 		t.Fatalf("write fake git: %v", err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -373,7 +382,7 @@ func TestExecGitPushProbeTimesOut(t *testing.T) {
 	if err == nil {
 		t.Fatal("push credential probe succeeded with a hung git process")
 	}
-	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+	if elapsed := time.Since(started); elapsed > hungGitReturnCeiling {
 		t.Fatalf("push credential probe returned after %s, want bounded network timeout", elapsed)
 	}
 }
