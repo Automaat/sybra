@@ -195,21 +195,50 @@ func TestSandboxProfile_ReferencesAppSupport(t *testing.T) {
 // (/var/folders/.../T) while /tmp resolves to /private/tmp — so every such
 // write failed EPERM and the agent retried an impossible mkdir instead of
 // progressing.
-func TestClaudeScratchRoot_IsUIDScopedNotAllOfTmp(t *testing.T) {
+func TestClaudeScratchRoot_IsExactlyTheTmpScratchpad(t *testing.T) {
 	got := claudeScratchRoot()
 	if got == "" {
 		t.Fatal("no scratchpad root resolved; Claude Code writes would be denied")
 	}
+	// Pinned to the exact path, not merely "contains claude-<uid>": a
+	// uid-scoped path under $TMPDIR would satisfy a looser check while
+	// leaving the real /tmp scratchpad denied, which is the bug this fixes.
+	want := filepath.Join("/tmp", fmt.Sprintf("claude-%d", os.Getuid()))
+	wantResolved := filepath.Join("/private/tmp", fmt.Sprintf("claude-%d", os.Getuid()))
+	if got != want && got != wantResolved {
+		t.Fatalf("scratchpad root = %q, want %q (or its resolved form %q)", got, want, wantResolved)
+	}
 	// Granting /tmp wholesale would hand agents a world-writable directory
-	// shared with every process on the host — the blast radius this sandbox
-	// exists to shrink.
+	// shared with every process on the host.
 	for _, tooWide := range []string{"/tmp", "/private/tmp", "/private/var/tmp"} {
 		if got == tooWide {
-			t.Fatalf("scratchpad root is %q, which grants all of tmp rather than this uid's scratchpad", got)
+			t.Fatalf("scratchpad root is %q, which grants all of tmp", got)
 		}
 	}
-	if !strings.Contains(got, fmt.Sprintf("claude-%d", os.Getuid())) {
-		t.Fatalf("scratchpad root %q is not scoped to this uid", got)
+}
+
+// /tmp is world-writable, so any local process can pre-create the scratchpad
+// path as a symlink. Following it would grant a writable root outside /tmp and
+// defeat the boundary the sandbox exists to enforce.
+func TestResolveScratchRoot_RefusesSymlink(t *testing.T) {
+	base := t.TempDir()
+	link := filepath.Join(base, "scratch-link")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if got := resolveScratchRoot(link); got != "" {
+		t.Fatalf("resolveScratchRoot() = %q via a symlink; must refuse rather than grant outside the intended root", got)
+	}
+}
+
+func TestResolveScratchRoot_AcceptsRealDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "scratch")
+
+	got := resolveScratchRoot(root)
+
+	if got != root && got != filepath.Join("/private", root) {
+		t.Fatalf("resolveScratchRoot() = %q, want the created directory %q", got, root)
 	}
 }
 
