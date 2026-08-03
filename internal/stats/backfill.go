@@ -34,14 +34,13 @@ func (s *Store) Backfill(auditDir string) error {
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	unlock, err := fsutil.LockFile(s.path)
+	unlock, err := fsutil.LockFileWithin(s.path, storeLockTimeout)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = unlock() }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if err := s.reloadLocked(); err != nil {
 		return err

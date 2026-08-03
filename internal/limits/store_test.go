@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 func writeLimitsFile(t *testing.T, path string, p persisted) {
@@ -87,6 +89,51 @@ func TestStore_RecordUsageFlushesPrunedEvents(t *testing.T) {
 	}
 	if len(p.Events) != 1 || p.Events[0].ID != "new" {
 		t.Fatalf("expected only the fresh event on disk, got %+v", p.Events)
+	}
+}
+
+func TestStore_LockContentionDoesNotBlockProviderAvailability(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "limits.json")
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := fsutil.LockFile(path)
+	if err != nil {
+		t.Fatalf("LockFile: %v", err)
+	}
+	t.Cleanup(func() {
+		if unlock != nil {
+			_ = unlock()
+		}
+	})
+
+	recorded := make(chan error, 1)
+	go func() {
+		recorded <- s.RecordUsage(UsageEvent{ID: "blocked", Provider: ProviderClaude, Timestamp: time.Now()})
+	}()
+	select {
+	case err := <-recorded:
+		t.Fatalf("RecordUsage returned while lock was held: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	available := make(chan struct{})
+	go func() {
+		_, _ = s.ProviderAvailable(ProviderClaude, Policy{Enabled: true})
+		close(available)
+	}()
+	select {
+	case <-available:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("ProviderAvailable blocked behind a contended file lock")
+	}
+	if err := unlock(); err != nil {
+		t.Fatalf("unlock: %v", err)
+	}
+	unlock = nil
+	if err := <-recorded; err != nil {
+		t.Fatalf("RecordUsage after lock release: %v", err)
 	}
 }
 
