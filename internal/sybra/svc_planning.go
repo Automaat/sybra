@@ -107,7 +107,7 @@ func recoverCompletedPlanReview(t workflow.TaskInfo) (*workflow.Execution, bool,
 		return nil, false, nil
 	}
 	if problems := completedPlanReviewRecoveryProblems(t); len(problems) > 0 {
-		return nil, false, fmt.Errorf("cannot recover plan review workflow for task %s: %s", t.ID, strings.Join(problems, "; "))
+		return nil, false, conflictError(fmt.Sprintf("cannot recover plan review workflow for task %s: %s", t.ID, strings.Join(problems, "; ")))
 	}
 
 	wf := *t.Workflow

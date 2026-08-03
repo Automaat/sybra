@@ -116,6 +116,24 @@ func TestBeginDrainCancelsSchedulerOnly(t *testing.T) {
 	}
 }
 
+func TestBeginDrainRejectsLateTrackedBackgroundWork(t *testing.T) {
+	a := &App{}
+	a.initLifecycle(context.Background())
+	if !a.BeginDrain() {
+		t.Fatal("BeginDrain = false, want true")
+	}
+
+	ran := make(chan struct{}, 1)
+	if a.goWhileRunning(func() { ran <- struct{}{} }) {
+		t.Fatal("goWhileRunning admitted work after drain")
+	}
+	select {
+	case <-ran:
+		t.Fatal("late background work ran after drain")
+	default:
+	}
+}
+
 func TestBeginShutdownCancelsAcceptedWork(t *testing.T) {
 	a := &App{logger: discardLogger()}
 	a.initLifecycle(context.Background())

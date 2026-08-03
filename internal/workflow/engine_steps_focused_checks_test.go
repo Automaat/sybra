@@ -130,7 +130,14 @@ func TestExecFocusedChecks_PassIsClean(t *testing.T) {
 
 func TestExecFocusedChecks_ScaledTimeoutAbsorbsHostOversubscription(t *testing.T) {
 	orig := workflowCheckLoadPerCPU
-	workflowCheckLoadPerCPU = func() (float64, bool) { return 3.0, true }
+	// Stubbed at the scale ceiling, not just above 1: the assertion needs the
+	// scaled budget to clear `sleep 0.2` plus real process-spawn cost on a
+	// machine already running the rest of the suite. At load 3 the budget was
+	// 300ms against a 200ms sleep, and that 100ms margin is what made this
+	// flake under `go test ./...` while passing in isolation. At the ceiling
+	// the budget is 800ms, while the unscaled 100ms still fails without
+	// scaling — so the test proves the same thing with 4x the headroom.
+	workflowCheckLoadPerCPU = func() (float64, bool) { return verifyTimeoutScaleCeilingLoad, true }
 	t.Cleanup(func() { workflowCheckLoadPerCPU = orig })
 
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -315,6 +322,9 @@ func TestExecFocusedChecks_FailureReasksImplement(t *testing.T) {
 	if wf.Variables["step.focused_checks.auto_fix"] != "1" {
 		t.Fatalf("auto_fix counter = %q, want 1", wf.Variables["step.focused_checks.auto_fix"])
 	}
+	if got := wf.Variables[verifyRetryModelVar]; got != "expensive" {
+		t.Fatalf("%s = %q, want expensive", verifyRetryModelVar, got)
+	}
 	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "in-progress" {
 		t.Fatalf("status = %q, want in-progress", ti.Status)
 	}
@@ -337,7 +347,7 @@ func TestExecFocusedChecks_FailureReasksImplement(t *testing.T) {
 	}
 }
 
-func TestExecFocusedChecks_FailureReasksPastOldCap(t *testing.T) {
+func TestExecFocusedChecks_FailureReasksBelowCeiling(t *testing.T) {
 	t.Parallel()
 
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -352,10 +362,10 @@ func TestExecFocusedChecks_FailureReasksPastOldCap(t *testing.T) {
 	}}, nil)
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	// Past the old cap of 2, a code-fixable focused-check failure keeps being
-	// re-asked; it escalates only at verifyChecksAutoFixCeiling.
+	// A code-fixable focused-check failure below the generic ceiling keeps
+	// being re-asked.
 	wf := implementedExec()
-	wf.Variables["step.focused_checks.auto_fix"] = "9"
+	wf.Variables["step.focused_checks.auto_fix"] = "2"
 	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
 	if !errors.Is(err, errStepParked) {
 		t.Fatalf("err = %v, want errStepParked (keep re-asking, never escalate)", err)
@@ -366,8 +376,8 @@ func TestExecFocusedChecks_FailureReasksPastOldCap(t *testing.T) {
 	if wf.CurrentStep != verifyChecksImplStepID || wf.State != ExecWaiting {
 		t.Fatalf("workflow after rewind = %+v, want implement/ExecWaiting", wf)
 	}
-	if got := wf.Variables["step.focused_checks.auto_fix"]; got != "10" {
-		t.Fatalf("auto_fix counter = %q, want 10", got)
+	if got := wf.Variables["step.focused_checks.auto_fix"]; got != "3" {
+		t.Fatalf("auto_fix counter = %q, want 3", got)
 	}
 	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "in-progress" {
 		t.Fatalf("status = %q, want in-progress (never escalated to human)", ti.Status)

@@ -32,7 +32,10 @@ import (
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
-var errWorkflowEffectNoPersist = errors.New("workflow effect claim requires no persistence")
+var (
+	errWorkflowEffectNoPersist             = errors.New("workflow effect claim requires no persistence")
+	errWorkflowStatusReasonNoLongerMatches = errors.New("workflow status reason no longer matches")
+)
 
 // Compile-time interface checks.
 var (
@@ -190,6 +193,49 @@ func (a *taskAdapter) UpdateTaskStatus(id, status, reason string) error {
 		Extra:    extra,
 	})
 	return err
+}
+
+func (a *taskAdapter) ClearTaskStatusReasonIf(id, expectedStatus, expectedReason string) (bool, error) {
+	cleared := false
+	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+		if string(cur.Status) != expectedStatus || cur.StatusReason != expectedReason {
+			return task.Update{}, errWorkflowStatusReasonNoLongerMatches
+		}
+		empty := ""
+		cleared = true
+		return task.Update{StatusReason: &empty}, nil
+	})
+	if errors.Is(err, errWorkflowStatusReasonNoLongerMatches) {
+		return false, nil
+	}
+	return cleared, err
+}
+
+// ClearTaskStatusReasonAndSetWorkflowIf clears a status reason and persists the
+// workflow in a single store write, and only while the task still carries the
+// expected status/reason. It is the atomic form of SetWorkflow followed by
+// ClearTaskStatusReasonIf: on a mismatch nothing is written at all, so a
+// superseded retry cannot leave an incremented counter banked against a budget
+// it never spent, and no crash window can land the bumped counter without the
+// cleared marker (see #2749).
+func (a *taskAdapter) ClearTaskStatusReasonAndSetWorkflowIf(id, expectedStatus, expectedReason string, wf *workflow.Execution) (bool, error) {
+	cleared := false
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		if string(cur.Status) != expectedStatus || cur.StatusReason != expectedReason {
+			return task.TransitionIntent{}, errWorkflowStatusReasonNoLongerMatches
+		}
+		empty := ""
+		cleared = true
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.clear_reason_and_set_workflow",
+			Extra:    task.Update{StatusReason: &empty, Workflow: &wf},
+		}, nil
+	})
+	if errors.Is(err, errWorkflowStatusReasonNoLongerMatches) {
+		return false, nil
+	}
+	return cleared, err
 }
 
 func (a *taskAdapter) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {
@@ -591,6 +637,7 @@ func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 			TestFailureFingerprint: runs[i].TestFailureFingerprint,
 			HeadSHA:                runs[i].HeadSHA,
 			FinalCommitSource:      runs[i].FinalCommitSource,
+			SubagentCallCount:      runs[i].SubagentCallCount,
 		}
 	}
 	return out
@@ -1051,6 +1098,10 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// NOTES.md; verifier roles (review/test-runner/eval) share the same
 		// worktree but must stay independent of the implementer's scratchpad.
 		SeedWorkingMemory: r.AuthorsCode(),
+		// Verifier roles judge a worktree they must not alter. Enforced at the
+		// OS level rather than through the tool allowlist, which cannot express
+		// it — Bash reaches the same files (#2791).
+		ReadOnlyDir: r.JudgesWithoutWriting(),
 		// fork_subagent is a task-level opt-in, but must never reach a
 		// verifier role (review/test-runner/eval) — a forked subagent's own
 		// token spend would multiply on every independent check, and a

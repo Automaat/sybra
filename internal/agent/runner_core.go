@@ -55,6 +55,12 @@ type sandboxSpec struct {
 	gitShared   []string
 	gitReadonly []string
 	sandboxHome string
+	// stateDenied are paths re-locked read-only *after* the writable roots,
+	// so one run cannot change how later runs behave. claude's state dir has
+	// to stay writable — a real run writes plugins/, sessions/, session-env/,
+	// shell-snapshots/ and projects/ — so the durable-config files are
+	// carved back out rather than the directory being narrowed (#2779).
+	stateDenied []string
 	tmp         string
 	sharedCache string
 	// readOnlyDir, when non-empty, is re-locked read-only after every writable
@@ -91,6 +97,55 @@ type sandboxSpec struct {
 	copilotState  string
 	opencodeState string
 	toolCache     string
+	// appSupport is the macOS per-user application-data root
+	// (~/Library/Application Support). The codex CLI's in-process app-server
+	// creates its own directory there at startup, which needs write on the
+	// parent — granting only a codex-named subpath fails, measured. Without
+	// it codex dies immediately under enforce with "failed to initialize
+	// in-process app-server client: Operation not permitted". Empty off
+	// darwin, where no such path exists.
+	appSupport string
+	// claudeScratch is the Claude Code per-user scratchpad root
+	// (/tmp/claude-<uid>). Claude Code creates a per-session directory under
+	// it and writes working files there, so without the grant every such
+	// write fails EPERM and the agent retries an impossible operation
+	// instead of progressing. On Linux this sits inside os.TempDir() and is
+	// already covered; on darwin $TMPDIR is /var/folders/... while /tmp
+	// resolves to /private/tmp, so it needs its own root.
+	claudeScratch string
+
+	// readRoots, when non-empty, switches the wrapper from "everything is
+	// readable" to deny-by-default reads over exactly these roots (#2781).
+	// Empty means reads stay unrestricted, which is the posture every
+	// deployment has today. Every write root is also a read root; these are
+	// the additional read-only ones (system, toolchain, project clone).
+	//
+	// The measured trap is ~/.local/share/mise/installs: 8403 unique reads in
+	// the #2780 tracing pass, the largest non-worktree read root, because it
+	// holds the Go stdlib source every build compiles against. It appears on
+	// no command line, so it is invisible to log-derived allowlists.
+	readRoots []string
+}
+
+// writeRoots returns every path this spec grants write access to, so the read
+// allowlist can guarantee a writable root is never invisible. Empty entries
+// are dropped by the caller's dedupeRoots.
+func (s sandboxSpec) writeRoots() []string {
+	roots := []string{
+		s.worktree, s.sandboxHome, s.tmp, s.sharedCache,
+		s.claudeState, s.codexState, s.copilotState, s.opencodeState, s.toolCache,
+		s.appSupport, s.claudeScratch,
+		s.gitAdminDir, s.gitCommonDir, s.gitWorktrees, s.gitObjectDir,
+		s.gitOverlayObjectDir, s.gitOverlayRefDir, s.gitOverlayLogDir,
+		s.gitOverlayRemoteRefDir, s.gitOverlayRemoteLogDir,
+		s.gitOverlayTagRefDir, s.gitOverlayTagLogDir,
+		s.gitBranchRefDir, s.gitBranchLogDir, s.gitRemoteRefDir,
+		s.gitRemoteLogDir, s.gitTagRefDir, s.gitTagLogDir,
+	}
+	roots = append(roots, s.gitMetadata...)
+	roots = append(roots, s.gitShared...)
+	roots = append(roots, s.gitReadonly...)
+	return roots
 }
 
 // attemptEventsFrom slices the events produced since prevLen out of all,

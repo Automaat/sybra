@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/attribution"
 	"github.com/Automaat/sybra/internal/evidence"
@@ -302,7 +303,7 @@ func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution,
 	}
 
 	if strings.TrimSpace(string(output)) == "" {
-		return e.verifyCommitsHandleEmptyOutput(taskID, step, wfExec, wtPath), nil
+		return e.verifyCommitsHandleEmptyOutput(taskID, step, wfExec, t, wtPath)
 	}
 
 	if finalSource == "" {
@@ -431,15 +432,18 @@ func (e *Engine) verifyCommitsRecoveredRemoteAdopt(taskID, wtPath string, t Task
 	}
 }
 
-func (e *Engine) verifyCommitsHandleEmptyOutput(taskID string, step *Step, wfExec *Execution, wtPath string) StepOutput {
-	if wfExec.LastAgentStepFailed() {
+func (e *Engine) verifyCommitsHandleEmptyOutput(taskID string, step *Step, wfExec *Execution, t TaskInfo, wtPath string) (StepOutput, error) {
+	if wfExec != nil && wfExec.LastAgentStepFailed() {
 		reason := "implementation agent failed before committing — no commits on branch"
 		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
 			e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
 		}
 		e.logger.Warn("workflow.verify-commits.agent-failed", "task_id", taskID)
 		e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyCommits, evidence.ProofDeterministicCheck, 1, "", reason)
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "agent failed before commit: flipped to human-required"}
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "agent failed before commit: flipped to human-required"}, nil
+	}
+	if e.rearmNoCommitAuthorRun(taskID, wfExec, t) {
+		return StepOutput{}, errStepParked
 	}
 	// branchMergedIntoBase(e.ctx, wtPath) used to gate a "done" verdict here,
 	// on the theory that HEAD == base could mean the fix already landed via a
@@ -461,7 +465,69 @@ func (e *Engine) verifyCommitsHandleEmptyOutput(taskID string, step *Step, wfExe
 		e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
 	}
 	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyCommits, evidence.ProofDeterministicCheck, 1, "", reason)
-	return StepOutput{StepID: step.ID, Status: "completed", Output: "no commits: flipped to human-required"}
+	return StepOutput{StepID: step.ID, Status: "completed", Output: "no commits: flipped to human-required"}, nil
+}
+
+func (e *Engine) rearmNoCommitAuthorRun(taskID string, wfExec *Execution, t TaskInfo) bool {
+	if wfExec == nil {
+		return false
+	}
+	agentID := wfExec.LastAgentID()
+	run, ok := agentRunInfoByID(t.AgentRuns, agentID)
+	if !ok || !isCodeAuthorRun(run) {
+		return false
+	}
+	stepID := wfExec.LastAgentStepID()
+	if stepID == "" {
+		return false
+	}
+	const counterKey = "step.verify_commits.no_commit_retry"
+	if parseWorkflowInt(wfExec.Variables[counterKey]) >= 1 {
+		return false
+	}
+	wfExec.SetVar(counterKey, "1")
+	wfExec.SetVar(verifyReaskNoteVar, noCommitReaskNote(run))
+	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(verifyChecksAutoFixBackoff).Format(time.RFC3339))
+	wfExec.ClearStepRecords(stepID)
+	wfExec.CurrentStep = stepID
+	wfExec.State = ExecWaiting
+	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		e.logger.Error("workflow.verify-commits.no-commit-retry.workflow", "task_id", taskID, "err", err)
+		return false
+	}
+	reason := "retrying implementation once after no commits were produced"
+	if run.SubagentCallCount > 0 {
+		reason = "retrying implementation once after a background subagent handoff produced no commits"
+	}
+	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, reason); err != nil {
+		e.logger.Error("workflow.verify-commits.no-commit-retry.status", "task_id", taskID, "err", err)
+		return false
+	}
+	e.logger.Warn("workflow.verify-commits.no-commit-retry",
+		"task_id", taskID, "step", stepID, "agent_id", agentID, "subagent_call_count", run.SubagentCallCount)
+	return true
+}
+
+// noCommitReaskNote builds the retry-once prompt injection for a code-author
+// run that ended without commits. A run that fanned out to subagent calls
+// (SubagentCallCount > 0) gets a diagnosis specific to the background-handoff
+// failure mode instead of the generic no-commit note: the one-shot CLI
+// process tears down as soon as it emits its final response, which kills any
+// delegated subagent work still in flight — so a run that hands off to a
+// subagent and says it will "wait" for the result ends with nothing done, see
+// backgroundTaskGuardrail for the mid-run equivalent of this warning.
+func noCommitReaskNote(run AgentRunInfo) string {
+	if run.SubagentCallCount > 0 {
+		return "The previous implementation run delegated work to a background " +
+			"subagent and ended before that work produced any commits — a one-shot " +
+			"run's process exits as soon as it emits its final response, which kills " +
+			"any subagent still working in the background. Do not delegate the " +
+			"implementation to a background/forked subagent and end your turn waiting " +
+			"on it. Make the required code changes directly yourself, then commit and " +
+			"push them before finishing this run."
+	}
+	return "The previous implementation run completed without producing commits. " +
+		"Make the required code changes, then commit and push them before finishing."
 }
 
 func (e *Engine) recordFinalCommitState(taskID string, wfExec *Execution, wtPath, source string) {
@@ -510,6 +576,19 @@ func (e *Engine) adoptEquivalentRemoteCommit(taskID, wtPath string, t TaskInfo) 
 	}
 
 	if worktreeTree == remoteTree {
+		baseRef := resolveOriginBase(ctx, wtPath)
+		hasWork, err := remoteBranchCarriesWork(ctx, wtPath, baseRef, remoteRef, remoteTree)
+		if err != nil {
+			return "", false, err
+		}
+		if !hasWork {
+			// The remote branch is byte-identical to base with nothing ahead
+			// of it — adopting it would silently mark a no-op as done (an
+			// implementation agent that hands off to a background subagent
+			// and exits can leave a branch pushed but empty). Fall through
+			// to the no-commits handling instead.
+			return "", false, nil
+		}
 		if err := resetHardToRef(ctx, wtPath, remoteRef); err != nil {
 			return "", false, err
 		}
@@ -538,6 +617,24 @@ func (e *Engine) adoptEquivalentRemoteCommit(taskID, wtPath string, t TaskInfo) 
 	}
 	e.logger.Info("workflow.verify-commits.remote-adopted", "task_id", taskID, "branch", branch, "reason", "fast_forward")
 	return finalCommitSourceAgent, true, nil
+}
+
+// remoteBranchCarriesWork reports whether remoteRef represents real work
+// relative to baseRef: either its tree differs from base's, or it has
+// commits base does not (a merge/revert lineage that nets out to base's
+// tree but still carries history). Guards equivalent-tree remote adoption so
+// a branch pushed byte-identical to base with zero commits ahead is never
+// mistaken for completed work.
+func remoteBranchCarriesWork(ctx context.Context, wtPath, baseRef, remoteRef, remoteTree string) (bool, error) {
+	baseTree := revParseTree(ctx, wtPath, baseRef)
+	if baseTree == "" || baseTree != remoteTree {
+		return true, nil
+	}
+	ahead, err := gitCombinedOutput(ctx, wtPath, "log", baseRef+".."+remoteRef, "--oneline")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(ahead)) != "", nil
 }
 
 func (e *Engine) gitLogAheadOfBaseWithRetry(taskID, wtPath string, t TaskInfo) ([]byte, error) {

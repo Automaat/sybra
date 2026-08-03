@@ -1,6 +1,14 @@
 package workflow
 
-import "strconv"
+import (
+	"errors"
+	"strconv"
+)
+
+// errRetryArmingSuperseded tells boundedRetry that a concurrent state change
+// won after the counter was persisted but before the retry could dispatch.
+// It is a normal fence, not a persistence failure.
+var errRetryArmingSuperseded = errors.New("retry arming superseded by concurrent task update")
 
 // boundedRetryPolicy is the shape shared by every capped auto-retry the
 // engine runs against a stalled run_agent step: read a per-step attempt
@@ -53,6 +61,15 @@ type boundedRetryPolicy struct {
 	// bumped" and "status cleared" that a plain SetWorkflow+onArmed pair
 	// leaves open. Mutually exclusive with onArmed. Optional.
 	armedStatus func(e *Engine, t *TaskInfo, step *Step, attempt int) (status, reason string)
+	// armedClearIf, given, folds a compare-and-swap status-reason clear into
+	// the same store write as the incremented counter, for policies whose arm
+	// side effect is "drop the marker that armed me". It returns the status and
+	// reason the caller observed; the write lands only while the task still
+	// carries both. On a mismatch nothing is persisted — not even the counter —
+	// so a superseded arm cannot bank a retry against a budget it never spent,
+	// which the SetWorkflow-then-clear pair could. Mutually exclusive with
+	// onArmed and armedStatus. Optional.
+	armedClearIf func(e *Engine, t *TaskInfo, step *Step, attempt int) (expectedStatus, expectedReason string)
 	// onExhausted owns the entire escalation once the budget is spent:
 	// workflow state, task status/blocker, logging, and any extra
 	// completion signal. boundedRetry neither persists nor logs on its
@@ -93,7 +110,25 @@ func (e *Engine) boundedRetry(t *TaskInfo, step *Step, p boundedRetryPolicy) boo
 	if p.onArm != nil {
 		p.onArm(e, t, step, attempt)
 	}
-	if p.armedStatus != nil {
+	switch {
+	case p.armedClearIf != nil:
+		expectedStatus, expectedReason := p.armedClearIf(e, t, step, attempt)
+		cleared, err := e.tasks.ClearTaskStatusReasonAndSetWorkflowIf(t.ID, expectedStatus, expectedReason, t.Workflow)
+		if err != nil {
+			if p.onPersistError != nil {
+				p.onPersistError(e, t, step, err)
+			} else {
+				e.logger.Error("workflow."+p.name+".persist", "task_id", t.ID, "step", step.ID, "err", err)
+			}
+			return true
+		}
+		if !cleared {
+			// Nothing was written, counter included, so the budget is intact.
+			e.logger.Debug("workflow."+p.name+".superseded", "task_id", t.ID, "step", step.ID)
+			return true
+		}
+		t.StatusReason = ""
+	case p.armedStatus != nil:
 		status, reason := p.armedStatus(e, t, step, attempt)
 		if err := e.tasks.SetStatusAndWorkflow(t.ID, status, reason, t.Workflow); err != nil {
 			if p.onPersistError != nil {
@@ -105,7 +140,7 @@ func (e *Engine) boundedRetry(t *TaskInfo, step *Step, p boundedRetryPolicy) boo
 		}
 		t.Status = status
 		t.StatusReason = reason
-	} else {
+	default:
 		if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 			if p.onPersistError != nil {
 				p.onPersistError(e, t, step, err)
@@ -116,6 +151,10 @@ func (e *Engine) boundedRetry(t *TaskInfo, step *Step, p boundedRetryPolicy) boo
 		}
 		if p.onArmed != nil {
 			if err := p.onArmed(e, t, step, attempt); err != nil {
+				if errors.Is(err, errRetryArmingSuperseded) {
+					e.logger.Debug("workflow."+p.name+".superseded", "task_id", t.ID, "step", step.ID)
+					return true
+				}
 				e.logger.Error("workflow."+p.name+".clear", "task_id", t.ID, "step", step.ID, "err", err)
 				return true
 			}

@@ -14,7 +14,10 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
-var errWorkflowEffectNoPersist = errors.New("workflow effect claim requires no persistence")
+var (
+	errWorkflowEffectNoPersist             = errors.New("workflow effect claim requires no persistence")
+	errWorkflowStatusReasonNoLongerMatches = errors.New("workflow status reason no longer matches")
+)
 
 // taskAdapter and agentAdapter are minimal test-only stand-ins for the real
 // bridges (internal/sybra's private taskAdapter/agentAdapter) that let a
@@ -65,6 +68,38 @@ func (a *taskAdapter) UpdateTaskStatus(id, status, reason string) error {
 	}
 	_, err = a.tasks.Update(id, u)
 	return err
+}
+
+func (a *taskAdapter) ClearTaskStatusReasonIf(id, expectedStatus, expectedReason string) (bool, error) {
+	cleared := false
+	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+		if string(cur.Status) != expectedStatus || cur.StatusReason != expectedReason {
+			return task.Update{}, errWorkflowStatusReasonNoLongerMatches
+		}
+		empty := ""
+		cleared = true
+		return task.Update{StatusReason: &empty}, nil
+	})
+	if errors.Is(err, errWorkflowStatusReasonNoLongerMatches) {
+		return false, nil
+	}
+	return cleared, err
+}
+
+func (a *taskAdapter) ClearTaskStatusReasonAndSetWorkflowIf(id, expectedStatus, expectedReason string, wf *workflow.Execution) (bool, error) {
+	cleared := false
+	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+		if string(cur.Status) != expectedStatus || cur.StatusReason != expectedReason {
+			return task.Update{}, errWorkflowStatusReasonNoLongerMatches
+		}
+		empty := ""
+		cleared = true
+		return task.Update{StatusReason: &empty, Workflow: &wf}, nil
+	})
+	if errors.Is(err, errWorkflowStatusReasonNoLongerMatches) {
+		return false, nil
+	}
+	return cleared, err
 }
 
 func (a *taskAdapter) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {

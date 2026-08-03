@@ -30,7 +30,7 @@ steps:
     config:
       role: implementation
       mode: "{{.Task.AgentMode}}"
-      model: sonnet
+      model: cheap
       attempts: 3
       max_retries: 1
       prompt: >-

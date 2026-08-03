@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // LockFile acquires an advisory, cross-process exclusive lock for path by
@@ -40,6 +41,43 @@ func LockFile(path string) (func() error, error) {
 		}
 		return unlockErr
 	}, nil
+}
+
+// ErrLockTimeout is returned when LockFileWithin cannot acquire the lock
+// before its deadline. Callers can use errors.Is to distinguish a wedged or
+// busy peer process from an open or flock failure.
+var ErrLockTimeout = errors.New("fsutil: timed out waiting for file lock")
+
+// LockFileWithin acquires LockFile's sibling lock, retrying non-blocking flock
+// attempts until timeout expires. It prevents a stalled peer process from
+// indefinitely blocking a hot in-process mutex while retaining the full
+// read-modify-write critical section once the lock is acquired.
+func LockFileWithin(path string, timeout time.Duration) (func() error, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+		if err != nil {
+			return nil, fmt.Errorf("open lock file: %w", err)
+		}
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return func() error {
+				unlockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				if closeErr := f.Close(); unlockErr == nil {
+					unlockErr = closeErr
+				}
+				return unlockErr
+			}, nil
+		}
+		_ = f.Close()
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, fmt.Errorf("flock: %w", err)
+		}
+		if !time.Now().Before(deadline) {
+			return nil, fmt.Errorf("%w after %s", ErrLockTimeout, timeout)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // ErrLocked is returned by TryLockPath when another process already holds

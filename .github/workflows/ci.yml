@@ -432,6 +432,11 @@ jobs:
           cat > "$SYBRA_HOME/config.yaml" <<EOF
           agent:
             provider: ${{ matrix.provider }}
+            # sybra-server refuses to start without an explicit posture, so a
+            # config that merely omits the key can never be mistaken for a
+            # contained one. "off" is correct here: this suite drives the HTTP
+            # API against fake providers and starts no real agent subprocess.
+            sandbox_mode: "off"
           server:
             auth_token: e2e-test-token
           monitor:

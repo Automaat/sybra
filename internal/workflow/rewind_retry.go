@@ -28,6 +28,10 @@ type rewindRetryPolicy struct {
 	// backoff computes the retry-after delay from the pre-increment attempt
 	// count (verify-checks grows it per attempt; testing uses a constant).
 	backoff func(attempts int) time.Duration
+	// fingerprint identifies the failure being retried. When set, repeated
+	// identical failures can exhaust earlier than the generic attempt ceiling.
+	fingerprint            string
+	maxSameFingerprintRuns int
 	// onArm sets any additional workflow variables the rewound step's prompt
 	// needs (reask note, cleared verdict vars) once the counter has been
 	// bumped to `attempt`, before the workflow is persisted. Optional.
@@ -49,9 +53,26 @@ func (e *Engine) rewindRetry(taskID string, wfExec *Execution, t TaskInfo, p rew
 	if attempts >= p.max {
 		return false, attempts, nil
 	}
+	if p.fingerprint != "" && p.maxSameFingerprintRuns > 0 {
+		fpKey := p.counterKey + ".fingerprint"
+		fpCountKey := p.counterKey + ".fingerprint_count"
+		if wfExec.Variables[fpKey] == p.fingerprint && parseWorkflowInt(wfExec.Variables[fpCountKey]) >= p.maxSameFingerprintRuns {
+			return false, attempts, nil
+		}
+	}
 
 	attempt = attempts + 1
 	wfExec.SetVar(p.counterKey, strconv.Itoa(attempt))
+	if p.fingerprint != "" {
+		fpKey := p.counterKey + ".fingerprint"
+		fpCountKey := p.counterKey + ".fingerprint_count"
+		count := 1
+		if wfExec.Variables[fpKey] == p.fingerprint {
+			count = parseWorkflowInt(wfExec.Variables[fpCountKey]) + 1
+		}
+		wfExec.SetVar(fpKey, p.fingerprint)
+		wfExec.SetVar(fpCountKey, strconv.Itoa(count))
+	}
 	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(p.backoff(attempts)).Format(time.RFC3339))
 	if p.onArm != nil {
 		p.onArm(wfExec, attempt)

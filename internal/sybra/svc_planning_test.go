@@ -1,7 +1,9 @@
 package sybra
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -146,8 +149,16 @@ func TestPlanningService_ApprovePlan_ErrorWhenNotWaiting(t *testing.T) {
 	}
 
 	// No workflow running → approve should fail.
-	if _, err := planSvc.ApprovePlan(created.ID); err == nil {
+	_, err = planSvc.ApprovePlan(created.ID)
+	if err == nil {
 		t.Fatal("expected error when approving task without active workflow")
+	}
+	var ce httpapi.ClientError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want a 4xx httpapi.ClientError so a cluster follower's rejection relays as a readable error instead of a sanitized 500, got %T: %v", err, err)
+	}
+	if ce.HTTPStatus() != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", ce.HTTPStatus(), http.StatusConflict)
 	}
 }
 
@@ -212,6 +223,63 @@ func TestPlanningService_ApprovePlan_RecoversCompletedPlanReviewWorkflow(t *test
 	}
 	if got := updated.Workflow.Variables["step.critique_plan.note"]; got != "keep" {
 		t.Fatalf("step variable = %q, want preserved", got)
+	}
+}
+
+func TestWorkflowService_HandleHumanAction_RecoversCompletedPlanReviewWorkflow(t *testing.T) {
+	_, taskSvc, a := setupPlanningService(t)
+	workflowSvc := &WorkflowService{engine: taskSvc.workflowEngine}
+
+	created, err := a.tasks.Create("approve stale plan through workflow service", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusPlanReview
+	completedAt := time.Now().UTC()
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-plan",
+		CurrentStep: "",
+		State:       workflow.ExecCompleted,
+		StepHistory: []workflow.StepRecord{
+			{StepID: "validate_plan_contract", Status: "completed"},
+			{StepID: "maybe_critique", Status: "completed"},
+		},
+		StartedAt:   completedAt.Add(-time.Minute),
+		CompletedAt: &completedAt,
+	}
+	plan := "# Execution Plan\n\n## Steps\n1. Fix it."
+	planContract := validPlanningContract(created.ID)
+	planResearch := "researched relevant files"
+	planDecisions := "# Decisions\n\nNo open decisions."
+	planBrief := "safe to approve"
+	if _, err := a.tasks.Update(created.ID, task.Update{
+		Status:        &status,
+		Workflow:      &wf,
+		Plan:          &plan,
+		PlanContract:  &planContract,
+		PlanResearch:  &planResearch,
+		PlanDecisions: &planDecisions,
+		PlanBrief:     &planBrief,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := workflowSvc.HandleHumanAction(created.ID, "approve", nil); err != nil {
+		t.Fatalf("HandleHumanAction approve: %v", err)
+	}
+
+	updated, err := a.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusInProgress {
+		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusInProgress)
+	}
+	if updated.Workflow == nil || updated.Workflow.State != workflow.ExecCompleted {
+		t.Fatalf("workflow = %+v, want completed", updated.Workflow)
+	}
+	if updated.Workflow.CurrentStep != "" {
+		t.Fatalf("CurrentStep = %q, want empty after approval", updated.Workflow.CurrentStep)
 	}
 }
 
@@ -419,8 +487,16 @@ func TestPlanningService_RejectPlan_ErrorWhenNotWaiting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := planSvc.RejectPlan(created.ID, "bad plan"); err == nil {
+	_, err = planSvc.RejectPlan(created.ID, "bad plan")
+	if err == nil {
 		t.Fatal("expected error when rejecting task without active workflow")
+	}
+	var ce httpapi.ClientError
+	if !errors.As(err, &ce) {
+		t.Fatalf("want a 4xx httpapi.ClientError so a cluster follower's rejection relays as a readable error instead of a sanitized 500, got %T: %v", err, err)
+	}
+	if ce.HTTPStatus() != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", ce.HTTPStatus(), http.StatusConflict)
 	}
 }
 
