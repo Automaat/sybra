@@ -199,6 +199,7 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		{"OPENCODE_STATE", sandboxRootOr(cfg.sandbox.opencodeState, home)},
 		{"TOOL_CACHE", sandboxRootOr(cfg.sandbox.toolCache, home)},
 		{"APP_SUPPORT", cfg.sandbox.appSupport},
+		{"CLAUDE_SCRATCH", cfg.sandbox.claudeScratch},
 		{"READONLY_DIR", sandboxRootOr(cfg.sandbox.readOnlyDir, unusedReadOnlyDirSentinel)},
 		{"STATE_DENY_1", sandboxRootOr(stateDenyAt(cfg.sandbox.stateDenied, 0), unusedReadOnlyDirSentinel)},
 		{"STATE_DENY_2", sandboxRootOr(stateDenyAt(cfg.sandbox.stateDenied, 1), unusedReadOnlyDirSentinel)},

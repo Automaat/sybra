@@ -700,6 +700,7 @@ func enforceSpec(
 		opencodeState: agentStateRoot(filepath.Join(".local", "share", "opencode"), sandboxHome),
 		toolCache:     agentStateRoot(".cache", sandboxHome),
 		appSupport:    providerAppSupportRoot(),
+		claudeScratch: claudeScratchRoot(),
 	}
 }
 
@@ -964,6 +965,31 @@ func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 // under it at startup. Narrower grants were measured and do not work: naming
 // a codex-specific subpath still fails, because creating that subdirectory
 // requires write on the parent.
+// claudeScratchRoot returns the Claude Code per-user scratchpad root, created
+// if absent so canonicalizeRoot can resolve it.
+//
+// Claude Code writes its per-session working files under /tmp/claude-<uid>.
+// On darwin that is not covered by the tmp root: os.TempDir() resolves to
+// $TMPDIR (/var/folders/.../T) while /tmp resolves to /private/tmp, so the
+// scratchpad is invisible to the sandbox and every write there fails EPERM.
+// Measured: an agent retried the same denied mkdir eight times in thirty
+// seconds rather than progressing.
+//
+// Scoped to this uid's scratchpad rather than granting /tmp wholesale, which
+// is world-writable and shared with every process on the host.
+func claudeScratchRoot() string {
+	root := filepath.Join(os.TempDir(), fmt.Sprintf("claude-%d", os.Getuid()))
+	if canon, err := canonicalizeRoot(root); err == nil {
+		return canon
+	}
+	// darwin: /tmp is not os.TempDir(), so fall back to the literal path.
+	canon, err := canonicalizeCreatedRoot(filepath.Join("/tmp", fmt.Sprintf("claude-%d", os.Getuid())), 0o700)
+	if err != nil {
+		return ""
+	}
+	return canon
+}
+
 func providerAppSupportRoot() string {
 	home, err := os.UserHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {

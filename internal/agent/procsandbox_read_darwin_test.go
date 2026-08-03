@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -186,5 +187,34 @@ func TestWrapInvocation_GrantsAppSupportRoot(t *testing.T) {
 func TestSandboxProfile_ReferencesAppSupport(t *testing.T) {
 	if !strings.Contains(string(agentSandboxProfile), `(subpath (param "APP_SUPPORT"))`) {
 		t.Fatal("profile has no APP_SUPPORT write rule, so the resolved root grants nothing")
+	}
+}
+
+// Claude Code writes per-session working files under /tmp/claude-<uid>. On
+// darwin that is outside the tmp root, since os.TempDir() is $TMPDIR
+// (/var/folders/.../T) while /tmp resolves to /private/tmp — so every such
+// write failed EPERM and the agent retried an impossible mkdir instead of
+// progressing.
+func TestClaudeScratchRoot_IsUIDScopedNotAllOfTmp(t *testing.T) {
+	got := claudeScratchRoot()
+	if got == "" {
+		t.Fatal("no scratchpad root resolved; Claude Code writes would be denied")
+	}
+	// Granting /tmp wholesale would hand agents a world-writable directory
+	// shared with every process on the host — the blast radius this sandbox
+	// exists to shrink.
+	for _, tooWide := range []string{"/tmp", "/private/tmp", "/private/var/tmp"} {
+		if got == tooWide {
+			t.Fatalf("scratchpad root is %q, which grants all of tmp rather than this uid's scratchpad", got)
+		}
+	}
+	if !strings.Contains(got, fmt.Sprintf("claude-%d", os.Getuid())) {
+		t.Fatalf("scratchpad root %q is not scoped to this uid", got)
+	}
+}
+
+func TestSandboxProfile_ReferencesClaudeScratch(t *testing.T) {
+	if !strings.Contains(string(agentSandboxProfile), `(subpath (param "CLAUDE_SCRATCH"))`) {
+		t.Fatal("profile has no CLAUDE_SCRATCH rule, so the resolved root grants nothing")
 	}
 }
