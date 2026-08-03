@@ -1649,6 +1649,32 @@ func TestSendMessage_HeadlessRejectsWhenFinalizing(t *testing.T) {
 	}
 }
 
+// TestSendMessage_HeadlessRejectsAfterEmptyBoundary proves that the terminal
+// boundary atomically commits finalization before a later steer can enqueue.
+// This is the former pop-empty / set-finalizing TOCTOU window.
+func TestSendMessage_HeadlessRejectsAfterEmptyBoundary(t *testing.T) {
+	m, _ := newTestManager(t)
+	r, w := io.Pipe()
+	a := &Agent{ID: "h-empty-boundary", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	putAgent(t, m, a)
+	t.Cleanup(func() { _ = r.Close() })
+
+	if _, ok := a.PopPendingPromptOrBeginFinalizing(); ok {
+		t.Fatal("empty queue unexpectedly yielded a prompt")
+	}
+	err := m.SendMessage(a.ID, "too late")
+	if err == nil {
+		t.Fatal("expected finalizing conflict after empty terminal boundary")
+	}
+	assertConflictClientError(t, err)
+	if got := a.PendingPromptCount(); got != 0 {
+		t.Errorf("PendingPromptCount = %d, want 0", got)
+	}
+}
+
 // assertConflictClientError verifies err implements httpapi.ClientError
 // (structurally: error + HTTPStatus() int) with a 409 status, so the HTTP
 // API surfaces it as a clear rejection instead of a generic 500 — see

@@ -996,21 +996,27 @@ func (a *Agent) EnqueuePrompt(text string) {
 	a.mu.Unlock()
 }
 
-// TryEnqueuePrompt appends text to the pending queue iff its current length
-// is below max, checking and appending under a single lock acquisition.
+// TryEnqueuePrompt appends text to the pending queue iff the run has not begun
+// finalizing and its current queue length is below max. All three checks and
+// the append share one lock acquisition, so a steer accepted by this method
+// cannot race a terminal boundary into a queue that will never be drained.
 // Callers that check PendingPromptCount() and then call EnqueuePrompt() as
 // two separate steps leave a TOCTOU window: concurrent callers can each pass
 // the check while the queue is below max and all append, overshooting the
 // cap the check was meant to enforce. Returns the queue length after the
-// call and whether the prompt was enqueued.
-func (a *Agent) TryEnqueuePrompt(text string, limit int) (queueLen int, enqueued bool) {
+// call, whether the prompt was enqueued, and whether finalization caused a
+// rejection (rather than the queue limit).
+func (a *Agent) TryEnqueuePrompt(text string, limit int) (queueLen int, enqueued, finalizing bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.finalizing {
+		return len(a.convo.pendingPrompts), false, true
+	}
 	if len(a.convo.pendingPrompts) >= limit {
-		return len(a.convo.pendingPrompts), false
+		return len(a.convo.pendingPrompts), false, false
 	}
 	a.convo.pendingPrompts = append(a.convo.pendingPrompts, text)
-	return len(a.convo.pendingPrompts), true
+	return len(a.convo.pendingPrompts), true, false
 }
 
 // PopPendingPrompt returns the next queued prompt and a flag indicating
@@ -1024,6 +1030,24 @@ func (a *Agent) PopPendingPrompt() (string, bool) {
 	next := a.convo.pendingPrompts[0]
 	a.convo.pendingPrompts = a.convo.pendingPrompts[1:]
 	return next, true
+}
+
+// PopPendingPromptOrBeginFinalizing atomically reserves the next pending
+// prompt or, when there is none, permanently prevents any later enqueue. The
+// latter transition must share the queue lock with TryEnqueuePrompt: otherwise
+// a message can be accepted after the empty-pop check but before stdin closes.
+func (a *Agent) PopPendingPromptOrBeginFinalizing() (string, bool) {
+	a.mu.Lock()
+	if len(a.convo.pendingPrompts) > 0 {
+		next := a.convo.pendingPrompts[0]
+		a.convo.pendingPrompts = a.convo.pendingPrompts[1:]
+		a.mu.Unlock()
+		return next, true
+	}
+	a.finalizing = true
+	a.mu.Unlock()
+	a.refreshCanSteer()
+	return "", false
 }
 
 // PendingPromptCount returns the size of the pending prompt queue.
