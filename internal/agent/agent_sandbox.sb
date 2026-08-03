@@ -28,7 +28,15 @@
   ;; CLAUDE_SCRATCH is Claude Code's per-user scratchpad root
   ;; (/tmp/claude-<uid>). Granted narrowly rather than opening /tmp, which is
   ;; world-writable and shared with every process on the host.
-  (subpath (param "CLAUDE_SCRATCH")))
+  (subpath (param "CLAUDE_SCRATCH"))
+  ;; GIT_ADMIN_DIR is this task's own linked-worktree admin directory under
+  ;; the shared bare clone (worktrees/<branch>/ — HEAD, index, logs/HEAD).
+  ;; WORKTREE only covers the checkout; a linked worktree's actual gitdir
+  ;; lives outside it, so every git write (add/commit/fetch/push) failed
+  ;; EPERM without this. Scoped to just this task's own admin subdirectory,
+  ;; not the shared bare-clone root or sibling worktrees, so one task cannot
+  ;; write another's refs.
+  (subpath (param "GIT_ADMIN_DIR")))
 ;; Device sinks. Writing to these is a no-op by definition, so allowing them
 ;; adds no blast radius, but denying them breaks essentially all tooling:
 ;; every `>/dev/null` redirect fails, which took out git with

@@ -190,6 +190,43 @@ func TestSandboxProfile_ReferencesAppSupport(t *testing.T) {
 	}
 }
 
+// A linked worktree's actual gitdir (HEAD, index, logs/HEAD) lives outside
+// WORKTREE, under the shared bare clone's worktrees/<branch>/ subdirectory.
+// Without this grant every git write (add/commit/fetch/push) failed EPERM.
+func TestWrapInvocation_GrantsGitAdminDir(t *testing.T) {
+	const gitAdminDir = "/data/clones/repo.git/worktrees/task-branch"
+	cfg := &RunConfig{sandbox: sandboxSpec{
+		mode:        "enforce",
+		worktree:    "/data/wt",
+		sandboxHome: "/data/home",
+		tmp:         "/tmp",
+		sharedCache: "/data/cache",
+		gitAdminDir: gitAdminDir,
+	}}
+
+	_, args := wrapInvocation("claude", []string{"-p", "hi"}, cfg)
+
+	var got string
+	for i := range len(args) - 1 {
+		if args[i] == "-D" {
+			if name, value, ok := strings.Cut(args[i+1], "="); ok && name == "GIT_ADMIN_DIR" {
+				got = value
+			}
+		}
+	}
+	if got != gitAdminDir {
+		t.Fatalf("GIT_ADMIN_DIR = %q, want %q", got, gitAdminDir)
+	}
+}
+
+// The embedded profile must actually reference the param, or the -D value is
+// inert and the grant silently does nothing.
+func TestSandboxProfile_ReferencesGitAdminDir(t *testing.T) {
+	if !strings.Contains(string(agentSandboxProfile), `(subpath (param "GIT_ADMIN_DIR"))`) {
+		t.Fatal("profile has no GIT_ADMIN_DIR write rule, so the resolved root grants nothing")
+	}
+}
+
 // Claude Code writes per-session working files under /tmp/claude-<uid>. On
 // darwin that is outside the tmp root, since os.TempDir() is $TMPDIR
 // (/var/folders/.../T) while /tmp resolves to /private/tmp — so every such
