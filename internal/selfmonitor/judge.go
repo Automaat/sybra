@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/health"
 	"github.com/Automaat/sybra/internal/llmexec"
@@ -13,6 +14,11 @@ import (
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 )
+
+// judgeAttemptTimeout bounds each provider invocation, including llmjob repair
+// attempts. A judge is advisory: a wedged CLI must not freeze the sequential
+// self-monitor loop indefinitely.
+const judgeAttemptTimeout = 2 * time.Minute
 
 // Judge classifies a single health Finding given its distilled log summary
 // and optional task context. Returns a filled Verdict; callers should treat
@@ -40,15 +46,20 @@ func (j *ClaudeJudge) Judge(ctx context.Context, f health.Finding, ls *LogSummar
 
 	prompt := buildJudgePrompt(f, ls, t)
 
-	v, _, err := llmjob.Run(ctx, prompt, llmjob.Spec[Verdict]{
-		Name:     "selfmonitor-judge",
-		Tier:     selfMonitorTier(model),
-		Validate: validateJudgeVerdict,
-	}, llmexec.Options{Logger: j.Logger, Gate: j.Gate})
+	v, _, err := llmjob.Run(ctx, prompt, judgeJobSpec(model), llmexec.Options{Logger: j.Logger, Gate: j.Gate})
 	if err != nil {
 		return Verdict{Classification: VerdictPending}, err
 	}
 	return v, nil
+}
+
+func judgeJobSpec(model string) llmjob.Spec[Verdict] {
+	return llmjob.Spec[Verdict]{
+		Name:           "selfmonitor-judge",
+		Tier:           selfMonitorTier(model),
+		Validate:       validateJudgeVerdict,
+		AttemptTimeout: judgeAttemptTimeout,
+	}
 }
 
 func selfMonitorTier(model string) llmjob.Tier {
