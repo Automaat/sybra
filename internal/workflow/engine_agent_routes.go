@@ -267,11 +267,14 @@ func (e *Engine) deferStartedAgentRoute(taskID, stepID, agentID string, err erro
 	return errWorkflowYield
 }
 
-func (e *Engine) hasPendingAgentRouteForStep(taskID, stepID string) bool {
+func (e *Engine) hasPendingAgentRouteForStep(taskID string, step *Step) bool {
+	if step == nil {
+		return false
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for key, routedStepID := range e.pendingRoutes {
-		if strings.HasPrefix(key, taskID+"\x00") && routedStepID == stepID {
+		if strings.HasPrefix(key, taskID+"\x00") && routeMatchesStep(step, routedStepID) {
 			return true
 		}
 	}

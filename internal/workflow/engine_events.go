@@ -1506,7 +1506,7 @@ func (e *Engine) finishResumeStalledStep(taskID string, def *Definition, step *S
 }
 
 func (e *Engine) clearDeliveredWatchdogReaskNote(taskID string, step *Step, wf *Execution) {
-	if wf == nil || wf.Variables == nil {
+	if step == nil || step.ID == "" || wf == nil || wf.Variables == nil {
 		return
 	}
 	if !e.watchdogReaskDelivered(taskID, step, wf) {
@@ -1516,11 +1516,13 @@ func (e *Engine) clearDeliveredWatchdogReaskNote(taskID string, step *Step, wf *
 	e.clearWatchdogReaskNote(taskID, wf)
 	// clearWatchdogReaskNote deliberately no-ops when this role uses a
 	// role-specific note key; persist marker removal in that case too.
-	_ = e.tasks.SetWorkflow(taskID, wf)
+	if err := e.tasks.SetWorkflow(taskID, wf); err != nil {
+		e.logger.Error("workflow.watchdog-reask.delivery-clear", "task_id", taskID, "step", step.ID, "err", err)
+	}
 }
 
 func (e *Engine) watchdogReaskDelivered(taskID string, step *Step, wf *Execution) bool {
-	if workflowHasAgentRouteForStep(wf, step) || e.hasPendingAgentRouteForStep(taskID, step.ID) {
+	if workflowHasAgentRouteForStep(wf, step) || e.hasPendingAgentRouteForStep(taskID, step) {
 		return true
 	}
 	return wf != nil && wf.Variables[watchdogReaskDeliveredKey(step.ID)] == "1"
