@@ -131,6 +131,64 @@ func TestWithBareRepoPushLock_DoesNotBlockBareRepoLockForSameClonePath(t *testin
 	}
 }
 
+func TestRefreshTrackingRefWaitsForBareRepoLock(t *testing.T) {
+	t.Parallel()
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("fetch origin: %v", err)
+	}
+	branch, err := DefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	wt := filepath.Join(t.TempDir(), "worktree")
+	if err := CreateWorktree(context.Background(), bare, wt, "task-branch", "origin/"+branch); err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	commonDir, err := gitCommonDir(context.Background(), wt)
+	if err != nil {
+		t.Fatalf("resolve common dir: %v", err)
+	}
+	canonicalBare, err := filepath.EvalSymlinks(bare)
+	if err != nil {
+		t.Fatalf("canonicalize bare path: %v", err)
+	}
+	if filepath.Clean(commonDir) != filepath.Clean(canonicalBare) {
+		t.Fatalf("common dir = %q, want bare clone %q", commonDir, bare)
+	}
+
+	locked := make(chan struct{})
+	release := make(chan struct{})
+	lockDone := make(chan error, 1)
+	go func() {
+		lockDone <- withBareRepoLock(bare, func() error {
+			close(locked)
+			<-release
+			return nil
+		})
+	}()
+	<-locked
+
+	fetched := make(chan error, 1)
+	go func() { fetched <- refreshTrackingRef(context.Background(), wt, "origin", branch) }()
+	select {
+	case err := <-fetched:
+		t.Fatalf("tracking fetch completed while bare lock held: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-lockDone; err != nil {
+		t.Fatalf("hold lock: %v", err)
+	}
+	if err := <-fetched; err != nil {
+		t.Fatalf("refresh tracking ref: %v", err)
+	}
+}
+
 func TestWithLockRetry_RetriesOnLockContention(t *testing.T) {
 	prevBackoffs, prevSleep := gitOpRetryBackoffs, gitOpRetrySleep
 	t.Cleanup(func() { gitOpRetryBackoffs, gitOpRetrySleep = prevBackoffs, prevSleep })
