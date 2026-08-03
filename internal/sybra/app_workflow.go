@@ -313,16 +313,46 @@ func (a *taskAdapter) ReplaceTaskBody(id, body string) error {
 }
 
 func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
-	_, err := a.tasks.Update(id, task.Update{Workflow: &wf})
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.set_workflow",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
+	})
+	return err
+}
+
+// SetStatusAndWorkflow persists a task's Status/StatusReason and Workflow in
+// a single store write, closing the crash window a paired
+// UpdateTaskStatus+SetWorkflow call leaves open (a restart between the two
+// calls could otherwise land a terminal task status with a still-running
+// workflow, or vice versa — see #2749).
+func (a *taskAdapter) SetStatusAndWorkflow(id, status, reason string, wf *workflow.Execution) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	reason = a.normalizeHumanRequiredReason(id, st, reason)
+	extra := task.Update{Workflow: &wf}
+	if reason != "" {
+		extra.StatusReason = &reason
+	}
+	_, err = a.tasks.Apply(task.TransitionIntent{
+		TaskID:   id,
+		ToStatus: st,
+		Actor:    "workflow.engine.set_status_and_workflow",
+		Extra:    extra,
+	})
 	return err
 }
 
 func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
 	var result workflow.EffectClaimResult
 	var fenceErr error
-	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
 		if cur.Workflow == nil {
-			return task.Update{}, fmt.Errorf("task %s has no workflow", id)
+			return task.TransitionIntent{}, fmt.Errorf("task %s has no workflow", id)
 		}
 		wf := cur.Workflow.Clone()
 		result.Workflow = wf
@@ -332,11 +362,15 @@ func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim)
 		if claimErr != nil {
 			if errors.Is(claimErr, workflow.ErrEffectClaimConflict) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
 				fenceErr = claimErr
-				return task.Update{}, errWorkflowEffectNoPersist
+				return task.TransitionIntent{}, errWorkflowEffectNoPersist
 			}
-			return task.Update{}, claimErr
+			return task.TransitionIntent{}, claimErr
 		}
-		return task.Update{Workflow: &wf}, nil
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.claim_effect",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
 	})
 	if err != nil {
 		if errors.Is(err, errWorkflowEffectNoPersist) {
@@ -350,9 +384,9 @@ func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim)
 func (a *taskAdapter) CompleteWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
 	var result workflow.EffectClaimResult
 	var fenceErr error
-	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
 		if cur.Workflow == nil {
-			return task.Update{}, fmt.Errorf("task %s has no workflow", id)
+			return task.TransitionIntent{}, fmt.Errorf("task %s has no workflow", id)
 		}
 		wf := cur.Workflow.Clone()
 		result.Workflow = wf
@@ -362,11 +396,15 @@ func (a *taskAdapter) CompleteWorkflowEffect(id string, claim workflow.EffectCla
 		if claimErr != nil {
 			if errors.Is(claimErr, workflow.ErrEffectClaimLost) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
 				fenceErr = claimErr
-				return task.Update{}, errWorkflowEffectNoPersist
+				return task.TransitionIntent{}, errWorkflowEffectNoPersist
 			}
-			return task.Update{}, claimErr
+			return task.TransitionIntent{}, claimErr
 		}
-		return task.Update{Workflow: &wf}, nil
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.complete_effect",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
 	})
 	if err != nil {
 		if errors.Is(err, errWorkflowEffectNoPersist) {

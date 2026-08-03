@@ -263,14 +263,11 @@ func (e *Engine) handleFanOutCompletion(taskID string, def *Definition, ctx adva
 }
 
 func (e *Engine) finishTerminalStepOutput(taskID string, wfExec *Execution, output StepOutput, release func()) error {
-	if err := e.tasks.UpdateTaskStatus(taskID, output.TerminalStatus, output.TerminalReason); err != nil {
-		return err
-	}
 	now := time.Now()
 	wfExec.CurrentStep = ""
 	wfExec.State = ExecCompleted
 	wfExec.CompletedAt = &now
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if err := e.tasks.SetStatusAndWorkflow(taskID, output.TerminalStatus, output.TerminalReason, wfExec); err != nil {
 		return err
 	}
 	release()
@@ -1066,14 +1063,11 @@ func (e *Engine) blockRetryExhaustedPlanningIfNeeded(taskID string, def *Definit
 	if trimmed := strings.TrimSpace(output); trimmed != "" {
 		reason += ": " + truncate(trimmed, 500)
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
-		return true, err
-	}
 	now := time.Now().UTC()
 	wfExec.State = ExecFailed
 	wfExec.CompletedAt = &now
 	wfExec.CurrentStep = ""
-	return true, e.tasks.SetWorkflow(taskID, wfExec)
+	return true, e.tasks.SetStatusAndWorkflow(taskID, "human-required", reason, wfExec)
 }
 
 func truncate(s string, limit int) string {

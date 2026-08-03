@@ -80,16 +80,13 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 		fresh.Workflow.CurrentStep = ""
 		fresh.Workflow.State = ExecCompleted
 		fresh.Workflow.CompletedAt = &now
-		if err := e.tasks.SetWorkflow(taskID, fresh.Workflow); err != nil {
-			e.logger.Warn("workflow.skill-receipt.clear", "task_id", taskID, "step", spawnedStep, "err", err)
-		}
 		summary := skillReceiptExhaustionSummary(output)
 		reason := fmt.Sprintf("mandatory workflow skill %q produced no conformance receipt after automatic recovery retry", run.RequestedSkill)
 		if summary != "" {
 			reason += ": " + summary
 		}
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
-			e.logger.Error("workflow.skill-receipt.human-required", "task_id", taskID, "step", spawnedStep, "err", statusErr)
+		if err := e.tasks.SetStatusAndWorkflow(taskID, "human-required", reason, fresh.Workflow); err != nil {
+			e.logger.Error("workflow.skill-receipt.human-required", "task_id", taskID, "step", spawnedStep, "err", err)
 		}
 		e.logger.Warn("workflow.skill-receipt.exhausted", "task_id", taskID, "step", spawnedStep, "skill", run.RequestedSkill, "summary", summary)
 		e.fireComplete(&CompletionInfo{

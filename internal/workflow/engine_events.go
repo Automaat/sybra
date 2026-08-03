@@ -1169,22 +1169,19 @@ func (e *Engine) escalateMissingStep(taskID string, wf *Execution) {
 	e.logger.Warn("workflow.resume-stalled.step-missing",
 		"task_id", taskID, "workflow_id", wf.WorkflowID, "step", wf.CurrentStep)
 
-	// Status first, execution second, so a failed second write leaves the task
-	// visible and retryable rather than buried mid-escalation.
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required",
-		"Workflow step "+wf.CurrentStep+" no longer exists in "+wf.WorkflowID+
-			" — it was removed while this task was parked on it. Set the task back to"+
-			" planning to re-plan against the current workflow."); err != nil {
-		e.logger.Warn("workflow.resume-stalled.step-missing.escalate", "task_id", taskID, "err", err)
-		return
-	}
-	// Failing the execution is what makes the task recoverable: the planning
-	// dispatcher only starts a fresh workflow when the old one is completed or
-	// failed, so a waiting execution would reject the operator's re-plan.
+	// Status and execution persist in one atomic write, so there's no window
+	// where the task shows human-required with a still-waiting execution (or
+	// vice versa) — see SetStatusAndWorkflow. Failing the execution is what
+	// makes the task recoverable: the planning dispatcher only starts a fresh
+	// workflow when the old one is completed or failed, so a waiting
+	// execution would reject the operator's re-plan.
 	failed := *wf
 	failed.State = ExecFailed
-	if err := e.tasks.SetWorkflow(taskID, &failed); err != nil {
-		e.logger.Warn("workflow.resume-stalled.step-missing.fail", "task_id", taskID, "err", err)
+	if err := e.tasks.SetStatusAndWorkflow(taskID, "human-required",
+		"Workflow step "+wf.CurrentStep+" no longer exists in "+wf.WorkflowID+
+			" — it was removed while this task was parked on it. Set the task back to"+
+			" planning to re-plan against the current workflow.", &failed); err != nil {
+		e.logger.Warn("workflow.resume-stalled.step-missing.escalate", "task_id", taskID, "err", err)
 	}
 }
 
@@ -1498,8 +1495,8 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 			// empty-surface fallback.
 			t.Workflow.SetVar(watchdogReaskNoteVarForStep(step), buildWatchdogReaskNoteForStep(e.withManualTestConfig(*t), step, attempt))
 		},
-		onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
-			return e.tasks.UpdateTaskStatus(t.ID, t.Status, "")
+		armedStatus: func(e *Engine, t *TaskInfo, step *Step, attempt int) (status, reason string) {
+			return t.Status, ""
 		},
 		onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 			targetStatus, reason, terminalState := watchdogHangExhaustionResolution(*t, step, attempts, e.openPROnUnrunnableGate)
@@ -1507,10 +1504,7 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 			t.Workflow.State = terminalState
 			t.Workflow.CompletedAt = &now
 			t.Workflow.CurrentStep = ""
-			if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
-				e.logger.Error("workflow.watchdog-hang.persist", "task_id", t.ID, "step", step.ID, "err", err)
-			}
-			if err := e.tasks.UpdateTaskStatus(t.ID, targetStatus, reason); err != nil {
+			if err := e.tasks.SetStatusAndWorkflow(t.ID, targetStatus, reason, t.Workflow); err != nil {
 				e.logger.Error("workflow.watchdog-hang.escalate", "task_id", t.ID, "step", step.ID, "err", err)
 				return
 			}
@@ -1557,11 +1551,7 @@ func (e *Engine) handleWatchdogHangReadyPR(t *TaskInfo, step *Step) bool {
 	t.Workflow.CompletedAt = &now
 	t.Workflow.CurrentStep = ""
 	t.Workflow.SetVar("cancel_reason", "watchdog hang: implementation superseded by linked PR already open and green")
-	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
-		e.logger.Error("workflow.watchdog-hang.ready-pr.persist", "task_id", t.ID, "step", step.ID, "pr", t.PRNumber, "err", err)
-		return true
-	}
-	if err := e.tasks.UpdateTaskStatus(t.ID, "in-review", ""); err != nil {
+	if err := e.tasks.SetStatusAndWorkflow(t.ID, "in-review", "", t.Workflow); err != nil {
 		e.logger.Error("workflow.watchdog-hang.ready-pr.status", "task_id", t.ID, "step", step.ID, "pr", t.PRNumber, "err", err)
 		return true
 	}
@@ -1627,16 +1617,13 @@ func (e *Engine) handleWatchdogRewardHackingRetry(t *TaskInfo, step *Step) bool 
 			t.Workflow.SetVar(watchdogHangCleanRetryKey(step.ID), cleanRef)
 			t.Workflow.SetVar(watchdogReaskNoteVar, profile.note(attempt))
 		},
-		onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
-			return e.tasks.UpdateTaskStatus(t.ID, t.Status, "")
+		armedStatus: func(e *Engine, t *TaskInfo, step *Step, attempt int) (status, reason string) {
+			return t.Status, ""
 		},
 		onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 			reason := profile.exhaustedReason(attempts)
 			t.Workflow.State = ExecFailed
-			if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
-				e.logger.Error("workflow.watchdog-reward-hacking.persist", "task_id", t.ID, "step", step.ID, "err", err)
-			}
-			if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
+			if err := e.tasks.SetStatusAndWorkflow(t.ID, "human-required", reason, t.Workflow); err != nil {
 				e.logger.Error("workflow.watchdog-reward-hacking.escalate", "task_id", t.ID, "step", step.ID, "err", err)
 				return
 			}
@@ -1928,21 +1915,13 @@ func (e *Engine) handleWatchdogStopRetry(t *TaskInfo, step *Step) bool {
 			t.Workflow.SetVar(watchdogHangCleanRetryKey(step.ID), cleanRef)
 			t.Workflow.SetVar(watchdogReaskNoteVar, buildWatchdogStopReaskNote(t.StatusReason, attempt))
 		},
-		onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
-			if err := e.tasks.UpdateTaskStatus(t.ID, "in-progress", ""); err != nil {
-				return err
-			}
-			t.Status = "in-progress"
-			t.StatusReason = ""
-			return nil
+		armedStatus: func(e *Engine, t *TaskInfo, step *Step, attempt int) (status, reason string) {
+			return "in-progress", ""
 		},
 		onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 			reason := fmt.Sprintf("watchdog stop: retry budget exhausted after %d clean re-dispatches", attempts)
 			t.Workflow.State = ExecFailed
-			if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
-				e.logger.Error("workflow.watchdog-stop.persist", "task_id", t.ID, "step", step.ID, "err", err)
-			}
-			if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
+			if err := e.tasks.SetStatusAndWorkflow(t.ID, "human-required", reason, t.Workflow); err != nil {
 				e.logger.Error("workflow.watchdog-stop.escalate", "task_id", t.ID, "step", step.ID, "err", err)
 				return
 			}

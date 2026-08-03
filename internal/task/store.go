@@ -809,11 +809,16 @@ func applyUpdateFields(t *Task, u Update) error {
 	if u.Status != nil {
 		oldStatus := t.Status
 		t.Status = *u.Status
-		// Clear reason when status changes unless a new reason is also provided.
-		if u.StatusReason == nil {
+		statusChanged := *u.Status != oldStatus
+		// Clear reason when status actually changes, unless a new reason is
+		// also provided. A same-value resubmission (e.g. SetStatusAndWorkflow
+		// carrying the task's current status alongside a Workflow-only update)
+		// must not wipe an unrelated reason/blocker that has nothing to do
+		// with this write — see #2749.
+		if statusChanged && u.StatusReason == nil {
 			t.StatusReason = ""
 		}
-		if u.Blocker == nil {
+		if statusChanged && u.Blocker == nil {
 			t.Blocker = blocker.State{}
 		}
 		// Stamp ClosedAt on transition into a terminal status; clear on exit.

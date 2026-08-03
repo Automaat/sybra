@@ -131,6 +131,14 @@ type TaskProvider interface {
 	// body (see stripTestFailuresSections).
 	ReplaceTaskBody(id, body string) error
 	SetWorkflow(id string, wf *Execution) error
+	// SetStatusAndWorkflow persists Status/StatusReason and Workflow in a
+	// single atomic write. Use this instead of a paired
+	// UpdateTaskStatus+SetWorkflow call whenever both change together — the
+	// two-call sequence leaves a crash window where a restart between them
+	// can land a terminal status with a still-running workflow (or vice
+	// versa). reason == "" leaves the task's current StatusReason
+	// untouched.
+	SetStatusAndWorkflow(id, status, reason string, wf *Execution) error
 	ClaimWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
 	CompleteWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
 	// ConsumeSupervisorSteer prepends a pending watchdog headless-nudge steer to

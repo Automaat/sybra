@@ -198,12 +198,9 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	if admit, reason := e.agents.AdmitDispatch(taskID, step.Config.Role, mode); !admit {
 		err := fmt.Errorf("%w: %s", ErrResourcePressure, reason)
 		failure := ClassifyAgentStartFailure(err)
-		if err := e.tasks.UpdateTaskStatus(taskID, ctx.Task.Status, failure.Reason); err != nil {
-			return err
-		}
 		wfExec.State = ExecWaiting
 		e.logger.Info("workflow.run-agent.resource-pressure", "task_id", taskID, "step", step.ID, "reason", reason)
-		return e.tasks.SetWorkflow(taskID, wfExec)
+		return e.tasks.SetStatusAndWorkflow(taskID, ctx.Task.Status, failure.Reason, wfExec)
 	}
 
 	model := step.Config.Model
@@ -676,15 +673,13 @@ var providerAvailable = func(provider string) bool {
 }
 
 func (e *Engine) execWaitHuman(taskID string, step *Step, wfExec *Execution) error {
-	if step.Config.Status != "" {
-		if err := e.tasks.UpdateTaskStatus(taskID, step.Config.Status, step.Config.StatusReason); err != nil {
-			return err
-		}
-	}
-
 	wfExec.State = ExecWaiting
 	e.logger.Info("workflow.wait-human", "task_id", taskID, "step", step.ID, "actions", step.Config.HumanActions)
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if step.Config.Status != "" {
+		if err := e.tasks.SetStatusAndWorkflow(taskID, step.Config.Status, step.Config.StatusReason, wfExec); err != nil {
+			return err
+		}
+	} else if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
 		return err
 	}
 	e.maybeAutoApprovePlanReview(taskID, step)

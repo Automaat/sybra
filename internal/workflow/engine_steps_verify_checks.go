@@ -299,10 +299,7 @@ func (e *Engine) parkVerifyChecksForBackpressure(taskID string, step *Step, wfEx
 	wfExec.CurrentStep = step.ID
 	wfExec.State = ExecWaiting
 	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(verifyChecksBackoff).Format(time.RFC3339))
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		return StepOutput{}, err
-	}
-	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, verifyChecksBusyReason); err != nil {
+	if err := e.tasks.SetStatusAndWorkflow(taskID, t.Status, verifyChecksBusyReason, wfExec); err != nil {
 		return StepOutput{}, err
 	}
 	e.logger.Warn("workflow.verify-checks.backpressure", "task_id", taskID, "step", step.ID)

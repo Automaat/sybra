@@ -40,8 +40,19 @@ type boundedRetryPolicy struct {
 	// owns clearing the task's status/blocker back to a runnable state —
 	// each policy targets a different one — and syncing any TaskInfo field a
 	// caller reads afterward (e.g. watchdog-stop's t.Status). Returning an
-	// error aborts the tick (already logged as consumed). Optional.
+	// error aborts the tick (already logged as consumed). Mutually exclusive
+	// with armedStatus — a policy needing a non-status side effect (e.g.
+	// worktree-repair's UpdateTaskBlocker) uses this; a policy that only
+	// needs to set the task status uses armedStatus instead so the counter
+	// bump and the status write land in one store call. Optional.
 	onArmed func(e *Engine, t *TaskInfo, step *Step, attempt int) error
+	// armedStatus, given, folds the arm side effect into the same store
+	// write as the incremented counter via SetStatusAndWorkflow, instead of
+	// boundedRetry's default bare SetWorkflow followed by onArmed's own
+	// separate status write — closing the crash window between "counter
+	// bumped" and "status cleared" that a plain SetWorkflow+onArmed pair
+	// leaves open. Mutually exclusive with onArmed. Optional.
+	armedStatus func(e *Engine, t *TaskInfo, step *Step, attempt int) (status, reason string)
 	// onExhausted owns the entire escalation once the budget is spent:
 	// workflow state, task status/blocker, logging, and any extra
 	// completion signal. boundedRetry neither persists nor logs on its
@@ -82,18 +93,32 @@ func (e *Engine) boundedRetry(t *TaskInfo, step *Step, p boundedRetryPolicy) boo
 	if p.onArm != nil {
 		p.onArm(e, t, step, attempt)
 	}
-	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
-		if p.onPersistError != nil {
-			p.onPersistError(e, t, step, err)
-		} else {
-			e.logger.Error("workflow."+p.name+".persist", "task_id", t.ID, "step", step.ID, "err", err)
-		}
-		return true
-	}
-	if p.onArmed != nil {
-		if err := p.onArmed(e, t, step, attempt); err != nil {
-			e.logger.Error("workflow."+p.name+".clear", "task_id", t.ID, "step", step.ID, "err", err)
+	if p.armedStatus != nil {
+		status, reason := p.armedStatus(e, t, step, attempt)
+		if err := e.tasks.SetStatusAndWorkflow(t.ID, status, reason, t.Workflow); err != nil {
+			if p.onPersistError != nil {
+				p.onPersistError(e, t, step, err)
+			} else {
+				e.logger.Error("workflow."+p.name+".persist", "task_id", t.ID, "step", step.ID, "err", err)
+			}
 			return true
+		}
+		t.Status = status
+		t.StatusReason = reason
+	} else {
+		if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+			if p.onPersistError != nil {
+				p.onPersistError(e, t, step, err)
+			} else {
+				e.logger.Error("workflow."+p.name+".persist", "task_id", t.ID, "step", step.ID, "err", err)
+			}
+			return true
+		}
+		if p.onArmed != nil {
+			if err := p.onArmed(e, t, step, attempt); err != nil {
+				e.logger.Error("workflow."+p.name+".clear", "task_id", t.ID, "step", step.ID, "err", err)
+				return true
+			}
 		}
 	}
 	e.logger.Info("workflow."+p.name+".retry",

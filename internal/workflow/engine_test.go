@@ -818,6 +818,26 @@ func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	return nil
 }
 
+func (m *memTasks) SetStatusAndWorkflow(id, status, reason string, wf *Execution) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.failSetWorkflow || m.failSetWorkflowN > 0 {
+		if m.failSetWorkflowN > 0 {
+			m.failSetWorkflowN--
+		}
+		return fmt.Errorf("simulated write failure for task %s", id)
+	}
+	t, ok := m.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	t.Status = status
+	t.StatusReason = reason
+	m.reasons[id] = reason
+	t.Workflow = wf.Clone()
+	return nil
+}
+
 func (m *memTasks) ClaimWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

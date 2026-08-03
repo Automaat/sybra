@@ -60,10 +60,7 @@ func (e *Engine) rewindRetry(taskID string, wfExec *Execution, t TaskInfo, p rew
 	wfExec.CurrentStep = p.rewindStep
 	wfExec.State = ExecWaiting
 
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		return true, attempt, err
-	}
-	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, p.reason(attempt)); err != nil {
+	if err := e.tasks.SetStatusAndWorkflow(taskID, t.Status, p.reason(attempt), wfExec); err != nil {
 		return true, attempt, err
 	}
 	return true, attempt, nil
