@@ -130,7 +130,14 @@ func TestExecFocusedChecks_PassIsClean(t *testing.T) {
 
 func TestExecFocusedChecks_ScaledTimeoutAbsorbsHostOversubscription(t *testing.T) {
 	orig := workflowCheckLoadPerCPU
-	workflowCheckLoadPerCPU = func() (float64, bool) { return 3.0, true }
+	// Stubbed at the scale ceiling, not just above 1: the assertion needs the
+	// scaled budget to clear `sleep 0.2` plus real process-spawn cost on a
+	// machine already running the rest of the suite. At load 3 the budget was
+	// 300ms against a 200ms sleep, and that 100ms margin is what made this
+	// flake under `go test ./...` while passing in isolation. At the ceiling
+	// the budget is 800ms, while the unscaled 100ms still fails without
+	// scaling — so the test proves the same thing with 4x the headroom.
+	workflowCheckLoadPerCPU = func() (float64, bool) { return verifyTimeoutScaleCeilingLoad, true }
 	t.Cleanup(func() { workflowCheckLoadPerCPU = orig })
 
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
