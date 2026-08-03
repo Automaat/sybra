@@ -95,7 +95,7 @@ func CheckBareCloneHealth(ctx context.Context, barePath string) error {
 }
 
 // CheckWorktreeIndexes reports the first linked worktree whose index git
-// cannot read.
+// cannot use.
 //
 // Split out of CheckBareCloneHealth because the two answer different
 // questions and only one of them should gate dispatch. An index git cannot
@@ -104,9 +104,7 @@ func CheckBareCloneHealth(ctx context.Context, barePath string) error {
 // from a single unscoped `git fsck` exit code conflated them, so ordinary
 // worktree churn read as clone corruption.
 //
-// Reads the index via `git ls-files` rather than `git status`: it parses the
-// index without stat-ing the working tree, which matters when this runs
-// across dozens of live worktrees on every dispatch.
+// See indexUsable for what "cannot read" covers and why it is two probes.
 func CheckWorktreeIndexes(ctx context.Context, barePath string) error {
 	entries, err := os.ReadDir(filepath.Join(barePath, "worktrees"))
 	if err != nil {
@@ -132,22 +130,47 @@ func CheckWorktreeIndexes(ctx context.Context, barePath string) error {
 		if _, err := os.Stat(filepath.Join(adminDir, "index")); err != nil {
 			continue
 		}
-		if err := indexReadable(ctx, checkoutPath); err != nil {
-			return fmt.Errorf("worktrees/%s/index file is unreadable: %w", entry.Name(), err)
+		if err := indexUsable(ctx, checkoutPath); err != nil {
+			return fmt.Errorf("worktrees/%s: %w", entry.Name(), err)
 		}
 	}
 	return nil
 }
 
-// indexReadable reports whether git can parse the worktree's index.
+// indexUsable reports whether git can both parse the worktree's index and
+// resolve every object it names.
 //
-// Discards stdout rather than using executil.Run: this runs per worktree on
-// the dispatch path, and ls-files on a large repo emits thousands of paths
-// that would otherwise be buffered in full only to be thrown away. Only
-// stderr is kept, since that is what explains a parse failure.
-func indexReadable(ctx context.Context, checkoutPath string) error {
-	cmd := exec.CommandContext(ctx, "git", "ls-files")
-	cmd.Dir = checkoutPath
+// Two probes, because they fail differently and only one was covered before:
+// ls-files catches an index git cannot parse at all, while write-tree catches
+// an index that parses but names a blob the object database no longer has.
+// The second is the shape behind the "codegen gate could not checkpoint:
+// recovery commit: invalid object <sha> for '<path>'" failures seen on the
+// board — write-tree is the operation a commit performs, so it reproduces the
+// break exactly rather than approximating it.
+//
+// Missing that second case was not merely incomplete reporting:
+// rebuildWorktreeIndexes early-returns when this check passes, so an index in
+// that state received no repair at all and the checkpoint kept failing.
+//
+// This runs on the repair path (rebuildWorktreeIndexes), not per dispatch, so
+// write-tree's cost and its unreferenced-tree side effect are acceptable —
+// the tree it writes is one a commit would have written anyway, and it is
+// unreferenced garbage that gc collects.
+func indexUsable(ctx context.Context, checkoutPath string) error {
+	if err := runQuietGit(ctx, checkoutPath, "ls-files"); err != nil {
+		return fmt.Errorf("index is unparseable: %w", err)
+	}
+	if err := runQuietGit(ctx, checkoutPath, "write-tree"); err != nil {
+		return fmt.Errorf("index names an unresolvable object: %w", err)
+	}
+	return nil
+}
+
+// runQuietGit runs git in dir, discarding stdout and surfacing only stderr,
+// which is the part that explains a failure.
+func runQuietGit(ctx context.Context, dir string, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
 	cmd.Stdout = io.Discard
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
