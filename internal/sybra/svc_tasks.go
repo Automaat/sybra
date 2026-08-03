@@ -460,7 +460,7 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 		}, nil
 	})
 	if err != nil {
-		return result.Task, err
+		return result.Task, mapLockTimeout(err)
 	}
 	updated := result.Task
 
@@ -671,6 +671,9 @@ func (s *TaskService) AssignTask(t task.Task) error {
 	t.MirrorUpdatedAt = nil
 	saved, created, err := s.tasks.Put(t)
 	if err != nil {
+		if lt := mapLockTimeout(err); lt != err {
+			return lt
+		}
 		return fmt.Errorf("assign task: %w", err)
 	}
 	if s.audit != nil && created {
@@ -801,7 +804,7 @@ func (s *TaskService) CreateTaskWithInit(title, body, mode string, init task.Upd
 	}
 	t, err := s.tasks.CreateFull(title, body, mode, createInit)
 	if err != nil {
-		return t, err
+		return t, mapLockTimeout(err)
 	}
 
 	if prRepo != "" {
@@ -1127,7 +1130,7 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 		updates["workflow"] = (*workflow.Execution)(nil)
 	}
 	if _, err := s.tasks.UpdateMap(id, updates); err != nil {
-		return task.Task{}, err
+		return task.Task{}, mapLockTimeout(err)
 	}
 
 	if spec.dispatches {
@@ -1157,6 +1160,9 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 				}); revertErr != nil {
 					s.logger.Error("task.dispatch.revert-failed", "task_id", id, "target", target, "err", revertErr)
 					s.logDispatchAudit(id, target, string(cur.Status), reason, "revert-failed")
+					if lt := mapLockTimeout(revertErr); lt != revertErr {
+						return task.Task{}, lt
+					}
 					return task.Task{}, fmt.Errorf("dispatch to %s failed (%s) and revert to human-required also failed: %w", target, failure, revertErr)
 				}
 				// The bounce back to human-required is the event an operator most
