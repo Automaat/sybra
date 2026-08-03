@@ -15,9 +15,9 @@ var ErrLockUnsupported = errors.New("fsutil: cross-process file locking is not s
 
 // AtomicWrite writes data to path via a temp file + rename to prevent
 // partial reads from concurrent goroutines. It syncs the completed temp file
-// before renaming and syncs the containing directory afterwards, so Unix
-// filesystems persist both the new data and the name replacement across a
-// power loss. The temp file is removed on every pre-rename error path —
+// before renaming and then attempts to sync the containing directory, so
+// supported filesystems persist both the new data and the name replacement
+// across a power loss. The temp file is removed on every pre-rename error path —
 // including a failed rename into a read-only target directory — so repeated
 // write failures don't fill the disk with orphans.
 //
