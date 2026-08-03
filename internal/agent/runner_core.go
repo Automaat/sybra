@@ -76,9 +76,20 @@ type sandboxSpec struct {
 	gitWorktrees string
 	gitObjectDir string
 
-	gitBranchRef           string
-	gitBranchRefDir        string
-	gitBranchLogDir        string
+	gitBranchRef    string
+	gitBranchRefDir string
+	gitBranchLogDir string
+	// gitBranchRefFile/gitBranchRefLockFile/gitBranchLogFile are the exact,
+	// single-file absolute paths for this task's own branch — darwin grants
+	// these via literal (not subpath) SBPL rules, since gitBranchRefDir can be
+	// shared with sibling tasks whose branch names nest under the same
+	// directory (e.g. two "fix/..." branches both live under refs/heads/fix/).
+	// Linux avoids that exposure with a bind-mounted overlay instead; Seatbelt
+	// has no filesystem-view mechanism to do the same, so darwin narrows the
+	// grant to the one file per root instead.
+	gitBranchRefFile       string
+	gitBranchRefLockFile   string
+	gitBranchLogFile       string
 	gitRemoteRefDir        string
 	gitRemoteLogDir        string
 	gitTagRefDir           string
@@ -141,6 +152,7 @@ func (s sandboxSpec) writeRoots() []string {
 		s.gitOverlayTagRefDir, s.gitOverlayTagLogDir,
 		s.gitBranchRefDir, s.gitBranchLogDir, s.gitRemoteRefDir,
 		s.gitRemoteLogDir, s.gitTagRefDir, s.gitTagLogDir,
+		s.gitBranchRefFile, s.gitBranchRefLockFile, s.gitBranchLogFile,
 	}
 	roots = append(roots, s.gitMetadata...)
 	roots = append(roots, s.gitShared...)

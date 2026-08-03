@@ -36,7 +36,34 @@
   ;; EPERM without this. Scoped to just this task's own admin subdirectory,
   ;; not the shared bare-clone root or sibling worktrees, so one task cannot
   ;; write another's refs.
-  (subpath (param "GIT_ADMIN_DIR")))
+  (subpath (param "GIT_ADMIN_DIR"))
+  ;; GIT_OBJECT_DIR is the shared bare clone's objects/ store. Content-
+  ;; addressed and safe to grant directly: every object is written once,
+  ;; atomically, to a name derived from its own hash, so concurrent writes
+  ;; from sibling tasks sharing this clone cannot collide or corrupt it.
+  (subpath (param "GIT_OBJECT_DIR"))
+  ;; GIT_BRANCH_REF_FILE/_LOCK_FILE/GIT_BRANCH_LOG_FILE are the exact ref,
+  ;; ref-lock, and reflog files for this task's own branch — literal, not
+  ;; subpath: the branch's parent ref directory can be shared with sibling
+  ;; tasks whose branch names nest under the same path segment (two "fix/..."
+  ;; branches both live under refs/heads/fix/), so granting the directory
+  ;; would let one task write another's ref. Linux avoids this with a bind-
+  ;; mounted overlay; Seatbelt has no filesystem-view mechanism to do the
+  ;; same, so this narrows the grant to the three files a commit touches.
+  (literal (param "GIT_BRANCH_REF_FILE"))
+  (literal (param "GIT_BRANCH_REF_LOCK_FILE"))
+  (literal (param "GIT_BRANCH_LOG_FILE"))
+  ;; GIT_REMOTE_REF_DIR/_LOG_DIR and GIT_TAG_REF_DIR/_LOG_DIR are granted as
+  ;; whole subpaths, unlike the per-file branch-ref grants above: unlike a
+  ;; branch (one task's own, exclusive work), remote-tracking refs and tags
+  ;; are shared truth every task fetching the same origin converges on, so a
+  ;; write here is idempotent rather than destructive to a sibling task's own
+  ;; state — the same tradeoff Linux's overlay-and-sync makes safe by a
+  ;; different mechanism.
+  (subpath (param "GIT_REMOTE_REF_DIR"))
+  (subpath (param "GIT_REMOTE_LOG_DIR"))
+  (subpath (param "GIT_TAG_REF_DIR"))
+  (subpath (param "GIT_TAG_LOG_DIR")))
 ;; Device sinks. Writing to these is a no-op by definition, so allowing them
 ;; adds no blast radius, but denying them breaks essentially all tooling:
 ;; every `>/dev/null` redirect fails, which took out git with

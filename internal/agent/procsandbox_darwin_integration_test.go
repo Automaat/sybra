@@ -4,73 +4,133 @@ package agent
 
 import (
 	"context"
-	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// TestSandboxEnforce_GrantsGitAdminDirWrite reproduces task 24849431's
-// EPERM: a linked worktree's gitdir (HEAD, index, logs/HEAD) lives outside
-// WORKTREE, under the shared bare clone's own worktrees/<branch>/
-// subdirectory. Runs real sandbox-exec: a write inside GIT_ADMIN_DIR must
-// succeed, while a write to a sibling path under the same parent (standing
-// in for the shared bare-clone root or another task's worktree) must still
-// be kernel-denied — the isolation property the narrow grant depends on.
-func TestSandboxEnforce_GrantsGitAdminDirWrite(t *testing.T) {
-	if !sandboxExecAvailable() {
-		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
+// runGitOrFatal runs a git command in dir, unsandboxed, for test setup.
+func runGitOrFatal(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v (dir=%s): %v: %s", args, dir, err, out)
 	}
+}
+
+// setupLinkedWorktree builds a bare clone + linked worktree pair matching a
+// real Sybra task layout: a shared bare clone (analogous to
+// ~/.sybra/clones/<owner>/<repo>.git) with a linked worktree checked out from
+// it on its own branch, and the standard tracking refspec CloneBare
+// configures so `git fetch origin` actually updates refs/remotes/origin/*.
+func setupLinkedWorktree(t *testing.T) (bare, worktree string) {
+	t.Helper()
+	src := t.TempDir()
+	runGitOrFatal(t, src, "init", "-q", "-b", "main")
+	runGitOrFatal(t, src, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init")
+
+	bare = filepath.Join(t.TempDir(), "bare.git")
+	runGitOrFatal(t, "", "clone", "-q", "--bare", src, bare)
+	runGitOrFatal(t, bare, "config", "user.email", "t@t")
+	runGitOrFatal(t, bare, "config", "user.name", "t")
+	runGitOrFatal(t, bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+
+	worktree = filepath.Join(t.TempDir(), "wt")
+	runGitOrFatal(t, bare, "worktree", "add", worktree, "-b", "fix/task-branch", "main")
+
+	// Advance upstream after the worktree is created, so fetch+merge below
+	// has real forward progress to make, not a no-op.
+	runGitOrFatal(t, src, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "upstream change")
+	return bare, worktree
+}
+
+// buildEnforceCfg drives the exact production discovery pipeline
+// (resolveGitSandboxRoots → enforceSpec) that Manager.buildEnforceSpec uses,
+// rather than hand-constructing a sandboxSpec — a hand-built spec can grant
+// paths a real run would never compute the same way, silently passing a test
+// that a production run would fail.
+func buildEnforceCfg(t *testing.T, worktree string) *RunConfig {
+	t.Helper()
 	profilePath, err := materializeSandboxProfile()
 	if err != nil {
 		t.Fatalf("materializeSandboxProfile: %v", err)
 	}
-
-	wt, err := canonicalizeRoot(t.TempDir())
+	wtCanon, err := canonicalizeRoot(worktree)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("canonicalizeRoot(worktree): %v", err)
 	}
-	clonesRoot, err := canonicalizeRoot(t.TempDir())
+	gitRoots, err := resolveGitSandboxRoots(context.Background(), wtCanon)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("resolveGitSandboxRoots: %v", err)
 	}
-	gitAdminDir := filepath.Join(clonesRoot, "worktrees", "this-task-branch")
-	if err := os.MkdirAll(gitAdminDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// Stands in for the shared bare-clone root / a sibling task's own admin
-	// dir: same parent as GIT_ADMIN_DIR, but never granted.
-	sibling := filepath.Join(clonesRoot, "worktrees", "other-task-branch")
-	if err := os.MkdirAll(sibling, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	spec := enforceSpec(wtCanon, nil, wtCanon, wtCanon, wtCanon, profilePath, "", gitRoots, gitSandboxOverlay{})
+	return &RunConfig{sandbox: spec}
+}
 
-	cfg := &RunConfig{sandbox: sandboxSpec{
-		mode:        "enforce",
-		worktree:    wt,
-		sandboxHome: wt,
-		tmp:         wt,
-		sharedCache: wt,
-		gitAdminDir: gitAdminDir,
-		profilePath: profilePath,
-	}}
+// TestSandboxEnforce_FullGitWorkflowSucceeds reproduces task 24849431's
+// EPERM end to end: fetch, fast-forward merge, add, and commit — the exact
+// operations the task's own diagnosis named — run for real under
+// sandbox-exec, through the same discovery pipeline (resolveGitSandboxRoots,
+// enforceSpec, newProviderCmd → wrapInvocation) a production dispatch uses.
+// A linked worktree's gitdir (HEAD/index/logs/HEAD) and its branch's own
+// ref/reflog live outside WORKTREE, under the shared bare clone; without
+// these grants git fails partway through with the reported EPERM.
+func TestSandboxEnforce_FullGitWorkflowSucceeds(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
+	}
+	_, wt := setupLinkedWorktree(t)
+	cfg := buildEnforceCfg(t, wt)
 
-	script := "touch " + filepath.Join(gitAdminDir, "HEAD") + " && echo ADMIN_OK; " +
-		"(touch " + filepath.Join(sibling, "HEAD") + " 2>/dev/null && echo SIBLING_LEAK) || echo SIBLING_DENIED"
+	script := "set -e; cd " + wt + "\n" +
+		"git fetch origin\n" +
+		"git merge --ff-only refs/remotes/origin/main\n" +
+		"echo hello > f.txt\n" +
+		"git add f.txt\n" +
+		"git commit -q -m 'task change'\n" +
+		"echo WORKFLOW_OK"
 	cmd := newProviderCmd(context.Background(), cfg, false, "sh", "-c", script)
-	out, runErr := cmd.CombinedOutput()
+	out, err := cmd.CombinedOutput()
 	got := string(out)
 
-	if !strings.Contains(got, "ADMIN_OK") {
-		t.Errorf("write to GIT_ADMIN_DIR should succeed (err=%v): %q", runErr, got)
+	if err != nil {
+		t.Fatalf("fetch+merge+add+commit failed under sandbox (err=%v): %s", err, got)
 	}
-	if strings.Contains(got, "SIBLING_LEAK") || !strings.Contains(got, "SIBLING_DENIED") {
-		t.Errorf("write to a sibling worktree admin dir must be kernel-denied: %q", got)
+	if !strings.Contains(got, "WORKFLOW_OK") {
+		t.Errorf("workflow did not reach its final step: %s", got)
 	}
-	if _, statErr := os.Stat(filepath.Join(gitAdminDir, "HEAD")); statErr != nil {
-		t.Errorf("in-sandbox file not created: %v", statErr)
+
+	log := exec.Command("git", "log", "--format=%s", "-1")
+	log.Dir = wt
+	logOut, logErr := log.CombinedOutput()
+	if logErr != nil || strings.TrimSpace(string(logOut)) != "task change" {
+		t.Errorf("commit did not land as expected (err=%v): %s", logErr, logOut)
 	}
-	if _, statErr := os.Stat(filepath.Join(sibling, "HEAD")); statErr == nil {
-		t.Errorf("sibling leak probe exists — sandbox did not fence the write")
+}
+
+// TestSandboxEnforce_GitAdminDirIsolatedFromSiblingWorktree proves the
+// per-task grant does not widen into a sibling task's own worktree admin
+// dir sharing the same bare clone — the isolation property the narrow,
+// per-task scoping depends on.
+func TestSandboxEnforce_GitAdminDirIsolatedFromSiblingWorktree(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
+	}
+	bare, wt := setupLinkedWorktree(t)
+	cfg := buildEnforceCfg(t, wt)
+
+	siblingWt := filepath.Join(filepath.Dir(wt), "sibling-wt")
+	runGitOrFatal(t, bare, "worktree", "add", siblingWt, "-b", "fix/sibling-branch", "main")
+	siblingAdminDir := filepath.Join(bare, "worktrees", "sibling-wt")
+
+	script := "(touch " + filepath.Join(siblingAdminDir, "HEAD") + " 2>/dev/null && echo LEAK) || echo DENIED"
+	cmd := newProviderCmd(context.Background(), cfg, false, "sh", "-c", script)
+	out, _ := cmd.CombinedOutput()
+	got := string(out)
+
+	if strings.Contains(got, "LEAK") || !strings.Contains(got, "DENIED") {
+		t.Errorf("write to a sibling worktree's admin dir must be kernel-denied: %q", got)
 	}
 }

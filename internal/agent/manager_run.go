@@ -656,6 +656,7 @@ func enforceSpec(
 	gitRoots gitSandboxRoots,
 	gitOverlay gitSandboxOverlay,
 ) sandboxSpec {
+	branchRefFile, branchRefLockFile, branchLogFile := gitBranchSingleFiles(gitRoots)
 	return sandboxSpec{
 		mode:                   "enforce",
 		worktree:               worktree,
@@ -674,6 +675,9 @@ func enforceSpec(
 		gitBranchRef:           gitRoots.branchRef,
 		gitBranchRefDir:        gitRoots.branchRefDir,
 		gitBranchLogDir:        gitRoots.branchLogDir,
+		gitBranchRefFile:       branchRefFile,
+		gitBranchRefLockFile:   branchRefLockFile,
+		gitBranchLogFile:       branchLogFile,
 		gitRemoteRefDir:        gitRoots.remoteRefDir,
 		gitRemoteLogDir:        gitRoots.remoteLogDir,
 		gitTagRefDir:           gitRoots.tagRefDir,
@@ -702,6 +706,19 @@ func enforceSpec(
 		appSupport:    providerAppSupportRoot(),
 		claudeScratch: claudeScratchRoot(),
 	}
+}
+
+// gitBranchSingleFiles derives the exact, single-file absolute paths for the
+// current branch's ref, its lock, and its reflog from roots' already-resolved
+// directories — narrow enough to grant directly on darwin (see sandboxSpec's
+// gitBranchRefFile doc). Empty on a detached HEAD, matching roots.branchRef.
+func gitBranchSingleFiles(roots gitSandboxRoots) (refFile, refLockFile, logFile string) {
+	if roots.branchRef == "" || roots.branchRefDir == "" || roots.branchLogDir == "" {
+		return "", "", ""
+	}
+	name := filepath.Base(roots.branchRef)
+	refFile = filepath.Join(roots.branchRefDir, name)
+	return refFile, refFile + ".lock", filepath.Join(roots.branchLogDir, name)
 }
 
 func injectSandboxGitEnv(cfg *RunConfig, roots gitSandboxRoots, overlay gitSandboxOverlay) error {

@@ -191,39 +191,76 @@ func TestSandboxProfile_ReferencesAppSupport(t *testing.T) {
 }
 
 // A linked worktree's actual gitdir (HEAD, index, logs/HEAD) lives outside
-// WORKTREE, under the shared bare clone's worktrees/<branch>/ subdirectory.
-// Without this grant every git write (add/commit/fetch/push) failed EPERM.
-func TestWrapInvocation_GrantsGitAdminDir(t *testing.T) {
-	const gitAdminDir = "/data/clones/repo.git/worktrees/task-branch"
-	cfg := &RunConfig{sandbox: sandboxSpec{
-		mode:        "enforce",
-		worktree:    "/data/wt",
-		sandboxHome: "/data/home",
-		tmp:         "/tmp",
-		sharedCache: "/data/cache",
-		gitAdminDir: gitAdminDir,
-	}}
+// WORKTREE, under the shared bare clone's worktrees/<branch>/ subdirectory,
+// and a real commit also needs write on the shared object store plus the
+// branch's own ref/lock/reflog and the shared remote/tag ref+log dirs.
+// Without these grants git fetch/add/commit failed EPERM partway through.
+func TestWrapInvocation_GrantsAllGitRoots(t *testing.T) {
+	spec := sandboxSpec{
+		mode:                 "enforce",
+		worktree:             "/data/wt",
+		sandboxHome:          "/data/home",
+		tmp:                  "/tmp",
+		sharedCache:          "/data/cache",
+		gitAdminDir:          "/data/clones/repo.git/worktrees/task-branch",
+		gitObjectDir:         "/data/clones/repo.git/objects",
+		gitBranchRefFile:     "/data/clones/repo.git/refs/heads/fix/task-branch",
+		gitBranchRefLockFile: "/data/clones/repo.git/refs/heads/fix/task-branch.lock",
+		gitBranchLogFile:     "/data/clones/repo.git/logs/refs/heads/fix/task-branch",
+		gitRemoteRefDir:      "/data/clones/repo.git/refs/remotes",
+		gitRemoteLogDir:      "/data/clones/repo.git/logs/refs/remotes",
+		gitTagRefDir:         "/data/clones/repo.git/refs/tags",
+		gitTagLogDir:         "/data/clones/repo.git/logs/refs/tags",
+	}
+	cfg := &RunConfig{sandbox: spec}
 
 	_, args := wrapInvocation("claude", []string{"-p", "hi"}, cfg)
 
-	var got string
+	want := map[string]string{
+		"GIT_ADMIN_DIR":            spec.gitAdminDir,
+		"GIT_OBJECT_DIR":           spec.gitObjectDir,
+		"GIT_BRANCH_REF_FILE":      spec.gitBranchRefFile,
+		"GIT_BRANCH_REF_LOCK_FILE": spec.gitBranchRefLockFile,
+		"GIT_BRANCH_LOG_FILE":      spec.gitBranchLogFile,
+		"GIT_REMOTE_REF_DIR":       spec.gitRemoteRefDir,
+		"GIT_REMOTE_LOG_DIR":       spec.gitRemoteLogDir,
+		"GIT_TAG_REF_DIR":          spec.gitTagRefDir,
+		"GIT_TAG_LOG_DIR":          spec.gitTagLogDir,
+	}
+	got := map[string]string{}
 	for i := range len(args) - 1 {
-		if args[i] == "-D" {
-			if name, value, ok := strings.Cut(args[i+1], "="); ok && name == "GIT_ADMIN_DIR" {
-				got = value
-			}
+		if args[i] != "-D" {
+			continue
+		}
+		if name, value, ok := strings.Cut(args[i+1], "="); ok {
+			got[name] = value
 		}
 	}
-	if got != gitAdminDir {
-		t.Fatalf("GIT_ADMIN_DIR = %q, want %q", got, gitAdminDir)
+	for name, wantValue := range want {
+		if got[name] != wantValue {
+			t.Errorf("%s = %q, want %q", name, got[name], wantValue)
+		}
 	}
 }
 
-// The embedded profile must actually reference the param, or the -D value is
-// inert and the grant silently does nothing.
-func TestSandboxProfile_ReferencesGitAdminDir(t *testing.T) {
-	if !strings.Contains(string(agentSandboxProfile), `(subpath (param "GIT_ADMIN_DIR"))`) {
-		t.Fatal("profile has no GIT_ADMIN_DIR write rule, so the resolved root grants nothing")
+// The embedded profile must actually reference every git-root param, or the
+// -D value is inert and the grant silently does nothing.
+func TestSandboxProfile_ReferencesAllGitRoots(t *testing.T) {
+	profile := string(agentSandboxProfile)
+	for _, rule := range []string{
+		`(subpath (param "GIT_ADMIN_DIR"))`,
+		`(subpath (param "GIT_OBJECT_DIR"))`,
+		`(literal (param "GIT_BRANCH_REF_FILE"))`,
+		`(literal (param "GIT_BRANCH_REF_LOCK_FILE"))`,
+		`(literal (param "GIT_BRANCH_LOG_FILE"))`,
+		`(subpath (param "GIT_REMOTE_REF_DIR"))`,
+		`(subpath (param "GIT_REMOTE_LOG_DIR"))`,
+		`(subpath (param "GIT_TAG_REF_DIR"))`,
+		`(subpath (param "GIT_TAG_LOG_DIR"))`,
+	} {
+		if !strings.Contains(profile, rule) {
+			t.Errorf("profile missing %s; the resolved root grants nothing", rule)
+		}
 	}
 }
 
