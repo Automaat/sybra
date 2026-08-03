@@ -700,6 +700,7 @@ func enforceSpec(
 		opencodeState: agentStateRoot(filepath.Join(".local", "share", "opencode"), sandboxHome),
 		toolCache:     agentStateRoot(".cache", sandboxHome),
 		appSupport:    providerAppSupportRoot(),
+		claudeScratch: claudeScratchRoot(),
 	}
 }
 
@@ -964,6 +965,55 @@ func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 // under it at startup. Narrower grants were measured and do not work: naming
 // a codex-specific subpath still fails, because creating that subdirectory
 // requires write on the parent.
+// claudeScratchRoot returns the Claude Code per-user scratchpad root, or ""
+// when it cannot be established safely.
+//
+// Claude Code writes its per-session working files under /tmp/claude-<uid>.
+// On darwin that is not covered by the tmp root: os.TempDir() resolves to
+// $TMPDIR (/var/folders/.../T) while /tmp resolves to /private/tmp, so the
+// scratchpad is invisible to the sandbox and every write there fails EPERM.
+// Measured: an agent retried the same denied mkdir eight times in thirty
+// seconds rather than progressing.
+//
+// Resolves /tmp explicitly rather than os.TempDir(): the location Claude Code
+// uses is /tmp, so deriving it from $TMPDIR would grant a
+// /var/folders/.../claude-<uid> directory if one happened to exist and leave
+// the real scratchpad denied.
+//
+// Refuses a symlink. /tmp is world-writable, so any local process can
+// pre-create /tmp/claude-<uid> pointing anywhere; canonicalizing that would
+// hand the agent a writable root outside /tmp — defeating the boundary this
+// sandbox exists to enforce. Bailing out costs the scratchpad grant, which
+// degrades to the EPERM this fixes, rather than silently widening the
+// sandbox.
+func claudeScratchRoot() string {
+	return resolveScratchRoot(filepath.Join("/tmp", fmt.Sprintf("claude-%d", os.Getuid())))
+}
+
+// resolveScratchRoot validates and canonicalizes one scratchpad path. Split
+// from claudeScratchRoot so the symlink refusal is testable without touching
+// the real /tmp/claude-<uid> on a developer machine.
+func resolveScratchRoot(root string) string {
+	if fi, err := os.Lstat(root); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+			return ""
+		}
+	} else if !os.IsNotExist(err) {
+		return ""
+	}
+	canon, err := canonicalizeCreatedRoot(root, 0o700)
+	if err != nil {
+		return ""
+	}
+	// canonicalizeCreatedRoot resolves symlinks. Accept only the path itself
+	// or darwin's /private-prefixed alias of it, so a link that slipped in
+	// between the Lstat and here cannot widen the grant.
+	if canon != root && canon != filepath.Join("/private", root) {
+		return ""
+	}
+	return canon
+}
+
 func providerAppSupportRoot() string {
 	home, err := os.UserHomeDir()
 	if err != nil || strings.TrimSpace(home) == "" {
