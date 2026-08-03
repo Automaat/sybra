@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -241,5 +244,39 @@ func TestAssignTaskRejectsMalformed(t *testing.T) {
 				t.Fatal("a rejected task must not have been written to the store")
 			}
 		})
+	}
+}
+
+func TestAssignTaskLockTimeoutIsUnavailable(t *testing.T) {
+	svc, a := setupTaskService(t)
+	restore := setTaskLockTimingForTest(t, 150*time.Millisecond, 10*time.Millisecond)
+	defer restore()
+
+	pushed := task.Task{
+		ID:        "leader-locked",
+		Title:     "locked mirror push",
+		Status:    task.StatusTodo,
+		AgentMode: task.AgentModeHeadless,
+	}
+	lockPath := filepath.Join(a.tasksDir, pushed.ID+".md")
+	cmd, release := startTaskLockHolder(t, lockPath)
+	defer release()
+
+	err := svc.AssignTask(pushed)
+	if err == nil {
+		t.Fatal("AssignTask err = nil, want unavailable clientError")
+	}
+	var ce *clientError
+	if !errors.As(err, &ce) {
+		t.Fatalf("err = %T %v, want *clientError", err, err)
+	}
+	if ce.HTTPStatus() != 503 {
+		t.Fatalf("status = %d, want 503", ce.HTTPStatus())
+	}
+	if !strings.Contains(err.Error(), lockPath+".lock") {
+		t.Fatalf("error = %q, want lock path", err.Error())
+	}
+	if !strings.Contains(err.Error(), "pid "+strconv.Itoa(cmd.Process.Pid)) {
+		t.Fatalf("error = %q, want holder pid %d", err.Error(), cmd.Process.Pid)
 	}
 }

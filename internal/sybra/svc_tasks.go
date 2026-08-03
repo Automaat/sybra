@@ -22,7 +22,6 @@ import (
 	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
-	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/project"
@@ -202,7 +201,7 @@ func (s *TaskService) UploadAttachment(taskID, fileName string, data []byte) (ta
 	})
 	if err != nil {
 		_ = s.attachments.Delete(taskID, meta.ID)
-		return task.Attachment{}, err
+		return task.Attachment{}, mapLockTimeout(err)
 	}
 	return meta, nil
 }
@@ -233,7 +232,7 @@ func (s *TaskService) DeleteAttachment(taskID, attachmentID string) error {
 		return task.Update{Attachments: &next}, nil
 	})
 	if err != nil {
-		return err
+		return mapLockTimeout(err)
 	}
 	if err := s.attachments.Delete(taskID, attachmentID); err != nil && s.logger != nil {
 		s.logger.Warn("attachments.delete", "task_id", taskID, "attachment_id", attachmentID, "err", err)
@@ -906,10 +905,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	}
 	t, err := s.tasks.UpdateMap(id, updates)
 	if err != nil {
-		if errors.Is(err, fsutil.ErrLockTimeout) {
-			return t, unavailableError(err.Error())
-		}
-		return t, err
+		return t, mapLockTimeout(err)
 	}
 	s.appendManualHumanRequiredDecision(cur, t, decisionReason)
 	s.wg.Go(func() {
@@ -1270,10 +1266,7 @@ func (s *TaskService) DeleteTask(id string) error {
 	}
 	if err := s.tasks.Delete(id); err != nil {
 		s.logger.Error("task.delete.failed", "task_id", id, "err", err)
-		if errors.Is(err, fsutil.ErrLockTimeout) {
-			return unavailableError(err.Error())
-		}
-		return err
+		return mapLockTimeout(err)
 	}
 	return nil
 }

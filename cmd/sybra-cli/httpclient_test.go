@@ -62,6 +62,25 @@ func (f *failingTaskService) UpdateTask(string, map[string]any) (task.Task, erro
 	return task.Task{}, errors.New("simulated internal server failure")
 }
 
+type unavailableCreateTaskService struct {
+	fakeTaskService
+}
+
+func (f *unavailableCreateTaskService) CreateTask(string, string, string) (task.Task, error) {
+	return task.Task{}, &testHTTPClientError{
+		status: http.StatusServiceUnavailable,
+		msg:    "fsutil: lock acquisition timed out: /tmp/task.md.lock held by pid 1234",
+	}
+}
+
+type testHTTPClientError struct {
+	status int
+	msg    string
+}
+
+func (e *testHTTPClientError) Error() string   { return e.msg }
+func (e *testHTTPClientError) HTTPStatus() int { return e.status }
+
 func startFailingAPIServer(t *testing.T, tasksDir string) string {
 	t.Helper()
 	rawStore, err := task.NewStore(tasksDir)
@@ -69,6 +88,25 @@ func startFailingAPIServer(t *testing.T, tasksDir string) string {
 		t.Fatal(err)
 	}
 	svc := &failingTaskService{fakeTaskService{tasks: task.NewManager(rawStore, nil)}}
+	mux := http.NewServeMux()
+	httpapi.Mount(mux, map[string]httpapi.Service{
+		"TaskService": httpapi.NewService(svc, "GetTask", "UpdateTask", "CreateTask", "DeleteTask"),
+	}, slog.Default(), nil)
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return strings.TrimPrefix(srv.URL, "http://127.0.0.1:")
+}
+
+func startUnavailableCreateAPIServer(t *testing.T, tasksDir string) string {
+	t.Helper()
+	rawStore, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &unavailableCreateTaskService{fakeTaskService{tasks: task.NewManager(rawStore, nil)}}
 	mux := http.NewServeMux()
 	httpapi.Mount(mux, map[string]httpapi.Service{
 		"TaskService": httpapi.NewService(svc, "GetTask", "UpdateTask", "CreateTask", "DeleteTask"),
@@ -191,6 +229,33 @@ func TestUpdate_UsesHTTPModeWhenTaskOnlyExistsOnServer(t *testing.T) {
 	mustUnmarshal(t, out, &got)
 	if got.ID != created.ID || got.Status != task.StatusTodo || got.StatusReason != "via http only" {
 		t.Fatalf("updated task = %+v, want server task updated through HTTP", got)
+	}
+}
+
+func TestCreate_HTTPUnavailableLockTimeoutIsRetryable(t *testing.T) {
+	home := t.TempDir()
+	_ = useDefaultHTTPCLIHome(t, home)
+
+	port := startUnavailableCreateAPIServer(t, t.TempDir())
+	t.Setenv(serverTargetEnv, "127.0.0.1:"+port)
+
+	code, _, stderr := runCLIWithStderr(t, "--json", "create", "--title", "http locked task")
+	if code != 75 {
+		t.Fatalf("create exit = %d, want 75", code)
+	}
+	var errEnv struct {
+		Error     string `json:"error"`
+		Retryable bool   `json:"retryable"`
+	}
+	mustUnmarshal(t, stderr, &errEnv)
+	if !errEnv.Retryable {
+		t.Fatalf("retryable = false, want true (stderr=%q)", stderr)
+	}
+	if !strings.Contains(errEnv.Error, "retryable:") {
+		t.Fatalf("error = %q, want retryable prefix", errEnv.Error)
+	}
+	if !strings.Contains(errEnv.Error, "fsutil: lock acquisition timed out") {
+		t.Fatalf("error = %q, want lock-timeout marker", errEnv.Error)
 	}
 }
 
