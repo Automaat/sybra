@@ -12,6 +12,8 @@ import (
 	"github.com/Automaat/sybra/internal/skillattr"
 )
 
+const storeLockTimeout = 2 * time.Second
+
 // Store persists RunRecords to a JSON file and computes aggregates in memory.
 type Store struct {
 	path string
@@ -32,18 +34,18 @@ func NewStore(path string) (*Store, error) {
 // append-and-flush here would silently drop any run written by another
 // process (sybra-cli and the GUI server each hold their own Store over the
 // same path) in the gap since this process last loaded the file. Reloading
-// from disk under the cross-process flock, immediately before appending,
+// from disk under the bounded cross-process flock, immediately before appending,
 // closes that gap: the in-memory s.runs is resynced to the authoritative
-// on-disk state before this run is added.
+// on-disk state before this run is added. The flock is acquired before s.mu so
+// a stalled peer process cannot block in-process stats readers.
 func (s *Store) Record(r RunRecord) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	unlock, err := fsutil.LockFile(s.path)
+	unlock, err := fsutil.LockFileWithin(s.path, storeLockTimeout)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = unlock() }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if err := s.reloadLocked(); err != nil {
 		return err
