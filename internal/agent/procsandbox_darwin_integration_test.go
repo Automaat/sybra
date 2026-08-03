@@ -118,6 +118,11 @@ func TestSandboxEnforce_FullGitWorkflowSucceeds(t *testing.T) {
 // file — none of which the fetch/merge/commit path above exercises. Every
 // one of those needed its own grant; this failed with "Operation not
 // permitted" at each step until all were added.
+//
+// Scope: this is the solo-task case — no sibling worktree shares the bare
+// clone. See TestSandboxEnforce_GCDegradesGracefullyWithSiblingWorktree for
+// the concurrent-task case, where `--all` maintenance touches refs this
+// task's own grant deliberately does not extend to.
 func TestSandboxEnforce_GCAndPackRefsSucceeds(t *testing.T) {
 	if !sandboxExecAvailable() {
 		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
@@ -135,6 +140,50 @@ func TestSandboxEnforce_GCAndPackRefsSucceeds(t *testing.T) {
 	}
 	if !strings.Contains(got, "EXIT=0") {
 		t.Errorf("git gc/pack-refs did not exit cleanly: %s", got)
+	}
+}
+
+// TestSandboxEnforce_GCDegradesGracefullyWithSiblingWorktree documents an
+// accepted limitation, not a bug: `git gc`'s internal `git reflog expire
+// --all` and `git pack-refs --all --prune` iterate every worktree sharing
+// the bare clone, not just the caller's own, so with a sibling worktree
+// present they try to lock/prune the sibling's ref and reflog — which this
+// task's grant deliberately does not extend to (see
+// GIT_BRANCH_REF_FILE/_LOCK_FILE's literal-not-subpath doc above). That
+// isolation is the whole point of the narrow, per-task grant, so widening
+// it to make `--all` fully succeed would defeat the property
+// TestSandboxEnforce_SiblingBranchRefFileIsolated (and
+// TestSandboxEnforce_GitAdminDirIsolatedFromSiblingWorktree) exist to prove.
+// git itself treats each maintenance sub-step's failure as non-fatal: `gc`
+// still exits 0, having completed the housekeeping it *can* do for the
+// caller's own state, and simply logs (does not propagate) the refs it
+// could not touch. This test locks in that non-fatal, isolation-preserving
+// degradation — an EPERM in the output here is expected and correct, not a
+// regression to chase with another grant.
+func TestSandboxEnforce_GCDegradesGracefullyWithSiblingWorktree(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
+	}
+	bare, wt := setupLinkedWorktree(t)
+	cfg := buildEnforceCfg(t, wt)
+
+	siblingWt := filepath.Join(filepath.Dir(wt), "sibling-wt")
+	runGitOrFatal(t, bare, "worktree", "add", siblingWt, "-b", "fix/sibling-branch", "main")
+
+	script := "cd " + wt + " && git fetch origin 2>&1 && git gc 2>&1; echo EXIT=$?"
+	cmd := newProviderCmd(context.Background(), cfg, false, "sh", "-c", script)
+	out, _ := cmd.CombinedOutput()
+	got := string(out)
+
+	if !strings.Contains(got, "EXIT=0") {
+		t.Fatalf("git gc must exit 0 even when it cannot touch a sibling's refs: %s", got)
+	}
+
+	log := exec.Command("git", "log", "--format=%s", "-1")
+	log.Dir = wt
+	logOut, logErr := log.CombinedOutput()
+	if logErr != nil {
+		t.Errorf("this task's own repo state must remain intact after gc: %v: %s", logErr, logOut)
 	}
 }
 
@@ -185,5 +234,60 @@ func TestSandboxEnforce_SiblingBranchRefFileIsolated(t *testing.T) {
 
 	if strings.Contains(got, "LEAK") || !strings.Contains(got, "DENIED") {
 		t.Errorf("write to a sibling branch's own ref file must be kernel-denied: %q", got)
+	}
+}
+
+// TestSandboxEnforce_InfoDirDeniesAttributesAndExclude proves the
+// GIT_INFO_DIR subpath grant does not widen into info/attributes or
+// info/exclude — hand-authored, behavior-altering config shared with every
+// sibling task on the clone, unlike the idempotent regenerated info/refs
+// and info/packs the grant exists for.
+func TestSandboxEnforce_InfoDirDeniesAttributesAndExclude(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
+	}
+	_, wt := setupLinkedWorktree(t)
+	cfg := buildEnforceCfg(t, wt)
+
+	script := "COMMON=$(cd " + wt + " && git rev-parse --git-common-dir); " +
+		"(echo evil > \"$COMMON/info/attributes\" 2>/dev/null && echo LEAK_ATTR) || echo DENIED_ATTR; " +
+		"(echo evil >> \"$COMMON/info/exclude\" 2>/dev/null && echo LEAK_EXCLUDE) || echo DENIED_EXCLUDE; " +
+		"(echo x > \"$COMMON/info/refs\" 2>/dev/null && echo ALLOWED_REFS) || echo DENIED_REFS"
+	cmd := newProviderCmd(context.Background(), cfg, false, "sh", "-c", script)
+	out, _ := cmd.CombinedOutput()
+	got := string(out)
+
+	if strings.Contains(got, "LEAK_ATTR") || !strings.Contains(got, "DENIED_ATTR") {
+		t.Errorf("write to info/attributes must be kernel-denied: %q", got)
+	}
+	if strings.Contains(got, "LEAK_EXCLUDE") || !strings.Contains(got, "DENIED_EXCLUDE") {
+		t.Errorf("write to info/exclude must be kernel-denied: %q", got)
+	}
+	if !strings.Contains(got, "ALLOWED_REFS") {
+		t.Errorf("write to info/refs must still succeed (the grant this deny carves out of): %q", got)
+	}
+}
+
+// TestSandboxEnforce_ShallowFetchSucceeds covers a git operation not issued
+// by Sybra's own git calls today but reachable if an agent runs one
+// directly: a shallow fetch locks gitCommonDir/shallow the same way a
+// normal fetch locks packed-refs.
+func TestSandboxEnforce_ShallowFetchSucceeds(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
+	}
+	_, wt := setupLinkedWorktree(t)
+	cfg := buildEnforceCfg(t, wt)
+
+	script := "cd " + wt + " && git fetch --depth=1 origin main 2>&1; echo EXIT=$?"
+	cmd := newProviderCmd(context.Background(), cfg, false, "sh", "-c", script)
+	out, _ := cmd.CombinedOutput()
+	got := string(out)
+
+	if strings.Contains(got, "Operation not permitted") {
+		t.Errorf("shallow fetch hit EPERM under sandbox: %s", got)
+	}
+	if !strings.Contains(got, "EXIT=0") {
+		t.Errorf("shallow fetch did not exit cleanly: %s", got)
 	}
 }

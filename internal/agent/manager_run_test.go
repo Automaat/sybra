@@ -917,12 +917,16 @@ func TestGitCommonDirSingleFiles_DerivesAllHousekeepingPaths(t *testing.T) {
 	files := gitCommonDirSingleFiles(gitSandboxRoots{commonDir: "/data/clones/repo.git"})
 
 	want := gitCommonDirFiles{
-		packedRefs:     "/data/clones/repo.git/packed-refs",
-		packedRefsNew:  "/data/clones/repo.git/packed-refs.new",
-		packedRefsLock: "/data/clones/repo.git/packed-refs.lock",
-		gcPid:          "/data/clones/repo.git/gc.pid",
-		gcPidLock:      "/data/clones/repo.git/gc.pid.lock",
-		infoDir:        "/data/clones/repo.git/info",
+		packedRefs:         "/data/clones/repo.git/packed-refs",
+		packedRefsNew:      "/data/clones/repo.git/packed-refs.new",
+		packedRefsLock:     "/data/clones/repo.git/packed-refs.lock",
+		gcPid:              "/data/clones/repo.git/gc.pid",
+		gcPidLock:          "/data/clones/repo.git/gc.pid.lock",
+		shallow:            "/data/clones/repo.git/shallow",
+		shallowLock:        "/data/clones/repo.git/shallow.lock",
+		infoDir:            "/data/clones/repo.git/info",
+		infoDenyAttributes: "/data/clones/repo.git/info/attributes",
+		infoDenyExclude:    "/data/clones/repo.git/info/exclude",
 	}
 	if files != want {
 		t.Fatalf("gitCommonDirSingleFiles() = %+v, want %+v", files, want)

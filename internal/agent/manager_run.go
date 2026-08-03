@@ -685,7 +685,11 @@ func enforceSpec(
 		gitPackedRefsLockFile:  commonFiles.packedRefsLock,
 		gitGCPidFile:           commonFiles.gcPid,
 		gitGCPidLockFile:       commonFiles.gcPidLock,
+		gitShallowFile:         commonFiles.shallow,
+		gitShallowLockFile:     commonFiles.shallowLock,
 		gitInfoDir:             commonFiles.infoDir,
+		gitInfoDenyAttributes:  commonFiles.infoDenyAttributes,
+		gitInfoDenyExclude:     commonFiles.infoDenyExclude,
 		gitRemoteRefDir:        gitRoots.remoteRefDir,
 		gitRemoteLogDir:        gitRoots.remoteLogDir,
 		gitTagRefDir:           gitRoots.tagRefDir,
@@ -736,12 +740,20 @@ func gitBranchSingleFiles(roots gitSandboxRoots) (refFile, refLockFile, logFile,
 // files — outside refs/heads, refs/remotes, refs/tags, objects, and
 // worktrees/<name>, so none of the other grants cover them. infoDir is a
 // directory, not a file: update_info_file() (wrapper.c) stages its rewrite
-// through xmkstemp(), a randomly-suffixed temp name no literal grant can
-// predict, so info/ needs a subpath grant rather than named-file literals.
+// through xmkstemp() — a randomly-suffixed "<name>_XXXXXX" temp file no
+// literal grant can predict — so info/ needs a subpath grant rather than
+// named-file literals. That subpath also covers info/attributes and
+// info/exclude, which unlike info/refs are hand-authored, behavior-altering
+// config shared with every sibling task on the same clone; infoDenyAttributes
+// and infoDenyExclude carve those back out as darwin's equivalent of
+// stateDenied — Seatbelt resolves the more specific literal deny over the
+// broader subpath allow regardless of declaration order.
 type gitCommonDirFiles struct {
 	packedRefs, packedRefsNew, packedRefsLock string
 	gcPid, gcPidLock                          string
+	shallow, shallowLock                      string
 	infoDir                                   string
+	infoDenyAttributes, infoDenyExclude       string
 }
 
 // gitCommonDirSingleFiles derives gitCommonDirFiles' paths from the bare
@@ -750,20 +762,28 @@ type gitCommonDirFiles struct {
 // git gc/pack-refs additionally stages packed-refs.new (git's
 // write-then-rename pattern) before renaming it over packed-refs, and (via
 // repack.updateServerInfo, on by default) rewrites info/refs and
-// info/packs for the dumb-HTTP transport.
+// info/packs for the dumb-HTTP transport. shallow(.lock) is touched by a
+// shallow fetch/clone (`--depth`/`--shallow-since`) — not issued by Sybra's
+// own git calls today, but an agent can run arbitrary git commands.
 func gitCommonDirSingleFiles(roots gitSandboxRoots) gitCommonDirFiles {
 	if roots.commonDir == "" {
 		return gitCommonDirFiles{}
 	}
 	packedRefs := filepath.Join(roots.commonDir, "packed-refs")
 	gcPid := filepath.Join(roots.commonDir, "gc.pid")
+	shallow := filepath.Join(roots.commonDir, "shallow")
+	infoDir := filepath.Join(roots.commonDir, "info")
 	return gitCommonDirFiles{
-		packedRefs:     packedRefs,
-		packedRefsNew:  packedRefs + ".new",
-		packedRefsLock: packedRefs + ".lock",
-		gcPid:          gcPid,
-		gcPidLock:      gcPid + ".lock",
-		infoDir:        filepath.Join(roots.commonDir, "info"),
+		packedRefs:         packedRefs,
+		packedRefsNew:      packedRefs + ".new",
+		packedRefsLock:     packedRefs + ".lock",
+		gcPid:              gcPid,
+		gcPidLock:          gcPid + ".lock",
+		shallow:            shallow,
+		shallowLock:        shallow + ".lock",
+		infoDir:            infoDir,
+		infoDenyAttributes: filepath.Join(infoDir, "attributes"),
+		infoDenyExclude:    filepath.Join(infoDir, "exclude"),
 	}
 }
 

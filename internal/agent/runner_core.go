@@ -101,10 +101,21 @@ type sandboxSpec struct {
 	gitPackedRefsLockFile string
 	gitGCPidFile          string
 	gitGCPidLockFile      string
+	// gitShallowFile/gitShallowLockFile: touched by a shallow fetch/clone
+	// (`--depth`/`--shallow-since`) — not issued by Sybra's own git calls
+	// today, but reachable if an agent runs one directly.
+	gitShallowFile     string
+	gitShallowLockFile string
 	// gitInfoDir (gitCommonDir/info) is a whole-subpath grant, not named
 	// literals: update_info_file() stages info/refs via xmkstemp(), a
 	// randomly-suffixed temp name no literal grant can predict.
+	// gitInfoDenyAttributes/gitInfoDenyExclude carve info/attributes and
+	// info/exclude back out of that subpath: unlike info/refs, both are
+	// hand-authored config shared with every sibling task on the clone, not
+	// idempotent regenerated output.
 	gitInfoDir             string
+	gitInfoDenyAttributes  string
+	gitInfoDenyExclude     string
 	gitRemoteRefDir        string
 	gitRemoteLogDir        string
 	gitTagRefDir           string
@@ -169,7 +180,7 @@ func (s sandboxSpec) writeRoots() []string {
 		s.gitRemoteLogDir, s.gitTagRefDir, s.gitTagLogDir,
 		s.gitBranchRefFile, s.gitBranchRefLockFile, s.gitBranchLogFile, s.gitBranchLogLockFile,
 		s.gitPackedRefsFile, s.gitPackedRefsNewFile, s.gitPackedRefsLockFile,
-		s.gitGCPidFile, s.gitGCPidLockFile,
+		s.gitGCPidFile, s.gitGCPidLockFile, s.gitShallowFile, s.gitShallowLockFile,
 	}
 	roots = append(roots, s.gitMetadata...)
 	roots = append(roots, s.gitShared...)
