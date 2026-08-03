@@ -2829,8 +2829,11 @@ func TestInvalidatePathWaitsForTaskWriterBeforeRefreshingCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	started := make(chan struct{})
+	store.refreshBeforeLock = func() { close(started) }
 	done := make(chan struct{})
 	go func() { store.InvalidatePath(tk.FilePath); close(done) }()
+	<-started
 	select {
 	case <-done:
 		t.Fatal("refresh ran while task writer lock was held")
@@ -2840,7 +2843,11 @@ func TestInvalidatePathWaitsForTaskWriterBeforeRefreshingCache(t *testing.T) {
 	if _, err := store.Update(tk.ID, Update{Title: Ptr("After")}); err != nil {
 		t.Fatal(err)
 	}
-	<-done
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("refresh did not complete after writer lock release")
+	}
 	listed, err := store.List()
 	if err != nil {
 		t.Fatal(err)

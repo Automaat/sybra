@@ -54,6 +54,15 @@ func (s *Store) InvalidatePath(path string) {
 // A vanished file removes the entry; an unexpected read error falls back to a
 // full invalidate. No-op when the cache is cold (storeTaskCache guards on it).
 func (s *Store) refreshCachedTask(id string) {
+	s.cacheMu.RLock()
+	warm := s.listValid
+	s.cacheMu.RUnlock()
+	if !warm {
+		return
+	}
+	if s.refreshBeforeLock != nil {
+		s.refreshBeforeLock()
+	}
 	unlock, err := s.lockTask(id)
 	if err != nil {
 		s.invalidateListCache()
