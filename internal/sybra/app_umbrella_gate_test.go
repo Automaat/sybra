@@ -623,7 +623,7 @@ func TestReleaseUnblockedChildren_CancelledChildSurfaces(t *testing.T) {
 	}
 }
 
-func TestReleaseUnblockedChildren_PreservesBlockedTracker(t *testing.T) {
+func TestReleaseUnblockedChildren_BlockedTrackerReasonTransitions(t *testing.T) {
 	t.Parallel()
 	const reason = "auto-review: provider failure (local task abc12345; issue filing failed)"
 	tests := []struct {
@@ -663,6 +663,25 @@ func TestReleaseUnblockedChildren_PreservesBlockedTracker(t *testing.T) {
 				t.Fatalf("umbrella was closed %d times while tracker blocked", closes)
 			}
 		})
+	}
+}
+
+func TestReleaseUnblockedChildren_StampsBlockedTrackerWithResolvedDuplicate(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 5)
+	if _, err := m.Update(tracker.ID, task.Update{Status: task.Ptr(task.StatusBlocked)}); err != nil {
+		t.Fatalf("block tracker: %v", err)
+	}
+	mkChild(t, m, "cancelled duplicate", "Automaat/sybra#1", umb, nil, task.StatusCancelled)
+	mkChild(t, m, "completed duplicate", "Automaat/sybra#1", umb, nil, task.StatusDone)
+
+	app.releaseUnblockedChildren(context.Background())
+
+	got := mustTask(t, m, tracker.ID)
+	if got.Status != task.StatusBlocked || got.StatusReason != blockedTrackerChildrenCompleteReason {
+		t.Fatalf("tracker = (%q, %q), want blocked with completion marker", got.Status, got.StatusReason)
 	}
 }
 
