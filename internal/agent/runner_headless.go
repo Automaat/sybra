@@ -414,7 +414,7 @@ func (m *Manager) startHeadlessProcessSurviveStdin(a *Agent, cmd *exec.Cmd) (*os
 	childStdin, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
 	if err != nil {
 		_ = writeFifo.Close()
-		return nil, fmt.Errorf("open fifo (read): %w", err)
+		return nil, fmt.Errorf("open fifo (child): %w", err)
 	}
 	cmd.Stdin = childStdin
 	a.convo.replaceStdinPipe(writeFifo)
