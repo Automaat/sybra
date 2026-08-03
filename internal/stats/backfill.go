@@ -15,11 +15,9 @@ import (
 // The in-memory Len() check is a fast path only, so backfill is a no-op cost
 // after the first successful run instead of scanning the full audit dir on
 // every startup. The authoritative guard is the reload+recheck inside the
-// lock below: the has-records guard and the append are one read-modify-write
-// critical section, flocked across it. Without the reload immediately inside
-// the lock, a concurrent Record from another process (or another instance of
-// Backfill) between this process's stale in-memory check and its flush would
-// be silently discarded by the overwrite.
+// lock below: the has-records guard and the append are one critical section,
+// flocked across it. Reloading is needed only for this startup backfill path;
+// ordinary Record calls append without decoding the history.
 func (s *Store) Backfill(auditDir string) error {
 	if s.Len() > 0 {
 		return nil
@@ -52,8 +50,8 @@ func (s *Store) Backfill(auditDir string) error {
 	records := backfillRecords(events)
 	s.runs = append(s.runs, records...)
 
-	if len(s.runs) > 0 {
-		return s.flush()
+	if err := s.appendLocked(records); err != nil {
+		return err
 	}
 	return nil
 }
