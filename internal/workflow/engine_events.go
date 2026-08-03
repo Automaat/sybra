@@ -933,7 +933,7 @@ func (e *Engine) rescheduleRunAgent(taskID, agentID string, step *Step, t TaskIn
 	}
 	cleanupWorkflow := e.workflowForPostDispatchCleanup(taskID)
 	e.clearCircuitBreakerOnSuccess(taskID, cleanupWorkflow, step.ID)
-	e.clearWatchdogReaskNote(taskID, cleanupWorkflow)
+	e.clearDeliveredWatchdogReaskNote(taskID, step, cleanupWorkflow)
 }
 
 func (e *Engine) workflowForPostDispatchCleanup(taskID string) *Execution {
@@ -1499,7 +1499,45 @@ func (e *Engine) finishResumeStalledStep(taskID string, def *Definition, step *S
 	cleanupWorkflow := e.workflowForPostDispatchCleanup(taskID)
 	e.clearTransientFetchRetry(fresh.ID, cleanupWorkflow, step.ID)
 	e.clearCircuitBreakerOnSuccess(fresh.ID, cleanupWorkflow, step.ID)
-	e.clearWatchdogReaskNote(fresh.ID, cleanupWorkflow)
+	// A pool-busy start is deliberately normalized to a nil error so ResumeStalled
+	// parks quietly, but it did not start an agent. Keep the watchdog guidance
+	// armed until a persisted route or pending effect proves a real dispatch did.
+	e.clearDeliveredWatchdogReaskNote(fresh.ID, step, cleanupWorkflow)
+}
+
+func (e *Engine) clearDeliveredWatchdogReaskNote(taskID string, step *Step, wf *Execution) {
+	if wf == nil || wf.Variables == nil {
+		return
+	}
+	if !e.watchdogReaskDelivered(taskID, step, wf) {
+		return
+	}
+	delete(wf.Variables, watchdogReaskDeliveredKey(step.ID))
+	e.clearWatchdogReaskNote(taskID, wf)
+	// clearWatchdogReaskNote deliberately no-ops when this role uses a
+	// role-specific note key; persist marker removal in that case too.
+	_ = e.tasks.SetWorkflow(taskID, wf)
+}
+
+func (e *Engine) watchdogReaskDelivered(taskID string, step *Step, wf *Execution) bool {
+	if workflowHasAgentRouteForStep(wf, step) || e.hasPendingAgentRouteForStep(taskID, step.ID) {
+		return true
+	}
+	return wf != nil && wf.Variables[watchdogReaskDeliveredKey(step.ID)] == "1"
+}
+
+func watchdogReaskDeliveredKey(stepID string) string { return "watchdog_reask_delivered." + stepID }
+
+func workflowHasAgentRouteForStep(wf *Execution, step *Step) bool {
+	if wf == nil || step == nil {
+		return false
+	}
+	for _, routedStepID := range wf.AgentRoutes {
+		if routeMatchesStep(step, routedStepID) {
+			return true
+		}
+	}
+	return false
 }
 
 // handleWatchdogRetries checks both bounded watchdog stop-retry paths — a
