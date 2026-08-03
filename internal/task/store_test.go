@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -68,6 +69,204 @@ func TestStoreCreate(t *testing.T) {
 
 	if _, err := os.Stat(task.FilePath); err != nil {
 		t.Errorf("file not written: %v", err)
+	}
+}
+
+func TestStoreCreate_RetriesIDCollisionWithoutOverwriting(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := Task{
+		ID:         "deadbeef",
+		Title:      "original task",
+		Slug:       "original-task",
+		Status:     StatusTodo,
+		Generation: 1,
+		AgentMode:  AgentModeHeadless,
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	originalData, err := Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPath := filepath.Join(store.Dir(), original.ID+".md")
+	if err := os.WriteFile(originalPath, originalData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ids := []string{"deadbeef", "cafebabe"}
+	store.newTaskID = func() string {
+		id := ids[0]
+		ids = ids[1:]
+		return id
+	}
+	created, err := store.Create("new task", "new body", AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.ID != "cafebabe" {
+		t.Fatalf("created ID = %q, want collision retry ID cafebabe", created.ID)
+	}
+	got, err := os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, originalData) {
+		t.Fatal("collision replaced the original task file")
+	}
+}
+
+func TestStoreCreateFull_RetriesBeforeWritingSidecars(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := Task{
+		ID:         "deadbeef",
+		Title:      "original task",
+		Slug:       "original-task",
+		Status:     StatusTodo,
+		Generation: 1,
+		AgentMode:  AgentModeHeadless,
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	originalData, err := Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPath := filepath.Join(store.Dir(), original.ID+".md")
+	if err := os.WriteFile(originalPath, originalData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Plans().Write(original.ID, "original plan"); err != nil {
+		t.Fatal(err)
+	}
+
+	ids := []string{"deadbeef", "cafebabe"}
+	store.newTaskID = func() string {
+		id := ids[0]
+		ids = ids[1:]
+		return id
+	}
+	plan := "new plan"
+	created, err := store.CreateFull("new task", "new body", AgentModeHeadless, Update{Plan: &plan})
+	if err != nil {
+		t.Fatalf("CreateFull: %v", err)
+	}
+	if created.ID != "cafebabe" {
+		t.Fatalf("created ID = %q, want collision retry ID cafebabe", created.ID)
+	}
+	got, err := os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, originalData) {
+		t.Fatal("collision replaced the original task file")
+	}
+	originalPlan, err := store.Plans().Read(original.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if originalPlan != "original plan" {
+		t.Fatalf("original sidecar = %q, want unchanged original plan", originalPlan)
+	}
+	newPlan, err := store.Plans().Read(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newPlan != plan {
+		t.Fatalf("new sidecar = %q, want %q", newPlan, plan)
+	}
+}
+
+func TestStoreCreate_DoesNotReuseIDWithOrphanedSidecars(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Plans().Write("deadbeef", "interrupted creation plan"); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{"deadbeef", "cafebabe"}
+	store.newTaskID = func() string {
+		id := ids[0]
+		ids = ids[1:]
+		return id
+	}
+	created, err := store.Create("new task", "new body", AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.ID != "cafebabe" {
+		t.Fatalf("created ID = %q, want retry ID cafebabe", created.ID)
+	}
+	plan, err := store.Plans().Read("deadbeef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan != "interrupted creation plan" {
+		t.Fatalf("orphaned sidecar = %q, want preserved contents", plan)
+	}
+}
+
+func TestStoreLockNewTask_SymlinkAliasSharesReservation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink setup requires elevated Windows privileges")
+	}
+	root := t.TempDir()
+	realDir := filepath.Join(root, "tasks")
+	realStore, err := NewStore(realDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasDir := filepath.Join(root, "tasks-alias")
+	if err := os.Symlink(realDir, aliasDir); err != nil {
+		t.Fatal(err)
+	}
+	alias, err := NewStore(aliasDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	unlock, err := realStore.lockNewTask("deadbeef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			unlock()
+		}
+	}()
+	acquired := make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() {
+		otherUnlock, err := alias.lockNewTask("deadbeef")
+		if err != nil {
+			errCh <- err
+			return
+		}
+		close(acquired)
+		otherUnlock()
+	}()
+	select {
+	case <-acquired:
+		t.Fatal("symlink-alias store acquired an already-held creation reservation")
+	case err := <-errCh:
+		t.Fatalf("symlink-alias reservation: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlock()
+	released = true
+	select {
+	case <-acquired:
+	case err := <-errCh:
+		t.Fatalf("symlink-alias reservation: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("symlink-alias store did not acquire reservation after release")
 	}
 }
 
@@ -1396,7 +1595,7 @@ func TestStoreCreateDefaultMode(t *testing.T) {
 	}
 }
 
-func TestStoreListSkipsMalformed(t *testing.T) {
+func TestStoreListSurfacesMalformedAsDegraded(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	store, err := NewStore(dir)
@@ -1417,12 +1616,27 @@ func TestStoreListSkipsMalformed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tasks) != 1 {
-		t.Errorf("got %d tasks, want 1 (should skip malformed)", len(tasks))
+	if len(tasks) != 2 {
+		t.Fatalf("got %d tasks, want 2 (valid task plus degraded entry)", len(tasks))
+	}
+	var degraded *Task
+	for i := range tasks {
+		if tasks[i].Degraded {
+			degraded = &tasks[i]
+		}
+	}
+	if degraded == nil {
+		t.Fatal("malformed file was not surfaced as degraded")
+	}
+	if degraded.Status != StatusHumanRequired {
+		t.Errorf("degraded status = %q, want %q", degraded.Status, StatusHumanRequired)
+	}
+	if degraded.ParseError == "" || degraded.FilePath != filepath.Join(dir, "bad.md") {
+		t.Errorf("degraded entry = %+v, want parse error and source path", *degraded)
 	}
 }
 
-func TestStoreListQuarantinesMalformed(t *testing.T) {
+func TestStoreListLeavesMalformedFileInPlace(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	store, err := NewStore(dir)
@@ -1430,67 +1644,40 @@ func TestStoreListQuarantinesMalformed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := os.WriteFile(filepath.Join(dir, "bad.md"), []byte("not valid frontmatter"), 0o644); err != nil {
+	bad := filepath.Join(dir, "bad.md")
+	if err := os.WriteFile(bad, []byte("not valid frontmatter"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := store.List(); err != nil {
-		t.Fatal(err)
+	// Listing must never move or delete an unparseable file: the file may be
+	// mid-write by an editor or another process, and a repaired file has to
+	// return to the board on its own.
+	for i := range 2 {
+		tasks, err := store.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tasks) != 1 || !tasks[0].Degraded {
+			t.Fatalf("List #%d = %+v, want a single degraded entry", i+1, tasks)
+		}
+		if _, err := os.Stat(bad); err != nil {
+			t.Fatalf("bad.md no longer in the tasks dir after List #%d: %v", i+1, err)
+		}
 	}
 
-	// The corrupt file must be moved out of the tasks dir so it stops
-	// vanishing from every subsequent List call/sweep.
-	if _, err := os.Stat(filepath.Join(dir, "bad.md")); !os.IsNotExist(err) {
-		t.Fatalf("bad.md still present in tasks dir: %v", err)
-	}
-	quarantineDir := filepath.Join(filepath.Dir(dir), "quarantine")
-	if _, err := os.Stat(filepath.Join(quarantineDir, "bad.md")); err != nil {
-		t.Fatalf("bad.md not found in quarantine dir: %v", err)
-	}
-
-	entries, err := store.QuarantinedTasks()
+	repaired, err := Marshal(Task{ID: "bad", Title: "Repaired", Status: StatusTodo, AgentMode: AgentModeHeadless})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("got %d quarantine entries, want 1: %+v", len(entries), entries)
-	}
-	if entries[0].File != "bad.md" {
-		t.Errorf("File = %q, want %q", entries[0].File, "bad.md")
-	}
-	if entries[0].Reason == "" {
-		t.Error("Reason is empty, want parse error text")
-	}
-	if entries[0].QuarantinedAt.IsZero() {
-		t.Error("QuarantinedAt is zero")
-	}
-
-	// A second List call must not re-discover or re-quarantine the file —
-	// it's already gone from the tasks dir.
-	if _, err := store.List(); err != nil {
+	if err := os.WriteFile(bad, repaired, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	entries, err = store.QuarantinedTasks()
+	tasks, err := store.List()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 {
-		t.Errorf("got %d quarantine entries after second List, want 1 (no duplicate)", len(entries))
-	}
-}
-
-func TestStoreQuarantinedTasksEmptyWhenNoQuarantineDir(t *testing.T) {
-	t.Parallel()
-	store, err := NewStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	entries, err := store.QuarantinedTasks()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
-		t.Errorf("got %d entries, want 0", len(entries))
+	if len(tasks) != 1 || tasks[0].Degraded {
+		t.Fatalf("List after repair = %+v, want the repaired task back on the board", tasks)
 	}
 }
 
@@ -2614,14 +2801,17 @@ func TestStoreGet_PathTraversalSlugRejected(t *testing.T) {
 		t.Fatal("Store.Get with path-traversal slug: expected error, got nil")
 	}
 
-	// List must also skip the malformed file (it logs and continues).
+	// List must surface the malformed file without returning its unsafe slug.
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	for _, task := range tasks {
-		if task.ID == tk.ID {
-			t.Errorf("malformed-slug task appeared in List: slug=%q", task.Slug)
+	for _, listed := range tasks {
+		if listed.ID == tk.ID {
+			t.Errorf("malformed-slug task appeared as real task: slug=%q", listed.Slug)
+		}
+		if listed.Degraded && listed.ParseError == "" {
+			t.Error("degraded malformed-slug task lacks parse error")
 		}
 	}
 }

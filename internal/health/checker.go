@@ -157,17 +157,11 @@ func (c *Checker) check(ctx context.Context) {
 		tasks = nil
 	}
 
-	quarantined, err := c.tasks.QuarantinedTasks()
-	if err != nil {
-		c.logger.Warn("health.check.task_quarantine", "err", err)
-		quarantined = nil
-	}
-
 	var findings []Finding
 	findings = append(findings, checkFailureRate(dayEvents, now)...)
 	findings = append(findings, checkCostOutliers(dayEvents, now)...)
 	findings = append(findings, checkStuckTasks(dayEvents, tasks, now)...)
-	findings = append(findings, checkQuarantinedTasks(quarantined, now)...)
+	findings = append(findings, checkUnreadableTasks(tasks, now)...)
 	findings = append(findings, checkWorkflowLoops(dayEvents, now)...)
 	findings = append(findings, checkStatusBounce(dayEvents, now)...)
 	findings = append(findings, checkCostDrift(dayEvents, weekEvents, now)...)

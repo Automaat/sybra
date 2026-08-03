@@ -175,8 +175,12 @@ func workflowBoundaryOpen(step *Step, exec *Execution) bool {
 	if step == nil || exec == nil {
 		return true
 	}
-	switch step.Type {
-	case StepParallel, StepBestOfN:
+	boundary, ok := stepBoundary(step.Type)
+	if !ok {
+		return true
+	}
+	switch boundary {
+	case stepBoundaryParallel, stepBoundaryBestOfN:
 		return !reducerAsyncBoundaryComplete(exec, step)
 	default:
 		return true

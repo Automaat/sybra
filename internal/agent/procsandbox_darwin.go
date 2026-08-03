@@ -102,6 +102,23 @@ func sandboxRootOr(root, fallback string) string {
 	return root
 }
 
+// unusedWritableRootSentinel stands in for a writable root that this run
+// legitimately has none of — WORKTREE on a RunConfig.ReadOnlyDir run, where
+// injectReadOnlyProcessSandbox deliberately passes an empty worktree so Dir is
+// never writable.
+//
+// The profile references every param unconditionally, and sandbox-exec rejects
+// an empty pattern with "sandbox-exec: empty subpath pattern" and refuses to
+// launch. That surfaced as the agent producing no output at all — a 36-byte
+// stderr and a workflow that blamed missing sidecars — rather than as a
+// sandbox error, so it must be impossible to reach rather than merely fixed at
+// the one site that hit it.
+//
+// A reserved, never-written path keeps the allow rule inert. Distinct from
+// unusedReadOnlyDirSentinel so an unused *allow* root can never alias an
+// unused *deny* root.
+const unusedWritableRootSentinel = "/private/var/empty/sybra-sandbox-unused-writable"
+
 // unusedReadOnlyDirSentinel is READONLY_DIR's value on every run that isn't
 // RunConfig.ReadOnlyDir: the profile's READONLY_DIR deny rule is
 // unconditional, so it always needs a value, and this one is a fixed,
@@ -109,26 +126,96 @@ func sandboxRootOr(root, fallback string) string {
 // its subpath can never shadow a legitimate write.
 const unusedReadOnlyDirSentinel = "/private/var/empty/sybra-sandbox-readonly-unused"
 
+// stateDenyAt returns the i-th durable-config path, or "" past the end. SBPL
+// takes fixed parameters and cannot iterate, so the slots are filled
+// positionally and unused ones fall back to the sentinel — a path nothing
+// writes, so an unused slot denies nothing.
+func stateDenyAt(paths []string, i int) string {
+	if i < len(paths) {
+		return paths[i]
+	}
+	return ""
+}
+
+// sbplQuote renders p as an SBPL string literal. A path containing a quote or
+// backslash would otherwise terminate the literal early and change which
+// rules the profile expresses, so both are escaped rather than assumed absent.
+func sbplQuote(p string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(p) + `"`
+}
+
+// buildReadProfile materializes a profile that denies reads outside roots,
+// returning base unchanged when roots is empty. SBPL parameters are
+// fixed-arity and cannot iterate, so a variable-length allowlist has to be
+// generated into the profile text and written per run rather than passed
+// as -D values like the write roots are.
+//
+// Seatbelt resolves the most specific applicable rule rather than the last
+// declared one, so appending after the embedded base leaves the base's
+// write rules untouched.
+func buildReadProfile(base string, roots []string, dir string) (string, error) {
+	if len(roots) == 0 {
+		return base, nil
+	}
+	var b strings.Builder
+	b.Write(agentSandboxProfile)
+	b.WriteString("\n;; Deny-by-default reads (#2781), generated per run.\n")
+	b.WriteString("(deny file-read*)\n(allow file-read*\n")
+	for _, r := range roots {
+		// subpath covers directories; literal covers the plain files in the
+		// allowlist (~/.claude.json, ~/.gitconfig), which subpath does not
+		// match on its own.
+		b.WriteString("  (subpath " + sbplQuote(r) + ")\n")
+		b.WriteString("  (literal " + sbplQuote(r) + ")\n")
+	}
+	b.WriteString(")\n")
+	// Fixed name inside the per-task sandbox home rather than a fresh
+	// os.CreateTemp file. This runs on every enforce spawn, so a long-lived
+	// daemon would otherwise leak one profile per spawn into the system temp
+	// dir forever. One file per task, removed with the sandbox home.
+	if strings.TrimSpace(dir) == "" {
+		return "", fmt.Errorf("read sandbox profile: no sandbox home to write into")
+	}
+	path := filepath.Join(dir, "agent-sandbox-read.sb")
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		return "", fmt.Errorf("write read sandbox profile: %w", err)
+	}
+	return path, nil
+}
+
 func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName string, wrappedArgs []string) {
 	if cfg == nil || cfg.sandbox.mode != "enforce" {
 		return name, args
 	}
 	home := cfg.sandbox.sandboxHome
-	wrapped := make([]string, 0, len(args)+21)
-	wrapped = append(wrapped,
-		"-f", cfg.sandbox.profilePath,
-		"-D", "WORKTREE="+cfg.sandbox.worktree,
-		"-D", "SANDBOX_HOME="+home,
-		"-D", "TMP="+cfg.sandbox.tmp,
-		"-D", "SHARED_CACHE="+cfg.sandbox.sharedCache,
-		"-D", "CLAUDE_STATE="+sandboxRootOr(cfg.sandbox.claudeState, home),
-		"-D", "CODEX_STATE="+sandboxRootOr(cfg.sandbox.codexState, home),
-		"-D", "COPILOT_STATE="+sandboxRootOr(cfg.sandbox.copilotState, home),
-		"-D", "OPENCODE_STATE="+sandboxRootOr(cfg.sandbox.opencodeState, home),
-		"-D", "TOOL_CACHE="+sandboxRootOr(cfg.sandbox.toolCache, home),
-		"-D", "READONLY_DIR="+sandboxRootOr(cfg.sandbox.readOnlyDir, unusedReadOnlyDirSentinel),
-		name,
-	)
+	params := [][2]string{
+		{"WORKTREE", cfg.sandbox.worktree},
+		{"SANDBOX_HOME", home},
+		{"TMP", cfg.sandbox.tmp},
+		{"SHARED_CACHE", cfg.sandbox.sharedCache},
+		{"CLAUDE_STATE", sandboxRootOr(cfg.sandbox.claudeState, home)},
+		{"CODEX_STATE", sandboxRootOr(cfg.sandbox.codexState, home)},
+		{"COPILOT_STATE", sandboxRootOr(cfg.sandbox.copilotState, home)},
+		{"OPENCODE_STATE", sandboxRootOr(cfg.sandbox.opencodeState, home)},
+		{"TOOL_CACHE", sandboxRootOr(cfg.sandbox.toolCache, home)},
+		{"APP_SUPPORT", cfg.sandbox.appSupport},
+		{"CLAUDE_SCRATCH", cfg.sandbox.claudeScratch},
+		{"READONLY_DIR", sandboxRootOr(cfg.sandbox.readOnlyDir, unusedReadOnlyDirSentinel)},
+		{"STATE_DENY_1", sandboxRootOr(stateDenyAt(cfg.sandbox.stateDenied, 0), unusedReadOnlyDirSentinel)},
+		{"STATE_DENY_2", sandboxRootOr(stateDenyAt(cfg.sandbox.stateDenied, 1), unusedReadOnlyDirSentinel)},
+		{"STATE_DENY_3", sandboxRootOr(stateDenyAt(cfg.sandbox.stateDenied, 2), unusedReadOnlyDirSentinel)},
+	}
+	wrapped := make([]string, 0, len(args)+2*len(params)+3)
+	wrapped = append(wrapped, "-f", cfg.sandbox.profilePath)
+	for _, p := range params {
+		// Every param is templated into an unconditional (subpath (param ...))
+		// rule, and seatbelt rejects an empty pattern outright — see
+		// unusedWritableRootSentinel. Substituting here is the single
+		// chokepoint that keeps a legitimately-absent root from producing a
+		// malformed profile.
+		wrapped = append(wrapped, "-D", p[0]+"="+sandboxRootOr(p[1], unusedWritableRootSentinel))
+	}
+	wrapped = append(wrapped, name)
 	wrapped = append(wrapped, args...)
 	return sandboxExecPath, wrapped
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -39,6 +40,35 @@ func TestAssignTaskPersistsVerbatim(t *testing.T) {
 	}
 	if got.Body != "## Description\nfrom the leader" {
 		t.Fatalf("mirror did not preserve body: %q", got.Body)
+	}
+}
+
+func TestListTasksForNodeExcludesDegradedEntries(t *testing.T) {
+	svc, app := setupTaskService(t)
+	created, err := app.tasks.Create("will break", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(created.FilePath, []byte("not valid frontmatter"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := svc.ListTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || !all[0].Degraded {
+		t.Fatalf("ListTasks = %+v, want one degraded entry", all)
+	}
+	follower, err := svc.ListTasksForNode("follower")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(follower) != 0 {
+		t.Fatalf("ListTasksForNode replicated degraded entry: %+v", follower)
+	}
+	if filepath.Base(all[0].FilePath) != filepath.Base(created.FilePath) {
+		t.Fatalf("degraded source = %q, want %q", all[0].FilePath, created.FilePath)
 	}
 }
 
@@ -225,6 +255,8 @@ func TestAssignTaskRejectsMalformed(t *testing.T) {
 		{"no title", task.Task{ID: "x", Status: task.StatusTodo}},
 		{"bad status", task.Task{ID: "x", Title: "t", Status: task.Status("bogus")}},
 		{"bad agent mode", task.Task{ID: "x", Title: "t", Status: task.StatusTodo, AgentMode: "telepathy"}},
+		{"bad slug", task.Task{ID: "x", Title: "t", Status: task.StatusTodo, Slug: "../../etc/passwd"}},
+		{"degraded", task.Task{ID: "x", Title: "t", Status: task.StatusHumanRequired, Degraded: true}},
 		{"bad task type", task.Task{ID: "x", Title: "t", Status: task.StatusTodo, TaskType: task.TaskType("weird")}},
 	}
 	for _, c := range cases {

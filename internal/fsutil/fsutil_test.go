@@ -2,6 +2,8 @@ package fsutil
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -44,6 +46,24 @@ func TestAtomicWrite_Overwrite(t *testing.T) {
 	}
 	if string(got) != "new" {
 		t.Errorf("got %q, want %q", got, "new")
+	}
+}
+
+func TestAtomicWriteNew_RefusesExistingFile(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "file.txt")
+	if err := AtomicWrite(path, []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWriteNew(path, []byte("new")); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("AtomicWriteNew error = %v, want fs.ErrExist", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "old" {
+		t.Fatalf("existing file = %q, want unchanged old contents", got)
 	}
 }
 
@@ -143,41 +163,8 @@ func TestAtomicWrite_RenameFailCleansUpTemp(t *testing.T) {
 	}
 }
 
-func TestAtomicWriteSync(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "file.txt")
-	data := []byte("hello sync")
-
-	if err := AtomicWriteSync(path, data); err != nil {
-		t.Fatalf("AtomicWriteSync: %v", err)
-	}
-
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if !bytes.Equal(got, data) {
-		t.Errorf("got %q, want %q", got, data)
-	}
-
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("ReadDir: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Errorf("dir has %d entries after AtomicWriteSync, want 1 (no leftover temp)", len(entries))
-	}
-}
-
-func TestAtomicWriteSync_BadDir(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "nonexistent", "file.txt")
-	if err := AtomicWriteSync(path, []byte("data")); err == nil {
-		t.Fatal("expected error for non-existent parent dir")
-	}
-}
-
+// BenchmarkAtomicWrite measures the fsync round-trip AtomicWrite pays per
+// call, so the task store's write volume can be judged against it.
 func BenchmarkAtomicWrite(b *testing.B) {
 	dir := b.TempDir()
 	path := filepath.Join(dir, "file.txt")
@@ -185,18 +172,6 @@ func BenchmarkAtomicWrite(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		if err := AtomicWrite(path, data); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkAtomicWriteSync(b *testing.B) {
-	dir := b.TempDir()
-	path := filepath.Join(dir, "file.txt")
-	data := []byte("benchmark payload for a typical task markdown file, roughly a couple hundred bytes of frontmatter and body text")
-	b.ResetTimer()
-	for range b.N {
-		if err := AtomicWriteSync(path, data); err != nil {
 			b.Fatal(err)
 		}
 	}

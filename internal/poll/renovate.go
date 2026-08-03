@@ -26,6 +26,7 @@ type RenovateHandler struct {
 	logger              *slog.Logger
 	emit                func(string, any)
 	cfg                 *config.RenovateConfig
+	config              func() *config.RenovateConfig
 	allowsType          func(project.ProjectType) bool
 	fetchPRsFn          func(context.Context, string, []string) ([]github.RenovatePR, error)
 	lastPRsCount        atomic.Int64
@@ -70,8 +71,18 @@ func NewRenovateHandler(
 		logger:      logger,
 		emit:        emit,
 		cfg:         cfg,
+		config:      func() *config.RenovateConfig { return cfg },
 		allowsType:  allowsType,
 		authCircuit: NewAuthCircuit("renovate", logger),
+	}
+}
+
+// SetConfigSource makes each poll read one immutable Renovate configuration
+// snapshot. It is installed during app wiring and remains safe across hot
+// reloads because the source itself is never replaced.
+func (h *RenovateHandler) SetConfigSource(source func() *config.RenovateConfig) {
+	if source != nil {
+		h.config = source
 	}
 }
 
@@ -125,7 +136,11 @@ func (h *RenovateHandler) pollRenovatePRs(ctx context.Context) time.Duration {
 	if h.fetchPRsFn != nil {
 		fetchFn = h.fetchPRsFn
 	}
-	prs, err := fetchFn(ctx, h.cfg.Author, repos)
+	cfg := h.cfg
+	if h.config != nil {
+		cfg = h.config()
+	}
+	prs, err := fetchFn(ctx, cfg.Author, repos)
 	metrics.RenovatePoll(ctx, err == nil)
 	if err != nil {
 		switch {

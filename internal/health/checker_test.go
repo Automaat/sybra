@@ -153,7 +153,7 @@ func TestCheckerIncludesSandboxCleanupFinding(t *testing.T) {
 	}
 }
 
-func TestCheckerIncludesQuarantinedTaskFinding(t *testing.T) {
+func TestCheckerIncludesUnreadableTaskFinding(t *testing.T) {
 	t.Parallel()
 
 	home := t.TempDir()
@@ -163,12 +163,6 @@ func TestCheckerIncludesQuarantinedTaskFinding(t *testing.T) {
 		t.Fatalf("task.NewStore: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(tasksDir, "bad.md"), []byte("not valid frontmatter"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// List's own quarantine pass runs before the checker's, mirroring how a
-	// running server would have already listed tasks by the time a health
-	// tick fires.
-	if _, err := store.List(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -181,19 +175,24 @@ func TestCheckerIncludesQuarantinedTaskFinding(t *testing.T) {
 	}
 	var found *Finding
 	for i := range report.Findings {
-		if report.Findings[i].Category == CatTaskQuarantine {
+		if report.Findings[i].Category == CatTaskUnreadable {
 			found = &report.Findings[i]
 			break
 		}
 	}
 	if found == nil {
-		t.Fatalf("expected %q finding, got %v", CatTaskQuarantine, findingCategories(report.Findings))
+		t.Fatalf("expected %q finding, got %v", CatTaskUnreadable, findingCategories(report.Findings))
 	}
-	if found.TaskID != "bad.md" {
-		t.Errorf("TaskID = %q, want bad.md", found.TaskID)
+	if found.Evidence["file"] != "bad.md" {
+		t.Errorf("Evidence[file] = %v, want bad.md", found.Evidence["file"])
 	}
 	if report.Score != ScoreCritical {
 		t.Errorf("Score = %q, want critical", report.Score)
+	}
+	// The check must not move or otherwise touch the broken file — repairing
+	// it in place is what makes the finding disappear.
+	if _, err := os.Stat(filepath.Join(tasksDir, "bad.md")); err != nil {
+		t.Errorf("bad.md no longer readable in the tasks dir: %v", err)
 	}
 }
 

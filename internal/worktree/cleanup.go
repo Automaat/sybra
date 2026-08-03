@@ -309,6 +309,31 @@ func (m *Manager) RepairAll(ctx context.Context) {
 	}
 }
 
+// refuseRecreateWithUnpushedWork stops healOrRecreate from wiping a worktree
+// that still holds commits origin has never seen.
+//
+// Remove and CleanupOrphaned already refuse in that case (#2593), but the
+// branch-mismatch recreate path deleted unconditionally. A worktree can be
+// healthy yet on an unexpected branch — precisely the state a merge or
+// conflict resolution leaves — and wiping it discards work an agent already
+// did and verified, with the only record being the original push failure.
+//
+// Scoped to that path on purpose. The unrepairable path stays unguarded: a
+// broken worktree's commits are not reliably readable, so there is nothing
+// dependable to preserve, and refusing there would wedge the task with no
+// route forward.
+//
+// Failing loudly is the point: the task surfaces a real error a human can act
+// on while the commits still exist, rather than the work disappearing and the
+// task reporting only why the push was blocked.
+func (m *Manager) refuseRecreateWithUnpushedWork(ctx context.Context, taskID, wtPath, reason string) error {
+	if !project.HasUnpushedCommits(ctx, wtPath) {
+		return nil
+	}
+	m.logger.Error("worktree.recreate.unpushed-commits", "task_id", taskID, "path", wtPath, "reason", reason)
+	return fmt.Errorf("refusing to recreate %s worktree %s: it holds commits that never reached origin", reason, wtPath)
+}
+
 // healOrRecreate ensures the worktree at wtPath has resolvable git metadata
 // and sits on wantBranch. Returns (true, nil) if the worktree is usable on
 // return, (false, nil) if it was wiped and the caller should re-create it, or
@@ -320,8 +345,10 @@ func (m *Manager) healOrRecreate(ctx context.Context, taskID, clonePath, wtPath,
 		return true, nil
 	}
 	if healthy {
+		if err := m.refuseRecreateWithUnpushedWork(ctx, taskID, wtPath, "branch-mismatch"); err != nil {
+			return false, err
+		}
 		m.logger.Warn("worktree.branch-mismatch-recreate", "task_id", taskID, "path", wtPath, "branch", wantBranch)
-		m.logger.Warn("worktree.unrepairable-recreate", "task_id", taskID, "path", wtPath)
 		_ = project.RemoveWorktree(ctx, clonePath, wtPath)
 		if err := os.RemoveAll(wtPath); err != nil {
 			return false, fmt.Errorf("remove mismatched-branch worktree %s: %w", wtPath, err)
@@ -337,6 +364,11 @@ func (m *Manager) healOrRecreate(ctx context.Context, taskID, clonePath, wtPath,
 		m.logger.Info("worktree.repaired", "task_id", taskID, "path", wtPath)
 		return true, nil
 	}
+	// Deliberately unguarded, unlike the branch-mismatch path above: this
+	// worktree is broken, so its commits are not reliably readable and there
+	// is no usable state to preserve. Refusing here would wedge the task
+	// forever with no route forward, trading a recoverable loss for a
+	// permanent stall.
 	m.logger.Warn("worktree.unrepairable-recreate", "task_id", taskID, "path", wtPath)
 	_ = project.RemoveWorktree(ctx, clonePath, wtPath)
 	if err := os.RemoveAll(wtPath); err != nil {

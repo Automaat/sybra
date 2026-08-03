@@ -188,10 +188,6 @@ func (m *Manager) List() ([]Task, error) { return m.store.List() }
 // Get returns a single task by ID (lock-free).
 func (m *Manager) Get(id string) (Task, error) { return m.store.Get(id) }
 
-// QuarantinedTasks returns every task file currently quarantined because it
-// failed to parse (see Store.QuarantinedTasks).
-func (m *Manager) QuarantinedTasks() ([]QuarantineEntry, error) { return m.store.QuarantinedTasks() }
-
 // Create persists a new task and emits task:created.
 func (m *Manager) Create(title, body, mode string) (Task, error) {
 	t, err := m.store.Create(title, body, mode)
@@ -280,6 +276,37 @@ func (m *Manager) Put(t Task) (Task, bool, error) {
 		m.onStatusHook(saved.ID, prevStatus, newStatus)
 	}
 	return saved, !existed, nil
+}
+
+// PutFn atomically reads an existing task and writes the fully-formed
+// replacement computed by fn. The callback runs under both Manager's per-task
+// mutex and Store's cross-process task lock, making it safe to merge a stale
+// long-running operation with the latest leader-side edit immediately before
+// the write. It preserves Put's lifecycle events and status-hook behaviour.
+func (m *Manager) PutFn(id string, fn func(cur Task) (Task, error)) (Task, bool, error) {
+	mu := m.lockFor(id)
+	mu.Lock()
+
+	saved, prev, err := m.store.PutFn(id, fn)
+	if err != nil {
+		mu.Unlock()
+		return saved, false, err
+	}
+
+	prevStatus := string(prev.Status)
+	newStatus := string(saved.Status)
+	fireHook := m.onStatusHook != nil && newStatus != prevStatus
+	if fireHook {
+		m.recordFiredStatus(saved.ID, newStatus)
+	}
+	mu.Unlock()
+
+	metrics.TaskUpdated()
+	m.emitter.Emit(events.TaskUpdated, saved.FilePath)
+	if fireHook {
+		m.onStatusHook(saved.ID, prevStatus, newStatus)
+	}
+	return saved, false, nil
 }
 
 // Update applies field updates to a task and emits task:updated.

@@ -160,8 +160,12 @@ func reduceCurrentStep(desired DesiredState, observed ObservedState, exec *Execu
 		}
 		visited[current.ID] = i
 
-		switch current.Type {
-		case StepWaitHuman:
+		behavior, ok := stepReducerBehavior(current.Type)
+		if !ok {
+			return nil, fmt.Errorf("unknown step type %q", current.Type)
+		}
+		switch behavior {
+		case stepReducerWaitHuman:
 			if exec.State == ExecWaiting && (current.Config.Status == "" || observed.Task.Status == current.Config.Status) {
 				return cloneEffects(effects), nil
 			}
@@ -175,7 +179,7 @@ func reduceCurrentStep(desired DesiredState, observed ObservedState, exec *Execu
 				Effect{Kind: EffectWaitHuman, Step: cloneStep(current), HumanActions: slices.Clone(current.Config.HumanActions)},
 			)
 			return cloneEffects(effects), nil
-		case StepSetStatus:
+		case stepReducerSetStatus:
 			if current.Config.Status != "" {
 				effects = append(effects, Effect{Kind: EffectSetTaskStatus, Status: current.Config.Status, StatusReason: current.Config.StatusReason})
 				observed.Task.Status = current.Config.Status
@@ -184,11 +188,11 @@ func reduceCurrentStep(desired DesiredState, observed ObservedState, exec *Execu
 			record := StepRecord{StepID: current.ID, Status: "completed", StartedAt: observed.Now, EndedAt: observed.Now}
 			exec.RecordStep(record)
 			effects = append(effects, newRecordEffect(record))
-		case StepCondition:
+		case stepReducerCondition:
 			record := StepRecord{StepID: current.ID, Status: "completed", StartedAt: observed.Now, EndedAt: observed.Now}
 			exec.RecordStep(record)
 			effects = append(effects, newRecordEffect(record))
-		default:
+		case stepReducerDispatch:
 			if len(effects) > 0 || observed.Execution == nil {
 				exec.CurrentStep = current.ID
 				exec.State = ExecRunning
@@ -199,6 +203,8 @@ func reduceCurrentStep(desired DesiredState, observed ObservedState, exec *Execu
 				return cloneEffects(effects), nil
 			}
 			return cloneEffects(effects), nil
+		default:
+			return nil, fmt.Errorf("unknown reducer behavior %d for step type %q", behavior, current.Type)
 		}
 
 		next, complete, err := reducerNextStep(desired, observed, exec, current)
@@ -263,12 +269,8 @@ func reducerParksExistingExecution(step *Step) bool {
 	if step == nil {
 		return false
 	}
-	switch step.Type {
-	case StepWaitHuman, StepSetStatus, StepCondition:
-		return true
-	default:
-		return false
-	}
+	behavior, ok := stepReducerBehavior(step.Type)
+	return ok && behavior != stepReducerDispatch
 }
 
 func reducerTransitionFields(desired DesiredState, observed ObservedState, exec *Execution) map[string]string {
@@ -291,13 +293,17 @@ func reducerAsyncBoundaryComplete(exec *Execution, step *Step) bool {
 	if exec == nil || step == nil {
 		return true
 	}
-	switch step.Type {
-	case StepParallel:
+	boundary, ok := stepBoundary(step.Type)
+	if !ok {
+		return true
+	}
+	switch boundary {
+	case stepBoundaryParallel:
 		if p := exec.ParallelInflight[step.ID]; p != nil {
 			return p.AllChildrenDone()
 		}
 		return false
-	case StepBestOfN:
+	case stepBoundaryBestOfN:
 		if b := exec.BestOfNInflight[step.ID]; b != nil {
 			return b.AllAttemptsDone()
 		}

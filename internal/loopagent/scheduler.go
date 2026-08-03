@@ -35,6 +35,8 @@ type Scheduler struct {
 	homeDir string
 
 	mu          sync.Mutex
+	runMu       sync.Mutex // serializes RunNow admission with Stop
+	stopped     bool
 	fetchers    map[string]*runningFetcher
 	agentToLoop map[string]string
 	wg          sync.WaitGroup
@@ -87,6 +89,9 @@ func (s *Scheduler) SyncContext(ctx context.Context) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.stopped {
+		return
+	}
 
 	// Cancel fetchers whose record is gone, disabled, or has changed
 	// timing fields. Restart-on-change ensures interval edits take effect.
@@ -219,6 +224,14 @@ func (s *Scheduler) fire(la LoopAgent) (string, error) {
 // next tick still happens at its natural time — RunNow does not reset the
 // fetcher's clock.
 func (s *Scheduler) RunNow(id string) (string, error) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	s.mu.Lock()
+	stopped := s.stopped
+	s.mu.Unlock()
+	if stopped {
+		return "", errors.New("loop agent scheduler stopped")
+	}
 	la, err := s.store.Get(id)
 	if err != nil {
 		return "", err
@@ -263,7 +276,14 @@ func (s *Scheduler) persistRun(id string, mutate func(*LoopAgent)) (LoopAgent, e
 
 // Stop cancels every running fetcher and waits for the goroutines to drain.
 func (s *Scheduler) Stop() {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
 	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
+	s.stopped = true
 	for id, rf := range s.fetchers {
 		rf.cancel()
 		delete(s.fetchers, id)

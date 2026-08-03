@@ -55,7 +55,7 @@ func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
 	if err != nil {
 		return err
 	}
-	if err := fsutil.AtomicWriteSync(t.FilePath, d); err != nil {
+	if err := fsutil.AtomicWrite(t.FilePath, d); err != nil {
 		return err
 	}
 	s.storeTaskCache(t)
@@ -267,7 +267,7 @@ func (s *Store) UpdateRun(taskID, agentID string, patch RunPatch) error {
 	if err != nil {
 		return err
 	}
-	if err := fsutil.AtomicWriteSync(t.FilePath, d); err != nil {
+	if err := fsutil.AtomicWrite(t.FilePath, d); err != nil {
 		return err
 	}
 	s.storeTaskCache(t)

@@ -149,6 +149,21 @@ func TestRunOutcome(t *testing.T) {
 			exitErr: errBoom,
 			want:    "failed",
 		},
+		{
+			// A runaway forked-subagent fan-out is hard-stopped outright, not an
+			// infra stall — it must flow through the bounded failed-completion
+			// path, not ResumeStalled's silent re-dispatch.
+			name: "subagent_turns_guardrail_stop_stays_a_failure",
+			role: agent.RoleImplementation,
+			agent: func() *agent.Agent {
+				ag := &agent.Agent{}
+				ag.MarkStopped()
+				ag.SetEscalationReason(agent.EscalationReasonSubagentTurns)
+				return ag
+			},
+			exitErr: errBoom,
+			want:    "failed",
+		},
 	}
 
 	for _, tc := range cases {

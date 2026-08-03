@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -111,6 +112,11 @@ type AgentRunInfo struct {
 	TestFailureFingerprint string
 	HeadSHA                string
 	FinalCommitSource      string
+	// SubagentCallCount is the number of distinct forked-subagent calls the
+	// run made (task.AgentRun.SubagentCallCount). Used to tell a genuine
+	// no-op run apart from one that delegated to a background subagent and
+	// ended before that delegation produced any commits.
+	SubagentCallCount int
 }
 
 // TaskProvider reads and updates tasks.
@@ -118,6 +124,10 @@ type TaskProvider interface {
 	GetTask(id string) (TaskInfo, error)
 	ListTasks() ([]TaskInfo, error)
 	UpdateTaskStatus(id, status, reason string) error
+	// ClearTaskStatusReasonIf atomically clears a status reason only when the
+	// task still has the exact status and reason the caller observed. It keeps a
+	// stale retry cleanup from erasing a newer failure or operator decision.
+	ClearTaskStatusReasonIf(id, expectedStatus, expectedReason string) (bool, error)
 	UpdateTaskBlocker(id, status, reason string, state blocker.State) error
 	UpdateTaskPR(id string, prNumber int) error
 	MarkTaskReviewed(id string) error
@@ -383,6 +393,7 @@ type Engine struct {
 	prExistence      PRExistenceChecker
 	prContentGen     PRContentGenerator
 	worktrees        WorktreeGetter
+	sidecarDir       SidecarDirResolver
 	attemptNotes     AttemptNoteAppender
 	branchSyncer     BranchSyncer
 	checks           CheckConfigGetter
@@ -418,6 +429,7 @@ type Engine struct {
 	starting         map[string]struct{}        // taskID → StartWorkflowWithVars in progress
 	humanAction      map[string]struct{}        // taskID → HandleHumanAction in progress
 	pendingRoutes    map[string]string          // taskID+"\x00"+agentID → stepID while StartAgent succeeded but route persistence has not
+	completing       map[string]int             // taskID → in-flight HandleAgentComplete calls (agent finished, completion not yet routed)
 	cascadeDepth     map[string]int             // taskID → synchronous cascade hop depth (recursion guard)
 	pendingRecovery  map[string]pendingRecovery // taskID → branch-conflict recovery deferred until the outer marker releases
 	resumeError      *logging.ErrorThrottle
@@ -527,6 +539,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		starting:               make(map[string]struct{}),
 		humanAction:            make(map[string]struct{}),
 		pendingRoutes:          make(map[string]string),
+		completing:             make(map[string]int),
 		cascadeDepth:           make(map[string]int),
 		pendingRecovery:        make(map[string]pendingRecovery),
 		resumeError:            logging.NewErrorThrottle(),
@@ -681,6 +694,25 @@ func (e *Engine) SetPRContentGenerator(g PRContentGenerator) { e.prContentGen = 
 // live git checkout (verify_commits, re-implementation note seeding). Leaving
 // it unset makes those worktree-dependent paths no-op.
 func (e *Engine) SetWorktreeGetter(g WorktreeGetter) { e.worktrees = g }
+
+// SetSidecarDirResolver late-binds the writable scratch directory used by
+// verifier roles whose worktree is read-only.
+func (e *Engine) SetSidecarDirResolver(r SidecarDirResolver) { e.sidecarDir = r }
+
+// resolveSidecarDir returns the writable scratch dir for taskID, or "" when no
+// resolver is wired or it fails. Callers fall back to the worktree, which is
+// the pre-#2791 behaviour, so a missing resolver degrades rather than breaks.
+func (e *Engine) resolveSidecarDir(taskID string) string {
+	if e == nil || e.sidecarDir == nil {
+		return ""
+	}
+	dir, err := e.sidecarDir(taskID)
+	if err != nil {
+		e.logger.Warn("workflow.sidecar-dir.resolve", "task_id", taskID, "err", err)
+		return ""
+	}
+	return strings.TrimSpace(dir)
+}
 
 // SetAttemptNoteAppender wires the local NOTES.md writer used when testing
 // routes a task back to implementation. Leaving it unset disables note seeding.

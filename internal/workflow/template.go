@@ -33,10 +33,25 @@ func RenderTemplate(tmpl string, ctx TemplateContext) (string, error) {
 var templateFuncs = template.FuncMap{
 	"shellquote":          shellQuote,
 	"getvar":              getVar,
+	"sidecardir":          sidecarDirVar,
 	"recoveredorprev":     recoveredOrPrev,
 	"plancontractjson":    PlanContractPromptJSON,
 	"currenttestfailures": currentTestFailures,
 	"acceptanceledger":    acceptanceLedger,
+}
+
+// sidecarDirVar returns the directory workflow scratch output belongs in: the
+// writable per-task sandbox dir when one is set, otherwise the worktree.
+//
+// Verifier roles run against a read-only worktree so they cannot alter the
+// code they judge (#2791), which means their own output cannot live there.
+// The fallback keeps every flow working when no resolver is wired — the
+// pre-#2791 behaviour — so this is safe to use unconditionally in templates.
+func sidecarDirVar(vars map[string]string) string {
+	if v := strings.TrimSpace(vars[WorkflowVarSidecarDir]); v != "" {
+		return v
+	}
+	return vars[WorkflowVarDir]
 }
 
 // currentTestFailures returns the current "## Test Failures" section from a

@@ -64,6 +64,20 @@ func TestParallelValidation_Rejects(t *testing.T) {
 			errSub: "nests another parallel",
 		},
 		{
+			name: "child needs worktree",
+			def: Definition{
+				ID: "x",
+				Steps: []Step{{
+					ID: "p", Type: StepParallel,
+					Parallel: []Step{
+						{ID: "a", Type: StepRunAgent, Config: StepConfig{NeedsWorktree: true}},
+						{ID: "b", Type: StepRunAgent},
+					},
+				}},
+			},
+			errSub: "cannot set needs_worktree",
+		},
+		{
 			name: "duplicate child id",
 			def: Definition{
 				ID: "x",
