@@ -779,6 +779,8 @@ func (a *App) releaseCapped(ctx context.Context, ready []string, byID map[string
 // long rather than up to 30s per stuck release.
 const pushReleaseTimeout = 5 * time.Second
 
+const blockedTrackerChildrenCompleteReason = "children complete, tracker blocked — needs release"
+
 // pushReleaseToHomeNode forwards a just-released child's new state to its
 // home follower when the task isn't homed locally. The local a.tasks.Update
 // above only ever touches this leader's own canonical copy; Mirror only pulls
@@ -850,6 +852,20 @@ func (a *App) rollupTrackers(states map[string]*umbrellaState, cyclic map[string
 			continue
 		}
 		if st.tracker.Status == task.StatusBlocked {
+			// A blocked tracker can be owned by an operator or another workflow
+			// path. Preserve that ownership while work remains, but once every
+			// materialized child is done stamp an explicit, actionable reason
+			// instead of leaving an invisible permanent dead end. Do not close
+			// the umbrella or override the blocked status: release remains an
+			// operator decision.
+			if st.total > 0 && st.doneCount == st.total &&
+				st.tracker.StatusReason != blockedTrackerChildrenCompleteReason {
+				if _, err := a.tasks.Update(st.tracker.ID, task.Update{
+					StatusReason: task.Ptr(blockedTrackerChildrenCompleteReason),
+				}); err != nil {
+					a.logger.Error("umbrella.tracker.blocked_complete.update.failed", "task_id", st.tracker.ID, "err", err)
+				}
+			}
 			continue
 		}
 		// A tracker is "settled" once it has outlived the creation window, so a

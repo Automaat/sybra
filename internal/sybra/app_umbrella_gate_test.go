@@ -307,6 +307,36 @@ func TestReleaseUnblockedChildren_RollupClosesUmbrella(t *testing.T) {
 	}
 }
 
+func TestReleaseUnblockedChildren_StampsCompletedBlockedTracker(t *testing.T) {
+	t.Parallel()
+	app, m := newUmbrellaGateApp(t)
+	closes := 0
+	app.umbrellaCloseIssue = func(string, int, string) error { closes++; return nil }
+	const umb = "https://github.com/Automaat/sybra/issues/100"
+	tracker := mkTracker(t, m, umb, 5)
+	if _, err := m.Update(tracker.ID, task.Update{
+		Status:       task.Ptr(task.StatusBlocked),
+		StatusReason: task.Ptr("confidentiality review needs release"),
+	}); err != nil {
+		t.Fatalf("block tracker: %v", err)
+	}
+	mkChild(t, m, "c1", "Automaat/sybra#1", umb, nil, task.StatusDone)
+	mkChild(t, m, "c2", "Automaat/sybra#2", umb, nil, task.StatusDone)
+
+	app.releaseUnblockedChildren(context.Background())
+
+	got := mustTask(t, m, tracker.ID)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("tracker = %q, want blocked after all children complete", got.Status)
+	}
+	if got.StatusReason != blockedTrackerChildrenCompleteReason {
+		t.Fatalf("tracker reason = %q, want %q", got.StatusReason, blockedTrackerChildrenCompleteReason)
+	}
+	if closes != 0 {
+		t.Fatalf("umbrella close calls = %d, want 0 while tracker remains blocked", closes)
+	}
+}
+
 func TestReleaseUnblockedChildren_UpdatesTrackerProgressChecklist(t *testing.T) {
 	t.Parallel()
 	app, m := newUmbrellaGateApp(t)
@@ -595,12 +625,14 @@ func TestReleaseUnblockedChildren_CancelledChildSurfaces(t *testing.T) {
 
 func TestReleaseUnblockedChildren_PreservesBlockedTracker(t *testing.T) {
 	t.Parallel()
+	const reason = "auto-review: provider failure (local task abc12345; issue filing failed)"
 	tests := []struct {
 		name        string
 		childStatus task.Status
+		wantReason  string
 	}{
-		{"human-required child", task.StatusHumanRequired},
-		{"completed child", task.StatusDone},
+		{"human-required child", task.StatusHumanRequired, reason},
+		{"completed child", task.StatusDone, blockedTrackerChildrenCompleteReason},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -610,7 +642,6 @@ func TestReleaseUnblockedChildren_PreservesBlockedTracker(t *testing.T) {
 			app.umbrellaCloseIssue = func(string, int, string) error { closes++; return nil }
 			const umb = "https://github.com/Automaat/sybra/issues/100"
 			tracker := mkTracker(t, m, umb, 5)
-			const reason = "auto-review: provider failure (local task abc12345; issue filing failed)"
 			if _, err := m.Update(tracker.ID, task.Update{
 				Status:       task.Ptr(task.StatusBlocked),
 				StatusReason: task.Ptr(reason),
@@ -625,8 +656,8 @@ func TestReleaseUnblockedChildren_PreservesBlockedTracker(t *testing.T) {
 			if got.Status != task.StatusBlocked {
 				t.Fatalf("tracker = %q, want blocked", got.Status)
 			}
-			if got.StatusReason != reason {
-				t.Fatalf("tracker reason = %q, want %q", got.StatusReason, reason)
+			if got.StatusReason != tt.wantReason {
+				t.Fatalf("tracker reason = %q, want %q", got.StatusReason, tt.wantReason)
 			}
 			if closes != 0 {
 				t.Fatalf("umbrella was closed %d times while tracker blocked", closes)
