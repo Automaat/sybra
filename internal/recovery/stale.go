@@ -58,6 +58,9 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 	if t.Status != task.StatusInProgress {
 		return
 	}
+	if released := r.Agents.ReleaseDeadAgentsForTask(ctx, t.ID); released > 0 {
+		r.Logger.Warn("restart-stale.released-dead-agents", "task_id", t.ID, "count", released)
+	}
 	if r.Agents.HasRunningAgentForTask(t.ID) {
 		return
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -107,6 +108,55 @@ func TestReleaseStaleStoppedAgentsForTask_KeepsFreshStopRace(t *testing.T) {
 	}
 	if !m.HasRunningAgentForTask("task-1") {
 		t.Fatal("fresh stopped agent should still gate until its runner exits")
+	}
+}
+
+func TestReleaseDeadAgentsForTask_ReleasesDeadRunningGate(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.deadAgentRetention = 0
+	dead := &Agent{
+		ID:       "dead-running",
+		TaskID:   "task-1",
+		Provider: "claude",
+		State:    StateRunning,
+		PID:      9999999,
+		done:     make(chan struct{}),
+	}
+	if err := m.registerRunningAgent(dead, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+	if !m.HasRunningAgentForTask("task-1") {
+		t.Fatal("precondition: dead running agent should still gate before release")
+	}
+
+	if got := m.ReleaseDeadAgentsForTask(context.Background(), "task-1"); got != 1 {
+		t.Fatalf("released = %d, want 1", got)
+	}
+	if m.HasRunningAgentForTask("task-1") {
+		t.Fatal("dead running agent should no longer gate dispatch")
+	}
+}
+
+func TestReleaseDeadAgentsForTask_KeepsLiveProcess(t *testing.T) {
+	m, _ := newTestManager(t)
+	alive := &Agent{
+		ID:       "alive-running",
+		TaskID:   "task-1",
+		Provider: "claude",
+		State:    StateRunning,
+		PID:      os.Getpid(),
+		done:     make(chan struct{}),
+	}
+	if err := m.registerRunningAgent(alive, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+	t.Cleanup(func() { m.markAgentDone(context.Background(), alive) })
+
+	if got := m.ReleaseDeadAgentsForTask(context.Background(), "task-1"); got != 0 {
+		t.Fatalf("released = %d, want 0", got)
+	}
+	if !m.HasRunningAgentForTask("task-1") {
+		t.Fatal("live process must keep gating liveness")
 	}
 }
 
