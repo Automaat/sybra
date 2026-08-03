@@ -476,10 +476,10 @@ func prFixVerdict(wfExec *Execution) (verdict PRFixVerdict, reason string) {
 
 // prFixFailingTests returns the specific failing tests a pr-fix agent named
 // via repeated SYBRA_PR_FIX_FAILING_TEST: lines alongside a human-required
-// verdict — the concrete repro info a human (or a future scoped test-fix
-// follow-up) needs, instead of just the free-text reason, which truncate()s
-// to 200 chars and would otherwise drop it. Mirrors prFixVerdict's own
-// var-first-then-reclassify lookup so both stay consistent across a resume.
+// verdict — structured repro info a human (or a future scoped test-fix
+// follow-up) can consume directly, instead of re-parsing it out of the
+// free-text reason. Mirrors prFixVerdict's own var-first-then-reclassify
+// lookup so both stay consistent across a resume.
 func prFixFailingTests(wfExec *Execution) []string {
 	if wfExec == nil {
 		return nil
@@ -560,7 +560,7 @@ func classifyPRFixResult(output string) (verdict PRFixVerdict, reason string) {
 	}
 	for _, phrase := range humanPhrases {
 		if strings.Contains(lower, phrase) {
-			return PRFixHuman, "pr-fix agent requested human review: " + truncate(firstNonEmptyLine(output), 200)
+			return PRFixHuman, "pr-fix agent requested human review: " + firstNonEmptyLine(output)
 		}
 	}
 	return PRFixContinue, ""
@@ -573,7 +573,7 @@ func sentinelReason(output string) string {
 		return ""
 	}
 	m := matches[len(matches)-1]
-	return truncate(strings.TrimSpace(m[1]), 200)
+	return strings.TrimSpace(m[1])
 }
 
 func extractPRFixReason(output string) string {

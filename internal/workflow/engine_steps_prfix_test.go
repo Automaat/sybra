@@ -98,6 +98,25 @@ func TestClassifyPRFixResult(t *testing.T) {
 			wantVerdict: PRFixHuman,
 			wantReason:  "real blocker",
 		},
+		{
+			// Regression for a real production incident: an agent's own diagnosis
+			// ran past the old 200-char truncate() cap and got cut mid-sentence
+			// before it reached the actual root cause, leaving the task
+			// undiagnosable. The reason must survive in full, however long.
+			name: "sentinel reason longer than the old 200-char cap survives in full",
+			output: "SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: " + strings.Repeat("environment-specific detail ", 20) + "root cause at the end\n",
+			wantVerdict: PRFixHuman,
+			wantReason:  strings.Repeat("environment-specific detail ", 20) + "root cause at the end",
+		},
+		{
+			name: "legacy free-text reason longer than the old 200-char cap survives in full",
+			output: strings.Repeat("investigation detail. ", 20) +
+				"As instructed, I ran git rebase --abort. This task requires human review.",
+			wantVerdict: PRFixHuman,
+			wantReason: "pr-fix agent requested human review: " + strings.Repeat("investigation detail. ", 20) +
+				"As instructed, I ran git rebase --abort. This task requires human review.",
+		},
 	}
 
 	for _, tc := range cases {

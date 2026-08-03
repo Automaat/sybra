@@ -3,6 +3,7 @@ package workflow
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -275,6 +276,48 @@ func TestExecVerifyChecks_FailureFlags(t *testing.T) {
 	}
 	if r := tasks.Reason("t1"); r == "" {
 		t.Errorf("expected a non-empty status reason")
+	}
+}
+
+// Regression: the artifact used to cap stored output to the last 8000 bytes
+// (tailString), which for a verbose failing command silently drops whatever
+// ran before the cut — including, in production, the actual `--- FAIL:` line
+// a human needs to diagnose the task. The stored output must never be cut.
+func TestExecVerifyChecks_LongOutputNotTruncated(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{"echo MARKER_START; yes x | head -c 9000; exit 1"})
+	rec := &recordingArtifactRecorder{}
+	engine.SetArtifactRecorder(rec)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+
+	var report *verifyChecksReport
+	for _, put := range rec.puts {
+		if put.name != "verify-checks.json" {
+			continue
+		}
+		var r verifyChecksReport
+		if err := json.Unmarshal([]byte(put.content), &r); err != nil {
+			t.Fatalf("unmarshal artifact: %v", err)
+		}
+		report = &r
+	}
+	if report == nil {
+		t.Fatalf("no verify-checks.json artifact recorded; puts: %+v", rec.puts)
+	}
+	if len(report.OutputTail) < 9000 {
+		t.Fatalf("OutputTail = %d bytes, want the full >9000-byte output preserved", len(report.OutputTail))
+	}
+	if !strings.Contains(report.OutputTail, "MARKER_START") {
+		t.Errorf("artifact lost the start of the output — the old tail-only truncation would have dropped it:\n%s", report.OutputTail[:min(200, len(report.OutputTail))])
 	}
 }
 

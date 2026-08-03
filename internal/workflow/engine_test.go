@@ -10827,7 +10827,7 @@ func TestExecEvaluate_LastAgentFailedFlipsHumanRequired(t *testing.T) {
 	}
 }
 
-func TestExecEvaluate_LastAgentFailedTruncatesLongReason(t *testing.T) {
+func TestExecEvaluate_LastAgentFailedKeepsFullReason(t *testing.T) {
 	long := strings.Repeat("x", 500)
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
@@ -10842,11 +10842,11 @@ func TestExecEvaluate_LastAgentFailedTruncatesLongReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := tasks.Reason("t1")
-	if !strings.Contains(got, "(truncated)") {
-		t.Errorf("reason missing truncation marker: %q", got)
+	if strings.Contains(got, "(truncated)") {
+		t.Errorf("reason should not be truncated: %q", got)
 	}
-	if len(got) >= len(long) {
-		t.Errorf("reason not truncated: %d chars", len(got))
+	if got != long {
+		t.Errorf("reason = %d chars, want the full %d-char output preserved", len(got), len(long))
 	}
 }
 

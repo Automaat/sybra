@@ -31,9 +31,6 @@ const verifyChecksDefaultTimeout = 10 * time.Minute
 // output streams into a fixed-size tail buffer rather than a growing slice.
 const verifyChecksMaxOutput = 64 * 1024
 
-// verifyChecksOutputTail caps how much of that buffer is stored in the artifact.
-const verifyChecksOutputTail = 8000
-
 // verifyBlessedTag lets a human accept a verify failure (e.g. a known-flaky
 // suite) and let the task proceed instead of re-blocking on every re-dispatch.
 const verifyBlessedTag = "verify-blessed"
@@ -193,7 +190,7 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 	}
 
 	report := verifyChecksReport{
-		Commands: cmds, FailedCmd: failedCmd, OutputTail: tailString(output, verifyChecksOutputTail),
+		Commands: cmds, FailedCmd: failedCmd, OutputTail: output,
 	}
 	classification := e.classifyVerifyFailure(taskID, wtPath, failedCmd, output)
 	if classification != nil {
