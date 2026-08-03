@@ -272,11 +272,12 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 		return
 	}
 
-	if ag.EffectiveRole() == agent.RoleFixReview && exitErr == nil {
+	stall := classifyStall(ag, exitErr)
+	if ag.EffectiveRole() == agent.RoleFixReview && exitErr == nil && !stall.Stalled {
 		h.handleFixReviewCompletion(ag)
 	}
 
-	if !h.notifyWorkflowEngine(ag, resultContent, exitErr) {
+	if !h.notifyWorkflowEngine(ag, resultContent, exitErr, stall) {
 		return
 	}
 
@@ -510,11 +511,10 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 // process, but its work already finished cleanly via a terminal result event
 // — treating it as a stall would silently re-queue already-completed work
 // instead of finalizing it.
-func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, exitErr error) bool {
+func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, exitErr error, stall stallDisposition) bool {
 	if h.workflowEngine == nil {
 		return true
 	}
-	stall := classifyStall(ag, exitErr)
 	if stall.Stalled {
 		h.logger.Warn("agent.completion.stall",
 			"task_id", ag.TaskID, "agent_id", ag.ID,
