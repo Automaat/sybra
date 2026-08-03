@@ -388,19 +388,16 @@ func makeFIFO(path string) error {
 
 // startHeadlessProcessSurviveStdin assigns a steerable detached headless
 // claude process's stdin to a FIFO (reusing makeFIFO/agentFIFOPath). Unlike a
-// conversational agent — which is handed an O_RDWR fd so it never sees EOF and
-// survives the parent indefinitely — a headless run MUST terminate when the
-// steer turn boundary closes stdin with no queued message (see
-// drainOrCloseHeadlessSteer). So the child is given a READ-ONLY stdin fd while
-// the parent keeps its own O_RDWR writer: closing the parent's only writer then
-// delivers EOF to the child, which exits exactly like a plain one-shot
-// `claude -p`. Passing the child an O_RDWR fd instead (as the convo path does)
-// leaves the child itself a writer on the pipe, so it never sees EOF and every
-// unsteered run hangs until postResultGrace kills it.
+// conversational agent — which is handed an O_RDWR fd so it keeps a writer
+// across an app restart — a steerable headless run needs the same property.
+// Giving it a read-only fd makes the parent's writer the last writer, so a
+// deploy closes stdin and silently ends the detached child before reattach.
+// The normal terminal-result path already has an explicit finalizing state and
+// post-result kill, so EOF is neither needed nor safe as its close signal.
 //
-// The returned *os.File is the parent's copy of the child's read end; the
-// caller must close it after cmd.Start() (the child holds its own dup) so a
-// single closeStdinPipe on the parent's writer is enough to EOF the child.
+// The returned *os.File is the parent's copy of the child's O_RDWR end; the
+// caller closes it after cmd.Start(), leaving the child as the restart-safe
+// FIFO anchor.
 // Called from startHeadlessSurviveProcess before cmd.Start(); on any error
 // cmd.Stdin is left unset and the caller aborts the attempt.
 func (m *Manager) startHeadlessProcessSurviveStdin(a *Agent, cmd *exec.Cmd) (*os.File, error) {
@@ -408,16 +405,16 @@ func (m *Manager) startHeadlessProcessSurviveStdin(a *Agent, cmd *exec.Cmd) (*os
 	if err := makeFIFO(fifoPath); err != nil {
 		return nil, fmt.Errorf("mkfifo: %w", err)
 	}
-	// Open the writer first (O_RDWR never blocks on a FIFO), so the read-only
-	// open below finds a writer present and returns immediately too.
+	// O_RDWR never blocks on a FIFO. Both parent and child retain a writer, so
+	// a process that survives an app restart cannot observe a false EOF.
 	writeFifo, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open fifo (write): %w", err)
 	}
-	childStdin, err := os.OpenFile(fifoPath, os.O_RDONLY, 0)
+	childStdin, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
 	if err != nil {
 		_ = writeFifo.Close()
-		return nil, fmt.Errorf("open fifo (read): %w", err)
+		return nil, fmt.Errorf("open fifo (child): %w", err)
 	}
 	cmd.Stdin = childStdin
 	a.convo.replaceStdinPipe(writeFifo)
@@ -445,10 +442,9 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 	a.Command = command
 	cmd.Stdout = outFile
 
-	// Steerable claude runs get a FIFO stdin, exactly like a detached
-	// conversational agent (startConvoProcessSurvive). The parent keeps an
-	// O_RDWR anchor open so the FIFO survives process handoff, while the child
-	// gets a read-only fd and still sees EOF once the writer side closes.
+	// Steerable claude runs get an O_RDWR FIFO stdin, exactly like a detached
+	// conversational agent. The child retains a writer across process handoff,
+	// so a server restart cannot deliver a false EOF before reattach.
 	// Only claude honors HeadlessSteerable (see steerableHeadlessInvocation);
 	// codex/copilot keep the plain no-stdin invocation unchanged.
 	steerable := steerableHeadlessInvocation(cfg, name)
@@ -486,8 +482,7 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 		}
 		return nil, fmt.Errorf("start %s: %w", name, startErr)
 	}
-	// The child holds its own dup of the read end; drop the parent's copy so
-	// closing the parent's writer (closeStdinPipe) is enough to EOF the child.
+	// The child holds its own O_RDWR dup; drop the parent's copy after start.
 	if childStdin != nil {
 		_ = childStdin.Close()
 	}
@@ -1264,8 +1259,9 @@ func (m *Manager) logPostResultWaitDone(a *Agent, resolution string) {
 
 // drainOrCloseHeadlessSteer is the steerable headless run's turn-boundary
 // chokepoint: it flushes one queued steer message so the process stays alive
-// and lands the next turn back-to-back, or closes stdin so the child sees
-// EOF and exits exactly like an unsteered one-shot run. Gated on
+// and lands the next turn back-to-back, or marks the transport finalizing.
+// Detached FIFO children retain an O_RDWR anchor across restart; their normal
+// terminal cleanup is performed by the post-result reaper, not EOF. Gated on
 // hasStdinPipe so a non-steerable (legacy one-shot) run is unaffected.
 func (m *Manager) drainOrCloseHeadlessSteer(a *Agent) {
 	if !a.convo.hasStdinPipe() {
@@ -1287,8 +1283,7 @@ func (m *Manager) drainOrCloseHeadlessSteer(a *Agent) {
 		a.RestorePendingPrompt(next)
 		m.saveRegistry(m.ctx, a)
 		a.SetError("rate_limit", "provider unhealthy at steer boundary")
-		a.setFinalizing(true)
-		a.convo.closeStdinPipe()
+		m.closeHeadlessSteerForRetry(a)
 		m.logger.Warn("agent.headless.steer.parked", "id", a.ID, "provider", a.GetProvider(),
 			"remaining", a.PendingPromptCount())
 		return
@@ -1297,8 +1292,7 @@ func (m *Manager) drainOrCloseHeadlessSteer(a *Agent) {
 		m.logger.Error("agent.headless.steer.write", "id", a.ID, "err", writeErr)
 		a.RestorePendingPrompt(next)
 		m.saveRegistry(m.ctx, a)
-		a.setFinalizing(true)
-		a.convo.closeStdinPipe()
+		m.closeHeadlessSteerForRetry(a)
 		return
 	}
 	m.saveRegistry(m.ctx, a)
@@ -1310,12 +1304,22 @@ func (m *Manager) drainOrCloseHeadlessSteer(a *Agent) {
 // those prompts in order; a new message is rejected rather than falsely
 // acknowledged after the terminal error has already arrived.
 func (m *Manager) closeHeadlessSteerAfterError(a *Agent) {
-	if !a.convo.hasStdinPipe() {
-		return
-	}
+	m.closeHeadlessSteerForRetry(a)
+}
+
+// closeHeadlessSteerForRetry ends the current transport while retaining queued
+// prompts. Detached children retain a FIFO writer across restart, so retry
+// paths must explicitly terminate them instead of depending on EOF.
+func (m *Manager) closeHeadlessSteerForRetry(a *Agent) {
 	a.setFinalizing(true)
 	m.saveRegistry(m.ctx, a)
 	a.convo.closeStdinPipe()
+	// An O_RDWR child intentionally survives the parent's close across a
+	// restart. A terminal provider error is different: this attempt must end
+	// now so the normal retry path can start a fresh transport.
+	if a.isDetached() {
+		m.signalKill(a)
+	}
 }
 
 // sendHeadlessSteerMessage queues a follow-up message for a steerable
