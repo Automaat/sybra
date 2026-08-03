@@ -28,7 +28,8 @@ const verifyChecksDefaultTimeout = 10 * time.Minute
 
 // verifyChecksMaxOutput bounds how much command output is retained in memory.
 // A noisy or malicious verify command must not be able to OOM the engine, so
-// output streams into a fixed-size tail buffer rather than a growing slice.
+// output streams into a fixed-size head+tail buffer (see boundedTail) rather
+// than a growing slice.
 const verifyChecksMaxOutput = 64 * 1024
 
 // verifyBlessedTag lets a human accept a verify failure (e.g. a known-flaky

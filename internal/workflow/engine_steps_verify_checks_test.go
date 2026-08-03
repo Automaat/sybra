@@ -365,8 +365,9 @@ func TestExecVerifyChecks_LongOutputNotTruncated(t *testing.T) {
 func TestExecVerifyChecks_OutputPastStreamingCapKeepsStartAndEnd(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	// 100000 alone exceeds verifyChecksMaxOutput, independent of flake retries.
 	engine, tasks := newVerifyChecksEngine(t, wt,
-		[]string{"echo MARKER_START; yes x | head -c 40000; echo MARKER_END; exit 1"})
+		[]string{"echo MARKER_START; yes x | head -c 100000; echo MARKER_END; exit 1"})
 	rec := &recordingArtifactRecorder{}
 	engine.SetArtifactRecorder(rec)
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
