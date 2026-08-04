@@ -24,8 +24,6 @@ var (
 	submitFn   func(title, projectID string)
 )
 
-func Supported() bool { return true }
-
 //export goHotkeyCallback
 func goHotkeyCallback() {
 	callbackMu.Lock()
