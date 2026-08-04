@@ -213,8 +213,14 @@ func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
 		u.PlanDecisions = &content
 	case "plan_brief":
 		u.PlanBrief = &content
+	case "current_test_failures":
+		u.CurrentTestFailures = &content
+	case "acceptance_ledger":
+		u.AcceptanceLedger = &content
+	case "spec_decision":
+		u.SpecDecision = &content
 	default:
-		return fmt.Errorf("unknown sidecar kind %q (want plan|plan_contract|code_review|plan_critique|plan_research|plan_decisions|plan_brief|plan_draft.<name>)", kind)
+		return fmt.Errorf("unknown sidecar kind %q (want plan|plan_contract|code_review|plan_critique|plan_research|plan_decisions|plan_brief|current_test_failures|acceptance_ledger|spec_decision|plan_draft.<name>)", kind)
 	}
 	_, err := a.tasks.Update(id, u)
 	return err
