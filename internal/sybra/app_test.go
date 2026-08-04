@@ -100,9 +100,11 @@ func setupManualQueueApp(t *testing.T, taskDir, queueDir string, maxConcurrent i
 	fakebin := t.TempDir()
 	fakeClaude := filepath.Join(fakebin, "claude")
 	if err := os.WriteFile(fakeClaude, []byte("#!/usr/bin/env bash\n"+
-		"trap 'exit 0' TERM INT\n"+
 		"printf '{\"type\":\"system\",\"session_id\":\"fake-session\"}\\n'\n"+
-		"sleep 5\n"+
+		"sleep 5 &\n"+
+		"child=$!\n"+
+		"trap 'kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; exit 0' TERM INT\n"+
+		"wait \"$child\"\n"+
 		"printf '{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"fake-session\",\"result\":\"done\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}\\n'\n"),
 		0o755); err != nil {
 		t.Fatalf("write fake claude: %v", err)
