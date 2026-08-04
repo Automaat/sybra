@@ -58,7 +58,7 @@ func IsBadRefError(err error) bool {
 const fsckRefBatch = 256
 
 // CheckBareCloneHealth reports whether the object database is intact for
-// everything reachable from refs.
+// refs that can seed a task checkout.
 //
 // It scopes fsck to the ref tips rather than running it bare. An unscoped
 // `git fsck` also walks every linked worktree's index and HEAD reflog, and
