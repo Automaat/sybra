@@ -240,10 +240,12 @@ func (e *Engine) execRequireSidecar(taskID string, step *Step, t TaskInfo) (Step
 // resolveOriginBase returns the remote ref to use as the base for commit
 // range comparisons. It checks for origin/HEAD (set when the remote HEAD
 // symbolic ref is configured), then falls back to probing master and main.
+// A plain rev-parse accepts a syntactically valid but missing object ID, so
+// each candidate must resolve to a commit before it can be used in a range.
 // Returns "origin/main" if nothing resolves.
 func resolveOriginBase(ctx context.Context, wtPath string) string {
 	for _, candidate := range []string{"origin/HEAD", "origin/master", "origin/main"} {
-		if gitOK(ctx, wtPath, "rev-parse", "--verify", candidate) {
+		if gitOK(ctx, wtPath, "rev-parse", "--verify", candidate+"^{commit}") {
 			return candidate
 		}
 	}

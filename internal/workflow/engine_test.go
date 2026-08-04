@@ -9100,6 +9100,21 @@ func makeGitRepo(t *testing.T, withExtraCommit bool) string {
 	return dir
 }
 
+func TestResolveOriginBase_FallsBackFromDanglingOriginHEAD(t *testing.T) {
+	wtPath := makeGitRepo(t, false)
+	refPath := filepath.Join(wtPath, ".git", "refs", "remotes", "origin", "HEAD")
+	if err := os.MkdirAll(filepath.Dir(refPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(refPath, []byte(strings.Repeat("f", 40)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolveOriginBase(context.Background(), wtPath); got != "origin/main" {
+		t.Fatalf("resolveOriginBase() = %q, want origin/main when origin/HEAD is dangling", got)
+	}
+}
+
 func runGitAt(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	out, err := gitCombinedAt(dir, args...)
