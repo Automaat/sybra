@@ -258,8 +258,24 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates); err != nil {
 		h.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
-	h.salvageInterruptedReview(ag)
-	h.markCompletedReview(ag, exitErr)
+
+	// Resolved before any review-side-effect or routing side effect below: a
+	// parked adoption may only persist its run and clear the workflow step.
+	// markCompletedReview/salvageInterruptedReview set Task.Reviewed/CodeReview
+	// without the workflow engine recording review evidence (that only happens
+	// on advancement, which parked adoption skips) — running them here would
+	// leave the resumed simple-task-review workflow believing review already
+	// happened while require_evidence still finds the criterion missing,
+	// parking the task again. handleFixReviewCompletion in particular pushes
+	// the survivor's branch (and under review-hold rewrites the task's
+	// status), which must not happen behind a human's or the monitor's
+	// deliberate parking.
+	parked, parkedAdoption := h.parkedAdoption(ag)
+
+	if !parkedAdoption {
+		h.salvageInterruptedReview(ag)
+		h.markCompletedReview(ag, exitErr)
+	}
 
 	// Human-review agents are out-of-band diagnostics — they must not
 	// feed into the workflow engine (which would advance the step that
@@ -272,12 +288,6 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 		return
 	}
 
-	// Resolved before any routing side effect below: a parked adoption may
-	// only persist its run and clear the workflow step. handleFixReviewCompletion
-	// in particular pushes the survivor's branch (and under review-hold rewrites
-	// the task's status), which must not happen behind a human's or the
-	// monitor's deliberate parking.
-	parked, parkedAdoption := h.parkedAdoption(ag)
 	stall := classifyStall(ag, exitErr)
 
 	if !parkedAdoption && ag.EffectiveRole() == agent.RoleFixReview && exitErr == nil && !stall.Stalled {
