@@ -261,6 +261,7 @@ const signoffHook = `#!/bin/sh
 # Auto-installed by Sybra. Guarantees a DCO Signed-off-by trailer on every
 # commit so PRs never fail the DCO check when an agent forgets 'git commit -s'.
 msg_file="$1"
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 sob=$(git var GIT_AUTHOR_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
 [ -z "$sob" ] && exit 0
 git interpret-trailers --if-exists addIfDifferent --trailer "$sob" --in-place "$msg_file"
