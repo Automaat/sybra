@@ -3,12 +3,12 @@ package project
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/gitexec"
 )
 
 type RepairReport struct {
@@ -175,18 +175,10 @@ func indexUsable(ctx context.Context, checkoutPath string) error {
 	return nil
 }
 
-// runQuietGit runs git in dir, discarding stdout and surfacing only stderr,
-// which is the part that explains a failure.
+// runQuietGit runs git in dir and discards successful output. On failure the
+// shared execution boundary includes Git's diagnostic output in the error.
 func runQuietGit(ctx context.Context, dir string, args ...string) error {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	cmd.Stdout = io.Discard
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	return nil
+	return gitexec.Run(ctx, gitexec.Options{Dir: dir}, args...)
 }
 
 // bareRefTips lists the object ids every ref points at. They are the roots
@@ -341,10 +333,8 @@ func rebuildWorktreeIndexes(ctx context.Context, barePath string, report *Repair
 			continue
 		}
 		QuarantineRef(barePath, "worktrees/"+entry.Name()+"/index", quarantined)
-		cmd := exec.CommandContext(ctx, "git", "-C", checkoutPath, "reset", "--mixed", "HEAD")
-		if out, err := cmd.CombinedOutput(); err != nil {
+		if err := gitexec.Run(ctx, gitexec.Options{Dir: checkoutPath}, "reset", "--mixed", "HEAD"); err != nil {
 			_ = os.Rename(quarantined, indexPath)
-			_ = out
 			continue
 		}
 		report.RebuiltWorktreeIndexes = append(report.RebuiltWorktreeIndexes, "worktrees/"+entry.Name()+"/index")

@@ -2,8 +2,8 @@ package project
 
 import (
 	"context"
-	"os/exec"
-	"strings"
+
+	"github.com/Automaat/sybra/internal/gitexec"
 )
 
 // GPGSigningAvailable reports whether this machine can GPG-sign commits, i.e.
@@ -13,11 +13,11 @@ import (
 // emit only -s there. DCO sign-off (-s) is guaranteed independently by the
 // prepare-commit-msg hook (see InstallSignoffHook).
 func GPGSigningAvailable(ctx context.Context) bool {
-	out, err := exec.CommandContext(ctx, "git", "config", "--global", "--get", "user.signingkey").Output()
+	out, err := gitexec.Output(ctx, gitexec.Options{}, "config", "--global", "--get", "user.signingkey")
 	if err != nil {
 		return false
 	}
-	return strings.TrimSpace(string(out)) != ""
+	return out != ""
 }
 
 // CommitSignFlags returns the git commit flags an agent should use on this
