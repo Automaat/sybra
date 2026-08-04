@@ -2883,6 +2883,35 @@ func TestRefreshedRemoteTrackingSHA_RefreshesBeforeReading(t *testing.T) {
 	}
 }
 
+func TestRefreshedRemoteTrackingSHA_RemovesStaleTrackingRefWhenRemoteBranchGone(t *testing.T) {
+	t.Parallel()
+	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
+	makeCommit(t, wtPath, "one")
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
+		t.Fatalf("PushSync seed: %v", err)
+	}
+
+	trackingRef := "refs/remotes/origin/" + branch
+	if out, err := exec.Command("git", "-C", wtPath, "rev-parse", "--verify", trackingRef).CombinedOutput(); err != nil {
+		t.Fatalf("rev-parse tracking ref before delete: %v: %s", err, out)
+	}
+
+	if out, err := exec.Command("git", "--git-dir", remoteBare, "update-ref", "-d", "refs/heads/"+branch).CombinedOutput(); err != nil {
+		t.Fatalf("delete remote branch: %v: %s", err, out)
+	}
+
+	got, ok, err := RefreshedRemoteTrackingSHA(context.Background(), wtPath, "origin", branch)
+	if err != nil {
+		t.Fatalf("RefreshedRemoteTrackingSHA: %v", err)
+	}
+	if ok {
+		t.Fatalf("RefreshedRemoteTrackingSHA reported remote branch present with SHA %q after delete", got)
+	}
+	if RefExists(context.Background(), remoteBare, trackingRef) {
+		t.Fatalf("tracking ref %s still exists after remote deletion", trackingRef)
+	}
+}
+
 // TestReconcileWithRemote_DivergedReturnsError guards against clobbering a
 // remote that has genuinely diverged: reconcile must refuse rather than let a
 // later force-push silently overwrite remote-only commits.

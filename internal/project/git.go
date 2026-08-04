@@ -1387,6 +1387,7 @@ func RefreshedRemoteTrackingSHA(ctx context.Context, worktreePath, remote, branc
 // without making the regression depend on a local git fetch's timing.
 func refreshTrackingRefWithFetch(ctx context.Context, worktreePath, remote, branch string, fetch func(refspec string) error) error {
 	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
+	trackingRef := fmt.Sprintf("refs/remotes/%s/%s", remote, branch)
 	barePath, err := gitCommonDir(ctx, worktreePath)
 	if err != nil {
 		return err
@@ -1398,7 +1399,15 @@ func refreshTrackingRefWithFetch(ctx context.Context, worktreePath, remote, bran
 			})
 		})
 	})
-	if fetchErr != nil && !strings.Contains(fetchErr.Error(), "couldn't find remote ref") {
+	if fetchErr != nil && strings.Contains(fetchErr.Error(), "couldn't find remote ref") {
+		if RefExists(ctx, barePath, trackingRef) {
+			if err := runBare(ctx, barePath, "update-ref", "-d", trackingRef); err != nil {
+				return fmt.Errorf("delete stale tracking ref %s: %w", trackingRef, err)
+			}
+		}
+		return nil
+	}
+	if fetchErr != nil {
 		return fmt.Errorf("fetch %s %s: %w", remote, refspec, fetchErr)
 	}
 	return nil
