@@ -886,6 +886,10 @@ func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {
 	return path, ok
 }
 
+func (a *worktreeGetterAdapter) ResolvePRWorktree(ctx context.Context, taskID string) (path string, found bool, err error) {
+	return ensureReadyPRWorktree(ctx, a.tasks, a.mgr, taskID)
+}
+
 func (*attemptNoteAppenderAdapter) AppendReimplementNote(ctx context.Context, _, wtPath, marker, note string) error {
 	return worktree.AppendNote(ctx, wtPath, marker, note)
 }

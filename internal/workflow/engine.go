@@ -188,6 +188,13 @@ type WorktreeGetter interface {
 	GetWorktreePath(taskID string) (string, bool)
 }
 
+// PRWorktreeResolver resolves or reconstructs the implementation worktree for
+// deterministic PR-tail steps. It is optional so lightweight Engine users and
+// tests can keep providing a read-only WorktreeGetter.
+type PRWorktreeResolver interface {
+	ResolvePRWorktree(ctx context.Context, taskID string) (path string, found bool, err error)
+}
+
 // AttemptNoteAppender persists re-implementation context into a task's local
 // NOTES.md scratchpad. Engine passes the already-resolved worktree path so the
 // adapter can reuse the same path for both diff inspection and the append.

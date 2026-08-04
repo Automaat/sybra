@@ -168,6 +168,71 @@ func (f *fakePushPreflighter) PreflightPushCredentials(_ context.Context, wtPath
 	return f.err
 }
 
+type fakePRWorktreeResolver struct {
+	path         string
+	err          error
+	resolveCalls int
+	getCalls     int
+}
+
+func (f *fakePRWorktreeResolver) GetWorktreePath(string) (string, bool) {
+	f.getCalls++
+	return "", false
+}
+
+func (f *fakePRWorktreeResolver) ResolvePRWorktree(context.Context, string) (path string, found bool, err error) {
+	f.resolveCalls++
+	return f.path, f.path != "", f.err
+}
+
+func TestExecPushBranch_RecoversMissingWorktreeOnce(t *testing.T) {
+	_, wtPath := newPRWorktree(t, "feat/existing-pr")
+	commitFile(t, wtPath, "change.txt", "feat: task work")
+	local := headSHA(t, wtPath)
+
+	tasks := newMemTasks()
+	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"}
+	tasks.Put(task)
+	resolver := &fakePRWorktreeResolver{path: wtPath}
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(resolver)
+	engine.SetPRHeadFetcher(&fakePRHeadFetcher{sha: local})
+
+	out, err := engine.execPushBranch("t1", newPushBranchStep(), &Execution{Variables: map[string]string{}}, task)
+	if err != nil {
+		t.Fatalf("execPushBranch: %v", err)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("status = %q, want completed", out.Status)
+	}
+	if resolver.resolveCalls != 1 || resolver.getCalls != 0 {
+		t.Fatalf("resolver calls = %d, getter calls = %d; want one resolve and no fallback get", resolver.resolveCalls, resolver.getCalls)
+	}
+}
+
+func TestExecCreatePR_WorktreeRecoveryErrorIsPrecise(t *testing.T) {
+	tasks := newMemTasks()
+	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets"}
+	tasks.Put(task)
+	resolver := &fakePRWorktreeResolver{err: errors.New("prepare branch: remote ref missing")}
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(resolver)
+
+	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
+	if err != nil {
+		t.Fatalf("execCreatePR: %v", err)
+	}
+	if resolver.resolveCalls != 1 || resolver.getCalls != 0 {
+		t.Fatalf("resolver calls = %d, getter calls = %d; want one resolve and no fallback get", resolver.resolveCalls, resolver.getCalls)
+	}
+	if !strings.Contains(out.Output, "could not prepare worktree: prepare branch: remote ref missing") {
+		t.Fatalf("output = %q, want underlying prepare error", out.Output)
+	}
+	if reason := tasks.Reason("t1"); reason != out.Output {
+		t.Fatalf("status reason = %q, want %q", reason, out.Output)
+	}
+}
+
 func TestExecPushBranch_Success(t *testing.T) {
 	_, wtPath := newPRWorktree(t, "feat/existing-pr")
 	commitFile(t, wtPath, "change.txt", "feat: task work")

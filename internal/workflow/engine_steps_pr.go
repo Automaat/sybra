@@ -171,16 +171,29 @@ func (e *Engine) linkTaskPR(taskID string, t TaskInfo, newPR int) error {
 }
 
 // prWorktreeAndBranch resolves the on-disk worktree and branch used by
-// push_branch/create_pr. These steps run only after implementation/review has
-// already produced a worktree, so a missing WorktreeGetter or worktree is an
-// unrecoverable setup problem, not a transient one, and flips straight to
-// human-required.
+// push_branch/create_pr. A production WorktreeGetter may also implement
+// PRWorktreeResolver, allowing one reconstruction attempt before a genuinely
+// unrecoverable setup problem is escalated to human-required.
 func (e *Engine) prWorktreeAndBranch(taskID string, step *Step, t TaskInfo) (wtPath, branch string, out StepOutput, done bool) {
 	if e.worktrees == nil {
 		out, _ = e.humanRequiredPR(taskID, step, "no worktree getter configured")
 		return "", "", out, true
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	var (
+		ok  bool
+		err error
+	)
+	if resolver, resolves := e.worktrees.(PRWorktreeResolver); resolves {
+		ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+		defer cancel()
+		wtPath, ok, err = resolver.ResolvePRWorktree(ctx, taskID)
+	} else {
+		wtPath, ok = e.worktrees.GetWorktreePath(taskID)
+	}
+	if err != nil {
+		out, _ = e.humanRequiredPR(taskID, step, "could not prepare worktree: "+err.Error())
+		return "", "", out, true
+	}
 	if !ok {
 		out, _ = e.humanRequiredPR(taskID, step, "no worktree found for task")
 		return "", "", out, true
