@@ -261,6 +261,37 @@ func TestProtectedStoreRescueFailureLeavesFindingOpen(t *testing.T) {
 	}
 }
 
+func TestRescueWorktreeCreatesRefAndBundle(t *testing.T) {
+	worktree := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.email", "test@example.invalid"},
+		{"config", "user.name", "Test"},
+		{"config", "commit.gpgsign", "false"},
+		{"commit", "-q", "--allow-empty", "-m", "seed"},
+	} {
+		cmd := exec.CommandContext(t.Context(), "git", args...)
+		cmd.Dir = worktree
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+
+	ref := "refs/sybra/rescue/test"
+	bundle := filepath.Join(t.TempDir(), "rescue.bundle")
+	if err := rescueWorktree(worktree, ref, bundle); err != nil {
+		t.Fatalf("rescueWorktree: %v", err)
+	}
+	if info, err := os.Stat(bundle); err != nil || info.Size() == 0 {
+		t.Fatalf("bundle stat: info=%v err=%v", info, err)
+	}
+	cmd := exec.CommandContext(t.Context(), "git", "rev-parse", "--verify", ref)
+	cmd.Dir = worktree
+	if out, err := cmd.CombinedOutput(); err != nil || strings.TrimSpace(string(out)) == "" {
+		t.Fatalf("verify rescue ref: %v: %s", err, out)
+	}
+}
+
 func TestProtectedEvidenceLogPathsIncludesReattachedFinding(t *testing.T) {
 	t.Parallel()
 	store := newProtectedStore(t)

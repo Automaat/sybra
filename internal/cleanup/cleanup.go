@@ -13,7 +13,6 @@
 package cleanup
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io/fs"
@@ -28,6 +27,7 @@ import (
 	"github.com/Automaat/sybra/internal/buildcache"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -305,11 +305,11 @@ func goBuildCacheDir() string {
 func gitStatusClean(path string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", path, "status", "--porcelain").Output()
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: path}, "status", "--porcelain")
 	if err != nil {
 		return false
 	}
-	return len(bytes.TrimSpace(out)) == 0
+	return out == ""
 }
 
 // hasUnpushedCommits reports whether the worktree at path holds commits not
