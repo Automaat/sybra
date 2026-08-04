@@ -1409,11 +1409,11 @@ func (r *Handler) prFixParkedOnConflict(taskID string) bool {
 // success resumes the task's original interrupted workflow/stage rather than
 // jumping to a terminal status.
 //
-// Guards fail closed exactly like the PR-numbered path: a missing dependency,
-// an exhausted no-PR branch-conflict retry budget, or an already-in-flight
-// recovery for this task
-// (branchRecoveryMu/branchRecoveryInFlight) all return false so the caller
-// (agentorch.MarkRebaseBlocked helper) escalates to human-required as before. Never loops:
+// Guards fail closed exactly like the PR-numbered path: missing dependencies
+// and exhausted no-PR branch-conflict retry budgets return false so the caller
+// (agentorch.MarkRebaseBlocked helper) escalates to human-required. An
+// already-in-flight recovery is treated as handled, so a concurrent caller
+// cannot cancel the workflow the first caller is preparing. Never loops:
 // a conflict discovered while resolving THIS conflict re-enters
 // agentorch.MarkRebaseBlocked -> RecoverStaleBranchConflict -> here, and the in-flight
 // marker (still held from the outer call, since this method runs
@@ -1488,7 +1488,12 @@ func (r *Handler) recoverTaskBranchConflict(ctx context.Context, t task.Task, sp
 	}
 	if _, busy := r.branchRecoveryInFlight[taskID]; busy {
 		r.branchRecoveryMu.Unlock()
-		return false
+		// Another caller is already preparing or dispatching the bounded
+		// recovery for this task. Treat that as handled: callers interpret
+		// false as "escalate to human-required", which would otherwise cancel
+		// the recovery workflow the first caller has just started. The owner
+		// of the in-flight attempt still reports its own real failure.
+		return true
 	}
 	r.branchRecoveryInFlight[taskID] = struct{}{}
 	r.branchRecoveryMu.Unlock()
