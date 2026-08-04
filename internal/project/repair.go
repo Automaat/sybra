@@ -333,7 +333,7 @@ func rebuildWorktreeIndexes(ctx context.Context, barePath string, report *Repair
 			continue
 		}
 		QuarantineRef(barePath, "worktrees/"+entry.Name()+"/index", quarantined)
-		if err := gitexec.Run(ctx, gitexec.Options{Dir: checkoutPath}, "reset", "--mixed", "HEAD"); err != nil {
+		if err := gitexec.RunQuiet(ctx, gitexec.Options{Dir: checkoutPath}, "reset", "--mixed", "HEAD"); err != nil {
 			_ = os.Rename(quarantined, indexPath)
 			continue
 		}
