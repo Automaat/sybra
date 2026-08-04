@@ -17,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -315,6 +316,31 @@ func TestUpdateStatus(t *testing.T) {
 	mustUnmarshal(t, out, &updated)
 	if updated.Status != "in-progress" {
 		t.Errorf("status = %q", updated.Status)
+	}
+}
+
+func TestUpdateRetryableLockTimeoutExitsTempFail(t *testing.T) {
+	setupStore(t)
+
+	code, out := runCLI(t, "--json", "create", "--title", "locked update")
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, out)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	unlock, err := fsutil.LockFile(created.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unlock() }()
+
+	code, _, errOut := runCLIWithStderr(t, "--json", "update", created.ID, "--status", "in-progress")
+	if code != 75 {
+		t.Fatalf("update exit = %d, want 75 (stderr: %s)", code, errOut)
+	}
+	if !strings.Contains(errOut, created.FilePath+".lock") {
+		t.Fatalf("stderr %q missing lock path %q", errOut, created.FilePath+".lock")
 	}
 }
 

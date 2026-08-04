@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // KeyedLocker serializes read-modify-write critical sections keyed by an
@@ -42,6 +43,19 @@ func NewKeyedLocker() *KeyedLocker {
 // never proceed holding only the in-process half, since that would silently
 // reintroduce the cross-process race this lock exists to close.
 func (l *KeyedLocker) Lock(key, path string) (func(), error) {
+	return l.lock(key, func() (func() error, error) {
+		return LockFile(path)
+	})
+}
+
+// LockWithin is Lock with a bounded cross-process wait.
+func (l *KeyedLocker) LockWithin(key, path string, timeout time.Duration) (func(), error) {
+	return l.lock(key, func() (func() error, error) {
+		return LockFileWithin(path, timeout)
+	})
+}
+
+func (l *KeyedLocker) lock(key string, lockFile func() (func() error, error)) (func(), error) {
 	l.mu.Lock()
 	if l.locks == nil {
 		l.locks = map[string]*keyRefLock{}
@@ -66,7 +80,7 @@ func (l *KeyedLocker) Lock(key, path string) (func(), error) {
 		}
 	}
 
-	unlockFile, err := LockFile(path)
+	unlockFile, err := lockFile()
 	if err != nil {
 		releaseInProcess()
 		return nil, fmt.Errorf("lock %s: %w", key, err)

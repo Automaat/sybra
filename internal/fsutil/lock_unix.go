@@ -3,6 +3,7 @@
 package fsutil
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,29 @@ import (
 	"syscall"
 	"time"
 )
+
+const lockRetryInterval = 10 * time.Millisecond
+
+// LockTimeoutError reports that a file lock could not be acquired before the
+// caller's deadline. holder PID is best-effort from the lock file contents.
+type LockTimeoutError struct {
+	Path      string
+	HolderPID int
+}
+
+func (e *LockTimeoutError) Error() string {
+	if e == nil {
+		return ErrLockTimeout.Error()
+	}
+	if e.HolderPID > 0 {
+		return fmt.Sprintf("%s: %s (held by pid %d)", ErrLockTimeout, e.Path, e.HolderPID)
+	}
+	return fmt.Sprintf("%s: %s", ErrLockTimeout, e.Path)
+}
+
+func (e *LockTimeoutError) Is(target error) bool {
+	return target == ErrLockTimeout
+}
 
 // LockFile acquires an advisory, cross-process exclusive lock for path by
 // flocking a sibling "<path>.lock" file, blocking until it is held. Sybra
@@ -26,21 +50,17 @@ import (
 // write) or a concurrent writer can still interleave between another
 // process's read and write.
 func LockFile(path string) (func() error, error) {
-	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, fmt.Errorf("open lock file: %w", err)
+	return lockFileUntil(path, time.Time{}, nil)
+}
+
+// LockFileContext retries non-blocking flock attempts until ctx is cancelled.
+// Cancellation is reported as a typed ErrLockTimeout so callers can treat it
+// as a retryable busy-peer condition while still bounding the wait.
+func LockFileContext(ctx context.Context, path string) (func() error, error) {
+	if ctx == nil {
+		return LockFile(path)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		_ = f.Close()
-		return nil, fmt.Errorf("flock: %w", err)
-	}
-	return func() error {
-		unlockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		if closeErr := f.Close(); unlockErr == nil {
-			unlockErr = closeErr
-		}
-		return unlockErr
-	}, nil
+	return lockFileUntil(path, time.Time{}, ctx.Done())
 }
 
 // ErrLockTimeout is returned when LockFileWithin cannot acquire the lock
@@ -53,30 +73,84 @@ var ErrLockTimeout = errors.New("fsutil: timed out waiting for file lock")
 // indefinitely blocking a hot in-process mutex while retaining the full
 // read-modify-write critical section once the lock is acquired.
 func LockFileWithin(path string, timeout time.Duration) (func() error, error) {
-	deadline := time.Now().Add(timeout)
+	return lockFileUntil(path, time.Now().Add(timeout), nil)
+}
+
+func lockFileUntil(path string, deadline time.Time, done <-chan struct{}) (func() error, error) {
+	lockPath := path + ".lock"
 	for {
-		f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 		if err != nil {
 			return nil, fmt.Errorf("open lock file: %w", err)
 		}
 		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
-			return func() error {
-				unlockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-				if closeErr := f.Close(); unlockErr == nil {
-					unlockErr = closeErr
-				}
-				return unlockErr
-			}, nil
+			if err := writeLockHolderPID(f); err != nil {
+				_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				_ = f.Close()
+				return nil, err
+			}
+			return unlockFunc(f), nil
 		}
+		holder := readLockHolderPID(f)
 		_ = f.Close()
 		if !errors.Is(err, syscall.EWOULDBLOCK) {
 			return nil, fmt.Errorf("flock: %w", err)
 		}
-		if !time.Now().Before(deadline) {
-			return nil, fmt.Errorf("%w after %s", ErrLockTimeout, timeout)
+		if timedOut(deadline, done) {
+			return nil, &LockTimeoutError{Path: lockPath, HolderPID: holder}
 		}
-		time.Sleep(10 * time.Millisecond)
+		if err := waitForLockRetry(deadline, done); err != nil {
+			return nil, &LockTimeoutError{Path: lockPath, HolderPID: holder}
+		}
+	}
+}
+
+func timedOut(deadline time.Time, done <-chan struct{}) bool {
+	if done != nil {
+		select {
+		case <-done:
+			return true
+		default:
+		}
+	}
+	return !deadline.IsZero() && !time.Now().Before(deadline)
+}
+
+func waitForLockRetry(deadline time.Time, done <-chan struct{}) error {
+	delay := lockRetryInterval
+	if !deadline.IsZero() {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return ErrLockTimeout
+		}
+		if remaining < delay {
+			delay = remaining
+		}
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	if done == nil {
+		<-timer.C
+		return nil
+	}
+
+	select {
+	case <-timer.C:
+		return nil
+	case <-done:
+		return ErrLockTimeout
+	}
+}
+
+func unlockFunc(f *os.File) func() error {
+	return func() error {
+		unlockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		if closeErr := f.Close(); unlockErr == nil {
+			unlockErr = closeErr
+		}
+		return unlockErr
 	}
 }
 
@@ -117,28 +191,27 @@ func TryLockPath(path string) (func() error, error) {
 		}
 		return nil, fmt.Errorf("flock: %w", err)
 	}
-	if err := f.Truncate(0); err != nil {
+	if err := writeLockHolderPID(f); err != nil {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
-		return nil, fmt.Errorf("truncate lock file: %w", err)
+		return nil, err
 	}
-	if _, err := f.WriteAt([]byte(strconv.Itoa(os.Getpid())), 0); err != nil {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		_ = f.Close()
-		return nil, fmt.Errorf("write lock file: %w", err)
-	}
-	return func() error {
-		unlockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		if closeErr := f.Close(); unlockErr == nil {
-			unlockErr = closeErr
-		}
-		return unlockErr
-	}, nil
+	return unlockFunc(f), nil
 }
 
-// readLockHolderPID best-effort reads the pid a prior TryLockPath winner
-// wrote into f, for a friendlier "held by pid N" error. Returns 0 (omit from
-// the error) if the file is empty, unreadable, or predates this convention.
+func writeLockHolderPID(f *os.File) error {
+	if err := f.Truncate(0); err != nil {
+		return fmt.Errorf("truncate lock file: %w", err)
+	}
+	if _, err := f.WriteAt([]byte(strconv.Itoa(os.Getpid())), 0); err != nil {
+		return fmt.Errorf("write lock file: %w", err)
+	}
+	return nil
+}
+
+// readLockHolderPID best-effort reads the pid a prior lock winner wrote into
+// f, for a friendlier "held by pid N" error. Returns 0 (omit from the error)
+// if the file is empty, unreadable, or predates this convention.
 func readLockHolderPID(f *os.File) int {
 	buf := make([]byte, 32)
 	n, _ := f.ReadAt(buf, 0)

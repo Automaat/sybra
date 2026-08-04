@@ -22,6 +22,7 @@ import (
 	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/project"
@@ -432,6 +433,13 @@ func isMissingArtifactError(err error) bool {
 	return errors.Is(err, artifact.ErrNotFound)
 }
 
+func translateTaskLockTimeout(err error) error {
+	if err == nil || !errors.Is(err, fsutil.ErrLockTimeout) {
+		return err
+	}
+	return unavailableError(err.Error())
+}
+
 // BlessTampering records a human bless for a tamper-flagged task and sends it
 // back to the review workflow.
 func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
@@ -465,7 +473,7 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 				return merged, nil
 			})
 			if putErr != nil {
-				return task.Task{}, putErr
+				return task.Task{}, translateTaskLockTimeout(putErr)
 			}
 			s.logger.Info("cluster.task.tamper_bless.forwarded", "task_id", taskID, "node", current.AssignedNode)
 			return result, nil
@@ -499,7 +507,7 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 		}, nil
 	})
 	if err != nil {
-		return result.Task, err
+		return result.Task, translateTaskLockTimeout(err)
 	}
 	updated := result.Task
 
@@ -722,7 +730,7 @@ func (s *TaskService) AssignTask(t task.Task) error {
 	t.MirrorUpdatedAt = nil
 	saved, created, err := s.tasks.Put(t)
 	if err != nil {
-		return fmt.Errorf("assign task: %w", err)
+		return translateTaskLockTimeout(fmt.Errorf("assign task: %w", err))
 	}
 	if s.audit != nil && created {
 		_ = s.audit.Log(audit.Event{
@@ -852,7 +860,7 @@ func (s *TaskService) CreateTaskWithInit(title, body, mode string, init task.Upd
 	}
 	t, err := s.tasks.CreateFull(title, body, mode, createInit)
 	if err != nil {
-		return t, err
+		return t, translateTaskLockTimeout(err)
 	}
 
 	if prRepo != "" {
@@ -982,7 +990,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 					return merged, nil
 				})
 				if putErr != nil {
-					return cur, putErr
+					return cur, translateTaskLockTimeout(putErr)
 				}
 				s.logger.Info("cluster.task.status_update.forwarded", "task_id", id, "node", cur.AssignedNode, "status", status)
 				return t, nil
@@ -991,7 +999,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	}
 	t, err := s.tasks.UpdateMap(id, updates)
 	if err != nil {
-		return t, err
+		return t, translateTaskLockTimeout(err)
 	}
 	s.appendManualHumanRequiredDecision(cur, t, decisionReason)
 	s.wg.Go(func() {
@@ -1214,7 +1222,7 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 			})
 			s.followerStatusMu.Unlock()
 			if localErr != nil {
-				return task.Task{}, localErr
+				return task.Task{}, translateTaskLockTimeout(localErr)
 			}
 			s.logDispatchAudit(id, target, string(cur.Status), reason, "forwarded")
 			return local, nil
@@ -1241,7 +1249,7 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 		updates["workflow"] = (*workflow.Execution)(nil)
 	}
 	if _, err := s.tasks.UpdateMap(id, updates); err != nil {
-		return task.Task{}, err
+		return task.Task{}, translateTaskLockTimeout(err)
 	}
 
 	if spec.dispatches {
@@ -1271,7 +1279,7 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 				}); revertErr != nil {
 					s.logger.Error("task.dispatch.revert-failed", "task_id", id, "target", target, "err", revertErr)
 					s.logDispatchAudit(id, target, string(cur.Status), reason, "revert-failed")
-					return task.Task{}, fmt.Errorf("dispatch to %s failed (%s) and revert to human-required also failed: %w", target, failure, revertErr)
+					return task.Task{}, translateTaskLockTimeout(fmt.Errorf("dispatch to %s failed (%s) and revert to human-required also failed: %w", target, failure, revertErr))
 				}
 				// The bounce back to human-required is the event an operator most
 				// needs a durable record of — log it, not just the success path.
@@ -1378,7 +1386,7 @@ func (s *TaskService) DeleteTask(id string) error {
 	}
 	if err := s.tasks.Delete(id); err != nil {
 		s.logger.Error("task.delete.failed", "task_id", id, "err", err)
-		return err
+		return translateTaskLockTimeout(err)
 	}
 	return nil
 }
