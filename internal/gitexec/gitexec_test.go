@@ -175,6 +175,25 @@ func TestExecutableResolutionSkipsInaccessibleFile(t *testing.T) {
 	}
 }
 
+func TestExecutableResolutionMakesRelativePATHAbsoluteBeforeChangingDir(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	relativeBin := "relative-bin"
+	if err := os.Mkdir(relativeBin, 0o755); err != nil {
+		t.Fatalf("create relative bin: %v", err)
+	}
+	writeFakeGit(t, relativeBin, `printf 'relative-path-git\n'`)
+	t.Setenv("PATH", relativeBin)
+
+	got, err := Output(context.Background(), Options{Dir: t.TempDir()}, "version")
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	if got != "relative-path-git" {
+		t.Fatalf("Output = %q, want relative-path-git", got)
+	}
+}
+
 func TestCancellationKillsProcessGroup(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("process-group cancellation is supported on darwin and Linux")

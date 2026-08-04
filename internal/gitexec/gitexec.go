@@ -146,7 +146,11 @@ func commandError(args []string, err error, output []byte) error {
 func usablePathExecutable(name string) string {
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
 		candidate := filepath.Join(dir, name)
-		resolved, err := filepath.EvalSymlinks(candidate)
+		absolute, err := filepath.Abs(candidate)
+		if err != nil {
+			continue
+		}
+		resolved, err := filepath.EvalSymlinks(absolute)
 		if err != nil {
 			continue
 		}
