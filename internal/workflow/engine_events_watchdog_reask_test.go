@@ -598,6 +598,118 @@ func TestBuildRewardHackingFixReviewReaskNote_AttemptCount(t *testing.T) {
 	}
 }
 
+func TestResumePreflight_TerminalizesNonRetryableRewardHackingPark(t *testing.T) {
+	tasks := newMemTasks()
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	wf := &Execution{
+		WorkflowID:  "branch-conflict-fix",
+		CurrentStep: "fix",
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	ti := TaskInfo{
+		ID:           "t1",
+		Status:       "human-required",
+		StatusReason: "watchdog: reward_hacking: repeated fake progress",
+		Workflow:     wf,
+	}
+	tasks.Put(ti)
+
+	if !engine.resumePreflightConsumesTick(&ti, &Step{ID: "fix", Type: StepRunAgent}, "test") {
+		t.Fatal("non-retryable reward-hacking park must consume the resume tick")
+	}
+	fresh, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if fresh.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", fresh.Status)
+	}
+	if fresh.Workflow.State != ExecFailed {
+		t.Fatalf("workflow state = %q, want ExecFailed", fresh.Workflow.State)
+	}
+	if fresh.Workflow.CompletedAt == nil {
+		t.Fatal("workflow completed_at not set")
+	}
+	if fresh.Workflow.CurrentStep != "fix" {
+		t.Fatalf("current step = %q, want preserved for diagnosis", fresh.Workflow.CurrentStep)
+	}
+}
+
+func TestResumePreflight_DoesNotTerminalizeOrdinaryHumanRequired(t *testing.T) {
+	tasks := newMemTasks()
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	wf := &Execution{
+		WorkflowID:  "branch-conflict-fix",
+		CurrentStep: "fix",
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	ti := TaskInfo{
+		ID:           "t1",
+		Status:       "human-required",
+		StatusReason: "operator decision required",
+		Workflow:     wf,
+	}
+	tasks.Put(ti)
+
+	if !engine.resumePreflightConsumesTick(&ti, &Step{ID: "fix", Type: StepRunAgent}, "test") {
+		t.Fatal("human-required task must consume the resume tick")
+	}
+	fresh, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if fresh.Workflow.State != ExecWaiting {
+		t.Fatalf("workflow state = %q, want ExecWaiting", fresh.Workflow.State)
+	}
+}
+
+func TestResumePreflight_DoesNotOverwriteReplacementWorkflow(t *testing.T) {
+	tasks := newMemTasks()
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	staleWorkflow := &Execution{
+		WorkflowID:  "branch-conflict-fix",
+		CurrentStep: "fix",
+		State:       ExecWaiting,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	stale := TaskInfo{
+		ID:           "t1",
+		Generation:   7,
+		Status:       "human-required",
+		StatusReason: "watchdog: reward_hacking: repeated fake progress",
+		Workflow:     staleWorkflow,
+	}
+	replacement := &Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "implement",
+		State:       ExecRunning,
+		Variables:   map[string]string{},
+		StartedAt:   time.Now().UTC(),
+	}
+	tasks.Put(TaskInfo{
+		ID:         "t1",
+		Generation: 8,
+		Status:     "in-progress",
+		Workflow:   replacement,
+	})
+
+	if !engine.resumePreflightConsumesTick(&stale, &Step{ID: "fix", Type: StepRunAgent}, "test") {
+		t.Fatal("stale maintenance snapshot must consume the tick")
+	}
+	fresh, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if fresh.Workflow.WorkflowID != replacement.WorkflowID || fresh.Workflow.CurrentStep != replacement.CurrentStep || fresh.Workflow.State != ExecRunning {
+		t.Fatalf("replacement workflow was overwritten: %+v", fresh.Workflow)
+	}
+}
+
 func TestResumeStalled_WatchdogRewardHackingPlanCriticRendersRetryNote(t *testing.T) {
 	store := newTestStore(t)
 	if err := store.Save(*mustBuiltinDefinition(t, "simple-task-plan")); err != nil {

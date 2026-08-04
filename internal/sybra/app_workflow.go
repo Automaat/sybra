@@ -420,6 +420,24 @@ func (a *taskAdapter) SetBlockerAndWorkflow(id, status, reason string, state blo
 	return err
 }
 
+var errWorkflowWriteFenceMismatch = errors.New("workflow write fence mismatch")
+
+func (a *taskAdapter) SetWorkflowIf(id string, fence workflow.WorkflowWriteFence, wf *workflow.Execution) (bool, error) {
+	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+		if cur.Generation != fence.Generation || string(cur.Status) != fence.Status ||
+			cur.StatusReason != fence.StatusReason || cur.Workflow == nil ||
+			cur.Workflow.WorkflowID != fence.WorkflowID || cur.Workflow.CurrentStep != fence.CurrentStep ||
+			cur.Workflow.State != fence.State {
+			return task.Update{}, errWorkflowWriteFenceMismatch
+		}
+		return task.Update{Workflow: &wf}, nil
+	})
+	if errors.Is(err, errWorkflowWriteFenceMismatch) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
 	var result workflow.EffectClaimResult
 	var fenceErr error

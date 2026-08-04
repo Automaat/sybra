@@ -7,6 +7,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/dispatchorder"
 	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 )
 
 func resumeSkipReasonForStatus(status string) (reason string, skip bool) {
@@ -254,6 +255,9 @@ func (e *Engine) resumePreflightConsumesTick(t *TaskInfo, step *Step, logEvent s
 			"task_id", t.ID, "reason", "retry_after", "retry_after", retryAtStr, "step", step.ID)
 		return true
 	}
+	if e.terminalizeNonRetryableRewardHacking(t, step) {
+		return true
+	}
 	retryableWatchdogStop := e.canRetryWatchdogStop(t, step)
 	retryableWorktreeRepair := e.canRetryWorktreeRepair(t, step)
 	if reason, skip := resumeSkipReasonForStatus(t.Status); skip &&
@@ -280,6 +284,48 @@ func (e *Engine) resumePreflightConsumesTick(t *TaskInfo, step *Step, logEvent s
 		return true
 	}
 	return false
+}
+
+// terminalizeNonRetryableRewardHacking repairs the cross-component invariant
+// between watchdog and workflow state. The watchdog parks unsupported roles
+// at human-required because retrying the same ungrounded context is unsafe;
+// leaving the workflow waiting at the same time makes guarded operator
+// dispatch impossible, because a new workflow may only replace a terminal one.
+func (e *Engine) terminalizeNonRetryableRewardHacking(t *TaskInfo, step *Step) bool {
+	if t == nil || t.Workflow == nil || t.Status != "human-required" ||
+		!watchdogreason.IsRewardHacking(t.StatusReason) {
+		return false
+	}
+
+	failed := t.Workflow.Clone()
+	if failed == nil {
+		return false
+	}
+	failed.State = ExecFailed
+	now := time.Now().UTC()
+	failed.CompletedAt = &now
+	applied, err := e.tasks.SetWorkflowIf(t.ID, WorkflowWriteFence{
+		Generation:   t.Generation,
+		Status:       t.Status,
+		StatusReason: t.StatusReason,
+		WorkflowID:   t.Workflow.WorkflowID,
+		CurrentStep:  t.Workflow.CurrentStep,
+		State:        t.Workflow.State,
+	}, failed)
+	if err != nil {
+		e.logger.Error("workflow.watchdog-reward-hacking.terminalize",
+			"task_id", t.ID, "step", step.ID, "err", err)
+		return true
+	}
+	if !applied {
+		e.logger.Info("workflow.watchdog-reward-hacking.terminalize-stale",
+			"task_id", t.ID, "step", step.ID)
+		return true
+	}
+	t.Workflow = failed
+	e.logger.Warn("workflow.watchdog-reward-hacking.terminalized",
+		"task_id", t.ID, "step", step.ID)
+	return true
 }
 
 // resolveFreshTaskForResume re-reads the task to guard against stale snapshots
