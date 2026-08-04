@@ -307,6 +307,9 @@ func (e *Engine) terminalizeNonRetryableRewardHacking(t *TaskInfo, step *Step) b
 	}
 
 	failed := t.Workflow.Clone()
+	if failed == nil {
+		return false
+	}
 	failed.State = ExecFailed
 	now := time.Now().UTC()
 	failed.CompletedAt = &now
