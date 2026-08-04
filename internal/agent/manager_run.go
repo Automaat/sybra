@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -656,58 +657,55 @@ func enforceSpec(
 	gitRoots gitSandboxRoots,
 	gitOverlay gitSandboxOverlay,
 ) sandboxSpec {
-	branchRefFile, branchRefLockFile, branchLogFile, branchLogLockFile := gitBranchSingleFiles(gitRoots)
+	branchRefFile, branchRefLockFile, branchLogFile, _ := gitBranchSingleFiles(gitRoots)
 	commonFiles := gitCommonDirSingleFiles(gitRoots)
 	return sandboxSpec{
-		mode:                   "enforce",
-		worktree:               worktree,
-		gitMetadata:            slices.Clone(gitMetadata),
-		gitShared:              slices.Clone(gitRoots.sharedWritable),
-		gitReadonly:            slices.Clone(gitRoots.sharedReadonly),
-		sandboxHome:            sandboxHome,
-		tmp:                    tmp,
-		sharedCache:            sharedCache,
-		profilePath:            profilePath,
-		readOnlyDir:            readOnlyDir,
-		gitAdminDir:            gitRoots.adminDir,
-		gitCommonDir:           gitRoots.commonDir,
-		gitWorktrees:           gitRoots.worktreesDir,
-		gitObjectDir:           gitRoots.objectDir,
-		gitBranchRef:           gitRoots.branchRef,
-		gitBranchRefDir:        gitRoots.branchRefDir,
-		gitBranchLogDir:        gitRoots.branchLogDir,
-		gitBranchRefFile:       branchRefFile,
-		gitBranchRefLockFile:   branchRefLockFile,
-		gitBranchLogFile:       branchLogFile,
-		gitBranchLogLockFile:   branchLogLockFile,
-		gitPackedRefsFile:      commonFiles.packedRefs,
-		gitPackedRefsNewFile:   commonFiles.packedRefsNew,
-		gitPackedRefsLockFile:  commonFiles.packedRefsLock,
-		gitGCPidFile:           commonFiles.gcPid,
-		gitGCPidLockFile:       commonFiles.gcPidLock,
-		gitShallowFile:         commonFiles.shallow,
-		gitShallowLockFile:     commonFiles.shallowLock,
-		gitInfoDir:             commonFiles.infoDir,
-		gitInfoDenyAttributes:  commonFiles.infoDenyAttributes,
-		gitInfoDenyExclude:     commonFiles.infoDenyExclude,
-		gitStashRefFile:        commonFiles.stashRef,
-		gitStashRefLockFile:    commonFiles.stashRefLock,
-		gitStashLogFile:        commonFiles.stashLog,
-		gitStashLogLockFile:    commonFiles.stashLogLock,
-		gitRemoteRefDir:        gitRoots.remoteRefDir,
-		gitRemoteLogDir:        gitRoots.remoteLogDir,
-		gitTagRefDir:           gitRoots.tagRefDir,
-		gitTagLogDir:           gitRoots.tagLogDir,
-		gitNotesRefDir:         gitRoots.notesRefDir,
-		gitNotesLogDir:         gitRoots.notesLogDir,
-		gitOverlayObjectDir:    gitOverlay.objectDir,
-		gitOverlayRefDir:       gitOverlay.branchRefDir,
-		gitOverlayLogDir:       gitOverlay.branchLogDir,
-		gitOverlayRefFile:      gitOverlay.branchRefFile,
-		gitOverlayRemoteRefDir: gitOverlay.remoteRefDir,
-		gitOverlayRemoteLogDir: gitOverlay.remoteLogDir,
-		gitOverlayTagRefDir:    gitOverlay.tagRefDir,
-		gitOverlayTagLogDir:    gitOverlay.tagLogDir,
+		mode:                        "enforce",
+		worktree:                    worktree,
+		gitMetadata:                 slices.Clone(gitMetadata),
+		gitShared:                   slices.Clone(gitRoots.sharedWritable),
+		gitReadonly:                 slices.Clone(gitRoots.sharedReadonly),
+		sandboxHome:                 sandboxHome,
+		tmp:                         tmp,
+		sharedCache:                 sharedCache,
+		profilePath:                 profilePath,
+		readOnlyDir:                 readOnlyDir,
+		gitAdminDir:                 gitRoots.adminDir,
+		gitCommonDir:                gitRoots.commonDir,
+		gitWorktrees:                gitRoots.worktreesDir,
+		gitObjectDir:                gitRoots.objectDir,
+		gitLooseObjectPattern:       gitLooseObjectPattern(gitRoots.objectDir),
+		gitLooseObjectFanoutPattern: gitLooseObjectFanoutPattern(gitRoots.objectDir),
+		gitBranchRef:                gitRoots.branchRef,
+		gitBranchRefDir:             gitRoots.branchRefDir,
+		gitBranchLogDir:             gitRoots.branchLogDir,
+		gitBranchRefFile:            branchRefFile,
+		gitBranchRefLockFile:        branchRefLockFile,
+		gitBranchLogFile:            branchLogFile,
+		gitPackedRefsLockFile:       commonFiles.packedRefsLock,
+		gitShallowFile:              commonFiles.shallow,
+		gitShallowLockFile:          commonFiles.shallowLock,
+		gitStashRefFile:             commonFiles.stashRef,
+		gitStashRefLockFile:         commonFiles.stashRefLock,
+		gitStashLogFile:             commonFiles.stashLog,
+		gitStashLogLockFile:         commonFiles.stashLogLock,
+		gitRemoteRefDir:             gitRoots.remoteRefDir,
+		gitRemoteLogDir:             gitRoots.remoteLogDir,
+		gitRemoteLogLockPattern:     gitLogLockPattern(gitRoots.remoteLogDir),
+		gitTagRefDir:                gitRoots.tagRefDir,
+		gitTagLogDir:                gitRoots.tagLogDir,
+		gitTagLogLockPattern:        gitLogLockPattern(gitRoots.tagLogDir),
+		gitNotesRefDir:              gitRoots.notesRefDir,
+		gitNotesLogDir:              gitRoots.notesLogDir,
+		gitNotesLogLockPattern:      gitLogLockPattern(gitRoots.notesLogDir),
+		gitOverlayObjectDir:         gitOverlay.objectDir,
+		gitOverlayRefDir:            gitOverlay.branchRefDir,
+		gitOverlayLogDir:            gitOverlay.branchLogDir,
+		gitOverlayRefFile:           gitOverlay.branchRefFile,
+		gitOverlayRemoteRefDir:      gitOverlay.remoteRefDir,
+		gitOverlayRemoteLogDir:      gitOverlay.remoteLogDir,
+		gitOverlayTagRefDir:         gitOverlay.tagRefDir,
+		gitOverlayTagLogDir:         gitOverlay.tagLogDir,
 		// Only projects/ — not the whole state dir. Sealing the root closes
 		// settings.json, whose PreToolUse hooks would otherwise execute in
 		// every later run, including verifier roles, and survive worktree
@@ -726,6 +724,27 @@ func enforceSpec(
 	}
 }
 
+func gitLooseObjectPattern(objectDir string) string {
+	if objectDir == "" {
+		return ""
+	}
+	return "^" + regexp.QuoteMeta(objectDir) + `/(tmp_obj_[^/]+|[0-9a-f][0-9a-f]/[^/]+)$`
+}
+
+func gitLogLockPattern(logDir string) string {
+	if logDir == "" {
+		return ""
+	}
+	return "^" + regexp.QuoteMeta(logDir) + `/.*\.lock$`
+}
+
+func gitLooseObjectFanoutPattern(objectDir string) string {
+	if objectDir == "" {
+		return ""
+	}
+	return "^" + regexp.QuoteMeta(objectDir) + `/[0-9a-f][0-9a-f]/[0-9a-f]+$`
+}
+
 // gitBranchSingleFiles derives the exact, single-file absolute paths for the
 // current branch's ref, its lock, and its reflog (plus the reflog's own lock
 // — `git reflog expire`, part of `git gc`, locks it same as the ref) from
@@ -742,24 +761,12 @@ func gitBranchSingleFiles(roots gitSandboxRoots) (refFile, refLockFile, logFile,
 	return refFile, refFile + ".lock", logFile, logFile + ".lock"
 }
 
-// gitCommonDirFiles holds the shared bare clone's top-level housekeeping
-// files — outside refs/heads, refs/remotes, refs/tags, objects, and
-// worktrees/<name>, so none of the other grants cover them. infoDir is a
-// directory, not a file: update_info_file() (wrapper.c) stages its rewrite
-// through xmkstemp() — a randomly-suffixed "<name>_XXXXXX" temp file no
-// literal grant can predict — so info/ needs a subpath grant rather than
-// named-file literals. That subpath also covers info/attributes and
-// info/exclude, which unlike info/refs are hand-authored, behavior-altering
-// config shared with every sibling task on the same clone; infoDenyAttributes
-// and infoDenyExclude carve those back out as darwin's equivalent of
-// stateDenied — Seatbelt resolves the more specific literal deny over the
-// broader subpath allow regardless of declaration order.
+// gitCommonDirFiles holds the few shared bare-clone files ordinary task work
+// may update. Repository-wide maintenance files (packed-refs, gc.pid, info/)
+// are deliberately absent: enforce-mode agents must not mutate them.
 type gitCommonDirFiles struct {
-	packedRefs, packedRefsNew, packedRefsLock string
-	gcPid, gcPidLock                          string
-	shallow, shallowLock                      string
-	infoDir                                   string
-	infoDenyAttributes, infoDenyExclude       string
+	packedRefsLock       string
+	shallow, shallowLock string
 	// stashRef/stashRefLock/stashLog/stashLogLock: refs/stash is a single,
 	// fixed-name ref directly under refs/ (like refs/heads/<name> but with
 	// no branch-name variability), repo-wide shared like remotes/tags
@@ -768,45 +775,34 @@ type gitCommonDirFiles struct {
 	stashLog, stashLogLock string
 }
 
-// gitCommonDirSingleFiles derives gitCommonDirFiles' paths from the bare
-// clone root. git's default post-fetch maintenance (`git maintenance run
-// --auto --detach`) touches packed-refs.lock on every fetch; an explicit
-// git gc/pack-refs additionally stages packed-refs.new (git's
-// write-then-rename pattern) before renaming it over packed-refs, and (via
-// repack.updateServerInfo, on by default) rewrites info/refs and
-// info/packs for the dumb-HTTP transport. shallow(.lock) is touched by a
-// shallow fetch/clone (`--depth`/`--shallow-since`) — not issued by Sybra's
-// own git calls today, but an agent can run arbitrary git commands.
+// gitCommonDirSingleFiles derives the shared paths retained for ordinary
+// workflows. shallow(.lock) is touched by shallow fetch/clone operations.
 func gitCommonDirSingleFiles(roots gitSandboxRoots) gitCommonDirFiles {
 	if roots.commonDir == "" {
 		return gitCommonDirFiles{}
 	}
-	packedRefs := filepath.Join(roots.commonDir, "packed-refs")
-	gcPid := filepath.Join(roots.commonDir, "gc.pid")
 	shallow := filepath.Join(roots.commonDir, "shallow")
-	infoDir := filepath.Join(roots.commonDir, "info")
+	packedRefs := filepath.Join(roots.commonDir, "packed-refs")
 	stashRef := filepath.Join(roots.commonDir, "refs", "stash")
 	stashLog := filepath.Join(roots.commonDir, "logs", "refs", "stash")
 	return gitCommonDirFiles{
-		packedRefs:         packedRefs,
-		packedRefsNew:      packedRefs + ".new",
-		packedRefsLock:     packedRefs + ".lock",
-		gcPid:              gcPid,
-		gcPidLock:          gcPid + ".lock",
-		shallow:            shallow,
-		shallowLock:        shallow + ".lock",
-		infoDir:            infoDir,
-		infoDenyAttributes: filepath.Join(infoDir, "attributes"),
-		infoDenyExclude:    filepath.Join(infoDir, "exclude"),
-		stashRef:           stashRef,
-		stashRefLock:       stashRef + ".lock",
-		stashLog:           stashLog,
-		stashLogLock:       stashLog + ".lock",
+		packedRefsLock: packedRefs + ".lock",
+		shallow:        shallow,
+		shallowLock:    shallow + ".lock",
+		stashRef:       stashRef,
+		stashRefLock:   stashRef + ".lock",
+		stashLog:       stashLog,
+		stashLogLock:   stashLog + ".lock",
 	}
 }
 
 func injectSandboxGitEnv(cfg *RunConfig, roots gitSandboxRoots, overlay gitSandboxOverlay) error {
 	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
+	var err error
+	cfg.ExtraEnv, err = appendGitConfigEnv(cfg.ExtraEnv, "fetch.unpackLimit", "100000000")
+	if err != nil {
+		return err
+	}
 	if !sandboxUsesGitObjectOverlay() {
 		if roots.objectDir != "" {
 			// Trusted assignments are appended last by every provider runner, so
@@ -830,6 +826,31 @@ func injectSandboxGitEnv(cfg *RunConfig, roots gitSandboxRoots, overlay gitSandb
 		"GIT_ALTERNATE_OBJECT_DIRECTORIES="+roots.objectDir,
 	)
 	return nil
+}
+
+func appendGitConfigEnv(env []string, key, value string) ([]string, error) {
+	countText := os.Getenv("GIT_CONFIG_COUNT")
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "GIT_CONFIG_COUNT="); ok {
+			countText = v
+		}
+	}
+	count := 0
+	if countText != "" {
+		parsed, err := strconv.Atoi(countText)
+		if err != nil || parsed < 0 || parsed > 1000 {
+			return nil, fmt.Errorf("invalid GIT_CONFIG_COUNT %q", countText)
+		}
+		count = parsed
+	}
+	countKey := "GIT_CONFIG_KEY_" + strconv.Itoa(count)
+	countValue := "GIT_CONFIG_VALUE_" + strconv.Itoa(count)
+	env = stripEnvKeys(env, "GIT_CONFIG_COUNT", countKey, countValue)
+	return append(env,
+		"GIT_CONFIG_COUNT="+strconv.Itoa(count+1),
+		countKey+"="+key,
+		countValue+"="+value,
+	), nil
 }
 
 func (m *Manager) resolveGitMetadataRoots(taskID, worktree string) []string {

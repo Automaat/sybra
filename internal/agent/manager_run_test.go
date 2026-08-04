@@ -913,24 +913,17 @@ func TestGitBranchSingleFiles_EmptyOnDetachedHead(t *testing.T) {
 	}
 }
 
-func TestGitCommonDirSingleFiles_DerivesAllHousekeepingPaths(t *testing.T) {
+func TestGitCommonDirSingleFiles_DerivesOrdinaryWorkflowPaths(t *testing.T) {
 	files := gitCommonDirSingleFiles(gitSandboxRoots{commonDir: "/data/clones/repo.git"})
 
 	want := gitCommonDirFiles{
-		packedRefs:         "/data/clones/repo.git/packed-refs",
-		packedRefsNew:      "/data/clones/repo.git/packed-refs.new",
-		packedRefsLock:     "/data/clones/repo.git/packed-refs.lock",
-		gcPid:              "/data/clones/repo.git/gc.pid",
-		gcPidLock:          "/data/clones/repo.git/gc.pid.lock",
-		shallow:            "/data/clones/repo.git/shallow",
-		shallowLock:        "/data/clones/repo.git/shallow.lock",
-		infoDir:            "/data/clones/repo.git/info",
-		infoDenyAttributes: "/data/clones/repo.git/info/attributes",
-		infoDenyExclude:    "/data/clones/repo.git/info/exclude",
-		stashRef:           "/data/clones/repo.git/refs/stash",
-		stashRefLock:       "/data/clones/repo.git/refs/stash.lock",
-		stashLog:           "/data/clones/repo.git/logs/refs/stash",
-		stashLogLock:       "/data/clones/repo.git/logs/refs/stash.lock",
+		packedRefsLock: "/data/clones/repo.git/packed-refs.lock",
+		shallow:        "/data/clones/repo.git/shallow",
+		shallowLock:    "/data/clones/repo.git/shallow.lock",
+		stashRef:       "/data/clones/repo.git/refs/stash",
+		stashRefLock:   "/data/clones/repo.git/refs/stash.lock",
+		stashLog:       "/data/clones/repo.git/logs/refs/stash",
+		stashLogLock:   "/data/clones/repo.git/logs/refs/stash.lock",
 	}
 	if files != want {
 		t.Fatalf("gitCommonDirSingleFiles() = %+v, want %+v", files, want)
@@ -940,5 +933,19 @@ func TestGitCommonDirSingleFiles_DerivesAllHousekeepingPaths(t *testing.T) {
 func TestGitCommonDirSingleFiles_EmptyWithoutCommonDir(t *testing.T) {
 	if got := (gitCommonDirSingleFiles(gitSandboxRoots{})); got != (gitCommonDirFiles{}) {
 		t.Fatalf("gitCommonDirSingleFiles() = %+v, want zero value", got)
+	}
+}
+
+func TestGitLooseObjectPattern(t *testing.T) {
+	if got := gitLooseObjectPattern(""); got != "" {
+		t.Fatalf("empty object dir must produce no sandbox pattern, got %q", got)
+	}
+	got := gitLooseObjectPattern("/data/repo+.git/objects")
+	want := `^/data/repo\+\.git/objects/(tmp_obj_[^/]+|[0-9a-f][0-9a-f]/[^/]+)$`
+	if got != want {
+		t.Fatalf("gitLooseObjectPattern() = %q, want %q", got, want)
+	}
+	if got := gitLooseObjectFanoutPattern("/data/repo+.git/objects"); got != `^/data/repo\+\.git/objects/[0-9a-f][0-9a-f]/[0-9a-f]+$` {
+		t.Fatalf("gitLooseObjectFanoutPattern() = %q", got)
 	}
 }
