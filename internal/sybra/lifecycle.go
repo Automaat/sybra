@@ -288,7 +288,7 @@ func (a *App) healthPressureStatus() *health.PressureStatus {
 func (lm *LifecycleManager) StartWatchers(ctx context.Context) {
 	a := lm.app
 	cfgPath := filepath.Join(config.HomeDir(), "config.yaml")
-	cw := confighot.New(cfgPath, func() { //nolint:contextcheck // config reload emits process-global provider health UI events from a file watcher callback.
+	cw := confighot.New(cfgPath, func() { //nolint:contextcheck,nolintlint // contextcheck applies on Darwin; Linux must retain the shared suppression.
 		result, err := a.configSvc.ReloadFromDisk()
 		if err != nil {
 			a.logger.Error("config.reload.failed", "err", err)

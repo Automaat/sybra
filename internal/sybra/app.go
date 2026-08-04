@@ -928,7 +928,7 @@ func (a *App) RegisterSpotlightHotkey() {
 			}
 		}
 		spotlight.ShowPanel(projectsJSON)
-	}); err != nil {
+	}); err != nil { //nolint:staticcheck,nolintlint // non-Darwin builds intentionally return an unsupported-platform error.
 		a.logger.Error("spotlight.register", "err", err)
 		return
 	}
