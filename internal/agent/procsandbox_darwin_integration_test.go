@@ -4,11 +4,180 @@ package agent
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestSandboxEnforce_DarwinCommitSurvivesSandboxReset(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
+	}
+	bare, wt := setupLinkedWorktree(t)
+	sandboxHome := t.TempDir()
+	ambientObjects := t.TempDir()
+	t.Setenv("GIT_OBJECT_DIRECTORY", ambientObjects)
+	t.Setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", "/attacker/alternates")
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return sandboxHome, nil },
+	})
+	sharedObjects, err := canonicalizeRoot(filepath.Join(bare, "objects"))
+	if err != nil {
+		t.Fatalf("canonicalize shared object store: %v", err)
+	}
+	prepare := func() RunConfig {
+		cfg, _, err := m.prepareRunConfig(RunConfig{
+			TaskID:      "task-durable-objects",
+			Mode:        "headless",
+			Dir:         wt,
+			SandboxMode: "enforce",
+		})
+		if err != nil {
+			t.Fatalf("prepareRunConfig: %v", err)
+		}
+		if got, want := darwinEnvValue(cfg.ExtraEnv, "GIT_OBJECT_DIRECTORY"), sharedObjects; got != want {
+			t.Fatalf("GIT_OBJECT_DIRECTORY = %q, want trusted shared store %q", got, want)
+		}
+		if got := darwinEnvValue(cfg.ExtraEnv, "GIT_ALTERNATE_OBJECT_DIRECTORIES"); got != "" {
+			t.Fatalf("GIT_ALTERNATE_OBJECT_DIRECTORIES = %q, want empty trusted override", got)
+		}
+		return cfg
+	}
+
+	cfg := prepare()
+	cmd := newProviderCmd(context.Background(), &cfg, false, "sh", "-c", "echo durable > durable.txt && git add durable.txt && git commit -q -m durable")
+	cmd.Dir = wt
+	cmd.Env = append(os.Environ(), cfg.ExtraEnv...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed commit: %v: %s", err, out)
+	}
+	headCmd := exec.Command("git", "rev-parse", "HEAD")
+	headCmd.Dir = wt
+	headCmd.Env = gitSandboxDiscoveryEnv()
+	headOut, err := headCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("resolve committed HEAD: %v: %s", err, headOut)
+	}
+	head := strings.TrimSpace(string(headOut))
+
+	if err := os.RemoveAll(ambientObjects); err != nil {
+		t.Fatalf("remove ambient object store: %v", err)
+	}
+	if err := os.RemoveAll(sandboxHome); err != nil {
+		t.Fatalf("remove sandbox home: %v", err)
+	}
+	if err := os.MkdirAll(sandboxHome, 0o755); err != nil {
+		t.Fatalf("recreate sandbox home: %v", err)
+	}
+	_ = prepare()
+
+	verify := exec.Command("git", "cat-file", "-e", head+"^{commit}")
+	verify.Dir = bare
+	verify.Env = gitSandboxDiscoveryEnv()
+	if out, err := verify.CombinedOutput(); err != nil {
+		t.Fatalf("commit disappeared after sandbox reset: %v: %s", err, out)
+	}
+}
+
+func darwinEnvValue(env []string, key string) string {
+	prefix := key + "="
+	for _, assignment := range env {
+		if value, ok := strings.CutPrefix(assignment, prefix); ok {
+			return value
+		}
+	}
+	return ""
+}
+
+func TestPrepareGitSandboxOverlay_DarwinPreservesLegacyObjects(t *testing.T) {
+	sandboxHome := t.TempDir()
+	legacy := filepath.Join(sandboxHome, ".sybra-git-overlay", "objects", "ab", "cdef")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("legacy"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := prepareGitSandboxOverlay(context.Background(), t.TempDir(), sandboxHome, gitSandboxRoots{objectDir: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "refusing to delete") {
+		t.Fatalf("prepareGitSandboxOverlay error = %v, want preserved legacy-object failure", err)
+	}
+	if _, err := os.Stat(legacy); err != nil {
+		t.Fatalf("legacy object was not preserved: %v", err)
+	}
+}
+
+func TestPrepareGitSandboxOverlay_DarwinRemovesEmptyLegacyObjectDirs(t *testing.T) {
+	sandboxHome := t.TempDir()
+	legacyObjects := filepath.Join(sandboxHome, ".sybra-git-overlay", "objects")
+	for _, dir := range []string{legacyObjects, filepath.Join(legacyObjects, "info"), filepath.Join(legacyObjects, "pack")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, metadata := range []string{
+		filepath.Join("info", "commit-graph"),
+		filepath.Join("info", "commit-graphs", "commit-graph-chain"),
+		filepath.Join("info", "packs"),
+	} {
+		path := filepath.Join(legacyObjects, metadata)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("derived"), 0o444); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, err := prepareGitSandboxOverlay(context.Background(), t.TempDir(), sandboxHome, gitSandboxRoots{objectDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("prepareGitSandboxOverlay: %v", err)
+	}
+	if _, err := os.Stat(legacyObjects); !os.IsNotExist(err) {
+		t.Fatalf("metadata-only legacy object dirs were not reset: %v", err)
+	}
+}
+
+func TestPrepareGitSandboxOverlay_DarwinPreservesLegacyPack(t *testing.T) {
+	sandboxHome := t.TempDir()
+	legacyPack := filepath.Join(sandboxHome, ".sybra-git-overlay", "objects", "pack", "pack-deadbeef.pack")
+	if err := os.MkdirAll(filepath.Dir(legacyPack), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPack, []byte("legacy"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := prepareGitSandboxOverlay(context.Background(), t.TempDir(), sandboxHome, gitSandboxRoots{objectDir: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "refusing to delete") {
+		t.Fatalf("prepareGitSandboxOverlay error = %v, want preserved legacy-pack failure", err)
+	}
+	if _, err := os.Stat(legacyPack); err != nil {
+		t.Fatalf("legacy pack was not preserved: %v", err)
+	}
+}
+
+func TestPrepareGitSandboxOverlay_DarwinPreservesLegacyAlternates(t *testing.T) {
+	sandboxHome := t.TempDir()
+	legacyAlternates := filepath.Join(sandboxHome, ".sybra-git-overlay", "objects", "info", "alternates")
+	if err := os.MkdirAll(filepath.Dir(legacyAlternates), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyAlternates, []byte("/objects/elsewhere\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := prepareGitSandboxOverlay(context.Background(), t.TempDir(), sandboxHome, gitSandboxRoots{objectDir: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "refusing to delete") {
+		t.Fatalf("prepareGitSandboxOverlay error = %v, want preserved legacy-alternates failure", err)
+	}
+	if _, err := os.Stat(legacyAlternates); err != nil {
+		t.Fatalf("legacy alternates file was not preserved: %v", err)
+	}
+}
 
 // runGitOrFatal runs a git command in dir, unsandboxed, for test setup.
 func runGitOrFatal(t *testing.T, dir string, args ...string) {
@@ -29,12 +198,13 @@ func setupLinkedWorktree(t *testing.T) (bare, worktree string) {
 	t.Helper()
 	src := t.TempDir()
 	runGitOrFatal(t, src, "init", "-q", "-b", "main")
-	runGitOrFatal(t, src, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init")
+	runGitOrFatal(t, src, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "init")
 
 	bare = filepath.Join(t.TempDir(), "bare.git")
 	runGitOrFatal(t, "", "clone", "-q", "--bare", src, bare)
 	runGitOrFatal(t, bare, "config", "user.email", "t@t")
 	runGitOrFatal(t, bare, "config", "user.name", "t")
+	runGitOrFatal(t, bare, "config", "commit.gpgsign", "false")
 	runGitOrFatal(t, bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
 
 	worktree = filepath.Join(t.TempDir(), "wt")
@@ -42,7 +212,7 @@ func setupLinkedWorktree(t *testing.T) (bare, worktree string) {
 
 	// Advance upstream after the worktree is created, so fetch+merge below
 	// has real forward progress to make, not a no-op.
-	runGitOrFatal(t, src, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "upstream change")
+	runGitOrFatal(t, src, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "upstream change")
 	return bare, worktree
 }
 

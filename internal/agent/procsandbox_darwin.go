@@ -44,6 +44,14 @@ func sandboxExecAvailable() bool {
 
 func sandboxWrapperName() string { return "sandbox-exec" }
 
+// sandboxUsesGitObjectOverlay reports whether provider Git objects need a
+// task-private staging directory. Seatbelt can grant the shared, content-
+// addressed objects directory directly, so Darwin must write there. Unlike
+// Linux's bwrap wrapper, sandbox-exec has no post-process object/ref sync; an
+// overlay here would let Git publish the real branch ref to a disposable
+// object and corrupt it when the next run resets the sandbox home.
+func sandboxUsesGitObjectOverlay() bool { return false }
+
 // materializeSandboxProfile writes the embedded seatbelt profile to a stable
 // temp file once per process and returns its path, for both the -f flag and
 // operator-facing log/error messages. The profile content is fixed at build

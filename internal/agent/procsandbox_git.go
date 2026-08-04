@@ -197,11 +197,21 @@ type gitSandboxOverlay struct {
 
 func prepareGitSandboxOverlay(ctx context.Context, worktree, sandboxHome string, roots gitSandboxRoots) (gitSandboxOverlay, error) {
 	base := filepath.Join(sandboxHome, ".sybra-git-overlay")
+	if !sandboxUsesGitObjectOverlay() {
+		legacyObjects := filepath.Join(base, "objects")
+		populated, err := gitObjectOverlayPopulated(legacyObjects)
+		if err != nil {
+			return gitSandboxOverlay{}, fmt.Errorf("inspect legacy git object overlay %s: %w", legacyObjects, err)
+		}
+		if populated {
+			return gitSandboxOverlay{}, fmt.Errorf("legacy git object overlay %s is not empty; refusing to delete objects that may be referenced by the task branch", legacyObjects)
+		}
+	}
 	if err := os.RemoveAll(base); err != nil {
 		return gitSandboxOverlay{}, fmt.Errorf("reset %s: %w", base, err)
 	}
 	overlay := gitSandboxOverlay{}
-	if roots.objectDir != "" {
+	if roots.objectDir != "" && sandboxUsesGitObjectOverlay() {
 		var err error
 		if overlay.objectDir, err = prepareGitObjectOverlay(base); err != nil {
 			return gitSandboxOverlay{}, err
@@ -250,6 +260,51 @@ func prepareGitSandboxOverlay(ctx context.Context, worktree, sandboxHome string,
 	}
 	overlay.branchRefFile = canonRefFile
 	return overlay, nil
+}
+
+func gitObjectOverlayPopulated(path string) (bool, error) {
+	populated := false
+	err := filepath.WalkDir(path, func(current string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if current == path && os.IsNotExist(walkErr) {
+				return nil
+			}
+			return walkErr
+		}
+		if current != path && !entry.IsDir() && isGitObjectPayloadPath(path, current) {
+			populated = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return populated, err
+}
+
+func isGitObjectPayloadPath(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return true
+	}
+	first, rest, hasRest := strings.Cut(rel, string(filepath.Separator))
+	if first == "pack" {
+		return true
+	}
+	if first == "info" {
+		if !hasRest {
+			return false
+		}
+		return rest != "commit-graph" && rest != "packs" &&
+			!strings.HasPrefix(rest, "commit-graphs"+string(filepath.Separator))
+	}
+	if len(first) != 2 {
+		return false
+	}
+	for _, char := range first {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", char) {
+			return false
+		}
+	}
+	return true
 }
 
 func prepareGitObjectOverlay(base string) (string, error) {
@@ -343,6 +398,7 @@ func copyGitOverlayFile(src, dst string, mode fs.FileMode) error {
 func gitHeadCommit(ctx context.Context, worktree string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "HEAD")
 	cmd.Dir = worktree
+	cmd.Env = gitSandboxDiscoveryEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
@@ -374,6 +430,7 @@ func gitPathRaw(ctx context.Context, worktree string, args ...string) (string, e
 	cmdArgs := append([]string{"rev-parse"}, args...)
 	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
 	cmd.Dir = worktree
+	cmd.Env = gitSandboxDiscoveryEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
@@ -425,6 +482,7 @@ func gitRevParsePath(ctx context.Context, worktree, arg string) (string, error) 
 func gitSymbolicRef(ctx context.Context, worktree string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "-q", "HEAD")
 	cmd.Dir = worktree
+	cmd.Env = gitSandboxDiscoveryEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
@@ -443,6 +501,12 @@ func gitSymbolicRef(ctx context.Context, worktree string) (string, error) {
 		return "", fmt.Errorf("git symbolic-ref -q HEAD: empty ref")
 	}
 	return ref, nil
+}
+
+// gitSandboxDiscoveryEnv prevents Sybra's own ambient Git object overrides
+// from changing which repository paths are trusted and granted to an agent.
+func gitSandboxDiscoveryEnv() []string {
+	return stripEnvKeys(os.Environ(), "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
 }
 
 func ensureGitPathDir(ctx context.Context, worktree, rel string) (string, error) {
