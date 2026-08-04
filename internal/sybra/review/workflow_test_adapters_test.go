@@ -17,6 +17,7 @@ import (
 var (
 	errWorkflowEffectNoPersist             = errors.New("workflow effect claim requires no persistence")
 	errWorkflowStatusReasonNoLongerMatches = errors.New("workflow status reason no longer matches")
+	errWorkflowWriteFenceMismatch          = errors.New("workflow write fence mismatch")
 )
 
 // taskAdapter and agentAdapter are minimal test-only stand-ins for the real
@@ -146,6 +147,22 @@ func (a *taskAdapter) ReplaceTaskBody(id, body string) error {
 func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
 	_, err := a.tasks.Update(id, task.Update{Workflow: &wf})
 	return err
+}
+
+func (a *taskAdapter) SetWorkflowIf(id string, fence workflow.WorkflowWriteFence, wf *workflow.Execution) (bool, error) {
+	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+		if cur.Generation != fence.Generation || string(cur.Status) != fence.Status ||
+			cur.StatusReason != fence.StatusReason || cur.Workflow == nil ||
+			cur.Workflow.WorkflowID != fence.WorkflowID || cur.Workflow.CurrentStep != fence.CurrentStep ||
+			cur.Workflow.State != fence.State {
+			return task.Update{}, errWorkflowWriteFenceMismatch
+		}
+		return task.Update{Workflow: &wf}, nil
+	})
+	if errors.Is(err, errWorkflowWriteFenceMismatch) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
