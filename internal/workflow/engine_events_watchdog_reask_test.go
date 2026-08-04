@@ -6,8 +6,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/github"
 )
+
+type watchdogRecoveryAssertion func(*testing.T, *memTasks, *Execution)
+
+func runWatchdogRecoveryAssertion(t *testing.T, assert watchdogRecoveryAssertion, tasks *memTasks, wf *Execution) {
+	t.Helper()
+	assert(t, tasks, wf)
+}
 
 func TestHandleWatchdogHangRetry_SetsReaskNoteOnRetry(t *testing.T) {
 	t.Parallel()
@@ -44,6 +52,134 @@ func TestHandleWatchdogHangRetry_SetsReaskNoteOnRetry(t *testing.T) {
 	}
 	if !strings.Contains(note, "human-required") {
 		t.Fatalf("reask note should offer the human-required escape hatch:\n%s", note)
+	}
+}
+
+func TestHandleWatchdogRecoveryRetry_TableDrivenKinds(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		kind      watchdogRecoveryKind
+		task      TaskInfo
+		step      Step
+		assertion watchdogRecoveryAssertion
+	}{
+		{
+			name: "hang",
+			kind: watchdogRecoveryHang,
+			task: TaskInfo{ID: "t1", Status: "in-progress", StatusReason: "watchdog hang: no stream activity"},
+			step: Step{ID: "implement", Type: StepRunAgent},
+			assertion: func(t *testing.T, tasks *memTasks, wf *Execution) {
+				t.Helper()
+				if got := wf.Variables[watchdogHangRetryKey("implement")]; got != "1" {
+					t.Fatalf("hang retry var = %q, want 1", got)
+				}
+				got, err := tasks.GetTask("t1")
+				if err != nil {
+					t.Fatalf("get task: %v", err)
+				}
+				if got.StatusReason != "" {
+					t.Fatalf("status_reason = %q, want cleared", got.StatusReason)
+				}
+			},
+		},
+		{
+			name: "reward hacking",
+			kind: watchdogRecoveryRewardHacking,
+			task: TaskInfo{ID: "t1", Status: "in-progress", StatusReason: "watchdog: reward-hacking retry: still looping"},
+			step: Step{ID: "fix_review", Type: StepRunAgent, Config: StepConfig{Role: "fix-review"}},
+			assertion: func(t *testing.T, tasks *memTasks, wf *Execution) {
+				t.Helper()
+				if got := wf.Variables[watchdogRewardHackingRetryKey("fix_review")]; got != "1" {
+					t.Fatalf("reward-hacking retry var = %q, want 1", got)
+				}
+				if !strings.Contains(wf.Variables[watchdogReaskNoteVar], "reward-hacking") {
+					t.Fatalf("reward-hacking note = %q", wf.Variables[watchdogReaskNoteVar])
+				}
+			},
+		},
+		{
+			name: "rate limit",
+			kind: watchdogRecoveryRateLimit,
+			task: TaskInfo{ID: "t1", Status: "in-progress", StatusReason: "watchdog: rate limit: quota exhausted"},
+			step: Step{ID: "implement", Type: StepRunAgent},
+			assertion: func(t *testing.T, tasks *memTasks, wf *Execution) {
+				t.Helper()
+				if got := wf.Variables[watchdogRateLimitRetryKey("implement")]; got != "1" {
+					t.Fatalf("rate-limit retry var = %q, want 1", got)
+				}
+			},
+		},
+		{
+			name: "watchdog stop",
+			kind: watchdogRecoveryStop,
+			task: TaskInfo{ID: "t1", Status: "human-required", StatusReason: "watchdog: loop stop: looping on toolchain setup"},
+			step: Step{ID: "implement", Type: StepRunAgent, Config: StepConfig{Role: "implementation"}},
+			assertion: func(t *testing.T, tasks *memTasks, wf *Execution) {
+				t.Helper()
+				if got := wf.Variables[watchdogStopRetryKey("implement")]; got != "1" {
+					t.Fatalf("watchdog-stop retry var = %q, want 1", got)
+				}
+				got, err := tasks.GetTask("t1")
+				if err != nil {
+					t.Fatalf("get task: %v", err)
+				}
+				if got.Status != "in-progress" {
+					t.Fatalf("status = %q, want in-progress", got.Status)
+				}
+			},
+		},
+		{
+			name: "worktree repair",
+			kind: watchdogRecoveryWorktreeRepair,
+			task: TaskInfo{
+				ID:     "t1",
+				Status: "blocked",
+				Blocker: blocker.State{
+					Kind: blocker.KindWorktreeRepair,
+				},
+			},
+			step: Step{ID: "implement", Type: StepRunAgent},
+			assertion: func(t *testing.T, tasks *memTasks, wf *Execution) {
+				t.Helper()
+				if got := wf.Variables[worktreeRepairRetryKey("implement")]; got != "1" {
+					t.Fatalf("worktree-repair retry var = %q, want 1", got)
+				}
+				got, err := tasks.GetTask("t1")
+				if err != nil {
+					t.Fatalf("get task: %v", err)
+				}
+				if got.Status != "in-progress" {
+					t.Fatalf("status = %q, want in-progress", got.Status)
+				}
+				if !got.Blocker.IsZero() {
+					t.Fatalf("blocker = %#v, want cleared", got.Blocker)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tasks := newMemTasks()
+			engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+			wf := &Execution{
+				WorkflowID:  "test-simple",
+				CurrentStep: tc.step.ID,
+				State:       ExecWaiting,
+				Variables:   map[string]string{},
+				StartedAt:   time.Now().UTC(),
+			}
+			tc.task.Workflow = wf
+			tasks.Put(tc.task)
+
+			if handled := engine.handleWatchdogRecoveryRetry(tc.kind, &tc.task, &tc.step); handled {
+				t.Fatalf("first %s retry should arm, not exhaust", tc.kind)
+			}
+			runWatchdogRecoveryAssertion(t, tc.assertion, tasks, wf)
+		})
 	}
 }
 
