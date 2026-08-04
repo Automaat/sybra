@@ -51,6 +51,23 @@ describe('TaskFilterPanel', () => {
     expect(onprojectChange).toHaveBeenCalledWith('foo/bar')
   })
 
+  it('filters alphabetically sorted projects by typed name', async () => {
+    render(TaskFilterPanel, {
+      props: {
+        query: '',
+        onqueryChange: vi.fn(),
+        showProject: true,
+      },
+    })
+    await fireEvent.click(screen.getByTestId('project-filter-button'))
+    const projects = screen.getAllByRole('button', { name: /^(baz\/qux|foo\/bar)$/ })
+    expect(projects.map((project) => project.textContent)).toEqual(['foo/bar', 'baz/qux'])
+
+    await fireEvent.input(screen.getByLabelText('Find project'), { target: { value: 'foo' } })
+    expect(screen.getByText('foo/bar')).toBeDefined()
+    expect(screen.queryByText('baz/qux')).toBeNull()
+  })
+
   it('renders status pills and emits onstatusChange', async () => {
     const onstatusChange = vi.fn()
     render(TaskFilterPanel, {

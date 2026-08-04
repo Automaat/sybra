@@ -83,6 +83,7 @@ func TestIsTransitionAllowed_NamedLegalMoves(t *testing.T) {
 		{StatusInProgress, StatusInReview},
 		{StatusInReview, StatusDone},
 		{StatusInProgress, StatusTodo},
+		{StatusInProgress, StatusPlanReview},
 		{StatusHumanRequired, StatusInProgress},
 		{StatusHumanRequired, StatusInReview},
 	}
