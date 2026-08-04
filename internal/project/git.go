@@ -1562,7 +1562,11 @@ func RemoteURL(ctx context.Context, worktreePath, remote string) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("resolve remote %s URL: %w", remote, err)
 	}
-	return strings.TrimSpace(remoteURL), nil
+	remoteURL = strings.TrimSpace(remoteURL)
+	if parsed, parseErr := url.Parse(remoteURL); parseErr == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.User != nil {
+		return "", fmt.Errorf("remote %s URL must not contain HTTP userinfo", remote)
+	}
+	return remoteURL, nil
 }
 
 // PushSyncToPinnedRemote synchronizes branch to a pre-validated source remote

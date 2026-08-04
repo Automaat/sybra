@@ -213,7 +213,7 @@ func TestExecPushBranch_BranchConflictUsesTrustedSelectedRemote(t *testing.T) {
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
 
-	wfExec := &Execution{Variables: map[string]string{
+	wfExec := &Execution{WorkflowID: "branch-conflict-fix", Variables: map[string]string{
 		WorkflowVarBranchConflictPushRemote: "origin",
 		WorkflowVarBranchConflictPushURL:    originURL,
 	}}

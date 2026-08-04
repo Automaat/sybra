@@ -245,8 +245,15 @@ func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t 
 		pushURL = strings.TrimSpace(wfExec.Variables[WorkflowVarBranchConflictPushURL])
 	}
 	var pushErr error
-	if pushRemote == "origin" && pushURL != "" {
-		pushErr = project.PushSyncToPinnedRemote(pushCtx, wtPath, branch, pushRemote, pushURL)
+	if wfExec != nil && wfExec.WorkflowID == "branch-conflict-fix" && pushRemote == "origin" && pushURL != "" {
+		hasGuard, guardErr := project.OriginPushHasForkOnlyGuard(pushCtx, wtPath)
+		if guardErr != nil {
+			pushErr = fmt.Errorf("verify fork-only origin guard: %w", guardErr)
+		} else if !hasGuard {
+			pushErr = errors.New("fork-only origin guard changed during branch recovery")
+		} else {
+			pushErr = project.PushSyncToPinnedRemote(pushCtx, wtPath, branch, pushRemote, pushURL)
+		}
 	} else {
 		pushErr = project.PushSync(pushCtx, wtPath, branch)
 	}
