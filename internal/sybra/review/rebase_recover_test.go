@@ -771,19 +771,20 @@ func TestRecoverBranchConflictNoPR_MissingBranchEscalates(t *testing.T) {
 }
 
 // TestRecoverBranchConflictNoPR_InFlightGuardPreventsDoubleDispatch verifies
-// that a second recovery attempt for a task already mid-recovery bails out
-// instead of starting a duplicate worktree prep / workflow dispatch.
+// that a second recovery attempt for a task already mid-recovery treats the
+// existing attempt as handled instead of starting a duplicate worktree prep /
+// workflow dispatch or escalating the task to human-required.
 func TestRecoverBranchConflictNoPR_InFlightGuardPreventsDoubleDispatch(t *testing.T) {
 	r, tk := setupBranchConflictNoPRHandler(t, task.StatusInProgress, nil)
 	r.branchRecoveryMu.Lock()
 	r.branchRecoveryInFlight = map[string]struct{}{tk.ID: {}}
 	r.branchRecoveryMu.Unlock()
 
-	if r.RecoverStaleBranchConflict(tk.ID) {
-		t.Fatal("RecoverStaleBranchConflict returned true while a recovery was already marked in-flight")
+	if !r.RecoverStaleBranchConflict(tk.ID) {
+		t.Fatal("RecoverStaleBranchConflict returned false while a recovery was already marked in-flight")
 	}
 	if r.prTracker.Retries(tk.ID, github.PRIssueBranchConflictNoPR) != 0 {
-		t.Fatal("branch-conflict retry budget was marked handled despite the in-flight guard rejecting the attempt")
+		t.Fatal("branch-conflict retry budget was marked handled despite the in-flight guard coalescing the attempt")
 	}
 }
 
