@@ -210,6 +210,74 @@ func TestOnComplete_ParkedAdoptionSkipsFixReviewCompletion(t *testing.T) {
 	}
 }
 
+// TestOnComplete_ParkedAdoptionSkipsReviewSideEffects locks the third leg of
+// the adoption contract: markCompletedReview/salvageInterruptedReview must
+// not run for a parked adoption. Both set task fields (Reviewed, CodeReview)
+// outside the workflow engine's advancement path, which is the only place
+// that records review evidence — a resumed simple-task-review would then see
+// Reviewed=true and skip re-review, while require_evidence still finds the
+// missing review criterion and parks the task again.
+func TestOnComplete_ParkedAdoptionSkipsReviewSideEffects(t *testing.T) {
+	cases := []struct {
+		name         string
+		adoptedOver  string
+		liveStatus   task.Status
+		wantReviewed bool
+	}{
+		{
+			name:        "parked adoption does not mark reviewed",
+			adoptedOver: "human-required",
+			liveStatus:  task.StatusHumanRequired,
+		},
+		{
+			// Control: an ordinary review completion still marks the task
+			// reviewed, exactly as before this change.
+			name:         "ordinary completion still marks reviewed",
+			liveStatus:   task.StatusInProgress,
+			wantReviewed: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			store, err := task.NewStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tasks := task.NewManager(store, nil)
+			logger := discardLogger()
+			wm := worktree.New(worktree.Config{WorktreesDir: t.TempDir(), Tasks: tasks, Logger: logger})
+			wf := &recordingWorkflow{}
+
+			created, err := tasks.CreateWithStatus("review task", "body", "headless", tc.liveStatus, task.Update{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tasks.AddRun(created.ID, task.AgentRun{
+				AgentID: "ag-1", Role: string(agent.RoleReview), Mode: "headless",
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			ag := &agent.Agent{ID: "ag-1", TaskID: created.ID, Mode: "headless", Provider: "claude", Name: agent.RoleReview.AgentName("review task")}
+			ag.SetAdoptedParkedStatus(tc.adoptedOver)
+			ag.AppendOutput(agent.StreamEvent{Type: "result", Content: "review finished"})
+
+			h := New(Config{Logger: logger, Tasks: tasks, Worktrees: wm, WorkflowEngine: wf})
+			h.OnComplete(ag)
+
+			after, err := tasks.Get(created.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Reviewed != tc.wantReviewed {
+				t.Fatalf("Reviewed = %v, want %v", after.Reviewed, tc.wantReviewed)
+			}
+		})
+	}
+}
+
 func boolToInt(b bool) int {
 	if b {
 		return 1
