@@ -989,15 +989,80 @@ func TestAgentAdapterStartAgentCleanRetryResetsRecreatedProvidedDir(t *testing.T
 	if startedDir != h.dir {
 		t.Fatalf("startedDir = %q, want recreated original path %q", startedDir, h.dir)
 	}
-	if baselineRef != baseline {
-		t.Fatalf("baselineRef = %q, want clean retry baseline %q", baselineRef, baseline)
-	}
-	if _, err := os.Stat(filepath.Join(startedDir, "stale.txt")); !os.IsNotExist(err) {
-		t.Fatalf("stale retry file survived reset: %v", err)
+	if baselineRef == "" {
+		t.Fatal("baselineRef empty after recreated clean retry worktree")
 	}
 	head := gitOutput(t, "-C", startedDir, "rev-parse", "HEAD")
-	if head != baseline {
-		t.Fatalf("recreated worktree HEAD = %s, want clean retry baseline %s", head, baseline)
+	if head != baselineRef {
+		t.Fatalf("recreated worktree HEAD = %s, want baselineRef %s", head, baselineRef)
+	}
+	if got := gitOutput(t, "-C", startedDir, "branch", "--show-current"); got != h.task.Branch {
+		t.Fatalf("branch = %q, want task branch %q", got, h.task.Branch)
+	}
+	if status := gitOutput(t, "-C", startedDir, "status", "--short"); status != "" {
+		t.Fatalf("status = %q, want clean worktree", status)
+	}
+}
+
+func TestAgentAdapterStartAgentCleanRetryRecreatesDetachedDirtyCheckoutFromTaskBranchTip(t *testing.T) {
+	h := setupProvidedDirRecoveryHarness(t, agent.RoleImplementation)
+	baseline := gitOutput(t, "-C", h.dir, "rev-parse", "HEAD")
+	branch := h.task.Branch
+
+	if err := os.WriteFile(filepath.Join(h.dir, "repair.txt"), []byte("later repair output\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, "-C", h.dir, "add", "repair.txt")
+	gitRun(t, "-C", h.dir, "-c", "user.name=Test", "-c", "user.email=test@test.com", "-c", "commit.gpgsign=false", "commit", "-m", "repair output")
+	gitRun(t, "-C", h.dir, "push", "origin", branch)
+	repairTip := gitOutput(t, "-C", h.dir, "rev-parse", "HEAD")
+
+	gitRun(t, "-C", h.dir, "checkout", "--detach", baseline)
+	if err := os.WriteFile(filepath.Join(h.dir, "generated.txt"), []byte("stale churn\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	agentID, startedDir, baselineRef, err := h.aa.StartAgent(
+		h.task.ID,
+		string(agent.RoleImplementation),
+		"headless",
+		"sonnet",
+		"claude",
+		"prompt",
+		h.dir,
+		nil,
+		true,
+		false,
+		"",
+		baseline,
+		workflow.AgentAssignment{},
+	)
+	if err != nil {
+		t.Fatalf("StartAgent clean retry with detached dirty checkout: %v", err)
+	}
+	if agentID == "" {
+		t.Fatal("StartAgent returned empty agentID")
+	}
+	if startedDir != h.dir {
+		t.Fatalf("startedDir = %q, want canonical task worktree %q", startedDir, h.dir)
+	}
+	if baselineRef != repairTip {
+		t.Fatalf("baselineRef = %q, want task branch tip %q", baselineRef, repairTip)
+	}
+	if got := gitOutput(t, "-C", startedDir, "branch", "--show-current"); got != branch {
+		t.Fatalf("branch = %q, want attached task branch %q", got, branch)
+	}
+	if got := gitOutput(t, "-C", startedDir, "rev-parse", "HEAD"); got != repairTip {
+		t.Fatalf("HEAD = %q, want task branch tip %q", got, repairTip)
+	}
+	if _, err := os.Stat(filepath.Join(startedDir, "generated.txt")); !os.IsNotExist(err) {
+		t.Fatalf("generated.txt survived recreate: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(startedDir, "repair.txt")); err != nil || string(got) != "later repair output\n" {
+		t.Fatalf("repair.txt = %q, err=%v; want pushed repair output", got, err)
+	}
+	if status := gitOutput(t, "-C", startedDir, "status", "--short"); status != "" {
+		t.Fatalf("status = %q, want clean worktree", status)
 	}
 }
 

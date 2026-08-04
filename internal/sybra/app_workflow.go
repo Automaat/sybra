@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -1061,9 +1062,22 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 // the workflow's start-failure circuit breaker.
 func (a *agentAdapter) ensureWorktreeDir(t task.Task, taskID string, role agent.Role, dir, cleanRetryRef string, claim *agent.DispatchClaim) (updated task.Task, resolvedDir string, cleanRetryReset bool, err error) {
 	if dir == "" {
-		return a.resolveWorktreeDir(t, taskID, string(role), cleanRetryRef, claim)
+		return a.resolveWorktreeDir(t, taskID, role, cleanRetryRef, claim)
 	}
 	if _, statErr := os.Stat(dir); statErr == nil {
+		if cleanRetryRef != "" {
+			ready, readyErr := a.cleanRetryWorktreeReady(t, taskID, role, dir)
+			if readyErr != nil {
+				return t, "", false, readyErr
+			}
+			if ready {
+				return t, dir, true, nil
+			}
+			if role.AuthorsCode() && strings.TrimSpace(t.Branch) != "" {
+				updated, resolvedDir, err := a.recreateManagedWorktreeForRetry(t, taskID, role, dir, claim)
+				return updated, resolvedDir, true, err
+			}
+		}
 		repair, repairErr := a.providedWorktreeNeedsRepair(t, taskID, role, dir)
 		if repairErr != nil {
 			return t, "", false, repairErr
@@ -1076,8 +1090,42 @@ func (a *agentAdapter) ensureWorktreeDir(t task.Task, taskID string, role agent.
 	} else if !os.IsNotExist(statErr) {
 		return t, "", false, fmt.Errorf("stat provided worktree dir %s: %w", dir, statErr)
 	}
+	if cleanRetryRef != "" {
+		updated, resolvedDir, cleanRetryReset, err = a.reprepareProvidedWorktreeDir(t, taskID, role, dir, "", claim)
+		return updated, resolvedDir, true, err
+	}
 	updated, resolvedDir, cleanRetryReset, err = a.reprepareProvidedWorktreeDir(t, taskID, role, dir, cleanRetryRef, claim)
 	return updated, resolvedDir, cleanRetryReset, err
+}
+
+func (a *agentAdapter) cleanRetryWorktreeReady(t task.Task, taskID string, role agent.Role, dir string) (bool, error) {
+	if !role.AuthorsCode() || strings.TrimSpace(t.Branch) == "" || strings.TrimSpace(dir) == "" {
+		return false, nil
+	}
+	currentBranch, err := project.CurrentBranch(context.Background(), dir)
+	if err != nil {
+		return false, fmt.Errorf("resolve clean retry worktree branch %s: %w", dir, err)
+	}
+	if currentBranch != t.Branch {
+		a.agentOrch.Logger().Warn("workflow.worktree.clean-retry.branch-mismatch",
+			"task_id", taskID, "role", role, "path", dir, "branch", currentBranch, "want_branch", t.Branch)
+		return false, nil
+	}
+	dirty, err := project.IsWorktreeDirty(context.Background(), dir)
+	if err != nil {
+		return false, fmt.Errorf("inspect clean retry worktree %s: %w", dir, err)
+	}
+	if dirty {
+		a.agentOrch.Logger().Warn("workflow.worktree.clean-retry.dirty",
+			"task_id", taskID, "role", role, "path", dir)
+		return false, nil
+	}
+	if project.HasUnpushedCommits(context.Background(), dir) {
+		a.agentOrch.Logger().Warn("workflow.worktree.clean-retry.unpushed",
+			"task_id", taskID, "role", role, "path", dir)
+		return false, nil
+	}
+	return true, nil
 }
 
 func (a *agentAdapter) providedWorktreeNeedsRepair(t task.Task, taskID string, role agent.Role, dir string) (bool, error) {
@@ -1130,6 +1178,40 @@ func (a *agentAdapter) reprepareProvidedWorktreeDir(t task.Task, taskID string, 
 	}
 	resolvedDir, cleanRetryReset, err = a.reprepareMissingWorktreeDir(t, taskID, role, dir, claim)
 	return t, resolvedDir, cleanRetryReset, err
+}
+
+func (a *agentAdapter) recreateManagedWorktreeForRetry(t task.Task, taskID string, role agent.Role, dir string, claim *agent.DispatchClaim) (updated task.Task, resolvedDir string, err error) {
+	if t.WorktreeDir != "" {
+		return t, "", fmt.Errorf("adopted worktree %s is not reusable for clean retry on task branch %q", dir, t.Branch)
+	}
+	proj, err := a.projects.Get(t.ProjectID)
+	if err != nil {
+		return t, "", err
+	}
+	a.agentOrch.Logger().Warn("workflow.worktree.clean-retry.recreate",
+		"task_id", taskID, "role", role, "path", dir, "branch", t.Branch)
+	if fetchErr := project.FetchOrigin(context.Background(), proj.ClonePath); fetchErr != nil {
+		a.agentOrch.Logger().Warn("workflow.worktree.clean-retry.fetch",
+			"task_id", taskID, "role", role, "project", proj.ID, "branch", t.Branch, "err", fetchErr)
+	}
+	remoteRef := "refs/remotes/origin/" + t.Branch
+	if out, revErr := exec.Command("git", "-c", "safe.bareRepository=all", "-C", proj.ClonePath, "rev-parse", "--verify", remoteRef).CombinedOutput(); revErr == nil {
+		remoteHead := strings.TrimSpace(string(out))
+		if remoteHead != "" {
+			if err := project.SetBranchTo(context.Background(), proj.ClonePath, t.Branch, remoteHead); err != nil {
+				return t, "", fmt.Errorf("reset task branch %s to pushed tip %s: %w", t.Branch, remoteHead, err)
+			}
+		}
+	} else if project.BranchExists(context.Background(), proj.ClonePath, t.Branch) {
+		if err := project.DeleteBranch(context.Background(), proj.ClonePath, t.Branch); err != nil {
+			return t, "", fmt.Errorf("drop local-only task branch %s before clean retry recreate: %w", t.Branch, err)
+		}
+	}
+	if err := project.RemoveWorktreeReconcile(context.Background(), proj.ClonePath, dir); err != nil {
+		return t, "", fmt.Errorf("reconcile clean retry worktree dir %s: %w", dir, err)
+	}
+	resolvedDir, _, err = a.reprepareMissingWorktreeDir(t, taskID, role, dir, claim)
+	return t, resolvedDir, err
 }
 
 func (a *agentAdapter) reprepareExistingWorktreeDir(t task.Task, taskID string, role agent.Role, dir, cleanRetryRef string, claim *agent.DispatchClaim) (resolvedDir string, cleanRetryReset bool, err error) {
@@ -1216,7 +1298,7 @@ func (a *agentAdapter) configureTestRunnerRun(cfg *agent.RunConfig, taskID strin
 // worktree-prep failure this releases it early (see the claim.Release() call
 // below) rather than the caller's own deferred release, which — since
 // DispatchClaim.Release is idempotent — is then a safe no-op.
-func (a *agentAdapter) resolveWorktreeDir(t task.Task, taskID, role, cleanRetryRef string, claim *agent.DispatchClaim) (updated task.Task, dir string, cleanRetryReset bool, err error) {
+func (a *agentAdapter) resolveWorktreeDir(t task.Task, taskID string, role agent.Role, cleanRetryRef string, claim *agent.DispatchClaim) (updated task.Task, dir string, cleanRetryReset bool, err error) {
 	t, err = a.agentOrch.AutoAssignProject(t)
 	if err != nil {
 		return t, "", false, err
@@ -1225,11 +1307,30 @@ func (a *agentAdapter) resolveWorktreeDir(t task.Task, taskID, role, cleanRetryR
 		return t, "", false, fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree: %w", taskID, role, workflow.ErrNoProjectAssigned)
 	}
 	if cleanRetryRef != "" {
-		reset, resetErr := a.resetWorktreeForRetry(t, "", cleanRetryRef)
-		if resetErr != nil {
-			return t, "", false, resetErr
+		target := a.agentOrch.Worktrees().PathFor(t)
+		if _, statErr := os.Stat(target); statErr == nil {
+			ready, readyErr := a.cleanRetryWorktreeReady(t, taskID, role, target)
+			if readyErr != nil {
+				return t, "", false, readyErr
+			}
+			if ready {
+				cleanRetryReset = true
+			} else if role.AuthorsCode() && strings.TrimSpace(t.Branch) != "" {
+				updated, resolvedDir, recreateErr := a.recreateManagedWorktreeForRetry(t, taskID, role, target, claim)
+				return updated, resolvedDir, true, recreateErr
+			}
+		} else if os.IsNotExist(statErr) {
+			cleanRetryReset = true
+		} else {
+			return t, "", false, fmt.Errorf("stat clean retry worktree: %w", statErr)
 		}
-		cleanRetryReset = reset
+		if !cleanRetryReset {
+			reset, resetErr := a.resetWorktreeForRetry(t, "", cleanRetryRef)
+			if resetErr != nil {
+				return t, "", false, resetErr
+			}
+			cleanRetryReset = reset
+		}
 	}
 	// context.Background(): StartAgent implements workflow.AgentDispatcher,
 	// a fixed interface signature with no ctx parameter (invoked from many
