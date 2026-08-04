@@ -271,13 +271,33 @@ func gitObjectOverlayPopulated(path string) (bool, error) {
 			}
 			return walkErr
 		}
-		if current != path && !entry.IsDir() {
+		if current != path && !entry.IsDir() && isGitObjectPayloadPath(path, current) {
 			populated = true
 			return fs.SkipAll
 		}
 		return nil
 	})
 	return populated, err
+}
+
+func isGitObjectPayloadPath(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return true
+	}
+	first, _, _ := strings.Cut(rel, string(filepath.Separator))
+	if first == "pack" {
+		return true
+	}
+	if len(first) != 2 {
+		return false
+	}
+	for _, char := range first {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", char) {
+			return false
+		}
+	}
+	return true
 }
 
 func prepareGitObjectOverlay(base string) (string, error) {

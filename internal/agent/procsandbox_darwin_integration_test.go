@@ -118,13 +118,35 @@ func TestPrepareGitSandboxOverlay_DarwinRemovesEmptyLegacyObjectDirs(t *testing.
 			t.Fatal(err)
 		}
 	}
+	if err := os.WriteFile(filepath.Join(legacyObjects, "info", "commit-graph"), []byte("derived"), 0o444); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err := prepareGitSandboxOverlay(context.Background(), t.TempDir(), sandboxHome, gitSandboxRoots{objectDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("prepareGitSandboxOverlay: %v", err)
 	}
 	if _, err := os.Stat(legacyObjects); !os.IsNotExist(err) {
-		t.Fatalf("empty legacy object dirs were not reset: %v", err)
+		t.Fatalf("metadata-only legacy object dirs were not reset: %v", err)
+	}
+}
+
+func TestPrepareGitSandboxOverlay_DarwinPreservesLegacyPack(t *testing.T) {
+	sandboxHome := t.TempDir()
+	legacyPack := filepath.Join(sandboxHome, ".sybra-git-overlay", "objects", "pack", "pack-deadbeef.pack")
+	if err := os.MkdirAll(filepath.Dir(legacyPack), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPack, []byte("legacy"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := prepareGitSandboxOverlay(context.Background(), t.TempDir(), sandboxHome, gitSandboxRoots{objectDir: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "refusing to delete") {
+		t.Fatalf("prepareGitSandboxOverlay error = %v, want preserved legacy-pack failure", err)
+	}
+	if _, err := os.Stat(legacyPack); err != nil {
+		t.Fatalf("legacy pack was not preserved: %v", err)
 	}
 }
 
