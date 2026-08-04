@@ -97,7 +97,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		// round (reached only after a fresh code_review cycle re-enters this
 		// same step ID) starts from a full budget instead of inheriting an
 		// already-exhausted counter from a prior round (#2229 stop-and-reset).
-		clearWatchdogRewardHackingRetry(wfExec, output.StepID)
+		clearWatchdogRetryCounters(wfExec, output.StepID)
 	}
 	if output.Output != "" {
 		wfExec.SetVar("step."+output.StepID+".output", truncate(output.Output, 2000))

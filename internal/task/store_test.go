@@ -1636,6 +1636,80 @@ func TestStoreListSurfacesMalformedAsDegraded(t *testing.T) {
 	}
 }
 
+// A degraded entry's ID must be unaddressable: it is derived from a filename,
+// not from a real task, so if CRUD resolved it to `<dir>/<id>.md` an
+// update/delete issued against the board card would land on whatever task
+// happens to occupy that path.
+func TestStoreDegradedIDIsNotAddressable(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bad.md"), []byte("not valid frontmatter"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || !tasks[0].Degraded {
+		t.Fatalf("List = %+v, want a single degraded entry", tasks)
+	}
+	id := tasks[0].ID
+	if !IsDegradedID(id) {
+		t.Fatalf("degraded ID %q not recognized by IsDegradedID", id)
+	}
+	if err := ValidateID(id); err == nil {
+		t.Errorf("ValidateID(%q) = nil, want rejection so the ID can never be minted or persisted", id)
+	}
+
+	if _, err := store.Get(id); err == nil {
+		t.Error("Get on a degraded ID succeeded, want rejection")
+	}
+	if _, err := store.Update(id, Update{Title: Ptr("hijacked")}); err == nil {
+		t.Error("Update on a degraded ID succeeded, want rejection")
+	}
+	if err := store.Delete(id); err == nil {
+		t.Error("Delete on a degraded ID succeeded, want rejection")
+	}
+	if _, err := store.Put(Task{ID: id, Title: "hijacked", Status: StatusTodo, AgentMode: AgentModeHeadless}); err == nil {
+		t.Error("Put with a degraded ID succeeded, want rejection")
+	}
+}
+
+// A hand-written task file claiming a degraded-reserved ID must not join the
+// board under that ID — it would be a second entry sharing the synthetic ID
+// of whatever unreadable file hashes to it.
+func TestStoreListRejectsReservedDegradedIDInFrontmatter(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "---\nid: " + degradedIDPrefix + "0123456789abcdef\ntitle: Impostor\nstatus: todo\nagent_mode: headless\n---\n"
+	if err := os.WriteFile(filepath.Join(dir, "impostor.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(tasks))
+	}
+	if !tasks[0].Degraded {
+		t.Fatalf("impostor task = %+v, want it surfaced as degraded rather than accepted", tasks[0])
+	}
+	if tasks[0].Title == "Impostor" {
+		t.Error("impostor frontmatter was trusted; want a filename-derived degraded entry")
+	}
+}
+
 func TestStoreListLeavesMalformedFileInPlace(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

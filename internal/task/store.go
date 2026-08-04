@@ -276,13 +276,28 @@ func (s *Store) List() ([]Task, error) {
 	return tasks, nil
 }
 
+// degradedIDPrefix namespaces Store.List's synthetic entries for task files
+// that could not be parsed. The colon is deliberately outside the character
+// set ValidateID accepts, so a synthetic ID can never be minted, persisted,
+// or collide with a real task ID; safePath additionally refuses to resolve
+// one to a file, which is what keeps the degraded card read-only by
+// construction rather than by convention.
+const degradedIDPrefix = "unreadable:"
+
+// IsDegradedID reports whether id is one of Store.List's synthetic
+// unreadable-task identifiers rather than a real, addressable task ID.
+func IsDegradedID(id string) bool {
+	return strings.HasPrefix(id, degradedIDPrefix)
+}
+
 // degradedTask exposes an unreadable task file without trusting any of its
-// frontmatter. The generated ID is deterministic for its filename but cannot
-// address a real task file, making the entry read-only by construction.
+// frontmatter. The generated ID is deterministic for its filename and
+// unaddressable by construction (see degradedIDPrefix), so the entry is
+// read-only and can never be confused with a real task.
 func degradedTask(path string, parseErr error) Task {
 	base := filepath.Base(path)
 	sum := sha256.Sum256([]byte(base))
-	id := fmt.Sprintf("unreadable-%x", sum[:8])
+	id := fmt.Sprintf("%s%x", degradedIDPrefix, sum[:8])
 	modified := time.Time{}
 	if info, err := os.Stat(path); err == nil {
 		modified = info.ModTime().UTC()
@@ -505,6 +520,12 @@ func (s *Store) read(id string) (Task, error) {
 // routinely call sybra-cli with task IDs they parsed from prompts, so the
 // untrusted-input surface is real even though the GUI generates IDs itself.
 func (s *Store) safePath(id string) (string, error) {
+	if IsDegradedID(id) {
+		// Synthetic List-only entry for an unparseable file: it has no task
+		// file of its own, and resolving it would let an update/delete issued
+		// against the degraded board card land on some unrelated real task.
+		return "", fmt.Errorf("task ID %q is a synthetic unreadable-file entry and has no task file", id)
+	}
 	path := filepath.Clean(filepath.Join(s.dir, id+".md"))
 	if !strings.HasPrefix(path, filepath.Clean(s.dir)+string(filepath.Separator)) {
 		return "", fmt.Errorf("invalid task ID %q", id)
