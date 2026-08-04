@@ -48,6 +48,25 @@ func TestFetchOrigin_RepairsPoisonedSiblingRef(t *testing.T) {
 	}
 }
 
+func TestFetchOrigin_RepairsPoisonedRemoteRef(t *testing.T) {
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+	branch, err := DefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	plantBadRef(t, bare, "refs/remotes/origin/"+branch)
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("FetchOrigin should repair poisoned remote ref: %v", err)
+	}
+	if _, err := outputBare(context.Background(), bare, "rev-parse", "--verify", "refs/remotes/origin/"+branch); err != nil {
+		t.Fatalf("refetched remote ref is missing: %v", err)
+	}
+}
+
 func TestRepairBareClone_QuarantinesRefsAndWorktreeHead(t *testing.T) {
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
