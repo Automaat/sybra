@@ -258,9 +258,9 @@ func repairBareCloneLocked(ctx context.Context, barePath, taskBranch string) (Re
 	releaseDeadWorktreeRefs(ctx, barePath, &report)
 	rebuildWorktreeIndexes(ctx, barePath, &report)
 
-	refsOut, err := outputBare(ctx, barePath, "for-each-ref", "--format=%(refname)", "refs/heads")
+	refsOut, err := outputBare(ctx, barePath, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin")
 	if err != nil {
-		return report, fmt.Errorf("enumerate refs/heads: %w", err)
+		return report, fmt.Errorf("enumerate refs: %w", err)
 	}
 	for line := range strings.SplitSeq(strings.TrimSpace(refsOut), "\n") {
 		ref := strings.TrimSpace(line)
@@ -270,8 +270,7 @@ func repairBareCloneLocked(ctx context.Context, barePath, taskBranch string) (Re
 		if checkErr := runBare(ctx, barePath, "cat-file", "-e", ref+"^{object}"); checkErr == nil {
 			continue
 		}
-		badValue, _ := outputBare(ctx, barePath, "rev-parse", ref)
-		QuarantineRef(barePath, ref, strings.TrimSpace(badValue))
+		QuarantineRef(barePath, ref, "unresolvable")
 		delErr := withLockRetry(func() error {
 			return runBare(ctx, barePath, "update-ref", "-d", ref)
 		})

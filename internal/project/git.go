@@ -430,11 +430,11 @@ func commitIdentity(ctx context.Context) (name, email string) {
 }
 
 func gitGlobalConfig(ctx context.Context, key string) string {
-	out, err := exec.CommandContext(ctx, "git", "config", "--global", "--get", key).Output()
+	out, err := executil.Output(ctx, "", "git", "config", "--global", "--get", key)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(out)
 }
 
 // DefaultBranch resolves barePath's HEAD symbolic ref (e.g.
