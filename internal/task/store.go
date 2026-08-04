@@ -23,23 +23,24 @@ import (
 // task's own frontmatter+body. Safe for concurrent use within a process; see
 // lockTask for the cross-process locking story.
 type Store struct {
-	dir           string
-	trashDir      string
-	comments      *CommentStore
-	plans         *PlanStore
-	planContracts *PlanningSidecarStore
-	planDrafts    *PlanDraftStore
-	planCritiques *PlanCritiqueStore
-	planResearch  *PlanningSidecarStore
-	planDecisions *PlanningSidecarStore
-	planBrief     *PlanningSidecarStore
-	codeReviews   *CodeReviewStore
-	locker        *fsutil.KeyedLocker
-	cacheMu       sync.RWMutex
-	listCache     []Task
-	listValid     bool
-	listSnapshot  map[string]listFileState
-	newTaskID     func() string
+	dir               string
+	trashDir          string
+	comments          *CommentStore
+	plans             *PlanStore
+	planContracts     *PlanningSidecarStore
+	planDrafts        *PlanDraftStore
+	planCritiques     *PlanCritiqueStore
+	planResearch      *PlanningSidecarStore
+	planDecisions     *PlanningSidecarStore
+	planBrief         *PlanningSidecarStore
+	codeReviews       *CodeReviewStore
+	locker            *fsutil.KeyedLocker
+	cacheMu           sync.RWMutex
+	listCache         []Task
+	listValid         bool
+	listSnapshot      map[string]listFileState
+	newTaskID         func() string
+	refreshBeforeLock func()
 }
 
 const maxTaskIDAttempts = 16

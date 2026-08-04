@@ -88,7 +88,7 @@ func (e *Engine) execFocusedChecks(taskID string, step *Step, wfExec *Execution,
 	failedCmd, output, runErr := e.runVerifyCommands(ctx, taskID, wtPath, cmds)
 
 	report.FailedCmd = failedCmd
-	report.OutputTail = tailString(output, verifyChecksOutputTail)
+	report.OutputTail = output
 	if err := e.recordFocusedChecksReport(taskID, step.ID, report); err != nil {
 		e.logger.Warn("workflow.focused-checks.artifact", "task_id", taskID, "err", err)
 	}

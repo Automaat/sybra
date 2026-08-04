@@ -76,13 +76,62 @@ type sandboxSpec struct {
 	gitWorktrees string
 	gitObjectDir string
 
-	gitBranchRef           string
-	gitBranchRefDir        string
-	gitBranchLogDir        string
-	gitRemoteRefDir        string
-	gitRemoteLogDir        string
-	gitTagRefDir           string
-	gitTagLogDir           string
+	gitBranchRef    string
+	gitBranchRefDir string
+	gitBranchLogDir string
+	// gitBranchRefFile/gitBranchRefLockFile/gitBranchLogFile are the exact,
+	// single-file absolute paths for this task's own branch — darwin grants
+	// these via literal (not subpath) SBPL rules, since gitBranchRefDir can be
+	// shared with sibling tasks whose branch names nest under the same
+	// directory (e.g. two "fix/..." branches both live under refs/heads/fix/).
+	// Linux avoids that exposure with a bind-mounted overlay instead; Seatbelt
+	// has no filesystem-view mechanism to do the same, so darwin narrows the
+	// grant to the one file per root instead.
+	gitBranchRefFile     string
+	gitBranchRefLockFile string
+	gitBranchLogFile     string
+	// gitBranchLogLockFile: `git reflog expire` (part of `git gc`) locks the
+	// reflog the same way a commit locks the ref itself.
+	gitBranchLogLockFile string
+	// gitPackedRefsFile/gitPackedRefsNewFile/gitPackedRefsLockFile/
+	// gitGCPidFile/gitGCPidLockFile: single files under gitCommonDir, all
+	// touched by git's post-fetch maintenance or an explicit git gc.
+	gitPackedRefsFile     string
+	gitPackedRefsNewFile  string
+	gitPackedRefsLockFile string
+	gitGCPidFile          string
+	gitGCPidLockFile      string
+	// gitShallowFile/gitShallowLockFile: touched by a shallow fetch/clone
+	// (`--depth`/`--shallow-since`) — not issued by Sybra's own git calls
+	// today, but reachable if an agent runs one directly.
+	gitShallowFile     string
+	gitShallowLockFile string
+	// gitInfoDir (gitCommonDir/info) is a whole-subpath grant, not named
+	// literals: update_info_file() stages info/refs via xmkstemp(), a
+	// randomly-suffixed temp name no literal grant can predict.
+	// gitInfoDenyAttributes/gitInfoDenyExclude carve info/attributes and
+	// info/exclude back out of that subpath: unlike info/refs, both are
+	// hand-authored config shared with every sibling task on the clone, not
+	// idempotent regenerated output.
+	gitInfoDir            string
+	gitInfoDenyAttributes string
+	gitInfoDenyExclude    string
+	// gitStashRefFile/_LockFile/gitStashLogFile/_LockFile: refs/stash is a
+	// single fixed-name ref directly under refs/, not per-branch — literal,
+	// like the branch ref grants, since it sits at a known, exact path.
+	gitStashRefFile     string
+	gitStashRefLockFile string
+	gitStashLogFile     string
+	gitStashLogLockFile string
+	gitRemoteRefDir     string
+	gitRemoteLogDir     string
+	gitTagRefDir        string
+	gitTagLogDir        string
+	// gitNotesRefDir/gitNotesLogDir (refs/notes, logs/refs/notes): granted
+	// as whole subpaths like remote/tag refs — repo-wide annotation truth,
+	// not a task's own exclusive work.
+	gitNotesRefDir         string
+	gitNotesLogDir         string
 	gitOverlayObjectDir    string
 	gitOverlayRefDir       string
 	gitOverlayLogDir       string
@@ -135,12 +184,17 @@ func (s sandboxSpec) writeRoots() []string {
 		s.worktree, s.sandboxHome, s.tmp, s.sharedCache,
 		s.claudeState, s.codexState, s.copilotState, s.opencodeState, s.toolCache,
 		s.appSupport, s.claudeScratch,
-		s.gitAdminDir, s.gitCommonDir, s.gitWorktrees, s.gitObjectDir,
+		s.gitAdminDir, s.gitCommonDir, s.gitWorktrees, s.gitObjectDir, s.gitInfoDir,
 		s.gitOverlayObjectDir, s.gitOverlayRefDir, s.gitOverlayLogDir,
 		s.gitOverlayRemoteRefDir, s.gitOverlayRemoteLogDir,
 		s.gitOverlayTagRefDir, s.gitOverlayTagLogDir,
 		s.gitBranchRefDir, s.gitBranchLogDir, s.gitRemoteRefDir,
 		s.gitRemoteLogDir, s.gitTagRefDir, s.gitTagLogDir,
+		s.gitNotesRefDir, s.gitNotesLogDir,
+		s.gitBranchRefFile, s.gitBranchRefLockFile, s.gitBranchLogFile, s.gitBranchLogLockFile,
+		s.gitStashRefFile, s.gitStashRefLockFile, s.gitStashLogFile, s.gitStashLogLockFile,
+		s.gitPackedRefsFile, s.gitPackedRefsNewFile, s.gitPackedRefsLockFile,
+		s.gitGCPidFile, s.gitGCPidLockFile, s.gitShallowFile, s.gitShallowLockFile,
 	}
 	roots = append(roots, s.gitMetadata...)
 	roots = append(roots, s.gitShared...)

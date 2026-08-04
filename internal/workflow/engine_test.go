@@ -724,7 +724,6 @@ func (m *memTasks) ClearTaskStatusReasonAndSetWorkflowIf(id, expectedStatus, exp
 	t.Workflow = wf.Clone()
 	return true, nil
 }
-
 func (m *memTasks) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -897,15 +896,16 @@ func (m *memTasks) SetStatusAndWorkflow(id, status, reason string, wf *Execution
 
 func (m *memTasks) SetBlockerAndWorkflow(id, status, reason string, state blocker.State, wf *Execution) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.failSetWorkflow || m.failSetWorkflowN > 0 {
 		if m.failSetWorkflowN > 0 {
 			m.failSetWorkflowN--
 		}
+		m.mu.Unlock()
 		return fmt.Errorf("simulated write failure for task %s", id)
 	}
 	t, ok := m.tasks[id]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("task %s not found", id)
 	}
 	t.Status = status
@@ -913,6 +913,11 @@ func (m *memTasks) SetBlockerAndWorkflow(id, status, reason string, state blocke
 	t.Blocker = state
 	m.reasons[id] = reason
 	t.Workflow = wf.Clone()
+	hook := m.onSetWorkflow
+	m.mu.Unlock()
+	if hook != nil {
+		hook(id)
+	}
 	return nil
 }
 
@@ -4656,6 +4661,30 @@ func TestResumeStalled_WatchdogRateLimitPoolBusyDoesNotBurnRetryBudget(t *testin
 	}
 }
 
+func TestResumeStalled_WatchdogHangPoolBusyRetainsReaskNote(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetFailSpawn(ErrAgentPoolBusy)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{
+		ID: "t1", Status: "in-progress", StatusReason: "watchdog hang: no stream activity", AgentMode: "headless",
+		Workflow: &Execution{WorkflowID: "test-simple", CurrentStep: "implement", State: ExecWaiting, Variables: map[string]string{}, StartedAt: time.Now().UTC()},
+	})
+
+	engine.ResumeStalled()
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if note := got.Workflow.Variables[watchdogReaskNoteVar]; note == "" {
+		t.Fatal("pool-busy park cleared watchdog guidance before an agent started")
+	}
+	if retry := got.Workflow.Variables[watchdogHangRetryKey("implement")]; retry != "1" {
+		t.Fatalf("hang retry = %q, want 1", retry)
+	}
+}
 func TestResumeStalled_WatchdogRateLimitDoesNotClearConcurrentFailure(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -9151,6 +9180,56 @@ func makeGitRepo(t *testing.T, withExtraCommit bool) string {
 	return dir
 }
 
+func TestResolveOriginBase_FallsBackFromDanglingOriginHEAD(t *testing.T) {
+	wtPath := makeGitRepo(t, false)
+	refPath := filepath.Join(wtPath, ".git", "refs", "remotes", "origin", "HEAD")
+	if err := os.MkdirAll(filepath.Dir(refPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(refPath, []byte(strings.Repeat("f", 40)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolveOriginBase(context.Background(), wtPath); got != "origin/main" {
+		t.Fatalf("resolveOriginBase() = %q, want origin/main when origin/HEAD is dangling", got)
+	}
+}
+
+func TestResolveOriginBase_UsesLinkedRepositoryDefaultBranch(t *testing.T) {
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGitAt(t, "", "init", "--bare", remote)
+	seed := filepath.Join(t.TempDir(), "seed")
+	if err := os.MkdirAll(seed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, seed, "init", "-b", "trunk")
+	runGitAt(t, seed, "config", "user.email", "test@test.com")
+	runGitAt(t, seed, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("init\\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, seed, "add", "README.md")
+	runGitAt(t, seed, "commit", "-m", "init")
+	runGitAt(t, seed, "remote", "add", "origin", remote)
+	runGitAt(t, seed, "push", "origin", "trunk")
+
+	// Sybra worktrees are linked to a bare clone. Its HEAD, unlike a normal
+	// checkout's HEAD, identifies the default branch for all linked worktrees.
+	runGitAt(t, "", "-C", remote, "symbolic-ref", "HEAD", "refs/heads/trunk")
+	runGitAt(t, "", "-C", remote, "update-ref", "refs/remotes/origin/trunk", "refs/heads/trunk")
+	wtPath := filepath.Join(t.TempDir(), "worktree")
+	runGitAt(t, "", "-C", remote, "worktree", "add", wtPath, "trunk")
+
+	refPath := filepath.Join(remote, "refs", "remotes", "origin", "HEAD")
+	if err := os.WriteFile(refPath, []byte(strings.Repeat("f", 40)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolveOriginBase(context.Background(), wtPath); got != "origin/trunk" {
+		t.Fatalf("resolveOriginBase() = %q, want origin/trunk from linked repository HEAD", got)
+	}
+}
+
 func runGitAt(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	out, err := gitCombinedAt(dir, args...)
@@ -10952,7 +11031,7 @@ func TestExecEvaluate_LastAgentFailedFlipsHumanRequired(t *testing.T) {
 	}
 }
 
-func TestExecEvaluate_LastAgentFailedTruncatesLongReason(t *testing.T) {
+func TestExecEvaluate_LastAgentFailedKeepsFullReason(t *testing.T) {
 	long := strings.Repeat("x", 500)
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
@@ -10967,11 +11046,11 @@ func TestExecEvaluate_LastAgentFailedTruncatesLongReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := tasks.Reason("t1")
-	if !strings.Contains(got, "(truncated)") {
-		t.Errorf("reason missing truncation marker: %q", got)
+	if strings.Contains(got, "(truncated)") {
+		t.Errorf("reason should not be truncated: %q", got)
 	}
-	if len(got) >= len(long) {
-		t.Errorf("reason not truncated: %d chars", len(got))
+	if got != long {
+		t.Errorf("reason = %d chars, want the full %d-char output preserved", len(got), len(long))
 	}
 }
 
