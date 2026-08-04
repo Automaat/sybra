@@ -334,6 +334,10 @@ func stepIsAsync(stepType StepType) bool {
 	return ok && spec.async != nil
 }
 
+func stepIsResumable(stepType StepType) bool {
+	spec, ok := lookupStepSpec(stepType)
+	return ok && spec.resumable
+}
 func stepReducerBehavior(stepType StepType) (stepReducerKind, bool) {
 	spec, ok := lookupStepSpec(stepType)
 	return spec.reducer, ok
