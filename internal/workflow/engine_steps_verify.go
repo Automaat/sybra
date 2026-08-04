@@ -486,7 +486,7 @@ func (e *Engine) rearmNoCommitAuthorRun(taskID string, wfExec *Execution, t Task
 		return false
 	}
 	wfExec.SetVar(counterKey, "1")
-	wfExec.SetVar(verifyReaskNoteVar, "The previous implementation run completed without producing commits. Make the required code changes, then commit and push them before finishing.")
+	wfExec.SetVar(verifyReaskNoteVar, noCommitReaskNote(run))
 	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(verifyChecksAutoFixBackoff).Format(time.RFC3339))
 	wfExec.ClearStepRecords(stepID)
 	wfExec.CurrentStep = stepID
@@ -495,12 +495,39 @@ func (e *Engine) rearmNoCommitAuthorRun(taskID string, wfExec *Execution, t Task
 		e.logger.Error("workflow.verify-commits.no-commit-retry.workflow", "task_id", taskID, "err", err)
 		return false
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, "retrying implementation once after no commits were produced"); err != nil {
+	reason := "retrying implementation once after no commits were produced"
+	if run.SubagentCallCount > 0 {
+		reason = "retrying implementation once after a background subagent handoff produced no commits"
+	}
+	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, reason); err != nil {
 		e.logger.Error("workflow.verify-commits.no-commit-retry.status", "task_id", taskID, "err", err)
 		return false
 	}
-	e.logger.Warn("workflow.verify-commits.no-commit-retry", "task_id", taskID, "step", stepID, "agent_id", agentID)
+	e.logger.Warn("workflow.verify-commits.no-commit-retry",
+		"task_id", taskID, "step", stepID, "agent_id", agentID, "subagent_call_count", run.SubagentCallCount)
 	return true
+}
+
+// noCommitReaskNote builds the retry-once prompt injection for a code-author
+// run that ended without commits. A run that fanned out to subagent calls
+// (SubagentCallCount > 0) gets a diagnosis specific to the background-handoff
+// failure mode instead of the generic no-commit note: the one-shot CLI
+// process tears down as soon as it emits its final response, which kills any
+// delegated subagent work still in flight — so a run that hands off to a
+// subagent and says it will "wait" for the result ends with nothing done, see
+// backgroundTaskGuardrail for the mid-run equivalent of this warning.
+func noCommitReaskNote(run AgentRunInfo) string {
+	if run.SubagentCallCount > 0 {
+		return "The previous implementation run delegated work to a background " +
+			"subagent and ended before that work produced any commits — a one-shot " +
+			"run's process exits as soon as it emits its final response, which kills " +
+			"any subagent still working in the background. Do not delegate the " +
+			"implementation to a background/forked subagent and end your turn waiting " +
+			"on it. Make the required code changes directly yourself, then commit and " +
+			"push them before finishing this run."
+	}
+	return "The previous implementation run completed without producing commits. " +
+		"Make the required code changes, then commit and push them before finishing."
 }
 
 func (e *Engine) recordFinalCommitState(taskID string, wfExec *Execution, wtPath, source string) {

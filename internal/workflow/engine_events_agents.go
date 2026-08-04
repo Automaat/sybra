@@ -486,6 +486,13 @@ func (e *Engine) clearResumeDispatching(taskID string) {
 	e.mu.Unlock()
 }
 
+func (e *Engine) resumeDispatching(taskID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, ok := e.dispatching[taskID]
+	return ok
+}
+
 // RescheduleCheckpointedAgent immediately re-drives the current run_agent step
 // after a durable turn-ceiling checkpoint handoff, bounded by a persisted
 // per-step checkpoint counter.

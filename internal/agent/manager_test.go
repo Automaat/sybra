@@ -1092,22 +1092,22 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "no model no tools",
 			cfg:     RunConfig{},
-			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model sonnet",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools " + deniedToolsArg() + " --model sonnet",
 		},
 		{
 			name:    "valid model",
 			cfg:     RunConfig{Model: "claude-opus-4-6"},
-			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model claude-opus-4-6",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools " + deniedToolsArg() + " --model claude-opus-4-6",
 		},
 		{
 			name:    "valid tools",
 			cfg:     RunConfig{AllowedTools: []string{"Read", "Write", "Bash"}},
-			wantCmd: "claude --allowedTools Read,Write,Bash --disallowedTools ScheduleWakeup --model sonnet",
+			wantCmd: "claude --allowedTools Read,Write,Bash --disallowedTools " + deniedToolsArg() + " --model sonnet",
 		},
 		{
 			name:    "valid model and tools",
 			cfg:     RunConfig{Model: "claude-sonnet-4-6", AllowedTools: []string{"Read"}},
-			wantCmd: "claude --allowedTools Read --disallowedTools ScheduleWakeup --model claude-sonnet-4-6",
+			wantCmd: "claude --allowedTools Read --disallowedTools " + deniedToolsArg() + " --model claude-sonnet-4-6",
 		},
 		{
 			name:    "model with shell metachar semicolon",
@@ -1152,7 +1152,7 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "valid model with slash and dot",
 			cfg:     RunConfig{Model: "anthropic/claude-3.5-sonnet"},
-			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model anthropic/claude-3.5-sonnet",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools " + deniedToolsArg() + " --model anthropic/claude-3.5-sonnet",
 		},
 		{
 			name:    "codex default model mapping",
@@ -1172,22 +1172,22 @@ func TestBuildCommand(t *testing.T) {
 		{
 			name:    "fable alias",
 			cfg:     RunConfig{Model: "fable"},
-			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model fable",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools " + deniedToolsArg() + " --model fable",
 		},
 		{
 			name:    "fable with 1m suffix stripped",
 			cfg:     RunConfig{Model: "fable[1m]"},
-			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model fable",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools " + deniedToolsArg() + " --model fable",
 		},
 		{
 			name:    "claude-fable-5 with 1m suffix stripped",
 			cfg:     RunConfig{Model: "claude-fable-5[1m]"},
-			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model claude-fable-5",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools " + deniedToolsArg() + " --model claude-fable-5",
 		},
 		{
 			name:    "sonnet with 1m suffix stripped",
 			cfg:     RunConfig{Model: "sonnet[1m]"},
-			wantCmd: "claude --dangerously-skip-permissions --disallowedTools ScheduleWakeup --model sonnet",
+			wantCmd: "claude --dangerously-skip-permissions --disallowedTools " + deniedToolsArg() + " --model sonnet",
 		},
 		{
 			name:    "codex fable passes through as explicit model",
@@ -1646,6 +1646,32 @@ func TestSendMessage_HeadlessRejectsWhenFinalizing(t *testing.T) {
 	assertConflictClientError(t, err)
 	if got := a.PendingPromptCount(); got != 0 {
 		t.Errorf("PendingPromptCount = %d, want 0 (message must not be queued)", got)
+	}
+}
+
+// TestSendMessage_HeadlessRejectsAfterEmptyBoundary proves that the terminal
+// boundary atomically commits finalization before a later steer can enqueue.
+// This is the former pop-empty / set-finalizing TOCTOU window.
+func TestSendMessage_HeadlessRejectsAfterEmptyBoundary(t *testing.T) {
+	m, _ := newTestManager(t)
+	r, w := io.Pipe()
+	a := &Agent{ID: "h-empty-boundary", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
+	if err := a.convo.installStdinPipe(w); err != nil {
+		t.Fatalf("installStdinPipe: %v", err)
+	}
+	putAgent(t, m, a)
+	t.Cleanup(func() { _ = r.Close() })
+
+	if _, ok := a.PopPendingPromptOrBeginFinalizing(); ok {
+		t.Fatal("empty queue unexpectedly yielded a prompt")
+	}
+	err := m.SendMessage(a.ID, "too late")
+	if err == nil {
+		t.Fatal("expected finalizing conflict after empty terminal boundary")
+	}
+	assertConflictClientError(t, err)
+	if got := a.PendingPromptCount(); got != 0 {
+		t.Errorf("PendingPromptCount = %d, want 0", got)
 	}
 }
 

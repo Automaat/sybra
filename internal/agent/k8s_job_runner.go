@@ -146,7 +146,7 @@ func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunCon
 		m.finalizeRun(ctx, a, "agent.k8s.done")
 		return
 	}
-	a.Command = "kubernetes job/" + jobName
+	a.SetCommand("kubernetes job/" + jobName)
 	m.emit(events.AgentState(a.ID), a)
 
 	prevLen := len(a.Output())

@@ -9,7 +9,6 @@
     searchQuery: string
     selectedProjectId: string
     selectedTags: string[]
-    selectedAgentMode: string
     allTags: string[]
     showDone: boolean
     hasActiveFilters: boolean
@@ -24,7 +23,6 @@
     searchQuery = $bindable(),
     selectedProjectId = $bindable(),
     selectedTags = $bindable(),
-    selectedAgentMode = $bindable(),
     allTags,
     showDone = $bindable(),
     hasActiveFilters,
@@ -33,12 +31,6 @@
     onclear,
     onviewchange,
   }: Props = $props()
-
-  const agentModes = [
-    { value: '', label: 'All' },
-    { value: 'headless', label: 'Headless' },
-    { value: 'interactive', label: 'Interactive' },
-  ]
 
   function pickViewMode(m: ViewMode) {
     viewModeStore.set(m)
@@ -59,20 +51,6 @@
     selectedTags={selectedTags}
     ontagsChange={(tags) => (selectedTags = tags)}
   />
-
-  <div class="flex h-8 rounded-md border border-surface-300 dark:border-surface-700">
-    {#each agentModes as mode}
-      <button
-        type="button"
-        class="px-2.5 text-xs font-medium transition-colors first:rounded-l-md last:rounded-r-md {selectedAgentMode === mode.value
-          ? 'bg-primary-500 text-white dark:bg-primary-600'
-          : 'bg-surface-50 text-surface-600 hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700'}"
-        onclick={() => (selectedAgentMode = mode.value)}
-      >
-        {mode.label}
-      </button>
-    {/each}
-  </div>
 
   <div class="ml-auto flex items-center gap-3">
     {#if hasActiveFilters}

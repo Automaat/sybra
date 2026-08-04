@@ -26,6 +26,10 @@ func claudeEventToStreamEvent(e ClaudeEvent) StreamEvent {
 			ev.toolSig = obs.signature
 			ev.toolLoopLabel = obs.label
 			ev.toolUses = e.Message.ToolUses
+			ev.InputTokens = e.Message.InputTokens
+			ev.OutputTokens = e.Message.OutputTokens
+			ev.CacheCreationInputTokens = e.Message.CacheCreationInputTokens
+			ev.CacheReadInputTokens = e.Message.CacheReadInputTokens
 		}
 	case "user":
 		if e.Message != nil {

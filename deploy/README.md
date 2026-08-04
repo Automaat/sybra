@@ -55,6 +55,7 @@ validate it (below) before trusting the deploy.**
 | `systemd/sybra.service` | `/etc/systemd/system/sybra.service` | The unit (KillMode=process, exit-42 restart, ExecStartPre build, ExecStartPost health check, start-rate limit). |
 | `systemd/sybra.env.example` | `/etc/sybra/sybra.env` | Runtime env (listen port, local CLI server target, deploy paths, `PATH` with mise shims + npm globals). |
 | `bin/sybra-deploy-lib.sh` | `/opt/sybra/bin/sybra-deploy-lib.sh` | Shared helpers (logging, host lock, quarantine key/marker, atomic symlink swap) sourced by the two scripts below. |
+| `bin/sybra-repair-src.sh` | `/opt/sybra/bin/sybra-repair-src.sh` | Privileged `ExecStartPre`: repairs `/opt/sybra/src` ownership drift before the unprivileged build/autoupdate path touches `.git/objects`. |
 | `bin/sybra-build.sh` | `/opt/sybra/bin/sybra-build.sh` | `ExecStartPre`: build web + server + CLI from `/opt/sybra/src` into a versioned candidate, preflight it against the live config, atomically activate it, or quarantine + keep last-good. |
 | `bin/sybra-healthcheck.sh` | `/opt/sybra/bin/sybra-healthcheck.sh` | `ExecStartPost`: poll the just-started release's `/health`; promote to last-good on success, or roll back + record a failure (quarantining after repeated failures) on timeout. |
 | `bin/sybra-run.sh` | `/opt/sybra/bin/sybra-run.sh` | `ExecStart`: activate mise toolchain, `exec` whichever release `current` points at. |
@@ -65,7 +66,7 @@ Layout on the box:
 /opt/sybra/
   src/           git checkout of Automaat/sybra on main   (autoupdate RepoDir)
   review-src/    second, independent checkout for human-review's fallback dir
-  bin/           sybra-deploy-lib.sh, sybra-build.sh, sybra-healthcheck.sh, sybra-run.sh
+  bin/           sybra-deploy-lib.sh, sybra-repair-src.sh, sybra-build.sh, sybra-healthcheck.sh, sybra-run.sh
   releases/<id>/ versioned candidate builds: sybra-server, sybra-cli, web/
   current        symlink -> releases/<id>, the release ExecStart runs
   last-good      symlink -> releases/<id>, restored automatically on a failed health check
@@ -243,6 +244,7 @@ Install the unit + scripts + env:
 
 ```bash
 install -m 0755 /opt/sybra/src/deploy/bin/sybra-deploy-lib.sh  /opt/sybra/bin/
+install -m 0755 /opt/sybra/src/deploy/bin/sybra-repair-src.sh  /opt/sybra/bin/
 install -m 0755 /opt/sybra/src/deploy/bin/sybra-build.sh       /opt/sybra/bin/
 install -m 0755 /opt/sybra/src/deploy/bin/sybra-healthcheck.sh /opt/sybra/bin/
 install -m 0755 /opt/sybra/src/deploy/bin/sybra-run.sh         /opt/sybra/bin/

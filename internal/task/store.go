@@ -1,6 +1,7 @@
 package task
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,23 +23,27 @@ import (
 // task's own frontmatter+body. Safe for concurrent use within a process; see
 // lockTask for the cross-process locking story.
 type Store struct {
-	dir           string
-	trashDir      string
-	comments      *CommentStore
-	plans         *PlanStore
-	planContracts *PlanningSidecarStore
-	planDrafts    *PlanDraftStore
-	planCritiques *PlanCritiqueStore
-	planResearch  *PlanningSidecarStore
-	planDecisions *PlanningSidecarStore
-	planBrief     *PlanningSidecarStore
-	codeReviews   *CodeReviewStore
-	locker        *fsutil.KeyedLocker
-	cacheMu       sync.RWMutex
-	listCache     []Task
-	listValid     bool
-	listSnapshot  map[string]listFileState
+	dir               string
+	trashDir          string
+	comments          *CommentStore
+	plans             *PlanStore
+	planContracts     *PlanningSidecarStore
+	planDrafts        *PlanDraftStore
+	planCritiques     *PlanCritiqueStore
+	planResearch      *PlanningSidecarStore
+	planDecisions     *PlanningSidecarStore
+	planBrief         *PlanningSidecarStore
+	codeReviews       *CodeReviewStore
+	locker            *fsutil.KeyedLocker
+	cacheMu           sync.RWMutex
+	listCache         []Task
+	listValid         bool
+	listSnapshot      map[string]listFileState
+	newTaskID         func() string
+	refreshBeforeLock func()
 }
+
+const maxTaskIDAttempts = 16
 
 // NewStore creates dir if it does not exist and returns a Store rooted
 // there, along with its sidecar stores (comments, plans, code reviews).
@@ -59,6 +64,7 @@ func NewStore(dir string) (*Store, error) {
 		planBrief:     NewPlanningSidecarStore(dir, ".plan-brief.md", "plan brief"),
 		codeReviews:   NewCodeReviewStore(dir),
 		locker:        fsutil.NewKeyedLocker(),
+		newTaskID:     func() string { return uuid.NewString()[:8] },
 	}, nil
 }
 
@@ -147,6 +153,29 @@ func (s *Store) lockTask(id string) (func(), error) {
 	return unlock, nil
 }
 
+// lockNewTask serializes candidate-ID reservation without creating a visible
+// task-dir entry. Ordinary task locks deliberately sit beside their task file,
+// but creation has no file yet and must not leave a spurious .md.lock artifact
+// that callers can mistake for task data.
+func (s *Store) lockNewTask(id string) (func(), error) {
+	// Resolve aliases first: two Store instances may address the same task
+	// directory through a real path and a symlink, and must still contend on
+	// one candidate-ID lock.
+	taskDir, err := filepath.EvalSymlinks(s.dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve task dir for creation lock: %w", err)
+	}
+	dir := filepath.Join(filepath.Dir(taskDir), ".task-create-locks")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("create task lock dir: %w", err)
+	}
+	unlock, err := s.locker.Lock("create:"+id, filepath.Join(dir, id))
+	if err != nil {
+		return nil, fmt.Errorf("lock new task %s: %w", id, err)
+	}
+	return unlock, nil
+}
+
 // sidecarFileSuffixes lists every fixed-name (non-plan-draft) sidecar
 // suffix a task can own. Single source of truth for both IsSidecarFile and
 // Store.taskFiles, so a new fixed-name sidecar kind only needs to be added
@@ -181,8 +210,9 @@ func IsSidecarFile(base string) bool {
 
 // List returns every task under the store's directory, in directory-read
 // order (unspecified — sort by CreatedAt/UpdatedAt if you need an order).
-// A task with a parse error is logged and skipped rather than failing the
-// whole call. Results are served from an in-memory cache invalidated on any
+// A task with a parse error is represented as a non-dispatchable, degraded
+// Human Required entry rather than silently disappearing from the board.
+// Results are served from an in-memory cache invalidated on any
 // Create/Update/Delete; callers do not need to worry about staleness within
 // a single process.
 func (s *Store) List() ([]Task, error) {
@@ -217,7 +247,8 @@ func (s *Store) List() ([]Task, error) {
 	for _, p := range taskPaths {
 		t, err := Parse(p)
 		if err != nil {
-			slog.Default().Warn("task.parse.skip", "file", filepath.Base(p), "err", err)
+			slog.Default().Warn("task.parse.degraded", "file", filepath.Base(p), "err", err)
+			tasks = append(tasks, degradedTask(p, err))
 			parseErr = true
 			continue
 		}
@@ -244,6 +275,35 @@ func (s *Store) List() ([]Task, error) {
 		}
 	}
 	return tasks, nil
+}
+
+// degradedTask exposes an unreadable task file without trusting any of its
+// frontmatter. The generated ID is deterministic for its filename but cannot
+// address a real task file, making the entry read-only by construction.
+func degradedTask(path string, parseErr error) Task {
+	base := filepath.Base(path)
+	sum := sha256.Sum256([]byte(base))
+	id := fmt.Sprintf("unreadable-%x", sum[:8])
+	modified := time.Time{}
+	if info, err := os.Stat(path); err == nil {
+		modified = info.ModTime().UTC()
+	}
+	reason := fmt.Sprintf("Task file %q cannot be parsed; repair it on disk to restore the task.", base)
+	return Task{
+		ID:              id,
+		Slug:            "unreadable-task",
+		Title:           "Unreadable task file: " + base,
+		Status:          StatusHumanRequired,
+		AgentMode:       AgentModeHeadless,
+		StatusReason:    reason,
+		Body:            reason,
+		CreatedAt:       modified,
+		UpdatedAt:       modified,
+		StatusChangedAt: modified,
+		FilePath:        path,
+		Degraded:        true,
+		ParseError:      parseErr.Error(),
+	}
 }
 
 // sidecarIndex holds sidecar contents loaded in a single ReadDir pass,
@@ -423,8 +483,9 @@ func (s *Store) safePath(id string) (string, error) {
 	return path, nil
 }
 
-// Create writes a new task file with a fresh 8-char ID, status "todo", and
-// type "normal". mode defaults to AgentModeHeadless when empty and is
+// Create writes a new task file with a fresh ID, status "todo", and type
+// "normal". Creation never replaces an existing task: a generated ID that
+// already exists is retried. mode defaults to AgentModeHeadless when empty and is
 // validated via ValidateMintableAgentMode. Use CreateFull to set additional
 // fields (tags, project, priority, ...) atomically at creation time.
 func (s *Store) Create(title, body, mode string) (Task, error) {
@@ -435,9 +496,7 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 		return Task{}, err
 	}
 	now := time.Now().UTC()
-	id := uuid.NewString()[:8]
 	t := Task{
-		ID:              id,
 		Slug:            Slugify(title),
 		Title:           title,
 		Status:          StatusTodo,
@@ -450,15 +509,8 @@ func (s *Store) Create(title, body, mode string) (Task, error) {
 		Body:            body,
 	}
 
-	data, err := Marshal(t)
-	if err != nil {
+	if err := s.createNewTask(&t, nil); err != nil {
 		return Task{}, err
-	}
-
-	filename := fmt.Sprintf("%s.md", t.ID)
-	t.FilePath = filepath.Join(s.dir, filename)
-	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
-		return Task{}, fmt.Errorf("write task file: %w", err)
 	}
 	s.storeTaskCache(t)
 	return t, nil
@@ -478,9 +530,7 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 		return Task{}, err
 	}
 	now := time.Now().UTC()
-	id := uuid.NewString()[:8]
 	t := Task{
-		ID:              id,
 		Slug:            Slugify(title),
 		Title:           title,
 		Status:          StatusTodo,
@@ -498,21 +548,86 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 	if err := normalizeSandboxEscapeHatch(&t); err != nil {
 		return Task{}, err
 	}
-	if err := s.writeSidecars(t.ID, init, &t); err != nil {
+	if err := s.createNewTask(&t, func() error {
+		return s.writeSidecars(t.ID, init, &t)
+	}); err != nil {
 		return Task{}, err
-	}
-
-	data, err := Marshal(t)
-	if err != nil {
-		return Task{}, err
-	}
-	filename := fmt.Sprintf("%s.md", t.ID)
-	t.FilePath = filepath.Join(s.dir, filename)
-	if err := fsutil.AtomicWrite(t.FilePath, data); err != nil {
-		return Task{}, fmt.Errorf("write task file: %w", err)
 	}
 	s.storeTaskCache(t)
 	return t, nil
+}
+
+// createNewTask locks a candidate ID, invokes beforePublish while no task file
+// is visible, then exclusively publishes the primary task file. The lock spans
+// the whole operation so a failed sidecar write can be rolled back before
+// another current Store process can reuse the candidate ID. AtomicWriteNew
+// independently refuses to replace an already-published primary task file.
+func (s *Store) createNewTask(t *Task, beforePublish func() error) error {
+	for range maxTaskIDAttempts {
+		t.ID = s.newTaskID()
+		t.FilePath = filepath.Join(s.dir, t.ID+".md")
+		unlock, err := s.lockNewTask(t.ID)
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stat(t.FilePath); err == nil {
+			unlock()
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			unlock()
+			return fmt.Errorf("stat task file: %w", err)
+		}
+		files, err := s.taskFiles(t.ID)
+		if err != nil {
+			unlock()
+			return err
+		}
+		if len(files) > 0 {
+			// A prior interrupted CreateFull may have left sidecars without
+			// its primary file. Never bind that history to a fresh task.
+			unlock()
+			continue
+		}
+		if beforePublish != nil {
+			if err := beforePublish(); err != nil {
+				s.removeNewTaskSidecars(t.ID)
+				unlock()
+				return err
+			}
+		}
+		data, err := Marshal(*t)
+		if err != nil {
+			s.removeNewTaskSidecars(t.ID)
+			unlock()
+			return err
+		}
+		writeErr := fsutil.AtomicWriteNew(t.FilePath, data)
+		if writeErr == nil {
+			unlock()
+			return nil
+		}
+		// A writer outside Store raced our protected reservation. Do not
+		// delete the sidecars: they may now belong to that writer's task.
+		unlock()
+		if errors.Is(writeErr, os.ErrExist) {
+			continue
+		}
+		return fmt.Errorf("write task file: %w", writeErr)
+	}
+	return fmt.Errorf("create task: generated ID collided %d times", maxTaskIDAttempts)
+}
+
+// removeNewTaskSidecars rolls back sidecars written before task publication.
+// createNewTask verifies this ID has no task or sidecars while holding the
+// current Store's cross-process lock, so every sidecar found here belongs to
+// this failed creation attempt. It deliberately never removes the primary
+// task file.
+func (s *Store) removeNewTaskSidecars(id string) {
+	if files, err := s.taskFiles(id); err == nil {
+		for _, name := range files {
+			_ = os.Remove(filepath.Join(s.dir, name))
+		}
+	}
 }
 
 // applyCreateInit applies the CreateFull init overrides onto a fresh task.
@@ -586,6 +701,43 @@ func (s *Store) Put(t Task) (Task, error) {
 		return Task{}, err
 	}
 	defer unlock()
+	return s.putLocked(t)
+}
+
+// PutFn reads an existing task and writes the fully-formed replacement
+// returned by fn while holding the task's cross-process write lock. It is for
+// callers that need to merge a long-running operation's result with the most
+// recent canonical task without a read-modify-write gap.
+func (s *Store) PutFn(id string, fn func(cur Task) (Task, error)) (saved, previous Task, err error) {
+	if err := ValidateID(id); err != nil {
+		return Task{}, Task{}, err
+	}
+	unlock, err := s.lockTask(id)
+	if err != nil {
+		return Task{}, Task{}, err
+	}
+	defer unlock()
+
+	cur, err := s.read(id)
+	if err != nil {
+		return Task{}, cur, err
+	}
+	next, err := fn(cur)
+	if err != nil {
+		return Task{}, cur, err
+	}
+	if next.ID != id {
+		return Task{}, cur, fmt.Errorf("task: put-fn: callback changed task ID from %q to %q", id, next.ID)
+	}
+	saved, err = s.putLocked(next)
+	return saved, cur, err
+}
+
+// putLocked is Put after the caller has acquired lockTask(t.ID).
+func (s *Store) putLocked(t Task) (Task, error) {
+	if err := validateWriteTask(t); err != nil {
+		return Task{}, err
+	}
 	now := time.Now().UTC()
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = now
@@ -646,6 +798,23 @@ func (s *Store) Put(t Task) (Task, error) {
 	}
 	s.storeTaskCache(t)
 	return t, nil
+}
+
+// validateWriteTask enforces the values Parse rejects on every write path,
+// including PutFn, which reaches putLocked directly while holding its task
+// lock. Empty values retain the legacy compatibility accepted by Parse.
+func validateWriteTask(t Task) error {
+	if t.Slug != "" {
+		if err := ValidateSlug(t.Slug); err != nil {
+			return err
+		}
+	}
+	if t.AgentMode != "" {
+		if _, err := ValidateAgentMode(t.AgentMode); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // taskFiles returns the basenames of every sidecar file this store owns for

@@ -112,6 +112,11 @@ type AgentRunInfo struct {
 	TestFailureFingerprint string
 	HeadSHA                string
 	FinalCommitSource      string
+	// SubagentCallCount is the number of distinct forked-subagent calls the
+	// run made (task.AgentRun.SubagentCallCount). Used to tell a genuine
+	// no-op run apart from one that delegated to a background subagent and
+	// ended before that delegation produced any commits.
+	SubagentCallCount int
 }
 
 // TaskProvider reads and updates tasks.
@@ -119,6 +124,10 @@ type TaskProvider interface {
 	GetTask(id string) (TaskInfo, error)
 	ListTasks() ([]TaskInfo, error)
 	UpdateTaskStatus(id, status, reason string) error
+	// ClearTaskStatusReasonIf atomically clears a status reason only when the
+	// task still has the exact status and reason the caller observed. It keeps a
+	// stale retry cleanup from erasing a newer failure or operator decision.
+	ClearTaskStatusReasonIf(id, expectedStatus, expectedReason string) (bool, error)
 	UpdateTaskBlocker(id, status, reason string, state blocker.State) error
 	UpdateTaskPR(id string, prNumber int) error
 	MarkTaskReviewed(id string) error

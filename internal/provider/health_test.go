@@ -683,6 +683,20 @@ func TestChecker_PassiveAuthPersistsUntilProbe(t *testing.T) {
 	}
 }
 
+func TestChecker_LivenessOnlyProbeDoesNotClearPassiveAuthFailure(t *testing.T) {
+	for _, provider := range []string{"copilot", "opencode"} {
+		t.Run(provider, func(t *testing.T) {
+			c, _, _ := newTestChecker(t)
+			c.setStatus(provider, Status{Provider: provider, Healthy: true, Reason: "ok"}, true)
+			c.ReportAuthFailure(provider, "logged_out")
+			c.setStatus(provider, Status{Provider: provider, Healthy: true, Reason: "ok"}, true)
+			if c.IsHealthy(provider) || c.Reason(provider) != "logged_out" {
+				t.Fatalf("version-only probe resurrected logged-out %s: healthy=%v reason=%q", provider, c.IsHealthy(provider), c.Reason(provider))
+			}
+		})
+	}
+}
+
 func TestChecker_RateLimitExpires(t *testing.T) {
 	c, _, clock := newTestChecker(t)
 	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)

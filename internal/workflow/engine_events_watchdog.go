@@ -281,7 +281,6 @@ func (e *Engine) canRetryWatchdogStop(t *TaskInfo, step *Step) bool {
 		step != nil &&
 		step.Type == StepRunAgent &&
 		t.Status == "human-required" &&
-		step.Config.Role == "implementation" &&
 		watchdogreason.IsRetryableStop(t.StatusReason)
 }
 
@@ -416,6 +415,17 @@ func (e *Engine) watchdogRateLimitRecoverySpec() watchdogRecoverySpec {
 			applies:    watchdogRunAgentStatusApplies(isWatchdogRateLimitReason),
 			counterKey: watchdogRateLimitRetryKey,
 			max:        maxWatchdogRateLimitRetries,
+			onArmed: func(e *Engine, t *TaskInfo, _ *Step, _ int) error {
+				cleared, err := e.tasks.ClearTaskStatusReasonIf(t.ID, t.Status, t.StatusReason)
+				if err != nil {
+					return err
+				}
+				if !cleared {
+					return errRetryArmingSuperseded
+				}
+				t.StatusReason = ""
+				return nil
+			},
 			onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 				retryKey := watchdogRateLimitRetryKey(step.ID)
 				freshKey := watchdogZeroOutputFreshRetryKey(step.ID)
@@ -464,7 +474,7 @@ func (e *Engine) watchdogStopRecoverySpec() watchdogRecoverySpec {
 			max:        maxWatchdogStopRetries,
 			onArm: func(_ *Engine, t *TaskInfo, step *Step, attempt int) {
 				armWatchdogCleanRetry(t, step)
-				t.Workflow.SetVar(watchdogReaskNoteVar, buildWatchdogStopReaskNote(t.StatusReason, attempt))
+				t.Workflow.SetVar(watchdogReaskNoteVarForStep(step), buildWatchdogStopReaskNote(t.StatusReason, attempt))
 			},
 			onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
 				if err := e.tasks.UpdateTaskStatus(t.ID, "in-progress", ""); err != nil {
@@ -531,7 +541,7 @@ func armWatchdogCleanRetry(t *TaskInfo, step *Step) {
 
 func buildWatchdogStopReaskNote(reason string, attempt int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "⚠️ Your previous implementation run was STOPPED by the watchdog for loop-like behavior — attempt %d of %d.\n\n", attempt, maxWatchdogStopRetries)
+	fmt.Fprintf(&b, "⚠️ Your previous agent run was STOPPED by the watchdog for loop-like behavior — attempt %d of %d.\n\n", attempt, maxWatchdogStopRetries)
 	if reason = strings.TrimSpace(reason); reason != "" {
 		b.WriteString("Previous watchdog reason: ")
 		b.WriteString(reason)
@@ -588,6 +598,44 @@ func (e *Engine) clearWatchdogReaskNote(taskID string, wf *Execution) {
 	delete(wf.Variables, watchdogReaskNoteVar)
 	if err := e.tasks.SetWorkflow(taskID, wf); err != nil {
 		e.logger.Error("workflow.watchdog-hang.reask-clear", "task_id", taskID, "err", err)
+	}
+}
+
+func (e *Engine) clearDeliveredWatchdogReaskNote(taskID string, step *Step, wf *Execution) {
+	if step == nil || step.ID == "" || wf == nil || wf.Variables == nil {
+		return
+	}
+	if !e.watchdogReaskDelivered(taskID, step, wf) {
+		return
+	}
+	delete(wf.Variables, watchdogReaskDeliveredKey(step.ID))
+	e.clearWatchdogReaskNote(taskID, wf)
+	if err := e.tasks.SetWorkflow(taskID, wf); err != nil {
+		e.logger.Error("workflow.watchdog-reask.delivery-clear", "task_id", taskID, "step", step.ID, "err", err)
+	}
+}
+
+func (e *Engine) watchdogReaskDelivered(taskID string, step *Step, wf *Execution) bool {
+	if workflowHasAgentRouteForStep(wf, step) || e.hasPendingAgentRouteForStep(taskID, step) {
+		return true
+	}
+	return wf != nil && wf.Variables[watchdogReaskDeliveredKey(step.ID)] == "1"
+}
+
+func watchdogReaskDeliveredKey(stepID string) string { return "watchdog_reask_delivered." + stepID }
+
+func clearWatchdogRetryCounters(wf *Execution, stepID string) {
+	if wf == nil || wf.Variables == nil || stepID == "" {
+		return
+	}
+	for _, key := range []string{
+		watchdogRewardHackingRetryKey(stepID),
+		watchdogHangRetryKey(stepID),
+		watchdogStopRetryKey(stepID),
+		watchdogRateLimitRetryKey(stepID),
+		watchdogZeroOutputFreshRetryKey(stepID),
+	} {
+		delete(wf.Variables, key)
 	}
 }
 

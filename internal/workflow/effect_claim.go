@@ -50,7 +50,7 @@ func currentStepEffectRecord(t TaskInfo, step *Step, pos int) (EffectRecord, boo
 
 func (e *Engine) effectClaimForStep(t TaskInfo, step *Step, pos int) EffectClaim {
 	stepID := step.ID
-	reuseCompleted := !isAsyncWorkflowStep(step.Type)
+	reuseCompleted := !stepIsAsync(step.Type)
 	skippedCompleted := false
 	if rec, ok := currentStepEffectRecord(t, step, pos); ok {
 		if rec.CompletedAt != nil && !reuseCompleted {
@@ -137,15 +137,6 @@ func mergeClaimedEffectLog(active, claimed *Execution) *Execution {
 		active.EffectLog[i] = cloneEffectRecord(active.EffectLog[i])
 	}
 	return active
-}
-
-func isAsyncWorkflowStep(stepType StepType) bool {
-	switch stepType {
-	case StepRunAgent, StepParallel, StepBestOfN, StepWaitHuman:
-		return true
-	default:
-		return false
-	}
 }
 
 func (c EffectClaim) validate() error {

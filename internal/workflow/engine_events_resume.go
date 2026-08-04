@@ -335,6 +335,14 @@ func (e *Engine) resumeStalledRerouteStaleConditionBranch(t *TaskInfo, def *Defi
 	if nextID == step.ID {
 		return false
 	}
+	reason, acquired := e.tryMarkResumeDispatching(t.ID, step)
+	if !acquired {
+		e.resumeSkip.Log(e.logger, "workflow.resume-stalled.condition-reroute.skip", t.ID,
+			reason+"|"+step.ID,
+			"task_id", t.ID, "reason", reason, "step", step.ID)
+		return true
+	}
+	defer e.clearResumeDispatching(t.ID)
 
 	wf := t.Workflow.Clone()
 	if wf == nil {
@@ -400,7 +408,7 @@ func (e *Engine) finishResumeStalledStep(taskID string, def *Definition, step *S
 	cleanupWorkflow := e.workflowForPostDispatchCleanup(taskID)
 	e.clearTransientFetchRetry(fresh.ID, cleanupWorkflow, step.ID)
 	e.clearCircuitBreakerOnSuccess(fresh.ID, cleanupWorkflow, step.ID)
-	e.clearWatchdogReaskNote(fresh.ID, cleanupWorkflow)
+	e.clearDeliveredWatchdogReaskNote(fresh.ID, step, cleanupWorkflow)
 }
 
 // handleWatchdogRetries checks both bounded watchdog stop-retry paths — a

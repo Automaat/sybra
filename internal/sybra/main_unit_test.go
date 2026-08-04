@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/testutil/gitenv"
 	"go.uber.org/goleak"
 )
 
@@ -23,6 +24,12 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "internal/sybra tests require git on PATH:", err)
 		os.Exit(1)
 	}
+	cleanup, err := gitenv.Isolate()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "internal/sybra tests require an isolated git config:", err)
+		os.Exit(1)
+	}
+	defer cleanup()
 	goleak.VerifyTestMain(m,
 		goleak.IgnoreTopFunction("runtime.cgocall"),
 		goleak.IgnoreAnyFunction("net/http.(*Transport).dialConnFor"),

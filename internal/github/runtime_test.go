@@ -181,6 +181,72 @@ func TestGHRequestGateExecute_SuppressesCallsWhileAuthCircuitOpen(t *testing.T) 
 	}
 }
 
+func TestGHRequestGateExecute_RateWallDoesNotBlockMutex(t *testing.T) {
+	g := newGHRequestGate()
+	g.notBefore = time.Now().Add(time.Hour)
+	started := time.Now()
+	_, err := g.execute(context.Background(), func() ([]byte, error) { t.Fatal("run must be suppressed"); return nil, nil })
+	if !strings.Contains(err.Error(), rateLimitWallMarker) {
+		t.Fatalf("err = %v, want rate-limit wall", err)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("rate wall blocked caller")
+	}
+	done := make(chan struct{})
+	go func() { _ = g.shouldSkipOptional("core", priorityMergePath); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("rate wall held gate mutex")
+	}
+}
+
+func TestGHRequestGateExecute_WaitHonorsContext(t *testing.T) {
+	g := newGHRequestGate()
+	g.lastRun = time.Now()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ran := make(chan struct{}, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := g.execute(ctx, func() ([]byte, error) { ran <- struct{}{}; return nil, nil })
+		errCh <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+	err := <-errCh
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context canceled", err)
+	}
+	select {
+	case <-ran:
+		t.Fatal("run must not start")
+	default:
+	}
+}
+
+func TestGHRequestGateExecute_CanceledContextNeverRuns(t *testing.T) {
+	g := newGHRequestGate()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := g.execute(ctx, func() ([]byte, error) { t.Fatal("run must not start"); return nil, nil })
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context canceled", err)
+	}
+}
+
+func TestGHRequestGateExecute_LockHonorsContext(t *testing.T) {
+	g := newGHRequestGate()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	_, err := g.execute(ctx, func() ([]byte, error) { t.Fatal("run must not start"); return nil, nil })
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want deadline exceeded", err)
+	}
+}
+
 // TestGHRequestGateExecute_ObservesCallResult asserts a real (non-suppressed)
 // call result flows into the shared auth-health tracker, so a caller that
 // never explicitly wires ObserveCallResult still gets auth-failure detection
