@@ -280,7 +280,6 @@ func (e *Engine) hasPendingAgentRouteForStep(taskID string, step *Step) bool {
 	}
 	return false
 }
-
 func workflowHasAgentRouteForStep(wf *Execution, step *Step) bool {
 	if wf == nil || step == nil {
 		return false
