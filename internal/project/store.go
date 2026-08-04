@@ -135,6 +135,9 @@ func (s *Store) disableAutoMaintenanceLocked(ctx context.Context, id, snapshotCl
 	if err := DisableAutoMaintenance(runCtx, current.ClonePath); err != nil {
 		return fmt.Errorf("%s: %w", id, err)
 	}
+	if err := ConfigureCommitIdentity(runCtx, current.ClonePath); err != nil {
+		return fmt.Errorf("%s: configure commit identity: %w", id, err)
+	}
 	return nil
 }
 

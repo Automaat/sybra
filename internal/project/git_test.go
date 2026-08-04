@@ -215,16 +215,16 @@ func TestCloneBare_SetsCommitIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read user.name: %v", err)
 	}
-	if got := strings.TrimSpace(name); got != "Sybra Agent" {
-		t.Errorf("user.name = %q, want %q", got, "Sybra Agent")
+	if got := strings.TrimSpace(name); got != "Sybra Test" {
+		t.Errorf("user.name = %q, want %q", got, "Sybra Test")
 	}
 
 	email, err := outputBare(context.Background(), bare, "config", "user.email")
 	if err != nil {
 		t.Fatalf("read user.email: %v", err)
 	}
-	if got := strings.TrimSpace(email); got != "sybra-agent@example.invalid" {
-		t.Errorf("user.email = %q, want %q", got, "sybra-agent@example.invalid")
+	if got := strings.TrimSpace(email); got != "test@test.com" {
+		t.Errorf("user.email = %q, want %q", got, "test@test.com")
 	}
 }
 
@@ -252,6 +252,26 @@ func TestCloneBare_CommitIdentityRespectsEnvOverride(t *testing.T) {
 	}
 	if got := strings.TrimSpace(email); got != "custom-bot@example.com" {
 		t.Errorf("user.email = %q, want %q", got, "custom-bot@example.com")
+	}
+}
+
+func TestCloneBare_CommitIdentityFallsBackWithoutGlobalIdentity(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "empty-global-config"))
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	name, err := outputBare(context.Background(), bare, "config", "user.name")
+	if err != nil {
+		t.Fatalf("read user.name: %v", err)
+	}
+	email, err := outputBare(context.Background(), bare, "config", "user.email")
+	if err != nil {
+		t.Fatalf("read user.email: %v", err)
+	}
+	if strings.TrimSpace(name) != "Sybra Agent" || strings.TrimSpace(email) != "sybra-agent@example.invalid" {
+		t.Fatalf("fallback identity = %q <%q>", strings.TrimSpace(name), strings.TrimSpace(email))
 	}
 }
 
