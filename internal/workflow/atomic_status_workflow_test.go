@@ -18,7 +18,11 @@ func TestFinishTerminalStepOutput_PersistFailureLeavesTaskUnchanged(t *testing.T
 	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 
 	tasks.failSetWorkflow = true
-	err := engine.finishTerminalStepOutput("t1", wf.Clone(), StepOutput{
+	clone := wf.Clone()
+	if clone == nil {
+		t.Fatal("Clone returned nil")
+	}
+	err := engine.finishTerminalStepOutput("t1", clone, StepOutput{
 		StepID:         "step1",
 		Status:         "completed",
 		TerminalStatus: "done",
@@ -37,7 +41,11 @@ func TestFinishTerminalStepOutput_PersistFailureLeavesTaskUnchanged(t *testing.T
 	}
 
 	tasks.failSetWorkflow = false
-	if err := engine.finishTerminalStepOutput("t1", wf.Clone(), StepOutput{
+	clone = wf.Clone()
+	if clone == nil {
+		t.Fatal("Clone returned nil")
+	}
+	if err := engine.finishTerminalStepOutput("t1", clone, StepOutput{
 		StepID:         "step1",
 		Status:         "completed",
 		TerminalStatus: "done",
