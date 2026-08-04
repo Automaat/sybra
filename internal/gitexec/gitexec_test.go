@@ -122,6 +122,32 @@ exit 7
 	}
 }
 
+func TestRunQuietDiscardsStdoutAndPreservesStderr(t *testing.T) {
+	bin := t.TempDir()
+	writeFakeGit(t, bin, `
+printf 'discarded stdout\n'
+if [ "$1" = fail ]; then
+  printf 'useful stderr\n' >&2
+  exit 9
+fi
+`)
+	t.Setenv("PATH", bin)
+
+	if err := RunQuiet(context.Background(), Options{}, "success"); err != nil {
+		t.Fatalf("RunQuiet success: %v", err)
+	}
+	err := RunQuiet(context.Background(), Options{}, "fail")
+	if err == nil {
+		t.Fatal("RunQuiet failure unexpectedly succeeded")
+	}
+	if got := err.Error(); strings.Contains(got, "discarded stdout") || !strings.Contains(got, "useful stderr") {
+		t.Fatalf("RunQuiet error = %q, want stderr without stdout", got)
+	}
+	if code, ok := ExitCode(err); !ok || code != 9 {
+		t.Fatalf("ExitCode = (%d, %v), want (9, true)", code, ok)
+	}
+}
+
 func TestOutputFailureIncludesStderr(t *testing.T) {
 	bin := t.TempDir()
 	writeFakeGit(t, bin, `

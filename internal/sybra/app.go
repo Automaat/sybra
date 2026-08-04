@@ -920,7 +920,7 @@ func (a *App) RegisterSpotlightHotkey() {
 		}()
 	})
 
-	if err := spotlight.Register(func() {
+	a.registerSpotlight(func() {
 		projectsJSON := "[]"
 		if projects, err := a.projectSvc.ListProjects(); err == nil {
 			if data, err := json.Marshal(projects); err == nil {
@@ -928,11 +928,7 @@ func (a *App) RegisterSpotlightHotkey() {
 			}
 		}
 		spotlight.ShowPanel(projectsJSON)
-	}); err != nil {
-		a.logger.Error("spotlight.register", "err", err)
-		return
-	}
-	a.logger.Info("spotlight.registered", "hotkey", "ctrl+space")
+	})
 }
 
 // Context returns the app's running context.

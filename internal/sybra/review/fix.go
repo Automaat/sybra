@@ -14,7 +14,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/blocker"
-	"github.com/Automaat/sybra/internal/executil"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/project"
@@ -1104,7 +1104,7 @@ func (r *Handler) autoResolveConflict(ctx context.Context, t task.Task, pr githu
 		return false
 	}
 
-	preMergeHead, err := executil.Output(ctx, dir, "git", "rev-parse", "--verify", "HEAD")
+	preMergeHead, err := gitexec.Output(ctx, gitexec.Options{Dir: dir}, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		r.logger.Warn("pr-monitor.auto-resolve.pre-merge-head", "task_id", t.ID, "pr", pr.Number, "err", err)
 		return false
@@ -1112,7 +1112,7 @@ func (r *Handler) autoResolveConflict(ctx context.Context, t task.Task, pr githu
 	preMergeHead = strings.TrimSpace(preMergeHead)
 
 	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", base, base)
-	if err := executil.Run(ctx, dir, "git", "fetch", "origin", refspec); err != nil {
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: dir}, "fetch", "origin", refspec); err != nil {
 		r.logger.Warn("pr-monitor.auto-resolve.fetch", "task_id", t.ID, "pr", pr.Number, "err", err)
 		return false
 	}
@@ -1130,7 +1130,7 @@ func (r *Handler) autoResolveConflict(ctx context.Context, t task.Task, pr githu
 		return false
 	}
 
-	mergedHead, err := executil.Output(ctx, dir, "git", "rev-parse", "--verify", "HEAD")
+	mergedHead, err := gitexec.Output(ctx, gitexec.Options{Dir: dir}, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		r.logger.Warn("pr-monitor.auto-resolve.post-merge-head", "task_id", t.ID, "pr", pr.Number, "err", err)
 		r.rollbackAutoResolvedMerge(ctx, t.ID, pr.Number, dir, preMergeHead, "post-merge-head")
@@ -1179,7 +1179,7 @@ func resolveAutoResolveBase(ctx context.Context, dir string, pr github.PullReque
 	if base == "" {
 		return "", errors.New("base branch is empty")
 	}
-	if err := executil.Run(ctx, dir, "git", "check-ref-format", "--branch", base); err != nil {
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: dir}, "check-ref-format", "--branch", base); err != nil {
 		return "", fmt.Errorf("validate base branch %q: %w", base, err)
 	}
 	return base, nil
@@ -1191,7 +1191,7 @@ func (r *Handler) rollbackAutoResolvedMerge(ctx context.Context, taskID string, 
 	}
 	resetCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 	defer cancel()
-	if err := executil.Run(resetCtx, dir, "git", "reset", "--hard", preMergeHead); err != nil {
+	if err := gitexec.Run(resetCtx, gitexec.Options{Dir: dir}, "reset", "--hard", preMergeHead); err != nil {
 		r.logger.Error("pr-monitor.auto-resolve.rollback-failed",
 			"task_id", taskID, "pr", prNumber, "reason", reason, "pre_merge_head", preMergeHead, "err", err)
 		return

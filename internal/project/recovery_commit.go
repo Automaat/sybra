@@ -3,16 +3,14 @@ package project
 import (
 	"context"
 	"fmt"
-	"os/exec"
-	"strings"
+
+	"github.com/Automaat/sybra/internal/gitexec"
 )
 
 func gitIdentityConfigured(ctx context.Context, wtPath string) bool {
 	for _, key := range []string{"user.name", "user.email"} {
-		cmd := exec.CommandContext(ctx, "git", "config", "--get", key)
-		cmd.Dir = wtPath
-		out, err := cmd.Output()
-		if err != nil || strings.TrimSpace(string(out)) == "" {
+		out, err := gitexec.Output(ctx, gitexec.Options{Dir: wtPath}, "config", "--get", key)
+		if err != nil || out == "" {
 			return false
 		}
 	}
@@ -36,18 +34,16 @@ func recoveryCommitArgs(message string, hasIdentity, sign bool) []string {
 func runRecoveryCommit(ctx context.Context, wtPath, message string) error {
 	hasIdentity := gitIdentityConfigured(ctx, wtPath)
 	sign := GPGSigningAvailable(ctx)
-	out, err := gitCommitOutput(ctx, wtPath, recoveryCommitArgs(message, hasIdentity, sign))
+	err := gitCommit(ctx, wtPath, recoveryCommitArgs(message, hasIdentity, sign))
 	if err != nil && sign {
-		out, err = gitCommitOutput(ctx, wtPath, recoveryCommitArgs(message, hasIdentity, false))
+		err = gitCommit(ctx, wtPath, recoveryCommitArgs(message, hasIdentity, false))
 	}
 	if err != nil {
-		return fmt.Errorf("recovery commit: %w: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("recovery commit: %w", err)
 	}
 	return nil
 }
 
-func gitCommitOutput(ctx context.Context, wtPath string, args []string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = wtPath
-	return cmd.CombinedOutput()
+func gitCommit(ctx context.Context, wtPath string, args []string) error {
+	return gitexec.Run(ctx, gitexec.Options{Dir: wtPath}, args...)
 }
