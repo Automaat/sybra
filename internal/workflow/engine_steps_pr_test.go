@@ -192,6 +192,43 @@ func TestExecPushBranch_Success(t *testing.T) {
 	}
 }
 
+// Branch-conflict recovery may target origin for a same-repository PR even
+// when the worktree has the fork-only origin push sentinel installed. The
+// deterministic workflow is the trusted exception; an agent subprocess still
+// uses the normal PushSync path and remains blocked by that sentinel.
+func TestExecPushBranch_BranchConflictUsesTrustedSelectedRemote(t *testing.T) {
+	bare, wtPath := newPRWorktree(t, "feat/existing-pr")
+	commitFile(t, wtPath, "change.txt", "feat: recovered merge")
+	if out, err := exec.Command("git", "-C", wtPath, "config", "remote.origin.pushurl", "sybra-disabled-do-not-push-to-upstream-use-fork").CombinedOutput(); err != nil {
+		t.Fatalf("install origin push sentinel: %v\n%s", err, out)
+	}
+	originURL, err := project.RemoteURL(context.Background(), wtPath, "origin")
+	if err != nil {
+		t.Fatalf("resolve origin URL: %v", err)
+	}
+
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+
+	wfExec := &Execution{WorkflowID: "branch-conflict-fix", Variables: map[string]string{
+		WorkflowVarBranchConflictPushRemote: "origin",
+		WorkflowVarBranchConflictPushURL:    originURL,
+	}}
+	out, err := engine.execPushBranch("t1", newPushBranchStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
+	if err != nil {
+		t.Fatalf("execPushBranch: %v", err)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("status = %q, want completed", out.Status)
+	}
+	if got := strings.TrimSpace(runGitAt(t, bare, "rev-parse", "feat/existing-pr")); got != headSHA(t, wtPath) {
+		t.Fatalf("bare remote head = %q, want trusted recovered branch head", got)
+	}
+}
+
 // TestExecPushBranch_PreflightFailureFallsThroughToSuccessfulPush covers the
 // #2386 false-block: the dry-run preflight probe can fail transiently (e.g. a
 // stale app-token cache) even though the real push would succeed. The step
