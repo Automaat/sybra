@@ -58,6 +58,7 @@
   }: Props = $props()
 
   let projectDropdownOpen = $state(false)
+  let projectQuery = $state('')
   let projectDropdownRef = $state<HTMLDivElement | null>(null)
   let searchInputRef = $state<HTMLInputElement | null>(null)
 
@@ -89,6 +90,19 @@
           return p ? `${p.owner}/${p.repo}` : selectedProjectId
         })()
       : 'All projects',
+  )
+
+  const sortedProjects = $derived(
+    [...projectStore.list].sort((a, b) =>
+      a.repo.localeCompare(b.repo, undefined, { sensitivity: 'base' })
+      || a.owner.localeCompare(b.owner, undefined, { sensitivity: 'base' }),
+    ),
+  )
+
+  const matchingProjects = $derived(
+    projectQuery.trim()
+      ? sortedProjects.filter((p) => `${p.owner}/${p.repo}`.toLowerCase().includes(projectQuery.trim().toLowerCase()))
+      : sortedProjects,
   )
 
   function addTag(tag: string) {
@@ -166,30 +180,45 @@
       <button
         type="button"
         class="flex h-8 items-center gap-2 rounded-md border border-surface-300 bg-surface-50 px-2.5 text-sm dark:border-surface-700 dark:bg-surface-800"
-        onclick={() => (projectDropdownOpen = !projectDropdownOpen)}
+        onclick={() => {
+          projectDropdownOpen = !projectDropdownOpen
+          if (!projectDropdownOpen) projectQuery = ''
+        }}
         data-testid="project-filter-button"
       >
         <span class={selectedProjectId ? '' : 'text-surface-400'}>{selectedProjectLabel}</span>
         <ChevronDown size={14} class="text-surface-400" />
       </button>
       {#if projectDropdownOpen}
-        <div class="absolute top-full z-10 mt-1 min-w-full rounded-md border border-surface-300 bg-surface-50 py-1 shadow-lg dark:border-surface-700 dark:bg-surface-800">
+        <div class="absolute top-full z-10 mt-1 min-w-64 rounded-md border border-surface-300 bg-surface-50 py-1 shadow-lg dark:border-surface-700 dark:bg-surface-800">
+          <div class="px-2 pb-1">
+            <input
+              bind:value={projectQuery}
+              type="text"
+              placeholder="Find project..."
+              aria-label="Find project"
+              class="h-8 w-full rounded border border-surface-300 bg-white px-2 text-sm outline-none focus:border-primary-400 focus:ring-1 focus:ring-primary-400 dark:border-surface-600 dark:bg-surface-900 dark:focus:border-primary-500 dark:focus:ring-primary-500"
+            />
+          </div>
           <button
             type="button"
             class="w-full whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-surface-200 dark:hover:bg-surface-700 {selectedProjectId === '' ? 'font-medium text-primary-500' : ''}"
-            onmousedown={() => { onprojectChange?.(''); projectDropdownOpen = false }}
+            onmousedown={() => { onprojectChange?.(''); projectDropdownOpen = false; projectQuery = '' }}
           >
             All projects
           </button>
-          {#each projectStore.list as p (p.id)}
+          {#each matchingProjects as p (p.id)}
             <button
               type="button"
               class="w-full whitespace-nowrap px-3 py-1.5 text-left text-sm hover:bg-surface-200 dark:hover:bg-surface-700 {selectedProjectId === p.id ? 'font-medium text-primary-500' : ''}"
-              onmousedown={() => { onprojectChange?.(p.id); projectDropdownOpen = false }}
+              onmousedown={() => { onprojectChange?.(p.id); projectDropdownOpen = false; projectQuery = '' }}
             >
               {p.owner}/{p.repo}
             </button>
           {/each}
+          {#if matchingProjects.length === 0}
+            <p class="px-3 py-1.5 text-sm text-surface-400">No matching projects</p>
+          {/if}
         </div>
       {/if}
     </div>
