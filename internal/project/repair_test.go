@@ -81,6 +81,9 @@ func TestFetchOrigin_IgnoresPoisonedTagOutsideCheckoutScope(t *testing.T) {
 	if err := CheckBareCloneHealth(context.Background(), bare); err != nil {
 		t.Fatalf("checkout-relevant clone health should ignore poisoned tag: %v", err)
 	}
+	if _, err := outputBare(context.Background(), bare, "rev-parse", "--verify", "refs/tags/unrelated-bad-tag"); err == nil {
+		t.Fatal("poisoned tag should be quarantined so fetch can proceed")
+	}
 }
 
 func TestRepairBareClone_QuarantinesRefsAndWorktreeHead(t *testing.T) {

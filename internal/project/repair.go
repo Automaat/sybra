@@ -262,7 +262,10 @@ func repairBareCloneLocked(ctx context.Context, barePath, taskBranch string) (Re
 	releaseDeadWorktreeRefs(ctx, barePath, &report)
 	rebuildWorktreeIndexes(ctx, barePath, &report)
 
-	refsOut, err := outputBare(ctx, barePath, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin")
+	// Fetch rejects any corrupt ref, including tags and non-origin remotes.
+	// Quarantine only refs Git cannot resolve; valid refs outside checkout scope
+	// are left untouched even though they are not part of the dispatch gate.
+	refsOut, err := outputBare(ctx, barePath, "for-each-ref", "--format=%(refname)")
 	if err != nil {
 		return report, fmt.Errorf("enumerate refs: %w", err)
 	}
