@@ -40,3 +40,35 @@ func TestIsZeroOutputRateLimit(t *testing.T) {
 		t.Fatalf("non-zero-output rate limit must not match")
 	}
 }
+
+func TestParse(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+		want   Parsed
+	}{
+		{"hang", Hang("no stream activity"), Parsed{Kind: KindHang, Detail: "no stream activity"}},
+		{"legacy stop", "watchdog: looping on toolchain setup", Parsed{Kind: KindLoopStop, Detail: "looping on toolchain setup"}},
+		{"bare legacy stop", "watchdog stop", Parsed{Kind: KindLoopStop}},
+		{"rate limit", RateLimit("quota exhausted"), Parsed{Kind: KindRateLimit, Detail: "quota exhausted"}},
+		{"reward hacking retry", RewardHackingRetry("still looping"), Parsed{Kind: KindRewardHackingRetry, Detail: "still looping"}},
+		{"verify failed", "watchdog: verify suite still fails after loop stop: go test ./...", Parsed{Kind: KindVerifyFailed, Detail: "go test ./..."}},
+		{"unknown", "human review requested", Parsed{Kind: KindUnknown, Detail: "human review requested"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Parse(tc.reason); got != tc.want {
+				t.Fatalf("Parse(%q) = %#v, want %#v", tc.reason, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsRewardHackingRetry(t *testing.T) {
+	if !IsRewardHackingRetry(RewardHackingRetry("repeated fake progress")) {
+		t.Fatal("expected reward-hacking retry reason to match")
+	}
+	if IsRewardHackingRetry(RewardHacking("repeated fake progress")) {
+		t.Fatal("plain reward-hacking reason must not match retry classifier")
+	}
+}
