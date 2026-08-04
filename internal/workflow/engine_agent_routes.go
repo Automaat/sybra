@@ -292,7 +292,6 @@ func workflowHasAgentRouteForStep(wf *Execution, step *Step) bool {
 	}
 	return false
 }
-
 func clearAgentRouteFromWorkflow(wf *Execution, agentID string) bool {
 	if wf == nil || agentID == "" {
 		return false
