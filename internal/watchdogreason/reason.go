@@ -114,6 +114,13 @@ func RewardHackingRetry(reason string) string {
 	return withDetail(rewardHackingRetryPrefix, reason)
 }
 
+// IsRewardHacking reports whether reason is the terminal, non-retryable
+// reward-hacking verdict. It deliberately excludes rewardHackingRetryPrefix:
+// that status is owned by ResumeStalled's bounded clean re-dispatch path.
+func IsRewardHacking(reason string) bool {
+	return Parse(reason).Kind == KindRewardHacking
+}
+
 func RateLimit(reason string) string {
 	return withDetail(rateLimitPrefix, reason)
 }

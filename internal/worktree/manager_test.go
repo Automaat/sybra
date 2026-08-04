@@ -2086,8 +2086,8 @@ func TestPrepareForTask_BootstrapFailureBlocks(t *testing.T) {
 // unexpected branch — exactly the state a merge or conflict resolution leaves
 // behind — so its commits are readable and worth preserving.
 //
-// The unrepairable recreate path is still unguarded, by design: see
-// refuseRecreateWithUnpushedWork.
+// The unrepairable recreate path is still unguarded, by design: broken linked
+// worktree metadata cannot distinguish local work from a clean orphan.
 func TestManager_RefuseRecreateWithUnpushedWork(t *testing.T) {
 	dir := t.TempDir()
 	tasksDir := t.TempDir()
@@ -2107,7 +2107,7 @@ func TestManager_RefuseRecreateWithUnpushedWork(t *testing.T) {
 
 	// branch-mismatch only: the unrepairable path stays unguarded by design,
 	// since a broken worktree has no dependably-readable state to preserve.
-	err = m.refuseRecreateWithUnpushedWork(context.Background(), "t1", wt, "branch-mismatch")
+	err = m.refuseRecreateWithLocalWork(context.Background(), "t1", wt, "branch-mismatch")
 
 	if err == nil {
 		t.Fatal("recreate allowed on a worktree holding commits origin never saw; that discards the agent's work")
@@ -2131,7 +2131,31 @@ func TestManager_AllowsRecreateWhenPushed(t *testing.T) {
 	wt := filepath.Join(dir, "pushed-work")
 	makePushedGitDir(t, wt)
 
-	if err := m.refuseRecreateWithUnpushedWork(context.Background(), "t1", wt, "branch-mismatch"); err != nil {
+	if err := m.refuseRecreateWithLocalWork(context.Background(), "t1", wt, "branch-mismatch"); err != nil {
 		t.Fatalf("guard blocked recreate of a fully-pushed worktree: %v", err)
+	}
+}
+
+func TestManager_RefuseRecreateWithUncommittedWork(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
+
+	wt := filepath.Join(dir, "dirty-work")
+	makePushedGitDir(t, wt)
+	if err := os.WriteFile(filepath.Join(wt, "uncommitted.txt"), []byte("local recovery state"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err = m.refuseRecreateWithLocalWork(context.Background(), "t1", wt, "branch-mismatch")
+	if err == nil {
+		t.Fatal("recreate allowed on a worktree holding uncommitted work")
+	}
+	if _, statErr := os.Stat(filepath.Join(wt, "uncommitted.txt")); statErr != nil {
+		t.Fatalf("uncommitted worktree contents gone: %v", statErr)
 	}
 }
