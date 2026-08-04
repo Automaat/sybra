@@ -365,22 +365,34 @@ func CloneBare(ctx context.Context, repoURL, destPath string) error {
 	return runBare(ctx, destPath, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
 }
 
-// DisableAutoMaintenance turns off git's default maintenance.auto, which
-// otherwise lets any plain `git fetch` in any linked worktree silently
-// trigger a detached `git maintenance run --auto` against this shared bare
-// clone's object store. Concurrent tasks each have their own worktree but
-// share one clone: a repack from one task's auto-maintenance can run while
-// a sibling task is mid-commit (object written, ref not yet updated) and
-// conclude the new object is unreachable, dropping it — corrupting the
-// sibling's branch with no warning until something later fails to read it
-// ("fatal: bad object HEAD"). This closes only the *implicit* trigger; an
-// agent running `git gc`/`git repack`/`git maintenance run` explicitly in
-// its own worktree reproduces the identical race and is not prevented here
-// (see internal/agent/manager_run.go's git-sandbox write grants, which
+// DisableAutoMaintenance turns off both of git's independent implicit-repack
+// triggers, either of which otherwise lets an ordinary command in any linked
+// worktree silently repack this shared bare clone's object store:
+//   - maintenance.auto (git 2.30+): `git fetch` runs a detached
+//     `git maintenance run --auto` afterward.
+//   - gc.auto (older, separate mechanism `maintenance.auto` does NOT
+//     disable): `git commit`/`checkout`/`merge`/`fetch` and others run
+//     `git gc --auto` once loose objects exceed a threshold (default 6700).
+//
+// Concurrent tasks each have their own worktree but share one clone: a
+// repack from either trigger can run while a sibling task is mid-commit
+// (object written, ref not yet updated) and conclude the new object is
+// unreachable, dropping it — corrupting the sibling's branch with no warning
+// until something later fails to read it ("fatal: bad object HEAD").
+// Confirmed in production: disabling only maintenance.auto still let this
+// happen via gc.auto on the very next commit to the same clone.
+//
+// This closes only the *implicit* triggers; an agent running `git
+// gc`/`git repack`/`git maintenance run` explicitly in its own worktree
+// reproduces the identical race and is not prevented here (see
+// internal/agent/manager_run.go's git-sandbox write grants, which
 // intentionally permit those paths). Exported so a startup migration can
 // retrofit already-registered projects, not just newly cloned ones.
 func DisableAutoMaintenance(ctx context.Context, barePath string) error {
-	return runBare(ctx, barePath, "config", "maintenance.auto", "false")
+	if err := runBare(ctx, barePath, "config", "maintenance.auto", "false"); err != nil {
+		return err
+	}
+	return runBare(ctx, barePath, "config", "gc.auto", "0")
 }
 
 // configureCommitIdentity sets an explicit git identity on the bare clone.

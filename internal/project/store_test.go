@@ -540,6 +540,14 @@ func TestStoreMigrateDisableAutoMaintenance_RetrofitsExistingClone(t *testing.T)
 	if got := strings.TrimSpace(raw); got != "false" {
 		t.Errorf("maintenance.auto = %q, want %q", got, "false")
 	}
+
+	gcAuto, err := outputBare(context.Background(), bare, "config", "gc.auto")
+	if err != nil {
+		t.Fatalf("read gc.auto: %v", err)
+	}
+	if got := strings.TrimSpace(gcAuto); got != "0" {
+		t.Errorf("gc.auto = %q, want %q", got, "0")
+	}
 }
 
 // disableAutoMaintenanceLocked's re-check must only swallow the two expected

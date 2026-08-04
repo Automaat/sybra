@@ -274,6 +274,18 @@ func TestCloneBare_DisablesAutoMaintenance(t *testing.T) {
 	if got := strings.TrimSpace(raw); got != "false" {
 		t.Errorf("maintenance.auto = %q, want %q", got, "false")
 	}
+
+	// gc.auto is a separate, older auto-gc mechanism maintenance.auto=false
+	// does not disable — git commit/checkout/merge/fetch all still trigger
+	// `git gc --auto` once loose objects cross gc.auto's threshold (default
+	// 6700) unless this is also set to 0.
+	gcAuto, err := outputBare(context.Background(), bare, "config", "gc.auto")
+	if err != nil {
+		t.Fatalf("read gc.auto: %v", err)
+	}
+	if got := strings.TrimSpace(gcAuto); got != "0" {
+		t.Errorf("gc.auto = %q, want %q", got, "0")
+	}
 }
 
 func TestDefaultBranch(t *testing.T) {
