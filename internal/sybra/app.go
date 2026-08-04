@@ -507,7 +507,7 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.prTracker = github.NewIssueTrackerWithMaxRetries(30*time.Minute, a.cfg.GitHub.PRFixRetries())
 
-	configureProjectGitDefaults()
+	configureProjectGitDefaults(a.worktreesDir)
 	// Initialize domain services (dependency order: worktrees → agentOrch → reviewer, workflow)
 	a.worktrees = worktree.New(worktree.Config{
 		WorktreesDir:      a.worktreesDir,
@@ -567,9 +567,10 @@ func (a *App) taskEventEmitter(store *task.Store) func(string, any) {
 	}
 }
 
-func configureProjectGitDefaults() {
+func configureProjectGitDefaults(worktreesDir string) {
 	project.FetchTTL = 60 * time.Second
 	project.QuarantineDir = filepath.Join(config.HomeDir(), "quarantine")
+	project.WorktreesDir = worktreesDir
 }
 
 // sandboxRetentionWindow translates the resolved sandbox.retention_hours

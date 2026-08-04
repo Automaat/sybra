@@ -230,6 +230,9 @@ func TestRepairBareClone_DeletesRefStillCheckedOutByDeadWorktree(t *testing.T) {
 	if err := CreateWorktree(context.Background(), bare, wtPath, "task-branch", "origin/"+branch); err != nil {
 		t.Fatalf("create worktree: %v", err)
 	}
+	origWorktreesDir := WorktreesDir
+	WorktreesDir = filepath.Dir(wtPath)
+	t.Cleanup(func() { WorktreesDir = origWorktreesDir })
 	if err := os.WriteFile(filepath.Join(wtPath, "extra.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -263,6 +266,127 @@ func TestRepairBareClone_DeletesRefStillCheckedOutByDeadWorktree(t *testing.T) {
 
 	if _, err := outputBare(context.Background(), bare, "rev-parse", "--verify", "refs/heads/task-branch"); err == nil {
 		t.Fatal("dead task-branch ref should have been deleted, but a live worktree HEAD still pinned it")
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("corrupt worktree still active after repair: stat err=%v", err)
+	}
+	archives, err := os.ReadDir(filepath.Join(QuarantineDir, "worktrees"))
+	if err != nil {
+		t.Fatalf("read archived worktrees: %v", err)
+	}
+	if len(archives) != 1 {
+		t.Fatalf("archived worktrees = %v, want one", archives)
+	}
+	archivedFile := filepath.Join(QuarantineDir, "worktrees", archives[0].Name(), "extra.txt")
+	if got, err := os.ReadFile(archivedFile); err != nil || string(got) != "x" {
+		t.Fatalf("archived worktree did not preserve extra.txt: got %q err=%v", got, err)
+	}
+}
+
+func TestRegisteredWorktreeCheckoutPath_RejectsPoisonedAdminGitdir(t *testing.T) {
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+	branch, err := DefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("fetch origin: %v", err)
+	}
+
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	if err := CreateWorktree(context.Background(), bare, wtPath, "task-branch", "origin/"+branch); err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	origWorktreesDir := WorktreesDir
+	WorktreesDir = filepath.Dir(wtPath)
+	t.Cleanup(func() { WorktreesDir = origWorktreesDir })
+	adminDirBytes, err := os.ReadFile(filepath.Join(wtPath, ".git"))
+	if err != nil {
+		t.Fatalf("read worktree .git: %v", err)
+	}
+	gitdir, ok := strings.CutPrefix(strings.TrimSpace(string(adminDirBytes)), "gitdir: ")
+	if !ok {
+		t.Fatalf("worktree .git = %q, want gitdir declaration", adminDirBytes)
+	}
+	adminDir := strings.TrimSpace(gitdir)
+
+	victim := t.TempDir()
+	if err := os.WriteFile(filepath.Join(victim, ".git"), []byte("not a worktree"), 0o644); err != nil {
+		t.Fatalf("write victim git file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(victim, "keep.txt"), []byte("keep"), 0o644); err != nil {
+		t.Fatalf("write victim file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(adminDir, "gitdir"), []byte(filepath.Join(victim, ".git")+"\n"), 0o644); err != nil {
+		t.Fatalf("poison admin gitdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(adminDir, "HEAD"), []byte("ref: refs/heads/missing\n"), 0o644); err != nil {
+		t.Fatalf("poison admin HEAD: %v", err)
+	}
+
+	if got := registeredWorktreeCheckoutPath(adminDir); got != "" {
+		t.Fatalf("registered checkout = %q, want empty for poisoned gitdir", got)
+	}
+	if got, err := os.ReadFile(filepath.Join(victim, "keep.txt")); err != nil || string(got) != "keep" {
+		t.Fatalf("victim contents changed: got %q err=%v", got, err)
+	}
+	if _, err := RepairBareClone(context.Background(), bare, ""); err != nil {
+		t.Fatalf("repair poisoned worktree metadata: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(victim, "keep.txt")); err != nil || string(got) != "keep" {
+		t.Fatalf("repair moved victim contents: got %q err=%v", got, err)
+	}
+}
+
+func TestRepairBareClone_PreservesWorktreeWhenArchiveUnavailable(t *testing.T) {
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+	branch, err := DefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("fetch origin: %v", err)
+	}
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	if err := CreateWorktree(context.Background(), bare, wtPath, "task-branch", "origin/"+branch); err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	origWorktreesDir := WorktreesDir
+	WorktreesDir = filepath.Dir(wtPath)
+	t.Cleanup(func() { WorktreesDir = origWorktreesDir })
+	if err := os.WriteFile(filepath.Join(wtPath, "keep.txt"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"-C", wtPath, "config", "user.email", "test@test.com"}, {"-C", wtPath, "config", "user.name", "Test"}, {"-C", wtPath, "add", "."}, {"-C", wtPath, "commit", "-m", "keep"}} {
+		if out, cmdErr := exec.Command("git", args...).CombinedOutput(); cmdErr != nil {
+			t.Fatalf("git %v: %v: %s", args, cmdErr, out)
+		}
+	}
+	headOut, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	headSHA := strings.TrimSpace(string(headOut))
+	if err := os.Remove(filepath.Join(bare, "objects", headSHA[:2], headSHA[2:])); err != nil {
+		t.Fatalf("corrupt commit object: %v", err)
+	}
+	origQuarantineDir := QuarantineDir
+	QuarantineDir = ""
+	t.Cleanup(func() { QuarantineDir = origQuarantineDir })
+
+	if _, err := RepairBareClone(context.Background(), bare, ""); err != nil {
+		t.Fatalf("repair with unavailable archive: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(wtPath, "keep.txt")); err != nil || string(got) != "keep" {
+		t.Fatalf("worktree lost after archive failure: got %q err=%v", got, err)
 	}
 }
 
