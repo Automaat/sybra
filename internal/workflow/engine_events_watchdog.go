@@ -164,13 +164,6 @@ func watchdogRewardHackingRetryKey(stepID string) string {
 	return watchdogRewardHackingRetryVarPrefix + stepID
 }
 
-func clearWatchdogRewardHackingRetry(wf *Execution, stepID string) {
-	if wf == nil || wf.Variables == nil || stepID == "" {
-		return
-	}
-	delete(wf.Variables, watchdogRewardHackingRetryKey(stepID))
-}
-
 func buildRewardHackingFixReviewReaskNote(attempt int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "⚠️ Your previous run on this step was TERMINATED because the watchdog detected a reward-hacking pattern — repeating the same non-editing action (reading/navigating) instead of making progress — attempt %d of %d.\n\n", attempt, maxWatchdogRewardHackingRetries)
