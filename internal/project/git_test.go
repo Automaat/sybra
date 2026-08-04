@@ -2620,6 +2620,92 @@ func TestPushSync_FirstPushSetsTracking(t *testing.T) {
 	}
 }
 
+// A fork-only setup deliberately replaces origin's push URL with a sentinel so
+// an agent cannot accidentally publish to the upstream repository. Recovery
+// of a same-repository PR is the narrow trusted exception: it must still be
+// able to publish the reconciled, non-force merge to the PR's source remote.
+func TestPushSyncToPinnedRemote_PublishesDespiteForkOnlyOriginSentinel(t *testing.T) {
+	t.Parallel()
+
+	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
+	localSHA := makeCommit(t, wtPath, "trusted-recovery")
+	if out, err := exec.Command("git", "-C", wtPath, "config", "remote.origin.pushurl", "sybra-disabled-do-not-push-to-upstream-use-fork").CombinedOutput(); err != nil {
+		t.Fatalf("install origin push sentinel: %v: %s", err, out)
+	}
+
+	if err := PushSync(context.Background(), wtPath, branch); err == nil {
+		t.Fatal("PushSync unexpectedly bypassed origin's fork-only push sentinel")
+	}
+	if got := remoteRefSHA(t, remoteBare, branch); got != "" {
+		t.Fatalf("origin changed through sentinel: got %q", got)
+	}
+
+	if err := PushSyncToPinnedRemote(context.Background(), wtPath, branch, "origin", remoteBare); err != nil {
+		t.Fatalf("trusted PushSyncToPinnedRemote: %v", err)
+	}
+	if got := remoteRefSHA(t, remoteBare, branch); got != localSHA {
+		t.Fatalf("trusted push SHA = %q, want %q", got, localSHA)
+	}
+}
+
+func TestPushSyncToPinnedRemote_RejectsChangedRemoteURL(t *testing.T) {
+	t.Parallel()
+
+	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
+	makeCommit(t, wtPath, "trusted-recovery")
+	redirectBare := filepath.Join(t.TempDir(), "redirect.git")
+	if out, err := exec.Command("git", "init", "--bare", redirectBare).CombinedOutput(); err != nil {
+		t.Fatalf("init redirect bare: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "remote", "set-url", "origin", redirectBare).CombinedOutput(); err != nil {
+		t.Fatalf("redirect origin: %v: %s", err, out)
+	}
+
+	err := PushSyncToPinnedRemote(context.Background(), wtPath, branch, "origin", remoteBare)
+	if err == nil || !strings.Contains(err.Error(), "URL changed") {
+		t.Fatalf("PushSyncToPinnedRemote = %v, want changed URL rejection", err)
+	}
+	if got := remoteRefSHA(t, remoteBare, branch); got != "" {
+		t.Fatalf("original remote changed after URL rejection: %q", got)
+	}
+	if got := remoteRefSHA(t, redirectBare, branch); got != "" {
+		t.Fatalf("redirect remote changed after URL rejection: %q", got)
+	}
+}
+
+func TestOriginPushHasForkOnlyGuard_OnlyMatchesSybraSentinel(t *testing.T) {
+	t.Parallel()
+
+	_, wtPath, _ := setupPushSyncWorktree(t)
+	for _, tc := range []struct {
+		name    string
+		pushURL string
+		want    bool
+	}{
+		{name: "no push URL", want: false},
+		{name: "foreign push URL", pushURL: "ssh://example.invalid/writable.git", want: false},
+		{name: "sybra sentinel", pushURL: forkOnlyDisabledPushURL, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Exit status 5 means the key was absent, which is exactly the
+			// starting state required by the first table case.
+			_ = exec.Command("git", "-C", wtPath, "config", "--unset-all", "remote.origin.pushurl").Run()
+			if tc.pushURL != "" {
+				if out, err := exec.Command("git", "-C", wtPath, "config", "remote.origin.pushurl", tc.pushURL).CombinedOutput(); err != nil {
+					t.Fatalf("set pushurl: %v: %s", err, out)
+				}
+			}
+			got, err := OriginPushHasForkOnlyGuard(context.Background(), wtPath)
+			if err != nil {
+				t.Fatalf("OriginPushHasForkOnlyGuard: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("OriginPushHasForkOnlyGuard = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPushSync_NoopWhenSynced(t *testing.T) {
 	t.Parallel()
 	remoteBare, wtPath, branch := setupPushSyncWorktree(t)

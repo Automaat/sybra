@@ -678,9 +678,19 @@ func (a *App) initStatusHook() {
 
 		// Advance workflows whose current run_agent step declares a
 		// matching wait_for_status. This is how interactive agents (which
-		// never exit between turns) signal step completion.
+		// never exit between turns) signal step completion. Gated on
+		// startupRecoveryDone: a step's completion can itself fire a
+		// dispatch (e.g. maybeRecoverHumanRequiredAlreadyFixedOnMain), and
+		// HasRunningAgentForTask reads an empty registry until reattach
+		// finishes — see startupRecoveryPending's doc comment (#2752). Deferred
+		// rather than dropped: nothing else re-delivers a wait_for_status match,
+		// so a suppressed event would park the step until an operator intervenes.
 		if local && a.workflowEngine != nil {
-			a.workflowEngine.HandleStatusChange(taskID, to)
+			if a.startupRecoveryDone() {
+				a.workflowEngine.HandleStatusChange(taskID, to)
+			} else {
+				a.deferStatusChange(taskID)
+			}
 		}
 		// HandleStatusChange may reroute a human-required self-escalation back
 		// into the PR flow (missing live-PR blocker recovery). When it does the
@@ -729,7 +739,7 @@ func (a *App) initStatusHook() {
 			if a.notifier != nil {
 				a.notifier.Send(notification.LevelWarning, "Needs human", msg, taskID, "")
 			}
-			if local && a.runsScheduler() && a.humanReview != nil {
+			if local && a.runsScheduler() && a.startupRecoveryDone() && a.humanReview != nil {
 				go a.humanReview.maybeSpawn(taskID, from)
 			}
 		case string(task.StatusReadyReview):
@@ -938,7 +948,7 @@ func (a *App) initCluster() {
 //     without this branch it sits inert with no PR. Mirrors the
 //     testing/ready-review cases.
 func (a *App) dispatchStatusWorkflow(taskID string, status task.Status) {
-	if !a.runsScheduler() {
+	if !a.runsScheduler() || !a.startupRecoveryDone() {
 		return
 	}
 	if a.workflowEngine == nil {
@@ -995,14 +1005,15 @@ func expectedHumanKind(t task.Task) string {
 // owns a non-terminal workflow, so duplicate watcher/status events are harmless.
 // dispatchTaskCreatedWorkflow, dispatchPlanningWorkflow and dispatchStatusWorkflow
 // are the three sinks through which a task auto-starts work, so each gates on
-// runsScheduler itself rather than trusting its callers. Gating call sites was
-// tried and leaked twice: the watcher reaches these both via the status hook and
-// via maybeStartWorkflowForExternalTask, and because the task store writes
+// runsScheduler (and startupRecoveryDone, see its doc comment) itself rather
+// than trusting its callers. Gating call sites was tried and leaked twice: the
+// watcher reaches these both via the status hook and via
+// maybeStartWorkflowForExternalTask, and because the task store writes
 // atomically (temp file + rename) fsnotify reports every external write — even a
 // tags-only update — as CREATE, so the create path is far hotter than its name
 // suggests.
 func (a *App) dispatchTaskCreatedWorkflow(taskID string) {
-	if !a.runsScheduler() {
+	if !a.runsScheduler() || !a.startupRecoveryDone() {
 		return
 	}
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
