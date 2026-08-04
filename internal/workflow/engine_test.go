@@ -9864,6 +9864,55 @@ func TestExecVerifyCommits_NoCommitAuthorRunRetriesOnce(t *testing.T) {
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Fatalf("status = %q, want in-progress retry", ti.Status)
+	} else if ti.StatusReason != "retrying implementation once after no commits were produced" {
+		t.Fatalf("status reason = %q, want no-commit retry reason", ti.StatusReason)
+	}
+}
+
+func TestExecVerifyCommits_NoCommitAuthorRunRetryPersistFailureDoesNotPartiallyRearm(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "original reason",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "verify",
+			State:       ExecRunning,
+			Variables:   map[string]string{},
+		},
+	})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	wfExec := &Execution{Variables: map[string]string{}}
+	wfExec.RecordStep(StepRecord{StepID: "implement", Status: "completed", AgentID: "a1", Provider: "claude"})
+	ti := TaskInfo{
+		ID: "t1", Status: "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "a1", Role: "implementation"}},
+	}
+
+	tasks.failSetWorkflow = true
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, ti)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != "completed" || !strings.Contains(out.Output, "no commits") {
+		t.Fatalf("output = %+v, want completed no-commit escalation after failed retry persist", out)
+	}
+
+	got := tasks.mustGetTask(t, "t1")
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q after failed retry persist, want fallback human-required escalation", got.Status)
+	}
+	if !strings.Contains(got.StatusReason, "no commits") {
+		t.Fatalf("status reason = %q after failed retry persist, want no-commits escalation", got.StatusReason)
+	}
+	if got.Workflow == nil || got.Workflow.CurrentStep != "verify" || got.Workflow.State != ExecRunning {
+		t.Fatalf("workflow = %+v after failed retry persist, want retry workflow not partially persisted", got.Workflow)
 	}
 }
 

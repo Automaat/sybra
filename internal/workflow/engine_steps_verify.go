@@ -491,16 +491,12 @@ func (e *Engine) rearmNoCommitAuthorRun(taskID string, wfExec *Execution, t Task
 	wfExec.ClearStepRecords(stepID)
 	wfExec.CurrentStep = stepID
 	wfExec.State = ExecWaiting
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		e.logger.Error("workflow.verify-commits.no-commit-retry.workflow", "task_id", taskID, "err", err)
-		return false
-	}
 	reason := "retrying implementation once after no commits were produced"
 	if run.SubagentCallCount > 0 {
 		reason = "retrying implementation once after a background subagent handoff produced no commits"
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, reason); err != nil {
-		e.logger.Error("workflow.verify-commits.no-commit-retry.status", "task_id", taskID, "err", err)
+	if err := e.tasks.SetStatusAndWorkflow(taskID, t.Status, reason, wfExec); err != nil {
+		e.logger.Error("workflow.verify-commits.no-commit-retry.persist", "task_id", taskID, "err", err)
 		return false
 	}
 	e.logger.Warn("workflow.verify-commits.no-commit-retry",
