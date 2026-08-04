@@ -2853,6 +2853,36 @@ func TestReconcileWithRemote_FastForwardsStaleLocal(t *testing.T) {
 	}
 }
 
+func TestRefreshedRemoteTrackingSHA_RefreshesBeforeReading(t *testing.T) {
+	t.Parallel()
+	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
+	makeCommit(t, wtPath, "one")
+	if err := PushSync(context.Background(), wtPath, branch); err != nil {
+		t.Fatalf("PushSync seed: %v", err)
+	}
+
+	out, err := exec.Command("git", "-C", wtPath, "rev-parse", "--verify", "refs/remotes/origin/"+branch).CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse stale tracking ref: %v: %s", err, out)
+	}
+	staleSHA := strings.TrimSpace(string(out))
+	freshSHA := pushRemoteCommit(t, remoteBare, branch, "review-fix")
+	if freshSHA == staleSHA {
+		t.Fatal("fresh SHA unexpectedly equals stale SHA")
+	}
+
+	got, ok, err := RefreshedRemoteTrackingSHA(context.Background(), wtPath, "origin", branch)
+	if err != nil {
+		t.Fatalf("RefreshedRemoteTrackingSHA: %v", err)
+	}
+	if !ok {
+		t.Fatal("RefreshedRemoteTrackingSHA reported missing remote branch")
+	}
+	if got != freshSHA {
+		t.Fatalf("RefreshedRemoteTrackingSHA = %q, want refreshed SHA %q", got, freshSHA)
+	}
+}
+
 // TestReconcileWithRemote_DivergedReturnsError guards against clobbering a
 // remote that has genuinely diverged: reconcile must refuse rather than let a
 // later force-push silently overwrite remote-only commits.

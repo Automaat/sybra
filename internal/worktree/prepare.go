@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Automaat/sybra/internal/prepstate"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/worktreeerr"
@@ -203,6 +204,12 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 			return "", err
 		}
 		if usable {
+			if reusable, err := prepstate.Reusable(ctx, wtPath, wtBranch); err != nil {
+				m.logger.Warn("worktree.prep-state-read", "task_id", t.ID, "path", wtPath, "branch", wtBranch, "err", err)
+			} else if reusable {
+				m.logger.Info("worktree.prep-state-reused", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
+				return m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
+			}
 			if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
 				m.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
 			}
@@ -222,7 +229,9 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 			if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "reused worktree", onPhase); err != nil {
 				return "", err
 			}
-			return m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
+			path, err := m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
+			m.recordPreparedState(ctx, t.ID, wtPath, wtBranch)
+			return path, err
 		}
 		// Worktree was wiped — fall through to create paths below.
 	}
@@ -247,7 +256,9 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 		if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "reused branch", onPhase); err != nil {
 			return "", err
 		}
-		return m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
+		path, err := m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
+		m.recordPreparedState(ctx, t.ID, wtPath, wtBranch)
+		return path, err
 	}
 
 	callPhase(onPhase, "Creating worktree…")
@@ -265,9 +276,9 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 		m.logger.Warn("worktree.push-upstream", "task_id", t.ID, "branch", wtBranch, "err", err)
 	}
 
-	m.ensureBranch(t, wtBranch)
-	m.seedWorktree(ctx, t, wtPath, wtBranch)
-	return wtPath, nil
+	path, err := m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
+	m.recordPreparedState(ctx, t.ID, wtPath, wtBranch)
+	return path, err
 }
 
 func (m *Manager) resolveTaskBranch(ctx context.Context, t task.Task, clonePath, wtPath, wtBranch string) string {
@@ -587,6 +598,17 @@ func (m *Manager) finalizeWorktree(ctx context.Context, t task.Task, wtPath, wtB
 	m.ensureBranch(t, wtBranch)
 	m.seedWorktree(ctx, t, wtPath, wtBranch)
 	return wtPath, nil
+}
+
+func (m *Manager) recordPreparedState(ctx context.Context, taskID, wtPath, wtBranch string) {
+	wrote, err := prepstate.WriteVerified(ctx, wtPath, wtBranch)
+	if err != nil {
+		m.logger.Warn("worktree.prep-state-write", "task_id", taskID, "path", wtPath, "branch", wtBranch, "err", err)
+		return
+	}
+	if wrote {
+		m.logger.Info("worktree.prep-state-written", "task_id", taskID, "path", wtPath, "branch", wtBranch)
+	}
 }
 
 // PrepareForReview creates a detached-HEAD worktree for read-only PR review.

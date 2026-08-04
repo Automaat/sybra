@@ -1370,6 +1370,19 @@ func refreshTrackingRef(ctx context.Context, worktreePath, remote, branch string
 	})
 }
 
+// RefreshedRemoteTrackingSHA refreshes refs/remotes/<remote>/<branch> from the
+// live remote, then returns the refreshed tracking SHA. The bool reports
+// whether the branch exists remotely at all (false for a first-push branch).
+// Refresh failures are returned so callers can treat the cached ref as stale
+// rather than silently trusting it.
+func RefreshedRemoteTrackingSHA(ctx context.Context, worktreePath, remote, branch string) (string, bool, error) {
+	if err := refreshTrackingRef(ctx, worktreePath, remote, branch); err != nil {
+		return "", false, err
+	}
+	sha, ok := remoteTrackingRef(ctx, worktreePath, remote, branch)
+	return sha, ok, nil
+}
+
 // refreshTrackingRefWithFetch keeps the shared-bare locking policy testable
 // without making the regression depend on a local git fetch's timing.
 func refreshTrackingRefWithFetch(ctx context.Context, worktreePath, remote, branch string, fetch func(refspec string) error) error {
