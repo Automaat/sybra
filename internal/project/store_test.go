@@ -548,6 +548,17 @@ func TestStoreMigrateDisableAutoMaintenance_RetrofitsExistingClone(t *testing.T)
 	if got := strings.TrimSpace(gcAuto); got != "0" {
 		t.Errorf("gc.auto = %q, want %q", got, "0")
 	}
+	name, err := outputBare(context.Background(), bare, "config", "user.name")
+	if err != nil {
+		t.Fatalf("read user.name: %v", err)
+	}
+	email, err := outputBare(context.Background(), bare, "config", "user.email")
+	if err != nil {
+		t.Fatalf("read user.email: %v", err)
+	}
+	if strings.TrimSpace(name) != "Sybra Test" || strings.TrimSpace(email) != "test@test.com" {
+		t.Errorf("migrated identity = %q <%q>", strings.TrimSpace(name), strings.TrimSpace(email))
+	}
 }
 
 // disableAutoMaintenanceLocked's re-check must only swallow the two expected

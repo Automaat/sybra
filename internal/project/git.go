@@ -1,7 +1,6 @@
 package project
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -353,7 +352,7 @@ func CloneBare(ctx context.Context, repoURL, destPath string) error {
 	if err := InstallSignoffHook(ctx, destPath); err != nil {
 		return fmt.Errorf("install signoff hook: %w", err)
 	}
-	if err := configureCommitIdentity(ctx, destPath); err != nil {
+	if err := ConfigureCommitIdentity(ctx, destPath); err != nil {
 		return fmt.Errorf("configure commit identity: %w", err)
 	}
 	if err := DisableAutoMaintenance(ctx, destPath); err != nil {
@@ -395,19 +394,18 @@ func DisableAutoMaintenance(ctx context.Context, barePath string) error {
 	return runBare(ctx, barePath, "config", "gc.auto", "0")
 }
 
-// configureCommitIdentity sets an explicit git identity on the bare clone.
-// Headless/interactive agent commits are made by the agent's own bash tool
+// ConfigureCommitIdentity sets an explicit git identity on the bare clone.
+// Headless agent commits are made by the agent's own bash tool
 // calls, not orchestrated Go code, so they inherit whatever identity is
 // already configured on the clone — an empty one fails every commit with
 // "empty ident name", and any stray local override (however it got there)
 // silently becomes the permanent author of every real commit. Setting it
 // explicitly at clone time means neither can happen by accident.
-// GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL let an operator brand commits (e.g. as
-// their own GitHub App bot); the default matches the identity
-// internal/agent/k8s_job_runner.go already falls back to.
-func configureCommitIdentity(ctx context.Context, barePath string) error {
-	name := cmp.Or(os.Getenv("GIT_AUTHOR_NAME"), "Sybra Agent")
-	email := cmp.Or(os.Getenv("GIT_AUTHOR_EMAIL"), "sybra-agent@example.invalid")
+// GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL take precedence. On a developer machine,
+// a complete global Git identity is used next; the placeholder is only for
+// unattended hosts that have neither identity configured.
+func ConfigureCommitIdentity(ctx context.Context, barePath string) error {
+	name, email := commitIdentity(ctx)
 	if err := runBare(ctx, barePath, "config", "user.name", name); err != nil {
 		return fmt.Errorf("set user.name: %w", err)
 	}
@@ -415,6 +413,28 @@ func configureCommitIdentity(ctx context.Context, barePath string) error {
 		return fmt.Errorf("set user.email: %w", err)
 	}
 	return nil
+}
+
+func commitIdentity(ctx context.Context) (name, email string) {
+	name = strings.TrimSpace(os.Getenv("GIT_AUTHOR_NAME"))
+	email = strings.TrimSpace(os.Getenv("GIT_AUTHOR_EMAIL"))
+	if name != "" && email != "" {
+		return name, email
+	}
+	globalName := gitGlobalConfig(ctx, "user.name")
+	globalEmail := gitGlobalConfig(ctx, "user.email")
+	if globalName != "" && globalEmail != "" {
+		return globalName, globalEmail
+	}
+	return "Sybra Agent", "sybra-agent@example.invalid"
+}
+
+func gitGlobalConfig(ctx context.Context, key string) string {
+	out, err := exec.CommandContext(ctx, "git", "config", "--global", "--get", key).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // DefaultBranch resolves barePath's HEAD symbolic ref (e.g.
