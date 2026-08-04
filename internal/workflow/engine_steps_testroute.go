@@ -92,6 +92,10 @@ const (
 		"output, the expected behaviour citing the task's own words, and a code line quoted from the " +
 		"CURRENT file (file:line). Re-run the probes and produce that evidence — or, if the feature " +
 		"actually works, emit PASS with the required manual-testing evidence."
+	fixSuggestionsReask = "Your previous FAIL report was rejected because it contained fix suggestions " +
+		"instead of observed symptoms. Re-run adversarial testing and report only what you directly " +
+		"observed: commands, outputs, expected behaviour, actual behaviour, and cited evidence. Do not " +
+		"propose implementation changes; if you cannot prove a product defect, emit PASS."
 )
 
 func testingAutoRetryKey(outcome string) string {
@@ -2377,21 +2381,16 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	}
 
 	if violation := wfExec.Variables["step."+testVerdictSourceStep+"."+testVerdictTaintedKey]; violation != "" {
-		// A missing-evidence report describes the runner, not the code — re-ask
-		// the tester (with the specific evidence it owes) before a human. A
-		// fix-suggestions violation already had one in-step retry and rarely
-		// improves on re-ask, so it still escalates immediately.
+		// Protocol violations describe the runner, not the code. Re-ask the
+		// tester with the specific contract it broke before involving a human.
 		if violation == testProtocolMissingEvidence {
 			return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeMissingEvidence, missingEvidenceReask,
 				"test-runner report lacked machine-checkable evidence after auto-retries — needs local reproduction",
 				"protocol violation: "+violation, "workflow.test.protocol-violation", wfExec, t)
 		}
-		reason := "test-runner report violated testing protocol after retry: contained fix suggestions instead of observed symptoms"
-		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
-			return StepOutput{}, err
-		}
-		e.logger.Warn("workflow.test.protocol-violation", "task_id", taskID, "violation", violation)
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "protocol violation: " + violation}, nil
+		return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeProtocolViolation, fixSuggestionsReask,
+			"test-runner report violated testing protocol after auto-retries — needs local reproduction",
+			"protocol violation: "+violation, "workflow.test.protocol-violation", wfExec, t)
 	}
 	outcome := wfExec.Variables["step."+testVerdictSourceStep+"."+testVerdictOutcomeKey]
 	if out, handled, err := e.routeNonProductTestOutcome(taskID, step.ID, outcome, wfExec, t); handled || err != nil {

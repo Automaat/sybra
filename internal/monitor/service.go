@@ -282,8 +282,9 @@ func (s *Service) closeMergedHumanRequiredPRs(ctx context.Context, tasks []task.
 			}
 		} else {
 			if _, err := s.tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
-				Source:   "monitor.close-merged-human-required-pr",
-				ToStatus: task.StatusDone,
+				Source:         "monitor.close-merged-human-required-pr",
+				ToStatus:       task.StatusDone,
+				ExpectedStatus: t.Status,
 				Extra: task.Update{
 					StatusReason: task.Ptr("monitor: linked PR already merged"),
 					Outcome:      task.Ptr("merged"),

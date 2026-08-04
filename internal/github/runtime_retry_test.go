@@ -66,19 +66,41 @@ func TestRunGHAPIWith_NoRetryOnNonTransient(t *testing.T) {
 	}
 }
 
-func TestRunGHAPIWith_NoRetryOnRateLimit(t *testing.T) {
+func TestRunGHAPIWith_RetriesBodyMentioningRateLimit(t *testing.T) {
 	stubRetrySleep(t)
 
 	se := &sequenceExecer{
-		outputs: [][]byte{[]byte("API rate limit exceeded")},
-		errs:    []error{fmt.Errorf("exit 1")},
+		outputs: [][]byte{[]byte("gh: HTTP 502\nissue body mentions /rate_limit and retry after"), []byte("HTTP/2.0 200 OK\n\n{}")},
+		errs:    []error{fmt.Errorf("exit 1"), nil},
 	}
+	if _, err := runGHAPIWith(se, "", "graphql"); err != nil {
+		t.Fatalf("want transient retry success, got %v", err)
+	}
+	if se.calls != 2 {
+		t.Errorf("calls = %d, want 2 (body text must not suppress transient retry)", se.calls)
+	}
+}
 
-	if _, err := runGHAPIWith(se, "", "graphql"); err == nil {
-		t.Fatal("want error")
+func TestIsRateLimitedResponse_UsesStructuredSignals(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		resp ghHTTPResponse
+		want bool
+	}{
+		{"429", ghHTTPResponse{statusCode: 429}, true},
+		{"403 remaining zero", ghHTTPResponse{statusCode: 403, headers: map[string]string{"x-ratelimit-remaining": "0"}}, true},
+		{"403 retry after", ghHTTPResponse{statusCode: 403, headers: map[string]string{"retry-after": "60"}}, true},
+		{"403 secondary envelope", ghHTTPResponse{statusCode: 403, body: []byte(`{"message":"You have exceeded a secondary rate limit."}`)}, true},
+		{"typed graphql", ghHTTPResponse{body: []byte(`{"errors":[{"type":"RATE_LIMITED","message":"quota"}]}`)}, true},
+		{"body mention", ghHTTPResponse{body: []byte(`{"data":{"issue":{"body":"/rate_limit retry after"}}}`)}, false},
 	}
-	if se.calls != 1 {
-		t.Errorf("calls = %d, want 1 (rate limits are paced by the gate, not retried)", se.calls)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isRateLimitedResponse(tt.resp); got != tt.want {
+				t.Errorf("isRateLimitedResponse = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

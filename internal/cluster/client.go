@@ -327,6 +327,30 @@ func (c *Client) BlessTampering(ctx context.Context, taskID string) (task.Task, 
 	return decode[task.Task](raw)
 }
 
+// UpdateTaskStatus applies a status edit on the follower that owns task
+// execution. The follower enforces its own live-agent and workflow guards,
+// which a leader mirror cannot observe.
+func (c *Client) UpdateTaskStatus(ctx context.Context, taskID, status string) (task.Task, error) {
+	return c.UpdateTask(ctx, taskID, map[string]any{"status": status})
+}
+
+// UpdateTask applies a narrow leader-originated field update on a follower.
+func (c *Client) UpdateTask(ctx context.Context, taskID string, updates map[string]any) (task.Task, error) {
+	raw, err := c.Call(ctx, "TaskService", "UpdateTask", taskID, updates)
+	if err != nil {
+		return task.Task{}, err
+	}
+	return decode[task.Task](raw)
+}
+
+func (c *Client) DispatchFromHumanRequired(ctx context.Context, taskID, target, reason string) (task.Task, error) {
+	raw, err := c.Call(ctx, "TaskService", "DispatchFromHumanRequired", taskID, target, reason)
+	if err != nil {
+		return task.Task{}, err
+	}
+	return decode[task.Task](raw)
+}
+
 // ImportAttachment replicates one attachment blob onto a follower before the
 // task metadata that references it is assigned there.
 func (c *Client) ImportAttachment(ctx context.Context, taskID string, meta task.Attachment, data []byte) (task.Attachment, error) {

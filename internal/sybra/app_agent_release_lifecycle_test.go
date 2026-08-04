@@ -154,3 +154,35 @@ func TestApp_TaskTerminal_AsksLiveSteerableAgentToExit(t *testing.T) {
 		})
 	}
 }
+
+// releaseTaskAgents spares agents started after a human-required park, so the
+// park cannot reap the very agent dispatched to clear it. That exemption must
+// not extend to terminal statuses: a done task has no more work, so an agent
+// running against it is a leak regardless of when it started.
+func TestApp_ReleaseTaskAgents_TerminalReapsEvenNewerAgent(t *testing.T) {
+	a := newFakeSteerableClaudeApp(t)
+
+	created, err := a.tasks.Create("terminal reap", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.tasks.Apply(task.TransitionIntent{
+		TaskID: created.ID, ToStatus: task.StatusDone, Actor: "test", OperatorOverride: true,
+	}); err != nil {
+		t.Fatalf("mark done: %v", err)
+	}
+
+	// This agent starts strictly after the terminal transition, which is the
+	// exact shape the human-required exemption spares.
+	ag, pid := startIdleSteerableAgent(t, a, created.ID)
+
+	a.releaseTaskAgents(created.ID)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && processAliveForTest(pid) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if processAliveForTest(pid) {
+		t.Fatalf("agent %s still running against a done task; the newer-agent exemption must not apply to terminal statuses", ag.ID)
+	}
+}

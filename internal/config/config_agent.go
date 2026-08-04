@@ -38,6 +38,11 @@ type AgentDefaults struct {
 	// TurnMultiplier scales the assistant-event ceiling on each
 	// auto-continuation. Default 2 when unset.
 	TurnMultiplier float64 `yaml:"assistant_event_multiplier" json:"turnMultiplier"`
+	// MaxSubagentEvents caps forked-subagent assistant events (CLAUDE_CODE_FORK_SUBAGENT
+	// parent_tool_use_id turns) per run, independent of MaxAssistantEvents which
+	// only counts top-level turns. 0 disables the ceiling. A breach hard-stops
+	// the run outright — there is no auto-continue/human-escalation path.
+	MaxSubagentEvents int `yaml:"max_subagent_events" json:"maxSubagentEvents"`
 	// RequirePermissions sets the default permission requirement for agents.
 	// nil means not configured (falls back to true — safe default).
 	// Set to false in config to opt all tasks into skip-permissions mode.
@@ -135,6 +140,14 @@ type AgentDefaults struct {
 	// the wrapper is unavailable.
 	// Empty treated as "report".
 	SandboxMode string `yaml:"sandbox_mode" json:"sandboxMode"`
+	// SandboxReadMode layers read-visibility on top of SandboxMode: "off"
+	// (default) leaves reads unrestricted, "report" logs the resolved read
+	// allowlist without restricting the spawn, "enforce" denies reads outside
+	// it. Kept separate from sandbox_mode so upgrading a write-enforcing
+	// deployment cannot silently escalate it into the highest-breakage tier,
+	// where one missing read path fails the run closed. Consulted only when
+	// SandboxMode is "enforce". Empty treated as "off".
+	SandboxReadMode string `yaml:"sandbox_read_mode" json:"sandboxReadMode"`
 	// HeadlessSteerable controls whether headless claude runs launch with the
 	// stdin/stream-json shape that accepts mid-run steer messages (instead of
 	// the legacy one-shot `-p <prompt>` invocation). nil means not configured

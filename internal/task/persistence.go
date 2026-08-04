@@ -55,6 +55,7 @@ type taskFrontmatter struct {
 	HeadlessPermissionMode string                  `yaml:"headless_permission_mode,omitempty"`
 	ForkSubagent           bool                    `yaml:"fork_subagent,omitempty"`
 	Sandbox                *bool                   `yaml:"sandbox,omitempty"`
+	SandboxOffReason       string                  `yaml:"sandbox_off_reason,omitempty"`
 	ReasoningEffort        string                  `yaml:"reasoning_effort,omitempty"`
 	TestingCycleStartedAt  *time.Time              `yaml:"testing_cycle_started_at,omitempty"`
 	Attachments            []Attachment            `yaml:"attachments,omitempty"`
@@ -66,6 +67,7 @@ type taskFrontmatter struct {
 	StatusChangedAt        time.Time               `yaml:"status_changed_at,omitempty"`
 	AssignedNode           string                  `yaml:"assigned_node,omitempty"`
 	NodeOverride           string                  `yaml:"node_override,omitempty"`
+	AssignmentRev          int64                   `yaml:"assignment_rev,omitempty"`
 	Generation             int64                   `yaml:"generation,omitempty"`
 	MirrorRev              int64                   `yaml:"mirror_rev,omitempty"`
 	MirrorUpdatedAt        *time.Time              `yaml:"mirror_updated_at,omitempty"`
@@ -153,6 +155,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		HeadlessPermissionMode: fm.HeadlessPermissionMode,
 		ForkSubagent:           fm.ForkSubagent,
 		Sandbox:                fm.Sandbox,
+		SandboxOffReason:       fm.SandboxOffReason,
 		ReasoningEffort:        fm.ReasoningEffort,
 		TestingCycleStartedAt:  fm.TestingCycleStartedAt,
 		Attachments:            fm.Attachments,
@@ -163,6 +166,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		StatusChangedAt:        fm.StatusChangedAt,
 		AssignedNode:           fm.AssignedNode,
 		NodeOverride:           fm.NodeOverride,
+		AssignmentRev:          fm.AssignmentRev,
 		Generation:             fm.Generation,
 		MirrorRev:              fm.MirrorRev,
 		MirrorUpdatedAt:        fm.MirrorUpdatedAt,
@@ -227,6 +231,7 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		HeadlessPermissionMode: t.HeadlessPermissionMode,
 		ForkSubagent:           t.ForkSubagent,
 		Sandbox:                t.Sandbox,
+		SandboxOffReason:       t.SandboxOffReason,
 		ReasoningEffort:        t.ReasoningEffort,
 		TestingCycleStartedAt:  t.TestingCycleStartedAt,
 		Attachments:            t.Attachments,
@@ -238,6 +243,7 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		StatusChangedAt:        t.StatusChangedAt,
 		AssignedNode:           t.AssignedNode,
 		NodeOverride:           t.NodeOverride,
+		AssignmentRev:          t.AssignmentRev,
 		Generation:             t.Generation,
 		MirrorRev:              t.MirrorRev,
 		MirrorUpdatedAt:        t.MirrorUpdatedAt,

@@ -27,6 +27,7 @@ const (
 	KindLostAgent         AnomalyKind = "lost_agent"
 	KindFailureSpike      AnomalyKind = "failure_spike"
 	KindBottleneck        AnomalyKind = "bottleneck"
+	KindBoardStalled      AnomalyKind = "board_stalled"
 	// KindClusterDrift is filed by clusterlead.Mirror, not Detect — a leader
 	// canonical task's Tags/DependsOn disagree with what its home follower
 	// reports, meaning a leader-side write never reached the node that
@@ -46,6 +47,7 @@ func AllAnomalyKinds() []AnomalyKind {
 		KindLostAgent,
 		KindFailureSpike,
 		KindBottleneck,
+		KindBoardStalled,
 		KindClusterDrift,
 	}
 }

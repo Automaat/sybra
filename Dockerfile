@@ -94,7 +94,7 @@ RUN ARCH="$(dpkg --print-architecture)" \
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
 ARG CLAUDE_CODE_VERSION=2.1.217
 # renovate: datasource=npm depName=@openai/codex
-ARG CODEX_VERSION=0.145.0
+ARG CODEX_VERSION=0.146.0
 # renovate: datasource=npm depName=opencode-ai
 ARG OPENCODE_VERSION=1.18.4
 RUN npm install -g \
@@ -176,7 +176,7 @@ ENV SYBRA_PORT=8080
 ENV SYBRA_STATIC_DIR=/app/web
 ENV HOME=/home/sybra
 
-USER sybra
+USER ${SYBRA_UID}:${SYBRA_GID}
 WORKDIR /home/sybra
 
 EXPOSE 8080

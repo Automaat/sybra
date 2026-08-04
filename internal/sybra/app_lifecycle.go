@@ -46,6 +46,8 @@ func (a *App) BeginDrain() bool {
 	if a == nil {
 		return false
 	}
+	a.backgroundMu.Lock()
+	defer a.backgroundMu.Unlock()
 	for {
 		state := lifecycleState(a.lifecycle.Load())
 		switch state {

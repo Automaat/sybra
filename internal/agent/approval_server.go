@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/toolledger"
 )
 
 // ApprovalServer runs an HTTP server that handles PreToolUse hook requests
@@ -130,6 +131,10 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 
 	// Auto-approve safe read-only tools regardless of session.
 	if isSafeTool(input.ToolName) {
+		// Resolve best-effort only: safe tools are allowed even when the
+		// session is unknown, but recording them without an agent would strip
+		// task/role/provider from the most common approvals in the ledger.
+		s.recordDecision(s.findAgentBySession(input.SessionID), input, "allow", "safe-tool")
 		s.respondAllow(w, input.ToolInput)
 		return
 	}
@@ -191,8 +196,10 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 	select {
 	case resp := <-ch:
 		if resp.Approved {
+			s.recordDecision(agentID, input, "allow", "human")
 			s.respondAllow(w, input.ToolInput)
 		} else {
+			s.recordDecision(agentID, input, "deny", "human")
 			s.recordApprovalFailureByID(agentID, input, "approval-denied", "User denied this action")
 			s.respondDeny(w, "User denied this action")
 		}
@@ -233,6 +240,30 @@ func (s *ApprovalServer) recordApprovalFailure(a *Agent, input hookInput, source
 		Source:           source,
 		Reason:           reason,
 	})
+}
+
+// recordDecision writes an adjudicated tool call to the ledger. Only
+// refusals were ever recorded before, which describes what a human rejected
+// and nothing about the far larger set they waved through — the wrong half to
+// keep when the point is to derive a policy from observed behaviour.
+func (s *ApprovalServer) recordDecision(agentID string, input hookInput, decision, by string) {
+	if s == nil || s.agents == nil {
+		return
+	}
+	rec := toolledger.Record{
+		AgentID:   agentID,
+		Tool:      input.ToolName,
+		ToolUseID: input.ToolUseID,
+		Input:     input.ToolInput,
+		Decision:  decision,
+		DecidedBy: by,
+	}
+	if a, err := s.agents.GetAgent(agentID); err == nil && a != nil {
+		rec.TaskID = a.TaskID
+		rec.Role = string(a.EffectiveRole())
+		rec.Provider = a.Provider
+	}
+	s.agents.recordToolCall(rec)
 }
 
 func (s *ApprovalServer) respondAllow(w http.ResponseWriter, input map[string]any) {

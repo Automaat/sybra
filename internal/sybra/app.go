@@ -62,6 +62,7 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/tasksnapshot"
+	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -76,6 +77,7 @@ type App struct {
 	watcherCtx      context.Context
 	watcherCancel   context.CancelFunc
 	lifecycle       atomic.Uint32
+	backgroundMu    sync.Mutex // serializes tracked background work with drain
 	wg              sync.WaitGroup
 	// fetchPRHeadSHA overrides the PR-head lookup in tests; nil uses GitHub.
 	fetchPRHeadSHA    func(ctx context.Context, repo string, number int) (string, error)
@@ -126,19 +128,24 @@ type App struct {
 	workflowStore     *workflow.Store
 	pressureGate      *pressure.Gate
 	diskReclaimer     *diskreclaim.Reclaimer
+	toolLedger        *toolledger.Logger
 	renovate          *renovateCoordinator
 	promptLab         *promptLabCoordinator
 	triage            *triageCoordinator
 	humanReview       *humanReviewHandler
-	cfg               *config.Config
-	baseABTesting     atomic.Value
-	liveABTesting     atomic.Value
-	logLevel          *slog.LevelVar
-	emit              func(string, any)
-	emitFactory       func(context.Context) func(string, any)
-	openBrowser       func(string)
-	requestRestart    func()
-	restartStaleErr   *logging.ErrorThrottle
+	// activeCfg is the immutable configuration snapshot used by concurrent
+	// runtime readers. cfg remains the construction-time snapshot for legacy
+	// startup wiring and tests; hot reloads must never mutate it in place.
+	activeCfg       atomic.Pointer[config.Config]
+	cfg             *config.Config
+	baseABTesting   atomic.Value
+	liveABTesting   atomic.Value
+	logLevel        *slog.LevelVar
+	emit            func(string, any)
+	emitFactory     func(context.Context) func(string, any)
+	openBrowser     func(string)
+	requestRestart  func()
+	restartStaleErr *logging.ErrorThrottle
 	// dispatchNudge wakes the orchestrator dispatch pass on demand (e.g. on a
 	// status change) so a freshly-ready task isn't left idle until the next
 	// fast tick. Buffered, size 1, coalescing — see nudgeDispatch.
@@ -151,9 +158,13 @@ type App struct {
 	// rather than silently refusing to dispatch.
 	schedulerDisabled atomic.Bool
 	brainDisabled     atomic.Bool
-	recovery          *recovery.Recovery
-	snapshotter       *tasksnapshot.Snapshotter
-	agentCompletion   *completion.Handler
+	// maintenanceCleanupRunning prevents slow git cleanup from stacking across
+	// maintenance ticks. Cleanup itself runs outside the orchestrator loop.
+	maintenanceCleanupRunning atomic.Bool
+	worktreeCleanupFn         func(context.Context) // test seam; nil uses worktrees
+	recovery                  *recovery.Recovery
+	snapshotter               *tasksnapshot.Snapshotter
+	agentCompletion           *completion.Handler
 	// umbrellaCloseIssue closes the umbrella GitHub issue on full roll-up.
 	// nil defaults to github.CloseIssue; overridden in tests.
 	umbrellaCloseIssue func(repo string, number int, comment string) error
@@ -204,6 +215,26 @@ type App struct {
 
 	// HTTP-only services. QueueService must stay out of V3Services().
 	queueSvc *QueueService
+}
+
+// goWhileRunning adds tracked background work only while shutdown has not
+// begun. BeginDrain holds the same lock before it transitions lifecycle state,
+// closing the WaitGroup Add-vs-Wait window during Shutdown.
+func (a *App) goWhileRunning(fn func()) bool {
+	if a == nil || fn == nil {
+		return false
+	}
+	a.backgroundMu.Lock()
+	defer a.backgroundMu.Unlock()
+	switch a.lifecycleState() {
+	case lifecycleStateIdle, lifecycleStateRunning:
+		// Tests and startup code may schedule work before the running marker is
+		// installed; both states are safe until BeginDrain takes backgroundMu.
+	case lifecycleStateDraining, lifecycleStateStopping, lifecycleStateStopped:
+		return false
+	}
+	a.wg.Go(fn)
+	return true
 }
 
 // Option configures App behaviour at construction time.
@@ -258,6 +289,7 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 		dispatchNudge:            make(chan struct{}, 1),
 		umbrellaRecoveryInFlight: make(map[string]bool),
 	}
+	a.activeCfg.Store(cfg)
 	// Pre-allocate service structs so Wails can bind them before startup().
 	// Fields are populated in startup() once dependencies are initialized.
 	a.taskSvc = &TaskService{}
@@ -282,6 +314,19 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 	}
 	a.initializeABTesting(cfg.ABTesting)
 	return a
+}
+
+// currentConfig returns one immutable configuration snapshot for the caller's
+// whole operation. A reload publishes a replacement snapshot atomically, so a
+// reader can never observe a torn struct or a mixture of two configurations.
+func (a *App) currentConfig() *config.Config {
+	if a == nil {
+		return nil
+	}
+	if cfg := a.activeCfg.Load(); cfg != nil {
+		return cfg
+	}
+	return a.cfg
 }
 
 // acquireHomeLock takes an exclusive, non-blocking flock on
@@ -316,7 +361,7 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 	a.initFileWatcher(watcherCtx, emit)
 
 	issuesFetcher := a.initAutomations(emit)
-	a.wireServices(emit)
+	a.wireServices(emit) //nolint:contextcheck // TaskService uses the app-bound root context; see Startup's contextcheck note.
 	if a.humanReview != nil {
 		a.wg.Go(a.humanReview.recoverRenderedUnblockedTasks)
 	}
@@ -403,6 +448,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.logger.Info("app.starting")
 
 	a.initAudit()
+	a.initToolLedger()
 	a.initStats()
 
 	store, err := task.NewStore(a.tasksDir)
@@ -427,6 +473,10 @@ func (a *App) Startup(ctx context.Context) error {
 		return fmt.Errorf("project store: %w", err)
 	}
 	a.projects = projStore
+	// Retrofits maintenance.auto=false onto existing clones; see #2978.
+	if err := projStore.MigrateDisableAutoMaintenance(appCtx); err != nil {
+		a.logger.Warn("project.store.migrate_maintenance_auto", "err", err)
+	}
 
 	if err := a.initLoopAgents(); err != nil {
 		return fmt.Errorf("loop agents: %w", err)
@@ -457,7 +507,7 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.prTracker = github.NewIssueTrackerWithMaxRetries(30*time.Minute, a.cfg.GitHub.PRFixRetries())
 
-	configureProjectGitDefaults()
+	configureProjectGitDefaults(a.worktreesDir)
 	// Initialize domain services (dependency order: worktrees → agentOrch → reviewer, workflow)
 	a.worktrees = worktree.New(worktree.Config{
 		WorktreesDir:      a.worktreesDir,
@@ -517,9 +567,10 @@ func (a *App) taskEventEmitter(store *task.Store) func(string, any) {
 	}
 }
 
-func configureProjectGitDefaults() {
+func configureProjectGitDefaults(worktreesDir string) {
 	project.FetchTTL = 60 * time.Second
 	project.QuarantineDir = filepath.Join(config.HomeDir(), "quarantine")
+	project.WorktreesDir = worktreesDir
 }
 
 // sandboxRetentionWindow translates the resolved sandbox.retention_hours
@@ -650,6 +701,9 @@ func (a *App) Shutdown(ctx context.Context) {
 	a.stopFileWatcher()
 	if a.audit != nil {
 		_ = a.audit.Close()
+	}
+	if a.toolLedger != nil {
+		_ = a.toolLedger.Close()
 	}
 	if a.homeUnlock != nil {
 		if err := a.homeUnlock(); err != nil {
