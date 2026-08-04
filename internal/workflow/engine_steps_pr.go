@@ -6,11 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/project"
 )
 
@@ -559,7 +559,7 @@ func branchPatchAlreadyAppliedToBase(ctx context.Context, wtPath string) (bool, 
 	}
 
 	// Raw (untrimmed) patch bytes — fed verbatim into `git apply` stdin below.
-	patch, err := gitCmd(ctx, wtPath, "diff", "--binary", mergeBase+"..HEAD", "--").Output()
+	patch, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: wtPath}, "diff", "--binary", mergeBase+"..HEAD", "--")
 	if err != nil {
 		return false, fmt.Errorf("git diff %s..HEAD: %w", mergeBase, err)
 	}
@@ -583,21 +583,15 @@ func branchPatchAlreadyAppliedToBase(ctx context.Context, wtPath string) (bool, 
 		_ = gitDo(cleanupCtx, wtPath, "worktree", "remove", "--force", baseTreeDir)
 	}()
 
-	cmd := gitCmd(ctx, baseTreeDir, "apply", "--check", "--reverse", "--whitespace=nowarn", "-")
-	cmd.Stdin = bytes.NewReader(patch)
-	out, err := cmd.CombinedOutput()
+	_, err = gitexec.CombinedOutput(ctx, gitexec.Options{Dir: baseTreeDir, Stdin: bytes.NewReader(patch)},
+		"apply", "--check", "--reverse", "--whitespace=nowarn", "-")
 	if err == nil {
 		return true, nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+	if code, ok := gitexec.ExitCode(err); ok && code == 1 {
 		return false, nil
 	}
-	detail := strings.TrimSpace(string(out))
-	if detail == "" {
-		return false, fmt.Errorf("git apply --reverse --check: %w", err)
-	}
-	return false, fmt.Errorf("git apply --reverse --check: %w: %s", err, detail)
+	return false, fmt.Errorf("git apply --reverse --check: %w", err)
 }
 
 // verifyPushedHead best-effort verifies the PR head now matches local HEAD

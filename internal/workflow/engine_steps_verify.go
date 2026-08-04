@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/attribution"
 	"github.com/Automaat/sybra/internal/evidence"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 )
@@ -836,16 +836,16 @@ func currentWorktreeTree(ctx context.Context, wtPath string) (string, error) {
 	_ = tmpIndex.Close()
 	defer func() { _ = os.Remove(path) }()
 
-	env := append(os.Environ(), "GIT_INDEX_FILE="+path)
-	if out, err := gitCmdEnv(ctx, wtPath, env, "read-tree", "HEAD").CombinedOutput(); err != nil {
-		return "", fmt.Errorf("git read-tree HEAD: %w: %s", err, strings.TrimSpace(string(out)))
+	opts := gitexec.Options{Dir: wtPath, ExtraEnv: []string{"GIT_INDEX_FILE=" + path}}
+	if _, err := gitexec.CombinedOutput(ctx, opts, "read-tree", "HEAD"); err != nil {
+		return "", err
 	}
-	if out, err := gitCmdEnv(ctx, wtPath, env, "add", "-A").CombinedOutput(); err != nil {
-		return "", fmt.Errorf("git add -A: %w: %s", err, strings.TrimSpace(string(out)))
+	if _, err := gitexec.CombinedOutput(ctx, opts, "add", "-A"); err != nil {
+		return "", err
 	}
-	out, err := gitCmdEnv(ctx, wtPath, env, "write-tree").CombinedOutput()
+	out, err := gitexec.CombinedOutput(ctx, opts, "write-tree")
 	if err != nil {
-		return "", fmt.Errorf("git write-tree: %w: %s", err, strings.TrimSpace(string(out)))
+		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -861,12 +861,11 @@ func fastForwardToRef(ctx context.Context, wtPath, ref string) error {
 }
 
 func isAncestorCommit(ctx context.Context, wtPath, ancestor, ref string) (bool, error) {
-	err := gitCmd(ctx, wtPath, "merge-base", "--is-ancestor", ancestor, ref).Run()
+	err := gitexec.RunQuiet(ctx, gitexec.Options{Dir: wtPath}, "merge-base", "--is-ancestor", ancestor, ref)
 	if err == nil {
 		return true, nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+	if code, ok := gitexec.ExitCode(err); ok && code == 1 {
 		return false, nil
 	}
 	return false, err
@@ -881,7 +880,7 @@ func diagnoseWorktreeState(parentCtx context.Context, wtPath string) string {
 	ctx, cancel := context.WithTimeout(parentCtx, shellTimeout)
 	defer cancel()
 
-	out, err := gitCmd(ctx, wtPath, "status", "--porcelain").CombinedOutput()
+	out, err := gitexec.CombinedOutput(ctx, gitexec.Options{Dir: wtPath}, "status", "--porcelain")
 	if err != nil {
 		first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
 		first = strings.TrimSpace(first)
