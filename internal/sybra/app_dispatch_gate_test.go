@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -272,6 +274,73 @@ func TestReplayDeferredStatusChanges_UsesCurrentStatus(t *testing.T) {
 	}
 }
 
+// TestReplayDeferredStatusChanges_DispatchesHumanReview pins the other half
+// of #2752's replay fix: a task that lands in human-required while
+// startupRecoveryPending is set gets its automatic human-review dispatch
+// suppressed at delivery time (initStatusHook's own maybeSpawn call is
+// gated on startupRecoveryDone). Nothing else re-fires it, so the replay
+// pass must do so explicitly once recovery clears — otherwise the task is
+// stuck in human-required with no review agent ever spawned.
+func TestReplayDeferredStatusChanges_DispatchesHumanReview(t *testing.T) {
+	app := setupApp(t)
+
+	wfDir := t.TempDir()
+	wfStore, err := workflow.NewStore(wfDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.workflowEngine = workflow.NewEngine(
+		wfStore,
+		&taskAdapter{tasks: app.tasks},
+		&agentAdapter{agents: app.agents, agentOrch: app.agentOrch, tasks: app.tasks},
+		app.logger,
+	)
+
+	reviewDir := t.TempDir()
+	cfg := &config.Config{}
+	cfg.HumanReview.Enabled = true
+	cfg.HumanReview.SybraRepoDir = reviewDir
+	cfg.HumanReview.MaxPerHour = 3
+	spawned := make(chan agent.RunConfig, 1)
+	app.humanReview = newHumanReviewHandler(cfg, app.tasks, &fakeHumanReviewAgentRunner{
+		run: func(runCfg agent.RunConfig) (*agent.Agent, error) {
+			spawned <- runCfg
+			return &agent.Agent{ID: "fake-human-review", TaskID: runCfg.TaskID, StartedAt: time.Now().UTC()}, nil
+		},
+	}, nil, app.logger, reviewDir, filepath.Join(reviewDir, "missing.log"), nil)
+	app.initStatusHook()
+
+	created, err := app.tasks.Create("human review replay test", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{"project_id": "owner/repo"}); err != nil {
+		t.Fatalf("UpdateMap: %v", err)
+	}
+
+	app.startupRecoveryPending.Store(true)
+	if _, err := app.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	select {
+	case runCfg := <-spawned:
+		t.Fatalf("human review dispatched while startup recovery was pending: %+v", runCfg)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	app.startupRecoveryPending.Store(false)
+	app.replayDeferredStatusChanges()
+
+	select {
+	case runCfg := <-spawned:
+		if runCfg.TaskID != created.ID {
+			t.Fatalf("human review dispatched for task %q, want %q", runCfg.TaskID, created.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("replayDeferredStatusChanges did not dispatch the deferred human-review for a task parked at human-required")
+	}
+}
+
 // TestAppStartup_ClearsStartupRecoveryPending pins the wiring: Startup arms
 // dispatch (startupRecoveryPending -> false) only after RunStartupCleanup
 // returns, not before.
@@ -283,6 +352,15 @@ func TestAppStartup_ClearsStartupRecoveryPending(t *testing.T) {
 
 	cfg := startupTestConfig(home)
 	app := NewApp(discardLogger(), &slog.LevelVar{}, cfg)
+	// recoveryStartGate blocks the recovery goroutine right before it calls
+	// RunStartupCleanup, giving the assertion below a guaranteed
+	// happens-before instead of racing the goroutine's own scheduling — Go
+	// provides no ordering guarantee between a freshly spawned goroutine and
+	// the code after the spawning call returns, so without this gate the
+	// goroutine could in principle run to completion (Store(false)) before
+	// this test goroutine resumes past Startup().
+	gate := make(chan struct{})
+	app.recoveryStartGate = gate
 	if err := app.Startup(context.Background()); err != nil {
 		t.Fatalf("Startup: %v", err)
 	}
@@ -295,13 +373,14 @@ func TestAppStartup_ClearsStartupRecoveryPending(t *testing.T) {
 
 	// The flag must be armed the moment Startup returns: Store(false) only
 	// happens inside the recovery goroutine after RunStartupCleanup returns,
-	// which does real filesystem work and cannot complete before the two
-	// trivial statements between startLifecycle and Startup's return. Without
-	// this assertion, deleting Store(true) would leave the zero-value false and
+	// and that goroutine is still parked on recoveryStartGate. Without this
+	// assertion, deleting Store(true) would leave the zero-value false and
 	// the eventual-clear poll below would pass identically — catching nothing.
 	if app.startupRecoveryDone() {
 		t.Fatal("startupRecoveryPending was not armed when Startup returned — dispatch gate fails open during recovery")
 	}
+
+	close(gate)
 
 	deadline := time.After(5 * time.Second)
 	for {

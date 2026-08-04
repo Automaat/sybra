@@ -192,9 +192,16 @@ type App struct {
 	// maintenance ticks. Cleanup itself runs outside the orchestrator loop.
 	maintenanceCleanupRunning atomic.Bool
 	worktreeCleanupFn         func(context.Context) // test seam; nil uses worktrees
-	recovery                  *recovery.Recovery
-	snapshotter               *tasksnapshot.Snapshotter
-	agentCompletion           *completion.Handler
+	// recoveryStartGate, if non-nil, is closed by the caller to release the
+	// recovery goroutine right before it calls RunStartupCleanup. Test seam
+	// only: it lets a test observe startupRecoveryPending's armed state with a
+	// guaranteed happens-before instead of racing the goroutine's own
+	// scheduling (Go gives no ordering guarantee between a freshly spawned
+	// goroutine and the code after the spawning call returns).
+	recoveryStartGate chan struct{}
+	recovery          *recovery.Recovery
+	snapshotter       *tasksnapshot.Snapshotter
+	agentCompletion   *completion.Handler
 	// umbrellaCloseIssue closes the umbrella GitHub issue on full roll-up.
 	// nil defaults to github.CloseIssue; overridden in tests.
 	umbrellaCloseIssue func(repo string, number int, comment string) error
@@ -428,6 +435,9 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 	lm.mintAppTokenBeforeRecovery(schedulerCtx)
 
 	a.wg.Go(func() {
+		if a.recoveryStartGate != nil {
+			<-a.recoveryStartGate
+		}
 		a.recovery.RunStartupCleanup(schedulerCtx)
 		// Arm dispatch now that reattach/replay/restart-stale have run, then
 		// nudge so any task that changed status during the window (buffered,
