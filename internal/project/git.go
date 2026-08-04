@@ -237,7 +237,7 @@ func InstallHooks(ctx context.Context, worktreePath string, checks *ChecksConfig
 		}
 		var sb strings.Builder
 		sb.WriteString("#!/bin/sh\nset -e\n")
-		sb.WriteString("unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY\n")
+		sb.WriteString("unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES\n")
 		sb.WriteString("for __sybra_hook_env_name in $(env | sed -n 's/^\\(SYBRA_[A-Za-z0-9_]*\\)=.*/\\1/p'); do unset \"$__sybra_hook_env_name\"; done\n")
 		sb.WriteString("unset __sybra_hook_env_name\n")
 		for _, c := range commands {

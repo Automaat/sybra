@@ -1717,6 +1717,33 @@ func TestInstallHooks_RepoConfigPriority(t *testing.T) {
 	}
 }
 
+func TestInstallHooks_UnsetsGitObjectEnv(t *testing.T) {
+	t.Parallel()
+	_, wtPath := initWorktree(t)
+
+	checks := &ChecksConfig{PrePush: []string{
+		`test -z "$GIT_OBJECT_DIRECTORY"`,
+		`test -z "$GIT_ALTERNATE_OBJECT_DIRECTORIES"`,
+	}}
+	if err := InstallHooks(context.Background(), wtPath, checks); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+
+	gitDir, err := gitCommonDir(context.Background(), wtPath)
+	if err != nil {
+		t.Fatalf("gitCommonDir: %v", err)
+	}
+	cmd := exec.Command(filepath.Join(gitDir, "hooks", "pre-push"))
+	cmd.Dir = wtPath
+	cmd.Env = append(os.Environ(),
+		"GIT_OBJECT_DIRECTORY=/some/sandbox/overlay/objects",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES=/some/other/repo/objects",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("pre-push hook should scrub Git object environment: %v: %s", err, out)
+	}
+}
+
 func TestInstallHooks_NilChecks(t *testing.T) {
 	t.Parallel()
 	_, wtPath := initWorktree(t)
