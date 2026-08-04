@@ -161,7 +161,7 @@ func (a *App) replayDeferredStatusChanges() {
 	pending := a.deferredStatusChanges
 	a.deferredStatusChanges = nil
 	a.deferredStatusMu.Unlock()
-	if len(pending) == 0 || a.workflowEngine == nil {
+	if len(pending) == 0 {
 		return
 	}
 	for _, taskID := range slices.Sorted(maps.Keys(pending)) {
@@ -174,7 +174,25 @@ func (a *App) replayDeferredStatusChanges() {
 			continue
 		}
 		a.logger.Info("app.status-hook.replay", "task_id", taskID, "status", string(t.Status))
-		a.workflowEngine.HandleStatusChange(taskID, string(t.Status))
+		if a.workflowEngine != nil {
+			a.workflowEngine.HandleStatusChange(taskID, string(t.Status))
+		}
+		// HandleStatusChange can reroute a human-required self-escalation back
+		// into the PR flow, so re-read before deciding whether the automatic
+		// human-review dispatch — suppressed for this task by the same startup
+		// gate that deferred the status change — still applies. Without this,
+		// a task that lands in human-required during the recovery window never
+		// gets its review agent (see #2752): initStatusHook's own
+		// maybeSpawn call was skipped at delivery time (startupRecoveryDone was
+		// false), and nothing else re-fires it.
+		t2, err := a.tasks.Get(taskID)
+		if err != nil {
+			a.logger.Warn("app.status-hook.replay.reget", "task_id", taskID, "err", err)
+			continue
+		}
+		if t2.Status == task.StatusHumanRequired && a.runsScheduler() && a.humanReview != nil {
+			go a.humanReview.maybeSpawn(taskID, "")
+		}
 	}
 }
 
