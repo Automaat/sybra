@@ -78,10 +78,13 @@ func Reusable(ctx context.Context, wtPath, branch string) (bool, error) {
 		return false, nil
 	}
 	remoteSHA, ok, err := project.RefreshedRemoteTrackingSHA(ctx, wtPath, state.Remote, state.Branch)
-	if err != nil || !ok {
+	if err != nil {
+		return false, err
+	}
+	if !ok || remoteSHA != state.RemoteSHA {
 		return false, nil
 	}
-	return remoteSHA == state.RemoteSHA && remoteSHA == state.HeadSHA, nil
+	return remoteSHA == state.HeadSHA, nil
 }
 
 func Read(wtPath string) (State, bool, error) {
