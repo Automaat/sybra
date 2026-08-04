@@ -165,6 +165,33 @@ func TestBranchConflictPrompt_AllowsRebaseBeforePRExists(t *testing.T) {
 	}
 }
 
+func TestSameBranchConflictPrompt_DefersPublishToTrustedWorkflow(t *testing.T) {
+	t.Parallel()
+
+	prompt := sameBranchConflictPrompt(context.Background(), task.Task{Branch: "fix/example", PRNumber: 1178}, "origin")
+	for _, want := range []string{
+		"git fetch origin +refs/heads/fix/example:refs/remotes/origin/fix/example",
+		"Do NOT rebase, amend, or force-push",
+		"Do not push: Sybra will verify and publish this completed merge through its trusted, non-force workflow step",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("same-branch conflict prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "PUSH_REMOTE=") || strings.Contains(prompt, "git push ") {
+		t.Fatalf("same-branch conflict prompt still authorizes an agent push:\n%s", prompt)
+	}
+}
+
+func TestSameBranchConflictRemote_UnknownHeadOwnerIsNotTrusted(t *testing.T) {
+	t.Parallel()
+
+	remote, trusted := (&Handler{}).sameBranchConflictRemote(context.Background(), task.Task{ProjectID: "acme/widgets"}, github.PullRequest{Repository: "acme/widgets"})
+	if remote != "origin" || trusted {
+		t.Fatalf("unknown head owner resolved to remote=%q trusted=%v, want origin and untrusted", remote, trusted)
+	}
+}
+
 // A pr-fix agent that backgrounds its test run and then narrates "still
 // waiting" status messages instead of blocking on it trips the watchdog's
 // semantic-loop detector and burns the run for nothing. Both conflict

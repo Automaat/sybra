@@ -1023,6 +1023,22 @@ func RemoteConfigured(ctx context.Context, repoPath, remote string) bool {
 // so the error message itself documents the policy.
 const forkOnlyDisabledPushURL = "sybra-disabled-do-not-push-to-upstream-use-fork"
 
+// OriginPushHasForkOnlyGuard reports whether origin's push URL is the exact
+// sentinel owned by EnforceForkOnlyPush. Foreign user-configured push URLs are
+// intentionally not treated as Sybra's guard and must retain normal Git push
+// behavior.
+func OriginPushHasForkOnlyGuard(ctx context.Context, worktreePath string) (bool, error) {
+	pushURL, err := executil.Output(ctx, worktreePath, "git", "config", "--get", "remote.origin.pushurl")
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, err
+	}
+	return strings.TrimSpace(pushURL) == forkOnlyDisabledPushURL, nil
+}
+
 // EnforceForkOnlyPush configures a worktree so pushes never reach origin
 // when a "fork" remote exists. It overrides remote.origin.pushurl with a
 // deliberately invalid value; git push fails before any network call, which
@@ -1537,6 +1553,40 @@ func worktreeDirty(ctx context.Context, worktreePath string) (bool, error) {
 //
 // Returns ErrBranchMissing if the local branch ref does not exist.
 func PushSync(ctx context.Context, worktreePath, branch string) error {
+	return pushSyncToRemote(ctx, worktreePath, branch, PushRemote(ctx, worktreePath), "")
+}
+
+// RemoteURL returns a configured remote's fetch URL.
+func RemoteURL(ctx context.Context, worktreePath, remote string) (string, error) {
+	remoteURL, err := executil.Output(ctx, worktreePath, "git", "remote", "get-url", remote)
+	if err != nil {
+		return "", fmt.Errorf("resolve remote %s URL: %w", remote, err)
+	}
+	remoteURL = strings.TrimSpace(remoteURL)
+	if parsed, parseErr := url.Parse(remoteURL); parseErr == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.User != nil {
+		return "", fmt.Errorf("remote %s URL must not contain HTTP userinfo", remote)
+	}
+	return remoteURL, nil
+}
+
+// PushSyncToPinnedRemote synchronizes branch to a pre-validated source remote
+// URL without force-pushing. It is the narrow trusted Sybra workflow path for
+// publishing a same-repository PR recovery despite EnforceForkOnlyPush's
+// origin push-url sentinel. The remote must still resolve to expectedURL when
+// this runs, so an agent cannot redirect the host-credential push by editing
+// the worktree's Git configuration during its recovery run.
+func PushSyncToPinnedRemote(ctx context.Context, worktreePath, branch, remote, expectedURL string) error {
+	currentURL, err := RemoteURL(ctx, worktreePath, remote)
+	if err != nil {
+		return err
+	}
+	if expectedURL == "" || currentURL != expectedURL {
+		return fmt.Errorf("push remote %q URL changed during recovery", remote)
+	}
+	return pushSyncToRemote(ctx, worktreePath, branch, remote, expectedURL)
+}
+
+func pushSyncToRemote(ctx context.Context, worktreePath, branch, remote, pinnedPushURL string) error {
 	if err := executil.Run(ctx, worktreePath, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
@@ -1545,7 +1595,9 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 		return err
 	}
 
-	remote := PushRemote(ctx, worktreePath)
+	if !RemoteConfigured(ctx, worktreePath, remote) {
+		return fmt.Errorf("push remote %q is not configured", remote)
+	}
 	localSHA, err := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", "refs/heads/"+branch)
 	if err != nil {
 		return err
@@ -1565,7 +1617,7 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 	remoteSHA, remoteOK := remoteTrackingRef(ctx, worktreePath, remote, branch)
 	if !remoteOK {
 		// Remote tracking ref unknown — first push, set upstream.
-		return pushLocked(ctx, worktreePath, "push", "-u", remote, branch)
+		return pushBranchToRemote(ctx, worktreePath, remote, branch, pinnedPushURL)
 	}
 	remoteAdvanced := beforeRefreshOK && beforeRefreshSHA != remoteSHA
 
@@ -1575,7 +1627,7 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 
 	// Fast-forward when remote SHA is reachable from local SHA.
 	if isAncestor(ctx, worktreePath, remoteSHA, localSHA) {
-		return pushLocked(ctx, worktreePath, "push", "-u", remote, branch)
+		return pushBranchToRemote(ctx, worktreePath, remote, branch, pinnedPushURL)
 	}
 
 	// Divergence path: never force-push. remoteSHA reflects the freshly
@@ -1586,6 +1638,14 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 		return fmt.Errorf("%w: %w: local %s vs remote %s/%s %s diverged", ErrDivergedNeedsResolve, ErrRemoteAdvanced, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
 	}
 	return fmt.Errorf("%w: local %s vs remote %s/%s %s diverged", ErrDivergedNeedsResolve, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
+}
+
+func pushBranchToRemote(ctx context.Context, worktreePath, remote, branch, pinnedPushURL string) error {
+	if pinnedPushURL == "" {
+		return pushLocked(ctx, worktreePath, "push", "-u", remote, branch)
+	}
+	refspec := "refs/heads/" + branch + ":refs/heads/" + branch
+	return pushLocked(ctx, worktreePath, "push", pinnedPushURL, refspec)
 }
 
 // pushPreflightRetryBackoffs bounds retries for a push-credential preflight
