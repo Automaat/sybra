@@ -904,6 +904,9 @@ func (a *App) SetDesktopNotifications(enabled bool) {
 
 // RegisterSpotlightHotkey binds Ctrl+Space to the Spotlight quick-add panel.
 func (a *App) RegisterSpotlightHotkey() {
+	if !spotlight.Supported() {
+		return
+	}
 	spotlight.OnSubmit(func(title, projectID string) {
 		a.logger.Info("spotlight.submit", "title", title, "project", projectID)
 		go func() {
