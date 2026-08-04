@@ -225,8 +225,20 @@ func (m *Manager) reattachHeadless(ctx context.Context, a *Agent, startOffset in
 	// closes stdin so the child sees EOF and exits like an unsteered one-shot,
 	// instead of hanging (or accepting a post-reattach steer that would queue
 	// forever with no further result to flush it).
-	if found, _ := a.lastHeadlessResult(); found {
-		m.drainOrCloseHeadlessSteer(a)
+	//
+	// An error result means the child already failed — draining would pop a
+	// persisted steer and write it to a process that's exiting, losing the
+	// prompt with no further result event left to flush it. Close the
+	// transport without draining so the retry that follows still has it queued.
+	if found, isError := a.lastHeadlessResult(); found {
+		if isError {
+			if a.convo.hasStdinPipe() {
+				a.setFinalizing(true)
+				a.convo.closeStdinPipe()
+			}
+		} else {
+			m.drainOrCloseHeadlessSteer(a)
+		}
 	}
 	procDone := make(chan struct{})
 	go watchPID(ctx, a.GetPID(), procStart, procDone)

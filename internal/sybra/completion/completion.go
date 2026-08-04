@@ -295,13 +295,14 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 		if h.workflowEngine != nil {
 			h.workflowEngine.ClearAgentStep(ag.TaskID, ag.ID)
 		}
-	} else {
-		if !h.notifyWorkflowEngine(ag, resultContent, exitErr) {
-			return
-		}
-		if ag.EffectiveRole() == agent.RoleTestRunner {
-			h.importEvidenceForAgent(ag)
-		}
+	} else if !h.notifyWorkflowEngine(ag, resultContent, exitErr) {
+		return
+	}
+	// Import evidence even when workflow advancement was suppressed above: the
+	// terminal-task cleanup below removes the managed worktree, and anything
+	// written to .sybra/evidence while Sybra was down would otherwise be lost.
+	if ag.EffectiveRole() == agent.RoleTestRunner {
+		h.importEvidenceForAgent(ag)
 	}
 
 	// Worktree and sandbox cleanup for terminal tasks (after engine
