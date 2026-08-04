@@ -20,6 +20,8 @@ var (
 	suffixTaskIDRe = regexp.MustCompile(`-([0-9a-f]{8})$`)
 )
 
+const worktreeQuarantineDirName = ".quarantine"
+
 // taskIDFromWorktreeDir extracts the owning task ID from a worktree directory
 // name: task.Task.DirName() is either the bare 8-hex-char ID (no slug yet) or
 // "<slug>-<8hex-id>". Anything else returns "" (no match).
@@ -91,6 +93,9 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 
 	for _, e := range entries {
 		if !e.IsDir() {
+			continue
+		}
+		if e.Name() == worktreeQuarantineDirName {
 			continue
 		}
 		name := e.Name()
@@ -368,18 +373,34 @@ func (m *Manager) healOrRecreate(ctx context.Context, taskID, clonePath, wtPath,
 		m.logger.Info("worktree.repaired", "task_id", taskID, "path", wtPath)
 		return true, nil
 	}
-	// Deliberately unguarded, unlike the healthy branch-mismatch path above:
-	// broken linked-worktree metadata makes git status and reachability
-	// unreadable, including for clean orphan directories left after their admin
-	// entry disappears. Repair was already attempted; recreate is the only
-	// deterministic route forward for that class.
-	m.logger.Warn("worktree.unrepairable-recreate", "task_id", taskID, "path", wtPath)
-	_ = project.RemoveWorktree(ctx, clonePath, wtPath)
-	if err := os.RemoveAll(wtPath); err != nil {
-		return false, fmt.Errorf("remove unhealthy worktree %s: %w", wtPath, err)
+	// Broken linked-worktree metadata makes git status and reachability
+	// unreadable. Preserve the entire checkout before recreating: unreadable is
+	// not evidence that its filesystem contents are disposable.
+	quarantined, err := m.quarantineWorktreeDir(wtPath)
+	if err != nil {
+		return false, fmt.Errorf("quarantine unhealthy worktree %s: %w", wtPath, err)
 	}
+	m.logger.Warn("worktree.unrepairable-recreate", "task_id", taskID, "path", wtPath, "quarantine", quarantined)
+	_ = project.RemoveWorktree(ctx, clonePath, wtPath)
 	_ = project.PruneWorktrees(ctx, clonePath)
 	return false, nil
+}
+
+func (m *Manager) quarantineWorktreeDir(wtPath string) (string, error) {
+	root := filepath.Join(m.dir, worktreeQuarantineDirName)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	slot, err := os.MkdirTemp(root, filepath.Base(wtPath)+"-")
+	if err != nil {
+		return "", err
+	}
+	destination := filepath.Join(slot, "worktree")
+	if err := os.Rename(wtPath, destination); err != nil {
+		_ = os.Remove(slot)
+		return "", err
+	}
+	return destination, nil
 }
 
 // onExpectedBranch reports whether wtPath is currently checked out on

@@ -310,9 +310,22 @@ func (e *Engine) terminalizeNonRetryableRewardHacking(t *TaskInfo, step *Step) b
 	failed.State = ExecFailed
 	now := time.Now().UTC()
 	failed.CompletedAt = &now
-	if err := e.tasks.SetWorkflow(t.ID, failed); err != nil {
+	applied, err := e.tasks.SetWorkflowIf(t.ID, WorkflowWriteFence{
+		Generation:   t.Generation,
+		Status:       t.Status,
+		StatusReason: t.StatusReason,
+		WorkflowID:   t.Workflow.WorkflowID,
+		CurrentStep:  t.Workflow.CurrentStep,
+		State:        t.Workflow.State,
+	}, failed)
+	if err != nil {
 		e.logger.Error("workflow.watchdog-reward-hacking.terminalize",
 			"task_id", t.ID, "step", step.ID, "err", err)
+		return true
+	}
+	if !applied {
+		e.logger.Info("workflow.watchdog-reward-hacking.terminalize-stale",
+			"task_id", t.ID, "step", step.ID)
 		return true
 	}
 	t.Workflow = failed
