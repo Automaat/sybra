@@ -69,6 +69,7 @@ type taskBranchConflictRecoverySpec struct {
 	retryKind      github.PRIssueKind
 	branchOverride string
 	remoteOverride string
+	trustedOrigin  bool
 	allowRecreate  bool
 	prompt         func(context.Context, task.Task, string) string
 }
@@ -79,7 +80,7 @@ type dispatchFixOptions struct {
 }
 
 const PRFixResultContract = "\n\nBefore your final response, decide the outcome:\n" +
-	"- If you completed and pushed the fix, end with `SYBRA_PR_FIX_RESULT: continue`.\n" +
+	"- If you completed the fix, end with `SYBRA_PR_FIX_RESULT: continue`.\n" +
 	"- If this PR's diff is correct and CI failed for reasons unrelated to it — a " +
 	"flaky test, an infrastructure failure, or a breakage that reproduces on the " +
 	"base branch — end with `SYBRA_PR_FIX_RESULT: flake` and `SYBRA_PR_FIX_REASON: " +
@@ -1427,7 +1428,7 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 	})
 }
 
-func (r *Handler) recoverSameBranchConflict(ctx context.Context, t task.Task, branch, remote string) bool {
+func (r *Handler) recoverSameBranchConflict(ctx context.Context, t task.Task, branch, remote string, trustedOrigin bool) bool {
 	if remote == "" {
 		remote = "origin"
 	}
@@ -1435,13 +1436,14 @@ func (r *Handler) recoverSameBranchConflict(ctx context.Context, t task.Task, br
 		retryKind:      sameBranchConflictRetryKind,
 		branchOverride: branch,
 		remoteOverride: remote,
+		trustedOrigin:  trustedOrigin && remote == "origin",
 		prompt: func(ctx context.Context, t task.Task, _ string) string {
 			return sameBranchConflictPrompt(ctx, t, remote)
 		},
 	})
 }
 
-func (r *Handler) sameBranchConflictRemote(ctx context.Context, t task.Task, pr github.PullRequest) string {
+func (r *Handler) sameBranchConflictRemote(ctx context.Context, t task.Task, pr github.PullRequest) (remote string, trustedOrigin bool) {
 	baseOwner := ""
 	if pr.Repository != "" {
 		baseOwner, _, _ = strings.Cut(pr.Repository, "/")
@@ -1449,17 +1451,17 @@ func (r *Handler) sameBranchConflictRemote(ctx context.Context, t task.Task, pr 
 	if baseOwner == "" && t.ProjectID != "" {
 		baseOwner, _, _ = strings.Cut(t.ProjectID, "/")
 	}
-	if pr.HeadRepoOwner == "" || strings.EqualFold(pr.HeadRepoOwner, baseOwner) {
-		return "origin"
+	if pr.HeadRepoOwner != "" && baseOwner != "" && strings.EqualFold(pr.HeadRepoOwner, baseOwner) {
+		return "origin", true
 	}
 	if r.projects == nil || t.ProjectID == "" {
-		return "origin"
+		return "origin", false
 	}
 	proj, err := r.projects.Get(t.ProjectID)
 	if err != nil || proj.ClonePath == "" {
-		return "origin"
+		return "origin", false
 	}
-	return project.PushRemote(ctx, proj.ClonePath)
+	return project.PushRemote(ctx, proj.ClonePath), false
 }
 
 func (r *Handler) recoverTaskBranchConflict(ctx context.Context, t task.Task, spec taskBranchConflictRecoverySpec) bool {
@@ -1543,7 +1545,23 @@ func (r *Handler) recoverTaskBranchConflict(ctx context.Context, t task.Task, sp
 	if shaErr != nil {
 		r.logger.Warn("pr-monitor.branch-conflict.head-sha", "task_id", taskID, "err", shaErr)
 	}
-	return r.dispatchBranchConflictRecovery(ctx, taskID, dir, spec.prompt(ctx, t, base), t, headSHA, resume, hadActiveWorkflow, spec.retryKind)
+	trustedPushURL := ""
+	if spec.trustedOrigin {
+		hasGuard, guardErr := project.OriginPushHasForkOnlyGuard(ctx, dir)
+		if guardErr != nil {
+			r.logger.Warn("pr-monitor.branch-conflict.origin-push-guard", "task_id", taskID, "err", guardErr)
+			return false
+		}
+		if hasGuard {
+			var urlErr error
+			trustedPushURL, urlErr = project.RemoteURL(ctx, dir, "origin")
+			if urlErr != nil || trustedPushURL == "" {
+				r.logger.Warn("pr-monitor.branch-conflict.origin-url", "task_id", taskID, "err", urlErr)
+				return false
+			}
+		}
+	}
+	return r.dispatchBranchConflictRecoveryToRemote(ctx, taskID, dir, spec.prompt(ctx, t, base), t, headSHA, resume, hadActiveWorkflow, spec.retryKind, trustedPushURL)
 }
 
 func (r *Handler) recreateExhaustedNoPRBranch(ctx context.Context, t task.Task) bool {
@@ -1656,11 +1674,19 @@ func (r *Handler) recoverRetryablePRFixDispatch(taskID string, startErr error) b
 // what avoids a guaranteed reentrant "start in progress" failure there (see
 // workflow.Engine.ReplaceWorkflow's doc).
 func (r *Handler) dispatchBranchConflictRecovery(ctx context.Context, taskID, dir, prompt string, t task.Task, headSHA string, resume branchConflictResumeState, hadActiveWorkflow bool, retryKind github.PRIssueKind) bool {
+	return r.dispatchBranchConflictRecoveryToRemote(ctx, taskID, dir, prompt, t, headSHA, resume, hadActiveWorkflow, retryKind, "")
+}
+
+func (r *Handler) dispatchBranchConflictRecoveryToRemote(ctx context.Context, taskID, dir, prompt string, t task.Task, headSHA string, resume branchConflictResumeState, hadActiveWorkflow bool, retryKind github.PRIssueKind, trustedPushURL string) bool {
 	vars := map[string]string{
 		"prompt":                prompt + PRFixResultContract,
 		workflow.WorkflowVarDir: dir,
 		"resume_status":         resume.status,
 		"resume_status_reason":  resume.statusReason,
+	}
+	if trustedPushURL != "" {
+		vars[workflow.WorkflowVarBranchConflictPushRemote] = "origin"
+		vars[workflow.WorkflowVarBranchConflictPushURL] = trustedPushURL
 	}
 	if resume.workflowID != "" {
 		vars["resume_workflow_id"] = resume.workflowID
@@ -2019,10 +2045,9 @@ func sameBranchConflictPrompt(ctx context.Context, t task.Task, remote string) s
 			"# If the merge already completed on its own (clean/no-op), do not run git\n"+
 			"# commit again.\n"+
 			"# Do NOT rebase, amend, or force-push: this branch already backs a live PR.\n"+
-			"%s\n"+
 			"```\n\n"+
-			"After pushing, summarize what conflicted and how you resolved it.",
-		branch, prCtx, remote, branch, remote, branch, remote, branch, project.CommitSignFlags(ctx), prFixPushPromptWithRemote(branch, "", false, false, remote),
+			"Do not push: Sybra will verify and publish this completed merge through its trusted, non-force workflow step. Summarize what conflicted and how you resolved it.",
+		branch, prCtx, remote, branch, remote, branch, remote, branch, project.CommitSignFlags(ctx),
 	)
 }
 
@@ -2057,8 +2082,8 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 			return "", false
 		}
 		if errors.Is(wtErr, project.ErrBranchDiverged) {
-			remote := r.sameBranchConflictRemote(ctx, t, issue.PR)
-			if r.recoverSameBranchConflict(ctx, t, issue.PR.HeadRefName, remote) {
+			remote, trustedOrigin := r.sameBranchConflictRemote(ctx, t, issue.PR)
+			if r.recoverSameBranchConflict(ctx, t, issue.PR.HeadRefName, remote, trustedOrigin) {
 				return "", false
 			}
 		}

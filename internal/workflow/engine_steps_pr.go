@@ -238,7 +238,26 @@ func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t 
 	// non-auth retry bucket (#2160/#2386).
 	pushCtx, pushCancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer pushCancel()
-	pushErr := project.PushSync(pushCtx, wtPath, branch)
+	pushRemote := ""
+	pushURL := ""
+	if wfExec != nil {
+		pushRemote = strings.TrimSpace(wfExec.Variables[WorkflowVarBranchConflictPushRemote])
+		pushURL = strings.TrimSpace(wfExec.Variables[WorkflowVarBranchConflictPushURL])
+	}
+	var pushErr error
+	if wfExec != nil && wfExec.WorkflowID == "branch-conflict-fix" && pushRemote == "origin" && pushURL != "" {
+		hasGuard, guardErr := project.OriginPushHasForkOnlyGuard(pushCtx, wtPath)
+		switch {
+		case guardErr != nil:
+			pushErr = fmt.Errorf("verify fork-only origin guard: %w", guardErr)
+		case !hasGuard:
+			pushErr = errors.New("fork-only origin guard changed during branch recovery")
+		default:
+			pushErr = project.PushSyncToPinnedRemote(pushCtx, wtPath, branch, pushRemote, pushURL)
+		}
+	} else {
+		pushErr = project.PushSync(pushCtx, wtPath, branch)
+	}
 	if pushErr == nil {
 		return StepOutput{}, nil, true
 	}

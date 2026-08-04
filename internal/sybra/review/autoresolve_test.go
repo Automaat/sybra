@@ -558,8 +558,11 @@ func TestPrepareWorktree_SameBranchConflictUsesForkRemote(t *testing.T) {
 	if strings.Contains(prompt, "git merge refs/remotes/origin/"+h.branch) {
 		t.Fatalf("prompt merges origin instead of fork:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "PUSH_REMOTE=fork") {
-		t.Fatalf("prompt does not push fork-backed PR to fork:\n%s", prompt)
+	if got.Workflow.Variables[workflow.WorkflowVarBranchConflictPushRemote] != "" || got.Workflow.Variables[workflow.WorkflowVarBranchConflictPushURL] != "" {
+		t.Fatalf("fork recovery unexpectedly received trusted origin push variables: %+v", got.Workflow.Variables)
+	}
+	if strings.Contains(prompt, "git push ") {
+		t.Fatalf("prompt still permits fork-backed recovery agent to push:\n%s", prompt)
 	}
 }
 
@@ -648,8 +651,14 @@ func TestPrepareWorktree_SameBranchConflictKeepsOriginBackedPR(t *testing.T) {
 	if strings.Contains(prompt, "refs/remotes/fork/"+h.branch) {
 		t.Fatalf("prompt uses stale fork branch for origin-backed PR:\n%s", prompt)
 	}
-	if strings.Contains(prompt, "PUSH_REMOTE=fork") {
-		t.Fatalf("prompt pushes origin-backed PR to fork:\n%s", prompt)
+	if got.Workflow.Variables[workflow.WorkflowVarBranchConflictPushRemote] != "origin" {
+		t.Fatalf("trusted recovery push remote = %q, want origin", got.Workflow.Variables[workflow.WorkflowVarBranchConflictPushRemote])
+	}
+	if got.Workflow.Variables[workflow.WorkflowVarBranchConflictPushURL] == "" {
+		t.Fatal("origin-backed recovery did not pin its source URL before agent dispatch")
+	}
+	if strings.Contains(prompt, "git push ") {
+		t.Fatalf("prompt still permits origin-backed recovery agent to push:\n%s", prompt)
 	}
 }
 
