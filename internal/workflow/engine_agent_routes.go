@@ -280,7 +280,17 @@ func (e *Engine) hasPendingAgentRouteForStep(taskID string, step *Step) bool {
 	}
 	return false
 }
-
+func workflowHasAgentRouteForStep(wf *Execution, step *Step) bool {
+	if wf == nil || step == nil {
+		return false
+	}
+	for _, routedStepID := range wf.AgentRoutes {
+		if routeMatchesStep(step, routedStepID) {
+			return true
+		}
+	}
+	return false
+}
 func clearAgentRouteFromWorkflow(wf *Execution, agentID string) bool {
 	if wf == nil || agentID == "" {
 		return false
