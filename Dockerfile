@@ -92,11 +92,11 @@ RUN ARCH="$(dpkg --print-architecture)" \
 
 # --- Layer C: node CLIs (claude code + codex + opencode), pinned for cache stability ---
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-ARG CLAUDE_CODE_VERSION=2.1.217
+ARG CLAUDE_CODE_VERSION=2.1.220
 # renovate: datasource=npm depName=@openai/codex
 ARG CODEX_VERSION=0.146.0
 # renovate: datasource=npm depName=opencode-ai
-ARG OPENCODE_VERSION=1.18.4
+ARG OPENCODE_VERSION=1.18.10
 RUN npm install -g \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
         "@openai/codex@${CODEX_VERSION}" \
