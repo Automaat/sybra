@@ -1737,6 +1737,33 @@ func TestInstallHooks_RepoConfigPriority(t *testing.T) {
 	}
 }
 
+func TestInstallHooks_UnsetsGitObjectEnv(t *testing.T) {
+	t.Parallel()
+	_, wtPath := initWorktree(t)
+
+	checks := &ChecksConfig{PrePush: []string{
+		`test -z "$GIT_OBJECT_DIRECTORY"`,
+		`test -z "$GIT_ALTERNATE_OBJECT_DIRECTORIES"`,
+	}}
+	if err := InstallHooks(context.Background(), wtPath, checks); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+
+	gitDir, err := gitCommonDir(context.Background(), wtPath)
+	if err != nil {
+		t.Fatalf("gitCommonDir: %v", err)
+	}
+	cmd := exec.Command(filepath.Join(gitDir, "hooks", "pre-push"))
+	cmd.Dir = wtPath
+	cmd.Env = append(os.Environ(),
+		"GIT_OBJECT_DIRECTORY=/some/sandbox/overlay/objects",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES=/some/other/repo/objects",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("pre-push hook should scrub Git object environment: %v: %s", err, out)
+	}
+}
+
 func TestInstallHooks_NilChecks(t *testing.T) {
 	t.Parallel()
 	_, wtPath := initWorktree(t)
@@ -3712,6 +3739,24 @@ func TestInstallSignoffHook(t *testing.T) {
 
 	if err := InstallSignoffHook(context.Background(), wtPath); err != nil {
 		t.Fatalf("InstallSignoffHook: %v", err)
+	}
+	gitDir, err := gitCommonDir(context.Background(), wtPath)
+	if err != nil {
+		t.Fatalf("gitCommonDir: %v", err)
+	}
+	msgPath := filepath.Join(t.TempDir(), "message")
+	if err := os.WriteFile(msgPath, []byte("test message\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hook := exec.Command(filepath.Join(gitDir, "hooks", "prepare-commit-msg"), msgPath)
+	hook.Dir = wtPath
+	hook.Env = append(os.Environ(),
+		"GIT_DIR=/nonexistent/attacker-git-dir",
+		"GIT_OBJECT_DIRECTORY=/nonexistent/attacker-objects",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES=/nonexistent/attacker-alternates",
+	)
+	if out, err := hook.CombinedOutput(); err != nil {
+		t.Fatalf("signoff hook should scrub inherited Git environment: %v: %s", err, out)
 	}
 
 	body := func() string {
