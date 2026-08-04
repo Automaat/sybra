@@ -42,6 +42,8 @@ type gitSandboxRoots struct {
 	remoteLogDir   string
 	tagRefDir      string
 	tagLogDir      string
+	notesRefDir    string
+	notesLogDir    string
 	sharedWritable []string
 	sharedReadonly []string
 }
@@ -56,6 +58,8 @@ type gitSharedPaths struct {
 	remoteLogDir string
 	tagRefDir    string
 	tagLogDir    string
+	notesRefDir  string
+	notesLogDir  string
 }
 
 func resolveGitSandboxRoots(ctx context.Context, worktree string) (gitSandboxRoots, error) {
@@ -94,6 +98,8 @@ func resolveGitSandboxRoots(ctx context.Context, worktree string) (gitSandboxRoo
 	roots.remoteLogDir = sharedPaths.remoteLogDir
 	roots.tagRefDir = sharedPaths.tagRefDir
 	roots.tagLogDir = sharedPaths.tagLogDir
+	roots.notesRefDir = sharedPaths.notesRefDir
+	roots.notesLogDir = sharedPaths.notesLogDir
 	roots.sharedReadonly = sharedPaths.readonly
 	return roots, nil
 }
@@ -162,6 +168,11 @@ func resolveGitSharedWritablePaths(ctx context.Context, worktree string) (gitSha
 		{label: "resolve remote logs dir", rel: filepath.Join("logs", "refs", "remotes"), dst: &paths.remoteLogDir},
 		{label: "resolve tag refs dir", rel: filepath.Join("refs", "tags"), dst: &paths.tagRefDir},
 		{label: "resolve tag logs dir", rel: filepath.Join("logs", "refs", "tags"), dst: &paths.tagLogDir},
+		// refs/notes/* (git notes add, default ref "commits") is annotation
+		// data layered onto commits repo-wide — shared/idempotent truth like
+		// remotes and tags, not a task's own exclusive work.
+		{label: "resolve notes refs dir", rel: filepath.Join("refs", "notes"), dst: &paths.notesRefDir},
+		{label: "resolve notes logs dir", rel: filepath.Join("logs", "refs", "notes"), dst: &paths.notesLogDir},
 	} {
 		path, err := resolveDir(spec.label, spec.rel)
 		if err != nil {

@@ -13,12 +13,17 @@ import (
 
 type RepairReport struct {
 	QuarantinedRefs        []string
+	ArchivedWorktrees      []string
 	PrunedWorktrees        bool
 	RebuiltWorktreeIndexes []string
 	RefetchedBranches      []string
 }
 
 var QuarantineDir string
+
+// WorktreesDir is the sole root whose linked checkouts repair may archive.
+// It is configured by the app alongside QuarantineDir.
+var WorktreesDir string
 
 var badRefMarkers = []string{
 	"fatal: bad object",
@@ -53,7 +58,7 @@ func IsBadRefError(err error) bool {
 const fsckRefBatch = 256
 
 // CheckBareCloneHealth reports whether the object database is intact for
-// everything reachable from refs.
+// refs that can seed a task checkout.
 //
 // It scopes fsck to the ref tips rather than running it bare. An unscoped
 // `git fsck` also walks every linked worktree's index and HEAD reflog, and
@@ -187,7 +192,11 @@ func runQuietGit(ctx context.Context, dir string, args ...string) error {
 // bareRefTips lists the object ids every ref points at. They are the roots
 // the scoped fsck walks from.
 func bareRefTips(ctx context.Context, barePath string) ([]string, error) {
-	out, err := outputBare(ctx, barePath, "rev-parse", "--all")
+	// Dispatch only needs refs that can seed a task checkout. Keep this in
+	// lockstep with repairBareCloneLocked: tags and non-origin remotes are
+	// neither fetched nor used as checkout bases, so corruption there must not
+	// wedge every task for the project.
+	out, err := outputBare(ctx, barePath, "for-each-ref", "--format=%(objectname)", "refs/heads", "refs/remotes/origin")
 	if err != nil {
 		return nil, fmt.Errorf("list ref tips: %w", err)
 	}
@@ -253,9 +262,12 @@ func repairBareCloneLocked(ctx context.Context, barePath, taskBranch string) (Re
 	releaseDeadWorktreeRefs(ctx, barePath, &report)
 	rebuildWorktreeIndexes(ctx, barePath, &report)
 
-	refsOut, err := outputBare(ctx, barePath, "for-each-ref", "--format=%(refname)", "refs/heads")
+	// Fetch rejects any corrupt ref, including tags and non-origin remotes.
+	// Quarantine only refs Git cannot resolve; valid refs outside checkout scope
+	// are left untouched even though they are not part of the dispatch gate.
+	refsOut, err := outputBare(ctx, barePath, "for-each-ref", "--format=%(refname)")
 	if err != nil {
-		return report, fmt.Errorf("enumerate refs/heads: %w", err)
+		return report, fmt.Errorf("enumerate refs: %w", err)
 	}
 	for line := range strings.SplitSeq(strings.TrimSpace(refsOut), "\n") {
 		ref := strings.TrimSpace(line)
@@ -265,8 +277,7 @@ func repairBareCloneLocked(ctx context.Context, barePath, taskBranch string) (Re
 		if checkErr := runBare(ctx, barePath, "cat-file", "-e", ref+"^{object}"); checkErr == nil {
 			continue
 		}
-		badValue, _ := outputBare(ctx, barePath, "rev-parse", ref)
-		QuarantineRef(barePath, ref, strings.TrimSpace(badValue))
+		QuarantineRef(barePath, ref, "unresolvable")
 		delErr := withLockRetry(func() error {
 			return runBare(ctx, barePath, "update-ref", "-d", ref)
 		})
@@ -363,15 +374,93 @@ func releaseDeadWorktreeRefs(ctx context.Context, barePath string, report *Repai
 		}
 		QuarantineRef(barePath, wtRef, head)
 		report.QuarantinedRefs = append(report.QuarantinedRefs, wtRef)
-		if checkoutPath := worktreeCheckoutPath(wtAdminDir); checkoutPath != "" {
-			_ = withLockRetry(func() error {
-				return runBare(ctx, barePath, "worktree", "remove", "--force", checkoutPath)
-			})
+		if checkoutPath := registeredWorktreeCheckoutPath(wtAdminDir); checkoutPath != "" {
+			// A broken ref does not mean the checkout is worthless: its files can
+			// be the only surviving copy of work whose commit object was lost.
+			// Preserve the whole checkout before pruning its now-invalid Git
+			// registration. QuarantineDir is on the same Sybra data volume in
+			// production, so rename is atomic and keeps ignored files too.
+			if archived, ok := archiveCorruptWorktree(checkoutPath); ok {
+				report.ArchivedWorktrees = append(report.ArchivedWorktrees, archived)
+			}
+			// Do not force-remove a checkout after a failed archive. WorktreesDir
+			// can be on another filesystem from QuarantineDir, and losing the
+			// checkout is worse than retaining a stale registration for recovery.
 		}
 	}
 	_ = withLockRetry(func() error {
 		return runBare(ctx, barePath, "worktree", "prune")
 	})
+}
+
+// registeredWorktreeCheckoutPath returns a checkout only when its .git file
+// points back at this exact linked-worktree admin directory. The admin
+// directory's gitdir file is mutable metadata, so treating it as authoritative
+// would let a corrupt entry redirect repair's archive move outside the managed
+// worktree.
+func registeredWorktreeCheckoutPath(adminDir string) string {
+	if WorktreesDir == "" {
+		return ""
+	}
+	checkoutPath := worktreeCheckoutPath(adminDir)
+	if checkoutPath == "" {
+		return ""
+	}
+	gitFile, err := os.ReadFile(filepath.Join(checkoutPath, ".git"))
+	if err != nil {
+		return ""
+	}
+	gitdir, ok := strings.CutPrefix(strings.TrimSpace(string(gitFile)), "gitdir: ")
+	if !ok || strings.TrimSpace(gitdir) == "" {
+		return ""
+	}
+	gitdir = strings.TrimSpace(gitdir)
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(checkoutPath, gitdir)
+	}
+	canonicalAdminDir, err := filepath.EvalSymlinks(adminDir)
+	if err != nil {
+		return ""
+	}
+	canonicalGitDir, err := filepath.EvalSymlinks(gitdir)
+	if err != nil || canonicalGitDir != canonicalAdminDir {
+		return ""
+	}
+	canonicalWorktreesDir, err := filepath.EvalSymlinks(WorktreesDir)
+	if err != nil || !pathWithin(canonicalWorktreesDir, checkoutPath) {
+		return ""
+	}
+	return checkoutPath
+}
+
+func pathWithin(root, path string) bool {
+	canonicalPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, canonicalPath)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// archiveCorruptWorktree moves a worktree whose HEAD is unresolvable out of
+// the active worktree root before repair prunes Git's stale registration. The
+// archive deliberately includes the .git file and ignored files: it is a
+// forensic/recovery copy, not a usable checkout. Returns false when no safe
+// archive destination is configured or the move fails.
+func archiveCorruptWorktree(checkoutPath string) (string, bool) {
+	if QuarantineDir == "" {
+		return "", false
+	}
+	archiveRoot := filepath.Join(QuarantineDir, "worktrees")
+	if err := os.MkdirAll(archiveRoot, 0o755); err != nil {
+		return "", false
+	}
+	name := filepath.Base(filepath.Clean(checkoutPath)) + "-" + time.Now().UTC().Format("20060102T150405.000000000")
+	archivePath := filepath.Join(archiveRoot, name)
+	if err := os.Rename(checkoutPath, archivePath); err != nil {
+		return "", false
+	}
+	return archivePath, true
 }
 
 func worktreeCheckoutPath(adminDir string) string {

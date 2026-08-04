@@ -64,6 +64,83 @@ func (s *Store) lock(id string) (func(), error) {
 	return unlock, nil
 }
 
+// migrateMaintenanceAutoPerProjectTimeout bounds each project's git config
+// call so one stalled clone (hung disk, lock contention with a concurrent
+// mutation) cannot block every other project's retrofit, or the app startup
+// path calling this, indefinitely.
+const migrateMaintenanceAutoPerProjectTimeout = 10 * time.Second
+
+// MigrateDisableAutoMaintenance retrofits maintenance.auto=false (see
+// DisableAutoMaintenance) onto every already-registered project's clone, so
+// projects created before that CloneBare step existed get the same
+// protection without a re-clone. Safe to run on every startup: git config is
+// idempotent. Skips a project whose clone directory is missing, or whose
+// Status is not ready/unset — CreateProject's async clone path (unlike
+// Store.Create) writes directly into the final ClonePath rather than a temp
+// path plus atomic rename, so a project mid-clone already has a directory
+// `os.Stat` succeeds against; touching it here would race CloneBare's own
+// `.git/config` writes. Each project is processed under the same per-ID lock
+// every other mutation holds, so it also cannot race a concurrent Delete.
+// Errors are joined and returned so the caller can log without treating this
+// as fatal.
+func (s *Store) MigrateDisableAutoMaintenance(ctx context.Context) error {
+	projects, err := s.List()
+	if err != nil {
+		return fmt.Errorf("list projects: %w", err)
+	}
+	var errs []error
+	for i := range projects {
+		p := &projects[i]
+		if p.ClonePath == "" {
+			continue
+		}
+		if p.Status != "" && p.Status != ProjectStatusReady {
+			continue
+		}
+		if err := s.disableAutoMaintenanceLocked(ctx, p.ID, p.ClonePath); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// disableAutoMaintenanceLocked re-checks id's current clone path under the
+// per-project lock before touching it, so a Delete that lands between
+// MigrateDisableAutoMaintenance's List() snapshot and this call is not raced.
+func (s *Store) disableAutoMaintenanceLocked(ctx context.Context, id, snapshotClonePath string) error {
+	unlock, err := s.lock(id)
+	if err != nil {
+		return fmt.Errorf("%s: %w", id, err)
+	}
+	defer unlock()
+
+	current, err := s.Get(id)
+	if errors.Is(err, ErrProjectNotRegistered) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%s: %w", id, err)
+	}
+	if current.ClonePath != snapshotClonePath || (current.Status != "" && current.Status != ProjectStatusReady) {
+		return nil
+	}
+	if _, statErr := os.Stat(current.ClonePath); errors.Is(statErr, os.ErrNotExist) {
+		return nil
+	} else if statErr != nil {
+		return fmt.Errorf("%s: stat clone: %w", id, statErr)
+	}
+
+	runCtx, cancel := context.WithTimeout(ctx, migrateMaintenanceAutoPerProjectTimeout)
+	defer cancel()
+	if err := DisableAutoMaintenance(runCtx, current.ClonePath); err != nil {
+		return fmt.Errorf("%s: %w", id, err)
+	}
+	if err := ConfigureCommitIdentity(runCtx, current.ClonePath); err != nil {
+		return fmt.Errorf("%s: configure commit identity: %w", id, err)
+	}
+	return nil
+}
+
 // List returns every registered project. A file that fails to parse is
 // silently skipped rather than failing the whole call.
 func (s *Store) List() ([]Project, error) {
