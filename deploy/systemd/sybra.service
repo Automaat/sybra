@@ -23,6 +23,7 @@ EnvironmentFile=/etc/sybra/sybra.env
 
 # Build+preflight into a versioned candidate and atomically activate it (or
 # quarantine + keep the last-good release). See deploy/bin/sybra-build.sh.
+ExecStartPre=+/opt/sybra/bin/sybra-repair-src.sh
 ExecStartPre=/opt/sybra/bin/sybra-build.sh
 # Poll the just-started release's /health; roll back to last-good and record
 # a failure (quarantining after repeated failures) if it never comes up. See

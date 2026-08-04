@@ -98,6 +98,68 @@ func TestClassifyPRFixResult(t *testing.T) {
 			wantVerdict: PRFixHuman,
 			wantReason:  "real blocker",
 		},
+		{
+			// Regression for a real production incident: an agent's own diagnosis
+			// ran past the old 200-char truncate() cap and got cut mid-sentence
+			// before it reached the actual root cause, leaving the task
+			// undiagnosable. The reason must survive in full, however long.
+			name: "sentinel reason longer than the old 200-char cap survives in full",
+			output: "SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: " + strings.Repeat("environment-specific detail ", 20) + "root cause at the end\n",
+			wantVerdict: PRFixHuman,
+			wantReason:  strings.Repeat("environment-specific detail ", 20) + "root cause at the end",
+		},
+		{
+			// Regression: prFixReasonRe used to be a single capturing regex
+			// anchored with (?m) `^`/`$`, so `.` never matched past the first
+			// newline — a multi-line SYBRA_PR_FIX_REASON value (the realistic
+			// shape of any non-trivial diagnosis) was cut at line 1 even after
+			// the 200-char truncate() wrapper was removed. Found via a live
+			// end-to-end run of the workflow engine against a real task, not
+			// just this unit test — the value must span every line it wrote.
+			name: "sentinel reason spanning multiple lines survives in full",
+			output: "SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: first line of the diagnosis\n" +
+				"second line with more detail\n" +
+				"third line with the actual root cause\n",
+			wantVerdict: PRFixHuman,
+			wantReason:  "first line of the diagnosis\nsecond line with more detail\nthird line with the actual root cause",
+		},
+		{
+			// A multi-line reason must still stop at the next sentinel line
+			// (e.g. a following SYBRA_PR_FIX_FAILING_TEST:) rather than
+			// swallowing it — only the reason's own lines belong to it.
+			name: "sentinel reason spanning multiple lines stops at the next sentinel",
+			output: "SYBRA_PR_FIX_RESULT: human-required\n" +
+				"SYBRA_PR_FIX_REASON: first line of the diagnosis\n" +
+				"second line with more detail\n" +
+				"SYBRA_PR_FIX_FAILING_TEST: pkg/a_test.go:1 TestA\n",
+			wantVerdict: PRFixHuman,
+			wantReason:  "first line of the diagnosis\nsecond line with more detail",
+		},
+		{
+			name: "legacy free-text reason longer than the old 200-char cap survives in full",
+			output: strings.Repeat("investigation detail. ", 20) +
+				"As instructed, I ran git rebase --abort. This task requires human review.",
+			wantVerdict: PRFixHuman,
+			wantReason: "pr-fix agent requested human review: " + strings.Repeat("investigation detail. ", 20) +
+				"As instructed, I ran git rebase --abort. This task requires human review.",
+		},
+		{
+			// Regression: the free-text fallback used to read only the first
+			// non-empty line via firstNonEmptyLine, so a multi-line narrative
+			// with the actual root cause on a later line — and the trigger
+			// phrase only at the very end — silently dropped everything but
+			// line 1. The full multi-line narrative must survive.
+			name: "legacy free-text reason with root cause on a later line survives in full",
+			output: "I looked into this PR failure.\n" +
+				"The root cause is a sandbox limitation unrelated to this diff.\n" +
+				"This task requires human review.\n",
+			wantVerdict: PRFixHuman,
+			wantReason: "pr-fix agent requested human review: I looked into this PR failure.\n" +
+				"The root cause is a sandbox limitation unrelated to this diff.\n" +
+				"This task requires human review.",
+		},
 	}
 
 	for _, tc := range cases {

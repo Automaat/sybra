@@ -115,14 +115,52 @@ if [ "$1" = "api" ]; then
 	# Refuse a review payload we cannot inspect rather than assume it is benign.
 	[ "$sawhidden$sawreviews" = "11" ] && printf '%%s\n' '%[1]s' >&2 && exit 1
 fi
-if command -v sybra-cli >/dev/null 2>&1; then
+if [ -n '%[3]s' ] && [ -x '%[3]s' ]; then
+	token="$('%[3]s' github-app-token 2>/dev/null || true)"
+elif command -v sybra-cli >/dev/null 2>&1; then
 	token="$(sybra-cli github-app-token 2>/dev/null || true)"
-	[ -z "$token" ] || {
-		export GH_TOKEN="$token"
-		export GITHUB_TOKEN="$token"
-	}
+else
+	token=
 fi
+[ -z "$token" ] || {
+	export GH_TOKEN="$token"
+	export GITHUB_TOKEN="$token"
+}
 exec '%[2]s' "$@"
+`
+
+const gitCredentialShimTemplate = `#!/bin/sh
+case "$1" in
+get)
+	protocol=
+	host=
+	while IFS= read -r line; do
+		[ -n "$line" ] || break
+		case "$line" in
+		protocol=*) protocol=${line#protocol=} ;;
+		host=*) host=${line#host=} ;;
+		esac
+	done
+	case "$protocol:$host" in
+	https:github.com)
+		if [ -n '%[1]s' ] && [ -x '%[1]s' ]; then
+			token="$('%[1]s' github-app-token 2>/dev/null || true)"
+		elif command -v sybra-cli >/dev/null 2>&1; then
+			token="$(sybra-cli github-app-token 2>/dev/null || true)"
+		else
+			token=
+		fi
+	[ -z "$token" ] || {
+			printf 'username=x-access-token\n'
+			printf '` + "pass" + `word=%%s\n' "$token"
+		}
+		;;
+	esac
+	;;
+store | erase)
+	;;
+esac
+exit 0
 `
 
 // writeGhShim materializes a `gh` wrapper in dir, for callers to prepend to an
@@ -147,10 +185,6 @@ exec '%[2]s' "$@"
 // Living on PATH rather than in a provider hook, it covers every provider
 // (claude, codex, copilot) and any grandchild process, which no single
 // provider's hook contract can offer.
-//
-// Returns ("", nil) when no real gh is installed: there is nothing to guard and
-// nothing to exec, and shimming a missing binary would break `gh` probes that
-// already tolerate its absence.
 func lookRealGh() string {
 	path, err := exec.LookPath("gh")
 	if err != nil {
@@ -159,27 +193,65 @@ func lookRealGh() string {
 	return path
 }
 
+func lookRealSybraCLI() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		if abs := executableAbsolute(filepath.Join(home, ".local", "bin", "sybra-cli")); abs != "" {
+			return abs
+		}
+	}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			dir = "."
+		}
+		if abs := executableAbsolute(filepath.Join(dir, "sybra-cli")); abs != "" {
+			return abs
+		}
+	}
+	return ""
+}
+
+func executableAbsolute(path string) string {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	return abs
+}
+
 func writeGhShim(dir string) (string, error) {
 	found := lookRealGh()
-	if found == "" {
-		return "", nil
-	}
-	realGh, err := filepath.Abs(found)
-	if err != nil {
-		return "", fmt.Errorf("resolve gh path: %w", err)
-	}
-	if strings.ContainsAny(realGh, "'\n") {
-		return "", fmt.Errorf("gh path %q is not shell-safe", realGh)
-	}
 	if !shellSingleQuoteSafe(GhShimReason) {
 		return "", fmt.Errorf("gh shim reason is not shell-safe")
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create gh shim dir: %w", err)
 	}
-	script := fmt.Sprintf(ghShimScript, GhShimReason, realGh)
-	if err := writeExecutableAtomic(filepath.Join(dir, "gh"), script); err != nil {
+
+	sybraCLI := lookRealSybraCLI()
+	if strings.ContainsAny(sybraCLI, "'\n") {
+		return "", fmt.Errorf("sybra-cli path %q is not shell-safe", sybraCLI)
+	}
+
+	credentialScript := fmt.Sprintf(gitCredentialShimTemplate, sybraCLI)
+	if err := writeExecutableAtomic(filepath.Join(dir, "git-credential-sybra"), credentialScript); err != nil {
 		return "", err
+	}
+	if found != "" {
+		realGh, err := filepath.Abs(found)
+		if err != nil {
+			return "", fmt.Errorf("resolve gh path: %w", err)
+		}
+		if strings.ContainsAny(realGh, "'\n") {
+			return "", fmt.Errorf("gh path %q is not shell-safe", realGh)
+		}
+		script := fmt.Sprintf(ghShimScript, GhShimReason, realGh, sybraCLI)
+		if err := writeExecutableAtomic(filepath.Join(dir, "gh"), script); err != nil {
+			return "", err
+		}
 	}
 	return dir, nil
 }
@@ -228,10 +300,6 @@ func resolveGhShimDir(dir string, logger *slog.Logger) string {
 		logger.Error("agent.gh-shim.failed", "dir", dir, "err", err)
 		return ""
 	}
-	if resolved == "" {
-		logger.Info("agent.gh-shim.skipped", "reason", "no gh on PATH")
-		return ""
-	}
 	logger.Info("agent.gh-shim.ready", "dir", resolved)
 	return resolved
 }
@@ -244,6 +312,7 @@ func (m *Manager) injectGhShim(cfg *RunConfig) {
 		return
 	}
 	cfg.ExtraEnv = prependPATH(cfg.ExtraEnv, m.ghShimDir)
+	cfg.ExtraEnv = injectGitCredentialHelperEnv(cfg.ExtraEnv)
 }
 
 func prependPATH(env []string, dir string) []string {
@@ -254,4 +323,41 @@ func prependPATH(env []string, dir string) []string {
 		}
 	}
 	return append(stripEnvKeys(env, "PATH"), "PATH="+dir+string(os.PathListSeparator)+current)
+}
+
+func injectGitCredentialHelperEnv(env []string) []string {
+	env = stripEnvKeyPrefixes(env, "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+	env = stripEnvKeys(env, "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS")
+	return append(env,
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=credential.https://github.com.helper",
+		"GIT_CONFIG_VALUE_0=sybra",
+		"GIT_CONFIG_KEY_1=credential.https://github.com.useHttpPath",
+		"GIT_CONFIG_VALUE_1=false",
+	)
+}
+
+func stripEnvKeyPrefixes(env []string, prefixes ...string) []string {
+	if len(env) == 0 {
+		return env
+	}
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		key, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			out = append(out, kv)
+			continue
+		}
+		drop := false
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(key, prefix) {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out = append(out, kv)
+		}
+	}
+	return out
 }

@@ -42,6 +42,7 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -480,6 +481,12 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 		return fmt.Errorf("agent manager: %w", err)
 	}
 	a.agents.SetGHAppToken(github.CurrentAppToken)
+	// initToolLedger runs before this function, when a.agents is still nil, so
+	// its own SetToolLedger call is skipped. Without re-binding here the
+	// manager's ledger stays nil and Logger.Log's nil guard drops every record
+	// silently — the ledger creates its directory, never writes a line, and
+	// looks healthy while collecting nothing (#2788).
+	a.agents.SetToolLedger(a.toolLedger)
 	if agentCfg.SurviveRestartDir != "" {
 		a.logger.Info("agent.survive-restart.enabled", "dir", agentCfg.SurviveRestartDir)
 	}
@@ -508,6 +515,7 @@ func (a *App) agentRuntimeConfig(cfg *config.Config) agent.ManagerRuntimeConfig 
 		DispatchJitterMs:       cfg.Agent.DispatchJitterMs,
 		HeadlessSteerable:      cfg.DefaultHeadlessSteerable(),
 		SandboxMode:            cfg.DefaultSandboxMode(),
+		SandboxReadMode:        cfg.DefaultSandboxReadMode(),
 		PlaywrightMCPEnabled:   cfg.PlaywrightMCPEnabled(),
 		PlaywrightMCPExtraArgs: cfg.PlaywrightMCPExtraArgs(),
 		K8sJobsEnabled:         cfg.Agent.K8sJobs.Enabled,
@@ -589,7 +597,7 @@ func (a *App) taskStatusForAgent(taskID string) (string, bool) {
 }
 
 func (a *App) startLiveLimitPolling(ctx context.Context, limitStore *limits.Store, policy limits.Policy) {
-	a.wg.Go(func() {
+	a.goWhileRunning(func() {
 		state := newLiveLimitPollState(time.Now().UTC())
 		for {
 			if ctx.Err() != nil {
@@ -788,9 +796,36 @@ func (a *App) releaseTaskAgents(taskID string) {
 	if len(targets) == 0 {
 		return
 	}
+	// Agents started after the park are deliberate new dispatches, not
+	// leftovers from before it, so they are not this release's to reap.
+	//
+	// The status hook fires with prev == "" the first time this process
+	// observes a task, which happens on every restart. For an
+	// already-parked task that fabricates a fresh transition into
+	// human-required and reaps whatever is running — including a review
+	// agent dispatched seconds earlier. Measured: a task parked at 08:08
+	// had its review agent killed 1.6ms after start at 08:47, and since
+	// human-required is what the review phase asserts to mean "needs you",
+	// the only agent that could clear it was the one being killed.
+	// Scoped to human-required only. releaseTaskAgents also runs for terminal
+	// statuses, and a done/cancelled task must reap every agent regardless of
+	// when it started — otherwise a restart can leave work running against a
+	// task that is already finished.
+	parkedAt := time.Time{}
+	if t, err := a.tasks.Get(taskID); err == nil && t.Status == task.StatusHumanRequired {
+		parkedAt = t.StatusChangedAt
+	}
 	filtered := make([]*agent.Agent, 0, len(targets))
 	for _, ag := range targets {
-		if ag.EffectiveRole() == agent.RoleHumanReview {
+		if ag.EffectiveRole().DiagnosesBlockedTask() {
+			continue
+		}
+		// !Before, not After: a tie means the agent started in the same instant
+		// the park was recorded, which is the dispatch that triggered it.
+		if !parkedAt.IsZero() && !ag.StartedAt.Before(parkedAt) {
+			a.logger.Info("task.status.release-agent.skip-newer",
+				"task_id", taskID, "agent_id", ag.ID,
+				"started_at", ag.StartedAt, "status_changed_at", parkedAt)
 			continue
 		}
 		filtered = append(filtered, ag)
@@ -809,7 +844,7 @@ func (a *App) releaseTaskAgents(taskID string) {
 	// Tracking it here only needs to guarantee the signal is sent — once
 	// StopAgent's SIGINT/SIGKILL reaches the OS, delivery no longer depends
 	// on this process staying alive.
-	a.wg.Go(func() {
+	a.goWhileRunning(func() {
 		for _, ag := range filtered {
 			var err error
 			if ag.Mode == "headless" && ag.CompletedSuccessfully() {
@@ -825,7 +860,8 @@ func (a *App) releaseTaskAgents(taskID string) {
 }
 
 func (a *App) runsTaskLocally(t task.Task) bool {
-	return a.cfg == nil || a.cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local
+	cfg := a.currentConfig()
+	return cfg == nil || cfg.HomeNodeForTask(t.ProjectID, t.NodeOverride).Local
 }
 
 func (a *App) isWorkProject(projectID string) bool {
@@ -849,7 +885,8 @@ func (a *App) auditClusterBlock(taskID, node, reason string) {
 func (a *App) initCluster() {
 	if a.workflowEngine != nil {
 		a.workflowEngine.SetDispatchGate(func(ti workflow.TaskInfo) bool {
-			return a.cfg == nil || a.cfg.HomeNodeForTask(ti.ProjectID, ti.NodeOverride).Local
+			cfg := a.currentConfig()
+			return cfg == nil || cfg.HomeNodeForTask(ti.ProjectID, ti.NodeOverride).Local
 		})
 	}
 	if a.cfg == nil || !a.cfg.IsLeader() {
@@ -974,7 +1011,7 @@ func (a *App) dispatchTaskCreatedWorkflow(taskID string) {
 	if taskID == "" {
 		return
 	}
-	a.wg.Go(func() {
+	a.goWhileRunning(func() {
 		t, err := a.tasks.Get(taskID)
 		if err != nil {
 			return
@@ -1066,6 +1103,21 @@ func (a *App) maybeStartWorkflowForExternalTask(path string) {
 		a.dispatchPlanningWorkflow(id)
 	default:
 		a.dispatchTaskCreatedWorkflow(id)
+	}
+}
+
+// initToolLedger opens the always-on tool-call ledger. A failure degrades to
+// no recording rather than blocking startup: the ledger informs future policy,
+// it does not gate anything running now.
+func (a *App) initToolLedger() {
+	l, err := toolledger.New(a.cfg.ToolLedgerDir())
+	if err != nil {
+		a.logger.Warn("tool_ledger.init.degraded", "err", err)
+		return
+	}
+	a.toolLedger = l
+	if a.agents != nil {
+		a.agents.SetToolLedger(l)
 	}
 }
 
@@ -1440,6 +1492,7 @@ func (a *App) initAgentConfig() {
 		TurnCostFraction:        a.cfg.Agent.TurnCostFraction,
 		TurnMultiplier:          a.cfg.Agent.TurnMultiplier,
 		CheckpointOnTurnCeiling: a.cfg.CheckpointOnTurnCeilingEnabled(),
+		MaxSubagentEvents:       a.cfg.Agent.MaxSubagentEvents,
 	})
 }
 

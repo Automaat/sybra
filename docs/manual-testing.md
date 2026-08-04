@@ -196,14 +196,14 @@ Acceptance checks:
 
 ```bash
 api TaskService GetTask "[\"$TASK_ID\"]" | jq '.status, .agentRuns[-1]'
-cat "$TMP/home/stats.json" | jq '.[-1]'
+tail -n 1 "$TMP/home/stats.json" | jq .
 api App GetEvaluationReport '[]' | jq '.byAgentModel, .byExperimentKind'
 ```
 
 Expected:
 
 - `agentRuns[-1]` has `model`, `experimentId`, `variantId`, `assignmentUnit`, and `assignmentKey`.
-- `stats.json[-1]` has the same A/B metadata.
+- The final NDJSON record in `stats.json` has the same A/B metadata.
 - Copilot smoke runs preserve fractional `premiumRequests` such as `7.5`.
 - Evaluation report includes rows in `byAgentModel` and `byExperimentKind` groups (`kind: "model"`, `"prompt"`, `"skill"`, `"unknown"`), each with a `groups[]` list keyed by `experimentId` (never mixing two experiments' rows), and each `groups[].rows`/`groups[].rowsContribution` breakdown carrying role drilldowns when multiple roles are present.
 

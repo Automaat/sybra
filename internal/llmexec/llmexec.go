@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -451,12 +452,14 @@ func classifyError(p, stderrOut, content string) (provider.Signal, string, time.
 func overloaded(parts ...string) bool {
 	for _, p := range parts {
 		lower := strings.ToLower(p)
-		if strings.Contains(lower, "529") || strings.Contains(lower, "overloaded") {
+		if overloadedStatusCode.MatchString(lower) || strings.Contains(lower, "overloaded") {
 			return true
 		}
 	}
 	return false
 }
+
+var overloadedStatusCode = regexp.MustCompile(`\b529\b`)
 
 func schemaFlagRejected(providerName, schema string, parts ...string) bool {
 	if providerName != "codex" || strings.TrimSpace(schema) == "" {

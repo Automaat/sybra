@@ -90,7 +90,7 @@ func (e *Engine) execCodegenGate(taskID string, step *Step) (StepOutput, error) 
 	}
 
 	report.Committed = committed
-	report.OutputTail = tailString(tail.String(), verifyChecksOutputTail)
+	report.OutputTail = tail.String()
 	if e.recorder != nil {
 		if data, mErr := json.MarshalIndent(report, "", "  "); mErr == nil {
 			if recErr := e.recorder.PutGeneric(taskID, "codegen-gate.json", step.ID, string(data)); recErr != nil {

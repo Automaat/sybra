@@ -271,6 +271,28 @@ func TestAssignerTickIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestAssignerTickDoesNotRouteDegradedTask(t *testing.T) {
+	stub := &followerStub{}
+	srv := stub.server(t)
+	cfg := leaderConfig(srv.URL, []string{"owner/pet"})
+	roster, _ := NewRoster(cfg, nil)
+	mgr := newManager(t)
+	assigner := NewAssigner(cfg, mgr, roster, func(string) bool { return false }, nil, nil)
+
+	created, _, err := mgr.Put(task.Task{ID: "broken-pet", Title: "t", Status: task.StatusTodo, ProjectID: "owner/pet"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(created.FilePath, []byte("not valid frontmatter"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	assigner.Tick(context.Background())
+	if _, ok := stub.lastAssigned(); ok {
+		t.Fatal("AssignTask received degraded task")
+	}
+}
+
 func TestMirrorApplyConvergesAndDropsStale(t *testing.T) {
 	cfg := leaderConfig("http://unused", []string{"owner/pet"})
 	roster, _ := NewRoster(cfg, nil)

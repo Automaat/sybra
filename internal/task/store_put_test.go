@@ -70,6 +70,62 @@ func TestStorePutVerbatimAndUpsert(t *testing.T) {
 	}
 }
 
+func TestStorePutRejectsInvalidSlug(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Put(Task{ID: "mirror-1", Title: "pushed", Status: StatusTodo, Slug: "../../etc/passwd"}); err == nil {
+		t.Fatal("Put with traversal slug: got nil error, want validation error")
+	}
+	if _, err := os.Stat(filepath.Join(store.dir, "mirror-1.md")); !os.IsNotExist(err) {
+		t.Fatalf("invalid Put wrote task file: %v", err)
+	}
+}
+
+func TestStorePutRejectsInvalidAgentMode(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Put(Task{ID: "mirror-1", Title: "pushed", Status: StatusTodo, AgentMode: "telepathy"}); err == nil {
+		t.Fatal("Put with invalid agent mode: got nil error, want validation error")
+	}
+	if _, err := os.Stat(filepath.Join(store.dir, "mirror-1.md")); !os.IsNotExist(err) {
+		t.Fatalf("invalid Put wrote task file: %v", err)
+	}
+}
+
+func TestStorePutFnRejectsInvalidAgentMode(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create("valid", "", AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := store.PutFn(created.ID, func(t Task) (Task, error) {
+		t.AgentMode = "telepathy"
+		return t, nil
+	}); err == nil {
+		t.Fatal("PutFn with invalid agent mode: got nil error, want validation error")
+	}
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AgentMode != AgentModeHeadless {
+		t.Fatalf("PutFn persisted invalid mode: %q", got.AgentMode)
+	}
+}
+
 // TestStorePutRejectsStatusChangeWithoutAdvancingUpdatedAt covers #2203: a
 // Put that changes Status but carries forward a stale/unchanged UpdatedAt
 // (e.g. a push built from a snapshot captured before the change, such as a

@@ -21,11 +21,6 @@ export function matchesTags(task: Task, tags: string[]): boolean {
   return tags.every((tag) => taskTags.includes(tag))
 }
 
-export function matchesAgentMode(task: Task, mode: string): boolean {
-  if (!mode) return true
-  return task.agentMode === mode
-}
-
 export type DateField = 'closedAt' | 'updatedAt' | 'createdAt' | 'dueDate'
 
 export function matchesDateRange(

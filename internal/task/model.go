@@ -513,6 +513,7 @@ type Task struct {
 
 	AssignedNode    string     `json:"assignedNode,omitempty"`
 	NodeOverride    string     `json:"nodeOverride,omitempty"`
+	AssignmentRev   int64      `json:"assignmentRev,omitempty"`
 	Generation      int64      `json:"generation,omitempty"`
 	MirrorRev       int64      `json:"mirrorRev,omitempty"`
 	MirrorUpdatedAt *time.Time `json:"mirrorUpdatedAt,omitempty"`
@@ -535,6 +536,12 @@ type Task struct {
 	// result to Plan.
 	PlanDrafts map[string]string `json:"planDrafts,omitempty"`
 	FilePath   string            `json:"filePath"`
+	// Degraded marks a synthetic, read-only board entry created for a task file
+	// that could not be parsed. It is never persisted and must never be
+	// dispatched or mirrored; fixing the source file makes the entry disappear
+	// on the next List.
+	Degraded   bool   `json:"degraded,omitempty"`
+	ParseError string `json:"parseError,omitempty"`
 	// TamperFlagged reports whether this task is parked at human-required
 	// pending a tamper bless. Derived from Status/StatusReason (never
 	// persisted) so the frontend doesn't need to duplicate

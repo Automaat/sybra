@@ -155,7 +155,7 @@ func (a *App) maintenancePass(ctx context.Context) {
 	if a.taskSvc != nil {
 		a.taskSvc.ReconcilePendingEnrichment()
 	}
-	a.worktrees.CleanupOrphaned(ctx)
+	a.startWorktreeCleanup(ctx)
 	if a.sandboxes != nil && a.tasks != nil {
 		if tasks, err := a.tasks.List(); err == nil {
 			var hasAgent func(string) bool
@@ -173,6 +173,26 @@ func (a *App) maintenancePass(ctx context.Context) {
 	}
 }
 
+// startWorktreeCleanup keeps slow bare-repo pruning out of the orchestrator's
+// select loop. A hung remote operation can still delay this best-effort
+// maintenance work, but it can no longer stop dispatch or queue nudges.
+func (a *App) startWorktreeCleanup(ctx context.Context) {
+	if a.worktrees == nil && a.worktreeCleanupFn == nil {
+		return
+	}
+	if !a.maintenanceCleanupRunning.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer a.maintenanceCleanupRunning.Store(false)
+		if a.worktreeCleanupFn != nil {
+			a.worktreeCleanupFn(ctx)
+			return
+		}
+		a.worktrees.CleanupOrphaned(ctx)
+	}()
+}
+
 func (a *App) queueDrainPass(ctx context.Context) {
 	// Draining the manual queue is the resume path for an agent an operator
 	// already explicitly started, not auto-dispatch — an agent-only instance
@@ -183,6 +203,19 @@ func (a *App) queueDrainPass(ctx context.Context) {
 		return
 	}
 	a.reconcileRunnableBoardTasks(ctx)
+	// A repair pass, not a dispatch decision, so it rides the slower recovery
+	// tick rather than the fast one. Lists once here rather than inside the
+	// pass, so the recovery tick does not pay for a second full store scan.
+	if a.tasks != nil {
+		tasks, err := a.tasks.List()
+		if err != nil {
+			// Logged rather than swallowed: a silent skip here leaves tasks
+			// stranded exactly as before, with nothing in the log to say why.
+			a.logger.Warn("umbrella.gate.stale-tag-scan", "err", err)
+		} else {
+			a.clearGateTagOnHandedOffChildren(tasks)
+		}
+	}
 	if a.workflowEngine != nil {
 		var workflowRecovery workflowRecoveryLoop = a.workflowEngine
 		workflowRecovery.ReplayPersistedEffects()

@@ -561,6 +561,7 @@ type memTasks struct {
 	steers           map[string]string
 	gets             map[string]int
 	onGet            func(id string, t *TaskInfo, count int)
+	onSetWorkflow    func(id string)
 	appendErr        error
 	failGet          bool
 	failSetWorkflow  bool
@@ -672,6 +673,21 @@ func (m *memTasks) UpdateTaskStatus(id, status, reason string) error {
 	t.StatusReason = reason
 	m.reasons[id] = reason
 	return nil
+}
+
+func (m *memTasks) ClearTaskStatusReasonIf(id, expectedStatus, expectedReason string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return false, fmt.Errorf("task %s not found", id)
+	}
+	if t.Status != expectedStatus || t.StatusReason != expectedReason {
+		return false, nil
+	}
+	t.StatusReason = ""
+	m.reasons[id] = ""
+	return true, nil
 }
 
 func (m *memTasks) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {
@@ -803,18 +819,24 @@ func (m *memTasks) ReplaceTaskBody(id, body string) error {
 
 func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.failSetWorkflow || m.failSetWorkflowN > 0 {
 		if m.failSetWorkflowN > 0 {
 			m.failSetWorkflowN--
 		}
+		m.mu.Unlock()
 		return fmt.Errorf("simulated write failure for task %s", id)
 	}
 	t, ok := m.tasks[id]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("task %s not found", id)
 	}
 	t.Workflow = wf.Clone()
+	hook := m.onSetWorkflow
+	m.mu.Unlock()
+	if hook != nil {
+		hook(id)
+	}
 	return nil
 }
 
@@ -3911,6 +3933,141 @@ steps:
 	}
 }
 
+func TestResumeStalled_DoesNotRerouteConditionWhileDispatchClaimed(t *testing.T) {
+	store := newInlineTestStore(t, "condition-reroute-claimed", `
+id: condition-reroute-claimed
+steps:
+  - id: maybe_critique
+    type: condition
+    next:
+      - when:
+          field: task.tags
+          operator: not_contains
+          value: nocritic
+        goto: critique_plan
+      - goto: review_plan
+  - id: critique_plan
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      prompt: critique
+    next:
+      - goto: review_plan
+  - id: review_plan
+    type: wait_human
+    config:
+      status: plan-review
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	now := time.Now().UTC()
+	tasks.Put(TaskInfo{
+		ID: "t1", Status: "planning", Tags: []string{"nocritic"},
+		Workflow: &Execution{
+			WorkflowID: "condition-reroute-claimed", CurrentStep: "critique_plan", State: ExecWaiting,
+			StepHistory: []StepRecord{{StepID: "maybe_critique", Status: "completed", StartedAt: now, EndedAt: now}},
+			AgentRoutes: map[string]string{"agent-1": "critique_plan"},
+		},
+	})
+
+	// This models recovery's lost-callback bridge: the manager no longer sees
+	// the agent, but HandleAgentComplete has already claimed the task while it
+	// advances the persisted route.
+	engine.mu.Lock()
+	engine.dispatching["t1"] = struct{}{}
+	engine.mu.Unlock()
+	defer engine.clearResumeDispatching("t1")
+
+	engine.ResumeStalled()
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Workflow.CurrentStep != "critique_plan" {
+		t.Fatalf("CurrentStep = %q, want critique_plan while completion owns dispatch", ti.Workflow.CurrentStep)
+	}
+	if _, ok := ti.Workflow.AgentRoute("agent-1"); !ok {
+		t.Fatal("condition reroute cleared the completing agent route")
+	}
+	if agents.CallCount() != 0 {
+		t.Fatalf("agent starts = %d, want 0", agents.CallCount())
+	}
+}
+
+func TestResumeStalled_ConditionRerouteDoesNotOverwriteFreshCompletion(t *testing.T) {
+	store := newInlineTestStore(t, "condition-reroute-fresh", `
+id: condition-reroute-fresh
+steps:
+  - id: maybe_critique
+    type: condition
+    next:
+      - when:
+          field: task.tags
+          operator: not_contains
+          value: nocritic
+        goto: critique_plan
+      - goto: review_plan
+  - id: critique_plan
+    type: run_agent
+    config:
+      role: plan-critic
+      mode: headless
+      prompt: critique
+    next:
+      - goto: review_plan
+  - id: review_plan
+    type: wait_human
+    config:
+      status: plan-review
+`)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	now := time.Now().UTC()
+	stale := TaskInfo{
+		ID: "t1", Status: "planning", Tags: []string{"nocritic"},
+		Workflow: &Execution{
+			WorkflowID: "condition-reroute-fresh", CurrentStep: "critique_plan", State: ExecWaiting,
+			StepHistory: []StepRecord{{StepID: "maybe_critique", Status: "completed", StartedAt: now, EndedAt: now}},
+			AgentRoutes: map[string]string{"agent-1": "critique_plan"},
+		},
+	}
+	tasks.Put(stale)
+
+	// A recovered completion advances after ResumeStalled read stale but before
+	// its reroute claim. The reroute must re-read rather than write stale back.
+	completed := stale
+	completed.Workflow = stale.Workflow.Clone()
+	if completed.Workflow == nil {
+		t.Fatal("stale workflow clone is nil")
+	}
+	completed.Workflow.CurrentStep = "review_plan"
+	completed.Workflow.ClearAgentRoute("agent-1")
+	tasks.Put(completed)
+
+	def, err := store.Get("condition-reroute-fresh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := def.StepByID("critique_plan")
+	if step == nil {
+		t.Fatal("critique_plan step missing")
+	}
+	if !engine.resumeStalledRerouteStaleConditionBranch(&stale, &def, step) {
+		t.Fatal("stale reroute was not consumed")
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow.CurrentStep != "review_plan" {
+		t.Fatalf("CurrentStep = %q, want completion's review_plan", got.Workflow.CurrentStep)
+	}
+}
+
 func TestResumeStalled_RunAgent(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -4150,7 +4307,7 @@ func TestRescheduleRateLimitedAgent_WatchdogRetriesThenEscalates(t *testing.T) {
 			name:       "first watchdog rate limit reruns",
 			wantStarts: 1,
 			wantStatus: "in-progress",
-			wantReason: "watchdog: rate limit: org-level quota exhausted",
+			wantReason: "",
 			wantRetry:  "1",
 		},
 		{
@@ -4230,7 +4387,7 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 			retries:    "1",
 			wantStarts: 1,
 			wantStatus: "in-progress",
-			wantReason: watchdogreason.RateLimit(watchdogreason.ZeroOutputBeforeStartup),
+			wantReason: "",
 			wantRetry:  "2",
 		},
 		{
@@ -4376,6 +4533,111 @@ func TestResumeStalled_WatchdogZeroOutputFreshRoundDispatches(t *testing.T) {
 	}
 	if final.Status == "blocked" {
 		t.Fatalf("task latched blocked despite a fresh-session recovery being available")
+	}
+}
+
+func TestResumeStalled_WatchdogRateLimitPoolBusyDoesNotBurnRetryBudget(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetFailSpawn(ErrAgentPoolBusy)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: rate limit: org-level quota exhausted",
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+
+	// The first retry is armed then hits a benign capacity park. A later tick
+	// must retry dispatch normally instead of re-arming the rate-limit policy.
+	for range maxWatchdogRateLimitRetries + 1 {
+		engine.ResumeStalled()
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "in-progress" {
+		t.Fatalf("status = %q, want in-progress", got.Status)
+	}
+	if got.StatusReason != "" {
+		t.Fatalf("status_reason = %q, want cleared after arming retry", got.StatusReason)
+	}
+	if retry := got.Workflow.Variables[watchdogRateLimitRetryKey("implement")]; retry != "1" {
+		t.Fatalf("rate-limit retry var = %q, want 1 after repeated pool-busy parks", retry)
+	}
+	if got.Workflow.State == ExecFailed {
+		t.Fatal("pool-busy parks must not exhaust the watchdog retry budget")
+	}
+}
+
+func TestResumeStalled_WatchdogHangPoolBusyRetainsReaskNote(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetFailSpawn(ErrAgentPoolBusy)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{
+		ID: "t1", Status: "in-progress", StatusReason: "watchdog hang: no stream activity", AgentMode: "headless",
+		Workflow: &Execution{WorkflowID: "test-simple", CurrentStep: "implement", State: ExecWaiting, Variables: map[string]string{}, StartedAt: time.Now().UTC()},
+	})
+
+	engine.ResumeStalled()
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if note := got.Workflow.Variables[watchdogReaskNoteVar]; note == "" {
+		t.Fatal("pool-busy park cleared watchdog guidance before an agent started")
+	}
+	if retry := got.Workflow.Variables[watchdogHangRetryKey("implement")]; retry != "1" {
+		t.Fatalf("hang retry = %q, want 1", retry)
+	}
+}
+
+func TestResumeStalled_WatchdogRateLimitDoesNotClearConcurrentFailure(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "watchdog: rate limit: org-level quota exhausted",
+		AgentMode:    "headless",
+		Workflow:     &Execution{WorkflowID: "test-simple", CurrentStep: "implement", State: ExecWaiting, Variables: map[string]string{}},
+	})
+	var once sync.Once
+	tasks.onSetWorkflow = func(id string) {
+		once.Do(func() {
+			if err := tasks.UpdateTaskStatus(id, "human-required", "concurrent permanent failure"); err != nil {
+				t.Errorf("set concurrent failure: %v", err)
+			}
+		})
+	}
+
+	engine.ResumeStalled()
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "human-required" || got.StatusReason != "concurrent permanent failure" {
+		t.Fatalf("concurrent failure was overwritten: status=%q reason=%q", got.Status, got.StatusReason)
+	}
+	if starts := agents.CallCount(); starts != 0 {
+		t.Fatalf("concurrent failure must fence dispatch, started %d agents", starts)
 	}
 }
 
@@ -4912,7 +5174,7 @@ func TestRescheduleRateLimitedAgent_ParallelChildWatchdogRetriesThenEscalates(t 
 			name:       "first watchdog rate limit reruns child",
 			wantStarts: 1,
 			wantStatus: "in-progress",
-			wantReason: "watchdog: rate limit: org-level quota exhausted",
+			wantReason: "",
 			wantRetry:  "1",
 		},
 		{
@@ -9554,6 +9816,36 @@ func TestExecVerifyCommits_NoCommitAuthorRunRetriesOnce(t *testing.T) {
 	}
 }
 
+func TestExecVerifyCommits_NoCommitAuthorRunRetriesOnceWithSubagentDiagnosis(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	wfExec := &Execution{Variables: map[string]string{}}
+	wfExec.RecordStep(StepRecord{StepID: "implement", Status: "completed", AgentID: "a1", Provider: "claude"})
+	ti := TaskInfo{
+		ID: "t1", Status: "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "a1", Role: "implementation", SubagentCallCount: 2}},
+	}
+
+	_, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, ti)
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+	got := wfExec.Variables[verifyReaskNoteVar]
+	if !strings.Contains(got, "background subagent") {
+		t.Fatalf("verify reask note = %q, want background-subagent diagnosis", got)
+	}
+	if reason := tasks.Reason("t1"); !strings.Contains(reason, "background subagent handoff") {
+		t.Fatalf("status reason = %q, want background subagent diagnosis", reason)
+	}
+}
+
 func TestExecVerifyCommits_NoCommitAuthorRunEscalatesAfterRetry(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -10560,7 +10852,7 @@ func TestExecEvaluate_LastAgentFailedFlipsHumanRequired(t *testing.T) {
 	}
 }
 
-func TestExecEvaluate_LastAgentFailedTruncatesLongReason(t *testing.T) {
+func TestExecEvaluate_LastAgentFailedKeepsFullReason(t *testing.T) {
 	long := strings.Repeat("x", 500)
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
@@ -10575,11 +10867,11 @@ func TestExecEvaluate_LastAgentFailedTruncatesLongReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := tasks.Reason("t1")
-	if !strings.Contains(got, "(truncated)") {
-		t.Errorf("reason missing truncation marker: %q", got)
+	if strings.Contains(got, "(truncated)") {
+		t.Errorf("reason should not be truncated: %q", got)
 	}
-	if len(got) >= len(long) {
-		t.Errorf("reason not truncated: %d chars", len(got))
+	if got != long {
+		t.Errorf("reason = %d chars, want the full %d-char output preserved", len(got), len(long))
 	}
 }
 

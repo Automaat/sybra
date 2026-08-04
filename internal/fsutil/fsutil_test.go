@@ -2,6 +2,8 @@ package fsutil
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -44,6 +46,24 @@ func TestAtomicWrite_Overwrite(t *testing.T) {
 	}
 	if string(got) != "new" {
 		t.Errorf("got %q, want %q", got, "new")
+	}
+}
+
+func TestAtomicWriteNew_RefusesExistingFile(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "file.txt")
+	if err := AtomicWrite(path, []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWriteNew(path, []byte("new")); !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("AtomicWriteNew error = %v, want fs.ErrExist", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "old" {
+		t.Fatalf("existing file = %q, want unchanged old contents", got)
 	}
 }
 

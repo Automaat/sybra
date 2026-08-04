@@ -215,16 +215,16 @@ func TestCloneBare_SetsCommitIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read user.name: %v", err)
 	}
-	if got := strings.TrimSpace(name); got != "Sybra Agent" {
-		t.Errorf("user.name = %q, want %q", got, "Sybra Agent")
+	if got := strings.TrimSpace(name); got != "Sybra Test" {
+		t.Errorf("user.name = %q, want %q", got, "Sybra Test")
 	}
 
 	email, err := outputBare(context.Background(), bare, "config", "user.email")
 	if err != nil {
 		t.Fatalf("read user.email: %v", err)
 	}
-	if got := strings.TrimSpace(email); got != "sybra-agent@example.invalid" {
-		t.Errorf("user.email = %q, want %q", got, "sybra-agent@example.invalid")
+	if got := strings.TrimSpace(email); got != "test@test.com" {
+		t.Errorf("user.email = %q, want %q", got, "test@test.com")
 	}
 }
 
@@ -255,6 +255,59 @@ func TestCloneBare_CommitIdentityRespectsEnvOverride(t *testing.T) {
 	}
 }
 
+func TestCloneBare_CommitIdentityFallsBackWithoutGlobalIdentity(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "empty-global-config"))
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	name, err := outputBare(context.Background(), bare, "config", "user.name")
+	if err != nil {
+		t.Fatalf("read user.name: %v", err)
+	}
+	email, err := outputBare(context.Background(), bare, "config", "user.email")
+	if err != nil {
+		t.Fatalf("read user.email: %v", err)
+	}
+	if strings.TrimSpace(name) != "Sybra Agent" || strings.TrimSpace(email) != "sybra-agent@example.invalid" {
+		t.Fatalf("fallback identity = %q <%q>", strings.TrimSpace(name), strings.TrimSpace(email))
+	}
+}
+
+// A plain `git fetch` in any linked worktree defaults to triggering a
+// detached `git maintenance run --auto` against this shared clone's object
+// store — a repack racing a sibling worktree's in-flight commit can drop the
+// object before its ref update lands. CloneBare must disable this by default.
+func TestCloneBare_DisablesAutoMaintenance(t *testing.T) {
+	t.Parallel()
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+
+	raw, err := outputBare(context.Background(), bare, "config", "maintenance.auto")
+	if err != nil {
+		t.Fatalf("read maintenance.auto: %v", err)
+	}
+	if got := strings.TrimSpace(raw); got != "false" {
+		t.Errorf("maintenance.auto = %q, want %q", got, "false")
+	}
+
+	// gc.auto is a separate, older auto-gc mechanism maintenance.auto=false
+	// does not disable — git commit/checkout/merge/fetch all still trigger
+	// `git gc --auto` once loose objects cross gc.auto's threshold (default
+	// 6700) unless this is also set to 0.
+	gcAuto, err := outputBare(context.Background(), bare, "config", "gc.auto")
+	if err != nil {
+		t.Fatalf("read gc.auto: %v", err)
+	}
+	if got := strings.TrimSpace(gcAuto); got != "0" {
+		t.Errorf("gc.auto = %q, want %q", got, "0")
+	}
+}
+
 func TestDefaultBranch(t *testing.T) {
 	t.Parallel()
 	bare := initBareRepo(t)
@@ -273,6 +326,117 @@ func TestFetchOriginNoRemote(t *testing.T) {
 	err := FetchOrigin(context.Background(), bare)
 	if err == nil {
 		t.Fatal("expected error fetching from repo with no origin")
+	}
+}
+
+func TestFetchRemoteBranchTimesOutNetworkGit(t *testing.T) {
+	oldTimeout := networkGitTimeout
+	networkGitTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { networkGitTimeout = oldTimeout })
+
+	bin := t.TempDir()
+	git := filepath.Join(bin, "git")
+	if err := os.WriteFile(git, []byte("#!/bin/sh\nexec sleep 10\n"), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	started := time.Now()
+	err := FetchRemoteBranch(context.Background(), t.TempDir(), "fork", "main")
+	if err == nil {
+		t.Fatal("FetchRemoteBranch succeeded with a hung git process")
+	}
+	if elapsed := time.Since(started); elapsed > hungGitReturnCeiling {
+		t.Fatalf("FetchRemoteBranch returned after %s, want bounded network timeout", elapsed)
+	}
+}
+
+// hungGitReturnCeiling bounds how long a remote git call may take to return
+// once its network timeout has fired. It is deliberately far below the fake
+// git's sleep and far above the timeout itself: the assertion's power comes
+// from that gap (5s ceiling vs a 10s sleep), not from a tight wall-clock bound.
+// The previous 500ms ceiling against a 1s sleep left too little room: returning
+// under suite load took seconds, so a correctly-bounded timeout still failed
+// the test (#2896).
+const hungGitReturnCeiling = 5 * time.Second
+
+func TestRemoteGitOperationsTimeOut(t *testing.T) {
+	oldTimeout := networkGitTimeout
+	networkGitTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { networkGitTimeout = oldTimeout })
+
+	pushWorktree := initRepoWithCommit(t)
+	bin := t.TempDir()
+	git := filepath.Join(bin, "git")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("locate git: %v", err)
+	}
+	// pushLocked resolves the shared git dir before it starts the remote
+	// transport. Preserve only that local rev-parse call, then hang every
+	// remote operation the test exercises.
+	fakeGit := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = rev-parse ]; then exec %q \"$@\"; fi\nexec sleep 10\n", realGit)
+	if err := os.WriteFile(git, []byte(fakeGit), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "ls-remote",
+			run: func() error {
+				_, err := RemoteBranchHead(context.Background(), t.TempDir(), "origin", "main")
+				return err
+			},
+		},
+		{
+			name: "linked-worktree-fetch",
+			run: func() error {
+				return refreshTrackingRef(context.Background(), t.TempDir(), "origin", "main")
+			},
+		},
+		{
+			name: "push",
+			run: func() error {
+				return pushLocked(context.Background(), pushWorktree, "push", "origin", "main")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			started := time.Now()
+			if err := tt.run(); err == nil {
+				t.Fatal("remote git operation succeeded with a hung git process")
+			}
+			if elapsed := time.Since(started); elapsed > hungGitReturnCeiling {
+				t.Fatalf("remote git operation returned after %s, want bounded network timeout", elapsed)
+			}
+		})
+	}
+}
+
+func TestExecGitPushProbeTimesOut(t *testing.T) {
+	oldTimeout := networkGitTimeout
+	networkGitTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { networkGitTimeout = oldTimeout })
+
+	bin := t.TempDir()
+	git := filepath.Join(bin, "git")
+	if err := os.WriteFile(git, []byte("#!/bin/sh\nexec sleep 10\n"), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	started := time.Now()
+	_, err := execGitPushProbe(context.Background(), t.TempDir(), nil, "push", "--dry-run", "origin", "HEAD")
+	if err == nil {
+		t.Fatal("push credential probe succeeded with a hung git process")
+	}
+	if elapsed := time.Since(started); elapsed > hungGitReturnCeiling {
+		t.Fatalf("push credential probe returned after %s, want bounded network timeout", elapsed)
 	}
 }
 
@@ -1570,6 +1734,33 @@ func TestInstallHooks_RepoConfigPriority(t *testing.T) {
 	commitCmd.Dir = wtPath
 	if err := commitCmd.Run(); err == nil {
 		t.Fatal("commit should have been blocked by repo pre-commit hook (exit 1)")
+	}
+}
+
+func TestInstallHooks_UnsetsGitObjectEnv(t *testing.T) {
+	t.Parallel()
+	_, wtPath := initWorktree(t)
+
+	checks := &ChecksConfig{PrePush: []string{
+		`test -z "$GIT_OBJECT_DIRECTORY"`,
+		`test -z "$GIT_ALTERNATE_OBJECT_DIRECTORIES"`,
+	}}
+	if err := InstallHooks(context.Background(), wtPath, checks); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+
+	gitDir, err := gitCommonDir(context.Background(), wtPath)
+	if err != nil {
+		t.Fatalf("gitCommonDir: %v", err)
+	}
+	cmd := exec.Command(filepath.Join(gitDir, "hooks", "pre-push"))
+	cmd.Dir = wtPath
+	cmd.Env = append(os.Environ(),
+		"GIT_OBJECT_DIRECTORY=/some/sandbox/overlay/objects",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES=/some/other/repo/objects",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("pre-push hook should scrub Git object environment: %v: %s", err, out)
 	}
 }
 
@@ -3548,6 +3739,24 @@ func TestInstallSignoffHook(t *testing.T) {
 
 	if err := InstallSignoffHook(context.Background(), wtPath); err != nil {
 		t.Fatalf("InstallSignoffHook: %v", err)
+	}
+	gitDir, err := gitCommonDir(context.Background(), wtPath)
+	if err != nil {
+		t.Fatalf("gitCommonDir: %v", err)
+	}
+	msgPath := filepath.Join(t.TempDir(), "message")
+	if err := os.WriteFile(msgPath, []byte("test message\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hook := exec.Command(filepath.Join(gitDir, "hooks", "prepare-commit-msg"), msgPath)
+	hook.Dir = wtPath
+	hook.Env = append(os.Environ(),
+		"GIT_DIR=/nonexistent/attacker-git-dir",
+		"GIT_OBJECT_DIRECTORY=/nonexistent/attacker-objects",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES=/nonexistent/attacker-alternates",
+	)
+	if out, err := hook.CombinedOutput(); err != nil {
+		t.Fatalf("signoff hook should scrub inherited Git environment: %v: %s", err, out)
 	}
 
 	body := func() string {
