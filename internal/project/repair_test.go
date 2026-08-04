@@ -67,6 +67,25 @@ func TestFetchOrigin_RepairsPoisonedRemoteRef(t *testing.T) {
 	}
 }
 
+func TestFetchOrigin_IgnoresPoisonedTagOutsideCheckoutScope(t *testing.T) {
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+
+	plantBadRef(t, bare, "refs/tags/unrelated-bad-tag")
+	if err := FetchOrigin(context.Background(), bare); err != nil {
+		t.Fatalf("FetchOrigin should ignore a poisoned tag outside checkout scope, got: %v", err)
+	}
+	if err := CheckBareCloneHealth(context.Background(), bare); err != nil {
+		t.Fatalf("checkout-relevant clone health should ignore poisoned tag: %v", err)
+	}
+	if _, err := outputBare(context.Background(), bare, "rev-parse", "--verify", "refs/tags/unrelated-bad-tag"); err == nil {
+		t.Fatal("poisoned tag should be quarantined so fetch can proceed")
+	}
+}
+
 func TestRepairBareClone_QuarantinesRefsAndWorktreeHead(t *testing.T) {
 	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")

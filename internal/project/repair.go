@@ -58,7 +58,7 @@ func IsBadRefError(err error) bool {
 const fsckRefBatch = 256
 
 // CheckBareCloneHealth reports whether the object database is intact for
-// everything reachable from refs.
+// refs that can seed a task checkout.
 //
 // It scopes fsck to the ref tips rather than running it bare. An unscoped
 // `git fsck` also walks every linked worktree's index and HEAD reflog, and
@@ -192,7 +192,11 @@ func runQuietGit(ctx context.Context, dir string, args ...string) error {
 // bareRefTips lists the object ids every ref points at. They are the roots
 // the scoped fsck walks from.
 func bareRefTips(ctx context.Context, barePath string) ([]string, error) {
-	out, err := outputBare(ctx, barePath, "rev-parse", "--all")
+	// Dispatch only needs refs that can seed a task checkout. Keep this in
+	// lockstep with repairBareCloneLocked: tags and non-origin remotes are
+	// neither fetched nor used as checkout bases, so corruption there must not
+	// wedge every task for the project.
+	out, err := outputBare(ctx, barePath, "for-each-ref", "--format=%(objectname)", "refs/heads", "refs/remotes/origin")
 	if err != nil {
 		return nil, fmt.Errorf("list ref tips: %w", err)
 	}
@@ -258,7 +262,10 @@ func repairBareCloneLocked(ctx context.Context, barePath, taskBranch string) (Re
 	releaseDeadWorktreeRefs(ctx, barePath, &report)
 	rebuildWorktreeIndexes(ctx, barePath, &report)
 
-	refsOut, err := outputBare(ctx, barePath, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin")
+	// Fetch rejects any corrupt ref, including tags and non-origin remotes.
+	// Quarantine only refs Git cannot resolve; valid refs outside checkout scope
+	// are left untouched even though they are not part of the dispatch gate.
+	refsOut, err := outputBare(ctx, barePath, "for-each-ref", "--format=%(refname)")
 	if err != nil {
 		return report, fmt.Errorf("enumerate refs: %w", err)
 	}
