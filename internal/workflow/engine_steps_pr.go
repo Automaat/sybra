@@ -19,9 +19,9 @@ import (
 // maybe_create_pr retry path in simple-task-pr). Replaces the push-branch
 // agent role: no LLM/agent involved, only git plumbing.
 func (e *Engine) execPushBranch(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
-	wtPath, branch, out, done := e.prWorktreeAndBranch(taskID, step, t)
+	wtPath, branch, out, done, err := e.prWorktreeAndBranch(taskID, step, t)
 	if done {
-		return out, nil
+		return out, err
 	}
 
 	if out, err, ok := e.pushTaskBranch(taskID, step, wfExec, t, wtPath, branch); !ok {
@@ -48,9 +48,9 @@ func (e *Engine) execCreatePR(taskID string, step *Step, wfExec *Execution, t Ta
 		return e.humanRequiredPR(taskID, step, "task has no project — cannot open a PR")
 	}
 
-	wtPath, branch, out, done := e.prWorktreeAndBranch(taskID, step, t)
+	wtPath, branch, out, done, err := e.prWorktreeAndBranch(taskID, step, t)
 	if done {
-		return out, nil
+		return out, err
 	}
 
 	headArg, err := func() (string, error) {
@@ -174,10 +174,10 @@ func (e *Engine) linkTaskPR(taskID string, t TaskInfo, newPR int) error {
 // push_branch/create_pr. A production WorktreeGetter may also implement
 // PRWorktreeResolver, allowing one reconstruction attempt before a genuinely
 // unrecoverable setup problem is escalated to human-required.
-func (e *Engine) prWorktreeAndBranch(taskID string, step *Step, t TaskInfo) (wtPath, branch string, out StepOutput, done bool) {
+func (e *Engine) prWorktreeAndBranch(taskID string, step *Step, t TaskInfo) (wtPath, branch string, out StepOutput, done bool, stepErr error) {
 	if e.worktrees == nil {
-		out, _ = e.humanRequiredPR(taskID, step, "no worktree getter configured")
-		return "", "", out, true
+		out, stepErr = e.humanRequiredPR(taskID, step, "no worktree getter configured")
+		return "", "", out, true, stepErr
 	}
 	var (
 		ok  bool
@@ -191,12 +191,12 @@ func (e *Engine) prWorktreeAndBranch(taskID string, step *Step, t TaskInfo) (wtP
 		wtPath, ok = e.worktrees.GetWorktreePath(taskID)
 	}
 	if err != nil {
-		out, _ = e.humanRequiredPR(taskID, step, "could not prepare worktree: "+err.Error())
-		return "", "", out, true
+		out, stepErr = e.humanRequiredPR(taskID, step, "could not prepare worktree: "+err.Error())
+		return "", "", out, true, stepErr
 	}
 	if !ok {
-		out, _ = e.humanRequiredPR(taskID, step, "no worktree found for task")
-		return "", "", out, true
+		out, stepErr = e.humanRequiredPR(taskID, step, "no worktree found for task")
+		return "", "", out, true, stepErr
 	}
 	branch = t.Branch
 	if branch == "" {
@@ -208,12 +208,12 @@ func (e *Engine) prWorktreeAndBranch(taskID string, step *Step, t TaskInfo) (wtP
 			if err != nil {
 				reason += ": " + err.Error()
 			}
-			out, _ = e.humanRequiredPR(taskID, step, reason)
-			return "", "", out, true
+			out, stepErr = e.humanRequiredPR(taskID, step, reason)
+			return "", "", out, true, stepErr
 		}
 		branch = resolved
 	}
-	return wtPath, branch, StepOutput{}, false
+	return wtPath, branch, StepOutput{}, false, nil
 }
 
 // humanRequiredPR flips the task to human-required with reason and returns a

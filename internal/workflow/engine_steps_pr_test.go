@@ -175,6 +175,15 @@ type fakePRWorktreeResolver struct {
 	getCalls     int
 }
 
+type failStatusTaskProvider struct {
+	*memTasks
+	err error
+}
+
+func (f *failStatusTaskProvider) UpdateTaskStatus(string, string, string) error {
+	return f.err
+}
+
 func (f *fakePRWorktreeResolver) GetWorktreePath(string) (string, bool) {
 	f.getCalls++
 	return "", false
@@ -230,6 +239,34 @@ func TestExecCreatePR_WorktreeRecoveryErrorIsPrecise(t *testing.T) {
 	}
 	if reason := tasks.Reason("t1"); reason != out.Output {
 		t.Fatalf("status reason = %q, want %q", reason, out.Output)
+	}
+}
+
+func TestExecCreatePR_WorktreeRecoveryPropagatesStatusFailure(t *testing.T) {
+	baseTasks := newMemTasks()
+	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets"}
+	baseTasks.Put(task)
+	tasks := &failStatusTaskProvider{memTasks: baseTasks, err: errors.New("persist status: disk full")}
+	resolver := &fakePRWorktreeResolver{err: errors.New("prepare branch: remote ref missing")}
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(resolver)
+
+	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
+	if err == nil || !strings.Contains(err.Error(), "persist status: disk full") {
+		t.Fatalf("err = %v, want status persistence failure", err)
+	}
+	if out != (StepOutput{}) {
+		t.Fatalf("output = %+v, want zero output on status persistence failure", out)
+	}
+	if resolver.resolveCalls != 1 {
+		t.Fatalf("resolver calls = %d, want 1", resolver.resolveCalls)
+	}
+	stored, getErr := baseTasks.GetTask("t1")
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if stored.Status != "ready-pr" {
+		t.Fatalf("status = %q, want unchanged ready-pr", stored.Status)
 	}
 }
 
