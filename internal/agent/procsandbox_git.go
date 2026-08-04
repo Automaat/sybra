@@ -402,7 +402,7 @@ func gitHeadCommit(ctx context.Context, worktree string) (string, error) {
 		Env: gitSandboxDiscoveryEnv(),
 	}, "rev-parse", "--verify", "HEAD")
 	if err != nil {
-		return "", fmt.Errorf("git rev-parse --verify HEAD: %w", err)
+		return "", err
 	}
 	head := strings.TrimSpace(string(out))
 	if head == "" {
@@ -434,7 +434,7 @@ func gitPathRaw(ctx context.Context, worktree string, args ...string) (string, e
 		if looksLikeNotGitRepo(msg) {
 			return "", errGitSandboxNotRepo
 		}
-		return "", fmt.Errorf("git %s: %w", strings.Join(cmdArgs, " "), err)
+		return "", err
 	}
 	path := strings.TrimSpace(string(out))
 	if path == "" {
@@ -482,7 +482,7 @@ func gitSymbolicRef(ctx context.Context, worktree string) (string, error) {
 		if msg == "" && gitExitCode(err) == 1 {
 			return "", nil
 		}
-		return "", fmt.Errorf("git symbolic-ref -q HEAD: %w", err)
+		return "", err
 	}
 	// Exit 0 with no ref is not a state git produces; treat it as a real fault
 	// rather than silently reporting "detached".
