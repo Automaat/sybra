@@ -154,6 +154,27 @@ func TestExecutableResolutionSkipsDanglingShim(t *testing.T) {
 	}
 }
 
+func TestExecutableResolutionSkipsInaccessibleFile(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("effective-user executable checks are supported on darwin and Linux")
+	}
+	badBin := t.TempDir()
+	goodBin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(badBin, "git"), []byte("not executable\n"), 0o010); err != nil {
+		t.Fatalf("write inaccessible git: %v", err)
+	}
+	writeFakeGit(t, goodBin, `printf 'usable\n'`)
+	t.Setenv("PATH", badBin+string(os.PathListSeparator)+goodBin)
+
+	got, err := Output(context.Background(), Options{}, "version")
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	if got != "usable" {
+		t.Fatalf("Output = %q, want usable", got)
+	}
+}
+
 func TestCancellationKillsProcessGroup(t *testing.T) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		t.Skip("process-group cancellation is supported on darwin and Linux")

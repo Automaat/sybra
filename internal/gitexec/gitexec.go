@@ -151,7 +151,7 @@ func usablePathExecutable(name string) string {
 			continue
 		}
 		info, err := os.Stat(resolved)
-		if err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+		if err == nil && executableByCurrentUser(resolved, info) {
 			return resolved
 		}
 	}
