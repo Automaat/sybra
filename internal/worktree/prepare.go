@@ -616,8 +616,19 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 	// Check out the PR head via refs/pull/<N>/head rather than
 	// refs/remotes/origin/<branch>: a fork PR's head branch never lands under
 	// origin, so the latter fails with "invalid reference".
+	//
+	// Like reconcileAndRebase's remote fetch, a transient connectivity blip
+	// here (SSH/DNS/timeout) looks identical to a genuine failure unless
+	// distinguished — wrap it as ErrTransientFetch so ClassifyAgentStartFailure
+	// treats it as retryable instead of feeding the circuit breaker (the raw
+	// error used to fall into ClassifyAgentStartFailure's default case, which
+	// counts toward the breaker and can trip a review dispatch to
+	// human-required after a few DNS blips even though nothing needs a human).
 	ref, err := project.FetchPRHead(ctx, proj.ClonePath, t.PRNumber)
 	if err != nil {
+		if project.IsTransientNetworkError(err) {
+			return "", fmt.Errorf("%w: fetch pr head: %w", ErrTransientFetch, err)
+		}
 		return "", fmt.Errorf("fetch pr head: %w", err)
 	}
 	if err := project.CreateWorktreeDetached(ctx, proj.ClonePath, wtPath, ref); err != nil {
@@ -929,6 +940,9 @@ func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) 
 		if !project.RefExists(ctx, proj.ClonePath, originRef) {
 			prHeadRef, err := project.FetchPRHead(ctx, proj.ClonePath, prNumber)
 			if err != nil {
+				if project.IsTransientNetworkError(err) {
+					return "", fmt.Errorf("%w: fetch pr head: %w", ErrTransientFetch, err)
+				}
 				return "", fmt.Errorf("fetch pr head: %w", err)
 			}
 			reconcileTarget = freshFixReconcileTarget{ref: prHeadRef}
@@ -944,6 +958,9 @@ func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) 
 		// so the fix agent still gets a real local branch to push.
 		prHeadRef, err := project.FetchPRHead(ctx, proj.ClonePath, prNumber)
 		if err != nil {
+			if project.IsTransientNetworkError(err) {
+				return "", fmt.Errorf("%w: fetch pr head: %w", ErrTransientFetch, err)
+			}
 			return "", fmt.Errorf("fetch pr head: %w", err)
 		}
 		if err := project.CreateWorktree(ctx, proj.ClonePath, wtPath, branch, prHeadRef); err != nil {

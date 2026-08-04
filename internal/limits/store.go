@@ -13,7 +13,10 @@ import (
 	"github.com/Automaat/sybra/internal/fsutil"
 )
 
-const exactSnapshotMaxAge = 30 * time.Minute
+const (
+	exactSnapshotMaxAge = 30 * time.Minute
+	storeLockTimeout    = 2 * time.Second
+)
 
 // eventMaxAge bounds how long a UsageEvent survives in limits.json.
 // Summary never looks back further than the weekly window (7d, see
@@ -57,19 +60,20 @@ func NewStore(path string) (*Store, error) {
 // on-disk file: s.snapshots/s.events are populated once at NewStore time and
 // otherwise never re-read, but sybra-cli and the GUI server each hold a
 // separate Store over the same path in separate OS processes. Reloading
-// under the cross-process flock immediately before mutating resyncs this
+// after the bounded cross-process flock immediately before mutating resyncs this
 // process's view to the authoritative on-disk state, so a write from the
-// other process in the gap since this process last loaded isn't clobbered.
+// other process in the gap since this process last loaded isn't clobbered. The
+// flock is acquired before s.mu so a wedged peer process cannot stall provider
+// selection or availability reads behind that mutex.
 
 func (s *Store) UpdateSnapshot(snapshot Snapshot) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	unlock, err := fsutil.LockFile(s.path)
+	unlock, err := fsutil.LockFileWithin(s.path, storeLockTimeout)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = unlock() }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if err := s.reloadLocked(); err != nil {
 		return err
@@ -81,14 +85,13 @@ func (s *Store) UpdateSnapshot(snapshot Snapshot) error {
 }
 
 func (s *Store) RecordUsage(e UsageEvent) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	unlock, err := fsutil.LockFile(s.path)
+	unlock, err := fsutil.LockFileWithin(s.path, storeLockTimeout)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = unlock() }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if err := s.reloadLocked(); err != nil {
 		return err
@@ -101,14 +104,13 @@ func (s *Store) RecordUsage(e UsageEvent) error {
 
 // Import records a batch of parsed session-file data and flushes at most once.
 func (s *Store) Import(events []UsageEvent, snapshots []Snapshot) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	unlock, err := fsutil.LockFile(s.path)
+	unlock, err := fsutil.LockFileWithin(s.path, storeLockTimeout)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = unlock() }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if err := s.reloadLocked(); err != nil {
 		return err
@@ -130,14 +132,13 @@ func (s *Store) Import(events []UsageEvent, snapshots []Snapshot) error {
 // estimated confidence so routing falls back to event-based usage counters
 // instead of trusting a now-unreadable exact quota sample.
 func (s *Store) InvalidateLiveExactSnapshot(provider string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	unlock, err := fsutil.LockFile(s.path)
+	unlock, err := fsutil.LockFileWithin(s.path, storeLockTimeout)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = unlock() }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if err := s.reloadLocked(); err != nil {
 		return err

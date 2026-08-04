@@ -1,3 +1,6 @@
+// Package harnessevolution mines persisted self-monitor reports into proposal
+// tasks. It is intentionally CLI-driven today (`sybra-cli harness-evolution`),
+// not an always-on in-process app loop.
 package harnessevolution
 
 import (

@@ -729,6 +729,11 @@ func latestReviewRunStoppedByCostGuardrail(t *task.Task) bool {
 	return false
 }
 
+// defaultManualReviewReason explains the manual review phase on the board.
+// Without it a task parked by computeReviewPhase carries no status reason at
+// all, so the operator sees a needs-you badge with no stated cause.
+const defaultManualReviewReason = "no automated review exists for this PR yet — review it, or reopen the task to let an agent draft one"
+
 // applyReviewPhase persists only the fields that changed. Status is set only
 // when the result names one and it differs (so an unchanged status never
 // clears a triage-authored reason); the reason follows a status or phase change.
@@ -750,8 +755,22 @@ func (r *Handler) applyReviewPhase(t *task.Task, res reviewPhaseResult) {
 	if phaseChanged {
 		u.ReviewPhase = task.Ptr(res.Phase)
 	}
-	if res.Reason != "" && (statusChanged || phaseChanged) {
-		u.StatusReason = task.Ptr(res.Reason)
+	reason := res.Reason
+	// A phase that asserts human-required but names no reason (manual) leaves
+	// the board showing "needs you" with nothing said, which is
+	// indistinguishable from a bug.
+	//
+	// The empty reason exists so an existing triage/reconciliation blocker
+	// survives — but that only holds while the status is unchanged, since a
+	// transition clears the reason regardless. So fill on a transition (where
+	// nothing is preserved either way) or when the reason is genuinely blank,
+	// and leave an existing reason alone on a phase-only update.
+	if reason == "" && res.Status == task.StatusHumanRequired &&
+		(statusChanged || strings.TrimSpace(t.StatusReason) == "") {
+		reason = defaultManualReviewReason
+	}
+	if reason != "" && (statusChanged || phaseChanged) {
+		u.StatusReason = task.Ptr(reason)
 	}
 
 	prev := t.ReviewPhase

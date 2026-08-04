@@ -167,6 +167,9 @@ func TestReassignRepushesToNewNodeAndClearsWorktree(t *testing.T) {
 	if got.AssignedNode != "new-box" {
 		t.Fatalf("assigned_node = %q, want new-box", got.AssignedNode)
 	}
+	if got.AssignmentRev != 1 {
+		t.Fatalf("assignment_rev = %d, want 1 after reassignment", got.AssignmentRev)
+	}
 	if got.WorktreeDir != "" {
 		t.Fatalf("worktree must be cleared (it is not transferable), got %q", got.WorktreeDir)
 	}
@@ -183,6 +186,9 @@ func TestReassignRepushesToNewNodeAndClearsWorktree(t *testing.T) {
 	}
 	if pushed[0].AssignedNode != "new-box" {
 		t.Fatalf("pushed task carries node %q, want new-box", pushed[0].AssignedNode)
+	}
+	if pushed[0].AssignmentRev != got.AssignmentRev {
+		t.Fatalf("pushed assignment_rev = %d, want %d", pushed[0].AssignmentRev, got.AssignmentRev)
 	}
 	if got := oldNode.assignedTasks(); len(got) != 0 {
 		t.Fatalf("task must not be re-pushed to the old node: %+v", got)

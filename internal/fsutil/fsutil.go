@@ -14,9 +14,12 @@ import (
 var ErrLockUnsupported = errors.New("fsutil: cross-process file locking is not supported on this platform")
 
 // AtomicWrite writes data to path via a temp file + rename to prevent
-// partial reads from concurrent goroutines. The temp file is removed on
-// every error path — including a failed rename into a read-only target
-// directory — so repeated write failures don't fill the disk with orphans.
+// partial reads from concurrent goroutines. It syncs the completed temp file
+// before renaming and then attempts to sync the containing directory, so
+// supported filesystems persist both the new data and the name replacement
+// across a power loss. The temp file is removed on every pre-rename error path —
+// including a failed rename into a read-only target directory — so repeated
+// write failures don't fill the disk with orphans.
 //
 // The rename preserves whatever mode the temp file has, which os.CreateTemp
 // sets to 0600 regardless of the target's existing permissions. To avoid
@@ -36,23 +39,68 @@ func AtomicWrite(path string, data []byte) error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-
 	if info, err := os.Stat(path); err == nil {
-		if err := os.Chmod(tmp, info.Mode().Perm()); err != nil {
+		if err := f.Chmod(info.Mode().Perm()); err != nil {
+			_ = f.Close()
 			_ = os.Remove(tmp)
 			return err
 		}
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
 	}
 
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
-	return nil
+	return syncDir(dir)
+}
+
+// AtomicWriteNew writes data to a previously absent path without ever
+// replacing an existing file. Like AtomicWrite, readers see either no file or
+// the complete, synced contents. It returns an error satisfying
+// errors.Is(err, fs.ErrExist) when another writer has already created path.
+//
+// os.Link provides the exclusive publish operation: linking the completed
+// temporary file to path fails if path exists, unlike os.Rename which replaces
+// its destination. The temporary file and destination are in the same
+// directory, so the link is atomic and cannot cross filesystems.
+func AtomicWriteNew(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Link(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Remove(tmp); err != nil {
+		return err
+	}
+	return syncDir(dir)
 }
 
 // RemoveAllForce removes path and everything under it, tolerating read-only

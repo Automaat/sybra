@@ -45,6 +45,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.ABTesting.EnabledValue() {
 		t.Fatal("ABTesting.EnabledValue() = true, want false until explicitly opted in")
 	}
+	if cfg.Agent.MaxTaskCostUSD <= 0 {
+		t.Errorf("Agent.MaxTaskCostUSD = %v, want a positive default so the cumulative-per-task cost gate is enabled out of the box", cfg.Agent.MaxTaskCostUSD)
+	}
+	if cfg.Agent.MaxSubagentEvents <= 0 {
+		t.Errorf("Agent.MaxSubagentEvents = %d, want a positive default so a runaway forked-subagent fan-out is bounded out of the box", cfg.Agent.MaxSubagentEvents)
+	}
 }
 
 func TestDefaultConfigMatchesEmptyFileResolution(t *testing.T) {

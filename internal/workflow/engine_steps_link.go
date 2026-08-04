@@ -202,7 +202,7 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 		if reason == "no agent result to evaluate" {
 			switch {
 			case last.Status == "failed":
-				reason = truncate(strings.TrimSpace(last.Output), 200)
+				reason = strings.TrimSpace(last.Output)
 				if reason == "" {
 					reason = "agent failed with no output"
 				}

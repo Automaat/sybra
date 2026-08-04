@@ -46,6 +46,10 @@ agent:
   post_result_cost_usd: 5
   max_assistant_events: 50
   require_permissions: false
+  # sybra-server refuses to start without an explicit posture, so an omitted
+  # key can never be mistaken for a contained one. "off" suits this harness:
+  # the fake provider CLIs write only inside $TMP.
+  sandbox_mode: "off"
 orchestrator:
   dispatch_interval_seconds: 3600
   maintenance_interval_seconds: 3600
@@ -192,14 +196,14 @@ Acceptance checks:
 
 ```bash
 api TaskService GetTask "[\"$TASK_ID\"]" | jq '.status, .agentRuns[-1]'
-cat "$TMP/home/stats.json" | jq '.[-1]'
+tail -n 1 "$TMP/home/stats.json" | jq .
 api App GetEvaluationReport '[]' | jq '.byAgentModel, .byExperimentKind'
 ```
 
 Expected:
 
 - `agentRuns[-1]` has `model`, `experimentId`, `variantId`, `assignmentUnit`, and `assignmentKey`.
-- `stats.json[-1]` has the same A/B metadata.
+- The final NDJSON record in `stats.json` has the same A/B metadata.
 - Copilot smoke runs preserve fractional `premiumRequests` such as `7.5`.
 - Evaluation report includes rows in `byAgentModel` and `byExperimentKind` groups (`kind: "model"`, `"prompt"`, `"skill"`, `"unknown"`), each with a `groups[]` list keyed by `experimentId` (never mixing two experiments' rows), and each `groups[].rows`/`groups[].rowsContribution` breakdown carrying role drilldowns when multiple roles are present.
 

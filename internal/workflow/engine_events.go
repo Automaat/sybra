@@ -115,7 +115,7 @@ func (e *Engine) withHumanActionLock(taskID string, fn func() error) error {
 	e.mu.Lock()
 	if _, busy := e.humanAction[taskID]; busy {
 		e.mu.Unlock()
-		return fmt.Errorf("task %s human action already in progress", taskID)
+		return conflictError(fmt.Sprintf("task %s human action already in progress", taskID))
 	}
 	e.humanAction[taskID] = struct{}{}
 	e.mu.Unlock()
@@ -146,7 +146,7 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 		}
 	}
 	if t.Workflow == nil || t.Workflow.State != ExecWaiting {
-		return fmt.Errorf("task %s is not waiting for human action", taskID)
+		return conflictError(fmt.Sprintf("task %s is not waiting for human action", taskID))
 	}
 	def, err := e.store.Get(t.Workflow.WorkflowID)
 	if err != nil {
@@ -167,7 +167,7 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 				return err
 			}
 			if t.Workflow == nil {
-				return fmt.Errorf("task %s is not waiting for human action", taskID)
+				return conflictError(fmt.Sprintf("task %s is not waiting for human action", taskID))
 			}
 			def, err = e.store.Get(t.Workflow.WorkflowID)
 			if err != nil {
@@ -180,7 +180,7 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 		}
 	}
 	if currentStep.Type != StepWaitHuman {
-		return fmt.Errorf("task %s is not at a wait_human step", taskID)
+		return conflictError(fmt.Sprintf("task %s is not at a wait_human step", taskID))
 	}
 	if err := validateHumanAction(currentStep, action); err != nil {
 		return err
@@ -239,7 +239,7 @@ func (e *Engine) recoverMissedWaitForStatusHumanGate(taskID string, t TaskInfo, 
 
 func validateHumanAction(step *Step, action string) error {
 	if len(step.Config.HumanActions) > 0 && !slices.Contains(step.Config.HumanActions, action) {
-		return fmt.Errorf("invalid human action %q for step %q", action, step.ID)
+		return validationError(fmt.Sprintf("invalid human action %q for step %q", action, step.ID))
 	}
 	return nil
 }
@@ -335,6 +335,10 @@ func (e *Engine) HandleStatusChange(taskID, newStatus string) {
 // found" error loop that followed workflow completion in older versions —
 // but that legitimacy still needs to be visible when diagnosing a stall.
 func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
+	// Held past the final clearAgentStep so pruneStaleAgentRoutes cannot mistake
+	// this task's still-needed routes for orphans while the advance is underway.
+	defer e.enterCompletion(taskID)()
+
 	routeMu := e.taskRouteMutex(taskID)
 	routeMu.Lock()
 	e.mu.Lock()
@@ -809,6 +813,13 @@ func (e *Engine) clearResumeDispatching(taskID string) {
 	e.mu.Unlock()
 }
 
+func (e *Engine) resumeDispatching(taskID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, ok := e.dispatching[taskID]
+	return ok
+}
+
 // RescheduleCheckpointedAgent immediately re-drives the current run_agent step
 // after a durable turn-ceiling checkpoint handoff, bounded by a persisted
 // per-step checkpoint counter.
@@ -922,7 +933,7 @@ func (e *Engine) rescheduleRunAgent(taskID, agentID string, step *Step, t TaskIn
 	}
 	cleanupWorkflow := e.workflowForPostDispatchCleanup(taskID)
 	e.clearCircuitBreakerOnSuccess(taskID, cleanupWorkflow, step.ID)
-	e.clearWatchdogReaskNote(taskID, cleanupWorkflow)
+	e.clearDeliveredWatchdogReaskNote(taskID, step, cleanupWorkflow)
 }
 
 func (e *Engine) workflowForPostDispatchCleanup(taskID string) *Execution {
@@ -1079,12 +1090,7 @@ func resumeSkipReasonForStatus(status string) (reason string, skip bool) {
 }
 
 func isResumableStepType(t StepType) bool {
-	switch t {
-	case StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepVerifyChecks, StepCreatePR, StepPushBranch, StepPromoteBestOfN, StepAdmissionPreflight:
-		return true
-	default:
-		return false
-	}
+	return stepIsResumable(t)
 }
 
 func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason string, ok bool) {
@@ -1101,6 +1107,15 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 		mu.Unlock()
 	}
 
+	// Routes below stand in for "an agent is still working on this step", but
+	// nothing except an agent-completion path ever clears one. Retire the ones
+	// whose agent is gone first, or this task is skipped forever (#2824). Not
+	// while advancing: the route table is mid-rewrite and the skip is decided
+	// anyway.
+	if !advancing {
+		e.pruneStaleAgentRoutes(taskID, step)
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -1108,7 +1123,7 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 	hasOutstandingAgent := false
 	if fresh, err := e.tasks.GetTask(taskID); err == nil && fresh.Workflow != nil {
 		for _, stepID := range fresh.Workflow.AgentRoutes {
-			if stepID == step.ID || parallelHasChild(step, stepID) || bestOfNStepMatches(step, stepID) {
+			if routeMatchesStep(step, stepID) {
 				hasOutstandingAgent = true
 				break
 			}
@@ -1385,8 +1400,42 @@ func (e *Engine) resumeStalledRerouteStaleConditionBranch(t *TaskInfo, def *Defi
 	if nextID == step.ID {
 		return false
 	}
+	// The reroute replaces the current step and re-executes the condition, so it
+	// must participate in the same claim protocol as every other ResumeStalled
+	// dispatch. In particular, recovery can be routing a completion after the
+	// manager has stopped reporting its agent as running. Without this claim,
+	// the reroute can erase that agent's route before its completion advances it.
+	reason, acquired := e.tryMarkResumeDispatching(t.ID, step)
+	if !acquired {
+		e.resumeSkip.Log(e.logger, "workflow.resume-stalled.condition-reroute.skip", t.ID,
+			reason+"|"+step.ID,
+			"task_id", t.ID, "reason", reason, "step", step.ID)
+		return true
+	}
+	defer e.clearResumeDispatching(t.ID)
+	fresh, abort := e.resolveFreshTaskForResume(t, step, def)
+	if abort {
+		return true
+	}
 
-	wf := t.Workflow.Clone()
+	// The completion which previously owned this step may have advanced it
+	// between the first condition evaluation and our claim. Recompute from the
+	// fresh execution snapshot so a stale reroute cannot overwrite that advance.
+	condition = latestConditionPredecessor(def, fresh.Workflow, step.ID)
+	if condition == nil {
+		return false
+	}
+	nextID, err = ResolveTransition(condition.Next, e.transitionFields(fresh, fresh.Workflow))
+	if err != nil {
+		e.logger.Warn("workflow.resume-stalled.condition-reroute.transition",
+			"task_id", fresh.ID, "condition", condition.ID, "step", step.ID, "err", err)
+		return false
+	}
+	if nextID == step.ID {
+		return false
+	}
+
+	wf := fresh.Workflow.Clone()
 	if wf == nil {
 		e.logger.Warn("workflow.resume-stalled.condition-reroute.clone",
 			"task_id", t.ID, "condition", condition.ID, "step", step.ID)
@@ -1397,20 +1446,20 @@ func (e *Engine) resumeStalledRerouteStaleConditionBranch(t *TaskInfo, def *Defi
 	wf.CompletedAt = nil
 	wf.ClearStepRecords(condition.ID)
 	wf.ClearStepRecords(step.ID)
-	if err := e.tasks.SetWorkflow(t.ID, wf); err != nil {
+	if err := e.tasks.SetWorkflow(fresh.ID, wf); err != nil {
 		e.logger.Warn("workflow.resume-stalled.condition-reroute.persist",
-			"task_id", t.ID, "condition", condition.ID, "step", step.ID, "err", err)
+			"task_id", fresh.ID, "condition", condition.ID, "step", step.ID, "err", err)
 		return true
 	}
 
 	e.logger.Info("workflow.resume-stalled.condition-reroute",
-		"task_id", t.ID, "condition", condition.ID, "from", step.ID, "to", nextID)
-	comp, rErr := e.executeSteps(t.ID, def, condition, wf)
+		"task_id", fresh.ID, "condition", condition.ID, "from", step.ID, "to", nextID)
+	comp, rErr := e.executeSteps(fresh.ID, def, condition, wf)
 	rErr = normalizeExecuteStepsErr(rErr)
 	e.fireComplete(comp)
-	e.resumeError.Log(e.logger, "workflow.resume-stalled.condition-reroute.exec", t.ID, rErr, "task_id", t.ID)
+	e.resumeError.Log(e.logger, "workflow.resume-stalled.condition-reroute.exec", fresh.ID, rErr, "task_id", fresh.ID)
 	if rErr != nil {
-		e.surfaceStartFailure(t.ID, t.Status, rErr, wf, condition.ID)
+		e.surfaceStartFailure(fresh.ID, fresh.Status, rErr, wf, condition.ID)
 	}
 	return true
 }
@@ -1450,7 +1499,47 @@ func (e *Engine) finishResumeStalledStep(taskID string, def *Definition, step *S
 	cleanupWorkflow := e.workflowForPostDispatchCleanup(taskID)
 	e.clearTransientFetchRetry(fresh.ID, cleanupWorkflow, step.ID)
 	e.clearCircuitBreakerOnSuccess(fresh.ID, cleanupWorkflow, step.ID)
-	e.clearWatchdogReaskNote(fresh.ID, cleanupWorkflow)
+	// A pool-busy start is deliberately normalized to a nil error so ResumeStalled
+	// parks quietly, but it did not start an agent. Keep the watchdog guidance
+	// armed until a persisted route or pending effect proves a real dispatch did.
+	e.clearDeliveredWatchdogReaskNote(fresh.ID, step, cleanupWorkflow)
+}
+
+func (e *Engine) clearDeliveredWatchdogReaskNote(taskID string, step *Step, wf *Execution) {
+	if step == nil || step.ID == "" || wf == nil || wf.Variables == nil {
+		return
+	}
+	if !e.watchdogReaskDelivered(taskID, step, wf) {
+		return
+	}
+	delete(wf.Variables, watchdogReaskDeliveredKey(step.ID))
+	e.clearWatchdogReaskNote(taskID, wf)
+	// clearWatchdogReaskNote deliberately no-ops when this role uses a
+	// role-specific note key; persist marker removal in that case too.
+	if err := e.tasks.SetWorkflow(taskID, wf); err != nil {
+		e.logger.Error("workflow.watchdog-reask.delivery-clear", "task_id", taskID, "step", step.ID, "err", err)
+	}
+}
+
+func (e *Engine) watchdogReaskDelivered(taskID string, step *Step, wf *Execution) bool {
+	if workflowHasAgentRouteForStep(wf, step) || e.hasPendingAgentRouteForStep(taskID, step) {
+		return true
+	}
+	return wf != nil && wf.Variables[watchdogReaskDeliveredKey(step.ID)] == "1"
+}
+
+func watchdogReaskDeliveredKey(stepID string) string { return "watchdog_reask_delivered." + stepID }
+
+func workflowHasAgentRouteForStep(wf *Execution, step *Step) bool {
+	if wf == nil || step == nil {
+		return false
+	}
+	for _, routedStepID := range wf.AgentRoutes {
+		if routeMatchesStep(step, routedStepID) {
+			return true
+		}
+	}
+	return false
 }
 
 // handleWatchdogRetries checks both bounded watchdog stop-retry paths — a
@@ -1692,15 +1781,22 @@ func watchdogRewardHackingRetryKey(stepID string) string {
 	return watchdogRewardHackingRetryVarPrefix + stepID
 }
 
-// clearWatchdogRewardHackingRetry drops the per-step reward-hacking retry
-// counter once that step's run completes cleanly. Without this, a later,
-// unrelated round of the same step ID would inherit an already-exhausted
-// counter and escalate immediately instead of getting its own bounded retry.
-func clearWatchdogRewardHackingRetry(wf *Execution, stepID string) {
+// clearWatchdogRetryCounters drops every per-step watchdog retry counter once
+// the step completes cleanly. A later workflow round may legitimately re-enter
+// the same step ID, and must start with a fresh consecutive-failure budget.
+func clearWatchdogRetryCounters(wf *Execution, stepID string) {
 	if wf == nil || wf.Variables == nil || stepID == "" {
 		return
 	}
-	delete(wf.Variables, watchdogRewardHackingRetryKey(stepID))
+	for _, key := range []string{
+		watchdogRewardHackingRetryKey(stepID),
+		watchdogHangRetryKey(stepID),
+		watchdogStopRetryKey(stepID),
+		watchdogRateLimitRetryKey(stepID),
+		watchdogZeroOutputFreshRetryKey(stepID),
+	} {
+		delete(wf.Variables, key)
+	}
 }
 
 // buildRewardHackingFixReviewReaskNote builds the steer prepended to a
@@ -1825,6 +1921,22 @@ func (e *Engine) handleWatchdogRateLimitRetry(t *TaskInfo, step *Step) bool {
 		},
 		counterKey: watchdogRateLimitRetryKey,
 		max:        maxWatchdogRateLimitRetries,
+		onArmed: func(e *Engine, t *TaskInfo, _ *Step, _ int) error {
+			// The counter now represents a real retry attempt. Clear the watchdog
+			// marker before dispatch so a benign capacity park cannot make the
+			// next ResumeStalled tick re-arm and burn this budget again. The
+			// compare is atomic: a concurrent terminal failure must win rather
+			// than being reopened from this stale retry snapshot.
+			cleared, err := e.tasks.ClearTaskStatusReasonIf(t.ID, t.Status, t.StatusReason)
+			if err != nil {
+				return err
+			}
+			if !cleared {
+				return errRetryArmingSuperseded
+			}
+			t.StatusReason = ""
+			return nil
+		},
 		onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 			retryKey := watchdogRateLimitRetryKey(step.ID)
 			freshKey := watchdogZeroOutputFreshRetryKey(step.ID)
@@ -1906,7 +2018,6 @@ func (e *Engine) canRetryWatchdogStop(t *TaskInfo, step *Step) bool {
 		step != nil &&
 		step.Type == StepRunAgent &&
 		t.Status == "human-required" &&
-		step.Config.Role == "implementation" &&
 		watchdogreason.IsRetryableStop(t.StatusReason)
 }
 
@@ -1926,7 +2037,7 @@ func (e *Engine) handleWatchdogStopRetry(t *TaskInfo, step *Step) bool {
 				cleanRef = "HEAD"
 			}
 			t.Workflow.SetVar(watchdogHangCleanRetryKey(step.ID), cleanRef)
-			t.Workflow.SetVar(watchdogReaskNoteVar, buildWatchdogStopReaskNote(t.StatusReason, attempt))
+			t.Workflow.SetVar(watchdogReaskNoteVarForStep(step), buildWatchdogStopReaskNote(t.StatusReason, attempt))
 		},
 		onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
 			if err := e.tasks.UpdateTaskStatus(t.ID, "in-progress", ""); err != nil {
@@ -2005,7 +2116,7 @@ func (e *Engine) handleWorktreeRepairRetry(t *TaskInfo, step *Step) bool {
 
 func buildWatchdogStopReaskNote(reason string, attempt int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "⚠️ Your previous implementation run was STOPPED by the watchdog for loop-like behavior — attempt %d of %d.\n\n",
+	fmt.Fprintf(&b, "⚠️ Your previous agent run was STOPPED by the watchdog for loop-like behavior — attempt %d of %d.\n\n",
 		attempt, maxWatchdogStopRetries)
 	if reason = strings.TrimSpace(reason); reason != "" {
 		b.WriteString("Previous watchdog reason: ")

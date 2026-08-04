@@ -278,8 +278,9 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 	// the task's status), which must not happen behind a human's or the
 	// monitor's deliberate parking.
 	parked, parkedAdoption := h.parkedAdoption(ag)
+	stall := classifyStall(ag, exitErr)
 
-	if !parkedAdoption && ag.EffectiveRole() == agent.RoleFixReview && exitErr == nil {
+	if !parkedAdoption && ag.EffectiveRole() == agent.RoleFixReview && exitErr == nil && !stall.Stalled {
 		h.handleFixReviewCompletion(ag)
 	}
 
@@ -295,7 +296,7 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 		if h.workflowEngine != nil {
 			h.workflowEngine.ClearAgentStep(ag.TaskID, ag.ID)
 		}
-	} else if !h.notifyWorkflowEngine(ag, resultContent, exitErr) {
+	} else if !h.notifyWorkflowEngine(ag, resultContent, exitErr, stall) {
 		return
 	}
 	// Import evidence even when workflow advancement was suppressed above: the
@@ -556,11 +557,10 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 // process, but its work already finished cleanly via a terminal result event
 // — treating it as a stall would silently re-queue already-completed work
 // instead of finalizing it.
-func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, exitErr error) bool {
+func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, exitErr error, stall stallDisposition) bool {
 	if h.workflowEngine == nil {
 		return true
 	}
-	stall := classifyStall(ag, exitErr)
 	if stall.Stalled {
 		h.logger.Warn("agent.completion.stall",
 			"task_id", ag.TaskID, "agent_id", ag.ID,
@@ -611,13 +611,16 @@ func classifyStall(ag *agent.Agent, exitErr error) stallDisposition {
 		ToolUseAborted:  isToolUseAbortedRun(ag),
 		UserInterrupted: isUserInterruptedRun(ag),
 	}
-	// Cost guardrails intentionally hard-stop the subprocess, but they are a
-	// budget failure, not an infra stall. Let them flow through the bounded
-	// failed-completion path instead of ClearAgentStep/ResumeStalled.
+	// Cost and forked-subagent-turn guardrails intentionally hard-stop the
+	// subprocess, but they are a budget/runaway failure, not an infra stall.
+	// Let them flow through the bounded failed-completion path instead of
+	// ClearAgentStep/ResumeStalled — otherwise the runaway workflow step is
+	// silently re-dispatched on the next sweep, defeating the ceiling.
 	costStopped := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCost
+	subagentTurnsStopped := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonSubagentTurns
 	checkpointFailed := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpointFailed
 	out.CheckpointStopped = ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpoint
-	out.StopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped && !checkpointFailed && !out.CheckpointStopped
+	out.StopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped && !subagentTurnsStopped && !checkpointFailed && !out.CheckpointStopped
 	out.Stalled = isSignalKill(exitErr) || out.StopStalled || out.RateLimited || out.MalformedTool || out.ToolUseAborted || out.UserInterrupted || out.CheckpointStopped
 	return out
 }

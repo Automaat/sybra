@@ -20,7 +20,8 @@ func (a *App) wireTaskService() {
 	a.taskSvc.wg = &a.wg
 	a.taskSvc.logger = a.logger
 	a.taskSvc.audit = a.audit
-	a.taskSvc.cfg = a.cfg
+	a.taskSvc.cfg = a.currentConfig()
+	a.taskSvc.currentConfig = a.currentConfig
 	a.taskSvc.projects = a.projects
 	a.taskSvc.intervention = a.intervention
 	a.taskSvc.abTesting = a.abTestingConfig
@@ -35,14 +36,16 @@ func (a *App) wireTaskService() {
 	// Expand a manually-added umbrella issue into a gated child DAG instead of
 	// a flat task. Wired unconditionally; enrichFromIssue gates the call on
 	// cfg.Umbrella.Enabled so a config reload toggles it without re-wiring.
-	// Read a.cfg inside the closure so config reloads update the planner model.
+	// Read one current snapshot inside the closure so config reloads update the
+	// planner model without mixing settings from different snapshots.
 	// Mirrors initIssuesFetcher's poll-loop expander (same Expand entry point).
 	a.taskSvc.umbrellaExpand = func(issueURL string) (umbrella.Result, error) {
+		cfg := a.currentConfig()
 		var opts []umbrella.ExpandOption
-		if a.cfg.Umbrella.Ground {
-			opts = append(opts, umbrella.WithExpandGrounder(buildGroundLister(a.projects), a.cfg.Umbrella.GroundMinSubIssues))
+		if cfg.Umbrella.Ground {
+			opts = append(opts, umbrella.WithExpandGrounder(buildGroundLister(a.projects), cfg.Umbrella.GroundMinSubIssues))
 		}
-		return umbrella.Expand(a.ctx, a.tasks, umbrella.FallbackPlannerRunner(a.cfg.Umbrella.Model, a.providerHealth), issueURL, opts...)
+		return umbrella.Expand(a.ctx, a.tasks, umbrella.FallbackPlannerRunner(cfg.Umbrella.Model, a.providerHealth), issueURL, opts...)
 	}
 	if a.humanReview != nil {
 		a.humanReview.dispatchFromHumanRequired = func(id, target, reason, completingAgentID string) (task.Task, error) {

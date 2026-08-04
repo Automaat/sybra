@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -68,6 +69,204 @@ func TestStoreCreate(t *testing.T) {
 
 	if _, err := os.Stat(task.FilePath); err != nil {
 		t.Errorf("file not written: %v", err)
+	}
+}
+
+func TestStoreCreate_RetriesIDCollisionWithoutOverwriting(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := Task{
+		ID:         "deadbeef",
+		Title:      "original task",
+		Slug:       "original-task",
+		Status:     StatusTodo,
+		Generation: 1,
+		AgentMode:  AgentModeHeadless,
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	originalData, err := Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPath := filepath.Join(store.Dir(), original.ID+".md")
+	if err := os.WriteFile(originalPath, originalData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ids := []string{"deadbeef", "cafebabe"}
+	store.newTaskID = func() string {
+		id := ids[0]
+		ids = ids[1:]
+		return id
+	}
+	created, err := store.Create("new task", "new body", AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.ID != "cafebabe" {
+		t.Fatalf("created ID = %q, want collision retry ID cafebabe", created.ID)
+	}
+	got, err := os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, originalData) {
+		t.Fatal("collision replaced the original task file")
+	}
+}
+
+func TestStoreCreateFull_RetriesBeforeWritingSidecars(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := Task{
+		ID:         "deadbeef",
+		Title:      "original task",
+		Slug:       "original-task",
+		Status:     StatusTodo,
+		Generation: 1,
+		AgentMode:  AgentModeHeadless,
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	originalData, err := Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalPath := filepath.Join(store.Dir(), original.ID+".md")
+	if err := os.WriteFile(originalPath, originalData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Plans().Write(original.ID, "original plan"); err != nil {
+		t.Fatal(err)
+	}
+
+	ids := []string{"deadbeef", "cafebabe"}
+	store.newTaskID = func() string {
+		id := ids[0]
+		ids = ids[1:]
+		return id
+	}
+	plan := "new plan"
+	created, err := store.CreateFull("new task", "new body", AgentModeHeadless, Update{Plan: &plan})
+	if err != nil {
+		t.Fatalf("CreateFull: %v", err)
+	}
+	if created.ID != "cafebabe" {
+		t.Fatalf("created ID = %q, want collision retry ID cafebabe", created.ID)
+	}
+	got, err := os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, originalData) {
+		t.Fatal("collision replaced the original task file")
+	}
+	originalPlan, err := store.Plans().Read(original.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if originalPlan != "original plan" {
+		t.Fatalf("original sidecar = %q, want unchanged original plan", originalPlan)
+	}
+	newPlan, err := store.Plans().Read(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newPlan != plan {
+		t.Fatalf("new sidecar = %q, want %q", newPlan, plan)
+	}
+}
+
+func TestStoreCreate_DoesNotReuseIDWithOrphanedSidecars(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Plans().Write("deadbeef", "interrupted creation plan"); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{"deadbeef", "cafebabe"}
+	store.newTaskID = func() string {
+		id := ids[0]
+		ids = ids[1:]
+		return id
+	}
+	created, err := store.Create("new task", "new body", AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.ID != "cafebabe" {
+		t.Fatalf("created ID = %q, want retry ID cafebabe", created.ID)
+	}
+	plan, err := store.Plans().Read("deadbeef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan != "interrupted creation plan" {
+		t.Fatalf("orphaned sidecar = %q, want preserved contents", plan)
+	}
+}
+
+func TestStoreLockNewTask_SymlinkAliasSharesReservation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink setup requires elevated Windows privileges")
+	}
+	root := t.TempDir()
+	realDir := filepath.Join(root, "tasks")
+	realStore, err := NewStore(realDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasDir := filepath.Join(root, "tasks-alias")
+	if err := os.Symlink(realDir, aliasDir); err != nil {
+		t.Fatal(err)
+	}
+	alias, err := NewStore(aliasDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	unlock, err := realStore.lockNewTask("deadbeef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			unlock()
+		}
+	}()
+	acquired := make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() {
+		otherUnlock, err := alias.lockNewTask("deadbeef")
+		if err != nil {
+			errCh <- err
+			return
+		}
+		close(acquired)
+		otherUnlock()
+	}()
+	select {
+	case <-acquired:
+		t.Fatal("symlink-alias store acquired an already-held creation reservation")
+	case err := <-errCh:
+		t.Fatalf("symlink-alias reservation: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlock()
+	released = true
+	select {
+	case <-acquired:
+	case err := <-errCh:
+		t.Fatalf("symlink-alias reservation: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("symlink-alias store did not acquire reservation after release")
 	}
 }
 
@@ -1396,7 +1595,7 @@ func TestStoreCreateDefaultMode(t *testing.T) {
 	}
 }
 
-func TestStoreListSkipsMalformed(t *testing.T) {
+func TestStoreListSurfacesMalformedAsDegraded(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	store, err := NewStore(dir)
@@ -1417,8 +1616,23 @@ func TestStoreListSkipsMalformed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tasks) != 1 {
-		t.Errorf("got %d tasks, want 1 (should skip malformed)", len(tasks))
+	if len(tasks) != 2 {
+		t.Fatalf("got %d tasks, want 2 (valid task plus degraded entry)", len(tasks))
+	}
+	var degraded *Task
+	for i := range tasks {
+		if tasks[i].Degraded {
+			degraded = &tasks[i]
+		}
+	}
+	if degraded == nil {
+		t.Fatal("malformed file was not surfaced as degraded")
+	}
+	if degraded.Status != StatusHumanRequired {
+		t.Errorf("degraded status = %q, want %q", degraded.Status, StatusHumanRequired)
+	}
+	if degraded.ParseError == "" || degraded.FilePath != filepath.Join(dir, "bad.md") {
+		t.Errorf("degraded entry = %+v, want parse error and source path", *degraded)
 	}
 }
 
@@ -2517,14 +2731,17 @@ func TestStoreGet_PathTraversalSlugRejected(t *testing.T) {
 		t.Fatal("Store.Get with path-traversal slug: expected error, got nil")
 	}
 
-	// List must also skip the malformed file (it logs and continues).
+	// List must surface the malformed file without returning its unsafe slug.
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	for _, task := range tasks {
-		if task.ID == tk.ID {
-			t.Errorf("malformed-slug task appeared in List: slug=%q", task.Slug)
+	for _, listed := range tasks {
+		if listed.ID == tk.ID {
+			t.Errorf("malformed-slug task appeared as real task: slug=%q", listed.Slug)
+		}
+		if listed.Degraded && listed.ParseError == "" {
+			t.Error("degraded malformed-slug task lacks parse error")
 		}
 	}
 }
@@ -2591,6 +2808,54 @@ func TestStoreListInvalidatePathTargetedRefresh(t *testing.T) {
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("want 1 task remaining, got %d", len(tasks))
+	}
+}
+
+func TestInvalidatePathWaitsForTaskWriterBeforeRefreshingCache(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk, err := store.Create("Before", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.List(); err != nil {
+		t.Fatal(err)
+	}
+
+	unlock, err := store.lockTask(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	store.refreshBeforeLock = func() { close(started) }
+	done := make(chan struct{})
+	go func() { store.InvalidatePath(tk.FilePath); close(done) }()
+	<-started
+	select {
+	case <-done:
+		t.Fatal("refresh ran while task writer lock was held")
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlock()
+	if _, err := store.Update(tk.ID, Update{Title: Ptr("After")}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("refresh did not complete after writer lock release")
+	}
+	listed, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, got := range listed {
+		if got.ID == tk.ID && got.Title != "After" {
+			t.Fatalf("cached title = %q, want After", got.Title)
+		}
 	}
 }
 
