@@ -76,6 +76,7 @@ run = [
   "cd frontend && npx oxlint .",
   "cd frontend && node scripts/check-pin-strategy.mjs",
   "bash scripts/check-api-shim-sync.sh",
+  "bash scripts/check-repo-hygiene.sh",
   "bash scripts/check-no-home-fallback.sh",
   "bash scripts/check-no-viewer-user-endpoint.sh",
   "bash scripts/check-gh-exec-gate.sh",
