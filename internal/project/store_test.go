@@ -542,6 +542,36 @@ func TestStoreMigrateDisableAutoMaintenance_RetrofitsExistingClone(t *testing.T)
 	}
 }
 
+// disableAutoMaintenanceLocked's re-check must only swallow the two expected
+// races (project deleted, clone directory removed) — a genuine read/parse
+// failure has to surface in the joined error, not be silently dropped, or a
+// real filesystem problem would be indistinguishable from a healthy startup.
+func TestStoreDisableAutoMaintenanceLocked_PropagatesRealReadError(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p := Project{ID: "org/broken", Owner: "org", Repo: "broken", ClonePath: t.TempDir()}
+	if err := store.writeFile(p); err != nil {
+		t.Fatal(err)
+	}
+	// Corrupt the record after it's written, simulating a genuine read/parse
+	// failure distinct from "file does not exist" (ErrProjectNotRegistered).
+	if err := os.WriteFile(store.filePath(p.ID), []byte("not: [valid yaml"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err = store.disableAutoMaintenanceLocked(context.Background(), p.ID, p.ClonePath)
+	if err == nil {
+		t.Fatal("expected the parse error to propagate, got nil")
+	}
+	if errors.Is(err, ErrProjectNotRegistered) {
+		t.Fatalf("a real parse error must not be reported as ErrProjectNotRegistered: %v", err)
+	}
+}
+
 // A project mid-clone (ClonePath set but the directory not yet created) or
 // mid-delete (directory already removed) must not fail the whole migration
 // pass for every other registered project.

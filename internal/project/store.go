@@ -115,11 +115,19 @@ func (s *Store) disableAutoMaintenanceLocked(ctx context.Context, id, snapshotCl
 	defer unlock()
 
 	current, err := s.Get(id)
-	if err != nil || current.ClonePath != snapshotClonePath || (current.Status != "" && current.Status != ProjectStatusReady) {
+	if errors.Is(err, ErrProjectNotRegistered) {
 		return nil
 	}
-	if _, statErr := os.Stat(current.ClonePath); statErr != nil {
+	if err != nil {
+		return fmt.Errorf("%s: %w", id, err)
+	}
+	if current.ClonePath != snapshotClonePath || (current.Status != "" && current.Status != ProjectStatusReady) {
 		return nil
+	}
+	if _, statErr := os.Stat(current.ClonePath); errors.Is(statErr, os.ErrNotExist) {
+		return nil
+	} else if statErr != nil {
+		return fmt.Errorf("%s: stat clone: %w", id, statErr)
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, migrateMaintenanceAutoPerProjectTimeout)
