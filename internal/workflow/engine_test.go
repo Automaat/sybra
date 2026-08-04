@@ -9075,6 +9075,56 @@ func makeGitRepo(t *testing.T, withExtraCommit bool) string {
 	return dir
 }
 
+func TestResolveOriginBase_FallsBackFromDanglingOriginHEAD(t *testing.T) {
+	wtPath := makeGitRepo(t, false)
+	refPath := filepath.Join(wtPath, ".git", "refs", "remotes", "origin", "HEAD")
+	if err := os.MkdirAll(filepath.Dir(refPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(refPath, []byte(strings.Repeat("f", 40)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolveOriginBase(context.Background(), wtPath); got != "origin/main" {
+		t.Fatalf("resolveOriginBase() = %q, want origin/main when origin/HEAD is dangling", got)
+	}
+}
+
+func TestResolveOriginBase_UsesLinkedRepositoryDefaultBranch(t *testing.T) {
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGitAt(t, "", "init", "--bare", remote)
+	seed := filepath.Join(t.TempDir(), "seed")
+	if err := os.MkdirAll(seed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, seed, "init", "-b", "trunk")
+	runGitAt(t, seed, "config", "user.email", "test@test.com")
+	runGitAt(t, seed, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("init\\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, seed, "add", "README.md")
+	runGitAt(t, seed, "commit", "-m", "init")
+	runGitAt(t, seed, "remote", "add", "origin", remote)
+	runGitAt(t, seed, "push", "origin", "trunk")
+
+	// Sybra worktrees are linked to a bare clone. Its HEAD, unlike a normal
+	// checkout's HEAD, identifies the default branch for all linked worktrees.
+	runGitAt(t, "", "-C", remote, "symbolic-ref", "HEAD", "refs/heads/trunk")
+	runGitAt(t, "", "-C", remote, "update-ref", "refs/remotes/origin/trunk", "refs/heads/trunk")
+	wtPath := filepath.Join(t.TempDir(), "worktree")
+	runGitAt(t, "", "-C", remote, "worktree", "add", wtPath, "trunk")
+
+	refPath := filepath.Join(remote, "refs", "remotes", "origin", "HEAD")
+	if err := os.WriteFile(refPath, []byte(strings.Repeat("f", 40)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolveOriginBase(context.Background(), wtPath); got != "origin/trunk" {
+		t.Fatalf("resolveOriginBase() = %q, want origin/trunk from linked repository HEAD", got)
+	}
+}
+
 func runGitAt(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	out, err := gitCombinedAt(dir, args...)
