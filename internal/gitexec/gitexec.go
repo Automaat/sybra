@@ -69,6 +69,20 @@ func RawOutput(ctx context.Context, opts Options, args ...string) ([]byte, error
 	return output(ctx, opts, args...)
 }
 
+// OutputWithStderr executes Git and returns raw stdout and stderr separately.
+// It is for callers that must inspect non-fatal stderr emitted by a successful
+// command while keeping stdout byte-exact.
+func OutputWithStderr(ctx context.Context, opts Options, args ...string) (stdoutBytes, stderrBytes []byte, runErr error) {
+	cmd := command(ctx, opts, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return stdout.Bytes(), stderr.Bytes(), commandError(args, err, stderr.Bytes())
+	}
+	return stdout.Bytes(), stderr.Bytes(), nil
+}
+
 // CombinedOutput executes Git and returns raw interleaved stdout and stderr.
 // The output is returned even on failure so callers can classify Git errors.
 func CombinedOutput(ctx context.Context, opts Options, args ...string) ([]byte, error) {

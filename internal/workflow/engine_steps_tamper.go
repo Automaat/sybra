@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/evidence"
+	"github.com/Automaat/sybra/internal/gitexec"
 )
 
 // TamperBlessedTag short-circuits the detector: a human who has reviewed a
@@ -1196,11 +1197,11 @@ func pathIdenticalToUpstream(ctx context.Context, wtPath, upstream, path string)
 }
 
 // gitFilePatch and gitFileAtRef return raw (untrimmed) git output — the exact
-// patch/file bytes matter to the tamper regex scanners below, so they use
-// gitCmd directly rather than the output-trimming gitOutput helper.
+// patch/file bytes matter to the tamper regex scanners below, so they use the
+// shared runner's raw-output operation rather than the trimming helper.
 
 func gitFilePatch(ctx context.Context, wtPath, rangeSpec, path string) (string, error) {
-	out, err := gitCmd(ctx, wtPath, "-c", "core.quotePath=false", "diff", rangeSpec, "--", path).Output()
+	out, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: wtPath}, "-c", "core.quotePath=false", "diff", rangeSpec, "--", path)
 	if err != nil {
 		return "", err
 	}
@@ -1212,7 +1213,7 @@ func gitFilePatch(ctx context.Context, wtPath, rangeSpec, path string) (string, 
 // newly added file — which callers treat as "no base content" rather than a
 // hard failure.
 func gitFileAtRef(ctx context.Context, wtPath, ref, path string) (string, error) {
-	out, err := gitCmd(ctx, wtPath, "show", ref+":"+path).Output()
+	out, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: wtPath}, "show", ref+":"+path)
 	if err != nil {
 		return "", err
 	}

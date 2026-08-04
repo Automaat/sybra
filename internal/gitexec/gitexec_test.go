@@ -162,6 +162,40 @@ exit 3
 	}
 }
 
+func TestOutputWithStderrKeepsStreamsSeparate(t *testing.T) {
+	bin := t.TempDir()
+	writeFakeGit(t, bin, `
+printf 'stdout bytes\n'
+printf 'stderr advisory\n' >&2
+if [ "$1" = fail ]; then
+  exit 4
+fi
+`)
+	t.Setenv("PATH", bin)
+
+	stdout, stderr, err := OutputWithStderr(context.Background(), Options{}, "success")
+	if err != nil {
+		t.Fatalf("OutputWithStderr success: %v", err)
+	}
+	if string(stdout) != "stdout bytes\n" || string(stderr) != "stderr advisory\n" {
+		t.Fatalf("OutputWithStderr = (%q, %q), want separate streams", stdout, stderr)
+	}
+
+	stdout, stderr, err = OutputWithStderr(context.Background(), Options{}, "fail")
+	if err == nil {
+		t.Fatal("OutputWithStderr failure unexpectedly succeeded")
+	}
+	if string(stdout) != "stdout bytes\n" || string(stderr) != "stderr advisory\n" {
+		t.Fatalf("failed OutputWithStderr = (%q, %q), want retained streams", stdout, stderr)
+	}
+	if got := err.Error(); !strings.Contains(got, "git fail") || !strings.Contains(got, "stderr advisory") {
+		t.Fatalf("OutputWithStderr error = %q, want command and stderr", got)
+	}
+	if code, ok := ExitCode(err); !ok || code != 4 {
+		t.Fatalf("ExitCode = (%d, %v), want (4, true)", code, ok)
+	}
+}
+
 func TestExecutableResolutionSkipsDanglingShim(t *testing.T) {
 	badBin := t.TempDir()
 	goodBin := t.TempDir()

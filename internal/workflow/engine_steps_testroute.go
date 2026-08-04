@@ -1,13 +1,11 @@
 package workflow
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"sort"
 	"strconv"
@@ -16,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/evidence"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/workflow/failureclassify"
 )
 
@@ -2519,21 +2518,17 @@ func (e *Engine) attemptDiffStat(ctx context.Context, wtPath string) string {
 	defer cancel()
 
 	base := resolveOriginBase(diffCtx, wtPath)
-	cmd := exec.CommandContext(diffCtx, "git", "diff", "--stat", base+"...HEAD")
-	cmd.Dir = wtPath
 	// Capture stderr separately so git's non-fatal advisories (safe.directory,
 	// advice.* hints) — which it can emit while still exiting 0 — never leak into
 	// the note's fenced diff-stat block presented as if part of the diff.
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	out, stderr, err := gitexec.OutputWithStderr(diffCtx, gitexec.Options{Dir: wtPath}, "diff", "--stat", base+"...HEAD")
 	if err != nil {
-		diag := singleLineDiagnostic(err, stderr.String())
+		diag := singleLineDiagnostic(err, string(stderr))
 		e.logger.Warn("workflow.test.reimplement-note", "worktree", wtPath, "base", base, "err", err, "phase", "diff-stat")
 		return "(diff unavailable: " + diag + ")"
 	}
-	if stderr.Len() > 0 {
-		e.logger.Warn("workflow.test.reimplement-note", "worktree", wtPath, "base", base, "phase", "diff-stat", "stderr", singleLineDiagnostic(nil, stderr.String()))
+	if len(stderr) > 0 {
+		e.logger.Warn("workflow.test.reimplement-note", "worktree", wtPath, "base", base, "phase", "diff-stat", "stderr", singleLineDiagnostic(nil, string(stderr)))
 	}
 	diff := capPriorAttemptDiffStat(string(out))
 	if diff == "" {
