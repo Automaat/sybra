@@ -473,6 +473,10 @@ func (a *App) Startup(ctx context.Context) error {
 		return fmt.Errorf("project store: %w", err)
 	}
 	a.projects = projStore
+	// Retrofits maintenance.auto=false onto existing clones; see #2978.
+	if err := projStore.MigrateDisableAutoMaintenance(appCtx); err != nil {
+		a.logger.Warn("project.store.migrate_maintenance_auto", "err", err)
+	}
 
 	if err := a.initLoopAgents(); err != nil {
 		return fmt.Errorf("loop agents: %w", err)

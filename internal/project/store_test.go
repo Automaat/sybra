@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -497,5 +499,104 @@ func TestStoreDeleteCleansClone(t *testing.T) {
 	}
 	if _, err := os.Stat(store.filePath("org/tool")); !os.IsNotExist(err) {
 		t.Error("YAML file should be removed")
+	}
+}
+
+// A project registered before DisableAutoMaintenance existed in CloneBare
+// never got maintenance.auto=false, leaving its clone exposed to the same
+// cross-worktree repack race a fresh clone is now protected against.
+// MigrateDisableAutoMaintenance must retrofit it without a re-clone.
+func TestStoreMigrateDisableAutoMaintenance_RetrofitsExistingClone(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "pre-fix-bare.git")
+	if out, err := exec.Command("git", "clone", "-q", "--bare", src, bare).CombinedOutput(); err != nil {
+		t.Fatalf("git clone --bare: %v: %s", err, out)
+	}
+	// Simulate the pre-fix state: no CloneBare-set config at all, so
+	// maintenance.auto falls back to git's own default (true). --unset exits
+	// non-zero when the key was never set, which is the expected outcome
+	// here — plain `git clone --bare` sets no such key.
+	_ = exec.Command("git", "-C", bare, "config", "--unset", "maintenance.auto").Run()
+
+	p := Project{ID: "org/pre-fix", Owner: "org", Repo: "pre-fix", ClonePath: bare}
+	if err := store.writeFile(p); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.MigrateDisableAutoMaintenance(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	raw, err := outputBare(context.Background(), bare, "config", "maintenance.auto")
+	if err != nil {
+		t.Fatalf("read maintenance.auto: %v", err)
+	}
+	if got := strings.TrimSpace(raw); got != "false" {
+		t.Errorf("maintenance.auto = %q, want %q", got, "false")
+	}
+}
+
+// A project mid-clone (ClonePath set but the directory not yet created) or
+// mid-delete (directory already removed) must not fail the whole migration
+// pass for every other registered project.
+func TestStoreMigrateDisableAutoMaintenance_SkipsMissingClone(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	missing := Project{ID: "org/missing", Owner: "org", Repo: "missing", ClonePath: filepath.Join(t.TempDir(), "never-created.git")}
+	if err := store.writeFile(missing); err != nil {
+		t.Fatal(err)
+	}
+	empty := Project{ID: "org/empty", Owner: "org", Repo: "empty"}
+	if err := store.writeFile(empty); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.MigrateDisableAutoMaintenance(context.Background()); err != nil {
+		t.Fatalf("migrate should skip missing/empty clones rather than error: %v", err)
+	}
+}
+
+// CreateProject's async clone path writes directly into the final ClonePath
+// (no temp-path-plus-atomic-rename like Store.Create uses), so a project
+// genuinely mid-clone has a directory that already exists and os.Stat
+// succeeds against — Status=cloning, not a missing directory, is the real
+// signal MigrateDisableAutoMaintenance must key off to avoid racing
+// CloneBare's own .git/config writes.
+func TestStoreMigrateDisableAutoMaintenance_SkipsInProgressClone(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "mid-clone-bare.git")
+	if out, err := exec.Command("git", "clone", "-q", "--bare", src, bare).CombinedOutput(); err != nil {
+		t.Fatalf("git clone --bare: %v: %s", err, out)
+	}
+	_ = exec.Command("git", "-C", bare, "config", "--unset", "maintenance.auto").Run()
+
+	p := Project{ID: "org/mid-clone", Owner: "org", Repo: "mid-clone", ClonePath: bare, Status: ProjectStatusCloning}
+	if err := store.writeFile(p); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.MigrateDisableAutoMaintenance(context.Background()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	raw, err := outputBare(context.Background(), bare, "config", "maintenance.auto")
+	if err == nil && strings.TrimSpace(raw) == "false" {
+		t.Fatal("migrate touched a clone still marked Status=cloning; must wait for it to reach ready")
 	}
 }
