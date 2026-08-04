@@ -258,7 +258,7 @@ func repairBareCloneLocked(ctx context.Context, barePath, taskBranch string) (Re
 	releaseDeadWorktreeRefs(ctx, barePath, &report)
 	rebuildWorktreeIndexes(ctx, barePath, &report)
 
-	refsOut, err := outputBare(ctx, barePath, "for-each-ref", "--format=%(refname)")
+	refsOut, err := outputBare(ctx, barePath, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin")
 	if err != nil {
 		return report, fmt.Errorf("enumerate refs: %w", err)
 	}
