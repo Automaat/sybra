@@ -466,7 +466,7 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 				return merged, nil
 			})
 			if putErr != nil {
-				return task.Task{}, putErr
+				return task.Task{}, mapLockTimeout(putErr)
 			}
 			s.logger.Info("cluster.task.tamper_bless.forwarded", "task_id", taskID, "node", current.AssignedNode)
 			return result, nil
@@ -986,7 +986,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 					return merged, nil
 				})
 				if putErr != nil {
-					return cur, putErr
+					return cur, mapLockTimeout(putErr)
 				}
 				s.logger.Info("cluster.task.status_update.forwarded", "task_id", id, "node", cur.AssignedNode, "status", status)
 				return t, nil
@@ -1218,7 +1218,7 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 			})
 			s.followerStatusMu.Unlock()
 			if localErr != nil {
-				return task.Task{}, localErr
+				return task.Task{}, mapLockTimeout(localErr)
 			}
 			s.logDispatchAudit(id, target, string(cur.Status), reason, "forwarded")
 			return local, nil

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1289,6 +1290,36 @@ func TestDispatchFromHumanRequired_FailsClosedOnDispatchError(t *testing.T) {
 	}
 	if !strings.Contains(got.StatusReason, "retry please") {
 		t.Fatalf("status_reason = %q, want it to preserve the operator's reason", got.StatusReason)
+	}
+}
+
+func TestDispatchFromHumanRequired_LockTimeoutIsUnavailable(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	restore := setTaskLockTimingForTest(t, 150*time.Millisecond, 10*time.Millisecond)
+	defer restore()
+
+	tk := newHumanRequiredTask(t, a, 42)
+	lockPath := filepath.Join(a.tasksDir, tk.ID+".md")
+	cmd, release := startTaskLockHolder(t, lockPath)
+	defer release()
+
+	_, err := svc.DispatchFromHumanRequired(tk.ID, "in-review", "resume monitoring")
+	if err == nil {
+		t.Fatal("DispatchFromHumanRequired err = nil, want unavailable clientError")
+	}
+	var ce *clientError
+	if !errors.As(err, &ce) {
+		t.Fatalf("err = %T %v, want *clientError", err, err)
+	}
+	if ce.HTTPStatus() != 503 {
+		t.Fatalf("status = %d, want 503", ce.HTTPStatus())
+	}
+	if !strings.Contains(err.Error(), lockPath+".lock") {
+		t.Fatalf("error = %q, want lock path", err.Error())
+	}
+	if !strings.Contains(err.Error(), "pid "+strconv.Itoa(cmd.Process.Pid)) {
+		t.Fatalf("error = %q, want holder pid %d", err.Error(), cmd.Process.Pid)
 	}
 }
 

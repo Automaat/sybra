@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -613,6 +614,47 @@ func TestTaskService_BlessTamperingRejectsNonTamperTask(t *testing.T) {
 	}
 	if got.Status != task.StatusHumanRequired || slices.Contains(got.Tags, workflow.TamperBlessedTag) {
 		t.Fatalf("task after rejected bless = status %q tags %v", got.Status, got.Tags)
+	}
+}
+
+func TestTaskService_BlessTamperingLockTimeoutIsUnavailable(t *testing.T) {
+	svc, a := setupTaskService(t)
+	restore := setTaskLockTimingForTest(t, 150*time.Millisecond, 10*time.Millisecond)
+	defer restore()
+
+	created, err := svc.tasks.Create("Bless locked", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason := workflow.TamperFlaggedReasonPrefix + " removed-test in internal/foo_test.go"
+	flagged, err := svc.tasks.Update(created.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(reason),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lockPath := filepath.Join(a.tasksDir, flagged.ID+".md")
+	cmd, release := startTaskLockHolder(t, lockPath)
+	defer release()
+
+	_, err = svc.BlessTampering(flagged.ID)
+	if err == nil {
+		t.Fatal("BlessTampering err = nil, want unavailable clientError")
+	}
+	var ce *clientError
+	if !errors.As(err, &ce) {
+		t.Fatalf("err = %T %v, want *clientError", err, err)
+	}
+	if ce.HTTPStatus() != 503 {
+		t.Fatalf("status = %d, want 503", ce.HTTPStatus())
+	}
+	if !strings.Contains(err.Error(), lockPath+".lock") {
+		t.Fatalf("error = %q, want lock path", err.Error())
+	}
+	if !strings.Contains(err.Error(), "pid "+strconv.Itoa(cmd.Process.Pid)) {
+		t.Fatalf("error = %q, want holder pid %d", err.Error(), cmd.Process.Pid)
 	}
 }
 
