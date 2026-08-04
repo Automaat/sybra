@@ -4580,6 +4580,31 @@ func TestResumeStalled_WatchdogRateLimitPoolBusyDoesNotBurnRetryBudget(t *testin
 	}
 }
 
+func TestResumeStalled_WatchdogHangPoolBusyRetainsReaskNote(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetFailSpawn(ErrAgentPoolBusy)
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	tasks.Put(TaskInfo{
+		ID: "t1", Status: "in-progress", StatusReason: "watchdog hang: no stream activity", AgentMode: "headless",
+		Workflow: &Execution{WorkflowID: "test-simple", CurrentStep: "implement", State: ExecWaiting, Variables: map[string]string{}, StartedAt: time.Now().UTC()},
+	})
+
+	engine.ResumeStalled()
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if note := got.Workflow.Variables[watchdogReaskNoteVar]; note == "" {
+		t.Fatal("pool-busy park cleared watchdog guidance before an agent started")
+	}
+	if retry := got.Workflow.Variables[watchdogHangRetryKey("implement")]; retry != "1" {
+		t.Fatalf("hang retry = %q, want 1", retry)
+	}
+}
+
 func TestResumeStalled_WatchdogRateLimitDoesNotClearConcurrentFailure(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -10877,7 +10902,7 @@ func TestExecEvaluate_LastAgentFailedFlipsHumanRequired(t *testing.T) {
 	}
 }
 
-func TestExecEvaluate_LastAgentFailedTruncatesLongReason(t *testing.T) {
+func TestExecEvaluate_LastAgentFailedKeepsFullReason(t *testing.T) {
 	long := strings.Repeat("x", 500)
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
@@ -10892,11 +10917,11 @@ func TestExecEvaluate_LastAgentFailedTruncatesLongReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := tasks.Reason("t1")
-	if !strings.Contains(got, "(truncated)") {
-		t.Errorf("reason missing truncation marker: %q", got)
+	if strings.Contains(got, "(truncated)") {
+		t.Errorf("reason should not be truncated: %q", got)
 	}
-	if len(got) >= len(long) {
-		t.Errorf("reason not truncated: %d chars", len(got))
+	if got != long {
+		t.Errorf("reason = %d chars, want the full %d-char output preserved", len(got), len(long))
 	}
 }
 
