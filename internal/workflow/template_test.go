@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -275,5 +276,50 @@ func TestAcceptanceLedgerPromptRendering(t *testing.T) {
 	}
 	if !strings.Contains(testPrompt, "### Ledger entry fp-1") || !strings.Contains(testPrompt, "### Ledger entry fp-2") {
 		t.Fatalf("testing prompt missing ledger entries:\n%s", testPrompt)
+	}
+}
+
+func TestCurrentTestFailures_TruncatesHeadAndTail(t *testing.T) {
+	t.Parallel()
+
+	huge := testFailuresHeading + "\n\nhead\n" +
+		strings.Repeat("middle growth line keeps expanding the prompt\n", 500) +
+		"tail sentinel\n"
+	got := currentTestFailures(huge)
+	if len(got) > promptInlineMaxBytes+len(promptInlineElision) {
+		t.Fatalf("len(currentTestFailures) = %d, want bounded output", len(got))
+	}
+	if !strings.Contains(got, "head") || !strings.Contains(got, "tail sentinel") {
+		t.Fatalf("truncated current test failures lost head/tail sentinels:\n%s", got)
+	}
+	if !strings.Contains(got, promptInlineElision) {
+		t.Fatalf("truncated current test failures missing elision marker:\n%s", got)
+	}
+}
+
+func TestAcceptanceLedger_TruncatesHeadAndTail(t *testing.T) {
+	t.Parallel()
+
+	var b strings.Builder
+	b.WriteString(acceptanceLedgerHeading + "\n\n")
+	for i := range 30 {
+		b.WriteString("### Ledger entry fp-" + strconv.Itoa(i) + "\n\n")
+		b.WriteString(ledgerEntryMarker("fp-"+strconv.Itoa(i)) + "\n\n")
+		b.WriteString("> repro head " + strconv.Itoa(i) + "\n")
+		b.WriteString("> " + strings.Repeat("large ledger repro line\n> ", 80))
+		b.WriteString("> repro tail " + strconv.Itoa(i) + "\n\n")
+	}
+	got := acceptanceLedger(b.String())
+	if len(got) > promptInlineMaxBytes+len(promptInlineElision) {
+		t.Fatalf("len(acceptanceLedger) = %d, want bounded output", len(got))
+	}
+	if !strings.Contains(got, acceptanceLedgerHeading) {
+		t.Fatalf("truncated acceptance ledger lost heading:\n%s", got)
+	}
+	if !strings.Contains(got, "repro head 0") || !strings.Contains(got, "repro tail 29") {
+		t.Fatalf("truncated acceptance ledger lost head/tail sentinels:\n%s", got)
+	}
+	if !strings.Contains(got, promptInlineElision) {
+		t.Fatalf("truncated acceptance ledger missing elision marker:\n%s", got)
 	}
 }
