@@ -7,9 +7,10 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/gitexec"
 )
 
 var errGitSandboxNotRepo = errors.New("sandbox git roots: worktree is not a git repository")
@@ -396,16 +397,12 @@ func copyGitOverlayFile(src, dst string, mode fs.FileMode) error {
 }
 
 func gitHeadCommit(ctx context.Context, worktree string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "HEAD")
-	cmd.Dir = worktree
-	cmd.Env = gitSandboxDiscoveryEnv()
-	out, err := cmd.CombinedOutput()
+	out, err := gitexec.CombinedOutput(ctx, gitexec.Options{
+		Dir: worktree,
+		Env: gitSandboxDiscoveryEnv(),
+	}, "rev-parse", "--verify", "HEAD")
 	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			return "", fmt.Errorf("git rev-parse --verify HEAD: %w", err)
-		}
-		return "", fmt.Errorf("git rev-parse --verify HEAD: %w: %s", err, msg)
+		return "", err
 	}
 	head := strings.TrimSpace(string(out))
 	if head == "" {
@@ -428,19 +425,16 @@ func gitPath(ctx context.Context, worktree string, args ...string) (string, erro
 
 func gitPathRaw(ctx context.Context, worktree string, args ...string) (string, error) {
 	cmdArgs := append([]string{"rev-parse"}, args...)
-	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
-	cmd.Dir = worktree
-	cmd.Env = gitSandboxDiscoveryEnv()
-	out, err := cmd.CombinedOutput()
+	out, err := gitexec.CombinedOutput(ctx, gitexec.Options{
+		Dir: worktree,
+		Env: gitSandboxDiscoveryEnv(),
+	}, cmdArgs...)
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if looksLikeNotGitRepo(msg) {
 			return "", errGitSandboxNotRepo
 		}
-		if msg == "" {
-			return "", fmt.Errorf("git %s: %w", strings.Join(cmdArgs, " "), err)
-		}
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(cmdArgs, " "), err, msg)
+		return "", err
 	}
 	path := strings.TrimSpace(string(out))
 	if path == "" {
@@ -455,9 +449,8 @@ func gitPathRaw(ctx context.Context, worktree string, args ...string) (string, e
 // gitExitCode reports a git process exit code, or -1 when err is not an exit
 // failure (spawn error, context cancellation).
 func gitExitCode(err error) int {
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		return ee.ExitCode()
+	if code, ok := gitexec.ExitCode(err); ok {
+		return code
 	}
 	return -1
 }
@@ -480,19 +473,16 @@ func gitRevParsePath(ctx context.Context, worktree, arg string) (string, error) 
 // empty output, while a real failure (not a repository, unreadable HEAD)
 // exits 128 and prints. Only the first is swallowed.
 func gitSymbolicRef(ctx context.Context, worktree string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "-q", "HEAD")
-	cmd.Dir = worktree
-	cmd.Env = gitSandboxDiscoveryEnv()
-	out, err := cmd.CombinedOutput()
+	out, err := gitexec.CombinedOutput(ctx, gitexec.Options{
+		Dir: worktree,
+		Env: gitSandboxDiscoveryEnv(),
+	}, "symbolic-ref", "-q", "HEAD")
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if msg == "" && gitExitCode(err) == 1 {
 			return "", nil
 		}
-		if msg == "" {
-			return "", fmt.Errorf("git symbolic-ref -q HEAD: %w", err)
-		}
-		return "", fmt.Errorf("git symbolic-ref -q HEAD: %w: %s", err, msg)
+		return "", err
 	}
 	// Exit 0 with no ref is not a state git produces; treat it as a real fault
 	// rather than silently reporting "detached".

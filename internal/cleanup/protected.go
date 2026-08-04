@@ -12,7 +12,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -454,13 +454,13 @@ func rescueWorktree(path, ref, bundlePath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := exec.CommandContext(ctx, "git", "-C", path, "update-ref", ref, "HEAD").Run(); err != nil {
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: path}, "update-ref", ref, "HEAD"); err != nil {
 		return fmt.Errorf("create rescue ref: %w", err)
 	}
-	if out, err := exec.CommandContext(ctx, "git", "-C", path, "bundle", "create", bundlePath, "HEAD").CombinedOutput(); err != nil {
-		return fmt.Errorf("create rescue bundle: %w: %s", err, strings.TrimSpace(string(out)))
+	if _, err := gitexec.CombinedOutput(ctx, gitexec.Options{Dir: path}, "bundle", "create", bundlePath, "HEAD"); err != nil {
+		return fmt.Errorf("create rescue bundle: %w", err)
 	}
-	if out, err := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "--verify", ref).CombinedOutput(); err != nil || strings.TrimSpace(string(out)) == "" {
+	if out, err := gitexec.Output(ctx, gitexec.Options{Dir: path}, "rev-parse", "--verify", ref); err != nil || out == "" {
 		if err == nil {
 			err = errors.New("empty rescue ref")
 		}

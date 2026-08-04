@@ -4,13 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/cleanup"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -196,11 +195,11 @@ func (m *Manager) resolveProtectedWorktrees(observed map[string]bool) {
 func worktreeHead(ctx context.Context, path string) string {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "HEAD").Output()
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: path}, "rev-parse", "HEAD")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return out
 }
 
 func worktreeObservedState(ctx context.Context, path string) string {

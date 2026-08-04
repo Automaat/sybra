@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 )
 
@@ -630,12 +630,9 @@ func gitRun(ctx context.Context, dir, name string, args ...string) error {
 }
 
 func git(ctx context.Context, dir, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{name}, args...)...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	out, err := cmd.CombinedOutput()
+	out, err := gitexec.CombinedOutput(ctx, gitexec.Options{Dir: dir}, append([]string{name}, args...)...)
 	if err != nil {
-		return "", fmt.Errorf("git %s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
 }
