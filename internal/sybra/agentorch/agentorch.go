@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -20,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/project"
@@ -1521,13 +1521,11 @@ func CurrentWorktreeHead(ctx context.Context, dir string) string {
 	if dir == "" {
 		return ""
 	}
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "HEAD")
-	cmd.Dir = dir
-	out, err := cmd.Output()
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: dir}, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return out
 }
 
 // FirstNonEmpty returns the first non-empty string among vals, or "" if all

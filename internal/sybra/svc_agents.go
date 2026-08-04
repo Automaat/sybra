@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/sysopen"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -186,21 +186,14 @@ func (s *AgentService) GetAgentDiff(taskID string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_PAGER=cat")
-
-	diffCmd := exec.CommandContext(ctx, "git", "diff", "HEAD", "--patch", "-M", "--no-color")
-	diffCmd.Dir = dir
-	diffCmd.Env = env
-	diffOut, err := diffCmd.Output()
+	opts := gitexec.Options{Dir: dir, ExtraEnv: []string{"GIT_PAGER=cat"}}
+	diffOut, err := gitexec.RawOutput(ctx, opts, "diff", "HEAD", "--patch", "-M", "--no-color")
 	if err != nil {
 		s.logger.Warn("agent.diff.git-diff-failed", "task_id", taskID, "err", err)
 		return "", nil
 	}
 
-	lsCmd := exec.CommandContext(ctx, "git", "ls-files", "--others", "--exclude-standard")
-	lsCmd.Dir = dir
-	lsCmd.Env = env
-	lsOut, err := lsCmd.Output()
+	lsOut, err := gitexec.RawOutput(ctx, opts, "ls-files", "--others", "--exclude-standard")
 	if err != nil {
 		s.logger.Warn("agent.diff.ls-files-failed", "task_id", taskID, "err", err)
 		return string(diffOut), nil
