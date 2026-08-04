@@ -282,12 +282,11 @@ describe('TaskList', () => {
     })
   })
 
-  describe('agent mode filter chip', () => {
-    it('renders All, Headless, Interactive buttons', () => {
+  describe('agent mode filter', () => {
+    it('is not rendered', () => {
       render(TaskList, { props: { onselect: vi.fn() } })
-      expect(screen.getByText('All')).toBeDefined()
-      expect(screen.getByText('Headless')).toBeDefined()
-      expect(screen.getByText('Interactive')).toBeDefined()
+      expect(screen.queryByText('Headless')).toBeNull()
+      expect(screen.queryByText('Interactive')).toBeNull()
     })
   })
 
@@ -523,17 +522,6 @@ describe('TaskList', () => {
       await vi.waitFor(() => {
         expect(onfocusedtaskchange).toHaveBeenCalledWith('t-1')
       })
-    })
-  })
-
-  describe('agent mode filter chip rendering', () => {
-    it('renders All button as initially selected with primary styling', () => {
-      render(TaskList, { props: { onselect: vi.fn() } })
-      const allBtn = screen.getByText('All')
-      // All button is the default-selected mode; lives inside the filter bar
-      expect(allBtn).toBeDefined()
-      expect(screen.getByText('Headless')).toBeDefined()
-      expect(screen.getByText('Interactive')).toBeDefined()
     })
   })
 

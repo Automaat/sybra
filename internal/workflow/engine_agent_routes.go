@@ -267,6 +267,20 @@ func (e *Engine) deferStartedAgentRoute(taskID, stepID, agentID string, err erro
 	return errWorkflowYield
 }
 
+func (e *Engine) hasPendingAgentRouteForStep(taskID string, step *Step) bool {
+	if step == nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for key, routedStepID := range e.pendingRoutes {
+		if strings.HasPrefix(key, taskID+"\x00") && routeMatchesStep(step, routedStepID) {
+			return true
+		}
+	}
+	return false
+}
+
 func clearAgentRouteFromWorkflow(wf *Execution, agentID string) bool {
 	if wf == nil || agentID == "" {
 		return false

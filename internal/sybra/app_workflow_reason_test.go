@@ -142,7 +142,6 @@ func TestTaskAdapterSetBlockerAndWorkflowPersistsAllFieldsAtomically(t *testing.
 		t.Fatalf("Generation = %d, want %d (single atomic write)", after.Generation, before.Generation+1)
 	}
 }
-
 func TestTaskAdapterClearTaskStatusReasonIfIsAtomicGuard(t *testing.T) {
 	t.Parallel()
 

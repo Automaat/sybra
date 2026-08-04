@@ -53,7 +53,7 @@ func (s *ProjectService) CreateProject(url, ptype string) (project.Project, erro
 		// runs in a detached background goroutine with no ctx to thread.
 		if err := project.CloneBare(context.Background(), p.URL, p.ClonePath); err != nil {
 			s.logger.Error("project.clone.failed", "id", p.ID, "err", err)
-			if markErr := s.projects.MarkError(p.ID); markErr != nil {
+			if markErr := s.projects.MarkErrorFor(p); markErr != nil {
 				s.logger.Error("project.mark-error", "id", p.ID, "err", markErr)
 			}
 			if s.bgops != nil && opID != "" {
@@ -65,7 +65,7 @@ func (s *ProjectService) CreateProject(url, ptype string) (project.Project, erro
 			}
 			return
 		}
-		if markErr := s.projects.MarkReady(p.ID); markErr != nil {
+		if markErr := s.projects.MarkReadyFor(p); markErr != nil {
 			s.logger.Error("project.mark-ready", "id", p.ID, "err", markErr)
 		}
 		if s.bgops != nil && opID != "" {

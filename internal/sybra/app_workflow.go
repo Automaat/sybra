@@ -237,7 +237,6 @@ func (a *taskAdapter) ClearTaskStatusReasonAndSetWorkflowIf(id, expectedStatus, 
 	}
 	return cleared, err
 }
-
 func (a *taskAdapter) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {
 	st, err := task.ValidateStatus(status)
 	if err != nil {
