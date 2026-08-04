@@ -238,7 +238,18 @@ func (e *Engine) pushTaskBranch(taskID string, step *Step, wfExec *Execution, t 
 	// non-auth retry bucket (#2160/#2386).
 	pushCtx, pushCancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer pushCancel()
-	pushErr := project.PushSync(pushCtx, wtPath, branch)
+	pushRemote := ""
+	pushURL := ""
+	if wfExec != nil {
+		pushRemote = strings.TrimSpace(wfExec.Variables[WorkflowVarBranchConflictPushRemote])
+		pushURL = strings.TrimSpace(wfExec.Variables[WorkflowVarBranchConflictPushURL])
+	}
+	var pushErr error
+	if pushRemote == "origin" && pushURL != "" {
+		pushErr = project.PushSyncToPinnedRemote(pushCtx, wtPath, branch, pushRemote, pushURL)
+	} else {
+		pushErr = project.PushSync(pushCtx, wtPath, branch)
+	}
 	if pushErr == nil {
 		return StepOutput{}, nil, true
 	}
