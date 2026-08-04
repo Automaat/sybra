@@ -215,16 +215,16 @@ func TestCloneBare_SetsCommitIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read user.name: %v", err)
 	}
-	if got := strings.TrimSpace(name); got != "Sybra Agent" {
-		t.Errorf("user.name = %q, want %q", got, "Sybra Agent")
+	if got := strings.TrimSpace(name); got != "Sybra Test" {
+		t.Errorf("user.name = %q, want %q", got, "Sybra Test")
 	}
 
 	email, err := outputBare(context.Background(), bare, "config", "user.email")
 	if err != nil {
 		t.Fatalf("read user.email: %v", err)
 	}
-	if got := strings.TrimSpace(email); got != "sybra-agent@example.invalid" {
-		t.Errorf("user.email = %q, want %q", got, "sybra-agent@example.invalid")
+	if got := strings.TrimSpace(email); got != "test@test.com" {
+		t.Errorf("user.email = %q, want %q", got, "test@test.com")
 	}
 }
 
@@ -252,6 +252,59 @@ func TestCloneBare_CommitIdentityRespectsEnvOverride(t *testing.T) {
 	}
 	if got := strings.TrimSpace(email); got != "custom-bot@example.com" {
 		t.Errorf("user.email = %q, want %q", got, "custom-bot@example.com")
+	}
+}
+
+func TestCloneBare_CommitIdentityFallsBackWithoutGlobalIdentity(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "empty-global-config"))
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	name, err := outputBare(context.Background(), bare, "config", "user.name")
+	if err != nil {
+		t.Fatalf("read user.name: %v", err)
+	}
+	email, err := outputBare(context.Background(), bare, "config", "user.email")
+	if err != nil {
+		t.Fatalf("read user.email: %v", err)
+	}
+	if strings.TrimSpace(name) != "Sybra Agent" || strings.TrimSpace(email) != "sybra-agent@example.invalid" {
+		t.Fatalf("fallback identity = %q <%q>", strings.TrimSpace(name), strings.TrimSpace(email))
+	}
+}
+
+// A plain `git fetch` in any linked worktree defaults to triggering a
+// detached `git maintenance run --auto` against this shared clone's object
+// store — a repack racing a sibling worktree's in-flight commit can drop the
+// object before its ref update lands. CloneBare must disable this by default.
+func TestCloneBare_DisablesAutoMaintenance(t *testing.T) {
+	t.Parallel()
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+
+	raw, err := outputBare(context.Background(), bare, "config", "maintenance.auto")
+	if err != nil {
+		t.Fatalf("read maintenance.auto: %v", err)
+	}
+	if got := strings.TrimSpace(raw); got != "false" {
+		t.Errorf("maintenance.auto = %q, want %q", got, "false")
+	}
+
+	// gc.auto is a separate, older auto-gc mechanism maintenance.auto=false
+	// does not disable — git commit/checkout/merge/fetch all still trigger
+	// `git gc --auto` once loose objects cross gc.auto's threshold (default
+	// 6700) unless this is also set to 0.
+	gcAuto, err := outputBare(context.Background(), bare, "config", "gc.auto")
+	if err != nil {
+		t.Fatalf("read gc.auto: %v", err)
+	}
+	if got := strings.TrimSpace(gcAuto); got != "0" {
+		t.Errorf("gc.auto = %q, want %q", got, "0")
 	}
 }
 
@@ -1684,6 +1737,33 @@ func TestInstallHooks_RepoConfigPriority(t *testing.T) {
 	}
 }
 
+func TestInstallHooks_UnsetsGitObjectEnv(t *testing.T) {
+	t.Parallel()
+	_, wtPath := initWorktree(t)
+
+	checks := &ChecksConfig{PrePush: []string{
+		`test -z "$GIT_OBJECT_DIRECTORY"`,
+		`test -z "$GIT_ALTERNATE_OBJECT_DIRECTORIES"`,
+	}}
+	if err := InstallHooks(context.Background(), wtPath, checks); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+
+	gitDir, err := gitCommonDir(context.Background(), wtPath)
+	if err != nil {
+		t.Fatalf("gitCommonDir: %v", err)
+	}
+	cmd := exec.Command(filepath.Join(gitDir, "hooks", "pre-push"))
+	cmd.Dir = wtPath
+	cmd.Env = append(os.Environ(),
+		"GIT_OBJECT_DIRECTORY=/some/sandbox/overlay/objects",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES=/some/other/repo/objects",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("pre-push hook should scrub Git object environment: %v: %s", err, out)
+	}
+}
+
 func TestInstallHooks_NilChecks(t *testing.T) {
 	t.Parallel()
 	_, wtPath := initWorktree(t)
@@ -2537,6 +2617,92 @@ func TestPushSync_FirstPushSetsTracking(t *testing.T) {
 	}
 	if got := remoteRefSHA(t, remoteBare, branch); got != localSHA {
 		t.Fatalf("remote SHA after first push = %q, want %q", got, localSHA)
+	}
+}
+
+// A fork-only setup deliberately replaces origin's push URL with a sentinel so
+// an agent cannot accidentally publish to the upstream repository. Recovery
+// of a same-repository PR is the narrow trusted exception: it must still be
+// able to publish the reconciled, non-force merge to the PR's source remote.
+func TestPushSyncToPinnedRemote_PublishesDespiteForkOnlyOriginSentinel(t *testing.T) {
+	t.Parallel()
+
+	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
+	localSHA := makeCommit(t, wtPath, "trusted-recovery")
+	if out, err := exec.Command("git", "-C", wtPath, "config", "remote.origin.pushurl", "sybra-disabled-do-not-push-to-upstream-use-fork").CombinedOutput(); err != nil {
+		t.Fatalf("install origin push sentinel: %v: %s", err, out)
+	}
+
+	if err := PushSync(context.Background(), wtPath, branch); err == nil {
+		t.Fatal("PushSync unexpectedly bypassed origin's fork-only push sentinel")
+	}
+	if got := remoteRefSHA(t, remoteBare, branch); got != "" {
+		t.Fatalf("origin changed through sentinel: got %q", got)
+	}
+
+	if err := PushSyncToPinnedRemote(context.Background(), wtPath, branch, "origin", remoteBare); err != nil {
+		t.Fatalf("trusted PushSyncToPinnedRemote: %v", err)
+	}
+	if got := remoteRefSHA(t, remoteBare, branch); got != localSHA {
+		t.Fatalf("trusted push SHA = %q, want %q", got, localSHA)
+	}
+}
+
+func TestPushSyncToPinnedRemote_RejectsChangedRemoteURL(t *testing.T) {
+	t.Parallel()
+
+	remoteBare, wtPath, branch := setupPushSyncWorktree(t)
+	makeCommit(t, wtPath, "trusted-recovery")
+	redirectBare := filepath.Join(t.TempDir(), "redirect.git")
+	if out, err := exec.Command("git", "init", "--bare", redirectBare).CombinedOutput(); err != nil {
+		t.Fatalf("init redirect bare: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", wtPath, "remote", "set-url", "origin", redirectBare).CombinedOutput(); err != nil {
+		t.Fatalf("redirect origin: %v: %s", err, out)
+	}
+
+	err := PushSyncToPinnedRemote(context.Background(), wtPath, branch, "origin", remoteBare)
+	if err == nil || !strings.Contains(err.Error(), "URL changed") {
+		t.Fatalf("PushSyncToPinnedRemote = %v, want changed URL rejection", err)
+	}
+	if got := remoteRefSHA(t, remoteBare, branch); got != "" {
+		t.Fatalf("original remote changed after URL rejection: %q", got)
+	}
+	if got := remoteRefSHA(t, redirectBare, branch); got != "" {
+		t.Fatalf("redirect remote changed after URL rejection: %q", got)
+	}
+}
+
+func TestOriginPushHasForkOnlyGuard_OnlyMatchesSybraSentinel(t *testing.T) {
+	t.Parallel()
+
+	_, wtPath, _ := setupPushSyncWorktree(t)
+	for _, tc := range []struct {
+		name    string
+		pushURL string
+		want    bool
+	}{
+		{name: "no push URL", want: false},
+		{name: "foreign push URL", pushURL: "ssh://example.invalid/writable.git", want: false},
+		{name: "sybra sentinel", pushURL: forkOnlyDisabledPushURL, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Exit status 5 means the key was absent, which is exactly the
+			// starting state required by the first table case.
+			_ = exec.Command("git", "-C", wtPath, "config", "--unset-all", "remote.origin.pushurl").Run()
+			if tc.pushURL != "" {
+				if out, err := exec.Command("git", "-C", wtPath, "config", "remote.origin.pushurl", tc.pushURL).CombinedOutput(); err != nil {
+					t.Fatalf("set pushurl: %v: %s", err, out)
+				}
+			}
+			got, err := OriginPushHasForkOnlyGuard(context.Background(), wtPath)
+			if err != nil {
+				t.Fatalf("OriginPushHasForkOnlyGuard: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("OriginPushHasForkOnlyGuard = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -3659,6 +3825,24 @@ func TestInstallSignoffHook(t *testing.T) {
 
 	if err := InstallSignoffHook(context.Background(), wtPath); err != nil {
 		t.Fatalf("InstallSignoffHook: %v", err)
+	}
+	gitDir, err := gitCommonDir(context.Background(), wtPath)
+	if err != nil {
+		t.Fatalf("gitCommonDir: %v", err)
+	}
+	msgPath := filepath.Join(t.TempDir(), "message")
+	if err := os.WriteFile(msgPath, []byte("test message\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hook := exec.Command(filepath.Join(gitDir, "hooks", "prepare-commit-msg"), msgPath)
+	hook.Dir = wtPath
+	hook.Env = append(os.Environ(),
+		"GIT_DIR=/nonexistent/attacker-git-dir",
+		"GIT_OBJECT_DIRECTORY=/nonexistent/attacker-objects",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES=/nonexistent/attacker-alternates",
+	)
+	if out, err := hook.CombinedOutput(); err != nil {
+		t.Fatalf("signoff hook should scrub inherited Git environment: %v: %s", err, out)
 	}
 
 	body := func() string {

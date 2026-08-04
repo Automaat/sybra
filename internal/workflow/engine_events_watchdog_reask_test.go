@@ -534,8 +534,12 @@ steps:
 		CurrentStep: "fix_review",
 		State:       ExecWaiting,
 		Variables: map[string]string{
-			// Budget already spent by an earlier reward-hacking retry round.
-			watchdogRewardHackingRetryKey("fix_review"): "1",
+			// Budgets already spent by earlier watchdog retry rounds.
+			watchdogRewardHackingRetryKey("fix_review"):   "1",
+			watchdogHangRetryKey("fix_review"):            "1",
+			watchdogStopRetryKey("fix_review"):            "1",
+			watchdogRateLimitRetryKey("fix_review"):       "1",
+			watchdogZeroOutputFreshRetryKey("fix_review"): "1",
 		},
 		StartedAt: time.Now().UTC(),
 	}
@@ -549,8 +553,16 @@ steps:
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if _, ok := fresh.Workflow.Variables[watchdogRewardHackingRetryKey("fix_review")]; ok {
-		t.Fatal("reward-hacking retry counter should be cleared after a clean fix_review completion")
+	for _, key := range []string{
+		watchdogRewardHackingRetryKey("fix_review"),
+		watchdogHangRetryKey("fix_review"),
+		watchdogStopRetryKey("fix_review"),
+		watchdogRateLimitRetryKey("fix_review"),
+		watchdogZeroOutputFreshRetryKey("fix_review"),
+	} {
+		if _, ok := fresh.Workflow.Variables[key]; ok {
+			t.Fatalf("watchdog retry counter %q should be cleared after a clean completion", key)
+		}
 	}
 
 	// A reward_hacking stop on a later round of the same step must retry

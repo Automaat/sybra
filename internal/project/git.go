@@ -1,7 +1,6 @@
 package project
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -237,7 +236,7 @@ func InstallHooks(ctx context.Context, worktreePath string, checks *ChecksConfig
 		}
 		var sb strings.Builder
 		sb.WriteString("#!/bin/sh\nset -e\n")
-		sb.WriteString("unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY\n")
+		sb.WriteString("unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES\n")
 		sb.WriteString("for __sybra_hook_env_name in $(env | sed -n 's/^\\(SYBRA_[A-Za-z0-9_]*\\)=.*/\\1/p'); do unset \"$__sybra_hook_env_name\"; done\n")
 		sb.WriteString("unset __sybra_hook_env_name\n")
 		for _, c := range commands {
@@ -261,6 +260,7 @@ const signoffHook = `#!/bin/sh
 # Auto-installed by Sybra. Guarantees a DCO Signed-off-by trailer on every
 # commit so PRs never fail the DCO check when an agent forgets 'git commit -s'.
 msg_file="$1"
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 sob=$(git var GIT_AUTHOR_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
 [ -z "$sob" ] && exit 0
 git interpret-trailers --if-exists addIfDifferent --trailer "$sob" --in-place "$msg_file"
@@ -353,8 +353,11 @@ func CloneBare(ctx context.Context, repoURL, destPath string) error {
 	if err := InstallSignoffHook(ctx, destPath); err != nil {
 		return fmt.Errorf("install signoff hook: %w", err)
 	}
-	if err := configureCommitIdentity(ctx, destPath); err != nil {
+	if err := ConfigureCommitIdentity(ctx, destPath); err != nil {
 		return fmt.Errorf("configure commit identity: %w", err)
+	}
+	if err := DisableAutoMaintenance(ctx, destPath); err != nil {
+		return fmt.Errorf("disable auto maintenance: %w", err)
 	}
 	// `git clone --bare` leaves remote.origin.fetch empty, so later `git fetch
 	// origin` becomes a no-op against refs/remotes/origin/*. Configure the
@@ -362,19 +365,48 @@ func CloneBare(ctx context.Context, repoURL, destPath string) error {
 	return runBare(ctx, destPath, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
 }
 
-// configureCommitIdentity sets an explicit git identity on the bare clone.
-// Headless/interactive agent commits are made by the agent's own bash tool
+// DisableAutoMaintenance turns off both of git's independent implicit-repack
+// triggers, either of which otherwise lets an ordinary command in any linked
+// worktree silently repack this shared bare clone's object store:
+//   - maintenance.auto (git 2.30+): `git fetch` runs a detached
+//     `git maintenance run --auto` afterward.
+//   - gc.auto (older, separate mechanism `maintenance.auto` does NOT
+//     disable): `git commit`/`checkout`/`merge`/`fetch` and others run
+//     `git gc --auto` once loose objects exceed a threshold (default 6700).
+//
+// Concurrent tasks each have their own worktree but share one clone: a
+// repack from either trigger can run while a sibling task is mid-commit
+// (object written, ref not yet updated) and conclude the new object is
+// unreachable, dropping it — corrupting the sibling's branch with no warning
+// until something later fails to read it ("fatal: bad object HEAD").
+// Confirmed in production: disabling only maintenance.auto still let this
+// happen via gc.auto on the very next commit to the same clone.
+//
+// This closes only the *implicit* triggers; an agent running `git
+// gc`/`git repack`/`git maintenance run` explicitly in its own worktree
+// reproduces the identical race and is not prevented here (see
+// internal/agent/manager_run.go's git-sandbox write grants, which
+// intentionally permit those paths). Exported so a startup migration can
+// retrofit already-registered projects, not just newly cloned ones.
+func DisableAutoMaintenance(ctx context.Context, barePath string) error {
+	if err := runBare(ctx, barePath, "config", "maintenance.auto", "false"); err != nil {
+		return err
+	}
+	return runBare(ctx, barePath, "config", "gc.auto", "0")
+}
+
+// ConfigureCommitIdentity sets an explicit git identity on the bare clone.
+// Headless agent commits are made by the agent's own bash tool
 // calls, not orchestrated Go code, so they inherit whatever identity is
 // already configured on the clone — an empty one fails every commit with
 // "empty ident name", and any stray local override (however it got there)
 // silently becomes the permanent author of every real commit. Setting it
 // explicitly at clone time means neither can happen by accident.
-// GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL let an operator brand commits (e.g. as
-// their own GitHub App bot); the default matches the identity
-// internal/agent/k8s_job_runner.go already falls back to.
-func configureCommitIdentity(ctx context.Context, barePath string) error {
-	name := cmp.Or(os.Getenv("GIT_AUTHOR_NAME"), "Sybra Agent")
-	email := cmp.Or(os.Getenv("GIT_AUTHOR_EMAIL"), "sybra-agent@example.invalid")
+// GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL take precedence. On a developer machine,
+// a complete global Git identity is used next; the placeholder is only for
+// unattended hosts that have neither identity configured.
+func ConfigureCommitIdentity(ctx context.Context, barePath string) error {
+	name, email := commitIdentity(ctx)
 	if err := runBare(ctx, barePath, "config", "user.name", name); err != nil {
 		return fmt.Errorf("set user.name: %w", err)
 	}
@@ -382,6 +414,28 @@ func configureCommitIdentity(ctx context.Context, barePath string) error {
 		return fmt.Errorf("set user.email: %w", err)
 	}
 	return nil
+}
+
+func commitIdentity(ctx context.Context) (name, email string) {
+	name = strings.TrimSpace(os.Getenv("GIT_AUTHOR_NAME"))
+	email = strings.TrimSpace(os.Getenv("GIT_AUTHOR_EMAIL"))
+	if name != "" && email != "" {
+		return name, email
+	}
+	globalName := gitGlobalConfig(ctx, "user.name")
+	globalEmail := gitGlobalConfig(ctx, "user.email")
+	if globalName != "" && globalEmail != "" {
+		return globalName, globalEmail
+	}
+	return "Sybra Agent", "sybra-agent@example.invalid"
+}
+
+func gitGlobalConfig(ctx context.Context, key string) string {
+	out, err := executil.Output(ctx, "", "git", "config", "--global", "--get", key)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 // DefaultBranch resolves barePath's HEAD symbolic ref (e.g.
@@ -969,6 +1023,22 @@ func RemoteConfigured(ctx context.Context, repoPath, remote string) bool {
 // so the error message itself documents the policy.
 const forkOnlyDisabledPushURL = "sybra-disabled-do-not-push-to-upstream-use-fork"
 
+// OriginPushHasForkOnlyGuard reports whether origin's push URL is the exact
+// sentinel owned by EnforceForkOnlyPush. Foreign user-configured push URLs are
+// intentionally not treated as Sybra's guard and must retain normal Git push
+// behavior.
+func OriginPushHasForkOnlyGuard(ctx context.Context, worktreePath string) (bool, error) {
+	pushURL, err := executil.Output(ctx, worktreePath, "git", "config", "--get", "remote.origin.pushurl")
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, err
+	}
+	return strings.TrimSpace(pushURL) == forkOnlyDisabledPushURL, nil
+}
+
 // EnforceForkOnlyPush configures a worktree so pushes never reach origin
 // when a "fork" remote exists. It overrides remote.origin.pushurl with a
 // deliberately invalid value; git push fails before any network call, which
@@ -1311,10 +1381,24 @@ func BranchPushed(ctx context.Context, worktreePath, branch string) bool {
 }
 
 func refreshTrackingRef(ctx context.Context, worktreePath, remote, branch string) error {
+	return refreshTrackingRefWithFetch(ctx, worktreePath, remote, branch, func(refspec string) error {
+		return runNetworkGit(ctx, worktreePath, fetchEnv(), "fetch", remote, refspec)
+	})
+}
+
+// refreshTrackingRefWithFetch keeps the shared-bare locking policy testable
+// without making the regression depend on a local git fetch's timing.
+func refreshTrackingRefWithFetch(ctx context.Context, worktreePath, remote, branch string, fetch func(refspec string) error) error {
 	refspec := fmt.Sprintf("+refs/heads/%s:refs/remotes/%s/%s", branch, remote, branch)
-	fetchErr := withNetworkRetry(ctx, func() error {
-		return withLockRetry(func() error {
-			return runNetworkGit(ctx, worktreePath, fetchEnv(), "fetch", remote, refspec)
+	barePath, err := gitCommonDir(ctx, worktreePath)
+	if err != nil {
+		return err
+	}
+	fetchErr := withBareRepoLock(barePath, func() error {
+		return withNetworkRetry(ctx, func() error {
+			return withLockRetry(func() error {
+				return fetch(refspec)
+			})
 		})
 	})
 	if fetchErr != nil && !strings.Contains(fetchErr.Error(), "couldn't find remote ref") {
@@ -1469,6 +1553,40 @@ func worktreeDirty(ctx context.Context, worktreePath string) (bool, error) {
 //
 // Returns ErrBranchMissing if the local branch ref does not exist.
 func PushSync(ctx context.Context, worktreePath, branch string) error {
+	return pushSyncToRemote(ctx, worktreePath, branch, PushRemote(ctx, worktreePath), "")
+}
+
+// RemoteURL returns a configured remote's fetch URL.
+func RemoteURL(ctx context.Context, worktreePath, remote string) (string, error) {
+	remoteURL, err := executil.Output(ctx, worktreePath, "git", "remote", "get-url", remote)
+	if err != nil {
+		return "", fmt.Errorf("resolve remote %s URL: %w", remote, err)
+	}
+	remoteURL = strings.TrimSpace(remoteURL)
+	if parsed, parseErr := url.Parse(remoteURL); parseErr == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.User != nil {
+		return "", fmt.Errorf("remote %s URL must not contain HTTP userinfo", remote)
+	}
+	return remoteURL, nil
+}
+
+// PushSyncToPinnedRemote synchronizes branch to a pre-validated source remote
+// URL without force-pushing. It is the narrow trusted Sybra workflow path for
+// publishing a same-repository PR recovery despite EnforceForkOnlyPush's
+// origin push-url sentinel. The remote must still resolve to expectedURL when
+// this runs, so an agent cannot redirect the host-credential push by editing
+// the worktree's Git configuration during its recovery run.
+func PushSyncToPinnedRemote(ctx context.Context, worktreePath, branch, remote, expectedURL string) error {
+	currentURL, err := RemoteURL(ctx, worktreePath, remote)
+	if err != nil {
+		return err
+	}
+	if expectedURL == "" || currentURL != expectedURL {
+		return fmt.Errorf("push remote %q URL changed during recovery", remote)
+	}
+	return pushSyncToRemote(ctx, worktreePath, branch, remote, expectedURL)
+}
+
+func pushSyncToRemote(ctx context.Context, worktreePath, branch, remote, pinnedPushURL string) error {
 	if err := executil.Run(ctx, worktreePath, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
@@ -1477,7 +1595,9 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 		return err
 	}
 
-	remote := PushRemote(ctx, worktreePath)
+	if !RemoteConfigured(ctx, worktreePath, remote) {
+		return fmt.Errorf("push remote %q is not configured", remote)
+	}
 	localSHA, err := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", "refs/heads/"+branch)
 	if err != nil {
 		return err
@@ -1497,7 +1617,7 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 	remoteSHA, remoteOK := remoteTrackingRef(ctx, worktreePath, remote, branch)
 	if !remoteOK {
 		// Remote tracking ref unknown — first push, set upstream.
-		return pushLocked(ctx, worktreePath, "push", "-u", remote, branch)
+		return pushBranchToRemote(ctx, worktreePath, remote, branch, pinnedPushURL)
 	}
 	remoteAdvanced := beforeRefreshOK && beforeRefreshSHA != remoteSHA
 
@@ -1507,7 +1627,7 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 
 	// Fast-forward when remote SHA is reachable from local SHA.
 	if isAncestor(ctx, worktreePath, remoteSHA, localSHA) {
-		return pushLocked(ctx, worktreePath, "push", "-u", remote, branch)
+		return pushBranchToRemote(ctx, worktreePath, remote, branch, pinnedPushURL)
 	}
 
 	// Divergence path: never force-push. remoteSHA reflects the freshly
@@ -1518,6 +1638,14 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 		return fmt.Errorf("%w: %w: local %s vs remote %s/%s %s diverged", ErrDivergedNeedsResolve, ErrRemoteAdvanced, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
 	}
 	return fmt.Errorf("%w: local %s vs remote %s/%s %s diverged", ErrDivergedNeedsResolve, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
+}
+
+func pushBranchToRemote(ctx context.Context, worktreePath, remote, branch, pinnedPushURL string) error {
+	if pinnedPushURL == "" {
+		return pushLocked(ctx, worktreePath, "push", "-u", remote, branch)
+	}
+	refspec := "refs/heads/" + branch + ":refs/heads/" + branch
+	return pushLocked(ctx, worktreePath, "push", pinnedPushURL, refspec)
 }
 
 // pushPreflightRetryBackoffs bounds retries for a push-credential preflight

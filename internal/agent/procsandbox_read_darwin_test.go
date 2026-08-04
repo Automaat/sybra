@@ -190,6 +190,131 @@ func TestSandboxProfile_ReferencesAppSupport(t *testing.T) {
 	}
 }
 
+// A linked worktree's actual gitdir (HEAD, index, logs/HEAD) lives outside
+// WORKTREE, under the shared bare clone's worktrees/<branch>/ subdirectory,
+// and a real commit also needs write on the shared object store plus the
+// branch's own ref/lock/reflog and the shared remote/tag ref+log dirs.
+// Without these grants git fetch/add/commit failed EPERM partway through.
+func TestWrapInvocation_GrantsAllGitRoots(t *testing.T) {
+	spec := sandboxSpec{
+		mode:                  "enforce",
+		worktree:              "/data/wt",
+		sandboxHome:           "/data/home",
+		tmp:                   "/tmp",
+		sharedCache:           "/data/cache",
+		gitAdminDir:           "/data/clones/repo.git/worktrees/task-branch",
+		gitObjectDir:          "/data/clones/repo.git/objects",
+		gitBranchRefFile:      "/data/clones/repo.git/refs/heads/fix/task-branch",
+		gitBranchRefLockFile:  "/data/clones/repo.git/refs/heads/fix/task-branch.lock",
+		gitBranchLogFile:      "/data/clones/repo.git/logs/refs/heads/fix/task-branch",
+		gitBranchLogLockFile:  "/data/clones/repo.git/logs/refs/heads/fix/task-branch.lock",
+		gitStashRefFile:       "/data/clones/repo.git/refs/stash",
+		gitStashRefLockFile:   "/data/clones/repo.git/refs/stash.lock",
+		gitStashLogFile:       "/data/clones/repo.git/logs/refs/stash",
+		gitStashLogLockFile:   "/data/clones/repo.git/logs/refs/stash.lock",
+		gitPackedRefsFile:     "/data/clones/repo.git/packed-refs",
+		gitPackedRefsNewFile:  "/data/clones/repo.git/packed-refs.new",
+		gitPackedRefsLockFile: "/data/clones/repo.git/packed-refs.lock",
+		gitGCPidFile:          "/data/clones/repo.git/gc.pid",
+		gitGCPidLockFile:      "/data/clones/repo.git/gc.pid.lock",
+		gitShallowFile:        "/data/clones/repo.git/shallow",
+		gitShallowLockFile:    "/data/clones/repo.git/shallow.lock",
+		gitInfoDir:            "/data/clones/repo.git/info",
+		gitInfoDenyAttributes: "/data/clones/repo.git/info/attributes",
+		gitInfoDenyExclude:    "/data/clones/repo.git/info/exclude",
+		gitRemoteRefDir:       "/data/clones/repo.git/refs/remotes",
+		gitRemoteLogDir:       "/data/clones/repo.git/logs/refs/remotes",
+		gitTagRefDir:          "/data/clones/repo.git/refs/tags",
+		gitTagLogDir:          "/data/clones/repo.git/logs/refs/tags",
+		gitNotesRefDir:        "/data/clones/repo.git/refs/notes",
+		gitNotesLogDir:        "/data/clones/repo.git/logs/refs/notes",
+	}
+	cfg := &RunConfig{sandbox: spec}
+
+	_, args := wrapInvocation("claude", []string{"-p", "hi"}, cfg)
+
+	want := map[string]string{
+		"GIT_ADMIN_DIR":             spec.gitAdminDir,
+		"GIT_OBJECT_DIR":            spec.gitObjectDir,
+		"GIT_BRANCH_REF_FILE":       spec.gitBranchRefFile,
+		"GIT_BRANCH_REF_LOCK_FILE":  spec.gitBranchRefLockFile,
+		"GIT_BRANCH_LOG_FILE":       spec.gitBranchLogFile,
+		"GIT_BRANCH_LOG_LOCK_FILE":  spec.gitBranchLogLockFile,
+		"GIT_STASH_REF_FILE":        spec.gitStashRefFile,
+		"GIT_STASH_REF_LOCK_FILE":   spec.gitStashRefLockFile,
+		"GIT_STASH_LOG_FILE":        spec.gitStashLogFile,
+		"GIT_STASH_LOG_LOCK_FILE":   spec.gitStashLogLockFile,
+		"GIT_PACKED_REFS_FILE":      spec.gitPackedRefsFile,
+		"GIT_PACKED_REFS_NEW_FILE":  spec.gitPackedRefsNewFile,
+		"GIT_PACKED_REFS_LOCK_FILE": spec.gitPackedRefsLockFile,
+		"GIT_GC_PID_FILE":           spec.gitGCPidFile,
+		"GIT_GC_PID_LOCK_FILE":      spec.gitGCPidLockFile,
+		"GIT_SHALLOW_FILE":          spec.gitShallowFile,
+		"GIT_SHALLOW_LOCK_FILE":     spec.gitShallowLockFile,
+		"GIT_INFO_DIR":              spec.gitInfoDir,
+		"GIT_INFO_DENY_ATTRIBUTES":  spec.gitInfoDenyAttributes,
+		"GIT_INFO_DENY_EXCLUDE":     spec.gitInfoDenyExclude,
+		"GIT_REMOTE_REF_DIR":        spec.gitRemoteRefDir,
+		"GIT_REMOTE_LOG_DIR":        spec.gitRemoteLogDir,
+		"GIT_TAG_REF_DIR":           spec.gitTagRefDir,
+		"GIT_TAG_LOG_DIR":           spec.gitTagLogDir,
+		"GIT_NOTES_REF_DIR":         spec.gitNotesRefDir,
+		"GIT_NOTES_LOG_DIR":         spec.gitNotesLogDir,
+	}
+	got := map[string]string{}
+	for i := range len(args) - 1 {
+		if args[i] != "-D" {
+			continue
+		}
+		if name, value, ok := strings.Cut(args[i+1], "="); ok {
+			got[name] = value
+		}
+	}
+	for name, wantValue := range want {
+		if got[name] != wantValue {
+			t.Errorf("%s = %q, want %q", name, got[name], wantValue)
+		}
+	}
+}
+
+// The embedded profile must actually reference every git-root param, or the
+// -D value is inert and the grant silently does nothing.
+func TestSandboxProfile_ReferencesAllGitRoots(t *testing.T) {
+	profile := string(agentSandboxProfile)
+	for _, rule := range []string{
+		`(subpath (param "GIT_ADMIN_DIR"))`,
+		`(subpath (param "GIT_OBJECT_DIR"))`,
+		`(literal (param "GIT_BRANCH_REF_FILE"))`,
+		`(literal (param "GIT_BRANCH_REF_LOCK_FILE"))`,
+		`(literal (param "GIT_BRANCH_LOG_FILE"))`,
+		`(literal (param "GIT_BRANCH_LOG_LOCK_FILE"))`,
+		`(literal (param "GIT_STASH_REF_FILE"))`,
+		`(literal (param "GIT_STASH_REF_LOCK_FILE"))`,
+		`(literal (param "GIT_STASH_LOG_FILE"))`,
+		`(literal (param "GIT_STASH_LOG_LOCK_FILE"))`,
+		`(literal (param "GIT_PACKED_REFS_FILE"))`,
+		`(literal (param "GIT_PACKED_REFS_NEW_FILE"))`,
+		`(literal (param "GIT_PACKED_REFS_LOCK_FILE"))`,
+		`(literal (param "GIT_GC_PID_FILE"))`,
+		`(literal (param "GIT_GC_PID_LOCK_FILE"))`,
+		`(literal (param "GIT_SHALLOW_FILE"))`,
+		`(literal (param "GIT_SHALLOW_LOCK_FILE"))`,
+		`(subpath (param "GIT_INFO_DIR"))`,
+		`(literal (param "GIT_INFO_DENY_ATTRIBUTES"))`,
+		`(literal (param "GIT_INFO_DENY_EXCLUDE"))`,
+		`(subpath (param "GIT_REMOTE_REF_DIR"))`,
+		`(subpath (param "GIT_REMOTE_LOG_DIR"))`,
+		`(subpath (param "GIT_TAG_REF_DIR"))`,
+		`(subpath (param "GIT_TAG_LOG_DIR"))`,
+		`(subpath (param "GIT_NOTES_REF_DIR"))`,
+		`(subpath (param "GIT_NOTES_LOG_DIR"))`,
+	} {
+		if !strings.Contains(profile, rule) {
+			t.Errorf("profile missing %s; the resolved root grants nothing", rule)
+		}
+	}
+}
+
 // Claude Code writes per-session working files under /tmp/claude-<uid>. On
 // darwin that is outside the tmp root, since os.TempDir() is $TMPDIR
 // (/var/folders/.../T) while /tmp resolves to /private/tmp — so every such

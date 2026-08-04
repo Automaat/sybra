@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -122,6 +123,79 @@ func (a *App) runsOrchestratorBrain() bool {
 	return !a.brainDisabled.Load()
 }
 
+// startupRecoveryDone reports whether it is safe for a dispatch-triggering
+// path (status hook, watcher) to start a workflow — see
+// startupRecoveryPending's doc comment for why this window matters.
+func (a *App) startupRecoveryDone() bool {
+	return !a.startupRecoveryPending.Load()
+}
+
+// deferStatusChange records a status change the startup gate suppressed so
+// replayDeferredStatusChanges can re-deliver it once reattach finishes.
+func (a *App) deferStatusChange(taskID string) {
+	if taskID == "" {
+		return
+	}
+	a.deferredStatusMu.Lock()
+	if a.deferredStatusChanges == nil {
+		a.deferredStatusChanges = make(map[string]struct{})
+	}
+	a.deferredStatusChanges[taskID] = struct{}{}
+	a.deferredStatusMu.Unlock()
+	// The gate can clear between the hook's check and this record, after the
+	// drain already ran — replay right away rather than strand the event until
+	// the next restart. The drain empties the set under the same lock, so at
+	// most one caller ever delivers a given entry.
+	if a.startupRecoveryDone() {
+		a.replayDeferredStatusChanges()
+	}
+}
+
+// replayDeferredStatusChanges re-delivers the status changes suppressed during
+// startup recovery, using each task's *current* persisted status rather than
+// the status recorded at suppression time: a task that moved several times in
+// the window only needs the transition that still holds, and a step waiting on
+// a status it already passed must not be advanced by a stale event.
+func (a *App) replayDeferredStatusChanges() {
+	a.deferredStatusMu.Lock()
+	pending := a.deferredStatusChanges
+	a.deferredStatusChanges = nil
+	a.deferredStatusMu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
+	for _, taskID := range slices.Sorted(maps.Keys(pending)) {
+		t, err := a.tasks.Get(taskID)
+		if err != nil {
+			a.logger.Warn("app.status-hook.replay.get", "task_id", taskID, "err", err)
+			continue
+		}
+		if !a.runsTaskLocally(t) {
+			continue
+		}
+		a.logger.Info("app.status-hook.replay", "task_id", taskID, "status", string(t.Status))
+		if a.workflowEngine != nil {
+			a.workflowEngine.HandleStatusChange(taskID, string(t.Status))
+		}
+		// HandleStatusChange can reroute a human-required self-escalation back
+		// into the PR flow, so re-read before deciding whether the automatic
+		// human-review dispatch — suppressed for this task by the same startup
+		// gate that deferred the status change — still applies. Without this,
+		// a task that lands in human-required during the recovery window never
+		// gets its review agent (see #2752): initStatusHook's own
+		// maybeSpawn call was skipped at delivery time (startupRecoveryDone was
+		// false), and nothing else re-fires it.
+		t2, err := a.tasks.Get(taskID)
+		if err != nil {
+			a.logger.Warn("app.status-hook.replay.reget", "task_id", taskID, "err", err)
+			continue
+		}
+		if t2.Status == task.StatusHumanRequired && a.runsScheduler() && a.humanReview != nil {
+			go a.humanReview.maybeSpawn(taskID, "")
+		}
+	}
+}
+
 const clusterHealthProbeInterval = 30 * time.Second
 
 func (a *App) clusterHealthLoop(ctx context.Context) {
@@ -203,6 +277,19 @@ func (a *App) queueDrainPass(ctx context.Context) {
 		return
 	}
 	a.reconcileRunnableBoardTasks(ctx)
+	// A repair pass, not a dispatch decision, so it rides the slower recovery
+	// tick rather than the fast one. Lists once here rather than inside the
+	// pass, so the recovery tick does not pay for a second full store scan.
+	if a.tasks != nil {
+		tasks, err := a.tasks.List()
+		if err != nil {
+			// Logged rather than swallowed: a silent skip here leaves tasks
+			// stranded exactly as before, with nothing in the log to say why.
+			a.logger.Warn("umbrella.gate.stale-tag-scan", "err", err)
+		} else {
+			a.clearGateTagOnHandedOffChildren(tasks)
+		}
+	}
 	if a.workflowEngine != nil {
 		var workflowRecovery workflowRecoveryLoop = a.workflowEngine
 		workflowRecovery.ReplayPersistedEffects()
@@ -325,7 +412,16 @@ func (a *App) fetchPRFunc() func(ctx context.Context, repo string, number int) (
 	return github.FetchPRMetaContext
 }
 
+// dispatchInboundReviewWorkflow is the fourth workflow-dispatch sink (alongside
+// dispatchTaskCreatedWorkflow, dispatchPlanningWorkflow and dispatchStatusWorkflow).
+// It gates on runsScheduler/startupRecoveryDone itself rather than trusting its
+// callers: HasRunningAgentForTask (used below) is unreliable before reattach
+// repopulates the live agent registry, so dispatching during the recovery window
+// reopens the duplicate-agent race the gate closes for the other three sinks.
 func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) {
+	if !a.runsScheduler() || !a.startupRecoveryDone() {
+		return
+	}
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
 		return
 	}
@@ -431,7 +527,7 @@ func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) 
 }
 
 func (a *App) dispatchPlanningWorkflow(taskID string) {
-	if !a.runsScheduler() {
+	if !a.runsScheduler() || !a.startupRecoveryDone() {
 		return
 	}
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
