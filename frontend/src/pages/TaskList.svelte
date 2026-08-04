@@ -276,11 +276,12 @@
       || a.owner.localeCompare(b.owner, undefined, { sensitivity: 'base' }),
     ),
   )
-  const mobileMatchingProjects = $derived(
-    mobileProjectQuery.trim()
-      ? sortedProjects.filter((p) => `${p.owner}/${p.repo}`.toLowerCase().includes(mobileProjectQuery.trim().toLowerCase()))
-      : sortedProjects,
-  )
+  const mobileMatchingProjects = $derived.by(() => {
+    const query = mobileProjectQuery.trim().toLowerCase()
+    return query
+      ? sortedProjects.filter((p) => `${p.owner}/${p.repo}`.toLowerCase().includes(query))
+      : sortedProjects
+  })
 
   function filteredByStatuses(statuses: string[]): Task[] {
     return taskStore.list.filter((t: Task) => {

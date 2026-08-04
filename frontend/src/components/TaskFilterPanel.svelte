@@ -99,11 +99,12 @@
     ),
   )
 
-  const matchingProjects = $derived(
-    projectQuery.trim()
-      ? sortedProjects.filter((p) => `${p.owner}/${p.repo}`.toLowerCase().includes(projectQuery.trim().toLowerCase()))
-      : sortedProjects,
-  )
+  const matchingProjects = $derived.by(() => {
+    const query = projectQuery.trim().toLowerCase()
+    return query
+      ? sortedProjects.filter((p) => `${p.owner}/${p.repo}`.toLowerCase().includes(query))
+      : sortedProjects
+  })
 
   function addTag(tag: string) {
     if (!ontagsChange) return
