@@ -806,13 +806,16 @@ func gitCommonDirSingleFiles(roots gitSandboxRoots) gitCommonDirFiles {
 }
 
 func injectSandboxGitEnv(cfg *RunConfig, roots gitSandboxRoots, overlay gitSandboxOverlay) error {
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
+	if !sandboxUsesGitObjectOverlay() {
+		return nil
+	}
 	if roots.objectDir == "" && overlay.objectDir == "" {
 		return nil
 	}
 	if roots.objectDir == "" || overlay.objectDir == "" {
 		return fmt.Errorf("incomplete sandbox git object paths: shared=%q overlay=%q", roots.objectDir, overlay.objectDir)
 	}
-	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
 	cfg.ExtraEnv = append(cfg.ExtraEnv,
 		"GIT_OBJECT_DIRECTORY="+overlay.objectDir,
 		"GIT_ALTERNATE_OBJECT_DIRECTORIES="+roots.objectDir,

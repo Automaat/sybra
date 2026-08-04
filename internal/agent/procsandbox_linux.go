@@ -26,6 +26,11 @@ func sandboxExecAvailable() bool {
 
 func sandboxWrapperName() string { return "bwrap" }
 
+// Linux bind-mounts branch refs into an overlay and publishes them only after
+// sandboxSyncShell has copied the corresponding objects into the shared
+// store, so object staging is safe and required on this platform.
+func sandboxUsesGitObjectOverlay() bool { return true }
+
 func materializeSandboxProfile() (string, error) {
 	return "", nil
 }

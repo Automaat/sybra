@@ -197,11 +197,21 @@ type gitSandboxOverlay struct {
 
 func prepareGitSandboxOverlay(ctx context.Context, worktree, sandboxHome string, roots gitSandboxRoots) (gitSandboxOverlay, error) {
 	base := filepath.Join(sandboxHome, ".sybra-git-overlay")
+	if !sandboxUsesGitObjectOverlay() {
+		legacyObjects := filepath.Join(base, "objects")
+		populated, err := gitObjectOverlayPopulated(legacyObjects)
+		if err != nil {
+			return gitSandboxOverlay{}, fmt.Errorf("inspect legacy git object overlay %s: %w", legacyObjects, err)
+		}
+		if populated {
+			return gitSandboxOverlay{}, fmt.Errorf("legacy git object overlay %s is not empty; refusing to delete objects that may be referenced by the task branch", legacyObjects)
+		}
+	}
 	if err := os.RemoveAll(base); err != nil {
 		return gitSandboxOverlay{}, fmt.Errorf("reset %s: %w", base, err)
 	}
 	overlay := gitSandboxOverlay{}
-	if roots.objectDir != "" {
+	if roots.objectDir != "" && sandboxUsesGitObjectOverlay() {
 		var err error
 		if overlay.objectDir, err = prepareGitObjectOverlay(base); err != nil {
 			return gitSandboxOverlay{}, err
@@ -250,6 +260,24 @@ func prepareGitSandboxOverlay(ctx context.Context, worktree, sandboxHome string,
 	}
 	overlay.branchRefFile = canonRefFile
 	return overlay, nil
+}
+
+func gitObjectOverlayPopulated(path string) (bool, error) {
+	populated := false
+	err := filepath.WalkDir(path, func(current string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if current == path && os.IsNotExist(walkErr) {
+				return nil
+			}
+			return walkErr
+		}
+		if current != path && !entry.IsDir() {
+			populated = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return populated, err
 }
 
 func prepareGitObjectOverlay(base string) (string, error) {
