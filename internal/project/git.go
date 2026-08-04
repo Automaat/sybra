@@ -356,10 +356,31 @@ func CloneBare(ctx context.Context, repoURL, destPath string) error {
 	if err := configureCommitIdentity(ctx, destPath); err != nil {
 		return fmt.Errorf("configure commit identity: %w", err)
 	}
+	if err := DisableAutoMaintenance(ctx, destPath); err != nil {
+		return fmt.Errorf("disable auto maintenance: %w", err)
+	}
 	// `git clone --bare` leaves remote.origin.fetch empty, so later `git fetch
 	// origin` becomes a no-op against refs/remotes/origin/*. Configure the
 	// standard refspec so fetches actually update tracking refs.
 	return runBare(ctx, destPath, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+}
+
+// DisableAutoMaintenance turns off git's default maintenance.auto, which
+// otherwise lets any plain `git fetch` in any linked worktree silently
+// trigger a detached `git maintenance run --auto` against this shared bare
+// clone's object store. Concurrent tasks each have their own worktree but
+// share one clone: a repack from one task's auto-maintenance can run while
+// a sibling task is mid-commit (object written, ref not yet updated) and
+// conclude the new object is unreachable, dropping it — corrupting the
+// sibling's branch with no warning until something later fails to read it
+// ("fatal: bad object HEAD"). This closes only the *implicit* trigger; an
+// agent running `git gc`/`git repack`/`git maintenance run` explicitly in
+// its own worktree reproduces the identical race and is not prevented here
+// (see internal/agent/manager_run.go's git-sandbox write grants, which
+// intentionally permit those paths). Exported so a startup migration can
+// retrofit already-registered projects, not just newly cloned ones.
+func DisableAutoMaintenance(ctx context.Context, barePath string) error {
+	return runBare(ctx, barePath, "config", "maintenance.auto", "false")
 }
 
 // configureCommitIdentity sets an explicit git identity on the bare clone.

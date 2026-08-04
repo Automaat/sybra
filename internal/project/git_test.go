@@ -255,6 +255,27 @@ func TestCloneBare_CommitIdentityRespectsEnvOverride(t *testing.T) {
 	}
 }
 
+// A plain `git fetch` in any linked worktree defaults to triggering a
+// detached `git maintenance run --auto` against this shared clone's object
+// store — a repack racing a sibling worktree's in-flight commit can drop the
+// object before its ref update lands. CloneBare must disable this by default.
+func TestCloneBare_DisablesAutoMaintenance(t *testing.T) {
+	t.Parallel()
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+
+	raw, err := outputBare(context.Background(), bare, "config", "maintenance.auto")
+	if err != nil {
+		t.Fatalf("read maintenance.auto: %v", err)
+	}
+	if got := strings.TrimSpace(raw); got != "false" {
+		t.Errorf("maintenance.auto = %q, want %q", got, "false")
+	}
+}
+
 func TestDefaultBranch(t *testing.T) {
 	t.Parallel()
 	bare := initBareRepo(t)
