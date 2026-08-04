@@ -5,6 +5,7 @@
 package gitexec
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -36,6 +37,20 @@ type Options struct {
 func Run(ctx context.Context, opts Options, args ...string) error {
 	_, err := CombinedOutput(ctx, opts, args...)
 	return err
+}
+
+// RunQuiet executes Git for side effects without retaining stdout. It is for
+// commands whose successful output can be large and is intentionally ignored;
+// stderr is still captured and included in failure diagnostics.
+func RunQuiet(ctx context.Context, opts Options, args ...string) error {
+	cmd := command(ctx, opts, args...)
+	cmd.Stdout = io.Discard
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return commandError(args, err, stderr.Bytes())
+	}
+	return nil
 }
 
 // Output executes Git and returns trimmed stdout. Failures include captured

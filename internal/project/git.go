@@ -746,7 +746,7 @@ func SanitizeWorktree(ctx context.Context, wtPath string) error {
 	// Abort stuck merge if any. No harm running this when no merge is in
 	// progress — git just errors, which we ignore (best-effort, like the
 	// rebase abort above).
-	_ = gitexec.Run(ctx, gitexec.Options{Dir: wtPath}, "merge", "--abort")
+	_ = gitexec.RunQuiet(ctx, gitexec.Options{Dir: wtPath}, "merge", "--abort")
 
 	// Auto-commit any uncommitted changes before resetting. Agents are expected
 	// to commit before finishing, but if they forget this preserves their work
@@ -756,8 +756,8 @@ func SanitizeWorktree(ctx context.Context, wtPath string) error {
 	// Discard any remaining working-tree dirt (e.g. ignored files, failed
 	// commit) so the rebase can proceed cleanly. Committed work on the branch
 	// is preserved.
-	_ = gitexec.Run(ctx, gitexec.Options{Dir: wtPath}, "reset", "--hard", "HEAD")
-	_ = gitexec.Run(ctx, gitexec.Options{Dir: wtPath}, "clean", "-fd")
+	_ = gitexec.RunQuiet(ctx, gitexec.Options{Dir: wtPath}, "reset", "--hard", "HEAD")
+	_ = gitexec.RunQuiet(ctx, gitexec.Options{Dir: wtPath}, "clean", "-fd")
 
 	// Delete local branches that shadow remote tracking refs.
 	// A local branch named "origin/foo" shadows "refs/remotes/origin/foo".
@@ -769,7 +769,7 @@ func SanitizeWorktree(ctx context.Context, wtPath string) error {
 		if !strings.HasPrefix(line, "origin/") {
 			continue
 		}
-		_ = gitexec.Run(ctx, gitexec.Options{Dir: wtPath}, "branch", "-D", line)
+		_ = gitexec.RunQuiet(ctx, gitexec.Options{Dir: wtPath}, "branch", "-D", line)
 	}
 	return nil
 }
@@ -788,7 +788,7 @@ func ResetWorktreeForRetry(ctx context.Context, wtPath, ref string) error {
 		clearRebaseState(ctx, wtPath)
 	}
 
-	_ = gitexec.Run(ctx, gitexec.Options{Dir: wtPath}, "merge", "--abort")
+	_ = gitexec.RunQuiet(ctx, gitexec.Options{Dir: wtPath}, "merge", "--abort")
 
 	if err := gitexec.Run(ctx, gitexec.Options{Dir: wtPath}, "reset", "--hard", ref); err != nil {
 		return fmt.Errorf("reset worktree to %s: %w", ref, err)
@@ -811,7 +811,7 @@ func clearRebaseState(ctx context.Context, wtPath string) {
 	dir := rebaseStateDir(ctx, wtPath)
 	abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rebaseAbortTimeout)
 	defer cancel()
-	if err := gitexec.Run(abortCtx, gitexec.Options{Dir: wtPath}, "rebase", "--abort"); err != nil {
+	if err := gitexec.RunQuiet(abortCtx, gitexec.Options{Dir: wtPath}, "rebase", "--abort"); err != nil {
 		_ = os.RemoveAll(dir)
 	}
 }
@@ -1157,7 +1157,7 @@ func DeleteBranch(ctx context.Context, barePath, branch string) error {
 // entire recreate path would only strand a task on a local-only cleanup.
 func DeleteUpstreamBranch(ctx context.Context, barePath, branch string) error {
 	remote := PushRemote(ctx, barePath)
-	if err := gitexec.Run(ctx, gitexec.Options{Dir: barePath}, "config", "--get", "remote."+remote+".url"); err != nil {
+	if err := gitexec.RunQuiet(ctx, gitexec.Options{Dir: barePath}, "config", "--get", "remote."+remote+".url"); err != nil {
 		if code, ok := gitexec.ExitCode(err); ok && code == 1 {
 			return nil
 		}
@@ -1289,7 +1289,7 @@ func RemoteBranchHead(ctx context.Context, worktreePath, remote, branch string) 
 // isAncestor reports whether ancestor is reachable from descendant in the
 // worktree's history. Returns false when either ref is unknown.
 func isAncestor(ctx context.Context, worktreePath, ancestor, descendant string) bool {
-	return gitexec.Run(ctx, gitexec.Options{Dir: worktreePath}, "merge-base", "--is-ancestor", ancestor, descendant) == nil
+	return gitexec.RunQuiet(ctx, gitexec.Options{Dir: worktreePath}, "merge-base", "--is-ancestor", ancestor, descendant) == nil
 }
 
 // remoteBranchHead queries the live head SHA of branch on remote via ls-remote.

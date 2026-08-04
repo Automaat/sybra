@@ -178,7 +178,7 @@ func indexUsable(ctx context.Context, checkoutPath string) error {
 // runQuietGit runs git in dir and discards successful output. On failure the
 // shared execution boundary includes Git's diagnostic output in the error.
 func runQuietGit(ctx context.Context, dir string, args ...string) error {
-	return gitexec.Run(ctx, gitexec.Options{Dir: dir}, args...)
+	return gitexec.RunQuiet(ctx, gitexec.Options{Dir: dir}, args...)
 }
 
 // bareRefTips lists the object ids every ref points at. They are the roots
