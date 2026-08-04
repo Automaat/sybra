@@ -3,10 +3,10 @@ package executil
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/gitexec"
 )
 
 // EscapeAppleScript escapes a string for safe embedding inside an AppleScript
@@ -25,8 +25,12 @@ func Run(ctx context.Context, dir, name string, args ...string) error {
 // RunEnv executes a command in dir with an explicit environment, returning a
 // formatted error with stderr on failure. A nil env means "inherit the
 // current process environment", matching exec.Cmd's own zero-value behavior
-// and Run's default.
+// and Run's default. Git delegates to gitexec, which additionally enforces its
+// non-interactive subprocess environment.
 func RunEnv(ctx context.Context, dir string, env []string, name string, args ...string) error {
+	if name == "git" {
+		return gitexec.Run(ctx, gitexec.Options{Dir: dir, Env: env}, args...)
+	}
 	cmd := commandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Env = env
@@ -38,6 +42,9 @@ func RunEnv(ctx context.Context, dir string, env []string, name string, args ...
 
 // Output executes a command in dir and returns its trimmed stdout.
 func Output(ctx context.Context, dir, name string, args ...string) (string, error) {
+	if name == "git" {
+		return gitexec.Output(ctx, gitexec.Options{Dir: dir}, args...)
+	}
 	cmd := commandContext(ctx, name, args...)
 	cmd.Dir = dir
 	out, err := cmd.Output()
@@ -47,31 +54,6 @@ func Output(ctx context.Context, dir, name string, args ...string) (string, erro
 	return strings.TrimSpace(string(out)), nil
 }
 
-// commandContext avoids exec.LookPath accepting a stale executable symlink.
-// This matters for long-lived desktop processes after a profile-manager
-// upgrade: a now-dangling git shim can remain first on PATH even though a
-// usable system git follows it. Worktree preparation must not fail before the
-// provider sandbox is even reached.
 func commandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
-	if name == "git" {
-		if path := usablePathExecutable(name); path != "" {
-			return exec.CommandContext(ctx, path, args...)
-		}
-	}
 	return exec.CommandContext(ctx, name, args...)
-}
-
-func usablePathExecutable(name string) string {
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		candidate := filepath.Join(dir, name)
-		resolved, err := filepath.EvalSymlinks(candidate)
-		if err != nil {
-			continue
-		}
-		info, err := os.Stat(resolved)
-		if err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
-			return resolved
-		}
-	}
-	return ""
 }
