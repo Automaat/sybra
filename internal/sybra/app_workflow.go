@@ -1091,7 +1091,7 @@ func (a *agentAdapter) ensureWorktreeDir(t task.Task, taskID string, role agent.
 		return t, "", false, fmt.Errorf("stat provided worktree dir %s: %w", dir, statErr)
 	}
 	if cleanRetryRef != "" {
-		updated, resolvedDir, cleanRetryReset, err = a.reprepareProvidedWorktreeDir(t, taskID, role, dir, "", claim)
+		updated, resolvedDir, _, err = a.reprepareProvidedWorktreeDir(t, taskID, role, dir, "", claim)
 		return updated, resolvedDir, true, err
 	}
 	updated, resolvedDir, cleanRetryReset, err = a.reprepareProvidedWorktreeDir(t, taskID, role, dir, cleanRetryRef, claim)
@@ -1195,7 +1195,7 @@ func (a *agentAdapter) recreateManagedWorktreeForRetry(t task.Task, taskID strin
 			"task_id", taskID, "role", role, "project", proj.ID, "branch", t.Branch, "err", fetchErr)
 	}
 	remoteRef := "refs/remotes/origin/" + t.Branch
-	if out, revErr := exec.Command("git", "-c", "safe.bareRepository=all", "-C", proj.ClonePath, "rev-parse", "--verify", remoteRef).CombinedOutput(); revErr == nil {
+	if out, revErr := exec.CommandContext(context.Background(), "git", "-c", "safe.bareRepository=all", "-C", proj.ClonePath, "rev-parse", "--verify", remoteRef).CombinedOutput(); revErr == nil {
 		remoteHead := strings.TrimSpace(string(out))
 		if remoteHead != "" {
 			if err := project.SetBranchTo(context.Background(), proj.ClonePath, t.Branch, remoteHead); err != nil {
