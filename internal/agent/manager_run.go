@@ -808,6 +808,15 @@ func gitCommonDirSingleFiles(roots gitSandboxRoots) gitCommonDirFiles {
 func injectSandboxGitEnv(cfg *RunConfig, roots gitSandboxRoots, overlay gitSandboxOverlay) error {
 	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
 	if !sandboxUsesGitObjectOverlay() {
+		if roots.objectDir != "" {
+			// Trusted assignments are appended last by every provider runner, so
+			// they override any ambient object-store redirection inherited by the
+			// Sybra process. Darwin writes directly to the shared object store.
+			cfg.ExtraEnv = append(cfg.ExtraEnv,
+				"GIT_OBJECT_DIRECTORY="+roots.objectDir,
+				"GIT_ALTERNATE_OBJECT_DIRECTORIES=",
+			)
+		}
 		return nil
 	}
 	if roots.objectDir == "" && overlay.objectDir == "" {

@@ -17,28 +17,31 @@ func TestSandboxEnforce_DarwinCommitSurvivesSandboxReset(t *testing.T) {
 	}
 	bare, wt := setupLinkedWorktree(t)
 	sandboxHome := t.TempDir()
+	ambientObjects := t.TempDir()
+	t.Setenv("GIT_OBJECT_DIRECTORY", ambientObjects)
+	t.Setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", "/attacker/alternates")
 	m, _ := newTestManager(t, ManagerConfig{
 		SandboxHome: func(string) (string, error) { return sandboxHome, nil },
 	})
+	sharedObjects, err := canonicalizeRoot(filepath.Join(bare, "objects"))
+	if err != nil {
+		t.Fatalf("canonicalize shared object store: %v", err)
+	}
 	prepare := func() RunConfig {
 		cfg, _, err := m.prepareRunConfig(RunConfig{
 			TaskID:      "task-durable-objects",
 			Mode:        "headless",
 			Dir:         wt,
 			SandboxMode: "enforce",
-			ExtraEnv: []string{
-				"GIT_OBJECT_DIRECTORY=/attacker/objects",
-				"GIT_ALTERNATE_OBJECT_DIRECTORIES=/attacker/alternates",
-			},
 		})
 		if err != nil {
 			t.Fatalf("prepareRunConfig: %v", err)
 		}
-		if got := darwinEnvValue(cfg.ExtraEnv, "GIT_OBJECT_DIRECTORY"); got != "" {
-			t.Fatalf("GIT_OBJECT_DIRECTORY = %q, want unset on Darwin", got)
+		if got, want := darwinEnvValue(cfg.ExtraEnv, "GIT_OBJECT_DIRECTORY"), sharedObjects; got != want {
+			t.Fatalf("GIT_OBJECT_DIRECTORY = %q, want trusted shared store %q", got, want)
 		}
 		if got := darwinEnvValue(cfg.ExtraEnv, "GIT_ALTERNATE_OBJECT_DIRECTORIES"); got != "" {
-			t.Fatalf("GIT_ALTERNATE_OBJECT_DIRECTORIES = %q, want unset on Darwin", got)
+			t.Fatalf("GIT_ALTERNATE_OBJECT_DIRECTORIES = %q, want empty trusted override", got)
 		}
 		return cfg
 	}
@@ -52,12 +55,16 @@ func TestSandboxEnforce_DarwinCommitSurvivesSandboxReset(t *testing.T) {
 	}
 	headCmd := exec.Command("git", "rev-parse", "HEAD")
 	headCmd.Dir = wt
+	headCmd.Env = gitSandboxDiscoveryEnv()
 	headOut, err := headCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("resolve committed HEAD: %v: %s", err, headOut)
 	}
 	head := strings.TrimSpace(string(headOut))
 
+	if err := os.RemoveAll(ambientObjects); err != nil {
+		t.Fatalf("remove ambient object store: %v", err)
+	}
 	if err := os.RemoveAll(sandboxHome); err != nil {
 		t.Fatalf("remove sandbox home: %v", err)
 	}
@@ -68,6 +75,7 @@ func TestSandboxEnforce_DarwinCommitSurvivesSandboxReset(t *testing.T) {
 
 	verify := exec.Command("git", "cat-file", "-e", head+"^{commit}")
 	verify.Dir = bare
+	verify.Env = gitSandboxDiscoveryEnv()
 	if out, err := verify.CombinedOutput(); err != nil {
 		t.Fatalf("commit disappeared after sandbox reset: %v: %s", err, out)
 	}

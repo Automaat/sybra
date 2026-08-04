@@ -371,6 +371,7 @@ func copyGitOverlayFile(src, dst string, mode fs.FileMode) error {
 func gitHeadCommit(ctx context.Context, worktree string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "HEAD")
 	cmd.Dir = worktree
+	cmd.Env = gitSandboxDiscoveryEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
@@ -402,6 +403,7 @@ func gitPathRaw(ctx context.Context, worktree string, args ...string) (string, e
 	cmdArgs := append([]string{"rev-parse"}, args...)
 	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
 	cmd.Dir = worktree
+	cmd.Env = gitSandboxDiscoveryEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
@@ -453,6 +455,7 @@ func gitRevParsePath(ctx context.Context, worktree, arg string) (string, error) 
 func gitSymbolicRef(ctx context.Context, worktree string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "-q", "HEAD")
 	cmd.Dir = worktree
+	cmd.Env = gitSandboxDiscoveryEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
@@ -471,6 +474,12 @@ func gitSymbolicRef(ctx context.Context, worktree string) (string, error) {
 		return "", fmt.Errorf("git symbolic-ref -q HEAD: empty ref")
 	}
 	return ref, nil
+}
+
+// gitSandboxDiscoveryEnv prevents Sybra's own ambient Git object overrides
+// from changing which repository paths are trusted and granted to an agent.
+func gitSandboxDiscoveryEnv() []string {
+	return stripEnvKeys(os.Environ(), "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
 }
 
 func ensureGitPathDir(ctx context.Context, worktree, rel string) (string, error) {
