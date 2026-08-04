@@ -438,6 +438,10 @@ func TestPrepareForFix_ReconcilesOrphanWorktreeDir(t *testing.T) {
 	if project.WorktreeHealthy(context.Background(), wtPath) {
 		t.Fatalf("expected worktree to be unhealthy after dropping its admin entry")
 	}
+	sentinel := filepath.Join(wtPath, "uncommitted-sentinel.txt")
+	if err := os.WriteFile(sentinel, []byte("recoverable local edit"), 0o644); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("expected orphan checkout dir to still exist: %v", err)
 	}
@@ -458,6 +462,18 @@ func TestPrepareForFix_ReconcilesOrphanWorktreeDir(t *testing.T) {
 	}
 	if gotBranch := strings.TrimSpace(string(headBranch)); gotBranch != branch {
 		t.Errorf("worktree branch = %q, want %q", gotBranch, branch)
+	}
+	quarantineRoot := filepath.Join(h.wtDir, worktreeQuarantineDirName)
+	slots, err := os.ReadDir(quarantineRoot)
+	if err != nil {
+		t.Fatalf("read quarantine: %v", err)
+	}
+	if len(slots) != 1 {
+		t.Fatalf("quarantine entries = %d, want 1", len(slots))
+	}
+	quarantinedSentinel := filepath.Join(quarantineRoot, slots[0].Name(), "worktree", "uncommitted-sentinel.txt")
+	if body, readErr := os.ReadFile(quarantinedSentinel); readErr != nil || string(body) != "recoverable local edit" {
+		t.Fatalf("quarantined sentinel body=%q err=%v", body, readErr)
 	}
 }
 

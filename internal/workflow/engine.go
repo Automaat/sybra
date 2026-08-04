@@ -141,6 +141,10 @@ type TaskProvider interface {
 	// body (see stripTestFailuresSections).
 	ReplaceTaskBody(id, body string) error
 	SetWorkflow(id string, wf *Execution) error
+	// SetWorkflowIf atomically replaces the workflow only while the persisted
+	// task still matches fence. It prevents a maintenance scan from overwriting
+	// a newer operator/automation workflow with a stale snapshot.
+	SetWorkflowIf(id string, fence WorkflowWriteFence, wf *Execution) (bool, error)
 	ClaimWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
 	CompleteWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
 	// ConsumeSupervisorSteer prepends a pending watchdog headless-nudge steer to
@@ -163,6 +167,17 @@ type TaskProvider interface {
 	//       engine derives <name> from the step ID when the YAML kind is
 	//       a bare "plan_draft".
 	WriteSidecar(id, kind, content string) error
+}
+
+// WorkflowWriteFence identifies the exact task/workflow snapshot a
+// maintenance mutation is allowed to replace.
+type WorkflowWriteFence struct {
+	Generation   int64
+	Status       string
+	StatusReason string
+	WorkflowID   string
+	CurrentStep  string
+	State        ExecState
 }
 
 // WorktreeGetter resolves the filesystem path of a task's git worktree.

@@ -515,8 +515,12 @@ func (m *Manager) reuseBranchConflictWorktree(ctx context.Context, taskID, clone
 	if !usable {
 		return false, nil
 	}
+	if _, err := project.CheckpointCommit(ctx, wtPath,
+		"wip: checkpoint before branch conflict recovery\n\nSybra preserved local work before preparing conflict recovery."); err != nil {
+		return false, fmt.Errorf("checkpoint branch-conflict worktree: %w", err)
+	}
 	if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
-		m.logger.Warn("branch-conflict.worktree.sanitize", "task_id", taskID, "err", err)
+		return false, fmt.Errorf("sanitize branch-conflict worktree: %w", err)
 	}
 	return true, nil
 }

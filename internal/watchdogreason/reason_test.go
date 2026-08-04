@@ -72,3 +72,19 @@ func TestIsRewardHackingRetry(t *testing.T) {
 		t.Fatal("plain reward-hacking reason must not match retry classifier")
 	}
 }
+
+func TestIsRewardHacking(t *testing.T) {
+	for _, tc := range []struct {
+		reason string
+		want   bool
+	}{
+		{reason: "watchdog: reward_hacking", want: true},
+		{reason: " watchdog: reward_hacking: repeated fake progress ", want: true},
+		{reason: "watchdog: reward-hacking retry: repeated fake progress", want: false},
+		{reason: "human review requested", want: false},
+	} {
+		if got := IsRewardHacking(tc.reason); got != tc.want {
+			t.Fatalf("IsRewardHacking(%q) = %v, want %v", tc.reason, got, tc.want)
+		}
+	}
+}
