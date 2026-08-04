@@ -31,6 +31,9 @@ assert_rejected() {
 assert_rejected command 'package fixture; import "os/exec"; func f() { _ = exec.Command("git", "status") }'
 assert_rejected command_context 'package fixture; import ("context"; "os/exec"); func f(ctx context.Context) { _ = exec.CommandContext(ctx, "git", "status") }'
 assert_rejected command_background 'package fixture; import ("context"; "os/exec"); func f() { _ = exec.CommandContext(context.Background(), "git", "status") }'
+assert_rejected multiline_command $'package fixture\nimport "os/exec"\nfunc f() {\n\t_ = exec.Command(\n\t\t"git",\n\t\t"status",\n\t)\n}'
+assert_rejected multiline_command_context $'package fixture\nimport ("context"; "os/exec")\nfunc f(ctx context.Context) {\n\t_ = exec.CommandContext(\n\t\tctx,\n\t\t"git",\n\t\t"status",\n\t)\n}'
+assert_rejected aliased_import 'package fixture; import command "os/exec"; func f() { _ = command.Command("git", "status") }'
 
 # Direct Git in test fixtures is deliberately allowed.
 printf '%s\n' 'package fixture; import "os/exec"; func f() { _ = exec.Command("git", "status") }' > "${fixture_dir}/fixture_test.go"
