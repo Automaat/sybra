@@ -1,7 +1,6 @@
 package project
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -237,7 +236,7 @@ func InstallHooks(ctx context.Context, worktreePath string, checks *ChecksConfig
 		}
 		var sb strings.Builder
 		sb.WriteString("#!/bin/sh\nset -e\n")
-		sb.WriteString("unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY\n")
+		sb.WriteString("unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES\n")
 		sb.WriteString("for __sybra_hook_env_name in $(env | sed -n 's/^\\(SYBRA_[A-Za-z0-9_]*\\)=.*/\\1/p'); do unset \"$__sybra_hook_env_name\"; done\n")
 		sb.WriteString("unset __sybra_hook_env_name\n")
 		for _, c := range commands {
@@ -261,6 +260,7 @@ const signoffHook = `#!/bin/sh
 # Auto-installed by Sybra. Guarantees a DCO Signed-off-by trailer on every
 # commit so PRs never fail the DCO check when an agent forgets 'git commit -s'.
 msg_file="$1"
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 sob=$(git var GIT_AUTHOR_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
 [ -z "$sob" ] && exit 0
 git interpret-trailers --if-exists addIfDifferent --trailer "$sob" --in-place "$msg_file"
@@ -353,8 +353,11 @@ func CloneBare(ctx context.Context, repoURL, destPath string) error {
 	if err := InstallSignoffHook(ctx, destPath); err != nil {
 		return fmt.Errorf("install signoff hook: %w", err)
 	}
-	if err := configureCommitIdentity(ctx, destPath); err != nil {
+	if err := ConfigureCommitIdentity(ctx, destPath); err != nil {
 		return fmt.Errorf("configure commit identity: %w", err)
+	}
+	if err := DisableAutoMaintenance(ctx, destPath); err != nil {
+		return fmt.Errorf("disable auto maintenance: %w", err)
 	}
 	// `git clone --bare` leaves remote.origin.fetch empty, so later `git fetch
 	// origin` becomes a no-op against refs/remotes/origin/*. Configure the
@@ -362,19 +365,48 @@ func CloneBare(ctx context.Context, repoURL, destPath string) error {
 	return runBare(ctx, destPath, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
 }
 
-// configureCommitIdentity sets an explicit git identity on the bare clone.
-// Headless/interactive agent commits are made by the agent's own bash tool
+// DisableAutoMaintenance turns off both of git's independent implicit-repack
+// triggers, either of which otherwise lets an ordinary command in any linked
+// worktree silently repack this shared bare clone's object store:
+//   - maintenance.auto (git 2.30+): `git fetch` runs a detached
+//     `git maintenance run --auto` afterward.
+//   - gc.auto (older, separate mechanism `maintenance.auto` does NOT
+//     disable): `git commit`/`checkout`/`merge`/`fetch` and others run
+//     `git gc --auto` once loose objects exceed a threshold (default 6700).
+//
+// Concurrent tasks each have their own worktree but share one clone: a
+// repack from either trigger can run while a sibling task is mid-commit
+// (object written, ref not yet updated) and conclude the new object is
+// unreachable, dropping it — corrupting the sibling's branch with no warning
+// until something later fails to read it ("fatal: bad object HEAD").
+// Confirmed in production: disabling only maintenance.auto still let this
+// happen via gc.auto on the very next commit to the same clone.
+//
+// This closes only the *implicit* triggers; an agent running `git
+// gc`/`git repack`/`git maintenance run` explicitly in its own worktree
+// reproduces the identical race and is not prevented here (see
+// internal/agent/manager_run.go's git-sandbox write grants, which
+// intentionally permit those paths). Exported so a startup migration can
+// retrofit already-registered projects, not just newly cloned ones.
+func DisableAutoMaintenance(ctx context.Context, barePath string) error {
+	if err := runBare(ctx, barePath, "config", "maintenance.auto", "false"); err != nil {
+		return err
+	}
+	return runBare(ctx, barePath, "config", "gc.auto", "0")
+}
+
+// ConfigureCommitIdentity sets an explicit git identity on the bare clone.
+// Headless agent commits are made by the agent's own bash tool
 // calls, not orchestrated Go code, so they inherit whatever identity is
 // already configured on the clone — an empty one fails every commit with
 // "empty ident name", and any stray local override (however it got there)
 // silently becomes the permanent author of every real commit. Setting it
 // explicitly at clone time means neither can happen by accident.
-// GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL let an operator brand commits (e.g. as
-// their own GitHub App bot); the default matches the identity
-// internal/agent/k8s_job_runner.go already falls back to.
-func configureCommitIdentity(ctx context.Context, barePath string) error {
-	name := cmp.Or(os.Getenv("GIT_AUTHOR_NAME"), "Sybra Agent")
-	email := cmp.Or(os.Getenv("GIT_AUTHOR_EMAIL"), "sybra-agent@example.invalid")
+// GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL take precedence. On a developer machine,
+// a complete global Git identity is used next; the placeholder is only for
+// unattended hosts that have neither identity configured.
+func ConfigureCommitIdentity(ctx context.Context, barePath string) error {
+	name, email := commitIdentity(ctx)
 	if err := runBare(ctx, barePath, "config", "user.name", name); err != nil {
 		return fmt.Errorf("set user.name: %w", err)
 	}
@@ -382,6 +414,28 @@ func configureCommitIdentity(ctx context.Context, barePath string) error {
 		return fmt.Errorf("set user.email: %w", err)
 	}
 	return nil
+}
+
+func commitIdentity(ctx context.Context) (name, email string) {
+	name = strings.TrimSpace(os.Getenv("GIT_AUTHOR_NAME"))
+	email = strings.TrimSpace(os.Getenv("GIT_AUTHOR_EMAIL"))
+	if name != "" && email != "" {
+		return name, email
+	}
+	globalName := gitGlobalConfig(ctx, "user.name")
+	globalEmail := gitGlobalConfig(ctx, "user.email")
+	if globalName != "" && globalEmail != "" {
+		return globalName, globalEmail
+	}
+	return "Sybra Agent", "sybra-agent@example.invalid"
+}
+
+func gitGlobalConfig(ctx context.Context, key string) string {
+	out, err := executil.Output(ctx, "", "git", "config", "--global", "--get", key)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 // DefaultBranch resolves barePath's HEAD symbolic ref (e.g.

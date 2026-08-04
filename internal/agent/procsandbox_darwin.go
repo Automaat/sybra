@@ -200,6 +200,32 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		{"TOOL_CACHE", sandboxRootOr(cfg.sandbox.toolCache, home)},
 		{"APP_SUPPORT", cfg.sandbox.appSupport},
 		{"CLAUDE_SCRATCH", cfg.sandbox.claudeScratch},
+		{"GIT_ADMIN_DIR", cfg.sandbox.gitAdminDir},
+		{"GIT_OBJECT_DIR", cfg.sandbox.gitObjectDir},
+		{"GIT_BRANCH_REF_FILE", cfg.sandbox.gitBranchRefFile},
+		{"GIT_BRANCH_REF_LOCK_FILE", cfg.sandbox.gitBranchRefLockFile},
+		{"GIT_BRANCH_LOG_FILE", cfg.sandbox.gitBranchLogFile},
+		{"GIT_BRANCH_LOG_LOCK_FILE", cfg.sandbox.gitBranchLogLockFile},
+		{"GIT_STASH_REF_FILE", cfg.sandbox.gitStashRefFile},
+		{"GIT_STASH_REF_LOCK_FILE", cfg.sandbox.gitStashRefLockFile},
+		{"GIT_STASH_LOG_FILE", cfg.sandbox.gitStashLogFile},
+		{"GIT_STASH_LOG_LOCK_FILE", cfg.sandbox.gitStashLogLockFile},
+		{"GIT_REMOTE_REF_DIR", cfg.sandbox.gitRemoteRefDir},
+		{"GIT_REMOTE_LOG_DIR", cfg.sandbox.gitRemoteLogDir},
+		{"GIT_TAG_REF_DIR", cfg.sandbox.gitTagRefDir},
+		{"GIT_TAG_LOG_DIR", cfg.sandbox.gitTagLogDir},
+		{"GIT_NOTES_REF_DIR", cfg.sandbox.gitNotesRefDir},
+		{"GIT_NOTES_LOG_DIR", cfg.sandbox.gitNotesLogDir},
+		{"GIT_PACKED_REFS_FILE", cfg.sandbox.gitPackedRefsFile},
+		{"GIT_PACKED_REFS_NEW_FILE", cfg.sandbox.gitPackedRefsNewFile},
+		{"GIT_PACKED_REFS_LOCK_FILE", cfg.sandbox.gitPackedRefsLockFile},
+		{"GIT_GC_PID_FILE", cfg.sandbox.gitGCPidFile},
+		{"GIT_GC_PID_LOCK_FILE", cfg.sandbox.gitGCPidLockFile},
+		{"GIT_SHALLOW_FILE", cfg.sandbox.gitShallowFile},
+		{"GIT_SHALLOW_LOCK_FILE", cfg.sandbox.gitShallowLockFile},
+		{"GIT_INFO_DIR", cfg.sandbox.gitInfoDir},
+		{"GIT_INFO_DENY_ATTRIBUTES", sandboxRootOr(cfg.sandbox.gitInfoDenyAttributes, unusedReadOnlyDirSentinel)},
+		{"GIT_INFO_DENY_EXCLUDE", sandboxRootOr(cfg.sandbox.gitInfoDenyExclude, unusedReadOnlyDirSentinel)},
 		{"READONLY_DIR", sandboxRootOr(cfg.sandbox.readOnlyDir, unusedReadOnlyDirSentinel)},
 		{"STATE_DENY_1", sandboxRootOr(stateDenyAt(cfg.sandbox.stateDenied, 0), unusedReadOnlyDirSentinel)},
 		{"STATE_DENY_2", sandboxRootOr(stateDenyAt(cfg.sandbox.stateDenied, 1), unusedReadOnlyDirSentinel)},
@@ -208,7 +234,7 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 	wrapped := make([]string, 0, len(args)+2*len(params)+3)
 	wrapped = append(wrapped, "-f", cfg.sandbox.profilePath)
 	for _, p := range params {
-		// Every param is templated into an unconditional (subpath (param ...))
+		// Every param is templated into an unconditional subpath or literal
 		// rule, and seatbelt rejects an empty pattern outright — see
 		// unusedWritableRootSentinel. Substituting here is the single
 		// chokepoint that keeps a legitimately-absent root from producing a

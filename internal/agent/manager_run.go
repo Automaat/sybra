@@ -656,6 +656,8 @@ func enforceSpec(
 	gitRoots gitSandboxRoots,
 	gitOverlay gitSandboxOverlay,
 ) sandboxSpec {
+	branchRefFile, branchRefLockFile, branchLogFile, branchLogLockFile := gitBranchSingleFiles(gitRoots)
+	commonFiles := gitCommonDirSingleFiles(gitRoots)
 	return sandboxSpec{
 		mode:                   "enforce",
 		worktree:               worktree,
@@ -674,10 +676,30 @@ func enforceSpec(
 		gitBranchRef:           gitRoots.branchRef,
 		gitBranchRefDir:        gitRoots.branchRefDir,
 		gitBranchLogDir:        gitRoots.branchLogDir,
+		gitBranchRefFile:       branchRefFile,
+		gitBranchRefLockFile:   branchRefLockFile,
+		gitBranchLogFile:       branchLogFile,
+		gitBranchLogLockFile:   branchLogLockFile,
+		gitPackedRefsFile:      commonFiles.packedRefs,
+		gitPackedRefsNewFile:   commonFiles.packedRefsNew,
+		gitPackedRefsLockFile:  commonFiles.packedRefsLock,
+		gitGCPidFile:           commonFiles.gcPid,
+		gitGCPidLockFile:       commonFiles.gcPidLock,
+		gitShallowFile:         commonFiles.shallow,
+		gitShallowLockFile:     commonFiles.shallowLock,
+		gitInfoDir:             commonFiles.infoDir,
+		gitInfoDenyAttributes:  commonFiles.infoDenyAttributes,
+		gitInfoDenyExclude:     commonFiles.infoDenyExclude,
+		gitStashRefFile:        commonFiles.stashRef,
+		gitStashRefLockFile:    commonFiles.stashRefLock,
+		gitStashLogFile:        commonFiles.stashLog,
+		gitStashLogLockFile:    commonFiles.stashLogLock,
 		gitRemoteRefDir:        gitRoots.remoteRefDir,
 		gitRemoteLogDir:        gitRoots.remoteLogDir,
 		gitTagRefDir:           gitRoots.tagRefDir,
 		gitTagLogDir:           gitRoots.tagLogDir,
+		gitNotesRefDir:         gitRoots.notesRefDir,
+		gitNotesLogDir:         gitRoots.notesLogDir,
 		gitOverlayObjectDir:    gitOverlay.objectDir,
 		gitOverlayRefDir:       gitOverlay.branchRefDir,
 		gitOverlayLogDir:       gitOverlay.branchLogDir,
@@ -701,6 +723,85 @@ func enforceSpec(
 		toolCache:     agentStateRoot(".cache", sandboxHome),
 		appSupport:    providerAppSupportRoot(),
 		claudeScratch: claudeScratchRoot(),
+	}
+}
+
+// gitBranchSingleFiles derives the exact, single-file absolute paths for the
+// current branch's ref, its lock, and its reflog (plus the reflog's own lock
+// — `git reflog expire`, part of `git gc`, locks it same as the ref) from
+// roots' already-resolved directories — narrow enough to grant directly on
+// darwin (see sandboxSpec's gitBranchRefFile doc). Empty on a detached HEAD,
+// matching roots.branchRef.
+func gitBranchSingleFiles(roots gitSandboxRoots) (refFile, refLockFile, logFile, logLockFile string) {
+	if roots.branchRef == "" || roots.branchRefDir == "" || roots.branchLogDir == "" {
+		return "", "", "", ""
+	}
+	name := filepath.Base(roots.branchRef)
+	refFile = filepath.Join(roots.branchRefDir, name)
+	logFile = filepath.Join(roots.branchLogDir, name)
+	return refFile, refFile + ".lock", logFile, logFile + ".lock"
+}
+
+// gitCommonDirFiles holds the shared bare clone's top-level housekeeping
+// files — outside refs/heads, refs/remotes, refs/tags, objects, and
+// worktrees/<name>, so none of the other grants cover them. infoDir is a
+// directory, not a file: update_info_file() (wrapper.c) stages its rewrite
+// through xmkstemp() — a randomly-suffixed "<name>_XXXXXX" temp file no
+// literal grant can predict — so info/ needs a subpath grant rather than
+// named-file literals. That subpath also covers info/attributes and
+// info/exclude, which unlike info/refs are hand-authored, behavior-altering
+// config shared with every sibling task on the same clone; infoDenyAttributes
+// and infoDenyExclude carve those back out as darwin's equivalent of
+// stateDenied — Seatbelt resolves the more specific literal deny over the
+// broader subpath allow regardless of declaration order.
+type gitCommonDirFiles struct {
+	packedRefs, packedRefsNew, packedRefsLock string
+	gcPid, gcPidLock                          string
+	shallow, shallowLock                      string
+	infoDir                                   string
+	infoDenyAttributes, infoDenyExclude       string
+	// stashRef/stashRefLock/stashLog/stashLogLock: refs/stash is a single,
+	// fixed-name ref directly under refs/ (like refs/heads/<name> but with
+	// no branch-name variability), repo-wide shared like remotes/tags
+	// rather than per-branch — `git stash` fails closed without these.
+	stashRef, stashRefLock string
+	stashLog, stashLogLock string
+}
+
+// gitCommonDirSingleFiles derives gitCommonDirFiles' paths from the bare
+// clone root. git's default post-fetch maintenance (`git maintenance run
+// --auto --detach`) touches packed-refs.lock on every fetch; an explicit
+// git gc/pack-refs additionally stages packed-refs.new (git's
+// write-then-rename pattern) before renaming it over packed-refs, and (via
+// repack.updateServerInfo, on by default) rewrites info/refs and
+// info/packs for the dumb-HTTP transport. shallow(.lock) is touched by a
+// shallow fetch/clone (`--depth`/`--shallow-since`) — not issued by Sybra's
+// own git calls today, but an agent can run arbitrary git commands.
+func gitCommonDirSingleFiles(roots gitSandboxRoots) gitCommonDirFiles {
+	if roots.commonDir == "" {
+		return gitCommonDirFiles{}
+	}
+	packedRefs := filepath.Join(roots.commonDir, "packed-refs")
+	gcPid := filepath.Join(roots.commonDir, "gc.pid")
+	shallow := filepath.Join(roots.commonDir, "shallow")
+	infoDir := filepath.Join(roots.commonDir, "info")
+	stashRef := filepath.Join(roots.commonDir, "refs", "stash")
+	stashLog := filepath.Join(roots.commonDir, "logs", "refs", "stash")
+	return gitCommonDirFiles{
+		packedRefs:         packedRefs,
+		packedRefsNew:      packedRefs + ".new",
+		packedRefsLock:     packedRefs + ".lock",
+		gcPid:              gcPid,
+		gcPidLock:          gcPid + ".lock",
+		shallow:            shallow,
+		shallowLock:        shallow + ".lock",
+		infoDir:            infoDir,
+		infoDenyAttributes: filepath.Join(infoDir, "attributes"),
+		infoDenyExclude:    filepath.Join(infoDir, "exclude"),
+		stashRef:           stashRef,
+		stashRefLock:       stashRef + ".lock",
+		stashLog:           stashLog,
+		stashLogLock:       stashLog + ".lock",
 	}
 }
 

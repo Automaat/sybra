@@ -67,6 +67,10 @@ var allowedTransitions = map[Status]map[Status]bool{
 		StatusDone:          true,
 	},
 	StatusInProgress: {
+		// A resumed planning workflow can already carry in-progress after an
+		// interrupted agent retry; its review gate must still be able to park at
+		// plan-review rather than tripping the circuit breaker.
+		StatusPlanReview:    true,
 		StatusInReview:      true,
 		StatusTodo:          true,
 		StatusTesting:       true,
