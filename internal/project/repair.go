@@ -13,12 +13,17 @@ import (
 
 type RepairReport struct {
 	QuarantinedRefs        []string
+	ArchivedWorktrees      []string
 	PrunedWorktrees        bool
 	RebuiltWorktreeIndexes []string
 	RefetchedBranches      []string
 }
 
 var QuarantineDir string
+
+// WorktreesDir is the sole root whose linked checkouts repair may archive.
+// It is configured by the app alongside QuarantineDir.
+var WorktreesDir string
 
 var badRefMarkers = []string{
 	"fatal: bad object",
@@ -363,15 +368,93 @@ func releaseDeadWorktreeRefs(ctx context.Context, barePath string, report *Repai
 		}
 		QuarantineRef(barePath, wtRef, head)
 		report.QuarantinedRefs = append(report.QuarantinedRefs, wtRef)
-		if checkoutPath := worktreeCheckoutPath(wtAdminDir); checkoutPath != "" {
-			_ = withLockRetry(func() error {
-				return runBare(ctx, barePath, "worktree", "remove", "--force", checkoutPath)
-			})
+		if checkoutPath := registeredWorktreeCheckoutPath(wtAdminDir); checkoutPath != "" {
+			// A broken ref does not mean the checkout is worthless: its files can
+			// be the only surviving copy of work whose commit object was lost.
+			// Preserve the whole checkout before pruning its now-invalid Git
+			// registration. QuarantineDir is on the same Sybra data volume in
+			// production, so rename is atomic and keeps ignored files too.
+			if archived, ok := archiveCorruptWorktree(checkoutPath); ok {
+				report.ArchivedWorktrees = append(report.ArchivedWorktrees, archived)
+			}
+			// Do not force-remove a checkout after a failed archive. WorktreesDir
+			// can be on another filesystem from QuarantineDir, and losing the
+			// checkout is worse than retaining a stale registration for recovery.
 		}
 	}
 	_ = withLockRetry(func() error {
 		return runBare(ctx, barePath, "worktree", "prune")
 	})
+}
+
+// registeredWorktreeCheckoutPath returns a checkout only when its .git file
+// points back at this exact linked-worktree admin directory. The admin
+// directory's gitdir file is mutable metadata, so treating it as authoritative
+// would let a corrupt entry redirect repair's archive move outside the managed
+// worktree.
+func registeredWorktreeCheckoutPath(adminDir string) string {
+	if WorktreesDir == "" {
+		return ""
+	}
+	checkoutPath := worktreeCheckoutPath(adminDir)
+	if checkoutPath == "" {
+		return ""
+	}
+	gitFile, err := os.ReadFile(filepath.Join(checkoutPath, ".git"))
+	if err != nil {
+		return ""
+	}
+	gitdir, ok := strings.CutPrefix(strings.TrimSpace(string(gitFile)), "gitdir: ")
+	if !ok || strings.TrimSpace(gitdir) == "" {
+		return ""
+	}
+	gitdir = strings.TrimSpace(gitdir)
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(checkoutPath, gitdir)
+	}
+	canonicalAdminDir, err := filepath.EvalSymlinks(adminDir)
+	if err != nil {
+		return ""
+	}
+	canonicalGitDir, err := filepath.EvalSymlinks(gitdir)
+	if err != nil || canonicalGitDir != canonicalAdminDir {
+		return ""
+	}
+	canonicalWorktreesDir, err := filepath.EvalSymlinks(WorktreesDir)
+	if err != nil || !pathWithin(canonicalWorktreesDir, checkoutPath) {
+		return ""
+	}
+	return checkoutPath
+}
+
+func pathWithin(root, path string) bool {
+	canonicalPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(root, canonicalPath)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// archiveCorruptWorktree moves a worktree whose HEAD is unresolvable out of
+// the active worktree root before repair prunes Git's stale registration. The
+// archive deliberately includes the .git file and ignored files: it is a
+// forensic/recovery copy, not a usable checkout. Returns false when no safe
+// archive destination is configured or the move fails.
+func archiveCorruptWorktree(checkoutPath string) (string, bool) {
+	if QuarantineDir == "" {
+		return "", false
+	}
+	archiveRoot := filepath.Join(QuarantineDir, "worktrees")
+	if err := os.MkdirAll(archiveRoot, 0o755); err != nil {
+		return "", false
+	}
+	name := filepath.Base(filepath.Clean(checkoutPath)) + "-" + time.Now().UTC().Format("20060102T150405.000000000")
+	archivePath := filepath.Join(archiveRoot, name)
+	if err := os.Rename(checkoutPath, archivePath); err != nil {
+		return "", false
+	}
+	return archivePath, true
 }
 
 func worktreeCheckoutPath(adminDir string) string {
