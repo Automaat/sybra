@@ -285,9 +285,16 @@ func isGitObjectPayloadPath(root, path string) bool {
 	if err != nil {
 		return true
 	}
-	first, _, _ := strings.Cut(rel, string(filepath.Separator))
+	first, rest, hasRest := strings.Cut(rel, string(filepath.Separator))
 	if first == "pack" {
 		return true
+	}
+	if first == "info" {
+		if !hasRest {
+			return false
+		}
+		return rest != "commit-graph" && rest != "packs" &&
+			!strings.HasPrefix(rest, "commit-graphs"+string(filepath.Separator))
 	}
 	if len(first) != 2 {
 		return false

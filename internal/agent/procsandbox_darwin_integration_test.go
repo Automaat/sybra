@@ -118,8 +118,18 @@ func TestPrepareGitSandboxOverlay_DarwinRemovesEmptyLegacyObjectDirs(t *testing.
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(legacyObjects, "info", "commit-graph"), []byte("derived"), 0o444); err != nil {
-		t.Fatal(err)
+	for _, metadata := range []string{
+		filepath.Join("info", "commit-graph"),
+		filepath.Join("info", "commit-graphs", "commit-graph-chain"),
+		filepath.Join("info", "packs"),
+	} {
+		path := filepath.Join(legacyObjects, metadata)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("derived"), 0o444); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	_, err := prepareGitSandboxOverlay(context.Background(), t.TempDir(), sandboxHome, gitSandboxRoots{objectDir: t.TempDir()})
@@ -147,6 +157,25 @@ func TestPrepareGitSandboxOverlay_DarwinPreservesLegacyPack(t *testing.T) {
 	}
 	if _, err := os.Stat(legacyPack); err != nil {
 		t.Fatalf("legacy pack was not preserved: %v", err)
+	}
+}
+
+func TestPrepareGitSandboxOverlay_DarwinPreservesLegacyAlternates(t *testing.T) {
+	sandboxHome := t.TempDir()
+	legacyAlternates := filepath.Join(sandboxHome, ".sybra-git-overlay", "objects", "info", "alternates")
+	if err := os.MkdirAll(filepath.Dir(legacyAlternates), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyAlternates, []byte("/objects/elsewhere\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := prepareGitSandboxOverlay(context.Background(), t.TempDir(), sandboxHome, gitSandboxRoots{objectDir: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "refusing to delete") {
+		t.Fatalf("prepareGitSandboxOverlay error = %v, want preserved legacy-alternates failure", err)
+	}
+	if _, err := os.Stat(legacyAlternates); err != nil {
+		t.Fatalf("legacy alternates file was not preserved: %v", err)
 	}
 }
 
