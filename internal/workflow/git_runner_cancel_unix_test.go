@@ -36,12 +36,13 @@ esac
 	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake git: %v", err)
 	}
-	t.Setenv("PATH", bin)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	pidFile := filepath.Join(t.TempDir(), "helper.pid")
 	t.Setenv("WORKFLOW_GIT_HELPER_PID", pidFile)
 	wtPath := t.TempDir()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
 	go func() {
 		done <- gitDo(ctx, wtPath, "hold")
