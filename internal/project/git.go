@@ -1558,11 +1558,11 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 
 // RemoteURL returns a configured remote's fetch URL.
 func RemoteURL(ctx context.Context, worktreePath, remote string) (string, error) {
-	url, err := executil.Output(ctx, worktreePath, "git", "remote", "get-url", remote)
+	remoteURL, err := executil.Output(ctx, worktreePath, "git", "remote", "get-url", remote)
 	if err != nil {
 		return "", fmt.Errorf("resolve remote %s URL: %w", remote, err)
 	}
-	return strings.TrimSpace(url), nil
+	return strings.TrimSpace(remoteURL), nil
 }
 
 // PushSyncToPinnedRemote synchronizes branch to a pre-validated source remote
