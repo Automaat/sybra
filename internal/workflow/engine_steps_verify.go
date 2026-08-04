@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -238,16 +239,34 @@ func (e *Engine) execRequireSidecar(taskID string, step *Step, t TaskInfo) (Step
 }
 
 // resolveOriginBase returns the remote ref to use as the base for commit
-// range comparisons. It checks for origin/HEAD (set when the remote HEAD
-// symbolic ref is configured), then falls back to probing master and main.
+// range comparisons. It first resolves the linked repository's default branch,
+// then checks origin/HEAD, followed by compatibility fallbacks. A plain
+// rev-parse accepts a syntactically valid but missing object ID, so each
+// candidate must resolve to a commit before it can be used in a range.
 // Returns "origin/main" if nothing resolves.
 func resolveOriginBase(ctx context.Context, wtPath string) string {
-	for _, candidate := range []string{"origin/HEAD", "origin/master", "origin/main"} {
-		if gitOK(ctx, wtPath, "rev-parse", "--verify", candidate) {
+	candidates := originBaseCandidates(ctx, wtPath)
+	for _, candidate := range candidates {
+		if gitOK(ctx, wtPath, "rev-parse", "--verify", candidate+"^{commit}") {
 			return candidate
 		}
 	}
 	return "origin/main"
+}
+
+func originBaseCandidates(ctx context.Context, wtPath string) []string {
+	candidates := make([]string, 0, 4)
+	if commonDir, err := gitStdout(ctx, wtPath, "rev-parse", "--git-common-dir"); err == nil && commonDir != "" {
+		if !filepath.IsAbs(commonDir) {
+			commonDir = filepath.Join(wtPath, commonDir)
+		}
+		if bare, err := gitStdout(ctx, commonDir, "rev-parse", "--is-bare-repository"); err == nil && bare == "true" {
+			if branch, err := gitStdout(ctx, commonDir, "symbolic-ref", "--short", "HEAD"); err == nil && branch != "" {
+				candidates = append(candidates, "origin/"+branch)
+			}
+		}
+	}
+	return append(candidates, "origin/HEAD", "origin/master", "origin/main")
 }
 
 func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
