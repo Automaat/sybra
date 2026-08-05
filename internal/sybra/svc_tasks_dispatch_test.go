@@ -1943,7 +1943,9 @@ func TestDispatchInboundReview_TaskLimitParksForHuman(t *testing.T) {
 	tk := newInboundReviewTask(t, a, 151, "needs-approval")
 	now := time.Now()
 	for i := range config.DefaultReviewRoundsPerTask {
-		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i+2)*time.Hour))); err != nil {
+		// Keep every lifetime run inside the rolling hour too: when both limits
+		// are exhausted, the permanent lifetime reason must take precedence.
+		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i)*time.Minute))); err != nil {
 			t.Fatal(err)
 		}
 	}

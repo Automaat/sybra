@@ -330,7 +330,16 @@ func TestReduceTransitionFields(t *testing.T) {
 			name:      "review lifetime exceeded",
 			condition: Condition{Field: "task.review_lifetime_exceeded", Operator: "equals", Value: "true"},
 			observed: func() ObservedState {
-				observed := makeObserved(TaskInfo{ID: "t1"}, &Execution{WorkflowID: "wf", CurrentStep: "gate", State: ExecRunning}, true)
+				observed := makeObserved(TaskInfo{ID: "t1"}, &Execution{WorkflowID: "wf", CurrentStep: "gate", State: ExecRunning}, false)
+				observed.ReviewLifetimeExceeded = true
+				return observed
+			}(),
+		},
+		{
+			name:      "lifetime exhaustion also sets generic budget field",
+			condition: Condition{Field: "task.review_budget_exceeded", Operator: "equals", Value: "true"},
+			observed: func() ObservedState {
+				observed := makeObserved(TaskInfo{ID: "t1"}, &Execution{WorkflowID: "wf", CurrentStep: "gate", State: ExecRunning}, false)
 				observed.ReviewLifetimeExceeded = true
 				return observed
 			}(),

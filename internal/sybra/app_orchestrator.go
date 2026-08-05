@@ -497,12 +497,12 @@ func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) 
 	// Checked before the GitHub call — it needs no network.
 	budget := a.reviewBudget()
 	runs := taskReviewRuns(t)
-	if budget.HourlyExceeded(runs, time.Now()) {
-		a.parkReviewRateLimited(t, budget.PerHour)
-		return
-	}
 	if budget.LifetimeExceeded(runs) {
 		a.parkReviewLifetimeLimited(t, budget.PerTask)
+		return
+	}
+	if budget.HourlyExceeded(runs, time.Now()) {
+		a.parkReviewRateLimited(t, budget.PerHour)
 		return
 	}
 
