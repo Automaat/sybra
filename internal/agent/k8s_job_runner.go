@@ -19,7 +19,6 @@ import (
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/project"
-
 	"github.com/Automaat/sybra/internal/providerid"
 )
 

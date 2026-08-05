@@ -10,11 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/roleeffort"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/toolledger"
-
-	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // NOTE on concurrency: Agent has distinct mutexes.

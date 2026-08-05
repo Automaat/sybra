@@ -7,9 +7,8 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/Automaat/sybra/internal/version"
-
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/version"
 )
 
 // VersionInfo holds version strings for the server and client.

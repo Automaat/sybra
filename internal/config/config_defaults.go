@@ -12,9 +12,8 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
-	"gopkg.in/yaml.v3"
-
 	"github.com/Automaat/sybra/internal/providerid"
+	"gopkg.in/yaml.v3"
 )
 
 // AllowsProjectType reports whether automations on this machine should act on

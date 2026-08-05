@@ -14,9 +14,8 @@ import (
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/llmexec"
 	"github.com/Automaat/sybra/internal/provider"
-	"github.com/Automaat/sybra/internal/stats"
-
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/stats"
 )
 
 // EmitFunc emits a Wails event to the frontend.

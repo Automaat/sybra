@@ -15,10 +15,9 @@ import (
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/notification"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/workflow"
 	"gopkg.in/yaml.v3"
-
-	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // ConfigService exposes settings read/write as Wails-bound methods.

@@ -17,9 +17,8 @@ import (
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/health"
 	"github.com/Automaat/sybra/internal/provider"
-	"github.com/Automaat/sybra/internal/task"
-
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // minInterval is the smallest tick interval the Run loop will honor. Anything

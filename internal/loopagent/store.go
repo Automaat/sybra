@@ -9,10 +9,9 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
-
-	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // Store persists LoopAgent records as one YAML file per record under dir.

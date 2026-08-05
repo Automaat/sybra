@@ -10,9 +10,8 @@ import (
 	"github.com/Automaat/sybra/internal/llmjob"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
-	"github.com/Automaat/sybra/internal/task"
-
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // Classifier produces a triage verdict for a task. Exposed as an interface so

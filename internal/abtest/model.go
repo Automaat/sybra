@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/modeltier"
-
 	"github.com/Automaat/sybra/internal/providerid"
 )
 

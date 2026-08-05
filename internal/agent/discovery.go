@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/fsutil"
-
 	"github.com/Automaat/sybra/internal/providerid"
 )
 

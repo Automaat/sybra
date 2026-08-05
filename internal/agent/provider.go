@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	providerpkg "github.com/Automaat/sybra/internal/provider"
-
 	"github.com/Automaat/sybra/internal/providerid"
 )
 

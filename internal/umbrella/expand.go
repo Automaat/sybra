@@ -17,9 +17,8 @@ import (
 	"github.com/Automaat/sybra/internal/llmexec"
 	"github.com/Automaat/sybra/internal/llmjob"
 	"github.com/Automaat/sybra/internal/provider"
-	"github.com/Automaat/sybra/internal/task"
-
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // expandIssueLocker serializes one umbrella's critical section across both

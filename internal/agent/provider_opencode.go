@@ -5,7 +5,6 @@ import (
 
 	"github.com/Automaat/sybra/internal/modeltier"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
-
 	"github.com/Automaat/sybra/internal/providerid"
 )
 

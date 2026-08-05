@@ -13,12 +13,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/skillinvoke"
 	bundledskills "github.com/Automaat/sybra/internal/skills"
 	"gopkg.in/yaml.v3"
-
-	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // rewriteSkillInvocations converts Claude-style `/skill-name` invocations

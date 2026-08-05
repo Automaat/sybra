@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/Automaat/sybra/internal/provider"
-
 	"github.com/Automaat/sybra/internal/providerid"
 )
 

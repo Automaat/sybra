@@ -6,7 +6,6 @@ import (
 
 	"github.com/Automaat/sybra/internal/modeltier"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
-
 	"github.com/Automaat/sybra/internal/providerid"
 )
 
@@ -47,7 +46,7 @@ func (codexProvider) NormalizeModel(model string) string {
 	// naming the "claude" vendor — InferTier's Contains-based matching is too
 	// permissive to run unconditionally (e.g. it would fuzzy-match, and thus
 	// silently truncate, codex's own "gpt-5.4[1m]" down to "gpt-5.4").
-	if strings.Contains(strings.ToLower(model), providerid.Claude) {
+	if strings.Contains(strings.ToLower(model), "claude") {
 		if tier, ok := modeltier.InferTier(model); ok {
 			if mapped := modeltier.Model(tier, providerid.Codex); mapped != "" {
 				return mapped

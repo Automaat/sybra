@@ -14,7 +14,6 @@ import (
 	"github.com/Automaat/sybra/internal/llmexec"
 	"github.com/Automaat/sybra/internal/llmjob"
 	"github.com/Automaat/sybra/internal/provider"
-
 	"github.com/Automaat/sybra/internal/providerid"
 )
 
