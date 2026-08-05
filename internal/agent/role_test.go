@@ -191,6 +191,7 @@ func TestRole_AuthorsCode(t *testing.T) {
 		{RoleFixReview, true},
 		{RolePRFix, true},
 		{RoleTestFix, true},
+		{RoleHumanReview, true},
 		{Role(""), true}, // empty maps to implementation
 		// Independent verifiers — must NOT inherit the implementer's scratchpad,
 		// or the reward-hacking defense is silently weakened.
@@ -200,7 +201,6 @@ func TestRole_AuthorsCode(t *testing.T) {
 		{RolePlan, false},
 		{RolePlanCritic, false},
 		{RoleTriage, false},
-		{RoleHumanReview, false},
 		{RoleLoop, false},
 		{RoleMonitor, false},
 	}

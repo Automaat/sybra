@@ -156,6 +156,58 @@ func TestHumanReviewDispatchDir_ReadOnlyFallback(t *testing.T) {
 	})
 }
 
+func TestHumanReviewDispatchDir_PreparesManagedWorktree(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	wantDir := t.TempDir()
+	called := false
+	h.prepareTaskWorktree = func(tk task.Task) (string, error) {
+		called = true
+		if tk.ID != "managed-task" {
+			t.Fatalf("prepare task id = %q, want managed-task", tk.ID)
+		}
+		return wantDir, nil
+	}
+
+	dir, readOnly := h.dispatchDir(task.Task{ID: "managed-task"})
+	if !called {
+		t.Fatal("managed worktree preparer was not called")
+	}
+	if dir != wantDir || readOnly {
+		t.Fatalf("got dir=%q readOnly=%v, want dir=%q readOnly=false", dir, readOnly, wantDir)
+	}
+}
+
+func TestHumanReviewDispatchDir_PrepareFailureFallsBackReadOnly(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		return "", errors.New("worktree unavailable")
+	}
+
+	dir, readOnly := h.dispatchDir(task.Task{ID: "fallback-task"})
+	if dir != h.cfg.HumanReview.SybraRepoDir || !readOnly {
+		t.Fatalf("got dir=%q readOnly=%v, want dir=%q readOnly=true", dir, readOnly, h.cfg.HumanReview.SybraRepoDir)
+	}
+}
+
+func TestWriteAutonomyMandate_UsesHostCommitFlags(t *testing.T) {
+	t.Parallel()
+	for _, flags := range []string{"-s", "-s -S"} {
+		t.Run(flags, func(t *testing.T) {
+			t.Parallel()
+			var b strings.Builder
+			writeAutonomyMandate(&b, flags)
+			want := "`git commit " + flags + "`"
+			if !strings.Contains(b.String(), want) {
+				t.Fatalf("mandate missing host commit flags %q:\n%s", want, b.String())
+			}
+		})
+	}
+}
+
 // TestBuildPrompt_NoFencedVerdictInstruction pins that the prompt no longer
 // tells the agent to emit a fenced ```sybra-verdict``` block — the schema is
 // now enforced out-of-band via RunConfig.OutputSchema/--json-schema, and the
