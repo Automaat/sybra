@@ -199,6 +199,9 @@ type gitSandboxOverlay struct {
 func prepareGitSandboxOverlay(ctx context.Context, worktree, sandboxHome string, roots gitSandboxRoots) (gitSandboxOverlay, error) {
 	base := filepath.Join(sandboxHome, ".sybra-git-overlay")
 	if !sandboxUsesGitObjectOverlay() {
+		if err := prepareGitLooseObjectDirs(roots.objectDir); err != nil {
+			return gitSandboxOverlay{}, err
+		}
 		legacyObjects := filepath.Join(base, "objects")
 		populated, err := gitObjectOverlayPopulated(legacyObjects)
 		if err != nil {
@@ -261,6 +264,19 @@ func prepareGitSandboxOverlay(ctx context.Context, worktree, sandboxHome string,
 	}
 	overlay.branchRefFile = canonRefFile
 	return overlay, nil
+}
+
+func prepareGitLooseObjectDirs(objectDir string) error {
+	if objectDir == "" {
+		return nil
+	}
+	for i := range 256 {
+		path := filepath.Join(objectDir, fmt.Sprintf("%02x", i))
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return fmt.Errorf("prepare loose-object fanout %s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func gitObjectOverlayPopulated(path string) (bool, error) {

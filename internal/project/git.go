@@ -374,12 +374,11 @@ func CloneBare(ctx context.Context, repoURL, destPath string) error {
 // Confirmed in production: disabling only maintenance.auto still let this
 // happen via gc.auto on the very next commit to the same clone.
 //
-// This closes only the *implicit* triggers; an agent running `git
-// gc`/`git repack`/`git maintenance run` explicitly in its own worktree
-// reproduces the identical race and is not prevented here (see
-// internal/agent/manager_run.go's git-sandbox write grants, which
-// intentionally permit those paths). Exported so a startup migration can
-// retrofit already-registered projects, not just newly cloned ones.
+// Enforce-mode provider sandboxes separately make the repository-wide pack,
+// info, and packed-ref surfaces read-only, blocking explicit maintenance too.
+// This configuration still matters for trusted Sybra processes and for
+// report/off-mode runs. Exported so a startup migration can retrofit already-
+// registered projects, not just newly cloned ones.
 func DisableAutoMaintenance(ctx context.Context, barePath string) error {
 	if err := runBare(ctx, barePath, "config", "maintenance.auto", "false"); err != nil {
 		return err
