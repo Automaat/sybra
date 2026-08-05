@@ -105,6 +105,13 @@ export class AgentRun {
      * instead of body-text patterns which can collide with user content.
      */
     "verdictRendered"?: boolean;
+
+    /**
+     * RecoveryReplayRejected records that startup replay evaluated this exact
+     * unblocked verdict and permanently rejected it. It is keyed to the run so
+     * a newer verdict with identical wording still gets its own evaluation.
+     */
+    "recoveryReplayRejected"?: boolean;
     "logFile": string;
     "sessionId"?: string;
 
