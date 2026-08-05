@@ -12,6 +12,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // execPushBranch deterministically pushes the task's worktree branch to its
@@ -479,24 +480,7 @@ func prRetryReason(base, detail string) string {
 	if detail == "" {
 		return base
 	}
-	return base + ": " + truncateMiddle(detail, 240)
-}
-
-func truncateMiddle(s string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	if len(s) <= limit {
-		return s
-	}
-	marker := "\n... (truncated) ...\n"
-	if limit <= len(marker)+2 {
-		return s[:limit]
-	}
-	keep := limit - len(marker)
-	head := keep / 2
-	tail := keep - head
-	return s[:head] + marker + s[len(s)-tail:]
+	return base + ": " + textutil.TruncateMiddle(detail, 240, "\n... (truncated) ...\n")
 }
 
 // findExistingPRForBranch checks for a PR already open on branch, mirroring

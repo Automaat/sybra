@@ -388,13 +388,22 @@ func assertPRFixPromptUsesResolvedPushRemote(t *testing.T, prompt, branch string
 	}
 }
 
-func TestTruncatePushPreflightReasonKeepsValidUTF8(t *testing.T) {
-	got := truncatePushPreflightReason("prefix \xff café suffix", 12)
+func TestPushPreflightFailureReasonKeepsValidUTF8(t *testing.T) {
+	// The multibyte and invalid bytes must sit BEFORE the 240-byte cut, or
+	// the test passes without exercising either the boundary walk or the
+	// sanitisation — git surfaces remote bytes verbatim, so both can land
+	// anywhere in the string.
+	detail := "\xff café… " + strings.Repeat("remote rejected …", 30)
+	got := pushPreflightFailureReason(errors.New(detail))
+
 	if !utf8.ValidString(got) {
-		t.Fatalf("truncated reason is invalid UTF-8: %q", got)
+		t.Fatalf("preflight reason is invalid UTF-8: %q", got)
 	}
 	if !strings.HasSuffix(got, "...") {
-		t.Fatalf("truncated reason = %q, want ellipsis", got)
+		t.Fatalf("preflight reason = %q, want ellipsis", got)
+	}
+	if !strings.HasPrefix(got, "GitHub push credential preflight failed") {
+		t.Fatalf("preflight reason = %q, want the classified prefix", got)
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/project"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // errSurviveShutdown is returned by a detached headless attempt when the
@@ -1159,7 +1160,7 @@ func (m *Manager) handleMalformedToolResults(a *Agent, event StreamEvent) {
 				return
 			}
 		}
-		reason := fmt.Sprintf("tool %s rejected malformed input: %s", toolName, truncatePromptField(diag.ValidationError))
+		reason := fmt.Sprintf("tool %s rejected malformed input: %s", toolName, textutil.TruncateBytesTrimmed(strings.TrimSpace(diag.ValidationError), malformedToolPromptFieldLimit, "\n... (truncated)"))
 		a.NoteMalformedToolCall(event.toolResults[i].ToolUseID, toolName, malformedToolCallOutcomeUnrecoverable)
 		a.SetError(malformedToolCallErrorKind, reason)
 		m.ReportProviderSignal(a.GetProvider(), providerpkg.Classification{

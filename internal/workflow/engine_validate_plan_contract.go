@@ -8,6 +8,8 @@ import (
 	"path"
 	"sort"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 const maxPlanContractBytes = 64 * 1024
@@ -358,10 +360,7 @@ func normalizeCriterionWhitespace(s string) string {
 }
 
 func quoteProblem(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) > 140 {
-		s = s[:137] + "..."
-	}
+	s = textutil.TruncateBytesTotal(strings.TrimSpace(s), 140, "...")
 	return fmt.Sprintf("%q", s)
 }
 

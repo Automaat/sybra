@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/llmjob"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // judgeAttemptTimeout bounds each provider invocation, including llmjob repair
@@ -119,10 +120,7 @@ func buildJudgePrompt(f health.Finding, ls *LogSummary, t *task.Task) string {
 
 	if t != nil {
 		fmt.Fprintf(&b, "Task: %s\n", t.Title)
-		body := t.Body
-		if len(body) > 500 {
-			body = body[:500] + "…"
-		}
+		body := textutil.TruncateBytes(t.Body, 500, "…")
 		if body != "" {
 			fmt.Fprintf(&b, "Body: %s\n", body)
 		}

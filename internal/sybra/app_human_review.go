@@ -23,6 +23,7 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/verdict"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -1795,10 +1796,7 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, dir string, wctx *WorkScru
 					defaultStr(r.ProtocolViolation, "(none)"), defaultStr(r.TestOutcome, "(none)"), defaultStr(r.TestFailureFingerprint, "(none)"))
 			}
 			if r.Result != "" {
-				res := r.Result
-				if len(res) > humanReviewMaxAgentResult {
-					res = res[:humanReviewMaxAgentResult] + "\n... (truncated)"
-				}
+				res := textutil.TruncateBytes(r.Result, humanReviewMaxAgentResult, "\n... (truncated)")
 				b.WriteString("Result:\n```\n")
 				b.WriteString(strings.TrimSpace(res))
 				b.WriteString("\n```\n")

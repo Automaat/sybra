@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/blocker"
@@ -21,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
@@ -969,13 +969,21 @@ func prHasCurrentApproval(pr github.PullRequest) bool {
 	return pr.ReviewDecision == "APPROVED" || pr.RESTApproved
 }
 
+// pushPreflightFailureReason builds the status_reason for a failed credential
+// preflight. git surfaces remote output verbatim, so err can carry raw bytes
+// in whatever encoding the remote used — sanitize before it reaches YAML.
+func pushPreflightFailureReason(err error) string {
+	return "GitHub push credential preflight failed before starting PR fix: " +
+		textutil.TruncateBytesTrimmed(strings.ToValidUTF8(err.Error(), ""), 240, "...")
+}
+
 func (r *Handler) preflightPushCredentials(ctx context.Context, taskID, dir string) (admit, handled bool) {
 	preflight := r.pushPreflightFn
 	if preflight == nil {
 		preflight = project.PreflightPushCredentials
 	}
 	if err := preflight(ctx, dir); err != nil {
-		reason := "GitHub push credential preflight failed before starting PR fix: " + truncatePushPreflightReason(err.Error(), 240)
+		reason := pushPreflightFailureReason(err)
 		if _, updateErr := r.tasks.Apply(task.TransitionIntent{
 			TaskID:   taskID,
 			ToStatus: task.StatusHumanRequired,
@@ -991,21 +999,6 @@ func (r *Handler) preflightPushCredentials(ctx context.Context, taskID, dir stri
 		return false, true
 	}
 	return true, false
-}
-
-func truncatePushPreflightReason(s string, limit int) string {
-	s = strings.ToValidUTF8(s, "")
-	if limit <= 0 || len(s) <= limit {
-		return s
-	}
-	var b strings.Builder
-	for _, r := range s {
-		if b.Len()+utf8.RuneLen(r) > limit {
-			break
-		}
-		b.WriteRune(r)
-	}
-	return strings.TrimSpace(b.String()) + "..."
 }
 
 // A rerun re-runs jobs the repo already ran and sends no content anywhere, so the work/pet split does not apply. EXC:FILE011:load-bearing-invariant

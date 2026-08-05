@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 var errBestOfNParked = errors.New("best-of-n parked waiting for attempt completion")
@@ -273,7 +275,7 @@ func (e *Engine) advanceBestOfNAttempt(taskID string, def *Definition, parent *S
 	status.AgentID = output.AgentID
 	status.Provider = output.Provider
 	status.Status = output.Status
-	status.Output = truncate(output.Output, 4000)
+	status.Output = textutil.TruncateBytes(output.Output, 4000, "\n... (truncated)")
 
 	if !rec.AllAttemptsDone() {
 		e.logger.Debug("workflow.best-of-n.attempt-done",
@@ -327,11 +329,11 @@ func (e *Engine) finalizeBestOfNParent(taskID string, def *Definition, parent *S
 	wfExec.RecordStep(StepRecord{
 		StepID:    parent.ID,
 		Status:    "completed",
-		Output:    truncate(parentOutput, 4000),
+		Output:    textutil.TruncateBytes(parentOutput, 4000, "\n... (truncated)"),
 		StartedAt: rec.StartedAt,
 		EndedAt:   now,
 	})
-	wfExec.SetVar("step."+parent.ID+".output", truncate(parentOutput, 2000))
+	wfExec.SetVar("step."+parent.ID+".output", textutil.TruncateBytes(parentOutput, 2000, "\n... (truncated)"))
 
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
@@ -465,7 +467,7 @@ func buildBestOfNManifest(stepID string, rec *BestOfNInflight) string {
 			Provider:  a.Provider,
 			Branch:    a.Branch,
 			Dir:       a.Dir,
-			Output:    truncate(a.Output, 500),
+			Output:    textutil.TruncateBytes(a.Output, 500, "\n... (truncated)"),
 		})
 	}
 	b, mErr := json.Marshal(m)

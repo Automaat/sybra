@@ -7430,28 +7430,6 @@ func TestAdvanceStep_FailedWorkflowIsNoop(t *testing.T) {
 	}
 }
 
-func TestTruncate(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		limit int
-		want  string
-	}{
-		{"under limit", "short", 100, "short"},
-		{"at limit", "exact", 5, "exact"},
-		{"over limit", "this is too long", 7, "this is\n... (truncated)"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := truncate(tt.input, tt.limit)
-			if got != tt.want {
-				t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.limit, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestAgentModeTemplate(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()

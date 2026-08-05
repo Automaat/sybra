@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 const (
@@ -95,7 +95,7 @@ func bindToolResultContent(taskID, producerRole string, store *artifact.Store, t
 	}
 	b.WriteString("\n")
 	b.WriteString(summary)
-	return truncateUTF8(b.String(), toolResultSummaryMaxBytes)
+	return textutil.TruncateBytesTotal(b.String(), toolResultSummaryMaxBytes, "...")
 }
 
 func persistToolResultArtifact(taskID, producerRole string, store *artifact.Store, tr ToolResultBlock) toolResultArtifactRef {
@@ -147,7 +147,7 @@ func summarizeToolResult(content string, isError bool) string {
 		if tailStart := max(0, len(lines)-toolResultTailLines); tailStart > 0 {
 			sections = append(sections, fmt.Sprintf("tail lines %d-%d:\n%s", tailStart+1, len(lines), strings.Join(lines[tailStart:], "\n")))
 		}
-		return truncateUTF8(strings.Join(sections, "\n\n"), toolResultSummaryMaxBytes)
+		return textutil.TruncateBytesTotal(strings.Join(sections, "\n\n"), toolResultSummaryMaxBytes, "...")
 	}
 
 	headEnd := min(len(lines), toolResultHeadLines)
@@ -161,7 +161,7 @@ func summarizeToolResult(content string, isError bool) string {
 			sections = append(sections, fmt.Sprintf("tail lines %d-%d:\n%s", tailStart+1, len(lines), strings.Join(lines[tailStart:], "\n")))
 		}
 	}
-	return truncateUTF8(strings.Join(sections, "\n\n"), toolResultSummaryMaxBytes)
+	return textutil.TruncateBytesTotal(strings.Join(sections, "\n\n"), toolResultSummaryMaxBytes, "...")
 }
 
 func interestingToolResultWindows(lines []string, isError bool) []lineWindow {
@@ -302,20 +302,6 @@ func sanitizeArtifactToken(s string) string {
 		return "tool"
 	}
 	return out
-}
-
-func truncateUTF8(s string, maxBytes int) string {
-	if maxBytes <= 0 || len(s) <= maxBytes {
-		return s
-	}
-	if maxBytes <= 3 {
-		return s[:maxBytes]
-	}
-	cut := maxBytes - 3
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + "..."
 }
 
 func windowCovered(w lineWindow, sections, lines []string) bool {
