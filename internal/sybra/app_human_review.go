@@ -37,7 +37,18 @@ const (
 	humanReviewMaxAgentResult = 4000
 	humanReviewWindow         = time.Hour
 	humanReviewFallbackModel  = "haiku"
-	humanReviewClaimRetryMax  = 3
+	// humanReviewClaimRetryMax and humanReviewClaimRetryStep set the ladder
+	// that waits for a contended dispatch claim or a still-running agent.
+	//
+	// It has to outlast what it waits for. The claim is now held across
+	// PrepareForTask — FetchOrigin, rebase, PushSync, and project setup
+	// commands with a five-minute batch timeout — and staleDispatchClaimAge is
+	// fifteen minutes. The previous 1s/4s/9s ladder gave up after fourteen
+	// seconds, so a task that flipped to human-required while its own setup
+	// was running exhausted every attempt inside that window and was never
+	// examined.
+	humanReviewClaimRetryMax  = 6
+	humanReviewClaimRetryStep = 20 * time.Second
 
 	// humanReviewMaxPerTaskPerWindow caps how many times a SINGLE task can
 	// spawn a review agent within humanReviewWindow. The global window
@@ -381,12 +392,24 @@ func lifecycleSchedule(ctx context.Context) func(time.Duration, func()) {
 }
 
 func (h *humanReviewHandler) scheduleClaimRetry(taskID, prevStatus string, opts humanReviewSpawnOptions) {
-	if h.schedule == nil || opts.ClaimRetryAttempt >= humanReviewClaimRetryMax {
+	if opts.ClaimRetryAttempt >= humanReviewClaimRetryMax || h.schedule == nil {
+		// Exhaustion is terminal and nothing else re-triggers it:
+		// recoverStrandedUnblockedTasks only replays verdicts whose side
+		// effects failed, not spawns that never happened. Record it, or the
+		// only trace is an Info line.
+		h.logger.Warn("human-review.dispatch-claim.retries-exhausted",
+			"task_id", taskID, "attempts", opts.ClaimRetryAttempt, "scheduler", h.schedule != nil)
+		h.logAudit(audit.EventHumanReviewRetriesExhausted, taskID, "", map[string]any{
+			"attempts":  opts.ClaimRetryAttempt,
+			"scheduler": h.schedule != nil,
+		})
 		return
 	}
 	next := opts
 	next.ClaimRetryAttempt++
-	delay := time.Duration(next.ClaimRetryAttempt*next.ClaimRetryAttempt) * time.Second
+	// Quadratic: 20s, 80s, 3m, 5m20s, 8m20s, 12m, spanning 30m, which outlasts
+	// agent.staleDispatchClaimAge so even a leaked claim is reaped in time.
+	delay := time.Duration(next.ClaimRetryAttempt*next.ClaimRetryAttempt) * humanReviewClaimRetryStep
 	h.logger.Info("human-review.dispatch-claim.retry-scheduled",
 		"task_id", taskID, "attempt", next.ClaimRetryAttempt, "delay", delay)
 	h.schedule(delay, func() {

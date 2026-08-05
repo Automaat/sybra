@@ -105,6 +105,12 @@ const (
 	EventHumanReviewVerdict          = "human_review.verdict"
 	EventHumanReviewIssue            = "human_review.issue_filed"
 	EventHumanReviewSkipped          = "human_review.skipped"
+	// EventHumanReviewRetriesExhausted marks a recovery that was scheduled and
+	// then dropped: the dispatch claim or worktree never freed up within the
+	// retry ladder. Distinct from Skipped, which is a decision not to spawn —
+	// this is a spawn that was wanted and never happened, and nothing else
+	// re-triggers it.
+	EventHumanReviewRetriesExhausted = "human_review.retries_exhausted"
 	EventExperienceRecorded          = "experience.recorded"
 	EventExperienceSkipped           = "experience.skipped"
 	EventExperienceInjected          = "experience.injected"

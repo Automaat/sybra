@@ -275,8 +275,8 @@ func TestHumanReviewSpawn_ClaimConflictRetriesAfterRelease(t *testing.T) {
 	}
 	var scheduled func()
 	h.schedule = func(delay time.Duration, fn func()) {
-		if delay != time.Second {
-			t.Fatalf("first retry delay = %s, want 1s", delay)
+		if delay != humanReviewClaimRetryStep {
+			t.Fatalf("first retry delay = %s, want %s", delay, humanReviewClaimRetryStep)
 		}
 		if scheduled != nil {
 			t.Fatal("claim conflict scheduled more than one retry")
@@ -3883,5 +3883,109 @@ func TestHumanReviewPrompt_HonorsCommitSigningPolicy(t *testing.T) {
 	h.SetSigningPolicy(project.SigningRequire)
 	if got := h.signingPolicy().CommitFlags(context.Background()); got != "-s -S" {
 		t.Errorf("after reload to require, flags = %q, want -s -S", got)
+	}
+}
+
+// The ladder has to outlast what it waits for. A claim is now held across the
+// whole of PrepareForTask, whose setup batch alone may run five minutes, and
+// agent.staleDispatchClaimAge only reaps a leaked claim after fifteen.
+func TestScheduleClaimRetry_LadderOutlastsHeldClaim(t *testing.T) {
+	t.Parallel()
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	var delays []time.Duration
+	h.schedule = func(d time.Duration, _ func()) { delays = append(delays, d) }
+
+	opts := humanReviewSpawnOptions{}
+	for range humanReviewClaimRetryMax {
+		h.scheduleClaimRetry("t1", string(task.StatusInReview), opts)
+		opts.ClaimRetryAttempt++
+	}
+	h.scheduleClaimRetry("t1", string(task.StatusInReview), opts)
+
+	if len(delays) != humanReviewClaimRetryMax {
+		t.Fatalf("scheduled %d retries, want %d then stop", len(delays), humanReviewClaimRetryMax)
+	}
+	var span time.Duration
+	for _, d := range delays {
+		span += d
+	}
+	// 15m is agent.staleDispatchClaimAge, unexported from this package.
+	if span <= 15*time.Minute {
+		t.Errorf("ladder spans %s, gives up before a leaked claim is reaped", span)
+	}
+	if !slices.IsSorted(delays) {
+		t.Errorf("delays not increasing: %v", delays)
+	}
+}
+
+// Exhaustion is terminal and nothing re-triggers it: recoverStrandedUnblocked
+// Tasks replays verdicts whose side effects failed, never a spawn that was
+// wanted and never happened. Without an event the only trace is an Info line.
+func TestScheduleClaimRetry_ExhaustionIsAudited(t *testing.T) {
+	t.Parallel()
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	auditDir := t.TempDir()
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatalf("audit.NewLogger: %v", err)
+	}
+	t.Cleanup(func() { _ = auditLog.Close() })
+	h.audit = auditLog
+	h.schedule = func(time.Duration, func()) {}
+
+	h.scheduleClaimRetry("t1", string(task.StatusInReview),
+		humanReviewSpawnOptions{ClaimRetryAttempt: humanReviewClaimRetryMax})
+
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Minute),
+		Until: time.Now().Add(time.Minute),
+		Type:  audit.EventHumanReviewRetriesExhausted,
+	})
+	if err != nil {
+		t.Fatalf("audit.Read: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("exhausted ladder wrote %d audit events, want 1", len(events))
+	}
+	if got := events[0].TaskID; got != "t1" {
+		t.Errorf("task_id = %q, want t1", got)
+	}
+	if got := events[0].Data["attempts"]; got != float64(humanReviewClaimRetryMax) {
+		t.Errorf("attempts = %v, want %d", got, humanReviewClaimRetryMax)
+	}
+}
+
+// A retry that is still within the ladder must not be audited as exhausted, or
+// the event stops meaning "this task was dropped".
+func TestScheduleClaimRetry_InProgressIsNotAudited(t *testing.T) {
+	t.Parallel()
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	auditDir := t.TempDir()
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatalf("audit.NewLogger: %v", err)
+	}
+	t.Cleanup(func() { _ = auditLog.Close() })
+	h.audit = auditLog
+	h.schedule = func(time.Duration, func()) {}
+
+	h.scheduleClaimRetry("t1", string(task.StatusInReview), humanReviewSpawnOptions{})
+
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Minute),
+		Until: time.Now().Add(time.Minute),
+		Type:  audit.EventHumanReviewRetriesExhausted,
+	})
+	if err != nil {
+		t.Fatalf("audit.Read: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("first retry audited as exhausted: %+v", events)
 	}
 }
