@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/Automaat/sybra/internal/modeltier"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
@@ -147,7 +146,7 @@ func (claudeProvider) ParseHeadlessLine(line []byte) (StreamEvent, error) {
 	return claudeEventToStreamEvent(ce), nil
 }
 
-func (claudeProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration, providerpkg.CooldownSource) {
+func (claudeProvider) ClassifyError(sample providerpkg.ErrorSample) providerpkg.Classification {
 	return providerpkg.ClassifyClaudeError(sample)
 }
 

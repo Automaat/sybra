@@ -218,7 +218,7 @@ type Watchdog struct {
 	// recordProviderSignal forwards a watchdog-detected provider signal through
 	// the same agent-manager helper the runner uses, so the agent error kind and
 	// provider health gate stay in sync across both paths.
-	recordProviderSignal func(*agent.Agent, provider.Signal, string, time.Duration, provider.CooldownSource)
+	recordProviderSignal func(*agent.Agent, provider.Classification)
 	// hasLiveHeadlessAgent reports whether a task has a registered live
 	// headless agent. checkDwell uses it to skip escalating a task whose
 	// headless run is mid-flight but hasn't touched the task file recently —
@@ -874,7 +874,11 @@ func (w *Watchdog) stopForRateLimit(ag *agent.Agent, trigger string, verdict age
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
 	if w.recordProviderSignal != nil {
-		w.recordProviderSignal(ag, provider.SignalRateLimit, reason, 0, provider.CooldownFromConfig)
+		w.recordProviderSignal(ag, provider.Classification{
+			Signal: provider.SignalRateLimit,
+			Reason: reason,
+			Source: provider.CooldownFromConfig,
+		})
 	}
 	if err := w.stopAgent(ag.ID); err != nil {
 		w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
@@ -977,7 +981,11 @@ func (w *Watchdog) handleZeroOutputStall(ag *agent.Agent, stall, total time.Dura
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
 	if w.recordProviderSignal != nil {
-		w.recordProviderSignal(ag, provider.SignalRateLimit, zeroOutputReason, 0, provider.CooldownFromConfig)
+		w.recordProviderSignal(ag, provider.Classification{
+			Signal: provider.SignalRateLimit,
+			Reason: zeroOutputReason,
+			Source: provider.CooldownFromConfig,
+		})
 	}
 	if err := w.stopAgent(ag.ID); err != nil {
 		w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)

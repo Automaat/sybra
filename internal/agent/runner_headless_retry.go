@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/Automaat/sybra/internal/provider"
 )
@@ -32,31 +31,31 @@ func (m *Manager) reportCleanProviderHealthSignal(a *Agent, stderrOut string, at
 }
 
 func (m *Manager) reportProviderHealthSample(a *Agent, sample provider.ErrorSample) provider.Signal {
-	sig, reason, retryAfter, src := classifyProviderError(a.Provider, sample)
-	if sig == provider.SignalNone {
+	c := classifyProviderError(a.Provider, sample)
+	if c.Signal == provider.SignalNone {
 		if sample.ErrorType != "" || sample.ErrorStatus != 0 {
 			m.logger.Info("agent.provider.signal.unknown",
 				"provider", a.Provider,
 				"errorType", sample.ErrorType,
 				"errorStatus", sample.ErrorStatus)
 		}
-		return sig
+		return c.Signal
 	}
-	m.RecordProviderSignal(a, sig, reason, retryAfter, src)
-	return sig
+	m.RecordProviderSignal(a, c)
+	return c.Signal
 }
 
 // RecordProviderSignal stores a provider-health classification on the agent
 // and forwards it to the shared health gate so all recovery paths maintain the
 // same "agent error kind + gate signal" invariant.
-func (m *Manager) RecordProviderSignal(a *Agent, sig provider.Signal, reason string, retryAfter time.Duration, source provider.CooldownSource) {
+func (m *Manager) RecordProviderSignal(a *Agent, c provider.Classification) {
 	if a == nil {
 		return
 	}
-	if kind := signalErrorKind(sig); kind != "" {
-		a.SetError(kind, reason)
+	if kind := signalErrorKind(c.Signal); kind != "" {
+		a.SetError(kind, c.Reason)
 	}
-	m.ReportProviderSignal(a.Provider, sig, reason, retryAfter, source)
+	m.ReportProviderSignal(a.Provider, c)
 }
 
 // signalErrorKind maps a provider health signal to the short error-kind tag
@@ -94,10 +93,10 @@ func buildErrorSample(stderrOut string, attemptEvents []StreamEvent) provider.Er
 // classifyProviderError routes an error sample to the provider-appropriate
 // classifier. Without a copilot branch a logged-out / quota-exhausted copilot
 // would never be flagged, leaving the health gate routing failover work to it.
-func classifyProviderError(prov string, sample provider.ErrorSample) (provider.Signal, string, time.Duration, provider.CooldownSource) {
+func classifyProviderError(prov string, sample provider.ErrorSample) provider.Classification {
 	p, err := lookupProvider(prov)
 	if err != nil {
-		return provider.SignalNone, "", 0, provider.CooldownFromConfig
+		return provider.Classification{Signal: provider.SignalNone, Source: provider.CooldownFromConfig}
 	}
 	return p.ClassifyError(sample)
 }

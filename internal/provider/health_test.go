@@ -200,7 +200,8 @@ func TestClassifyClaudeError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, reason, retryAfter, _ := ClassifyClaudeError(tc.in)
+			c := ClassifyClaudeError(tc.in)
+			got, reason, retryAfter, _ := c.Signal, c.Reason, c.RetryAfter, c.Source
 			if got != tc.want {
 				t.Errorf("signal: got %v want %v", got, tc.want)
 			}
@@ -283,7 +284,8 @@ func TestClassifyCodexError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, reason, retryAfter, _ := ClassifyCodexError(tc.in)
+			c := ClassifyCodexError(tc.in)
+			got, reason, retryAfter, _ := c.Signal, c.Reason, c.RetryAfter, c.Source
 			if got != tc.want {
 				t.Errorf("signal: got %v want %v", got, tc.want)
 			}
@@ -312,7 +314,8 @@ func TestClassifyCopilotError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _, _, _ := ClassifyCopilotError(tc.in)
+			c := ClassifyCopilotError(tc.in)
+			got, _, _, _ := c.Signal, c.Reason, c.RetryAfter, c.Source
 			if got != tc.want {
 				t.Errorf("got %v want %v", got, tc.want)
 			}

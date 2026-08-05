@@ -106,11 +106,11 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 				failures = append(failures, fmt.Sprintf("%s: overloaded", p))
 				continue
 			}
-			sig, reason, retryAfter, src := classifyError(p, stderrOut, string(raw))
-			if sig != provider.SignalNone {
-				reportSignal(opts.Gate, p, sig, reason, retryAfter, src)
-				logFallback(opts.Logger, p, sig, reason)
-				failures = append(failures, fmt.Sprintf("%s: %s", p, reason))
+			c := classifyError(p, stderrOut, string(raw))
+			if c.Signal != provider.SignalNone {
+				reportSignal(opts.Gate, p, c)
+				logFallback(opts.Logger, p, c.Signal, c.Reason)
+				failures = append(failures, fmt.Sprintf("%s: %s", p, c.Reason))
 				continue
 			}
 			return Result{Provider: p}, providerError(p, err, stderrOut)
@@ -128,11 +128,11 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 				failures = append(failures, fmt.Sprintf("%s: overloaded", p))
 				continue
 			}
-			sig, reason, retryAfter, src := classifyError(p, stderrOut, string(raw))
-			if sig != provider.SignalNone {
-				reportSignal(opts.Gate, p, sig, reason, retryAfter, src)
-				logFallback(opts.Logger, p, sig, reason)
-				failures = append(failures, fmt.Sprintf("%s: %s", p, reason))
+			c := classifyError(p, stderrOut, string(raw))
+			if c.Signal != provider.SignalNone {
+				reportSignal(opts.Gate, p, c)
+				logFallback(opts.Logger, p, c.Signal, c.Reason)
+				failures = append(failures, fmt.Sprintf("%s: %s", p, c.Reason))
 				continue
 			}
 			return Result{Provider: p}, fmt.Errorf("%s output: %w", p, parseErr)
@@ -435,7 +435,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func classifyError(p, stderrOut, content string) (provider.Signal, string, time.Duration, provider.CooldownSource) {
+func classifyError(p, stderrOut, content string) provider.Classification {
 	sample := provider.ErrorSample{Stderr: stderrOut, Content: content}
 	switch p {
 	case "codex":
@@ -500,15 +500,15 @@ func containsAnyString(haystack string, needles ...string) bool {
 	return false
 }
 
-func reportSignal(g provider.HealthGate, p string, sig provider.Signal, reason string, retryAfter time.Duration, source provider.CooldownSource) {
+func reportSignal(g provider.HealthGate, p string, c provider.Classification) {
 	if g == nil {
 		return
 	}
-	switch sig {
+	switch c.Signal {
 	case provider.SignalAuthFailure:
-		g.ReportAuthFailure(p, reason)
+		g.ReportAuthFailure(p, c.Reason)
 	case provider.SignalRateLimit:
-		g.ReportRateLimit(p, retryAfter, reason, source)
+		g.ReportRateLimit(p, c.RetryAfter, c.Reason, c.Source)
 	case provider.SignalNone:
 	}
 }
