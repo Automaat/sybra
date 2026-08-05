@@ -3136,4 +3136,35 @@ func TestRunCheckConfig(t *testing.T) {
 			}
 		}
 	})
+
+	// Position must not matter: the CLI already strips --json and --home
+	// wherever they appear, and a caller that puts one first would otherwise
+	// have -check-config treated as a subcommand and skip the preflight
+	// entirely.
+	t.Run("flag is routed after other global flags", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("SYBRA_HOME", home)
+		if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code := run([]string{"--json", "-check-config"}); code != 0 {
+			t.Errorf("run(--json -check-config) = %d, want 0", code)
+		}
+	})
+
+	// --home must select the home the preflight validates, not be ignored.
+	t.Run("home override targets the validated config", func(t *testing.T) {
+		good := t.TempDir()
+		bad := t.TempDir()
+		t.Setenv("SYBRA_HOME", good)
+		if err := os.WriteFile(filepath.Join(good, "config.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(bad, "config.yaml"), []byte("this_key_does_not_exist: true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code := run([]string{"--home", bad, "-check-config"}); code != 1 {
+			t.Errorf("run(--home <invalid> -check-config) = %d, want 1 — the override was ignored", code)
+		}
+	})
 }

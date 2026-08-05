@@ -98,12 +98,10 @@ func run(args []string) int {
 		usage()
 		return 1
 	}
-	if args[0] == "-check-config" || args[0] == "--check-config" {
-		return runCheckConfig()
-	}
 
 	// Extract global --json and --home flags before subcommand.
 	jsonOut := false
+	checkConfig := false
 	filtered := make([]string, 0, len(args))
 	homeOverride := ""
 	homeErr := false
@@ -125,9 +123,29 @@ func run(args []string) int {
 			i++
 		case strings.HasPrefix(a, "--home="):
 			homeOverride = strings.TrimPrefix(a, "--home=")
+		case a == "-check-config" || a == "--check-config":
+			checkConfig = true
 		default:
 			filtered = append(filtered, a)
 		}
+	}
+
+	// After the global-flag pass, so position does not matter: the preflight is
+	// invoked as `sybra-cli -check-config` today, but `--home DIR
+	// -check-config` must validate DIR rather than silently treating the flag
+	// as a subcommand. Handled before the home/config plumbing below because
+	// runCheckConfig does its own strict load and must not inherit the
+	// task-store fallback that exists for ordinary commands.
+	if checkConfig {
+		if homeErr {
+			return fatal(jsonOut, "--home requires a value")
+		}
+		if homeOverride != "" {
+			if err := os.Setenv("SYBRA_HOME", homeOverride); err != nil {
+				return fatal(jsonOut, "set SYBRA_HOME: %v", err)
+			}
+		}
+		return runCheckConfig()
 	}
 
 	// Detect the hook subcommand before config.Load can abort: codex lifecycle
