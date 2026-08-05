@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
@@ -27,6 +26,7 @@ import (
 	"github.com/Automaat/sybra/internal/codexhook"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/issueref"
 	"github.com/Automaat/sybra/internal/modeltier"
@@ -262,11 +262,11 @@ func currentWorktreeRevision() string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", wd, "rev-parse", "HEAD").Output()
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: wd}, "rev-parse", "HEAD")
 	if err != nil {
 		return ""
 	}
-	return string(out)
+	return out
 }
 
 func shortRevision(rev string) string {
@@ -1119,11 +1119,11 @@ func printHandoffStatusResult(t task.Task, status task.Status, projectID, dir st
 // deriveProjectID reads the origin remote of a git worktree and converts it to
 // a Sybra project id (owner/repo).
 func deriveProjectID(dir string) (string, error) {
-	out, err := exec.CommandContext(context.Background(), "git", "-C", dir, "remote", "get-url", "origin").Output()
+	out, err := gitexec.Output(context.Background(), gitexec.Options{Dir: dir}, "remote", "get-url", "origin")
 	if err != nil {
 		return "", fmt.Errorf("git remote get-url origin: %w", err)
 	}
-	owner, repo, err := project.ParseGitHubURL(strings.TrimSpace(string(out)))
+	owner, repo, err := project.ParseGitHubURL(out)
 	if err != nil {
 		return "", err
 	}
@@ -2972,31 +2972,24 @@ func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
 	// the read-only commands below but must be set consistently.
 	env := tasksnapshot.BuildEnv(gitDir, cfg.TasksDir)
 
-	verify := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
-	verify.Env = env
-	if err := verify.Run(); err != nil {
+	opts := gitexec.Options{Env: env}
+	if err := gitexec.Run(ctx, opts, "rev-parse", "--git-dir"); err != nil {
 		return fatal(jsonOut, "tasks snapshot history unavailable — snapshotting is disabled or has not run yet (%v)", err)
 	}
 
 	// Detect an empty repo by HEAD resolvability, not a locale-dependent
 	// stderr string: `rev-parse --verify --quiet HEAD` exits non-zero with no
 	// output when no commits exist yet, which is a valid empty history.
-	head := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", "HEAD")
-	head.Env = env
-	hasCommits := head.Run() == nil
+	hasCommits := gitexec.RunQuiet(ctx, opts, "rev-parse", "--verify", "--quiet", "HEAD") == nil
 
 	var entries []taskHistoryEntry
 	if hasCommits {
 		const sep = "\x1f"
-		logCmd := exec.CommandContext(ctx, "git", "log", "--date=iso-strict", "--pretty=format:%h"+sep+"%ad"+sep+"%s", fmt.Sprintf("-n%d", *limit))
-		logCmd.Env = env
-		var stdout, stderr bytes.Buffer
-		logCmd.Stdout = &stdout
-		logCmd.Stderr = &stderr
-		if err := logCmd.Run(); err != nil {
-			return fatal(jsonOut, "tasks snapshot history unavailable: %v: %s", err, strings.TrimSpace(stderr.String()))
+		stdout, err := gitexec.RawOutput(ctx, opts, "log", "--date=iso-strict", "--pretty=format:%h"+sep+"%ad"+sep+"%s", fmt.Sprintf("-n%d", *limit))
+		if err != nil {
+			return fatal(jsonOut, "tasks snapshot history unavailable: %v", err)
 		}
-		for line := range strings.SplitSeq(strings.TrimRight(stdout.String(), "\n"), "\n") {
+		for line := range strings.SplitSeq(strings.TrimRight(string(stdout), "\n"), "\n") {
 			if line == "" {
 				continue
 			}

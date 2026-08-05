@@ -76,6 +76,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/Automaat/sybra/internal/gitexec"
 )
 
 // scenarioFileLockSuffix is appended to FAKE_CLAUDE_SCENARIO_FILE to derive a
@@ -329,10 +331,8 @@ func runBestOfNJudge() {
 }
 
 func runGitIn(dir string, args ...string) {
-	cmd := exec.CommandContext(context.Background(), "git", args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		emitResult("best_of_n_attempt: git " + strings.Join(args, " ") + " failed: " + err.Error() + ": " + string(out))
+	if _, err := gitexec.CombinedOutput(context.Background(), gitexec.Options{Dir: dir}, args...); err != nil {
+		emitResult("best_of_n_attempt: " + err.Error())
 		os.Exit(1)
 	}
 }
@@ -483,13 +483,7 @@ git push origin "HEAD:refs/heads/$branch" >/dev/null 2>&1
 }
 
 func gitOutput(dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(context.Background(), "git", args...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-	}
-	return strings.TrimSpace(string(out)), nil
+	return gitexec.Output(context.Background(), gitexec.Options{Dir: dir}, args...)
 }
 
 func runEvaluate(taskID string) {

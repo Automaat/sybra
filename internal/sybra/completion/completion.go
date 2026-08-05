@@ -20,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/loopagent"
@@ -795,11 +796,11 @@ func (h *Handler) captureHeadSHA(taskID string) string {
 	if err != nil || !h.worktrees.Exists(t) {
 		return ""
 	}
-	out, err := exec.CommandContext(context.Background(), "git", "-C", h.worktrees.PathFor(t), "rev-parse", "HEAD").Output()
+	out, err := gitexec.Output(context.Background(), gitexec.Options{Dir: h.worktrees.PathFor(t)}, "rev-parse", "HEAD")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return out
 }
 
 // runOutcome derives the stats.RunRecord outcome for a completed agent run.
