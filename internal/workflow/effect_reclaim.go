@@ -66,8 +66,9 @@ func (e *Engine) reclaimEligible(t *TaskInfo) bool {
 	return true
 }
 
-// orphanedLeaseSteps nils the lease on every record this engine may reclaim and
-// returns their step ids for logging. A lapsed lease already fences nobody, so
+// orphanedLeaseSteps nils the lease on every record this engine may reclaim,
+// reporting "<effect-id>=<stale-owner>" so a reclaim names the exact record it
+// freed rather than an ambiguous step. A lapsed lease already fences nobody, so
 // rewriting it would bump the task generation for no gain — and a generation
 // bump re-opens status-effect dedupe, which keys on exactly one generation back.
 func (e *Engine) orphanedLeaseSteps(wf *Execution) []string {
@@ -83,7 +84,7 @@ func (e *Engine) orphanedLeaseSteps(wf *Execution) []string {
 			continue
 		}
 		rec.LeaseExpiresAt = nil
-		steps = append(steps, rec.ID.StepID+"="+rec.Owner)
+		steps = append(steps, rec.ID.String()+"="+rec.Owner)
 	}
 	return steps
 }
