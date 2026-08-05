@@ -259,8 +259,24 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates); err != nil {
 		h.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
-	h.salvageInterruptedReview(ag)
-	h.markCompletedReview(ag, exitErr)
+
+	// Resolved before any review-side-effect or routing side effect below: a
+	// parked adoption may only persist its run and clear the workflow step.
+	// markCompletedReview/salvageInterruptedReview set Task.Reviewed/CodeReview
+	// without the workflow engine recording review evidence (that only happens
+	// on advancement, which parked adoption skips) — running them here would
+	// leave the resumed simple-task-review workflow believing review already
+	// happened while require_evidence still finds the criterion missing,
+	// parking the task again. handleFixReviewCompletion in particular pushes
+	// the survivor's branch (and under review-hold rewrites the task's
+	// status), which must not happen behind a human's or the monitor's
+	// deliberate parking.
+	parked, parkedAdoption := h.parkedAdoption(ag)
+
+	if !parkedAdoption {
+		h.salvageInterruptedReview(ag)
+		h.markCompletedReview(ag, exitErr)
+	}
 
 	// Human-review agents are out-of-band diagnostics — they must not
 	// feed into the workflow engine (which would advance the step that
@@ -274,14 +290,29 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 	}
 
 	stall := classifyStall(ag, exitErr)
-	if ag.EffectiveRole() == agent.RoleFixReview && exitErr == nil && !stall.Stalled {
+
+	if !parkedAdoption && ag.EffectiveRole() == agent.RoleFixReview && exitErr == nil && !stall.Stalled {
 		h.handleFixReviewCompletion(ag)
 	}
 
-	if !h.notifyWorkflowEngine(ag, resultContent, exitErr, stall) {
+	if parkedAdoption {
+		// Reattach adopted this survivor over a parked/terminal task status to
+		// save its uncommitted work (see agent.ParksLiveAgent). Its result is
+		// already persisted above, but the workflow engine gates advancement on
+		// Workflow.State alone — letting it advance here would run the next
+		// step (e.g. set_ready_review) and drag a task a human or the monitor
+		// deliberately parked back into the pipeline.
+		h.logger.Warn("agent.completion.parked-adoption",
+			"task_id", ag.TaskID, "agent_id", ag.ID, "task_status", parked)
+		if h.workflowEngine != nil {
+			h.workflowEngine.ClearAgentStep(ag.TaskID, ag.ID)
+		}
+	} else if !h.notifyWorkflowEngine(ag, resultContent, exitErr, stall) {
 		return
 	}
-
+	// Import evidence even when workflow advancement was suppressed above: the
+	// terminal-task cleanup below removes the managed worktree, and anything
+	// written to .sybra/evidence while Sybra was down would otherwise be lost.
 	if ag.EffectiveRole() == agent.RoleTestRunner {
 		h.importEvidenceForAgent(ag)
 	}
@@ -296,6 +327,31 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 			go h.sandboxes.Remove(ag.TaskID)
 		}
 	}
+}
+
+// parkedAdoption reports whether ag is a survivor that reattach adopted over a
+// parked/terminal task status AND whose task is still parked, meaning its
+// completion must not advance the workflow. Returns the blocking status for
+// logging.
+//
+// The live status is re-read rather than trusting the reattach-time snapshot:
+// a human who parked the task while the app was down may since have put it
+// back in flight, in which case this is an ordinary completion and has to
+// advance normally. A task that cannot be read at all is treated as still
+// parked — advancing on an unknown status is the unsafe direction.
+func (h *Handler) parkedAdoption(ag *agent.Agent) (string, bool) {
+	parked := ag.AdoptedParkedStatus()
+	if parked == "" {
+		return "", false
+	}
+	t, err := h.tasks.Get(ag.TaskID)
+	if err != nil {
+		return parked, true
+	}
+	if !agent.ParksLiveAgent(string(t.Status)) {
+		return "", false
+	}
+	return string(t.Status), true
 }
 
 func terminalResultContent(ag *agent.Agent) string {

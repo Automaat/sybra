@@ -723,6 +723,73 @@ func TestLastHeadlessResultIgnoresPriorRetryResult(t *testing.T) {
 	}
 }
 
+// TestLastHeadlessResultSkipsPostResultBookkeeping covers the reattach
+// recovery hazard: a forked-subagent run (CLAUDE_CODE_FORK_SUBAGENT) or one
+// with CLI background bash tasks keeps emitting child turns and
+// background_tasks_changed snapshots after its top-level terminal result. If
+// the literal last event decided completion, finalizeIfCompleted would refuse
+// to finalize and reattachHeadless would stamp errReattachedGone — requeueing
+// a run that in fact finished cleanly. Only that bookkeeping is skipped: a new
+// top-level event still supersedes the result.
+func TestLastHeadlessResultSkipsPostResultBookkeeping(t *testing.T) {
+	result := StreamEvent{Type: "result", Content: "done"}
+	cases := []struct {
+		name      string
+		trailing  []StreamEvent
+		wantFound bool
+	}{
+		{
+			name:      "no trailing events",
+			wantFound: true,
+		},
+		{
+			name: "forked subagent child turns",
+			trailing: []StreamEvent{
+				{Type: "assistant", Content: "child working", parentToolUseID: "toolu_1"},
+				{Type: "result", Content: "child done", parentToolUseID: "toolu_1"},
+			},
+			wantFound: true,
+		},
+		{
+			name: "background task snapshots draining",
+			trailing: []StreamEvent{
+				{Type: "system", Subtype: "background_tasks_changed", BackgroundTaskIDs: []string{"bg-1"}},
+				{Type: "system", Subtype: "background_tasks_changed", BackgroundTaskIDs: []string{}},
+			},
+			wantFound: true,
+		},
+		{
+			name:     "new top-level turn after result",
+			trailing: []StreamEvent{{Type: "assistant", Content: "steered again"}},
+		},
+		{
+			name: "new top-level turn after subagent chatter",
+			trailing: []StreamEvent{
+				{Type: "assistant", Content: "child working", parentToolUseID: "toolu_1"},
+				{Type: "assistant", Content: "steered again"},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &Agent{}
+			a.AppendOutput(result)
+			for _, ev := range tc.trailing {
+				a.AppendOutput(ev)
+			}
+
+			found, isError := a.lastHeadlessResult()
+			if found != tc.wantFound {
+				t.Fatalf("lastHeadlessResult found = %v, want %v", found, tc.wantFound)
+			}
+			if isError {
+				t.Fatal("lastHeadlessResult isError = true, want false (clean result)")
+			}
+		})
+	}
+}
+
 // TestStreamHeadlessOutput_MalformedMidStream verifies that a malformed
 // NDJSON line between two valid events is logged but does NOT break the
 // stream — subsequent valid events must still be parsed. A regression that

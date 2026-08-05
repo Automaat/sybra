@@ -283,6 +283,13 @@ type Agent struct {
 	// cancelling them. Guarded by mu.
 	detached bool
 
+	// adoptedParkedStatus is the task status a reattached survivor was adopted
+	// over: the process was alive and progressing, but its task had been
+	// parked (or finished) while the app was down. Set by ReattachAll only,
+	// and read by completion routing to keep the run's result while
+	// suppressing workflow advancement. Guarded by mu.
+	adoptedParkedStatus string
+
 	// requirePermissions mirrors RunConfig.RequirePermissions. Persisted to
 	// the registry so a recreated codex chat keeps its sandbox/approval
 	// choice across a restart instead of silently becoming permissive.
@@ -1501,10 +1508,29 @@ func (a *Agent) isDetached() bool {
 	return a.detached
 }
 
-// lastHeadlessResult reports whether the output buffer contains a terminal
-// result event and whether that result was a provider error. Used by reattach
-// completion to distinguish a clean finish from an error result or a process
-// that vanished mid-run.
+// SetAdoptedParkedStatus records the task status this survivor was adopted
+// over at reattach (see ParksLiveAgent). Empty for every agent Sybra itself
+// dispatched.
+func (a *Agent) SetAdoptedParkedStatus(status string) {
+	a.mu.Lock()
+	a.adoptedParkedStatus = status
+	a.mu.Unlock()
+}
+
+// AdoptedParkedStatus returns the task status this survivor was adopted over
+// at reattach, or "" when it was not a parked adoption.
+func (a *Agent) AdoptedParkedStatus() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.adoptedParkedStatus
+}
+
+// lastHeadlessResult reports whether the output buffer's latest top-level
+// event is a terminal result and whether that result was a provider error.
+// Used by reattach completion to distinguish a clean finish from an error
+// result or a process that vanished mid-run: unlike bufferedResultEvent it
+// rejects a result that a later top-level event (a retry attempt, a steer
+// turn) has superseded.
 func (a *Agent) lastHeadlessResult() (found, isError bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -1512,15 +1538,33 @@ func (a *Agent) lastHeadlessResult() (found, isError bool) {
 }
 
 func lastHeadlessResultEvent(events []StreamEvent) (found, isError bool) {
-	if len(events) == 0 {
-		return false, false
+	for i := range slices.Backward(events) {
+		ev := &events[i]
+		if isPostResultBookkeepingEvent(*ev) {
+			continue
+		}
+		if ev.Type != "result" {
+			// A top-level event after the last result means a new attempt (or
+			// steer turn) began, so the buffered result no longer describes
+			// the run's current state.
+			return false, false
+		}
+		return true, resultSubtypeIsError(ev.Subtype) || ev.ErrorType != "" || ev.ErrorStatus != 0
 	}
-	last := events[len(events)-1]
-	found = last.Type == "result"
-	if !found {
-		return false, false
+	return false, false
+}
+
+// isPostResultBookkeepingEvent reports whether ev is CLI bookkeeping that can
+// legitimately trail a terminal result without meaning the run started new
+// top-level work: a forked subagent's own event (parent_tool_use_id set, see
+// CLAUDE_CODE_FORK_SUBAGENT — children can outlive the parent's result) or a
+// background_tasks_changed snapshot emitted as CLI background bash tasks
+// drain. Anything else is a genuine new top-level event.
+func isPostResultBookkeepingEvent(ev StreamEvent) bool {
+	if ev.parentToolUseID != "" {
+		return true
 	}
-	return true, resultSubtypeIsError(last.Subtype) || last.ErrorType != "" || last.ErrorStatus != 0
+	return ev.Type == "system" && ev.Subtype == "background_tasks_changed"
 }
 
 // CompletedSuccessfully reports whether the headless agent's stream buffer
@@ -1567,8 +1611,8 @@ func (a *Agent) HadTerminalError() bool {
 }
 
 // bufferedResultEvent scans the full event slice for the last "result" event,
-// regardless of whether it is the final element — unlike
-// lastHeadlessResultEvent, which requires the result to be strictly last.
+// regardless of what follows it — unlike lastHeadlessResultEvent, which
+// requires the result to be the latest top-level event.
 // Mirrors completion.terminalResultContent's own forward scan: a skill that
 // spawns subagents (CLAUDE_CODE_FORK_SUBAGENT) can append further NDJSON
 // lines onto the stream after CC's own terminal result, so "the last event
