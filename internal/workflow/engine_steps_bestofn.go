@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/llmjob"
 	"github.com/Automaat/sybra/internal/textutil"
 )
 
@@ -492,20 +493,18 @@ type judgeScore struct {
 }
 
 // extractJudgeJSON parses a judgeVerdict out of a judge agent's raw output,
-// tolerating surrounding prose by falling back to the outermost {...} span
-// when the whole trimmed output isn't valid JSON on its own.
+// tolerating surrounding prose and code fences.
 func extractJudgeJSON(output string) (judgeVerdict, error) {
 	trimmed := strings.TrimSpace(output)
 	var v judgeVerdict
 	if err := json.Unmarshal([]byte(trimmed), &v); err == nil {
 		return v, nil
 	}
-	start := strings.IndexByte(trimmed, '{')
-	end := strings.LastIndexByte(trimmed, '}')
-	if start < 0 || end <= start {
+	obj := llmjob.ExtractLastJSONObject(trimmed)
+	if obj == "" {
 		return judgeVerdict{}, fmt.Errorf("no JSON object found in judge output")
 	}
-	if err := json.Unmarshal([]byte(trimmed[start:end+1]), &v); err != nil {
+	if err := json.Unmarshal([]byte(obj), &v); err != nil {
 		return judgeVerdict{}, fmt.Errorf("malformed judge JSON: %w", err)
 	}
 	return v, nil

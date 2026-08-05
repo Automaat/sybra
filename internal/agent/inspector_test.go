@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/llmjob"
 )
 
 // TestInspectorVerdictSchemaIsCodexStrict asserts inspectorVerdictSchema is a
@@ -155,8 +157,8 @@ func TestExtractLastJSONObject(t *testing.T) {
 		{`{unbalanced`, ``},
 	}
 	for _, tc := range tests {
-		if got := extractLastJSONObject(tc.in); got != tc.want {
-			t.Errorf("extractLastJSONObject(%q) = %q, want %q", tc.in, got, tc.want)
+		if got := llmjob.ExtractLastJSONObject(tc.in); got != tc.want {
+			t.Errorf("llmjob.ExtractLastJSONObject(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }
@@ -195,9 +197,9 @@ func TestExtractLastJSONObject_BraceInsideString(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := extractLastJSONObject(tc.in)
+			got := llmjob.ExtractLastJSONObject(tc.in)
 			if got != tc.want {
-				t.Errorf("extractLastJSONObject(%q) = %q, want %q (brace inside string literal mis-parsed)", tc.in, got, tc.want)
+				t.Errorf("llmjob.ExtractLastJSONObject(%q) = %q, want %q (brace inside string literal mis-parsed)", tc.in, got, tc.want)
 			}
 		})
 	}

@@ -7,6 +7,8 @@ import (
 
 	"github.com/Automaat/sybra/internal/health"
 	"github.com/Automaat/sybra/internal/task"
+
+	"github.com/Automaat/sybra/internal/llmjob"
 )
 
 func TestJudgeJobSpecBoundsEachProviderAttempt(t *testing.T) {
@@ -237,9 +239,9 @@ func TestJudgeExtractLastJSON_ReturnsLastObject(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := judgeExtractLastJSON(tt.input)
+			got := llmjob.ExtractLastJSONObject(tt.input)
 			if got != tt.want {
-				t.Errorf("judgeExtractLastJSON(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("llmjob.ExtractLastJSONObject(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

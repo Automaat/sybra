@@ -97,7 +97,7 @@ func Run[T any](ctx context.Context, prompt string, s Spec[T], o llmexec.Options
 		}
 		lastProvider = res.Provider
 		var out T
-		jsonText := extractLastJSONObject(res.Text)
+		jsonText := ExtractLastJSONObject(res.Text)
 		if jsonText == "" {
 			lastErr = fmt.Errorf("parse JSON: no JSON object in result: %q", res.Text)
 		} else if err := json.Unmarshal([]byte(jsonText), &out); err != nil {
@@ -144,9 +144,12 @@ func mergeModels(defaults, explicit map[string]string) map[string]string {
 	return out
 }
 
-// extractLastJSONObject returns the last balanced {...} substring in s, or "".
-// It tolerates common provider wrappers such as prose and fenced code blocks.
-func extractLastJSONObject(s string) string {
+// ExtractLastJSONObject returns the last balanced {...} substring in s, or "".
+// It tolerates common provider wrappers — prose, reasoning, fenced code blocks
+// — and tracks string-literal state so a brace inside a JSON string value does
+// not count toward depth. Last, not first: a model that reasons before
+// answering often emits a JSON-ish block ahead of its real answer.
+func ExtractLastJSONObject(s string) string {
 	s = strings.TrimSpace(s)
 	var (
 		inString  bool
