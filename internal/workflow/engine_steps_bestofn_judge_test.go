@@ -28,6 +28,19 @@ func TestExtractJudgeJSONToleratesBracesAndProse(t *testing.T) {
 			wantWinner: "a1",
 		},
 		{
+			// An odd ASCII quote in the prose flips the balanced scanner's
+			// string-literal state and hides the object entirely. Losing this
+			// discards every attempt in the round.
+			name:       "odd quote in the prose",
+			output:     "Attempt a2 hardcodes a 6\" margin.\n" + `{"winner_attempt_id":"a1","scores":[],"rationale":"ok"}`,
+			wantWinner: "a1",
+		},
+		{
+			name:       "unterminated string literal mentioned in prose",
+			output:     "a2 leaves an unterminated string literal (\") in parser.go.\n" + `{"winner_attempt_id":"a1","scores":[],"rationale":"ok"}`,
+			wantWinner: "a1",
+		},
+		{
 			name:       "decoy verdict before the real one",
 			output:     `{"winner_attempt_id":"a2","scores":[]}` + "\nOn reflection:\n" + `{"winner_attempt_id":"a1","scores":[],"rationale":"revised"}`,
 			wantWinner: "a1",

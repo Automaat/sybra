@@ -7,8 +7,6 @@ import (
 
 	"github.com/Automaat/sybra/internal/health"
 	"github.com/Automaat/sybra/internal/task"
-
-	"github.com/Automaat/sybra/internal/llmjob"
 )
 
 func TestJudgeJobSpecBoundsEachProviderAttempt(t *testing.T) {
@@ -199,49 +197,6 @@ func TestParseJudgeVerdict_ExtractsLastJSONObject(t *testing.T) {
 			}
 			if v.RootCause != tt.wantRootCause {
 				t.Errorf("RootCause = %q, want %q", v.RootCause, tt.wantRootCause)
-			}
-		})
-	}
-}
-
-func TestJudgeExtractLastJSON_ReturnsLastObject(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{
-			name:  "single object",
-			input: `{"a":"b"}`,
-			want:  `{"a":"b"}`,
-		},
-		{
-			name:  "prose then object",
-			input: `some text {"classification":"confirmed"}`,
-			want:  `{"classification":"confirmed"}`,
-		},
-		{
-			name:  "two objects, returns last",
-			input: `{"first":1} more text {"second":2}`,
-			want:  `{"second":2}`,
-		},
-		{
-			name:  "no object",
-			input: `plain text only`,
-			want:  "",
-		},
-		{
-			name:  "nested object",
-			input: `{"outer":{"inner":1}}`,
-			want:  `{"outer":{"inner":1}}`,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := llmjob.ExtractLastJSONObject(tt.input)
-			if got != tt.want {
-				t.Errorf("llmjob.ExtractLastJSONObject(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

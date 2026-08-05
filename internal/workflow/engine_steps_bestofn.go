@@ -494,6 +494,13 @@ type judgeScore struct {
 
 // extractJudgeJSON parses a judgeVerdict out of a judge agent's raw output,
 // tolerating surrounding prose and code fences.
+//
+// Failing to parse costs every attempt in the round, so it tries both
+// heuristics: the shared scanner first, then the outermost brace span. They
+// fail on disjoint inputs — the scanner is defeated by an odd ASCII quote in
+// the prose ("a 6\" margin"), which flips its string-literal state and hides
+// the object, while the span is defeated by a brace inside a string value.
+// json.Unmarshal validates whichever one produced a candidate.
 func extractJudgeJSON(output string) (judgeVerdict, error) {
 	trimmed := strings.TrimSpace(output)
 	var v judgeVerdict
@@ -502,12 +509,26 @@ func extractJudgeJSON(output string) (judgeVerdict, error) {
 	}
 	obj := llmjob.ExtractLastJSONObject(trimmed)
 	if obj == "" {
+		obj = outermostBraceSpan(trimmed)
+	}
+	if obj == "" {
 		return judgeVerdict{}, fmt.Errorf("no JSON object found in judge output")
 	}
 	if err := json.Unmarshal([]byte(obj), &v); err != nil {
 		return judgeVerdict{}, fmt.Errorf("malformed judge JSON: %w", err)
 	}
 	return v, nil
+}
+
+// outermostBraceSpan returns the first `{` through the last `}`, ignoring
+// quote state. Only a fallback for output the balanced scanner cannot read.
+func outermostBraceSpan(s string) string {
+	start := strings.IndexByte(s, '{')
+	end := strings.LastIndexByte(s, '}')
+	if start < 0 || end <= start {
+		return ""
+	}
+	return s[start : end+1]
 }
 
 // humanRequiredStepOutput flips the task to human-required with reason and

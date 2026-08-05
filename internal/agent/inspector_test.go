@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/Automaat/sybra/internal/llmjob"
 )
 
 // TestInspectorVerdictSchemaIsCodexStrict asserts inspectorVerdictSchema is a
@@ -146,60 +144,29 @@ func TestParseInspectorOutput(t *testing.T) {
 	}
 }
 
-func TestExtractLastJSONObject(t *testing.T) {
-	tests := []struct {
-		in, want string
-	}{
-		{`{"a":1}`, `{"a":1}`},
-		{`noise {"a":1} more {"b":2}`, `{"b":2}`},
-		{`{"outer":{"inner":1}}`, `{"outer":{"inner":1}}`},
-		{`no braces`, ``},
-		{`{unbalanced`, ``},
-	}
-	for _, tc := range tests {
-		if got := llmjob.ExtractLastJSONObject(tc.in); got != tc.want {
-			t.Errorf("llmjob.ExtractLastJSONObject(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
-// TestExtractLastJSONObject_BraceInsideString demonstrates that the
-// brace-counting walker in extractLastJSONObject does not understand JSON
-// string literals — it counts every `{` and `}` byte regardless of whether
-// it sits inside a quoted string. A perfectly valid JSON object whose
-// string value contains a `{` or `}` character is therefore mis-parsed:
-// the walker sees an unbalanced brace and either truncates the result or
-// returns an empty string.
-//
-// This matters because parseInspectorOutput feeds the inspector model's
-// `result` text through this function. If the model writes a reason like
-// `"saw a stray ) {"`, the verdict is silently lost and the watchdog
-// fails to act on a stuck agent.
-//
-// Fix: parse the result as JSON (or use a real tokenizer that knows about
-// string literals) instead of brace counting on raw bytes.
-func TestExtractLastJSONObject_BraceInsideString(t *testing.T) {
+// The inspector model wraps its verdict in prose, so this call site depends on
+// the shared scanner's two hard cases: a brace inside a string value (the model
+// quotes code in its reason) and a decoy object before the want answer.
+func TestParseInspectorOutputResolvesTheRealObject(t *testing.T) {
+	want := `{"recommendation":"continue","reason":"looks fine"}`
 	tests := []struct {
 		name string
-		in   string
-		want string
+		raw  string
 	}{
-		{
-			name: "open brace inside string value",
-			in:   `{"reason": "if (x) {"}`,
-			want: `{"reason": "if (x) {"}`,
-		},
-		{
-			name: "close brace inside string value",
-			in:   `{"reason": "saw }"}`,
-			want: `{"reason": "saw }"}`,
-		},
+		{name: "prose around", raw: "My read:\n" + want + "\ndone."},
+		{name: "fenced", raw: "```json\n" + want + "\n```"},
+		{name: "open brace inside a string value", raw: `{"recommendation":"stop","reason":"if (x) {"}` + "\nrevised:\n" + want},
+		{name: "close brace inside a string value", raw: `{"recommendation":"stop","reason":"saw }"}` + "\nrevised:\n" + want},
+		{name: "decoy object first", raw: `{"recommendation":"stop","reason":"draft"}` + "\nOn reflection:\n" + want},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := llmjob.ExtractLastJSONObject(tc.in)
-			if got != tc.want {
-				t.Errorf("llmjob.ExtractLastJSONObject(%q) = %q, want %q (brace inside string literal mis-parsed)", tc.in, got, tc.want)
+			got, err := parseInspectorOutput([]byte(tc.raw))
+			if err != nil {
+				t.Fatalf("parseInspectorOutput: %v", err)
+			}
+			if got.Recommendation != "continue" || got.Reason != "looks fine" {
+				t.Errorf("resolved the wrong object: %+v", got)
 			}
 		})
 	}
