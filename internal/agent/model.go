@@ -200,12 +200,16 @@ type Agent struct {
 	// live computation, so it is never stale on the wire.
 	CanSteer bool `json:"canSteer"`
 
-	ExitErr         error `json:"-"`
-	outputBuffer    []StreamEvent
-	convoBuffer     []ConvoEvent
-	cmd             *exec.Cmd
-	cancel          context.CancelFunc
-	sessionCWD      string
+	ExitErr      error `json:"-"`
+	outputBuffer []StreamEvent
+	convoBuffer  []ConvoEvent
+	cmd          *exec.Cmd
+	cancel       context.CancelFunc
+	sessionCWD   string
+	// sessionReadOnly mirrors RunConfig.ReadOnlyDir. checkpointAndHandoff
+	// commits into sessionCWD from the host process, outside the sandbox, so
+	// the sandbox cannot be what keeps a read-only dispatch dir read-only.
+	sessionReadOnly bool
 	sandboxHomeDir  string
 	sessionFilePath string // path to provider session file (Codex JSONL)
 	// done is closed when the headless/conversational goroutine has fully exited.

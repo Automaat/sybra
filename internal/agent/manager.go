@@ -981,6 +981,14 @@ func (m *Manager) canCheckpointOnTurnCeiling(a *Agent) bool {
 	if !a.EffectiveRole().AuthorsCode() {
 		return false
 	}
+	// A read-only dispatch dir is diagnostic-only, and the checkpoint commit
+	// runs in this process rather than in the sandboxed child — so nothing
+	// else stops it writing there. On the deploy host that dir is the Sybra
+	// source checkout, which is also auto_update.repo_dir: a commit lands
+	// there permanently and breaks the ff-only merge auto-deploy relies on.
+	if a.sessionReadOnly {
+		return false
+	}
 	m.mu.RLock()
 	enabled := m.guardrails.CheckpointOnTurnCeiling
 	m.mu.RUnlock()

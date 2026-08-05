@@ -44,6 +44,9 @@ func (a *App) wireConfigService() {
 		if a.reviewer != nil {
 			a.reviewer.SetSigningPolicy(policy)
 		}
+		if a.humanReview != nil {
+			a.humanReview.SetSigningPolicy(policy)
+		}
 		// The synced skill bundle is the file a fix-review agent actually
 		// loads, so leaving it on the startup posture makes the dispatched
 		// prompt and the skill it invokes disagree about -S.

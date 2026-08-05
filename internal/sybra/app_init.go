@@ -1237,11 +1237,11 @@ func (a *App) emitDegradedWarnings(emit func(string, any)) {
 // initAutomations starts every per-machine task source in dependency order
 // and returns the GitHub issues fetcher (still consumed by
 // startBackgroundServices). Extracted so Startup stays under funlen.
-func (a *App) initAutomations(emit func(string, any)) *poll.IssuesFetcher {
+func (a *App) initAutomations(ctx context.Context, emit func(string, any)) *poll.IssuesFetcher {
 	a.initRenovate(emit)
 	a.initPromptLab()
 	a.initTriage()
-	a.initHumanReview()
+	a.initHumanReview(ctx)
 	return a.initIssuesFetcher(emit)
 }
 
