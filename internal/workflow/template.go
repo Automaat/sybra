@@ -173,3 +173,10 @@ func recoveredOrPrev(wf *Execution, prev *StepRecord) string {
 	}
 	return prev.Output
 }
+
+// DefaultCommitSignFlags reports the configured fallback. Exported for the
+// app-layer hot-reload test, which has no other way to observe that a reload
+// reached this sink.
+func DefaultCommitSignFlags() string {
+	return commitSignFlagsVar(nil)
+}

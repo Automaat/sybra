@@ -3,6 +3,8 @@ package sybra
 import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 func (a *App) wireConfigService() {
@@ -34,6 +36,13 @@ func (a *App) wireConfigService() {
 	// Read a.routingSvc lazily: it is constructed later in startRoutingService,
 	// so binding the pointer now would capture nil. ApplyPersistedOverlay itself
 	// no-ops when routing is disabled or no overlay was ever saved.
+	a.configSvc.applyCommitSigning = func(raw string) {
+		policy := project.NormalizeSigningPolicy(raw)
+		if a.projects != nil {
+			a.projects.SetSigningPolicy(policy)
+		}
+		workflow.SetDefaultCommitSignFlags(policy.CommitFlags(a.ctx))
+	}
 	a.configSvc.reapplyRouting = func() {
 		if a.routingSvc != nil {
 			a.routingSvc.ApplyPersistedOverlay()

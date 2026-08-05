@@ -37,6 +37,13 @@ type ConfigService struct {
 	// snapshot to App runtime readers. It is set by App wiring; standalone
 	// ConfigService tests intentionally leave it nil.
 	publishConfig func(*config.Config)
+	// applyCommitSigning re-applies agent.commit_signing to the two sinks that
+	// cache it outside the config struct: the workflow template fallback and
+	// the project store's clone posture. Both are set once at startup, so
+	// without this a hot reload reports Applied while agents keep being told
+	// the old flags and fresh clones keep the old floor. Set by App wiring;
+	// nil in standalone ConfigService tests.
+	applyCommitSigning func(string)
 	// reapplyRouting re-merges the persisted routing overlay on top of the
 	// freshly hot-reloaded base A/B config and fans it back out to every
 	// selection site. Called after an ab_testing hot change so a base edit
@@ -453,6 +460,9 @@ func (s *ConfigService) applyAgentGuardrails(cfg config.Config) {
 		})
 	}
 	s.applyWorkflowGuardrails(cfg)
+	if s.applyCommitSigning != nil {
+		s.applyCommitSigning(cfg.CommitSigning())
+	}
 }
 
 func (s *ConfigService) applyWorkflowGuardrails(cfg config.Config) {
