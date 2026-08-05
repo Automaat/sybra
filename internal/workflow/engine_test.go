@@ -26,6 +26,7 @@ import (
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/prompteval"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -7430,9 +7431,9 @@ func TestTruncate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := truncate(tt.input, tt.limit)
+			got := textutil.TruncateBytes(tt.input, tt.limit, "\n... (truncated)")
 			if got != tt.want {
-				t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.limit, got, tt.want)
+				t.Errorf("TruncateBytes(%q, %d) = %q, want %q", tt.input, tt.limit, got, tt.want)
 			}
 		})
 	}

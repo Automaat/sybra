@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 var prURLRe = regexp.MustCompile(`github\.com/[^/\s]+/[^/\s]+/pull/(\d+)`)
@@ -124,7 +126,7 @@ func (e *Engine) execLinkPRAndReview(taskID string, step *Step, wfExec *Executio
 			if jsonErr != nil {
 				// gh --json returned malformed output. Don't mask the upstream
 				// failure as "no pr found" — log so operators can diagnose.
-				e.logger.Warn("workflow.link-pr.gh-list.parse", "task_id", taskID, "err", jsonErr, "raw", truncate(string(out), 200))
+				e.logger.Warn("workflow.link-pr.gh-list.parse", "task_id", taskID, "err", jsonErr, "raw", textutil.TruncateBytes(string(out), 200, "\n... (truncated)"))
 			}
 		}
 	}
@@ -166,7 +168,7 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 				return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
 			}
 			if jsonErr != nil {
-				e.logger.Warn("workflow.evaluate.gh-list.parse", "task_id", taskID, "err", jsonErr, "raw", truncate(string(out), 200))
+				e.logger.Warn("workflow.evaluate.gh-list.parse", "task_id", taskID, "err", jsonErr, "raw", textutil.TruncateBytes(string(out), 200, "\n... (truncated)"))
 			}
 		}
 	}

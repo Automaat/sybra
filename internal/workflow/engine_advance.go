@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/reviewbudget"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 const triageRetryableStatusReasonPrefix = "triage retryable: "
@@ -68,7 +69,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	wfExec.RecordStep(StepRecord{
 		StepID:    output.StepID,
 		Status:    output.Status,
-		Output:    truncate(output.Output, 4000),
+		Output:    textutil.TruncateBytes(output.Output, 4000, "\n... (truncated)"),
 		AgentID:   output.AgentID,
 		Provider:  output.Provider,
 		StartedAt: now,
@@ -100,7 +101,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		clearWatchdogRetryCounters(wfExec, output.StepID)
 	}
 	if output.Output != "" {
-		wfExec.SetVar("step."+output.StepID+".output", truncate(output.Output, 2000))
+		wfExec.SetVar("step."+output.StepID+".output", textutil.TruncateBytes(output.Output, 2000, "\n... (truncated)"))
 		// Extract the adversarial test verdict from the UNtruncated output and
 		// stash it in a tiny dedicated var. The verdict marker sits on the final
 		// line and would otherwise be lost to the 2000-byte prefix truncation
@@ -663,12 +664,12 @@ func (e *Engine) recordSyncStepOutput(taskID string, step *Step, wfExec *Executi
 	wfExec.RecordStep(StepRecord{
 		StepID:    step.ID,
 		Status:    output.Status,
-		Output:    truncate(output.Output, 4000),
+		Output:    textutil.TruncateBytes(output.Output, 4000, "\n... (truncated)"),
 		StartedAt: now,
 		EndedAt:   now,
 	})
 	if output.Output != "" {
-		wfExec.SetVar("step."+step.ID+".output", truncate(output.Output, 2000))
+		wfExec.SetVar("step."+step.ID+".output", textutil.TruncateBytes(output.Output, 2000, "\n... (truncated)"))
 	}
 
 	// Re-read task for latest state (set_status changes task).
@@ -1037,7 +1038,7 @@ func (e *Engine) blockRetryExhaustedPlanningIfNeeded(taskID string, def *Definit
 	role := step.Config.Role
 	reason := fmt.Sprintf("planning %s retry budget exhausted after %d attempt(s)", role, attempts)
 	if trimmed := strings.TrimSpace(output); trimmed != "" {
-		reason += ": " + truncate(trimmed, 500)
+		reason += ": " + textutil.TruncateBytes(trimmed, 500, "\n... (truncated)")
 	}
 	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
 		return true, err
@@ -1047,11 +1048,4 @@ func (e *Engine) blockRetryExhaustedPlanningIfNeeded(taskID string, def *Definit
 	wfExec.CompletedAt = &now
 	wfExec.CurrentStep = ""
 	return true, e.tasks.SetWorkflow(taskID, wfExec)
-}
-
-func truncate(s string, limit int) string {
-	if len(s) <= limit {
-		return s
-	}
-	return s[:limit] + "\n... (truncated)"
 }

@@ -1,0 +1,108 @@
+// Package textutil holds the one rune-safe truncation implementation.
+//
+// Every cut lands on a UTF-8 rune boundary. Slicing raw bytes instead splits
+// multibyte runes in agent output — `…`, `→`, box-drawing borders, emoji are
+// ordinary there — and the invalid UTF-8 that produces is not inert: yaml.v3
+// re-encodes it as an unreadable `!!binary` block in the task file, and
+// encoding/json silently swaps in U+FFFD.
+package textutil
+
+import (
+	"strings"
+	"unicode/utf8"
+)
+
+// TruncateBytes keeps at most limit bytes of s and appends suffix when it
+// cuts, so the result can exceed limit by len(suffix). Callers that need the
+// whole result bounded want TruncateBytesTotal.
+func TruncateBytes(s string, limit int, suffix string) string {
+	if len(s) <= limit {
+		return s
+	}
+	if limit < 0 {
+		limit = 0
+	}
+	return s[:runeBoundaryAtOrBefore(s, limit)] + suffix
+}
+
+// TruncateBytesTotal bounds the whole result — content plus suffix — to limit
+// bytes. A limit too small for the suffix yields the suffix alone, itself cut
+// on a rune boundary.
+func TruncateBytesTotal(s string, limit int, suffix string) string {
+	if len(s) <= limit {
+		return s
+	}
+	if limit <= len(suffix) {
+		return suffix[:runeBoundaryAtOrBefore(suffix, max(limit, 0))]
+	}
+	return TruncateBytes(s, limit-len(suffix), suffix)
+}
+
+// TruncateRunesTotal bounds the whole result to limit runes. Use it for
+// budgets a human reads as a character count; the byte variants are for
+// storage and protocol limits.
+func TruncateRunesTotal(s string, limit int, suffix string) string {
+	if limit <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= limit {
+		return s
+	}
+	suffixRunes := []rune(suffix)
+	if limit <= len(suffixRunes) {
+		return string(suffixRunes[:limit])
+	}
+	return string([]rune(s)[:limit-len(suffixRunes)]) + suffix
+}
+
+// TruncateMiddle keeps the head and tail of s and replaces the middle with
+// marker, bounding the whole result to limit bytes. Prefer it when the end of
+// the text carries the signal — a stack trace's innermost frame, a command's
+// exit status — and a head-only cut would drop it.
+func TruncateMiddle(s string, limit int, marker string) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return s
+	}
+	if limit <= len(marker)+2 {
+		return s[:runeBoundaryAtOrBefore(s, limit)]
+	}
+	keep := limit - len(marker)
+	head := runeBoundaryAtOrBefore(s, keep/2)
+	tail := runeBoundaryAtOrAfter(s, len(s)-(keep-keep/2))
+	return s[:head] + marker + s[tail:]
+}
+
+// TruncateBytesTrimmed is TruncateBytes with surrounding whitespace stripped
+// from the cut content, so a cut landing mid-indentation does not leave the
+// suffix dangling off a run of spaces.
+func TruncateBytesTrimmed(s string, limit int, suffix string) string {
+	if len(s) <= limit {
+		return s
+	}
+	return strings.TrimSpace(TruncateBytes(s, limit, "")) + suffix
+}
+
+// runeBoundaryAtOrBefore returns the largest index <= i that starts a rune.
+func runeBoundaryAtOrBefore(s string, i int) int {
+	if i >= len(s) {
+		return len(s)
+	}
+	for i > 0 && !utf8.RuneStart(s[i]) {
+		i--
+	}
+	return i
+}
+
+// runeBoundaryAtOrAfter returns the smallest index >= i that starts a rune.
+func runeBoundaryAtOrAfter(s string, i int) int {
+	if i < 0 {
+		return 0
+	}
+	for i < len(s) && !utf8.RuneStart(s[i]) {
+		i++
+	}
+	return i
+}

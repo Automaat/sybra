@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 const (
@@ -125,23 +127,9 @@ func formatRuntimeProbeError(ctx context.Context, err error, output []byte, time
 	}
 	msg = strings.Join(strings.Fields(msg), " ")
 	if len(msg) > runtimeProbeErrorMax {
-		msg = truncateRuntimeProbeError(msg)
+		msg = textutil.TruncateBytesTotal(msg, runtimeProbeErrorMax, "...")
 	}
 	return msg
-}
-
-func truncateRuntimeProbeError(msg string) string {
-	const suffix = "..."
-	limit := runtimeProbeErrorMax - len(suffix)
-	var b strings.Builder
-	for _, r := range msg {
-		next := string(r)
-		if b.Len()+len(next) > limit {
-			break
-		}
-		b.WriteString(next)
-	}
-	return b.String() + suffix
 }
 
 func probeRuntimeTextCapability(path string, probe *runtimeTextProbe, timeout time.Duration) string {

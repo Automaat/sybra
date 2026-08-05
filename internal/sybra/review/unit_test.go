@@ -22,6 +22,7 @@ import (
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
@@ -389,7 +390,7 @@ func assertPRFixPromptUsesResolvedPushRemote(t *testing.T, prompt, branch string
 }
 
 func TestTruncatePushPreflightReasonKeepsValidUTF8(t *testing.T) {
-	got := truncatePushPreflightReason("prefix \xff café suffix", 12)
+	got := textutil.TruncateBytesTrimmed(strings.ToValidUTF8("prefix \xff café suffix", ""), 12, "...")
 	if !utf8.ValidString(got) {
 		t.Fatalf("truncated reason is invalid UTF-8: %q", got)
 	}

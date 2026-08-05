@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // newPRWorktree sets up a bare "origin" clone plus a worktree checked out on
@@ -1190,7 +1191,7 @@ func TestPRRetryReasonPreservesTailForLongHookOutput(t *testing.T) {
 
 func TestTruncateMiddleHonorsSmallLimit(t *testing.T) {
 	for _, limit := range []int{-1, 0, 1, 5, 20} {
-		got := truncateMiddle("abcdefghijklmnopqrstuvwxyz", limit)
+		got := textutil.TruncateMiddle("abcdefghijklmnopqrstuvwxyz", limit, "\n... (truncated) ...\n")
 		if len(got) > max(0, limit) {
 			t.Fatalf("limit %d: len(%q) = %d, want <= %d", limit, got, len(got), max(0, limit))
 		}

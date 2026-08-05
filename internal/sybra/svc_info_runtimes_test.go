@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 func TestDetectAvailableRuntimes(t *testing.T) {
@@ -133,7 +135,7 @@ func TestRuntimeProbeTimeout(t *testing.T) {
 
 func TestRuntimeProbeErrorTruncationStaysWithinByteLimit(t *testing.T) {
 	longErr := strings.Repeat("failure ", 40) + "ą"
-	got := truncateRuntimeProbeError(longErr)
+	got := textutil.TruncateBytesTotal(longErr, runtimeProbeErrorMax, "...")
 	if len(got) > runtimeProbeErrorMax {
 		t.Fatalf("truncated error length = %d, want <= %d", len(got), runtimeProbeErrorMax)
 	}

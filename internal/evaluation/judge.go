@@ -8,11 +8,11 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/llmexec"
 	"github.com/Automaat/sybra/internal/llmjob"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // defaultJudgeModel is a capable model for nuanced code-quality judgment.
@@ -128,14 +128,14 @@ func buildQualityPrompt(req JudgeRequest, dims []RubricDimension) string {
 	b.WriteString("Score each dimension 0–10 (10 = excellent). Output ONLY a single JSON object on the final line.\n\n")
 
 	fmt.Fprintf(&b, "Task: %s\n", req.Title)
-	if body := truncate(req.Body, 800); body != "" {
+	if body := textutil.TruncateBytes(req.Body, 800, "\n…(truncated)"); body != "" {
 		fmt.Fprintf(&b, "Task details: %s\n", body)
 	}
 	if req.Trajectory != "" {
 		fmt.Fprintf(&b, "How the agent worked: %s\n", req.Trajectory)
 	}
 	b.WriteString("\nDiff (may be truncated):\n")
-	b.WriteString(truncate(req.Diff, maxDiffChars))
+	b.WriteString(textutil.TruncateBytes(req.Diff, maxDiffChars, "\n…(truncated)"))
 	b.WriteString("\n\nScore these dimensions:\n")
 	for _, d := range dims {
 		fmt.Fprintf(&b, "- %s: %s\n", d.Key, d.Question)
@@ -289,15 +289,4 @@ func clampScore(s int) int {
 		return 10
 	}
 	return s
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	// Back up to a rune boundary so the cut never splits a multibyte character.
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n] + "\n…(truncated)"
 }

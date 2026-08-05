@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // maxBucketItems and maxItemChars bound every free-text bucket so a digest
@@ -43,7 +45,7 @@ type rawDigest struct {
 func parseDigestJSON(text string) (rawDigest, error) {
 	jsonStr := extractLastJSON(text)
 	if jsonStr == "" {
-		return rawDigest{}, fmt.Errorf("no JSON object in summarizer output: %q", truncateForError(text))
+		return rawDigest{}, fmt.Errorf("no JSON object in summarizer output: %q", textutil.TruncateBytes(text, 200, "…"))
 	}
 	var rd rawDigest
 	if err := json.Unmarshal([]byte(jsonStr), &rd); err != nil {
@@ -157,14 +159,6 @@ func mentionsLowSample(text string) bool {
 		}
 	}
 	return false
-}
-
-func truncateForError(s string) string {
-	const maxChars = 200
-	if len(s) <= maxChars {
-		return s
-	}
-	return s[:maxChars] + "…"
 }
 
 // extractLastJSON returns the last balanced {...} substring in s, or "".

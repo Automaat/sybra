@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 const (
@@ -84,17 +86,9 @@ Previous input:
 %s
 Reissue exactly one corrected %s tool call next. No explanation. No other tool first.`,
 		tool,
-		truncatePromptField(diag.ValidationError),
-		truncatePromptField(diag.ExpectedSchema),
-		truncatePromptField(inputJSON),
+		textutil.TruncateBytesTrimmed(strings.TrimSpace(diag.ValidationError), malformedToolPromptFieldLimit, "\n... (truncated)"),
+		textutil.TruncateBytesTrimmed(strings.TrimSpace(diag.ExpectedSchema), malformedToolPromptFieldLimit, "\n... (truncated)"),
+		textutil.TruncateBytesTrimmed(strings.TrimSpace(inputJSON), malformedToolPromptFieldLimit, "\n... (truncated)"),
 		tool,
 	))
-}
-
-func truncatePromptField(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= malformedToolPromptFieldLimit {
-		return s
-	}
-	return strings.TrimSpace(s[:malformedToolPromptFieldLimit]) + "\n... (truncated)"
 }
