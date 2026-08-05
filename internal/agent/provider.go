@@ -3,7 +3,6 @@ package agent
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	providerpkg "github.com/Automaat/sybra/internal/provider"
 )
@@ -30,7 +29,7 @@ type Provider interface {
 	// receipt must still be appended and verified for them.
 	EnforcesOutputSchema() bool
 	SessionFilePath(sessionID string) string
-	ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration, providerpkg.CooldownSource)
+	ClassifyError(sample providerpkg.ErrorSample) providerpkg.Classification
 	// HonorsAllowedTools reports whether this provider actually enforces
 	// RunConfig.AllowedTools on the spawned CLI. False means the list is
 	// silently ignored and the agent runs with the provider's own default

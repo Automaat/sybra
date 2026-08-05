@@ -906,18 +906,18 @@ func (m *Manager) ProviderCanFailover(name string) bool {
 
 // ReportProviderSignal forwards a runner-side passive signal (rate-limit or
 // auth failure) to the health gate. Safe to call with a nil gate.
-func (m *Manager) ReportProviderSignal(name string, sig provider.Signal, reason string, retryAfter time.Duration, source provider.CooldownSource) {
+func (m *Manager) ReportProviderSignal(name string, c provider.Classification) {
 	m.mu.RLock()
 	g := m.gate
 	m.mu.RUnlock()
 	if g == nil {
 		return
 	}
-	switch sig {
+	switch c.Signal {
 	case provider.SignalAuthFailure:
-		g.ReportAuthFailure(name, reason)
+		g.ReportAuthFailure(name, c.Reason)
 	case provider.SignalRateLimit:
-		g.ReportRateLimit(name, retryAfter, reason, source)
+		g.ReportRateLimit(name, c.RetryAfter, c.Reason, c.Source)
 	case provider.SignalNone:
 		// no-op: caller decided not to escalate this run.
 	}

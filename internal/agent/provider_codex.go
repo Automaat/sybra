@@ -3,7 +3,6 @@ package agent
 import (
 	"os"
 	"strings"
-	"time"
 
 	"github.com/Automaat/sybra/internal/modeltier"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
@@ -137,7 +136,7 @@ func (codexProvider) SessionFilePath(sessionID string) string {
 	return resolveCodexSessionFile(sessionID)
 }
 
-func (codexProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration, providerpkg.CooldownSource) {
+func (codexProvider) ClassifyError(sample providerpkg.ErrorSample) providerpkg.Classification {
 	return providerpkg.ClassifyCodexError(sample)
 }
 

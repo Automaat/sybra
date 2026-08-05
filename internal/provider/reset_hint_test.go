@@ -170,9 +170,10 @@ func TestClassifiers_PreferProviderResetOverFixedCooldown(t *testing.T) {
 
 	t.Run("codex", func(t *testing.T) {
 		pinNow(t, now)
-		sig, reason, after, _ := ClassifyCodexError(ErrorSample{
+		c := ClassifyCodexError(ErrorSample{
 			Stderr: "ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Aug 8th, 2026 9:41 AM.",
 		})
+		sig, reason, after, _ := c.Signal, c.Reason, c.RetryAfter, c.Source
 		if sig != SignalRateLimit {
 			t.Fatalf("signal = %v, want SignalRateLimit", sig)
 		}
@@ -187,9 +188,10 @@ func TestClassifiers_PreferProviderResetOverFixedCooldown(t *testing.T) {
 	t.Run("claude weekly limit overrides the hour default", func(t *testing.T) {
 		pinNow(t, now)
 		wantClaude := time.Date(2026, time.August, 7, 17, 0, 0, 0, time.Local).Sub(now)
-		sig, reason, after, _ := ClassifyClaudeError(ErrorSample{
+		c := ClassifyClaudeError(ErrorSample{
 			Stderr: "You've hit your weekly limit · resets Aug 7 at 5pm",
 		})
+		sig, reason, after, _ := c.Signal, c.Reason, c.RetryAfter, c.Source
 		if sig != SignalRateLimit || reason != "weekly_limit" {
 			t.Fatalf("got (%v, %q), want (SignalRateLimit, weekly_limit)", sig, reason)
 		}
@@ -203,9 +205,10 @@ func TestClassifiers_PreferProviderResetOverFixedCooldown(t *testing.T) {
 
 	t.Run("no parseable instant keeps the fixed cooldown", func(t *testing.T) {
 		pinNow(t, now)
-		_, reason, after, _ := ClassifyClaudeError(ErrorSample{
+		c := ClassifyClaudeError(ErrorSample{
 			Stderr: "You've hit your weekly limit",
 		})
+		_, reason, after, _ := c.Signal, c.Reason, c.RetryAfter, c.Source
 		if reason != "weekly_limit" || after != weeklyLimitCooldown {
 			t.Errorf("got (%q, %v), want (weekly_limit, %v)", reason, after, weeklyLimitCooldown)
 		}
@@ -243,7 +246,8 @@ func TestCleanResultContentNeverSuppliesAResetHint(t *testing.T) {
 	for name, sample := range surfaces {
 		t.Run(name, func(t *testing.T) {
 			pinNow(t, now)
-			_, _, after, src := ClassifyClaudeError(sample)
+			c := ClassifyClaudeError(sample)
+			_, _, after, src := c.Signal, c.Reason, c.RetryAfter, c.Source
 			if src == CooldownFromProvider {
 				t.Errorf("clean run supplied a provider hint (%v); a run the provider served states nothing about refusing", after)
 			}
@@ -276,9 +280,10 @@ func TestCooldownSourceIsHonest(t *testing.T) {
 
 	t.Run("constant fallback is not a provider hint", func(t *testing.T) {
 		pinNow(t, now)
-		_, reason, after, src := ClassifyCodexError(ErrorSample{
+		c := ClassifyCodexError(ErrorSample{
 			Stderr: "ERROR: You've hit your weekly limit. Please try again later.",
 		})
+		_, reason, after, src := c.Signal, c.Reason, c.RetryAfter, c.Source
 		if reason != "weekly_limit" || after != weeklyLimitCooldown {
 			t.Fatalf("got (%q, %v), want the weekly constant", reason, after)
 		}
@@ -289,9 +294,10 @@ func TestCooldownSourceIsHonest(t *testing.T) {
 
 	t.Run("out-of-range hint is distinguishable from no hint", func(t *testing.T) {
 		pinNow(t, now)
-		_, _, _, src := ClassifyCodexError(ErrorSample{
+		c := ClassifyCodexError(ErrorSample{
 			Stderr: "ERROR: You've hit your usage limit. Please try again at Dec 25th, 2026 9:41 AM.",
 		})
+		_, _, _, src := c.Signal, c.Reason, c.RetryAfter, c.Source
 		if src != CooldownHintRejected {
 			t.Errorf("source = %q, want %q so an out-of-range parse leaves a trace", src, CooldownHintRejected)
 		}
@@ -299,9 +305,10 @@ func TestCooldownSourceIsHonest(t *testing.T) {
 
 	t.Run("ansi coloured message still parses", func(t *testing.T) {
 		pinNow(t, now)
-		_, _, after, src := ClassifyCodexError(ErrorSample{
+		c := ClassifyCodexError(ErrorSample{
 			Stderr: "\x1b[1;31mERROR:\x1b[0m usage limit. Please try again at \x1b[1mAug 8th, 2026 9:41 AM\x1b[0m.",
 		})
+		_, _, after, src := c.Signal, c.Reason, c.RetryAfter, c.Source
 		want := time.Date(2026, time.August, 8, 9, 41, 0, 0, time.Local).Sub(now)
 		if src != CooldownFromProvider || after != want {
 			t.Errorf("got (%v, %q), want (%v, %q)", after, src, want, CooldownFromProvider)
@@ -333,9 +340,10 @@ func TestPastInstantIsReportedAsRejected(t *testing.T) {
 
 	t.Run("surfaces through the classifier", func(t *testing.T) {
 		pinNow(t, now)
-		_, _, _, src := ClassifyCodexError(ErrorSample{
+		c := ClassifyCodexError(ErrorSample{
 			Stderr: "ERROR: usage limit. Please try again at Aug 1st, 2026 9:41 AM.",
 		})
+		_, _, _, src := c.Signal, c.Reason, c.RetryAfter, c.Source
 		if src != CooldownHintRejected {
 			t.Errorf("source = %q, want %q", src, CooldownHintRejected)
 		}

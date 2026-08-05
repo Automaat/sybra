@@ -70,6 +70,33 @@ func rateLimitCooldown(s ErrorSample, fallback time.Duration) (time.Duration, Co
 	}
 }
 
+// Classification is the result of inspecting a failed run: what it means for
+// provider health, why, how long to park, and where that duration came from.
+//
+// One value rather than a positional tuple. The tuple was re-declared at every
+// layer it crossed — the Provider interface, classifyProviderError,
+// llmexec.classifyError, RecordProviderSignal, ReportProviderSignal,
+// reportSignal, HealthGate.ReportRateLimit — plus every test fake. Adding the
+// CooldownSource field alone touched ~10 production files and ~40 call sites,
+// most of them carrying no information, and broke three test files in the
+// mechanical edit. A named value makes the next field additive.
+type Classification struct {
+	Signal Signal
+	// Reason is the short tag recorded on provider health and the agent.
+	Reason string
+	// RetryAfter is the park duration; zero means the caller's configured
+	// cooldown.
+	RetryAfter time.Duration
+	// Source records whether RetryAfter came from the provider, a configured
+	// default, or a provider hint that was rejected.
+	Source CooldownSource
+}
+
+// classified is shorthand for building a Classification at a return site.
+func classified(sig Signal, reason string, retryAfter time.Duration, src CooldownSource) Classification {
+	return Classification{Signal: sig, Reason: reason, RetryAfter: retryAfter, Source: src}
+}
+
 // ErrorSample is the runner→classifier DTO. Using a plain struct (instead of
 // agent.StreamEvent directly) prevents an import cycle between internal/agent
 // and internal/provider.
@@ -89,15 +116,15 @@ type ErrorSample struct {
 // 529/overloaded is intentionally NOT classified here — the retry path in
 // runner_headless.go already handles transient overload without marking the
 // provider unhealthy.
-func ClassifyClaudeError(s ErrorSample) (Signal, string, time.Duration, CooldownSource) {
+func ClassifyClaudeError(s ErrorSample) Classification {
 	if s.ErrorStatus == 401 || s.ErrorType == "authentication_error" || s.ErrorType == "invalid_api_key" {
-		return SignalAuthFailure, "logged_out", 0, CooldownFromConfig
+		return classified(SignalAuthFailure, "logged_out", 0, CooldownFromConfig)
 	}
 	stderr := strings.ToLower(s.Stderr)
 	content := strings.ToLower(s.Content)
 	if containsAny(stderr, "not logged in", "please run claude auth login", "unauthorized") ||
 		containsAny(content, "not logged in", "please run claude auth login") {
-		return SignalAuthFailure, "logged_out", 0, CooldownFromConfig
+		return classified(SignalAuthFailure, "logged_out", 0, CooldownFromConfig)
 	}
 	// Weekly-limit phrasing is checked before the structured 429/rate_limit_error
 	// short-circuit below: providers can attach a generic rate-limit error code
@@ -105,19 +132,19 @@ func ClassifyClaudeError(s ErrorSample) (Signal, string, time.Duration, Cooldown
 	// park only applies if the text is inspected first.
 	if isWeeklyLimitText(stderr, content, s.ContentIsCleanResult) {
 		cooldown, src := rateLimitCooldown(s, weeklyLimitCooldown)
-		return SignalRateLimit, "weekly_limit", cooldown, src
+		return classified(SignalRateLimit, "weekly_limit", cooldown, src)
 	}
 	if s.ErrorStatus == 429 || s.ErrorType == "rate_limit_error" || s.ErrorType == "credit_balance_too_low" {
 		cooldown, src := rateLimitCooldown(s, 0)
-		return SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), cooldown, src
+		return classified(SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), cooldown, src)
 	}
 	if containsAny(stderr, "rate_limit", "rate limit", "credit_balance_too_low", "quota", "session limit", "usage limit", "weekly limit") ||
 		containsRateLimitContent(content, s.ContentIsCleanResult,
 			"rate_limit", "rate limit", "credit_balance_too_low", "quota", "session limit", "usage limit", "weekly limit") {
 		cooldown, src := rateLimitCooldown(s, 0)
-		return SignalRateLimit, "rate_limited", cooldown, src
+		return classified(SignalRateLimit, "rate_limited", cooldown, src)
 	}
-	return SignalNone, "", 0, CooldownFromConfig
+	return classified(SignalNone, "", 0, CooldownFromConfig)
 }
 
 // isWeeklyLimit reports whether text contains a weekly-specific limit
@@ -176,15 +203,15 @@ func isCodexConnectivityText(text string) bool {
 // taxonomy is less well-known at design time, so we lean on substring matching
 // and let the runner log SignalNone cases with the raw strings for iterative
 // discovery.
-func ClassifyCodexError(s ErrorSample) (Signal, string, time.Duration, CooldownSource) {
+func ClassifyCodexError(s ErrorSample) Classification {
 	if s.ErrorStatus == 401 || strings.EqualFold(s.ErrorType, "unauthorized") {
-		return SignalAuthFailure, "logged_out", 0, CooldownFromConfig
+		return classified(SignalAuthFailure, "logged_out", 0, CooldownFromConfig)
 	}
 	stderr := strings.ToLower(s.Stderr)
 	content := strings.ToLower(s.Content)
 	if containsAny(stderr, "not logged in", "please run: codex login", "please run codex login", "unauthorized") ||
 		containsAny(content, "not logged in", "please run: codex login") {
-		return SignalAuthFailure, "logged_out", 0, CooldownFromConfig
+		return classified(SignalAuthFailure, "logged_out", 0, CooldownFromConfig)
 	}
 	// Weekly-limit phrasing is checked before the structured 429/rate_limit
 	// short-circuit below: providers can attach a generic rate-limit error
@@ -192,7 +219,7 @@ func ClassifyCodexError(s ErrorSample) (Signal, string, time.Duration, CooldownS
 	// weeklyLimitCooldown park only applies if the text is inspected first.
 	if isWeeklyLimitText(stderr, content, s.ContentIsCleanResult) {
 		cooldown, src := rateLimitCooldown(s, weeklyLimitCooldown)
-		return SignalRateLimit, "weekly_limit", cooldown, src
+		return classified(SignalRateLimit, "weekly_limit", cooldown, src)
 	}
 	// Host-anchored: a bare "websocket connection" without the codex backend
 	// host must NOT match — it would false-positive on unrelated network
@@ -212,19 +239,19 @@ func ClassifyCodexError(s ErrorSample) (Signal, string, time.Duration, CooldownS
 	// itself hit a connectivity failure — see containsRateLimitContent for
 	// the same distinction on the rate-limit path.
 	if isCodexConnectivityText(stderr) || (!s.ContentIsCleanResult && isCodexConnectivityText(content)) {
-		return SignalRateLimit, "connectivity", connectivityCooldown, CooldownFromConfig
+		return classified(SignalRateLimit, "connectivity", connectivityCooldown, CooldownFromConfig)
 	}
 	if s.ErrorStatus == 429 || strings.EqualFold(s.ErrorType, "rate_limit") || strings.EqualFold(s.ErrorType, "insufficient_quota") {
 		cooldown, src := rateLimitCooldown(s, 0)
-		return SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), cooldown, src
+		return classified(SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), cooldown, src)
 	}
 	if containsAny(stderr, "rate_limit", "rate limit", "insufficient_quota", "quota exceeded", "usage limit", "weekly limit") ||
 		containsRateLimitContent(content, s.ContentIsCleanResult,
 			"rate_limit", "rate limit", "insufficient_quota", "quota exceeded", "usage limit", "weekly limit") {
 		cooldown, src := rateLimitCooldown(s, 0)
-		return SignalRateLimit, "rate_limited", cooldown, src
+		return classified(SignalRateLimit, "rate_limited", cooldown, src)
 	}
-	return SignalNone, "", 0, CooldownFromConfig
+	return classified(SignalNone, "", 0, CooldownFromConfig)
 }
 
 // ClassifyCopilotError mirrors the other classifiers for GitHub Copilot CLI
@@ -233,37 +260,37 @@ func ClassifyCodexError(s ErrorSample) (Signal, string, time.Duration, CooldownS
 // (kept in sync with isLoggedOutStderr). Without a copilot-specific classifier
 // a logged-out/quota-exhausted copilot would return SignalNone and the health
 // gate would keep routing failover work to a dead provider.
-func ClassifyCopilotError(s ErrorSample) (Signal, string, time.Duration, CooldownSource) {
+func ClassifyCopilotError(s ErrorSample) Classification {
 	if s.ErrorStatus == 401 || strings.EqualFold(s.ErrorType, "unauthorized") {
-		return SignalAuthFailure, "logged_out", 0, CooldownFromConfig
+		return classified(SignalAuthFailure, "logged_out", 0, CooldownFromConfig)
 	}
 	if s.ErrorStatus == 429 || strings.EqualFold(s.ErrorType, "rate_limit") || strings.EqualFold(s.ErrorType, "insufficient_quota") {
-		return SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), 0, CooldownFromConfig
+		return classified(SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), 0, CooldownFromConfig)
 	}
 	stderr := strings.ToLower(s.Stderr)
 	content := strings.ToLower(s.Content)
 	authNeedles := []string{"not logged in", "not authenticated", "please run: copilot login", "run `copilot login`", "run 'copilot login'", "unauthorized"}
 	if containsAny(stderr, authNeedles...) || containsAny(content, authNeedles...) {
-		return SignalAuthFailure, "logged_out", 0, CooldownFromConfig
+		return classified(SignalAuthFailure, "logged_out", 0, CooldownFromConfig)
 	}
 	// Copilot meters usage in "premium requests"; an exhausted allowance is the
 	// copilot analogue of a rate limit.
 	quotaNeedles := []string{"rate_limit", "rate limit", "quota", "premium request", "usage limit", "monthly limit"}
 	if containsAny(stderr, quotaNeedles...) || containsRateLimitContent(content, s.ContentIsCleanResult, quotaNeedles...) {
-		return SignalRateLimit, "rate_limited", 0, CooldownFromConfig
+		return classified(SignalRateLimit, "rate_limited", 0, CooldownFromConfig)
 	}
-	return SignalNone, "", 0, CooldownFromConfig
+	return classified(SignalNone, "", 0, CooldownFromConfig)
 }
 
 // ClassifyOpenCodeError classifies OpenCode CLI failures. OpenCode can front
 // many providers, so keep the patterns generic and avoid provider-specific
 // assumptions beyond common HTTP/auth/rate-limit vocabulary.
-func ClassifyOpenCodeError(s ErrorSample) (Signal, string, time.Duration, CooldownSource) {
+func ClassifyOpenCodeError(s ErrorSample) Classification {
 	if s.ErrorStatus == 401 || s.ErrorStatus == 403 {
-		return SignalAuthFailure, "logged_out", 0, CooldownFromConfig
+		return classified(SignalAuthFailure, "logged_out", 0, CooldownFromConfig)
 	}
 	if s.ErrorStatus == 429 {
-		return SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), 0, CooldownFromConfig
+		return classified(SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), 0, CooldownFromConfig)
 	}
 	hay := strings.ToLower(strings.Join([]string{s.ErrorType, s.Stderr, s.Content}, "\n"))
 	switch {
@@ -272,15 +299,15 @@ func ClassifyOpenCodeError(s ErrorSample) (Signal, string, time.Duration, Cooldo
 		strings.Contains(hay, "unauthorized"),
 		strings.Contains(hay, "invalid api key"),
 		strings.Contains(hay, "missing api key"):
-		return SignalAuthFailure, "logged_out", 0, CooldownFromConfig
+		return classified(SignalAuthFailure, "logged_out", 0, CooldownFromConfig)
 	case strings.Contains(hay, "rate limit"),
 		strings.Contains(hay, "too many requests"),
 		strings.Contains(hay, "quota"),
 		strings.Contains(hay, "insufficient credits"),
 		strings.Contains(hay, "credit balance"):
-		return SignalRateLimit, "rate_limited", 0, CooldownFromConfig
+		return classified(SignalRateLimit, "rate_limited", 0, CooldownFromConfig)
 	}
-	return SignalNone, "", 0, CooldownFromConfig
+	return classified(SignalNone, "", 0, CooldownFromConfig)
 }
 
 func containsRateLimitContent(content string, cleanResult bool, broadNeedles ...string) bool {

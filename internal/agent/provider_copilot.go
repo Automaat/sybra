@@ -2,7 +2,6 @@ package agent
 
 import (
 	"strings"
-	"time"
 
 	"github.com/Automaat/sybra/internal/modeltier"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
@@ -83,7 +82,7 @@ func (copilotProvider) ParseHeadlessLine(line []byte) (StreamEvent, error) {
 	return copilotEventToStreamEvent(ce), nil
 }
 
-func (copilotProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration, providerpkg.CooldownSource) {
+func (copilotProvider) ClassifyError(sample providerpkg.ErrorSample) providerpkg.Classification {
 	return providerpkg.ClassifyCopilotError(sample)
 }
 
