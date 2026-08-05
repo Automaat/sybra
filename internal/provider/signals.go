@@ -41,14 +41,23 @@ const (
 // caller's default. Parsing runs on the raw (non-lowercased) sample so month
 // names survive.
 //
-// Content is consulted ONLY for a non-clean result. A successful exit-0 run's
-// content is the agent's own prose, which routinely discusses rate limits and
-// dates — including the source of this very file. Parsing that would let an
-// agent talking about a usage limit park its own provider for days, turning a
-// pre-existing content false-positive worth 15 minutes into one worth a week.
+// A clean result supplies NO reset hint, from any surface. A successful exit-0
+// run's content is the agent's own prose, which routinely discusses rate limits
+// and dates — including the source of this very file. Its stderr is provider
+// and tool warnings: an MCP server or a fallback-model notice can quote a usage
+// limit while the run itself succeeded.
+//
+// Guarding content alone is not enough, and was not: the same defect
+// reproduced through stderr, parking every enabled provider for 59 hours off
+// two successful runs and leaving failover nowhere to go — against 15 minutes
+// before this parsing existed. If the provider served the run, it did not
+// refuse it, so nothing in that run states when it will serve again.
 func rateLimitCooldown(s ErrorSample, fallback time.Duration) (time.Duration, CooldownSource) {
+	if s.ContentIsCleanResult {
+		return fallback, CooldownFromConfig
+	}
 	d, outcome := parseResetHint(s.Stderr)
-	if outcome == HintNone && !s.ContentIsCleanResult {
+	if outcome == HintNone {
 		d, outcome = parseResetHint(s.Content)
 	}
 	switch outcome {

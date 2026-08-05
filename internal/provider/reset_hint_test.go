@@ -221,12 +221,34 @@ func TestCleanResultContentNeverSuppliesAResetHint(t *testing.T) {
 	prose := "Done. I implemented the reset-hint parser for the case where codex says " +
 		"you've hit your usage limit and prints: try again at Aug 12th, 2026 9:00 AM."
 
-	_, _, after, src := ClassifyClaudeError(ErrorSample{Content: prose, ContentIsCleanResult: true})
-	if src == CooldownFromProvider {
-		t.Errorf("clean result content supplied a provider hint (%v); agent prose must never park its own provider", after)
+	// Every surface of a clean run, not just content. The first fix guarded
+	// content alone and the defect reproduced through stderr: an MCP warning
+	// or a fallback-model notice quoting a usage limit parked every enabled
+	// provider for 59 hours off runs that succeeded.
+	surfaces := map[string]ErrorSample{
+		"content": {Content: prose, ContentIsCleanResult: true},
+		"stderr": {
+			Stderr:               "[api] request failed: usage limit reached; try again at Aug 8th, 2026 9:41 AM",
+			Content:              "ok, done",
+			ContentIsCleanResult: true,
+		},
+		"mcp warning on stderr": {
+			Stderr:               `[warn] mcp server "notes" exited: You've hit your usage limit. Try again at Aug 8th, 2026 9:41 AM`,
+			Content:              "Task complete. All tests pass.",
+			ContentIsCleanResult: true,
+		},
 	}
-	if after > weeklyLimitCooldown {
-		t.Errorf("clean result content produced a %v park, longer than the fixed fallback %v", after, weeklyLimitCooldown)
+	for name, sample := range surfaces {
+		t.Run(name, func(t *testing.T) {
+			pinNow(t, now)
+			_, _, after, src := ClassifyClaudeError(sample)
+			if src == CooldownFromProvider {
+				t.Errorf("clean run supplied a provider hint (%v); a run the provider served states nothing about refusing", after)
+			}
+			if after > weeklyLimitCooldown {
+				t.Errorf("clean run produced a %v park, longer than the fixed fallback %v", after, weeklyLimitCooldown)
+			}
+		})
 	}
 }
 
