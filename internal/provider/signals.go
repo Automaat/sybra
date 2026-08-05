@@ -310,9 +310,27 @@ func ClassifyOpenCodeError(s ErrorSample) Classification {
 	return classified(SignalNone, "", 0, CooldownFromConfig)
 }
 
+// cleanResultLimitBudget bounds how long a clean run's content may be and
+// still be read as a provider limit notice.
+//
+// A provider usage cap arrives on a subtype:"success" result with the limit
+// text as essentially the whole content — see buildErrorSample, which captures
+// the terminal result regardless of subtype precisely for that case. An
+// agent's answer that happens to discuss rate limits is a full response with
+// the phrase somewhere inside it. Length is what separates them: the needle
+// list alone cannot, because "hit your usage limit" and "rate limit exceeded"
+// are exactly what an agent writes when it works on this area of the codebase.
+//
+// Without this, a successful exit-0 run parked its own provider for the
+// configured cooldown off its own prose.
+const cleanResultLimitBudget = 400
+
 func containsRateLimitContent(content string, cleanResult bool, broadNeedles ...string) bool {
 	if !cleanResult {
 		return containsAny(content, broadNeedles...)
+	}
+	if len(strings.TrimSpace(content)) > cleanResultLimitBudget {
+		return false
 	}
 	return containsAny(content,
 		"you've hit your session limit",
