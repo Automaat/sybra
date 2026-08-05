@@ -14,8 +14,10 @@ import (
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -154,6 +156,241 @@ func TestHumanReviewDispatchDir_ReadOnlyFallback(t *testing.T) {
 			t.Fatalf("got dir=%q readOnly=%v, want dir=%q readOnly=false", dir, readOnly, worktreeDir)
 		}
 	})
+}
+
+func TestHumanReviewDispatchDir_PreparesManagedWorktree(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	wantDir := t.TempDir()
+	called := false
+	h.prepareTaskWorktree = func(tk task.Task) (string, error) {
+		called = true
+		if tk.ID != "managed-task" {
+			t.Fatalf("prepare task id = %q, want managed-task", tk.ID)
+		}
+		return wantDir, nil
+	}
+
+	dir, readOnly := h.dispatchDir(task.Task{ID: "managed-task"})
+	if !called {
+		t.Fatal("managed worktree preparer was not called")
+	}
+	if dir != wantDir || readOnly {
+		t.Fatalf("got dir=%q readOnly=%v, want dir=%q readOnly=false", dir, readOnly, wantDir)
+	}
+}
+
+func TestHumanReviewDispatchDir_PrepareFailureFallsBackReadOnly(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		return "", errors.New("worktree unavailable")
+	}
+
+	dir, readOnly := h.dispatchDir(task.Task{ID: "fallback-task"})
+	if dir != h.cfg.HumanReview.SybraRepoDir || !readOnly {
+		t.Fatalf("got dir=%q readOnly=%v, want dir=%q readOnly=true", dir, readOnly, h.cfg.HumanReview.SybraRepoDir)
+	}
+}
+
+func TestHumanReviewSpawn_HoldsDispatchClaimAcrossPreparationAndRun(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("recover with claim", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk, err = tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	held := false
+	h.claimTaskDispatch = func(taskID string) (func(), bool) {
+		if taskID != tk.ID || held {
+			return nil, false
+		}
+		held = true
+		return func() { held = false }, true
+	}
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		if !held {
+			t.Fatal("worktree preparation ran without the dispatch claim")
+		}
+		return t.TempDir(), nil
+	}
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		if !held {
+			t.Fatal("agent registration ran without the dispatch claim")
+		}
+		if cfg.ReadOnlyDir {
+			t.Fatal("prepared recovery worktree was dispatched read-only")
+		}
+		return &agent.Agent{ID: "human-recovery", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	if !h.maybeSpawn(tk.ID, string(task.StatusInReview)) {
+		t.Fatal("human review was not spawned")
+	}
+	if held {
+		t.Fatal("dispatch claim was not released after agent registration")
+	}
+}
+
+func TestHumanReviewSpawn_ClaimConflictRetriesAfterRelease(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+	auditDir := t.TempDir()
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = auditLog.Close() })
+	h.audit = auditLog
+
+	tk, err := tasks.Create("claim conflict", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claimAvailable := false
+	claimHeld := false
+	h.claimTaskDispatch = func(string) (func(), bool) {
+		if !claimAvailable || claimHeld {
+			return nil, false
+		}
+		claimHeld = true
+		return func() { claimHeld = false }, true
+	}
+	var scheduled func()
+	h.schedule = func(delay time.Duration, fn func()) {
+		if delay != time.Second {
+			t.Fatalf("first retry delay = %s, want 1s", delay)
+		}
+		if scheduled != nil {
+			t.Fatal("claim conflict scheduled more than one retry")
+		}
+		scheduled = fn
+	}
+	prepareCalls := 0
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		prepareCalls++
+		if !claimHeld {
+			t.Fatal("retry prepared the worktree without holding the claim")
+		}
+		return t.TempDir(), nil
+	}
+	runCalls := 0
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		runCalls++
+		if !claimHeld {
+			t.Fatal("retry registered the agent without holding the claim")
+		}
+		return &agent.Agent{ID: "retried-human-review", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	if h.maybeSpawn(tk.ID, string(task.StatusInReview)) {
+		t.Fatal("human review spawned despite a conflicting dispatch claim")
+	}
+	if prepareCalls != 0 || runCalls != 0 {
+		t.Fatalf("claim conflict mutated/spawned before release: prepare=%d run=%d", prepareCalls, runCalls)
+	}
+	if scheduled == nil {
+		t.Fatal("claim conflict did not schedule a retry")
+	}
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Minute),
+		Until: time.Now().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == audit.EventHumanReviewSkipped {
+			t.Fatalf("transient claim contention recorded as terminal skip: %+v", event)
+		}
+	}
+
+	claimAvailable = true
+	scheduled()
+	if prepareCalls != 1 || runCalls != 1 {
+		t.Fatalf("retry after claim release: prepare=%d run=%d, want 1/1", prepareCalls, runCalls)
+	}
+	if claimHeld {
+		t.Fatal("retry did not release the dispatch claim after registration")
+	}
+}
+
+func TestLifecycleSchedule_CancelSuppressesRetry(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	called := make(chan struct{}, 1)
+	lifecycleSchedule(ctx)(20*time.Millisecond, func() { called <- struct{}{} })
+	cancel()
+	select {
+	case <-called:
+		t.Fatal("retry ran after lifecycle cancellation")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestHumanReviewSpawn_ClaimConflictRetryIsBounded(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("persistent claim conflict", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.claimTaskDispatch = func(string) (func(), bool) { return nil, false }
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		t.Fatal("persistent claim conflict must never prepare a worktree")
+		return "", nil
+	}
+	scheduled := 0
+	h.schedule = func(_ time.Duration, fn func()) {
+		scheduled++
+		fn()
+	}
+
+	if h.maybeSpawn(tk.ID, string(task.StatusInReview)) {
+		t.Fatal("human review spawned despite persistent claim conflicts")
+	}
+	if scheduled != humanReviewClaimRetryMax {
+		t.Fatalf("scheduled retries = %d, want bounded max %d", scheduled, humanReviewClaimRetryMax)
+	}
+}
+
+func TestWriteAutonomyMandate_UsesHostCommitFlags(t *testing.T) {
+	t.Parallel()
+	for _, flags := range []string{"-s", "-s -S"} {
+		t.Run(flags, func(t *testing.T) {
+			t.Parallel()
+			var b strings.Builder
+			writeAutonomyMandate(&b, flags)
+			want := "`git commit " + flags + "`"
+			if !strings.Contains(b.String(), want) {
+				t.Fatalf("mandate missing host commit flags %q:\n%s", want, b.String())
+			}
+		})
+	}
 }
 
 // TestBuildPrompt_NoFencedVerdictInstruction pins that the prompt no longer
@@ -3530,5 +3767,121 @@ func TestOnComplete_TerminalErrorWithToolCalls_SkipsCrashPath(t *testing.T) {
 	}
 	if !strings.Contains(got.Body, "Auto-review (unparseable verdict)") {
 		t.Errorf("expected the ordinary unparseable-verdict path; got:\n%s", got.Body)
+	}
+}
+
+// The provider-fallback path marks the verdict rendered and then deliberately
+// re-spawns with IgnoreRenderedVerdict. If that respawn loses a claim race the
+// retry must still run: honouring the idempotency gate there drops the fallback
+// permanently and audits it as a duplicate diagnosis, leaving the task parked
+// with no verdict at all.
+func TestHumanReviewSpawn_ContendedFallbackRetryIgnoresRenderedVerdict(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("contended fallback", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The fallback caller has already persisted the rendered verdict.
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID:         "malformed-run",
+		Role:            string(agent.RoleHumanReview),
+		Mode:            "headless",
+		State:           "stopped",
+		Outcome:         "failure",
+		VerdictRendered: true,
+		Result:          "not json",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+	seeded, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verdictAlreadyRendered(seeded) {
+		t.Fatal("precondition: verdict must already be rendered or this asserts nothing")
+	}
+
+	claimAvailable := false
+	claimHeld := false
+	h.claimTaskDispatch = func(string) (func(), bool) {
+		if !claimAvailable || claimHeld {
+			return nil, false
+		}
+		claimHeld = true
+		return func() { claimHeld = false }, true
+	}
+	var scheduled func()
+	h.schedule = func(_ time.Duration, fn func()) { scheduled = fn }
+	h.prepareTaskWorktree = func(task.Task) (string, error) { return t.TempDir(), nil }
+	runCalls := 0
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		runCalls++
+		return &agent.Agent{ID: "fallback-run", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	opts := humanReviewSpawnOptions{IgnoreRenderedVerdict: true}
+	if h.maybeSpawnWithOptions(tk.ID, string(task.StatusHumanRequired), opts) {
+		t.Fatal("spawned despite a conflicting dispatch claim")
+	}
+	if scheduled == nil {
+		t.Fatal("contended fallback did not schedule a retry")
+	}
+
+	claimAvailable = true
+	scheduled()
+
+	if runCalls != 1 {
+		t.Errorf("fallback retry runs = %d, want 1 — the rendered-verdict gate swallowed it", runCalls)
+	}
+}
+
+// TestWriteAutonomyMandate_UsesHostCommitFlags passes its own strings in and
+// asserts they come back out, so it proves Fprintf works and never touches the
+// production argument. This covers the argument: the recovery prompt must honor
+// agent.commit_signing, on a host that DOES resolve a key so "never" and the
+// host default are distinguishable.
+func TestHumanReviewPrompt_HonorsCommitSigningPolicy(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "gitconfig")
+	contents := "[user]\n\tname = Test\n\temail = t@example.invalid\n\tsigningkey = DEADBEEFDEADBEEF\n"
+	if err := os.WriteFile(cfgPath, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write git config: %v", err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", cfgPath)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	if got := project.SigningAuto.CommitFlags(context.Background()); got != "-s -S" {
+		t.Fatalf("precondition: host must resolve a signing key, got %q", got)
+	}
+
+	cfg := &config.Config{}
+	cfg.Agent.CommitSigning = "never"
+	h := &humanReviewHandler{cfg: cfg}
+
+	if got := h.signingPolicy(); got != project.SigningNever {
+		t.Fatalf("signingPolicy() = %q, want never from the snapshot", got)
+	}
+
+	// Go through the real prompt builder, not writeAutonomyMandate directly:
+	// asserting on a value this test supplies is what made the original test
+	// unable to catch the defect it appeared to cover.
+	prompt := h.buildPrompt(task.Task{ID: "t1", ProjectID: "Automaat/sybra"}, t.TempDir(), nil)
+	for line := range strings.Lines(prompt) {
+		if strings.Contains(line, "commit") && strings.Contains(line, "-S") {
+			t.Errorf("mandate instructs GPG signing under the never policy:\n%s", line)
+		}
+	}
+
+	// And a hot reload must reach it, since cfg is never rewritten.
+	h.SetSigningPolicy(project.SigningRequire)
+	if got := h.signingPolicy().CommitFlags(context.Background()); got != "-s -S" {
+		t.Errorf("after reload to require, flags = %q, want -s -S", got)
 	}
 }
