@@ -59,6 +59,21 @@ func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
+// runCheckConfigWithHome applies --home before validating, so the preflight
+// checks the home the caller named rather than whatever SYBRA_HOME happens to
+// hold.
+func runCheckConfigWithHome(homeOverride string, homeErr, jsonOut bool) int {
+	if homeErr {
+		return fatal(jsonOut, "--home requires a value")
+	}
+	if homeOverride != "" {
+		if err := os.Setenv("SYBRA_HOME", homeOverride); err != nil {
+			return fatal(jsonOut, "set SYBRA_HOME: %v", err)
+		}
+	}
+	return runCheckConfig()
+}
+
 // runCheckConfig mirrors sybra-server's -check-config so the deploy preflight
 // can assert both binaries accept the live config, not just the server.
 //
@@ -93,42 +108,55 @@ type homeResolution struct {
 	fromSybraHome   bool
 }
 
+// globalFlags are the flags accepted before, after, or around a subcommand.
+type globalFlags struct {
+	jsonOut      bool
+	checkConfig  bool
+	homeOverride string
+	homeErr      bool
+}
+
+// parseGlobalFlags strips the global flags from args wherever they appear and
+// returns the remainder as the subcommand and its arguments.
+func parseGlobalFlags(args []string) (flags globalFlags, rest []string) {
+	var g globalFlags
+	filtered := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--json":
+			g.jsonOut = true
+		case a == "--home":
+			// Take the tail as a slice rather than indexing: slicing at i+1 is
+			// always valid here, so the emptiness check is provably sufficient
+			// and the bounds analysis stays happy.
+			rest := args[i+1:]
+			if len(rest) == 0 {
+				g.homeErr = true
+				continue
+			}
+			g.homeOverride = rest[0]
+			i++
+		case strings.HasPrefix(a, "--home="):
+			g.homeOverride = strings.TrimPrefix(a, "--home=")
+		case a == "-check-config" || a == "--check-config":
+			g.checkConfig = true
+		default:
+			filtered = append(filtered, a)
+		}
+	}
+	return g, filtered
+}
+
 func run(args []string) int {
 	if len(args) == 0 {
 		usage()
 		return 1
 	}
 
-	// Extract global --json and --home flags before subcommand.
-	jsonOut := false
-	checkConfig := false
-	filtered := make([]string, 0, len(args))
-	homeOverride := ""
-	homeErr := false
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--json":
-			jsonOut = true
-		case a == "--home":
-			// Take the tail as a slice rather than indexing: slicing at
-			// i+1 is always valid here, so the emptiness check below is
-			// provably sufficient and the bounds analysis stays happy.
-			rest := args[i+1:]
-			if len(rest) == 0 {
-				homeErr = true
-				continue
-			}
-			homeOverride = rest[0]
-			i++
-		case strings.HasPrefix(a, "--home="):
-			homeOverride = strings.TrimPrefix(a, "--home=")
-		case a == "-check-config" || a == "--check-config":
-			checkConfig = true
-		default:
-			filtered = append(filtered, a)
-		}
-	}
+	globals, filtered := parseGlobalFlags(args)
+	jsonOut, checkConfig := globals.jsonOut, globals.checkConfig
+	homeOverride, homeErr := globals.homeOverride, globals.homeErr
 
 	// After the global-flag pass, so position does not matter: the preflight is
 	// invoked as `sybra-cli -check-config` today, but `--home DIR
@@ -137,15 +165,7 @@ func run(args []string) int {
 	// runCheckConfig does its own strict load and must not inherit the
 	// task-store fallback that exists for ordinary commands.
 	if checkConfig {
-		if homeErr {
-			return fatal(jsonOut, "--home requires a value")
-		}
-		if homeOverride != "" {
-			if err := os.Setenv("SYBRA_HOME", homeOverride); err != nil {
-				return fatal(jsonOut, "set SYBRA_HOME: %v", err)
-			}
-		}
-		return runCheckConfig()
+		return runCheckConfigWithHome(homeOverride, homeErr, jsonOut)
 	}
 
 	// Detect the hook subcommand before config.Load can abort: codex lifecycle
