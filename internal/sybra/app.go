@@ -397,7 +397,7 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 	a.initLoopScheduler(schedulerCtx, emit)
 	a.initFileWatcher(watcherCtx, emit)
 
-	issuesFetcher := a.initAutomations(emit)
+	issuesFetcher := a.initAutomations(schedulerCtx, emit)
 	a.wireServices(emit) //nolint:contextcheck // TaskService uses the app-bound root context; see Startup's contextcheck note.
 
 	// syncSkillsBundle's deep diagnostic logging uses context.Background()

@@ -157,7 +157,7 @@ func newHumanReviewHandler(
 
 // initHumanReview is called once during App.Startup. It is a no-op when the
 // feature is disabled or no Sybra source dir is configured.
-func (a *App) initHumanReview() {
+func (a *App) initHumanReview(ctx context.Context) {
 	if a.cfg == nil || !a.cfg.HumanReview.Enabled {
 		return
 	}
@@ -176,9 +176,9 @@ func (a *App) initHumanReview() {
 	if a.worktrees != nil {
 		a.humanReview.prepareTaskWorktree = func(t task.Task) (string, error) {
 			if t.PRNumber != 0 {
-				return a.worktrees.PrepareForFix(context.Background(), t, t.PRNumber)
+				return a.worktrees.PrepareForFix(ctx, t, t.PRNumber)
 			}
-			return a.worktrees.PrepareForTask(context.Background(), t, nil)
+			return a.worktrees.PrepareForTask(ctx, t, nil)
 		}
 	}
 	if a.agents != nil {
