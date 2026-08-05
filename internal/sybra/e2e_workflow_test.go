@@ -6162,7 +6162,7 @@ func TestE2E_RateLimitCooldownWindowCorrectness(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"success", "success"})
 	g := newCooldownGate()
 	env.agents.SetHealthGate(g)
-	g.ReportRateLimit("claude", 200*time.Millisecond, "rate_limited")
+	g.ReportRateLimit("claude", 200*time.Millisecond, "rate_limited", provider.CooldownFromConfig)
 
 	ag1, err := env.agents.Run(agent.RunConfig{
 		TaskID:   "cooldown-1",
