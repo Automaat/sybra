@@ -46,6 +46,7 @@ const (
 )
 
 var errHumanReviewTagAlreadyPresent = errors.New("human review tag already present")
+var errHumanReviewRecoverySuperseded = errors.New("human review recovery verdict superseded")
 
 type humanReviewAgentRunner interface {
 	ApplyABVariant(cfg agent.RunConfig, ab abtest.Config, taskID, role string) agent.RunConfig
@@ -444,9 +445,7 @@ func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID s
 	note := h.scrubForTask(current.ProjectID, v.Summary)
 	status, ok := safeHumanReviewRecoveryStatus(v.RecoverableAction)
 	if !ok || current.Status != task.StatusHumanRequired {
-		if h.appendNote(current.ID, "Auto-review: unblocked claim not verified", note) {
-			h.markVerdictRendered(current.ID, agentID)
-		}
+		h.rejectUnblockedRecovery(current, agentID, note, startupReplay)
 		return
 	}
 	if status == task.StatusDone {
@@ -507,16 +506,29 @@ func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID s
 		h.markVerdictRendered(current.ID, agentID)
 		return
 	}
-	if h.appendNote(current.ID, "Auto-review: unblocked claim not verified", note) {
-		h.markVerdictRendered(current.ID, agentID)
+	if startupReplay {
+		fresh, stillLatest := h.recoveryVerdictStillLatest(current.ID, agentID, v)
+		if !stillLatest {
+			return
+		}
+		current = fresh
 	}
+	h.rejectUnblockedRecovery(current, agentID, note, startupReplay)
 }
 
 func (h *humanReviewHandler) applyDoneRecovery(current task.Task, agentID, note string, v verdictDecision, startupReplay bool) {
 	prNumber := humanReviewRecoveryPRNumber(current, v)
 	mergedPR := false
 	if prNumber > 0 {
-		if !h.verifyDoneRecoveryMergedPR(current, agentID, note, prNumber) {
+		if !h.verifyDoneRecoveryMergedPR(current, agentID, prNumber) {
+			if startupReplay {
+				fresh, stillLatest := h.recoveryVerdictStillLatest(current.ID, agentID, v)
+				if !stillLatest {
+					return
+				}
+				current = fresh
+			}
+			h.rejectUnblockedRecovery(current, agentID, note, startupReplay)
 			return
 		}
 		mergedPR = true
@@ -613,30 +625,56 @@ func (h *humanReviewHandler) recoveryVerdictStillLatest(taskID, agentID string, 
 	return current, true
 }
 
-func (h *humanReviewHandler) verifyDoneRecoveryMergedPR(current task.Task, agentID, note string, prNumber int) bool {
+func (h *humanReviewHandler) rejectUnblockedRecovery(current task.Task, agentID, note string, startupReplay bool) {
+	if startupReplay {
+		_, _, err := h.tasks.PutFn(current.ID, func(latest task.Task) (task.Task, error) {
+			if !strandedHumanReviewRecoveryCandidate(latest) {
+				return task.Task{}, errHumanReviewRecoverySuperseded
+			}
+			latestAgentID, _, ok := latestHumanReviewUnblockedVerdict(latest)
+			if !ok || latestAgentID != agentID {
+				return task.Task{}, errHumanReviewRecoverySuperseded
+			}
+			for i := range latest.AgentRuns {
+				if latest.AgentRuns[i].AgentID != agentID {
+					continue
+				}
+				if latest.AgentRuns[i].RecoveryReplayRejected {
+					return task.Task{}, errHumanReviewRecoverySuperseded
+				}
+				latest.Body = appendSection(latest.Body, "Auto-review: unblocked claim not verified", note)
+				latest.AgentRuns[i].VerdictRendered = true
+				latest.AgentRuns[i].RecoveryReplayRejected = true
+				return latest, nil
+			}
+			return task.Task{}, errHumanReviewRecoverySuperseded
+		})
+		if err != nil && !errors.Is(err, errHumanReviewRecoverySuperseded) {
+			h.logger.Error("human-review.reject-recovery", "task_id", current.ID, "agent_id", agentID, "err", err)
+		}
+		return
+	}
+	if !h.appendNote(current.ID, "Auto-review: unblocked claim not verified", note) {
+		return
+	}
+	h.markVerdictRendered(current.ID, agentID)
+}
+
+func (h *humanReviewHandler) verifyDoneRecoveryMergedPR(current task.Task, agentID string, prNumber int) bool {
 	if current.ProjectID == "" || h.fetchPRState == nil {
 		h.logger.Warn("human-review.unblocked.pr-state-unavailable",
 			"task_id", current.ID, "agent_id", agentID, "pr", prNumber, "project_id", current.ProjectID)
-		if h.appendNote(current.ID, "Auto-review: unblocked claim not verified", note) {
-			h.markVerdictRendered(current.ID, agentID)
-		}
 		return false
 	}
 	state, err := h.fetchPRState(current.ProjectID, prNumber)
 	if err != nil {
 		h.logger.Error("human-review.unblocked.pr-state",
 			"task_id", current.ID, "agent_id", agentID, "pr", prNumber, "err", err)
-		if h.appendNote(current.ID, "Auto-review: unblocked claim not verified", note) {
-			h.markVerdictRendered(current.ID, agentID)
-		}
 		return false
 	}
 	if state.State != "MERGED" {
 		h.logger.Warn("human-review.unblocked.pr-not-merged",
 			"task_id", current.ID, "agent_id", agentID, "pr", prNumber, "state", state.State)
-		if h.appendNote(current.ID, "Auto-review: unblocked claim not verified", note) {
-			h.markVerdictRendered(current.ID, agentID)
-		}
 		return false
 	}
 	return true
@@ -729,12 +767,20 @@ func (h *humanReviewHandler) recoverStrandedUnblockedTasks() {
 		if !ok {
 			continue
 		}
-		note := h.scrubForTask(t.ProjectID, v.Summary)
-		if hasAppendedSection(t.Body, "Auto-review: unblocked claim not verified", note) {
+		if recoveryReplayRejected(t, agentID) {
 			continue
 		}
 		h.applyUnblockedRecovery(t, agentID, v, true)
 	}
+}
+
+func recoveryReplayRejected(t task.Task, agentID string) bool {
+	for i := range t.AgentRuns {
+		if t.AgentRuns[i].AgentID == agentID {
+			return t.AgentRuns[i].RecoveryReplayRejected
+		}
+	}
+	return false
 }
 
 func strandedHumanReviewRecoveryCandidate(t task.Task) bool {
@@ -1737,11 +1783,6 @@ func appendSection(body, header, content string) string {
 	}
 	body += "## " + header + "\n\n" + strings.TrimSpace(content) + "\n"
 	return body
-}
-
-func hasAppendedSection(body, header, content string) bool {
-	section := "## " + header + "\n\n" + strings.TrimSpace(content)
-	return strings.Contains(body, section)
 }
 
 func defaultStr(s, fallback string) string {

@@ -268,9 +268,13 @@ type AgentRun struct {
 	// all side-effects for this run (note appended, issue filed, local task
 	// created). Used by verdictAlreadyRendered as the durable rendered-marker
 	// instead of body-text patterns which can collide with user content.
-	VerdictRendered bool   `json:"verdictRendered,omitempty"`
-	LogFile         string `json:"logFile"`
-	SessionID       string `json:"sessionId,omitempty"`
+	VerdictRendered bool `json:"verdictRendered,omitempty"`
+	// RecoveryReplayRejected records that startup replay evaluated this exact
+	// unblocked verdict and permanently rejected it. It is keyed to the run so
+	// a newer verdict with identical wording still gets its own evaluation.
+	RecoveryReplayRejected bool   `json:"recoveryReplayRejected,omitempty"`
+	LogFile                string `json:"logFile"`
+	SessionID              string `json:"sessionId,omitempty"`
 	// ProtocolViolation records deterministic workflow-level contract failures
 	// for this run. Test routing uses it to avoid counting a bad verifier report
 	// as an implementation failure across later workflow executions.

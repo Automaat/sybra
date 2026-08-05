@@ -1071,6 +1071,16 @@ func TestRecoverStrandedUnblockedTasks_DirtyWorktreeStaysParked(t *testing.T) {
 	}
 
 	h.recoverStrandedUnblockedTasks()
+	first, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get first rejection: %v", err)
+	}
+	reopenedStore, err := task.NewStore(filepath.Dir(first.FilePath))
+	if err != nil {
+		t.Fatalf("reopen task store: %v", err)
+	}
+	tasks = task.NewManager(reopenedStore, nil)
+	h.tasks = tasks
 	h.recoverStrandedUnblockedTasks()
 
 	got, err := tasks.Get(tk.ID)
@@ -1082,6 +1092,32 @@ func TestRecoverStrandedUnblockedTasks_DirtyWorktreeStaysParked(t *testing.T) {
 	}
 	if count := strings.Count(got.Body, "## Auto-review: unblocked claim not verified"); count != 1 {
 		t.Fatalf("verification note count = %d, want 1 after repeated replay", count)
+	}
+	if !got.AgentRuns[0].RecoveryReplayRejected {
+		t.Fatal("rejected replay must be latched on the exact agent run")
+	}
+
+	if err := os.Remove(filepath.Join(dir, "dirty.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: "hr-dirty-repaired", Role: string(agent.RoleHumanReview), State: string(agent.StateStopped),
+		Outcome: "success",
+		Result:  `{"decision":"unblocked","reason":"claimed pushed fix","recoverable_action":"ready-pr","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	}); err != nil {
+		t.Fatalf("add repaired run: %v", err)
+	}
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		return tasks.Update(id, task.Update{Status: task.Ptr(task.StatusReadyPR), StatusReason: task.Ptr(reason)})
+	}
+	h.recoverStrandedUnblockedTasks()
+
+	got, err = tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get repaired task: %v", err)
+	}
+	if got.Status != task.StatusReadyPR {
+		t.Fatalf("new same-summary verdict status = %q, want %q", got.Status, task.StatusReadyPR)
 	}
 }
 

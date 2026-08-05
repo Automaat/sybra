@@ -101,6 +101,7 @@ type agentRunRecord struct {
 	OneShot                 bool      `yaml:"one_shot,omitempty"`
 	Verdict                 string    `yaml:"verdict,omitempty"`
 	VerdictRendered         bool      `yaml:"verdict_rendered,omitempty"`
+	RecoveryReplayRejected  bool      `yaml:"recovery_replay_rejected,omitempty"`
 	LogFile                 string    `yaml:"log_file,omitempty"`
 	SessionID               string    `yaml:"session_id,omitempty"`
 	ProtocolViolation       string    `yaml:"protocol_violation,omitempty"`

@@ -85,8 +85,8 @@ func statusChangedAtBackfill(t Task, fallback time.Time) time.Time {
 // non-empty/true guard in the old map[string]any path keep that guard here
 // (see applyRunLifecycle/applyRunVerdict/applyRunTestOutcome/applyRunIdentity):
 // HeadSHA, FinalCommitSource, Outcome, EscalationReason, and string verdict/
-// test/session values ignore empty strings, and VerdictRendered is a latch
-// that only ever flips true.
+// test/session values ignore empty strings, and verdict/recovery booleans are
+// latches that only ever flip true.
 type RunPatch struct {
 	// Lifecycle
 	State                 *string
@@ -103,8 +103,9 @@ type RunPatch struct {
 	PremiumRequests *float64
 
 	// Verdict
-	Verdict         *string
-	VerdictRendered *bool
+	Verdict                *string
+	VerdictRendered        *bool
+	RecoveryReplayRejected *bool
 
 	// Test outcome
 	TestOutcome            *string
@@ -169,6 +170,9 @@ func applyRunVerdict(run *AgentRun, p RunPatch) {
 	}
 	if p.VerdictRendered != nil && *p.VerdictRendered {
 		run.VerdictRendered = true
+	}
+	if p.RecoveryReplayRejected != nil && *p.RecoveryReplayRejected {
+		run.RecoveryReplayRejected = true
 	}
 }
 
