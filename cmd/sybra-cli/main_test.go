@@ -3080,3 +3080,60 @@ func TestHookCmd_FailsOpenOnBadConfig(t *testing.T) {
 		t.Errorf("hook must produce no stdout; got %q", out)
 	}
 }
+
+// The CLI must reject a config the server would reject, rather than tolerating
+// it. Its normal path falls back to a direct task store on a load failure, so
+// a key the server understands and the CLI does not is a per-invocation
+// warning instead of a failure — that is how a deployed CLI warned "unknown
+// config key agent.sandbox_read_mode" on every call while the server ran fine.
+// The deploy preflight runs this against the live config for exactly that
+// reason.
+func TestRunCheckConfig(t *testing.T) {
+	t.Run("valid config accepted", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("SYBRA_HOME", home)
+		if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code := runCheckConfig(); code != 0 {
+			t.Fatalf("runCheckConfig() = %d, want 0 for a valid config", code)
+		}
+	})
+
+	t.Run("unknown key rejected", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("SYBRA_HOME", home)
+		configPath := filepath.Join(home, "config.yaml")
+		if err := os.WriteFile(configPath, []byte("this_key_does_not_exist: true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code := runCheckConfig(); code != 1 {
+			t.Fatalf("runCheckConfig() = %d, want 1 for an unknown config key", code)
+		}
+		// LoadNoPersist, not Load: a preflight must never rewrite the live
+		// config.yaml it is validating.
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != "this_key_does_not_exist: true\n" {
+			t.Fatalf("runCheckConfig must not rewrite an invalid config.yaml, got %q", data)
+		}
+	})
+
+	// Assert the SUCCESS case through run(): an unrecognised flag also exits
+	// 1 as an unknown command, so asserting the failure path here would pass
+	// whether or not the flag is wired at all.
+	t.Run("flag is routed by run", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("SYBRA_HOME", home)
+		if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, flag := range []string{"-check-config", "--check-config"} {
+			if code := run([]string{flag}); code != 0 {
+				t.Errorf("run(%s) = %d, want 0 — the flag is not routed", flag, code)
+			}
+		}
+	})
+}

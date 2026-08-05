@@ -47,7 +47,7 @@ BUILD_RETRY_THRESHOLD="${SYBRA_BUILD_RETRY_THRESHOLD:-3}"
 # phase depends on transient host/network/toolchain state.
 is_deterministic_phase() {
   case "$1" in
-    config-preflight) return 0 ;;
+    config-preflight | config-preflight-cli) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -176,9 +176,18 @@ main() {
   # exact live config before it is ever activated. Deterministic given an
   # unchanged sha+config, so a failure here is quarantined immediately rather
   # than retried — see the acceptance bar in issue #2729.
-  log "preflight: validating live config (fingerprint=$(config_fingerprint)) against candidate binary"
+  log "preflight: validating live config (fingerprint=$(config_fingerprint)) against candidate binaries"
   "$CANDIDATE_DIR/sybra-server" -check-config >"$(detail_log_path "$ID" config-preflight)" 2>&1 \
-    || reject_candidate "config-preflight" "candidate binary rejected the live config; see $(detail_log_path "$ID" config-preflight) on this host for detail"
+    || reject_candidate "config-preflight" "candidate server rejected the live config; see $(detail_log_path "$ID" config-preflight) on this host for detail"
+
+  # The CLI too, not just the server. The CLI tolerates a config it cannot
+  # parse by falling back to a direct task store, so a schema disagreement is a
+  # warning on every invocation instead of a failure — and agents run
+  # sybra-cli from inside their worktrees to read and update task state. A
+  # build that ships a CLI which cannot parse the config the server runs on is
+  # not a good build.
+  "$CANDIDATE_DIR/sybra-cli" -check-config >"$(detail_log_path "$ID" config-preflight-cli)" 2>&1 \
+    || reject_candidate "config-preflight-cli" "candidate CLI rejected the live config the server accepted; see $(detail_log_path "$ID" config-preflight-cli) on this host for detail"
 
   activate_candidate
   prune_releases

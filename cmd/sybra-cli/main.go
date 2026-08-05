@@ -59,6 +59,34 @@ func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
+// runCheckConfig mirrors sybra-server's -check-config so the deploy preflight
+// can assert both binaries accept the live config, not just the server.
+//
+// They can disagree: the CLI tolerates a config it cannot parse by falling
+// back to a direct task store, so a key the server understands and the CLI
+// does not produces a warning on every invocation rather than a failure. That
+// is how a deployed CLI ended up warning "unknown config key
+// agent.sandbox_read_mode" on every call while the server ran happily — and
+// agents run sybra-cli from inside their worktrees to read and update task
+// state, so a CLI silently dropping the resolved config is a state-drift
+// hazard sitting in the middle of every workflow.
+//
+// LoadNoPersist, not Load, for the same reason the server uses it: a preflight
+// must never mutate the live config.yaml.
+func runCheckConfig() int {
+	cfg, err := config.LoadNoPersist()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config: invalid:", err)
+		return 1
+	}
+	if err := cfg.ValidateCluster(); err != nil {
+		fmt.Fprintln(os.Stderr, "config: invalid:", err)
+		return 1
+	}
+	fmt.Println("config: ok")
+	return 0
+}
+
 type homeResolution struct {
 	effectiveHome   string
 	fromControlHome bool
@@ -69,6 +97,9 @@ func run(args []string) int {
 	if len(args) == 0 {
 		usage()
 		return 1
+	}
+	if args[0] == "-check-config" || args[0] == "--check-config" {
+		return runCheckConfig()
 	}
 
 	// Extract global --json and --home flags before subcommand.
@@ -82,12 +113,16 @@ func run(args []string) int {
 		case a == "--json":
 			jsonOut = true
 		case a == "--home":
-			if i+1 >= len(args) {
+			// Take the tail as a slice rather than indexing: slicing at
+			// i+1 is always valid here, so the emptiness check below is
+			// provably sufficient and the bounds analysis stays happy.
+			rest := args[i+1:]
+			if len(rest) == 0 {
 				homeErr = true
 				continue
 			}
+			homeOverride = rest[0]
 			i++
-			homeOverride = args[i]
 		case strings.HasPrefix(a, "--home="):
 			homeOverride = strings.TrimPrefix(a, "--home=")
 		default:
