@@ -83,9 +83,17 @@ func (s *ConfigService) subscriberNames() []string {
 
 // pendingNotify is the set of subscriber callbacks a hot apply owes, captured
 // while the config lock is held and invoked after it is released.
+//
+// It deliberately does NOT carry the config snapshot it was built from.
+// Callbacks run outside s.mu, so a second mutation can acquire the lock and
+// finish before an earlier pending.run() gets scheduled; replaying a captured
+// snapshot would then leave a sink holding an older value than the live
+// config. Each callback reads the current config instead, and notifyMu
+// serialises them, so whichever order they run in they converge on the newest
+// value.
 type pendingNotify struct {
 	subs []configSubscriber
-	next config.Config
+	svc  *ConfigService
 }
 
 // collectSubscribersLocked snapshots the subscribers a hot apply must wake.
@@ -94,7 +102,7 @@ type pendingNotify struct {
 // service. That deadlock is not hypothetical: the first version of this called
 // RLock from applyHotChangesLocked and hung every SaveRawConfig to the test
 // timeout.
-func (s *ConfigService) collectSubscribersLocked(applied []string, next config.Config) pendingNotify {
+func (s *ConfigService) collectSubscribersLocked(applied []string, _ config.Config) pendingNotify {
 	if s == nil {
 		return pendingNotify{}
 	}
@@ -104,13 +112,27 @@ func (s *ConfigService) collectSubscribersLocked(applied []string, next config.C
 			subs = append(subs, sub)
 		}
 	}
-	return pendingNotify{subs: subs, next: next}
+	return pendingNotify{subs: subs, svc: s}
 }
 
-// run invokes the captured callbacks. Safe on a zero value.
+// run invokes the captured callbacks against the live config, serialised so
+// two concurrent mutations cannot interleave their notifications. Safe on a
+// zero value.
 func (p pendingNotify) run() {
+	if p.svc == nil || len(p.subs) == 0 {
+		return
+	}
+	p.svc.notifyMu.Lock()
+	defer p.svc.notifyMu.Unlock()
+
+	p.svc.mu.RLock()
+	live := p.svc.cfg
+	p.svc.mu.RUnlock()
+	if live == nil {
+		return
+	}
 	for _, sub := range p.subs {
-		sub.Apply(p.next)
+		sub.Apply(*live)
 	}
 }
 

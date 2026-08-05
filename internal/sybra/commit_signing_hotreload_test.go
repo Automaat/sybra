@@ -39,6 +39,8 @@ func TestApplyAgentGuardrails_ReappliesCommitSigning(t *testing.T) {
 
 	var cfg config.Config
 	cfg.Agent.CommitSigning = "never"
+	// Callbacks read the live config rather than a captured snapshot.
+	svc.cfg = &cfg
 	svc.notifySubscribers([]string{"agent"}, cfg)
 
 	if gotPolicy != "never" {

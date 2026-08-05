@@ -3,6 +3,7 @@ package sybra
 import (
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/config"
@@ -106,6 +107,9 @@ func TestConfigService_HotApplyReachesSubscribers(t *testing.T) {
 
 	var cfg config.Config
 	cfg.Agent.CommitSigning = "never"
+	// Callbacks read the live config rather than a captured snapshot, so the
+	// service must have one — see pendingNotify.
+	svc.cfg = &cfg
 	svc.notifySubscribers([]string{"agent"}, cfg)
 
 	if len(woke) != 1 || woke[0] != "commit_signing" {
@@ -130,5 +134,55 @@ func TestConfigService_SubscribeIsNilSafe(t *testing.T) {
 	svc.notifySubscribers([]string{"agent"}, config.Config{})
 	if names := svc.subscriberNames(); len(names) != 0 {
 		t.Errorf("subscriberNames() = %v, want the Apply-less subscriber rejected", names)
+	}
+}
+
+// Callbacks run outside the config lock, so a second mutation can finish
+// before an earlier notification is scheduled. Replaying a captured snapshot
+// would then leave a sink holding an older value than the live config; reading
+// the live config at callback time converges regardless of order.
+func TestConfigService_ConcurrentMutationsConvergeOnLiveConfig(t *testing.T) {
+	svc, cfgPath := setupConfigSvc(t)
+
+	write := func(value string) string {
+		return strings.Join([]string{"schema_version: 2", "agent:", "  commit_signing: " + value, ""}, "\n")
+	}
+	if err := os.WriteFile(cfgPath, []byte(write("auto")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.cfg = cfg
+	svc.persisted = cloneConfig(cfg)
+
+	var mu sync.Mutex
+	var seen []string
+	svc.subscribe(configSubscriber{
+		Name:  "commit_signing",
+		Paths: []string{"agent.commit_signing"},
+		Apply: func(c config.Config) {
+			mu.Lock()
+			defer mu.Unlock()
+			seen = append(seen, c.CommitSigning())
+		},
+	})
+
+	for _, v := range []string{"never", "require", "never"} {
+		if err := svc.SaveRawConfig(write(v)); err != nil {
+			t.Fatalf("SaveRawConfig(%s): %v", v, err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) == 0 {
+		t.Fatal("no subscriber callbacks fired")
+	}
+	// Whatever the interleaving, the final observation must match the live
+	// config rather than a stale captured snapshot.
+	if last, want := seen[len(seen)-1], svc.cfg.CommitSigning(); last != want {
+		t.Errorf("last observed %q, live config is %q", last, want)
 	}
 }

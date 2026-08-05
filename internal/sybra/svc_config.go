@@ -23,7 +23,11 @@ import (
 type ConfigService struct {
 	mu sync.RWMutex
 	// subscribers receive every hot apply; see configSubscriber.
-	subscribers    []configSubscriber
+	subscribers []configSubscriber
+	// notifyMu serialises subscriber callbacks. They run outside mu, so
+	// without this two concurrent mutations could interleave and leave a sink
+	// holding an older value than the live config.
+	notifyMu       sync.Mutex
 	cfg            *config.Config
 	persisted      *config.Config
 	logLevel       *slog.LevelVar
