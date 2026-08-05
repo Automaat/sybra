@@ -26,6 +26,19 @@ const connectivityCooldown = 60 * time.Second
 // would just churn retries against the same exhausted limit.
 const weeklyLimitCooldown = time.Hour
 
+// rateLimitCooldown prefers a provider-supplied reset instant over the
+// caller's default. Parsing runs on the raw (non-lowercased) sample so the
+// month names survive, and falls back silently when nothing parses.
+func rateLimitCooldown(s ErrorSample, fallback time.Duration) time.Duration {
+	if d, ok := parseResetHint(s.Stderr); ok {
+		return d
+	}
+	if d, ok := parseResetHint(s.Content); ok {
+		return d
+	}
+	return fallback
+}
+
 // ErrorSample is the runner→classifier DTO. Using a plain struct (instead of
 // agent.StreamEvent directly) prevents an import cycle between internal/agent
 // and internal/provider.
@@ -60,15 +73,15 @@ func ClassifyClaudeError(s ErrorSample) (Signal, string, time.Duration) {
 	// to a weekly-quota-exhaustion message, and the longer weeklyLimitCooldown
 	// park only applies if the text is inspected first.
 	if isWeeklyLimitText(stderr, content, s.ContentIsCleanResult) {
-		return SignalRateLimit, "weekly_limit", weeklyLimitCooldown
+		return SignalRateLimit, "weekly_limit", rateLimitCooldown(s, weeklyLimitCooldown)
 	}
 	if s.ErrorStatus == 429 || s.ErrorType == "rate_limit_error" || s.ErrorType == "credit_balance_too_low" {
-		return SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), 0
+		return SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), rateLimitCooldown(s, 0)
 	}
 	if containsAny(stderr, "rate_limit", "rate limit", "credit_balance_too_low", "quota", "session limit", "usage limit", "weekly limit") ||
 		containsRateLimitContent(content, s.ContentIsCleanResult,
 			"rate_limit", "rate limit", "credit_balance_too_low", "quota", "session limit", "usage limit", "weekly limit") {
-		return SignalRateLimit, "rate_limited", 0
+		return SignalRateLimit, "rate_limited", rateLimitCooldown(s, 0)
 	}
 	return SignalNone, "", 0
 }
@@ -144,7 +157,7 @@ func ClassifyCodexError(s ErrorSample) (Signal, string, time.Duration) {
 	// code to a weekly-quota-exhaustion message, and the longer
 	// weeklyLimitCooldown park only applies if the text is inspected first.
 	if isWeeklyLimitText(stderr, content, s.ContentIsCleanResult) {
-		return SignalRateLimit, "weekly_limit", weeklyLimitCooldown
+		return SignalRateLimit, "weekly_limit", rateLimitCooldown(s, weeklyLimitCooldown)
 	}
 	// Host-anchored: a bare "websocket connection" without the codex backend
 	// host must NOT match — it would false-positive on unrelated network
@@ -167,12 +180,12 @@ func ClassifyCodexError(s ErrorSample) (Signal, string, time.Duration) {
 		return SignalRateLimit, "connectivity", connectivityCooldown
 	}
 	if s.ErrorStatus == 429 || strings.EqualFold(s.ErrorType, "rate_limit") || strings.EqualFold(s.ErrorType, "insufficient_quota") {
-		return SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), 0
+		return SignalRateLimit, reasonFromType(s.ErrorType, "rate_limited"), rateLimitCooldown(s, 0)
 	}
 	if containsAny(stderr, "rate_limit", "rate limit", "insufficient_quota", "quota exceeded", "usage limit", "weekly limit") ||
 		containsRateLimitContent(content, s.ContentIsCleanResult,
 			"rate_limit", "rate limit", "insufficient_quota", "quota exceeded", "usage limit", "weekly limit") {
-		return SignalRateLimit, "rate_limited", 0
+		return SignalRateLimit, "rate_limited", rateLimitCooldown(s, 0)
 	}
 	return SignalNone, "", 0
 }

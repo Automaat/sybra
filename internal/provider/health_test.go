@@ -147,7 +147,20 @@ func TestProbeCodexOldCLIMarksProviderUnhealthy(t *testing.T) {
 	}
 }
 
+// classifierNow pins the classifier tests' clock a few days before the
+// "resets Jul 1 at 5pm" fixtures, so the parsed instant is a concrete
+// sub-clamp duration instead of depending on the wall clock.
+var classifierNow = time.Date(2026, time.June, 28, 12, 0, 0, 0, time.Local)
+
+// julyFirstReset is what the Jul 1 fixtures parse to under classifierNow.
+var julyFirstReset = time.Date(2026, time.July, 1, 17, 0, 0, 0, time.Local).Sub(classifierNow)
+
 func TestClassifyClaudeError(t *testing.T) {
+	// Pin the clock: several fixtures carry "resets Jul 1 at 5pm", which is now
+	// parsed into a concrete instant rather than falling back to the fixed
+	// cooldown. julyFirstReset is that instant relative to the pinned now.
+	pinNow(t, classifierNow)
+
 	cases := []struct {
 		name           string
 		in             ErrorSample
@@ -164,8 +177,8 @@ func TestClassifyClaudeError(t *testing.T) {
 		{"stderr_rate_limit", ErrorSample{Stderr: "rate limit exceeded"}, SignalRateLimit, "rate_limited", 0},
 		{"content_session_limit", ErrorSample{Content: "You've hit your session limit · resets 4:30pm"}, SignalRateLimit, "rate_limited", 0},
 		{"content_usage_limit", ErrorSample{Content: "usage limit reached for this period"}, SignalRateLimit, "rate_limited", 0},
-		{"content_weekly_limit", ErrorSample{Content: "You've hit your weekly limit · resets Jul 1 at 5pm"}, SignalRateLimit, "weekly_limit", weeklyLimitCooldown},
-		{"stderr_weekly_limit", ErrorSample{Stderr: "You've hit your weekly limit · resets Jul 1 at 5pm"}, SignalRateLimit, "weekly_limit", weeklyLimitCooldown},
+		{"content_weekly_limit", ErrorSample{Content: "You've hit your weekly limit · resets Jul 1 at 5pm"}, SignalRateLimit, "weekly_limit", julyFirstReset},
+		{"stderr_weekly_limit", ErrorSample{Stderr: "You've hit your weekly limit · resets Jul 1 at 5pm"}, SignalRateLimit, "weekly_limit", julyFirstReset},
 		{"weekly_word_without_specific_phrase_stays_rate_limited", ErrorSample{Content: "usage limit reached · resets weekly on Monday"}, SignalRateLimit, "rate_limited", 0},
 		{"clean_content_rate_limit_exceeded", ErrorSample{Content: "rate limit exceeded", ContentIsCleanResult: true}, SignalRateLimit, "rate_limited", 0},
 		{"clean_content_rate_limit_reached", ErrorSample{Content: "rate limit reached", ContentIsCleanResult: true}, SignalRateLimit, "rate_limited", 0},
@@ -177,7 +190,7 @@ func TestClassifyClaudeError(t *testing.T) {
 		{
 			"structured_429_with_weekly_content_stays_weekly",
 			ErrorSample{ErrorStatus: 429, Content: "You've hit your weekly limit · resets Jul 1 at 5pm"},
-			SignalRateLimit, "weekly_limit", weeklyLimitCooldown,
+			SignalRateLimit, "weekly_limit", julyFirstReset,
 		},
 		{
 			"structured_rate_limit_error_type_with_weekly_stderr_stays_weekly",
@@ -202,6 +215,11 @@ func TestClassifyClaudeError(t *testing.T) {
 }
 
 func TestClassifyCodexError(t *testing.T) {
+	// Pin the clock: several fixtures carry "resets Jul 1 at 5pm", which is now
+	// parsed into a concrete instant rather than falling back to the fixed
+	// cooldown. julyFirstReset is that instant relative to the pinned now.
+	pinNow(t, classifierNow)
+
 	cases := []struct {
 		name           string
 		in             ErrorSample
@@ -255,7 +273,7 @@ func TestClassifyCodexError(t *testing.T) {
 		{
 			"structured_429_with_weekly_content_stays_weekly",
 			ErrorSample{ErrorStatus: 429, Content: "You've hit your weekly limit · resets Jul 1 at 5pm"},
-			SignalRateLimit, "weekly_limit", weeklyLimitCooldown,
+			SignalRateLimit, "weekly_limit", julyFirstReset,
 		},
 		{
 			"structured_rate_limit_type_with_weekly_stderr_stays_weekly",
