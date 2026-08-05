@@ -3412,23 +3412,23 @@ func TestRouteTestResult_DistinctFailureLoopUsesRaisedDefaultBackstop(t *testing
 		wantStatus string
 	}{
 		{
-			name:       "past old cap still reimplements",
-			taskID:     "t-default-cap-11",
-			attempts:   11,
+			name:       "below new cap still reimplements",
+			taskID:     "t-default-cap-3",
+			attempts:   3,
 			wantOutput: "reimplement",
 			wantStatus: "in-progress",
 		},
 		{
 			name:       "one below new backstop still reimplements",
-			taskID:     "t-default-cap-24",
-			attempts:   24,
+			taskID:     "t-default-cap-4",
+			attempts:   4,
 			wantOutput: "reimplement",
 			wantStatus: "in-progress",
 		},
 		{
 			name:       "at new backstop escalates",
-			taskID:     "t-default-cap-25",
-			attempts:   25,
+			taskID:     "t-default-cap-5",
+			attempts:   5,
 			wantOutput: "escalated",
 			wantStatus: "human-required",
 		},
