@@ -3,6 +3,7 @@ package task
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -11,6 +12,7 @@ import (
 type sidecarCase struct {
 	name   string
 	suffix string
+	label  string
 	store  func(*Store) *PlanningSidecarStore
 	set    func(*Update, string)
 	get    func(Task) string
@@ -20,6 +22,7 @@ func sidecarCases() []sidecarCase {
 	return []sidecarCase{
 		{
 			name:   "plan",
+			label:  "plan",
 			suffix: ".plan.md",
 			store:  (*Store).Plans,
 			set:    func(u *Update, v string) { u.Plan = Ptr(v) },
@@ -27,6 +30,7 @@ func sidecarCases() []sidecarCase {
 		},
 		{
 			name:   "plan contract",
+			label:  "plan contract",
 			suffix: ".plan-contract.json",
 			store:  (*Store).PlanContracts,
 			set:    func(u *Update, v string) { u.PlanContract = Ptr(v) },
@@ -34,6 +38,7 @@ func sidecarCases() []sidecarCase {
 		},
 		{
 			name:   "plan critique",
+			label:  "plan critique",
 			suffix: ".plan-critique.md",
 			store:  (*Store).PlanCritiques,
 			set:    func(u *Update, v string) { u.PlanCritique = Ptr(v) },
@@ -41,6 +46,7 @@ func sidecarCases() []sidecarCase {
 		},
 		{
 			name:   "plan research",
+			label:  "plan research",
 			suffix: ".plan-research.md",
 			store:  (*Store).PlanResearch,
 			set:    func(u *Update, v string) { u.PlanResearch = Ptr(v) },
@@ -48,6 +54,7 @@ func sidecarCases() []sidecarCase {
 		},
 		{
 			name:   "plan decisions",
+			label:  "plan decisions",
 			suffix: ".plan-decisions.md",
 			store:  (*Store).PlanDecisions,
 			set:    func(u *Update, v string) { u.PlanDecisions = Ptr(v) },
@@ -55,6 +62,7 @@ func sidecarCases() []sidecarCase {
 		},
 		{
 			name:   "plan brief",
+			label:  "plan brief",
 			suffix: ".plan-brief.md",
 			store:  (*Store).PlanBrief,
 			set:    func(u *Update, v string) { u.PlanBrief = Ptr(v) },
@@ -62,6 +70,7 @@ func sidecarCases() []sidecarCase {
 		},
 		{
 			name:   "code review",
+			label:  "code review",
 			suffix: ".review.md",
 			store:  (*Store).CodeReviews,
 			set:    func(u *Update, v string) { u.CodeReview = Ptr(v) },
@@ -121,6 +130,45 @@ func TestPlanningSidecarStoreReadWriteDelete(t *testing.T) {
 				t.Errorf("sidecar %s should be removed by an empty write", path)
 			}
 		})
+	}
+}
+
+// Callers such as clusterlead mirroring surface these errors unwrapped, so the
+// store's own label is the only thing naming which of the seven sidecars failed.
+func TestPlanningSidecarStoreErrorsNameTheSidecar(t *testing.T) {
+	t.Parallel()
+	for _, tc := range sidecarCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			store, err := NewStore(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sidecar := tc.store(store)
+
+			// A non-empty directory where the sidecar file belongs fails
+			// all three operations from one fixture: EISDIR, ENOTEMPTY, and a rename collision.
+			blocked := filepath.Join(dir, "task-err"+tc.suffix)
+			if err := os.MkdirAll(filepath.Join(blocked, "child"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			_, readErr := sidecar.Read("task-err")
+			assertErrPrefix(t, "Read", readErr, "read "+tc.label)
+			assertErrPrefix(t, "Write", sidecar.Write("task-err", "content"), "write "+tc.label)
+			assertErrPrefix(t, "Delete", sidecar.Delete("task-err"), "delete "+tc.label)
+		})
+	}
+}
+
+func assertErrPrefix(t *testing.T, op string, err error, want string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: want an error naming %q, got nil", op, want)
+	}
+	if !strings.HasPrefix(err.Error(), want+": ") {
+		t.Errorf("%s error = %q, want prefix %q", op, err, want+": ")
 	}
 }
 
