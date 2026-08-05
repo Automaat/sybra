@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -123,4 +124,34 @@ func TestTaskService_DispatchFromHumanRequired_LockTimeoutReturnsUnavailable(t *
 
 	_, err = svc.DispatchFromHumanRequired(human.ID, string(task.StatusDone), "resume")
 	assertRetryableTaskLockError(t, err, human.FilePath+".lock")
+}
+
+func TestTaskService_DeleteTask_LockTimeoutReturnsBeforeCleanup(t *testing.T) {
+	t.Parallel()
+
+	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := task.NewManager(store, nil)
+	created, err := mgr.Create("locked delete", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := fsutil.LockFile(created.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unlock() }()
+
+	svc := &TaskService{
+		tasks:  mgr,
+		logger: discardLogger(),
+	}
+	err = svc.DeleteTask(created.ID)
+	assertRetryableTaskLockError(t, err, created.FilePath+".lock")
+
+	if _, err := mgr.Get(created.ID); err != nil {
+		t.Fatalf("task should remain after failed delete: %v", err)
+	}
 }

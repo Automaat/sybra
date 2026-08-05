@@ -20,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/loopagent"
@@ -46,6 +47,9 @@ const (
 	// to a task review sidecar when a review run is stopped by the cost
 	// guardrail before it can post a draft.
 	interruptedReviewMaxLen = 12000
+
+	completionUpdateRunRetryInitialDelay = 250 * time.Millisecond
+	completionUpdateRunRetryMaxDelay     = 5 * time.Second
 )
 
 // Config carries every dependency Handler needs. Only Logger and Tasks are
@@ -256,8 +260,39 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 
 	runUpdates := h.buildRunPatch(ag, state, cost, premiumRequests, resultContent, exitErr)
 	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates); err != nil {
+		if errors.Is(err, fsutil.ErrLockTimeout) {
+			h.logger.Warn("task.update-run.deferred", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+			go h.retryUpdateRunCompletion(ag, runUpdates, resultContent, exitErr)
+			return
+		}
 		h.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
+	h.afterRunPersisted(ag, resultContent, exitErr)
+}
+
+func (h *Handler) retryUpdateRunCompletion(ag *agent.Agent, runUpdates task.RunPatch, resultContent string, exitErr error) {
+	delay := completionUpdateRunRetryInitialDelay
+	for {
+		time.Sleep(delay)
+		err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates)
+		if err == nil {
+			h.logger.Info("task.update-run.deferred.persisted", "task_id", ag.TaskID, "agent_id", ag.ID)
+			h.afterRunPersisted(ag, resultContent, exitErr)
+			return
+		}
+		if !errors.Is(err, fsutil.ErrLockTimeout) {
+			h.logger.Error("task.update-run.deferred.failed", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+			return
+		}
+		h.logger.Warn("task.update-run.deferred.retry", "task_id", ag.TaskID, "agent_id", ag.ID, "delay", delay, "err", err)
+		delay *= 2
+		if delay > completionUpdateRunRetryMaxDelay {
+			delay = completionUpdateRunRetryMaxDelay
+		}
+	}
+}
+
+func (h *Handler) afterRunPersisted(ag *agent.Agent, resultContent string, exitErr error) {
 	h.salvageInterruptedReview(ag)
 	h.markCompletedReview(ag, exitErr)
 

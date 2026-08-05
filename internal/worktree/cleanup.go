@@ -41,6 +41,14 @@ func (m *Manager) Remove(ctx context.Context, taskID string) {
 	if err != nil || t.ProjectID == "" {
 		return
 	}
+	m.RemoveTask(ctx, t)
+}
+
+// RemoveTask cleans up the worktree for an already-loaded task snapshot.
+func (m *Manager) RemoveTask(ctx context.Context, t task.Task) {
+	if t.ProjectID == "" {
+		return
+	}
 	// Never touch an externally-adopted worktree: the tool that created it
 	// (e.g. Orca) owns its lifecycle. Removing it would delete the user's
 	// checkout from under them.

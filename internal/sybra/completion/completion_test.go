@@ -12,9 +12,11 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/watchdogreason"
+	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
@@ -32,6 +34,26 @@ func sigkillErr(t *testing.T) error {
 		t.Fatalf("signal: %v", err)
 	}
 	return cmd.Wait()
+}
+
+type recordingCompletionWorkflow struct {
+	completed chan workflow.AgentCompletion
+}
+
+func (w *recordingCompletionWorkflow) HandleAgentComplete(_ string, c workflow.AgentCompletion) {
+	w.completed <- c
+}
+
+func (w *recordingCompletionWorkflow) ClearAgentStep(_, _ string) {}
+
+func (w *recordingCompletionWorkflow) RescheduleInterruptedAgent(_, _ string) {}
+
+func (w *recordingCompletionWorkflow) RescheduleRateLimitedAgent(_, _ string) {}
+
+func (w *recordingCompletionWorkflow) RescheduleCheckpointedAgent(_, _ string) {}
+
+func (w *recordingCompletionWorkflow) DispatchEvent(_, _ string, _, _ map[string]string) (string, error) {
+	return "", nil
 }
 
 func TestRunOutcome(t *testing.T) {
@@ -675,6 +697,78 @@ func TestOnComplete_ImportsTestRunnerEvidenceBeforeTerminalStatus(t *testing.T) 
 	}
 	if metas[0].SourcePath != shotPath {
 		t.Fatalf("SourcePath = %q, want %q", metas[0].SourcePath, shotPath)
+	}
+}
+
+func TestOnComplete_DefersWorkflowUntilLockTimeoutRunUpdatePersists(t *testing.T) {
+	taskMgr := newMinimalTaskManager(t)
+	tk, err := taskMgr.Create("locked completion", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
+		AgentID:   "agent-lock",
+		Role:      string(agent.RoleImplementation),
+		Mode:      "headless",
+		State:     string(agent.StateRunning),
+		StartedAt: time.Now().Add(-time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	unlock, err := fsutil.LockFile(tk.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unlock() }()
+
+	wf := &recordingCompletionWorkflow{completed: make(chan workflow.AgentCompletion, 1)}
+	h := &Handler{
+		logger:         discardLogger(),
+		tasks:          taskMgr,
+		workflowEngine: wf,
+	}
+	ag := &agent.Agent{
+		ID:        "agent-lock",
+		TaskID:    tk.ID,
+		Name:      agent.RoleImplementation.AgentName(tk.Title),
+		Mode:      "headless",
+		State:     agent.StateStopped,
+		StartedAt: time.Now().Add(-time.Second),
+	}
+	ag.AppendOutput(agent.StreamEvent{Type: "result", Content: "done after lock"})
+
+	h.OnComplete(ag)
+
+	select {
+	case c := <-wf.completed:
+		t.Fatalf("workflow completed before terminal run persisted: %+v", c)
+	default:
+	}
+
+	if err := unlock(); err != nil {
+		t.Fatal(err)
+	}
+	unlock = func() error { return nil }
+
+	select {
+	case c := <-wf.completed:
+		if c.AgentID != "agent-lock" || c.Result != "done after lock" || !c.Success {
+			t.Fatalf("workflow completion = %+v, want persisted successful agent result", c)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("deferred completion did not reach workflow")
+	}
+
+	got, err := taskMgr.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AgentRuns[0].State != string(agent.StateStopped) {
+		t.Fatalf("run state = %q, want %q", got.AgentRuns[0].State, agent.StateStopped)
+	}
+	if got.AgentRuns[0].Result != "done after lock" {
+		t.Fatalf("run result = %q, want deferred result", got.AgentRuns[0].Result)
 	}
 }
 

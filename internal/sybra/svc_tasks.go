@@ -1372,21 +1372,26 @@ func (s *TaskService) logDispatchAudit(id, target, previousStatus, reason, outco
 // DeleteTask removes a task file from disk and cleans up its worktree.
 func (s *TaskService) DeleteTask(id string) error {
 	s.logger.Info("task.delete", "task_id", id)
+	deleted, err := s.tasks.Get(id)
+	if err != nil {
+		s.logger.Error("task.delete.failed", "task_id", id, "err", err)
+		return err
+	}
+	if err := s.tasks.Delete(id); err != nil {
+		s.logger.Error("task.delete.failed", "task_id", id, "err", err)
+		return translateTaskLockTimeout(err)
+	}
 	s.agents.KillAgentsForTask(id, 10*time.Second)
 	if s.sandboxes != nil {
 		s.sandboxes.Remove(id)
 	}
 	// context.Background(): DeleteTask is a Wails-bound method with no ctx.
-	s.worktrees.Remove(context.Background(), id)
+	s.worktrees.RemoveTask(context.Background(), deleted)
 	if s.audit != nil {
 		_ = s.audit.Log(audit.Event{
 			Type:   audit.EventTaskDeleted,
 			TaskID: id,
 		})
-	}
-	if err := s.tasks.Delete(id); err != nil {
-		s.logger.Error("task.delete.failed", "task_id", id, "err", err)
-		return translateTaskLockTimeout(err)
 	}
 	return nil
 }
