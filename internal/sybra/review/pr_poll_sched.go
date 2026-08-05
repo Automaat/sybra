@@ -15,6 +15,11 @@ type knownPRPollSelection struct {
 	selectedPRs int
 	deferredPRs int
 	cappedPRs   int
+	// retainKeys are the PRs this tick deliberately skipped (deferred by
+	// backoff or cut by the per-tick cap). They are absent from `tasks`, so
+	// without listing them here Prune would delete the very skip counters that
+	// deferred them and the backoff could never last more than one tick.
+	retainKeys []string
 }
 
 func expBackoff(streak, maxTicks int) int {
@@ -35,6 +40,7 @@ func (r *Handler) selectKnownPRPoll(ctx context.Context, tasks []task.Task) know
 	active := make([]task.Task, 0, len(tasks))
 	passthrough := make([]task.Task, 0, len(tasks))
 	candidates := make([]task.Task, 0, len(tasks))
+	var retainKeys []string
 	activePRs := 0
 	deferred := 0
 
@@ -61,6 +67,7 @@ func (r *Handler) selectKnownPRPoll(ctx context.Context, tasks []task.Task) know
 		if skipTicks > 0 {
 			if r.knownPRStillStableDuringBackoff(&tk, key) {
 				deferred++
+				retainKeys = append(retainKeys, key)
 				continue
 			}
 		}
@@ -85,9 +92,14 @@ func (r *Handler) selectKnownPRPoll(ctx context.Context, tasks []task.Task) know
 	selected = append(selected, active...)
 	selected = append(selected, passthrough...)
 	selected = append(selected, candidates[:budget]...)
+	for i := range candidates[budget:] {
+		capped := &candidates[budget+i]
+		retainKeys = append(retainKeys, prRefCacheKey(capped.ProjectID, capped.PRNumber))
+	}
 
 	return knownPRPollSelection{
 		tasks:       selected,
+		retainKeys:  retainKeys,
 		selectedPRs: activePRs + budget,
 		deferredPRs: deferred,
 		cappedPRs:   len(candidates) - budget,

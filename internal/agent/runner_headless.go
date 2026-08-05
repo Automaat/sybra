@@ -321,12 +321,13 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 		if writeErr := m.writeUserMessageTimeout(a, cfg.Prompt, stdinInitialWriteTimeout); writeErr != nil {
 			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
 			a.SetError(ErrorKindPromptUndelivered, writeErr.Error())
+			a.SetExitErr(fmt.Errorf("%w: %w", errPromptUndelivered, writeErr))
 			a.convo.closeStdinPipe()
 			if cmd.Process != nil {
 				_ = cmd.Process.Kill()
 			}
 			_ = cmd.Wait()
-			return false, fmt.Errorf("deliver initial prompt: %w", writeErr)
+			return false, fmt.Errorf("deliver initial prompt: %w: %w", errPromptUndelivered, writeErr)
 		}
 	} else if promptStdin != nil {
 		m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt)
@@ -511,6 +512,7 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 		if writeErr := m.writeUserMessageTimeout(a, cfg.Prompt, stdinInitialWriteTimeout); writeErr != nil {
 			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
 			a.SetError(ErrorKindPromptUndelivered, writeErr.Error())
+			a.SetExitErr(fmt.Errorf("%w: %w", errPromptUndelivered, writeErr))
 			a.convo.closeStdinPipe()
 			if cmd.Process != nil {
 				_ = cmd.Process.Kill()
@@ -520,7 +522,7 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 				// pipe variant's kill path.
 				_ = cmd.Wait()
 			}
-			return nil, fmt.Errorf("deliver initial prompt: %w", writeErr)
+			return nil, fmt.Errorf("deliver initial prompt: %w: %w", errPromptUndelivered, writeErr)
 		}
 	} else if promptStdin != nil {
 		m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt)
@@ -1681,6 +1683,11 @@ func (m *Manager) handleError(ctx context.Context, a *Agent, err error) {
 func classifyAgentError(err error) string {
 	if err == nil {
 		return "crash"
+	}
+	// Ahead of the substring table, which reads this as a bare i/o timeout and
+	// mislabels it git_clone.
+	if errors.Is(err, errPromptUndelivered) {
+		return ErrorKindPromptUndelivered
 	}
 	msg := strings.ToLower(err.Error())
 	switch {

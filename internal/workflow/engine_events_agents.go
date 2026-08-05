@@ -641,6 +641,80 @@ func (e *Engine) checkpointRescheduleKey(stepID string) string {
 	return "step." + stepID + ".checkpoint_count"
 }
 
+// maxPromptUndeliveredRetries bounds re-dispatches for runs whose prompt never
+// reached the provider child. The stall lane skips HandleAgentComplete, so
+// nothing else counts these — without a ceiling a wedged CLI would burn a
+// two-minute write timeout per tick forever instead of reaching a human.
+const maxPromptUndeliveredRetries = 3
+
+func promptUndeliveredKey(stepID string) string {
+	return "step." + stepID + ".prompt_undelivered"
+}
+
+func (e *Engine) handlePromptUndeliveredReschedule(taskID string, t *TaskInfo, step *Step) bool {
+	if t.Workflow == nil {
+		return true
+	}
+	return e.boundedRetry(t, step, boundedRetryPolicy{
+		name:       "prompt-undelivered-reschedule",
+		applies:    func(*Engine, *TaskInfo, *Step) bool { return true },
+		counterKey: promptUndeliveredKey,
+		max:        maxPromptUndeliveredRetries,
+		onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
+			reason := fmt.Sprintf("provider never accepted the prompt across %d attempts — the agent CLI is not reading stdin on this host", attempts+1)
+			if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+				e.resumeError.Log(e.logger, "workflow.prompt-undelivered-reschedule.human-required", taskID, err, "task_id", taskID)
+			}
+		},
+	})
+}
+
+// ReschedulePromptUndeliveredAgent re-drives a run_agent step whose provider
+// child never read the prompt, charging each attempt against a per-step budget
+// so a persistently wedged CLI escalates instead of looping.
+func (e *Engine) ReschedulePromptUndeliveredAgent(taskID, agentID string) {
+	if taskID == "" {
+		e.clearAgentStep(taskID, agentID)
+		e.logger.Warn("workflow.prompt-undelivered-reschedule.untracked", "agent_id", agentID)
+		return
+	}
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil || t.Workflow == nil || t.Workflow.CurrentStep == "" {
+		e.clearAgentStep(taskID, agentID)
+		return
+	}
+	if _, skip := resumeSkipReasonForStatus(t.Status); t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed || skip {
+		e.clearAgentStep(taskID, agentID)
+		return
+	}
+	def, err := e.store.Get(t.Workflow.WorkflowID)
+	if err != nil {
+		e.clearAgentStep(taskID, agentID)
+		return
+	}
+	step := def.StepByID(t.Workflow.CurrentStep)
+	if step == nil {
+		e.clearAgentStep(taskID, agentID)
+		return
+	}
+	spawnedStep, tracked := e.lookupAgentStep(taskID, agentID)
+	if step.Type != StepRunAgent || (tracked && spawnedStep != step.ID) {
+		// Block attempts still charge the budget so a wedged CLI cannot loop
+		// inside a parallel/best-of-n child; ResumeStalled respawns the attempt.
+		e.clearAgentStep(taskID, agentID)
+		clearAgentRouteFromWorkflow(t.Workflow, agentID)
+		if tracked {
+			e.handlePromptUndeliveredReschedule(taskID, &t, step)
+		}
+		return
+	}
+	e.clearAgentStep(taskID, agentID)
+	clearAgentRouteFromWorkflow(t.Workflow, agentID)
+	e.rescheduleRunAgent(taskID, agentID, step, t, &def, "workflow.prompt-undelivered-reschedule", func(t *TaskInfo, step *Step) bool {
+		return e.handlePromptUndeliveredReschedule(taskID, t, step)
+	})
+}
+
 func (e *Engine) effectiveMaxCheckpoints() int {
 	if e.maxCheckpoints > 0 {
 		return e.maxCheckpoints

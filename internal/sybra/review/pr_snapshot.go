@@ -96,9 +96,15 @@ func (s *PRSnapshotStore) TaskStatusAdvancedSince(key string, statusChangedAt ti
 	return statusChangedAt.After(e.statusChangedAt)
 }
 
-// NoteTaskStatus stamps the linked task's StatusChangedAt onto key.
+// NoteTaskStatus advances key's stamp to statusChangedAt. The stamp only ever
+// moves forward: several tasks can share one PR, and letting an older task's
+// timestamp overwrite a newer one would leave the newer task permanently
+// "advanced" and strip the PR of its backoff for good.
 func (s *PRSnapshotStore) NoteTaskStatus(key string, statusChangedAt time.Time) {
 	e := s.get(key)
+	if !statusChangedAt.After(e.statusChangedAt) {
+		return
+	}
 	e.statusChangedAt = statusChangedAt
 	s.set(key, e)
 }

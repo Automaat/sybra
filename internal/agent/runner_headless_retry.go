@@ -12,6 +12,11 @@ import (
 
 var errProviderRateLimited = errors.New("provider rate-limited")
 
+// errPromptUndelivered tags an attempt that died before the child could read
+// its prompt, so classifyAgentError can keep it out of the "crash" bucket that
+// completion counts as a real verdict.
+var errPromptUndelivered = errors.New("prompt undelivered")
+
 // reportProviderHealthSignal classifies the final error surface of a failed
 // run and forwards rate-limit / auth failures to the provider health gate so
 // the next scheduling attempt can fail over to a peer.

@@ -126,7 +126,7 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 		summary := skillReceiptExhaustionSummary(output)
 		reason := fmt.Sprintf("mandatory workflow skill %q produced no conformance receipt after automatic recovery retry", run.RequestedSkill)
 		if zeroOutput {
-			reason = fmt.Sprintf("provider produced no output across %d attempts, so mandatory workflow skill %q never ran", maxAttempts, run.RequestedSkill)
+			reason = fmt.Sprintf("provider produced no output across %d attempts, so mandatory workflow skill %q never ran", maxAttempts+1, run.RequestedSkill)
 		}
 		if summary != "" {
 			reason += ": " + summary

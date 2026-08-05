@@ -218,6 +218,79 @@ func TestSelectKnownPRPoll(t *testing.T) {
 		}
 	})
 
+	// A deferred PR is absent from the selection, so it is also absent from the
+	// `seen` set Prune keeps — its skip counters must be retained explicitly or
+	// the backoff can never survive past the tick that armed it.
+	t.Run("deferred and capped keys are retained for pruning", func(t *testing.T) {
+		t.Parallel()
+
+		r := &Handler{
+			cfg:         &config.Config{GitHub: config.GitHubConfig{ReviewsMaxPRsPerTick: 1}},
+			prSnapshots: PRSnapshotStore{entries: map[string]prSnapshot{"owner/repo#7": {skipTicks: 2}}},
+		}
+		deferredTask := newTask("deferred", 7, base)
+		cappedA := newTask("capped-a", 8, base.Add(time.Hour))
+		cappedB := newTask("capped-b", 9, base)
+
+		sel := r.selectKnownPRPoll(context.Background(), []task.Task{deferredTask, cappedA, cappedB})
+		if sel.deferredPRs != 1 || sel.cappedPRs != 1 {
+			t.Fatalf("selection stats = %+v, want deferred=1 capped=1", sel)
+		}
+		want := map[string]bool{"owner/repo#7": true, "owner/repo#9": true}
+		if len(sel.retainKeys) != len(want) {
+			t.Fatalf("retainKeys = %v, want the deferred and capped keys", sel.retainKeys)
+		}
+		for _, key := range sel.retainKeys {
+			if !want[key] {
+				t.Fatalf("retainKeys = %v, unexpected key %q", sel.retainKeys, key)
+			}
+		}
+	})
+
+	// An older sibling task must not rewind the PR-keyed stamp, or the newer
+	// one reads as "advanced" forever and the PR loses its request pacing.
+	t.Run("older sibling task cannot rewind the status stamp", func(t *testing.T) {
+		t.Parallel()
+
+		probes := 0
+		r := &Handler{
+			prSnapshots: PRSnapshotStore{entries: map[string]prSnapshot{
+				"owner/repo#7": {
+					headSHA:         "sha-1",
+					updatedAt:       "2026-07-13T12:00:00Z",
+					skipTicks:       2,
+					statusChangedAt: base,
+				},
+			}},
+			fetchHeadStateFn: func(string, int) (string, bool, string, error) {
+				probes++
+				return "sha-1", true, "2026-07-13T12:00:00Z", nil
+			},
+		}
+		newer := newTask("newer", 7, base.Add(2*time.Hour))
+		newer.StatusChangedAt = base.Add(2 * time.Hour)
+		older := newTask("older", 7, base.Add(time.Hour))
+		older.StatusChangedAt = base.Add(time.Hour)
+
+		if sel := r.selectKnownPRPoll(context.Background(), []task.Task{newer, older}); len(sel.tasks) != 2 {
+			t.Fatalf("first tick selected = %v, want both tasks after the status change", taskIDs(sel.tasks))
+		}
+		if got := r.prSnapshots.entries["owner/repo#7"].statusChangedAt; !got.Equal(newer.StatusChangedAt) {
+			t.Fatalf("stamp after tick 1 = %v, want the newer task's %v", got, newer.StatusChangedAt)
+		}
+
+		// Re-arm only the skip counter, leaving whatever stamp tick 1 wrote, so
+		// a rewound stamp shows up as a PR that never backs off again.
+		armed := r.prSnapshots.entries["owner/repo#7"]
+		armed.skipTicks = 2
+		r.prSnapshots.set("owner/repo#7", armed)
+
+		sel := r.selectKnownPRPoll(context.Background(), []task.Task{newer, older})
+		if len(sel.tasks) != 0 {
+			t.Fatalf("second tick selected = %v, want none — the stamp must not rewind", taskIDs(sel.tasks))
+		}
+	})
+
 	t.Run("updatedAt change breaks stable backoff", func(t *testing.T) {
 		t.Parallel()
 

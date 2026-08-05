@@ -2652,13 +2652,13 @@ func TestFetchKnownTaskPRs_CircuitBreaksOnRepeatedAuthFailure(t *testing.T) {
 	matchers := []github.TaskMatcher{{ID: "t1", PRNumber: 50, ProjectID: "pet-owner/pet-repo"}}
 
 	for i := range poll.AuthFailureThreshold - 1 {
-		r.fetchKnownTaskPRs(matchers)
+		r.fetchKnownTaskPRs(matchers, nil)
 		if r.AuthCircuitOpen() {
 			t.Fatalf("circuit opened after %d fetches, want threshold %d", i+1, poll.AuthFailureThreshold)
 		}
 	}
 
-	r.fetchKnownTaskPRs(matchers)
+	r.fetchKnownTaskPRs(matchers, nil)
 	if !r.AuthCircuitOpen() {
 		t.Fatalf("circuit did not open after %d consecutive auth failures", poll.AuthFailureThreshold)
 	}
@@ -2671,7 +2671,7 @@ func TestFetchKnownTaskPRs_CircuitBreaksOnRepeatedAuthFailure(t *testing.T) {
 		}
 		return results
 	}
-	r.fetchKnownTaskPRs(matchers)
+	r.fetchKnownTaskPRs(matchers, nil)
 	if r.AuthCircuitOpen() {
 		t.Error("circuit stayed open after a successful fetch")
 	}

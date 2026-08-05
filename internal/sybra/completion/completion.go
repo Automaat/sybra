@@ -582,6 +582,8 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 			h.workflowEngine.RescheduleCheckpointedAgent(ag.TaskID, ag.ID)
 		case stall.ToolUseAborted || stall.UserInterrupted:
 			h.workflowEngine.RescheduleInterruptedAgent(ag.TaskID, ag.ID)
+		case stall.PromptUndelivered:
+			h.workflowEngine.ReschedulePromptUndeliveredAgent(ag.TaskID, ag.ID)
 		case stall.RateLimited || stall.MalformedTool:
 			h.workflowEngine.RescheduleRateLimitedAgent(ag.TaskID, ag.ID)
 		default:
