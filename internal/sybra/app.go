@@ -442,12 +442,6 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 		if a.humanReview != nil {
 			a.humanReview.recoverStrandedUnblockedTasks() //nolint:contextcheck // handler bounds its git/PR checks with dedicated timeouts, matching live completion.
 		}
-		// After reattach, so a survive-restart agent's own claim is seen as live
-		// and left alone; before dispatch is armed, so the first sweep is not
-		// fenced by the previous instance's leases.
-		if a.workflowEngine != nil {
-			a.workflowEngine.ReclaimOrphanedEffectLeases()
-		}
 		// Arm dispatch now that reattach/replay/restart-stale have run, then
 		// nudge so any task that changed status during the window (buffered,
 		// not dispatched — see startupRecoveryPending) is picked up by the

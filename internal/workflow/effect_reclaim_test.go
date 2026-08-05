@@ -85,28 +85,81 @@ func TestReclaimOrphanedEffectLeases_SkipsTaskWithLiveAgent(t *testing.T) {
 	}
 }
 
-func TestReclaimOrphanedEffectLeases_LeavesOwnAndCompletedClaims(t *testing.T) {
+func TestReclaimOrphanedEffectLeases_LeavesClaimsItMustNotTouch(t *testing.T) {
+	past := time.Now().UTC().Add(-20 * time.Minute)
+	future := time.Now().UTC().Add(20 * time.Minute)
+
 	tests := []struct {
-		name      string
-		owner     func(e *Engine) string
-		completed bool
+		name    string
+		owner   func(e *Engine) string
+		expires time.Time
+		arrange func(e *Engine, agents *mockAgents, tk *TaskInfo)
 	}{
-		{name: "own live claim", owner: func(e *Engine) string { return e.ownerID }},
-		{name: "completed claim", owner: func(*Engine) string { return "workflow-engine-1-1" }, completed: true},
+		{
+			name:    "own live claim",
+			owner:   func(e *Engine) string { return e.ownerID },
+			expires: future,
+		},
+		{
+			name:    "completed claim",
+			owner:   func(*Engine) string { return "workflow-engine-1-1" },
+			expires: future,
+			arrange: func(_ *Engine, _ *mockAgents, tk *TaskInfo) {
+				done := time.Now().UTC()
+				tk.Workflow.EffectLog[0].CompletedAt = &done
+			},
+		},
+		{
+			// Intent-only: fences nobody, so rewriting only bumps generation.
+			name:    "ownerless claim",
+			owner:   func(*Engine) string { return "" },
+			expires: future,
+		},
+		{
+			// Already lapsed — ClaimEffect takes it over without help.
+			name:    "expired lease",
+			owner:   func(*Engine) string { return "workflow-engine-1-1" },
+			expires: past,
+		},
+		{
+			// Claimed before the agent registers, so HasRunningAgent misses it.
+			name:    "task mid-dispatch",
+			owner:   func(*Engine) string { return "workflow-engine-1-1" },
+			expires: future,
+			arrange: func(_ *Engine, agents *mockAgents, _ *TaskInfo) {
+				agents.dispatchClaimed = map[string]bool{"t1": true}
+			},
+		},
+		{
+			name:    "terminal workflow",
+			owner:   func(*Engine) string { return "workflow-engine-1-1" },
+			expires: future,
+			arrange: func(_ *Engine, _ *mockAgents, tk *TaskInfo) {
+				tk.Workflow.State = ExecCompleted
+			},
+		},
+		{
+			// Homed on a follower: that owner is a live peer, not an orphan.
+			name:    "task the dispatch gate rejects",
+			owner:   func(*Engine) string { return "workflow-engine-1-1" },
+			expires: future,
+			arrange: func(e *Engine, _ *mockAgents, _ *TaskInfo) {
+				e.SetDispatchGate(func(TaskInfo) bool { return false })
+			},
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			tasks := newMemTasks()
-			engine := NewEngine(newInlineTestStore(t, "noop", noopWorkflowYAML), tasks, newMockAgents(), discardLogger())
+			agents := newMockAgents()
+			engine := NewEngine(newInlineTestStore(t, "noop", noopWorkflowYAML), tasks, agents, discardLogger())
 
-			future := time.Now().UTC().Add(20 * time.Minute)
-			var completed *time.Time
-			if tc.completed {
-				done := time.Now().UTC()
-				completed = &done
+			tk := orphanedLeaseTask("t1", tc.owner(engine), tc.expires, nil)
+			if tc.arrange != nil {
+				tc.arrange(engine, agents, &tk)
 			}
-			tasks.Put(orphanedLeaseTask("t1", tc.owner(engine), future, completed))
+			tasks.Put(tk)
 
 			if got := engine.ReclaimOrphanedEffectLeases(); got != 0 {
 				t.Fatalf("ReclaimOrphanedEffectLeases() = %d, want 0", got)
@@ -115,6 +168,22 @@ func TestReclaimOrphanedEffectLeases_LeavesOwnAndCompletedClaims(t *testing.T) {
 				t.Fatal("LeaseExpiresAt = nil, want the claim left intact")
 			}
 		})
+	}
+}
+
+// An instance that never dispatches must not rewrite the board's effect log.
+func TestReclaimOrphanedEffectLeases_NoopWhenDispatchDisabled(t *testing.T) {
+	tasks := newMemTasks()
+	engine := NewEngine(newInlineTestStore(t, "noop", noopWorkflowYAML), tasks, newMockAgents(), discardLogger())
+	engine.SetAutoDispatch(false)
+
+	tasks.Put(orphanedLeaseTask("t1", "workflow-engine-1-1", time.Now().UTC().Add(20*time.Minute), nil))
+
+	if got := engine.ReclaimOrphanedEffectLeases(); got != 0 {
+		t.Fatalf("ReclaimOrphanedEffectLeases() = %d, want 0 with dispatch disabled", got)
+	}
+	if lease := leaseFor(t, tasks, "t1"); lease == nil {
+		t.Fatal("LeaseExpiresAt = nil, want the claim left intact")
 	}
 }
 
