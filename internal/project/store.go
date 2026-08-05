@@ -233,6 +233,14 @@ func (s *Store) Create(rawURL string, ptype ProjectType) (Project, error) {
 		}
 		return Project{}, fmt.Errorf("clone: %w", err)
 	}
+	// Before publish, so the clone is never reachable without its floor. The
+	// CLI never runs the startup migration, so this is the only place a
+	// CLI-created project gets one.
+	if err := ConfigureCommitSigning(ctx, clonePath, s.SigningPolicy()); err != nil {
+		_ = os.RemoveAll(clonePath)
+		_ = s.markCloneError(p)
+		return Project{}, fmt.Errorf("configure commit signing: %w", err)
+	}
 	if err := s.publishClone(p, clonePath); err != nil {
 		_ = os.RemoveAll(clonePath)
 		_ = s.markCloneError(p)

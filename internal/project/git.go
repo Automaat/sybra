@@ -397,45 +397,6 @@ func DisableAutoMaintenance(ctx context.Context, barePath string) error {
 // GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL take precedence. On a developer machine,
 // a complete global Git identity is used next; the placeholder is only for
 // unattended hosts that have neither identity configured.
-// ConfigureCommitSigning pins the clone's signing posture so a keyless host
-// cannot be talked into attempting a GPG signature. Headless agents commit
-// through their own bash calls, so the only durable floor below the prompt
-// layer is the clone's own config — and until now nothing wrote it. Hosts that
-// happened to carry commit.gpgsign=false held it as incidental state, so a
-// freshly cloned project got no protection at all.
-//
-// This does not stop an explicit `git commit -S`, which overrides config by
-// design; that case is caught by the recovery-commit fallback. It does stop
-// every plain commit from inheriting a signing default the host cannot honor.
-// Under a signing policy the keys are unset rather than forced true, leaving
-// the host's own configuration authoritative.
-func ConfigureCommitSigning(ctx context.Context, barePath string, policy SigningPolicy) error {
-	if policy.SignsCommits(ctx) {
-		for _, key := range []string{"commit.gpgsign", "tag.gpgsign"} {
-			// --unset on an absent key exits 5; that is the desired end
-			// state, not a failure.
-			if err := runBare(ctx, barePath, "config", "--unset", key); err != nil && !isGitConfigKeyAbsent(err) {
-				return fmt.Errorf("unset %s: %w", key, err)
-			}
-		}
-		return nil
-	}
-	for _, key := range []string{"commit.gpgsign", "tag.gpgsign"} {
-		if err := runBare(ctx, barePath, "config", key, "false"); err != nil {
-			return fmt.Errorf("set %s: %w", key, err)
-		}
-	}
-	return nil
-}
-
-// isGitConfigKeyAbsent reports whether err is `git config --unset`'s exit
-// code 5, which means the key was not set — indistinguishable from success
-// for our purposes.
-func isGitConfigKeyAbsent(err error) bool {
-	exitErr, ok := errors.AsType[*exec.ExitError](err)
-	return ok && exitErr.ExitCode() == 5
-}
-
 func ConfigureCommitIdentity(ctx context.Context, barePath string) error {
 	name, email := commitIdentity(ctx)
 	if err := runBare(ctx, barePath, "config", "user.name", name); err != nil {
@@ -467,6 +428,48 @@ func gitGlobalConfig(ctx context.Context, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(out)
+}
+
+// ConfigureCommitSigning pins the clone's signing posture so a keyless host
+// cannot be talked into attempting a GPG signature. Headless agents commit
+// through their own bash calls, so the only durable floor below the prompt
+// layer is the clone's own config — and until now nothing wrote it. Hosts that
+// happened to carry commit.gpgsign=false held it as incidental state, so a
+// freshly cloned project got no protection at all.
+//
+// This does not stop an explicit `git commit -S`, which overrides config by
+// design. It stops every plain commit from inheriting a signing default the
+// host cannot honor. Under a signing policy the keys are unset rather than
+// forced true, leaving the host's own configuration authoritative.
+//
+// --replace-all/--unset-all rather than the plain forms: a config carrying a
+// key twice makes `git config <key> <value>` fail outright ("cannot overwrite
+// multiple values with a single value") and makes `--unset` exit 5 while
+// leaving both values in place, so the plain forms silently fail to establish
+// either posture.
+func ConfigureCommitSigning(ctx context.Context, barePath string, policy SigningPolicy) error {
+	signing := policy.SignsCommits(ctx)
+	for _, key := range []string{"commit.gpgsign", "tag.gpgsign"} {
+		if signing {
+			// --unset-all on an absent key exits 5; that is the desired end
+			// state, not a failure.
+			if err := runBare(ctx, barePath, "config", "--unset-all", key); err != nil && !isGitConfigKeyAbsent(err) {
+				return fmt.Errorf("unset %s: %w", key, err)
+			}
+			continue
+		}
+		if err := runBare(ctx, barePath, "config", "--replace-all", key, "false"); err != nil {
+			return fmt.Errorf("set %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
+// isGitConfigKeyAbsent reports whether err is `git config --unset-all`'s exit
+// code 5, which for --unset-all means the key was not set.
+func isGitConfigKeyAbsent(err error) bool {
+	exitErr, ok := errors.AsType[*exec.ExitError](err)
+	return ok && exitErr.ExitCode() == 5
 }
 
 // DefaultBranch resolves barePath's HEAD symbolic ref (e.g.

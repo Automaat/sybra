@@ -19,8 +19,10 @@ const (
 	// SigningNever never signs, whatever the host has configured. Used on
 	// unattended hosts (e.g. the Linux server) that hold no key.
 	SigningNever SigningPolicy = "never"
-	// SigningRequire always signs, and is a configuration error on a host
-	// with no key rather than a silent downgrade.
+	// SigningRequire always signs, even where the host resolves no key: an
+	// operator who asks for signatures gets a loud commit failure rather than
+	// silently unsigned history. Config load cannot reject it on a keyless
+	// host without making validation depend on host state.
 	SigningRequire SigningPolicy = "require"
 )
 

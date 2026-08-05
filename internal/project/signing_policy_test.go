@@ -100,3 +100,38 @@ func TestConfigureCommitSigning_IdempotentUnset(t *testing.T) {
 		}
 	}
 }
+
+// A clone whose config already carries the key twice is the case the plain
+// `git config <key> <value>` / `--unset` forms silently fail on: the former
+// exits 5 with "cannot overwrite multiple values with a single value", the
+// latter exits 5 and leaves both values in place.
+func TestConfigureCommitSigning_HandlesMultiValuedKeys(t *testing.T) {
+	ctx := context.Background()
+	bare := t.TempDir()
+	if err := gitexec.Run(ctx, gitexec.Options{}, "init", "--bare", bare); err != nil {
+		t.Fatalf("init bare: %v", err)
+	}
+	for _, v := range []string{"true", "true"} {
+		if err := gitexec.Run(ctx, gitexec.Options{Dir: bare}, "config", "--add", "commit.gpgsign", v); err != nil {
+			t.Fatalf("seed duplicate commit.gpgsign: %v", err)
+		}
+	}
+
+	if err := ConfigureCommitSigning(ctx, bare, SigningNever); err != nil {
+		t.Fatalf("ConfigureCommitSigning(never): %v", err)
+	}
+	got, err := outputBare(ctx, bare, "config", "--get-all", "commit.gpgsign")
+	if err != nil {
+		t.Fatalf("read commit.gpgsign: %v", err)
+	}
+	if got != "false" {
+		t.Errorf("commit.gpgsign = %q, want a single false", got)
+	}
+
+	if err := ConfigureCommitSigning(ctx, bare, SigningRequire); err != nil {
+		t.Fatalf("ConfigureCommitSigning(require): %v", err)
+	}
+	if got, err := outputBare(ctx, bare, "config", "--get-all", "commit.gpgsign"); err == nil && got != "" {
+		t.Errorf("commit.gpgsign = %q, want unset", got)
+	}
+}

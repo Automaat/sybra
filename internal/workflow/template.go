@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"text/template"
 )
 
@@ -119,18 +120,36 @@ func getVar(vars map[string]string, key string) string {
 // host's resolved commit flags.
 const WorkflowVarCommitSignFlags = "commit_sign_flags"
 
+// defaultCommitSignFlags backs commitSignFlagsVar for the workflows no
+// dispatcher seeds. Package-level rather than an Engine field because
+// templates render through the free RenderTemplate from seven call sites, none
+// of which carry an Engine; the value is a single process-wide deployment
+// posture, so there is nothing per-execution to thread.
+var defaultCommitSignFlags atomic.Value
+
+// SetDefaultCommitSignFlags installs the fallback commit flags for prompts
+// whose workflow never seeds WorkflowVarCommitSignFlags. Wired from config at
+// startup. Unset keeps "-s".
+func SetDefaultCommitSignFlags(flags string) {
+	if flags = strings.TrimSpace(flags); flags != "" {
+		defaultCommitSignFlags.Store(flags)
+	}
+}
+
 // commitSignFlagsVar returns the git commit flags a prompt should instruct an
-// agent to use, defaulting to sign-off only.
+// agent to use.
 //
 // Prefer this over a bare getvar: only the pr-fix dispatcher seeds the
 // variable, so getvar renders an empty string — and therefore a broken
-// `git commit ` — in every other workflow. Defaulting to "-s" also fails in
-// the safe direction, since an unsignable `-S` hard-fails the commit and
-// parks the task, while a missing one costs only a GPG signature that no gate
-// requires. DCO sign-off is enforced independently by the prepare-commit-msg
-// hook.
+// `git commit ` — in every other workflow. The final "-s" fallback also fails
+// in the safe direction, since an unsignable `-S` hard-fails the commit and
+// parks the task, while a missing one costs only a signature no gate requires.
+// DCO sign-off is enforced independently by the prepare-commit-msg hook.
 func commitSignFlagsVar(vars map[string]string) string {
 	if v := strings.TrimSpace(vars[WorkflowVarCommitSignFlags]); v != "" {
+		return v
+	}
+	if v, ok := defaultCommitSignFlags.Load().(string); ok && v != "" {
 		return v
 	}
 	return "-s"

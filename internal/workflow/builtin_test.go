@@ -1881,7 +1881,9 @@ func TestBuiltinDefinitions_NeverHardcodeCommitSignFlags(t *testing.T) {
 				continue
 			}
 			for line := range strings.Lines(prompt) {
-				if !strings.Contains(line, "git commit") {
+				// "commit", not "git commit": prompts also spell this as a
+				// bare "# commit -s to complete the merge".
+				if !strings.Contains(line, "commit") {
 					continue
 				}
 				if strings.Contains(line, "-S") {

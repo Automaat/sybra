@@ -525,7 +525,11 @@ func (a *App) Startup(ctx context.Context) error {
 		a.logger.Error("project.store.init", "err", err)
 		return fmt.Errorf("project store: %w", err)
 	}
-	projStore.SetSigningPolicy(project.NormalizeSigningPolicy(a.cfg.CommitSigning()))
+	signingPolicy := project.NormalizeSigningPolicy(a.cfg.CommitSigning())
+	projStore.SetSigningPolicy(signingPolicy)
+	// Fallback for the workflows no dispatcher seeds; see
+	// workflow.SetDefaultCommitSignFlags.
+	workflow.SetDefaultCommitSignFlags(signingPolicy.CommitFlags(appCtx))
 	a.projects = projStore
 	// Retrofits maintenance.auto=false onto existing clones; see #2978.
 	if err := projStore.MigrateDisableAutoMaintenance(appCtx); err != nil {

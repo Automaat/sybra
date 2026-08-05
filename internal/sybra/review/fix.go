@@ -1231,7 +1231,7 @@ func (r *Handler) dispatchPRIssueWithOptions(ctx context.Context, t task.Task, p
 		// Same reasoning: the test_fix step's static YAML prompt needs the
 		// host-appropriate commit flags (-s vs -s -S) for its own commit
 		// instruction, computed once here rather than hardcoded in the YAML.
-		"commit_sign_flags": r.signingPolicy().CommitFlags(ctx),
+		workflow.WorkflowVarCommitSignFlags: r.signingPolicy().CommitFlags(ctx),
 	}
 	// Deterministic backstop for review-hold: when the hold is active and this
 	// fix touches review comments, the agent drafted its replies into a pending
