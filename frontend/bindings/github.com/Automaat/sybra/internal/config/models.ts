@@ -98,10 +98,9 @@ export class AgentDefaults {
      * review→fix loop (reviewbudget.Budget is their single owner) — it bounds
      * "how much automated review is too much" regardless of whether a PR
      * exists yet, which is why it lives here rather than under GitHubConfig.
-     * 0 uses the default; negative disables the cap. Rate-based rather than a
-     * lifetime total so a long-lived PR that is legitimately re-reviewed after
-     * each push is never blocked, while a runaway loop is stopped within the
-     * hour (#2164 sustained ~5/hour for 23 hours).
+     * 0 uses the default; negative disables the hourly cap. A fixed lifetime
+     * ceiling still applies through the shared review budget so long-lived churn
+     * cannot run forever.
      */
     "reviewRoundsPerHour": number;
 
