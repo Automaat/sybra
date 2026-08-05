@@ -1,8 +1,10 @@
 package sybra
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/config"
@@ -51,12 +53,28 @@ func TestCommitSigningHook_DrivesBothSinks(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", cfgPath)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 
+	// skillsync writes to os.UserHomeDir() and config.HomeDir(). Without both
+	// redirected this test rewrites the operator's real ~/.claude/skills,
+	// ~/.codex/skills, ~/.agents/skills and ~/.sybra — the #1576 blast radius.
+	// It did exactly that once before these two lines existed.
+	isolated := t.TempDir()
+	t.Setenv("HOME", isolated)
+	t.Setenv("SYBRA_HOME", filepath.Join(isolated, "sybra"))
+
 	projStore, err := project.NewStore(t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatalf("new project store: %v", err)
 	}
 	reviewer := &review.Handler{}
-	app := &App{ctx: t.Context(), projects: projStore, reviewer: reviewer}
+	skillsDir := t.TempDir()
+	app := &App{
+		ctx:       t.Context(),
+		projects:  projStore,
+		reviewer:  reviewer,
+		logger:    slog.New(slog.DiscardHandler),
+		repoDir:   repoRootForTest(t),
+		skillsDir: skillsDir,
+	}
 	app.configSvc = &ConfigService{}
 	app.cfg = &config.Config{}
 	app.activeCfg.Store(app.cfg)
@@ -64,6 +82,17 @@ func TestCommitSigningHook_DrivesBothSinks(t *testing.T) {
 
 	projStore.SetSigningPolicy(project.SigningAuto)
 	workflow.SetDefaultCommitSignFlags("-s -S")
+	// Establish the pre-reload baseline so the assertion below distinguishes
+	// "the reload rewrote the bundle" from "the bundle was never synced".
+	app.syncSkillsBundle(project.SigningAuto)
+	skill := filepath.Join(skillsDir, "fix-review-auto", "SKILL.md")
+	baseline, err := os.ReadFile(skill)
+	if err != nil {
+		t.Fatalf("seed synced skill: %v", err)
+	}
+	if !strings.Contains(string(baseline), "-s -S") {
+		t.Fatalf("precondition: seeded skill lacks -s -S, assertion would be vacuous:\n%s", skill)
+	}
 
 	app.configSvc.applyCommitSigning("never")
 
@@ -78,4 +107,32 @@ func TestCommitSigningHook_DrivesBothSinks(t *testing.T) {
 	if got := reviewer.SigningPolicy(); got != project.SigningNever {
 		t.Errorf("review handler policy = %q, want never", got)
 	}
+	// The fourth sink: the synced skill bundle is what a fix-review agent
+	// actually loads, so a reload that stops at the prompt leaves the agent
+	// reading the old flags out of its own skill file.
+	body, err := os.ReadFile(skill)
+	if err != nil {
+		t.Fatalf("read synced skill: %v", err)
+	}
+	if strings.Contains(string(body), "-s -S") {
+		t.Errorf("synced skill still instructs -S after reload to never:\n%s", skill)
+	}
+}
+
+// repoRootForTest locates the repo checkout so skillsync reads the real
+// .claude/skills source rather than falling back to the embedded bundle.
+func repoRootForTest(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for range 6 {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		dir = filepath.Dir(dir)
+	}
+	t.Fatal("repo root not found")
+	return ""
 }

@@ -44,6 +44,10 @@ func (a *App) wireConfigService() {
 		if a.reviewer != nil {
 			a.reviewer.SetSigningPolicy(policy)
 		}
+		// The synced skill bundle is the file a fix-review agent actually
+		// loads, so leaving it on the startup posture makes the dispatched
+		// prompt and the skill it invokes disagree about -S.
+		a.syncSkillsBundle(policy)
 		workflow.SetDefaultCommitSignFlags(policy.CommitFlags(a.ctx))
 	}
 	a.configSvc.reapplyRouting = func() {

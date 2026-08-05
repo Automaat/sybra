@@ -1625,7 +1625,7 @@ func (a *App) newRecovery() *recovery.Recovery {
 // configuration. UserHomeDir is best-effort — when unavailable the user-home
 // destinations (~/.claude/skills, ~/.codex/skills) are silently skipped so
 // startup still succeeds in environments without a usable home dir.
-func (a *App) syncSkillsBundle() {
+func (a *App) syncSkillsBundle(signing project.SigningPolicy) {
 	userHome, err := os.UserHomeDir()
 	if err != nil {
 		a.logger.Debug("skills.sync.no_user_home", "err", err)
@@ -1637,7 +1637,7 @@ func (a *App) syncSkillsBundle() {
 		PrimaryDst:           a.skillsDir,
 		SybraHomeDir:         config.HomeDir(),
 		UserHomeDir:          userHome,
-		DowngradeCommitFlags: !project.NormalizeSigningPolicy(a.cfg.CommitSigning()).SignsCommits(context.Background()),
+		DowngradeCommitFlags: !signing.SignsCommits(context.Background()),
 	})
 }
 

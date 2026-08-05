@@ -402,7 +402,7 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 
 	// syncSkillsBundle's deep diagnostic logging uses context.Background()
 	// intentionally (see skillsync.Syncer.log) — not a cancellation bug.
-	a.syncSkillsBundle() //nolint:contextcheck // plain diagnostic logging inside skillsync, see its log() comment
+	a.syncSkillsBundle(project.NormalizeSigningPolicy(a.cfg.CommitSigning())) //nolint:contextcheck // plain diagnostic logging inside skillsync, see its log() comment
 	a.snapshotter = tasksnapshot.New(config.TaskSnapshotGitDir(), a.tasksDir, time.Duration(a.cfg.DefaultTaskSnapshotInterval())*time.Second, a.logger)
 	// EnsureRepo must run before RunStartupCleanup: the startup trash prune
 	// fires CommitBeforePrune, which on a fresh install would otherwise commit
