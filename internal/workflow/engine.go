@@ -137,6 +137,11 @@ type TaskProvider interface {
 	MarkAgentRunProtocolViolation(taskID, agentID, violation string) error
 	MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint string) error
 	RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error
+	// MarkAgentRunIncomplete downgrades a clean-exit code-author run that
+	// produced no commits. Named rather than taking an outcome string because
+	// internal/workflow cannot import internal/task (cycle via
+	// internal/agent), so the vocabulary stays on the far side of the adapter.
+	MarkAgentRunIncomplete(taskID, agentID string) error
 	AppendTaskBody(id, content string) error
 	// ReplaceTaskBody overwrites the task's full body. Used by the test-route
 	// step to archive/strip a stale "## Test Failures" section before

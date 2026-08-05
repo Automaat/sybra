@@ -207,6 +207,13 @@ func ValidateAgentProvider(s string) (string, error) {
 const (
 	RunOutcomeSuccess = "success"
 	RunOutcomeFailure = "failure"
+	// RunOutcomeIncomplete marks a code-author run that exited cleanly but
+	// produced nothing. A clean exit is not evidence of work: an agent that
+	// delegates to a subagent and ends its turn waiting for it exits 0 with no
+	// commit, and recording that as success let one task accumulate 18 runs
+	// over 4 days while every downstream consumer believed the implementation
+	// had landed.
+	RunOutcomeIncomplete = "incomplete"
 )
 
 // AgentRun records one dispatch of an agent process against a task: what was
