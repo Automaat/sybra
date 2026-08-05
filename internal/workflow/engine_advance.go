@@ -147,7 +147,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	// require_evidence gate does not block an otherwise-complete task. In the
 	// multi-pass posture the follow-up review re-records fresh evidence itself,
 	// so this refresh is scoped to the single-pass route only.
-	if e.reviewLoopDisabled && currentStep.Config.Role == "fix-review" && output.Status == "completed" {
+	if e.reviewLoopDisabled.Load() && currentStep.Config.Role == "fix-review" && output.Status == "completed" {
 		e.refreshReviewEvidenceFreshness(taskID)
 	}
 
@@ -887,7 +887,7 @@ func (e *Engine) transitionFields(t TaskInfo, wfExec *Execution) map[string]stri
 	// review cycle runs, so an engine built without SetReviewUntilClean
 	// follows the documented default instead of silently shipping
 	// single-pass review.
-	fields["config.review_until_clean"] = strconv.FormatBool(!e.reviewLoopDisabled)
+	fields["config.review_until_clean"] = strconv.FormatBool(!e.reviewLoopDisabled.Load())
 	hourlyExceeded, lifetimeExceeded := e.reviewBudgetExhaustion(t)
 	fields["task.review_budget_exceeded"] = strconv.FormatBool(hourlyExceeded || lifetimeExceeded)
 	fields["task.review_lifetime_exceeded"] = strconv.FormatBool(lifetimeExceeded)
@@ -898,10 +898,10 @@ func (e *Engine) transitionFields(t TaskInfo, wfExec *Execution) map[string]stri
 // temporary hourly throttle differently from a permanent lifetime ceiling.
 // It uses the same reviewbudget.Budget as the inbound PR-review dispatcher.
 func (e *Engine) reviewBudgetExhaustion(t TaskInfo) (hourly, lifetime bool) {
-	if e.reviewLoopDisabled {
+	if e.reviewLoopDisabled.Load() {
 		return false, false
 	}
-	limit := e.reviewRoundsPerHour
+	limit := int(e.reviewRoundsPerHour.Load())
 	if limit == 0 {
 		limit = config.DefaultReviewRoundsPerHour
 	}

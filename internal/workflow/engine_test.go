@@ -11587,3 +11587,46 @@ func TestStartWorkflow_ConcurrentSameTaskSingleWinner(t *testing.T) {
 		t.Errorf("task workflow not set correctly: %+v", ti.Workflow)
 	}
 }
+
+// The Set* methods run on the config-reload goroutine while dispatch reads the
+// same fields. A -race run under concurrent reloads caught reviewLoopDisabled
+// and reviewRoundsPerHour; maxTestAttempts and openPROnUnrunnableGate have the
+// identical shape and were simply not hit by that workload, so all four are
+// exercised here. Run under -race; plain fields fail.
+func TestEngineGuardrails_ConcurrentSetAndRead(t *testing.T) {
+	store := newTestStore(t)
+	engine := NewEngine(store, newMemTasks(), newMockAgents(), discardLogger())
+
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Go(func() {
+			for j := range 300 {
+				engine.SetReviewUntilClean(j%2 == 0)
+				engine.SetReviewRoundsPerHour(i + j)
+				engine.SetTestingMaxAttempts(i + j)
+				engine.SetOpenPROnUnrunnableGate(j%2 == 0)
+			}
+		})
+	}
+	for range 8 {
+		wg.Go(func() {
+			for range 300 {
+				_ = engine.reviewLoopDisabled.Load()
+				_ = engine.reviewRoundsPerHour.Load()
+				_ = engine.maxTestAttempts.Load()
+				_ = engine.openPROnUnrunnableGate.Load()
+			}
+		})
+	}
+	wg.Wait()
+}
+
+// atomic.Bool's zero value is false, so the documented default has to be
+// stored explicitly — dropping that flips behaviour silently.
+func TestNewEngine_OpenPROnUnrunnableGateDefaultsTrue(t *testing.T) {
+	store := newTestStore(t)
+	engine := NewEngine(store, newMemTasks(), newMockAgents(), discardLogger())
+	if !engine.openPROnUnrunnableGate.Load() {
+		t.Error("openPROnUnrunnableGate = false, want the documented default of true")
+	}
+}
