@@ -343,7 +343,7 @@ func (e *Engine) watchdogHangRecoverySpec() watchdogRecoverySpec {
 				return e.tasks.UpdateTaskStatus(t.ID, t.Status, "")
 			},
 			onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
-				targetStatus, reason, terminalState := watchdogHangExhaustionResolution(*t, step, attempts, e.openPROnUnrunnableGate)
+				targetStatus, reason, terminalState := watchdogHangExhaustionResolution(*t, step, attempts, e.openPROnUnrunnableGate.Load())
 				now := time.Now().UTC()
 				t.Workflow.State = terminalState
 				t.Workflow.CompletedAt = &now

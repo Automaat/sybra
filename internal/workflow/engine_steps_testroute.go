@@ -191,7 +191,7 @@ func (e *Engine) openPRForUnrunnableTestingGate(taskID, stepID string) (StepOutp
 func (e *Engine) routeNonProductTestOutcome(taskID, stepID, outcome string, wfExec *Execution, t TaskInfo) (StepOutput, bool, error) {
 	switch outcome {
 	case testOutcomeInfraFailure:
-		if e.openPROnUnrunnableGate {
+		if e.openPROnUnrunnableGate.Load() {
 			out, err := e.retryOrOpenPRForUnrunnableGate(taskID, stepID, wfExec, t)
 			return out, true, err
 		}
@@ -2402,7 +2402,7 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	// and must not inflate the counter. Nil means no re-dispatch has happened
 	// (first cycle or automatic implement→test loop), so all runs count.
 	attempts, duplicate := e.countValidProductTestAttempts(t, wfExec)
-	limit := e.maxTestAttempts
+	limit := int(e.maxTestAttempts.Load())
 	if limit <= 0 {
 		limit = defaultTestAttempts
 	}

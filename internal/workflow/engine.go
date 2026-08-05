@@ -465,22 +465,27 @@ type Engine struct {
 	resumeError      *logging.ErrorThrottle
 	demotionThrottle *logging.ErrorThrottle
 	resumeSkip       *logging.InfoThrottle
-	maxTestAttempts  int // generous testing backstop; recurring fingerprints escalate before this cap (0 → defaultTestAttempts)
+	// These four are written by the config-reload goroutine via their Set*
+	// methods while dispatch reads them, so they are atomic rather than plain
+	// fields. A -race run under concurrent reloads caught reviewLoopDisabled
+	// and reviewRoundsPerHour; the other two have the identical shape and were
+	// simply not hit by that workload.
+	maxTestAttempts atomic.Int64 // generous testing backstop; recurring fingerprints escalate before this cap (0 → defaultTestAttempts)
 	// reviewLoopDisabled: see SetReviewUntilClean. Inverted so the zero value
 	// keeps the review→fix→review cycle running, matching
 	// config.ReviewUntilClean's default of true.
-	reviewLoopDisabled bool
+	reviewLoopDisabled atomic.Bool
 	// reviewRoundsPerHour bounds simple-task-review's review→fix→review
 	// cycle through the same durable reviewbudget.Budget the inbound
 	// PR-review dispatcher uses (internal/sybra's app_orchestrator.go) —
 	// one owner for "is this task reviewing too much", not a separate
 	// per-workflow-execution round cap. 0 → config.DefaultReviewRoundsPerHour;
 	// negative disables the cap.
-	reviewRoundsPerHour int
+	reviewRoundsPerHour atomic.Int64
 	// openPROnUnrunnableGate: see SetOpenPROnUnrunnableGate. Defaults to true
 	// (set in NewEngine), matching config.TestingOpenPROnUnrunnableGateEnabled's
 	// nil-is-true default.
-	openPROnUnrunnableGate bool
+	openPROnUnrunnableGate atomic.Bool
 	maxCheckpoints         int           // checkpoint handoff cap per step (0 → defaultMaxCheckpoints)
 	verifyTimeout          time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
 	verifyChecksSlots      chan struct{} // process-local verify_checks concurrency cap; lazily initialized for zero-value Engines in tests
@@ -554,29 +559,32 @@ const defaultMaxCheckpoints = config.DefaultMaxCheckpoints
 
 // NewEngine creates a workflow engine.
 func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger) *Engine {
-	return &Engine{
-		store:                  store,
-		tasks:                  tasks,
-		agents:                 agents,
-		ownerID:                newEffectOwnerID(),
-		effectLeaseTTL:         defaultEffectLeaseTTL,
-		now:                    func() time.Time { return time.Now().UTC() },
-		logger:                 logger,
-		ctx:                    context.Background(),
-		inflightMutexes:        make(map[string]*sync.Mutex),
-		routeMutexes:           make(map[string]*sync.Mutex),
-		dispatching:            make(map[string]struct{}),
-		starting:               make(map[string]struct{}),
-		humanAction:            make(map[string]struct{}),
-		pendingRoutes:          make(map[string]string),
-		completing:             make(map[string]int),
-		cascadeDepth:           make(map[string]int),
-		pendingRecovery:        make(map[string]pendingRecovery),
-		resumeError:            logging.NewErrorThrottle(),
-		demotionThrottle:       logging.NewErrorThrottle(),
-		resumeSkip:             logging.NewInfoThrottle(),
-		openPROnUnrunnableGate: true,
+	e := &Engine{
+		store:            store,
+		tasks:            tasks,
+		agents:           agents,
+		ownerID:          newEffectOwnerID(),
+		effectLeaseTTL:   defaultEffectLeaseTTL,
+		now:              func() time.Time { return time.Now().UTC() },
+		logger:           logger,
+		ctx:              context.Background(),
+		inflightMutexes:  make(map[string]*sync.Mutex),
+		routeMutexes:     make(map[string]*sync.Mutex),
+		dispatching:      make(map[string]struct{}),
+		starting:         make(map[string]struct{}),
+		humanAction:      make(map[string]struct{}),
+		pendingRoutes:    make(map[string]string),
+		completing:       make(map[string]int),
+		cascadeDepth:     make(map[string]int),
+		pendingRecovery:  make(map[string]pendingRecovery),
+		resumeError:      logging.NewErrorThrottle(),
+		demotionThrottle: logging.NewErrorThrottle(),
+		resumeSkip:       logging.NewInfoThrottle(),
 	}
+	// atomic.Bool's zero value is false, so the documented default has to be
+	// stored explicitly rather than set in the literal.
+	e.openPROnUnrunnableGate.Store(true)
+	return e
 }
 
 func newEffectOwnerID() string {
@@ -815,12 +823,12 @@ func (e *Engine) SetOnComplete(fn func(CompletionInfo)) { e.onComplete = fn }
 // route_test_result parks it human-required. Recurring grounded failure
 // fingerprints still escalate independently of this count. Values <= 0 fall
 // back to defaultTestAttempts.
-func (e *Engine) SetTestingMaxAttempts(n int) { e.maxTestAttempts = n }
+func (e *Engine) SetTestingMaxAttempts(n int) { e.maxTestAttempts.Store(int64(n)) }
 
 // SetReviewUntilClean controls whether simple-task-review re-reviews after
 // every fix until the verdict is CLEAN (true, the default) or runs a single
 // review pass per task (false).
-func (e *Engine) SetReviewUntilClean(v bool) { e.reviewLoopDisabled = !v }
+func (e *Engine) SetReviewUntilClean(v bool) { e.reviewLoopDisabled.Store(!v) }
 
 // SetReviewRoundsPerHour sets the rolling-hour review-role dispatch cap
 // simple-task-review's detect_tampering step checks before looping back for
@@ -828,7 +836,7 @@ func (e *Engine) SetReviewUntilClean(v bool) { e.reviewLoopDisabled = !v }
 // (config.AgentDefaults.ReviewRoundsPerHourLimit) the inbound PR-review
 // dispatcher enforces. 0 falls back to config.DefaultReviewRoundsPerHour;
 // negative disables the cap.
-func (e *Engine) SetReviewRoundsPerHour(n int) { e.reviewRoundsPerHour = n }
+func (e *Engine) SetReviewRoundsPerHour(n int) { e.reviewRoundsPerHour.Store(int64(n)) }
 
 // SetOpenPROnUnrunnableGate controls whether execRouteTestResult opens a PR
 // (ready-pr) instead of escalating to human-required once a testing cycle
@@ -836,7 +844,20 @@ func (e *Engine) SetReviewRoundsPerHour(n int) { e.reviewRoundsPerHour = n }
 // manual gate itself could not be run (harness/tooling limitation), not a
 // product defect. Defaults to true (see NewEngine); wired from
 // config.TestingOpenPROnUnrunnableGateEnabled in app_init.go.
-func (e *Engine) SetOpenPROnUnrunnableGate(v bool) { e.openPROnUnrunnableGate = v }
+func (e *Engine) SetOpenPROnUnrunnableGate(v bool) { e.openPROnUnrunnableGate.Store(v) }
+
+// ReviewUntilClean, ReviewRoundsPerHour, TestingMaxAttempts and
+// OpenPROnUnrunnableGate read back what the corresponding Set* stored. They
+// exist because these values live in atomics: the app layer's reload tests
+// previously reflected into the plain fields, which cannot work on an
+// atomic.Bool, and reflecting into one is worse than a getter.
+func (e *Engine) ReviewUntilClean() bool { return !e.reviewLoopDisabled.Load() }
+
+func (e *Engine) ReviewRoundsPerHour() int { return int(e.reviewRoundsPerHour.Load()) }
+
+func (e *Engine) TestingMaxAttempts() int { return int(e.maxTestAttempts.Load()) }
+
+func (e *Engine) OpenPROnUnrunnableGate() bool { return e.openPROnUnrunnableGate.Load() }
 
 // SetMaxCheckpoints sets how many checkpoint handoffs a workflow step may
 // spend before the task is parked human-required. Values <= 0 fall back to
