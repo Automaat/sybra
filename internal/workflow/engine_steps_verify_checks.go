@@ -829,6 +829,62 @@ func autoFixBackoff(attempts int) time.Duration {
 	return backoff
 }
 
+// verifyDiagnosticName is the sidecar a verify escalation leaves behind.
+const verifyDiagnosticName = ".sybra-verify-%s.md"
+
+// writeVerifyDiagnostic persists the failing command and the highest-signal
+// excerpt, returning the path it wrote or "".
+//
+// status_reason records the command trimmed to a single line and drops the
+// diagnostic entirely, so whoever picks the task up next — a human, or the
+// human-review autonomy agent whose mandate tells it to "re-run the exact
+// failing command" — gets a command but not the finding, and has to re-run a
+// multi-minute suite to learn what it already said. The re-ask path has built
+// this excerpt all along; only the escalation threw it away.
+//
+// Best-effort: a task that cannot be escalated because a sidecar would not
+// write is strictly worse than one escalated without it.
+func (e *Engine) writeVerifyDiagnostic(taskID, failedCmd, output string) string {
+	dir := e.resolveSidecarDir(taskID)
+	if dir == "" || taskID == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("# Verify failure — task ")
+	b.WriteString(taskID)
+	b.WriteString("\n\n## Failing command\n\n```\n")
+	b.WriteString(failedCmd)
+	b.WriteString("\n```\n")
+	if excerpt := highestSignalVerifyFailureExcerpt(failedCmd, output); excerpt != "" {
+		b.WriteString("\n## Highest-signal failure excerpt\n\n```\n")
+		b.WriteString(excerpt)
+		b.WriteString("\n```\n")
+	}
+	// The structured excerpt only covers frontend commands, so a Go lint or
+	// test failure — the majority of what escalates — would otherwise record
+	// nothing but the command. Mirror buildVerifyReaskNote and keep the tail.
+	if tail := tailString(strings.TrimSpace(output), 3000); tail != "" {
+		b.WriteString("\n## Output tail\n\n```\n")
+		b.WriteString(tail)
+		b.WriteString("\n```\n")
+	}
+	path := filepath.Join(dir, fmt.Sprintf(verifyDiagnosticName, taskID))
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		e.logger.Warn("workflow.verify-checks.diagnostic", "task_id", taskID, "err", err)
+		return ""
+	}
+	return path
+}
+
+// withDiagnostic appends a pointer to the sidecar so status_reason stays short
+// while still leading somewhere with the actual finding.
+func withDiagnostic(reason, path string) string {
+	if path == "" {
+		return reason
+	}
+	return reason + " — diagnostic: " + path
+}
+
 // autoFixOrFlagVerifyChecks rewinds the workflow to the implementation step and
 // re-asks the agent to fix a code-fixable verify failure at its root cause,
 // looping instead of escalating an ordinary lint/test failure the agent can fix
@@ -838,7 +894,8 @@ func autoFixBackoff(attempts int) time.Duration {
 // ran), escalates to human-required.
 func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Execution, t TaskInfo, reason, failedCmd, output string) (StepOutput, error) {
 	if wfExec == nil || wfExec.CountStep(verifyChecksImplStepID) == 0 {
-		return e.flagVerifyChecks(taskID, step, reason, failedCmd)
+		diag := e.writeVerifyDiagnostic(taskID, failedCmd, output)
+		return e.flagVerifyChecks(taskID, step, withDiagnostic(reason, diag), failedCmd)
 	}
 	fingerprint := autoFixFailureFingerprint(failedCmd, output)
 	armed, attempt, err := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
@@ -866,7 +923,8 @@ func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Ex
 	if !armed {
 		exhausted := fmt.Sprintf("%s — escalating after repeated identical auto-fix failures or %d attempts without passing",
 			reason, verifyChecksAutoFixCeiling)
-		return e.flagVerifyChecks(taskID, step, exhausted, "auto-fix-exhausted: "+trimDiffLine(failedCmd))
+		diag := e.writeVerifyDiagnostic(taskID, failedCmd, output)
+		return e.flagVerifyChecks(taskID, step, withDiagnostic(exhausted, diag), "auto-fix-exhausted: "+trimDiffLine(failedCmd))
 	}
 	e.logger.Info("workflow.verify-checks.auto-fix",
 		"task_id", taskID, "attempt", attempt, "cmd", trimDiffLine(failedCmd))
