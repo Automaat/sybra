@@ -11,7 +11,12 @@ import (
 // budget just the same, so a trivially fixable finding escalated on an attempt
 // that never happened.
 func TestRewindRetry_FingerprintNotChargedWithoutCommits(t *testing.T) {
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	tasks := newMemTasks()
+	// Seed the provider: rewindRetry persists via SetWorkflow and
+	// UpdateTaskStatus, and against an unseeded store both error — the test
+	// would then pass without exercising the path it claims to.
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 
 	policy := func(ti TaskInfo) rewindRetryPolicy {
 		return rewindRetryPolicy{
@@ -31,10 +36,18 @@ func TestRewindRetry_FingerprintNotChargedWithoutCommits(t *testing.T) {
 		ti := TaskInfo{ID: "t1", Status: "in-progress", AgentRuns: []AgentRunInfo{
 			{AgentID: "a1", Role: "implementation", HeadSHA: "deadbeef"},
 		}}
-		if armed, _, _ := engine.rewindRetry("t1", wfExec, ti, policy(ti)); !armed {
+		armed, _, err := engine.rewindRetry("t1", wfExec, ti, policy(ti))
+		if err != nil {
+			t.Fatalf("first arm: %v", err)
+		}
+		if !armed {
 			t.Fatal("first arm should be allowed")
 		}
-		if armed, _, _ := engine.rewindRetry("t1", wfExec, ti, policy(ti)); armed {
+		armed, _, err = engine.rewindRetry("t1", wfExec, ti, policy(ti))
+		if err != nil {
+			t.Fatalf("second arm: %v", err)
+		}
+		if armed {
 			t.Error("a committed attempt must spend the same-fingerprint budget")
 		}
 	})
@@ -44,10 +57,18 @@ func TestRewindRetry_FingerprintNotChargedWithoutCommits(t *testing.T) {
 		ti := TaskInfo{ID: "t1", Status: "in-progress", AgentRuns: []AgentRunInfo{
 			{AgentID: "a1", Role: "implementation"},
 		}}
-		if armed, _, _ := engine.rewindRetry("t1", wfExec, ti, policy(ti)); !armed {
+		armed, _, err := engine.rewindRetry("t1", wfExec, ti, policy(ti))
+		if err != nil {
+			t.Fatalf("first arm: %v", err)
+		}
+		if !armed {
 			t.Fatal("first arm should be allowed")
 		}
-		if armed, _, _ := engine.rewindRetry("t1", wfExec, ti, policy(ti)); !armed {
+		armed, _, err = engine.rewindRetry("t1", wfExec, ti, policy(ti))
+		if err != nil {
+			t.Fatalf("second arm: %v", err)
+		}
+		if !armed {
 			t.Error("a run that never committed did not attempt the fix; it must not spend the budget")
 		}
 	})
@@ -63,7 +84,11 @@ func TestRewindRetry_FingerprintNotChargedWithoutCommits(t *testing.T) {
 		p.max = 3
 		armedCount := 0
 		for range 10 {
-			if armed, _, _ := engine.rewindRetry("t1", wfExec, ti, p); armed {
+			armed, _, err := engine.rewindRetry("t1", wfExec, ti, p)
+			if err != nil {
+				t.Fatalf("rewindRetry: %v", err)
+			}
+			if armed {
 				armedCount++
 			}
 		}
