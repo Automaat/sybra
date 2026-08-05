@@ -109,9 +109,9 @@ type ErrorSample struct {
 }
 
 // ClassifyClaudeError decides whether a failed claude run should mark the
-// claude provider as rate-limited or logged-out. The third return is the
-// retry-after hint to use when setting a rate-limit cooldown; zero means the
-// checker should fall back to its configured default.
+// claude provider as rate-limited or logged-out. Classification.RetryAfter is
+// the hint to use when setting a rate-limit cooldown; zero means the checker
+// should fall back to its configured default.
 //
 // 529/overloaded is intentionally NOT classified here — the retry path in
 // runner_headless.go already handles transient overload without marking the
