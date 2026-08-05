@@ -433,7 +433,14 @@ func (h *humanReviewHandler) humanReviewCycleRunCount(t task.Task) int {
 	return count
 }
 
-func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID string, v verdictDecision) {
+func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID string, v verdictDecision, startupReplay bool) {
+	if startupReplay {
+		fresh, ok := h.recoveryVerdictStillLatest(current.ID, agentID, v)
+		if !ok {
+			return
+		}
+		current = fresh
+	}
 	note := h.scrubForTask(current.ProjectID, v.Summary)
 	status, ok := safeHumanReviewRecoveryStatus(v.RecoverableAction)
 	if !ok || current.Status != task.StatusHumanRequired {
@@ -443,10 +450,17 @@ func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID s
 		return
 	}
 	if status == task.StatusDone {
-		h.applyDoneRecovery(current, agentID, note, v)
+		h.applyDoneRecovery(current, agentID, note, v, startupReplay)
 		return
 	}
 	if h.verifyUnblocked(current) {
+		if startupReplay {
+			fresh, stillLatest := h.recoveryVerdictStillLatest(current.ID, agentID, v)
+			if !stillLatest {
+				return
+			}
+			current = fresh
+		}
 		statusReason := "auto-review recovery: " + strings.TrimSpace(v.Summary)
 		if h.dispatchFromHumanRequired != nil {
 			target, err := h.prepareRecoveryDispatch(current, status)
@@ -498,7 +512,7 @@ func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID s
 	}
 }
 
-func (h *humanReviewHandler) applyDoneRecovery(current task.Task, agentID, note string, v verdictDecision) {
+func (h *humanReviewHandler) applyDoneRecovery(current task.Task, agentID, note string, v verdictDecision, startupReplay bool) {
 	prNumber := humanReviewRecoveryPRNumber(current, v)
 	mergedPR := false
 	if prNumber > 0 {
@@ -506,6 +520,13 @@ func (h *humanReviewHandler) applyDoneRecovery(current task.Task, agentID, note 
 			return
 		}
 		mergedPR = true
+	}
+	if startupReplay {
+		fresh, stillLatest := h.recoveryVerdictStillLatest(current.ID, agentID, v)
+		if !stillLatest {
+			return
+		}
+		current = fresh
 	}
 	if mergedPR && h.landClosedPR != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -577,6 +598,19 @@ func (h *humanReviewHandler) applyDoneRecovery(current task.Task, agentID, note 
 		return
 	}
 	h.markVerdictRendered(current.ID, agentID)
+}
+
+func (h *humanReviewHandler) recoveryVerdictStillLatest(taskID, agentID string, expected verdictDecision) (task.Task, bool) {
+	current, err := h.tasks.Get(taskID)
+	if err != nil || !strandedHumanReviewRecoveryCandidate(current) {
+		return task.Task{}, false
+	}
+	latestAgentID, latest, ok := latestHumanReviewUnblockedVerdict(current)
+	if !ok || latestAgentID != agentID || latest.Summary != expected.Summary || latest.RecoverableAction != expected.RecoverableAction {
+		h.logger.Info("human-review.recover-stranded.superseded", "task_id", taskID, "agent_id", agentID)
+		return task.Task{}, false
+	}
+	return current, true
 }
 
 func (h *humanReviewHandler) verifyDoneRecoveryMergedPR(current task.Task, agentID, note string, prNumber int) bool {
@@ -695,7 +729,11 @@ func (h *humanReviewHandler) recoverStrandedUnblockedTasks() {
 		if !ok {
 			continue
 		}
-		h.applyUnblockedRecovery(t, agentID, v)
+		note := h.scrubForTask(t.ProjectID, v.Summary)
+		if hasAppendedSection(t.Body, "Auto-review: unblocked claim not verified", note) {
+			continue
+		}
+		h.applyUnblockedRecovery(t, agentID, v, true)
 	}
 }
 
@@ -714,7 +752,10 @@ func latestHumanReviewUnblockedVerdict(t task.Task) (agentID string, v verdictDe
 		}
 		// This is the latest human-review run, so every failure below is final:
 		// never skip it to resurrect an older recovery action.
-		if run.State != string(agent.StateStopped) || strings.TrimSpace(run.Result) == "" {
+		legacyRenderedSuccess := run.Outcome == "" && run.VerdictRendered
+		if run.State != string(agent.StateStopped) ||
+			(run.Outcome != "success" && !legacyRenderedSuccess) ||
+			strings.TrimSpace(run.Result) == "" {
 			return "", verdictDecision{}, false
 		}
 		parsed, _, err := verdict.Parse(run.Result)
@@ -769,7 +810,8 @@ func (h *humanReviewHandler) verifyUnblocked(t task.Task) bool {
 		return true
 	}
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		return true
+		h.logger.Warn("human-review.unblocked.verify-worktree", "task_id", t.ID, "dir", dir, "err", err)
+		return false
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -813,12 +855,6 @@ func (h *humanReviewHandler) verifyUnblocked(t task.Task) bool {
 
 func safeHumanReviewRecoveryStatus(action string) (task.Status, bool) {
 	switch strings.TrimSpace(action) {
-	case "todo":
-		return task.StatusTodo, true
-	case "planning":
-		return task.StatusPlanning, true
-	case "plan-review":
-		return task.StatusPlanReview, true
 	case "in-progress":
 		return task.StatusInProgress, true
 	case "ready-review":
@@ -1211,7 +1247,7 @@ func (h *humanReviewHandler) recordUnblocked(current task.Task, agentID string, 
 		"decision": v.Decision, "summary": v.Summary, "verdict_source": string(source),
 		"recoverable_action": v.RecoverableAction, "confidence": v.Confidence,
 	})
-	h.applyUnblockedRecovery(current, agentID, v)
+	h.applyUnblockedRecovery(current, agentID, v, false)
 }
 
 func (h *humanReviewHandler) findExistingLocalBugTaskOnRoute(title, routeTag string) *task.Task {
@@ -1638,7 +1674,7 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, dir string, wctx *WorkScru
 	b.WriteString("  - \"human\": a human genuinely must act (scope, creative decision, missing credential, unreachable system); the task stays human-required.\n")
 	b.WriteString("  - \"sybra_bug\": you could not unblock it and the cause is a Sybra defect; the host records the diagnosis on the task without opening a GitHub issue.\n")
 	b.WriteString("- `reason`: one sentence — what you did to unblock it, what a human must decide, or the diagnosis.\n")
-	b.WriteString("- `recoverable_action`: one of `none`, `todo`, `planning`, `plan-review`, `in-progress`, `ready-review`, `in-review`, `testing`, `ready-pr`, `done`.\n")
+	b.WriteString("- `recoverable_action`: one of `none`, `in-progress`, `ready-review`, `in-review`, `testing`, `ready-pr`, `done`.\n")
 	b.WriteString("  - Use `none` when you already moved the task yourself or when no safe host-side status change applies.\n")
 	b.WriteString("  - For `unblocked`, set this to the target workflow status when the host should move the task back into the pipeline for you. Prefer the first safe downstream stage (`in-progress`/`testing`/`in-review`) over `ready-pr`; use `ready-pr` only when deterministic gates are genuinely unavailable and a PR fallback is required.\n")
 	b.WriteString("- `confidence`: `low` | `medium` | `high`.\n")
@@ -1701,6 +1737,11 @@ func appendSection(body, header, content string) string {
 	}
 	body += "## " + header + "\n\n" + strings.TrimSpace(content) + "\n"
 	return body
+}
+
+func hasAppendedSection(body, header, content string) bool {
+	section := "## " + header + "\n\n" + strings.TrimSpace(content)
+	return strings.Contains(body, section)
 }
 
 func defaultStr(s, fallback string) string {

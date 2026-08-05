@@ -632,7 +632,7 @@ func completedHumanReviewWorkflow() **workflow.Execution {
 	return &wf
 }
 
-func TestRecoverStrandedUnblockedTasks_DispatchesMissingWorktreeCircuitBreaker(t *testing.T) {
+func TestRecoverStrandedUnblockedTasks_ReplaysLegacyReasonWithoutConfiguredWorktree(t *testing.T) {
 	t.Parallel()
 	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
@@ -984,6 +984,33 @@ func TestRecoverStrandedUnblockedTasks_LatestVerdictWins(t *testing.T) {
 	}
 }
 
+func TestLatestHumanReviewUnblockedVerdict_RequiresSuccessfulOutcome(t *testing.T) {
+	t.Parallel()
+	result := `{"decision":"unblocked","reason":"partial output","recoverable_action":"in-progress","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`
+	for _, tc := range []struct {
+		name string
+		run  task.AgentRun
+		want bool
+	}{
+		{name: "success", run: task.AgentRun{Outcome: "success"}, want: true},
+		{name: "failed", run: task.AgentRun{Outcome: "failed"}},
+		{name: "unfinished legacy", run: task.AgentRun{}},
+		{name: "rendered legacy success", run: task.AgentRun{VerdictRendered: true}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := tc.run
+			run.AgentID = "hr"
+			run.Role = string(agent.RoleHumanReview)
+			run.State = string(agent.StateStopped)
+			run.Result = result
+			_, _, got := latestHumanReviewUnblockedVerdict(task.Task{AgentRuns: []task.AgentRun{run}})
+			if got != tc.want {
+				t.Fatalf("latest verdict accepted = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestStrandedHumanReviewRecoveryCandidate_Guards(t *testing.T) {
 	t.Parallel()
 	completed := &workflow.Execution{State: workflow.ExecCompleted}
@@ -1033,7 +1060,8 @@ func TestRecoverStrandedUnblockedTasks_DirtyWorktreeStaysParked(t *testing.T) {
 	}
 	if err := tasks.AddRun(tk.ID, task.AgentRun{
 		AgentID: "hr-dirty", Role: string(agent.RoleHumanReview), State: string(agent.StateStopped),
-		Result: `{"decision":"unblocked","reason":"claimed pushed fix","recoverable_action":"ready-pr","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+		Outcome: "success",
+		Result:  `{"decision":"unblocked","reason":"claimed pushed fix","recoverable_action":"ready-pr","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
 	}); err != nil {
 		t.Fatalf("add run: %v", err)
 	}
@@ -1043,6 +1071,7 @@ func TestRecoverStrandedUnblockedTasks_DirtyWorktreeStaysParked(t *testing.T) {
 	}
 
 	h.recoverStrandedUnblockedTasks()
+	h.recoverStrandedUnblockedTasks()
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
@@ -1050,6 +1079,33 @@ func TestRecoverStrandedUnblockedTasks_DirtyWorktreeStaysParked(t *testing.T) {
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+	if count := strings.Count(got.Body, "## Auto-review: unblocked claim not verified"); count != 1 {
+		t.Fatalf("verification note count = %d, want 1 after repeated replay", count)
+	}
+}
+
+func TestVerifyUnblocked_ConfiguredInvalidWorktreeStaysParked(t *testing.T) {
+	t.Parallel()
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		dir  string
+	}{
+		{name: "missing", dir: filepath.Join(t.TempDir(), "missing")},
+		{name: "not-directory", dir: file},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if h.verifyUnblocked(task.Task{ID: "task-invalid-worktree", WorktreeDir: tc.dir}) {
+				t.Fatalf("verifyUnblocked(%q) = true, want false", tc.dir)
+			}
+		})
 	}
 }
 
