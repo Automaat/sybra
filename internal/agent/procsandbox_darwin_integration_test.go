@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"compress/zlib"
 	"context"
 	"fmt"
 	"os"
@@ -93,7 +94,7 @@ func darwinEnvValue(env []string, key string) string {
 	return ""
 }
 
-func TestPrepareGitSandboxOverlay_DarwinPreservesLegacyObjects(t *testing.T) {
+func TestPrepareGitSandboxOverlay_DarwinRejectsInvalidLegacyObjects(t *testing.T) {
 	sandboxHome := t.TempDir()
 	legacy := filepath.Join(sandboxHome, ".sybra-git-overlay", "objects", "ab", "cdef")
 	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
@@ -104,11 +105,106 @@ func TestPrepareGitSandboxOverlay_DarwinPreservesLegacyObjects(t *testing.T) {
 	}
 
 	_, err := prepareGitSandboxOverlay(context.Background(), t.TempDir(), sandboxHome, gitSandboxRoots{objectDir: t.TempDir()})
-	if err == nil || !strings.Contains(err.Error(), "refusing to delete") {
-		t.Fatalf("prepareGitSandboxOverlay error = %v, want preserved legacy-object failure", err)
+	if err == nil || !strings.Contains(err.Error(), "unsupported legacy Git object payload") {
+		t.Fatalf("prepareGitSandboxOverlay error = %v, want invalid legacy-object failure", err)
 	}
 	if _, err := os.Stat(legacy); err != nil {
 		t.Fatalf("legacy object was not preserved: %v", err)
+	}
+}
+
+func TestPrepareGitSandboxOverlay_DarwinPreservesCorruptCanonicalLegacyObject(t *testing.T) {
+	sandboxHome := t.TempDir()
+	legacy := filepath.Join(sandboxHome, ".sybra-git-overlay", "objects", "ab", strings.Repeat("0", 38))
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("not a zlib Git object"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := prepareGitSandboxOverlay(context.Background(), t.TempDir(), sandboxHome, gitSandboxRoots{objectDir: t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "verify legacy object") {
+		t.Fatalf("prepareGitSandboxOverlay error = %v, want corrupt legacy-object failure", err)
+	}
+	if _, err := os.Stat(legacy); err != nil {
+		t.Fatalf("corrupt legacy object was not preserved: %v", err)
+	}
+}
+
+func TestVerifyLooseObject_RejectsOversizedObjectBeforeReadingBody(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zlib.NewWriter(file)
+	if _, err := fmt.Fprintf(zw, "blob %d\x00", int64(maxLegacyLooseObjectSize)+1); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	file, err = os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+
+	err = verifyLooseObject(file, strings.Repeat("0", 40))
+	if err == nil || !strings.Contains(err.Error(), "exceeds migration limit") {
+		t.Fatalf("verifyLooseObject error = %v, want migration-size limit", err)
+	}
+}
+
+func TestPrepareGitSandboxOverlay_DarwinMigratesLegacyObjectsBeforeReset(t *testing.T) {
+	bare, wt := setupLinkedWorktree(t)
+	sandboxHome := t.TempDir()
+	legacyObjects := filepath.Join(sandboxHome, ".sybra-git-overlay", "objects")
+	if err := os.MkdirAll(legacyObjects, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sharedObjects := filepath.Join(bare, "objects")
+
+	if err := os.WriteFile(filepath.Join(wt, "legacy.txt"), []byte("preserved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitOrFatal(t, wt, "add", "legacy.txt")
+	commit := exec.Command("git", "commit", "-q", "-m", "legacy overlay commit")
+	commit.Dir = wt
+	commit.Env = append(gitSandboxDiscoveryEnv(),
+		"GIT_OBJECT_DIRECTORY="+legacyObjects,
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES="+sharedObjects,
+	)
+	if out, err := commit.CombinedOutput(); err != nil {
+		t.Fatalf("create legacy-overlay commit: %v: %s", err, out)
+	}
+	head := strings.TrimSpace(runGitOutput(t, wt, "rev-parse", "HEAD"))
+	if _, err := os.Stat(filepath.Join(sharedObjects, head[:2], head[2:])); !os.IsNotExist(err) {
+		t.Fatalf("legacy commit unexpectedly present in shared store before migration: %v", err)
+	}
+
+	roots, err := resolveGitSandboxRoots(context.Background(), wt)
+	if err != nil {
+		t.Fatalf("resolveGitSandboxRoots: %v", err)
+	}
+	if _, err := prepareGitSandboxOverlay(context.Background(), wt, sandboxHome, roots); err != nil {
+		t.Fatalf("prepareGitSandboxOverlay: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sharedObjects, head[:2], head[2:])); err != nil {
+		t.Fatalf("migrated commit missing from shared store: %v", err)
+	}
+	if _, err := os.Stat(legacyObjects); !os.IsNotExist(err) {
+		t.Fatalf("verified legacy object overlay was not reset: %v", err)
+	}
+	verify := exec.Command("git", "cat-file", "-e", head+"^{commit}")
+	verify.Dir = bare
+	verify.Env = gitSandboxDiscoveryEnv()
+	if out, err := verify.CombinedOutput(); err != nil {
+		t.Fatalf("migrated commit not independently readable: %v: %s", err, out)
 	}
 }
 
@@ -154,7 +250,7 @@ func TestPrepareGitSandboxOverlay_DarwinPreservesLegacyPack(t *testing.T) {
 	}
 
 	_, err := prepareGitSandboxOverlay(context.Background(), t.TempDir(), sandboxHome, gitSandboxRoots{objectDir: t.TempDir()})
-	if err == nil || !strings.Contains(err.Error(), "refusing to delete") {
+	if err == nil || !strings.Contains(err.Error(), "unsupported legacy Git object payload") {
 		t.Fatalf("prepareGitSandboxOverlay error = %v, want preserved legacy-pack failure", err)
 	}
 	if _, err := os.Stat(legacyPack); err != nil {
@@ -173,12 +269,24 @@ func TestPrepareGitSandboxOverlay_DarwinPreservesLegacyAlternates(t *testing.T) 
 	}
 
 	_, err := prepareGitSandboxOverlay(context.Background(), t.TempDir(), sandboxHome, gitSandboxRoots{objectDir: t.TempDir()})
-	if err == nil || !strings.Contains(err.Error(), "refusing to delete") {
+	if err == nil || !strings.Contains(err.Error(), "unsupported legacy Git object payload") {
 		t.Fatalf("prepareGitSandboxOverlay error = %v, want preserved legacy-alternates failure", err)
 	}
 	if _, err := os.Stat(legacyAlternates); err != nil {
 		t.Fatalf("legacy alternates file was not preserved: %v", err)
 	}
+}
+
+func runGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = gitSandboxDiscoveryEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v (dir=%s): %v: %s", args, dir, err, out)
+	}
+	return string(out)
 }
 
 // runGitOrFatal runs a git command in dir, unsandboxed, for test setup.
