@@ -352,14 +352,18 @@ const maxReviewAttemptsPerHead = 2
 
 // reviewBudget builds the single durable-AgentRuns-backed budget bounding
 // automated review dispatch: PerHour catches a runaway loop across any head,
-// PerHead catches repeated review of one unchanged commit. A nil cfg (tests)
-// uses the default per-hour limit.
+// PerTask puts a hard ceiling on lifetime review churn, and PerHead catches
+// repeated review of one unchanged commit. A nil cfg (tests) uses the defaults.
 func (a *App) reviewBudget() reviewbudget.Budget {
 	perHour := config.DefaultReviewRoundsPerHour
 	if a.cfg != nil {
 		perHour = a.cfg.Agent.ReviewRoundsPerHourLimit()
 	}
-	return reviewbudget.Budget{PerHour: perHour, PerHead: maxReviewAttemptsPerHead}
+	return reviewbudget.Budget{
+		PerHour: perHour,
+		PerTask: config.DefaultReviewRoundsPerTask,
+		PerHead: maxReviewAttemptsPerHead,
+	}
 }
 
 // taskReviewRuns adapts t's durable AgentRuns history into the role/timestamp
@@ -391,6 +395,24 @@ func (a *App) parkReviewRateLimited(t task.Task, limit int) {
 		},
 	}); err != nil {
 		a.logger.Error("workflow.dispatch.inbound-review.rate-limit-park", "task_id", t.ID, "err", err)
+	}
+}
+
+func (a *App) parkReviewLifetimeLimited(t task.Task, limit int) {
+	spent := a.reviewBudget().LifetimeSpent(taskReviewRuns(t))
+	a.logger.Error("workflow.dispatch.inbound-review.task-limit",
+		"task_id", t.ID, "repo", t.ProjectID, "pr", t.PRNumber,
+		"rounds", spent, "limit", limit)
+	reason := fmt.Sprintf("review lifetime limit: %d rounds spent on PR #%d", limit, t.PRNumber)
+	if _, err := a.tasks.Apply(task.TransitionIntent{
+		TaskID:   t.ID,
+		ToStatus: task.StatusHumanRequired,
+		Actor:    "orchestrator.review_task_limit.park",
+		Extra: task.Update{
+			StatusReason: task.Ptr(reason),
+		},
+	}); err != nil {
+		a.logger.Error("workflow.dispatch.inbound-review.task-limit-park", "task_id", t.ID, "err", err)
 	}
 }
 
@@ -471,12 +493,15 @@ func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) 
 	// The blast-radius cap, and the only gate here that bounds a loop we have
 	// not thought of: the per-head budget below assumes the head is a
 	// meaningful key, and every other gate assumes the phase machine is sane.
-	// Rate rather than lifetime total, so a PR legitimately re-reviewed after
-	// each push over weeks is never blocked while a runaway is stopped inside
-	// the hour. Counted off the durable AgentRuns list, so a restart cannot
-	// launder it. Checked before the GitHub call — it needs no network.
+	// Counted off the durable AgentRuns list, so a restart cannot launder it.
+	// Checked before the GitHub call — it needs no network.
 	budget := a.reviewBudget()
-	if budget.HourlyExceeded(taskReviewRuns(t), time.Now()) {
+	runs := taskReviewRuns(t)
+	if budget.LifetimeExceeded(runs) {
+		a.parkReviewLifetimeLimited(t, budget.PerTask)
+		return
+	}
+	if budget.HourlyExceeded(runs, time.Now()) {
 		a.parkReviewRateLimited(t, budget.PerHour)
 		return
 	}

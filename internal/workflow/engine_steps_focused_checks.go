@@ -385,12 +385,14 @@ func (e *Engine) reaskFocusedChecks(taskID string, step *Step, wfExec *Execution
 	}
 	fingerprint := autoFixFailureFingerprint(failedCmd, output)
 	armed, attempt, err := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
-		counterKey:             "step." + step.ID + ".auto_fix",
-		max:                    verifyChecksAutoFixCeiling,
-		rewindStep:             verifyChecksImplStepID,
-		backoff:                autoFixBackoff,
-		fingerprint:            fingerprint,
-		maxSameFingerprintRuns: 2,
+		counterKey:  "step." + step.ID + ".auto_fix",
+		max:         verifyChecksAutoFixCeiling,
+		rewindStep:  verifyChecksImplStepID,
+		backoff:     autoFixBackoff,
+		fingerprint: fingerprint,
+		// One prior identical occurrence means this is repeat #2. Re-running
+		// the same deterministic failure again only spends another author run.
+		maxSameFingerprintRuns: 1,
 		onArm: func(wfExec *Execution, attempt int) {
 			wfExec.SetVar(focusedChecksReaskNoteVar, buildFocusedChecksReaskNote(selected, changedFiles, failedCmd, output))
 			wfExec.SetVar(verifyRetryModelVar, "expensive")

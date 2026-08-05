@@ -888,29 +888,30 @@ func (e *Engine) transitionFields(t TaskInfo, wfExec *Execution) map[string]stri
 	// follows the documented default instead of silently shipping
 	// single-pass review.
 	fields["config.review_until_clean"] = strconv.FormatBool(!e.reviewLoopDisabled)
-	fields["task.review_budget_exceeded"] = strconv.FormatBool(e.reviewBudgetExceeded(t))
+	hourlyExceeded, lifetimeExceeded := e.reviewBudgetExhaustion(t)
+	fields["task.review_budget_exceeded"] = strconv.FormatBool(hourlyExceeded || lifetimeExceeded)
+	fields["task.review_lifetime_exceeded"] = strconv.FormatBool(lifetimeExceeded)
 	return fields
 }
 
-// reviewBudgetExceeded reports whether t has spent its review budget for
-// the current rolling hour — the same reviewbudget.Budget the inbound
-// PR-review dispatcher (internal/sybra's app_orchestrator.go) enforces, so a
-// runaway review→fix→review cycle inside simple-task-review trips the same
-// single cap rather than a separate per-workflow-execution counter.
-func (e *Engine) reviewBudgetExceeded(t TaskInfo) bool {
+// reviewBudgetExhaustion preserves which limit fired so workflows can park a
+// temporary hourly throttle differently from a permanent lifetime ceiling.
+// It uses the same reviewbudget.Budget as the inbound PR-review dispatcher.
+func (e *Engine) reviewBudgetExhaustion(t TaskInfo) (hourly, lifetime bool) {
 	if e.reviewLoopDisabled {
-		return false
+		return false, false
 	}
 	limit := e.reviewRoundsPerHour
 	if limit == 0 {
 		limit = config.DefaultReviewRoundsPerHour
 	}
-	budget := reviewbudget.Budget{PerHour: limit}
+	budget := reviewbudget.Budget{PerHour: limit, PerTask: config.DefaultReviewRoundsPerTask}
 	runs := make([]reviewbudget.Run, len(t.AgentRuns))
 	for i := range t.AgentRuns {
 		runs[i] = reviewbudget.Run{Role: t.AgentRuns[i].Role, StartedAt: t.AgentRuns[i].StartedAt}
 	}
-	return budget.HourlyExceeded(runs, time.Now())
+	now := time.Now()
+	return budget.HourlyExceeded(runs, now), budget.LifetimeExceeded(runs)
 }
 
 // maxCascadeDepth bounds how many workflows may chain synchronously off a

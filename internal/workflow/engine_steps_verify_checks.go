@@ -47,7 +47,7 @@ const (
 	autoFixBackoffMax          = 15 * time.Minute
 	// verifyChecksAutoFixCeiling bounds auto-fix re-asks so a deterministic
 	// failure no agent can fix reaches a human instead of looping forever.
-	verifyChecksAutoFixCeiling = 5
+	verifyChecksAutoFixCeiling = 3
 	// Full verify suites are CPU-heavy and already serialized by workflow
 	// retries; a single local slot prevents one saturated host from piling
 	// multiple suites on top of each other and timing them all out.
@@ -842,12 +842,16 @@ func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Ex
 	}
 	fingerprint := autoFixFailureFingerprint(failedCmd, output)
 	armed, attempt, err := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
-		counterKey:             "step." + step.ID + ".auto_fix",
-		max:                    verifyChecksAutoFixCeiling,
-		rewindStep:             verifyChecksImplStepID,
-		backoff:                autoFixBackoff,
-		fingerprint:            fingerprint,
-		maxSameFingerprintRuns: 2,
+		counterKey:  "step." + step.ID + ".auto_fix",
+		max:         verifyChecksAutoFixCeiling,
+		rewindStep:  verifyChecksImplStepID,
+		backoff:     autoFixBackoff,
+		fingerprint: fingerprint,
+		// The first occurrence earns one autonomous repair attempt. If the
+		// exact command and failure evidence survive that code-author run, the
+		// second occurrence proves the repair made no progress and must stop
+		// the loop immediately.
+		maxSameFingerprintRuns: 1,
 		onArm: func(wfExec *Execution, attempt int) {
 			wfExec.SetVar(verifyReaskNoteVar, buildVerifyReaskNote(failedCmd, output))
 			wfExec.SetVar(verifyRetryModelVar, "expensive")
