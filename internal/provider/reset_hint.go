@@ -102,10 +102,12 @@ func parseResetHint(text string) (time.Duration, HintOutcome) {
 				continue
 			}
 			d := when.Sub(now)
-			if d <= 0 {
-				continue
-			}
-			if d > maxResetHint {
+			// Both out-of-range directions are rejections, not absences. A
+			// stale-but-parseable hint — a message quoted from an earlier
+			// failure, or a clock skew across the boundary — must stay
+			// distinguishable from text that never carried a date, or the
+			// park log cannot tell them apart.
+			if d <= 0 || d > maxResetHint {
 				rejected = true
 				continue
 			}
@@ -158,16 +160,19 @@ func resetInstant(re *regexp.Regexp, m []string, now time.Time) (time.Time, bool
 			return time.Time{}, false
 		}
 	}
+	// A 12-hour suffix constrains the hour to 1..12. The regex allows two
+	// digits, so without this "0pm" would resolve to a plausible-looking
+	// 12:00 and "13am" to 13:00 — malformed text turned into a valid instant.
 	switch strings.ToLower(m[hourIdx+2]) {
 	case "pm":
-		if hour > 12 {
+		if hour < 1 || hour > 12 {
 			return time.Time{}, false
 		}
 		if hour < 12 {
 			hour += 12
 		}
 	case "am":
-		if hour > 12 {
+		if hour < 1 || hour > 12 {
 			return time.Time{}, false
 		}
 		if hour == 12 {

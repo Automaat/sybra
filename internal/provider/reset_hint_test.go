@@ -112,6 +112,8 @@ func TestParseResetHint(t *testing.T) {
 			text: "try again at Aug 1st, 2026 9:41 AM",
 			ok:   false,
 		},
+		{"zero hour with pm is malformed", "resets Aug 6 at 0pm", 0, false},
+		{"thirteen with am is malformed", "resets Aug 6 at 13am", 0, false},
 		{"no date at all", "You've hit your weekly limit", 0, false},
 		{"empty", "", 0, false},
 		{"garbage month", "try again at Foo 8th, 2026 9:41 AM", 0, false},
@@ -303,6 +305,39 @@ func TestCooldownSourceIsHonest(t *testing.T) {
 		want := time.Date(2026, time.August, 8, 9, 41, 0, 0, time.Local).Sub(now)
 		if src != CooldownFromProvider || after != want {
 			t.Errorf("got (%v, %q), want (%v, %q)", after, src, want, CooldownFromProvider)
+		}
+	})
+}
+
+// A stale-but-parseable hint and text with no date produce the same park, so
+// the source must distinguish them or an operator cannot tell a provider whose
+// message was out of date from one that said nothing.
+func TestPastInstantIsReportedAsRejected(t *testing.T) {
+	now := time.Date(2026, time.August, 5, 15, 4, 0, 0, time.Local)
+
+	t.Run("past instant", func(t *testing.T) {
+		pinNow(t, now)
+		_, outcome := parseResetHint("try again at Aug 1st, 2026 9:41 AM")
+		if outcome != HintRejected {
+			t.Errorf("outcome = %v, want HintRejected for a stale instant", outcome)
+		}
+	})
+
+	t.Run("no date at all", func(t *testing.T) {
+		pinNow(t, now)
+		_, outcome := parseResetHint("You've hit your weekly limit")
+		if outcome != HintNone {
+			t.Errorf("outcome = %v, want HintNone when no date is present", outcome)
+		}
+	})
+
+	t.Run("surfaces through the classifier", func(t *testing.T) {
+		pinNow(t, now)
+		_, _, _, src := ClassifyCodexError(ErrorSample{
+			Stderr: "ERROR: usage limit. Please try again at Aug 1st, 2026 9:41 AM.",
+		})
+		if src != CooldownHintRejected {
+			t.Errorf("source = %q, want %q", src, CooldownHintRejected)
 		}
 	})
 }
