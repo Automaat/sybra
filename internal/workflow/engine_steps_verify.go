@@ -487,6 +487,18 @@ func (e *Engine) verifyCommitsHandleEmptyOutput(taskID string, step *Step, wfExe
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "no commits: flipped to human-required"}, nil
 }
 
+// markRunIncomplete downgrades a clean-exit code-author run that produced
+// nothing. Best-effort: the retry it accompanies matters more than the
+// bookkeeping, so a patch failure is logged rather than aborting the rearm.
+func (e *Engine) markRunIncomplete(taskID, agentID string) {
+	if agentID == "" {
+		return
+	}
+	if err := e.tasks.MarkAgentRunIncomplete(taskID, agentID); err != nil {
+		e.logger.Error("workflow.verify-commits.mark-incomplete", "task_id", taskID, "agent_id", agentID, "err", err)
+	}
+}
+
 func (e *Engine) rearmNoCommitAuthorRun(taskID string, wfExec *Execution, t TaskInfo) bool {
 	if wfExec == nil {
 		return false
@@ -496,6 +508,12 @@ func (e *Engine) rearmNoCommitAuthorRun(taskID string, wfExec *Execution, t Task
 	if !ok || !isCodeAuthorRun(run) {
 		return false
 	}
+	// Correct the record before retrying. The completion handler derives
+	// success from a clean exit, which is all it can see — but a code-author
+	// run that produced no commit did not succeed, and every consumer of
+	// Outcome (stats, evaluation, the human-review verdict gate, stale-run
+	// recovery) otherwise believes the implementation landed.
+	e.markRunIncomplete(taskID, agentID)
 	stepID := wfExec.LastAgentStepID()
 	if stepID == "" {
 		return false
