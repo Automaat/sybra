@@ -32,20 +32,27 @@ func TestOutputCapsRepairInvalidBytesBeforeTheCut(t *testing.T) {
 // trimReceiptSummary's result is persisted as YAML frontmatter, so an invalid
 // byte anywhere in it turns the whole reason into an unreadable !!binary block.
 func TestReceiptSummaryMarshalsAsPlainYAML(t *testing.T) {
-	detail := "## Test Failures\nObserved output: assertion failed caf\xe9 mismatch \xff\xfe " +
-		strings.Repeat("expected vs actual … ", 20)
+	// Both branches matter: a malformed byte corrupts the frontmatter whether
+	// or not the line was long enough to be cut.
+	for name, detail := range map[string]string{
+		"truncated": "## Test Failures\nObserved output: assertion failed caf\xe9 mismatch \xff\xfe " +
+			strings.Repeat("expected vs actual … ", 20),
+		"under the cut": "## Test Failures\nObserved output: assertion failed caf\xe9 \xff\xfe mismatch",
+	} {
+		t.Run(name, func(t *testing.T) {
+			summary := trimReceiptSummary(detail)
+			if !utf8.ValidString(summary) {
+				t.Fatalf("receipt summary is not valid UTF-8: %q", summary)
+			}
 
-	summary := trimReceiptSummary(detail)
-	if !utf8.ValidString(summary) {
-		t.Fatalf("receipt summary is not valid UTF-8: %q", summary)
-	}
-
-	data, err := yaml.Marshal(map[string]string{"status_reason": summary})
-	if err != nil {
-		t.Fatalf("yaml.Marshal: %v", err)
-	}
-	if strings.Contains(string(data), "!!binary") {
-		t.Fatalf("receipt summary marshalled as a binary block:\n%s", data)
+			data, err := yaml.Marshal(map[string]string{"status_reason": summary})
+			if err != nil {
+				t.Fatalf("yaml.Marshal: %v", err)
+			}
+			if strings.Contains(string(data), "!!binary") {
+				t.Fatalf("receipt summary marshalled as a binary block:\n%s", data)
+			}
+		})
 	}
 }
 

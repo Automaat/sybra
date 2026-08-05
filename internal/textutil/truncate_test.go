@@ -152,11 +152,11 @@ func TestEveryCutPointStaysValidUTF8(t *testing.T) {
 	for limit := -2; limit <= len(s)+2; limit++ {
 		for _, suffix := range []string{"...", "…", "\n... (truncated)", ""} {
 			for name, got := range map[string]string{
-				"TruncateBytes":       TruncateBytes(s, limit, suffix),
-				"TruncateBytesTotal":  TruncateBytesTotal(s, limit, suffix),
-				"TruncateRunesTotal":  TruncateRunesTotal(s, limit, suffix),
-				"TruncateMiddle":      TruncateMiddle(s, limit, suffix),
-				"TruncateBytesTrimed": TruncateBytesTrimmed(s, limit, suffix),
+				"TruncateBytes":        TruncateBytes(s, limit, suffix),
+				"TruncateBytesTotal":   TruncateBytesTotal(s, limit, suffix),
+				"TruncateRunesTotal":   TruncateRunesTotal(s, limit, suffix),
+				"TruncateMiddle":       TruncateMiddle(s, limit, suffix),
+				"TruncateBytesTrimmed": TruncateBytesTrimmed(s, limit, suffix),
 			} {
 				if !utf8.ValidString(got) {
 					t.Errorf("%s(%q, %d, %q) = %q: invalid UTF-8", name, s, limit, suffix, got)

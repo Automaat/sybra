@@ -235,7 +235,10 @@ func trimReceiptSummary(s string) string {
 	if s == "" {
 		return ""
 	}
-	s = strings.Join(strings.Fields(s), " ")
+	// Sanitize whether or not the cut fires: this reaches a persisted YAML
+	// status_reason, so a short line carrying a malformed byte serializes as
+	// an unreadable !!binary block just as a truncated one does.
+	s = strings.ToValidUTF8(strings.Join(strings.Fields(s), " "), "\uFFFD")
 	if !isUsefulReceiptDetail(s) {
 		return ""
 	}
