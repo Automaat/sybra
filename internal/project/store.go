@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/sybra/internal/fsutil"
@@ -36,21 +37,24 @@ type Store struct {
 	clonesDir string
 	locker    *fsutil.KeyedLocker
 	cloneBare func(context.Context, string, string) error
-	signing   SigningPolicy
+	// signing is atomic because SetSigningPolicy runs on the config-reload
+	// goroutine while Create and the startup migration read it concurrently.
+	signing atomic.Value
 }
 
 // SetSigningPolicy late-binds the deployment's commit-signing posture, which
-// is resolved from config after the Store is constructed. Zero value is
-// SigningAuto, so a caller that never sets it keeps the historical
-// host-probing behavior.
-func (s *Store) SetSigningPolicy(p SigningPolicy) { s.signing = p }
+// is resolved from config after the Store is constructed and re-applied on
+// every hot reload. Unset means SigningAuto, so a caller that never sets it
+// keeps the historical host-probing behavior.
+func (s *Store) SetSigningPolicy(p SigningPolicy) { s.signing.Store(string(p)) }
 
 // SigningPolicy returns the configured posture, defaulting to SigningAuto.
 func (s *Store) SigningPolicy() SigningPolicy {
-	if s.signing == "" {
+	v, ok := s.signing.Load().(string)
+	if !ok || v == "" {
 		return SigningAuto
 	}
-	return s.signing
+	return SigningPolicy(v)
 }
 
 // NewStore creates dir and clonesDir if they do not exist and returns a

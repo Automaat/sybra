@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/gitexec"
@@ -134,4 +135,35 @@ func TestConfigureCommitSigning_HandlesMultiValuedKeys(t *testing.T) {
 	if got, err := outputBare(ctx, bare, "config", "--get-all", "commit.gpgsign"); err == nil && got != "" {
 		t.Errorf("commit.gpgsign = %q, want unset", got)
 	}
+}
+
+// SetSigningPolicy runs on the config-reload goroutine while Create and the
+// startup migration read the posture, so the field has to be race-safe. Run
+// under -race; a plain field fails here.
+func TestStoreSigningPolicy_ConcurrentReadWrite(t *testing.T) {
+	store, err := NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	policies := []SigningPolicy{SigningAuto, SigningNever, SigningRequire}
+	for i := range 8 {
+		wg.Go(func() {
+			for j := range 200 {
+				store.SetSigningPolicy(policies[(i+j)%len(policies)])
+			}
+		})
+	}
+	for range 8 {
+		wg.Go(func() {
+			for range 200 {
+				if got := store.SigningPolicy(); got == "" {
+					t.Errorf("SigningPolicy() returned empty, want a resolved policy")
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
 }
