@@ -62,14 +62,49 @@ func TestParseResetHint(t *testing.T) {
 			ok:   true,
 		},
 		{
-			// A yearless date already past this year rolls forward rather
-			// than producing a negative duration that would be discarded —
-			// and the clamp then caps the resulting months-long park.
-			name: "yearless date already past rolls forward then clamps",
+			// Barely past means the limit has already reset, not that it
+			// resets next year. Rolling forward here would park the provider
+			// for a week where the fixed cooldown parks it for an hour —
+			// strictly worse than doing nothing.
+			name: "yearless date barely past falls back",
+			text: "resets Aug 5 at 3pm",
+			ok:   false,
+		},
+		{
+			// Far past is genuinely next year, but that lands beyond the
+			// ceiling and is rejected rather than capped.
+			name: "yearless date far past exceeds the ceiling",
 			text: "resets Jan 3 at 9am",
-			want: maxResetHint,
+			ok:   false,
+		},
+		{
+			// A decoy date in agent prose or tool output must not shadow or
+			// corrupt the real hint that follows it.
+			name: "earlier date-shaped decoy does not win",
+			text: "tool output: git reset origin 1 at 3pm baseline\nYou've hit your weekly limit · resets Aug 7 at 5pm",
+			want: time.Date(2026, time.August, 7, 17, 0, 0, 0, time.Local).Sub(now),
 			ok:   true,
 		},
+		{
+			name: "past decoy does not win",
+			text: "note: reset May 1 at 9am was the last incident\nYou've hit your weekly limit · resets Aug 7 at 5pm",
+			want: time.Date(2026, time.August, 7, 17, 0, 0, 0, time.Local).Sub(now),
+			ok:   true,
+		},
+		{
+			// A malformed year must not have a two-digit prefix reinterpreted
+			// as the hour.
+			name: "malformed year does not become an hour",
+			text: "try again at Aug 8th, 20261 9:41 AM",
+			ok:   false,
+		},
+		{
+			name: "date-at-time phrasing parses",
+			text: "try again at Aug 6, 2026 at 9:41 AM",
+			want: time.Date(2026, time.August, 6, 9, 41, 0, 0, time.Local).Sub(now),
+			ok:   true,
+		},
+		{"impossible pm hour", "resets Aug 6 at 23pm", 0, false},
 		{
 			// A stale message quoted from an earlier failure must not park
 			// the provider at all.
@@ -98,18 +133,28 @@ func TestParseResetHint(t *testing.T) {
 	}
 }
 
-// A wrong-century or otherwise absurd parse must not take the provider offline
-// for years.
-func TestParseResetHint_ClampsFarFutureInstant(t *testing.T) {
-	now := time.Date(2026, time.August, 5, 15, 4, 0, 0, time.Local)
-	pinNow(t, now)
+// A wrong-century parse must fall back to the configured cooldown, not park
+// the provider for the ceiling. Capping a misparse turns it into the worst
+// available outcome; rejecting it is never worse than today.
+func TestParseResetHint_RejectsFarFutureInstant(t *testing.T) {
+	pinNow(t, time.Date(2026, time.August, 5, 15, 4, 0, 0, time.Local))
 
-	got, ok := parseResetHint("try again at Aug 8th, 2099 9:41 AM")
-	if !ok {
-		t.Fatal("parseResetHint returned ok=false for a far-future instant, want clamped")
+	if got, ok := parseResetHint("try again at Aug 8th, 2099 9:41 AM"); ok {
+		t.Errorf("parseResetHint = (%v, true), want rejection so the caller falls back", got)
 	}
-	if got != maxResetHint {
-		t.Errorf("parseResetHint = %v, want clamp to %v", got, maxResetHint)
+}
+
+// A hint parsed moments before its own instant must not produce a sub-second
+// park, which buys exactly one doomed dispatch.
+func TestParseResetHint_FloorsImminentInstant(t *testing.T) {
+	pinNow(t, time.Date(2026, time.August, 5, 16, 59, 59, 0, time.Local))
+
+	got, ok := parseResetHint("resets Aug 5 at 5pm")
+	if !ok {
+		t.Fatal("parseResetHint rejected an imminent future instant")
+	}
+	if got != minResetHint {
+		t.Errorf("parseResetHint = %v, want floor of %v", got, minResetHint)
 	}
 }
 

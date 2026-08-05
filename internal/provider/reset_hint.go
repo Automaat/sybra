@@ -7,10 +7,22 @@ import (
 	"time"
 )
 
-// maxResetHint bounds how far out a parsed reset instant may park a provider.
-// A misparse would otherwise take it offline effectively forever, and a
-// too-long park costs the whole fleet while a too-short one costs one probe.
+// maxResetHint bounds a parsed reset instant. Beyond it the parse is treated
+// as wrong and rejected outright rather than capped: capping would turn a
+// misparse into the worst possible park, while rejecting falls back to the
+// configured cooldown, which is never worse than today's behavior.
 const maxResetHint = 7 * 24 * time.Hour
+
+// minResetHint floors a parsed instant. A message classified moments before
+// its own reset yields a sub-second park, which buys one guaranteed-doomed
+// dispatch — the exact cost this parsing exists to remove.
+const minResetHint = 30 * time.Second
+
+// staleYearlessCutoff decides when a yearless date that already passed means
+// "next year" rather than "just now". "resets Jan 3" read in December is next
+// January; "resets Jul 1 at 5pm" read at 17:00:30 is a limit that has already
+// reset, not one eleven months out.
+const staleYearlessCutoff = 30 * 24 * time.Hour
 
 // nowFunc is the clock reset-hint parsing resolves relative dates against.
 // Overridden in tests; the classifiers are otherwise pure functions with no
@@ -19,9 +31,12 @@ var nowFunc = time.Now
 
 var (
 	// "try again at Aug 8th, 2026 9:41 AM" — the codex usage-limit message.
-	codexResetRe = regexp.MustCompile(`(?i)try again at\s+([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(\d{4})?[,\s]+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?`)
+	// The year is \b-anchored and the time is trailed by \b so a malformed
+	// number ("20261") cannot have a two-digit prefix reinterpreted as the
+	// hour; the optional "at" covers the "<date> at <time>" phrasing.
+	codexResetRe = regexp.MustCompile(`(?i)try again at\s+([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(?:(\d{4})\b)?[,\s]*(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b`)
 	// "resets Jul 1 at 5pm" / "resets Jul 1 at 17:00" — the claude message.
-	claudeResetRe = regexp.MustCompile(`(?i)resets?\s+(?:on\s+)?([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?`)
+	claudeResetRe = regexp.MustCompile(`(?i)resets?\s+(?:on\s+)?([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b`)
 )
 
 var monthByPrefix = map[string]time.Month{
@@ -37,31 +52,38 @@ var monthByPrefix = map[string]time.Month{
 // Providers state exactly when they will serve again — codex prints "try again
 // at Aug 8th, 2026 9:41 AM" — and without this the fixed cooldown retries every
 // 15 minutes for the three days until that instant, each retry burning a
-// dispatch. ok is false when nothing parses or when the instant is already
-// past, e.g. a stale message quoted from an earlier failure.
+// dispatch.
+//
+// ok is false whenever the result would be a guess: nothing parses, the
+// instant is already past, or it lands beyond maxResetHint. Every such case
+// falls back to the caller's configured cooldown, so this can only ever
+// shorten the gap between a park and the truth, never lengthen it past what
+// the provider itself stated.
 //
 // Times are read in the local zone: providers print them in the account's zone
-// with no offset. A zone mismatch skews the park by hours at most, never
-// unbounded, since maxResetHint still applies.
+// with no offset. A zone mismatch skews the park by hours, and because an
+// over-long parse is rejected rather than capped, the skew cannot compound
+// into a multi-day park.
 func parseResetHint(text string) (time.Duration, bool) {
 	if text == "" {
 		return 0, false
 	}
 	now := nowFunc()
 	for _, re := range []*regexp.Regexp{codexResetRe, claudeResetRe} {
-		m := re.FindStringSubmatch(text)
-		if m == nil {
-			continue
+		// All matches, not just the first: agent prose and tool output can
+		// carry an earlier date-shaped fragment ("git reset origin 1 at 3pm")
+		// that would otherwise shadow or corrupt the real hint.
+		for _, m := range re.FindAllStringSubmatch(text, -1) {
+			when, ok := resetInstant(re, m, now)
+			if !ok {
+				continue
+			}
+			d := when.Sub(now)
+			if d <= 0 || d > maxResetHint {
+				continue
+			}
+			return max(d, minResetHint), true
 		}
-		when, ok := resetInstant(re, m, now)
-		if !ok {
-			continue
-		}
-		d := when.Sub(now)
-		if d <= 0 {
-			continue
-		}
-		return min(d, maxResetHint), true
 	}
 	return 0, false
 }
@@ -71,7 +93,7 @@ func parseResetHint(text string) (time.Duration, bool) {
 // groups are read positionally per pattern rather than by a shared index.
 func resetInstant(re *regexp.Regexp, m []string, now time.Time) (time.Time, bool) {
 	name := strings.ToLower(m[1])
-	month, ok := monthByPrefix[name[:min(3, len(name))]]
+	month, ok := monthByPrefix[name[:3]]
 	if !ok {
 		return time.Time{}, false
 	}
@@ -103,20 +125,28 @@ func resetInstant(re *regexp.Regexp, m []string, now time.Time) (time.Time, bool
 	}
 	switch strings.ToLower(m[hourIdx+2]) {
 	case "pm":
+		if hour > 12 {
+			return time.Time{}, false
+		}
 		if hour < 12 {
 			hour += 12
 		}
 	case "am":
+		if hour > 12 {
+			return time.Time{}, false
+		}
 		if hour == 12 {
 			hour = 0
 		}
 	}
 
 	if year == 0 {
-		// A yearless "resets Jan 3" read in December means next January, not
-		// eleven months ago.
 		year = now.Year()
-		if time.Date(year, month, day, hour, minute, 0, 0, now.Location()).Before(now) {
+		candidate := time.Date(year, month, day, hour, minute, 0, 0, now.Location())
+		// Only a date far in the past means "next year". A few seconds or
+		// hours past means the limit has already reset, and rolling it
+		// forward would park the provider for a year.
+		if now.Sub(candidate) > staleYearlessCutoff {
 			year++
 		}
 	}

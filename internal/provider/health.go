@@ -622,6 +622,17 @@ func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, rea
 		reason = RateLimitReason
 	}
 	until := c.now().Add(cooldown)
+	// Without this a 3-day park is byte-identical in the log to a 900s one:
+	// the health.flip line carries only provider/healthy/reason, so an
+	// over-long park would be undiagnosable in production.
+	if c.logger != nil {
+		c.logger.Info("provider.rate_limit.park",
+			"provider", provider,
+			"reason", reason,
+			"cooldown", cooldown.String(),
+			"until", until,
+			"source", parkSource(retryAfter))
+	}
 	c.setStatus(provider, Status{
 		Provider:         provider,
 		Healthy:          false,
@@ -630,6 +641,16 @@ func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, rea
 		LastCheck:        c.now(),
 		RateLimitedUntil: until,
 	}, false)
+}
+
+// parkSource distinguishes a park the provider itself dated from one the
+// configured cooldown guessed at, so a surprising window can be traced to
+// whichever produced it.
+func parkSource(retryAfter time.Duration) string {
+	if retryAfter > 0 {
+		return "provider_hint"
+	}
+	return "configured_cooldown"
 }
 
 // Snapshot returns a copy of the current statuses for wails-bound read paths.
