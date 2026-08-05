@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -941,11 +943,31 @@ func TestGitLooseObjectPattern(t *testing.T) {
 		t.Fatalf("empty object dir must produce no sandbox pattern, got %q", got)
 	}
 	got := gitLooseObjectPattern("/data/repo+.git/objects")
-	want := `^/data/repo\+\.git/objects/(tmp_obj_[^/]+|[0-9a-f][0-9a-f]/[^/]+)$`
-	if got != want {
-		t.Fatalf("gitLooseObjectPattern() = %q, want %q", got, want)
+	writePattern := regexp.MustCompile(got)
+	for _, path := range []string{
+		"/data/repo+.git/objects/tmp_obj_publish",
+		"/data/repo+.git/objects/ab/tmp_obj_publish",
+		"/data/repo+.git/objects/ab/" + strings.Repeat("c", 38),
+		"/data/repo+.git/objects/ab/" + strings.Repeat("d", 62),
+	} {
+		if !writePattern.MatchString(path) {
+			t.Errorf("write pattern rejected valid object path %q", path)
+		}
 	}
-	if got := gitLooseObjectFanoutPattern("/data/repo+.git/objects"); got != `^/data/repo\+\.git/objects/[0-9a-f][0-9a-f]/[0-9a-f]+$` {
-		t.Fatalf("gitLooseObjectFanoutPattern() = %q", got)
+	for _, path := range []string{
+		"/data/repo+.git/objects/ab/not-an-object",
+		"/data/repo+.git/objects/ab/" + strings.Repeat("c", 37),
+		"/data/repo+.git/objects/abc/" + strings.Repeat("c", 38),
+	} {
+		if writePattern.MatchString(path) {
+			t.Errorf("write pattern accepted noncanonical object path %q", path)
+		}
+	}
+	fanoutPattern := regexp.MustCompile(gitLooseObjectFanoutPattern("/data/repo+.git/objects"))
+	if !fanoutPattern.MatchString("/data/repo+.git/objects/ab/" + strings.Repeat("c", 38)) {
+		t.Error("fanout pattern rejected canonical SHA-1 object")
+	}
+	if fanoutPattern.MatchString("/data/repo+.git/objects/ab/tmp_obj_publish") {
+		t.Error("fanout unlink pattern accepted a publication temp file")
 	}
 }

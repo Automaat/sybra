@@ -728,7 +728,8 @@ func gitLooseObjectPattern(objectDir string) string {
 	if objectDir == "" {
 		return ""
 	}
-	return "^" + regexp.QuoteMeta(objectDir) + `/(tmp_obj_[^/]+|[0-9a-f][0-9a-f]/[^/]+)$`
+	canonicalName := "(" + strings.Repeat("[0-9a-f]", 38) + "|" + strings.Repeat("[0-9a-f]", 62) + ")"
+	return "^" + regexp.QuoteMeta(objectDir) + `/(tmp_obj_[^/]+|[0-9a-f][0-9a-f]/(tmp_obj_[^/]+|` + canonicalName + `))$`
 }
 
 func gitLogLockPattern(logDir string) string {
@@ -742,7 +743,8 @@ func gitLooseObjectFanoutPattern(objectDir string) string {
 	if objectDir == "" {
 		return ""
 	}
-	return "^" + regexp.QuoteMeta(objectDir) + `/[0-9a-f][0-9a-f]/[0-9a-f]+$`
+	canonicalName := "(" + strings.Repeat("[0-9a-f]", 38) + "|" + strings.Repeat("[0-9a-f]", 62) + ")"
+	return "^" + regexp.QuoteMeta(objectDir) + `/[0-9a-f][0-9a-f]/` + canonicalName + `$`
 }
 
 // gitBranchSingleFiles derives the exact, single-file absolute paths for the

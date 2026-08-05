@@ -541,12 +541,10 @@ func TestSandboxEnforce_SiblingBranchRefFileIsolated(t *testing.T) {
 	}
 }
 
-// TestSandboxEnforce_InfoDirDeniesAttributesAndExclude proves the
-// GIT_INFO_DIR subpath grant does not widen into info/attributes or
-// info/exclude — hand-authored, behavior-altering config shared with every
-// sibling task on the clone, unlike the idempotent regenerated info/refs
-// and info/packs the grant exists for.
-func TestSandboxEnforce_InfoDirDeniesAttributesAndExclude(t *testing.T) {
+// TestSandboxEnforce_InfoDirIsReadOnly proves every shared info/* file stays
+// read-only. Maintenance-generated info/refs and behavior-altering attributes
+// or exclude files are all repository-wide state outside normal task work.
+func TestSandboxEnforce_InfoDirIsReadOnly(t *testing.T) {
 	if !sandboxExecAvailable() {
 		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
 	}
