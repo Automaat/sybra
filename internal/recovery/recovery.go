@@ -46,6 +46,10 @@ type WorkflowRestarter interface {
 	HandleAgentComplete(taskID string, completion workflow.AgentCompletion)
 	ReplayPersistedEffects()
 	ReplayPersistedEffectsForTask(taskID string) bool
+	// ReclaimOrphanedEffectLeases must run before the two replay paths above:
+	// both claim effects, and a lease held by the previous engine instance
+	// fences them for the rest of its TTL.
+	ReclaimOrphanedEffectLeases() int
 }
 
 // PRResolver resolves the GitHub PR a task lost track of when its pr_number was
@@ -133,6 +137,10 @@ func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 	r.cleanStaleRuns()
 	r.pruneAgentLogs()
 	if r.WorkflowEngine != nil {
+		// Ordered ahead of the replay: reattach above has established which
+		// steps are genuinely still running, and both replay paths below claim
+		// effects that a dead instance's lease would otherwise fence.
+		r.WorkflowEngine.ReclaimOrphanedEffectLeases()
 		r.WorkflowEngine.ReplayPersistedEffects()
 	}
 	r.RestartStaleInProgress(ctx)
