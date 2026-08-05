@@ -78,17 +78,21 @@ type Deps struct {
 // Service runs the monitor loop. It is constructed once at app startup and
 // runs until its context is cancelled.
 type Service struct {
-	cfg                 config.MonitorConfig
-	tasks               taskAPI
-	audit               auditAPI
-	agents              agentLister
-	observerOnly        bool
-	dispatcher          Dispatcher
-	sink                IssueSink
-	emit                EmitFunc
-	logger              *slog.Logger
-	now                 func() time.Time
-	allowsProject       func(string) bool
+	cfg           config.MonitorConfig
+	tasks         taskAPI
+	audit         auditAPI
+	agents        agentLister
+	observerOnly  bool
+	dispatcher    Dispatcher
+	sink          IssueSink
+	emit          EmitFunc
+	logger        *slog.Logger
+	now           func() time.Time
+	allowsProject func(string) bool
+	// providerHealth reports every configured provider's state. Late-bound
+	// (SetProviderHealth); nil keeps the no-capacity rule silent rather than
+	// guessing that a fleet with no reported providers has no capacity.
+	providerHealth      func() []ProviderHealth
 	downgradeLLMForTask func(taskID string) bool
 	fetchPRState        func(repo string, number int) (github.PRState, error)
 	landClosedPR        func(context.Context, string, int, string) error
@@ -228,6 +232,7 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 		LiveAgents:    live,
 		Cfg:           s.cfg,
 		AllowsProject: s.allowsProject,
+		Providers:     s.snapshotProviders(),
 	})
 	report.Anomalies = SortAnomalies(report.Anomalies)
 	s.applyDowngradeLLM(report.Anomalies)
@@ -357,6 +362,7 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 		LiveAgents:    live,
 		Cfg:           s.cfg,
 		AllowsProject: s.allowsProject,
+		Providers:     s.snapshotProviders(),
 	})
 	report.Anomalies = SortAnomalies(report.Anomalies)
 	return report, nil
@@ -374,6 +380,17 @@ func (s *Service) LastReport() (Report, bool) {
 // agent-driven filing path (which produces hard-to-scrub LLM output) into the
 // deterministic-body path where the issue sink applies redaction. No-op when
 // the closure is unset.
+// SetProviderHealth late-binds the provider-health snapshot the no-capacity
+// rule reads. Left unset the rule stays silent.
+func (s *Service) SetProviderHealth(fn func() []ProviderHealth) { s.providerHealth = fn }
+
+func (s *Service) snapshotProviders() []ProviderHealth {
+	if s == nil || s.providerHealth == nil {
+		return nil
+	}
+	return s.providerHealth()
+}
+
 func (s *Service) applyDowngradeLLM(anoms []Anomaly) {
 	if s.downgradeLLMForTask == nil {
 		return
