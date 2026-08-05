@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
@@ -61,7 +62,13 @@ type humanReviewAgentRunner interface {
 // into a side-effect. sybra_bug verdicts are retained as task notes by
 // default; richer issue filing is handled by the why-human workflow.
 type humanReviewHandler struct {
-	cfg       *config.Config
+	cfg *config.Config
+	// signing holds the hot-reloadable commit-signing posture. cfg is the
+	// construction-time snapshot and is never rewritten, so reading the
+	// posture from it alone latches the startup value — the same latch that
+	// had to be fixed in the workflow template, the project store, the review
+	// dispatcher and the skill bundle. Empty means "not late-bound".
+	signing   atomic.Value
 	abTesting func() abtest.Config
 	tasks     *task.Manager
 	agents    humanReviewAgentRunner
@@ -1679,6 +1686,32 @@ func (h *humanReviewHandler) preRunEligible(taskID string, reservedAt time.Time,
 // prompt is augmented with explicit redaction rules and the verdict will be
 // routed to a local sybra task instead of a public GH issue. The regex
 // scrubber is the floor — these instructions are the semantic ceiling.
+// SetSigningPolicy late-binds the commit-signing posture and is re-invoked on
+// every hot config reload, so the recovery prompt cannot keep instructing -S
+// after an operator sets agent.commit_signing: never.
+func (h *humanReviewHandler) SetSigningPolicy(p project.SigningPolicy) {
+	if h == nil {
+		return
+	}
+	h.signing.Store(string(p))
+}
+
+// signingPolicy falls back to the construction-time snapshot when nothing has
+// been late-bound, then to host probing, so a bare handler built in tests
+// keeps the historical behavior.
+func (h *humanReviewHandler) signingPolicy() project.SigningPolicy {
+	if h == nil {
+		return project.SigningAuto
+	}
+	if v, ok := h.signing.Load().(string); ok && v != "" {
+		return project.NormalizeSigningPolicy(v)
+	}
+	if h.cfg == nil {
+		return project.SigningAuto
+	}
+	return project.NormalizeSigningPolicy(h.cfg.CommitSigning())
+}
+
 func writeAutonomyMandate(b *strings.Builder, commitSignFlags string) {
 	b.WriteString("You are Sybra's autonomy agent (Sybra is a desktop task orchestrator). A user task just transitioned to status=human-required. Your job is NOT merely to diagnose — it is to get this task PROGRESSING again without a human wherever it is safe to do so, and to make Sybra more autonomous so this class of block never needs a human again. You run with full permissions and have git, gh, and sybra-cli. Work through three phases in order:\n\n")
 	b.WriteString("1. ROOT CAUSE — determine exactly why the task landed in human-required: a deterministic check failure (lint/test/build), a workflow misfire, an un-runnable gate (e.g. a manual smoke the harness cannot perform), an ambiguous spec, a missing credential, or an external system the agent cannot reach. Re-run the exact failing command in the task's worktree to confirm; never infer 'flaky/transient/infra' from reasoning alone.\n\n")
@@ -1737,7 +1770,7 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, dir string, wctx *WorkScru
 		b.WriteString("- NEVER include author emails, customer names, or internal hostnames.\n")
 		b.WriteString("- DO describe the sybra bug abstractly: which workflow step misfired, which sybra subsystem is implicated, what state was inconsistent.\n\n")
 	}
-	writeAutonomyMandate(&b, project.CommitSignFlags(context.Background()))
+	writeAutonomyMandate(&b, h.signingPolicy().CommitFlags(context.Background()))
 	b.WriteString("## Task\n")
 	h.writePromptTaskDetails(&b, t, dir)
 	b.WriteString("\n### Task body\n")

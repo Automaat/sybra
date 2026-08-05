@@ -17,6 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -3839,5 +3840,48 @@ func TestHumanReviewSpawn_ContendedFallbackRetryIgnoresRenderedVerdict(t *testin
 
 	if runCalls != 1 {
 		t.Errorf("fallback retry runs = %d, want 1 — the rendered-verdict gate swallowed it", runCalls)
+	}
+}
+
+// TestWriteAutonomyMandate_UsesHostCommitFlags passes its own strings in and
+// asserts they come back out, so it proves Fprintf works and never touches the
+// production argument. This covers the argument: the recovery prompt must honor
+// agent.commit_signing, on a host that DOES resolve a key so "never" and the
+// host default are distinguishable.
+func TestHumanReviewPrompt_HonorsCommitSigningPolicy(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "gitconfig")
+	contents := "[user]\n\tname = Test\n\temail = t@example.invalid\n\tsigningkey = DEADBEEFDEADBEEF\n"
+	if err := os.WriteFile(cfgPath, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write git config: %v", err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", cfgPath)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	if got := project.SigningAuto.CommitFlags(context.Background()); got != "-s -S" {
+		t.Fatalf("precondition: host must resolve a signing key, got %q", got)
+	}
+
+	cfg := &config.Config{}
+	cfg.Agent.CommitSigning = "never"
+	h := &humanReviewHandler{cfg: cfg}
+
+	if got := h.signingPolicy(); got != project.SigningNever {
+		t.Fatalf("signingPolicy() = %q, want never from the snapshot", got)
+	}
+
+	// Go through the real prompt builder, not writeAutonomyMandate directly:
+	// asserting on a value this test supplies is what made the original test
+	// unable to catch the defect it appeared to cover.
+	prompt := h.buildPrompt(task.Task{ID: "t1", ProjectID: "Automaat/sybra"}, t.TempDir(), nil)
+	for line := range strings.Lines(prompt) {
+		if strings.Contains(line, "commit") && strings.Contains(line, "-S") {
+			t.Errorf("mandate instructs GPG signing under the never policy:\n%s", line)
+		}
+	}
+
+	// And a hot reload must reach it, since cfg is never rewritten.
+	h.SetSigningPolicy(project.SigningRequire)
+	if got := h.signingPolicy().CommitFlags(context.Background()); got != "-s -S" {
+		t.Errorf("after reload to require, flags = %q, want -s -S", got)
 	}
 }
