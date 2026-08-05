@@ -91,6 +91,9 @@ type humanReviewHandler struct {
 	// not persisted in task.WorktreeDir, so looking at that field alone sends
 	// ordinary tasks to the read-only deploy checkout (#2973).
 	prepareTaskWorktree func(task.Task) (string, error)
+	// claimTaskDispatch serializes recovery preparation and registration with
+	// every workflow dispatcher that can mutate the same task worktree.
+	claimTaskDispatch func(string) (release func(), ok bool)
 
 	mu       sync.Mutex
 	inflight map[string]string      // taskID -> agent ID
@@ -172,6 +175,15 @@ func (a *App) initHumanReview() {
 				return a.worktrees.PrepareForFix(context.Background(), t, t.PRNumber)
 			}
 			return a.worktrees.PrepareForTask(context.Background(), t, nil)
+		}
+	}
+	if a.agents != nil {
+		a.humanReview.claimTaskDispatch = func(taskID string) (func(), bool) {
+			claim, ok := a.agents.TryClaimDispatch(taskID)
+			if !ok {
+				return nil, false
+			}
+			return claim.Release, true
 		}
 	}
 	a.logger.Info("human-review.enabled", "dir", dir, "repo", a.cfg.HumanReviewRepo(), "model", a.cfg.HumanReviewModel())
@@ -284,6 +296,17 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 	if skipReason != "" {
 		h.skip(taskID, skipReason)
 		return false
+	}
+	if h.claimTaskDispatch != nil {
+		release, ok := h.claimTaskDispatch(taskID)
+		if !ok {
+			h.releaseReservedSlot(taskID, now)
+			h.skip(taskID, "dispatch_in_flight")
+			return false
+		}
+		if release != nil {
+			defer release()
+		}
 	}
 
 	dir, readOnlyDir := h.dispatchDir(t)

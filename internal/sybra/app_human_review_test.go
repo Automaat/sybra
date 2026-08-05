@@ -193,6 +193,79 @@ func TestHumanReviewDispatchDir_PrepareFailureFallsBackReadOnly(t *testing.T) {
 	}
 }
 
+func TestHumanReviewSpawn_HoldsDispatchClaimAcrossPreparationAndRun(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("recover with claim", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk, err = tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	held := false
+	h.claimTaskDispatch = func(taskID string) (func(), bool) {
+		if taskID != tk.ID || held {
+			return nil, false
+		}
+		held = true
+		return func() { held = false }, true
+	}
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		if !held {
+			t.Fatal("worktree preparation ran without the dispatch claim")
+		}
+		return t.TempDir(), nil
+	}
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		if !held {
+			t.Fatal("agent registration ran without the dispatch claim")
+		}
+		if cfg.ReadOnlyDir {
+			t.Fatal("prepared recovery worktree was dispatched read-only")
+		}
+		return &agent.Agent{ID: "human-recovery", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	if !h.maybeSpawn(tk.ID, string(task.StatusInReview)) {
+		t.Fatal("human review was not spawned")
+	}
+	if held {
+		t.Fatal("dispatch claim was not released after agent registration")
+	}
+}
+
+func TestHumanReviewSpawn_ClaimConflictSkipsWorktreeMutation(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("claim conflict", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.claimTaskDispatch = func(string) (func(), bool) { return nil, false }
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		t.Fatal("worktree preparation ran despite a conflicting dispatch claim")
+		return "", nil
+	}
+
+	if h.maybeSpawn(tk.ID, string(task.StatusInReview)) {
+		t.Fatal("human review spawned despite a conflicting dispatch claim")
+	}
+}
+
 func TestWriteAutonomyMandate_UsesHostCommitFlags(t *testing.T) {
 	t.Parallel()
 	for _, flags := range []string{"-s", "-s -S"} {
