@@ -126,6 +126,7 @@ type RunPatch struct {
 	SkillConformance        *string
 	SessionID               *string
 	SubagentCallCount       *int
+	TurnCount               *int
 }
 
 func applyRunLifecycle(run *AgentRun, p RunPatch) {
@@ -227,6 +228,9 @@ func applyRunIdentity(run *AgentRun, p RunPatch) {
 	}
 	if p.SubagentCallCount != nil {
 		run.SubagentCallCount = *p.SubagentCallCount
+	}
+	if p.TurnCount != nil {
+		run.TurnCount = *p.TurnCount
 	}
 }
 

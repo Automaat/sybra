@@ -304,6 +304,9 @@ type AgentRun struct {
 	// It is the durable poison signal agentorch.PickImplementationResumeSession
 	// counts to detect a session stuck in a resume-stall loop.
 	ResumeZeroOutputStall bool `json:"zeroOutputStall,omitempty"`
+	// TurnCount is zero when the child produced nothing, so the run holds no
+	// evidence about its instructions and must not spend a conformance budget.
+	TurnCount int `json:"turnCount,omitempty"`
 }
 
 // Attachment re-exports the persisted task attachment metadata type.

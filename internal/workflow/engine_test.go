@@ -7046,6 +7046,7 @@ steps:
 			RequestedSkill:     "sybra-test",
 			SkillExecutionMode: "native",
 			SkillConformance:   "unverified",
+			TurnCount:          7,
 		}},
 	})
 
@@ -7135,6 +7136,7 @@ steps:
 			RequestedSkill:     "sybra-test",
 			SkillExecutionMode: "injected",
 			SkillConformance:   "unverified",
+			TurnCount:          7,
 		}},
 	})
 
@@ -7243,6 +7245,7 @@ steps:
 			RequestedSkill:     "adversarial-review",
 			SkillExecutionMode: "injected",
 			SkillConformance:   "unverified",
+			TurnCount:          7,
 		}},
 	})
 
@@ -7322,6 +7325,7 @@ steps:
 			RequestedSkill:     "sybra-test",
 			SkillExecutionMode: "injected",
 			SkillConformance:   "unverified",
+			TurnCount:          7,
 		}},
 	})
 

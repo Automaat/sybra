@@ -474,6 +474,7 @@ func addRunMetadata(updates *task.RunPatch, ag *agent.Agent) {
 		updates.SkillConformance = task.Ptr(ag.SkillConformance)
 	}
 	updates.SubagentCallCount = task.Ptr(ag.GetSubagentCallCount())
+	updates.TurnCount = task.Ptr(ag.GetTurnCount())
 }
 
 func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiumRequests float64, resultContent string, exitErr error) task.RunPatch {
@@ -575,12 +576,14 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 	if stall.Stalled {
 		h.logger.Warn("agent.completion.stall",
 			"task_id", ag.TaskID, "agent_id", ag.ID,
-			"signaled", isSignalKill(exitErr), "stopped", stall.StopStalled, "rate_limited", stall.RateLimited, "malformed_tool", stall.MalformedTool, "tool_use_aborted", stall.ToolUseAborted, "user_interrupted", stall.UserInterrupted, "checkpoint", stall.CheckpointStopped)
+			"signaled", isSignalKill(exitErr), "stopped", stall.StopStalled, "rate_limited", stall.RateLimited, "malformed_tool", stall.MalformedTool, "tool_use_aborted", stall.ToolUseAborted, "user_interrupted", stall.UserInterrupted, "checkpoint", stall.CheckpointStopped, "prompt_undelivered", stall.PromptUndelivered)
 		switch {
 		case stall.CheckpointStopped:
 			h.workflowEngine.RescheduleCheckpointedAgent(ag.TaskID, ag.ID)
 		case stall.ToolUseAborted || stall.UserInterrupted:
 			h.workflowEngine.RescheduleInterruptedAgent(ag.TaskID, ag.ID)
+		case stall.PromptUndelivered:
+			h.workflowEngine.ReschedulePromptUndeliveredAgent(ag.TaskID, ag.ID)
 		case stall.RateLimited || stall.MalformedTool:
 			h.workflowEngine.RescheduleRateLimitedAgent(ag.TaskID, ag.ID)
 		default:
@@ -599,8 +602,9 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 }
 
 // classifyStall reports whether a completion is a retryable stall: signal
-// kill, stop-before-result, provider rate limit, malformed tool call, or
-// rejected-tool interruption rather than the agent's actual terminal outcome.
+// kill, stop-before-result, provider rate limit, malformed tool call,
+// rejected-tool interruption, or an undelivered prompt rather than the agent's
+// actual terminal outcome.
 // buildRunPatch and
 // notifyWorkflowEngine both key off this so the persisted AgentRun.Outcome and
 // the workflow's Success signal can never diverge: a stalled run is retried,
@@ -611,16 +615,18 @@ type stallDisposition struct {
 	MalformedTool     bool
 	ToolUseAborted    bool
 	UserInterrupted   bool
+	PromptUndelivered bool
 	StopStalled       bool
 	CheckpointStopped bool
 }
 
 func classifyStall(ag *agent.Agent, exitErr error) stallDisposition {
 	out := stallDisposition{
-		RateLimited:     isRateLimitedRun(ag, exitErr),
-		MalformedTool:   ag.GetErrorKind() == "malformed_tool_call",
-		ToolUseAborted:  isToolUseAbortedRun(ag),
-		UserInterrupted: isUserInterruptedRun(ag),
+		RateLimited:       isRateLimitedRun(ag, exitErr),
+		MalformedTool:     ag.GetErrorKind() == "malformed_tool_call",
+		ToolUseAborted:    isToolUseAbortedRun(ag),
+		UserInterrupted:   isUserInterruptedRun(ag),
+		PromptUndelivered: ag.GetErrorKind() == agent.ErrorKindPromptUndelivered,
 	}
 	// Cost and forked-subagent-turn guardrails intentionally hard-stop the
 	// subprocess, but they are a budget/runaway failure, not an infra stall.
@@ -632,7 +638,7 @@ func classifyStall(ag *agent.Agent, exitErr error) stallDisposition {
 	checkpointFailed := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpointFailed
 	out.CheckpointStopped = ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpoint
 	out.StopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped && !subagentTurnsStopped && !checkpointFailed && !out.CheckpointStopped
-	out.Stalled = isSignalKill(exitErr) || out.StopStalled || out.RateLimited || out.MalformedTool || out.ToolUseAborted || out.UserInterrupted || out.CheckpointStopped
+	out.Stalled = isSignalKill(exitErr) || out.StopStalled || out.RateLimited || out.MalformedTool || out.ToolUseAborted || out.UserInterrupted || out.CheckpointStopped || out.PromptUndelivered
 	return out
 }
 

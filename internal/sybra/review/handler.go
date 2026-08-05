@@ -427,7 +427,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 		fetchMatchers = append(fetchMatchers, reconcileMatchers...)
 	}
 	fetchMatchers = append(fetchMatchers, r.settledImplementationFetchMatchers(ctx, selection.tasks)...)
-	monitoredPRs := r.fetchKnownTaskPRs(fetchMatchers)
+	monitoredPRs := r.fetchKnownTaskPRs(fetchMatchers, selection.retainKeys)
 	// fetchKnownTaskPRs records auth failures on the shared circuit. Once it
 	// trips, back off like pollAndMonitorPRs instead of re-hammering a dead
 	// token every cycle (#1516) — the next cycle re-probes and closes on
@@ -723,7 +723,7 @@ func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []tas
 
 	fetchMatchers := append([]github.TaskMatcher{}, matchers...)
 	fetchMatchers = append(fetchMatchers, settledImplementMatchers...)
-	monitoredPRs := r.fetchKnownTaskPRs(fetchMatchers)
+	monitoredPRs := r.fetchKnownTaskPRs(fetchMatchers, selection.retainKeys)
 	if len(matchers) > 0 {
 		var handled []github.PRIssue
 		matched := github.MatchTaskPRs(monitoredPRs, matchers)
@@ -949,7 +949,10 @@ func prRefCacheKey(repo string, number int) string {
 // status/check event at the same head, e.g. a re-run CI job failing), or a
 // failed probe evicts the cache entry and falls back to a full fetch, so a
 // stale ready-state is never reused.
-func (r *Handler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.PullRequest {
+// retain lists PR keys this tick skipped on purpose (backoff-deferred or
+// per-tick-capped). They are not fetched, but their snapshots must survive the
+// prune below or their skip counters die with them.
+func (r *Handler) fetchKnownTaskPRs(matchers []github.TaskMatcher, retain []string) []github.PullRequest {
 	fetchFn := github.FetchPRsForMonitor
 	if r.fetchKnownPRsFn != nil {
 		fetchFn = r.fetchKnownPRsFn
@@ -986,7 +989,12 @@ func (r *Handler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.Pull
 	}
 
 	// Drop cache entries for PRs no longer linked to a monitored task.
-	r.prSnapshots.Prune(seen)
+	keep := make(map[string]struct{}, len(seen)+len(retain))
+	maps.Copy(keep, seen)
+	for _, key := range retain {
+		keep[key] = struct{}{}
+	}
+	r.prSnapshots.Prune(keep)
 
 	if len(refs) == 0 {
 		return prs
@@ -1739,7 +1747,7 @@ func (r *Handler) includeKnownTaskPRs(ctx context.Context, tasks []task.Task, mo
 		return monitoredPRs
 	}
 
-	knownPRs := r.fetchKnownTaskPRs(matchers)
+	knownPRs := r.fetchKnownTaskPRs(matchers, selection.retainKeys)
 	if len(knownPRs) == 0 {
 		return monitoredPRs
 	}
