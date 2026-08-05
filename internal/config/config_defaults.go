@@ -13,6 +13,8 @@ import (
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"gopkg.in/yaml.v3"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // AllowsProjectType reports whether automations on this machine should act on
@@ -906,7 +908,7 @@ func WriteRawConfig(data []byte) error {
 	if err := preserveLastKnownGoodConfig(path); err != nil {
 		return err
 	}
-	return writeFileAtomic(path, data, ".config-*.yaml.tmp")
+	return writeFileAtomicMode(path, data)
 }
 
 // Directories returns the resolved paths for all sybra data directories.
@@ -1049,14 +1051,14 @@ func readAuthTokenFile() string {
 // mirroring WriteRawConfig's crash-safety, but targeting the dedicated token
 // file instead of config.yaml.
 func writeAuthTokenFile(token string) error {
-	return writeFileAtomic(AuthTokenPath(), []byte(token+"\n"), ".server_auth_token-*.tmp")
+	return writeFileAtomicMode(AuthTokenPath(), []byte(token+"\n"))
 }
 
 func preserveLastKnownGoodConfig(path string) error {
 	data, err := os.ReadFile(path)
 	switch {
 	case err == nil:
-		return writeFileAtomic(LastKnownGoodConfigPath(), data, ".config-last-good-*.tmp")
+		return writeFileAtomicMode(LastKnownGoodConfigPath(), data)
 	case os.IsNotExist(err):
 		return nil
 	default:
@@ -1071,31 +1073,16 @@ func RestoreLastKnownGoodConfig() error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(configPath(), data, ".config-restore-*.tmp")
+	return writeFileAtomicMode(configPath(), data)
 }
 
-func writeFileAtomic(path string, data []byte, tempPattern string) error {
+// writeFileAtomicMode creates the parent directory then writes through the
+// shared helper at the config file mode.
+func writeFileAtomicMode(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), tempPattern)
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(configFilePerm); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return fsutil.AtomicWriteMode(path, data, configFilePerm)
 }
 
 // ensureServerAuthToken completes the server auth-token precedence after

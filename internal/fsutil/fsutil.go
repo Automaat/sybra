@@ -28,6 +28,17 @@ var ErrLockUnsupported = errors.New("fsutil: cross-process file locking is not s
 // files keep CreateTemp's restrictive default, which avoids overriding the
 // caller's umask with a broader mode.
 func AtomicWrite(path string, data []byte) error {
+	return atomicWrite(path, data, nil)
+}
+
+// AtomicWriteMode is AtomicWrite with an explicit mode for the result, for
+// callers whose file must carry specific permissions — an executable shim, a
+// credential-bearing config — rather than inheriting the target's current mode.
+func AtomicWriteMode(path string, data []byte, perm os.FileMode) error {
+	return atomicWrite(path, data, &perm)
+}
+
+func atomicWrite(path string, data []byte, perm *os.FileMode) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
 	if err != nil {
@@ -39,11 +50,20 @@ func AtomicWrite(path string, data []byte) error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	if info, err := os.Stat(path); err == nil {
-		if err := f.Chmod(info.Mode().Perm()); err != nil {
+	switch {
+	case perm != nil:
+		if err := f.Chmod(*perm); err != nil {
 			_ = f.Close()
 			_ = os.Remove(tmp)
 			return err
+		}
+	default:
+		if info, err := os.Stat(path); err == nil {
+			if err := f.Chmod(info.Mode().Perm()); err != nil {
+				_ = f.Close()
+				_ = os.Remove(tmp)
+				return err
+			}
 		}
 	}
 	if err := f.Sync(); err != nil {

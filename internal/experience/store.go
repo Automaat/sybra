@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 const defaultMaxPerProject = 50
@@ -47,7 +49,7 @@ func (s *Store) Put(projectID string, rec Record) error {
 		return fmt.Errorf("marshal experience record: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(filepath.Join(projectDir, recordID+".json"), data, 0o644); err != nil {
+	if err := fsutil.AtomicWriteMode(filepath.Join(projectDir, recordID+".json"), data, 0o644); err != nil {
 		return fmt.Errorf("write experience record: %w", err)
 	}
 	return s.enforceCap(projectDir)

@@ -15,6 +15,8 @@ import (
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // EmitFunc emits a Wails event to the frontend.
@@ -306,5 +308,5 @@ func (s *Service) persist(r Report) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.reportPath, data, 0o644)
+	return fsutil.AtomicWriteMode(s.reportPath, data, 0o644)
 }

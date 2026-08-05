@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // Store is a project-partitioned, fingerprint-deduplicated, filesystem-backed
@@ -101,7 +103,7 @@ func (s *Store) Put(projectKey string, rec Record) error {
 		return fmt.Errorf("marshal intervention record: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := fsutil.AtomicWriteMode(path, data, 0o644); err != nil {
 		return fmt.Errorf("write intervention record: %w", err)
 	}
 	return nil
