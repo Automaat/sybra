@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/provider"
+
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/logging"
@@ -78,8 +80,8 @@ func (f fakeGate) Reason(string) string {
 	}
 	return ""
 }
-func (f fakeGate) ReportAuthFailure(string, string)              {}
-func (f fakeGate) ReportRateLimit(string, time.Duration, string) {}
+func (f fakeGate) ReportAuthFailure(string, string)                                       {}
+func (f fakeGate) ReportRateLimit(string, time.Duration, string, provider.CooldownSource) {}
 
 // TestRunStartupCleanupEmpty verifies the boot pass is idempotent on a
 // fresh, empty store — no panics, no error returns, no spurious task

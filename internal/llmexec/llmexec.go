@@ -106,9 +106,9 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 				failures = append(failures, fmt.Sprintf("%s: overloaded", p))
 				continue
 			}
-			sig, reason, retryAfter := classifyError(p, stderrOut, string(raw))
+			sig, reason, retryAfter, src := classifyError(p, stderrOut, string(raw))
 			if sig != provider.SignalNone {
-				reportSignal(opts.Gate, p, sig, reason, retryAfter)
+				reportSignal(opts.Gate, p, sig, reason, retryAfter, src)
 				logFallback(opts.Logger, p, sig, reason)
 				failures = append(failures, fmt.Sprintf("%s: %s", p, reason))
 				continue
@@ -128,9 +128,9 @@ func RunJSON(ctx context.Context, prompt string, opts Options) (Result, error) {
 				failures = append(failures, fmt.Sprintf("%s: overloaded", p))
 				continue
 			}
-			sig, reason, retryAfter := classifyError(p, stderrOut, string(raw))
+			sig, reason, retryAfter, src := classifyError(p, stderrOut, string(raw))
 			if sig != provider.SignalNone {
-				reportSignal(opts.Gate, p, sig, reason, retryAfter)
+				reportSignal(opts.Gate, p, sig, reason, retryAfter, src)
 				logFallback(opts.Logger, p, sig, reason)
 				failures = append(failures, fmt.Sprintf("%s: %s", p, reason))
 				continue
@@ -435,7 +435,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func classifyError(p, stderrOut, content string) (provider.Signal, string, time.Duration) {
+func classifyError(p, stderrOut, content string) (provider.Signal, string, time.Duration, provider.CooldownSource) {
 	sample := provider.ErrorSample{Stderr: stderrOut, Content: content}
 	switch p {
 	case "codex":
@@ -500,7 +500,7 @@ func containsAnyString(haystack string, needles ...string) bool {
 	return false
 }
 
-func reportSignal(g provider.HealthGate, p string, sig provider.Signal, reason string, retryAfter time.Duration) {
+func reportSignal(g provider.HealthGate, p string, sig provider.Signal, reason string, retryAfter time.Duration, source provider.CooldownSource) {
 	if g == nil {
 		return
 	}
@@ -508,7 +508,7 @@ func reportSignal(g provider.HealthGate, p string, sig provider.Signal, reason s
 	case provider.SignalAuthFailure:
 		g.ReportAuthFailure(p, reason)
 	case provider.SignalRateLimit:
-		g.ReportRateLimit(p, retryAfter, reason)
+		g.ReportRateLimit(p, retryAfter, reason, source)
 	case provider.SignalNone:
 	}
 }

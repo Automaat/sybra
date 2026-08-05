@@ -370,9 +370,9 @@ func (g claudeOnlyGate) ReportAuthFailure(p, reason string) {
 	}
 }
 
-func (g claudeOnlyGate) ReportRateLimit(p string, retryAfter time.Duration, reason string) {
+func (g claudeOnlyGate) ReportRateLimit(p string, retryAfter time.Duration, reason string, source provider.CooldownSource) {
 	if g.base != nil && p == "claude" {
-		g.base.ReportRateLimit(p, retryAfter, reason)
+		g.base.ReportRateLimit(p, retryAfter, reason, source)
 	}
 }
 

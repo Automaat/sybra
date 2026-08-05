@@ -200,7 +200,7 @@ func TestClassifyClaudeError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, reason, retryAfter := ClassifyClaudeError(tc.in)
+			got, reason, retryAfter, _ := ClassifyClaudeError(tc.in)
 			if got != tc.want {
 				t.Errorf("signal: got %v want %v", got, tc.want)
 			}
@@ -283,7 +283,7 @@ func TestClassifyCodexError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, reason, retryAfter := ClassifyCodexError(tc.in)
+			got, reason, retryAfter, _ := ClassifyCodexError(tc.in)
 			if got != tc.want {
 				t.Errorf("signal: got %v want %v", got, tc.want)
 			}
@@ -312,7 +312,7 @@ func TestClassifyCopilotError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _, _ := ClassifyCopilotError(tc.in)
+			got, _, _, _ := ClassifyCopilotError(tc.in)
 			if got != tc.want {
 				t.Errorf("got %v want %v", got, tc.want)
 			}
@@ -718,7 +718,7 @@ func TestChecker_LivenessOnlyProbeDoesNotClearPassiveAuthFailure(t *testing.T) {
 func TestChecker_RateLimitExpires(t *testing.T) {
 	c, _, clock := newTestChecker(t)
 	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	c.ReportRateLimit("claude", 10*time.Minute, "rate_limit_error")
+	c.ReportRateLimit("claude", 10*time.Minute, "rate_limit_error", CooldownFromConfig)
 	if c.IsHealthy("claude") {
 		t.Fatalf("claude should be rate-limited")
 	}
@@ -795,7 +795,7 @@ func TestChecker_ProbeHealthyPreservesActiveRateLimit(t *testing.T) {
 	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
 
 	// Mark rate-limited for 10m.
-	c.ReportRateLimit("claude", 10*time.Minute, "rate_limit_error")
+	c.ReportRateLimit("claude", 10*time.Minute, "rate_limit_error", CooldownFromConfig)
 	if c.IsHealthy("claude") {
 		t.Fatalf("claude should be rate-limited immediately after ReportRateLimit")
 	}
@@ -883,5 +883,5 @@ func TestNilChecker_IsAnAbsentGateNotAPanic(t *testing.T) {
 		t.Errorf("Failover = %q, want empty: an absent gate has no view to fail over with", got)
 	}
 	gate.ReportAuthFailure("codex", "logged_out")
-	gate.ReportRateLimit("codex", time.Minute, "429")
+	gate.ReportRateLimit("codex", time.Minute, "429", CooldownFromConfig)
 }

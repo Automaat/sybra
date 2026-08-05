@@ -56,7 +56,7 @@ func (opencodeProvider) ParseHeadlessLine(line []byte) (StreamEvent, error) {
 	return opencodeEventToStreamEvent(oe), nil
 }
 
-func (opencodeProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration) {
+func (opencodeProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration, providerpkg.CooldownSource) {
 	return providerpkg.ClassifyOpenCodeError(sample)
 }
 

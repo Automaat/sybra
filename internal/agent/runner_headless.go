@@ -1162,7 +1162,7 @@ func (m *Manager) handleMalformedToolResults(a *Agent, event StreamEvent) {
 		reason := fmt.Sprintf("tool %s rejected malformed input: %s", toolName, truncatePromptField(diag.ValidationError))
 		a.NoteMalformedToolCall(event.toolResults[i].ToolUseID, toolName, malformedToolCallOutcomeUnrecoverable)
 		a.SetError(malformedToolCallErrorKind, reason)
-		m.ReportProviderSignal(a.GetProvider(), providerpkg.SignalRateLimit, malformedToolCallErrorKind, malformedToolFailoverCooldown)
+		m.ReportProviderSignal(a.GetProvider(), providerpkg.SignalRateLimit, malformedToolCallErrorKind, malformedToolFailoverCooldown, providerpkg.CooldownFromConfig)
 		m.logger.Warn("agent.headless.tool_call_malformed.unrecoverable",
 			"id", a.ID,
 			"provider", a.GetProvider(),

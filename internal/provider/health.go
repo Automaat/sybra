@@ -59,7 +59,7 @@ type HealthGate interface {
 	Failover(unhealthy string) string
 	Reason(provider string) string
 	ReportAuthFailure(provider, reason string)
-	ReportRateLimit(provider string, retryAfter time.Duration, reason string)
+	ReportRateLimit(provider string, retryAfter time.Duration, reason string, source CooldownSource)
 }
 
 // HealthEvent is the payload emitted on state flips to the frontend.
@@ -594,7 +594,7 @@ func (c *Checker) ReportAuthFailure(provider, reason string) {
 
 // ReportRateLimit marks a provider as rate-limited. retryAfter zero falls back
 // to the per-provider configured cooldown.
-func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, reason string) {
+func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, reason string, source CooldownSource) {
 	// See ReportAuthFailure: the metric is a provider event and survives a nil
 	// checker; the cooldown it would record has nowhere to live without one.
 	metrics.ProviderRateLimit(provider)
@@ -631,7 +631,7 @@ func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, rea
 			"reason", reason,
 			"cooldown", cooldown.String(),
 			"until", until,
-			"source", parkSource(retryAfter))
+			"source", string(source))
 	}
 	c.setStatus(provider, Status{
 		Provider:         provider,
@@ -641,16 +641,6 @@ func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, rea
 		LastCheck:        c.now(),
 		RateLimitedUntil: until,
 	}, false)
-}
-
-// parkSource distinguishes a park the provider itself dated from one the
-// configured cooldown guessed at, so a surprising window can be traced to
-// whichever produced it.
-func parkSource(retryAfter time.Duration) string {
-	if retryAfter > 0 {
-		return "provider_hint"
-	}
-	return "configured_cooldown"
 }
 
 // Snapshot returns a copy of the current statuses for wails-bound read paths.

@@ -451,7 +451,7 @@ func TestClassifyProviderError_CodexConnectivityRoutesToRateLimit(t *testing.T) 
 	sample := provider.ErrorSample{
 		Stderr: "websocket connection refused: wss://chatgpt.com/backend-api/codex/responses",
 	}
-	sig, reason, _ := classifyProviderError("codex", sample)
+	sig, reason, _, _ := classifyProviderError("codex", sample)
 	if sig != provider.SignalRateLimit {
 		t.Fatalf("signal = %v, want SignalRateLimit", sig)
 	}

@@ -46,6 +46,23 @@ var monthByPrefix = map[string]time.Month{
 	"oct": time.October, "nov": time.November, "dec": time.December,
 }
 
+// HintOutcome distinguishes "the provider stated a time" from "nothing usable
+// was there" and from "something parsed but was out of range". The last case
+// must be visible: a rejected hint and an absent one produce identical parks,
+// so without this an over-long or nonsensical provider message is silently
+// indistinguishable from a message that never carried a date.
+type HintOutcome int
+
+const (
+	HintNone HintOutcome = iota
+	HintParsed
+	HintRejected
+)
+
+// ansiEscape matches SGR colour sequences, which would otherwise sit between
+// "try again at" and the month name and defeat the patterns.
+var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
 // parseResetHint extracts a provider-supplied reset instant from text and
 // returns how long from now that is.
 //
@@ -54,38 +71,56 @@ var monthByPrefix = map[string]time.Month{
 // 15 minutes for the three days until that instant, each retry burning a
 // dispatch.
 //
-// ok is false whenever the result would be a guess: nothing parses, the
-// instant is already past, or it lands beyond maxResetHint. Every such case
-// falls back to the caller's configured cooldown, so this can only ever
-// shorten the gap between a park and the truth, never lengthen it past what
-// the provider itself stated.
+// The outcome is HintParsed only when a concrete, in-range, future instant was
+// found. Anything else falls back to the caller's configured cooldown, so this
+// can only shorten the gap between a park and the truth, never lengthen it
+// past what the provider itself stated.
 //
 // Times are read in the local zone: providers print them in the account's zone
 // with no offset. A zone mismatch skews the park by hours, and because an
 // over-long parse is rejected rather than capped, the skew cannot compound
 // into a multi-day park.
-func parseResetHint(text string) (time.Duration, bool) {
+func parseResetHint(text string) (time.Duration, HintOutcome) {
 	if text == "" {
-		return 0, false
+		return 0, HintNone
 	}
+	text = ansiEscape.ReplaceAllString(text, "")
 	now := nowFunc()
+
+	// The EARLIEST valid instant, not the first match. All matches are scanned
+	// because agent prose and tool output can carry a date-shaped fragment
+	// that would otherwise shadow the real hint — but a decoy that parses
+	// cleanly and sits further out would then over-park the provider, so the
+	// most conservative candidate wins.
+	var best time.Duration
+	found := false
+	rejected := false
 	for _, re := range []*regexp.Regexp{codexResetRe, claudeResetRe} {
-		// All matches, not just the first: agent prose and tool output can
-		// carry an earlier date-shaped fragment ("git reset origin 1 at 3pm")
-		// that would otherwise shadow or corrupt the real hint.
 		for _, m := range re.FindAllStringSubmatch(text, -1) {
 			when, ok := resetInstant(re, m, now)
 			if !ok {
 				continue
 			}
 			d := when.Sub(now)
-			if d <= 0 || d > maxResetHint {
+			if d <= 0 {
 				continue
 			}
-			return max(d, minResetHint), true
+			if d > maxResetHint {
+				rejected = true
+				continue
+			}
+			if !found || d < best {
+				best, found = d, true
+			}
 		}
 	}
-	return 0, false
+	if found {
+		return max(best, minResetHint), HintParsed
+	}
+	if rejected {
+		return 0, HintRejected
+	}
+	return 0, HintNone
 }
 
 // resetInstant assembles the matched fields into a concrete instant. The two

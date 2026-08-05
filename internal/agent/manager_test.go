@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/provider"
+
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/limits"
 )
@@ -704,12 +706,12 @@ func TestHasRunningAgentForTask(t *testing.T) {
 
 type stubGate struct{ rateLimited bool }
 
-func (s stubGate) IsHealthy(string) bool                         { return !s.rateLimited }
-func (s stubGate) RateLimited(string) bool                       { return s.rateLimited }
-func (s stubGate) Failover(string) string                        { return "" }
-func (s stubGate) Reason(string) string                          { return "" }
-func (s stubGate) ReportAuthFailure(string, string)              {}
-func (s stubGate) ReportRateLimit(string, time.Duration, string) {}
+func (s stubGate) IsHealthy(string) bool                                                  { return !s.rateLimited }
+func (s stubGate) RateLimited(string) bool                                                { return s.rateLimited }
+func (s stubGate) Failover(string) string                                                 { return "" }
+func (s stubGate) Reason(string) string                                                   { return "" }
+func (s stubGate) ReportAuthFailure(string, string)                                       {}
+func (s stubGate) ReportRateLimit(string, time.Duration, string, provider.CooldownSource) {}
 
 func TestProviderRateLimited(t *testing.T) {
 	m, _ := newTestManager(t)

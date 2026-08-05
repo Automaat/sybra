@@ -137,7 +137,7 @@ func (codexProvider) SessionFilePath(sessionID string) string {
 	return resolveCodexSessionFile(sessionID)
 }
 
-func (codexProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration) {
+func (codexProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration, providerpkg.CooldownSource) {
 	return providerpkg.ClassifyCodexError(sample)
 }
 

@@ -122,11 +122,11 @@ func TestParseResetHint(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			pinNow(t, now)
-			got, ok := parseResetHint(tc.text)
-			if ok != tc.ok {
-				t.Fatalf("parseResetHint(%q) ok = %v, want %v (got %v)", tc.text, ok, tc.ok, got)
+			got, outcome := parseResetHint(tc.text)
+			if parsed := outcome == HintParsed; parsed != tc.ok {
+				t.Fatalf("parseResetHint(%q) outcome = %v, want parsed=%v (got %v)", tc.text, outcome, tc.ok, got)
 			}
-			if ok && got != tc.want {
+			if outcome == HintParsed && got != tc.want {
 				t.Errorf("parseResetHint(%q) = %v, want %v", tc.text, got, tc.want)
 			}
 		})
@@ -139,8 +139,9 @@ func TestParseResetHint(t *testing.T) {
 func TestParseResetHint_RejectsFarFutureInstant(t *testing.T) {
 	pinNow(t, time.Date(2026, time.August, 5, 15, 4, 0, 0, time.Local))
 
-	if got, ok := parseResetHint("try again at Aug 8th, 2099 9:41 AM"); ok {
-		t.Errorf("parseResetHint = (%v, true), want rejection so the caller falls back", got)
+	got, outcome := parseResetHint("try again at Aug 8th, 2099 9:41 AM")
+	if outcome != HintRejected {
+		t.Errorf("parseResetHint = (%v, %v), want HintRejected so the caller falls back", got, outcome)
 	}
 }
 
@@ -149,9 +150,9 @@ func TestParseResetHint_RejectsFarFutureInstant(t *testing.T) {
 func TestParseResetHint_FloorsImminentInstant(t *testing.T) {
 	pinNow(t, time.Date(2026, time.August, 5, 16, 59, 59, 0, time.Local))
 
-	got, ok := parseResetHint("resets Aug 5 at 5pm")
-	if !ok {
-		t.Fatal("parseResetHint rejected an imminent future instant")
+	got, outcome := parseResetHint("resets Aug 5 at 5pm")
+	if outcome != HintParsed {
+		t.Fatalf("parseResetHint outcome = %v, want HintParsed", outcome)
 	}
 	if got != minResetHint {
 		t.Errorf("parseResetHint = %v, want floor of %v", got, minResetHint)
@@ -167,7 +168,7 @@ func TestClassifiers_PreferProviderResetOverFixedCooldown(t *testing.T) {
 
 	t.Run("codex", func(t *testing.T) {
 		pinNow(t, now)
-		sig, reason, after := ClassifyCodexError(ErrorSample{
+		sig, reason, after, _ := ClassifyCodexError(ErrorSample{
 			Stderr: "ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Aug 8th, 2026 9:41 AM.",
 		})
 		if sig != SignalRateLimit {
@@ -184,7 +185,7 @@ func TestClassifiers_PreferProviderResetOverFixedCooldown(t *testing.T) {
 	t.Run("claude weekly limit overrides the hour default", func(t *testing.T) {
 		pinNow(t, now)
 		wantClaude := time.Date(2026, time.August, 7, 17, 0, 0, 0, time.Local).Sub(now)
-		sig, reason, after := ClassifyClaudeError(ErrorSample{
+		sig, reason, after, _ := ClassifyClaudeError(ErrorSample{
 			Stderr: "You've hit your weekly limit · resets Aug 7 at 5pm",
 		})
 		if sig != SignalRateLimit || reason != "weekly_limit" {
@@ -200,11 +201,86 @@ func TestClassifiers_PreferProviderResetOverFixedCooldown(t *testing.T) {
 
 	t.Run("no parseable instant keeps the fixed cooldown", func(t *testing.T) {
 		pinNow(t, now)
-		_, reason, after := ClassifyClaudeError(ErrorSample{
+		_, reason, after, _ := ClassifyClaudeError(ErrorSample{
 			Stderr: "You've hit your weekly limit",
 		})
 		if reason != "weekly_limit" || after != weeklyLimitCooldown {
 			t.Errorf("got (%q, %v), want (weekly_limit, %v)", reason, after, weeklyLimitCooldown)
+		}
+	})
+}
+
+// A clean, exit-0 run's content is the agent's own prose, which routinely
+// discusses rate limits and dates — the text below is close to what an agent
+// working on this very file would write. Parsing it let an agent park its own
+// provider for days off a successful run.
+func TestCleanResultContentNeverSuppliesAResetHint(t *testing.T) {
+	now := time.Date(2026, time.August, 5, 15, 4, 0, 0, time.Local)
+	pinNow(t, now)
+
+	prose := "Done. I implemented the reset-hint parser for the case where codex says " +
+		"you've hit your usage limit and prints: try again at Aug 12th, 2026 9:00 AM."
+
+	_, _, after, src := ClassifyClaudeError(ErrorSample{Content: prose, ContentIsCleanResult: true})
+	if src == CooldownFromProvider {
+		t.Errorf("clean result content supplied a provider hint (%v); agent prose must never park its own provider", after)
+	}
+	if after > weeklyLimitCooldown {
+		t.Errorf("clean result content produced a %v park, longer than the fixed fallback %v", after, weeklyLimitCooldown)
+	}
+}
+
+// A decoy that parses cleanly but sits further out must not beat the real
+// hint: the ceiling only bounds the damage, it does not prevent an over-park.
+func TestEarliestValidInstantWins(t *testing.T) {
+	now := time.Date(2026, time.August, 5, 15, 4, 0, 0, time.Local)
+	pinNow(t, now)
+
+	text := "INFO: scheduler note: try again at Aug 12th, 2026 9:00 AM if backoff persists\n" +
+		"ERROR: You've hit your usage limit. Please try again at Aug 8th, 2026 9:41 AM."
+	got, outcome := parseResetHint(text)
+	want := time.Date(2026, time.August, 8, 9, 41, 0, 0, time.Local).Sub(now)
+	if outcome != HintParsed || got != want {
+		t.Errorf("parseResetHint = (%v, %v), want (%v, HintParsed) — the earlier instant", got, outcome, want)
+	}
+}
+
+// A park whose duration came from a constant must not claim the provider
+// stated it, and a rejected hint must be distinguishable from no hint at all.
+func TestCooldownSourceIsHonest(t *testing.T) {
+	now := time.Date(2026, time.August, 5, 15, 4, 0, 0, time.Local)
+
+	t.Run("constant fallback is not a provider hint", func(t *testing.T) {
+		pinNow(t, now)
+		_, reason, after, src := ClassifyCodexError(ErrorSample{
+			Stderr: "ERROR: You've hit your weekly limit. Please try again later.",
+		})
+		if reason != "weekly_limit" || after != weeklyLimitCooldown {
+			t.Fatalf("got (%q, %v), want the weekly constant", reason, after)
+		}
+		if src != CooldownFromConfig {
+			t.Errorf("source = %q, want %q — nothing was parsed from the provider", src, CooldownFromConfig)
+		}
+	})
+
+	t.Run("out-of-range hint is distinguishable from no hint", func(t *testing.T) {
+		pinNow(t, now)
+		_, _, _, src := ClassifyCodexError(ErrorSample{
+			Stderr: "ERROR: You've hit your usage limit. Please try again at Dec 25th, 2026 9:41 AM.",
+		})
+		if src != CooldownHintRejected {
+			t.Errorf("source = %q, want %q so an out-of-range parse leaves a trace", src, CooldownHintRejected)
+		}
+	})
+
+	t.Run("ansi coloured message still parses", func(t *testing.T) {
+		pinNow(t, now)
+		_, _, after, src := ClassifyCodexError(ErrorSample{
+			Stderr: "\x1b[1;31mERROR:\x1b[0m usage limit. Please try again at \x1b[1mAug 8th, 2026 9:41 AM\x1b[0m.",
+		})
+		want := time.Date(2026, time.August, 8, 9, 41, 0, 0, time.Local).Sub(now)
+		if src != CooldownFromProvider || after != want {
+			t.Errorf("got (%v, %q), want (%v, %q)", after, src, want, CooldownFromProvider)
 		}
 	})
 }
