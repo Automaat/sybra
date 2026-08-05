@@ -21,7 +21,7 @@ func TestEnforceSpec_ResolvesAgentStateRoots(t *testing.T) {
 	}
 
 	sandboxHome := t.TempDir()
-	spec := enforceSpec("/wt", nil, sandboxHome, "/tmp", "/cache", "/profile", "", gitSandboxRoots{}, gitSandboxOverlay{})
+	spec := enforceSpec("/wt", nil, sandboxHome, "/tmp", "", "/cache", "/profile", "", gitSandboxRoots{}, gitSandboxOverlay{})
 
 	wantClaude, err := canonicalizeRoot(claude)
 	if err != nil {
@@ -43,7 +43,7 @@ func TestEnforceSpec_FallsBackWhenStateDirAbsent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	sandboxHome := t.TempDir()
 
-	spec := enforceSpec("/wt", nil, sandboxHome, "/tmp", "/cache", "/profile", "", gitSandboxRoots{}, gitSandboxOverlay{})
+	spec := enforceSpec("/wt", nil, sandboxHome, "/tmp", "", "/cache", "/profile", "", gitSandboxRoots{}, gitSandboxOverlay{})
 
 	for name, got := range map[string]string{
 		"codexState":    spec.codexState,
@@ -72,7 +72,7 @@ func TestEnforceSpec_DeniesDurableClaudeConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	spec := enforceSpec("/wt", nil, t.TempDir(), "/tmp", "/cache", "/profile", "", gitSandboxRoots{}, gitSandboxOverlay{})
+	spec := enforceSpec("/wt", nil, t.TempDir(), "/tmp", "", "/cache", "/profile", "", gitSandboxRoots{}, gitSandboxOverlay{})
 
 	if !strings.HasSuffix(spec.claudeState, ".claude") {
 		t.Fatalf("claudeState = %q, want the whole state dir writable", spec.claudeState)
@@ -103,7 +103,7 @@ func TestEnforceSpec_MaterializesAbsentDurableConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	spec := enforceSpec("/wt", nil, t.TempDir(), "/tmp", "/cache", "/profile", "", gitSandboxRoots{}, gitSandboxOverlay{})
+	spec := enforceSpec("/wt", nil, t.TempDir(), "/tmp", "", "/cache", "/profile", "", gitSandboxRoots{}, gitSandboxOverlay{})
 
 	for _, want := range []string{"settings.json", "hooks"} {
 		found := false
@@ -135,7 +135,7 @@ func TestEnforceSpec_KeepsExistingDurableConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	enforceSpec("/wt", nil, t.TempDir(), "/tmp", "/cache", "/profile", "", gitSandboxRoots{}, gitSandboxOverlay{})
+	enforceSpec("/wt", nil, t.TempDir(), "/tmp", "", "/cache", "/profile", "", gitSandboxRoots{}, gitSandboxOverlay{})
 
 	got, err := os.ReadFile(filepath.Join(claude, "settings.json"))
 	if err != nil {

@@ -95,6 +95,30 @@ func canonicalizeRoot(root string) (string, error) {
 	return resolved, nil
 }
 
+// sandboxTmpAlias re-opens darwin's stable /tmp entrypoint only when doing so
+// cannot escape the intended temp namespace. Real provider helpers are measured
+// to create cwd markers and redirected files through /tmp even when Sybra's
+// canonical temp root is $TMPDIR under /private/var/folders, so enforce mode
+// needs both paths; a non-temp alias or a symlink escape stays denied.
+func sandboxTmpAlias(canonTmp string) string {
+	if strings.TrimSpace(canonTmp) == "" {
+		return ""
+	}
+	const alias = "/tmp"
+	resolved, err := canonicalizeRoot(alias)
+	if err != nil {
+		return ""
+	}
+	switch {
+	case canonTmp == resolved:
+		return alias
+	case strings.HasPrefix(canonTmp, "/private/var/folders/") && resolved == "/private/tmp":
+		return alias
+	default:
+		return ""
+	}
+}
+
 // wrapInvocation transposes name/args into a sandbox-exec invocation when
 // cfg carries an enforce-mode sandbox spec (set by
 // Manager.injectProcessSandbox). report/off specs are never wrapped here:
@@ -200,6 +224,7 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		{"WORKTREE", cfg.sandbox.worktree},
 		{"SANDBOX_HOME", home},
 		{"TMP", cfg.sandbox.tmp},
+		{"TMP_ALIAS", cfg.sandbox.tmpAlias},
 		{"SHARED_CACHE", cfg.sandbox.sharedCache},
 		{"CLAUDE_STATE", sandboxRootOr(cfg.sandbox.claudeState, home)},
 		{"CODEX_STATE", sandboxRootOr(cfg.sandbox.codexState, home)},

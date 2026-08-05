@@ -115,6 +115,7 @@ func TestWrapInvocation_EnforceModeWraps(t *testing.T) {
 		worktree:    "/private/tmp/wt",
 		sandboxHome: "/private/tmp/home",
 		tmp:         "/private/tmp",
+		tmpAlias:    "/tmp",
 		profilePath: profile,
 	}}
 	name, args := wrapInvocation("claude", []string{"-p", "hi"}, cfg)
@@ -127,10 +128,24 @@ func TestWrapInvocation_EnforceModeWraps(t *testing.T) {
 		"WORKTREE=/private/tmp/wt",
 		"SANDBOX_HOME=/private/tmp/home",
 		"TMP=/private/tmp",
+		"TMP_ALIAS=/tmp",
 		"claude -p hi",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("wrapped args %v missing %q", args, want)
 		}
+	}
+}
+
+func TestSandboxTmpAlias_StableTmpAliasAllowed(t *testing.T) {
+	got := sandboxTmpAlias("/private/var/folders/zz/abcd/T")
+	if got != "/tmp" {
+		t.Fatalf("sandboxTmpAlias() = %q, want /tmp for darwin temp helpers", got)
+	}
+}
+
+func TestSandboxTmpAlias_UnrelatedRootDenied(t *testing.T) {
+	if got := sandboxTmpAlias("/opt/not-temp"); got != "" {
+		t.Fatalf("sandboxTmpAlias() = %q for unrelated root, want empty", got)
 	}
 }

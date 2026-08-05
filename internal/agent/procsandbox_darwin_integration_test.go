@@ -348,7 +348,7 @@ func buildEnforceCfg(t *testing.T, worktree string) *RunConfig {
 	if err := prepareGitLooseObjectDirs(gitRoots.objectDir); err != nil {
 		t.Fatalf("prepare loose object dirs: %v", err)
 	}
-	spec := enforceSpec(wtCanon, nil, wtCanon, wtCanon, wtCanon, profilePath, "", gitRoots, gitSandboxOverlay{})
+	spec := enforceSpec(wtCanon, nil, wtCanon, wtCanon, "", wtCanon, profilePath, "", gitRoots, gitSandboxOverlay{})
 	cfg := &RunConfig{sandbox: spec}
 	if err := injectSandboxGitEnv(cfg, gitRoots, gitSandboxOverlay{}); err != nil {
 		t.Fatalf("inject sandbox git env: %v", err)
@@ -439,6 +439,60 @@ func TestSandboxEnforce_LargeFetchUnpacksLooseObjects(t *testing.T) {
 		t.Fatalf("large fetch wrote shared pack/info state instead of loose objects\nbefore: %s\nafter: %s", before, after)
 	}
 	runGitOrFatal(t, wt, "cat-file", "-e", "refs/remotes/origin/main^{commit}")
+}
+
+func TestSandboxEnforce_TmpAliasAllowsHelpersButKeepsOtherTempRootsReadOnly(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
+	}
+	worktree := t.TempDir()
+	sandboxHome := t.TempDir()
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return sandboxHome, nil },
+	})
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		TaskID:      "task-darwin-tmp-alias",
+		Mode:        "headless",
+		Dir:         worktree,
+		SandboxMode: "enforce",
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	if got := cfg.sandbox.tmpAlias; got != "/tmp" {
+		t.Fatalf("sandbox tmpAlias = %q, want /tmp", got)
+	}
+
+	canonFile := filepath.Join(cfg.sandbox.tmp, "sybra-enforce-canon-probe")
+	aliasFile := filepath.Join("/tmp", "sybra-enforce-alias-probe")
+	deniedFile := filepath.Join("/private/var/tmp", "sybra-enforce-denied-probe")
+	for _, path := range []string{canonFile, aliasFile, deniedFile} {
+		_ = os.Remove(path)
+		t.Cleanup(func() { _ = os.Remove(path) })
+	}
+
+	script := fmt.Sprintf(
+		"set -e; echo canon > %q; echo alias > %q; (echo leak > %q 2>/dev/null && echo LEAK) || echo DENIED",
+		canonFile, aliasFile, deniedFile,
+	)
+	cmd := newProviderCmd(context.Background(), &cfg, false, "sh", "-c", script)
+	cmd.Env = append(os.Environ(), cfg.ExtraEnv...)
+	out, err := cmd.CombinedOutput()
+	got := string(out)
+	if err != nil {
+		t.Fatalf("tmp alias probe failed: %v: %s", err, got)
+	}
+	if strings.Contains(got, "LEAK") || !strings.Contains(got, "DENIED") {
+		t.Fatalf("unexpected tmp alias probe output: %q", got)
+	}
+	for _, path := range []string{canonFile, aliasFile} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected writable temp path %q missing: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(deniedFile); !os.IsNotExist(err) {
+		t.Fatalf("unrelated temp path %q became writable: %v", deniedFile, err)
+	}
 }
 
 // TestSandboxEnforce_BlocksSharedCloneMaintenance proves that provider-run

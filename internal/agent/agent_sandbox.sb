@@ -14,6 +14,10 @@
   (subpath (param "WORKTREE"))
   (subpath (param "SANDBOX_HOME"))
   (subpath (param "TMP"))
+  ;; TMP_ALIAS re-opens darwin's stable /tmp entrypoint for helpers that
+  ;; ignore $TMPDIR and write there directly. Unused slots resolve to the
+  ;; inert sentinel, so non-darwin/no-alias runs stay unchanged.
+  (subpath (param "TMP_ALIAS"))
   (subpath (param "SHARED_CACHE"))
   (subpath (param "CLAUDE_STATE"))
   (subpath (param "CODEX_STATE"))
