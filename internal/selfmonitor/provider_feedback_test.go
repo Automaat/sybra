@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/provider"
+
 	"github.com/Automaat/sybra/internal/health"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -28,8 +30,8 @@ func (s *stubProviderGate) RateLimited(_ string) bool     { return false }
 func (s *stubProviderGate) Failover(_ string) string      { return "" }
 func (s *stubProviderGate) Reason(_ string) string        { return "" }
 func (s *stubProviderGate) ReportAuthFailure(_, _ string) {}
-func (s *stubProviderGate) ReportRateLimit(provider string, after time.Duration, reason string) {
-	s.calls = append(s.calls, providerRateLimitCall{provider: provider, after: after, reason: reason})
+func (s *stubProviderGate) ReportRateLimit(name string, after time.Duration, reason string, _ provider.CooldownSource) {
+	s.calls = append(s.calls, providerRateLimitCall{provider: name, after: after, reason: reason})
 }
 
 // overloadedFixtureLines returns a Codex-format NDJSON stream that produces

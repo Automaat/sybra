@@ -147,7 +147,7 @@ func (claudeProvider) ParseHeadlessLine(line []byte) (StreamEvent, error) {
 	return claudeEventToStreamEvent(ce), nil
 }
 
-func (claudeProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration) {
+func (claudeProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration, providerpkg.CooldownSource) {
 	return providerpkg.ClassifyClaudeError(sample)
 }
 

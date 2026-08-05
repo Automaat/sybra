@@ -59,7 +59,7 @@ type HealthGate interface {
 	Failover(unhealthy string) string
 	Reason(provider string) string
 	ReportAuthFailure(provider, reason string)
-	ReportRateLimit(provider string, retryAfter time.Duration, reason string)
+	ReportRateLimit(provider string, retryAfter time.Duration, reason string, source CooldownSource)
 }
 
 // HealthEvent is the payload emitted on state flips to the frontend.
@@ -594,7 +594,7 @@ func (c *Checker) ReportAuthFailure(provider, reason string) {
 
 // ReportRateLimit marks a provider as rate-limited. retryAfter zero falls back
 // to the per-provider configured cooldown.
-func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, reason string) {
+func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, reason string, source CooldownSource) {
 	// See ReportAuthFailure: the metric is a provider event and survives a nil
 	// checker; the cooldown it would record has nowhere to live without one.
 	metrics.ProviderRateLimit(provider)
@@ -622,6 +622,17 @@ func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, rea
 		reason = RateLimitReason
 	}
 	until := c.now().Add(cooldown)
+	// Without this a 3-day park is byte-identical in the log to a 900s one:
+	// the health.flip line carries only provider/healthy/reason, so an
+	// over-long park would be undiagnosable in production.
+	if c.logger != nil {
+		c.logger.Info("provider.rate_limit.park",
+			"provider", provider,
+			"reason", reason,
+			"cooldown", cooldown.String(),
+			"until", until,
+			"source", string(source))
+	}
 	c.setStatus(provider, Status{
 		Provider:         provider,
 		Healthy:          false,

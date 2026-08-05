@@ -83,7 +83,7 @@ func (copilotProvider) ParseHeadlessLine(line []byte) (StreamEvent, error) {
 	return copilotEventToStreamEvent(ce), nil
 }
 
-func (copilotProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration) {
+func (copilotProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration, providerpkg.CooldownSource) {
 	return providerpkg.ClassifyCopilotError(sample)
 }
 

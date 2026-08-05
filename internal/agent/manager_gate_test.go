@@ -27,7 +27,7 @@ func (f *fakeGate) RateLimited(p string) bool     { return !f.healthy[p] }
 func (f *fakeGate) Failover(p string) string      { return f.failover[p] }
 func (f *fakeGate) Reason(p string) string        { return f.reasons[p] }
 func (f *fakeGate) ReportAuthFailure(p, _ string) { f.reportedAuth = append(f.reportedAuth, p) }
-func (f *fakeGate) ReportRateLimit(p string, d time.Duration, _ string) {
+func (f *fakeGate) ReportRateLimit(p string, d time.Duration, _ string, _ provider.CooldownSource) {
 	f.reportedRLName = append(f.reportedRLName, p)
 	f.reportedRLDelay = append(f.reportedRLDelay, d)
 }
@@ -606,8 +606,8 @@ func TestReportProviderSignal_DispatchesByKind(t *testing.T) {
 	m, _ := newTestManager(t)
 	fg := &fakeGate{healthy: map[string]bool{"claude": true}}
 	m.SetHealthGate(fg)
-	m.ReportProviderSignal("claude", provider.SignalAuthFailure, "logged_out", 0)
-	m.ReportProviderSignal("codex", provider.SignalRateLimit, "rate_limit_error", 30*time.Minute)
+	m.ReportProviderSignal("claude", provider.SignalAuthFailure, "logged_out", 0, provider.CooldownFromConfig)
+	m.ReportProviderSignal("codex", provider.SignalRateLimit, "rate_limit_error", 30*time.Minute, provider.CooldownFromConfig)
 	if len(fg.reportedAuth) != 1 || fg.reportedAuth[0] != "claude" {
 		t.Errorf("auth report missing: %+v", fg.reportedAuth)
 	}
@@ -622,7 +622,7 @@ func TestReportProviderSignal_DispatchesByKind(t *testing.T) {
 func TestReportProviderSignal_NilGateSafe(t *testing.T) {
 	m, _ := newTestManager(t)
 	// Do not call SetHealthGate.
-	m.ReportProviderSignal("claude", provider.SignalAuthFailure, "", 0)
+	m.ReportProviderSignal("claude", provider.SignalAuthFailure, "", 0, provider.CooldownFromConfig)
 }
 
 func TestReportProviderHealthSignal_CleanLimitResultMarksRateLimit(t *testing.T) {

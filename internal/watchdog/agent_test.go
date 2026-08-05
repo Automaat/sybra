@@ -1100,7 +1100,7 @@ func TestApplyVerdict_RateLimitStopReschedulesInsteadOfEscalating(t *testing.T) 
 				tasks:     tasks,
 				logger:    slog.New(slog.DiscardHandler),
 				stopAgent: func(string) error { stopped = true; return nil },
-				recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration) {
+				recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration, _ provider.CooldownSource) {
 					ag.SetError("rate_limit", reason)
 					signaledName, signaledKind, signaledReason = ag.Provider, sig, reason
 				},
@@ -1147,7 +1147,7 @@ func TestApplyVerdict_RateLimitStopWithoutTaskStillSignalsAndStops(t *testing.T)
 	w := &Watchdog{
 		logger:    slog.New(slog.DiscardHandler),
 		stopAgent: func(string) error { stopped = true; return nil },
-		recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration) {
+		recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration, _ provider.CooldownSource) {
 			ag.SetError("rate_limit", reason)
 			signaledName, signaledKind = ag.Provider, sig
 			if reason == "" {
@@ -1191,7 +1191,7 @@ func TestHandleZeroOutputStall_SignalsProviderAndReschedulesInsteadOfEscalating(
 		tasks:     tasks,
 		logger:    slog.New(slog.DiscardHandler),
 		stopAgent: func(string) error { stopped = true; return nil },
-		recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration) {
+		recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration, _ provider.CooldownSource) {
 			ag.SetError("rate_limit", reason)
 			signaledName, signaledKind, signaledReason = ag.Provider, sig, reason
 		},
@@ -1229,7 +1229,7 @@ func TestHandleZeroOutputStall_NoTaskStillSignalsAndStops(t *testing.T) {
 	w := &Watchdog{
 		logger:               slog.New(slog.DiscardHandler),
 		stopAgent:            func(string) error { stopped = true; return nil },
-		recordProviderSignal: func(*agent.Agent, provider.Signal, string, time.Duration) {},
+		recordProviderSignal: func(*agent.Agent, provider.Signal, string, time.Duration, provider.CooldownSource) {},
 	}
 
 	w.handleZeroOutputStall(&agent.Agent{ID: "a1", Provider: "claude"}, time.Hour, time.Hour, task.StatusInProgress)
@@ -1258,7 +1258,7 @@ func TestInspectHeadless_ZeroOutputStallSkipsJudge(t *testing.T) {
 			return agent.InspectorVerdict{Recommendation: "continue"}, nil
 		},
 		stopAgent: func(string) error { stopped = true; return nil },
-		recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration) {
+		recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration, _ provider.CooldownSource) {
 			ag.SetError("rate_limit", reason)
 			signaledReason = reason
 		},
@@ -1406,7 +1406,7 @@ func TestInspectHeadless_ReattachedSurvivorZeroOutputSkipsJudge(t *testing.T) {
 			return agent.InspectorVerdict{Recommendation: "continue"}, nil
 		},
 		stopAgent: func(string) error { stopped = true; return nil },
-		recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration) {
+		recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration, _ provider.CooldownSource) {
 			ag.SetError("rate_limit", reason)
 			signaledReason = reason
 		},

@@ -25,6 +25,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	synapsegithub "github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/sybra/completion"
 	"github.com/Automaat/sybra/internal/task"
@@ -4549,7 +4550,7 @@ func (g *scriptedGate) ReportAuthFailure(provider, reason string) {
 	g.reason[provider] = reason
 }
 
-func (g *scriptedGate) ReportRateLimit(provider string, retryAfter time.Duration, reason string) {
+func (g *scriptedGate) ReportRateLimit(provider string, retryAfter time.Duration, reason string, _ provider.CooldownSource) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.healthy[provider] = false
@@ -4608,7 +4609,7 @@ func (g *cooldownGate) ReportAuthFailure(provider, reason string) {
 	g.limitedTo[provider] = time.Now().Add(5 * time.Minute)
 }
 
-func (g *cooldownGate) ReportRateLimit(provider string, retryAfter time.Duration, reason string) {
+func (g *cooldownGate) ReportRateLimit(provider string, retryAfter time.Duration, reason string, _ provider.CooldownSource) {
 	if retryAfter <= 0 {
 		retryAfter = 200 * time.Millisecond
 	}
@@ -6161,7 +6162,7 @@ func TestE2E_RateLimitCooldownWindowCorrectness(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"success", "success"})
 	g := newCooldownGate()
 	env.agents.SetHealthGate(g)
-	g.ReportRateLimit("claude", 200*time.Millisecond, "rate_limited")
+	g.ReportRateLimit("claude", 200*time.Millisecond, "rate_limited", provider.CooldownFromConfig)
 
 	ag1, err := env.agents.Run(agent.RunConfig{
 		TaskID:   "cooldown-1",
