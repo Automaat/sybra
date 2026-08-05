@@ -310,7 +310,7 @@ func (a *taskAdapter) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerpr
 	return a.tasks.UpdateRun(taskID, agentID, patch)
 }
 
-// MarkAgentRunOutcome corrects a run's recorded outcome after the fact. The
+// MarkAgentRunIncomplete corrects a run's recorded outcome after the fact. The
 // completion handler derives success from a clean exit alone, which it must:
 // whether a code-author run produced commits is only known later, once the
 // branch is inspected.
