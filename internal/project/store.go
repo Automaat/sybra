@@ -36,6 +36,21 @@ type Store struct {
 	clonesDir string
 	locker    *fsutil.KeyedLocker
 	cloneBare func(context.Context, string, string) error
+	signing   SigningPolicy
+}
+
+// SetSigningPolicy late-binds the deployment's commit-signing posture, which
+// is resolved from config after the Store is constructed. Zero value is
+// SigningAuto, so a caller that never sets it keeps the historical
+// host-probing behavior.
+func (s *Store) SetSigningPolicy(p SigningPolicy) { s.signing = p }
+
+// SigningPolicy returns the configured posture, defaulting to SigningAuto.
+func (s *Store) SigningPolicy() SigningPolicy {
+	if s.signing == "" {
+		return SigningAuto
+	}
+	return s.signing
 }
 
 // NewStore creates dir and clonesDir if they do not exist and returns a
@@ -137,6 +152,12 @@ func (s *Store) disableAutoMaintenanceLocked(ctx context.Context, id, snapshotCl
 	}
 	if err := ConfigureCommitIdentity(runCtx, current.ClonePath); err != nil {
 		return fmt.Errorf("%s: configure commit identity: %w", id, err)
+	}
+	// Retrofit already-registered clones: nothing ever wrote the signing
+	// posture, so existing projects carry whatever incidental state their
+	// host happens to have.
+	if err := ConfigureCommitSigning(runCtx, current.ClonePath, s.SigningPolicy()); err != nil {
+		return fmt.Errorf("%s: configure commit signing: %w", id, err)
 	}
 	return nil
 }

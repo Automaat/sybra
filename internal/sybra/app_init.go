@@ -1637,7 +1637,7 @@ func (a *App) syncSkillsBundle() {
 		PrimaryDst:           a.skillsDir,
 		SybraHomeDir:         config.HomeDir(),
 		UserHomeDir:          userHome,
-		DowngradeCommitFlags: !project.GPGSigningAvailable(context.Background()),
+		DowngradeCommitFlags: !project.NormalizeSigningPolicy(a.cfg.CommitSigning()).SignsCommits(context.Background()),
 	})
 }
 

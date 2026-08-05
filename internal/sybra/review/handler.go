@@ -2205,3 +2205,13 @@ func prNeedsAttention(prs []github.PullRequest) bool {
 	}
 	return false
 }
+
+// signingPolicy resolves the deployment's commit-signing posture for prompts
+// this handler builds. Nil-cfg safe so tests constructing a bare Handler keep
+// the historical host-probing behavior.
+func (r *Handler) signingPolicy() project.SigningPolicy {
+	if r == nil || r.cfg == nil {
+		return project.SigningAuto
+	}
+	return project.NormalizeSigningPolicy(r.cfg.CommitSigning())
+}

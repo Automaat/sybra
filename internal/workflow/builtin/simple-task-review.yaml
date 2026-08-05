@@ -276,7 +276,7 @@ steps:
 
         When done, commit your changes (do NOT push yet — Sybra will push the
         branch deterministically before verification and PR creation). Sign
-        commits with `git commit -s -S`.
+        commits with `git commit {{commitsignflags .Vars}}`.
         Use conventional commit format: `fix(review): address review comments`.
 
         Never weaken, skip, delete, or hardcode tests to satisfy a review

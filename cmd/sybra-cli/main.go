@@ -362,6 +362,7 @@ func openStores(cfg *config.Config) (*task.Manager, *project.Store, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("open project store: %w", err)
 	}
+	projStore.SetSigningPolicy(project.NormalizeSigningPolicy(cfg.CommitSigning()))
 	return task.NewManager(rawStore, nil), projStore, nil
 }
 
@@ -1166,7 +1167,7 @@ func cmdInstallSkills(cfg *config.Config, jsonOut bool) int {
 		PrimaryDst:           cfg.SkillsDir,
 		SybraHomeDir:         config.HomeDir(),
 		UserHomeDir:          home,
-		DowngradeCommitFlags: !project.GPGSigningAvailable(context.Background()),
+		DowngradeCommitFlags: !project.NormalizeSigningPolicy(cfg.CommitSigning()).SignsCommits(context.Background()),
 	})
 
 	dsts := []string{
