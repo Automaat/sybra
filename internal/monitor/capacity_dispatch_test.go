@@ -55,9 +55,16 @@ func TestDispatchLLMAnomalies_CapacityFailureRetriesNextTick(t *testing.T) {
 		wantRetried bool
 	}{
 		{
-			name:        "provider unhealthy releases the reservation",
-			err:         &provider.UnhealthyError{Provider: "codex", Reason: "rate_limited", RateLimited: true},
+			name:        "rate-limited provider releases the reservation",
+			err:         &provider.UnhealthyError{Provider: "codex", Reason: provider.RateLimitReason, RateLimited: true},
 			wantRetried: true,
+		},
+		{
+			// A permanent refusal does not self-heal, so releasing would retry
+			// it every tick until a human logs the provider back in.
+			name:        "logged-out provider keeps the cooldown",
+			err:         &provider.UnhealthyError{Provider: "codex", Reason: "logged_out"},
+			wantRetried: false,
 		},
 		{
 			// A real dispatch failure did consume an attempt and must stay on

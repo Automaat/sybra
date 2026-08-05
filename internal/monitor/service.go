@@ -411,6 +411,19 @@ func (s *Service) applyRemediations(ctx context.Context, anoms []Anomaly) remedi
 	return res
 }
 
+// isTransientCapacityRefusal reports whether a dispatch failure was a
+// self-healing capacity throttle rather than a refusal that needs a human.
+// UnhealthyError.RateLimited is the reliable signal — a rate limit is not
+// always tagged with Until, so a zero Until would otherwise read as "not a
+// rate limit".
+func isTransientCapacityRefusal(err error) bool {
+	var unhealthy *provider.UnhealthyError
+	if errors.As(err, &unhealthy) {
+		return unhealthy.RateLimited
+	}
+	return false
+}
+
 func (s *Service) dispatchLLMAnomalies(ctx context.Context, now time.Time, anoms []Anomaly) []string {
 	cooldown := time.Duration(s.cfg.IssueCooldownMinutes) * time.Minute
 	var out []string
@@ -435,7 +448,12 @@ func (s *Service) dispatchLLMAnomalies(ctx context.Context, now time.Time, anoms
 			// it must not consume the anomaly's cooldown. Charging the fleet's
 			// outage to the task is what leaves an anomaly unexamined for a
 			// full cooldown window after every rate limit.
-			if errors.Is(err, provider.ErrProviderUnhealthy) {
+			//
+			// Only a transient throttle, not every unhealthy provider: a
+			// permanent refusal (logged out, disabled in config) does not
+			// self-heal, so releasing there would retry it every tick until a
+			// human intervenes.
+			if isTransientCapacityRefusal(err) {
 				s.state.releaseDispatch(a.Fingerprint)
 				s.logger.Warn("monitor.dispatch.no-capacity",
 					"kind", a.Kind, "fingerprint", a.Fingerprint, "err", err)
