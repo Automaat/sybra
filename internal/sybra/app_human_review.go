@@ -666,70 +666,60 @@ func (h *humanReviewHandler) prepareRecoveryDispatch(current task.Task, status t
 	return target, nil
 }
 
-func (h *humanReviewHandler) recoverRenderedUnblockedTasks() {
+// recoverStrandedUnblockedTasks replays a human-review recovery whose side
+// effect did not leave the task's durable state. The common case is a host
+// storage outage: the reviewer finished and persisted its structured result,
+// but the guarded status/workflow dispatch could not be written before the
+// process restarted.
+//
+// Only the latest completed human-review run is authoritative. Looking past a
+// newer human or sybra_bug verdict for an older unblocked action can resume a
+// task after later evidence proved that action unsafe. applyUnblockedRecovery
+// performs the same worktree/PR verification and guarded dispatch used by the
+// live completion path, so startup recovery gains no broader authority.
+func (h *humanReviewHandler) recoverStrandedUnblockedTasks() {
 	if h == nil || h.tasks == nil || h.dispatchFromHumanRequired == nil {
 		return
 	}
 	tasks, err := h.tasks.List()
 	if err != nil {
-		h.logger.Warn("human-review.recover-rendered.list", "err", err)
+		h.logger.Warn("human-review.recover-stranded.list", "err", err)
 		return
 	}
 	for i := range tasks {
 		t := tasks[i]
-		if !missingCachedWorktreeCircuitBreaker(t) {
+		if !strandedHumanReviewRecoveryCandidate(t) {
 			continue
 		}
 		agentID, v, ok := latestHumanReviewUnblockedVerdict(t)
 		if !ok {
 			continue
 		}
-		status, ok := safeHumanReviewRecoveryStatus(v.RecoverableAction)
-		if !ok {
-			continue
-		}
-		if status == task.StatusDone {
-			note := h.scrubForTask(t.ProjectID, v.Summary)
-			h.applyDoneRecovery(t, agentID, note, v)
-			continue
-		}
-		target, prepErr := h.prepareRecoveryDispatch(t, status)
-		if prepErr != nil {
-			h.logger.Warn("human-review.recover-rendered.prepare",
-				"task_id", t.ID, "agent_id", agentID, "target", status, "err", prepErr)
-			continue
-		}
-		reason := "auto-review recovery retry: " + strings.TrimSpace(v.Summary)
-		if _, err := h.dispatchFromHumanRequired(t.ID, string(target), reason, agentID); err != nil {
-			h.logger.Warn("human-review.recover-rendered.dispatch",
-				"task_id", t.ID, "agent_id", agentID, "target", target, "err", err)
-			continue
-		}
-		h.logger.Info("human-review.recover-rendered.dispatched",
-			"task_id", t.ID, "agent_id", agentID, "target", target)
+		h.applyUnblockedRecovery(t, agentID, v)
 	}
 }
 
-func missingCachedWorktreeCircuitBreaker(t task.Task) bool {
-	if t.Status != task.StatusHumanRequired {
+func strandedHumanReviewRecoveryCandidate(t task.Task) bool {
+	if t.Status != task.StatusHumanRequired || t.TaskType == task.TaskTypeUmbrella || t.Workflow == nil {
 		return false
 	}
-	reason := strings.ToLower(t.StatusReason)
-	return strings.Contains(reason, "circuit breaker: agent start failed") &&
-		strings.Contains(reason, "dir ") &&
-		strings.Contains(reason, "not accessible") &&
-		strings.Contains(reason, "/worktrees/")
+	return t.Workflow.State == workflow.ExecCompleted || t.Workflow.State == workflow.ExecFailed
 }
 
 func latestHumanReviewUnblockedVerdict(t task.Task) (agentID string, v verdictDecision, ok bool) {
 	for i := range slices.Backward(t.AgentRuns) {
 		run := &t.AgentRuns[i]
-		if run.Role != string(agent.RoleHumanReview) || !run.VerdictRendered || strings.TrimSpace(run.Result) == "" {
+		if run.Role != string(agent.RoleHumanReview) {
 			continue
+		}
+		// This is the latest human-review run, so every failure below is final:
+		// never skip it to resurrect an older recovery action.
+		if run.State != string(agent.StateStopped) || strings.TrimSpace(run.Result) == "" {
+			return "", verdictDecision{}, false
 		}
 		parsed, _, err := verdict.Parse(run.Result)
 		if err != nil || parsed.Decision != "unblocked" {
-			continue
+			return "", verdictDecision{}, false
 		}
 		return run.AgentID, parsed, true
 	}

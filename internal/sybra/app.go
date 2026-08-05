@@ -400,7 +400,7 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 	issuesFetcher := a.initAutomations(emit)
 	a.wireServices(emit) //nolint:contextcheck // TaskService uses the app-bound root context; see Startup's contextcheck note.
 	if a.humanReview != nil {
-		a.wg.Go(a.humanReview.recoverRenderedUnblockedTasks)
+		a.wg.Go(a.humanReview.recoverStrandedUnblockedTasks)
 	}
 
 	// syncSkillsBundle's deep diagnostic logging uses context.Background()
