@@ -7,6 +7,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -54,7 +55,8 @@ func TestCommitSigningHook_DrivesBothSinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new project store: %v", err)
 	}
-	app := &App{ctx: t.Context(), projects: projStore}
+	reviewer := &review.Handler{}
+	app := &App{ctx: t.Context(), projects: projStore, reviewer: reviewer}
 	app.configSvc = &ConfigService{}
 	app.cfg = &config.Config{}
 	app.activeCfg.Store(app.cfg)
@@ -70,5 +72,10 @@ func TestCommitSigningHook_DrivesBothSinks(t *testing.T) {
 	}
 	if got := workflow.DefaultCommitSignFlags(); got != "-s" {
 		t.Errorf("workflow default commit flags = %q, want -s", got)
+	}
+	// The review dispatcher is the third sink: it caches the config snapshot
+	// taken when the Handler was built, so the hook has to reach it too.
+	if got := reviewer.SigningPolicy(); got != project.SigningNever {
+		t.Errorf("review handler policy = %q, want never", got)
 	}
 }

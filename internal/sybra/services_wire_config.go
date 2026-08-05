@@ -41,6 +41,9 @@ func (a *App) wireConfigService() {
 		if a.projects != nil {
 			a.projects.SetSigningPolicy(policy)
 		}
+		if a.reviewer != nil {
+			a.reviewer.SetSigningPolicy(policy)
+		}
 		workflow.SetDefaultCommitSignFlags(policy.CommitFlags(a.ctx))
 	}
 	a.configSvc.reapplyRouting = func() {

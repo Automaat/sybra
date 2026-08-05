@@ -122,3 +122,42 @@ func TestSigningPolicy_NilConfigDefaultsToAuto(t *testing.T) {
 		t.Errorf("nil-cfg Handler signingPolicy() = %q, want auto", got)
 	}
 }
+
+// r.cfg is the construction-time snapshot and is never rewritten, so a hot
+// reload has to reach the handler through SetSigningPolicy. Without it a
+// reload to "never" keeps this package's prompts on the startup posture and a
+// key-bearing host goes on being told to pass -S.
+func TestSigningPolicy_LateBoundOverridesStartupSnapshot(t *testing.T) {
+	keyBearingHost(t)
+	ctx := context.Background()
+
+	h := handlerWithSigning("auto")
+	if got := h.signingPolicy().CommitFlags(ctx); got != "-s -S" {
+		t.Fatalf("startup posture = %q, want -s -S", got)
+	}
+
+	h.SetSigningPolicy(project.SigningNever)
+
+	if got := h.signingPolicy(); got != project.SigningNever {
+		t.Errorf("after reload signingPolicy() = %q, want never", got)
+	}
+	prompt := commentsPrompt(ctx, github.PullRequest{Number: 1, HeadRefName: "fix/x"}, h.signingPolicy())
+	if strings.Contains(prompt, "-S") {
+		t.Errorf("commentsPrompt still instructs -S after reload to never:\n%s", prompt)
+	}
+
+	// And back, so the late binding is not a one-way downgrade.
+	h.SetSigningPolicy(project.SigningAuto)
+	if got := h.signingPolicy().CommitFlags(ctx); got != "-s -S" {
+		t.Errorf("after reload back to auto = %q, want -s -S", got)
+	}
+}
+
+// A handler that was never late-bound must keep reading its snapshot rather
+// than silently resolving to auto.
+func TestSigningPolicy_UnboundFallsBackToSnapshot(t *testing.T) {
+	keyBearingHost(t)
+	if got := handlerWithSigning("never").signingPolicy(); got != project.SigningNever {
+		t.Errorf("unbound signingPolicy() = %q, want never from the snapshot", got)
+	}
+}
