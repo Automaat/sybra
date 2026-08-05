@@ -30,14 +30,19 @@ func TestApplyAgentGuardrails_ReappliesCommitSigning(t *testing.T) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 	var gotPolicy string
-	svc := &ConfigService{applyCommitSigning: func(raw string) { gotPolicy = raw }}
+	svc := &ConfigService{}
+	svc.Subscribe(ConfigSubscriber{
+		Name:  "commit_signing",
+		Paths: []string{"agent.commit_signing"},
+		Apply: func(c config.Config) { gotPolicy = c.CommitSigning() },
+	})
 
 	var cfg config.Config
 	cfg.Agent.CommitSigning = "never"
-	svc.applyAgentGuardrails(cfg)
+	svc.notifySubscribers([]string{"agent"}, cfg)
 
 	if gotPolicy != "never" {
-		t.Fatalf("applyAgentGuardrails did not re-apply commit signing: got %q, want never", gotPolicy)
+		t.Fatalf("a hot apply of \"agent\" did not reach the commit_signing subscriber: got %q, want never", gotPolicy)
 	}
 }
 
@@ -94,7 +99,7 @@ func TestCommitSigningHook_DrivesBothSinks(t *testing.T) {
 		t.Fatalf("precondition: seeded skill lacks -s -S, assertion would be vacuous:\n%s", skill)
 	}
 
-	app.configSvc.applyCommitSigning("never")
+	app.applyCommitSigning("never")
 
 	if got := projStore.SigningPolicy(); got != project.SigningNever {
 		t.Errorf("project store policy = %q, want never", got)

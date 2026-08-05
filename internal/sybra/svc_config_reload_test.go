@@ -807,7 +807,7 @@ func TestMutateLocked_PublishesImmutableAppSnapshot(t *testing.T) {
 	next := cloneConfig(initial)
 	next.Logging.Level = "debug"
 	svc.mu.Lock()
-	_, err := svc.mutateLocked(next, nil)
+	_, _, err := svc.mutateLocked(next, nil)
 	svc.mu.Unlock()
 	close(done)
 	readers.Wait()
