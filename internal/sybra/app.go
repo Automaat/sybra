@@ -399,9 +399,6 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 
 	issuesFetcher := a.initAutomations(emit)
 	a.wireServices(emit) //nolint:contextcheck // TaskService uses the app-bound root context; see Startup's contextcheck note.
-	if a.humanReview != nil {
-		a.wg.Go(a.humanReview.recoverRenderedUnblockedTasks)
-	}
 
 	// syncSkillsBundle's deep diagnostic logging uses context.Background()
 	// intentionally (see skillsync.Syncer.log) — not a cancellation bug.
@@ -439,6 +436,12 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 			<-a.recoveryStartGate
 		}
 		a.recovery.RunStartupCleanup(schedulerCtx)
+		// Startup cleanup reattaches surviving provider processes before replay
+		// can call the synchronous human-required dispatch path. Running this
+		// earlier sees an empty live-agent registry and can start a duplicate.
+		if a.humanReview != nil {
+			a.humanReview.recoverStrandedUnblockedTasks() //nolint:contextcheck // handler bounds its git/PR checks with dedicated timeouts, matching live completion.
+		}
 		// Arm dispatch now that reattach/replay/restart-stale have run, then
 		// nudge so any task that changed status during the window (buffered,
 		// not dispatched — see startupRecoveryPending) is picked up by the
