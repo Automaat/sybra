@@ -31,7 +31,7 @@ func TestApplyAgentGuardrails_ReappliesCommitSigning(t *testing.T) {
 
 	var gotPolicy string
 	svc := &ConfigService{}
-	svc.Subscribe(ConfigSubscriber{
+	svc.subscribe(configSubscriber{
 		Name:  "commit_signing",
 		Paths: []string{"agent.commit_signing"},
 		Apply: func(c config.Config) { gotPolicy = c.CommitSigning() },

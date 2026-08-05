@@ -33,7 +33,7 @@ func (a *App) wireConfigService() {
 			a.evaluationSvc.SetABTesting(cfg)
 		}
 	}
-	a.configSvc.Subscribe(ConfigSubscriber{
+	a.configSvc.subscribe(configSubscriber{
 		Name:  "commit_signing",
 		Paths: []string{"agent.commit_signing"},
 		Apply: func(cfg config.Config) {

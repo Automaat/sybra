@@ -6,7 +6,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 )
 
-// ConfigSubscriber observes a config value that lives outside the *config.Config
+// configSubscriber observes a config value that lives outside the *config.Config
 // struct once the app is running — cached in an engine field, an atomic, a
 // synced file on disk.
 //
@@ -19,7 +19,7 @@ import (
 // server. Two other keys — agent.evidence and agent.admission — are marked
 // restart-only in the registry purely because their consumers cache them and
 // nothing re-invokes the setter.
-type ConfigSubscriber struct {
+type configSubscriber struct {
 	// Name identifies the subscriber in logs and in the coverage test.
 	Name string
 	// Paths are the registry paths this subscriber cares about. Empty means
@@ -31,7 +31,7 @@ type ConfigSubscriber struct {
 }
 
 // wants reports whether any applied path should wake this subscriber.
-func (s ConfigSubscriber) wants(applied []string) bool {
+func (s configSubscriber) wants(applied []string) bool {
 	if len(s.Paths) == 0 {
 		return true
 	}
@@ -55,10 +55,12 @@ func isConfigPathPrefix(applied, want string) bool {
 		want[len(applied)] == '.'
 }
 
-// Subscribe registers a consumer of reloaded config. Registration is the whole
+// subscribe registers a consumer of reloaded config. Unexported because
+// ConfigService is a Wails-bound service: an exported method here would be
+// published to the frontend, which has no business registering Go callbacks. Registration is the whole
 // contract: a subscriber never needs a bespoke call added to an apply function
 // to participate, which is what let four sinks of one key drift apart.
-func (s *ConfigService) Subscribe(sub ConfigSubscriber) {
+func (s *ConfigService) subscribe(sub configSubscriber) {
 	if s == nil || sub.Apply == nil {
 		return
 	}
@@ -82,7 +84,7 @@ func (s *ConfigService) subscriberNames() []string {
 // pendingNotify is the set of subscriber callbacks a hot apply owes, captured
 // while the config lock is held and invoked after it is released.
 type pendingNotify struct {
-	subs []ConfigSubscriber
+	subs []configSubscriber
 	next config.Config
 }
 
@@ -96,7 +98,7 @@ func (s *ConfigService) collectSubscribersLocked(applied []string, next config.C
 	if s == nil {
 		return pendingNotify{}
 	}
-	var subs []ConfigSubscriber
+	var subs []configSubscriber
 	for _, sub := range s.subscribers {
 		if sub.wants(applied) {
 			subs = append(subs, sub)

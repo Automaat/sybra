@@ -22,8 +22,8 @@ import (
 // ConfigService exposes settings read/write as Wails-bound methods.
 type ConfigService struct {
 	mu sync.RWMutex
-	// subscribers receive every hot apply; see ConfigSubscriber.
-	subscribers    []ConfigSubscriber
+	// subscribers receive every hot apply; see configSubscriber.
+	subscribers    []configSubscriber
 	cfg            *config.Config
 	persisted      *config.Config
 	logLevel       *slog.LevelVar

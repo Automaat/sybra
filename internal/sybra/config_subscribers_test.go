@@ -30,7 +30,7 @@ func TestConfigSubscriber_WantsMatchesAncestorPaths(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			sub := ConfigSubscriber{Paths: tc.paths, Apply: func(config.Config) {}}
+			sub := configSubscriber{Paths: tc.paths, Apply: func(config.Config) {}}
 			if got := sub.wants(tc.applied); got != tc.want {
 				t.Errorf("wants(%v) with paths %v = %v, want %v", tc.applied, tc.paths, got, tc.want)
 			}
@@ -63,7 +63,7 @@ func TestConfigService_SaveRawConfigReachesSubscribers(t *testing.T) {
 	svc.persisted = cloneConfig(cfg)
 
 	var saw []string
-	svc.Subscribe(ConfigSubscriber{
+	svc.subscribe(configSubscriber{
 		Name:  "commit_signing",
 		Paths: []string{"agent.commit_signing"},
 		Apply: func(c config.Config) { saw = append(saw, c.CommitSigning()) },
@@ -90,7 +90,7 @@ func TestConfigService_HotApplyReachesSubscribers(t *testing.T) {
 
 	var woke []string
 	var sawSigning string
-	svc.Subscribe(ConfigSubscriber{
+	svc.subscribe(configSubscriber{
 		Name:  "commit_signing",
 		Paths: []string{"agent.commit_signing"},
 		Apply: func(c config.Config) {
@@ -98,7 +98,7 @@ func TestConfigService_HotApplyReachesSubscribers(t *testing.T) {
 			sawSigning = c.CommitSigning()
 		},
 	})
-	svc.Subscribe(ConfigSubscriber{
+	svc.subscribe(configSubscriber{
 		Name:  "unrelated",
 		Paths: []string{"github"},
 		Apply: func(config.Config) { woke = append(woke, "unrelated") },
@@ -123,10 +123,10 @@ func TestConfigService_HotApplyReachesSubscribers(t *testing.T) {
 // registers lazily and standalone tests construct bare services.
 func TestConfigService_SubscribeIsNilSafe(t *testing.T) {
 	var nilSvc *ConfigService
-	nilSvc.Subscribe(ConfigSubscriber{Name: "x", Apply: func(config.Config) {}})
+	nilSvc.subscribe(configSubscriber{Name: "x", Apply: func(config.Config) {}})
 
 	svc := &ConfigService{}
-	svc.Subscribe(ConfigSubscriber{Name: "no-apply"})
+	svc.subscribe(configSubscriber{Name: "no-apply"})
 	svc.notifySubscribers([]string{"agent"}, config.Config{})
 	if names := svc.subscriberNames(); len(names) != 0 {
 		t.Errorf("subscriberNames() = %v, want the Apply-less subscriber rejected", names)

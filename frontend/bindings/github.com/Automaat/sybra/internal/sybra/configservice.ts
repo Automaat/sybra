@@ -73,15 +73,6 @@ export function SaveRawConfig(raw: string): $CancellablePromise<void> {
 }
 
 /**
- * Subscribe registers a consumer of reloaded config. Registration is the whole
- * contract: a subscriber never needs a bespoke call added to an apply function
- * to participate, which is what let four sinks of one key drift apart.
- */
-export function Subscribe(sub: $models.ConfigSubscriber): $CancellablePromise<void> {
-    return $Call.ByID(1641438691, sub);
-}
-
-/**
  * UpdateSettings validates, persists, and hot-reloads the provided settings.
  */
 export function UpdateSettings(settings: $models.AppSettings): $CancellablePromise<$models.ConfigMutationResult> {
