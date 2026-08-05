@@ -47,6 +47,13 @@ type AgentDefaults struct {
 	// nil means not configured (falls back to true — safe default).
 	// Set to false in config to opt all tasks into skip-permissions mode.
 	RequirePermissions *bool `yaml:"require_permissions" json:"requirePermissions"`
+	// CommitSigning declares this deployment's posture on GPG-signing agent
+	// commits: "auto" (default — sign when the host resolves a signing key),
+	// "never", or "require". Empty means auto. An explicit "never" is what
+	// keeps a keyless unattended host from ever being told to pass -S, and
+	// keeps that guarantee from silently flipping if a key later appears on
+	// the host.
+	CommitSigning string `yaml:"commit_signing" json:"commitSigning"`
 	// ReviewUntilClean keeps simple-task-review cycling review→fix→review
 	// until the reviewer returns a CLEAN verdict, so the fix agent's diff is
 	// never the last word. nil means not configured (falls back to true). false

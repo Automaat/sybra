@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
@@ -45,8 +46,11 @@ type Handler struct {
 	worktrees      *worktree.Manager
 	WorkflowEngine *workflow.Engine
 	cfg            *config.Config
-	abTesting      func() abtest.Config
-	experience     *experience.Store
+	// signing holds the hot-reloadable commit-signing posture; see
+	// SetSigningPolicy. Empty means "not late-bound", not "auto".
+	signing    atomic.Value
+	abTesting  func() abtest.Config
+	experience *experience.Store
 	// intervention captures a genuine human-required unblock through the two
 	// automated exit paths this package owns (reconcileHumanRequiredBlockers,
 	// advanceClosedTaskPR). Late-bound via SetInterventionStore since it is
@@ -2212,4 +2216,39 @@ func prNeedsAttention(prs []github.PullRequest) bool {
 		}
 	}
 	return false
+}
+
+// SetSigningPolicy late-binds the commit-signing posture and is re-invoked on
+// every hot config reload. r.cfg is the snapshot captured when this Handler
+// was constructed and is never rewritten, so reading the posture from it
+// alone latches the startup value: a reload to "never" would keep telling
+// agents to pass -S on a key-bearing host, which is the failure the policy
+// exists to prevent.
+func (r *Handler) SetSigningPolicy(p project.SigningPolicy) {
+	if r == nil {
+		return
+	}
+	r.signing.Store(string(p))
+}
+
+// SigningPolicy exposes the resolved posture so the app layer can assert that
+// a hot reload actually reached this handler — the sink whose startup latch
+// survived the first fix.
+func (r *Handler) SigningPolicy() project.SigningPolicy { return r.signingPolicy() }
+
+// signingPolicy resolves the deployment's commit-signing posture for prompts
+// this handler builds. Falls back to the construction-time snapshot when
+// nothing has been late-bound, then to host probing, so a bare Handler built
+// in tests keeps the historical behavior.
+func (r *Handler) signingPolicy() project.SigningPolicy {
+	if r == nil {
+		return project.SigningAuto
+	}
+	if v, ok := r.signing.Load().(string); ok && v != "" {
+		return project.NormalizeSigningPolicy(v)
+	}
+	if r.cfg == nil {
+		return project.SigningAuto
+	}
+	return project.NormalizeSigningPolicy(r.cfg.CommitSigning())
 }

@@ -261,6 +261,39 @@ func NormalizeHeadlessPermissionMode(s string) (string, error) {
 	}
 }
 
+// NormalizeCommitSigning canonicalizes an agent.commit_signing value. Empty
+// maps to "auto". "auto", "never", and "require" pass through unchanged. Any
+// other value is rejected, so a typo cannot quietly resolve to auto and change
+// a host's signing posture.
+func NormalizeCommitSigning(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "auto":
+		return "auto", nil
+	case "never":
+		return "never", nil
+	case "require":
+		return "require", nil
+	default:
+		return "", fmt.Errorf("invalid commit_signing %q (valid: auto, never, require)", s)
+	}
+}
+
+// CommitSigning returns the configured commit-signing posture, or "auto" if
+// unset. An invalid value is logged and treated as "auto" — the historical
+// behavior — so a misconfigured host degrades to host-probing rather than
+// silently refusing or forcing signatures.
+func (c *Config) CommitSigning() string {
+	if c == nil || c.Agent.CommitSigning == "" {
+		return "auto"
+	}
+	mode, err := NormalizeCommitSigning(c.Agent.CommitSigning)
+	if err != nil {
+		slog.Warn("config: invalid agent.commit_signing; falling back to auto", "value", c.Agent.CommitSigning)
+		return "auto"
+	}
+	return mode
+}
+
 // DefaultHeadlessPermissionMode returns the configured default headless permission
 // mode, or "bypass" if unset. An invalid config value is logged and treated as
 // "bypass" so a misconfigured server never silently switches posture.
