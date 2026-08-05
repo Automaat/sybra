@@ -397,9 +397,11 @@ func (c *Config) TestingMaxConcurrent() int {
 	return DefaultTestingMaxConcurrent
 }
 
-// TestingMaxAttempts returns the configured cap or DefaultTestingMaxAttempts.
+// TestingMaxAttempts returns the configured cap, bounded by the immutable
+// safety ceiling. Values above the ceiling historically survived default
+// reductions and silently retained the old runaway-cost posture.
 func (c *Config) TestingMaxAttempts() int {
-	if c != nil && c.Testing.MaxAttempts > 0 {
+	if c != nil && c.Testing.MaxAttempts > 0 && c.Testing.MaxAttempts < DefaultTestingMaxAttempts {
 		return c.Testing.MaxAttempts
 	}
 	return DefaultTestingMaxAttempts

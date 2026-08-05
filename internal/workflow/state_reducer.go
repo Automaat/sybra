@@ -21,11 +21,12 @@ type DesiredState struct {
 
 // ObservedState is the reducer's caller-supplied runtime snapshot.
 type ObservedState struct {
-	Task                 TaskInfo
-	Execution            *Execution
-	CompletedOutput      *StepOutput
-	Now                  time.Time
-	ReviewBudgetExceeded bool
+	Task                   TaskInfo
+	Execution              *Execution
+	CompletedOutput        *StepOutput
+	Now                    time.Time
+	ReviewBudgetExceeded   bool
+	ReviewLifetimeExceeded bool
 }
 
 type EffectKind string
@@ -285,6 +286,7 @@ func reducerTransitionFields(desired DesiredState, observed ObservedState, exec 
 	}
 	fields["config.review_until_clean"] = strconv.FormatBool(desired.ReviewUntilClean)
 	fields["task.review_budget_exceeded"] = strconv.FormatBool(observed.ReviewBudgetExceeded)
+	fields["task.review_lifetime_exceeded"] = strconv.FormatBool(observed.ReviewLifetimeExceeded)
 	maps.Copy(fields, desired.TransitionExtras)
 	return fields
 }

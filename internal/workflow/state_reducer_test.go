@@ -327,6 +327,15 @@ func TestReduceTransitionFields(t *testing.T) {
 			observed:  makeObserved(TaskInfo{ID: "t1"}, &Execution{WorkflowID: "wf", CurrentStep: "gate", State: ExecRunning}, true),
 		},
 		{
+			name:      "review lifetime exceeded",
+			condition: Condition{Field: "task.review_lifetime_exceeded", Operator: "equals", Value: "true"},
+			observed: func() ObservedState {
+				observed := makeObserved(TaskInfo{ID: "t1"}, &Execution{WorkflowID: "wf", CurrentStep: "gate", State: ExecRunning}, true)
+				observed.ReviewLifetimeExceeded = true
+				return observed
+			}(),
+		},
+		{
 			name:      "workflow vars",
 			condition: Condition{Field: "vars.choice", Operator: "equals", Value: "ship"},
 			observed:  makeObserved(TaskInfo{ID: "t1"}, &Execution{WorkflowID: "wf", CurrentStep: "gate", State: ExecRunning, Variables: map[string]string{"choice": "ship"}}, false),
@@ -356,6 +365,61 @@ func TestReduceTransitionFields(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReduceSimpleReviewLifetimeExhaustionRequiresHuman(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var def *Definition
+	for i := range defs {
+		if defs[i].ID == "simple-task-review" {
+			def = &defs[i]
+			break
+		}
+	}
+	if def == nil {
+		t.Fatal("simple-task-review not found")
+	}
+
+	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	effects, err := Reduce(DesiredState{
+		Definition:       *def,
+		WorkflowID:       def.ID,
+		ReviewUntilClean: true,
+	}, ObservedState{
+		Task: TaskInfo{ID: "t1", Status: "testing"},
+		Execution: &Execution{
+			WorkflowID:  def.ID,
+			CurrentStep: "detect_tampering",
+			State:       ExecRunning,
+			Variables:   map[string]string{},
+		},
+		CompletedOutput:        &StepOutput{StepID: "detect_tampering", Status: "completed"},
+		Now:                    now,
+		ReviewBudgetExceeded:   true,
+		ReviewLifetimeExceeded: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, effect := range effects {
+		if effect.Kind != EffectSetTaskStatus {
+			continue
+		}
+		if effect.Status != "human-required" {
+			t.Fatalf("lifetime exhaustion status = %q, want human-required", effect.Status)
+		}
+		if strings.Contains(effect.StatusReason, "review_rounds_per_hour") {
+			t.Fatalf("lifetime exhaustion reason = %q, must not prescribe hourly config", effect.StatusReason)
+		}
+		return
+	}
+	t.Fatalf("effects = %+v, want human-required status effect", effects)
 }
 
 func requireKinds(t *testing.T, effects []Effect, want ...EffectKind) {
