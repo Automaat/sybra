@@ -30,7 +30,7 @@ type DetectInput struct {
 	LiveAgents    []liveAgent
 	Cfg           config.MonitorConfig
 	AllowsProject func(projectID string) bool
-	// Providers is the health of every configured provider, keyed by name.
+	// Providers is the health of every configured provider, one entry each.
 	// Empty means the caller did not wire provider health, and the
 	// no-capacity rule stays silent rather than guessing.
 	Providers []ProviderHealth
