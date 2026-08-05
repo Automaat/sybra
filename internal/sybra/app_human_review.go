@@ -173,6 +173,7 @@ func (a *App) initHumanReview(ctx context.Context) {
 	logFile := filepath.Join(a.logDir, "sybra.log")
 	a.humanReview = newHumanReviewHandler(a.cfg, a.tasks, a.agents, a.audit, a.logger, config.HomeDir(), logFile, a.workScrubContextForTask)
 	a.humanReview.abTesting = a.abTestingConfig
+	a.humanReview.schedule = lifecycleSchedule(ctx)
 	if a.worktrees != nil {
 		a.humanReview.prepareTaskWorktree = func(t task.Task) (string, error) {
 			if t.PRNumber != 0 {
@@ -309,7 +310,7 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 		release, ok := h.claimTaskDispatch(taskID)
 		if !ok {
 			h.releaseReservedSlot(taskID, now)
-			h.skip(taskID, "dispatch_in_flight")
+			h.logger.Info("human-review.dispatch-claim.contended", "task_id", taskID)
 			h.scheduleClaimRetry(taskID, prevStatus, opts)
 			return false
 		}
@@ -353,6 +354,17 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 		"retry_reason": opts.RetryReason,
 	})
 	return true
+}
+
+func lifecycleSchedule(ctx context.Context) func(time.Duration, func()) {
+	return func(delay time.Duration, fn func()) {
+		time.AfterFunc(delay, func() {
+			if ctx.Err() != nil {
+				return
+			}
+			fn()
+		})
+	}
 }
 
 func (h *humanReviewHandler) scheduleClaimRetry(taskID, prevStatus string, opts humanReviewSpawnOptions) {

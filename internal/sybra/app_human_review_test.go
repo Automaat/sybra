@@ -14,6 +14,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
@@ -244,6 +245,13 @@ func TestHumanReviewSpawn_HoldsDispatchClaimAcrossPreparationAndRun(t *testing.T
 func TestHumanReviewSpawn_ClaimConflictRetriesAfterRelease(t *testing.T) {
 	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
+	auditDir := t.TempDir()
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = auditLog.Close() })
+	h.audit = auditLog
 
 	tk, err := tasks.Create("claim conflict", "", task.AgentModeHeadless)
 	if err != nil {
@@ -300,6 +308,18 @@ func TestHumanReviewSpawn_ClaimConflictRetriesAfterRelease(t *testing.T) {
 	if scheduled == nil {
 		t.Fatal("claim conflict did not schedule a retry")
 	}
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Minute),
+		Until: time.Now().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == audit.EventHumanReviewSkipped {
+			t.Fatalf("transient claim contention recorded as terminal skip: %+v", event)
+		}
+	}
 
 	claimAvailable = true
 	scheduled()
@@ -308,6 +328,19 @@ func TestHumanReviewSpawn_ClaimConflictRetriesAfterRelease(t *testing.T) {
 	}
 	if claimHeld {
 		t.Fatal("retry did not release the dispatch claim after registration")
+	}
+}
+
+func TestLifecycleSchedule_CancelSuppressesRetry(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	called := make(chan struct{}, 1)
+	lifecycleSchedule(ctx)(20*time.Millisecond, func() { called <- struct{}{} })
+	cancel()
+	select {
+	case <-called:
+		t.Fatal("retry ran after lifecycle cancellation")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
