@@ -3107,8 +3107,8 @@ func TestTestingMaxAttemptsDefault(t *testing.T) {
 	if got := cfg.TestingMaxAttempts(); got != DefaultTestingMaxAttempts {
 		t.Errorf("zero-value TestingMaxAttempts() = %d, want %d", got, DefaultTestingMaxAttempts)
 	}
-	if DefaultTestingMaxAttempts != 25 {
-		t.Errorf("DefaultTestingMaxAttempts = %d, want 25", DefaultTestingMaxAttempts)
+	if DefaultTestingMaxAttempts != 5 {
+		t.Errorf("DefaultTestingMaxAttempts = %d, want 5", DefaultTestingMaxAttempts)
 	}
 
 	cfg.Testing.MaxAttempts = 10

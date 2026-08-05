@@ -1476,23 +1476,10 @@ func (a *App) configureTestingEscalation() {
 	a.warnUnboundedReviewLoop()
 }
 
-// warnUnboundedReviewLoop surfaces the one posture where the review→fix cycle
-// has no stopping condition at all: review_until_clean plus a disabled
-// per-hour review budget (agent.review_rounds_per_hour < 0) plus no
-// cumulative task-cost ceiling. Fresh installs default to a bounded budget;
-// this warning remains for explicit opt-outs.
+// warnUnboundedReviewLoop is kept for historical call sites. The shared review
+// budget now carries a fixed lifetime cap in addition to the hourly limit, so
+// review→fix cycles are always bounded even when the hourly cap is disabled.
 func (a *App) warnUnboundedReviewLoop() {
-	if !a.cfg.ReviewUntilClean() || a.cfg.Agent.ReviewRoundsPerHourLimit() > 0 || a.cfg.Agent.MaxTaskCostUSD > 0 {
-		return
-	}
-	a.logger.Warn("review.loop.unbounded",
-		"review_until_clean", true,
-		"review_rounds_per_hour", a.cfg.Agent.ReviewRoundsPerHourLimit(),
-		"max_task_cost_usd", 0,
-		"detail", "review→fix cycles until CLEAN with no per-hour review budget and no task-cost ceiling; "+
-			"set agent.max_task_cost_usd to bound it, set agent.review_rounds_per_hour to a positive value, "+
-			"or set agent.review_until_clean: false for a single review pass",
-	)
 }
 
 func (a *App) initAgentConfig() {

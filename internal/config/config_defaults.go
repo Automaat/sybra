@@ -385,9 +385,9 @@ const DefaultTestingMaxConcurrent = 3
 // loop when TestingConfig.MaxAttempts is unset. Recurring grounded failure
 // fingerprints remain the primary non-convergence detector — route_test_result
 // escalates immediately when the same fingerprint returns after an intervening
-// code-author run. This numeric cap is a generous safety-net backstop only for
-// loops that keep surfacing distinct grounded defects without converging.
-const DefaultTestingMaxAttempts = 25
+// code-author run. This numeric cap is a safety-net backstop only for loops
+// that keep surfacing distinct grounded defects without converging.
+const DefaultTestingMaxAttempts = 5
 
 // TestingMaxConcurrent returns the configured cap or DefaultTestingMaxConcurrent.
 func (c *Config) TestingMaxConcurrent() int {
@@ -423,6 +423,7 @@ const (
 	DefaultReviewsSlowSeconds           = 600 // was 300
 	DefaultReviewsMaxPRsPerTick         = 25
 	DefaultReviewRoundsPerHour          = 3
+	DefaultReviewRoundsPerTask          = 6
 	DefaultReviewsStableBackoffMaxTicks = 8
 	DefaultIssuesSeconds                = 600 // was 300
 	DefaultRenovateFastSeconds          = 120 // was 60

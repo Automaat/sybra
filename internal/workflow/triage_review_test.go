@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/config"
 )
 
 func manyGoFiles(n int) []string {
@@ -1183,10 +1185,10 @@ func TestEngineReviewUntilCleanDefaultsToLooping(t *testing.T) {
 }
 
 // TestEngineReviewBudgetExceededTransition locks in that simple-task-review's
-// detect_tampering condition is bounded by the same rolling-hour
-// reviewbudget.Budget the inbound PR-review dispatcher uses (#2499) — not a
-// separate per-workflow-execution round counter — so AgentRuns are stamped
-// relative to time.Now(), not a fixed Workflow.StartedAt.
+// detect_tampering condition is bounded by the same shared reviewbudget.Budget
+// the inbound PR-review dispatcher uses (#2499) — not a separate
+// per-workflow-execution round counter — so AgentRuns are stamped relative to
+// time.Now(), not a fixed Workflow.StartedAt.
 func TestEngineReviewBudgetExceededTransition(t *testing.T) {
 	t.Parallel()
 
@@ -1227,5 +1229,64 @@ func TestEngineReviewBudgetExceededTransition(t *testing.T) {
 	}
 	if next == nil || next.ID != "park" {
 		t.Fatalf("resolveNext routed to %v, want park", next)
+	}
+}
+
+func TestEngineReviewBudgetExceededTransition_LifetimeCap(t *testing.T) {
+	t.Parallel()
+
+	def := &Definition{
+		ID: "test-review-budget-lifetime",
+		Steps: []Step{
+			{
+				ID:   "gate",
+				Type: StepCondition,
+				Next: []Transition{
+					{When: &Condition{Field: "task.review_budget_exceeded", Operator: "equals", Value: "true"}, GoTo: "park"},
+					{GoTo: "loop"},
+				},
+			},
+			{ID: "park", Type: StepSetStatus},
+			{ID: "loop", Type: StepSetStatus},
+		},
+	}
+
+	mt := newMemTasks()
+	mt.tasks["t1"] = &TaskInfo{ID: "t1", Status: "testing"}
+	e := &Engine{logger: slog.New(slog.DiscardHandler), tasks: mt}
+	e.SetReviewUntilClean(true)
+	e.SetReviewRoundsPerHour(-1)
+
+	now := time.Now()
+	task := TaskInfo{
+		ID:     "t1",
+		Status: "testing",
+		AgentRuns: []AgentRunInfo{
+			{Role: "review", StartedAt: now.Add(-48 * time.Hour)},
+			{Role: "review", StartedAt: now.Add(-36 * time.Hour)},
+			{Role: "review", StartedAt: now.Add(-24 * time.Hour)},
+			{Role: "review", StartedAt: now.Add(-12 * time.Hour)},
+			{Role: "review", StartedAt: now.Add(-6 * time.Hour)},
+			{Role: "review", StartedAt: now.Add(-2 * time.Hour)},
+		},
+	}
+	next, _, err := e.resolveNext("t1", def, &def.Steps[0], &Execution{Variables: map[string]string{}}, task)
+	if err != nil {
+		t.Fatalf("resolveNext: %v", err)
+	}
+	if next == nil || next.ID != "park" {
+		t.Fatalf("resolveNext routed to %v, want park", next)
+	}
+}
+
+func TestLoopCapsBoundWorstCaseImplementationRuns(t *testing.T) {
+	t.Parallel()
+
+	const want = 120
+	got := (verifyChecksAutoFixCeiling + 1) *
+		config.DefaultTestingMaxAttempts *
+		config.DefaultReviewRoundsPerTask
+	if got != want {
+		t.Fatalf("worst-case implementation run product = %d, want %d", got, want)
 	}
 }

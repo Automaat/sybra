@@ -47,7 +47,7 @@ const (
 	autoFixBackoffMax          = 15 * time.Minute
 	// verifyChecksAutoFixCeiling bounds auto-fix re-asks so a deterministic
 	// failure no agent can fix reaches a human instead of looping forever.
-	verifyChecksAutoFixCeiling = 5
+	verifyChecksAutoFixCeiling = 3
 	// Full verify suites are CPU-heavy and already serialized by workflow
 	// retries; a single local slot prevents one saturated host from piling
 	// multiple suites on top of each other and timing them all out.

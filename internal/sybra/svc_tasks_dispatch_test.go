@@ -1934,6 +1934,37 @@ func TestDispatchInboundReview_RateLimitParksForHuman(t *testing.T) {
 	}
 }
 
+func TestDispatchInboundReview_TaskLimitParksForHuman(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	a.workflowEngine = svc.workflowEngine
+	a.fetchPRHeadSHA = func(context.Context, string, int) (string, error) { return "fresh-head", nil }
+
+	tk := newInboundReviewTask(t, a, 151, "needs-approval")
+	now := time.Now()
+	for i := range config.DefaultReviewRoundsPerTask {
+		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i+2)*time.Hour))); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launcher.startCalls != 0 {
+		t.Errorf("startCalls = %d, want 0 — dispatched past the lifetime cap", launcher.startCalls)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q — a spent lifetime budget must reach a human", got.Status, task.StatusHumanRequired)
+	}
+	if !strings.Contains(got.StatusReason, "review lifetime limit") {
+		t.Errorf("StatusReason = %q, want it to name the lifetime limit", got.StatusReason)
+	}
+}
+
 // The cap must not block a healthy PR: a fresh head under the rate still gets
 // reviewed.
 func TestDispatchInboundReview_UnderRateLimitStillReviews(t *testing.T) {
@@ -2061,7 +2092,7 @@ func TestDispatchInboundReview_RateLimitDisabledByConfig(t *testing.T) {
 
 	tk := newInboundReviewTask(t, a, 151, "needs-approval")
 	now := time.Now()
-	for i := range 10 {
+	for i := range config.DefaultReviewRoundsPerTask - 1 {
 		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i)*time.Minute))); err != nil {
 			t.Fatal(err)
 		}

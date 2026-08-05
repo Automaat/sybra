@@ -892,11 +892,11 @@ func (e *Engine) transitionFields(t TaskInfo, wfExec *Execution) map[string]stri
 	return fields
 }
 
-// reviewBudgetExceeded reports whether t has spent its review budget for
-// the current rolling hour — the same reviewbudget.Budget the inbound
-// PR-review dispatcher (internal/sybra's app_orchestrator.go) enforces, so a
-// runaway review→fix→review cycle inside simple-task-review trips the same
-// single cap rather than a separate per-workflow-execution counter.
+// reviewBudgetExceeded reports whether t has spent its shared review budget —
+// the same reviewbudget.Budget the inbound PR-review dispatcher
+// (internal/sybra's app_orchestrator.go) enforces, so a runaway
+// review→fix→review cycle inside simple-task-review trips the same hourly or
+// lifetime caps rather than a separate per-workflow-execution counter.
 func (e *Engine) reviewBudgetExceeded(t TaskInfo) bool {
 	if e.reviewLoopDisabled {
 		return false
@@ -905,12 +905,12 @@ func (e *Engine) reviewBudgetExceeded(t TaskInfo) bool {
 	if limit == 0 {
 		limit = config.DefaultReviewRoundsPerHour
 	}
-	budget := reviewbudget.Budget{PerHour: limit}
+	budget := reviewbudget.Budget{PerHour: limit, PerTask: config.DefaultReviewRoundsPerTask}
 	runs := make([]reviewbudget.Run, len(t.AgentRuns))
 	for i := range t.AgentRuns {
 		runs[i] = reviewbudget.Run{Role: t.AgentRuns[i].Role, StartedAt: t.AgentRuns[i].StartedAt}
 	}
-	return budget.HourlyExceeded(runs, time.Now())
+	return budget.Exhausted(runs, time.Now())
 }
 
 // maxCascadeDepth bounds how many workflows may chain synchronously off a
