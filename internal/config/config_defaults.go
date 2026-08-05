@@ -13,6 +13,8 @@ import (
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"gopkg.in/yaml.v3"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // AllowsProjectType reports whether automations on this machine should act on
@@ -751,7 +753,7 @@ func defaultSeedConfig() *Config {
 			MaxSizeMB: DefaultAttachmentMaxSizeMB,
 		},
 		Agent: AgentDefaults{
-			Provider:         "claude",
+			Provider:         providerid.Claude,
 			MaxConcurrent:    25,
 			MaxCostUSD:       5.0,
 			MaxTurns:         150,

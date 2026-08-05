@@ -144,10 +144,10 @@ func New(cfg Config, emit func(string, any), logger *slog.Logger) *Checker {
 	// real probe confirms it — see the incident that motivated this: a
 	// pre-probe seed of Healthy=true let quota-based failover route runs to
 	// an uninstalled copilot CLI, crashing every one of them.
-	c.statuses["claude"] = &Status{Provider: "claude", Healthy: false, Reason: initialReason(cfg.ClaudeEnabled)}
-	c.statuses["codex"] = &Status{Provider: "codex", Healthy: false, Reason: initialReason(cfg.CodexEnabled)}
-	c.statuses["copilot"] = &Status{Provider: "copilot", Healthy: false, Reason: initialReason(cfg.CopilotEnabled)}
-	c.statuses["opencode"] = &Status{Provider: "opencode", Healthy: false, Reason: initialReason(cfg.OpenCodeEnabled)}
+	c.statuses[providerid.Claude] = &Status{Provider: providerid.Claude, Healthy: false, Reason: initialReason(cfg.ClaudeEnabled)}
+	c.statuses[providerid.Codex] = &Status{Provider: providerid.Codex, Healthy: false, Reason: initialReason(cfg.CodexEnabled)}
+	c.statuses[providerid.Copilot] = &Status{Provider: providerid.Copilot, Healthy: false, Reason: initialReason(cfg.CopilotEnabled)}
+	c.statuses[providerid.OpenCode] = &Status{Provider: providerid.OpenCode, Healthy: false, Reason: initialReason(cfg.OpenCodeEnabled)}
 	return c
 }
 
@@ -226,16 +226,16 @@ func (c *Checker) checkAll(ctx context.Context) {
 
 	results := make([]probeResult, 0, 4)
 	if doClaude {
-		results = append(results, probeResult{provider: "claude", status: claudeStatus, err: claudeErr})
+		results = append(results, probeResult{provider: providerid.Claude, status: claudeStatus, err: claudeErr})
 	}
 	if doCodex {
-		results = append(results, probeResult{provider: "codex", status: codexStatus, err: codexErr})
+		results = append(results, probeResult{provider: providerid.Codex, status: codexStatus, err: codexErr})
 	}
 	if doCopilot {
-		results = append(results, probeResult{provider: "copilot", status: copilotStatus, err: copilotErr})
+		results = append(results, probeResult{provider: providerid.Copilot, status: copilotStatus, err: copilotErr})
 	}
 	if doOpenCode {
-		results = append(results, probeResult{provider: "opencode", status: openCodeStatus, err: openCodeErr})
+		results = append(results, probeResult{provider: providerid.OpenCode, status: openCodeStatus, err: openCodeErr})
 	}
 	c.applyProbeResults(ctx, results)
 }
@@ -422,7 +422,7 @@ func (c *Checker) setStatusLocked(name string, next Status, fromProbe bool) (Sta
 }
 
 func livenessOnlyProbe(provider string) bool {
-	return provider == "copilot" || provider == "opencode"
+	return provider == providerid.Copilot || provider == providerid.OpenCode
 }
 
 func statusChanged(a, b *Status) bool {
@@ -559,13 +559,13 @@ func (c *Checker) failoverLocked(unhealthy string) string {
 // failover. Caller must hold c.mu.
 func (c *Checker) providerEnabledLocked(provider string) bool {
 	switch provider {
-	case "claude":
+	case providerid.Claude:
 		return c.cfg.ClaudeEnabled
-	case "codex":
+	case providerid.Codex:
 		return c.cfg.CodexEnabled
-	case "copilot":
+	case providerid.Copilot:
 		return c.cfg.CopilotEnabled
-	case "opencode":
+	case providerid.OpenCode:
 		return c.cfg.OpenCodeEnabled
 	default:
 		return false
@@ -605,13 +605,13 @@ func (c *Checker) ReportRateLimit(provider string, retryAfter time.Duration, rea
 	if cooldown <= 0 {
 		c.mu.RLock()
 		switch provider {
-		case "claude":
+		case providerid.Claude:
 			cooldown = c.cfg.ClaudeRLCooldown
-		case "codex":
+		case providerid.Codex:
 			cooldown = c.cfg.CodexRLCooldown
-		case "copilot":
+		case providerid.Copilot:
 			cooldown = c.cfg.CopilotRLCooldown
-		case "opencode":
+		case providerid.OpenCode:
 			cooldown = c.cfg.OpenCodeRLCooldown
 		default:
 			cooldown = 15 * time.Minute
@@ -689,13 +689,13 @@ func (c *Checker) SetProviderEnabled(provider string, v bool) {
 	c.mu.Lock()
 	var prev bool
 	switch provider {
-	case "claude":
+	case providerid.Claude:
 		prev, c.cfg.ClaudeEnabled = c.cfg.ClaudeEnabled, v
-	case "codex":
+	case providerid.Codex:
 		prev, c.cfg.CodexEnabled = c.cfg.CodexEnabled, v
-	case "copilot":
+	case providerid.Copilot:
 		prev, c.cfg.CopilotEnabled = c.cfg.CopilotEnabled, v
-	case "opencode":
+	case providerid.OpenCode:
 		prev, c.cfg.OpenCodeEnabled = c.cfg.OpenCodeEnabled, v
 	default:
 		c.mu.Unlock()

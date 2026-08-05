@@ -26,6 +26,8 @@ import (
 	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/verdict"
 	"github.com/Automaat/sybra/internal/workflow"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // humanReviewPromptHeadTail bounds how many lines of the host log file are
@@ -502,12 +504,12 @@ func (h *humanReviewHandler) handleStructuredVerdictFailure(current task.Task, a
 func humanReviewFallbackTarget(currentProvider string) (provider, model string, ok bool) {
 	currentProvider = strings.TrimSpace(currentProvider)
 	switch currentProvider {
-	case "claude":
-		return "codex", humanReviewFallbackModel, true
-	case "codex":
-		return "claude", humanReviewFallbackModel, true
+	case providerid.Claude:
+		return providerid.Codex, humanReviewFallbackModel, true
+	case providerid.Codex:
+		return providerid.Claude, humanReviewFallbackModel, true
 	}
-	for _, candidate := range []string{"codex", "claude"} {
+	for _, candidate := range []string{providerid.Codex, providerid.Claude} {
 		if candidate == currentProvider || !agent.ProviderSupportsOutputSchema(candidate) {
 			continue
 		}

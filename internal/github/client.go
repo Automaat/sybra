@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // execer abstracts command execution for testing.
@@ -636,7 +638,7 @@ func sameActor(a, b string) bool {
 // login containing or starting with the word can't satisfy the merge gate.
 func IsCopilotReviewer(login string) bool {
 	switch strings.ToLower(login) {
-	case "copilot",
+	case providerid.Copilot,
 		"copilot[bot]",
 		"copilot-pull-request-reviewer",
 		"copilot-pull-request-reviewer[bot]",

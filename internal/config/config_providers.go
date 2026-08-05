@@ -1,5 +1,7 @@
 package config
 
+import "github.com/Automaat/sybra/internal/providerid"
+
 // ProvidersConfig groups per-machine routing for CLI providers (claude, codex,
 // copilot, opencode) and their background health-check loop. A missing block defaults to
 // "all providers enabled, health check on, auto-failover on, 300s interval".
@@ -130,13 +132,13 @@ func BuildRoutingSummary(cfg *Config) RoutingSummary {
 
 func providerEnabledForRouting(cfg *Config, provider string) bool {
 	switch provider {
-	case "claude":
+	case providerid.Claude:
 		return cfg.Providers.Claude.Enabled
-	case "codex":
+	case providerid.Codex:
 		return cfg.Providers.Codex.Enabled
-	case "copilot":
+	case providerid.Copilot:
 		return cfg.Providers.Copilot.Enabled
-	case "opencode":
+	case providerid.OpenCode:
 		return cfg.Providers.OpenCode.Enabled
 	default:
 		return false

@@ -3,6 +3,8 @@ package github
 import (
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // informationalCheckPrefixes lists check-name prefixes that report on
@@ -36,7 +38,7 @@ var informationalCheckPrefixes = []string{
 //
 // Matched by lowercase prefix, so `Copilot` and `Copilot review` both match.
 var aiReviewCheckPrefixes = []string{
-	"copilot",
+	providerid.Copilot,
 }
 
 // isInformationalCheck reports whether the check name belongs to a

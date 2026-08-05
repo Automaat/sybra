@@ -9,6 +9,8 @@ import (
 
 	"github.com/Automaat/sybra/internal/llmexec"
 	"github.com/Automaat/sybra/internal/llmjob"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // InspectorVerdict is the structured judgment returned by the inspector agent.
@@ -80,7 +82,7 @@ func claudeModelOverride(model string) map[string]string {
 	if strings.TrimSpace(model) == "" {
 		return nil
 	}
-	return map[string]string{"claude": model}
+	return map[string]string{providerid.Claude: model}
 }
 
 func validateInspectorVerdict(v *InspectorVerdict) error {

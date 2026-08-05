@@ -18,6 +18,8 @@ import (
 	"github.com/Automaat/sybra/internal/health"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // minInterval is the smallest tick interval the Run loop will honor. Anything
@@ -339,7 +341,7 @@ func (s *Service) reportProviderSignal(f *health.Finding, ls *LogSummary) {
 	}
 	providerName := s.resolveProvider(f)
 	if providerName == "" {
-		providerName = "claude"
+		providerName = providerid.Claude
 	}
 	for _, ec := range ls.ErrorClasses {
 		if ec.Class == "overloaded_error" || ec.Class == "rate_limit" {

@@ -8,6 +8,8 @@ import (
 	"sync"
 
 	"github.com/Automaat/sybra/internal/version"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // VersionInfo holds version strings for the server and client.
@@ -61,7 +63,7 @@ func (s *InfoService) GetAvailableRuntimes() []RuntimeInfo {
 }
 
 func fetchCodexModels() []CodexModel {
-	out, err := exec.CommandContext(context.Background(), "codex", "debug", "models").Output()
+	out, err := exec.CommandContext(context.Background(), providerid.Codex, "debug", "models").Output()
 	if err != nil {
 		return nil
 	}

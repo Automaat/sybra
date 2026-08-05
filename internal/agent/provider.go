@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 type headlessInvocation struct {
@@ -78,7 +80,7 @@ func registerAgentProvider(p Provider) {
 func lookupProvider(name string) (Provider, error) {
 	key := strings.ToLower(strings.TrimSpace(name))
 	if key == "" {
-		key = "claude"
+		key = providerid.Claude
 	}
 	if p, ok := agentProviders[key]; ok {
 		return p, nil

@@ -18,6 +18,8 @@ import (
 	"github.com/Automaat/sybra/internal/llmjob"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // expandIssueLocker serializes one umbrella's critical section across both
@@ -1027,7 +1029,7 @@ func claudeModelOverride(model string) map[string]string {
 	if strings.TrimSpace(model) == "" {
 		return nil
 	}
-	return map[string]string{"claude": model}
+	return map[string]string{providerid.Claude: model}
 }
 
 // IsUmbrellaIssue reports whether a GitHub issue should be auto-expanded as an

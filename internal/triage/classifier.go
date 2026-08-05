@@ -11,6 +11,8 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // Classifier produces a triage verdict for a task. Exposed as an interface so
@@ -49,7 +51,7 @@ func claudeModelOverride(model string) map[string]string {
 	if strings.TrimSpace(model) == "" {
 		return nil
 	}
-	return map[string]string{"claude": model}
+	return map[string]string{providerid.Claude: model}
 }
 
 func buildPrompt(t task.Task, projects []project.Project) string {

@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/modeltier"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // Config controls deterministic A/B assignment for workflow agent runs.
@@ -200,10 +202,10 @@ func DefaultConfig() Config {
 				Bracket:        "cheap",
 				Roles:          []string{"implementation"},
 				Variants: []Variant{
-					{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Tier: "cheap", Weight: 1},
-					{ID: "codex-gpt-5.4", Provider: "codex", Model: cheap["codex"], Tier: "cheap", Weight: 1},
-					{ID: "copilot-sonnet", Provider: "copilot", Model: cheap["copilot"], Tier: "cheap", Weight: 1},
-					{ID: "opencode-deepseek-v4-flash", Provider: "opencode", Model: cheap["opencode"], Tier: "cheap", Weight: 1},
+					{ID: "claude-sonnet", Provider: providerid.Claude, Model: "sonnet", Tier: "cheap", Weight: 1},
+					{ID: "codex-gpt-5.4", Provider: providerid.Codex, Model: cheap[providerid.Codex], Tier: "cheap", Weight: 1},
+					{ID: "copilot-sonnet", Provider: providerid.Copilot, Model: cheap[providerid.Copilot], Tier: "cheap", Weight: 1},
+					{ID: "opencode-deepseek-v4-flash", Provider: providerid.OpenCode, Model: cheap[providerid.OpenCode], Tier: "cheap", Weight: 1},
 				},
 			},
 			{
@@ -213,10 +215,10 @@ func DefaultConfig() Config {
 				Bracket:        "cheap",
 				Roles:          []string{"pr-fix", "test-runner"},
 				Variants: []Variant{
-					{ID: "claude-sonnet", Provider: "claude", Model: "sonnet", Tier: "cheap", Weight: 1},
-					{ID: "codex-gpt-5.4", Provider: "codex", Model: cheap["codex"], Tier: "cheap", Weight: 1},
-					{ID: "copilot-sonnet", Provider: "copilot", Model: cheap["copilot"], Tier: "cheap", Weight: 1},
-					{ID: "opencode-deepseek-v4-flash", Provider: "opencode", Model: cheap["opencode"], Tier: "cheap", Weight: 1},
+					{ID: "claude-sonnet", Provider: providerid.Claude, Model: "sonnet", Tier: "cheap", Weight: 1},
+					{ID: "codex-gpt-5.4", Provider: providerid.Codex, Model: cheap[providerid.Codex], Tier: "cheap", Weight: 1},
+					{ID: "copilot-sonnet", Provider: providerid.Copilot, Model: cheap[providerid.Copilot], Tier: "cheap", Weight: 1},
+					{ID: "opencode-deepseek-v4-flash", Provider: providerid.OpenCode, Model: cheap[providerid.OpenCode], Tier: "cheap", Weight: 1},
 				},
 			},
 			{
@@ -226,10 +228,10 @@ func DefaultConfig() Config {
 				Bracket:        "expensive",
 				Roles:          []string{"fix-review"},
 				Variants: []Variant{
-					{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
-					{ID: "codex-gpt-5.5", Provider: "codex", Model: expensive["codex"], Tier: "expensive", Weight: 1},
-					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: expensive["copilot"], Tier: "expensive", Weight: 1},
-					{ID: "opencode-glm-5.2", Provider: "opencode", Model: expensive["opencode"], Tier: "expensive", Weight: 1},
+					{ID: "claude-opus", Provider: providerid.Claude, Model: "opus", Tier: "expensive", Weight: 1},
+					{ID: "codex-gpt-5.5", Provider: providerid.Codex, Model: expensive[providerid.Codex], Tier: "expensive", Weight: 1},
+					{ID: "copilot-gemini-3.1-pro", Provider: providerid.Copilot, Model: expensive[providerid.Copilot], Tier: "expensive", Weight: 1},
+					{ID: "opencode-glm-5.2", Provider: providerid.OpenCode, Model: expensive[providerid.OpenCode], Tier: "expensive", Weight: 1},
 				},
 			},
 			{
@@ -239,10 +241,10 @@ func DefaultConfig() Config {
 				Bracket:        "expensive",
 				Roles:          []string{"plan"},
 				Variants: []Variant{
-					{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
-					{ID: "codex-gpt-5.5", Provider: "codex", Model: expensive["codex"], Tier: "expensive", Weight: 1},
-					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: expensive["copilot"], Tier: "expensive", Weight: 1},
-					{ID: "opencode-glm-5.2", Provider: "opencode", Model: expensive["opencode"], Tier: "expensive", Weight: 1},
+					{ID: "claude-opus", Provider: providerid.Claude, Model: "opus", Tier: "expensive", Weight: 1},
+					{ID: "codex-gpt-5.5", Provider: providerid.Codex, Model: expensive[providerid.Codex], Tier: "expensive", Weight: 1},
+					{ID: "copilot-gemini-3.1-pro", Provider: providerid.Copilot, Model: expensive[providerid.Copilot], Tier: "expensive", Weight: 1},
+					{ID: "opencode-glm-5.2", Provider: providerid.OpenCode, Model: expensive[providerid.OpenCode], Tier: "expensive", Weight: 1},
 				},
 			},
 			{
@@ -254,14 +256,14 @@ func DefaultConfig() Config {
 				Subject:        &Subject{Role: "review"},
 				Roles:          []string{"review"},
 				Variants: []Variant{
-					{ID: "claude-opus", Provider: "claude", Model: "opus", Tier: "expensive", Weight: 1},
-					{ID: "codex-gpt-5.5", Provider: "codex", Model: expensive["codex"], Tier: "expensive", Weight: 1},
-					{ID: "copilot-gemini-3.1-pro", Provider: "copilot", Model: expensive["copilot"], Tier: "expensive", Weight: 1},
-					{ID: "opencode-glm-5.2", Provider: "opencode", Model: expensive["opencode"], Tier: "expensive", Weight: 1},
+					{ID: "claude-opus", Provider: providerid.Claude, Model: "opus", Tier: "expensive", Weight: 1},
+					{ID: "codex-gpt-5.5", Provider: providerid.Codex, Model: expensive[providerid.Codex], Tier: "expensive", Weight: 1},
+					{ID: "copilot-gemini-3.1-pro", Provider: providerid.Copilot, Model: expensive[providerid.Copilot], Tier: "expensive", Weight: 1},
+					{ID: "opencode-glm-5.2", Provider: providerid.OpenCode, Model: expensive[providerid.OpenCode], Tier: "expensive", Weight: 1},
 					{
 						ID:       "pl-a2d853b2c1d9-codex-gpt-5.5",
-						Provider: "codex",
-						Model:    expensive["codex"],
+						Provider: providerid.Codex,
+						Model:    expensive[providerid.Codex],
 						Tier:     "expensive",
 						Version:  "pl-a2d853b2c1d9",
 						Digest:   digestString(ReviewTightenInstructionsPLA2D853B2C1D9),

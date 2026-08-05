@@ -5,11 +5,13 @@ import (
 
 	"github.com/Automaat/sybra/internal/modeltier"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // copilotDefaultModel is the model Copilot agents use when none is specified.
 // It is Sybra's provider-specific cheap/sonnet-class Copilot model.
-var copilotDefaultModel = modeltier.Model(modeltier.Cheap, "copilot")
+var copilotDefaultModel = modeltier.Model(modeltier.Cheap, providerid.Copilot)
 
 type copilotProvider struct {
 	baseProvider
@@ -19,14 +21,14 @@ func init() {
 	registerAgentProvider(copilotProvider{})
 }
 
-func (copilotProvider) Name() string { return "copilot" }
+func (copilotProvider) Name() string { return providerid.Copilot }
 
 func (copilotProvider) NormalizeModel(model string) string {
 	// The provider-agnostic short aliases (and the empty default the chat
 	// path passes) map through Sybra's shared model tiers. Full Copilot slugs
 	// (claude-opus-4.6, gpt-5.5, gemini-3.1-pro-preview, ...) selected
 	// in the model picker pass through untouched.
-	if resolved, ok := modeltier.NormalizeAlias("copilot", model); ok {
+	if resolved, ok := modeltier.NormalizeAlias(providerid.Copilot, model); ok {
 		return resolved
 	}
 	return model
@@ -68,7 +70,7 @@ func (copilotProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headles
 		args = append(args, "--session-id", sid)
 	}
 	return headlessInvocation{
-		name:    "copilot",
+		name:    providerid.Copilot,
 		args:    args,
 		command: "copilot " + strings.Join(args, " "),
 	}, nil
@@ -93,7 +95,7 @@ func (copilotProvider) ClassifyError(sample providerpkg.ErrorSample) providerpkg
 // buildCodexCommand, this is a display-only string showing the flags, not a
 // runnable line.
 func buildCopilotCommand(model, effort string) string {
-	parts := []string{"copilot", "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
+	parts := []string{providerid.Copilot, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
 	parts = append(parts, effortArgs(effort)...)
 	if model != "" {
 		parts = append(parts, "--model", model)

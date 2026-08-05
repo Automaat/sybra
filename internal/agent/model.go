@@ -13,6 +13,8 @@ import (
 	"github.com/Automaat/sybra/internal/roleeffort"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/toolledger"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // NOTE on concurrency: Agent has distinct mutexes.
@@ -1482,7 +1484,7 @@ func (a *Agent) computeCanSteerLocked(hasStdinPipe bool) bool {
 	}
 	switch a.Mode {
 	case "headless":
-		return a.Provider == "claude"
+		return a.Provider == providerid.Claude
 	default:
 		return false
 	}

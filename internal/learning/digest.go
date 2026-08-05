@@ -15,6 +15,8 @@ import (
 	"github.com/Automaat/sybra/internal/llmexec"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/stats"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // EmitFunc emits a Wails event to the frontend.
@@ -316,8 +318,8 @@ func (s *Service) readAudit(since, until time.Time) ([]audit.Event, error) {
 // instruction in that text has no tool to act through.
 func (s *Service) callSummarizer(ctx context.Context, prompt string) (llmexec.Result, error) {
 	res, err := s.runJSON(ctx, prompt, llmexec.Options{
-		Provider:     "claude",
-		Models:       map[string]string{"claude": s.cfg.Model},
+		Provider:     providerid.Claude,
+		Models:       map[string]string{providerid.Claude: s.cfg.Model},
 		DisableTools: true,
 		Logger:       s.logger,
 		Gate:         claudeOnlyGate{base: s.gate},
@@ -325,7 +327,7 @@ func (s *Service) callSummarizer(ctx context.Context, prompt string) (llmexec.Re
 	if err != nil {
 		return llmexec.Result{}, err
 	}
-	if res.Provider != "claude" {
+	if res.Provider != providerid.Claude {
 		return llmexec.Result{}, fmt.Errorf("expected claude provider, got %q", res.Provider)
 	}
 	return res, nil
@@ -339,7 +341,7 @@ type claudeOnlyGate struct {
 }
 
 func (g claudeOnlyGate) IsHealthy(p string) bool {
-	if p != "claude" {
+	if p != providerid.Claude {
 		return false
 	}
 	if g.base == nil {
@@ -349,7 +351,7 @@ func (g claudeOnlyGate) IsHealthy(p string) bool {
 }
 
 func (g claudeOnlyGate) RateLimited(p string) bool {
-	if p != "claude" {
+	if p != providerid.Claude {
 		return false
 	}
 	return g.base != nil && g.base.RateLimited(p)
@@ -365,13 +367,13 @@ func (g claudeOnlyGate) Reason(p string) string {
 }
 
 func (g claudeOnlyGate) ReportAuthFailure(p, reason string) {
-	if g.base != nil && p == "claude" {
+	if g.base != nil && p == providerid.Claude {
 		g.base.ReportAuthFailure(p, reason)
 	}
 }
 
 func (g claudeOnlyGate) ReportRateLimit(p string, retryAfter time.Duration, reason string, source provider.CooldownSource) {
-	if g.base != nil && p == "claude" {
+	if g.base != nil && p == providerid.Claude {
 		g.base.ReportRateLimit(p, retryAfter, reason, source)
 	}
 }
