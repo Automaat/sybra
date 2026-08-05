@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -430,6 +431,16 @@ func (s *Service) dispatchLLMAnomalies(ctx context.Context, now time.Time, anoms
 		}
 		agentID, err := s.dispatcher.Dispatch(ctx, a)
 		if err != nil {
+			// A dispatch refused for want of provider capacity never ran, so
+			// it must not consume the anomaly's cooldown. Charging the fleet's
+			// outage to the task is what leaves an anomaly unexamined for a
+			// full cooldown window after every rate limit.
+			if errors.Is(err, provider.ErrProviderUnhealthy) {
+				s.state.releaseDispatch(a.Fingerprint)
+				s.logger.Warn("monitor.dispatch.no-capacity",
+					"kind", a.Kind, "fingerprint", a.Fingerprint, "err", err)
+				continue
+			}
 			s.logger.Warn("monitor.dispatch.failed", "kind", a.Kind, "fingerprint", a.Fingerprint, "err", err)
 			continue
 		}

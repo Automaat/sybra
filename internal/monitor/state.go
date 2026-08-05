@@ -160,6 +160,20 @@ func (s *runState) canDispatch(fp string, now time.Time, cooldown time.Duration)
 	return true
 }
 
+// releaseDispatch undoes the cooldown canDispatch reserved, so the anomaly is
+// eligible again on the next tick.
+//
+// canDispatch has to record before the dispatch is attempted — two ticks must
+// not both fire for one fingerprint. But that means a dispatch which never
+// started, because no provider had capacity, burns the whole cooldown window
+// and charges the fleet's outage to the anomaly. Releasing keeps the reservation
+// honest: it is spent only when work actually began.
+func (s *runState) releaseDispatch(fp string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.lastDispatchAt, fp)
+}
+
 // recordReport stores the most recent finished report so Wails callers can
 // fetch it without waiting for the next tick.
 func (s *runState) recordReport(r Report, at time.Time) {
