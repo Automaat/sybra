@@ -589,6 +589,28 @@ func TestClassifyStall_CheckpointDisposition(t *testing.T) {
 		}
 	})
 
+	// An initial prompt that never reached the child leaves a run holding no
+	// verdict about anything, so it must be re-dispatched rather than counted.
+	t.Run("undelivered prompt stalls for retry", func(t *testing.T) {
+		ag := &agent.Agent{}
+		ag.SetError(agent.ErrorKindPromptUndelivered, "write stdin: timed out after 2m0s, pipe closed")
+
+		stall := classifyStall(ag, errors.New("deliver initial prompt: write stdin: timed out after 2m0s, pipe closed"))
+		if !stall.Stalled || !stall.PromptUndelivered || stall.RateLimited || stall.MalformedTool || stall.ToolUseAborted || stall.CheckpointStopped {
+			t.Fatalf("classifyStall(prompt_undelivered) = stalled=%v promptUndelivered=%v rateLimited=%v malformedTool=%v toolUseAborted=%v checkpointStopped=%v",
+				stall.Stalled, stall.PromptUndelivered, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.CheckpointStopped)
+		}
+	})
+
+	t.Run("undelivered prompt is not a definitive outcome", func(t *testing.T) {
+		ag := &agent.Agent{}
+		ag.SetError(agent.ErrorKindPromptUndelivered, "write stdin: timed out after 2m0s, pipe closed")
+
+		if got := runTerminalOutcome(ag, errors.New("deliver initial prompt: timed out")); got != "" {
+			t.Fatalf("runTerminalOutcome(prompt_undelivered) = %q, want empty", got)
+		}
+	})
+
 	t.Run("tool use aborted stalls for retry", func(t *testing.T) {
 		ag := &agent.Agent{}
 		ag.SetError(agent.ErrorKindToolUseAborted, "provider run aborted after tool use was rejected")

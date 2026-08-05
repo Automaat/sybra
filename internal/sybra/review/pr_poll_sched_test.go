@@ -166,6 +166,58 @@ func TestSelectKnownPRPoll(t *testing.T) {
 		}
 	})
 
+	// Backoff is keyed on the PR, so a task unblocked back into a fixable lane
+	// would otherwise serve out a streak the PR earned while it was parked.
+	t.Run("task status change breaks stable backoff", func(t *testing.T) {
+		t.Parallel()
+
+		unblockedAt := base.Add(time.Hour)
+		probes := 0
+		r := &Handler{
+			prSnapshots: PRSnapshotStore{entries: map[string]prSnapshot{
+				"owner/repo#7": {
+					headSHA:         "sha-1",
+					updatedAt:       "2026-07-13T12:00:00Z",
+					stableStreak:    3,
+					skipTicks:       4,
+					statusChangedAt: base,
+				},
+			}},
+			fetchHeadStateFn: func(string, int) (string, bool, string, error) {
+				probes++
+				return "sha-1", true, "2026-07-13T12:00:00Z", nil
+			},
+		}
+		tk := newTask("unblocked", 7, unblockedAt)
+		tk.StatusChangedAt = unblockedAt
+
+		sel := r.selectKnownPRPoll(context.Background(), []task.Task{tk})
+		if probes != 0 {
+			t.Fatalf("fetchHeadStateFn calls = %d, want 0 — a status change selects without probing", probes)
+		}
+		if got := taskIDs(sel.tasks); len(got) != 1 || got[0] != "unblocked" {
+			t.Fatalf("selected ids = %v, want [unblocked] on the tick after a status change", got)
+		}
+		if sel.deferredPRs != 0 {
+			t.Fatalf("deferredPRs = %d, want 0", sel.deferredPRs)
+		}
+		if _, _, got, _ := r.prSnapshots.Backoff("owner/repo#7"); got != 0 {
+			t.Fatalf("skipTicks = %d, want reset to 0", got)
+		}
+
+		// The same status must not keep bypassing the backoff on later ticks.
+		r.prSnapshots.set("owner/repo#7", prSnapshot{
+			headSHA:         "sha-1",
+			updatedAt:       "2026-07-13T12:00:00Z",
+			skipTicks:       2,
+			statusChangedAt: unblockedAt,
+		})
+		sel = r.selectKnownPRPoll(context.Background(), []task.Task{tk})
+		if len(sel.tasks) != 0 || sel.deferredPRs != 1 {
+			t.Fatalf("second tick selected=%v deferred=%d, want none selected and 1 deferred", taskIDs(sel.tasks), sel.deferredPRs)
+		}
+	})
+
 	t.Run("updatedAt change breaks stable backoff", func(t *testing.T) {
 		t.Parallel()
 

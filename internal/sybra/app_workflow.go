@@ -563,6 +563,7 @@ func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 			HeadSHA:                runs[i].HeadSHA,
 			FinalCommitSource:      runs[i].FinalCommitSource,
 			SubagentCallCount:      runs[i].SubagentCallCount,
+			TurnCount:              runs[i].TurnCount,
 		}
 	}
 	return out

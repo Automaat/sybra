@@ -320,6 +320,7 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 		// attempt instead of pressing on as if delivery succeeded.
 		if writeErr := m.writeUserMessageTimeout(a, cfg.Prompt, stdinInitialWriteTimeout); writeErr != nil {
 			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
+			a.SetError(ErrorKindPromptUndelivered, writeErr.Error())
 			a.convo.closeStdinPipe()
 			if cmd.Process != nil {
 				_ = cmd.Process.Kill()
@@ -509,6 +510,7 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 		// Fail the attempt instead of pressing on as if delivery succeeded.
 		if writeErr := m.writeUserMessageTimeout(a, cfg.Prompt, stdinInitialWriteTimeout); writeErr != nil {
 			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
+			a.SetError(ErrorKindPromptUndelivered, writeErr.Error())
 			a.convo.closeStdinPipe()
 			if cmd.Process != nil {
 				_ = cmd.Process.Kill()

@@ -54,12 +54,17 @@ func (r *Handler) selectKnownPRPoll(ctx context.Context, tasks []task.Task) know
 
 		key := prRefCacheKey(tk.ProjectID, tk.PRNumber)
 		_, _, skipTicks, _ := r.prSnapshots.Backoff(key)
+		if r.prSnapshots.TaskStatusAdvancedSince(key, tk.StatusChangedAt) {
+			r.prSnapshots.ResetBackoff(key)
+			skipTicks = 0
+		}
 		if skipTicks > 0 {
 			if r.knownPRStillStableDuringBackoff(&tk, key) {
 				deferred++
 				continue
 			}
 		}
+		r.prSnapshots.NoteTaskStatus(key, tk.StatusChangedAt)
 		candidates = append(candidates, tk)
 	}
 
