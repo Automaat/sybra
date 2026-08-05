@@ -363,7 +363,6 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 		// hits the per-hour cap and the task is never examined at all. The
 		// dispatch claim itself is released by the deferred call above.
 		h.releaseReservedSlot(taskID, now)
-		h.clearInflight(taskID)
 		h.scheduleClaimRetry(taskID, prevStatus, opts)
 		return false
 	}
