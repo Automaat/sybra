@@ -909,6 +909,7 @@ func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Ex
 		// second occurrence proves the repair made no progress and must stop
 		// the loop immediately.
 		maxSameFingerprintRuns: 1,
+		attemptProducedWork:    lastAuthorRunProducedWork,
 		onArm: func(wfExec *Execution, attempt int) {
 			wfExec.SetVar(verifyReaskNoteVar, buildVerifyReaskNote(failedCmd, output))
 			wfExec.SetVar(verifyRetryModelVar, "expensive")

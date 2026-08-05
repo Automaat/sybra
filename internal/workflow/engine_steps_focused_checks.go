@@ -393,6 +393,7 @@ func (e *Engine) reaskFocusedChecks(taskID string, step *Step, wfExec *Execution
 		// One prior identical occurrence means this is repeat #2. Re-running
 		// the same deterministic failure again only spends another author run.
 		maxSameFingerprintRuns: 1,
+		attemptProducedWork:    lastAuthorRunProducedWork,
 		onArm: func(wfExec *Execution, attempt int) {
 			wfExec.SetVar(focusedChecksReaskNoteVar, buildFocusedChecksReaskNote(selected, changedFiles, failedCmd, output))
 			wfExec.SetVar(verifyRetryModelVar, "expensive")
