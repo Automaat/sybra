@@ -35,6 +35,7 @@ const (
 	humanReviewMaxAgentResult = 4000
 	humanReviewWindow         = time.Hour
 	humanReviewFallbackModel  = "haiku"
+	humanReviewClaimRetryMax  = 3
 
 	// humanReviewMaxPerTaskPerWindow caps how many times a SINGLE task can
 	// spawn a review agent within humanReviewWindow. The global window
@@ -69,6 +70,7 @@ type humanReviewHandler struct {
 	homeDir   string
 	logFile   string
 	now       func() time.Time
+	schedule  func(time.Duration, func())
 
 	// workCtx returns a non-nil WorkScrubContext when the task's project is
 	// work-typed. When set, the handler still spawns the review agent but
@@ -114,6 +116,7 @@ type humanReviewSpawnOptions struct {
 	IgnoreRenderedVerdict bool
 	SkipABVariant         bool
 	RetryReason           string
+	ClaimRetryAttempt     int
 }
 
 func (h *humanReviewHandler) abTestingConfig() abtest.Config {
@@ -144,6 +147,7 @@ func newHumanReviewHandler(
 		homeDir:      homeDir,
 		logFile:      logFile,
 		now:          time.Now,
+		schedule:     func(delay time.Duration, fn func()) { time.AfterFunc(delay, fn) },
 		workCtx:      workCtx,
 		fetchPRState: github.FetchPRStateViaREST,
 		inflight:     make(map[string]string),
@@ -234,6 +238,10 @@ func (h *humanReviewHandler) dispatchDir(t task.Task) (dir string, readOnly bool
 // The bool return reports whether a review agent was actually dispatched —
 // retryAfterCrash relies on it to tell a real retry apart from a silent skip.
 func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
+	return h.maybeSpawnWithOptions(taskID, prevStatus, humanReviewSpawnOptions{})
+}
+
+func (h *humanReviewHandler) maybeSpawnWithOptions(taskID, prevStatus string, opts humanReviewSpawnOptions) bool {
 	if h == nil {
 		return false
 	}
@@ -278,7 +286,7 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 		h.skip(taskID, "no_project")
 		return false
 	}
-	return h.spawnReview(t, prevStatus, humanReviewSpawnOptions{})
+	return h.spawnReview(t, prevStatus, opts)
 }
 
 func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts humanReviewSpawnOptions) bool {
@@ -302,6 +310,7 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 		if !ok {
 			h.releaseReservedSlot(taskID, now)
 			h.skip(taskID, "dispatch_in_flight")
+			h.scheduleClaimRetry(taskID, prevStatus, opts)
 			return false
 		}
 		if release != nil {
@@ -344,6 +353,20 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 		"retry_reason": opts.RetryReason,
 	})
 	return true
+}
+
+func (h *humanReviewHandler) scheduleClaimRetry(taskID, prevStatus string, opts humanReviewSpawnOptions) {
+	if h.schedule == nil || opts.ClaimRetryAttempt >= humanReviewClaimRetryMax {
+		return
+	}
+	next := opts
+	next.ClaimRetryAttempt++
+	delay := time.Duration(next.ClaimRetryAttempt*next.ClaimRetryAttempt) * time.Second
+	h.logger.Info("human-review.dispatch-claim.retry-scheduled",
+		"task_id", taskID, "attempt", next.ClaimRetryAttempt, "delay", delay)
+	h.schedule(delay, func() {
+		h.maybeSpawnWithOptions(taskID, prevStatus, next)
+	})
 }
 
 func (h *humanReviewHandler) reserveSpawn(taskID string) (reservedAt time.Time, skipReason string) {

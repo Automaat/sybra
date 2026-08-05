@@ -241,7 +241,7 @@ func TestHumanReviewSpawn_HoldsDispatchClaimAcrossPreparationAndRun(t *testing.T
 	}
 }
 
-func TestHumanReviewSpawn_ClaimConflictSkipsWorktreeMutation(t *testing.T) {
+func TestHumanReviewSpawn_ClaimConflictRetriesAfterRelease(t *testing.T) {
 	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
@@ -255,14 +255,92 @@ func TestHumanReviewSpawn_ClaimConflictSkipsWorktreeMutation(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h.claimTaskDispatch = func(string) (func(), bool) { return nil, false }
-	h.prepareTaskWorktree = func(task.Task) (string, error) {
-		t.Fatal("worktree preparation ran despite a conflicting dispatch claim")
-		return "", nil
+	claimAvailable := false
+	claimHeld := false
+	h.claimTaskDispatch = func(string) (func(), bool) {
+		if !claimAvailable || claimHeld {
+			return nil, false
+		}
+		claimHeld = true
+		return func() { claimHeld = false }, true
 	}
+	var scheduled func()
+	h.schedule = func(delay time.Duration, fn func()) {
+		if delay != time.Second {
+			t.Fatalf("first retry delay = %s, want 1s", delay)
+		}
+		if scheduled != nil {
+			t.Fatal("claim conflict scheduled more than one retry")
+		}
+		scheduled = fn
+	}
+	prepareCalls := 0
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		prepareCalls++
+		if !claimHeld {
+			t.Fatal("retry prepared the worktree without holding the claim")
+		}
+		return t.TempDir(), nil
+	}
+	runCalls := 0
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		runCalls++
+		if !claimHeld {
+			t.Fatal("retry registered the agent without holding the claim")
+		}
+		return &agent.Agent{ID: "retried-human-review", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
 
 	if h.maybeSpawn(tk.ID, string(task.StatusInReview)) {
 		t.Fatal("human review spawned despite a conflicting dispatch claim")
+	}
+	if prepareCalls != 0 || runCalls != 0 {
+		t.Fatalf("claim conflict mutated/spawned before release: prepare=%d run=%d", prepareCalls, runCalls)
+	}
+	if scheduled == nil {
+		t.Fatal("claim conflict did not schedule a retry")
+	}
+
+	claimAvailable = true
+	scheduled()
+	if prepareCalls != 1 || runCalls != 1 {
+		t.Fatalf("retry after claim release: prepare=%d run=%d, want 1/1", prepareCalls, runCalls)
+	}
+	if claimHeld {
+		t.Fatal("retry did not release the dispatch claim after registration")
+	}
+}
+
+func TestHumanReviewSpawn_ClaimConflictRetryIsBounded(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("persistent claim conflict", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.claimTaskDispatch = func(string) (func(), bool) { return nil, false }
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		t.Fatal("persistent claim conflict must never prepare a worktree")
+		return "", nil
+	}
+	scheduled := 0
+	h.schedule = func(_ time.Duration, fn func()) {
+		scheduled++
+		fn()
+	}
+
+	if h.maybeSpawn(tk.ID, string(task.StatusInReview)) {
+		t.Fatal("human review spawned despite persistent claim conflicts")
+	}
+	if scheduled != humanReviewClaimRetryMax {
+		t.Fatalf("scheduled retries = %d, want bounded max %d", scheduled, humanReviewClaimRetryMax)
 	}
 }
 
