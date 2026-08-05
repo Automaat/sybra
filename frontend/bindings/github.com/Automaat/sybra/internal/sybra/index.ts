@@ -47,6 +47,7 @@ export {
     ConfigMutationResult,
     ConfigPathExplanation,
     ConfigRecovery,
+    ConfigSubscriber,
     CopilotModel,
     LoggingSettings,
     LoopAgentRun,

@@ -503,6 +503,67 @@ export class ConfigRecovery {
 }
 
 /**
+ * ConfigSubscriber observes a config value that lives outside the *config.Config
+ * struct once the app is running — cached in an engine field, an atomic, a
+ * synced file on disk.
+ * 
+ * It exists because "declare the key hot" and "the key actually takes effect"
+ * were separate facts. Consumers snapshot config at construction, and hot
+ * reload was a hand-maintained list of apply* calls that each new consumer had
+ * to remember to join. Shipping one hot key (agent.commit_signing) took three
+ * rounds of live testing because the same value was cached in four independent
+ * places, each found only after the previous fix was tested against a running
+ * server. Two other keys — agent.evidence and agent.admission — are marked
+ * restart-only in the registry purely because their consumers cache them and
+ * nothing re-invokes the setter.
+ */
+export class ConfigSubscriber {
+    /**
+     * Name identifies the subscriber in logs and in the coverage test.
+     */
+    "Name": string;
+
+    /**
+     * Paths are the registry paths this subscriber cares about. Empty means
+     * every hot apply. A path matches when it, or one of its ancestors, was
+     * applied — so "agent.commit_signing" fires on an "agent" apply.
+     */
+    "Paths": string[];
+
+    /**
+     * Apply receives the config that was just made live.
+     */
+    "Apply": any;
+
+    /** Creates a new ConfigSubscriber instance. */
+    constructor($$source: Partial<ConfigSubscriber> = {}) {
+        if (!("Name" in $$source)) {
+            this["Name"] = "";
+        }
+        if (!("Paths" in $$source)) {
+            this["Paths"] = [];
+        }
+        if (!("Apply" in $$source)) {
+            this["Apply"] = null;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ConfigSubscriber instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ConfigSubscriber {
+        const $$createField1_0 = $$createType20;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("Paths" in $$parsedSource) {
+            $$parsedSource["Paths"] = $$createField1_0($$parsedSource["Paths"]);
+        }
+        return new ConfigSubscriber($$parsedSource as Partial<ConfigSubscriber>);
+    }
+}
+
+/**
  * CopilotModel is a single Copilot model option (slug + display name).
  */
 export class CopilotModel {
