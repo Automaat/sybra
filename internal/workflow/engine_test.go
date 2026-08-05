@@ -26,7 +26,6 @@ import (
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/prompteval"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
-	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -7414,28 +7413,6 @@ func TestAdvanceStep_FailedWorkflowIsNoop(t *testing.T) {
 	}
 	if agents.CallCount() != 0 {
 		t.Errorf("agents.CallCount = %d, want 0 — failed workflow must not spawn", agents.CallCount())
-	}
-}
-
-func TestTruncate(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		limit int
-		want  string
-	}{
-		{"under limit", "short", 100, "short"},
-		{"at limit", "exact", 5, "exact"},
-		{"over limit", "this is too long", 7, "this is\n... (truncated)"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := textutil.TruncateBytes(tt.input, tt.limit, "\n... (truncated)")
-			if got != tt.want {
-				t.Errorf("TruncateBytes(%q, %d) = %q, want %q", tt.input, tt.limit, got, tt.want)
-			}
-		})
 	}
 }
 

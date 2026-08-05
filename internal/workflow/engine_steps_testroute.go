@@ -11,10 +11,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/gitexec"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/workflow/failureclassify"
 )
 
@@ -731,7 +731,7 @@ func capTextBlock(text string, maxLines, maxBytes int, suffix string, preserveLa
 		limit -= len(suffix)
 	}
 	if len(text) > limit {
-		text = trimUTF8ToBytes(text, limit)
+		text = textutil.TruncateBytes(text, limit, "")
 		truncated = true
 	}
 	text = strings.TrimRight(text, "\n")
@@ -764,25 +764,6 @@ func normalizeAcceptanceLedgerReport(report string) string {
 		}
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
-}
-
-func trimUTF8ToBytes(s string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	if len(s) <= limit {
-		return s
-	}
-	s = s[:limit]
-	for len(s) > 0 && !utf8.ValidString(s) {
-		_, size := utf8.DecodeLastRuneInString(s)
-		if size <= 1 {
-			s = s[:len(s)-1]
-			continue
-		}
-		s = s[:len(s)-size]
-	}
-	return s
 }
 
 func upsertAcceptanceLedger(body, fingerprint, report string) (nextBody string, changed bool) {
@@ -2569,7 +2550,7 @@ func singleLineDiagnostic(err error, output string) string {
 	if text == "" {
 		return "unknown error"
 	}
-	return trimUTF8ToBytes(text, 300)
+	return textutil.TruncateBytes(text, 300, "")
 }
 
 // recurringProductBugFingerprints returns the distinct product-bug failure

@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/triage"
 )
 
@@ -190,8 +191,6 @@ func triageRetryableReason(err error) string {
 	}
 	detail = strings.Join(strings.Fields(detail), " ")
 	const maxDetailLen = 500
-	if len(detail) > maxDetailLen {
-		detail = detail[:maxDetailLen] + "..."
-	}
+	detail = textutil.TruncateBytes(detail, maxDetailLen, "...")
 	return triageRetryableStatusReasonPrefix + "classifier failed: " + detail
 }

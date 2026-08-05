@@ -17,6 +17,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/gitexec"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // TamperBlessedTag short-circuits the detector: a human who has reviewed a
@@ -1277,12 +1278,8 @@ func tamperReason(r tamperReport) string {
 // trimDiffLine normalizes a diff content line for inclusion in a finding:
 // trimmed and capped to a sane length.
 func trimDiffLine(s string) string {
-	s = strings.TrimSpace(s)
 	const maxLen = 120
-	if len(s) > maxLen {
-		return s[:maxLen] + "…"
-	}
-	return s
+	return textutil.TruncateBytes(strings.TrimSpace(s), maxLen, "…")
 }
 
 // documentedDeletionAllowlist extracts explicitly documented file deletions

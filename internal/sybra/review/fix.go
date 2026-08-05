@@ -969,13 +969,21 @@ func prHasCurrentApproval(pr github.PullRequest) bool {
 	return pr.ReviewDecision == "APPROVED" || pr.RESTApproved
 }
 
+// pushPreflightFailureReason builds the status_reason for a failed credential
+// preflight. git surfaces remote output verbatim, so err can carry raw bytes
+// in whatever encoding the remote used — sanitize before it reaches YAML.
+func pushPreflightFailureReason(err error) string {
+	return "GitHub push credential preflight failed before starting PR fix: " +
+		textutil.TruncateBytesTrimmed(strings.ToValidUTF8(err.Error(), ""), 240, "...")
+}
+
 func (r *Handler) preflightPushCredentials(ctx context.Context, taskID, dir string) (admit, handled bool) {
 	preflight := r.pushPreflightFn
 	if preflight == nil {
 		preflight = project.PreflightPushCredentials
 	}
 	if err := preflight(ctx, dir); err != nil {
-		reason := "GitHub push credential preflight failed before starting PR fix: " + textutil.TruncateBytesTrimmed(strings.ToValidUTF8(err.Error(), ""), 240, "...")
+		reason := pushPreflightFailureReason(err)
 		if _, updateErr := r.tasks.Apply(task.TransitionIntent{
 			TaskID:   taskID,
 			ToStatus: task.StatusHumanRequired,

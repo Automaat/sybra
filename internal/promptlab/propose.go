@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // candidateIntents are the directions promptlab may scaffold from a weak
@@ -67,10 +68,7 @@ func buildProposal(s WeakSubject, intent string, now time.Time) Proposal {
 
 func proposalTitle(s WeakSubject, intent string) string {
 	base := fmt.Sprintf("Prompt Lab: %s for role %s", strings.ReplaceAll(intent, "-", " "), s.Role)
-	if len(base) <= 80 {
-		return base
-	}
-	return base[:77] + "..."
+	return textutil.TruncateBytesTotal(base, 80, "...")
 }
 
 func expectedImpact(s WeakSubject, intent string) string {

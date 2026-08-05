@@ -30,6 +30,7 @@ import (
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/verdict"
 	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -498,10 +499,7 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 			ag.SkillConformance = skillattr.ConformanceRecovered
 		}
 	}
-	truncated := resultContent
-	if len(truncated) > maxResultLen {
-		truncated = truncated[:maxResultLen] + "\n... (truncated)"
-	}
+	truncated := textutil.TruncateBytes(resultContent, maxResultLen, "\n... (truncated)")
 	runUpdates := task.RunPatch{
 		State:           task.Ptr(string(state)),
 		CostUSD:         task.Ptr(cost),
@@ -720,11 +718,7 @@ func interruptedReviewAssistantTranscript(ag *agent.Agent) string {
 	if b.Len() == 0 {
 		return ""
 	}
-	transcript := b.String()
-	if len(transcript) > interruptedReviewMaxLen {
-		transcript = transcript[:interruptedReviewMaxLen] + "\n\n... (truncated)"
-	}
-	return transcript
+	return textutil.TruncateBytes(b.String(), interruptedReviewMaxLen, "\n\n... (truncated)")
 }
 
 // handleFixReviewCompletion routes a finished manual fix-review agent. Without

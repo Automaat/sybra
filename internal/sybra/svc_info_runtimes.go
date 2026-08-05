@@ -127,7 +127,7 @@ func formatRuntimeProbeError(ctx context.Context, err error, output []byte, time
 	}
 	msg = strings.Join(strings.Fields(msg), " ")
 	if len(msg) > runtimeProbeErrorMax {
-		msg = textutil.TruncateBytesTotal(msg, runtimeProbeErrorMax, "...")
+		msg = textutil.TruncateBytesTotal(strings.ToValidUTF8(msg, "\uFFFD"), runtimeProbeErrorMax, "...")
 	}
 	return msg
 }

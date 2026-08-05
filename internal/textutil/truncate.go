@@ -85,6 +85,26 @@ func TruncateBytesTrimmed(s string, limit int, suffix string) string {
 	return strings.TrimSpace(TruncateBytes(s, limit, "")) + suffix
 }
 
+// TrimPartialRunePrefix drops a leading partial rune so s begins on a rune
+// boundary. Use it when slicing from the middle of a buffer, where the cut
+// point is not under your control.
+func TrimPartialRunePrefix(s string) string {
+	return s[runeBoundaryAtOrAfter(s, 0):]
+}
+
+// TrimPartialRuneSuffix drops a trailing partial rune so s ends on a rune
+// boundary. A legitimately-present U+FFFD is kept — only a 1-byte RuneError,
+// which can only come from a broken encoding, is trimmed.
+func TrimPartialRuneSuffix(s string) string {
+	for len(s) > 0 {
+		if r, size := utf8.DecodeLastRuneInString(s); r != utf8.RuneError || size > 1 {
+			break
+		}
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
 // runeBoundaryAtOrBefore returns the largest index <= i that starts a rune.
 func runeBoundaryAtOrBefore(s string, i int) int {
 	if i >= len(s) {

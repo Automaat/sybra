@@ -22,7 +22,6 @@ import (
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
-	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
@@ -389,13 +388,20 @@ func assertPRFixPromptUsesResolvedPushRemote(t *testing.T, prompt, branch string
 	}
 }
 
-func TestTruncatePushPreflightReasonKeepsValidUTF8(t *testing.T) {
-	got := textutil.TruncateBytesTrimmed(strings.ToValidUTF8("prefix \xff café suffix", ""), 12, "...")
+func TestPushPreflightFailureReasonKeepsValidUTF8(t *testing.T) {
+	// Long enough to force a cut, multibyte at the cut point, and a raw
+	// invalid byte of the kind a remote's own error output can carry.
+	detail := strings.Repeat("remote rejected ", 20) + "\xff café… suffix"
+	got := pushPreflightFailureReason(errors.New(detail))
+
 	if !utf8.ValidString(got) {
-		t.Fatalf("truncated reason is invalid UTF-8: %q", got)
+		t.Fatalf("preflight reason is invalid UTF-8: %q", got)
 	}
 	if !strings.HasSuffix(got, "...") {
-		t.Fatalf("truncated reason = %q, want ellipsis", got)
+		t.Fatalf("preflight reason = %q, want ellipsis", got)
+	}
+	if !strings.HasPrefix(got, "GitHub push credential preflight failed") {
+		t.Fatalf("preflight reason = %q, want the classified prefix", got)
 	}
 }
 

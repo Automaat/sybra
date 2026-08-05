@@ -4,6 +4,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // skillReceiptExhaustionSummary condenses the last failed skill output into a
@@ -237,10 +239,7 @@ func trimReceiptSummary(s string) string {
 	if !isUsefulReceiptDetail(s) {
 		return ""
 	}
-	if len(s) > 160 {
-		return strings.TrimSpace(trimUTF8ToBytes(s, 157)) + "..."
-	}
-	return s
+	return textutil.TruncateBytesTrimmed(s, 160, "...")
 }
 
 func isUsefulReceiptDetail(s string) bool {
