@@ -770,14 +770,14 @@ func prFixPushPromptWithRemote(branch, intro string, fenced, allowHistoryRewrite
 // prIssueBody returns the pr-fix agent prompt for one fixable issue kind. ok is
 // false for kinds with no agent prompt (ready_to_merge), which never reach the
 // dispatch path.
-func prIssueBody(ctx context.Context, issue github.PRIssue) (string, bool) {
+func prIssueBody(ctx context.Context, issue github.PRIssue, signing project.SigningPolicy) (string, bool) {
 	switch issue.Kind {
 	case github.PRIssueConflict:
-		return conflictPrompt(ctx, issue.PR), true
+		return conflictPrompt(ctx, issue.PR, signing), true
 	case github.PRIssueCIFailure:
 		return ciFailurePrompt(issue.PR), true
 	case github.PRIssueComments:
-		return commentsPrompt(ctx, issue.PR), true
+		return commentsPrompt(ctx, issue.PR, signing), true
 	default:
 		return "", false
 	}
@@ -844,17 +844,17 @@ func (r *Handler) logPRIssueDetected(taskID string, issue github.PRIssue) {
 // review-hold setting is on AND the set includes a review-comments issue — the
 // only kind that posts thread replies. It overrides the "reply live and push"
 // instructions above, so it must land after them.
-func coalescedFixPrompt(ctx context.Context, issues []github.PRIssue, holdSuffix string) string {
+func coalescedFixPrompt(ctx context.Context, issues []github.PRIssue, holdSuffix string, signing project.SigningPolicy) string {
 	var prompt string
 	if len(issues) == 1 {
-		prompt, _ = prIssueBody(ctx, issues[0])
+		prompt, _ = prIssueBody(ctx, issues[0], signing)
 	} else {
 		var b strings.Builder
 		b.WriteString("This PR has multiple open issues from the same push. Address " +
 			"ALL of them in one pass, then push once at the end (the per-section push " +
 			"commands are equivalent — run it a single time).\n\n")
 		for i := range issues {
-			body, ok := prIssueBody(ctx, issues[i])
+			body, ok := prIssueBody(ctx, issues[i], signing)
 			if !ok {
 				continue
 			}
@@ -962,7 +962,7 @@ func (r *Handler) dispatchFixIssuesWithOptions(ctx context.Context, taskID strin
 	// e.ctx field (Engine.SetContext), not an explicit parameter threaded here.
 	// contextcheck no longer flags this call site (verified with a clean
 	// build+lint cache), so no suppression directive is needed here.
-	return r.dispatchPRIssueWithOptions(ctx, t, primary, handle, coalescedFixPrompt(ctx, handle, reviewHoldFixSuffix(r.cfg)), dir, opts)
+	return r.dispatchPRIssueWithOptions(ctx, t, primary, handle, coalescedFixPrompt(ctx, handle, reviewHoldFixSuffix(r.cfg), r.signingPolicy()), dir, opts)
 }
 
 func prHasCurrentApproval(pr github.PullRequest) bool {
@@ -1231,7 +1231,7 @@ func (r *Handler) dispatchPRIssueWithOptions(ctx context.Context, t task.Task, p
 		// Same reasoning: the test_fix step's static YAML prompt needs the
 		// host-appropriate commit flags (-s vs -s -S) for its own commit
 		// instruction, computed once here rather than hardcoded in the YAML.
-		"commit_sign_flags": project.CommitSignFlags(ctx),
+		workflow.WorkflowVarCommitSignFlags: r.signingPolicy().CommitFlags(ctx),
 	}
 	// Deterministic backstop for review-hold: when the hold is active and this
 	// fix touches review comments, the agent drafted its replies into a pending
@@ -1424,7 +1424,9 @@ func (r *Handler) recoverBranchConflictNoPR(t task.Task) bool {
 	return r.recoverTaskBranchConflict(context.Background(), t, taskBranchConflictRecoverySpec{
 		retryKind:     branchConflictRetryKind,
 		allowRecreate: true,
-		prompt:        branchConflictPrompt,
+		prompt: func(ctx context.Context, t task.Task, base string) string {
+			return branchConflictPrompt(ctx, t, base, r.signingPolicy())
+		},
 	})
 }
 
@@ -1438,7 +1440,7 @@ func (r *Handler) recoverSameBranchConflict(ctx context.Context, t task.Task, br
 		remoteOverride: remote,
 		trustedOrigin:  trustedOrigin && remote == "origin",
 		prompt: func(ctx context.Context, t task.Task, _ string) string {
-			return sameBranchConflictPrompt(ctx, t, remote)
+			return sameBranchConflictPrompt(ctx, t, remote, r.signingPolicy())
 		},
 	})
 }
@@ -1984,7 +1986,7 @@ func (r *Handler) allowPreparedWorktree(taskID, dir string) bool {
 // by PrepareForBranchFix before this is called). Unlike the PR-backed conflict
 // prompt, this path may allow a rebase plus force-with-lease because no PR
 // exists yet.
-func branchConflictPrompt(ctx context.Context, t task.Task, base string) string {
+func branchConflictPrompt(ctx context.Context, t task.Task, base string, signing project.SigningPolicy) string {
 	branch := t.Branch
 	if branch == "" {
 		branch = "the task's current branch"
@@ -2016,11 +2018,11 @@ func branchConflictPrompt(ctx context.Context, t task.Task, base string) string 
 			"- Before pushing, run tests for touched code as a single blocking foreground command (e.g. `go test ./pkg/foo/...`) and wait for it to exit — never background a test run or narrate/poll its progress; if it has not finished within a couple of minutes, stop and report a blocker instead of waiting indefinitely\n"+
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes",
-		branch, base, project.CommitSignFlags(ctx), base, prFixPushPrompt(branch, "", false, true), base, base,
+		branch, base, signing.CommitFlags(ctx), base, prFixPushPrompt(branch, "", false, true), base, base,
 	)
 }
 
-func sameBranchConflictPrompt(ctx context.Context, t task.Task, remote string) string {
+func sameBranchConflictPrompt(ctx context.Context, t task.Task, remote string, signing project.SigningPolicy) string {
 	branch := t.Branch
 	if branch == "" {
 		branch = "the task's current branch"
@@ -2047,7 +2049,7 @@ func sameBranchConflictPrompt(ctx context.Context, t task.Task, remote string) s
 			"# Do NOT rebase, amend, or force-push: this branch already backs a live PR.\n"+
 			"```\n\n"+
 			"Do not push: Sybra will verify and publish this completed merge through its trusted, non-force workflow step. Summarize what conflicted and how you resolved it.",
-		branch, prCtx, remote, branch, remote, branch, remote, branch, project.CommitSignFlags(ctx),
+		branch, prCtx, remote, branch, remote, branch, remote, branch, signing.CommitFlags(ctx),
 	)
 }
 
@@ -2113,7 +2115,7 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 // commentsPrompt instructs the fix agent to address unresolved review comments
 // on the user's own PR via the /fix-review skill (which replies on every
 // thread), then push and re-request review.
-func commentsPrompt(ctx context.Context, pr github.PullRequest) string {
+func commentsPrompt(ctx context.Context, pr github.PullRequest, signing project.SigningPolicy) string {
 	return fmt.Sprintf(
 		"Run /fix-review %s --auto\n\n"+
 			"This is your own PR (#%d) — reviewers left comments or unresolved "+
@@ -2135,11 +2137,11 @@ func commentsPrompt(ctx context.Context, pr github.PullRequest) string {
 			"`fix(review): address PR review comments` (type(scope) required by "+
 			"repo hooks). Sign the commit with `git commit %s`.\n\n"+
 			"%s",
-		pr.URL, pr.Number, project.CommitSignFlags(ctx), prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true, false),
+		pr.URL, pr.Number, signing.CommitFlags(ctx), prFixPushPrompt(pr.HeadRefName, "Push to the same remote create-pr would target for this worktree:", true, false),
 	)
 }
 
-func conflictPrompt(ctx context.Context, pr github.PullRequest) string {
+func conflictPrompt(ctx context.Context, pr github.PullRequest, signing project.SigningPolicy) string {
 	var filesCtx string
 	if files, err := github.FetchPRFiles(pr.Repository, pr.Number); err == nil && len(files) > 0 {
 		var sb strings.Builder
@@ -2152,10 +2154,10 @@ func conflictPrompt(ctx context.Context, pr github.PullRequest) string {
 		filesCtx = sb.String()
 	}
 
-	return buildConflictPrompt(ctx, pr, filesCtx)
+	return buildConflictPrompt(ctx, pr, filesCtx, signing)
 }
 
-func buildConflictPrompt(ctx context.Context, pr github.PullRequest, filesCtx string) string {
+func buildConflictPrompt(ctx context.Context, pr github.PullRequest, filesCtx string, signing project.SigningPolicy) string {
 	base := pr.BaseRefName
 	if base == "" {
 		base = "main"
@@ -2186,6 +2188,6 @@ func buildConflictPrompt(ctx context.Context, pr github.PullRequest, filesCtx st
 			"- Stop only for a concrete blocker: binary conflict, missing secret/credential, deleted context you cannot reconstruct, or a semantic decision that the task/PR context does not answer\n"+
 			"- No investigation, no extra commits, no unrelated changes"+
 			"%s",
-		pr.HeadRefName, pr.Number, baseRef, project.CommitSignFlags(ctx), prFixPushPrompt(pr.HeadRefName, "", false, false), baseRef, filesCtx,
+		pr.HeadRefName, pr.Number, baseRef, signing.CommitFlags(ctx), prFixPushPrompt(pr.HeadRefName, "", false, false), baseRef, filesCtx,
 	)
 }

@@ -1123,6 +1123,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		FinalCommitSource:       Ptr("fallback"),
 		SubagentCallCount:       Ptr(3),
 		ResumeZeroOutputStall:   Ptr(true),
+		TurnCount:               Ptr(17),
 	}
 	assertRunPatchCoversEveryField(t, patch)
 
@@ -1176,6 +1177,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		FinalCommitSource:       "fallback",
 		SubagentCallCount:       3,
 		ResumeZeroOutputStall:   true,
+		TurnCount:               17,
 	})
 }
 
@@ -1285,6 +1287,9 @@ func assertAgentRunPayload(t *testing.T, got, want AgentRun) {
 	}
 	if got.ResumeZeroOutputStall != want.ResumeZeroOutputStall {
 		t.Errorf("ResumeZeroOutputStall = %t, want %t", got.ResumeZeroOutputStall, want.ResumeZeroOutputStall)
+	}
+	if got.TurnCount != want.TurnCount {
+		t.Errorf("TurnCount = %d, want %d", got.TurnCount, want.TurnCount)
 	}
 }
 

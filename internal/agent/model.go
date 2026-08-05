@@ -34,6 +34,9 @@ type State string
 const (
 	ErrorKindToolUseAborted  = "tool_use_aborted"
 	ErrorKindUserInterrupted = "user_interrupted"
+	// ErrorKindPromptUndelivered: the child never received the prompt, so the run
+	// carries no verdict and must be re-dispatched instead of counted as a try.
+	ErrorKindPromptUndelivered = "prompt_undelivered"
 )
 
 const (

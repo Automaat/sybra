@@ -25,6 +25,7 @@ type CompletionWorkflow interface {
 	RescheduleInterruptedAgent(taskID, agentID string)
 	RescheduleRateLimitedAgent(taskID, agentID string)
 	RescheduleCheckpointedAgent(taskID, agentID string)
+	ReschedulePromptUndeliveredAgent(taskID, agentID string)
 	DispatchEvent(taskID, event string, extra map[string]string, vars map[string]string) (string, error)
 }
 

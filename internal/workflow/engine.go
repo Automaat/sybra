@@ -117,6 +117,9 @@ type AgentRunInfo struct {
 	// no-op run apart from one that delegated to a background subagent and
 	// ended before that delegation produced any commits.
 	SubagentCallCount int
+	// TurnCount is zero when the provider child emitted nothing, marking a run
+	// that never saw its instructions rather than one that defied them.
+	TurnCount int
 }
 
 // TaskProvider reads and updates tasks.

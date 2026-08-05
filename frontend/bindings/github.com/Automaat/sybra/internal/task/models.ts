@@ -165,6 +165,12 @@ export class AgentRun {
      */
     "zeroOutputStall"?: boolean;
 
+    /**
+     * TurnCount is zero when the child produced nothing, so the run holds no
+     * evidence about its instructions and must not spend a conformance budget.
+     */
+    "turnCount"?: number;
+
     /** Creates a new AgentRun instance. */
     constructor($$source: Partial<AgentRun> = {}) {
         if (!("agentId" in $$source)) {

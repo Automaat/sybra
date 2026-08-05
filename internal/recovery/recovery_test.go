@@ -166,8 +166,10 @@ func TestRunStartupCleanup_ReplaysEffectsBeforeStaleRestart(t *testing.T) {
 	r.RunStartupCleanup(context.Background())
 	wg.Wait()
 
-	if !slices.Equal(order, []string{"replay", "replay:" + created.ID, "restart"}) {
-		t.Fatalf("startup order = %v, want [replay replay:%s restart]", order, created.ID)
+	// Reclaim must lead: both replay paths claim effects, and a lease held by
+	// the previous engine instance fences them for the rest of its TTL.
+	if !slices.Equal(order, []string{"reclaim", "replay", "replay:" + created.ID, "restart"}) {
+		t.Fatalf("startup order = %v, want [reclaim replay replay:%s restart]", order, created.ID)
 	}
 }
 
@@ -1233,10 +1235,11 @@ type stubWorkflowEngine struct {
 	startWorkflowErr   error
 	completions        []workflow.AgentCompletion
 
-	replayCalls int
-	callOrder   *[]string
-	replayTasks []string
-	replayTask  bool
+	replayCalls  int
+	reclaimCalls int
+	callOrder    *[]string
+	replayTasks  []string
+	replayTask   bool
 
 	dispatchEventCalls  []map[string]string
 	dispatchEventResult string
@@ -1256,6 +1259,14 @@ func (s *stubWorkflowEngine) DispatchEvent(_, _ string, extraFields, _ map[strin
 
 func (s *stubWorkflowEngine) HandleAgentComplete(_ string, c workflow.AgentCompletion) {
 	s.completions = append(s.completions, c)
+}
+
+func (s *stubWorkflowEngine) ReclaimOrphanedEffectLeases() int {
+	s.reclaimCalls++
+	if s.callOrder != nil {
+		*s.callOrder = append(*s.callOrder, "reclaim")
+	}
+	return 0
 }
 
 func (s *stubWorkflowEngine) ReplayPersistedEffects() {
@@ -2153,6 +2164,8 @@ func (s *recordingWorkflowStub) HandleAgentComplete(taskID string, _ workflow.Ag
 }
 
 func (*recordingWorkflowStub) ReplayPersistedEffects() {}
+
+func (*recordingWorkflowStub) ReclaimOrphanedEffectLeases() int { return 0 }
 
 func (*recordingWorkflowStub) ReplayPersistedEffectsForTask(string) bool { return false }
 

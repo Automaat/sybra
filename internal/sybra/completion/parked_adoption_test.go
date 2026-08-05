@@ -32,6 +32,8 @@ func (r *recordingWorkflow) RescheduleRateLimitedAgent(_, _ string) {}
 
 func (r *recordingWorkflow) RescheduleCheckpointedAgent(_, _ string) {}
 
+func (r *recordingWorkflow) ReschedulePromptUndeliveredAgent(_, _ string) {}
+
 func (r *recordingWorkflow) DispatchEvent(_, _ string, _, _ map[string]string) (string, error) {
 	return "", nil
 }
