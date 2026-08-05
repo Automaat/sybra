@@ -842,12 +842,16 @@ func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Ex
 	}
 	fingerprint := autoFixFailureFingerprint(failedCmd, output)
 	armed, attempt, err := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
-		counterKey:             "step." + step.ID + ".auto_fix",
-		max:                    verifyChecksAutoFixCeiling,
-		rewindStep:             verifyChecksImplStepID,
-		backoff:                autoFixBackoff,
-		fingerprint:            fingerprint,
-		maxSameFingerprintRuns: 2,
+		counterKey:  "step." + step.ID + ".auto_fix",
+		max:         verifyChecksAutoFixCeiling,
+		rewindStep:  verifyChecksImplStepID,
+		backoff:     autoFixBackoff,
+		fingerprint: fingerprint,
+		// The first occurrence earns one autonomous repair attempt. If the
+		// exact command and failure evidence survive that code-author run, the
+		// second occurrence proves the repair made no progress and must stop
+		// the loop immediately.
+		maxSameFingerprintRuns: 1,
 		onArm: func(wfExec *Execution, attempt int) {
 			wfExec.SetVar(verifyReaskNoteVar, buildVerifyReaskNote(failedCmd, output))
 			wfExec.SetVar(verifyRetryModelVar, "expensive")
