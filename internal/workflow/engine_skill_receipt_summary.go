@@ -239,7 +239,10 @@ func trimReceiptSummary(s string) string {
 	if !isUsefulReceiptDetail(s) {
 		return ""
 	}
-	return textutil.TruncateBytesTrimmed(s, 160, "...")
+	if len(s) <= 160 {
+		return s
+	}
+	return textutil.TruncateBytesTrimmed(s, 157, "...")
 }
 
 func isUsefulReceiptDetail(s string) bool {

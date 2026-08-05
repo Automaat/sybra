@@ -389,9 +389,11 @@ func assertPRFixPromptUsesResolvedPushRemote(t *testing.T, prompt, branch string
 }
 
 func TestPushPreflightFailureReasonKeepsValidUTF8(t *testing.T) {
-	// Long enough to force a cut, multibyte at the cut point, and a raw
-	// invalid byte of the kind a remote's own error output can carry.
-	detail := strings.Repeat("remote rejected ", 20) + "\xff café… suffix"
+	// The multibyte and invalid bytes must sit BEFORE the 240-byte cut, or
+	// the test passes without exercising either the boundary walk or the
+	// sanitisation — git surfaces remote bytes verbatim, so both can land
+	// anywhere in the string.
+	detail := "\xff café… " + strings.Repeat("remote rejected …", 30)
 	got := pushPreflightFailureReason(errors.New(detail))
 
 	if !utf8.ValidString(got) {

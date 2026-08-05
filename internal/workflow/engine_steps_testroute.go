@@ -731,7 +731,7 @@ func capTextBlock(text string, maxLines, maxBytes int, suffix string, preserveLa
 		limit -= len(suffix)
 	}
 	if len(text) > limit {
-		text = textutil.TruncateBytes(text, limit, "")
+		text = textutil.TruncateBytesValid(text, limit, "")
 		truncated = true
 	}
 	text = strings.TrimRight(text, "\n")
@@ -2550,7 +2550,7 @@ func singleLineDiagnostic(err error, output string) string {
 	if text == "" {
 		return "unknown error"
 	}
-	return textutil.TruncateBytes(text, 300, "")
+	return textutil.TruncateBytesValid(text, 300, "")
 }
 
 // recurringProductBugFingerprints returns the distinct product-bug failure

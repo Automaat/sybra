@@ -25,6 +25,15 @@ func TruncateBytes(s string, limit int, suffix string) string {
 	return s[:runeBoundaryAtOrBefore(s, limit)] + suffix
 }
 
+// TruncateBytesValid caps s like TruncateBytes and additionally guarantees the
+// whole result is valid UTF-8, repairing malformed bytes anywhere in the
+// retained text rather than only aligning the cut. Reach for it when the text
+// comes from outside the process — tool output, remote stderr, file contents —
+// where a bad byte can sit well before the cut point.
+func TruncateBytesValid(s string, limit int, suffix string) string {
+	return TruncateBytes(strings.ToValidUTF8(s, "\uFFFD"), limit, suffix)
+}
+
 // TruncateBytesTotal bounds the whole result — content plus suffix — to limit
 // bytes. A limit too small for the suffix yields the suffix alone, itself cut
 // on a rune boundary.
@@ -82,7 +91,7 @@ func TruncateBytesTrimmed(s string, limit int, suffix string) string {
 	if len(s) <= limit {
 		return s
 	}
-	return strings.TrimSpace(TruncateBytes(s, limit, "")) + suffix
+	return strings.TrimSpace(TruncateBytesValid(s, limit, "")) + suffix
 }
 
 // TrimPartialRunePrefix drops a leading partial rune so s begins on a rune
