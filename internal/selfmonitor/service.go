@@ -344,7 +344,7 @@ func (s *Service) reportProviderSignal(f *health.Finding, ls *LogSummary) {
 	for _, ec := range ls.ErrorClasses {
 		if ec.Class == "overloaded_error" || ec.Class == "rate_limit" {
 			s.deps.ProviderGate.ReportRateLimit(providerName, 15*time.Minute,
-				"selfmonitor: agent_retry_loop with "+ec.Class)
+				"selfmonitor: agent_retry_loop with "+ec.Class, provider.CooldownFromConfig)
 			s.deps.Logger.Info("selfmonitor.provider_signal",
 				"class", ec.Class, "task", f.TaskID, "provider", providerName)
 			return

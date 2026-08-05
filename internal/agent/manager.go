@@ -906,7 +906,7 @@ func (m *Manager) ProviderCanFailover(name string) bool {
 
 // ReportProviderSignal forwards a runner-side passive signal (rate-limit or
 // auth failure) to the health gate. Safe to call with a nil gate.
-func (m *Manager) ReportProviderSignal(name string, sig provider.Signal, reason string, retryAfter time.Duration) {
+func (m *Manager) ReportProviderSignal(name string, sig provider.Signal, reason string, retryAfter time.Duration, source provider.CooldownSource) {
 	m.mu.RLock()
 	g := m.gate
 	m.mu.RUnlock()
@@ -917,7 +917,7 @@ func (m *Manager) ReportProviderSignal(name string, sig provider.Signal, reason 
 	case provider.SignalAuthFailure:
 		g.ReportAuthFailure(name, reason)
 	case provider.SignalRateLimit:
-		g.ReportRateLimit(name, retryAfter, reason)
+		g.ReportRateLimit(name, retryAfter, reason, source)
 	case provider.SignalNone:
 		// no-op: caller decided not to escalate this run.
 	}
@@ -979,6 +979,14 @@ func (m *Manager) effectiveMaxSubagentEvents() int {
 
 func (m *Manager) canCheckpointOnTurnCeiling(a *Agent) bool {
 	if !a.EffectiveRole().AuthorsCode() {
+		return false
+	}
+	// A read-only dispatch dir is diagnostic-only, and the checkpoint commit
+	// runs in this process rather than in the sandboxed child — so nothing
+	// else stops it writing there. On the deploy host that dir is the Sybra
+	// source checkout, which is also auto_update.repo_dir: a commit lands
+	// there permanently and breaks the ff-only merge auto-deploy relies on.
+	if a.sessionReadOnly {
 		return false
 	}
 	m.mu.RLock()

@@ -266,9 +266,9 @@ func (g avoidingGate) ReportAuthFailure(providerName, reason string) {
 	}
 }
 
-func (g avoidingGate) ReportRateLimit(providerName string, retryAfter time.Duration, reason string) {
+func (g avoidingGate) ReportRateLimit(providerName string, retryAfter time.Duration, reason string, source provider.CooldownSource) {
 	if g.base != nil && providerName != g.avoid {
-		g.base.ReportRateLimit(providerName, retryAfter, reason)
+		g.base.ReportRateLimit(providerName, retryAfter, reason, source)
 	}
 }
 

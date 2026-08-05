@@ -566,6 +566,7 @@ type memTasks struct {
 	failGet          bool
 	failSetWorkflow  bool
 	failSetWorkflowN int
+	incompleteRuns   []string
 }
 
 func newMemTasks() *memTasks {
@@ -765,6 +766,19 @@ func (m *memTasks) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint
 		}
 	}
 	return fmt.Errorf("agent run %s not found for task %s", agentID, taskID)
+}
+
+func (m *memTasks) IncompleteRuns() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.incompleteRuns...)
+}
+
+func (m *memTasks) MarkAgentRunIncomplete(taskID, agentID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.incompleteRuns = append(m.incompleteRuns, taskID+"/"+agentID)
+	return nil
 }
 
 func (m *memTasks) RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error {
@@ -11628,5 +11642,63 @@ func TestNewEngine_OpenPROnUnrunnableGateDefaultsTrue(t *testing.T) {
 	engine := NewEngine(store, newMemTasks(), newMockAgents(), discardLogger())
 	if !engine.openPROnUnrunnableGate.Load() {
 		t.Error("openPROnUnrunnableGate = false, want the documented default of true")
+	}
+}
+
+// A code-author run that exits cleanly but produces no commits is not a
+// success, and the completion handler cannot know that — it derives the
+// outcome from the exit alone. Leaving the record at "success" is what let one
+// task accumulate 18 runs over 4 days: an agent delegated to a subagent, ended
+// its turn with "I'll just wait for the notification instead", exited 0, and
+// every downstream consumer of Outcome believed the implementation had landed.
+func TestExecVerifyCommits_NoCommitAuthorRunMarkedIncomplete(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	wtDir := makeGitRepo(t, false /* HEAD == origin/main, so no commits */)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	wfExec := &Execution{Variables: map[string]string{}}
+	wfExec.RecordStep(StepRecord{StepID: "implement", Status: "completed", AgentID: "a1", Provider: "claude"})
+	ti := TaskInfo{
+		ID: "t1", Status: "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "a1", Role: "implementation"}},
+	}
+
+	if _, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, ti); !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+
+	if got := tasks.IncompleteRuns(); len(got) != 1 || got[0] != "t1/a1" {
+		t.Errorf("incomplete runs = %v, want [t1/a1] — the success record was left uncorrected", got)
+	}
+}
+
+// A verifier role that produces no commits is doing its job; only code-author
+// roles are downgraded.
+func TestExecVerifyCommits_VerifierRunNotMarkedIncomplete(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	wtDir := makeGitRepo(t, false)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	wfExec := &Execution{Variables: map[string]string{}}
+	wfExec.RecordStep(StepRecord{StepID: "review", Status: "completed", AgentID: "a1", Provider: "claude"})
+	ti := TaskInfo{
+		ID: "t1", Status: "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "a1", Role: "review"}},
+	}
+
+	_, _ = engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, ti)
+
+	if got := tasks.IncompleteRuns(); len(got) != 0 {
+		t.Errorf("incomplete runs = %v, want none for a verifier role", got)
 	}
 }

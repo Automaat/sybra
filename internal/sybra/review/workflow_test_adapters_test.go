@@ -123,6 +123,10 @@ func (a *taskAdapter) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerpr
 	return a.tasks.UpdateRun(taskID, agentID, patch)
 }
 
+func (a *taskAdapter) MarkAgentRunIncomplete(taskID, agentID string) error {
+	return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{Outcome: task.Ptr(task.RunOutcomeIncomplete)})
+}
+
 func (a *taskAdapter) RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error {
 	patch := task.RunPatch{}
 	if headSHA != "" {
