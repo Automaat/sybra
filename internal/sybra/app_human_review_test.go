@@ -3768,3 +3768,76 @@ func TestOnComplete_TerminalErrorWithToolCalls_SkipsCrashPath(t *testing.T) {
 		t.Errorf("expected the ordinary unparseable-verdict path; got:\n%s", got.Body)
 	}
 }
+
+// The provider-fallback path marks the verdict rendered and then deliberately
+// re-spawns with IgnoreRenderedVerdict. If that respawn loses a claim race the
+// retry must still run: honouring the idempotency gate there drops the fallback
+// permanently and audits it as a duplicate diagnosis, leaving the task parked
+// with no verdict at all.
+func TestHumanReviewSpawn_ContendedFallbackRetryIgnoresRenderedVerdict(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("contended fallback", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The fallback caller has already persisted the rendered verdict.
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID:         "malformed-run",
+		Role:            string(agent.RoleHumanReview),
+		Mode:            "headless",
+		State:           "stopped",
+		Outcome:         "failure",
+		VerdictRendered: true,
+		Result:          "not json",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+	seeded, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verdictAlreadyRendered(seeded) {
+		t.Fatal("precondition: verdict must already be rendered or this asserts nothing")
+	}
+
+	claimAvailable := false
+	claimHeld := false
+	h.claimTaskDispatch = func(string) (func(), bool) {
+		if !claimAvailable || claimHeld {
+			return nil, false
+		}
+		claimHeld = true
+		return func() { claimHeld = false }, true
+	}
+	var scheduled func()
+	h.schedule = func(_ time.Duration, fn func()) { scheduled = fn }
+	h.prepareTaskWorktree = func(task.Task) (string, error) { return t.TempDir(), nil }
+	runCalls := 0
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		runCalls++
+		return &agent.Agent{ID: "fallback-run", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	opts := humanReviewSpawnOptions{IgnoreRenderedVerdict: true}
+	if h.maybeSpawnWithOptions(tk.ID, string(task.StatusHumanRequired), opts) {
+		t.Fatal("spawned despite a conflicting dispatch claim")
+	}
+	if scheduled == nil {
+		t.Fatal("contended fallback did not schedule a retry")
+	}
+
+	claimAvailable = true
+	scheduled()
+
+	if runCalls != 1 {
+		t.Errorf("fallback retry runs = %d, want 1 — the rendered-verdict gate swallowed it", runCalls)
+	}
+}

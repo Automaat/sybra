@@ -1280,6 +1280,7 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		LastEventAt:            now,
 		cancel:                 cancel,
 		sessionCWD:             cfg.Dir,
+		sessionReadOnly:        cfg.ReadOnlyDir,
 		sandboxHomeDir:         cfg.resolvedSandboxHome,
 		MaxTurns:               cfg.MaxTurns,
 		oneShot:                cfg.OneShot,

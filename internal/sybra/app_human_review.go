@@ -279,7 +279,12 @@ func (h *humanReviewHandler) maybeSpawnWithOptions(taskID, prevStatus string, op
 	}
 	// Idempotency gate: a prior run already produced a verdict — re-spawning
 	// on app restart or repeated status hooks would just duplicate the diagnosis.
-	if verdictAlreadyRendered(t) {
+	//
+	// IgnoreRenderedVerdict is the provider-fallback path: the caller has
+	// already marked the verdict rendered and is deliberately re-spawning
+	// after a malformed one. Honouring the gate there drops that retry
+	// permanently and audits it as a duplicate, which it is not.
+	if !opts.IgnoreRenderedVerdict && verdictAlreadyRendered(t) {
 		h.skip(taskID, "verdict_rendered")
 		return false
 	}
