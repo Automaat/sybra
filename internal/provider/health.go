@@ -661,6 +661,29 @@ func (c *Checker) SetAutoFailover(v bool) {
 	c.mu.Unlock()
 }
 
+// ProviderEnabled reports whether a provider participates in probing and
+// failover. Exposed so callers can tell "no capacity" from "not configured"
+// without reaching into Config.
+func (c *Checker) ProviderEnabled(provider string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	switch provider {
+	case "claude":
+		return c.cfg.ClaudeEnabled
+	case "codex":
+		return c.cfg.CodexEnabled
+	case "copilot":
+		return c.cfg.CopilotEnabled
+	case "opencode":
+		return c.cfg.OpenCodeEnabled
+	default:
+		return false
+	}
+}
+
 // SetProviderEnabled toggles per-provider probing and participation in failover.
 func (c *Checker) SetProviderEnabled(provider string, v bool) {
 	c.mu.Lock()
