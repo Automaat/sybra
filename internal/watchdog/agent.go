@@ -954,39 +954,37 @@ func (w *Watchdog) stopForRewardHackingRetry(ag *agent.Agent, verdict agent.Insp
 	w.logger.Info("agent.watchdog.reward_hacking.retry", "id", ag.ID, "task_id", ag.TaskID, "reason", verdict.Reason)
 }
 
-// zeroOutputReason is the provider-health detail recorded for a zero-output
-// startup hang (see inspectHeadless). Kept distinct from the generic
-// "rate_limited" reason so provider health status/logs can tell the two
-// apart even though both share the SignalRateLimit health-gate bucket.
+// zeroOutputReason is the detail recorded on the task and the agent for a
+// zero-output startup hang (see inspectHeadless).
 const zeroOutputReason = watchdogreason.ZeroOutputBeforeStartup
 
 // handleZeroOutputStall handles a "stall" trigger on a headless agent that
-// never produced any output at all. This reuses stopForRateLimit's recovery
-// machinery: mark the task retryable (not human-required), report a
-// provider-health signal so the health gate parks this provider for its
-// cooldown and the next dispatch can fail over to a healthy peer, and stop
-// the hung process. Reusing the "rate_limit" signal/error-kind is what makes
-// the completion handler's isRateLimitedRun check reschedule the run
-// immediately (RescheduleRateLimitedAgent) instead of leaving it for the
-// same-provider "watchdog hang" retry budget that #1913 exhausted for
-// nothing.
+// never produced any output at all: mark the task retryable (not
+// human-required), tag the agent so the completion handler re-dispatches the
+// run immediately, and stop the hung process.
+//
+// The agent gets ErrorKindSilentHang rather than a provider-health signal. The
+// two used to be one call: this path reported provider.SignalRateLimit purely
+// to reach the completion handler's reschedule branch and skip the
+// same-provider "watchdog hang" retry budget that #1913 exhausted for nothing.
+// That borrowed signal also parked the whole provider for its rate-limit
+// cooldown, so one task hanging three times in a morning made a healthy
+// provider unavailable to every other task for 45 minutes, and with the peer
+// provider genuinely capped there was nowhere left to fail over (#3154). A
+// silent child says nothing about the provider's quota, so nothing here
+// touches provider health; the reschedule is preserved by the error kind
+// instead.
 func (w *Watchdog) handleZeroOutputStall(ag *agent.Agent, stall, total time.Duration, expectedStatus task.Status) {
 	w.logger.Warn("agent.watchdog.zero_output_stall",
 		"id", ag.ID, "task_id", ag.TaskID, "provider", ag.Provider,
 		"stall_sec", int(stall.Seconds()), "total_sec", int(total.Seconds()))
-	reason := watchdogreason.RateLimit(zeroOutputReason)
+	reason := watchdogreason.SilentHang(zeroOutputReason)
 	if ag.TaskID == "" {
 		w.logger.Warn("agent.watchdog.zero_output_stall.untracked", "id", ag.ID, "provider", ag.Provider)
 	} else if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.zero-output-stall", task.StatusInProgress, expectedStatus, reason); err != nil {
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
-	if w.recordProviderSignal != nil {
-		w.recordProviderSignal(ag, provider.Classification{
-			Signal: provider.SignalRateLimit,
-			Reason: zeroOutputReason,
-			Source: provider.CooldownFromConfig,
-		})
-	}
+	ag.SetError(agent.ErrorKindSilentHang, zeroOutputReason)
 	if err := w.stopAgent(ag.ID); err != nil {
 		w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
 	}

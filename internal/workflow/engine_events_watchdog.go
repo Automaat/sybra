@@ -260,12 +260,17 @@ func (e *Engine) handleWatchdogRateLimitRetry(t *TaskInfo, step *Step) bool {
 	return e.handleWatchdogRecoveryRetry(watchdogRecoveryRateLimit, t, step)
 }
 
+// isWatchdogRateLimitReason gates the bounded retry policy that re-dispatches
+// a parked run. Silent hangs are recovered by the same policy (including its
+// fresh-session escape hatch below) even though they no longer claim the
+// provider was rate-limited, so both reasons have to match here or a hung task
+// parks forever with nothing to pick it back up.
 func isWatchdogRateLimitReason(reason string) bool {
-	return watchdogreason.IsRateLimit(reason)
+	return watchdogreason.IsRateLimit(reason) || watchdogreason.IsSilentHang(reason)
 }
 
 func watchdogRateLimitExhaustionResolution(t TaskInfo, _ *Step, attempts int) (status taskstatus.Status, reason string, terminalState ExecState) {
-	if watchdogreason.IsZeroOutputRateLimit(t.StatusReason) {
+	if watchdogreason.IsSilentHang(t.StatusReason) {
 		return taskstatus.Blocked, fmt.Sprintf("watchdog: zero-output startup retry budget exhausted after %d identical attempts", attempts+1), ExecFailed
 	}
 	return taskstatus.HumanRequired, fmt.Sprintf("watchdog: rate limit retry budget exhausted after %d clean re-dispatches", attempts), ExecFailed
@@ -425,7 +430,7 @@ func (e *Engine) watchdogRateLimitRecoverySpec() watchdogRecoverySpec {
 			onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 				retryKey := watchdogRateLimitRetryKey(step.ID)
 				freshKey := watchdogZeroOutputFreshRetryKey(step.ID)
-				if watchdogreason.IsZeroOutputRateLimit(t.StatusReason) && parseWorkflowInt(t.Workflow.Variables[freshKey]) == 0 {
+				if watchdogreason.IsSilentHang(t.StatusReason) && parseWorkflowInt(t.Workflow.Variables[freshKey]) == 0 {
 					t.Workflow.StartedAt = time.Now().UTC()
 					t.Workflow.SetVar(freshKey, "1")
 					t.Workflow.SetVar(retryKey, "0")
@@ -438,7 +443,7 @@ func (e *Engine) watchdogRateLimitRecoverySpec() watchdogRecoverySpec {
 				}
 				targetStatus, reason, terminalState := watchdogRateLimitExhaustionResolution(*t, step, attempts)
 				t.Workflow.State = terminalState
-				if watchdogreason.IsZeroOutputRateLimit(t.StatusReason) {
+				if watchdogreason.IsSilentHang(t.StatusReason) {
 					t.Workflow.StartedAt = time.Now().UTC()
 				}
 				if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {

@@ -38,6 +38,11 @@ const (
 	// ErrorKindPromptUndelivered: the child never received the prompt, so the run
 	// carries no verdict and must be re-dispatched instead of counted as a try.
 	ErrorKindPromptUndelivered = "prompt_undelivered"
+	// ErrorKindSilentHang: the child produced no output at all before the
+	// watchdog's startup timeout. Distinct from "rate_limit", which this case
+	// borrowed until the borrowed kind started parking healthy providers and
+	// telling operators to go check a quota that was fine.
+	ErrorKindSilentHang = "silent_hang"
 )
 
 const (
@@ -2163,9 +2168,9 @@ func (a *Agent) SetError(kind, msg string) {
 }
 
 // GetErrorKind returns the classified error kind recorded on the agent
-// ("rate_limit", "auth", or ""). The runner sets it when a run is classified
-// against the provider health gate, letting the completion handler tell a
-// transient provider limit apart from a real crash.
+// ("rate_limit", "auth", "silent_hang", or ""). The runner sets it when a run
+// is classified against the provider health gate, letting the completion
+// handler tell a transient provider limit apart from a real crash.
 func (a *Agent) GetErrorKind() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()

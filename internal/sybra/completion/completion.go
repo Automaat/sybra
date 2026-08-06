@@ -533,16 +533,16 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 	if sha := h.captureHeadSHA(ag.TaskID); sha != "" {
 		runUpdates.HeadSHA = task.Ptr(sha)
 	}
-	// Watchdog.handleZeroOutputStall reports the signal with the bare
-	// zeroOutputReason constant (internal/watchdog/agent.go), not the
-	// "watchdog: rate limit: ..." string watchdogreason.RateLimit wraps it in
-	// for the task's StatusReason — RecordProviderSignal persists exactly the
-	// reason string it is handed, so ag.GetErrorMsg() here is the bare
-	// constant. Comparing directly against it (not via
-	// watchdogreason.IsZeroOutputRateLimit, which checks the wrapped form)
-	// is intentional.
+	// Watchdog.handleZeroOutputStall records the bare zeroOutputReason constant
+	// (internal/watchdog/agent.go), not the "watchdog: silent hang: ..." string
+	// watchdogreason.SilentHang wraps it in for the task's StatusReason, so
+	// ag.GetErrorMsg() here is the bare constant. Comparing directly against it
+	// (not via watchdogreason.IsSilentHang, which checks the wrapped form) is
+	// intentional. The "rate_limit" kind is still accepted because a run that
+	// stalled before this build shipped carries the kind this case borrowed
+	// then, and its resume must still be recognized.
 	errKind, errMsg := ag.GetError()
-	if errKind == "rate_limit" && errMsg == watchdogreason.ZeroOutputBeforeStartup {
+	if (errKind == agent.ErrorKindSilentHang || errKind == "rate_limit") && errMsg == watchdogreason.ZeroOutputBeforeStartup {
 		runUpdates.ResumeZeroOutputStall = task.Ptr(true)
 	}
 	return runUpdates
@@ -550,9 +550,9 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 
 // notifyWorkflowEngine advances the workflow engine for a completed agent.
 // Returns false if the caller should return immediately. Signal kills and
-// Sybra-initiated stops stall for recovery; rate limits, malformed tool calls,
-// and rejected-tool/user interruptions immediately re-drive the same step so
-// provider failover can choose a healthy peer. Auth failures fall through
+// Sybra-initiated stops stall for recovery; rate limits, silent hangs,
+// malformed tool calls, and rejected-tool/user interruptions immediately
+// re-drive the same step so provider failover can choose a healthy peer. Auth failures fall through
 // (need human login) and take the normal failed path.
 //
 // Load-bearing: PR #722's SIGINT-first path lets default Go binaries (e.g.
@@ -574,7 +574,7 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 	if stall.Stalled {
 		h.logger.Warn("agent.completion.stall",
 			"task_id", ag.TaskID, "agent_id", ag.ID,
-			"signaled", isSignalKill(exitErr), "stopped", stall.StopStalled, "rate_limited", stall.RateLimited, "malformed_tool", stall.MalformedTool, "tool_use_aborted", stall.ToolUseAborted, "user_interrupted", stall.UserInterrupted, "checkpoint", stall.CheckpointStopped, "prompt_undelivered", stall.PromptUndelivered)
+			"signaled", isSignalKill(exitErr), "stopped", stall.StopStalled, "rate_limited", stall.RateLimited, "silent_hang", stall.SilentHang, "malformed_tool", stall.MalformedTool, "tool_use_aborted", stall.ToolUseAborted, "user_interrupted", stall.UserInterrupted, "checkpoint", stall.CheckpointStopped, "prompt_undelivered", stall.PromptUndelivered)
 		switch {
 		case stall.CheckpointStopped:
 			h.workflowEngine.RescheduleCheckpointedAgent(ag.TaskID, ag.ID)
@@ -582,7 +582,7 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 			h.workflowEngine.RescheduleInterruptedAgent(ag.TaskID, ag.ID)
 		case stall.PromptUndelivered:
 			h.workflowEngine.ReschedulePromptUndeliveredAgent(ag.TaskID, ag.ID)
-		case stall.RateLimited || stall.MalformedTool:
+		case stall.RateLimited || stall.SilentHang || stall.MalformedTool:
 			h.workflowEngine.RescheduleRateLimitedAgent(ag.TaskID, ag.ID)
 		default:
 			h.workflowEngine.ClearAgentStep(ag.TaskID, ag.ID)
@@ -610,6 +610,7 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 type stallDisposition struct {
 	Stalled           bool
 	RateLimited       bool
+	SilentHang        bool
 	MalformedTool     bool
 	ToolUseAborted    bool
 	UserInterrupted   bool
@@ -621,6 +622,7 @@ type stallDisposition struct {
 func classifyStall(ag *agent.Agent, exitErr error) stallDisposition {
 	out := stallDisposition{
 		RateLimited:       isRateLimitedRun(ag, exitErr),
+		SilentHang:        isSilentHangRun(ag),
 		MalformedTool:     ag.GetErrorKind() == "malformed_tool_call",
 		ToolUseAborted:    isToolUseAbortedRun(ag),
 		UserInterrupted:   isUserInterruptedRun(ag),
@@ -636,7 +638,7 @@ func classifyStall(ag *agent.Agent, exitErr error) stallDisposition {
 	checkpointFailed := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpointFailed
 	out.CheckpointStopped = ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpoint
 	out.StopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped && !subagentTurnsStopped && !checkpointFailed && !out.CheckpointStopped
-	out.Stalled = isSignalKill(exitErr) || out.StopStalled || out.RateLimited || out.MalformedTool || out.ToolUseAborted || out.UserInterrupted || out.CheckpointStopped || out.PromptUndelivered
+	out.Stalled = isSignalKill(exitErr) || out.StopStalled || out.RateLimited || out.SilentHang || out.MalformedTool || out.ToolUseAborted || out.UserInterrupted || out.CheckpointStopped || out.PromptUndelivered
 	return out
 }
 
@@ -1021,6 +1023,14 @@ func estimatedRunCost(ag *agent.Agent, cost, premiumRequests float64) float64 {
 // as an exit-0 result, so the agent error kind is authoritative.
 func isRateLimitedRun(ag *agent.Agent, exitErr error) bool {
 	return ag.GetErrorKind() == "rate_limit"
+}
+
+// isSilentHangRun reports whether the watchdog killed this run for producing no
+// output at all. It shares the rate-limited run's immediate-reschedule branch
+// (neither carries a verdict, and both re-drive the same step) without sharing
+// its provider-health verdict.
+func isSilentHangRun(ag *agent.Agent) bool {
+	return ag.GetErrorKind() == agent.ErrorKindSilentHang
 }
 
 func isToolUseAbortedRun(ag *agent.Agent) bool {

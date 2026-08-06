@@ -258,6 +258,18 @@ func TestBuildRunPatchMarksResumeZeroOutputStall(t *testing.T) {
 	t.Run("zero-output stall sets the marker", func(t *testing.T) {
 		t.Parallel()
 		ag := &agent.Agent{ID: "ag-1", TaskID: "task-1"}
+		ag.SetError(agent.ErrorKindSilentHang, watchdogreason.ZeroOutputBeforeStartup)
+
+		patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "", nil)
+
+		if patch.ResumeZeroOutputStall == nil || !*patch.ResumeZeroOutputStall {
+			t.Fatalf("ResumeZeroOutputStall = %v, want true", patch.ResumeZeroOutputStall)
+		}
+	})
+
+	t.Run("legacy rate_limit kind from an in-flight run still sets the marker", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{ID: "ag-1b", TaskID: "task-1"}
 		ag.SetError("rate_limit", watchdogreason.ZeroOutputBeforeStartup)
 
 		patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "", nil)
@@ -586,6 +598,21 @@ func TestClassifyStall_CheckpointDisposition(t *testing.T) {
 		if !stall.Stalled || stall.RateLimited || !stall.MalformedTool || stall.ToolUseAborted || stall.StopStalled || stall.CheckpointStopped {
 			t.Fatalf("classifyStall(malformed_tool_call) = stalled=%v rateLimited=%v malformedTool=%v toolUseAborted=%v stopStalled=%v checkpointStopped=%v",
 				stall.Stalled, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.StopStalled, stall.CheckpointStopped)
+		}
+	})
+
+	// A silent hang carries no verdict either, and the watchdog no longer
+	// borrows the rate-limit kind to reach this branch (#3154), so the
+	// disposition has to recognize it on its own or the run stops being
+	// re-dispatched at all.
+	t.Run("silent hang stalls for retry without claiming a rate limit", func(t *testing.T) {
+		ag := &agent.Agent{}
+		ag.SetError(agent.ErrorKindSilentHang, watchdogreason.ZeroOutputBeforeStartup)
+
+		stall := classifyStall(ag, nil)
+		if !stall.Stalled || !stall.SilentHang || stall.RateLimited || stall.MalformedTool || stall.ToolUseAborted || stall.CheckpointStopped {
+			t.Fatalf("classifyStall(silent_hang) = stalled=%v silentHang=%v rateLimited=%v malformedTool=%v toolUseAborted=%v checkpointStopped=%v",
+				stall.Stalled, stall.SilentHang, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.CheckpointStopped)
 		}
 	})
 

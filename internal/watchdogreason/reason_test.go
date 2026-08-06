@@ -32,12 +32,38 @@ func TestIsRetryableStop(t *testing.T) {
 	}
 }
 
-func TestIsZeroOutputRateLimit(t *testing.T) {
-	if !IsZeroOutputRateLimit(RateLimit(ZeroOutputBeforeStartup)) {
-		t.Fatalf("expected zero-output watchdog rate limit to match")
+func TestIsSilentHang(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+		want   bool
+	}{
+		{"current form", SilentHang(ZeroOutputBeforeStartup), true},
+		{"bare prefix", SilentHang(""), true},
+		{"legacy rate-limit wrapping already on disk", RateLimit(ZeroOutputBeforeStartup), true},
+		{"real rate limit", RateLimit("org-level quota exhausted"), false},
+		{"hang", Hang("no stream activity"), false},
+		{"empty", "", false},
 	}
-	if IsZeroOutputRateLimit(RateLimit("org-level quota exhausted")) {
-		t.Fatalf("non-zero-output rate limit must not match")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsSilentHang(tc.reason); got != tc.want {
+				t.Fatalf("IsSilentHang(%q) = %v, want %v", tc.reason, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSilentHangIsNotARateLimit pins the split the whole fix rests on: an
+// operator (and every consumer keying off IsRateLimit) must be able to tell a
+// hung child from an exhausted quota by the reason alone.
+func TestSilentHangIsNotARateLimit(t *testing.T) {
+	reason := SilentHang(ZeroOutputBeforeStartup)
+	if IsRateLimit(reason) {
+		t.Fatalf("IsRateLimit(%q) = true, want false", reason)
+	}
+	if got := Parse(reason); got.Kind != KindSilentHang || got.Detail != ZeroOutputBeforeStartup {
+		t.Fatalf("Parse(%q) = %+v, want kind %q with the zero-output detail", reason, got, KindSilentHang)
 	}
 }
 
