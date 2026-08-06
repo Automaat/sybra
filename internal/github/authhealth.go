@@ -274,7 +274,13 @@ func (t *authHealthTracker) applyFailureBackoffLocked() {
 // ObserveCallResult can classify a combined stdout+stderr blob the same way
 // IsAuthError classifies a wrapped error.
 func isAuthErrorMsg(msg string) bool {
-	return strings.Contains(strings.ToLower(msg), authCircuitOpenMarker) ||
+	lower := strings.ToLower(msg)
+	// "gh auth login" stays narrow here: the bare "gh auth" prefix also matches
+	// gh's missing-scope hint, which never self-heals and would hold the shared
+	// auth circuit open across every call.
+	return strings.Contains(lower, authCircuitOpenMarker) ||
+		strings.Contains(lower, "gh auth login") ||
+		strings.Contains(lower, "gh_token environment variable") ||
 		errclass.IsAuth(msg)
 }
 

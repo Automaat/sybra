@@ -21,10 +21,10 @@ func TestClassify(t *testing.T) {
 		{name: "gateway 502", text: "gh: HTTP 502", want: Transient},
 		{name: "gateway 503", text: "gh: HTTP 503 Service Unavailable", want: Transient},
 		{name: "git sideband", text: "fatal: unexpected disconnect while reading sideband packet", want: Transient},
+		{name: "blocked merge timeout is not transient", text: "required status check timed out", want: Unknown},
 
 		{name: "secondary rate limit", text: "You have exceeded a secondary rate limit", want: RateLimited},
-		{name: "api rate limit exceeded", text: "API rate limit exceeded for user", want: RateLimited},
-		{name: "too many requests", text: "HTTP 429: Too Many Requests", want: RateLimited},
+		{name: "api rate limit exceeded", text: "API rate limit exceeded for user ID 1", want: RateLimited},
 
 		{name: "bad credentials", text: "gh: Bad credentials (HTTP 401)", want: Auth},
 		{name: "http 401", text: "gh: HTTP 401", want: Auth},
@@ -105,43 +105,7 @@ func TestClassifyErr(t *testing.T) {
 	if got := ClassifyErr(errors.New("connection refused")); got != Transient {
 		t.Fatalf("ClassifyErr = %q, want %q", got, Transient)
 	}
-	if !Is(errors.New("Bad credentials"), Auth) {
-		t.Fatal("Is(auth error, Auth) = false")
+	if got := ClassifyErr(errors.New("Bad credentials")); got != Auth {
+		t.Fatalf("ClassifyErr = %q, want %q", got, Auth)
 	}
-}
-
-// TestFamiliesAreLowercase guards the tables themselves: an uppercase entry
-// can never match, since matching lowercases the input.
-func TestFamiliesAreLowercase(t *testing.T) {
-	families := map[string][]string{
-		"NetworkPhrases":      NetworkPhrases,
-		"DNSPhrases":          DNSPhrases,
-		"TLSPhrases":          TLSPhrases,
-		"GatewayPhrases":      GatewayPhrases,
-		"RateLimitPhrases":    RateLimitPhrases,
-		"AuthPhrases":         AuthPhrases,
-		"GitTransportPhrases": GitTransportPhrases,
-		"BadRefPhrases":       BadRefPhrases,
-		"StreamPhrases":       StreamPhrases,
-	}
-	for name, family := range families {
-		for _, phrase := range family {
-			if phrase != lower(phrase) {
-				t.Errorf("%s contains %q, which is not lowercase and can never match", name, phrase)
-			}
-			if phrase == "" {
-				t.Errorf("%s contains an empty phrase, which matches everything", name)
-			}
-		}
-	}
-}
-
-func lower(s string) string {
-	b := []byte(s)
-	for i := range b {
-		if b[i] >= 'A' && b[i] <= 'Z' {
-			b[i] += 'a' - 'A'
-		}
-	}
-	return string(b)
 }

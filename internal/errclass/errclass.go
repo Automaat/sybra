@@ -1,12 +1,19 @@
-// Package errclass is the one home for deciding whether an error is
-// transient, rate limited, an auth failure, or permanent.
+// Package errclass is the one home for the phrases that decide whether an
+// error is transient, rate limited, or an auth failure.
 //
-// The phrases used to live in twelve packages and drifted apart: "context
-// deadline exceeded" was transient to internal/github and unknown to
-// internal/project, a bare "tls handshake" was transient to two sites and not
-// to two others, and internal/monitor matched GitHub's rate-limit text without
-// lowercasing it first, so "Secondary rate limit" read as an ordinary failure
-// and retried against an exhausted token.
+// The tables used to live in a dozen packages and drifted apart. "context
+// deadline exceeded" was transient to internal/github and unrecognized by
+// internal/project. internal/monitor knew two of the four rate-limit phrases
+// internal/github knew, so a gate-suppressed call retried as an ordinary
+// failure. The twelve bad-ref needles existed byte-identically in
+// internal/project and internal/workflow, free to diverge.
+//
+// Families are deliberately narrow, and a caller composes the ones its scope
+// needs plus any literal only it uses. A broad family is not free: a bare
+// "timed out" in the network family reclassified a permanently blocked merge
+// as transient and cut its backoff ceiling from two hours to ten minutes, and
+// a bare "tls:" made an x509 certificate failure look like a network blip that
+// retries forever instead of reaching a human.
 //
 // It is a leaf on purpose. internal/github depends on internal/clock alone, so
 // anything heavier here would cycle.
@@ -14,32 +21,30 @@ package errclass
 
 import "strings"
 
-// Class is what a caller acts on. Unknown means the tables do not recognize
-// the text, and callers must fail closed rather than assume permanence.
+// Class is the answer a caller acts on. Unknown means the tables do not
+// recognize the text; callers fail closed rather than assume permanence.
 type Class string
 
 const (
 	Transient   Class = "transient"
 	RateLimited Class = "rate_limited"
 	Auth        Class = "auth"
-	Permanent   Class = "permanent"
 	Unknown     Class = "unknown"
 )
 
-// Phrase families. Each is the union of what the sites that were merged into
-// this package used to match, so a caller composes the families its scope
-// needs instead of carrying its own literals. Every entry is lowercase;
-// matching lowercases the input once.
+// Phrase families. Every entry is lowercase; matching lowercases the input
+// once. A phrase belongs here only when two or more callers used it; one used
+// by a single caller stays with that caller.
 var (
-	// NetworkPhrases are transport failures that resolve on their own.
+	// Every timeout entry is qualified: a bare "timed out" also matches a blocked merge waiting on a status check.
 	NetworkPhrases = []string{
 		"dial tcp",
 		"i/o timeout",
 		"context deadline exceeded",
-		"deadline exceeded",
 		"connection reset",
 		"connection refused",
-		"timed out",
+		"connection timed out",
+		"operation timed out",
 		"no route to host",
 		"network is unreachable",
 		"failed to connect",
@@ -48,16 +53,6 @@ var (
 		"recv failure",
 	}
 
-	// StreamPhrases are truncated-response failures. Kept out of
-	// NetworkPhrases because they also appear in a genuine parse defect
-	// ("parse graphql response: unexpected EOF"), which must escalate rather
-	// than retry, so only callers reading raw transport output want them.
-	StreamPhrases = []string{
-		"stream error",
-		"unexpected eof",
-	}
-
-	// DNSPhrases are name-resolution failures.
 	DNSPhrases = []string{
 		"could not resolve host",
 		"couldn't resolve host",
@@ -65,52 +60,49 @@ var (
 		"temporary failure in name resolution",
 	}
 
-	// TLSPhrases cover both the bare handshake failure and the timeout. Two
-	// of the merged sites required " timeout" and two did not, so a
-	// "tls: handshake failure" was transient to half the tree.
+	// A bare "tls:" is excluded: it also matches x509 verification failures, which never self-heal.
 	TLSPhrases = []string{
 		"tls handshake",
-		"tls handshake timeout",
-		"tls:",
 	}
 
-	// GatewayPhrases are the 5xx responses worth retrying. A plain 500 is
-	// deliberately absent: it is usually a real server-side bug rather than
-	// a blip, which is the narrower of the two answers the merged sites gave.
+	// A plain 500 is absent because it is usually a real server-side bug rather than a blip.
 	GatewayPhrases = []string{
 		"http 502",
 		"http 503",
 		"http 504",
 	}
 
-	// RateLimitPhrases are GitHub and provider backpressure.
 	RateLimitPhrases = []string{
 		"secondary rate limit",
-		"api rate limit exceeded",
 		"rate limit exceeded",
-		"rate limit",
-		"too many requests",
 	}
 
-	// AuthPhrases are credential failures. Unlike a rate limit these do not
-	// self-heal, so callers bound their retries before escalating.
+	// These do not self-heal, so callers bound their retries before escalating.
 	AuthPhrases = []string{
 		"http 401",
 		"401 unauthorized",
 		"bad credentials",
 		"authentication failed",
 		"failed to log in",
-		"gh auth",
-		"gh_token environment variable",
+		"token has expired",
 		"gh_token is invalid",
 		"github_token is invalid",
-		"token has expired",
 		"could not read username for 'https://github.com'",
 	}
 
-	// BadRefPhrases are corrupt or unresolvable git object/ref errors, which
-	// clear on a re-fetch. The same twelve lived byte-identically in
-	// internal/project and internal/workflow.
+	// Outside NetworkPhrases because a GraphQL parse defect reads the same and must escalate rather than retry.
+	StreamPhrases = []string{
+		"stream error",
+		"unexpected eof",
+	}
+
+	GitTransportPhrases = []string{
+		"ssh: connect to host",
+		"early eof",
+		"unexpected disconnect while reading sideband packet",
+	}
+
+	// Corrupt or unresolvable git objects and refs, which clear on a re-fetch.
 	BadRefPhrases = []string{
 		"bad object head",
 		"fatal: bad object",
@@ -125,30 +117,16 @@ var (
 		"ambiguous argument",
 		"reference broken",
 	}
-
-	// GitTransportPhrases are git-remote transport failures with no
-	// equivalent outside a fetch or push.
-	GitTransportPhrases = []string{
-		"ssh: connect to host",
-		"early eof",
-		"unexpected disconnect while reading sideband packet",
-	}
 )
 
-// IsNetwork reports a transport or name-resolution failure.
+// IsNetwork reports a transport, name-resolution, or TLS-handshake failure.
 func IsNetwork(text string) bool {
 	return matches(text, NetworkPhrases, DNSPhrases, TLSPhrases)
 }
 
-// IsGitTransport reports a git-remote transport failure, including the
-// generic network families.
+// IsGitTransport is IsNetwork plus the git-remote-only failures.
 func IsGitTransport(text string) bool {
 	return matches(text, NetworkPhrases, DNSPhrases, TLSPhrases, GitTransportPhrases)
-}
-
-// IsBadRef reports a corrupt or unresolvable git object or ref.
-func IsBadRef(text string) bool {
-	return matches(text, BadRefPhrases)
 }
 
 // IsGateway reports a retryable 5xx gateway response.
@@ -156,7 +134,7 @@ func IsGateway(text string) bool {
 	return matches(text, GatewayPhrases)
 }
 
-// IsRateLimit reports provider or forge backpressure.
+// IsRateLimit reports forge backpressure.
 func IsRateLimit(text string) bool {
 	return matches(text, RateLimitPhrases)
 }
@@ -166,13 +144,16 @@ func IsAuth(text string) bool {
 	return matches(text, AuthPhrases)
 }
 
-// Classify answers the four-way question for callers that want one verdict.
+// IsBadRef reports a corrupt or unresolvable git object or ref.
+func IsBadRef(text string) bool {
+	return matches(text, BadRefPhrases)
+}
+
+// Classify answers the three-way question, plus Unknown.
 //
-// Auth outranks rate limit, which outranks transient: a 401 that also mentions
+// Auth outranks rate limit, which outranks transient. A 401 that also mentions
 // a retry budget is still a credential problem, and a rate limit needs a
-// cooldown rather than an immediate retry. Text the tables do not recognize is
-// Unknown, never Permanent — a caller that cannot tell must fail closed rather
-// than swallow a retryable failure.
+// cooldown rather than an immediate retry.
 func Classify(text string) Class {
 	switch {
 	case IsAuth(text):
@@ -186,8 +167,7 @@ func Classify(text string) Class {
 	}
 }
 
-// ClassifyErr is Classify over an error. A nil error is Unknown, since there
-// is nothing to classify.
+// ClassifyErr is Classify over an error. A nil error is Unknown.
 func ClassifyErr(err error) Class {
 	if err == nil {
 		return Unknown
@@ -195,8 +175,8 @@ func ClassifyErr(err error) Class {
 	return Classify(err.Error())
 }
 
-// Matches reports whether text contains any phrase in families. Exported for
-// callers whose scope is narrower than any single predicate here.
+// Matches reports whether text contains any phrase in families. A caller whose
+// scope is narrower than a predicate here composes families with it.
 func Matches(text string, families ...[]string) bool {
 	return matches(text, families...)
 }
@@ -214,10 +194,4 @@ func matches(text string, families ...[]string) bool {
 		}
 	}
 	return false
-}
-
-// Is reports whether err classifies as c. Kept so a caller reads as a question
-// about one class rather than a switch.
-func Is(err error, c Class) bool {
-	return ClassifyErr(err) == c
 }

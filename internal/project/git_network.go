@@ -7,14 +7,6 @@ import (
 	"github.com/Automaat/sybra/internal/errclass"
 )
 
-// transientNetworkMarkers are substrings of git/ssh/curl transport failures
-// that indicate a connectivity blip (DNS, refused/reset connection, timeout)
-// rather than a genuine content conflict or an auth/config problem. Matching
-// is deliberately narrow — a false positive here would retry (and briefly
-// delay reporting) a permanent failure, but a false negative would wrongly
-// classify a transient outage as a content conflict and escalate a task to
-// human-required on a perfectly clean branch.
-
 var gitOpRetrySleepContext = sleepWithContext
 
 // IsTransientNetworkError reports whether err looks like a transient

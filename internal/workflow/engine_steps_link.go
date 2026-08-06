@@ -312,10 +312,13 @@ func isPRCreationStep(stepID string) bool {
 }
 
 func looksLikeGitHubRateLimit(output string) bool {
-	if !errclass.IsRateLimit(output) {
+	lower := strings.ToLower(output)
+	// A bare "rate limit" is this site's own: it reads agent prose, where
+	// "rate limit exhausted" is as common as GitHub's own wording, and the
+	// corroborator below is what keeps it from matching unrelated text.
+	if !errclass.IsRateLimit(output) && !strings.Contains(lower, "rate limit") {
 		return false
 	}
-	lower := strings.ToLower(output)
 	return strings.Contains(lower, "github") ||
 		strings.Contains(lower, "graphql") ||
 		strings.Contains(lower, "gh ") ||
@@ -330,7 +333,16 @@ func looksLikeGitHubRateLimit(output string) bool {
 // looksLikeGitHubRateLimit (requires "rate limit") and looksLikeAuthFailure
 // (credential problems, which are not naturally time-bounded).
 func looksLikeTransientGitHub(output string) bool {
-	return errclass.IsNetwork(output) || looksLikeGatewayStatus(strings.ToLower(output))
+	if errclass.IsNetwork(output) {
+		return true
+	}
+	lower := strings.ToLower(output)
+	// Only this site reads agent prose, where a bare "timed out" or "tls:" is
+	// still a GitHub-reachability failure rather than a blocked merge.
+	if strings.Contains(lower, "timed out") || strings.Contains(lower, "tls:") {
+		return true
+	}
+	return looksLikeGatewayStatus(lower)
 }
 
 // looksLikeGatewayStatus matches HTTP 502/503 responses regardless of how the
@@ -373,5 +385,7 @@ func isStatusBoundary(b byte) bool {
 // limits or network blips, a broken token does not self-heal, so callers must
 // bound how many times they retry before escalating to a human.
 func looksLikeAuthFailure(output string) bool {
-	return errclass.IsAuth(output)
+	// "gh auth" is broader than the shared family on purpose: this site reads
+	// agent output, where the echoed command is the usual credential signal.
+	return errclass.IsAuth(output) || strings.Contains(strings.ToLower(output), "gh auth")
 }

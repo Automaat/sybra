@@ -56,7 +56,10 @@ func isTransientGHError(out []byte, err error) bool {
 		return false
 	}
 	msg := string(out)
-	return errclass.IsGateway(msg) || errclass.IsNetwork(msg) || errclass.Matches(msg, errclass.StreamPhrases)
+	return errclass.IsGateway(msg) ||
+		errclass.IsNetwork(msg) ||
+		errclass.Matches(msg, errclass.StreamPhrases) ||
+		strings.Contains(strings.ToLower(msg), "deadline exceeded")
 }
 
 type ttlCache[T any] struct {
