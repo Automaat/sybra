@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -332,6 +333,7 @@ func TestSandboxEnforce_LargeFetchUnpacksLooseObjects(t *testing.T) {
 	h.gitRaw(t, h.src, "add", "bulk")
 	h.gitRaw(t, h.src, "commit", "-m", "large upstream change")
 	h.gitRaw(t, h.src, "push", "origin", "main")
+	upstreamHead := strings.TrimSpace(h.gitRaw(t, h.src, "rev-parse", "HEAD"))
 
 	m, _ := newTestManager(t, ManagerConfig{
 		SandboxHome: func(string) (string, error) { return h.sandboxHome, nil },
@@ -356,10 +358,21 @@ func TestSandboxEnforce_LargeFetchUnpacksLooseObjects(t *testing.T) {
 	if after := linuxRepoWideMaintenanceState(t, h.sybraBare); after != before {
 		t.Fatalf("large fetch wrote shared pack/info state instead of loose objects\nbefore: %s\nafter: %s", before, after)
 	}
+	// The fetched history itself must reach the shared clone, as loose
+	// objects: the maintenance snapshot above only watches pack/ and info/, so
+	// without this a publish regression (an empty object overlay, a fanout
+	// glob that stops matching) leaves every assertion here green while the
+	// fetch is discarded by the next run's overlay reset.
+	if !h.gitShowRefExists(t, h.sybraBare, "refs/heads/main") {
+		t.Fatal("harness lost refs/heads/main in the shared clone")
+	}
+	h.gitBare(t, h.sybraBare, "cat-file", "-e", upstreamHead+"^{commit}")
 	// Proves the fetch actually landed its ref, which is what makes the
 	// loose-object assertion above mean anything — checked inside the same
-	// sandbox, since refs/remotes is bound to a per-run overlay (#2054) and a
-	// task-scoped fetch is not allowed to publish into the shared clone.
+	// sandbox, because on Linux refs/remotes is bound to a per-run overlay
+	// (#2054) so a task-scoped fetch cannot publish it. Darwin grants the
+	// shared ref dir directly (sandboxUsesGitObjectOverlay is false there) and
+	// its twin test asserts the host-visible form instead.
 	inSandbox := newProviderCmd(context.Background(), &cfg, false, "git", "cat-file", "-e", "refs/remotes/origin/main^{commit}")
 	inSandbox.Dir = h.taskWt
 	inSandbox.Env = append(os.Environ(), cfg.ExtraEnv...)
@@ -494,6 +507,15 @@ func newSandboxGitHarness(t *testing.T) sandboxGitHarness {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
 
+	// The harness roots its clone at the working directory, not t.TempDir(),
+	// because enforceSpec binds os.TempDir() writable: a shared clone living
+	// there is inside a sandbox write root, which inverts every assertion in
+	// this file about writes being blocked. A checkout under /tmp reintroduces
+	// that silently, so say so instead of failing two unrelated tests.
+	if tmpRoot := os.TempDir(); strings.HasPrefix(base, tmpRoot+string(filepath.Separator)) {
+		t.Skipf("checkout lives under the sandbox tmp write root %s; run the suite from another path", tmpRoot)
+	}
+
 	h := sandboxGitHarness{
 		base:        base,
 		sandboxHome: t.TempDir(),
@@ -581,7 +603,17 @@ func (h sandboxGitHarness) gitShowRefExists(t *testing.T, gitDir, ref string) bo
 	t.Helper()
 	cmd := exec.Command("git", "-c", "safe.bareRepository=all", "--git-dir="+gitDir, "show-ref", "--verify", "--quiet", ref)
 	err := cmd.Run()
-	return err == nil
+	if err == nil {
+		return true
+	}
+	// Exit 1 is "no such ref"; anything else (dubious ownership, a mistyped
+	// git-dir, no git on PATH) would otherwise read as absence and quietly
+	// satisfy a containment assertion for the wrong reason.
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("show-ref %s in %s: %v", ref, gitDir, err)
+	}
+	return false
 }
 
 func (h sandboxGitHarness) writeLooseObject(t *testing.T, gitDir, body string) string {
