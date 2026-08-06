@@ -6296,7 +6296,7 @@ func TestE2E_StepHistoryCap_KeepsLatest50(t *testing.T) {
 	}
 }
 
-func TestE2E_WorkflowReload_AppliesOnAdvance(t *testing.T) {
+func TestE2E_WorkflowReload_PinnedExecutionKeepsOriginalDefinition(t *testing.T) {
 	env := setupE2E(t, "success")
 	writeWorkflowFixture(t, env, "test-reload-live", testReloadWorkflowYAML)
 
@@ -6321,8 +6321,8 @@ func TestE2E_WorkflowReload_AppliesOnAdvance(t *testing.T) {
 		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
 	})
 	tk, _ := env.tasks.Get(created.ID)
-	if tk.Status != task.StatusInProgress {
-		t.Fatalf("status = %q, want in-progress from updated workflow", tk.Status)
+	if tk.Status != task.StatusDone {
+		t.Fatalf("status = %q, want done from pinned original workflow", tk.Status)
 	}
 }
 
