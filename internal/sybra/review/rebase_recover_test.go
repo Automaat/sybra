@@ -278,6 +278,14 @@ func setupRebaseRecoveryHandler(t *testing.T, withConflictWorkflow bool) (*Handl
 	runGit(t, repo, "commit", "-m", "initial")
 	runGit(t, repo, "checkout", "-b", "feature/recover")
 
+	// ClonePath is a bare clone whose HEAD names the project's default branch;
+	// the task's checkout is a separate directory on its feature branch.
+	// Pointing both at `repo` left the default-branch adoption guard checking
+	// feature/recover against itself.
+	clone := filepath.Join(tmp, "clone.git")
+	runGit(t, "", "clone", "--bare", repo, clone)
+	runGit(t, clone, "-c", "safe.bareRepository=all", "symbolic-ref", "HEAD", "refs/heads/main")
+
 	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
 	if err != nil {
 		t.Fatal(err)
@@ -288,7 +296,7 @@ func setupRebaseRecoveryHandler(t *testing.T, withConflictWorkflow bool) (*Handl
 		Owner:     "owner",
 		Repo:      "repo",
 		URL:       "https://github.com/owner/repo",
-		ClonePath: repo,
+		ClonePath: clone,
 		Type:      project.ProjectTypePet,
 	})
 

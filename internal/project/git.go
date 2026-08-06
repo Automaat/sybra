@@ -472,31 +472,23 @@ func isGitConfigKeyAbsent(err error) bool {
 	return ok && exitErr.ExitCode() == 5
 }
 
-// DefaultBranch resolves barePath's HEAD symbolic ref (e.g.
-// refs/heads/main) and returns just the branch name (main).
-//
-// Truncating at the last slash is wrong for a branch name that contains one —
-// refs/heads/release/2.0 yields "2.0" — but several callers depend on the
-// current behaviour, so fixing it is tracked separately. Comparisons that must
-// be exact use DefaultBranchName.
+// DefaultBranch resolves barePath's HEAD symbolic ref (e.g. refs/heads/main)
+// and returns the branch name it points at (main), slashes intact.
 func DefaultBranch(ctx context.Context, barePath string) (string, error) {
+	// An empty path leaves git in the Sybra process's own cwd, which answers
+	// with whatever branch that checkout is on. Every caller feeds the answer
+	// to a guard, so a project record with no clone_path would compare a real
+	// branch against an unrelated repository's instead of failing.
+	if strings.TrimSpace(barePath) == "" {
+		return "", errors.New("project has no clone path")
+	}
 	ref, err := outputBare(ctx, barePath, "symbolic-ref", "HEAD")
 	if err != nil {
 		return "", err
 	}
-	// refs/heads/main → main
-	return filepath.Base(ref), nil
-}
-
-// DefaultBranchName returns the full default branch name, slashes intact, for
-// callers that compare it against a CurrentBranch. DefaultBranch cannot be used
-// there: it truncates release/2.0 to 2.0, which never matches, silently
-// disabling any guard built on the comparison.
-func DefaultBranchName(ctx context.Context, barePath string) (string, error) {
-	ref, err := outputBare(ctx, barePath, "symbolic-ref", "HEAD")
-	if err != nil {
-		return "", err
-	}
+	// refs/heads/release/2.0 → release/2.0, never "2.0": a truncated name
+	// matches no branch and resolves to no ref, so every guard and base-ref
+	// built on it fails open rather than loudly.
 	return strings.TrimPrefix(ref, "refs/heads/"), nil
 }
 
