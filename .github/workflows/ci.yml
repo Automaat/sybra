@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The main-branch merge queue creates a synthetic commit containing the
+  # queued group. Required checks must run for this event or GitHub cannot
+  # prove that independently-green PRs are green in combination. Keep this in
+  # sync with .github/BRANCH_PROTECTION.md.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
