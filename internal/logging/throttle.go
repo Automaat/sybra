@@ -80,8 +80,11 @@ const InfoRepeatInterval = 30 * time.Minute
 // InfoRepeatInterval. A different value under the same key re-arms the INFO
 // log immediately, so state changes are never lost or delayed.
 type InfoThrottle struct {
-	mu   sync.Mutex
-	last map[string]infoEntry
+	mu sync.Mutex
+	// last is keyed by (key, msg), not key alone: several call sites log
+	// different messages under the same task id, and a flat key let whichever
+	// ran first suppress the others as if they were repeats of it.
+	last map[string]map[string]infoEntry
 	now  func() time.Time
 }
 
@@ -92,7 +95,7 @@ type infoEntry struct {
 
 // NewInfoThrottle returns an empty throttle ready for use.
 func NewInfoThrottle() *InfoThrottle {
-	return &InfoThrottle{last: make(map[string]infoEntry), now: time.Now}
+	return &InfoThrottle{last: make(map[string]map[string]infoEntry), now: time.Now}
 }
 
 // Log emits msg under key. The first occurrence (or any change in value for
@@ -102,11 +105,14 @@ func NewInfoThrottle() *InfoThrottle {
 func (t *InfoThrottle) Log(logger *slog.Logger, msg, key, value string, attrs ...any) {
 	now := t.now()
 	t.mu.Lock()
-	prev, seen := t.last[key]
+	prev, seen := t.last[key][msg]
 	repeat := seen && prev.value == value
 	quiet := repeat && now.Sub(prev.loggedAt) < InfoRepeatInterval
 	if !quiet {
-		t.last[key] = infoEntry{value: value, loggedAt: now}
+		if t.last[key] == nil {
+			t.last[key] = make(map[string]infoEntry, 1)
+		}
+		t.last[key][msg] = infoEntry{value: value, loggedAt: now}
 	}
 	t.mu.Unlock()
 
@@ -120,8 +126,10 @@ func (t *InfoThrottle) Log(logger *slog.Logger, msg, key, value string, attrs ..
 	}
 }
 
-// Clear forgets the last-value state for key so the next Log call re-arms
-// the INFO log even if the value matches a stale suppressed entry.
+// Clear forgets every message's state for key, so the next Log call under any
+// of them re-arms the INFO log even if the value matches a stale suppressed
+// entry. Callers clear on success, where "the condition ended" is true of all
+// the reasons they might have logged.
 func (t *InfoThrottle) Clear(key string) {
 	t.mu.Lock()
 	delete(t.last, key)

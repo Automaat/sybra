@@ -205,3 +205,40 @@ func TestInfoThrottle_ClearReArms(t *testing.T) {
 		t.Fatalf("INFO lines = %d, want 2 (Clear re-arms)", got)
 	}
 }
+
+// Several call sites log different messages under the same task id. Keying on
+// the id alone let whichever ran first suppress the others as repeats of
+// itself, so one of two genuinely different lines vanished from the log.
+func TestInfoThrottle_MessagesDoNotSuppressEachOther(t *testing.T) {
+	t.Parallel()
+	logger, buf := newTestLogger(t)
+	th := NewInfoThrottle()
+
+	th.Log(logger, "workflow.resume-stalled.skip", "t1", "claimed|implement")
+	th.Log(logger, "workflow.effect-replay.skip", "t1", "claimed|implement")
+
+	if got := countLines(buf, "level=INFO"); got != 2 {
+		t.Fatalf("INFO lines = %d, want 2 (one per message)", got)
+	}
+	if got := countLines(buf, "workflow.effect-replay.skip"); got != 1 {
+		t.Errorf("second message logged %d times, want 1", got)
+	}
+}
+
+// Clear means "the condition ended", which is true of every reason the caller
+// might have logged for that key — not just the last one.
+func TestInfoThrottle_ClearDropsEveryMessage(t *testing.T) {
+	t.Parallel()
+	logger, buf := newTestLogger(t)
+	th := NewInfoThrottle()
+
+	th.Log(logger, "workflow.resume-stalled.skip", "t1", "claimed|implement")
+	th.Log(logger, "workflow.effect-replay.skip", "t1", "claimed|implement")
+	th.Clear("t1")
+	th.Log(logger, "workflow.resume-stalled.skip", "t1", "claimed|implement")
+	th.Log(logger, "workflow.effect-replay.skip", "t1", "claimed|implement")
+
+	if got := countLines(buf, "level=INFO"); got != 4 {
+		t.Fatalf("INFO lines = %d, want 4 (Clear re-arms both messages)", got)
+	}
+}

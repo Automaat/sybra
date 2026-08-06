@@ -135,7 +135,11 @@ func (e *Engine) replayPendingEffect(t *TaskInfo, step *Step, def *Definition) b
 	}
 	if rec.CompletedAt != nil {
 		e.clearResumeDispatching(t.ID)
-		e.logger.Info("workflow.effect-replay.noop",
+		// Throttled: a parked run_agent step always carries a completed
+		// step-action effect, so this fires every maintenance tick for the
+		// whole park — ~3,600 INFO lines per task across a 60-hour one.
+		e.resumeSkip.Log(e.logger, "workflow.effect-replay.noop", fresh.ID,
+			"already_completed|"+step.ID+"|"+rec.ID.String(),
 			"task_id", fresh.ID, "step", step.ID, "effect", rec.ID.String())
 		metrics.OrchestratorEffectReplay(e.metricContext(), "already_completed")
 		return true

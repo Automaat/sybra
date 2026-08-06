@@ -1004,6 +1004,7 @@ type mockAgents struct {
 	rateLimited       map[string]bool // provider -> rate-limited
 	unhealthy         map[string]bool // provider -> unhealthy (config-disabled/probe-down); absent = healthy
 	dispatchClaimed   map[string]bool // taskID -> a claim is held by an out-of-band dispatcher (e.g. simulated recovery)
+	defaultProvider   string
 	claimInsideStart  bool
 	failSpawnOnce     error
 	startGate         chan struct{}
@@ -1168,7 +1169,20 @@ func (m *mockAgents) SendPrompt(agentID, message string) error {
 	return nil
 }
 
-func (m *mockAgents) DefaultProvider() string { return "claude" }
+func (m *mockAgents) DefaultProvider() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.defaultProvider != "" {
+		return m.defaultProvider
+	}
+	return "claude"
+}
+
+func (m *mockAgents) SetDefaultProvider(p string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.defaultProvider = p
+}
 
 func (m *mockAgents) TryClaimDispatch(taskID string) (DispatchClaim, bool) {
 	m.mu.Lock()
@@ -11812,5 +11826,210 @@ func TestExecVerifyCommits_VerifierRunNotMarkedIncomplete(t *testing.T) {
 
 	if got := tasks.IncompleteRuns(); len(got) != 0 {
 		t.Errorf("incomplete runs = %v, want none for a verifier role", got)
+	}
+}
+
+// The throttle is keyed on the task id, and several skip reasons share that
+// key. Clearing on a merely-passing preflight re-armed all of them, so a task
+// stuck behind an out-of-band dispatch claim logged a fresh INFO every tick —
+// the flood this change exists to remove, moved up a level.
+func TestResumeStalled_ClaimedElsewhereDoesNotReArmEveryTick(t *testing.T) {
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetDispatchClaimed("t1", true)
+	engine := NewEngine(store, tasks, agents, logger)
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+
+	for range 10 {
+		engine.ResumeStalled()
+	}
+
+	info := 0
+	for _, r := range records {
+		if r.Message == "workflow.resume-stalled.skip" && r.Level == slog.LevelInfo {
+			info++
+		}
+	}
+	if info != 1 {
+		t.Errorf("got %d INFO skip records across 10 identical ticks, want 1", info)
+	}
+}
+
+// A parked run_agent step always carries a completed step-action effect, so the
+// replay no-op fires every maintenance tick for the whole park — the issue's
+// own ~3,600-lines-per-task number, at INFO under a different message.
+func TestReplayPersistedEffects_NoopIsThrottled(t *testing.T) {
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, logger)
+
+	completed := time.Now().UTC()
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			StartedAt:   completed,
+			EffectLog: []EffectRecord{{
+				ID:          EffectID{Generation: 1, StepSeq: 0, StepID: "implement", Pos: effectPosStepAction},
+				IntentAt:    completed,
+				CompletedAt: &completed,
+			}},
+		},
+	})
+
+	noops := func() int {
+		n := 0
+		for _, r := range records {
+			if r.Message == "workflow.effect-replay.noop" {
+				n++
+			}
+		}
+		return n
+	}
+
+	engine.ReplayPersistedEffects()
+	if got := noops(); got != 1 {
+		t.Fatalf("first replay logged %d no-ops, want 1", got)
+	}
+
+	records = nil
+	for range 20 {
+		engine.ReplayPersistedEffects()
+	}
+	if got := noops(); got != 0 {
+		t.Errorf("got %d no-op records from repeat ticks, want 0", got)
+	}
+}
+
+// A park that moves to a different provider is a state change, and the whole
+// reason the provider is in the throttle value is that it must re-arm INFO
+// rather than wait out the interval.
+func TestResumeStalled_ParkMovingProviderReArms(t *testing.T) {
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimitedFor("claude", true)
+	engine := NewEngine(store, tasks, agents, logger)
+
+	put := func() {
+		tasks.Put(TaskInfo{
+			ID: "t1", Status: "in-progress", AgentMode: "headless",
+			Workflow: &Execution{
+				WorkflowID:  "test-simple",
+				CurrentStep: "implement",
+				State:       ExecWaiting,
+				StartedAt:   time.Now().UTC(),
+			},
+		})
+	}
+
+	parks := func() int {
+		n := 0
+		for _, r := range records {
+			if recordAttr(r, "reason") == "provider_rate_limited" && r.Level == slog.LevelInfo {
+				n++
+			}
+		}
+		return n
+	}
+
+	put()
+	engine.ResumeStalled()
+	if got := parks(); got != 1 {
+		t.Fatalf("claude park logged %d times at INFO, want 1", got)
+	}
+
+	records = nil
+	agents.SetProviderRateLimitedFor("claude", false)
+	agents.SetProviderRateLimitedFor("codex", true)
+	agents.SetDefaultProvider("codex")
+	put()
+	engine.ResumeStalled()
+	if got := parks(); got != 1 {
+		t.Errorf("park moving to codex logged %d times at INFO, want 1", got)
+	}
+}
+
+// The reschedule route logs its own park and fires before ResumeStalled ever
+// sees the task, so it needs its own re-arm. Without one, a park that ends and
+// recurs here is dropped entirely rather than logged.
+func TestRescheduleRateLimitedAgent_LaterParkIsLoggedAgain(t *testing.T) {
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimitedFor("claude", true)
+	engine := NewEngine(store, tasks, agents, logger)
+
+	park := func(agentID string) {
+		tasks.Put(TaskInfo{
+			ID: "t1", Status: "in-progress", AgentMode: "headless",
+			Workflow: &Execution{
+				WorkflowID:  "test-simple",
+				CurrentStep: "implement",
+				State:       ExecWaiting,
+				Variables:   make(map[string]string),
+			},
+		})
+		setWorkflowAgentRoute(t, tasks, "t1", agentID, "implement")
+		engine.RescheduleRateLimitedAgent("t1", agentID)
+	}
+
+	parks := func() int {
+		n := 0
+		for _, r := range records {
+			if r.Message == "workflow.rate-limited-reschedule.skip" &&
+				recordAttr(r, "reason") == "provider_rate_limited" {
+				n++
+			}
+		}
+		return n
+	}
+
+	park("limited-agent-1")
+	if got := parks(); got != 1 {
+		t.Fatalf("first park logged %d times, want 1", got)
+	}
+
+	// The limit lifts and the reschedule dispatches, ending the park.
+	agents.SetProviderRateLimitedFor("claude", false)
+	park("limited-agent-2")
+	if agents.CallCount() == 0 {
+		t.Fatal("reschedule never dispatched, so the park never ended")
+	}
+
+	records = nil
+	agents.SetProviderRateLimitedFor("claude", true)
+	park("limited-agent-3")
+	if got := parks(); got != 1 {
+		t.Errorf("second park logged %d times, want 1: the throttle never re-armed", got)
 	}
 }

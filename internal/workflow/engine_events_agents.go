@@ -589,6 +589,12 @@ func (e *Engine) rescheduleRunAgent(taskID, agentID string, step *Step, t TaskIn
 		return
 	}
 
+	// This route logs its own park via shouldSkipResumeForRateLimitedProvider
+	// (beforeDispatch above) and fires before ResumeStalled ever sees the task,
+	// so it needs its own re-arm: without it a second park here is dropped
+	// entirely rather than logged.
+	e.resumeSkip.Clear(taskID)
+
 	e.logger.Info(logPrefix, "task_id", taskID, "step", step.ID)
 	comp, rErr := e.executeSteps(taskID, def, step, t.Workflow)
 	rErr = normalizeExecuteStepsErr(rErr)
