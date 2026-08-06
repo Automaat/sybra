@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/watchdogreason"
 )
 
@@ -85,7 +86,7 @@ func (e *Engine) handleWatchdogHangReadyPR(t *TaskInfo, step *Step) bool {
 		e.logger.Error("workflow.watchdog-hang.ready-pr.persist", "task_id", t.ID, "step", step.ID, "pr", t.PRNumber, "err", err)
 		return true
 	}
-	if err := e.tasks.UpdateTaskStatus(t.ID, "in-review", ""); err != nil {
+	if err := e.tasks.UpdateTaskStatus(t.ID, taskstatus.InReview, ""); err != nil {
 		e.logger.Error("workflow.watchdog-hang.ready-pr.status", "task_id", t.ID, "step", step.ID, "pr", t.PRNumber, "err", err)
 		return true
 	}
@@ -185,6 +186,8 @@ func buildRewardHackingImplementationReaskNote(attempt, maxRetries int) string {
 
 func buildRewardHackingPlanningReaskNote(role string, attempt, maxRetries int) string {
 	var b strings.Builder
+	// Prompt prose, not a status: "plan-critique" is not a member of the
+	// vocabulary, so typing this would promise a validity it does not have.
 	stage := "planning"
 	if role == "plan-critic" {
 		stage = "plan-critique"
@@ -243,14 +246,14 @@ func isTestRunnerWatchdogStep(step *Step) bool {
 	return step.ID == testVerdictSourceStep || step.Config.Role == testRunnerRole
 }
 
-func watchdogHangExhaustionResolution(t TaskInfo, step *Step, attempts int, openPROnUnrunnableGate bool) (status, reason string, terminalState ExecState) {
-	if t.Status == "testing" && isTestRunnerWatchdogStep(step) {
+func watchdogHangExhaustionResolution(t TaskInfo, step *Step, attempts int, openPROnUnrunnableGate bool) (status taskstatus.Status, reason string, terminalState ExecState) {
+	if t.Status == taskstatus.Testing && isTestRunnerWatchdogStep(step) {
 		if openPROnUnrunnableGate {
-			return "ready-pr", "manual testing gate could not be run after auto-retries (harness/infra limitation, not a product defect) — opening PR for CI and human review", ExecCompleted
+			return taskstatus.ReadyPR, "manual testing gate could not be run after auto-retries (harness/infra limitation, not a product defect) — opening PR for CI and human review", ExecCompleted
 		}
-		return "human-required", fmt.Sprintf("watchdog hang: run_test retry budget exhausted after %d clean re-dispatches", attempts), ExecFailed
+		return taskstatus.HumanRequired, fmt.Sprintf("watchdog hang: run_test retry budget exhausted after %d clean re-dispatches", attempts), ExecFailed
 	}
-	return "human-required", fmt.Sprintf("watchdog hang: retry budget exhausted after %d clean re-dispatches", attempts), ExecFailed
+	return taskstatus.HumanRequired, fmt.Sprintf("watchdog hang: retry budget exhausted after %d clean re-dispatches", attempts), ExecFailed
 }
 
 func (e *Engine) handleWatchdogRateLimitRetry(t *TaskInfo, step *Step) bool {
@@ -261,11 +264,11 @@ func isWatchdogRateLimitReason(reason string) bool {
 	return watchdogreason.IsRateLimit(reason)
 }
 
-func watchdogRateLimitExhaustionResolution(t TaskInfo, _ *Step, attempts int) (status, reason string, terminalState ExecState) {
+func watchdogRateLimitExhaustionResolution(t TaskInfo, _ *Step, attempts int) (status taskstatus.Status, reason string, terminalState ExecState) {
 	if watchdogreason.IsZeroOutputRateLimit(t.StatusReason) {
-		return "blocked", fmt.Sprintf("watchdog: zero-output startup retry budget exhausted after %d identical attempts", attempts+1), ExecFailed
+		return taskstatus.Blocked, fmt.Sprintf("watchdog: zero-output startup retry budget exhausted after %d identical attempts", attempts+1), ExecFailed
 	}
-	return "human-required", fmt.Sprintf("watchdog: rate limit retry budget exhausted after %d clean re-dispatches", attempts), ExecFailed
+	return taskstatus.HumanRequired, fmt.Sprintf("watchdog: rate limit retry budget exhausted after %d clean re-dispatches", attempts), ExecFailed
 }
 
 func (e *Engine) canRetryWatchdogStop(t *TaskInfo, step *Step) bool {
@@ -273,7 +276,7 @@ func (e *Engine) canRetryWatchdogStop(t *TaskInfo, step *Step) bool {
 		t.Workflow != nil &&
 		step != nil &&
 		step.Type == StepRunAgent &&
-		t.Status == "human-required" &&
+		t.Status == taskstatus.HumanRequired &&
 		watchdogreason.IsRetryableStop(t.StatusReason)
 }
 
@@ -286,7 +289,7 @@ func (e *Engine) canRetryWorktreeRepair(t *TaskInfo, step *Step) bool {
 		t.Workflow != nil &&
 		step != nil &&
 		step.Type == StepRunAgent &&
-		t.Status == "blocked" &&
+		t.Status == taskstatus.Blocked &&
 		t.Blocker.Kind == blocker.KindWorktreeRepair &&
 		!t.Blocker.Exhausted
 }
@@ -355,7 +358,7 @@ func (e *Engine) watchdogHangRecoverySpec() watchdogRecoverySpec {
 					e.logger.Error("workflow.watchdog-hang.escalate", "task_id", t.ID, "step", step.ID, "err", err)
 					return
 				}
-				if targetStatus == "ready-pr" {
+				if targetStatus == taskstatus.ReadyPR {
 					e.logger.Warn("workflow.watchdog-hang.exhausted.open-pr", "task_id", t.ID, "step", step.ID, "attempts", attempts)
 					e.fireComplete(&CompletionInfo{TaskID: t.ID, WorkflowID: t.Workflow.WorkflowID, Variables: t.Workflow.Variables})
 					return
@@ -391,7 +394,7 @@ func (e *Engine) watchdogRewardHackingRecoverySpec(t *TaskInfo, step *Step) (wat
 				if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 					e.logger.Error("workflow.watchdog-reward-hacking.persist", "task_id", t.ID, "step", step.ID, "err", err)
 				}
-				if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
+				if err := e.tasks.UpdateTaskStatus(t.ID, taskstatus.HumanRequired, reason); err != nil {
 					e.logger.Error("workflow.watchdog-reward-hacking.escalate", "task_id", t.ID, "step", step.ID, "err", err)
 					return
 				}
@@ -442,7 +445,7 @@ func (e *Engine) watchdogRateLimitRecoverySpec() watchdogRecoverySpec {
 					e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)
 				}
 				var escalateErr error
-				if targetStatus == "blocked" {
+				if targetStatus == taskstatus.Blocked {
 					escalateErr = e.tasks.UpdateTaskBlocker(t.ID, targetStatus, reason, blocker.State{Kind: blocker.KindWatchdogRateLimitExhausted, Actor: blocker.ActorWorkflow, Exhausted: true})
 				} else {
 					escalateErr = e.tasks.UpdateTaskStatus(t.ID, targetStatus, reason)
@@ -470,10 +473,10 @@ func (e *Engine) watchdogStopRecoverySpec() watchdogRecoverySpec {
 				t.Workflow.SetVar(watchdogReaskNoteVarForStep(step), buildWatchdogStopReaskNote(t.StatusReason, attempt))
 			},
 			onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
-				if err := e.tasks.UpdateTaskStatus(t.ID, "in-progress", ""); err != nil {
+				if err := e.tasks.UpdateTaskStatus(t.ID, taskstatus.InProgress, ""); err != nil {
 					return err
 				}
-				t.Status = "in-progress"
+				t.Status = taskstatus.InProgress
 				t.StatusReason = ""
 				return nil
 			},
@@ -483,7 +486,7 @@ func (e *Engine) watchdogStopRecoverySpec() watchdogRecoverySpec {
 				if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 					e.logger.Error("workflow.watchdog-stop.persist", "task_id", t.ID, "step", step.ID, "err", err)
 				}
-				if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
+				if err := e.tasks.UpdateTaskStatus(t.ID, taskstatus.HumanRequired, reason); err != nil {
 					e.logger.Error("workflow.watchdog-stop.escalate", "task_id", t.ID, "step", step.ID, "err", err)
 					return
 				}
@@ -502,10 +505,10 @@ func (e *Engine) worktreeRepairRecoverySpec() watchdogRecoverySpec {
 			counterKey: worktreeRepairRetryKey,
 			max:        maxWorktreeRepairRetries,
 			onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
-				if err := e.tasks.UpdateTaskBlocker(t.ID, "in-progress", "", blocker.State{}); err != nil {
+				if err := e.tasks.UpdateTaskBlocker(t.ID, taskstatus.InProgress, "", blocker.State{}); err != nil {
 					return err
 				}
-				t.Status = "in-progress"
+				t.Status = taskstatus.InProgress
 				t.StatusReason = ""
 				t.Blocker = blocker.State{}
 				return nil
@@ -514,7 +517,7 @@ func (e *Engine) worktreeRepairRecoverySpec() watchdogRecoverySpec {
 				exhausted := t.Blocker
 				exhausted.Exhausted = true
 				reason := fmt.Sprintf("worktree repair: retry budget exhausted after %d attempts — manual repair required", attempts)
-				if err := e.tasks.UpdateTaskBlocker(t.ID, "blocked", reason, exhausted); err != nil {
+				if err := e.tasks.UpdateTaskBlocker(t.ID, taskstatus.Blocked, reason, exhausted); err != nil {
 					e.logger.Error("workflow.worktree-repair.escalate", "task_id", t.ID, "step", step.ID, "err", err)
 					return
 				}
@@ -558,7 +561,7 @@ func (e *Engine) handleTransientFetchRetry(t *TaskInfo, step *Step) bool {
 		max:        maxTransientFetchRetries,
 		onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 			reason := fmt.Sprintf("agent start blocked: transient network retry budget exhausted after %d attempts reconciling worktree with remote", attempts)
-			if err := e.tasks.UpdateTaskStatus(t.ID, "human-required", reason); err != nil {
+			if err := e.tasks.UpdateTaskStatus(t.ID, taskstatus.HumanRequired, reason); err != nil {
 				e.logger.Error("workflow.transient-fetch.escalate", "task_id", t.ID, "step", step.ID, "err", err)
 				return
 			}

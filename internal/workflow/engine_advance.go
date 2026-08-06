@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/reviewbudget"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/textutil"
 )
 
@@ -76,7 +77,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		EndedAt:   now,
 	})
 
-	if ctx.Task.Status == "done" || ctx.Task.Status == "cancelled" {
+	if ctx.Task.Status == taskstatus.Done || ctx.Task.Status == taskstatus.Cancelled {
 		// The task itself already landed a terminal status out-of-band (e.g.
 		// an agent's own tool call, or a merged/closed PR) independently of
 		// this Execution ever reaching ExecCompleted/ExecFailed. Persist the
@@ -189,7 +190,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 // through to blockRetryExhaustedTriageIfNeeded's triage instead of an
 // onExhausted callback owning the escalation outright.
 func (e *Engine) retryFailedStepIfConfigured(taskID string, def *Definition, currentStep *Step, wfExec *Execution, task TaskInfo, output StepOutput, release func()) (handled bool, err error) {
-	if output.Status != "failed" || currentStep.Config.MaxRetries == 0 || task.Status == "human-required" {
+	if output.Status != "failed" || currentStep.Config.MaxRetries == 0 || task.Status == taskstatus.HumanRequired {
 		return false, nil
 	}
 	retries := wfExec.CountStep(output.StepID)
@@ -963,7 +964,7 @@ func taskFields(t TaskInfo) map[string]string {
 	fields := map[string]string{
 		"task.id":                      t.ID,
 		"task.title":                   t.Title,
-		"task.status":                  t.Status,
+		"task.status":                  string(t.Status),
 		"task.status_reason":           t.StatusReason,
 		"task.role":                    t.Role,
 		"task.tags":                    strings.Join(t.Tags, ","),
@@ -1015,7 +1016,7 @@ func (e *Engine) blockRetryExhaustedTriageIfNeeded(taskID string, step *Step, wf
 	if reason == "" {
 		return false, nil
 	}
-	if err := e.tasks.UpdateTaskBlocker(taskID, "blocked", reason, blocker.State{
+	if err := e.tasks.UpdateTaskBlocker(taskID, taskstatus.Blocked, reason, blocker.State{
 		Kind:       blocker.KindTriageRetryExhausted,
 		Actor:      blocker.ActorWorkflow,
 		Code:       "triage_retryable",
@@ -1040,7 +1041,7 @@ func (e *Engine) blockRetryExhaustedPlanningIfNeeded(taskID string, def *Definit
 	if trimmed := strings.TrimSpace(output); trimmed != "" {
 		reason += ": " + textutil.TruncateBytes(trimmed, 500, "\n... (truncated)")
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return true, err
 	}
 	now := time.Now().UTC()

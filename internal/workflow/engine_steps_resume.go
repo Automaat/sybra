@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
@@ -56,11 +57,11 @@ func (e *Engine) execResumeWorkflow(taskID string, step *Step, wfExec *Execution
 	// would immediately re-park a task recovery just fixed (see #47dcecdd).
 	// Any OTHER human-required reason predates this conflict and must still be
 	// restored verbatim.
-	if status == "human-required" && reason == worktreeerr.RebaseBlockedReason {
+	if taskstatus.Status(status) == taskstatus.HumanRequired && reason == worktreeerr.RebaseBlockedReason {
 		status = ""
 	}
 	if status != "" {
-		if err := e.tasks.UpdateTaskStatus(taskID, status, reason); err != nil {
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.Status(status), reason); err != nil {
 			e.logger.Warn("workflow.resume.restore-status", "task_id", taskID, "status", status, "err", err)
 		}
 	}

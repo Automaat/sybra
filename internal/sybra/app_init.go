@@ -35,6 +35,7 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/recovery"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/skillsync"
@@ -683,16 +684,16 @@ func (a *App) limitPolicy() limits.Policy {
 	p.WeeklyThresholdPercent = a.cfg.Providers.Limits.WeeklyThresholdPercent
 	p.PreferUnderused = a.cfg.Providers.Limits.PreferUnderused
 	p.SubscriptionMonthlyUSD = map[string]float64{
-		"claude":   a.cfg.Providers.Claude.MonthlySubscriptionUSD,
-		"codex":    a.cfg.Providers.Codex.MonthlySubscriptionUSD,
-		"copilot":  a.cfg.Providers.Copilot.MonthlySubscriptionUSD,
-		"opencode": a.cfg.Providers.OpenCode.MonthlySubscriptionUSD,
+		providerid.Claude:   a.cfg.Providers.Claude.MonthlySubscriptionUSD,
+		providerid.Codex:    a.cfg.Providers.Codex.MonthlySubscriptionUSD,
+		providerid.Copilot:  a.cfg.Providers.Copilot.MonthlySubscriptionUSD,
+		providerid.OpenCode: a.cfg.Providers.OpenCode.MonthlySubscriptionUSD,
 	}
 	p.ProviderEnabled = map[string]bool{
-		"claude":   a.cfg.Providers.Claude.Enabled,
-		"codex":    a.cfg.Providers.Codex.Enabled,
-		"copilot":  a.cfg.Providers.Copilot.Enabled,
-		"opencode": a.cfg.Providers.OpenCode.Enabled,
+		providerid.Claude:   a.cfg.Providers.Claude.Enabled,
+		providerid.Codex:    a.cfg.Providers.Codex.Enabled,
+		providerid.Copilot:  a.cfg.Providers.Copilot.Enabled,
+		providerid.OpenCode: a.cfg.Providers.OpenCode.Enabled,
 	}
 	return p
 }
@@ -1317,17 +1318,8 @@ func (a *App) initWorkflowEngine() {
 		agentLauncher,
 		a.logger,
 	)
-	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
-	a.workflowEngine.SetPRStateFetcher(prStateFetcherAdapter{})
-	a.workflowEngine.SetPRHeadFetcher(prHeadFetcherAdapter{})
-	a.workflowEngine.SetPRCreator(prCreatorAdapter{})
-	a.workflowEngine.SetPRCloser(prCloserAdapter{})
-	a.workflowEngine.SetPRFinder(prFinderAdapter{})
-	a.workflowEngine.SetPRAnyStateFinder(prFinderAdapter{})
-	a.workflowEngine.SetPRExistenceChecker(prExistenceCheckerAdapter{})
-	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
+	a.wirePRSurface()
 	a.workflowEngine.SetTaskClassifier(a.newTaskClassifierAdapter())
-	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.wireWorktreeAccess()
 	a.workflowEngine.SetAttemptNoteAppender(&attemptNoteAppenderAdapter{})
 	a.workflowEngine.SetBranchSyncer(&branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees})
@@ -1389,7 +1381,7 @@ func (a *App) initWorkflowEngine() {
 				queued[snap[i].TaskID] = snap[i]
 			}
 			toItem := func(t workflow.TaskInfo) agentqueue.Item {
-				it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: task.Status(t.Status)}
+				it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: t.Status}
 				if qit, ok := queued[t.ID]; ok {
 					it.Manual = qit.Manual
 					it.Enqueued = qit.Enqueued
@@ -1596,7 +1588,7 @@ func (a *App) seedDefaultLoopAgents() {
 		Prompt:       "/sybra-self-monitor",
 		IntervalSec:  21600, // 6 hours
 		AllowedTools: []string{"Bash", "Read", "Grep", "Glob"},
-		Provider:     "claude",
+		Provider:     providerid.Claude,
 		Model:        "sonnet",
 		Enabled:      false,
 	})
@@ -1707,4 +1699,27 @@ func (a *App) wireSidecarDir() {
 		return
 	}
 	a.workflowEngine.SetSidecarDirResolver(a.sandboxes.SybraHomeDir)
+}
+
+// wirePRSurface wires the engine's pull-request dependency group. Split out of
+// initWorkflowEngine both to keep that function within the length gate and
+// because the group is the unit that must stay complete.
+func (a *App) wirePRSurface() {
+	if err := a.workflowEngine.SetPRSurface(workflow.PRSurface{
+		Linker:           prLinkerAdapter{},
+		ReviewRequester:  prReviewRequesterAdapter{},
+		StateFetcher:     prStateFetcherAdapter{},
+		HeadFetcher:      prHeadFetcherAdapter{},
+		Creator:          prCreatorAdapter{},
+		Closer:           prCloserAdapter{},
+		Finder:           prFinderAdapter{},
+		AnyStateFinder:   prFinderAdapter{},
+		ExistenceChecker: prExistenceCheckerAdapter{},
+		ContentGenerator: prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}},
+	}); err != nil {
+		// Only reachable by forgetting a field here — a programming error, so
+		// fail at boot rather than let a PR step no-op in production. Same
+		// posture as buildPlanSchema's static-marshal panic.
+		panic("wire workflow PR surface: " + err.Error())
+	}
 }

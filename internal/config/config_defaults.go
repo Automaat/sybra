@@ -12,7 +12,10 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/providerid"
 	"gopkg.in/yaml.v3"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // AllowsProjectType reports whether automations on this machine should act on
@@ -751,7 +754,7 @@ func defaultSeedConfig() *Config {
 			MaxSizeMB: DefaultAttachmentMaxSizeMB,
 		},
 		Agent: AgentDefaults{
-			Provider:         "claude",
+			Provider:         providerid.Claude,
 			MaxConcurrent:    25,
 			MaxCostUSD:       5.0,
 			MaxTurns:         150,
@@ -906,7 +909,7 @@ func WriteRawConfig(data []byte) error {
 	if err := preserveLastKnownGoodConfig(path); err != nil {
 		return err
 	}
-	return writeFileAtomic(path, data, ".config-*.yaml.tmp")
+	return writeConfigFile(path, data)
 }
 
 // Directories returns the resolved paths for all sybra data directories.
@@ -1049,14 +1052,14 @@ func readAuthTokenFile() string {
 // mirroring WriteRawConfig's crash-safety, but targeting the dedicated token
 // file instead of config.yaml.
 func writeAuthTokenFile(token string) error {
-	return writeFileAtomic(AuthTokenPath(), []byte(token+"\n"), ".server_auth_token-*.tmp")
+	return writeConfigFile(AuthTokenPath(), []byte(token+"\n"))
 }
 
 func preserveLastKnownGoodConfig(path string) error {
 	data, err := os.ReadFile(path)
 	switch {
 	case err == nil:
-		return writeFileAtomic(LastKnownGoodConfigPath(), data, ".config-last-good-*.tmp")
+		return writeConfigFile(LastKnownGoodConfigPath(), data)
 	case os.IsNotExist(err):
 		return nil
 	default:
@@ -1071,31 +1074,17 @@ func RestoreLastKnownGoodConfig() error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(configPath(), data, ".config-restore-*.tmp")
+	return writeConfigFile(configPath(), data)
 }
 
-func writeFileAtomic(path string, data []byte, tempPattern string) error {
+// writeConfigFile creates the parent directory then publishes the file at the
+// config mode. These files can carry the server auth token, so the mode is
+// explicit rather than inherited from the operator's umask.
+func writeConfigFile(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), tempPattern)
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(configFilePerm); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return fsutil.AtomicWriteMode(path, data, configFilePerm)
 }
 
 // ensureServerAuthToken completes the server auth-token precedence after
@@ -1842,10 +1831,7 @@ const (
 var defaultConfigStub = []byte("# Sybra configuration\nschema_version: 2\n# GitHub automations are opt-in on first run.\nintegrations:\n  github:\n    enabled: false\n")
 
 func writeDefaultConfig(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
-		return err
-	}
-	return os.WriteFile(path, defaultConfigStub, configFilePerm)
+	return writeConfigFile(path, defaultConfigStub)
 }
 
 // tightenConfigPerms retrofits the config directory and file to 0o700/0o600

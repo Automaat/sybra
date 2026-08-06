@@ -7,64 +7,41 @@ import (
 	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
-// Status is a task's position in its lifecycle (see the pipeline diagram in
-// the root CLAUDE.md). Transitions are enforced by the workflow engine and
-// callers should validate untrusted input with ValidateStatus rather than
-// casting a string directly.
-type Status string
+// Status re-exports the task status vocabulary from internal/taskstatus.
+// The type and constants live in a leaf package so internal/workflow can use
+// them too; internal/task imports internal/workflow, so they cannot live here.
+// These aliases keep every existing caller and the Wails bindings unchanged.
+type Status = taskstatus.Status
 
 const (
-	StatusNew           Status = "new"
-	StatusTodo          Status = "todo"
-	StatusInProgress    Status = "in-progress"
-	StatusReadyReview   Status = "ready-review"
-	StatusInReview      Status = "in-review"
-	StatusPlanning      Status = "planning"
-	StatusPlanReview    Status = "plan-review"
-	StatusTesting       Status = "testing"
-	StatusReadyPR       Status = "ready-pr"
-	StatusHumanRequired Status = "human-required"
-	StatusBlocked       Status = "blocked"
-	StatusDone          Status = "done"
-	StatusCancelled     Status = "cancelled"
+	StatusNew           = taskstatus.New
+	StatusTodo          = taskstatus.Todo
+	StatusInProgress    = taskstatus.InProgress
+	StatusReadyReview   = taskstatus.ReadyReview
+	StatusInReview      = taskstatus.InReview
+	StatusPlanning      = taskstatus.Planning
+	StatusPlanReview    = taskstatus.PlanReview
+	StatusTesting       = taskstatus.Testing
+	StatusReadyPR       = taskstatus.ReadyPR
+	StatusHumanRequired = taskstatus.HumanRequired
+	StatusBlocked       = taskstatus.Blocked
+	StatusDone          = taskstatus.Done
+	StatusCancelled     = taskstatus.Cancelled
 )
 
-var validStatuses = map[Status]bool{
-	StatusNew: true, StatusTodo: true, StatusInProgress: true,
-	StatusReadyReview: true, StatusInReview: true,
-	StatusPlanning: true, StatusPlanReview: true,
-	StatusTesting: true, StatusReadyPR: true,
-	StatusHumanRequired: true, StatusBlocked: true,
-	StatusDone: true, StatusCancelled: true,
-}
-
 // AllStatuses returns every valid status in display order.
-func AllStatuses() []Status {
-	return []Status{
-		StatusNew, StatusTodo, StatusPlanning, StatusPlanReview,
-		StatusInProgress, StatusReadyReview, StatusInReview,
-		StatusTesting, StatusReadyPR,
-		StatusHumanRequired, StatusBlocked, StatusDone, StatusCancelled,
-	}
-}
+func AllStatuses() []Status { return taskstatus.All() }
 
 // IsTerminalStatus reports whether s is a terminal (closed) status.
-func IsTerminalStatus(s Status) bool {
-	return s == StatusDone || s == StatusCancelled
-}
+func IsTerminalStatus(s Status) bool { return taskstatus.IsTerminal(s) }
 
 // ValidateStatus parses s into a Status, returning an error naming every
 // valid status if s does not match one of the known constants.
-func ValidateStatus(s string) (Status, error) {
-	st := Status(s)
-	if !validStatuses[st] {
-		return "", fmt.Errorf("invalid status %q (valid: %v)", s, AllStatuses())
-	}
-	return st, nil
-}
+func ValidateStatus(s string) (Status, error) { return taskstatus.Validate(s) }
 
 // Priority is a task's dispatch priority. PriorityNone (the empty string) is
 // treated as the lowest priority, distinct from an unset/invalid value.

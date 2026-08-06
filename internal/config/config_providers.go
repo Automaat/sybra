@@ -166,13 +166,13 @@ func BuildRoutingSummary(cfg *Config) RoutingSummary {
 
 func providerEnabledForRouting(cfg *Config, provider string) bool {
 	switch provider {
-	case "claude":
+	case providerid.Claude:
 		return cfg.Providers.Claude.Enabled
-	case "codex":
+	case providerid.Codex:
 		return cfg.Providers.Codex.Enabled
-	case "copilot":
+	case providerid.Copilot:
 		return cfg.Providers.Copilot.Enabled
-	case "opencode":
+	case providerid.OpenCode:
 		return cfg.Providers.OpenCode.Enabled
 	default:
 		return false

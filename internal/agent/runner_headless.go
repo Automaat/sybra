@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/project"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/textutil"
 )
 
@@ -181,7 +182,7 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 		return false, err
 	}
 	defer prepared.cleanup()
-	a.SetForkSubagent(prepared.cfg.ForkSubagent && prepared.inv.name == "claude")
+	a.SetForkSubagent(prepared.cfg.ForkSubagent && prepared.inv.name == providerid.Claude)
 
 	if _, _, unrendered := a.GetPromptRender(); len(unrendered) > 0 {
 		m.logger.Warn("agent.headless.skill_unrendered", "id", a.ID, "provider", prepared.inv.name, "skills", unrendered)
@@ -233,7 +234,7 @@ func prepareHeadlessAttempt(a *Agent, cfg RunConfig) (preparedHeadlessAttempt, e
 // stdin pipe/FIFO must never be attached for them (nothing would ever read
 // or need it).
 func steerableHeadlessInvocation(cfg RunConfig, providerName string) bool {
-	return cfg.HeadlessSteerable && providerName == "claude"
+	return cfg.HeadlessSteerable && providerName == providerid.Claude
 }
 
 // stdinPromptHeadlessInvocation reports whether this attempt needs the
@@ -244,7 +245,7 @@ func steerableHeadlessInvocation(cfg RunConfig, providerName string) bool {
 // pipe path, so it's excluded here; codex/copilot still receive the prompt
 // positionally and are excluded too.
 func stdinPromptHeadlessInvocation(steerable bool, providerName string) bool {
-	return !steerable && providerName == "claude"
+	return !steerable && providerName == providerid.Claude
 }
 
 // writeAndCloseHeadlessPrompt sends the one-shot stdin prompt then closes the
@@ -1206,7 +1207,7 @@ func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event Stre
 	// meaningless fields for codex and log only the token counts it does
 	// report, so a healthy codex completion is distinguishable from a
 	// real crash at a glance.
-	if a.Provider == "codex" {
+	if a.Provider == providerid.Codex {
 		m.logger.Info("agent.headless.result", "id", a.ID,
 			"input_tokens", event.InputTokens, "output_tokens", event.OutputTokens, "reasoning_tokens", event.ReasoningTokens)
 	} else {

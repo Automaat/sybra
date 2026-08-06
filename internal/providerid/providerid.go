@@ -5,8 +5,9 @@ import (
 	"strings"
 )
 
-// Provider ids, so callers switching on one cannot drift from the universe
-// below by way of a typo.
+// The provider ids Sybra can dispatch to. These are for Go comparisons only —
+// the wire format is unchanged, so config files, persisted records and test
+// fixtures keep using the same bare strings.
 const (
 	Claude   = "claude"
 	Codex    = "codex"

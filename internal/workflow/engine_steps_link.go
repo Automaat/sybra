@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/textutil"
 )
 
@@ -50,7 +51,7 @@ func (e *Engine) execLinkPRAndReview(taskID string, step *Step, wfExec *Executio
 		if err := e.linkTaskPR(taskID, t, prNumber); err != nil {
 			return StepOutput{}, fmt.Errorf("link pr: %w", err)
 		}
-		if err := e.tasks.UpdateTaskStatus(taskID, "in-review", ""); err != nil {
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InReview, ""); err != nil {
 			return StepOutput{}, fmt.Errorf("set in-review: %w", err)
 		}
 		msg := fmt.Sprintf("pr #%d found via %s → in-review", prNumber, source)
@@ -160,7 +161,7 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 				if linkErr := e.linkTaskPR(taskID, t, prNum); linkErr != nil {
 					return StepOutput{}, fmt.Errorf("evaluate: link pr: %w", linkErr)
 				}
-				if linkErr := e.tasks.UpdateTaskStatus(taskID, "in-review", ""); linkErr != nil {
+				if linkErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.InReview, ""); linkErr != nil {
 					return StepOutput{}, fmt.Errorf("evaluate: set in-review: %w", linkErr)
 				}
 				msg := fmt.Sprintf("pr #%d found via late gh pr list → in-review", prNum)
@@ -225,7 +226,7 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 		}
 	}
 
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return StepOutput{}, fmt.Errorf("evaluate: set human-required: %w", err)
 	}
 	e.logger.Info("workflow.evaluate.human-required", "task_id", taskID, "reason", reason)
@@ -259,7 +260,7 @@ func (e *Engine) maybeParkImplementGitHubRetry(taskID string, step *Step, wfExec
 	if step == nil || step.Type != StepRunAgent || step.ID != "implement" || step.Config.Role != "implementation" {
 		return false, nil
 	}
-	if t.Status != "human-required" {
+	if t.Status != taskstatus.HumanRequired {
 		return false, nil
 	}
 	msg := strings.TrimSpace(t.StatusReason + "\n" + output.Output)
@@ -279,7 +280,7 @@ func (e *Engine) maybeParkImplementGitHubRetry(taskID string, step *Step, wfExec
 	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
 		return false, err
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, "in-progress", implementPushRetryStatusReason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InProgress, implementPushRetryStatusReason); err != nil {
 		return false, err
 	}
 	e.logger.Warn("workflow.implement-push-retry.parked",
