@@ -197,43 +197,10 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 	baseRef := worktreeBaseRef(proj.WorktreeBaseRef, branch)
 
 	wtBranch = m.resolveTaskBranch(ctx, t, proj.ClonePath, wtPath, wtBranch)
-	if _, statErr := os.Stat(wtPath); statErr == nil {
-		callPhase(onPhase, "Checking worktree…")
-		usable, err := m.healOrRecreate(ctx, t.ID, proj.ClonePath, wtPath, wtBranch)
-		if err != nil {
-			return "", err
-		}
-		if usable {
-			if reusable, err := prepstate.Reusable(ctx, wtPath, wtBranch); err != nil {
-				m.logger.Warn("worktree.prep-state-read", "task_id", t.ID, "path", wtPath, "branch", wtBranch, "err", err)
-			} else if reusable {
-				m.logger.Info("worktree.prep-state-reused", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
-				return m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
-			}
-			if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
-				m.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
-			}
-			if err := m.reconcileAndRebase(ctx, wtPath, wtBranch, baseRef, onPhase); err != nil {
-				return "", err
-			}
-			m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
-			// Sync remote after rebase. PushSync picks the minimum mode —
-			// no-op when local matches remote, regular push for
-			// fast-forward. On divergence it returns ErrDivergedNeedsResolve
-			// instead of force-pushing; callers here only log it (see
-			// logPushSync) because this is best-effort cleanup after the
-			// main reconcile/rebase path and the remote may have advanced
-			// again since that earlier fetch.
-			callPhase(onPhase, "Syncing upstream…")
-			m.logPushSync(t.ID, wtBranch, project.PushSync(ctx, wtPath, wtBranch))
-			if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "reused worktree", onPhase); err != nil {
-				return "", err
-			}
-			path, err := m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
-			m.recordPreparedState(ctx, t.ID, wtPath, wtBranch)
-			return path, err
-		}
-		// Worktree was wiped — fall through to create paths below.
+	if path, reused, err := m.prepareExistingWorktree(ctx, t, proj, wtPath, wtBranch, baseRef, onPhase); err != nil {
+		return "", err
+	} else if reused {
+		return path, nil
 	}
 
 	// Branch may survive a prior worktree removal — check out existing branch
@@ -279,6 +246,48 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 	path, err := m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
 	m.recordPreparedState(ctx, t.ID, wtPath, wtBranch)
 	return path, err
+}
+
+func (m *Manager) prepareExistingWorktree(ctx context.Context, t task.Task, proj project.Project, wtPath, wtBranch, baseRef string, onPhase func(string)) (path string, reused bool, err error) {
+	if _, err := os.Stat(wtPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("stat worktree %s: %w", wtPath, err)
+	}
+	callPhase(onPhase, "Checking worktree…")
+	usable, err := m.healOrRecreate(ctx, t.ID, proj.ClonePath, wtPath, wtBranch)
+	if err != nil {
+		return "", false, err
+	}
+	if !usable {
+		return "", false, nil
+	}
+	if reusable, err := prepstate.Reusable(ctx, wtPath, wtBranch); err != nil {
+		m.logger.Warn("worktree.prep-state-read", "task_id", t.ID, "path", wtPath, "branch", wtBranch, "err", err)
+	} else if reusable {
+		m.logger.Info("worktree.prep-state-reused", "task_id", t.ID, "path", wtPath, "branch", wtBranch)
+		if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "prepared worktree", onPhase); err != nil {
+			return "", false, err
+		}
+		path, err := m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
+		return path, true, err
+	}
+	if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
+		m.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
+	}
+	if err := m.reconcileAndRebase(ctx, wtPath, wtBranch, baseRef, onPhase); err != nil {
+		return "", false, err
+	}
+	m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
+	callPhase(onPhase, "Syncing upstream…")
+	m.logPushSync(t.ID, wtBranch, project.PushSync(ctx, wtPath, wtBranch))
+	if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "reused worktree", onPhase); err != nil {
+		return "", false, err
+	}
+	path, err = m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
+	m.recordPreparedState(ctx, t.ID, wtPath, wtBranch)
+	return path, true, err
 }
 
 func (m *Manager) resolveTaskBranch(ctx context.Context, t task.Task, clonePath, wtPath, wtBranch string) string {

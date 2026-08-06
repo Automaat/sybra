@@ -1375,12 +1375,12 @@ func refreshTrackingRef(ctx context.Context, worktreePath, remote, branch string
 // whether the branch exists remotely at all (false for a first-push branch).
 // Refresh failures are returned so callers can treat the cached ref as stale
 // rather than silently trusting it.
-func RefreshedRemoteTrackingSHA(ctx context.Context, worktreePath, remote, branch string) (string, bool, error) {
+func RefreshedRemoteTrackingSHA(ctx context.Context, worktreePath, remote, branch string) (sha string, exists bool, err error) {
 	if err := refreshTrackingRef(ctx, worktreePath, remote, branch); err != nil {
 		return "", false, err
 	}
-	sha, ok := remoteTrackingRef(ctx, worktreePath, remote, branch)
-	return sha, ok, nil
+	sha, exists = remoteTrackingRef(ctx, worktreePath, remote, branch)
+	return sha, exists, nil
 }
 
 // refreshTrackingRefWithFetch keeps the shared-bare locking policy testable
