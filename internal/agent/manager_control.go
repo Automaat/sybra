@@ -151,6 +151,44 @@ func (m *Manager) ReleaseStaleStoppedAgentsForTask(ctx context.Context, taskID s
 	return len(stale)
 }
 
+// ReleaseDeadAgentsForTask releases manager liveness for task-scoped agents
+// whose recorded PID is already gone. Unlike ReleaseStaleStoppedAgentsForTask
+// this only fires when the OS confirms the process is dead, so recovery can
+// safely clear a wedged "running" gate without cancelling a healthy agent.
+func (m *Manager) ReleaseDeadAgentsForTask(ctx context.Context, taskID string) int {
+	var dead []*Agent
+	m.mu.RLock()
+	for _, a := range m.agents {
+		if a.TaskID != taskID || a.External {
+			continue
+		}
+		pid := a.GetPID()
+		if pid <= 0 || processAlive(pid) {
+			continue
+		}
+		if a.done != nil {
+			select {
+			case <-a.done:
+				continue
+			default:
+			}
+		} else if !isLive(a.GetState()) {
+			continue
+		}
+		dead = append(dead, a)
+	}
+	m.mu.RUnlock()
+
+	for _, a := range dead {
+		a.MarkStopped()
+		if m.logger != nil {
+			m.logger.Warn("agent.dead.release", "agent_id", a.ID, "task_id", taskID, "pid", a.GetPID())
+		}
+		m.markAgentDone(ctx, a)
+	}
+	return len(dead)
+}
+
 // StopAgents stops the provided agents without waiting for their goroutines to
 // exit. Callers that need deterministic teardown (task delete/worktree
 // cleanup) should use KillAgentsForTask instead.

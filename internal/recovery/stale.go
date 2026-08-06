@@ -20,6 +20,13 @@ import (
 // dev-mode hot-reload loops spawning parallel agents onto the same task.
 const restartStaleMinAge = 5 * time.Minute
 
+const (
+	verifyAutoFixRunIDVar = "verify_auto_fix.rewound_run_agent_id"
+	workflowRetryAfterVar = "workflow.retry_after"
+	verifyAutoFixWorkflow = "simple-task-implement"
+	verifyAutoFixStepID   = "implement"
+)
+
 // RestartStaleInProgress recovers in-progress tasks that lost their agent
 // due to a crash or restart. Headless tasks are re-dispatched; interactive
 // tasks drive the workflow engine forward via recoverStaleInteractive.
@@ -57,6 +64,9 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 	}
 	if t.Status != task.StatusInProgress {
 		return
+	}
+	if released := r.Agents.ReleaseDeadAgentsForTask(ctx, t.ID); released > 0 {
+		r.Logger.Warn("restart-stale.released-dead-agents", "task_id", t.ID, "count", released)
 	}
 	if r.Agents.HasRunningAgentForTask(t.ID) {
 		return
@@ -149,6 +159,10 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 			return
 		}
 	}
+	r.startStaleRestart(ctx, t, oneShot)
+}
+
+func (r *Recovery) startStaleRestart(ctx context.Context, t task.Task, oneShot bool) {
 	if t.ProjectID == "" {
 		err := fmt.Errorf("task %s has no project_id: refusing to restart stale agent without isolated worktree: %w", t.ID, workflow.ErrNoProjectAssigned)
 		r.Logger.Warn("restart-stale.skip", "task_id", t.ID, "reason", "no project_id")
@@ -622,6 +636,12 @@ func (r *Recovery) recoverCompletedHeadlessRun(t *task.Task) bool {
 	if t.Workflow.CurrentStep == "" {
 		return false
 	}
+	if recoverySkippedForVerifyAutoFixRewind(t, lr) {
+		r.Logger.Info("recover-completed-headless-run.skip",
+			"task_id", t.ID, "agent_id", lr.AgentID, "step", t.Workflow.CurrentStep,
+			"reason", "verify_auto_fix_rewind_pending")
+		return true
+	}
 	// Skip if the current step already has a history record — it was processed
 	// (completed or failed) and any stall belongs to a downstream step.
 	if t.Workflow.RecordForStep(t.Workflow.CurrentStep) != nil {
@@ -662,4 +682,26 @@ func lastAgentRun(t *task.Task) *task.AgentRun {
 		return nil
 	}
 	return &t.AgentRuns[len(t.AgentRuns)-1]
+}
+
+func recoverySkippedForVerifyAutoFixRewind(t *task.Task, lr *task.AgentRun) bool {
+	if t == nil || lr == nil || t.Workflow == nil {
+		return false
+	}
+	if t.Workflow.WorkflowID != verifyAutoFixWorkflow || t.Workflow.CurrentStep != verifyAutoFixStepID {
+		return false
+	}
+	rewoundRunID := strings.TrimSpace(t.Workflow.Variables[verifyAutoFixRunIDVar])
+	if rewoundRunID == "" || rewoundRunID != strings.TrimSpace(lr.AgentID) {
+		return false
+	}
+	rawRetryAfter := strings.TrimSpace(t.Workflow.Variables[workflowRetryAfterVar])
+	if rawRetryAfter == "" {
+		return false
+	}
+	retryAfter, err := time.Parse(time.RFC3339, rawRetryAfter)
+	if err != nil {
+		return false
+	}
+	return time.Now().Before(retryAfter)
 }

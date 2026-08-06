@@ -41,6 +41,7 @@ const (
 	verifyChecksImplStepID = "implement"
 	verifyReaskNoteVar     = "verify_reask_note"
 	verifyRetryModelVar    = "verify_retry_model"
+	verifyAutoFixRunIDVar  = "verify_auto_fix.rewound_run_agent_id"
 	// verifyChecksAutoFixBackoff is the base re-dispatch delay before the next
 	// auto-fix attempt; autoFixBackoff grows it with the attempt count up to
 	// autoFixBackoffMax.
@@ -895,6 +896,7 @@ func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Ex
 		diag := e.writeVerifyDiagnostic(taskID, failedCmd, output)
 		return e.flagVerifyChecks(taskID, step, withDiagnostic(reason, diag), failedCmd)
 	}
+	rewoundRunAgentID := verifyAutoFixRewoundRunAgentID(wfExec, t)
 	fingerprint := autoFixFailureFingerprint(failedCmd, output)
 	armed, attempt, err := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
 		counterKey:  "step." + step.ID + ".auto_fix",
@@ -911,6 +913,9 @@ func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Ex
 		onArm: func(wfExec *Execution, attempt int) {
 			wfExec.SetVar(verifyReaskNoteVar, buildVerifyReaskNote(failedCmd, output))
 			wfExec.SetVar(verifyRetryModelVar, "expensive")
+			if rewoundRunAgentID != "" {
+				wfExec.SetVar(verifyAutoFixRunIDVar, rewoundRunAgentID)
+			}
 		},
 		reason: func(attempt int) string {
 			return fmt.Sprintf("auto-fixing failed verify check (attempt %d): %s", attempt, trimDiffLine(failedCmd))
@@ -960,6 +965,23 @@ func buildVerifyReaskNote(failedCmd, output string) string {
 	b.WriteString(tailString(strings.TrimSpace(output), 3000))
 	b.WriteString("\n```")
 	return b.String()
+}
+
+func verifyAutoFixRewoundRunAgentID(wfExec *Execution, t TaskInfo) string {
+	if wfExec != nil {
+		if rec := wfExec.RecordForStep(verifyChecksImplStepID); rec != nil && strings.TrimSpace(rec.AgentID) != "" {
+			return rec.AgentID
+		}
+	}
+	for i := range slices.Backward(t.AgentRuns) {
+		role := strings.TrimSpace(t.AgentRuns[i].Role)
+		if role == "" || role == "implementation" {
+			if id := strings.TrimSpace(t.AgentRuns[i].AgentID); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
 }
 
 // miseConfigNames are the mise config filenames that gate `mise exec` behind
