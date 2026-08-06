@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // bareRepoLocks serializes git mutations against a single bare clone within
@@ -13,12 +15,12 @@ import (
 // repo's shared lock files (e.g. .git/index.lock, ref locks). Keyed by the
 // cleaned clone path so callers passing equivalent-but-differently-formatted
 // paths still serialize against each other.
-var bareRepoLocks sync.Map // map[string]*sync.Mutex
+var bareRepoLocks fsutil.KeyedLocker
 
 // bareRepoPushLocks serializes `git push` invocations for worktrees sharing a
 // bare clone. Unlike bareRepoLocks, this lock may be held while pre-push hooks
 // run, so it must not gate fetch/worktree/ref plumbing for other agents.
-var bareRepoPushLocks sync.Map // map[string]*sync.Mutex
+var bareRepoPushLocks fsutil.KeyedLocker
 
 // withBareRepoLock runs fn while holding the mutex for barePath, blocking
 // concurrent git mutations against the same bare clone from other goroutines
@@ -36,7 +38,7 @@ func withBareRepoPushLock(barePath string, fn func() error) error {
 	return withPathLock(&bareRepoPushLocks, barePath, fn)
 }
 
-func withPathLock(locks *sync.Map, path string, fn func() error) error {
+func withPathLock(locks *fsutil.KeyedLocker, path string, fn func() error) error {
 	key := filepath.Clean(path)
 	// Git resolves macOS /var paths through the /private/var symlink when it
 	// reports a linked worktree's common directory. Canonicalize existing
@@ -46,14 +48,8 @@ func withPathLock(locks *sync.Map, path string, fn func() error) error {
 	if resolved, err := filepath.EvalSymlinks(key); err == nil {
 		key = filepath.Clean(resolved)
 	}
-	v, _ := locks.LoadOrStore(key, &sync.Mutex{})
-	mu, ok := v.(*sync.Mutex)
-	if !ok {
-		// Unreachable: these maps only ever store *sync.Mutex values.
-		mu = &sync.Mutex{}
-	}
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := locks.LockLocal(key)
+	defer unlock()
 	return fn()
 }
 

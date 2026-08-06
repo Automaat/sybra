@@ -2,6 +2,7 @@ package fsutil
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -39,5 +40,49 @@ func TestKeyedLockerLockWithin_TimesOutOnInProcessContention(t *testing.T) {
 	release()
 	if got := locker.Len(); got != 0 {
 		t.Fatalf("locker.Len() = %d, want timeout and release to reclaim key", got)
+	}
+}
+
+func TestKeyedLockerLocal_ReclaimsBurst(t *testing.T) {
+	t.Parallel()
+
+	locker := NewKeyedLocker()
+	const tasks = 200
+	var wg sync.WaitGroup
+	for i := range tasks {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			unlock := locker.LockLocal(fmt.Sprintf("task-%d", i))
+			unlock()
+		}()
+	}
+	wg.Wait()
+	if got := locker.Len(); got != 0 {
+		t.Fatalf("locker.Len() = %d, want burst keys reclaimed", got)
+	}
+}
+
+func TestKeyedLockerTryLockLocal_ReportsBusyAndReclaimsProbe(t *testing.T) {
+	t.Parallel()
+
+	locker := NewKeyedLocker()
+	unlock := locker.LockLocal("task-a")
+	if probeUnlock, ok := locker.TryLockLocal("task-a"); ok {
+		probeUnlock()
+		t.Fatal("TryLockLocal succeeded while key was held")
+	}
+	if got := locker.Len(); got != 1 {
+		t.Fatalf("locker.Len() during hold = %d, want one retained key", got)
+	}
+	unlock()
+
+	probeUnlock, ok := locker.TryLockLocal("task-a")
+	if !ok {
+		t.Fatal("TryLockLocal failed for idle key")
+	}
+	probeUnlock()
+	if got := locker.Len(); got != 0 {
+		t.Fatalf("locker.Len() after probe = %d, want key reclaimed", got)
 	}
 }

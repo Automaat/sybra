@@ -207,8 +207,8 @@ func taskSidecarContent(t TaskInfo, kind string) string {
 }
 
 func (e *Engine) rescheduleSkillReceiptParallelChild(taskID string, parent, child *Step) {
-	e.acquireInflight(taskID)
-	defer e.releaseInflight(taskID)
+	unlockInflight := e.acquireInflight(taskID)
+	defer unlockInflight()
 
 	fresh, err := e.tasks.GetTask(taskID)
 	_, skip := resumeSkipReasonForStatus(fresh.Status)

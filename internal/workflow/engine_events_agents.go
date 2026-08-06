@@ -14,19 +14,18 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	// task's still-legitimate routes mid-completion.
 	defer e.enterCompletion(taskID)()
 
-	routeMu := e.taskRouteMutex(taskID)
-	routeMu.Lock()
+	unlockRoute := e.routeLocks.LockLocal(taskID)
 	e.mu.Lock()
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
 		e.mu.Unlock()
-		routeMu.Unlock()
+		unlockRoute()
 		e.logger.Error("workflow.agent-complete.get", "task_id", taskID, "err", err)
 		return
 	}
 	spawnedStep, routeStatus := e.resolveCompletionRouteLocked(t, c)
 	e.mu.Unlock()
-	routeMu.Unlock()
+	unlockRoute()
 	if e.handleAgentCompleteInitialBail(taskID, t, c) {
 		e.clearAgentStep(taskID, c.AgentID)
 		return
@@ -569,13 +568,13 @@ func (e *Engine) rescheduleRunAgent(taskID, agentID string, step *Step, t TaskIn
 			"task_id", taskID, "reason", "other-agent-running", "step", step.ID)
 		return
 	}
-	mu := e.taskInflightMutex(taskID)
-	if !mu.TryLock() {
+	probeUnlock, ok := e.inflightLocks.TryLockLocal(taskID)
+	if !ok {
 		e.logger.Debug(logPrefix+".skip",
 			"task_id", taskID, "reason", "inflight", "step", step.ID)
 		return
 	}
-	mu.Unlock()
+	probeUnlock()
 
 	if !e.tryMarkRescheduleDispatching(taskID, step, logPrefix) {
 		return
@@ -754,8 +753,8 @@ func (e *Engine) handleCheckpointReschedule(taskID string, t *TaskInfo, step *St
 }
 
 func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, parent, child *Step, t TaskInfo) {
-	e.acquireInflight(taskID)
-	defer e.releaseInflight(taskID)
+	unlockInflight := e.acquireInflight(taskID)
+	defer unlockInflight()
 
 	fresh, err := e.tasks.GetTask(taskID)
 	_, skip := resumeSkipReasonForStatus(fresh.Status)
