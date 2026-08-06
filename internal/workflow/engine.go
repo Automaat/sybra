@@ -133,6 +133,11 @@ type TaskProvider interface {
 	// task still has the exact status and reason the caller observed. It keeps a
 	// stale retry cleanup from erasing a newer failure or operator decision.
 	ClearTaskStatusReasonIf(id string, expectedStatus taskstatus.Status, expectedReason string) (bool, error)
+	// ClearTaskStatusReasonAndSetWorkflowIf folds that compare-and-swap clear
+	// and the Workflow write into one store call, so an armed retry never
+	// persists its incremented counter without also dropping the marker that
+	// armed it — and writes nothing at all when the compare fails.
+	ClearTaskStatusReasonAndSetWorkflowIf(id, expectedStatus, expectedReason string, wf *Execution) (bool, error)
 	UpdateTaskBlocker(id string, status taskstatus.Status, reason string, state blocker.State) error
 	UpdateTaskPR(id string, prNumber int) error
 	MarkTaskReviewed(id string) error
@@ -151,6 +156,18 @@ type TaskProvider interface {
 	// body (see stripTestFailuresSections).
 	ReplaceTaskBody(id, body string) error
 	SetWorkflow(id string, wf *Execution) error
+	// SetStatusAndWorkflow persists Status/StatusReason and Workflow in a
+	// single atomic write. Use this instead of a paired
+	// UpdateTaskStatus+SetWorkflow call whenever both change together — the
+	// two-call sequence leaves a crash window where a restart between them
+	// can land a terminal status with a still-running workflow (or vice
+	// versa). reason == "" leaves the task's current StatusReason
+	// untouched.
+	SetStatusAndWorkflow(id, status, reason string, wf *Execution) error
+	// SetBlockerAndWorkflow is SetStatusAndWorkflow's counterpart for callers
+	// escalating to a blocked status with a workflow-owned blocker.State —
+	// same single-write atomicity guarantee, blocker included.
+	SetBlockerAndWorkflow(id, status, reason string, state blocker.State, wf *Execution) error
 	// SetWorkflowIf atomically replaces the workflow only while the persisted
 	// task still matches fence. It prevents a maintenance scan from overwriting
 	// a newer operator/automation workflow with a stale snapshot.

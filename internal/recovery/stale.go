@@ -578,7 +578,13 @@ func (r *Recovery) recoverStaleInteractive(t *task.Task) {
 	// flag.
 	t.Workflow.Recovered = true
 	wf := t.Workflow
-	if _, err := r.Tasks.Update(t.ID, task.Update{Workflow: &wf}); err != nil {
+	if _, err := r.Tasks.ApplyFn(t.ID, func(cur task.Task) (task.TransitionIntent, error) {
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "recovery.mark-recovered",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
+	}); err != nil {
 		r.Logger.Error("recover-stale.set-recovered", "task_id", t.ID, "err", err)
 		return
 	}
@@ -652,7 +658,13 @@ func (r *Recovery) recoverCompletedHeadlessRun(t *task.Task) bool {
 	// result, not a freshly produced one — same contract as recoverStaleInteractive.
 	wf := t.Workflow
 	wf.Recovered = true
-	if _, err := r.Tasks.Update(t.ID, task.Update{Workflow: &wf}); err != nil {
+	if _, err := r.Tasks.ApplyFn(t.ID, func(cur task.Task) (task.TransitionIntent, error) {
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "recovery.mark-recovered",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
+	}); err != nil {
 		r.Logger.Error("recover-completed-headless.set-recovered", "task_id", t.ID, "err", err)
 		return false
 	}

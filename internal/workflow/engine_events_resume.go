@@ -116,27 +116,20 @@ func (e *Engine) shouldSkipResumeAfterFreshRead(taskID string, wf *Execution) (T
 // before its human-required skip, so leaving the execution waiting would
 // re-escalate (and rewrite the task file) on every maintenance tick. Failing it
 // also unblocks the operator, since approve/reject cannot resolve a step the
-// definition no longer has.
+// definition no longer has. Status + workflow must land atomically: a partial
+// write strands the task at human-required with a still-waiting execution that
+// the planning dispatcher refuses to re-plan over.
 func (e *Engine) escalateMissingStep(taskID string, wf *Execution) {
 	e.logger.Warn("workflow.resume-stalled.step-missing",
 		"task_id", taskID, "workflow_id", wf.WorkflowID, "step", wf.CurrentStep)
 
-	// Status first, execution second, so a failed second write leaves the task
-	// visible and retryable rather than buried mid-escalation.
-	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired,
-		"Workflow step "+wf.CurrentStep+" no longer exists in "+wf.WorkflowID+
-			" — it was removed while this task was parked on it. Set the task back to"+
-			" planning to re-plan against the current workflow."); err != nil {
-		e.logger.Warn("workflow.resume-stalled.step-missing.escalate", "task_id", taskID, "err", err)
-		return
-	}
-	// Failing the execution is what makes the task recoverable: the planning
-	// dispatcher only starts a fresh workflow when the old one is completed or
-	// failed, so a waiting execution would reject the operator's re-plan.
+	reason := "Workflow step " + wf.CurrentStep + " no longer exists in " + wf.WorkflowID +
+		" — it was removed while this task was parked on it. Set the task back to" +
+		" planning to re-plan against the current workflow."
 	failed := *wf
 	failed.State = ExecFailed
-	if err := e.tasks.SetWorkflow(taskID, &failed); err != nil {
-		e.logger.Warn("workflow.resume-stalled.step-missing.fail", "task_id", taskID, "err", err)
+	if err := e.tasks.SetStatusAndWorkflow(taskID, "human-required", reason, &failed); err != nil {
+		e.logger.Warn("workflow.resume-stalled.step-missing.escalate", "task_id", taskID, "err", err)
 	}
 }
 
@@ -147,12 +140,10 @@ func (e *Engine) escalateMissingStep(taskID string, wf *Execution) {
 // so a failure here would discard the run.
 //
 // human-required is deliberately not skipped, unlike in the resumable path.
-// escalateMissingStep writes the status before the execution, so an escalation
-// whose second write failed sits at human-required with a live execution, which
-// the planning dispatcher refuses to re-plan — the operator would be stuck
-// following advice that cannot work. Re-entering here retries it. Nothing loops:
-// once both writes land, ResumeStalled's own ExecFailed check skips the task
-// before it ever reaches this function.
+// A failed atomic escalation leaves the task unchanged, so re-entering here on
+// the next tick is the intended retry path. Nothing loops: once both writes
+// land, ResumeStalled's own ExecFailed check skips the task before it ever
+// reaches this function.
 func (e *Engine) handleMissingStep(t *TaskInfo) {
 	if reason, skip := resumeSkipReasonForStatus(t.Status); skip && reason != "human_required" {
 		return

@@ -394,7 +394,6 @@ func TestExecFocusedChecks_LongOutputNotTruncated(t *testing.T) {
 		t.Errorf("artifact lost the start of the output — the old tail-only truncation would have dropped it")
 	}
 }
-
 func TestExecFocusedChecks_FailureReasksBelowCeiling(t *testing.T) {
 	t.Parallel()
 

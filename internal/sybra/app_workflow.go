@@ -212,6 +212,33 @@ func (a *taskAdapter) ClearTaskStatusReasonIf(id string, expectedStatus taskstat
 	return cleared, err
 }
 
+// ClearTaskStatusReasonAndSetWorkflowIf clears a status reason and persists the
+// workflow in a single store write, and only while the task still carries the
+// expected status/reason. It is the atomic form of SetWorkflow followed by
+// ClearTaskStatusReasonIf: on a mismatch nothing is written at all, so a
+// superseded retry cannot leave an incremented counter banked against a budget
+// it never spent, and no crash window can land the bumped counter without the
+// cleared marker (see #2749).
+func (a *taskAdapter) ClearTaskStatusReasonAndSetWorkflowIf(id, expectedStatus, expectedReason string, wf *workflow.Execution) (bool, error) {
+	cleared := false
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		if string(cur.Status) != expectedStatus || cur.StatusReason != expectedReason {
+			return task.TransitionIntent{}, errWorkflowStatusReasonNoLongerMatches
+		}
+		empty := ""
+		cleared = true
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.clear_reason_and_set_workflow",
+			Extra:    task.Update{StatusReason: &empty, Workflow: &wf},
+		}, nil
+	})
+	if errors.Is(err, errWorkflowStatusReasonNoLongerMatches) {
+		return false, nil
+	}
+	return cleared, err
+}
+
 func (a *taskAdapter) UpdateTaskBlocker(id string, status taskstatus.Status, reason string, state blocker.State) error {
 	st, err := task.ValidateStatus(string(status))
 	if err != nil {
@@ -341,7 +368,65 @@ func (a *taskAdapter) ReplaceTaskBody(id, body string) error {
 }
 
 func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
-	_, err := a.tasks.Update(id, task.Update{Workflow: &wf})
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.set_workflow",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
+	})
+	return err
+}
+
+// SetStatusAndWorkflow persists a task's Status/StatusReason and Workflow in
+// a single store write, closing the crash window a paired
+// UpdateTaskStatus+SetWorkflow call leaves open (a restart between the two
+// calls could otherwise land a terminal task status with a still-running
+// workflow, or vice versa — see #2749).
+func (a *taskAdapter) SetStatusAndWorkflow(id, status, reason string, wf *workflow.Execution) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	reason = a.normalizeHumanRequiredReason(id, st, reason)
+	extra := task.Update{Workflow: &wf}
+	if reason != "" {
+		extra.StatusReason = &reason
+	}
+	_, err = a.tasks.Apply(task.TransitionIntent{
+		TaskID:   id,
+		ToStatus: st,
+		Actor:    "workflow.engine.set_status_and_workflow",
+		Extra:    extra,
+	})
+	return err
+}
+
+// SetBlockerAndWorkflow persists a task's Status/StatusReason/Blocker and
+// Workflow in a single store write, the blocker-path counterpart to
+// SetStatusAndWorkflow — closing the same crash window for callers that
+// escalate to a blocked status (via a workflow-owned blocker.State) alongside
+// a workflow mutation (see #2749).
+func (a *taskAdapter) SetBlockerAndWorkflow(id, status, reason string, state blocker.State, wf *workflow.Execution) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	reason = a.normalizeHumanRequiredReason(id, st, reason)
+	var reasonPtr *string
+	if reason != "" {
+		reasonPtr = &reason
+	}
+	_, err = a.tasks.Apply(task.TransitionIntent{
+		TaskID:   id,
+		ToStatus: st,
+		Actor:    "workflow.engine.set_blocker_and_workflow",
+		Extra: task.Update{
+			Blocker:      &state,
+			StatusReason: reasonPtr,
+			Workflow:     &wf,
+		},
+	})
 	return err
 }
 
@@ -366,9 +451,9 @@ func (a *taskAdapter) SetWorkflowIf(id string, fence workflow.WorkflowWriteFence
 func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
 	var result workflow.EffectClaimResult
 	var fenceErr error
-	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
 		if cur.Workflow == nil {
-			return task.Update{}, fmt.Errorf("task %s has no workflow", id)
+			return task.TransitionIntent{}, fmt.Errorf("task %s has no workflow", id)
 		}
 		wf := cur.Workflow.Clone()
 		result.Workflow = wf
@@ -378,11 +463,15 @@ func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim)
 		if claimErr != nil {
 			if errors.Is(claimErr, workflow.ErrEffectClaimConflict) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
 				fenceErr = claimErr
-				return task.Update{}, errWorkflowEffectNoPersist
+				return task.TransitionIntent{}, errWorkflowEffectNoPersist
 			}
-			return task.Update{}, claimErr
+			return task.TransitionIntent{}, claimErr
 		}
-		return task.Update{Workflow: &wf}, nil
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.claim_effect",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
 	})
 	if err != nil {
 		if errors.Is(err, errWorkflowEffectNoPersist) {
@@ -396,9 +485,9 @@ func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim)
 func (a *taskAdapter) CompleteWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
 	var result workflow.EffectClaimResult
 	var fenceErr error
-	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
 		if cur.Workflow == nil {
-			return task.Update{}, fmt.Errorf("task %s has no workflow", id)
+			return task.TransitionIntent{}, fmt.Errorf("task %s has no workflow", id)
 		}
 		wf := cur.Workflow.Clone()
 		result.Workflow = wf
@@ -408,11 +497,15 @@ func (a *taskAdapter) CompleteWorkflowEffect(id string, claim workflow.EffectCla
 		if claimErr != nil {
 			if errors.Is(claimErr, workflow.ErrEffectClaimLost) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
 				fenceErr = claimErr
-				return task.Update{}, errWorkflowEffectNoPersist
+				return task.TransitionIntent{}, errWorkflowEffectNoPersist
 			}
-			return task.Update{}, claimErr
+			return task.TransitionIntent{}, claimErr
 		}
-		return task.Update{Workflow: &wf}, nil
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.complete_effect",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
 	})
 	if err != nil {
 		if errors.Is(err, errWorkflowEffectNoPersist) {

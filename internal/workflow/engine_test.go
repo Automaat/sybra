@@ -692,6 +692,41 @@ func (m *memTasks) ClearTaskStatusReasonIf(id string, expectedStatus taskstatus.
 	return true, nil
 }
 
+func (m *memTasks) ClearTaskStatusReasonAndSetWorkflowIf(id, expectedStatus, expectedReason string, wf *Execution) (bool, error) {
+	m.mu.Lock()
+	if m.failSetWorkflow || m.failSetWorkflowN > 0 {
+		if m.failSetWorkflowN > 0 {
+			m.failSetWorkflowN--
+		}
+		m.mu.Unlock()
+		return false, fmt.Errorf("simulated write failure for task %s", id)
+	}
+	hook := m.onSetWorkflow
+	m.mu.Unlock()
+	// Fire the concurrency hook ahead of the compare rather than after the
+	// write: this call is a single atomic store write, so a racing update can
+	// only land in front of it — and must then lose the compare instead of
+	// being overwritten.
+	if hook != nil {
+		hook(id)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return false, fmt.Errorf("task %s not found", id)
+	}
+	if string(t.Status) != expectedStatus || t.StatusReason != expectedReason {
+		// Mismatch writes nothing at all — the workflow included.
+		return false, nil
+	}
+	t.StatusReason = ""
+	m.reasons[id] = ""
+	t.Workflow = wf.Clone()
+	return true, nil
+}
+
 func (m *memTasks) UpdateTaskBlocker(id string, status taskstatus.Status, reason string, state blocker.State) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -846,6 +881,59 @@ func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 		m.mu.Unlock()
 		return fmt.Errorf("task %s not found", id)
 	}
+	t.Workflow = wf.Clone()
+	hook := m.onSetWorkflow
+	m.mu.Unlock()
+	if hook != nil {
+		hook(id)
+	}
+	return nil
+}
+
+func (m *memTasks) SetStatusAndWorkflow(id, status, reason string, wf *Execution) error {
+	m.mu.Lock()
+	if m.failSetWorkflow || m.failSetWorkflowN > 0 {
+		if m.failSetWorkflowN > 0 {
+			m.failSetWorkflowN--
+		}
+		m.mu.Unlock()
+		return fmt.Errorf("simulated write failure for task %s", id)
+	}
+	t, ok := m.tasks[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("task %s not found", id)
+	}
+	t.Status = taskstatus.Status(status)
+	t.StatusReason = reason
+	m.reasons[id] = reason
+	t.Workflow = wf.Clone()
+	hook := m.onSetWorkflow
+	m.mu.Unlock()
+	if hook != nil {
+		hook(id)
+	}
+	return nil
+}
+
+func (m *memTasks) SetBlockerAndWorkflow(id, status, reason string, state blocker.State, wf *Execution) error {
+	m.mu.Lock()
+	if m.failSetWorkflow || m.failSetWorkflowN > 0 {
+		if m.failSetWorkflowN > 0 {
+			m.failSetWorkflowN--
+		}
+		m.mu.Unlock()
+		return fmt.Errorf("simulated write failure for task %s", id)
+	}
+	t, ok := m.tasks[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("task %s not found", id)
+	}
+	t.Status = taskstatus.Status(status)
+	t.StatusReason = reason
+	t.Blocker = state
+	m.reasons[id] = reason
 	t.Workflow = wf.Clone()
 	hook := m.onSetWorkflow
 	m.mu.Unlock()
@@ -4955,7 +5043,6 @@ func TestResumeStalled_WatchdogHangPoolBusyRetainsReaskNote(t *testing.T) {
 		t.Fatalf("hang retry = %q, want 1", retry)
 	}
 }
-
 func TestResumeStalled_WatchdogRateLimitDoesNotClearConcurrentFailure(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -10330,6 +10417,55 @@ func TestExecVerifyCommits_NoCommitAuthorRunRetriesOnce(t *testing.T) {
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Fatalf("status = %q, want in-progress retry", ti.Status)
+	} else if ti.StatusReason != "retrying implementation once after no commits were produced" {
+		t.Fatalf("status reason = %q, want no-commit retry reason", ti.StatusReason)
+	}
+}
+
+func TestExecVerifyCommits_NoCommitAuthorRunRetryPersistFailureDoesNotPartiallyRearm(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "original reason",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "verify",
+			State:       ExecRunning,
+			Variables:   map[string]string{},
+		},
+	})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+
+	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	wfExec := &Execution{Variables: map[string]string{}}
+	wfExec.RecordStep(StepRecord{StepID: "implement", Status: "completed", AgentID: "a1", Provider: "claude"})
+	ti := TaskInfo{
+		ID: "t1", Status: "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "a1", Role: "implementation"}},
+	}
+
+	tasks.failSetWorkflow = true
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, ti)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != "completed" || !strings.Contains(out.Output, "no commits") {
+		t.Fatalf("output = %+v, want completed no-commit escalation after failed retry persist", out)
+	}
+
+	got := tasks.mustGetTask(t, "t1")
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q after failed retry persist, want fallback human-required escalation", got.Status)
+	}
+	if !strings.Contains(got.StatusReason, "no commits") {
+		t.Fatalf("status reason = %q after failed retry persist, want no-commits escalation", got.StatusReason)
+	}
+	if got.Workflow == nil || got.Workflow.CurrentStep != "verify" || got.Workflow.State != ExecRunning {
+		t.Fatalf("workflow = %+v after failed retry persist, want retry workflow not partially persisted", got.Workflow)
 	}
 }
 
