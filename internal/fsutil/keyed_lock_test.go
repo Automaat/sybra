@@ -50,12 +50,10 @@ func TestKeyedLockerLocal_ReclaimsBurst(t *testing.T) {
 	const tasks = 200
 	var wg sync.WaitGroup
 	for i := range tasks {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			unlock := locker.LockLocal(fmt.Sprintf("task-%d", i))
 			unlock()
-		}()
+		})
 	}
 	wg.Wait()
 	if got := locker.Len(); got != 0 {
