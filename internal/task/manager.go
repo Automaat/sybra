@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/metrics"
 )
 
@@ -40,7 +41,7 @@ type DeleteHook func(taskID string)
 type Manager struct {
 	store        *Store
 	emitter      EventEmitter
-	locks        sync.Map // string -> *sync.Mutex
+	locks        fsutil.KeyedLocker
 	onStatusHook StatusChangeHook
 	onDeleteHook []DeleteHook
 
@@ -117,24 +118,23 @@ func (m *Manager) OnExternalUpdate(path string) {
 		return
 	}
 
-	mu := m.lockFor(id)
-	mu.Lock()
+	unlock := m.lock(id)
 	// Only Status is needed here; use the parse-only read to avoid the
 	// per-call sidecar dir scan on every external file change.
 	t, err := m.store.read(id)
 	if err != nil {
-		mu.Unlock()
+		unlock()
 		return
 	}
 	newStatus := string(t.Status)
 
 	prev, ok := m.lastFiredStatus(id)
 	if ok && prev == newStatus {
-		mu.Unlock()
+		unlock()
 		return
 	}
 	m.recordFiredStatus(id, newStatus)
-	mu.Unlock()
+	unlock()
 
 	m.onStatusHook(id, prev, newStatus)
 }
@@ -173,13 +173,8 @@ func (m *Manager) Plans() *PlanningSidecarStore { return m.store.Plans() }
 // PlanDrafts returns the underlying PlanDraftStore.
 func (m *Manager) PlanDrafts() *PlanDraftStore { return m.store.PlanDrafts() }
 
-func (m *Manager) lockFor(id string) *sync.Mutex {
-	existing, _ := m.locks.LoadOrStore(id, &sync.Mutex{})
-	mu, ok := existing.(*sync.Mutex)
-	if !ok {
-		mu = &sync.Mutex{}
-	}
-	return mu
+func (m *Manager) lock(id string) func() {
+	return m.locks.LockLocal(id)
 }
 
 // List returns all tasks (lock-free).
@@ -243,14 +238,13 @@ func (m *Manager) CreateWithStatus(title, body, mode string, status Status, extr
 // reports whether the task was newly created (vs an in-place update). See
 // Store.Put.
 func (m *Manager) Put(t Task) (Task, bool, error) {
-	mu := m.lockFor(t.ID)
-	mu.Lock()
+	unlock := m.lock(t.ID)
 
 	prev, getErr := m.store.read(t.ID)
 	existed := getErr == nil
 	saved, err := m.store.Put(t)
 	if err != nil {
-		mu.Unlock()
+		unlock()
 		return saved, false, err
 	}
 
@@ -263,7 +257,7 @@ func (m *Manager) Put(t Task) (Task, bool, error) {
 	if fireHook {
 		m.recordFiredStatus(saved.ID, newStatus)
 	}
-	mu.Unlock()
+	unlock()
 
 	if existed {
 		metrics.TaskUpdated()
@@ -284,12 +278,11 @@ func (m *Manager) Put(t Task) (Task, bool, error) {
 // long-running operation with the latest leader-side edit immediately before
 // the write. It preserves Put's lifecycle events and status-hook behaviour.
 func (m *Manager) PutFn(id string, fn func(cur Task) (Task, error)) (Task, bool, error) {
-	mu := m.lockFor(id)
-	mu.Lock()
+	unlock := m.lock(id)
 
 	saved, prev, err := m.store.PutFn(id, fn)
 	if err != nil {
-		mu.Unlock()
+		unlock()
 		return saved, false, err
 	}
 
@@ -299,7 +292,7 @@ func (m *Manager) PutFn(id string, fn func(cur Task) (Task, error)) (Task, bool,
 	if fireHook {
 		m.recordFiredStatus(saved.ID, newStatus)
 	}
-	mu.Unlock()
+	unlock()
 
 	metrics.TaskUpdated()
 	m.emitter.Emit(events.TaskUpdated, saved.FilePath)
@@ -326,23 +319,22 @@ func (m *Manager) Update(id string, u Update) (Task, error) {
 // tag merge gated on the current status) that would otherwise race with a
 // concurrent Update for the same id between their read and their write.
 func (m *Manager) UpdateFn(id string, fn func(cur Task) (Update, error)) (Task, error) {
-	mu := m.lockFor(id)
-	mu.Lock()
+	unlock := m.lock(id)
 
 	cur, err := m.store.Get(id)
 	if err != nil {
-		mu.Unlock()
+		unlock()
 		return cur, err
 	}
 	u, err := fn(cur)
 	if err != nil {
-		mu.Unlock()
+		unlock()
 		return cur, err
 	}
 
 	t, prev, err := m.store.UpdateWithPrev(id, u)
 	if err != nil {
-		mu.Unlock()
+		unlock()
 		return t, err
 	}
 	var (
@@ -362,7 +354,7 @@ func (m *Manager) UpdateFn(id string, fn func(cur Task) (Update, error)) (Task, 
 	if fireHook {
 		m.recordFiredStatus(id, newStat)
 	}
-	mu.Unlock()
+	unlock()
 
 	if fireHook {
 		m.onStatusHook(id, prevStatus, newStat)
@@ -388,11 +380,10 @@ func (m *Manager) AppendBody(id, content string) (Task, error) {
 	if content == "" {
 		return m.Get(id)
 	}
-	mu := m.lockFor(id)
-	mu.Lock()
+	unlock := m.lock(id)
 	t, err := m.store.Get(id)
 	if err != nil {
-		mu.Unlock()
+		unlock()
 		return Task{}, err
 	}
 	body := strings.TrimRight(t.Body, "\n")
@@ -401,7 +392,7 @@ func (m *Manager) AppendBody(id, content string) (Task, error) {
 	}
 	body += content + "\n"
 	t, _, err = m.store.UpdateWithPrev(id, Update{Body: &body})
-	mu.Unlock()
+	unlock()
 	if err != nil {
 		return t, err
 	}
@@ -423,20 +414,18 @@ func (m *Manager) Touch(id string) (Task, error) {
 
 // Delete removes a task and emits task:deleted.
 func (m *Manager) Delete(id string) error {
-	mu := m.lockFor(id)
-	mu.Lock()
+	unlock := m.lock(id)
 	t, err := m.store.Get(id)
 	if err != nil {
-		mu.Unlock()
+		unlock()
 		return err
 	}
 	if err := m.store.Delete(id); err != nil {
-		mu.Unlock()
+		unlock()
 		return err
 	}
-	m.locks.Delete(id)
 	m.forgetFiredStatus(id)
-	mu.Unlock()
+	unlock()
 	// Emit/hook after releasing the lock — see UpdateFn/AddRunWithStatus for
 	// why: this Manager is its own emitter's target (app.go routes
 	// task:updated back into OnExternalUpdate), so firing while still holding
@@ -454,10 +443,9 @@ func (m *Manager) Delete(id string) error {
 // Create does, so watchers (file watcher, workflow engine) treat it as a
 // new task rather than an update to one that "already existed".
 func (m *Manager) RestoreFromTrash(id string) (Task, error) {
-	mu := m.lockFor(id)
-	mu.Lock()
+	unlock := m.lock(id)
 	t, err := m.store.RestoreFromTrash(id)
-	mu.Unlock()
+	unlock()
 	if err != nil {
 		return Task{}, err
 	}
@@ -496,8 +484,7 @@ func (m *Manager) AddRun(taskID string, run AgentRun) error {
 
 // AddRunWithStatus appends an agent run and optionally changes task status in one write.
 func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) error {
-	mu := m.lockFor(taskID)
-	mu.Lock()
+	unlock := m.lock(taskID)
 	var prevStatus string
 	if status != nil {
 		if prev, getErr := m.store.Get(taskID); getErr == nil {
@@ -505,7 +492,7 @@ func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) 
 		}
 	}
 	if err := m.store.AddRunWithStatus(taskID, run, status); err != nil {
-		mu.Unlock()
+		unlock()
 		return err
 	}
 	t, err := m.store.Get(taskID)
@@ -522,7 +509,7 @@ func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) 
 	if fireHook {
 		m.recordFiredStatus(taskID, newStatus)
 	}
-	mu.Unlock()
+	unlock()
 	// Emit after releasing the lock, same as UpdateFn: OnExternalUpdate takes
 	// the same per-task lock, and this Manager is its own emitter's target
 	// (app.go routes task:updated back into OnExternalUpdate), so firing
@@ -539,14 +526,13 @@ func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) 
 
 // UpdateRun updates fields on a specific agent run and emits task:updated.
 func (m *Manager) UpdateRun(taskID, agentID string, patch RunPatch) error {
-	mu := m.lockFor(taskID)
-	mu.Lock()
+	unlock := m.lock(taskID)
 	if err := m.store.UpdateRun(taskID, agentID, patch); err != nil {
-		mu.Unlock()
+		unlock()
 		return err
 	}
 	t, err := m.store.Get(taskID)
-	mu.Unlock()
+	unlock()
 	// Emit after releasing the lock — see AddRunWithStatus for why.
 	if err == nil {
 		m.emitter.Emit(events.TaskUpdated, t.FilePath)

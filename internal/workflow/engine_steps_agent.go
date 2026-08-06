@@ -290,9 +290,8 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		}
 		ctx.Vars[WorkflowVarSidecarDir] = sidecar
 	}
-	routeMu := e.taskRouteMutex(taskID)
-	routeMu.Lock()
-	defer routeMu.Unlock()
+	unlockRoute := e.routeLocks.LockLocal(taskID)
+	defer unlockRoute()
 
 	mode := resolveRunAgentMode(step.Config.Mode, ctx)
 	if admit, reason := e.agents.AdmitDispatch(taskID, step.Config.Role, mode); !admit {

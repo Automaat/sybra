@@ -120,8 +120,7 @@ func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec 
 	// Released before finalizeBestOfNParent (which may recurse into
 	// executeSteps/StopAgentsForTask) so it cannot deadlock the way holding
 	// this lock through execRunAgent's StopAgentsForTask would.
-	inflight := e.taskInflightMutex(taskID)
-	inflight.Lock()
+	unlockInflight := e.acquireInflight(taskID)
 	for i := 1; i <= n; i++ {
 		id := bestOfNAttemptID(i)
 		status := rec.Attempts[id]
@@ -154,7 +153,7 @@ func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec 
 	if !allDone {
 		persistErr = e.tasks.SetWorkflow(taskID, wfExec)
 	}
-	inflight.Unlock()
+	unlockInflight()
 	if persistErr != nil {
 		return nil, persistErr
 	}

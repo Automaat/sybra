@@ -1,6 +1,7 @@
 package task
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -457,22 +458,17 @@ func TestManagerConcurrentDifferentIDsParallel(t *testing.T) {
 	}
 }
 
-func TestLockForTypeMismatchNoPanic(t *testing.T) {
+func TestManagerLocksReclaimedAfterBurst(t *testing.T) {
 	t.Parallel()
 	m, _ := newTestManager(t)
 
-	// Manually store a non-*sync.Mutex value to simulate type mismatch.
-	m.locks.Store("bad-id", "not-a-mutex")
-
-	// Must not panic; returned mutex must be usable.
-	mu := m.lockFor("bad-id")
-	if mu == nil {
-		t.Fatal("lockFor returned nil on type mismatch")
+	for i := range 200 {
+		unlock := m.lock(fmt.Sprintf("task-%d", i))
+		unlock()
 	}
-	func() {
-		mu.Lock()
-		defer mu.Unlock()
-	}()
+	if got := m.locks.Len(); got != 0 {
+		t.Fatalf("lock entries = %d, want burst keys reclaimed", got)
+	}
 }
 
 func TestNoopEmitter(t *testing.T) {
@@ -606,8 +602,7 @@ func TestManagerOnExternalUpdateWaitsForBusyWriterAndStillFires(t *testing.T) {
 		hookMu.Unlock()
 	})
 
-	mu := m.lockFor(task.ID)
-	mu.Lock()
+	unlock := m.lock(task.ID)
 
 	done := make(chan struct{})
 	go func() {
@@ -620,10 +615,10 @@ func TestManagerOnExternalUpdateWaitsForBusyWriterAndStillFires(t *testing.T) {
 		Status: Ptr(StatusInProgress),
 		Body:   &body,
 	}); err != nil {
-		mu.Unlock()
+		unlock()
 		t.Fatalf("UpdateWithPrev: %v", err)
 	}
-	mu.Unlock()
+	unlock()
 
 	select {
 	case <-done:

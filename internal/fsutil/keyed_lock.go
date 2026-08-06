@@ -9,10 +9,10 @@ import (
 )
 
 // KeyedLocker serializes read-modify-write critical sections keyed by an
-// arbitrary string (e.g. a task or project ID), both within this process (a
-// ref-counted semaphore per key) and across processes (an flock via
-// LockFile). Sidecar stores that do a Get-then-mutate-then-write should share
-// one KeyedLocker per store and hold it across the full critical section —
+// arbitrary string (e.g. a task or project ID). LockLocal/TryLockLocal provide
+// ref-counted in-process serialization; Lock/LockWithin add a cross-process
+// flock via LockFile. Sidecar stores that do a Get-then-mutate-then-write
+// should share one KeyedLocker per store and hold it across the full critical section —
 // not just the final write — or a concurrent writer can still interleave
 // between another caller's read and write and silently drop an update.
 //
@@ -36,6 +36,27 @@ func NewKeyedLocker() *KeyedLocker {
 	return &KeyedLocker{locks: map[string]*keyRefLock{}}
 }
 
+// LockLocal acquires the in-process lock for key and returns its release
+// function. The key remains retained while a caller holds or waits for the
+// lock and is removed after the last release.
+func (l *KeyedLocker) LockLocal(key string) func() {
+	lock := l.retain(key)
+	lock.acquire()
+	return l.localUnlockFunc(key, lock)
+}
+
+// TryLockLocal attempts to acquire key without blocking. A failed probe does
+// not leave a retained entry behind. This is the non-blocking counterpart to
+// LockLocal for callers that distinguish a busy key from an idle one.
+func (l *KeyedLocker) TryLockLocal(key string) (func(), bool) {
+	lock := l.retain(key)
+	if !lock.tryAcquire() {
+		l.releaseRef(key, lock)
+		return nil, false
+	}
+	return l.localUnlockFunc(key, lock), true
+}
+
 // Lock acquires the in-process lock for key, then the cross-process flock
 // on path (typically the record's own file path, or any stable synthetic
 // path if the record has no single backing file), and returns a func that
@@ -44,13 +65,7 @@ func NewKeyedLocker() *KeyedLocker {
 // never proceed holding only the in-process half, since that would silently
 // reintroduce the cross-process race this lock exists to close.
 func (l *KeyedLocker) Lock(key, path string) (func(), error) {
-	lock := l.retain(key)
-	lock.acquire()
-
-	releaseInProcess := func() {
-		lock.release()
-		l.releaseRef(key, lock)
-	}
+	releaseInProcess := l.LockLocal(key)
 
 	unlockFile, err := LockFile(path)
 	if err != nil {
@@ -59,6 +74,16 @@ func (l *KeyedLocker) Lock(key, path string) (func(), error) {
 	}
 
 	return l.unlockFunc(key, unlockFile, releaseInProcess), nil
+}
+
+func (l *KeyedLocker) localUnlockFunc(key string, lock *keyRefLock) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			lock.release()
+			l.releaseRef(key, lock)
+		})
+	}
 }
 
 // LockWithin is Lock with a bounded wait across both in-process and
@@ -128,6 +153,15 @@ func newKeyRefLock() *keyRefLock {
 
 func (l *keyRefLock) acquire() {
 	<-l.token
+}
+
+func (l *keyRefLock) tryAcquire() bool {
+	select {
+	case <-l.token:
+		return true
+	default:
+		return false
+	}
 }
 
 func (l *keyRefLock) acquireUntil(deadline time.Time) bool {
