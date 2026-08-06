@@ -166,6 +166,9 @@ func TestHumanReviewDispatchDir_PreparesManagedWorktree(t *testing.T) {
 
 	wantDir := t.TempDir()
 	called := false
+	// Production wires both resolvers together, so a nil resolver would test an
+	// order that never ships.
+	h.resolveExistingWorktree = func(task.Task) (string, error) { return "", os.ErrNotExist }
 	h.prepareTaskWorktree = func(tk task.Task) (string, error) {
 		called = true
 		if tk.ID != "managed-task" {
@@ -187,6 +190,7 @@ func TestHumanReviewDispatchDir_PrepareFailureFallsBackReadOnly(t *testing.T) {
 	h, _, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
+	h.resolveExistingWorktree = func(task.Task) (string, error) { return "", os.ErrNotExist }
 	h.prepareTaskWorktree = func(task.Task) (string, error) {
 		return "", errors.New("worktree unavailable")
 	}
@@ -333,6 +337,66 @@ func TestHumanReviewDispatchDir_BusyWorktreeIsRetryable(t *testing.T) {
 	}
 }
 
+// A transient fetch failure lands after SanitizeWorktree has auto-committed
+// and reset the tree, so the retry reuses a checkout that no longer holds the
+// evidence. Without carrying the flag across the retry it is reported as
+// untouched — the exact false reassurance the warning exists to prevent.
+func TestHumanReviewSpawn_PreparedFlagSurvivesRetry(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("transient prepare", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	wtDir := t.TempDir()
+	prepared := false
+	// First pass: nothing to reuse, and preparation fails transiently after
+	// having already sanitized. Second pass: the sanitized tree is reusable.
+	h.resolveExistingWorktree = func(task.Task) (string, error) {
+		if prepared {
+			return wtDir, nil
+		}
+		return "", os.ErrNotExist
+	}
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		prepared = true
+		return "", fmt.Errorf("fetch: %w", worktree.ErrTransientFetch)
+	}
+
+	var prompt string
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		prompt = cfg.Prompt
+		return &agent.Agent{ID: "rev", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+	// Run the real scheduled retry rather than reconstructing its options, so
+	// the flag has to survive the actual handoff.
+	var retry func()
+	h.schedule = func(_ time.Duration, fn func()) { retry = fn }
+
+	if h.maybeSpawn(tk.ID, string(task.StatusInReview)) {
+		t.Fatal("spawned despite a retryable preparation failure")
+	}
+	if retry == nil {
+		t.Fatal("no retry scheduled after a retryable preparation failure")
+	}
+	retry()
+
+	if prompt == "" {
+		t.Fatal("retry did not spawn")
+	}
+	if !strings.Contains(prompt, "not looking at the state that failed") {
+		t.Error("retry reused a sanitized worktree without warning the agent")
+	}
+}
+
 // A preparation that sanitizes the tree and then fails non-retryably has
 // destroyed the evidence more thoroughly than one that succeeded, so the
 // read-only fallback still has to carry the warning.
@@ -377,6 +441,13 @@ func TestHumanReviewSpawn_HoldsDispatchClaimAcrossPreparationAndRun(t *testing.T
 		}
 		held = true
 		return func() { held = false }, true
+	}
+	// Reuse is tried first in production, and it must also be inside the claim.
+	h.resolveExistingWorktree = func(task.Task) (string, error) {
+		if !held {
+			t.Fatal("worktree reuse ran without the dispatch claim")
+		}
+		return "", os.ErrNotExist
 	}
 	h.prepareTaskWorktree = func(task.Task) (string, error) {
 		if !held {
@@ -4072,6 +4143,9 @@ func TestHumanReviewDispatchDir_RetryableErrorsDoNotFallBackReadOnly(t *testing.
 			h, _, cleanup := newReviewTestEnv(t)
 			defer cleanup()
 			h.cfg.HumanReview.SybraRepoDir = "/opt/sybra/src"
+			// No reusable checkout, so preparation is genuinely the next step —
+			// production always wires both resolvers together.
+			h.resolveExistingWorktree = func(task.Task) (string, error) { return "", os.ErrNotExist }
 			h.prepareTaskWorktree = func(task.Task) (string, error) { return "", tc.prepareErr }
 
 			dir, readOnly, retryable, _ := h.dispatchDir(task.Task{ID: "t1"})
@@ -4142,5 +4216,46 @@ func TestHumanReviewSpawn_RetryablePrepareSchedulesRetry(t *testing.T) {
 
 	if runCalls != 1 {
 		t.Errorf("agent runs after retry = %d, want 1", runCalls)
+	}
+}
+
+// The empty-dir guard is load-bearing: without it a resolver returning
+// ("", nil) would give the agent an empty RunConfig.Dir and run it in the
+// server process's own working directory.
+func TestHumanReviewDispatchDir_EmptyReuseFallsThrough(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	prepared := t.TempDir()
+	h.resolveExistingWorktree = func(task.Task) (string, error) { return "  ", nil }
+	h.prepareTaskWorktree = func(task.Task) (string, error) { return prepared, nil }
+
+	dir, _, _, _ := h.dispatchDir(task.Task{ID: "t1"})
+	if dir != prepared {
+		t.Errorf("dir = %q, want the prepared worktree %q", dir, prepared)
+	}
+}
+
+// A preparation can fail before it mutates anything — adoptWorktree refuses a
+// detached or default-branch checkout up front — and the fallback then lands
+// back on the task's own untouched worktree. Telling the agent it is "not
+// looking at the state that failed" there makes it distrust a correct
+// reproduction, which is the opposite of what the warning is for.
+func TestHumanReviewDispatchDir_AdoptedFallbackIsNotFlaggedRebuilt(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	adopted := t.TempDir()
+	h.resolveExistingWorktree = func(task.Task) (string, error) { return "", os.ErrInvalid }
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		return "", errors.New("adopt worktree: checked out on default branch")
+	}
+
+	dir, readOnly, _, rebuilt := h.dispatchDir(task.Task{ID: "t1", WorktreeDir: adopted})
+	if dir != adopted || readOnly {
+		t.Fatalf("got dir=%q readOnly=%v, want the task's own worktree", dir, readOnly)
+	}
+	if rebuilt {
+		t.Error("rebuilt=true for an untouched worktree; the agent would distrust a correct reproduction")
 	}
 }

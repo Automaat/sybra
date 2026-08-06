@@ -130,6 +130,11 @@ type humanReviewSpawnOptions struct {
 	SkipABVariant         bool
 	RetryReason           string
 	ClaimRetryAttempt     int
+	// WorktreePrepared records that an earlier attempt already ran
+	// PrepareForTask. A transient failure can leave the tree sanitized and
+	// rebased and still return retryable, so the retry reuses a checkout that
+	// no longer holds the evidence — and would report it as untouched.
+	WorktreePrepared bool
 }
 
 func (h *humanReviewHandler) abTestingConfig() abtest.Config {
@@ -278,13 +283,21 @@ func (h *humanReviewHandler) dispatchDir(t task.Task) (dir string, readOnly, ret
 		}
 		if err != nil {
 			if isRetryablePrepareError(err) {
+				// rebuilt, not clean: a transient fetch failure lands after
+				// SanitizeWorktree has already auto-committed and reset the
+				// tree, so the retry must not call the survivor untouched.
 				h.logger.Info("human-review.worktree.prepare.retryable", "task_id", t.ID, "err", err)
-				return "", false, true, false
+				return "", false, true, true
 			}
 			h.logger.Warn("human-review.worktree.prepare", "task_id", t.ID, "err", err)
 		}
 		dir, readOnly = humanReviewDispatchDir(t, h.cfg.HumanReview.SybraRepoDir)
-		return dir, readOnly, false, true
+		// Only warn when the fallback is the Sybra source tree. Landing back on
+		// the task's own adopted worktree means preparation refused it before
+		// touching anything, so the agent IS looking at the state that failed
+		// and must not be told otherwise — the mandate would have it distrust a
+		// correct reproduction.
+		return dir, readOnly, false, readOnly
 	}
 	dir, readOnly = humanReviewDispatchDir(t, h.cfg.HumanReview.SybraRepoDir)
 	return dir, readOnly, false, false
@@ -390,12 +403,15 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 	}
 
 	dir, readOnlyDir, retryable, rebuiltDir := h.dispatchDir(t)
+	rebuiltDir = rebuiltDir || opts.WorktreePrepared
 	if retryable {
 		// Give back the reserved slot as claim contention does, or the retry
 		// hits the per-hour cap and the task is never examined at all. The
 		// dispatch claim itself is released by the deferred call above.
 		h.releaseReservedSlot(taskID, now)
-		h.scheduleClaimRetry(taskID, prevStatus, opts)
+		next := opts
+		next.WorktreePrepared = rebuiltDir
+		h.scheduleClaimRetry(taskID, prevStatus, next)
 		return false
 	}
 	prompt := h.buildPrompt(t, dir, wctx, rebuiltDir)

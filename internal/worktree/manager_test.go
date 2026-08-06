@@ -2249,9 +2249,10 @@ func TestManager_ResolveExistingRefusesLiveAgent(t *testing.T) {
 	}
 }
 
-// A recovery agent is ordered to fix, commit and push. These two states pass
-// WorktreeHealthy and then cannot be pushed from at all — the commit lands
-// unreferenced and the next Prepare* drops the verified fix.
+// A recovery agent is ordered to fix, commit and push. Each of these passes
+// WorktreeHealthy and then either cannot be pushed from at all — the commit
+// lands unreferenced and the next Prepare* drops the verified fix — or pushes
+// somewhere catastrophic.
 func TestManager_ResolveExistingRefusesUnpushableCheckout(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -2265,13 +2266,31 @@ func TestManager_ResolveExistingRefusesUnpushableCheckout(t *testing.T) {
 			},
 		},
 		{
-			name: "interrupted rebase",
+			name: "conflicted merge",
 			breakWT: func(t *testing.T, wt string) {
 				t.Helper()
-				gitDir := gitOut(t, wt, "rev-parse", "--absolute-git-dir")
-				if err := os.MkdirAll(filepath.Join(gitDir, "rebase-merge"), 0o755); err != nil {
-					t.Fatal(err)
-				}
+				forkConflict(t, wt, "merge")
+			},
+		},
+		{
+			name: "conflicted cherry-pick",
+			breakWT: func(t *testing.T, wt string) {
+				t.Helper()
+				forkConflict(t, wt, "cherry-pick")
+			},
+		},
+		{
+			name: "conflicted rebase",
+			breakWT: func(t *testing.T, wt string) {
+				t.Helper()
+				forkConflict(t, wt, "rebase")
+			},
+		},
+		{
+			name: "half-applied revert",
+			breakWT: func(t *testing.T, wt string) {
+				t.Helper()
+				runInDirAllowFail(wt, "git", "revert", "--no-commit", "HEAD")
 			},
 		},
 	}
@@ -2288,6 +2307,7 @@ func TestManager_ResolveExistingRefusesUnpushableCheckout(t *testing.T) {
 			tk := task.Task{ID: "unpushable"}
 			wt := filepath.Join(dir, tk.DirName())
 			makePushedGitDir(t, wt)
+			mustRunInDir(t, wt, "git", "checkout", "-q", "-b", "feature")
 			if _, err := m.ResolveExisting(context.Background(), tk); err != nil {
 				t.Fatalf("healthy worktree refused before the break: %v", err)
 			}
@@ -2298,6 +2318,87 @@ func TestManager_ResolveExistingRefusesUnpushableCheckout(t *testing.T) {
 				t.Fatalf("ResolveExisting returned %q for a checkout that cannot be pushed from", got)
 			}
 		})
+	}
+}
+
+// forkConflict leaves op half-applied against a conflicting sibling commit, so
+// git writes the real in-progress marker rather than a hand-made directory.
+func forkConflict(t *testing.T, wt, op string) {
+	t.Helper()
+	base := gitOut(t, wt, "rev-parse", "HEAD")
+	mustRunInDir(t, wt, "git", "checkout", "-q", "-b", "other", base)
+	writeFileT(t, filepath.Join(wt, "f.txt"), "other side")
+	mustRunInDir(t, wt, "git", "commit", "-q", "-am", "other")
+	other := gitOut(t, wt, "rev-parse", "HEAD")
+
+	mustRunInDir(t, wt, "git", "checkout", "-q", "feature")
+	writeFileT(t, filepath.Join(wt, "f.txt"), "feature side")
+	mustRunInDir(t, wt, "git", "commit", "-q", "-am", "feature")
+
+	switch op {
+	case "merge":
+		runInDirAllowFail(wt, "git", "merge", other)
+	case "cherry-pick":
+		runInDirAllowFail(wt, "git", "cherry-pick", other)
+	case "rebase":
+		runInDirAllowFail(wt, "git", "rebase", other)
+	}
+}
+
+func writeFileT(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// runInDirAllowFail runs a command expected to exit non-zero (a deliberate
+// conflict), so only the resulting repository state matters.
+func runInDirAllowFail(dir, name string, args ...string) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	_, _ = cmd.CombinedOutput()
+}
+
+// The recovery mandate orders the agent to commit and push, and origin's push
+// URL is only neutered for fork remotes. Reusing a checkout sitting on the
+// default branch would put agent commits straight onto main with no PR —
+// which is why adoptWorktree already refuses it.
+func TestManager_ResolveExistingRefusesDefaultBranch(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("default branch reuse", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wt := h.m.PathFor(tk)
+	mustRunInDir(t, "", "git", "clone", "-q", h.proj.ClonePath, wt)
+	branch := gitOut(t, wt, "rev-parse", "--abbrev-ref", "HEAD")
+	def, err := project.DefaultBranch(context.Background(), h.proj.ClonePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch != def {
+		t.Fatalf("clone landed on %q, want the default branch %q", branch, def)
+	}
+
+	got, err := h.m.ResolveExisting(context.Background(), tk)
+	if err == nil {
+		t.Fatalf("ResolveExisting returned %q for a checkout on the default branch", got)
+	}
+
+	// A feature branch in the same worktree is still fine.
+	mustRunInDir(t, wt, "git", "checkout", "-q", "-b", "feature")
+	if _, err := h.m.ResolveExisting(context.Background(), tk); err != nil {
+		t.Errorf("feature branch refused: %v", err)
 	}
 }
 

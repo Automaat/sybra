@@ -157,16 +157,30 @@ func (m *Manager) ResolveExisting(ctx context.Context, t task.Task) (string, err
 	if m.hasLiveAgentOnly != nil && m.hasLiveAgentOnly(t.ID) {
 		return "", fmt.Errorf("resolve existing worktree %s: %w", path, ErrWorktreeBusy)
 	}
-	if err := pushableCheckout(ctx, path); err != nil {
+	if err := m.pushableCheckout(ctx, t, path); err != nil {
 		return "", err
 	}
 	return path, nil
 }
 
+// inProgressMarkers are the per-worktree files git writes while an operation is
+// half-applied. They live in the linked worktree's own git dir, not the common
+// one, so `rev-parse --git-dir` is the right base.
+var inProgressMarkers = []string{
+	"rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "sequencer",
+}
+
 // pushableCheckout rejects the states that pass WorktreeHealthy but leave an
-// agent unable to publish its fix: a detached HEAD (PrepareForReview creates
-// the same path detached) and an interrupted rebase or merge.
-func pushableCheckout(ctx context.Context, path string) error {
+// agent unable to publish its fix, or able to publish it somewhere catastrophic:
+// a detached HEAD (PrepareForReview creates the same path detached), a
+// half-applied rebase/merge/revert, and the project's default branch.
+//
+// The default-branch case is the dangerous one. The recovery mandate orders the
+// agent to fix, commit and push, and origin's push URL is only neutered for fork
+// remotes — so on an own-repo project this would put agent commits straight onto
+// main with no PR. adoptWorktree already refuses it for the same reason, and
+// like adoptWorktree this fails closed when the default branch cannot be read.
+func (m *Manager) pushableCheckout(ctx context.Context, t task.Task, path string) error {
 	branch, err := project.CurrentBranch(ctx, path)
 	if err != nil {
 		return fmt.Errorf("resolve existing worktree %s: %w", path, err)
@@ -182,10 +196,28 @@ func pushableCheckout(ctx context.Context, path string) error {
 	if !filepath.IsAbs(gitDir) {
 		gitDir = filepath.Join(path, gitDir)
 	}
-	for _, marker := range []string{"rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD"} {
+	for _, marker := range inProgressMarkers {
 		if _, err := os.Stat(filepath.Join(gitDir, marker)); err == nil {
 			return fmt.Errorf("resolve existing worktree %s: %s in progress: %w", path, marker, os.ErrInvalid)
 		}
+	}
+	return m.refuseDefaultBranch(ctx, t, path, branch)
+}
+
+func (m *Manager) refuseDefaultBranch(ctx context.Context, t task.Task, path, branch string) error {
+	if m.projects == nil || strings.TrimSpace(t.ProjectID) == "" {
+		return nil
+	}
+	proj, err := m.projects.Get(t.ProjectID)
+	if err != nil {
+		return fmt.Errorf("resolve existing worktree %s: load project: %w", path, err)
+	}
+	def, err := project.DefaultBranch(ctx, proj.ClonePath)
+	if err != nil {
+		return fmt.Errorf("resolve existing worktree %s: cannot determine default branch to guard against: %w", path, err)
+	}
+	if branch == def {
+		return fmt.Errorf("resolve existing worktree %s: checked out on default branch %q: %w", path, def, os.ErrInvalid)
 	}
 	return nil
 }
