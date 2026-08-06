@@ -1000,7 +1000,9 @@ func requireResolved(cfg *ResolvedConfig, err error) (*ResolvedConfig, error) {
 // other check, is the whole point. Everything that acts on the config still
 // fails closed via Load/LoadNoPersist.
 func LoadLenient() (cfg *ResolvedConfig, schemaErr, err error) {
-	return load(loadOptions{lenient: true})
+	cfg, schemaErr, err = load(loadOptions{lenient: true})
+	cfg, err = requireResolved(cfg, err)
+	return cfg, schemaErr, err
 }
 
 type loadOptions struct {

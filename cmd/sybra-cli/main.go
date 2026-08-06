@@ -1879,7 +1879,7 @@ func printJSON(v any) int {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
-		fmt.Fprintf(os.Stderr, `{"error":"%v"}`+"\n", err)
+		writeJSONError(err.Error())
 		return 1
 	}
 	return 0
@@ -1888,11 +1888,23 @@ func printJSON(v any) int {
 func fatal(jsonOut bool, format string, args ...any) int {
 	msg := fmt.Sprintf(format, args...)
 	if jsonOut {
-		fmt.Fprintf(os.Stderr, `{"error":"%s"}`+"\n", msg)
+		writeJSONError(msg)
 	} else {
 		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
 	}
 	return 1
+}
+
+// writeJSONError marshals rather than interpolating: several messages quote a
+// config key or a path, and a raw double quote inside the string literal makes
+// the object unparseable for the agents that run this with --json.
+func writeJSONError(msg string) {
+	encoded, err := json.Marshal(map[string]string{"error": msg})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
+		return
+	}
+	fmt.Fprintln(os.Stderr, string(encoded))
 }
 
 func filterProject(tasks []task.Task, projectID string) []task.Task {

@@ -137,6 +137,9 @@ func ParseFileConfig(data []byte) (*FileConfig, error) {
 	case schemaErr != nil:
 		return nil, schemaErr
 	case cfg == nil:
+		// parseFileConfigLenient never returns this combination. Stating it
+		// anyway is what lets the static analysis prove every caller's
+		// dereference safe, rather than leaving it to be inferred.
 		return nil, errors.New("parse config: no document")
 	}
 	return cfg, nil
@@ -162,11 +165,18 @@ func parseFileConfigLenient(data []byte) (parsed *FileConfig, schemaErr, err err
 	cfg.schemaVersion = schemaVersion
 	cfg.hasSchemaVersion = hasVersion
 	validateRoot := &root
+	var skipped []string
 	if cfg.schemaVersion >= CurrentSchemaVersion {
-		normalized, warnings, err := NormalizeV2Document(&root)
+		// Lenient: an unknown key at a namespace boundary is rejected here
+		// rather than by validateKnownConfigKeys below, so a strict normalizer
+		// would abort before the caller ever sees a schema error it could
+		// report. Collect and skip; the strict wrapper turns the same keys
+		// back into a hard failure.
+		normalized, warnings, unknown, err := normalizeV2Document(&root, &unknownKeySink{lenient: true})
 		if err != nil {
 			return nil, nil, err
 		}
+		skipped = unknown
 		cfg.normalizedRoot = normalized
 		cfg.warnings = warnings
 		cfg.normalizedData, err = marshalYAMLDocument(normalized)
@@ -176,7 +186,27 @@ func parseFileConfigLenient(data []byte) (parsed *FileConfig, schemaErr, err err
 		validateRoot = normalized
 		cfg.warnings = append(cfg.warnings, legacyFieldAliasWarnings(normalized)...)
 	}
-	return cfg, validateKnownConfigKeys(validateRoot, cfg.schemaVersion), nil
+	return cfg, unknownKeyError(skipped, validateKnownConfigKeys(validateRoot, cfg.schemaVersion)), nil
+}
+
+// unknownKeyError merges the keys the normalizer skipped with the one the
+// schema walk rejected into a single sentinel-matching error. Reporting every
+// stale key at once matters for the case this exists for: a rendered config
+// left behind by an upgrade usually carries several, and one-per-run turns a
+// single fix into a sequence of them.
+func unknownKeyError(skipped []string, validateErr error) error {
+	if len(skipped) == 0 {
+		return validateErr
+	}
+	quoted := make([]string, 0, len(skipped))
+	for _, key := range skipped {
+		quoted = append(quoted, fmt.Sprintf("%q", key))
+	}
+	msg := strings.Join(quoted, ", ")
+	if validateErr != nil {
+		msg += ", " + strings.TrimPrefix(validateErr.Error(), ErrUnknownConfigKey.Error()+" ")
+	}
+	return fmt.Errorf("%w %s", ErrUnknownConfigKey, msg)
 }
 
 func parseSchemaVersion(root *yaml.Node) (version int, hasVersion bool, err error) {
