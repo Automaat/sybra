@@ -3414,6 +3414,13 @@ func TestRouteTestResult_DistinctFailureLoopUsesBoundedDefaultBackstop(t *testin
 		wantStatus taskstatus.Status
 	}{
 		{
+			name:       "below cap still reimplements",
+			taskID:     "t-default-cap-3",
+			attempts:   config.DefaultTestingMaxAttempts - 2,
+			wantOutput: "reimplement",
+			wantStatus: "in-progress",
+		},
+		{
 			name:       "one below backstop still reimplements",
 			taskID:     "t-default-cap-4",
 			attempts:   config.DefaultTestingMaxAttempts - 1,
