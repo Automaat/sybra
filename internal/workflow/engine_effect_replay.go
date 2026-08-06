@@ -35,7 +35,7 @@ func (e *Engine) ReplayPersistedEffects() {
 		slices.SortStableFunc(tasks, e.dispatchComparator())
 	} else {
 		slices.SortStableFunc(tasks, func(a, b TaskInfo) int {
-			return cmp.Compare(dispatchorder.Rank(a.Status), dispatchorder.Rank(b.Status))
+			return cmp.Compare(dispatchorder.Rank(string(a.Status)), dispatchorder.Rank(string(b.Status)))
 		})
 	}
 
@@ -135,7 +135,11 @@ func (e *Engine) replayPendingEffect(t *TaskInfo, step *Step, def *Definition) b
 	}
 	if rec.CompletedAt != nil {
 		e.clearResumeDispatching(t.ID)
-		e.logger.Info("workflow.effect-replay.noop",
+		// Throttled: a parked run_agent step always carries a completed
+		// step-action effect, so this fires every maintenance tick for the
+		// whole park — ~3,600 INFO lines per task across a 60-hour one.
+		e.resumeSkip.Log(e.logger, "workflow.effect-replay.noop", fresh.ID,
+			"already_completed|"+step.ID+"|"+rec.ID.String(),
 			"task_id", fresh.ID, "step", step.ID, "effect", rec.ID.String())
 		metrics.OrchestratorEffectReplay(e.metricContext(), "already_completed")
 		return true
@@ -144,6 +148,11 @@ func (e *Engine) replayPendingEffect(t *TaskInfo, step *Step, def *Definition) b
 		return true
 	}
 
+	// Winning the claim is not enough to re-arm — the no-op branch above wins it
+	// on every tick of a park. Only an actual dispatch ends one, and once this
+	// route dispatches, ResumeStalled's own Clear is unreachable because its
+	// preflight short-circuits on HasRunningAgent.
+	e.resumeSkip.Clear(fresh.ID)
 	e.logger.Info("workflow.effect-replay", "task_id", fresh.ID, "step", step.ID, "effect", rec.ID.String())
 	comp, rErr := e.executeSteps(fresh.ID, def, step, fresh.Workflow)
 	rErr = normalizeExecuteStepsErr(rErr)

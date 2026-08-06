@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/provider"
+
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/logging"
@@ -78,8 +80,8 @@ func (f fakeGate) Reason(string) string {
 	}
 	return ""
 }
-func (f fakeGate) ReportAuthFailure(string, string)              {}
-func (f fakeGate) ReportRateLimit(string, time.Duration, string) {}
+func (f fakeGate) ReportAuthFailure(string, string)                                       {}
+func (f fakeGate) ReportRateLimit(string, time.Duration, string, provider.CooldownSource) {}
 
 // TestRunStartupCleanupEmpty verifies the boot pass is idempotent on a
 // fresh, empty store — no panics, no error returns, no spurious task
@@ -166,8 +168,10 @@ func TestRunStartupCleanup_ReplaysEffectsBeforeStaleRestart(t *testing.T) {
 	r.RunStartupCleanup(context.Background())
 	wg.Wait()
 
-	if !slices.Equal(order, []string{"replay", "replay:" + created.ID, "restart"}) {
-		t.Fatalf("startup order = %v, want [replay replay:%s restart]", order, created.ID)
+	// Reclaim must lead: both replay paths claim effects, and a lease held by
+	// the previous engine instance fences them for the rest of its TTL.
+	if !slices.Equal(order, []string{"reclaim", "replay", "replay:" + created.ID, "restart"}) {
+		t.Fatalf("startup order = %v, want [reclaim replay replay:%s restart]", order, created.ID)
 	}
 }
 
@@ -1233,10 +1237,11 @@ type stubWorkflowEngine struct {
 	startWorkflowErr   error
 	completions        []workflow.AgentCompletion
 
-	replayCalls int
-	callOrder   *[]string
-	replayTasks []string
-	replayTask  bool
+	replayCalls  int
+	reclaimCalls int
+	callOrder    *[]string
+	replayTasks  []string
+	replayTask   bool
 
 	dispatchEventCalls  []map[string]string
 	dispatchEventResult string
@@ -1256,6 +1261,14 @@ func (s *stubWorkflowEngine) DispatchEvent(_, _ string, extraFields, _ map[strin
 
 func (s *stubWorkflowEngine) HandleAgentComplete(_ string, c workflow.AgentCompletion) {
 	s.completions = append(s.completions, c)
+}
+
+func (s *stubWorkflowEngine) ReclaimOrphanedEffectLeases() int {
+	s.reclaimCalls++
+	if s.callOrder != nil {
+		*s.callOrder = append(*s.callOrder, "reclaim")
+	}
+	return 0
 }
 
 func (s *stubWorkflowEngine) ReplayPersistedEffects() {
@@ -2018,6 +2031,98 @@ func TestRestartStaleRecoverCompletedHeadlessRunGeneralizedBeyondReviewTag(t *te
 	}
 }
 
+// TestRestartStaleRecoverCompletedHeadlessRunSkipsVerifyAutoFixRewind proves
+// recovery does not re-consume the original successful implementation run
+// after verify_checks rewound simple-task-implement back to implement with a
+// future retry_after window. That run belongs to the pre-rewind attempt; the
+// pending re-dispatch must be left for the workflow resume path so the
+// verify_reask note reaches a fresh implementation agent.
+func TestRestartStaleRecoverCompletedHeadlessRunSkipsVerifyAutoFixRewind(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("implement feature", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusInProgress
+	retryAfter := time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)
+	wf := &workflow.Execution{
+		WorkflowID:  "simple-task-implement",
+		State:       workflow.ExecWaiting,
+		CurrentStep: "implement",
+		StartedAt:   time.Now(),
+		Variables: map[string]string{
+			"workflow.retry_after":                 retryAfter,
+			"verify_auto_fix.rewound_run_agent_id": "impl-1",
+		},
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:   &status,
+		Workflow: &wf,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{
+		AgentID:   "impl-1",
+		Role:      "implementation",
+		Mode:      "headless",
+		State:     string(agent.StateStopped),
+		Outcome:   task.RunOutcomeSuccess,
+		Result:    "implementation done",
+		StartedAt: time.Now().Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	wfStub := &stubWorkflowEngine{}
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		Orchestrator:   &stub,
+		WorkflowEngine: wfStub,
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if len(wfStub.completions) != 0 {
+		t.Fatalf("HandleAgentComplete called %d times; want 0 while verify auto-fix rewind is pending", len(wfStub.completions))
+	}
+	if stub.startCalls != 0 {
+		t.Fatalf("StartAgent called %d times; want 0 before retry_after expires", stub.startCalls)
+	}
+	got, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.CurrentStep != "implement" || got.Workflow.State != workflow.ExecWaiting {
+		t.Fatalf("workflow = %+v, want implement/ExecWaiting preserved", got.Workflow)
+	}
+}
+
 // TestTryClaimRecoveryMutualExclusion verifies the primitive backing the
 // concurrent-recovery-race fix: a second claim attempt for the same task
 // fails while the first is held, and succeeds again once released.
@@ -2153,6 +2258,8 @@ func (s *recordingWorkflowStub) HandleAgentComplete(taskID string, _ workflow.Ag
 }
 
 func (*recordingWorkflowStub) ReplayPersistedEffects() {}
+
+func (*recordingWorkflowStub) ReclaimOrphanedEffectLeases() int { return 0 }
 
 func (*recordingWorkflowStub) ReplayPersistedEffectsForTask(string) bool { return false }
 

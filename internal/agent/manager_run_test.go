@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -110,6 +113,55 @@ func TestReleaseStaleStoppedAgentsForTask_KeepsFreshStopRace(t *testing.T) {
 	}
 }
 
+func TestReleaseDeadAgentsForTask_ReleasesDeadRunningGate(t *testing.T) {
+	m, _ := newTestManager(t)
+	m.deadAgentRetention = 0
+	dead := &Agent{
+		ID:       "dead-running",
+		TaskID:   "task-1",
+		Provider: "claude",
+		State:    StateRunning,
+		PID:      9999999,
+		done:     make(chan struct{}),
+	}
+	if err := m.registerRunningAgent(dead, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+	if !m.HasRunningAgentForTask("task-1") {
+		t.Fatal("precondition: dead running agent should still gate before release")
+	}
+
+	if got := m.ReleaseDeadAgentsForTask(context.Background(), "task-1"); got != 1 {
+		t.Fatalf("released = %d, want 1", got)
+	}
+	if m.HasRunningAgentForTask("task-1") {
+		t.Fatal("dead running agent should no longer gate dispatch")
+	}
+}
+
+func TestReleaseDeadAgentsForTask_KeepsLiveProcess(t *testing.T) {
+	m, _ := newTestManager(t)
+	alive := &Agent{
+		ID:       "alive-running",
+		TaskID:   "task-1",
+		Provider: "claude",
+		State:    StateRunning,
+		PID:      os.Getpid(),
+		done:     make(chan struct{}),
+	}
+	if err := m.registerRunningAgent(alive, RunConfig{}, func() {}); err != nil {
+		t.Fatalf("registerRunningAgent: %v", err)
+	}
+	t.Cleanup(func() { m.markAgentDone(context.Background(), alive) })
+
+	if got := m.ReleaseDeadAgentsForTask(context.Background(), "task-1"); got != 0 {
+		t.Fatalf("released = %d, want 0", got)
+	}
+	if !m.HasRunningAgentForTask("task-1") {
+		t.Fatal("live process must keep gating liveness")
+	}
+}
+
 func TestClaimTaskDispatch_ExpiresLeakedClaim(t *testing.T) {
 	m, _ := newTestManager(t)
 	if !m.ClaimTaskDispatch("task-1") {
@@ -120,7 +172,7 @@ func TestClaimTaskDispatch_ExpiresLeakedClaim(t *testing.T) {
 	}
 
 	m.mu.Lock()
-	m.dispatchClaims["task-1"] = time.Now().Add(-staleDispatchClaimAge - time.Minute)
+	m.dispatchClaims["task-1"] = time.Now().Add(-StaleDispatchClaimAge - time.Minute)
 	m.mu.Unlock()
 
 	if !m.ClaimTaskDispatch("task-1") {
@@ -913,24 +965,17 @@ func TestGitBranchSingleFiles_EmptyOnDetachedHead(t *testing.T) {
 	}
 }
 
-func TestGitCommonDirSingleFiles_DerivesAllHousekeepingPaths(t *testing.T) {
+func TestGitCommonDirSingleFiles_DerivesOrdinaryWorkflowPaths(t *testing.T) {
 	files := gitCommonDirSingleFiles(gitSandboxRoots{commonDir: "/data/clones/repo.git"})
 
 	want := gitCommonDirFiles{
-		packedRefs:         "/data/clones/repo.git/packed-refs",
-		packedRefsNew:      "/data/clones/repo.git/packed-refs.new",
-		packedRefsLock:     "/data/clones/repo.git/packed-refs.lock",
-		gcPid:              "/data/clones/repo.git/gc.pid",
-		gcPidLock:          "/data/clones/repo.git/gc.pid.lock",
-		shallow:            "/data/clones/repo.git/shallow",
-		shallowLock:        "/data/clones/repo.git/shallow.lock",
-		infoDir:            "/data/clones/repo.git/info",
-		infoDenyAttributes: "/data/clones/repo.git/info/attributes",
-		infoDenyExclude:    "/data/clones/repo.git/info/exclude",
-		stashRef:           "/data/clones/repo.git/refs/stash",
-		stashRefLock:       "/data/clones/repo.git/refs/stash.lock",
-		stashLog:           "/data/clones/repo.git/logs/refs/stash",
-		stashLogLock:       "/data/clones/repo.git/logs/refs/stash.lock",
+		packedRefsLock: "/data/clones/repo.git/packed-refs.lock",
+		shallow:        "/data/clones/repo.git/shallow",
+		shallowLock:    "/data/clones/repo.git/shallow.lock",
+		stashRef:       "/data/clones/repo.git/refs/stash",
+		stashRefLock:   "/data/clones/repo.git/refs/stash.lock",
+		stashLog:       "/data/clones/repo.git/logs/refs/stash",
+		stashLogLock:   "/data/clones/repo.git/logs/refs/stash.lock",
 	}
 	if files != want {
 		t.Fatalf("gitCommonDirSingleFiles() = %+v, want %+v", files, want)
@@ -940,5 +985,39 @@ func TestGitCommonDirSingleFiles_DerivesAllHousekeepingPaths(t *testing.T) {
 func TestGitCommonDirSingleFiles_EmptyWithoutCommonDir(t *testing.T) {
 	if got := (gitCommonDirSingleFiles(gitSandboxRoots{})); got != (gitCommonDirFiles{}) {
 		t.Fatalf("gitCommonDirSingleFiles() = %+v, want zero value", got)
+	}
+}
+
+func TestGitLooseObjectPattern(t *testing.T) {
+	if got := gitLooseObjectPattern(""); got != "" {
+		t.Fatalf("empty object dir must produce no sandbox pattern, got %q", got)
+	}
+	got := gitLooseObjectPattern("/data/repo+.git/objects")
+	writePattern := regexp.MustCompile(got)
+	for _, path := range []string{
+		"/data/repo+.git/objects/tmp_obj_publish",
+		"/data/repo+.git/objects/ab/tmp_obj_publish",
+		"/data/repo+.git/objects/ab/" + strings.Repeat("c", 38),
+		"/data/repo+.git/objects/ab/" + strings.Repeat("d", 62),
+	} {
+		if !writePattern.MatchString(path) {
+			t.Errorf("write pattern rejected valid object path %q", path)
+		}
+	}
+	for _, path := range []string{
+		"/data/repo+.git/objects/ab/not-an-object",
+		"/data/repo+.git/objects/ab/" + strings.Repeat("c", 37),
+		"/data/repo+.git/objects/abc/" + strings.Repeat("c", 38),
+	} {
+		if writePattern.MatchString(path) {
+			t.Errorf("write pattern accepted noncanonical object path %q", path)
+		}
+	}
+	fanoutPattern := regexp.MustCompile(gitLooseObjectFanoutPattern("/data/repo+.git/objects"))
+	if !fanoutPattern.MatchString("/data/repo+.git/objects/ab/" + strings.Repeat("c", 38)) {
+		t.Error("fanout pattern rejected canonical SHA-1 object")
+	}
+	if fanoutPattern.MatchString("/data/repo+.git/objects/ab/tmp_obj_publish") {
+		t.Error("fanout unlink pattern accepted a publication temp file")
 	}
 }

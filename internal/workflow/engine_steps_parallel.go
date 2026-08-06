@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // execParallel spawns every child of a `parallel` block concurrently, all
@@ -225,7 +227,7 @@ func (e *Engine) advanceParallelChild(taskID string, def *Definition, parent, ch
 	status.AgentID = output.AgentID
 	status.Provider = output.Provider
 	status.Status = output.Status
-	status.Output = truncate(output.Output, 4000)
+	status.Output = textutil.TruncateBytes(output.Output, 4000, "\n... (truncated)")
 
 	// Wait for the rest of the cohort.
 	if !rec.AllChildrenDone() {
@@ -272,12 +274,12 @@ func (e *Engine) finalizeParallelParent(taskID string, def *Definition, parent *
 	wfExec.RecordStep(StepRecord{
 		StepID:    parent.ID,
 		Status:    parentStatus,
-		Output:    truncate(parentOutput, 4000),
+		Output:    textutil.TruncateBytes(parentOutput, 4000, "\n... (truncated)"),
 		StartedAt: rec.StartedAt,
 		EndedAt:   now,
 	})
 	if parentOutput != "" {
-		wfExec.SetVar("step."+parent.ID+".output", truncate(parentOutput, 2000))
+		wfExec.SetVar("step."+parent.ID+".output", textutil.TruncateBytes(parentOutput, 2000, "\n... (truncated)"))
 	}
 
 	t, err := e.tasks.GetTask(taskID)

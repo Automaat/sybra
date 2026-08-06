@@ -26,14 +26,14 @@ type Store struct {
 	dir               string
 	trashDir          string
 	comments          *CommentStore
-	plans             *PlanStore
+	plans             *PlanningSidecarStore
 	planContracts     *PlanningSidecarStore
 	planDrafts        *PlanDraftStore
-	planCritiques     *PlanCritiqueStore
+	planCritiques     *PlanningSidecarStore
 	planResearch      *PlanningSidecarStore
 	planDecisions     *PlanningSidecarStore
 	planBrief         *PlanningSidecarStore
-	codeReviews       *CodeReviewStore
+	codeReviews       *PlanningSidecarStore
 	locker            *fsutil.KeyedLocker
 	cacheMu           sync.RWMutex
 	listCache         []Task
@@ -55,14 +55,14 @@ func NewStore(dir string) (*Store, error) {
 		dir:           dir,
 		trashDir:      filepath.Join(filepath.Dir(dir), "trash"),
 		comments:      NewCommentStore(dir),
-		plans:         NewPlanStore(dir),
+		plans:         NewPlanningSidecarStore(dir, ".plan.md", "plan"),
 		planContracts: NewPlanningSidecarStore(dir, ".plan-contract.json", "plan contract"),
 		planDrafts:    NewPlanDraftStore(dir),
-		planCritiques: NewPlanCritiqueStore(dir),
+		planCritiques: NewPlanningSidecarStore(dir, ".plan-critique.md", "plan critique"),
 		planResearch:  NewPlanningSidecarStore(dir, ".plan-research.md", "plan research"),
 		planDecisions: NewPlanningSidecarStore(dir, ".plan-decisions.md", "plan decisions"),
 		planBrief:     NewPlanningSidecarStore(dir, ".plan-brief.md", "plan brief"),
-		codeReviews:   NewCodeReviewStore(dir),
+		codeReviews:   NewPlanningSidecarStore(dir, ".review.md", "code review"),
 		locker:        fsutil.NewKeyedLocker(),
 		newTaskID:     func() string { return uuid.NewString()[:8] },
 	}, nil
@@ -80,7 +80,7 @@ func (s *Store) Dir() string {
 
 // Plans returns the sidecar store for the human-readable compact plan
 // (Task.Plan).
-func (s *Store) Plans() *PlanStore {
+func (s *Store) Plans() *PlanningSidecarStore {
 	return s.plans
 }
 
@@ -98,7 +98,7 @@ func (s *Store) PlanDrafts() *PlanDraftStore {
 
 // PlanCritiques returns the sidecar store for plan-critic review output
 // (Task.PlanCritique).
-func (s *Store) PlanCritiques() *PlanCritiqueStore {
+func (s *Store) PlanCritiques() *PlanningSidecarStore {
 	return s.planCritiques
 }
 
@@ -122,7 +122,7 @@ func (s *Store) PlanBrief() *PlanningSidecarStore {
 
 // CodeReviews returns the sidecar store for code-review output
 // (Task.CodeReview).
-func (s *Store) CodeReviews() *CodeReviewStore {
+func (s *Store) CodeReviews() *PlanningSidecarStore {
 	return s.codeReviews
 }
 
@@ -277,13 +277,28 @@ func (s *Store) List() ([]Task, error) {
 	return tasks, nil
 }
 
+// degradedIDPrefix namespaces Store.List's synthetic entries for task files
+// that could not be parsed. The colon is deliberately outside the character
+// set ValidateID accepts, so a synthetic ID can never be minted, persisted,
+// or collide with a real task ID; safePath additionally refuses to resolve
+// one to a file, which is what keeps the degraded card read-only by
+// construction rather than by convention.
+const degradedIDPrefix = "unreadable:"
+
+// IsDegradedID reports whether id is one of Store.List's synthetic
+// unreadable-task identifiers rather than a real, addressable task ID.
+func IsDegradedID(id string) bool {
+	return strings.HasPrefix(id, degradedIDPrefix)
+}
+
 // degradedTask exposes an unreadable task file without trusting any of its
-// frontmatter. The generated ID is deterministic for its filename but cannot
-// address a real task file, making the entry read-only by construction.
+// frontmatter. The generated ID is deterministic for its filename and
+// unaddressable by construction (see degradedIDPrefix), so the entry is
+// read-only and can never be confused with a real task.
 func degradedTask(path string, parseErr error) Task {
 	base := filepath.Base(path)
 	sum := sha256.Sum256([]byte(base))
-	id := fmt.Sprintf("unreadable-%x", sum[:8])
+	id := fmt.Sprintf("%s%x", degradedIDPrefix, sum[:8])
 	modified := time.Time{}
 	if info, err := os.Stat(path); err == nil {
 		modified = info.ModTime().UTC()
@@ -434,15 +449,45 @@ func (s *Store) Get(id string) (Task, error) {
 	if err != nil {
 		return Task{}, err
 	}
-	t.Plan, _ = s.plans.Read(t.ID)
-	t.PlanContract, _ = s.planContracts.Read(t.ID)
-	t.PlanCritique, _ = s.planCritiques.Read(t.ID)
-	t.PlanResearch, _ = s.planResearch.Read(t.ID)
-	t.PlanDecisions, _ = s.planDecisions.Read(t.ID)
-	t.PlanBrief, _ = s.planBrief.Read(t.ID)
-	t.CodeReview, _ = s.codeReviews.Read(t.ID)
-	t.PlanDrafts, _ = s.planDrafts.List(t.ID)
+	if err := s.loadSidecars(&t); err != nil {
+		return Task{}, err
+	}
 	return t, nil
+}
+
+// loadSidecars populates t's planning/review sidecar fields from disk. Each
+// sidecar store's Read/List already turns "sidecar absent" into a nil error
+// with a zero value, so any error still returned here is a genuine read
+// failure (e.g. a transient EIO) — propagate it instead of discarding it,
+// since silently treating it as "no plan/review exists" would erase real
+// content from the engine's view of the task.
+func (s *Store) loadSidecars(t *Task) error {
+	var err error
+	if t.Plan, err = s.plans.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanContract, err = s.planContracts.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanCritique, err = s.planCritiques.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanResearch, err = s.planResearch.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanDecisions, err = s.planDecisions.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanBrief, err = s.planBrief.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.CodeReview, err = s.codeReviews.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanDrafts, err = s.planDrafts.List(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	return nil
 }
 
 // read parses just the task file for id, skipping the sidecar fan-out that
@@ -476,6 +521,12 @@ func (s *Store) read(id string) (Task, error) {
 // routinely call sybra-cli with task IDs they parsed from prompts, so the
 // untrusted-input surface is real even though the GUI generates IDs itself.
 func (s *Store) safePath(id string) (string, error) {
+	if IsDegradedID(id) {
+		// Synthetic List-only entry for an unparseable file: it has no task
+		// file of its own, and resolving it would let an update/delete issued
+		// against the degraded board card land on some unrelated real task.
+		return "", fmt.Errorf("task ID %q is a synthetic unreadable-file entry and has no task file", id)
+	}
 	path := filepath.Clean(filepath.Join(s.dir, id+".md"))
 	if !strings.HasPrefix(path, filepath.Clean(s.dir)+string(filepath.Separator)) {
 		return "", fmt.Errorf("invalid task ID %q", id)

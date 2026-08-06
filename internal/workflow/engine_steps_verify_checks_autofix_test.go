@@ -104,10 +104,23 @@ func TestExecVerifyChecks_AutoFixRewindsToImplement(t *testing.T) {
 	t.Parallel()
 	wt := makeLintVerifyRepo(t)
 	engine, tasks := newVerifyChecksEngine(t, wt, []string{lintVerifyCommand("internal/foo/foo.go")})
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "impl-1", Role: "implementation"}},
+	})
 
 	wf := implementedExec()
-	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	rec := wf.RecordForStep(verifyChecksImplStepID)
+	if rec == nil {
+		t.Fatal("implement step record missing")
+	}
+	rec.AgentID = "impl-1"
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "impl-1", Role: "implementation"}},
+	})
 	if !errors.Is(err, errStepParked) {
 		t.Fatalf("err = %v, want errStepParked", err)
 	}
@@ -131,6 +144,9 @@ func TestExecVerifyChecks_AutoFixRewindsToImplement(t *testing.T) {
 	}
 	if wf.Variables[workflowRetryAfterVar] == "" {
 		t.Errorf("retry-after not set")
+	}
+	if got := wf.Variables[verifyAutoFixRunIDVar]; got != "impl-1" {
+		t.Errorf("rewound run agent id = %q, want impl-1", got)
 	}
 	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "in-progress" {
 		t.Errorf("status = %q, want in-progress (not escalated on first failure)", ti.Status)
@@ -181,16 +197,6 @@ func TestExecVerifyChecks_AutoFixIdenticalFingerprintEscalatesEarly(t *testing.T
 		t.Fatalf("first parked output should be zero, got %+v", out)
 	}
 	now := time.Now().UTC()
-	wf.RecordStep(StepRecord{StepID: verifyChecksImplStepID, Status: "completed", StartedAt: now, EndedAt: now})
-
-	out, err = engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
-	if !errors.Is(err, errStepParked) {
-		t.Fatalf("second attempt err = %v, want errStepParked", err)
-	}
-	if out != (StepOutput{}) {
-		t.Fatalf("second parked output should be zero, got %+v", out)
-	}
-	now = time.Now().UTC()
 	wf.RecordStep(StepRecord{StepID: verifyChecksImplStepID, Status: "completed", StartedAt: now, EndedAt: now})
 
 	out, err = engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})

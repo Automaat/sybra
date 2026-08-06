@@ -394,3 +394,68 @@ func TestAppStartup_ClearsStartupRecoveryPending(t *testing.T) {
 		}
 	}
 }
+
+func TestAppStartup_ReplaysStrandedVerdictOnlyAfterStartupCleanup(t *testing.T) {
+	preventFetchTTLLeak(t)
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_DISABLE_WORKFLOWS", "0")
+
+	cfg := startupTestConfig(home)
+	cfg.HumanReview.Enabled = true
+	cfg.HumanReview.SybraRepoDir = home
+	app := NewApp(discardLogger(), &slog.LevelVar{}, cfg)
+	gate := make(chan struct{})
+	app.recoveryStartGate = gate
+	if err := app.Startup(context.Background()); err != nil {
+		t.Fatalf("Startup: %v", err)
+	}
+	t.Cleanup(func() {
+		select {
+		case <-gate:
+		default:
+			close(gate)
+		}
+		if app.agentSvc != nil && app.agentSvc.approval != nil {
+			_ = app.agentSvc.approval.Shutdown(context.Background())
+		}
+		app.Shutdown(context.Background())
+	})
+
+	created, err := app.tasks.Create("startup replay ordering", "body", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err = app.tasks.Update(created.ID, task.Update{
+		Status:   task.Ptr(task.StatusHumanRequired),
+		Workflow: completedHumanReviewWorkflow(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.tasks.AddRun(created.ID, task.AgentRun{
+		AgentID: "hr-startup-order", Role: string(agent.RoleHumanReview),
+		State: string(agent.StateStopped), Outcome: "success",
+		Result: `{"decision":"unblocked","reason":"resume safely","recoverable_action":"in-progress","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	dispatched := make(chan struct{}, 1)
+	app.humanReview.dispatchFromHumanRequired = func(string, string, string, string) (task.Task, error) {
+		dispatched <- struct{}{}
+		return created, nil
+	}
+	select {
+	case <-dispatched:
+		t.Fatal("stranded verdict replayed before startup cleanup/agent reattachment")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(gate)
+	select {
+	case <-dispatched:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stranded verdict was not replayed after startup cleanup")
+	}
+}

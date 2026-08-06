@@ -1102,6 +1102,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		Result:                  Ptr("completed with result"),
 		Verdict:                 Ptr("sybra_bug"),
 		VerdictRendered:         Ptr(true),
+		RecoveryReplayRejected:  Ptr(true),
 		LogFile:                 Ptr("/tmp/sybra/agent-payload.ndjson"),
 		Provider:                Ptr("codex"),
 		Model:                   Ptr("gpt-5"),
@@ -1122,6 +1123,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		FinalCommitSource:       Ptr("fallback"),
 		SubagentCallCount:       Ptr(3),
 		ResumeZeroOutputStall:   Ptr(true),
+		TurnCount:               Ptr(17),
 	}
 	assertRunPatchCoversEveryField(t, patch)
 
@@ -1165,6 +1167,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		Result:                  "completed with result",
 		Verdict:                 "sybra_bug",
 		VerdictRendered:         true,
+		RecoveryReplayRejected:  true,
 		LogFile:                 "/tmp/sybra/agent-payload.ndjson",
 		SessionID:               "session-123",
 		ProtocolViolation:       "missing-json",
@@ -1174,6 +1177,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		FinalCommitSource:       "fallback",
 		SubagentCallCount:       3,
 		ResumeZeroOutputStall:   true,
+		TurnCount:               17,
 	})
 }
 
@@ -1283,6 +1287,9 @@ func assertAgentRunPayload(t *testing.T, got, want AgentRun) {
 	}
 	if got.ResumeZeroOutputStall != want.ResumeZeroOutputStall {
 		t.Errorf("ResumeZeroOutputStall = %t, want %t", got.ResumeZeroOutputStall, want.ResumeZeroOutputStall)
+	}
+	if got.TurnCount != want.TurnCount {
+		t.Errorf("TurnCount = %d, want %d", got.TurnCount, want.TurnCount)
 	}
 }
 
@@ -1633,6 +1640,150 @@ func TestStoreListSurfacesMalformedAsDegraded(t *testing.T) {
 	}
 	if degraded.ParseError == "" || degraded.FilePath != filepath.Join(dir, "bad.md") {
 		t.Errorf("degraded entry = %+v, want parse error and source path", *degraded)
+	}
+}
+
+// A degraded entry's ID must be unaddressable: it is derived from a filename,
+// not from a real task, so if CRUD resolved it to `<dir>/<id>.md` an
+// update/delete issued against the board card would land on whatever task
+// happens to occupy that path.
+func TestStoreDegradedIDIsNotAddressable(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bad.md"), []byte("not valid frontmatter"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || !tasks[0].Degraded {
+		t.Fatalf("List = %+v, want a single degraded entry", tasks)
+	}
+	id := tasks[0].ID
+	if !IsDegradedID(id) {
+		t.Fatalf("degraded ID %q not recognized by IsDegradedID", id)
+	}
+	if err := ValidateID(id); err == nil {
+		t.Errorf("ValidateID(%q) = nil, want rejection so the ID can never be minted or persisted", id)
+	}
+
+	if _, err := store.Get(id); err == nil {
+		t.Error("Get on a degraded ID succeeded, want rejection")
+	}
+	if _, err := store.Update(id, Update{Title: Ptr("hijacked")}); err == nil {
+		t.Error("Update on a degraded ID succeeded, want rejection")
+	}
+	if err := store.Delete(id); err == nil {
+		t.Error("Delete on a degraded ID succeeded, want rejection")
+	}
+	if _, err := store.Put(Task{ID: id, Title: "hijacked", Status: StatusTodo, AgentMode: AgentModeHeadless}); err == nil {
+		t.Error("Put with a degraded ID succeeded, want rejection")
+	}
+}
+
+// A hand-written task file claiming a degraded-reserved ID must not join the
+// board under that ID — it would be a second entry sharing the synthetic ID
+// of whatever unreadable file hashes to it.
+func TestStoreListRejectsReservedDegradedIDInFrontmatter(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "---\nid: " + degradedIDPrefix + "0123456789abcdef\ntitle: Impostor\nstatus: todo\nagent_mode: headless\n---\n"
+	if err := os.WriteFile(filepath.Join(dir, "impostor.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(tasks))
+	}
+	if !tasks[0].Degraded {
+		t.Fatalf("impostor task = %+v, want it surfaced as degraded rather than accepted", tasks[0])
+	}
+	if tasks[0].Title == "Impostor" {
+		t.Error("impostor frontmatter was trusted; want a filename-derived degraded entry")
+	}
+}
+
+func TestStoreListLeavesMalformedFileInPlace(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bad := filepath.Join(dir, "bad.md")
+	if err := os.WriteFile(bad, []byte("not valid frontmatter"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Listing must never move or delete an unparseable file: the file may be
+	// mid-write by an editor or another process, and a repaired file has to
+	// return to the board on its own.
+	for i := range 2 {
+		tasks, err := store.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tasks) != 1 || !tasks[0].Degraded {
+			t.Fatalf("List #%d = %+v, want a single degraded entry", i+1, tasks)
+		}
+		if _, err := os.Stat(bad); err != nil {
+			t.Fatalf("bad.md no longer in the tasks dir after List #%d: %v", i+1, err)
+		}
+	}
+
+	repaired, err := Marshal(Task{ID: "bad", Title: "Repaired", Status: StatusTodo, AgentMode: AgentModeHeadless})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bad, repaired, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].Degraded {
+		t.Fatalf("List after repair = %+v, want the repaired task back on the board", tasks)
+	}
+}
+
+func TestStoreGetPropagatesSidecarReadError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create("Task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the plan sidecar with a directory so os.ReadFile fails with a
+	// real I/O error (EISDIR) instead of the not-exist case Read already
+	// turns into a nil error.
+	planPath := filepath.Join(dir, created.ID+".plan.md")
+	if err := os.Mkdir(planPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.Get(created.ID); err == nil {
+		t.Fatal("expected error from Get when a sidecar read fails, got nil")
 	}
 }
 

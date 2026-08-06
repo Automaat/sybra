@@ -163,7 +163,12 @@ func TestStatsServiceGetStatsCountsAuditDoneTasksMissingFromLiveList(t *testing.
 	taskMgr := task.NewManager(taskStore, nil)
 	auditDir := t.TempDir()
 
-	now := time.Now()
+	// Anchor to yesterday midday, not time.Now(): the offsets below span 90
+	// minutes, so a run in the first 90 minutes of a day put them on opposite
+	// sides of midnight and split the single bucket this asserts on. Nothing
+	// in closedTasksDaily filters by recency, so any past day works.
+	yesterday := time.Now().AddDate(0, 0, -1)
+	now := time.Date(yesterday.Year(), yesterday.Month(), yesterday.Day(), 12, 0, 0, 0, yesterday.Location())
 	liveClosed := now.Add(-1 * time.Hour)
 	writeStatsTask(t, tasksDir, task.Task{
 		ID:        "live-done",

@@ -3,6 +3,7 @@ package sybra
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -14,11 +15,15 @@ import (
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/workflow"
+	"github.com/Automaat/sybra/internal/worktree"
 )
 
 // setupUnblockedRecoveryWorktree creates a clone checked out on branch, with
@@ -156,6 +161,264 @@ func TestHumanReviewDispatchDir_ReadOnlyFallback(t *testing.T) {
 	})
 }
 
+func TestHumanReviewDispatchDir_PreparesManagedWorktree(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	wantDir := t.TempDir()
+	called := false
+	h.prepareTaskWorktree = func(tk task.Task) (string, error) {
+		called = true
+		if tk.ID != "managed-task" {
+			t.Fatalf("prepare task id = %q, want managed-task", tk.ID)
+		}
+		return wantDir, nil
+	}
+
+	dir, readOnly, _, _ := h.dispatchDir(task.Task{ID: "managed-task"})
+	if !called {
+		t.Fatal("managed worktree preparer was not called")
+	}
+	if dir != wantDir || readOnly {
+		t.Fatalf("got dir=%q readOnly=%v, want dir=%q readOnly=false", dir, readOnly, wantDir)
+	}
+}
+
+func TestHumanReviewDispatchDir_PrepareFailureFallsBackReadOnly(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		return "", errors.New("worktree unavailable")
+	}
+
+	dir, readOnly, _, _ := h.dispatchDir(task.Task{ID: "fallback-task"})
+	if dir != h.cfg.HumanReview.SybraRepoDir || !readOnly {
+		t.Fatalf("got dir=%q readOnly=%v, want dir=%q readOnly=true", dir, readOnly, h.cfg.HumanReview.SybraRepoDir)
+	}
+}
+
+// TestHumanReviewDispatchDir_BusyPathRetriesInsteadOfReadOnly pins that a
+// preparation refused because another one owns the path is retried, not
+// answered with the read-only Sybra checkout. The claim-retry ladder is capped
+// under StaleDispatchClaimAge precisely so this handler meets a live
+// preparation; treating that refusal as permanent lands the recovery agent on
+// a tree it cannot write, which is the recoverable_action:none regression.
+func TestHumanReviewDispatchDir_BusyPathRetriesInsteadOfReadOnly(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		return "", fmt.Errorf("prepare worktree: %w", worktree.ErrPreparationInFlight)
+	}
+
+	dir, readOnly, retryable, _ := h.dispatchDir(task.Task{ID: "busy-task"})
+	if !retryable {
+		t.Error("retryable = false, want true")
+	}
+	if readOnly || dir == h.cfg.HumanReview.SybraRepoDir {
+		t.Errorf("fell back to the read-only Sybra checkout: dir=%q readOnly=%v", dir, readOnly)
+	}
+}
+
+func TestHumanReviewSpawn_HoldsDispatchClaimAcrossPreparationAndRun(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("recover with claim", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk, err = tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	held := false
+	h.claimTaskDispatch = func(taskID string) (func(), bool) {
+		if taskID != tk.ID || held {
+			return nil, false
+		}
+		held = true
+		return func() { held = false }, true
+	}
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		if !held {
+			t.Fatal("worktree preparation ran without the dispatch claim")
+		}
+		return t.TempDir(), nil
+	}
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		if !held {
+			t.Fatal("agent registration ran without the dispatch claim")
+		}
+		if cfg.ReadOnlyDir {
+			t.Fatal("prepared recovery worktree was dispatched read-only")
+		}
+		return &agent.Agent{ID: "human-recovery", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	if !h.maybeSpawn(context.Background(), tk.ID, string(task.StatusInReview)) {
+		t.Fatal("human review was not spawned")
+	}
+	if held {
+		t.Fatal("dispatch claim was not released after agent registration")
+	}
+}
+
+func TestHumanReviewSpawn_ClaimConflictRetriesAfterRelease(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+	auditDir := t.TempDir()
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = auditLog.Close() })
+	h.audit = auditLog
+
+	tk, err := tasks.Create("claim conflict", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claimAvailable := false
+	claimHeld := false
+	h.claimTaskDispatch = func(string) (func(), bool) {
+		if !claimAvailable || claimHeld {
+			return nil, false
+		}
+		claimHeld = true
+		return func() { claimHeld = false }, true
+	}
+	var scheduled func()
+	h.schedule = func(delay time.Duration, fn func()) {
+		if delay != 9*time.Second {
+			t.Fatalf("first retry delay = %s, want 9s", delay)
+		}
+		if scheduled != nil {
+			t.Fatal("claim conflict scheduled more than one retry")
+		}
+		scheduled = fn
+	}
+	prepareCalls := 0
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		prepareCalls++
+		if !claimHeld {
+			t.Fatal("retry prepared the worktree without holding the claim")
+		}
+		return t.TempDir(), nil
+	}
+	runCalls := 0
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		runCalls++
+		if !claimHeld {
+			t.Fatal("retry registered the agent without holding the claim")
+		}
+		return &agent.Agent{ID: "retried-human-review", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	if h.maybeSpawn(context.Background(), tk.ID, string(task.StatusInReview)) {
+		t.Fatal("human review spawned despite a conflicting dispatch claim")
+	}
+	if prepareCalls != 0 || runCalls != 0 {
+		t.Fatalf("claim conflict mutated/spawned before release: prepare=%d run=%d", prepareCalls, runCalls)
+	}
+	if scheduled == nil {
+		t.Fatal("claim conflict did not schedule a retry")
+	}
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Minute),
+		Until: time.Now().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == audit.EventHumanReviewSkipped {
+			t.Fatalf("transient claim contention recorded as terminal skip: %+v", event)
+		}
+	}
+
+	claimAvailable = true
+	scheduled()
+	if prepareCalls != 1 || runCalls != 1 {
+		t.Fatalf("retry after claim release: prepare=%d run=%d, want 1/1", prepareCalls, runCalls)
+	}
+	if claimHeld {
+		t.Fatal("retry did not release the dispatch claim after registration")
+	}
+}
+
+func TestLifecycleSchedule_CancelSuppressesRetry(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	called := make(chan struct{}, 1)
+	lifecycleSchedule(ctx)(20*time.Millisecond, func() { called <- struct{}{} })
+	cancel()
+	select {
+	case <-called:
+		t.Fatal("retry ran after lifecycle cancellation")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestHumanReviewSpawn_ClaimConflictRetryIsBounded(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("persistent claim conflict", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.claimTaskDispatch = func(string) (func(), bool) { return nil, false }
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		t.Fatal("persistent claim conflict must never prepare a worktree")
+		return "", nil
+	}
+	scheduled := 0
+	h.schedule = func(_ time.Duration, fn func()) {
+		scheduled++
+		fn()
+	}
+
+	if h.maybeSpawn(context.Background(), tk.ID, string(task.StatusInReview)) {
+		t.Fatal("human review spawned despite persistent claim conflicts")
+	}
+	if scheduled != humanReviewClaimRetryMax {
+		t.Fatalf("scheduled retries = %d, want bounded max %d", scheduled, humanReviewClaimRetryMax)
+	}
+}
+
+func TestWriteAutonomyMandate_UsesHostCommitFlags(t *testing.T) {
+	t.Parallel()
+	for _, flags := range []string{"-s", "-s -S"} {
+		t.Run(flags, func(t *testing.T) {
+			t.Parallel()
+			var b strings.Builder
+			writeAutonomyMandate(&b, flags)
+			want := "`git commit " + flags + "`"
+			if !strings.Contains(b.String(), want) {
+				t.Fatalf("mandate missing host commit flags %q:\n%s", want, b.String())
+			}
+		})
+	}
+}
+
 // TestBuildPrompt_NoFencedVerdictInstruction pins that the prompt no longer
 // tells the agent to emit a fenced ```sybra-verdict``` block — the schema is
 // now enforced out-of-band via RunConfig.OutputSchema/--json-schema, and the
@@ -171,7 +434,7 @@ func TestBuildPrompt_NoFencedVerdictInstruction(t *testing.T) {
 	}
 
 	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
-	prompt := h.buildPrompt(tk, dir, nil)
+	prompt := h.buildPrompt(context.Background(), tk, dir, nil, false)
 	if strings.Contains(prompt, "sybra-verdict") {
 		t.Errorf("prompt still instructs a fenced sybra-verdict block:\n%s", prompt)
 	}
@@ -195,7 +458,7 @@ func TestBuildPrompt_RequiresVerificationBeforeTransient(t *testing.T) {
 	}
 
 	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
-	prompt := h.buildPrompt(tk, dir, nil)
+	prompt := h.buildPrompt(context.Background(), tk, dir, nil, false)
 	if !strings.Contains(prompt, "actually re-run the exact failing command") {
 		t.Errorf("prompt does not require re-running the failing command before calling it transient:\n%s", prompt)
 	}
@@ -226,7 +489,7 @@ func TestBuildPrompt_DraftApproveRequiresHumanSubmission(t *testing.T) {
 	}
 
 	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
-	prompt := h.buildPrompt(tk, dir, nil)
+	prompt := h.buildPrompt(context.Background(), tk, dir, nil, false)
 	for _, want := range []string{
 		"pre-flight the draft before submitting anything",
 		"APPROVE drafts must NEVER be auto-submitted",
@@ -256,7 +519,7 @@ func TestBuildPrompt_RequiresRecheckingSupersededFailures(t *testing.T) {
 	}
 
 	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
-	prompt := h.buildPrompt(tk, dir, nil)
+	prompt := h.buildPrompt(context.Background(), tk, dir, nil, false)
 	if !strings.Contains(prompt, "supersedes the wording the failure quotes") {
 		t.Errorf("prompt does not require rechecking superseded test-runner FAILs:\n%s", prompt)
 	}
@@ -627,7 +890,12 @@ func TestPrepareRecoveryDispatch_InReviewWithoutPRFallsBackToReadyReview(t *test
 	}
 }
 
-func TestRecoverRenderedUnblockedTasks_DispatchesMissingWorktreeCircuitBreaker(t *testing.T) {
+func completedHumanReviewWorkflow() **workflow.Execution {
+	wf := &workflow.Execution{WorkflowID: "simple-task-implement", State: workflow.ExecCompleted}
+	return &wf
+}
+
+func TestRecoverStrandedUnblockedTasks_ReplaysLegacyReasonWithoutConfiguredWorktree(t *testing.T) {
 	t.Parallel()
 	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
@@ -641,6 +909,7 @@ func TestRecoverRenderedUnblockedTasks_DispatchesMissingWorktreeCircuitBreaker(t
 		Status:       task.Ptr(task.StatusHumanRequired),
 		StatusReason: task.Ptr(reason),
 		ProjectID:    task.Ptr("Automaat/sybra"),
+		Workflow:     completedHumanReviewWorkflow(),
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
@@ -666,7 +935,7 @@ func TestRecoverRenderedUnblockedTasks_DispatchesMissingWorktreeCircuitBreaker(t
 		})
 	}
 
-	h.recoverRenderedUnblockedTasks()
+	h.recoverStrandedUnblockedTasks()
 
 	if dispatchedTarget != string(task.StatusReadyReview) {
 		t.Fatalf("dispatch target = %q, want %q", dispatchedTarget, task.StatusReadyReview)
@@ -680,7 +949,7 @@ func TestRecoverRenderedUnblockedTasks_DispatchesMissingWorktreeCircuitBreaker(t
 	}
 }
 
-func TestRecoverRenderedUnblockedTasks_DoneActionLandsMergedPR(t *testing.T) {
+func TestRecoverStrandedUnblockedTasks_DoneActionLandsMergedPR(t *testing.T) {
 	t.Parallel()
 	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
@@ -695,6 +964,7 @@ func TestRecoverRenderedUnblockedTasks_DoneActionLandsMergedPR(t *testing.T) {
 		Status:       task.Ptr(task.StatusHumanRequired),
 		StatusReason: task.Ptr(reason),
 		ProjectID:    task.Ptr("Automaat/sybra"),
+		Workflow:     completedHumanReviewWorkflow(),
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
@@ -742,7 +1012,7 @@ func TestRecoverRenderedUnblockedTasks_DoneActionLandsMergedPR(t *testing.T) {
 		return err
 	}
 
-	h.recoverRenderedUnblockedTasks()
+	h.recoverStrandedUnblockedTasks()
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
@@ -762,7 +1032,7 @@ func TestRecoverRenderedUnblockedTasks_DoneActionLandsMergedPR(t *testing.T) {
 	}
 }
 
-func TestRecoverRenderedUnblockedTasks_DoneActionRejectsUnmergedPR(t *testing.T) {
+func TestRecoverStrandedUnblockedTasks_DoneActionRejectsUnmergedPR(t *testing.T) {
 	t.Parallel()
 	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
@@ -777,6 +1047,7 @@ func TestRecoverRenderedUnblockedTasks_DoneActionRejectsUnmergedPR(t *testing.T)
 		Status:       task.Ptr(task.StatusHumanRequired),
 		StatusReason: task.Ptr(reason),
 		ProjectID:    task.Ptr("Automaat/sybra"),
+		Workflow:     completedHumanReviewWorkflow(),
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
@@ -808,7 +1079,7 @@ func TestRecoverRenderedUnblockedTasks_DoneActionRejectsUnmergedPR(t *testing.T)
 		return github.PRState{State: "CLOSED"}, nil
 	}
 
-	h.recoverRenderedUnblockedTasks()
+	h.recoverStrandedUnblockedTasks()
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
@@ -825,7 +1096,7 @@ func TestRecoverRenderedUnblockedTasks_DoneActionRejectsUnmergedPR(t *testing.T)
 	}
 }
 
-func TestRecoverRenderedUnblockedTasks_IgnoresUnrenderedVerdict(t *testing.T) {
+func TestRecoverStrandedUnblockedTasks_ReplaysUnrenderedVerdict(t *testing.T) {
 	t.Parallel()
 	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
@@ -839,6 +1110,7 @@ func TestRecoverRenderedUnblockedTasks_IgnoresUnrenderedVerdict(t *testing.T) {
 		Status:       task.Ptr(task.StatusHumanRequired),
 		StatusReason: task.Ptr(reason),
 		ProjectID:    task.Ptr("Automaat/sybra"),
+		Workflow:     completedHumanReviewWorkflow(),
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
@@ -856,11 +1128,115 @@ func TestRecoverRenderedUnblockedTasks_IgnoresUnrenderedVerdict(t *testing.T) {
 	}
 
 	h.dispatchFromHumanRequired = func(id, target, dispatchReason, agentID string) (task.Task, error) {
-		t.Fatalf("dispatchFromHumanRequired called unexpectedly with id=%q target=%q reason=%q agent=%q", id, target, dispatchReason, agentID)
+		if target != string(task.StatusReadyReview) {
+			t.Fatalf("target = %q, want %q", target, task.StatusReadyReview)
+		}
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusReadyReview),
+			StatusReason: task.Ptr(dispatchReason),
+		})
+	}
+
+	h.recoverStrandedUnblockedTasks()
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusReadyReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyReview)
+	}
+	if !got.AgentRuns[0].VerdictRendered {
+		t.Fatal("successful replay must latch verdict_rendered")
+	}
+}
+
+func TestRecoverStrandedUnblockedTasks_DoesNotRequireLegacyReason(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Recover verification park", "body", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr("verification could not persist while task storage was unavailable"),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+		Workflow:     completedHumanReviewWorkflow(),
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: "hr-storage", Role: string(agent.RoleHumanReview), State: string(agent.StateStopped),
+		Outcome: "success",
+		Result:  `{"decision":"unblocked","reason":"storage recovered; resume implementation","recoverable_action":"in-progress","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	h.dispatchFromHumanRequired = func(id, target, dispatchReason, _ string) (task.Task, error) {
+		if target != string(task.StatusInProgress) {
+			t.Fatalf("target = %q, want %q", target, task.StatusInProgress)
+		}
+		return tasks.Update(id, task.Update{
+			Status:       task.Ptr(task.StatusInProgress),
+			StatusReason: task.Ptr(dispatchReason),
+		})
+	}
+
+	h.recoverStrandedUnblockedTasks()
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+}
+
+func TestRecoverStrandedUnblockedTasks_LatestVerdictWins(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Do not replay stale verdict", "body", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = tasks.Update(tk.ID, task.Update{
+		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID: task.Ptr("Automaat/sybra"),
+		Workflow:  completedHumanReviewWorkflow(),
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+	for _, run := range []task.AgentRun{
+		{
+			AgentID: "hr-old", Role: string(agent.RoleHumanReview), State: string(agent.StateStopped),
+			VerdictRendered: true,
+			Result:          `{"decision":"unblocked","reason":"old evidence","recoverable_action":"in-progress","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+		},
+		{
+			AgentID: "hr-new", Role: string(agent.RoleHumanReview), State: string(agent.StateStopped),
+			VerdictRendered: true,
+			Result:          `{"decision":"human","reason":"new evidence requires an operator","recoverable_action":"none","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+		},
+	} {
+		if err := tasks.AddRun(tk.ID, run); err != nil {
+			t.Fatalf("add run %s: %v", run.AgentID, err)
+		}
+	}
+	h.dispatchFromHumanRequired = func(string, string, string, string) (task.Task, error) {
+		t.Fatal("an older unblocked verdict must not supersede the latest human verdict")
 		return task.Task{}, nil
 	}
 
-	h.recoverRenderedUnblockedTasks()
+	h.recoverStrandedUnblockedTasks()
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
@@ -868,6 +1244,167 @@ func TestRecoverRenderedUnblockedTasks_IgnoresUnrenderedVerdict(t *testing.T) {
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+}
+
+func TestLatestHumanReviewUnblockedVerdict_RequiresSuccessfulOutcome(t *testing.T) {
+	t.Parallel()
+	result := `{"decision":"unblocked","reason":"partial output","recoverable_action":"in-progress","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`
+	for _, tc := range []struct {
+		name string
+		run  task.AgentRun
+		want bool
+	}{
+		{name: "success", run: task.AgentRun{Outcome: "success"}, want: true},
+		{name: "failed", run: task.AgentRun{Outcome: "failed"}},
+		{name: "unfinished legacy", run: task.AgentRun{}},
+		{name: "rendered legacy success", run: task.AgentRun{VerdictRendered: true}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := tc.run
+			run.AgentID = "hr"
+			run.Role = string(agent.RoleHumanReview)
+			run.State = string(agent.StateStopped)
+			run.Result = result
+			_, _, got := latestHumanReviewUnblockedVerdict(task.Task{AgentRuns: []task.AgentRun{run}})
+			if got != tc.want {
+				t.Fatalf("latest verdict accepted = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStrandedHumanReviewRecoveryCandidate_Guards(t *testing.T) {
+	t.Parallel()
+	completed := &workflow.Execution{State: workflow.ExecCompleted}
+	running := &workflow.Execution{State: workflow.ExecRunning}
+	tests := []struct {
+		name string
+		task task.Task
+		want bool
+	}{
+		{name: "completed", task: task.Task{Status: task.StatusHumanRequired, Workflow: completed}, want: true},
+		{name: "failed", task: task.Task{Status: task.StatusHumanRequired, Workflow: &workflow.Execution{State: workflow.ExecFailed}}, want: true},
+		{name: "umbrella", task: task.Task{Status: task.StatusHumanRequired, TaskType: task.TaskTypeUmbrella, Workflow: completed}},
+		{name: "active workflow", task: task.Task{Status: task.StatusHumanRequired, Workflow: running}},
+		{name: "missing workflow", task: task.Task{Status: task.StatusHumanRequired}},
+		{name: "not parked", task: task.Task{Status: task.StatusInProgress, Workflow: completed}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := strandedHumanReviewRecoveryCandidate(tc.task); got != tc.want {
+				t.Fatalf("candidate = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRecoverStrandedUnblockedTasks_DirtyWorktreeStaysParked(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	dir := setupUnblockedRecoveryWorktree(t, "fix/stranded-dirty")
+	if err := os.WriteFile(filepath.Join(dir, "dirty.txt"), []byte("not committed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tk, err := tasks.Create("Keep dirty recovery parked", "body", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = tasks.Update(tk.ID, task.Update{
+		Status:      task.Ptr(task.StatusHumanRequired),
+		ProjectID:   task.Ptr("Automaat/sybra"),
+		WorktreeDir: task.Ptr(dir),
+		Workflow:    completedHumanReviewWorkflow(),
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: "hr-dirty", Role: string(agent.RoleHumanReview), State: string(agent.StateStopped),
+		Outcome: "success",
+		Result:  `{"decision":"unblocked","reason":"claimed pushed fix","recoverable_action":"ready-pr","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+	h.dispatchFromHumanRequired = func(string, string, string, string) (task.Task, error) {
+		t.Fatal("dirty worktree must fail verification before dispatch")
+		return task.Task{}, nil
+	}
+
+	h.recoverStrandedUnblockedTasks()
+	first, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get first rejection: %v", err)
+	}
+	reopenedStore, err := task.NewStore(filepath.Dir(first.FilePath))
+	if err != nil {
+		t.Fatalf("reopen task store: %v", err)
+	}
+	tasks = task.NewManager(reopenedStore, nil)
+	h.tasks = tasks
+	h.recoverStrandedUnblockedTasks()
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != task.StatusHumanRequired {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	}
+	if count := strings.Count(got.Body, "## Auto-review: unblocked claim not verified"); count != 1 {
+		t.Fatalf("verification note count = %d, want 1 after repeated replay", count)
+	}
+	if !got.AgentRuns[0].RecoveryReplayRejected {
+		t.Fatal("rejected replay must be latched on the exact agent run")
+	}
+
+	if err := os.Remove(filepath.Join(dir, "dirty.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: "hr-dirty-repaired", Role: string(agent.RoleHumanReview), State: string(agent.StateStopped),
+		Outcome: "success",
+		Result:  `{"decision":"unblocked","reason":"claimed pushed fix","recoverable_action":"ready-pr","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	}); err != nil {
+		t.Fatalf("add repaired run: %v", err)
+	}
+	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
+		return tasks.Update(id, task.Update{Status: task.Ptr(task.StatusReadyPR), StatusReason: task.Ptr(reason)})
+	}
+	h.recoverStrandedUnblockedTasks()
+
+	got, err = tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("get repaired task: %v", err)
+	}
+	if got.Status != task.StatusReadyPR {
+		t.Fatalf("new same-summary verdict status = %q, want %q", got.Status, task.StatusReadyPR)
+	}
+}
+
+func TestVerifyUnblocked_ConfiguredInvalidWorktreeStaysParked(t *testing.T) {
+	t.Parallel()
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		dir  string
+	}{
+		{name: "missing", dir: filepath.Join(t.TempDir(), "missing")},
+		{name: "not-directory", dir: file},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if h.verifyUnblocked(task.Task{ID: "task-invalid-worktree", WorktreeDir: tc.dir}) {
+				t.Fatalf("verifyUnblocked(%q) = true, want false", tc.dir)
+			}
+		})
 	}
 }
 
@@ -1864,7 +2401,7 @@ func TestBuildPrompt_IncludesUnblockAndAutonomyMandate(t *testing.T) {
 		Branch: "feat/queue", WorktreeDir: "/data/worktrees/queue",
 	}
 	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
-	p := h.buildPrompt(tk, dir, nil)
+	p := h.buildPrompt(context.Background(), tk, dir, nil, false)
 	for _, want := range []string{
 		"UNBLOCK", "AUTONOMY", "ROOT CAUSE", "unblocked",
 		"never fabricate", "/data/worktrees/queue", "feat/queue",
@@ -2540,6 +3077,46 @@ func TestOnComplete_RateLimitedVerdictDoesNotRenderNoise(t *testing.T) {
 	}
 }
 
+// TestOnComplete_SilentHangVerdictDoesNotRenderNoise mirrors the rate-limited
+// case for a review agent the watchdog killed for producing nothing. It has no
+// output at all, so without an explicit defer it reads as an unparseable
+// verdict, gets a "crashed before producing a verdict" note appended, and
+// latches verdict_rendered — retiring the review permanently over a hang that
+// is about to be re-dispatched.
+func TestOnComplete_SilentHangVerdictDoesNotRenderNoise(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Silent review", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{AgentID: "hr1", Role: string(agent.RoleHumanReview)}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	ag := &agent.Agent{ID: "hr1", TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.SetError(agent.ErrorKindSilentHang, watchdogreason.ZeroOutputBeforeStartup)
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if strings.Contains(got.Body, "unparseable verdict") || strings.Contains(got.Body, "crashed before producing a verdict") {
+		t.Errorf("silently-hung human-review should not append verdict noise; got:\n%s", got.Body)
+	}
+	for _, run := range got.AgentRuns {
+		if run.AgentID == "hr1" && run.VerdictRendered {
+			t.Fatal("silently-hung human-review must not mark verdict_rendered")
+		}
+	}
+}
+
 // TestOnComplete_ExecutionCrashRendersDiagnosis pins the no-dead-end contract
 // for a crash AFTER real tool calls: HadTerminalError+ToolCalls==0 is already
 // routed to handleCrashedVerdict's retry-budget path (see
@@ -2634,7 +3211,7 @@ func TestMaybeSpawn_IdempotencyGate_SkipsWhenVerdictRendered(t *testing.T) {
 	}
 
 	// Must not panic (agents is nil) and must skip.
-	h.maybeSpawn(tk.ID, "")
+	h.maybeSpawn(context.Background(), tk.ID, "")
 
 	h.mu.Lock()
 	_, busy := h.inflight[tk.ID]
@@ -2662,7 +3239,7 @@ func TestMaybeSpawn_SkipsWhenTaskNoLongerHumanRequired(t *testing.T) {
 		t.Fatalf("update task: %v", err)
 	}
 
-	h.maybeSpawn(tk.ID, string(task.StatusTodo))
+	h.maybeSpawn(context.Background(), tk.ID, string(task.StatusTodo))
 
 	h.mu.Lock()
 	_, busy := h.inflight[tk.ID]
@@ -2703,7 +3280,7 @@ func TestMaybeSpawn_RechecksStatusBeforeRun(t *testing.T) {
 	}
 	h.agents = runner
 
-	if spawned := h.maybeSpawn(tk.ID, string(task.StatusTodo)); spawned {
+	if spawned := h.maybeSpawn(context.Background(), tk.ID, string(task.StatusTodo)); spawned {
 		t.Fatal("maybeSpawn = true, want false after task left human-required before Run")
 	}
 	if runCalls != 0 {
@@ -2772,7 +3349,7 @@ func TestMaybeSpawn_IdempotencyGate_IgnoresRenderedVerdictBeforeTestingCycle(t *
 				p = true
 			}
 		}()
-		h.maybeSpawn(tk.ID, "")
+		h.maybeSpawn(context.Background(), tk.ID, "")
 		return false
 	}()
 	if !panicked {
@@ -2815,7 +3392,7 @@ func TestMaybeSpawn_IdempotencyGate_SpawnsWhenVerdictSetButNotRendered(t *testin
 				p = true
 			}
 		}()
-		h.maybeSpawn(tk.ID, "")
+		h.maybeSpawn(context.Background(), tk.ID, "")
 		return false
 	}()
 	if !panicked {
@@ -2859,7 +3436,7 @@ func TestMaybeSpawn_IdempotencyGate_PreexistingAutoReviewTextDoesNotBlock(t *tes
 				p = true
 			}
 		}()
-		h.maybeSpawn(tk.ID, "")
+		h.maybeSpawn(context.Background(), tk.ID, "")
 		return false
 	}()
 	if !panicked {
@@ -2898,7 +3475,7 @@ func TestMaybeSpawn_IdempotencyGate_SpawnsWhenNoVerdict(t *testing.T) {
 				p = true
 			}
 		}()
-		h.maybeSpawn(tk.ID, "")
+		h.maybeSpawn(context.Background(), tk.ID, "")
 		return false
 	}()
 	if !panicked {
@@ -2929,7 +3506,7 @@ func TestMaybeSpawn_SkipsUmbrellaTracker(t *testing.T) {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 
-	if spawned := h.maybeSpawn(tk.ID, string(task.StatusInProgress)); spawned {
+	if spawned := h.maybeSpawn(context.Background(), tk.ID, string(task.StatusInProgress)); spawned {
 		t.Error("expected maybeSpawn to report no spawn for an umbrella tracker")
 	}
 
@@ -2954,7 +3531,7 @@ func TestMaybeSpawn_SkipsProjectlessTask(t *testing.T) {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 
-	h.maybeSpawn(tk.ID, "")
+	h.maybeSpawn(context.Background(), tk.ID, "")
 
 	h.mu.Lock()
 	_, busy := h.inflight[tk.ID]
@@ -2980,7 +3557,7 @@ func TestMaybeSpawn_SkipsStaleNonHumanRequiredTask(t *testing.T) {
 		t.Fatalf("flip to blocked: %v", err)
 	}
 
-	h.maybeSpawn(tk.ID, string(task.StatusHumanRequired))
+	h.maybeSpawn(context.Background(), tk.ID, string(task.StatusHumanRequired))
 
 	h.mu.Lock()
 	_, busy := h.inflight[tk.ID]
@@ -3256,5 +3833,1089 @@ func TestOnComplete_TerminalErrorWithToolCalls_SkipsCrashPath(t *testing.T) {
 	}
 	if !strings.Contains(got.Body, "Auto-review (unparseable verdict)") {
 		t.Errorf("expected the ordinary unparseable-verdict path; got:\n%s", got.Body)
+	}
+}
+
+// The provider-fallback path marks the verdict rendered and then deliberately
+// re-spawns with IgnoreRenderedVerdict. If that respawn loses a claim race the
+// retry must still run: honouring the idempotency gate there drops the fallback
+// permanently and audits it as a duplicate diagnosis, leaving the task parked
+// with no verdict at all.
+func TestHumanReviewSpawn_ContendedFallbackRetryIgnoresRenderedVerdict(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("contended fallback", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The fallback caller has already persisted the rendered verdict.
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID:         "malformed-run",
+		Role:            string(agent.RoleHumanReview),
+		Mode:            "headless",
+		State:           "stopped",
+		Outcome:         "failure",
+		VerdictRendered: true,
+		Result:          "not json",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+	seeded, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verdictAlreadyRendered(seeded) {
+		t.Fatal("precondition: verdict must already be rendered or this asserts nothing")
+	}
+
+	claimAvailable := false
+	claimHeld := false
+	h.claimTaskDispatch = func(string) (func(), bool) {
+		if !claimAvailable || claimHeld {
+			return nil, false
+		}
+		claimHeld = true
+		return func() { claimHeld = false }, true
+	}
+	var scheduled func()
+	h.schedule = func(_ time.Duration, fn func()) { scheduled = fn }
+	h.prepareTaskWorktree = func(task.Task) (string, error) { return t.TempDir(), nil }
+	runCalls := 0
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		runCalls++
+		return &agent.Agent{ID: "fallback-run", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	opts := humanReviewSpawnOptions{IgnoreRenderedVerdict: true}
+	if h.maybeSpawnWithOptions(context.Background(), tk.ID, string(task.StatusHumanRequired), opts) {
+		t.Fatal("spawned despite a conflicting dispatch claim")
+	}
+	if scheduled == nil {
+		t.Fatal("contended fallback did not schedule a retry")
+	}
+
+	claimAvailable = true
+	scheduled()
+
+	if runCalls != 1 {
+		t.Errorf("fallback retry runs = %d, want 1 — the rendered-verdict gate swallowed it", runCalls)
+	}
+}
+
+// TestWriteAutonomyMandate_UsesHostCommitFlags passes its own strings in and
+// asserts they come back out, so it proves Fprintf works and never touches the
+// production argument. This covers the argument: the recovery prompt must honor
+// agent.commit_signing, on a host that DOES resolve a key so "never" and the
+// host default are distinguishable.
+func TestHumanReviewPrompt_HonorsCommitSigningPolicy(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "gitconfig")
+	contents := "[user]\n\tname = Test\n\temail = t@example.invalid\n\tsigningkey = DEADBEEFDEADBEEF\n"
+	if err := os.WriteFile(cfgPath, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write git config: %v", err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", cfgPath)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	if got := project.SigningAuto.CommitFlags(context.Background()); got != "-s -S" {
+		t.Fatalf("precondition: host must resolve a signing key, got %q", got)
+	}
+
+	cfg := &config.Config{}
+	cfg.Agent.CommitSigning = "never"
+	h := &humanReviewHandler{cfg: cfg}
+
+	if got := h.signingPolicy(); got != project.SigningNever {
+		t.Fatalf("signingPolicy() = %q, want never from the snapshot", got)
+	}
+
+	// Go through the real prompt builder, not writeAutonomyMandate directly:
+	// asserting on a value this test supplies is what made the original test
+	// unable to catch the defect it appeared to cover.
+	prompt := h.buildPrompt(context.Background(), task.Task{ID: "t1", ProjectID: "Automaat/sybra"}, t.TempDir(), nil, false)
+	for line := range strings.Lines(prompt) {
+		if strings.Contains(line, "commit") && strings.Contains(line, "-S") {
+			t.Errorf("mandate instructs GPG signing under the never policy:\n%s", line)
+		}
+	}
+
+	// And a hot reload must reach it, since cfg is never rewritten.
+	h.SetSigningPolicy(project.SigningRequire)
+	if got := h.signingPolicy().CommitFlags(context.Background()); got != "-s -S" {
+		t.Errorf("after reload to require, flags = %q, want -s -S", got)
+	}
+}
+
+// The ladder is bounded on both ends: long enough to outlast a claim held
+// across PrepareForTask (its setup batch alone runs five minutes), short
+// enough that no retry lands after agent.StaleDispatchClaimAge, where the
+// age-based release could hand it a claim a live holder is still using.
+//
+// Delays are pinned to literals, not to the constants under test, or a unit
+// typo in humanReviewClaimRetryStep passes by moving both sides at once.
+func TestScheduleClaimRetry_LadderIsBoundedOnBothEnds(t *testing.T) {
+	t.Parallel()
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	var delays []time.Duration
+	h.schedule = func(d time.Duration, _ func()) { delays = append(delays, d) }
+
+	opts := humanReviewSpawnOptions{}
+	for range humanReviewClaimRetryMax {
+		h.scheduleClaimRetry(context.Background(), "t1", string(task.StatusInReview), opts)
+		opts.ClaimRetryAttempt++
+	}
+	h.scheduleClaimRetry(context.Background(), "t1", string(task.StatusInReview), opts)
+
+	want := []time.Duration{
+		9 * time.Second, 36 * time.Second, 81 * time.Second,
+		144 * time.Second, 225 * time.Second, 324 * time.Second,
+	}
+	if !slices.Equal(delays, want) {
+		t.Fatalf("ladder = %v, want %v", delays, want)
+	}
+	var span time.Duration
+	for _, d := range delays {
+		span += d
+	}
+	// A setup batch alone was measured holding the claim for ten minutes.
+	if span < 11*time.Minute {
+		t.Errorf("ladder spans %s, gives up while a normal preparation is still running", span)
+	}
+	if span >= agent.StaleDispatchClaimAge {
+		t.Errorf("ladder spans %s, retries past the age-based claim release (%s)",
+			span, agent.StaleDispatchClaimAge)
+	}
+}
+
+// Exhaustion is terminal and nothing re-triggers it: recoverStrandedUnblocked
+// Tasks replays verdicts whose side effects failed, never a spawn that was
+// wanted and never happened. Without an event the only trace is an Info line.
+func TestScheduleClaimRetry_ExhaustionIsAudited(t *testing.T) {
+	t.Parallel()
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	auditDir := t.TempDir()
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatalf("audit.NewLogger: %v", err)
+	}
+	t.Cleanup(func() { _ = auditLog.Close() })
+	h.audit = auditLog
+	h.schedule = func(time.Duration, func()) {}
+
+	h.scheduleClaimRetry(context.Background(), "t1", string(task.StatusInReview),
+		humanReviewSpawnOptions{ClaimRetryAttempt: humanReviewClaimRetryMax})
+
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Minute),
+		Until: time.Now().Add(time.Minute),
+		Type:  audit.EventHumanReviewRetriesExhausted,
+	})
+	if err != nil {
+		t.Fatalf("audit.Read: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("exhausted ladder wrote %d audit events, want 1", len(events))
+	}
+	if got := events[0].TaskID; got != "t1" {
+		t.Errorf("task_id = %q, want t1", got)
+	}
+	if got := events[0].Data["attempts"]; got != float64(humanReviewClaimRetryMax) {
+		t.Errorf("attempts = %v, want %d", got, humanReviewClaimRetryMax)
+	}
+}
+
+// A retry that is still within the ladder must not be audited as exhausted, or
+// the event stops meaning "this task was dropped".
+func TestScheduleClaimRetry_InProgressIsNotAudited(t *testing.T) {
+	t.Parallel()
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	auditDir := t.TempDir()
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatalf("audit.NewLogger: %v", err)
+	}
+	t.Cleanup(func() { _ = auditLog.Close() })
+	h.audit = auditLog
+	h.schedule = func(time.Duration, func()) {}
+
+	h.scheduleClaimRetry(context.Background(), "t1", string(task.StatusInReview), humanReviewSpawnOptions{})
+
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Minute),
+		Until: time.Now().Add(time.Minute),
+		Type:  audit.EventHumanReviewRetriesExhausted,
+	})
+	if err != nil {
+		t.Fatalf("audit.Read: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("first retry audited as exhausted: %+v", events)
+	}
+
+	// A handler with no scheduler ran no ladder at all, so calling that
+	// exhausted would give one event two incompatible meanings.
+	h.schedule = nil
+	h.scheduleClaimRetry(context.Background(), "t2", string(task.StatusInReview), humanReviewSpawnOptions{})
+	events, err = audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Minute),
+		Until: time.Now().Add(time.Minute),
+		Type:  audit.EventHumanReviewRetriesExhausted,
+	})
+	if err != nil {
+		t.Fatalf("audit.Read: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("absent scheduler audited as exhausted: %+v", events)
+	}
+}
+
+// A pending claim retry is armed on the scheduler context, which every
+// graceful shutdown cancels, and lifecycleSchedule drops the callback without
+// a trace. Nothing else replays it — recoverStrandedUnblockedTasks needs a
+// completed verdict, and a task whose review never spawned has no run to hold
+// one — so the startup sweep is the only thing standing between a restart and
+// a park that is never examined.
+func TestRespawnDroppedReviews(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		parkedAgo   time.Duration
+		existingRun bool
+		declined    bool
+		wantSpawn   bool
+	}{
+		{name: "recent park with no review respawns", parkedAgo: time.Minute, wantSpawn: true},
+		{name: "park already reviewed is left alone", parkedAgo: time.Minute, existingRun: true},
+		{name: "park older than the sweep window is left alone", parkedAgo: 3 * time.Hour},
+		// maybeSpawn's prev_status_blocked guard cannot fire for a sweep, which
+		// never sees the transition. Prior agent activity was a poor proxy —
+		// any task that ever ran an agent has some — so the live path records
+		// its refusal instead.
+		{name: "park the live path declined is left alone", parkedAgo: time.Minute, declined: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h, tasks, cleanup := newReviewTestEnv(t)
+			defer cleanup()
+
+			tk, err := tasks.Create("dropped review", "", task.AgentModeHeadless)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+				"project_id": "Automaat/sybra",
+				"status":     string(task.StatusHumanRequired),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.existingRun {
+				if err := tasks.AddRun(tk.ID, task.AgentRun{
+					AgentID: "prior", Role: string(agent.RoleHumanReview),
+					State: string(agent.StateStopped),
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := tasks.AddRun(tk.ID, task.AgentRun{
+				AgentID: "impl", Role: string(agent.RoleImplementation),
+				State: string(agent.StateStopped),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.declined {
+				// Exactly what the live path does on a blocked transition.
+				if h.maybeSpawn(context.Background(), tk.ID, string(task.StatusBlocked)) {
+					t.Fatal("live path spawned on a blocked transition")
+				}
+			}
+			// Age the park by moving the clock, not the file: UpdatedAt is
+			// rewritten by every store mutation above.
+			h.now = func() time.Time { return time.Now().Add(tc.parkedAgo) }
+
+			// Pre-created: the spawn runs on its own goroutine, so calling
+			// t.TempDir() from inside it races the harness's own cleanup.
+			wtDir := t.TempDir()
+			h.prepareTaskWorktree = func(task.Task) (string, error) { return wtDir, nil }
+			spawns := make(chan string, 4)
+			h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+				spawns <- cfg.TaskID
+				return &agent.Agent{ID: "swept", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+			}}
+
+			h.RespawnDroppedReviews(context.Background())
+
+			if !tc.wantSpawn {
+				select {
+				case id := <-spawns:
+					t.Fatalf("sweep spawned a review for %s that it should have skipped", id)
+				case <-time.After(200 * time.Millisecond):
+				}
+				return
+			}
+			select {
+			case <-spawns:
+			case <-time.After(5 * time.Second):
+				t.Fatal("sweep never spawned a review for a recent never-reviewed park")
+			}
+			// A spawn's last store write, so its goroutine is done before the
+			// harness removes the store's temp dir underneath it.
+			waitForHumanReviewRun(t, tasks, tk.ID)
+		})
+	}
+}
+
+func waitForHumanReviewRun(t *testing.T, tasks *task.Manager, id string) {
+	t.Helper()
+	for range 200 {
+		got, err := tasks.Get(id)
+		if err == nil && hasHumanReviewRun(got) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("spawned review agent never recorded a run")
+}
+
+// Measured live: running the sweep inline serialized one full PrepareForTask
+// per swept task, and a single setup batch burned its whole ten-minute timeout
+// — startup did not arm dispatch for 9m32s, and no live park in that window
+// got a review at all. A sweep for stale work must not delay the current work.
+func TestRespawnDroppedReviews_DoesNotBlockOnPreparation(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	for range 3 {
+		tk, err := tasks.Create("dropped review", "", task.AgentModeHeadless)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+			"project_id": "Automaat/sybra",
+			"status":     string(task.StatusHumanRequired),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Both fail after unblocking: the spawn goroutines outlive the assertion,
+	// and a successful one would still be writing to the task store while the
+	// harness removes it.
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		<-release
+		return "", errors.New("torn down")
+	}
+	h.agents = &fakeHumanReviewAgentRunner{run: func(agent.RunConfig) (*agent.Agent, error) {
+		return nil, errors.New("torn down")
+	}}
+
+	done := make(chan struct{})
+	go func() {
+		h.RespawnDroppedReviews(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sweep blocked on worktree preparation; startup cannot arm dispatch behind it")
+	}
+}
+
+// The human-required status hook spawns while the agent that just failed is
+// still winding down in the registry, so PrepareForTask returns
+// ErrAgentRunning on the most common entry path into recovery. Falling back to
+// the read-only Sybra source there is the exact condition writable recovery
+// worktrees exist to eliminate — three agents on three tasks each verified a
+// fix and then reported they could not apply it.
+func TestHumanReviewDispatchDir_RetryableErrorsDoNotFallBackReadOnly(t *testing.T) {
+	tests := []struct {
+		name          string
+		prepareErr    error
+		wantRetryable bool
+	}{
+		{"live agent still winding down", worktree.ErrAgentRunning, true},
+		{"transient fetch blip", worktree.ErrTransientFetch, true},
+		{
+			// A task that genuinely has no worktree is what the read-only
+			// fallback is for: diagnosing Sybra itself.
+			name:          "permanent failure still falls back",
+			prepareErr:    errors.New("no worktree and no branch"),
+			wantRetryable: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _, cleanup := newReviewTestEnv(t)
+			defer cleanup()
+			h.cfg.HumanReview.SybraRepoDir = "/opt/sybra/src"
+			h.prepareTaskWorktree = func(task.Task) (string, error) { return "", tc.prepareErr }
+
+			dir, readOnly, retryable, _ := h.dispatchDir(task.Task{ID: "t1"})
+			if retryable != tc.wantRetryable {
+				t.Fatalf("retryable = %v, want %v", retryable, tc.wantRetryable)
+			}
+			if tc.wantRetryable {
+				if dir != "" || readOnly {
+					t.Errorf("retryable prepare returned dir=%q readOnly=%v, want no dispatch", dir, readOnly)
+				}
+				return
+			}
+			if dir != "/opt/sybra/src" || !readOnly {
+				t.Errorf("permanent failure gave dir=%q readOnly=%v, want the read-only fallback", dir, readOnly)
+			}
+		})
+	}
+}
+
+// Classifying the error is not enough: the spawn path must actually wait
+// instead of dispatching. Without this the agent still runs, just against the
+// read-only fallback.
+func TestHumanReviewSpawn_RetryablePrepareSchedulesRetry(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("retryable prepare", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	prepareCalls := 0
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		prepareCalls++
+		if prepareCalls == 1 {
+			return "", worktree.ErrAgentRunning
+		}
+		return t.TempDir(), nil
+	}
+	var scheduled func()
+	h.schedule = func(_ time.Duration, fn func()) { scheduled = fn }
+	runCalls := 0
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		runCalls++
+		if cfg.ReadOnlyDir {
+			t.Error("dispatched read-only after a retryable prepare failure")
+		}
+		return &agent.Agent{ID: "recovered", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	if h.maybeSpawn(context.Background(), tk.ID, string(task.StatusInReview)) {
+		t.Fatal("spawned despite a retryable prepare failure")
+	}
+	if runCalls != 0 {
+		t.Fatalf("agent ran %d times before the retry", runCalls)
+	}
+	if scheduled == nil {
+		t.Fatal("retryable prepare did not schedule a retry")
+	}
+
+	scheduled()
+
+	if runCalls != 1 {
+		t.Errorf("agent runs after retry = %d, want 1", runCalls)
+	}
+}
+
+// A spawn armed before BeginDrain must not start a provider process after it.
+// Measured live: a six-way sweep interrupted by SIGTERM started ten agents and
+// wrote their runs and verdicts after app.draining.
+func TestHumanReviewSpawn_RefusesAfterDrain(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("drain", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.prepareTaskWorktree = func(task.Task) (string, error) { return t.TempDir(), nil }
+	started := 0
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		started++
+		return &agent.Agent{ID: "late", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if h.maybeSpawn(ctx, tk.ID, string(task.StatusInReview)) {
+		t.Fatal("spawned after the scheduler context was cancelled")
+	}
+	if started != 0 {
+		t.Errorf("started %d provider agents during shutdown, want 0", started)
+	}
+}
+
+// A single PrepareForTask can hold the claim for its fetch budget plus its
+// setup budget — measured at 14m44s — while the ladder must stay under
+// StaleDispatchClaimAge (15m). Exhaustion therefore cannot be terminal: the
+// sweep has to pick the task back up rather than leave it parked forever.
+func TestRespawnDroppedReviews_RecoversAnExhaustedLadder(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("exhausted ladder", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: "impl", Role: string(agent.RoleImplementation), State: string(agent.StateStopped),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The ladder runs out while the claim is still held.
+	h.schedule = func(time.Duration, func()) {}
+	h.claimTaskDispatch = func(string) (func(), bool) { return nil, false }
+	h.scheduleClaimRetry(context.Background(), tk.ID, string(task.StatusInReview),
+		humanReviewSpawnOptions{ClaimRetryAttempt: humanReviewClaimRetryMax})
+
+	// The preparation finishes and the claim frees.
+	wtDir := t.TempDir()
+	h.claimTaskDispatch = func(string) (func(), bool) { return func() {}, true }
+	h.prepareTaskWorktree = func(task.Task) (string, error) { return wtDir, nil }
+	spawns := make(chan string, 2)
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		spawns <- cfg.TaskID
+		return &agent.Agent{ID: "swept", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	h.RespawnDroppedReviews(context.Background())
+
+	select {
+	case <-spawns:
+	case <-time.After(5 * time.Second):
+		t.Fatal("an exhausted ladder is never retried; the task stays parked forever")
+	}
+	waitForHumanReviewRun(t, tasks, tk.ID)
+}
+
+// The recovery is only real if the maintenance tick reaches it. Startup alone
+// leaves an exhausted ladder parked until the next restart.
+func TestMaintenancePass_RunsTheDroppedReviewSweep(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("swept on tick", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: "impl", Role: string(agent.RoleImplementation), State: string(agent.StateStopped),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	wtDir := t.TempDir()
+	h.prepareTaskWorktree = func(task.Task) (string, error) { return wtDir, nil }
+	spawns := make(chan string, 2)
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		spawns <- cfg.TaskID
+		return &agent.Agent{ID: "swept", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	a := &App{cfg: h.cfg, logger: slog.New(slog.DiscardHandler), humanReview: h}
+	a.maintenancePass(context.Background())
+
+	select {
+	case <-spawns:
+	case <-time.After(5 * time.Second):
+		t.Fatal("maintenance tick does not sweep dropped reviews")
+	}
+	waitForHumanReviewRun(t, tasks, tk.ID)
+}
+
+// A context check alone loses the race: a goroutine can pass it microseconds
+// before cancellation and still launch a provider process — measured at up to
+// 945ms past app.draining, in 9 of 14 randomized SIGTERM trials. BeginDrain
+// takes the lock the spawn holds across agents.Run, so the outcome is decided
+// rather than raced.
+func TestHumanReviewSpawn_BeginDrainRefusesEvenWithLiveContext(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("drain race", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.prepareTaskWorktree = func(task.Task) (string, error) { return t.TempDir(), nil }
+	started := 0
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		started++
+		return &agent.Agent{ID: "late", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	h.BeginDrain()
+
+	// Context deliberately still live, as it is for a goroutine that got past
+	// the ctx check just before schedulerCancel ran.
+	if h.maybeSpawn(context.Background(), tk.ID, string(task.StatusInReview)) {
+		t.Fatal("spawned after BeginDrain")
+	}
+	if started != 0 {
+		t.Errorf("started %d provider agents after drain, want 0", started)
+	}
+}
+
+// A permanently-ineligible park was re-swept on every tick, writing a skip
+// audit event each time — 21 no_project events in 200 seconds at a ten-second
+// interval. The sweep refuses those locally instead.
+func TestRespawnDroppedReviews_SkipsIneligibleWithoutAuditing(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	auditDir := t.TempDir()
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = auditLog.Close() })
+	h.audit = auditLog
+
+	for _, seed := range []struct {
+		title  string
+		fields map[string]any
+	}{
+		{"no project", map[string]any{"status": string(task.StatusHumanRequired)}},
+		{"umbrella", map[string]any{
+			"status": string(task.StatusHumanRequired), "project_id": "Automaat/sybra",
+			"task_type": string(task.TaskTypeUmbrella),
+		}},
+	} {
+		tk, err := tasks.Create(seed.title, "", task.AgentModeHeadless)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tasks.UpdateMap(tk.ID, seed.fields); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	h.agents = &fakeHumanReviewAgentRunner{run: func(agent.RunConfig) (*agent.Agent, error) {
+		t.Error("sweep spawned a review for an ineligible task")
+		return nil, errors.New("unreachable")
+	}}
+
+	for range 5 {
+		h.RespawnDroppedReviews(context.Background())
+	}
+
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Minute),
+		Until: time.Now().Add(time.Minute),
+		Type:  audit.EventHumanReviewSkipped,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Errorf("sweep wrote %d skip events for permanently-ineligible tasks, want 0", len(events))
+	}
+}
+
+// The handler gate is only reached if App.BeginDrain calls it, and it must be
+// called before schedulerCancel — after it, the spawn goroutine may already
+// have won the race the gate exists to decide.
+func TestAppBeginDrain_RefusesHumanReviewSpawns(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	a := &App{cfg: h.cfg, logger: slog.New(slog.DiscardHandler), humanReview: h}
+	a.lifecycle.Store(uint32(lifecycleStateRunning))
+
+	if !a.BeginDrain() {
+		t.Fatal("BeginDrain did not transition out of running")
+	}
+
+	h.drainMu.Lock()
+	draining := h.draining
+	h.drainMu.Unlock()
+	if !draining {
+		t.Error("App.BeginDrain did not close the human-review spawn gate")
+	}
+}
+
+// A preparation can fail before it mutates anything — adoptWorktree refuses a
+// detached or default-branch checkout up front — and the fallback then lands
+// back on the task's own untouched worktree. Telling the agent it is "not
+// looking at the state that failed" there makes it distrust a correct
+// reproduction, which is the opposite of what the warning is for.
+func TestHumanReviewDispatchDir_AdoptedFallbackIsNotFlaggedRebuilt(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	adopted := t.TempDir()
+	h.resolveExistingWorktree = func(task.Task) (string, error) { return "", os.ErrInvalid }
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		return "", errors.New("adopt worktree: checked out on default branch")
+	}
+
+	dir, readOnly, _, rebuilt := h.dispatchDir(task.Task{ID: "t1", WorktreeDir: adopted})
+	if dir != adopted || readOnly {
+		t.Fatalf("got dir=%q readOnly=%v, want the task's own worktree", dir, readOnly)
+	}
+	if rebuilt {
+		t.Error("rebuilt=true for an untouched worktree; the agent would distrust a correct reproduction")
+	}
+}
+
+// Reuse skips PrepareForTask, and with it the ErrAgentRunning guard that #3108
+// turned into a retry. A busy worktree must stay retryable, or the recovery
+// agent edits a checkout the implementer is still committing into.
+func TestHumanReviewDispatchDir_BusyWorktreeIsRetryable(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	h.resolveExistingWorktree = func(task.Task) (string, error) {
+		return "", fmt.Errorf("resolve: %w", worktree.ErrWorktreeBusy)
+	}
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		t.Fatal("preparation ran against a worktree with a live agent")
+		return "", nil
+	}
+
+	dir, readOnly, retryable, _ := h.dispatchDir(task.Task{ID: "busy-task"})
+	if !retryable {
+		t.Errorf("retryable=false for a busy worktree; recovery falls back instead of waiting")
+	}
+	if dir != "" || readOnly {
+		t.Errorf("got dir=%q readOnly=%v, want an empty retryable result", dir, readOnly)
+	}
+}
+
+// The empty-dir guard is load-bearing: without it a resolver returning
+// ("", nil) would give the agent an empty RunConfig.Dir and run it in the
+// server process's own working directory.
+func TestHumanReviewDispatchDir_EmptyReuseFallsThrough(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	prepared := t.TempDir()
+	h.resolveExistingWorktree = func(task.Task) (string, error) { return "  ", nil }
+	h.prepareTaskWorktree = func(task.Task) (string, error) { return prepared, nil }
+
+	dir, _, _, _ := h.dispatchDir(task.Task{ID: "t1"})
+	if dir != prepared {
+		t.Errorf("dir = %q, want the prepared worktree %q", dir, prepared)
+	}
+}
+
+// A preparation that sanitizes the tree and then fails non-retryably has
+// destroyed the evidence more thoroughly than one that succeeded, so the
+// read-only fallback still has to carry the warning.
+func TestHumanReviewDispatchDir_FailedPrepareStillFlagsRebuilt(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	h.resolveExistingWorktree = func(task.Task) (string, error) { return "", os.ErrNotExist }
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		return "", errors.New("reconcile failed after sanitize")
+	}
+
+	dir, readOnly, _, rebuilt := h.dispatchDir(task.Task{ID: "t1"})
+	if dir != h.cfg.HumanReview.SybraRepoDir || !readOnly {
+		t.Fatalf("got dir=%q readOnly=%v, want the read-only fallback", dir, readOnly)
+	}
+	if !rebuilt {
+		t.Error("rebuilt=false after a preparation that already mutated the tree")
+	}
+}
+
+// With no usable checkout, preparation is unavoidable — but then the agent has
+// to be told, because the mandate orders it to re-run the failing command and
+// forbids inferring "flaky" from reasoning alone.
+func TestHumanReviewDispatchDir_PreparedWorktreeIsFlaggedRebuilt(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	prepared := t.TempDir()
+	h.resolveExistingWorktree = func(task.Task) (string, error) { return "", os.ErrNotExist }
+	h.prepareTaskWorktree = func(task.Task) (string, error) { return prepared, nil }
+
+	dir, _, _, rebuilt := h.dispatchDir(task.Task{ID: "parked-task"})
+	if dir != prepared {
+		t.Errorf("dir = %q, want %q", dir, prepared)
+	}
+	if !rebuilt {
+		t.Fatal("rebuilt=false after preparation: the agent is never told its tree is not the tree that failed")
+	}
+
+	prompt := h.buildPrompt(context.Background(), task.Task{ID: "t1", ProjectID: "Automaat/sybra"}, dir, nil, rebuilt)
+	if !strings.Contains(prompt, "not looking at the state that failed") {
+		t.Error("prompt does not warn that the worktree was rebuilt")
+	}
+	clean := h.buildPrompt(context.Background(), task.Task{ID: "t1", ProjectID: "Automaat/sybra"}, dir, nil, false)
+	if strings.Contains(clean, "not looking at the state that failed") {
+		t.Error("prompt warns about a rebuild that did not happen")
+	}
+}
+
+// The recovery agent is sent to explain a failure, and every Prepare* path
+// rewrites the tree that failed before it reads a line of it — auto-committing
+// the dirty state, resetting, and rebasing onto a fresher base. A healthy
+// existing checkout must therefore be used untouched, or a base-induced
+// failure stops reproducing and the agent reports "flaky" on manufactured
+// evidence.
+func TestHumanReviewDispatchDir_ReusesExistingWorktreeUnmutated(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	existing := t.TempDir()
+	h.resolveExistingWorktree = func(task.Task) (string, error) { return existing, nil }
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		t.Fatal("preparation ran against a healthy existing worktree, rewriting the evidence")
+		return "", nil
+	}
+
+	dir, readOnly, retryable, rebuilt := h.dispatchDir(task.Task{ID: "parked-task"})
+	if dir != existing {
+		t.Errorf("dir = %q, want the existing worktree %q", dir, existing)
+	}
+	if readOnly || retryable {
+		t.Errorf("readOnly=%v retryable=%v, want both false", readOnly, retryable)
+	}
+	if rebuilt {
+		t.Error("rebuilt=true for a reused worktree: the agent would be told its evidence is stale when it is not")
+	}
+}
+
+// The provider-fallback retry and retryAfterCrash both build fresh spawn
+// options, so carrying the flag on options alone lost it: the second agent was
+// handed the tree the first one's preparation had already rewritten, with no
+// warning. The flag is sticky for the whole human-required episode instead.
+func TestHumanReviewSpawn_PreparedFlagIsStickyPerEpisode(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("sticky prepared", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	wtDir := t.TempDir()
+	prepared := false
+	h.resolveExistingWorktree = func(task.Task) (string, error) {
+		if prepared {
+			return wtDir, nil
+		}
+		return "", os.ErrNotExist
+	}
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		prepared = true
+		return wtDir, nil
+	}
+
+	var prompts []string
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		prompts = append(prompts, cfg.Prompt)
+		return &agent.Agent{ID: fmt.Sprintf("rev%d", len(prompts)), TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	if !h.maybeSpawn(context.Background(), tk.ID, string(task.StatusInReview)) {
+		t.Fatal("first review did not spawn")
+	}
+	// The first agent finished, as it has when the provider fallback re-spawns.
+	h.clearInflight(tk.ID)
+	// A fresh options value, as the provider fallback and crash retry both build.
+	if !h.maybeSpawnWithOptions(context.Background(), tk.ID, string(task.StatusInReview),
+		humanReviewSpawnOptions{IgnoreRenderedVerdict: true, RetryReason: "malformed_verdict"}) {
+		t.Fatal("retry did not spawn")
+	}
+
+	if len(prompts) != 2 {
+		t.Fatalf("got %d prompts, want 2", len(prompts))
+	}
+	for i, p := range prompts {
+		if !strings.Contains(p, "not looking at the state that failed") {
+			t.Errorf("prompt %d reused the rewritten tree without warning the agent", i)
+		}
+	}
+
+	// A later episode must not inherit the warning.
+	h.clearInflight(tk.ID)
+	h.forgetPrepared(tk.ID)
+	h.mu.Lock()
+	h.perTask = map[string][]time.Time{}
+	h.recent = nil
+	h.mu.Unlock()
+	prompts = nil
+	if !h.maybeSpawnWithOptions(context.Background(), tk.ID, string(task.StatusInReview),
+		humanReviewSpawnOptions{IgnoreRenderedVerdict: true}) {
+		t.Fatal("third spawn refused")
+	}
+	if len(prompts) != 1 {
+		t.Fatalf("third spawn produced %d prompts, want 1", len(prompts))
+	}
+	if strings.Contains(prompts[0], "not looking at the state that failed") {
+		t.Error("a new episode inherited a warning about a preparation that predates it")
+	}
+}
+
+// A transient fetch failure lands after SanitizeWorktree has auto-committed
+// and reset the tree, so the retry reuses a checkout that no longer holds the
+// evidence. Without carrying the flag across the retry it is reported as
+// untouched — the exact false reassurance the warning exists to prevent.
+func TestHumanReviewSpawn_PreparedFlagSurvivesRetry(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("transient prepare", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	wtDir := t.TempDir()
+	prepared := false
+	// First pass: nothing to reuse, and preparation fails transiently after
+	// having already sanitized. Second pass: the sanitized tree is reusable.
+	h.resolveExistingWorktree = func(task.Task) (string, error) {
+		if prepared {
+			return wtDir, nil
+		}
+		return "", os.ErrNotExist
+	}
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		prepared = true
+		return "", fmt.Errorf("fetch: %w", worktree.ErrTransientFetch)
+	}
+
+	var prompt string
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		prompt = cfg.Prompt
+		return &agent.Agent{ID: "rev", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+	// Run the real scheduled retry rather than reconstructing its options, so
+	// the flag has to survive the actual handoff.
+	var retry func()
+	h.schedule = func(_ time.Duration, fn func()) { retry = fn }
+
+	if h.maybeSpawn(context.Background(), tk.ID, string(task.StatusInReview)) {
+		t.Fatal("spawned despite a retryable preparation failure")
+	}
+	if retry == nil {
+		t.Fatal("no retry scheduled after a retryable preparation failure")
+	}
+	retry()
+
+	if prompt == "" {
+		t.Fatal("retry did not spawn")
+	}
+	if !strings.Contains(prompt, "not looking at the state that failed") {
+		t.Error("retry reused a sanitized worktree without warning the agent")
+	}
+}
+
+// dispatchDir computing the flag correctly is worth nothing if spawnReview
+// drops it. Assert against the prompt the agent is actually handed.
+func TestHumanReviewSpawn_RebuiltWarningReachesTheAgent(t *testing.T) {
+	cases := []struct {
+		name        string
+		reuse       bool
+		wantWarning bool
+	}{
+		{name: "reused worktree carries no warning", reuse: true},
+		{name: "prepared worktree carries the warning", wantWarning: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, tasks, cleanup := newReviewTestEnv(t)
+			defer cleanup()
+
+			tk, err := tasks.Create("rebuilt warning", "", task.AgentModeHeadless)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+				"project_id": "Automaat/sybra",
+				"status":     string(task.StatusHumanRequired),
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			wtDir := t.TempDir()
+			h.resolveExistingWorktree = func(task.Task) (string, error) {
+				if tc.reuse {
+					return wtDir, nil
+				}
+				return "", os.ErrNotExist
+			}
+			h.prepareTaskWorktree = func(task.Task) (string, error) { return wtDir, nil }
+
+			var prompt string
+			h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+				prompt = cfg.Prompt
+				return &agent.Agent{ID: "rev", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+			}}
+
+			if !h.maybeSpawn(context.Background(), tk.ID, string(task.StatusInReview)) {
+				t.Fatal("review did not spawn")
+			}
+			got := strings.Contains(prompt, "not looking at the state that failed")
+			if got != tc.wantWarning {
+				t.Errorf("prompt warns = %v, want %v", got, tc.wantWarning)
+			}
+		})
 	}
 }

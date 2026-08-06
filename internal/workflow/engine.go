@@ -17,6 +17,8 @@ import (
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 const (
@@ -36,7 +38,7 @@ type TaskInfo struct {
 	// Generation is the reducer-visible monotonic task version the effect-id
 	// scheme keys on until a dedicated persisted task-generation counter lands.
 	Generation   int64
-	Status       string
+	Status       taskstatus.Status
 	StatusReason string
 	Blocker      blocker.State
 	Role         string
@@ -117,23 +119,31 @@ type AgentRunInfo struct {
 	// no-op run apart from one that delegated to a background subagent and
 	// ended before that delegation produced any commits.
 	SubagentCallCount int
+	// TurnCount is zero when the provider child emitted nothing, marking a run
+	// that never saw its instructions rather than one that defied them.
+	TurnCount int
 }
 
 // TaskProvider reads and updates tasks.
 type TaskProvider interface {
 	GetTask(id string) (TaskInfo, error)
 	ListTasks() ([]TaskInfo, error)
-	UpdateTaskStatus(id, status, reason string) error
+	UpdateTaskStatus(id string, status taskstatus.Status, reason string) error
 	// ClearTaskStatusReasonIf atomically clears a status reason only when the
 	// task still has the exact status and reason the caller observed. It keeps a
 	// stale retry cleanup from erasing a newer failure or operator decision.
-	ClearTaskStatusReasonIf(id, expectedStatus, expectedReason string) (bool, error)
-	UpdateTaskBlocker(id, status, reason string, state blocker.State) error
+	ClearTaskStatusReasonIf(id string, expectedStatus taskstatus.Status, expectedReason string) (bool, error)
+	UpdateTaskBlocker(id string, status taskstatus.Status, reason string, state blocker.State) error
 	UpdateTaskPR(id string, prNumber int) error
 	MarkTaskReviewed(id string) error
 	MarkAgentRunProtocolViolation(taskID, agentID, violation string) error
 	MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint string) error
 	RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error
+	// MarkAgentRunIncomplete downgrades a clean-exit code-author run that
+	// produced no commits. Named rather than taking an outcome string because
+	// internal/workflow cannot import internal/task (cycle via
+	// internal/agent), so the vocabulary stays on the far side of the adapter.
+	MarkAgentRunIncomplete(taskID, agentID string) error
 	AppendTaskBody(id, content string) error
 	// ReplaceTaskBody overwrites the task's full body. Used by the test-route
 	// step to archive/strip a stale "## Test Failures" section before
@@ -173,7 +183,7 @@ type TaskProvider interface {
 // maintenance mutation is allowed to replace.
 type WorkflowWriteFence struct {
 	Generation   int64
-	Status       string
+	Status       taskstatus.Status
 	StatusReason string
 	WorkflowID   string
 	CurrentStep  string
@@ -186,6 +196,13 @@ type WorkflowWriteFence struct {
 // Engine operates with a nil WorktreeGetter — verify_commits becomes a no-op.
 type WorktreeGetter interface {
 	GetWorktreePath(taskID string) (string, bool)
+}
+
+// PRWorktreeResolver resolves or reconstructs the implementation worktree for
+// deterministic PR-tail steps. It is optional so lightweight Engine users and
+// tests can keep providing a read-only WorktreeGetter.
+type PRWorktreeResolver interface {
+	ResolvePRWorktree(ctx context.Context, taskID string) (path string, found bool, err error)
 }
 
 // AttemptNoteAppender persists re-implementation context into a task's local
@@ -450,22 +467,27 @@ type Engine struct {
 	resumeError      *logging.ErrorThrottle
 	demotionThrottle *logging.ErrorThrottle
 	resumeSkip       *logging.InfoThrottle
-	maxTestAttempts  int // generous testing backstop; recurring fingerprints escalate before this cap (0 → defaultTestAttempts)
+	// These four are written by the config-reload goroutine via their Set*
+	// methods while dispatch reads them, so they are atomic rather than plain
+	// fields. A -race run under concurrent reloads caught reviewLoopDisabled
+	// and reviewRoundsPerHour; the other two have the identical shape and were
+	// simply not hit by that workload.
+	maxTestAttempts atomic.Int64 // generous testing backstop; recurring fingerprints escalate before this cap (0 → defaultTestAttempts)
 	// reviewLoopDisabled: see SetReviewUntilClean. Inverted so the zero value
 	// keeps the review→fix→review cycle running, matching
 	// config.ReviewUntilClean's default of true.
-	reviewLoopDisabled bool
+	reviewLoopDisabled atomic.Bool
 	// reviewRoundsPerHour bounds simple-task-review's review→fix→review
 	// cycle through the same durable reviewbudget.Budget the inbound
 	// PR-review dispatcher uses (internal/sybra's app_orchestrator.go) —
 	// one owner for "is this task reviewing too much", not a separate
 	// per-workflow-execution round cap. 0 → config.DefaultReviewRoundsPerHour;
 	// negative disables the cap.
-	reviewRoundsPerHour int
+	reviewRoundsPerHour atomic.Int64
 	// openPROnUnrunnableGate: see SetOpenPROnUnrunnableGate. Defaults to true
 	// (set in NewEngine), matching config.TestingOpenPROnUnrunnableGateEnabled's
 	// nil-is-true default.
-	openPROnUnrunnableGate bool
+	openPROnUnrunnableGate atomic.Bool
 	maxCheckpoints         int           // checkpoint handoff cap per step (0 → defaultMaxCheckpoints)
 	verifyTimeout          time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
 	verifyChecksSlots      chan struct{} // process-local verify_checks concurrency cap; lazily initialized for zero-value Engines in tests
@@ -539,29 +561,32 @@ const defaultMaxCheckpoints = config.DefaultMaxCheckpoints
 
 // NewEngine creates a workflow engine.
 func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger) *Engine {
-	return &Engine{
-		store:                  store,
-		tasks:                  tasks,
-		agents:                 agents,
-		ownerID:                newEffectOwnerID(),
-		effectLeaseTTL:         defaultEffectLeaseTTL,
-		now:                    func() time.Time { return time.Now().UTC() },
-		logger:                 logger,
-		ctx:                    context.Background(),
-		inflightMutexes:        make(map[string]*sync.Mutex),
-		routeMutexes:           make(map[string]*sync.Mutex),
-		dispatching:            make(map[string]struct{}),
-		starting:               make(map[string]struct{}),
-		humanAction:            make(map[string]struct{}),
-		pendingRoutes:          make(map[string]string),
-		completing:             make(map[string]int),
-		cascadeDepth:           make(map[string]int),
-		pendingRecovery:        make(map[string]pendingRecovery),
-		resumeError:            logging.NewErrorThrottle(),
-		demotionThrottle:       logging.NewErrorThrottle(),
-		resumeSkip:             logging.NewInfoThrottle(),
-		openPROnUnrunnableGate: true,
+	e := &Engine{
+		store:            store,
+		tasks:            tasks,
+		agents:           agents,
+		ownerID:          newEffectOwnerID(),
+		effectLeaseTTL:   defaultEffectLeaseTTL,
+		now:              func() time.Time { return time.Now().UTC() },
+		logger:           logger,
+		ctx:              context.Background(),
+		inflightMutexes:  make(map[string]*sync.Mutex),
+		routeMutexes:     make(map[string]*sync.Mutex),
+		dispatching:      make(map[string]struct{}),
+		starting:         make(map[string]struct{}),
+		humanAction:      make(map[string]struct{}),
+		pendingRoutes:    make(map[string]string),
+		completing:       make(map[string]int),
+		cascadeDepth:     make(map[string]int),
+		pendingRecovery:  make(map[string]pendingRecovery),
+		resumeError:      logging.NewErrorThrottle(),
+		demotionThrottle: logging.NewErrorThrottle(),
+		resumeSkip:       logging.NewInfoThrottle(),
 	}
+	// atomic.Bool's zero value is false, so the documented default has to be
+	// stored explicitly rather than set in the literal.
+	e.openPROnUnrunnableGate.Store(true)
+	return e
 }
 
 func newEffectOwnerID() string {
@@ -655,20 +680,91 @@ func (e *Engine) SetAdmissionDecisionHook(hook func(TaskInfo, AdmissionDecision)
 // Defs returns the workflow definition store.
 func (e *Engine) Defs() *Store { return e.store }
 
+// PRSurface is the pull-request dependency group: every collaborator the
+// engine needs to open, find, link, close and re-review a PR.
+//
+// It exists because the engine is constructed empty and assembled through 46
+// Set* calls, so a dependency the wiring forgot is not a compile error or a
+// startup failure — it is a nil field that turns a step into a silently
+// skipped branch, weeks later and far from the omission. Grouping the surface
+// lets SetPRSurface reject a partial wiring at startup, where it is
+// attributable.
+//
+// The individual setters below survive as test seams: tests legitimately wire
+// one collaborator and leave the rest nil, so the per-field nil guards must
+// stay until a group has no seam left.
+type PRSurface struct {
+	Linker           PRLinker
+	ReviewRequester  PRReviewRequester
+	StateFetcher     PRStateFetcher
+	HeadFetcher      PRHeadFetcher
+	Creator          PRCreator
+	Closer           PRCloser
+	Finder           PRFinder
+	AnyStateFinder   PRAnyStateFinder
+	ExistenceChecker PRExistenceChecker
+	ContentGenerator PRContentGenerator
+}
+
+// SetPRSurface wires the whole PR dependency group and reports every missing
+// member at once, so a wiring omission surfaces at startup rather than as a
+// step that quietly does nothing. Production must use this; the per-field
+// setters are for tests.
+func (e *Engine) SetPRSurface(s PRSurface) error {
+	var missing []string
+	for _, dep := range []struct {
+		name  string
+		isNil bool
+	}{
+		{"Linker", s.Linker == nil},
+		{"ReviewRequester", s.ReviewRequester == nil},
+		{"StateFetcher", s.StateFetcher == nil},
+		{"HeadFetcher", s.HeadFetcher == nil},
+		{"Creator", s.Creator == nil},
+		{"Closer", s.Closer == nil},
+		{"Finder", s.Finder == nil},
+		{"AnyStateFinder", s.AnyStateFinder == nil},
+		{"ExistenceChecker", s.ExistenceChecker == nil},
+		{"ContentGenerator", s.ContentGenerator == nil},
+	} {
+		if dep.isNil {
+			missing = append(missing, dep.name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("workflow: PR surface missing %s", strings.Join(missing, ", "))
+	}
+	e.prLinker = s.Linker
+	e.prReviewers = s.ReviewRequester
+	e.prStates = s.StateFetcher
+	e.prHeads = s.HeadFetcher
+	e.prCreator = s.Creator
+	e.prCloser = s.Closer
+	e.prFinder = s.Finder
+	e.prAnyStateFinder = s.AnyStateFinder
+	e.prExistence = s.ExistenceChecker
+	e.prContentGen = s.ContentGenerator
+	return nil
+}
+
 // SetPRLinker wires an implementation of PRLinker used by the
 // `ensure_pr_closes_issue` step. Leaving it unset makes the step a no-op.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRLinker(l PRLinker) { e.prLinker = l }
 
 // SetPRReviewRequester wires an implementation used by rerequest_review.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRReviewRequester(r PRReviewRequester) { e.prReviewers = r }
 
 // SetPRStateFetcher wires an implementation used by `route_pr_fix_result` to
 // re-probe the live PR before parking human-required. Leaving it unset skips
 // the re-probe and trusts the agent's sentinel as-is.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRStateFetcher(f PRStateFetcher) { e.prStates = f }
 
 // SetPRHeadFetcher wires an implementation used by `push_branch` to verify a
 // push landed. Leaving it unset skips the verification.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRHeadFetcher(f PRHeadFetcher) { e.prHeads = f }
 
 // SetPushCredentialPreflighter wires the push-auth preflight used before
@@ -681,28 +777,34 @@ func (e *Engine) SetPushCredentialPreflighter(p PushCredentialPreflighter) {
 // SetPRCreator wires an implementation of `gh pr create` used by the
 // `create_pr` step. Leaving it unset flips the task to human-required when
 // create_pr is reached, since a PR cannot be opened without it.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRCreator(c PRCreator) { e.prCreator = c }
 
 // SetPRCloser wires best-effort cleanup for superseded PRs after a task is
 // relinked to a replacement PR.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRCloser(c PRCloser) { e.prCloser = c }
 
 // SetPRFinder wires the open-PR-by-branch lookup used by create_pr's
 // idempotency guard. Leaving it unset skips the guard.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRFinder(f PRFinder) { e.prFinder = f }
 
 // SetPRAnyStateFinder wires the all-state branch lookup used by create_pr's
 // squash-merge duplicate guard. Leaving it unset skips the guard.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRAnyStateFinder(f PRAnyStateFinder) { e.prAnyStateFinder = f }
 
 // SetPRExistenceChecker wires the pr_number-belongs-to-repo verification used
 // by link_pr_and_review's Path 1. Leaving it unset skips the check and
 // trusts task.pr_number outright, matching the engine's pre-existing
 // behavior.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRExistenceChecker(c PRExistenceChecker) { e.prExistence = c }
 
 // SetPRContentGenerator wires the LLM-backed title/body drafter used by the
 // `create_pr` step. Leaving it unset falls back to a templated title/body.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRContentGenerator(g PRContentGenerator) { e.prContentGen = g }
 
 // SetWorktreeGetter wires a WorktreeGetter used by steps that need the task's
@@ -800,12 +902,12 @@ func (e *Engine) SetOnComplete(fn func(CompletionInfo)) { e.onComplete = fn }
 // route_test_result parks it human-required. Recurring grounded failure
 // fingerprints still escalate independently of this count. Values <= 0 fall
 // back to defaultTestAttempts.
-func (e *Engine) SetTestingMaxAttempts(n int) { e.maxTestAttempts = n }
+func (e *Engine) SetTestingMaxAttempts(n int) { e.maxTestAttempts.Store(int64(n)) }
 
 // SetReviewUntilClean controls whether simple-task-review re-reviews after
 // every fix until the verdict is CLEAN (true, the default) or runs a single
 // review pass per task (false).
-func (e *Engine) SetReviewUntilClean(v bool) { e.reviewLoopDisabled = !v }
+func (e *Engine) SetReviewUntilClean(v bool) { e.reviewLoopDisabled.Store(!v) }
 
 // SetReviewRoundsPerHour sets the rolling-hour review-role dispatch cap
 // simple-task-review's detect_tampering step checks before looping back for
@@ -813,7 +915,7 @@ func (e *Engine) SetReviewUntilClean(v bool) { e.reviewLoopDisabled = !v }
 // (config.AgentDefaults.ReviewRoundsPerHourLimit) the inbound PR-review
 // dispatcher enforces. 0 falls back to config.DefaultReviewRoundsPerHour;
 // negative disables the cap.
-func (e *Engine) SetReviewRoundsPerHour(n int) { e.reviewRoundsPerHour = n }
+func (e *Engine) SetReviewRoundsPerHour(n int) { e.reviewRoundsPerHour.Store(int64(n)) }
 
 // SetOpenPROnUnrunnableGate controls whether execRouteTestResult opens a PR
 // (ready-pr) instead of escalating to human-required once a testing cycle
@@ -821,7 +923,20 @@ func (e *Engine) SetReviewRoundsPerHour(n int) { e.reviewRoundsPerHour = n }
 // manual gate itself could not be run (harness/tooling limitation), not a
 // product defect. Defaults to true (see NewEngine); wired from
 // config.TestingOpenPROnUnrunnableGateEnabled in app_init.go.
-func (e *Engine) SetOpenPROnUnrunnableGate(v bool) { e.openPROnUnrunnableGate = v }
+func (e *Engine) SetOpenPROnUnrunnableGate(v bool) { e.openPROnUnrunnableGate.Store(v) }
+
+// ReviewUntilClean, ReviewRoundsPerHour, TestingMaxAttempts and
+// OpenPROnUnrunnableGate read back what the corresponding Set* stored. They
+// exist because these values live in atomics: the app layer's reload tests
+// previously reflected into the plain fields, which cannot work on an
+// atomic.Bool, and reflecting into one is worse than a getter.
+func (e *Engine) ReviewUntilClean() bool { return !e.reviewLoopDisabled.Load() }
+
+func (e *Engine) ReviewRoundsPerHour() int { return int(e.reviewRoundsPerHour.Load()) }
+
+func (e *Engine) TestingMaxAttempts() int { return int(e.maxTestAttempts.Load()) }
+
+func (e *Engine) OpenPROnUnrunnableGate() bool { return e.openPROnUnrunnableGate.Load() }
 
 // SetMaxCheckpoints sets how many checkpoint handoffs a workflow step may
 // spend before the task is parked human-required. Values <= 0 fall back to

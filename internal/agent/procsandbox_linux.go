@@ -26,6 +26,11 @@ func sandboxExecAvailable() bool {
 
 func sandboxWrapperName() string { return "bwrap" }
 
+// Linux bind-mounts branch refs into an overlay and publishes them only after
+// sandboxSyncShell has copied the corresponding objects into the shared
+// store, so object staging is safe and required on this platform.
+func sandboxUsesGitObjectOverlay() bool { return true }
+
 func materializeSandboxProfile() (string, error) {
 	return "", nil
 }
@@ -121,6 +126,15 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 	if cfg.sandbox.gitOverlayTagLogDir != "" && cfg.sandbox.gitTagLogDir != "" {
 		wrapped = append(wrapped, "--bind", cfg.sandbox.gitOverlayTagLogDir, cfg.sandbox.gitTagLogDir)
 	}
+	// The object overlay remains writable for loose objects, but explicit
+	// maintenance must not create packs or commit-graph metadata that the
+	// post-run publisher could copy into the shared clone.
+	if cfg.sandbox.gitOverlayObjectDir != "" {
+		for _, dir := range []string{"pack", "info"} {
+			path := filepath.Join(cfg.sandbox.gitOverlayObjectDir, dir)
+			wrapped = append(wrapped, "--ro-bind", path, path)
+		}
+	}
 	// Re-lock the durable-config paths after every writable bind above:
 	// bwrap resolves overlapping entries in argument order, so these must
 	// come last to win over the state dir that contains them.
@@ -148,7 +162,7 @@ func sandboxSyncShell(bwrapArgs []string, cfg *RunConfig) (wrappedName string, w
 		`  src=$1`,
 		`  dst=$2`,
 		`  [ -d "$src" ] || return 0`,
-		`  mkdir -p "$dst" "$dst/pack" || return $?`,
+		`  mkdir -p "$dst" || return $?`,
 		`  for hexdir in "$src"/[0-9a-f][0-9a-f]; do`,
 		`    [ -d "$hexdir" ] || continue`,
 		`    base=$(basename "$hexdir")`,
@@ -157,10 +171,6 @@ func sandboxSyncShell(bwrapArgs []string, cfg *RunConfig) (wrappedName string, w
 		`      [ -f "$obj" ] || continue`,
 		`      cp -p "$obj" "$dst/$base/" || return $?`,
 		`    done`,
-		`  done`,
-		`  for pack in "$src"/pack/pack-*; do`,
-		`    [ -f "$pack" ] || continue`,
-		`    cp -p "$pack" "$dst/pack/" || return $?`,
 		`  done`,
 		`}`,
 		`"$@"`,

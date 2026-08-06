@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/task"
@@ -28,28 +27,12 @@ func newStore(dir string) (*store, error) {
 	return &store{dir: dir}, nil
 }
 
-// safeTaskID reports whether id is safe to use as a filename component: it
-// must be non-empty, contain no path separators or "..", and equal its own
-// filepath.Base (rejecting anything that could escape dir).
-func safeTaskID(id string) bool {
-	if id == "" {
-		return false
-	}
-	if strings.ContainsAny(id, "/\\") {
-		return false
-	}
-	if strings.Contains(id, "..") {
-		return false
-	}
-	return filepath.Base(id) == id
-}
-
 func (s *store) filePath(taskID string) string {
 	return filepath.Join(s.dir, taskID+".yaml")
 }
 
 func (s *store) put(it Item) error {
-	if !safeTaskID(it.TaskID) {
+	if fsutil.ValidateKey(it.TaskID) != nil {
 		return fmt.Errorf("agentqueue: unsafe task id %q", it.TaskID)
 	}
 	data, err := yaml.Marshal(it)
@@ -60,7 +43,7 @@ func (s *store) put(it Item) error {
 }
 
 func (s *store) del(taskID string) error {
-	if !safeTaskID(taskID) {
+	if fsutil.ValidateKey(taskID) != nil {
 		return fmt.Errorf("agentqueue: unsafe task id %q", taskID)
 	}
 	if err := os.Remove(s.filePath(taskID)); err != nil && !os.IsNotExist(err) {

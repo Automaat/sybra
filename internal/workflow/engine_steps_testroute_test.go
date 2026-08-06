@@ -15,7 +15,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/notes"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 func TestExtractTestVerdict(t *testing.T) {
@@ -3108,7 +3110,7 @@ func TestExecRouteTestResult_NonReimplementRoutesDoNotSeedNote(t *testing.T) {
 		taskID string
 		task   TaskInfo
 		wf     *Execution
-		status string
+		status taskstatus.Status
 	}{
 		{
 			name:   "pass_to_ready_pr",
@@ -3383,7 +3385,7 @@ func TestRouteTestResult_FailAtCapWithDistinctFailuresAfterImplementationReframe
 	}
 }
 
-func TestRouteTestResult_DistinctFailureLoopUsesRaisedDefaultBackstop(t *testing.T) {
+func TestRouteTestResult_DistinctFailureLoopUsesBoundedDefaultBackstop(t *testing.T) {
 	t.Parallel()
 	e, tasks, _ := makeTestingTaskEngine(t)
 	now := time.Now().UTC()
@@ -3409,26 +3411,26 @@ func TestRouteTestResult_DistinctFailureLoopUsesRaisedDefaultBackstop(t *testing
 		taskID     string
 		attempts   int
 		wantOutput string
-		wantStatus string
+		wantStatus taskstatus.Status
 	}{
 		{
-			name:       "past old cap still reimplements",
-			taskID:     "t-default-cap-11",
-			attempts:   11,
+			name:       "below cap still reimplements",
+			taskID:     "t-default-cap-3",
+			attempts:   config.DefaultTestingMaxAttempts - 2,
 			wantOutput: "reimplement",
 			wantStatus: "in-progress",
 		},
 		{
-			name:       "one below new backstop still reimplements",
-			taskID:     "t-default-cap-24",
-			attempts:   24,
+			name:       "one below backstop still reimplements",
+			taskID:     "t-default-cap-4",
+			attempts:   config.DefaultTestingMaxAttempts - 1,
 			wantOutput: "reimplement",
 			wantStatus: "in-progress",
 		},
 		{
-			name:       "at new backstop escalates",
-			taskID:     "t-default-cap-25",
-			attempts:   25,
+			name:       "at backstop escalates",
+			taskID:     "t-default-cap-5",
+			attempts:   config.DefaultTestingMaxAttempts,
 			wantOutput: "escalated",
 			wantStatus: "human-required",
 		},

@@ -5,9 +5,10 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/gitexec"
 )
 
 var conflictMarkerPrefixes = [][]byte{
@@ -69,15 +70,9 @@ func ResolvedUnmergedPaths(ctx context.Context, wtPath string) ([]string, error)
 	// staged deletion (an explicit, marker-free resolution with no working-tree
 	// file to inspect) apart from a staged add/modify whose file happens to be
 	// missing on disk.
-	cmd := exec.CommandContext(ctx, "git", "diff", "--cached", "--name-status", "-z")
-	cmd.Dir = wtPath
-	out, err := cmd.CombinedOutput()
+	out, err := gitexec.CombinedOutput(ctx, gitexec.Options{Dir: wtPath}, "diff", "--cached", "--name-status", "-z")
 	if err != nil {
-		detail := strings.TrimSpace(string(out))
-		if detail == "" {
-			return nil, fmt.Errorf("git diff --cached --name-status -z: %w", err)
-		}
-		return nil, fmt.Errorf("git diff --cached --name-status -z: %w: %s", err, detail)
+		return nil, err
 	}
 
 	fields := bytes.Split(out, []byte{0})
@@ -143,15 +138,9 @@ func ResolvedUnmergedPaths(ctx context.Context, wtPath string) ([]string, error)
 // so a path with all three stages present would otherwise be reported three
 // times.
 func unmergedIndexPaths(ctx context.Context, wtPath string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "ls-files", "-u", "-z")
-	cmd.Dir = wtPath
-	out, err := cmd.CombinedOutput()
+	out, err := gitexec.CombinedOutput(ctx, gitexec.Options{Dir: wtPath}, "ls-files", "-u", "-z")
 	if err != nil {
-		detail := strings.TrimSpace(string(out))
-		if detail == "" {
-			return nil, fmt.Errorf("git ls-files -u -z: %w", err)
-		}
-		return nil, fmt.Errorf("git ls-files -u -z: %w: %s", err, detail)
+		return nil, err
 	}
 
 	seen := make(map[string]struct{})
@@ -175,15 +164,9 @@ func unmergedIndexPaths(ctx context.Context, wtPath string) ([]string, error) {
 }
 
 func mergeInProgress(ctx context.Context, wtPath string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-path", "MERGE_HEAD")
-	cmd.Dir = wtPath
-	out, err := cmd.CombinedOutput()
+	out, err := gitexec.CombinedOutput(ctx, gitexec.Options{Dir: wtPath}, "rev-parse", "--git-path", "MERGE_HEAD")
 	if err != nil {
-		detail := strings.TrimSpace(string(out))
-		if detail == "" {
-			return false, fmt.Errorf("git rev-parse --git-path MERGE_HEAD: %w", err)
-		}
-		return false, fmt.Errorf("git rev-parse --git-path MERGE_HEAD: %w: %s", err, detail)
+		return false, err
 	}
 	path := strings.TrimSpace(string(out))
 	if path == "" {
