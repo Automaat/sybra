@@ -32,6 +32,7 @@ const (
 	CatGHPushAuthFailure Category = "gh_push_auth_failure"
 	CatGHAuthUnavailable Category = "gh_auth_unavailable"
 	CatSandboxCleanup    Category = "sandbox_cleanup_failure"
+	CatTaskUnreadable    Category = "task_unreadable"
 )
 
 // Score is the rollup verdict across all findings in a report.

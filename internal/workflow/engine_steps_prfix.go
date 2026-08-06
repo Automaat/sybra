@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/prepstate"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/taskstatus"
 )
@@ -86,6 +87,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 		reviewHoldForced = true
 	}
 	if verdict == PRFixContinue {
+		e.recordPreparedWorktreeState(taskID, wfExec, t)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "continue"}, nil
 	}
 	// A flake has no commit to verify, so parking or verify_commits would punish the honest answer. EXC:FILE011:load-bearing-invariant
@@ -182,6 +184,28 @@ func prFixShouldResumeNoPRRecovery(t TaskInfo, reason string) bool {
 	}
 	return strings.Contains(lower, "remote unreachable") ||
 		(strings.Contains(lower, "transport") && strings.Contains(lower, "github"))
+}
+
+func (e *Engine) recordPreparedWorktreeState(taskID string, wfExec *Execution, t TaskInfo) {
+	if wfExec == nil || wfExec.WorkflowID != "branch-conflict-fix" {
+		return
+	}
+	dir := wfExec.Variables[WorkflowVarDir]
+	if dir == "" {
+		return
+	}
+	branch := t.Branch
+	if branch == "" {
+		branch = strings.TrimSpace(t.Branch)
+	}
+	wrote, err := prepstate.WriteVerified(e.ctx, dir, branch)
+	if err != nil {
+		e.logger.Warn("workflow.pr-fix.prep-state-write", "task_id", taskID, "workflow", wfExec.WorkflowID, "dir", dir, "branch", branch, "err", err)
+		return
+	}
+	if wrote {
+		e.logger.Info("workflow.pr-fix.prep-state-written", "task_id", taskID, "workflow", wfExec.WorkflowID, "dir", dir, "branch", branch)
+	}
 }
 
 func prFixAllowsResolvedMergeRecovery(reason string) bool {

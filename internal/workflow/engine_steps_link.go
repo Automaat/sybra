@@ -241,11 +241,8 @@ func (e *Engine) parkStepForRetry(taskID string, wfExec *Execution, t TaskInfo, 
 	wfExec.CurrentStep = stepID
 	wfExec.State = ExecWaiting
 	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(prCreateRetryBackoff).Format(time.RFC3339))
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if err := e.tasks.SetStatusAndWorkflow(taskID, string(t.Status), statusReason, wfExec); err != nil {
 		return StepOutput{}, err
-	}
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, t.Status, statusReason); statusErr != nil {
-		return StepOutput{}, statusErr
 	}
 	attrs := append([]any{"task_id", taskID, "step", stepID, "reason", statusReason}, logAttrs...)
 	e.logger.Warn(logEvent, attrs...)
@@ -279,10 +276,7 @@ func (e *Engine) maybeParkImplementGitHubRetry(taskID string, step *Step, wfExec
 	wfExec.State = ExecWaiting
 	wfExec.SetVar(implementPushAttemptsVar, strconv.Itoa(attempts+1))
 	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(prCreateRetryBackoff).Format(time.RFC3339))
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		return false, err
-	}
-	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InProgress, implementPushRetryStatusReason); err != nil {
+	if err := e.tasks.SetStatusAndWorkflow(taskID, "in-progress", implementPushRetryStatusReason, wfExec); err != nil {
 		return false, err
 	}
 	e.logger.Warn("workflow.implement-push-retry.parked",

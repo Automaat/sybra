@@ -284,14 +284,11 @@ func (e *Engine) handleFanOutCompletion(taskID string, def *Definition, ctx adva
 }
 
 func (e *Engine) finishTerminalStepOutput(taskID string, wfExec *Execution, output StepOutput, release func()) error {
-	if err := e.tasks.UpdateTaskStatus(taskID, output.TerminalStatus, output.TerminalReason); err != nil {
-		return err
-	}
 	now := time.Now()
 	wfExec.CurrentStep = ""
 	wfExec.State = ExecCompleted
 	wfExec.CompletedAt = &now
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if err := e.tasks.SetStatusAndWorkflow(taskID, string(output.TerminalStatus), output.TerminalReason, wfExec); err != nil {
 		return err
 	}
 	release()
@@ -1019,20 +1016,17 @@ func (e *Engine) blockRetryExhaustedTriageIfNeeded(taskID string, step *Step, wf
 	if reason == "" {
 		return false, nil
 	}
-	if err := e.tasks.UpdateTaskBlocker(taskID, taskstatus.Blocked, reason, blocker.State{
+	now := time.Now().UTC()
+	wfExec.State = ExecFailed
+	wfExec.CompletedAt = &now
+	wfExec.CurrentStep = ""
+	return true, e.tasks.SetBlockerAndWorkflow(taskID, "blocked", reason, blocker.State{
 		Kind:       blocker.KindTriageRetryExhausted,
 		Actor:      blocker.ActorWorkflow,
 		Code:       "triage_retryable",
 		NextAction: "wait_for_operator_reclassify",
 		Exhausted:  true,
-	}); err != nil {
-		return true, err
-	}
-	now := time.Now().UTC()
-	wfExec.State = ExecFailed
-	wfExec.CompletedAt = &now
-	wfExec.CurrentStep = ""
-	return true, e.tasks.SetWorkflow(taskID, wfExec)
+	}, wfExec)
 }
 
 func (e *Engine) blockRetryExhaustedPlanningIfNeeded(taskID string, def *Definition, step *Step, wfExec *Execution, output string, attempts int) (bool, error) {
@@ -1044,12 +1038,9 @@ func (e *Engine) blockRetryExhaustedPlanningIfNeeded(taskID string, def *Definit
 	if trimmed := strings.TrimSpace(output); trimmed != "" {
 		reason += ": " + textutil.TruncateBytes(trimmed, 500, "\n... (truncated)")
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
-		return true, err
-	}
 	now := time.Now().UTC()
 	wfExec.State = ExecFailed
 	wfExec.CompletedAt = &now
 	wfExec.CurrentStep = ""
-	return true, e.tasks.SetWorkflow(taskID, wfExec)
+	return true, e.tasks.SetStatusAndWorkflow(taskID, "human-required", reason, wfExec)
 }

@@ -1,6 +1,0 @@
-# Sybra configuration
-schema_version: 2
-# GitHub automations are opt-in on first run.
-integrations:
-  github:
-    enabled: false

@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,6 +27,7 @@ import (
 	"github.com/Automaat/sybra/internal/codexhook"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/issueref"
@@ -1901,7 +1903,28 @@ func fatal(jsonOut bool, format string, args ...any) int {
 	} else {
 		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
 	}
+	if len(args) == 1 {
+		if err, ok := args[0].(error); ok && isRetryableCLIError(err) {
+			return 75
+		}
+	}
 	return 1
+}
+
+func isRetryableCLIError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, fsutil.ErrLockTimeout) {
+		return true
+	}
+	var ae *apiError
+	if errors.As(err, &ae) {
+		return ae.Status == http.StatusServiceUnavailable
+	}
+	type statusErr interface{ HTTPStatus() int }
+	var se statusErr
+	return errors.As(err, &se) && se.HTTPStatus() == http.StatusServiceUnavailable
 }
 
 // writeJSONError marshals rather than interpolating: several messages quote a

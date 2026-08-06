@@ -598,11 +598,13 @@ func (m *Mirror) writeSidecars(t task.Task) error {
 	if err := store.CodeReviews().Write(t.ID, t.CodeReview); err != nil {
 		return err
 	}
-	if _, err := store.Update(t.ID, task.Update{
-		CurrentTestFailures: task.Ptr(t.CurrentTestFailures),
-		AcceptanceLedger:    task.Ptr(t.AcceptanceLedger),
-		SpecDecision:        task.Ptr(t.SpecDecision),
-	}); err != nil {
+	if err := store.CurrentTestFailures().Write(t.ID, t.CurrentTestFailures); err != nil {
+		return err
+	}
+	if err := store.AcceptanceLedgers().Write(t.ID, t.AcceptanceLedger); err != nil {
+		return err
+	}
+	if err := store.SpecDecisions().Write(t.ID, t.SpecDecision); err != nil {
 		return err
 	}
 	return nil

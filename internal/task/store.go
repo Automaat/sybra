@@ -47,6 +47,7 @@ type Store struct {
 }
 
 const maxTaskIDAttempts = 16
+const taskLockTimeout = 2 * time.Second
 
 // NewStore creates dir if it does not exist and returns a Store rooted
 // there, along with its sidecar stores (comments, plans, code reviews).
@@ -132,6 +133,24 @@ func (s *Store) CodeReviews() *PlanningSidecarStore {
 	return s.codeReviews
 }
 
+// CurrentTestFailures returns the sidecar store for the latest bounded test
+// failure report.
+func (s *Store) CurrentTestFailures() *PlanningSidecarStore {
+	return s.currentTestFailures
+}
+
+// AcceptanceLedgers returns the sidecar store for the bounded acceptance
+// failure ledger.
+func (s *Store) AcceptanceLedgers() *PlanningSidecarStore {
+	return s.acceptanceLedgers
+}
+
+// SpecDecisions returns the sidecar store for the latest spec-decision
+// escalation summary.
+func (s *Store) SpecDecisions() *PlanningSidecarStore {
+	return s.specDecisions
+}
+
 // lockTask serializes read/modify/write calls for a single task file, both
 // within this process and across others. sybra-cli and the recovery sweep
 // run task.Store in separate OS processes from the GUI server against the
@@ -152,7 +171,7 @@ func (s *Store) lockTask(id string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	unlock, err := s.locker.Lock(id, path)
+	unlock, err := s.locker.LockWithin(id, path, taskLockTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("lock task %s: %w", id, err)
 	}
@@ -175,7 +194,7 @@ func (s *Store) lockNewTask(id string) (func(), error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create task lock dir: %w", err)
 	}
-	unlock, err := s.locker.Lock("create:"+id, filepath.Join(dir, id))
+	unlock, err := s.locker.LockWithin("create:"+id, filepath.Join(dir, id), taskLockTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("lock new task %s: %w", id, err)
 	}
@@ -289,13 +308,28 @@ func (s *Store) List() ([]Task, error) {
 	return tasks, nil
 }
 
+// degradedIDPrefix namespaces Store.List's synthetic entries for task files
+// that could not be parsed. The colon is deliberately outside the character
+// set ValidateID accepts, so a synthetic ID can never be minted, persisted,
+// or collide with a real task ID; safePath additionally refuses to resolve
+// one to a file, which is what keeps the degraded card read-only by
+// construction rather than by convention.
+const degradedIDPrefix = "unreadable:"
+
+// IsDegradedID reports whether id is one of Store.List's synthetic
+// unreadable-task identifiers rather than a real, addressable task ID.
+func IsDegradedID(id string) bool {
+	return strings.HasPrefix(id, degradedIDPrefix)
+}
+
 // degradedTask exposes an unreadable task file without trusting any of its
-// frontmatter. The generated ID is deterministic for its filename but cannot
-// address a real task file, making the entry read-only by construction.
+// frontmatter. The generated ID is deterministic for its filename and
+// unaddressable by construction (see degradedIDPrefix), so the entry is
+// read-only and can never be confused with a real task.
 func degradedTask(path string, parseErr error) Task {
 	base := filepath.Base(path)
 	sum := sha256.Sum256([]byte(base))
-	id := fmt.Sprintf("unreadable-%x", sum[:8])
+	id := fmt.Sprintf("%s%x", degradedIDPrefix, sum[:8])
 	modified := time.Time{}
 	if info, err := os.Stat(path); err == nil {
 		modified = info.ModTime().UTC()
@@ -476,18 +510,54 @@ func (s *Store) Get(id string) (Task, error) {
 	if err != nil {
 		return Task{}, err
 	}
-	t.Plan, _ = s.plans.Read(t.ID)
-	t.PlanContract, _ = s.planContracts.Read(t.ID)
-	t.PlanCritique, _ = s.planCritiques.Read(t.ID)
-	t.PlanResearch, _ = s.planResearch.Read(t.ID)
-	t.PlanDecisions, _ = s.planDecisions.Read(t.ID)
-	t.PlanBrief, _ = s.planBrief.Read(t.ID)
-	t.CodeReview, _ = s.codeReviews.Read(t.ID)
-	t.CurrentTestFailures, _ = s.currentTestFailures.Read(t.ID)
-	t.AcceptanceLedger, _ = s.acceptanceLedgers.Read(t.ID)
-	t.SpecDecision, _ = s.specDecisions.Read(t.ID)
-	t.PlanDrafts, _ = s.planDrafts.List(t.ID)
+	if err := s.loadSidecars(&t); err != nil {
+		return Task{}, err
+	}
 	return t, nil
+}
+
+// loadSidecars populates t's planning/review sidecar fields from disk. Each
+// sidecar store's Read/List already turns "sidecar absent" into a nil error
+// with a zero value, so any error still returned here is a genuine read
+// failure (e.g. a transient EIO) — propagate it instead of discarding it,
+// since silently treating it as "no plan/review exists" would erase real
+// content from the engine's view of the task.
+func (s *Store) loadSidecars(t *Task) error {
+	var err error
+	if t.Plan, err = s.plans.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanContract, err = s.planContracts.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanCritique, err = s.planCritiques.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanResearch, err = s.planResearch.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanDecisions, err = s.planDecisions.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanBrief, err = s.planBrief.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.CodeReview, err = s.codeReviews.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.CurrentTestFailures, err = s.currentTestFailures.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.AcceptanceLedger, err = s.acceptanceLedgers.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.SpecDecision, err = s.specDecisions.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanDrafts, err = s.planDrafts.List(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	return nil
 }
 
 // read parses just the task file for id, skipping the sidecar fan-out that
@@ -521,6 +591,12 @@ func (s *Store) read(id string) (Task, error) {
 // routinely call sybra-cli with task IDs they parsed from prompts, so the
 // untrusted-input surface is real even though the GUI generates IDs itself.
 func (s *Store) safePath(id string) (string, error) {
+	if IsDegradedID(id) {
+		// Synthetic List-only entry for an unparseable file: it has no task
+		// file of its own, and resolving it would let an update/delete issued
+		// against the degraded board card land on some unrelated real task.
+		return "", fmt.Errorf("task ID %q is a synthetic unreadable-file entry and has no task file", id)
+	}
 	path := filepath.Clean(filepath.Join(s.dir, id+".md"))
 	if !strings.HasPrefix(path, filepath.Clean(s.dir)+string(filepath.Separator)) {
 		return "", fmt.Errorf("invalid task ID %q", id)
@@ -1069,11 +1145,16 @@ func applyUpdateFields(t *Task, u Update) error {
 	if u.Status != nil {
 		oldStatus := t.Status
 		t.Status = *u.Status
-		// Clear reason when status changes unless a new reason is also provided.
-		if u.StatusReason == nil {
+		statusChanged := *u.Status != oldStatus
+		// Clear reason when status actually changes, unless a new reason is
+		// also provided. A same-value resubmission (e.g. SetStatusAndWorkflow
+		// carrying the task's current status alongside a Workflow-only update)
+		// must not wipe an unrelated reason/blocker that has nothing to do
+		// with this write — see #2749.
+		if statusChanged && u.StatusReason == nil {
 			t.StatusReason = ""
 		}
-		if u.Blocker == nil {
+		if statusChanged && u.Blocker == nil {
 			t.Blocker = blocker.State{}
 		}
 		// Stamp ClosedAt on transition into a terminal status; clear on exit.
