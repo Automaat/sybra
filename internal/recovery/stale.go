@@ -59,7 +59,21 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 		return
 	}
 	if r.Agents.HasRunningAgentForTask(t.ID) {
-		return
+		// HasRunningAgentForTask trusts the manager's own bookkeeping (the
+		// registered agent's done channel), not real process liveness. A
+		// registry entry can be left marked StateStopped by an earlier
+		// interrupted flow while its runner goroutine never closed that
+		// channel — HasRunningAgentForTask still reports it as running, so
+		// this bail-out never clears on its own. That is exactly the shape
+		// the lost_agent monitor detector catches (it keys off State !=
+		// Running, so it fires) while every remediation tick still no-ops
+		// here: the task is left in-progress indefinitely with a misleading
+		// "recovery will resume" status reason. Release any such stale
+		// record before giving up — see lost_agent investigation 9ca699e8.
+		r.Agents.ReleaseStaleStoppedAgentsForTask(ctx, t.ID, restartStaleMinAge)
+		if r.Agents.HasRunningAgentForTask(t.ID) {
+			return
+		}
 	}
 	if r.Agents.IsDispatching(t.ID) {
 		return
@@ -161,6 +175,13 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 		})
 		return
 	}
+	r.dispatchStaleRestart(ctx, t, oneShot)
+}
+
+// dispatchStaleRestart re-spawns the agent for a task that restartTaskIfStale
+// has already decided is genuinely stale (past every bail-out and recovery
+// path above). Split out to keep restartTaskIfStale under the funlen limit.
+func (r *Recovery) dispatchStaleRestart(ctx context.Context, t task.Task, oneShot bool) {
 	r.Logger.Info("restart.stale-in-progress", "task_id", t.ID, "run_role", t.RunRole)
 	taskID := t.ID
 	runRole := t.RunRole
