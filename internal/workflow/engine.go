@@ -11,6 +11,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/fsutil"
@@ -468,7 +469,7 @@ type Engine struct {
 	dispatchDisabled atomic.Bool
 	ownerID          string
 	effectLeaseTTL   time.Duration
-	now              func() time.Time
+	clock            clock.Clock
 	logger           *slog.Logger
 	ctx              context.Context
 	drainCtx         context.Context
@@ -585,7 +586,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		agents:           agents,
 		ownerID:          newEffectOwnerID(),
 		effectLeaseTTL:   defaultEffectLeaseTTL,
-		now:              func() time.Time { return time.Now().UTC() },
+		clock:            clock.System{},
 		logger:           logger,
 		ctx:              context.Background(),
 		dispatching:      make(map[string]struct{}),
@@ -608,6 +609,12 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 func newEffectOwnerID() string {
 	return fmt.Sprintf("workflow-engine-%d-%d", time.Now().UTC().UnixNano(), effectOwnerSeq.Add(1))
 }
+
+// SetClock binds the clock used by workflow control-flow decisions. Record
+// timestamps that do not influence control flow continue to use time.Now.
+func (e *Engine) SetClock(c clock.Clock) { e.clock = clock.Or(c) }
+
+func (e *Engine) now() time.Time { return clock.Or(e.clock).Now().UTC() }
 
 // SetContext binds a parent context to the engine. Shell steps use
 // context.WithTimeout(parent, shellTimeout) so they are cancelled when

@@ -147,7 +147,7 @@ func (e *Engine) surfaceStartFailureClassified(taskID string, currentStatus task
 	// surface a status_reason (unlike the fully-silent transient sentinels)
 	// but must never accumulate toward the breaker.
 	if wf != nil && stepID != "" && !isTransientCapacityError(err) && !isDeferredNotFailed(err) {
-		attempts, trip := recordCircuitBreakerFailure(wf, stepID, time.Now())
+		attempts, trip := recordCircuitBreakerFailure(wf, stepID, e.now())
 		if trip {
 			// The status skip in resumeSkipReasonForStatus alone is not a
 			// sufficient backstop against a flapping loop: it only stops

@@ -432,7 +432,7 @@ func (e *Engine) watchdogRateLimitRecoverySpec() watchdogRecoverySpec {
 				retryKey := watchdogRateLimitRetryKey(step.ID)
 				freshKey := watchdogZeroOutputFreshRetryKey(step.ID)
 				if watchdogreason.IsSilentHang(t.StatusReason) && parseWorkflowInt(t.Workflow.Variables[freshKey]) == 0 {
-					t.Workflow.StartedAt = time.Now().UTC()
+					t.Workflow.StartedAt = e.now()
 					t.Workflow.SetVar(freshKey, "1")
 					t.Workflow.SetVar(retryKey, "0")
 					if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
@@ -445,7 +445,7 @@ func (e *Engine) watchdogRateLimitRecoverySpec() watchdogRecoverySpec {
 				targetStatus, reason, terminalState := watchdogRateLimitExhaustionResolution(*t, step, attempts)
 				t.Workflow.State = terminalState
 				if watchdogreason.IsSilentHang(t.StatusReason) {
-					t.Workflow.StartedAt = time.Now().UTC()
+					t.Workflow.StartedAt = e.now()
 				}
 				if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 					e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)

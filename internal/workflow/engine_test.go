@@ -21,6 +21,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/attribution"
 	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/dispatchorder"
 	"github.com/Automaat/sybra/internal/metrics"
@@ -5772,13 +5773,15 @@ func TestResumeStalled_SkipsWorkflowRetryUntil(t *testing.T) {
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	engine := NewEngine(store, tasks, agents, discardLogger())
+	fakeClock := clock.NewFake(time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC))
+	engine.SetClock(fakeClock)
 
 	wf := &Execution{
 		WorkflowID:  "test-simple",
 		CurrentStep: "implement",
 		State:       ExecWaiting,
 		Variables: map[string]string{
-			workflowRetryAfterVar: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+			workflowRetryAfterVar: fakeClock.Now().Add(time.Hour).Format(time.RFC3339),
 		},
 	}
 	tasks.Put(TaskInfo{
@@ -5793,7 +5796,7 @@ func TestResumeStalled_SkipsWorkflowRetryUntil(t *testing.T) {
 		t.Fatalf("agent starts before retry window = %d, want 0", agents.CallCount())
 	}
 
-	wf.Variables[workflowRetryAfterVar] = time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	fakeClock.Advance(time.Hour)
 	tasks.Put(TaskInfo{
 		ID:        "t1",
 		Status:    "in-progress",

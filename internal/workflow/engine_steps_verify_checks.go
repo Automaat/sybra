@@ -301,7 +301,7 @@ func (e *Engine) acquireVerifyChecksSlot(slot chan struct{}) (release func(), ok
 func (e *Engine) parkVerifyChecksForBackpressure(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
 	wfExec.CurrentStep = step.ID
 	wfExec.State = ExecWaiting
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(verifyChecksBackoff).Format(time.RFC3339))
+	wfExec.SetVar(workflowRetryAfterVar, e.now().Add(verifyChecksBackoff).Format(time.RFC3339))
 	if err := e.tasks.SetStatusAndWorkflow(taskID, string(t.Status), verifyChecksBusyReason, wfExec); err != nil {
 		return StepOutput{}, err
 	}
