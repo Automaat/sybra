@@ -887,6 +887,42 @@ func (m *Manager) PrepareForBranchConflictFromRemote(ctx context.Context, t task
 	return wtPath, nil
 }
 
+// ResetForRetry discards a killed or hung agent's partial work before a clean
+// retry, under the same per-path exclusion every Prepare* takes. It aborts an
+// in-progress rebase and hard-resets the tree, so running it against a
+// directory a live preparation is inside produces exactly the half-rebased
+// tree the exclusion exists to prevent.
+//
+// dir overrides the task's own worktree path for callers that already resolved
+// one. Reports whether a reset ran; a directory that does not exist is not an
+// error.
+func (m *Manager) ResetForRetry(ctx context.Context, t task.Task, dir, ref string) (bool, error) {
+	target := dir
+	if target == "" {
+		target = m.PathFor(t)
+	}
+	if target == "" {
+		return false, nil
+	}
+
+	release, err := m.lockPath(target)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+
+	if _, statErr := os.Stat(target); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat clean retry worktree: %w", statErr)
+	}
+	if err := project.ResetWorktreeForRetry(ctx, target, ref); err != nil {
+		return false, fmt.Errorf("reset worktree for retry: %w", err)
+	}
+	return true, nil
+}
+
 // RecreateFromBase discards a task's diverged branch and its worktree so the
 // next PrepareForTask rebuilds it fresh off the project's base ref. The branch
 // tip is first backed up to refs/sybra-backup/<branch> (best-effort) so the
@@ -895,6 +931,12 @@ func (m *Manager) PrepareForBranchConflictFromRemote(ctx context.Context, t task
 // genuinely cannot be reconciled, so re-implementing from a clean base is the
 // only autonomous path left.
 func (m *Manager) RecreateFromBase(ctx context.Context, t task.Task) error {
+	release, err := m.lockPath(m.PathFor(t))
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	proj, err := m.projects.Get(t.ProjectID)
 	if err != nil {
 		return fmt.Errorf("get project: %w", err)

@@ -197,6 +197,29 @@ func TestHumanReviewDispatchDir_PrepareFailureFallsBackReadOnly(t *testing.T) {
 	}
 }
 
+// TestHumanReviewDispatchDir_BusyPathRetriesInsteadOfReadOnly pins that a
+// preparation refused because another one owns the path is retried, not
+// answered with the read-only Sybra checkout. The claim-retry ladder is capped
+// under StaleDispatchClaimAge precisely so this handler meets a live
+// preparation; treating that refusal as permanent lands the recovery agent on
+// a tree it cannot write, which is the recoverable_action:none regression.
+func TestHumanReviewDispatchDir_BusyPathRetriesInsteadOfReadOnly(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		return "", fmt.Errorf("prepare worktree: %w", worktree.ErrPreparationInFlight)
+	}
+
+	dir, readOnly, retryable, _ := h.dispatchDir(task.Task{ID: "busy-task"})
+	if !retryable {
+		t.Error("retryable = false, want true")
+	}
+	if readOnly || dir == h.cfg.HumanReview.SybraRepoDir {
+		t.Errorf("fell back to the read-only Sybra checkout: dir=%q readOnly=%v", dir, readOnly)
+	}
+}
+
 func TestHumanReviewSpawn_HoldsDispatchClaimAcrossPreparationAndRun(t *testing.T) {
 	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()

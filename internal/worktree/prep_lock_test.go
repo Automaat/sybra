@@ -130,6 +130,147 @@ func TestPrepareForTask_RefusesSecondConcurrentPreparation(t *testing.T) {
 	}
 }
 
+// TestLockedEntryPointsRefuseHeldPath sweeps the mutating entry points a
+// dispatcher can reach while another one owns the path. Each must refuse
+// rather than run its git operations over the top: ResetForRetry aborts an
+// in-progress rebase and hard-resets, RecreateFromBase deletes the directory
+// and its branch, and both are reached from re-dispatch paths that fire on
+// precisely the hung run that provokes the stale claim release.
+func TestLockedEntryPointsRefuseHeldPath(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("held path", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	release, err := h.m.lockPath(h.m.PathFor(tk))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	if _, err := h.m.ResetForRetry(context.Background(), tk, "", "HEAD"); !errors.Is(err, ErrPreparationInFlight) {
+		t.Errorf("ResetForRetry err = %v, want ErrPreparationInFlight", err)
+	}
+	if err := h.m.RecreateFromBase(context.Background(), tk); !errors.Is(err, ErrPreparationInFlight) {
+		t.Errorf("RecreateFromBase err = %v, want ErrPreparationInFlight", err)
+	}
+	if _, err := h.m.PrepareForReview(context.Background(), tk); !errors.Is(err, ErrPreparationInFlight) {
+		t.Errorf("PrepareForReview err = %v, want ErrPreparationInFlight", err)
+	}
+	if _, err := h.m.PrepareForBranchFix(context.Background(), tk); !errors.Is(err, ErrPreparationInFlight) {
+		t.Errorf("PrepareForBranchFix err = %v, want ErrPreparationInFlight", err)
+	}
+	if _, err := h.m.PrepareForBranchConflict(context.Background(), tk); !errors.Is(err, ErrPreparationInFlight) {
+		t.Errorf("PrepareForBranchConflict err = %v, want ErrPreparationInFlight", err)
+	}
+	if _, err := h.m.PrepareForFix(context.Background(), tk, 1); !errors.Is(err, ErrPreparationInFlight) {
+		t.Errorf("PrepareForFix err = %v, want ErrPreparationInFlight", err)
+	}
+	if _, _, err := h.m.PrepareAttempt(context.Background(), tk, "att1"); err != nil {
+		t.Errorf("PrepareAttempt on a different path must not be refused: %v", err)
+	}
+}
+
+// TestResetForRetry_ResetsWhenPathIsFree is the positive half: the refusal
+// above must come from the lock, not from ResetForRetry being broken.
+func TestResetForRetry_ResetsWhenPathIsFree(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("free path", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No worktree yet: nothing to reset, and that is not an error.
+	reset, err := h.m.ResetForRetry(context.Background(), tk, "", "HEAD")
+	if err != nil {
+		t.Fatalf("ResetForRetry with no worktree: %v", err)
+	}
+	if reset {
+		t.Error("reset = true with no worktree on disk, want false")
+	}
+
+	dir, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stray := filepath.Join(dir, "stray.txt")
+	if err := os.WriteFile(stray, []byte("partial work"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reset, err = h.m.ResetForRetry(context.Background(), tk, "", "HEAD")
+	if err != nil {
+		t.Fatalf("ResetForRetry: %v", err)
+	}
+	if !reset {
+		t.Error("reset = false on an existing worktree, want true")
+	}
+	if _, err := os.Stat(stray); !os.IsNotExist(err) {
+		t.Errorf("stray file survived the reset: %v", err)
+	}
+}
+
+// TestCleanup_SkipsHeldPathAndSweepsItLater covers the deletion half. Remove
+// declines a directory a preparation owns, and CleanupOrphaned — the sweep
+// Remove defers to — must both take the same lock and actually be able to reap
+// the deferred task, which for a cancelled one means looking past `done`.
+func TestCleanup_SkipsHeldPathAndSweepsItLater(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	m := New(Config{WorktreesDir: dir, Tasks: tasks, Logger: discardLogger()})
+
+	tk, err := store.Create("cancelled task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusCancelled)}); err != nil {
+		t.Fatal(err)
+	}
+	wtPath := filepath.Join(dir, tk.DirName())
+	makePushedGitDir(t, wtPath)
+
+	release, err := m.lockPath(wtPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m.Remove(context.Background(), tk.ID)
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("Remove deleted a worktree a preparation owns: %v", err)
+	}
+	m.CleanupOrphaned(context.Background())
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("CleanupOrphaned deleted a worktree a preparation owns: %v", err)
+	}
+
+	release()
+	m.CleanupOrphaned(context.Background())
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Errorf("cancelled task's worktree survived the sweep once the path was free: %v", err)
+	}
+}
+
 func waitForFile(t *testing.T, path string) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)

@@ -114,35 +114,22 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 		switch {
 		case !exists:
 			// Task deleted — remove worktree directory.
-		case t.Status != task.StatusDone:
+		case !task.IsTerminalStatus(t.Status):
 			continue
 		case m.hasAgent != nil && m.hasAgent(t.ID):
 			continue
 		}
 
-		if project.HasUnpushedCommits(ctx, wtPath) {
-			m.observeProtectedWorktree(ctx, wtPath, taskIDFromWorktreeDir(name), observedProtected)
+		// This sweep is the backstop for every worktree Remove skipped, so it
+		// must take the same per-path exclusion Remove does — otherwise the
+		// hazard is relocated here rather than avoided.
+		release, lockErr := m.lockPath(wtPath)
+		if lockErr != nil {
+			m.logger.Info("worktree.orphan-cleanup.busy", "path", wtPath, "err", lockErr)
 			continue
 		}
-
-		removed := false
-		if exists && t.ProjectID != "" {
-			if proj, perr := m.projects.Get(t.ProjectID); perr == nil {
-				if err := project.RemoveWorktree(ctx, proj.ClonePath, wtPath); err != nil {
-					m.logger.Error("worktree.orphan-cleanup", "path", wtPath, "err", err)
-				} else {
-					removed = true
-				}
-			}
-		}
-		if !removed {
-			// Task deleted or project lookup failed — force-remove and prune after.
-			if err := os.RemoveAll(wtPath); err != nil {
-				m.logger.Error("worktree.orphan-cleanup", "path", wtPath, "err", err)
-				continue
-			}
-		}
-		m.logger.Info("worktree.orphan-cleaned", "path", wtPath)
+		m.reapOrphanedWorktree(ctx, wtPath, name, t, exists, observedProtected)
+		release()
 	}
 	m.resolveProtectedWorktrees(observedProtected)
 
@@ -159,6 +146,34 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 			m.logger.Warn("worktree.prune", "project", projects[i].ID, "err", err)
 		}
 	}
+}
+
+// reapOrphanedWorktree removes one swept worktree directory. Caller holds the
+// path lock.
+func (m *Manager) reapOrphanedWorktree(ctx context.Context, wtPath, name string, t *task.Task, exists bool, observedProtected map[string]bool) {
+	if project.HasUnpushedCommits(ctx, wtPath) {
+		m.observeProtectedWorktree(ctx, wtPath, taskIDFromWorktreeDir(name), observedProtected)
+		return
+	}
+
+	removed := false
+	if exists && t.ProjectID != "" {
+		if proj, perr := m.projects.Get(t.ProjectID); perr == nil {
+			if err := project.RemoveWorktree(ctx, proj.ClonePath, wtPath); err != nil {
+				m.logger.Error("worktree.orphan-cleanup", "path", wtPath, "err", err)
+			} else {
+				removed = true
+			}
+		}
+	}
+	if !removed {
+		// Task deleted or project lookup failed — force-remove and prune after.
+		if err := os.RemoveAll(wtPath); err != nil {
+			m.logger.Error("worktree.orphan-cleanup", "path", wtPath, "err", err)
+			return
+		}
+	}
+	m.logger.Info("worktree.orphan-cleaned", "path", wtPath)
 }
 
 func (m *Manager) observeProtectedWorktree(ctx context.Context, path, taskID string, observed map[string]bool) {
