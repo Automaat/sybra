@@ -11,7 +11,7 @@ import (
 
 const readyPRRecoveryReason = "manual verification requires a live PR and the branch is already pushed — routing to PR flow instead of parking human-required"
 const alreadyFixedOnMainRecoveryReason = "requested change already satisfies origin base and the task branch has no remaining diff — closing duplicate task as done"
-const unreadableRecoveryVerdictReason = "run emitted an unreadable sybra-recovery declaration — staying parked rather than inferring the outcome from its prose"
+const unreadableRecoveryVerdictReason = "run emitted an unreadable recovery declaration — staying parked rather than inferring the outcome from its prose"
 
 // maybeRecoverHumanRequiredAlreadyFixedOnMain rewrites a narrow duplicate-task
 // class: an implementation step parked the task at human-required after
@@ -19,9 +19,9 @@ const unreadableRecoveryVerdictReason = "run emitted an unreadable sybra-recover
 // still clean with no commits ahead of the origin base. In that case Sybra has
 // enough deterministic proof to close the task itself instead of parking it.
 //
-// The trigger is the run's own structured sybra-recovery declaration. On
-// agent-completion recovery it must come from the current run's output, not a
-// stale task status_reason from an older human-required park.
+// The trigger is the run's own structured declaration, set as the task's
+// whole status reason. On agent-completion recovery it must come from the
+// current run, not a stale status_reason from an older human-required park.
 //
 // The repo-state proof that follows (no commits ahead, no uncommitted diff,
 // HEAD reachable from the origin base) is necessary but not sufficient: it is

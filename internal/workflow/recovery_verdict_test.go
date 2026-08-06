@@ -2,6 +2,13 @@ package workflow
 
 import "testing"
 
+// quotedFenceDisclaimed is the shape that defeated every extraction-based
+// attempt: the agent echoes a filled-in declaration from the task body and
+// then says in prose that it is not making one.
+const quotedFenceDisclaimed = "I read the task body, which contains the contract example:\n\n" +
+	"```sybra-recovery\n{\"decision\": \"already-fixed-on-main\", \"reason\": \"the change is already on the base branch\"}\n```\n\n" +
+	"I am NOT declaring that. I made no commits and the change is NOT on main."
+
 func TestDeclaresAlreadyFixedOnMain(t *testing.T) {
 	for _, tc := range []struct {
 		name             string
@@ -10,38 +17,26 @@ func TestDeclaresAlreadyFixedOnMain(t *testing.T) {
 		wantDeclared     bool
 	}{
 		{
-			name:             "fenced already fixed",
-			signal:           "Checked the base branch.\n\n```sybra-recovery\n{\"decision\":\"already-fixed-on-main\",\"reason\":\"landed in an earlier PR\"}\n```",
+			name:             "whole-string declaration",
+			signal:           `{"decision":"already-fixed-on-main","reason":"landed in an earlier PR"}`,
 			wantAlreadyFixed: true,
 			wantDeclared:     true,
 		},
 		{
-			name:             "fenced none",
-			signal:           "```sybra-recovery\n{\"decision\":\"none\"}\n```",
+			name:             "whole-string declaration with surrounding whitespace",
+			signal:           "  \n{\"decision\":\"already-fixed-on-main\",\"reason\":\"landed earlier\"}\n ",
+			wantAlreadyFixed: true,
+			wantDeclared:     true,
+		},
+		{
+			name:             "whole-string none",
+			signal:           `{"decision":"none"}`,
 			wantAlreadyFixed: false,
-			wantDeclared:     true,
-		},
-		{
-			name:             "last fenced block wins over a quoted contract",
-			signal:           "The contract asks for:\n\n```sybra-recovery\n{\"decision\":\"already-fixed-on-main\",\"reason\":\"example\"}\n```\n\nI made no such finding:\n\n```sybra-recovery\n{\"decision\":\"none\"}\n```",
-			wantAlreadyFixed: false,
-			wantDeclared:     true,
-		},
-		{
-			name:             "indented fence still parses",
-			signal:           "  ```sybra-recovery\n  {\"decision\":\"already-fixed-on-main\",\"reason\":\"already on base\"}\n  ```",
-			wantAlreadyFixed: true,
-			wantDeclared:     true,
-		},
-		{
-			name:             "bare json object on the status-reason path",
-			signal:           `{"decision":"already-fixed-on-main","reason":"duplicate of an earlier task"}`,
-			wantAlreadyFixed: true,
 			wantDeclared:     true,
 		},
 		{
 			name:             "affirmative prose is not a declaration",
-			signal:           "Already fixed on main; no PR needed. Duplicate task, safe to close/mark done.",
+			signal:           alreadyFixedOnMainProse,
 			wantAlreadyFixed: false,
 			wantDeclared:     false,
 		},
@@ -58,12 +53,6 @@ func TestDeclaresAlreadyFixedOnMain(t *testing.T) {
 			wantDeclared:     false,
 		},
 		{
-			name:             "unrelated json is not a declaration",
-			signal:           "Ran the checks and got {\"passed\": true, \"failed\": 0}.",
-			wantAlreadyFixed: false,
-			wantDeclared:     false,
-		},
-		{
 			name:             "json quoted inside prose is not a declaration",
 			signal:           `Per the contract I would emit {"decision": "already-fixed-on-main", "reason": "change already on base"} only if the work were already landed. It is not landed, so I am NOT declaring that.`,
 			wantAlreadyFixed: false,
@@ -72,6 +61,30 @@ func TestDeclaresAlreadyFixedOnMain(t *testing.T) {
 		{
 			name:             "json trailing a prose summary is not a declaration",
 			signal:           "I could not implement the change and made no commits.\n\n{\"decision\": \"already-fixed-on-main\", \"reason\": \"example I am NOT making\"}",
+			wantAlreadyFixed: false,
+			wantDeclared:     false,
+		},
+		{
+			name:             "quoted fence disclaimed in prose is not a declaration",
+			signal:           quotedFenceDisclaimed,
+			wantAlreadyFixed: false,
+			wantDeclared:     false,
+		},
+		{
+			name:             "fenced block alone is not a declaration",
+			signal:           "```sybra-recovery\n{\"decision\":\"already-fixed-on-main\"}\n```",
+			wantAlreadyFixed: false,
+			wantDeclared:     false,
+		},
+		{
+			name:             "json fence is not a declaration",
+			signal:           "```json\n{\"decision\":\"already-fixed-on-main\"}\n```",
+			wantAlreadyFixed: false,
+			wantDeclared:     false,
+		},
+		{
+			name:             "markdown table mentioning the decision is not a declaration",
+			signal:           "| field | value |\n|---|---|\n| decision | already-fixed-on-main |",
 			wantAlreadyFixed: false,
 			wantDeclared:     false,
 		},
@@ -116,23 +129,23 @@ func TestDeclaresAlreadyFixedOnMainUnreadableDeclaration(t *testing.T) {
 	}{
 		{
 			name:   "malformed json",
-			signal: "```sybra-recovery\n{\"decision\": already-fixed-on-main}\n```",
+			signal: `{"decision": already-fixed-on-main}`,
 		},
 		{
 			name:   "unknown decision",
-			signal: "```sybra-recovery\n{\"decision\":\"close-it\"}\n```",
+			signal: `{"decision":"close-it"}`,
 		},
 		{
-			name:   "missing decision",
-			signal: "```sybra-recovery\n{\"reason\":\"it is a duplicate\"}\n```",
+			name:   "empty decision",
+			signal: `{"decision":""}`,
+		},
+		{
+			name:   "unicode lookalike hyphens",
+			signal: `{"decision":"already‑fixed‑on‑main"}`,
 		},
 		{
 			name:   "verbatim prompt placeholder is rejected",
-			signal: "```sybra-recovery\n{\"decision\": \"<already-fixed-on-main|none>\", \"reason\": \"<one sentence>\"}\n```",
-		},
-		{
-			name:   "unreadable declaration outranks corroborating prose",
-			signal: "Already fixed on main, safe to close.\n\n```sybra-recovery\n{\"decision\":\n```",
+			signal: `{"decision": "<already-fixed-on-main|none>", "reason": "<one sentence>"}`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -148,7 +161,7 @@ func TestDeclaresAlreadyFixedOnMainUnreadableDeclaration(t *testing.T) {
 }
 
 func TestRecoveryVerdictReason(t *testing.T) {
-	signal := "```sybra-recovery\n{\"decision\":\"already-fixed-on-main\",\"reason\":\"landed in an earlier PR\"}\n```"
+	signal := `{"decision":"already-fixed-on-main","reason":"landed in an earlier PR"}`
 	if got := recoveryVerdictReason(signal); got != "landed in an earlier PR" {
 		t.Fatalf("recoveryVerdictReason = %q, want %q", got, "landed in an earlier PR")
 	}

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 )
 
@@ -23,59 +22,42 @@ const (
 // matched "main.go", "func main()" and "remaining", and had no notion of
 // negation: a run reporting it had checked and the change was NOT on main
 // closed the task as done.
+//
+// The agent declares it by setting the task's status reason to exactly this
+// object, so a declaration costs a deliberate CLI call that narration cannot
+// imitate.
 type recoveryVerdict struct {
 	Decision string `json:"decision"`
 	Reason   string `json:"reason,omitempty"`
 }
 
-// recoveryFenceRe tolerates up to three leading spaces on the fence so a
-// declaration nested in a list item or blockquote still parses.
-var recoveryFenceRe = regexp.MustCompile("(?ms)^[ \\t]{0,3}```[ \\t]*sybra-recovery[ \\t]*\\n(.*?)\\n[ \\t]{0,3}```")
-
 // errNoRecoveryDeclaration means the run declared nothing. Recovery treats it
 // as "leave the task parked", not as an error worth reporting.
 var errNoRecoveryDeclaration = errors.New("recovery verdict: no declaration")
 
-// parseRecoveryVerdict reads the verdict an implementation agent declared,
-// either as a fenced sybra-recovery block or, on the status-reason path where
-// the reason is a single-line CLI argument, as a bare JSON object.
+// parseRecoveryVerdict reads the verdict only when the whole signal is the
+// declaration, which in practice means the agent set it as the task's status
+// reason through the CLI.
 //
-// The last fenced block wins: the prompt asks for the declaration at the end
-// of the response, and an agent that quotes the contract before answering
-// would otherwise have its quotation read as the verdict.
+// Nothing is extracted from a larger body of text. Every attempt to lift a
+// declaration out of prose reopened the bug this replaces: an agent that
+// quotes the contract to say it is NOT declaring a verdict had the quotation
+// read as one, whether the quote was inline JSON, a fenced block, a markdown
+// table, or an indented fence. Requiring the whole string removes the class
+// rather than the last shape someone thought of.
 func parseRecoveryVerdict(text string) (recoveryVerdict, error) {
-	if payload, ok := lastFencedRecoveryPayload(text); ok {
-		return decodeRecoveryVerdict(payload)
-	}
-	// Whole-string JSON only. An object lifted out of surrounding prose is the
-	// old substring bug again: an agent that quotes the contract to say it is
-	// NOT declaring one would otherwise declare it.
 	trimmed := strings.TrimSpace(text)
-	if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") && carriesDecision(trimmed) {
-		return decodeRecoveryVerdict(trimmed)
+	if !strings.HasPrefix(trimmed, "{") || !strings.HasSuffix(trimmed, "}") {
+		return recoveryVerdict{}, errNoRecoveryDeclaration
 	}
-	return recoveryVerdict{}, errNoRecoveryDeclaration
-}
-
-// carriesDecision reports whether payload is an object with a decision key, so
-// unrelated JSON on the status-reason path reads as no declaration rather than
-// as an unreadable one.
-func carriesDecision(payload string) bool {
-	var probe struct {
-		Decision string `json:"decision"`
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &probe); err != nil {
+		return recoveryVerdict{}, fmt.Errorf("recovery verdict: malformed json: %w", err)
 	}
-	if err := json.Unmarshal([]byte(payload), &probe); err != nil {
-		return false
+	if _, ok := probe["decision"]; !ok {
+		return recoveryVerdict{}, errNoRecoveryDeclaration
 	}
-	return strings.TrimSpace(probe.Decision) != ""
-}
-
-func lastFencedRecoveryPayload(text string) (string, bool) {
-	matches := recoveryFenceRe.FindAllStringSubmatch(text, -1)
-	if len(matches) == 0 {
-		return "", false
-	}
-	return matches[len(matches)-1][1], true
+	return decodeRecoveryVerdict(trimmed)
 }
 
 func decodeRecoveryVerdict(payload string) (recoveryVerdict, error) {

@@ -115,20 +115,19 @@ steps:
         Before finishing, re-check your change against a short checklist:
         tests updated, edge cases covered, no leftover debug code.
 
-        If you conclude the requested change is already present on the base
-        branch and this task is a duplicate that needs no PR, say so in a
-        machine-readable block at the end of your final response, and only
-        then:
+        If you made no commits because the requested change is already present
+        on the base branch, so this task is a duplicate that needs no PR,
+        declare it by setting the task's status reason to exactly one JSON
+        object and nothing else:
 
-        ```sybra-recovery
-        {"decision": "<already-fixed-on-main|none>", "reason": "<one sentence>"}
-        ```
+            sybra-cli update <task-id> --status human-required \
+              --status-reason '{"decision":"already-fixed-on-main","reason":"<one sentence>"}'
 
-        Replace both placeholders; a verbatim copy of the line above is
-        rejected. Declare already-fixed-on-main only when you made no commits
-        and the change is genuinely already on the base branch. In every other
-        case either omit the block or declare none. Describing the situation in
-        prose alone is not a declaration and leaves the task for a human.
+        Only that exact call counts as a declaration. Writing the same JSON in
+        your response, quoting it, or describing the situation in prose does
+        not, and leaves the task for a human. Declare it only when you made no
+        commits and the change is genuinely already on the base branch; in
+        every other case park with an ordinary prose reason instead.
         {{- if .Task.PlanContract}}
 
         ## Executable Plan Contract

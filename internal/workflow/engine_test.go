@@ -2626,6 +2626,7 @@ func TestAdvanceStep_AlreadyFixedOnMainUndeclaredStaysHumanRequired(t *testing.T
 		{name: "negated prose", output: "I checked whether this was already fixed on main; it is NOT. Ran out of context before committing, parking for a human."},
 		{name: "incidental main.go mention", output: "Already fixed the nil deref in main.go but could not push."},
 		{name: "verdict json quoted inside prose", output: `Per the contract I would emit {"decision": "already-fixed-on-main", "reason": "change already on base"} only if the work were landed. It is not, so I am NOT declaring that. No commits were made.`},
+		{name: "verdict fence quoted and disclaimed", output: quotedFenceDisclaimed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tasks, ti := runAlreadyFixedOnMainRecovery(t, tc.output)
@@ -2644,7 +2645,7 @@ func TestAdvanceStep_AlreadyFixedOnMainUndeclaredStaysHumanRequired(t *testing.T
 // the run that tried to declare and produced something unparseable: it stays
 // parked, and the board says why rather than only the app log.
 func TestAdvanceStep_AlreadyFixedOnMainUnreadableDeclarationRecordsReason(t *testing.T) {
-	_, ti := runAlreadyFixedOnMainRecovery(t, "```sybra-recovery\n{\"decision\":\"close-it\"}\n```")
+	_, ti := runAlreadyFixedOnMainRecovery(t, `{"decision":"close-it"}`)
 	if ti.Status != "human-required" {
 		t.Fatalf("status = %q, want human-required", ti.Status)
 	}
