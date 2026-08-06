@@ -4345,7 +4345,7 @@ func TestStripHTTPSUserinfo(t *testing.T) {
 // A branch name may contain slashes. filepath.Base turned refs/heads/release/2.0
 // into "2.0", which never equals the CurrentBranch it is compared against, so
 // every default-branch refusal silently passed on such a project.
-func TestDefaultBranch_KeepsSlashesInTheName(t *testing.T) {
+func TestDefaultBranchName_KeepsSlashes(t *testing.T) {
 	t.Parallel()
 	bare := filepath.Join(t.TempDir(), "origin.git")
 	run := func(args ...string) {
@@ -4357,11 +4357,17 @@ func TestDefaultBranch_KeepsSlashesInTheName(t *testing.T) {
 	}
 	run("init", "--bare", "-b", "release/2.0", bare)
 
-	got, err := DefaultBranch(context.Background(), bare)
+	got, err := DefaultBranchName(context.Background(), bare)
 	if err != nil {
-		t.Fatalf("DefaultBranch: %v", err)
+		t.Fatalf("DefaultBranchName: %v", err)
 	}
 	if got != "release/2.0" {
-		t.Errorf("DefaultBranch = %q, want release/2.0", got)
+		t.Errorf("DefaultBranchName = %q, want release/2.0", got)
+	}
+
+	// The older DefaultBranch still truncates; that is tracked separately, and
+	// pinning it here keeps the difference deliberate rather than accidental.
+	if legacy, err := DefaultBranch(context.Background(), bare); err != nil || legacy != "2.0" {
+		t.Errorf("DefaultBranch = %q (err %v), want the documented 2.0 truncation", legacy, err)
 	}
 }

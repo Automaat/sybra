@@ -4330,6 +4330,9 @@ func TestHumanReviewSpawn_PreparedFlagIsStickyPerEpisode(t *testing.T) {
 		humanReviewSpawnOptions{IgnoreRenderedVerdict: true}) {
 		t.Fatal("third spawn refused")
 	}
+	if len(prompts) != 1 {
+		t.Fatalf("third spawn produced %d prompts, want 1", len(prompts))
+	}
 	if strings.Contains(prompts[0], "not looking at the state that failed") {
 		t.Error("a new episode inherited a warning about a preparation that predates it")
 	}

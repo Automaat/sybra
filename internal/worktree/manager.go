@@ -212,7 +212,7 @@ func (m *Manager) refuseDefaultBranch(ctx context.Context, t task.Task, path, br
 	if err != nil {
 		return fmt.Errorf("resolve existing worktree %s: load project: %w", path, err)
 	}
-	def, err := project.DefaultBranch(ctx, proj.ClonePath)
+	def, err := project.DefaultBranchName(ctx, proj.ClonePath)
 	if err != nil {
 		return fmt.Errorf("resolve existing worktree %s: cannot determine default branch to guard against: %w", path, err)
 	}
