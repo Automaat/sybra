@@ -112,6 +112,9 @@ func TestExecVerifyChecks_AutoFixRewindsToImplement(t *testing.T) {
 
 	wf := implementedExec()
 	rec := wf.RecordForStep(verifyChecksImplStepID)
+	if rec == nil {
+		t.Fatal("implement step record missing")
+	}
 	rec.AgentID = "impl-1"
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{
 		ID:        "t1",

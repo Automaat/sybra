@@ -159,6 +159,10 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 			return
 		}
 	}
+	r.startStaleRestart(ctx, t, oneShot)
+}
+
+func (r *Recovery) startStaleRestart(ctx context.Context, t task.Task, oneShot bool) {
 	if t.ProjectID == "" {
 		err := fmt.Errorf("task %s has no project_id: refusing to restart stale agent without isolated worktree: %w", t.ID, workflow.ErrNoProjectAssigned)
 		r.Logger.Warn("restart-stale.skip", "task_id", t.ID, "reason", "no project_id")

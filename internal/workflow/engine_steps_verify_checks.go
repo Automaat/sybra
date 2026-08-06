@@ -976,7 +976,7 @@ func verifyAutoFixRewoundRunAgentID(wfExec *Execution, t TaskInfo) string {
 			return rec.AgentID
 		}
 	}
-	for i := len(t.AgentRuns) - 1; i >= 0; i-- {
+	for i := range slices.Backward(t.AgentRuns) {
 		role := strings.TrimSpace(t.AgentRuns[i].Role)
 		if role == "" || role == "implementation" {
 			if id := strings.TrimSpace(t.AgentRuns[i].AgentID); id != "" {
