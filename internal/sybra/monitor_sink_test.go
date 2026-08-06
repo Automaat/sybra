@@ -363,6 +363,64 @@ func TestMonitorRoutingSink_CloseIfOpen_WorkAnomalyMarksLocalTaskDone(t *testing
 	}
 }
 
+func TestMonitorRoutingSink_CloseIfOpen_WorkAnomalyClosesLocalTaskAfterSourceDeleted(t *testing.T) {
+	t.Parallel()
+	sink, tasks, inner := newSinkTestEnv(t)
+	src, err := tasks.Create("source", "src body", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	pid := "kumahq/kuma"
+	if _, err := tasks.Update(src.ID, task.Update{ProjectID: &pid}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	a := monitor.Anomaly{
+		Kind:        monitor.KindUntriaged,
+		TaskID:      src.ID,
+		Fingerprint: monitor.Fingerprint(monitor.KindUntriaged, src.ID, nil),
+	}
+	if _, err := sink.Submit(context.Background(), a, monitor.DeterministicIssueBody(a)); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var routedID string
+	for i := range all {
+		if strings.HasPrefix(all[i].Title, "[monitor] untriaged") {
+			routedID = all[i].ID
+			break
+		}
+	}
+	if routedID == "" {
+		t.Fatalf("routed task not found; tasks=%+v", all)
+	}
+	if err := tasks.Delete(src.ID); err != nil {
+		t.Fatalf("delete source: %v", err)
+	}
+
+	closed, err := sink.CloseIfOpen(context.Background(), a, "monitor: condition cleared")
+	if err != nil {
+		t.Fatalf("CloseIfOpen: %v", err)
+	}
+	if !closed {
+		t.Fatal("want closed=true for matching local task after source deletion")
+	}
+	if inner.closeCalls != 0 {
+		t.Fatalf("inner sink should not be closed for a routed local task, got %d calls", inner.closeCalls)
+	}
+
+	routed, err := tasks.Get(routedID)
+	if err != nil {
+		t.Fatalf("Get routed: %v", err)
+	}
+	if routed.Status != task.StatusDone {
+		t.Errorf("status = %q, want done", routed.Status)
+	}
+}
+
 func TestMonitorRoutingSink_CloseIfOpen_NonWorkPassesThroughToInner(t *testing.T) {
 	t.Parallel()
 	sink, tasks, inner := newSinkTestEnv(t)
