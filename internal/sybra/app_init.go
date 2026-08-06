@@ -1272,17 +1272,8 @@ func (a *App) initWorkflowEngine() {
 		agentLauncher,
 		a.logger,
 	)
-	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
-	a.workflowEngine.SetPRStateFetcher(prStateFetcherAdapter{})
-	a.workflowEngine.SetPRHeadFetcher(prHeadFetcherAdapter{})
-	a.workflowEngine.SetPRCreator(prCreatorAdapter{})
-	a.workflowEngine.SetPRCloser(prCloserAdapter{})
-	a.workflowEngine.SetPRFinder(prFinderAdapter{})
-	a.workflowEngine.SetPRAnyStateFinder(prFinderAdapter{})
-	a.workflowEngine.SetPRExistenceChecker(prExistenceCheckerAdapter{})
-	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
+	a.wirePRSurface()
 	a.workflowEngine.SetTaskClassifier(a.newTaskClassifierAdapter())
-	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.wireWorktreeAccess()
 	a.workflowEngine.SetAttemptNoteAppender(&attemptNoteAppenderAdapter{})
 	a.workflowEngine.SetBranchSyncer(&branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees})
@@ -1662,4 +1653,27 @@ func (a *App) wireSidecarDir() {
 		return
 	}
 	a.workflowEngine.SetSidecarDirResolver(a.sandboxes.SybraHomeDir)
+}
+
+// wirePRSurface wires the engine's pull-request dependency group. Split out of
+// initWorkflowEngine both to keep that function within the length gate and
+// because the group is the unit that must stay complete.
+func (a *App) wirePRSurface() {
+	if err := a.workflowEngine.SetPRSurface(workflow.PRSurface{
+		Linker:           prLinkerAdapter{},
+		ReviewRequester:  prReviewRequesterAdapter{},
+		StateFetcher:     prStateFetcherAdapter{},
+		HeadFetcher:      prHeadFetcherAdapter{},
+		Creator:          prCreatorAdapter{},
+		Closer:           prCloserAdapter{},
+		Finder:           prFinderAdapter{},
+		AnyStateFinder:   prFinderAdapter{},
+		ExistenceChecker: prExistenceCheckerAdapter{},
+		ContentGenerator: prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}},
+	}); err != nil {
+		// Only reachable by forgetting a field here — a programming error, so
+		// fail at boot rather than let a PR step no-op in production. Same
+		// posture as buildPlanSchema's static-marshal panic.
+		panic("wire workflow PR surface: " + err.Error())
+	}
 }
