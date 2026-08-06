@@ -16,6 +16,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/buildcache"
 	"github.com/Automaat/sybra/internal/notes"
+	"github.com/Automaat/sybra/internal/prepstate"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -1617,6 +1618,119 @@ func TestPrepareForTask_RebaseSkipsWhenBaseAlreadyMerged(t *testing.T) {
 	}
 	if want := "branch edit\nupstream edit\n"; string(got) != want {
 		t.Fatalf("README.md = %q, want %q (the merge-resolved content, untouched by a skipped rebase)", got, want)
+	}
+}
+
+func TestPrepareForTask_ReusesVerifiedPreparedWorktreeAfterConflictRecovery(t *testing.T) {
+	h := prepareHarness(t, []string{"printf x >> ran-count"}, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("reuse prepared recovery worktree", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
+
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "README.md")
+	mustRunInDir(t, wtPath, "git", "commit", "-m", "branch edit")
+
+	if err := os.WriteFile(filepath.Join(h.src, "README.md"), []byte("upstream edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, h.src, "git", "add", "README.md")
+	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
+
+	mustRunInDir(t, wtPath, "git", "fetch", "origin")
+	if err := exec.Command("git", "-C", wtPath, "merge", "--no-edit", "origin/main").Run(); err == nil {
+		t.Fatal("expected conflict merge during simulated recovery")
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\nupstream edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "README.md")
+	mustRunInDir(t, wtPath, "git", "commit", "--no-edit")
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+	mustRunInDir(t, wtPath, "git", "push", "origin", "HEAD:"+branch)
+
+	wrote, err := prepstate.WriteVerified(context.Background(), wtPath, branch)
+	if err != nil {
+		t.Fatalf("WriteVerified: %v", err)
+	}
+	if !wrote {
+		t.Fatal("WriteVerified = false, want published prepared state")
+	}
+
+	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("PrepareForTask after recovery: %v", err)
+	}
+	if gotPath != wtPath {
+		t.Fatalf("reused path = %q, want %q", gotPath, wtPath)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wtPath, "ran-count"))
+	if err != nil {
+		t.Fatalf("read setup counter: %v", err)
+	}
+	if got := string(data); got != "x" {
+		t.Fatalf("setup reran after verified prep reuse; counter=%q, want \"x\"", got)
+	}
+}
+
+func TestRecordPreparedStateRequiresPublishedRemoteHead(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("unpublished prep state", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtPath, "local-only.txt"), []byte("not pushed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "local-only.txt")
+	mustRunInDir(t, wtPath, "git", "commit", "-m", "local only")
+
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+	wrote, err := prepstate.WriteVerified(context.Background(), wtPath, branch)
+	if err != nil {
+		t.Fatalf("WriteVerified: %v", err)
+	}
+	if wrote {
+		t.Fatal("WriteVerified = true for an unpublished head, want false")
+	}
+	if _, ok, err := prepstate.Read(wtPath); err != nil {
+		t.Fatalf("Read prep state: %v", err)
+	} else if ok {
+		t.Fatal("prep state marker exists for an unpublished head")
 	}
 }
 
