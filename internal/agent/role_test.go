@@ -191,6 +191,7 @@ func TestRole_AuthorsCode(t *testing.T) {
 		{RoleFixReview, true},
 		{RolePRFix, true},
 		{RoleTestFix, true},
+		{RoleHumanReview, true},
 		{Role(""), true}, // empty maps to implementation
 		// Independent verifiers — must NOT inherit the implementer's scratchpad,
 		// or the reward-hacking defense is silently weakened.
@@ -200,7 +201,6 @@ func TestRole_AuthorsCode(t *testing.T) {
 		{RolePlan, false},
 		{RolePlanCritic, false},
 		{RoleTriage, false},
-		{RoleHumanReview, false},
 		{RoleLoop, false},
 		{RoleMonitor, false},
 	}
@@ -387,5 +387,25 @@ func TestAllRolesReturnsACopy(t *testing.T) {
 func BenchmarkRoleIsKnown(b *testing.B) {
 	for b.Loop() {
 		_ = RoleImplementation.IsKnown()
+	}
+}
+
+// checkpointAndHandoff commits into sessionCWD from THIS process, not from the
+// sandboxed child, so the OS sandbox is not what protects a read-only dispatch
+// dir. On the deploy host that dir is the Sybra source checkout, which is also
+// auto_update.repo_dir — a checkpoint commit there wedges the ff-only merge
+// auto-deploy depends on.
+func TestCanCheckpointOnTurnCeiling_DeniedForReadOnlyDir(t *testing.T) {
+	m := &Manager{}
+	m.guardrails.CheckpointOnTurnCeiling = true
+
+	writable := &Agent{Role: RoleHumanReview}
+	if !m.canCheckpointOnTurnCeiling(writable) {
+		t.Fatal("precondition: a writable human-review run should be checkpoint-eligible")
+	}
+
+	readOnly := &Agent{Role: RoleHumanReview, sessionReadOnly: true}
+	if m.canCheckpointOnTurnCeiling(readOnly) {
+		t.Error("checkpoint allowed for a read-only dispatch dir; the host would commit into it")
 	}
 }

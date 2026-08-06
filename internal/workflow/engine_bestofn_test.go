@@ -9,6 +9,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
 // --- fakes for CostBudgetChecker / AttemptWorktreeManager ---
@@ -628,6 +631,31 @@ func TestBestOfN_PromotionRefused_FailsClosedWithDistinctReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertHumanRequiredReason(t, tasks, reason)
+}
+
+// TestBestOfN_PromotionBusyPathDefersInsteadOfEscalating separates the two
+// kinds of promotion failure. The fail-closed reasons above are judgements a
+// human must make; a canonical path another mutating operation currently owns
+// is not one, and parking a human on it hands them a condition that is gone
+// before they read it.
+func TestBestOfN_PromotionBusyPathDefersInsteadOfEscalating(t *testing.T) {
+	engine, tasks, agents, attemptWt, _ := newBestOfNTestEngine(t, 2)
+	attemptWt.promoteErr = fmt.Errorf("promote: %w", worktreeerr.ErrPreparationInFlight)
+	setupTwoSuccessfulAttempts(t, engine, tasks)
+
+	judgeAgentID := agents.LastID()
+	out := `{"winner_attempt_id": "attempt_1", "rationale": "x"}`
+	if err := engine.AdvanceStep("t1", StepOutput{StepID: "judge", Status: "completed", AgentID: judgeAgentID, Output: out}); !errors.Is(err, worktreeerr.ErrPreparationInFlight) {
+		t.Fatalf("AdvanceStep err = %v, want ErrPreparationInFlight surfaced to the caller", err)
+	}
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status == taskstatus.HumanRequired {
+		t.Errorf("task escalated to human-required on a self-clearing refusal (reason %q)", ti.StatusReason)
+	}
 }
 
 // --- resume-without-double-dispatch ---

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/sybra/internal/fsutil"
@@ -36,6 +37,24 @@ type Store struct {
 	clonesDir string
 	locker    *fsutil.KeyedLocker
 	cloneBare func(context.Context, string, string) error
+	// signing is atomic because SetSigningPolicy runs on the config-reload
+	// goroutine while Create and the startup migration read it concurrently.
+	signing atomic.Value
+}
+
+// SetSigningPolicy late-binds the deployment's commit-signing posture, which
+// is resolved from config after the Store is constructed and re-applied on
+// every hot reload. Unset means SigningAuto, so a caller that never sets it
+// keeps the historical host-probing behavior.
+func (s *Store) SetSigningPolicy(p SigningPolicy) { s.signing.Store(string(p)) }
+
+// SigningPolicy returns the configured posture, defaulting to SigningAuto.
+func (s *Store) SigningPolicy() SigningPolicy {
+	v, ok := s.signing.Load().(string)
+	if !ok || v == "" {
+		return SigningAuto
+	}
+	return SigningPolicy(v)
 }
 
 // NewStore creates dir and clonesDir if they do not exist and returns a
@@ -138,6 +157,12 @@ func (s *Store) disableAutoMaintenanceLocked(ctx context.Context, id, snapshotCl
 	if err := ConfigureCommitIdentity(runCtx, current.ClonePath); err != nil {
 		return fmt.Errorf("%s: configure commit identity: %w", id, err)
 	}
+	// Retrofit already-registered clones: nothing ever wrote the signing
+	// posture, so existing projects carry whatever incidental state their
+	// host happens to have.
+	if err := ConfigureCommitSigning(runCtx, current.ClonePath, s.SigningPolicy()); err != nil {
+		return fmt.Errorf("%s: configure commit signing: %w", id, err)
+	}
 	return nil
 }
 
@@ -211,6 +236,14 @@ func (s *Store) Create(rawURL string, ptype ProjectType) (Project, error) {
 			return Project{}, fmt.Errorf("clone: %w (mark error: %w)", err, markErr)
 		}
 		return Project{}, fmt.Errorf("clone: %w", err)
+	}
+	// Before publish, so the clone is never reachable without its floor. The
+	// CLI never runs the startup migration, so this is the only place a
+	// CLI-created project gets one.
+	if err := ConfigureCommitSigning(ctx, clonePath, s.SigningPolicy()); err != nil {
+		_ = os.RemoveAll(clonePath)
+		_ = s.markCloneError(p)
+		return Project{}, fmt.Errorf("configure commit signing: %w", err)
 	}
 	if err := s.publishClone(p, clonePath); err != nil {
 		_ = os.RemoveAll(clonePath)

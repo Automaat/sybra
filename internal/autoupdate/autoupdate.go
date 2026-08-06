@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 const (
@@ -630,12 +632,9 @@ func gitRun(ctx context.Context, dir, name string, args ...string) error {
 }
 
 func git(ctx context.Context, dir, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{name}, args...)...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	out, err := cmd.CombinedOutput()
+	out, err := gitexec.CombinedOutput(ctx, gitexec.Options{Dir: dir}, append([]string{name}, args...)...)
 	if err != nil {
-		return "", fmt.Errorf("git %s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -728,26 +727,7 @@ func saveState(path string, state persistedState) error {
 	if err != nil {
 		return fmt.Errorf("marshal autoupdate state: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("create autoupdate state temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer func() {
-		_ = os.Remove(tmpPath)
-	}()
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write autoupdate state temp file: %w", err)
-	}
-	if err := tmp.Chmod(0o644); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod autoupdate state temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close autoupdate state temp file: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := fsutil.AtomicWrite(path, append(data, '\n')); err != nil {
 		return fmt.Errorf("write autoupdate state: %w", err)
 	}
 	return nil

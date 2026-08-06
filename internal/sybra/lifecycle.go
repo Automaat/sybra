@@ -288,7 +288,7 @@ func (a *App) healthPressureStatus() *health.PressureStatus {
 func (lm *LifecycleManager) StartWatchers(ctx context.Context) {
 	a := lm.app
 	cfgPath := filepath.Join(config.HomeDir(), "config.yaml")
-	cw := confighot.New(cfgPath, func() { //nolint:contextcheck // config reload emits process-global provider health UI events from a file watcher callback.
+	cw := confighot.New(cfgPath, func() { //nolint:contextcheck,nolintlint // contextcheck applies on Darwin; Linux must retain the shared suppression.
 		result, err := a.configSvc.ReloadFromDisk()
 		if err != nil {
 			a.logger.Error("config.reload.failed", "err", err)
@@ -732,8 +732,30 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 			return a.reviewer.AdvanceClosedTaskPR(ctx, taskID, prNumber, state)
 		},
 	})
+	svc.SetProviderHealth(a.providerHealthSnapshot)
 	a.monitorSvc = svc
 	a.wg.Go(func() { svc.Run(ctx) })
+}
+
+// providerHealthSnapshot adapts the health checker for the monitor's
+// no-capacity rule. Nil checker yields nil, which keeps the rule silent rather
+// than reporting a fleet with no providers as having no capacity.
+func (a *App) providerHealthSnapshot() []monitor.ProviderHealth {
+	if a == nil || a.providerHealth == nil {
+		return nil
+	}
+	statuses := a.providerHealth.Snapshot()
+	out := make([]monitor.ProviderHealth, 0, len(statuses))
+	for name, st := range statuses {
+		out = append(out, monitor.ProviderHealth{
+			Name:    name,
+			Enabled: a.providerHealth.ProviderEnabled(name),
+			Healthy: st.Healthy,
+			Reason:  st.Reason,
+			Until:   st.RateLimitedUntil,
+		})
+	}
+	return out
 }
 
 // startSelfMonitorService wires the deep-analysis loop that distills agent logs

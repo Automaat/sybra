@@ -1,15 +1,23 @@
 package agent
 
 import (
+	"bufio"
+	"compress/zlib"
 	"context"
+	"crypto/sha1" // #nosec G505 -- Git's repository object format may be SHA-1.
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/gitexec"
 )
 
 var errGitSandboxNotRepo = errors.New("sandbox git roots: worktree is not a git repository")
@@ -197,11 +205,20 @@ type gitSandboxOverlay struct {
 
 func prepareGitSandboxOverlay(ctx context.Context, worktree, sandboxHome string, roots gitSandboxRoots) (gitSandboxOverlay, error) {
 	base := filepath.Join(sandboxHome, ".sybra-git-overlay")
+	if !sandboxUsesGitObjectOverlay() {
+		if err := prepareGitLooseObjectDirs(roots.objectDir); err != nil {
+			return gitSandboxOverlay{}, err
+		}
+		legacyObjects := filepath.Join(base, "objects")
+		if err := migrateLegacyGitObjectOverlay(ctx, worktree, legacyObjects, roots.objectDir); err != nil {
+			return gitSandboxOverlay{}, fmt.Errorf("migrate legacy git object overlay %s: %w", legacyObjects, err)
+		}
+	}
 	if err := os.RemoveAll(base); err != nil {
 		return gitSandboxOverlay{}, fmt.Errorf("reset %s: %w", base, err)
 	}
 	overlay := gitSandboxOverlay{}
-	if roots.objectDir != "" {
+	if roots.objectDir != "" && sandboxUsesGitObjectOverlay() {
 		var err error
 		if overlay.objectDir, err = prepareGitObjectOverlay(base); err != nil {
 			return gitSandboxOverlay{}, err
@@ -250,6 +267,291 @@ func prepareGitSandboxOverlay(ctx context.Context, worktree, sandboxHome string,
 	}
 	overlay.branchRefFile = canonRefFile
 	return overlay, nil
+}
+
+// migrateLegacyGitObjectOverlay publishes loose objects left by the former
+// Darwin object-overlay sandbox into the clone's durable object store. It is
+// deliberately conservative: every source object must be a canonical loose
+// object whose decompressed content hashes to its pathname, and an existing
+// destination must independently pass the same check. Pack files, alternates,
+// symlinks, and other payloads fail closed so os.RemoveAll cannot discard data
+// whose meaning Sybra has not proved.
+func migrateLegacyGitObjectOverlay(ctx context.Context, worktree, legacyObjects, sharedObjects string) error {
+	populated, err := gitObjectOverlayPopulated(legacyObjects)
+	if err != nil {
+		return err
+	}
+	if !populated {
+		return nil
+	}
+	if strings.TrimSpace(sharedObjects) == "" {
+		return errors.New("shared Git object directory is empty")
+	}
+
+	err = filepath.WalkDir(legacyObjects, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == legacyObjects || entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(legacyObjects, path)
+		if err != nil {
+			return err
+		}
+		if !isGitObjectPayloadPath(legacyObjects, path) {
+			return nil // derived commit-graph and info/packs metadata
+		}
+		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
+			return fmt.Errorf("unsupported legacy Git object entry %s", rel)
+		}
+		oid, ok := canonicalLooseObjectID(rel)
+		if !ok {
+			return fmt.Errorf("unsupported legacy Git object payload %s", rel)
+		}
+		return publishVerifiedLooseObject(path, filepath.Join(sharedObjects, rel), oid)
+	})
+	if err != nil {
+		return err
+	}
+
+	// A migrated commit is not useful if its tree or parents are still absent.
+	// Prove the task's entire HEAD graph resolves with only the shared store
+	// before the caller removes the legacy overlay.
+	out, err := gitexec.CombinedOutput(ctx, gitexec.Options{
+		Dir: worktree,
+		Env: append(stripEnvKeys(os.Environ(), "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"),
+			"GIT_OBJECT_DIRECTORY="+sharedObjects,
+			"GIT_ALTERNATE_OBJECT_DIRECTORIES=",
+		),
+	}, "rev-list", "--objects", "--missing=print", "HEAD")
+	if err != nil {
+		return fmt.Errorf("verify migrated HEAD reachability: %w", err)
+	}
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if missing, ok := strings.CutPrefix(line, "?"); ok {
+			return fmt.Errorf("verify migrated HEAD reachability: missing object %s", missing)
+		}
+	}
+	return nil
+}
+
+func canonicalLooseObjectID(rel string) (string, bool) {
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	if len(parts) != 2 || len(parts[0]) != 2 || (len(parts[1]) != 38 && len(parts[1]) != 62) {
+		return "", false
+	}
+	oid := parts[0] + parts[1]
+	if oid != strings.ToLower(oid) {
+		return "", false
+	}
+	_, err := hex.DecodeString(oid)
+	return oid, err == nil
+}
+
+func publishVerifiedLooseObject(src, dst, oid string) error {
+	source, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open legacy object %s: %w", oid, err)
+	}
+	defer func() { _ = source.Close() }()
+	info, err := source.Stat()
+	if err != nil {
+		return fmt.Errorf("stat legacy object %s: %w", oid, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("legacy object %s is not a regular file", oid)
+	}
+	if err := verifyLooseObject(source, oid); err != nil {
+		return fmt.Errorf("verify legacy object %s: %w", oid, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("prepare shared object fanout for %s: %w", oid, err)
+	}
+	if existing, err := os.Open(dst); err == nil {
+		defer func() { _ = existing.Close() }()
+		if err := verifyLooseObject(existing, oid); err != nil {
+			return fmt.Errorf("verify existing shared object %s: %w", oid, err)
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect existing shared object %s: %w", oid, err)
+	}
+
+	if _, err := source.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind legacy object %s: %w", oid, err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(dst), "tmp_obj_migrate_")
+	if err != nil {
+		return fmt.Errorf("stage shared object %s: %w", oid, err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := io.Copy(tmp, source); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("copy shared object %s: %w", oid, err)
+	}
+	if err := verifyLooseObject(tmp, oid); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("verify staged shared object %s: %w", oid, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync shared object %s: %w", oid, err)
+	}
+	if err := tmp.Chmod(0o444); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod shared object %s: %w", oid, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close shared object %s: %w", oid, err)
+	}
+	if err := os.Link(tmpName, dst); err != nil {
+		if !os.IsExist(err) {
+			return fmt.Errorf("publish shared object %s: %w", oid, err)
+		}
+		existing, openErr := os.Open(dst)
+		if openErr != nil {
+			return fmt.Errorf("open concurrently published shared object %s: %w", oid, openErr)
+		}
+		defer func() { _ = existing.Close() }()
+		if verifyErr := verifyLooseObject(existing, oid); verifyErr != nil {
+			return fmt.Errorf("verify concurrently published shared object %s: %w", oid, verifyErr)
+		}
+	}
+	return nil
+}
+
+// GitHub rejects ordinary Git blobs above 100 MiB. Leave ample headroom for
+// non-GitHub repositories while bounding work on a provider-controlled legacy
+// overlay: validation runs in the trusted Sybra process, outside the provider
+// sandbox, so it must not stream an arbitrarily large zlib payload.
+const maxLegacyLooseObjectSize = 1 << 30
+const maxLegacyLooseObjectDiskSize = maxLegacyLooseObjectSize + 1<<20
+
+func verifyLooseObject(file *os.File, oid string) error {
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat compressed object: %w", err)
+	}
+	if info.Size() > maxLegacyLooseObjectDiskSize {
+		return fmt.Errorf("compressed object size %d exceeds migration limit %d", info.Size(), maxLegacyLooseObjectDiskSize)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	compressed := bufio.NewReader(file)
+	zr, err := zlib.NewReader(compressed)
+	if err != nil {
+		return fmt.Errorf("open zlib stream: %w", err)
+	}
+	defer func() { _ = zr.Close() }()
+
+	var digest hash.Hash
+	switch len(oid) {
+	case sha1.Size * 2:
+		digest = sha1.New() // #nosec G401 -- required to verify SHA-1 Git object IDs.
+	case sha256.Size * 2:
+		digest = sha256.New()
+	default:
+		return fmt.Errorf("unsupported object ID length %d", len(oid))
+	}
+	reader := bufio.NewReader(io.TeeReader(zr, digest))
+	headerBytes := make([]byte, 0, 64)
+	for len(headerBytes) <= 128 {
+		char, err := reader.ReadByte()
+		if err != nil {
+			return fmt.Errorf("read object header: %w", err)
+		}
+		if char == 0 {
+			break
+		}
+		headerBytes = append(headerBytes, char)
+	}
+	if len(headerBytes) > 128 {
+		return errors.New("object header exceeds 128 bytes")
+	}
+	header := string(headerBytes)
+	typeName, sizeText, ok := strings.Cut(header, " ")
+	if !ok || (typeName != "blob" && typeName != "tree" && typeName != "commit" && typeName != "tag") {
+		return fmt.Errorf("invalid object header %q", header)
+	}
+	wantSize, err := strconv.ParseInt(sizeText, 10, 64)
+	if err != nil || wantSize < 0 {
+		return fmt.Errorf("invalid object size %q", sizeText)
+	}
+	if wantSize > maxLegacyLooseObjectSize {
+		return fmt.Errorf("object size %d exceeds migration limit %d", wantSize, maxLegacyLooseObjectSize)
+	}
+	gotSize, err := io.CopyN(io.Discard, reader, wantSize+1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("read object content: %w", err)
+	}
+	if gotSize != wantSize {
+		return fmt.Errorf("object size = %d, want %d", gotSize, wantSize)
+	}
+	if got := hex.EncodeToString(digest.Sum(nil)); got != oid {
+		return fmt.Errorf("object hash = %s, want %s", got, oid)
+	}
+	return nil
+}
+
+func prepareGitLooseObjectDirs(objectDir string) error {
+	if objectDir == "" {
+		return nil
+	}
+	for i := range 256 {
+		path := filepath.Join(objectDir, fmt.Sprintf("%02x", i))
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return fmt.Errorf("prepare loose-object fanout %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func gitObjectOverlayPopulated(path string) (bool, error) {
+	populated := false
+	err := filepath.WalkDir(path, func(current string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if current == path && os.IsNotExist(walkErr) {
+				return nil
+			}
+			return walkErr
+		}
+		if current != path && !entry.IsDir() && isGitObjectPayloadPath(path, current) {
+			populated = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return populated, err
+}
+
+func isGitObjectPayloadPath(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return true
+	}
+	first, rest, hasRest := strings.Cut(rel, string(filepath.Separator))
+	if first == "pack" {
+		return true
+	}
+	if first == "info" {
+		if !hasRest {
+			return false
+		}
+		return rest != "commit-graph" && rest != "packs" &&
+			!strings.HasPrefix(rest, "commit-graphs"+string(filepath.Separator))
+	}
+	if len(first) != 2 {
+		return false
+	}
+	for _, char := range first {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", char) {
+			return false
+		}
+	}
+	return true
 }
 
 func prepareGitObjectOverlay(base string) (string, error) {
@@ -341,15 +643,12 @@ func copyGitOverlayFile(src, dst string, mode fs.FileMode) error {
 }
 
 func gitHeadCommit(ctx context.Context, worktree string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "HEAD")
-	cmd.Dir = worktree
-	out, err := cmd.CombinedOutput()
+	out, err := gitexec.CombinedOutput(ctx, gitexec.Options{
+		Dir: worktree,
+		Env: gitSandboxDiscoveryEnv(),
+	}, "rev-parse", "--verify", "HEAD")
 	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			return "", fmt.Errorf("git rev-parse --verify HEAD: %w", err)
-		}
-		return "", fmt.Errorf("git rev-parse --verify HEAD: %w: %s", err, msg)
+		return "", err
 	}
 	head := strings.TrimSpace(string(out))
 	if head == "" {
@@ -372,18 +671,16 @@ func gitPath(ctx context.Context, worktree string, args ...string) (string, erro
 
 func gitPathRaw(ctx context.Context, worktree string, args ...string) (string, error) {
 	cmdArgs := append([]string{"rev-parse"}, args...)
-	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
-	cmd.Dir = worktree
-	out, err := cmd.CombinedOutput()
+	out, err := gitexec.CombinedOutput(ctx, gitexec.Options{
+		Dir: worktree,
+		Env: gitSandboxDiscoveryEnv(),
+	}, cmdArgs...)
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if looksLikeNotGitRepo(msg) {
 			return "", errGitSandboxNotRepo
 		}
-		if msg == "" {
-			return "", fmt.Errorf("git %s: %w", strings.Join(cmdArgs, " "), err)
-		}
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(cmdArgs, " "), err, msg)
+		return "", err
 	}
 	path := strings.TrimSpace(string(out))
 	if path == "" {
@@ -398,9 +695,8 @@ func gitPathRaw(ctx context.Context, worktree string, args ...string) (string, e
 // gitExitCode reports a git process exit code, or -1 when err is not an exit
 // failure (spawn error, context cancellation).
 func gitExitCode(err error) int {
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		return ee.ExitCode()
+	if code, ok := gitexec.ExitCode(err); ok {
+		return code
 	}
 	return -1
 }
@@ -423,18 +719,16 @@ func gitRevParsePath(ctx context.Context, worktree, arg string) (string, error) 
 // empty output, while a real failure (not a repository, unreadable HEAD)
 // exits 128 and prints. Only the first is swallowed.
 func gitSymbolicRef(ctx context.Context, worktree string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "-q", "HEAD")
-	cmd.Dir = worktree
-	out, err := cmd.CombinedOutput()
+	out, err := gitexec.CombinedOutput(ctx, gitexec.Options{
+		Dir: worktree,
+		Env: gitSandboxDiscoveryEnv(),
+	}, "symbolic-ref", "-q", "HEAD")
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if msg == "" && gitExitCode(err) == 1 {
 			return "", nil
 		}
-		if msg == "" {
-			return "", fmt.Errorf("git symbolic-ref -q HEAD: %w", err)
-		}
-		return "", fmt.Errorf("git symbolic-ref -q HEAD: %w: %s", err, msg)
+		return "", err
 	}
 	// Exit 0 with no ref is not a state git produces; treat it as a real fault
 	// rather than silently reporting "detached".
@@ -443,6 +737,12 @@ func gitSymbolicRef(ctx context.Context, worktree string) (string, error) {
 		return "", fmt.Errorf("git symbolic-ref -q HEAD: empty ref")
 	}
 	return ref, nil
+}
+
+// gitSandboxDiscoveryEnv prevents Sybra's own ambient Git object overrides
+// from changing which repository paths are trusted and granted to an agent.
+func gitSandboxDiscoveryEnv() []string {
+	return stripEnvKeys(os.Environ(), "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
 }
 
 func ensureGitPathDir(ctx context.Context, worktree, rel string) (string, error) {

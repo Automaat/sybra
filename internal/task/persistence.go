@@ -101,6 +101,7 @@ type agentRunRecord struct {
 	OneShot                 bool      `yaml:"one_shot,omitempty"`
 	Verdict                 string    `yaml:"verdict,omitempty"`
 	VerdictRendered         bool      `yaml:"verdict_rendered,omitempty"`
+	RecoveryReplayRejected  bool      `yaml:"recovery_replay_rejected,omitempty"`
 	LogFile                 string    `yaml:"log_file,omitempty"`
 	SessionID               string    `yaml:"session_id,omitempty"`
 	ProtocolViolation       string    `yaml:"protocol_violation,omitempty"`
@@ -110,6 +111,7 @@ type agentRunRecord struct {
 	FinalCommitSource       string    `yaml:"final_commit_source,omitempty"`
 	SubagentCallCount       int       `yaml:"subagent_call_count,omitempty"`
 	ResumeZeroOutputStall   bool      `yaml:"zero_output_stall,omitempty"`
+	TurnCount               int       `yaml:"turn_count,omitempty"`
 }
 
 // taskFromFrontmatter rebuilds the persisted task fields. Store loading

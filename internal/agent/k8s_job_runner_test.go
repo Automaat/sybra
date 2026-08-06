@@ -6,9 +6,41 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestGitOutputUsesWorkspaceDirectoryAndDisablesPrompts(t *testing.T) {
+	binDir := t.TempDir()
+	fakeGit := filepath.Join(binDir, "git")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf '%s\\n%s\\n' \"$PWD\" \"$GIT_TERMINAL_PROMPT\"\n"), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	workspace := t.TempDir()
+	out, err := gitOutput(t.Context(), workspace, "status", "--short")
+	if err != nil {
+		t.Fatalf("gitOutput: %v", err)
+	}
+	lines := strings.Split(out, "\n")
+	if len(lines) != 2 || lines[1] != "0" {
+		t.Fatalf("git environment = %q, want working directory and prompt=0", out)
+	}
+	actualInfo, err := os.Stat(lines[0])
+	if err != nil {
+		t.Fatalf("stat actual working directory: %v", err)
+	}
+	wantInfo, err := os.Stat(workspace)
+	if err != nil {
+		t.Fatalf("stat expected working directory: %v", err)
+	}
+	if !os.SameFile(actualInfo, wantInfo) {
+		t.Fatalf("working directory = %q, want %q", lines[0], workspace)
+	}
+}
 
 func TestK8sName(t *testing.T) {
 	got := k8sName("Sybra Agent_BAD.ID/With Stuff")

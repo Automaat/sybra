@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { Status, TaskType, type Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
+import { TaskType, type Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
+import { Status } from '../../bindings/github.com/Automaat/sybra/internal/taskstatus/models.js'
 import {
   buildUmbrellaProgress,
   childrenForUmbrella,
@@ -12,7 +13,7 @@ function task(overrides: Partial<Task>): Task {
   return {
     id: '',
     title: '',
-    status: Status.StatusTodo,
+    status: Status.Todo,
     tags: [],
     agentMode: 'headless',
     issue: '',
@@ -33,12 +34,12 @@ describe('umbrella progress', () => {
 
   it('counts only locally merged-outcome children, not false completions', () => {
     const byUmbrella = buildUmbrellaProgress([
-      task({ id: 'c1', status: Status.StatusDone, outcome: 'merged', umbrellaIssue: 'https://github.com/Automaat/sybra/issues/1213' }),
-      task({ id: 'c5', status: Status.StatusInProgress, outcome: 'merged_later', umbrellaIssue: 'https://github.com/Automaat/sybra/issues/1213' }),
-      task({ id: 'c2', status: Status.StatusInProgress, umbrellaIssue: 'Automaat/sybra#1213' }),
-      task({ id: 'c4', status: Status.StatusDone, outcome: '', umbrellaIssue: 'Automaat/sybra#1213' }),
-      task({ id: 'c3', status: Status.StatusDone, outcome: 'merged_with_edits', umbrellaIssue: 'Automaat/sybra#999' }),
-      task({ id: 'standalone', status: Status.StatusDone, outcome: 'merged' }),
+      task({ id: 'c1', status: Status.Done, outcome: 'merged', umbrellaIssue: 'https://github.com/Automaat/sybra/issues/1213' }),
+      task({ id: 'c5', status: Status.InProgress, outcome: 'merged_later', umbrellaIssue: 'https://github.com/Automaat/sybra/issues/1213' }),
+      task({ id: 'c2', status: Status.InProgress, umbrellaIssue: 'Automaat/sybra#1213' }),
+      task({ id: 'c4', status: Status.Done, outcome: '', umbrellaIssue: 'Automaat/sybra#1213' }),
+      task({ id: 'c3', status: Status.Done, outcome: 'merged_with_edits', umbrellaIssue: 'Automaat/sybra#999' }),
+      task({ id: 'standalone', status: Status.Done, outcome: 'merged' }),
     ])
 
     expect(byUmbrella.get('automaat/sybra#1213')).toEqual({ done: 2, total: 4 })
@@ -47,8 +48,8 @@ describe('umbrella progress', () => {
 
   it('resolves tracker progress from its issue ref', () => {
     const byUmbrella = buildUmbrellaProgress([
-      task({ id: 'c1', status: Status.StatusDone, outcome: 'merged', umbrellaIssue: 'Automaat/sybra#1213' }),
-      task({ id: 'c2', status: Status.StatusTodo, umbrellaIssue: 'Automaat/sybra#1213' }),
+      task({ id: 'c1', status: Status.Done, outcome: 'merged', umbrellaIssue: 'Automaat/sybra#1213' }),
+      task({ id: 'c2', status: Status.Todo, umbrellaIssue: 'Automaat/sybra#1213' }),
     ])
 
     expect(progressForUmbrellaTracker(
@@ -61,15 +62,15 @@ describe('umbrella progress', () => {
   describe('isChildComplete', () => {
     it('counts merged outcome prefixes as complete without relying on local status', () => {
       expect(isChildComplete(task({ outcome: 'merged' }))).toBe(true)
-      expect(isChildComplete(task({ status: Status.StatusTodo, outcome: 'merged_with_edits' }))).toBe(true)
+      expect(isChildComplete(task({ status: Status.Todo, outcome: 'merged_with_edits' }))).toBe(true)
     })
 
     it('does not count closed, reverted, empty, or bare local done', () => {
       expect(isChildComplete(task({ outcome: 'closed' }))).toBe(false)
       expect(isChildComplete(task({ outcome: 'reverted' }))).toBe(false)
       expect(isChildComplete(task({ outcome: '' }))).toBe(false)
-      expect(isChildComplete(task({ status: Status.StatusDone, outcome: '' }))).toBe(false)
-      expect(isChildComplete(task({ status: Status.StatusDone, prNumber: 0 }))).toBe(false)
+      expect(isChildComplete(task({ status: Status.Done, outcome: '' }))).toBe(false)
+      expect(isChildComplete(task({ status: Status.Done, prNumber: 0 }))).toBe(false)
     })
   })
 

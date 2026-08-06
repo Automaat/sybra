@@ -16,6 +16,9 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/evidence"
+	"github.com/Automaat/sybra/internal/gitexec"
+	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // TamperBlessedTag short-circuits the detector: a human who has reviewed a
@@ -937,7 +940,7 @@ func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (Ste
 
 	if high := report.highCount(); high > 0 {
 		reason := tamperReason(report)
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+		if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 			e.logger.Error("workflow.detect-tampering.status", "task_id", taskID, "err", statusErr)
 		}
 		e.logger.Warn("workflow.detect-tampering.flagged",
@@ -1196,11 +1199,11 @@ func pathIdenticalToUpstream(ctx context.Context, wtPath, upstream, path string)
 }
 
 // gitFilePatch and gitFileAtRef return raw (untrimmed) git output — the exact
-// patch/file bytes matter to the tamper regex scanners below, so they use
-// gitCmd directly rather than the output-trimming gitOutput helper.
+// patch/file bytes matter to the tamper regex scanners below, so they use the
+// shared runner's raw-output operation rather than the trimming helper.
 
 func gitFilePatch(ctx context.Context, wtPath, rangeSpec, path string) (string, error) {
-	out, err := gitCmd(ctx, wtPath, "-c", "core.quotePath=false", "diff", rangeSpec, "--", path).Output()
+	out, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: wtPath}, "-c", "core.quotePath=false", "diff", rangeSpec, "--", path)
 	if err != nil {
 		return "", err
 	}
@@ -1212,7 +1215,7 @@ func gitFilePatch(ctx context.Context, wtPath, rangeSpec, path string) (string, 
 // newly added file — which callers treat as "no base content" rather than a
 // hard failure.
 func gitFileAtRef(ctx context.Context, wtPath, ref, path string) (string, error) {
-	out, err := gitCmd(ctx, wtPath, "show", ref+":"+path).Output()
+	out, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: wtPath}, "show", ref+":"+path)
 	if err != nil {
 		return "", err
 	}
@@ -1276,12 +1279,8 @@ func tamperReason(r tamperReport) string {
 // trimDiffLine normalizes a diff content line for inclusion in a finding:
 // trimmed and capped to a sane length.
 func trimDiffLine(s string) string {
-	s = strings.TrimSpace(s)
 	const maxLen = 120
-	if len(s) > maxLen {
-		return s[:maxLen] + "…"
-	}
-	return s
+	return textutil.TruncateBytes(strings.TrimSpace(s), maxLen, "…")
 }
 
 // documentedDeletionAllowlist extracts explicitly documented file deletions

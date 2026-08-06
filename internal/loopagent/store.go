@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 )
@@ -67,7 +68,7 @@ func (s *Store) FindByName(name string) (LoopAgent, bool) {
 // Create assigns an ID and timestamps, validates, and writes the record.
 func (s *Store) Create(la LoopAgent) (LoopAgent, error) {
 	if la.Provider == "" {
-		la.Provider = "claude"
+		la.Provider = providerid.Claude
 	}
 	if err := la.Validate(); err != nil {
 		return LoopAgent{}, err
@@ -162,7 +163,7 @@ func (s *Store) readFile(path string) (LoopAgent, error) {
 		return LoopAgent{}, fmt.Errorf("parse loop agent: %w", err)
 	}
 	if la.Provider == "" {
-		la.Provider = "claude"
+		la.Provider = providerid.Claude
 	}
 	return la, nil
 }

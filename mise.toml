@@ -78,8 +78,12 @@ run = [
   "bash scripts/check-api-shim-sync.sh",
   "bash scripts/check-repo-hygiene.sh",
   "bash scripts/check-no-home-fallback.sh",
+  "bash scripts/check-atomic-writes.sh",
+  "bash scripts/check-atomic-writes.test.sh",
   "bash scripts/check-no-viewer-user-endpoint.sh",
   "bash scripts/check-gh-exec-gate.sh",
+  "bash scripts/check-git-exec-gate.sh",
+  "bash scripts/check-git-exec-gate.test.sh",
   "bash scripts/check-no-direct-status-write.sh",
   "bash scripts/check-autonomy-slo.sh",
   "bash scripts/resolve-release-version.test.sh",
@@ -88,7 +92,7 @@ run = [
   "wails3 generate bindings -ts -clean -d frontend/bindings ./... && git diff --exit-code frontend/bindings/",
   "hadolint Dockerfile",
 ]
-description = "Run every deterministic CI-aligned gate (go build+mod+tidy+tests+e2e, golangci-lint, frontend check+build:web+tests+oxlint+pins, api-shim sync, no-home-fallback, no-direct-status-write, autonomy SLO gate, bindings sync, hadolint). Run before committing. Excludes nilaway/security/playwright — CI owns those."
+description = "Run every deterministic CI-aligned gate (go build+mod+tidy+tests+e2e, golangci-lint, frontend check+build:web+tests+oxlint+pins, api-shim sync, no-home-fallback, Git/GitHub execution boundaries, no-direct-status-write, autonomy SLO gate, bindings sync, hadolint). Run before committing. Excludes nilaway/security/playwright — CI owns those."
 
 [tasks."build:frontend:desktop"]
 run = "cd frontend && npm run build:desktop"
