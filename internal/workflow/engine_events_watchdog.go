@@ -186,7 +186,9 @@ func buildRewardHackingImplementationReaskNote(attempt, maxRetries int) string {
 
 func buildRewardHackingPlanningReaskNote(role string, attempt, maxRetries int) string {
 	var b strings.Builder
-	stage := taskstatus.Planning
+	// Prompt prose, not a status: "plan-critique" is not a member of the
+	// vocabulary, so typing this would promise a validity it does not have.
+	stage := "planning"
 	if role == "plan-critic" {
 		stage = "plan-critique"
 	}

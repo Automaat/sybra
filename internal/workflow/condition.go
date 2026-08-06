@@ -69,7 +69,7 @@ func isKnownField(field string) bool {
 // registered set and skip enum validation.
 //
 // Keep this in lock-step with:
-//   - task.AllStatuses() in internal/task/model.go  → "task.status"
+//   - taskstatus.All() in internal/taskstatus       → "task.status"
 //   - task.AllTaskTypes()                           → "task.task_type"
 //   - github.PRIssueKind constants in internal/github/monitor.go
 //     → "pr.issue_kind"
@@ -77,19 +77,17 @@ func isKnownField(field string) bool {
 // The main-package test TestWorkflowFieldAllowedValues_MatchEnumSources
 // cross-checks this map against those enum sources at build time so any
 // drift (adding a new Status, renaming a kind) fails CI immediately.
-// statusAllowedValues derives the condition allowlist from the status
-// vocabulary itself, so a new status cannot be added without becoming
-// conditionable.
-func statusAllowedValues() map[string]bool {
-	out := make(map[string]bool, len(taskstatus.All()))
-	for _, s := range taskstatus.All() {
-		out[string(s)] = true
-	}
-	return out
-}
-
 var FieldAllowedValues = map[string]map[string]bool{
-	"task.status": statusAllowedValues(),
+	// Spelled out rather than derived from taskstatus.All(): the whole point
+	// of TestWorkflowFieldAllowedValues_MatchEnumSources is to fail when this
+	// map and the vocabulary disagree, and a derived map can never disagree.
+	"task.status": {
+		string(taskstatus.New): true, string(taskstatus.Todo): true, string(taskstatus.InProgress): true,
+		string(taskstatus.ReadyReview): true, string(taskstatus.InReview): true,
+		string(taskstatus.Planning): true, string(taskstatus.PlanReview): true, string(taskstatus.Testing): true,
+		string(taskstatus.ReadyPR): true, string(taskstatus.HumanRequired): true, string(taskstatus.Blocked): true,
+		string(taskstatus.Done): true, string(taskstatus.Cancelled): true,
+	},
 	"task.task_type": {
 		"umbrella": true,
 	},
