@@ -2159,3 +2159,78 @@ func TestManager_RefuseRecreateWithUncommittedWork(t *testing.T) {
 		t.Fatalf("uncommitted worktree contents gone: %v", statErr)
 	}
 }
+
+// ResolveExisting is the recovery path's answer to #3073, so what it must not
+// do is the whole point: a recovery agent re-running the failing command has
+// to see the working tree, HEAD, and branch that produced the failure.
+func TestManager_ResolveExistingLeavesTheTreeUntouched(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
+
+	tk := task.Task{ID: "t1"}
+	wt := filepath.Join(dir, tk.DirName())
+	makePushedGitDir(t, wt)
+	// The implementer's uncommitted edits are the evidence, and SanitizeWorktree
+	// would auto-commit then reset them away.
+	if err := os.WriteFile(filepath.Join(wt, "uncommitted.txt"), []byte("the state that failed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	headBefore := gitOut(t, wt, "rev-parse", "HEAD")
+	statusBefore := gitOut(t, wt, "status", "--porcelain")
+
+	got, ok := m.ResolveExisting(context.Background(), tk)
+	if !ok {
+		t.Fatalf("healthy worktree not resolved: %q", got)
+	}
+	if got != wt {
+		t.Errorf("resolved %q, want %q", got, wt)
+	}
+	if after := gitOut(t, wt, "rev-parse", "HEAD"); after != headBefore {
+		t.Errorf("HEAD moved: %q -> %q", headBefore, after)
+	}
+	if after := gitOut(t, wt, "status", "--porcelain"); after != statusBefore {
+		t.Errorf("working tree changed: %q -> %q", statusBefore, after)
+	}
+	if _, statErr := os.Stat(filepath.Join(wt, "uncommitted.txt")); statErr != nil {
+		t.Errorf("uncommitted evidence gone: %v", statErr)
+	}
+}
+
+func TestManager_ResolveExistingRejectsMissingAndNonGit(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
+
+	if got, ok := m.ResolveExisting(context.Background(), task.Task{ID: "absent"}); ok {
+		t.Errorf("resolved a worktree that does not exist: %q", got)
+	}
+
+	bare := task.Task{ID: "not-a-repo"}
+	notRepo := filepath.Join(dir, bare.DirName())
+	if err := os.MkdirAll(notRepo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := m.ResolveExisting(context.Background(), bare); ok {
+		t.Errorf("resolved a directory git cannot resolve: %q", got)
+	}
+}
+
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}

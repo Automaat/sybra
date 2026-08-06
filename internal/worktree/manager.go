@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -114,6 +115,34 @@ func (m *Manager) PathFor(t task.Task) string {
 func (m *Manager) Exists(t task.Task) bool {
 	_, err := os.Stat(m.PathFor(t))
 	return err == nil
+}
+
+// ResolveExisting returns the task's worktree path if one is already checked
+// out and git can resolve it, without touching a single byte of it.
+//
+// Every Prepare* entry point rewrites what it returns: SanitizeWorktree
+// auto-commits the dirty tree and then `reset --hard` / `clean -fd`s it,
+// reconcileAndRebase moves it onto a fresher base, and PushSync publishes the
+// result. That is right for an agent about to do work, and wrong for one sent
+// to explain a failure — it hands the diagnosis a different tree on a
+// different base, and a base-induced failure simply stops reproducing (#3073).
+//
+// Health here is deliberately just "git resolves it". Being on an unexpected
+// branch is not a reason to fall through to preparation: a half-merged or
+// conflicted checkout IS the state that failed, and preparation would destroy
+// exactly the evidence the caller came for.
+func (m *Manager) ResolveExisting(ctx context.Context, t task.Task) (string, bool) {
+	if m == nil {
+		return "", false
+	}
+	path := m.PathFor(t)
+	if _, err := os.Stat(path); err != nil {
+		return "", false
+	}
+	if !project.WorktreeHealthy(ctx, path) {
+		return "", false
+	}
+	return path, true
 }
 
 // ValidatePath checks that path is within the worktrees directory and is a directory.
