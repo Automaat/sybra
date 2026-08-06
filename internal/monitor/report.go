@@ -28,6 +28,12 @@ const (
 	KindFailureSpike      AnomalyKind = "failure_spike"
 	KindBottleneck        AnomalyKind = "bottleneck"
 	KindBoardStalled      AnomalyKind = "board_stalled"
+	// KindNoProviderCapacity fires when every enabled provider is unhealthy
+	// and there is work that would otherwise dispatch. Without it a fleet with
+	// nowhere to run looks exactly like an idle one: monitor.tick reports
+	// dispatched:0 either way, and diagnosing it means grepping
+	// provider.health.flip out of the app log by hand.
+	KindNoProviderCapacity AnomalyKind = "no_provider_capacity"
 	// KindClusterDrift is filed by clusterlead.Mirror, not Detect — a leader
 	// canonical task's Tags/DependsOn disagree with what its home follower
 	// reports, meaning a leader-side write never reached the node that
@@ -48,6 +54,7 @@ func AllAnomalyKinds() []AnomalyKind {
 		KindFailureSpike,
 		KindBottleneck,
 		KindBoardStalled,
+		KindNoProviderCapacity,
 		KindClusterDrift,
 	}
 }

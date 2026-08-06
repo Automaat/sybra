@@ -4,9 +4,11 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -280,6 +282,151 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 			t.Fatalf("shared clone unexpectedly exposes sandbox-only tag %s", ref)
 		}
 	}
+}
+
+func TestSandboxEnforce_BlocksSharedCloneMaintenance(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("bwrap not installed; enforce path unexercised on this host")
+	}
+
+	h := newSandboxGitHarness(t)
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return h.sandboxHome, nil },
+	})
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		TaskID:      "task-block-maintenance",
+		Mode:        "headless",
+		Dir:         h.taskWt,
+		SandboxMode: "enforce",
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	before := linuxMaintenanceState(t, h.sybraBare)
+	cmd := newProviderCmd(context.Background(), &cfg, false, "git", "gc")
+	cmd.Dir = h.taskWt
+	cmd.Env = append(os.Environ(), cfg.ExtraEnv...)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("git gc unexpectedly succeeded: %s", out)
+	}
+	if after := linuxMaintenanceState(t, h.sybraBare); after != before {
+		t.Fatalf("git gc partially mutated shared maintenance state\nbefore: %s\nafter:  %s\noutput: %s", before, after, out)
+	}
+}
+
+func TestSandboxEnforce_LargeFetchUnpacksLooseObjects(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("bwrap not installed; enforce path unexercised on this host")
+	}
+	h := newSandboxGitHarness(t)
+	for i := range 160 {
+		name := filepath.Join(h.src, "bulk", fmt.Sprintf("file-%03d.txt", i))
+		if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
+			t.Fatalf("mkdir bulk fixture: %v", err)
+		}
+		if err := os.WriteFile(name, fmt.Appendf(nil, "payload-%03d\n", i), 0o644); err != nil {
+			t.Fatalf("write bulk fixture: %v", err)
+		}
+	}
+	h.gitRaw(t, h.src, "add", "bulk")
+	h.gitRaw(t, h.src, "commit", "-m", "large upstream change")
+	h.gitRaw(t, h.src, "push", "origin", "main")
+
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return h.sandboxHome, nil },
+	})
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		TaskID:      "task-large-fetch",
+		Mode:        "headless",
+		Dir:         h.taskWt,
+		SandboxMode: "enforce",
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	before := linuxRepoWideMaintenanceState(t, h.sybraBare)
+	cmd := newProviderCmd(context.Background(), &cfg, false, "git", "fetch", "origin")
+	cmd.Dir = h.taskWt
+	cmd.Env = append(os.Environ(), cfg.ExtraEnv...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("large sandboxed fetch: %v: %s", err, out)
+	}
+	if after := linuxRepoWideMaintenanceState(t, h.sybraBare); after != before {
+		t.Fatalf("large fetch wrote shared pack/info state instead of loose objects\nbefore: %s\nafter: %s", before, after)
+	}
+	h.git(t, h.taskWt, "cat-file", "-e", "refs/remotes/origin/main^{commit}")
+}
+
+func linuxMaintenanceState(t *testing.T, bare string) string {
+	t.Helper()
+	var state []string
+	for _, root := range []string{filepath.Join(bare, "objects")} {
+		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			state = append(state, path+"="+string(content))
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("snapshot %s: %v", root, err)
+		}
+	}
+	for _, name := range []string{"packed-refs", "packed-refs.new", "packed-refs.lock", "gc.pid", "gc.pid.lock"} {
+		path := filepath.Join(bare, name)
+		content, err := os.ReadFile(path)
+		if err == nil {
+			state = append(state, path+"="+string(content))
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("snapshot %s: %v", path, err)
+		}
+	}
+	slices.Sort(state)
+	return strings.Join(state, "\n")
+}
+
+func linuxRepoWideMaintenanceState(t *testing.T, bare string) string {
+	t.Helper()
+	var state []string
+	for _, root := range []string{filepath.Join(bare, "objects", "pack"), filepath.Join(bare, "objects", "info")} {
+		err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			state = append(state, path+"="+string(content))
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("snapshot %s: %v", root, err)
+		}
+	}
+	for _, name := range []string{"packed-refs", "packed-refs.new", "packed-refs.lock", "gc.pid", "gc.pid.lock"} {
+		path := filepath.Join(bare, name)
+		content, err := os.ReadFile(path)
+		if err == nil {
+			state = append(state, path+"="+string(content))
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("snapshot %s: %v", path, err)
+		}
+	}
+	slices.Sort(state)
+	return strings.Join(state, "\n")
 }
 
 func TestPrepareRunConfig_Sandbox_EnforceFailsClosedOnBrokenGitMetadata(t *testing.T) {

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/config"
 )
 
 func manyGoFiles(n int) []string {
@@ -1017,6 +1019,9 @@ func TestBuiltinSimpleTask_ReviewLoopBlocksBudgetExceededBeforeTesting(t *testin
 	if !KnownTriggerFields["task.review_budget_exceeded"] {
 		t.Fatal("task.review_budget_exceeded missing from KnownTriggerFields")
 	}
+	if !KnownTriggerFields["task.review_lifetime_exceeded"] {
+		t.Fatal("task.review_lifetime_exceeded missing from KnownTriggerFields")
+	}
 
 	defs, err := BuiltinDefinitions()
 	if err != nil {
@@ -1064,6 +1069,30 @@ func TestBuiltinSimpleTask_ReviewLoopBlocksBudgetExceededBeforeTesting(t *testin
 	}
 	if !strings.Contains(limit.Config.StatusReason, "not eligible for testing or PR creation") {
 		t.Fatalf("review_budget_exhausted status_reason = %q, want no-testing-or-PR guidance", limit.Config.StatusReason)
+	}
+
+	got, err = ResolveTransition(tamper.Next, map[string]string{
+		"task.status":                   "testing",
+		"config.review_until_clean":     "true",
+		"task.review_budget_exceeded":   "true",
+		"task.review_lifetime_exceeded": "true",
+	})
+	if err != nil {
+		t.Fatalf("ResolveTransition lifetime: %v", err)
+	}
+	if got != "review_lifetime_exhausted" {
+		t.Fatalf("lifetime-exceeded goto = %q, want review_lifetime_exhausted", got)
+	}
+
+	lifetime := simple.StepByID("review_lifetime_exhausted")
+	if lifetime == nil {
+		t.Fatal("review_lifetime_exhausted step not found")
+	}
+	if lifetime.Type != StepSetStatus || lifetime.Config.Status != "human-required" {
+		t.Fatalf("review_lifetime_exhausted = type %q status %q, want set_status human-required", lifetime.Type, lifetime.Config.Status)
+	}
+	if strings.Contains(lifetime.Config.StatusReason, "review_rounds_per_hour") {
+		t.Fatalf("review_lifetime_exhausted status_reason = %q, must not prescribe the hourly setting", lifetime.Config.StatusReason)
 	}
 
 	var testingTask, prTask *Definition
@@ -1183,10 +1212,10 @@ func TestEngineReviewUntilCleanDefaultsToLooping(t *testing.T) {
 }
 
 // TestEngineReviewBudgetExceededTransition locks in that simple-task-review's
-// detect_tampering condition is bounded by the same rolling-hour
-// reviewbudget.Budget the inbound PR-review dispatcher uses (#2499) — not a
-// separate per-workflow-execution round counter — so AgentRuns are stamped
-// relative to time.Now(), not a fixed Workflow.StartedAt.
+// detect_tampering condition is bounded by the same shared reviewbudget.Budget
+// the inbound PR-review dispatcher uses (#2499) — not a separate
+// per-workflow-execution round counter — so AgentRuns are stamped relative to
+// time.Now(), not a fixed Workflow.StartedAt.
 func TestEngineReviewBudgetExceededTransition(t *testing.T) {
 	t.Parallel()
 
@@ -1227,5 +1256,133 @@ func TestEngineReviewBudgetExceededTransition(t *testing.T) {
 	}
 	if next == nil || next.ID != "park" {
 		t.Fatalf("resolveNext routed to %v, want park", next)
+	}
+}
+
+func TestEngineReviewBudgetExceededTransition_LifetimeCap(t *testing.T) {
+	t.Parallel()
+
+	def := &Definition{
+		ID: "test-review-budget-lifetime",
+		Steps: []Step{
+			{
+				ID:   "gate",
+				Type: StepCondition,
+				Next: []Transition{
+					{When: &Condition{Field: "task.review_lifetime_exceeded", Operator: "equals", Value: "true"}, GoTo: "park"},
+					{GoTo: "loop"},
+				},
+			},
+			{ID: "park", Type: StepSetStatus},
+			{ID: "loop", Type: StepSetStatus},
+		},
+	}
+
+	mt := newMemTasks()
+	mt.tasks["t1"] = &TaskInfo{ID: "t1", Status: "testing"}
+	e := &Engine{logger: slog.New(slog.DiscardHandler), tasks: mt}
+	e.SetReviewUntilClean(true)
+	e.SetReviewRoundsPerHour(-1)
+
+	now := time.Now()
+	task := TaskInfo{
+		ID:     "t1",
+		Status: "testing",
+		AgentRuns: []AgentRunInfo{
+			{Role: "review", StartedAt: now.Add(-48 * time.Hour)},
+			{Role: "review", StartedAt: now.Add(-36 * time.Hour)},
+			{Role: "review", StartedAt: now.Add(-24 * time.Hour)},
+			{Role: "review", StartedAt: now.Add(-12 * time.Hour)},
+			{Role: "review", StartedAt: now.Add(-6 * time.Hour)},
+			{Role: "review", StartedAt: now.Add(-2 * time.Hour)},
+		},
+	}
+	next, _, err := e.resolveNext("t1", def, &def.Steps[0], &Execution{Variables: map[string]string{}}, task)
+	if err != nil {
+		t.Fatalf("resolveNext: %v", err)
+	}
+	if next == nil || next.ID != "park" {
+		t.Fatalf("resolveNext routed to %v, want park", next)
+	}
+}
+
+// TestPrimaryLoopCapsBoundAgentRuns locks the combined ceiling for the four
+// primary loops changed by #2759 to the limits the engine and builtin
+// workflows actually resolve. It includes run_agent max_retries and the three
+// independently keyed route_test_result recovery budgets. Orthogonal watchdog,
+// provider, and worktree recovery ladders have their own focused bound tests.
+// Review arithmetic is deliberately conservative: the lifetime cap counts
+// reviewer retry attempts themselves, so the real review total is lower.
+func TestPrimaryLoopCapsBoundAgentRuns(t *testing.T) {
+	t.Parallel()
+
+	configured := &config.Config{}
+	configured.Testing.MaxAttempts = 25 // legacy deployments must be clamped.
+	testingRuns := configured.TestingMaxAttempts()
+	if testingRuns != config.DefaultTestingMaxAttempts {
+		t.Fatalf("resolved testing runs = %d, want safety ceiling %d", testingRuns, config.DefaultTestingMaxAttempts)
+	}
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepAttempts := func(workflowID, stepID string) int {
+		t.Helper()
+		for i := range defs {
+			if defs[i].ID != workflowID {
+				continue
+			}
+			step := defs[i].StepByID(stepID)
+			if step == nil {
+				t.Fatalf("workflow %s step %s not found", workflowID, stepID)
+			}
+			return 1 + step.Config.MaxRetries
+		}
+		t.Fatalf("workflow %s not found", workflowID)
+		return 0
+	}
+
+	implementationDispatches := testingRuns * (1 + verifyChecksAutoFixCeiling + verifyChecksAutoFixCeiling)
+	implementationRuns := implementationDispatches * stepAttempts("simple-task-implement", "implement")
+	testingRetryOutcomes := []string{
+		testOutcomeInfraFailure,
+		testOutcomeMissingEvidence,
+		testOutcomeProtocolViolation,
+	}
+	seenRetryKeys := make(map[string]bool, len(testingRetryOutcomes))
+	for _, outcome := range testingRetryOutcomes {
+		key := testingAutoRetryKey(outcome)
+		if seenRetryKeys[key] {
+			t.Fatalf("testing retry outcomes share counter %q", key)
+		}
+		seenRetryKeys[key] = true
+	}
+	testerDispatches := testingRuns * (1 + len(testingRetryOutcomes)*testingAutoRetryCap)
+	testerAttempts := testerDispatches * stepAttempts("testing-task", "run_test")
+	reviewRuns := config.DefaultReviewRoundsPerTask
+	reviewAttempts := reviewRuns * stepAttempts("simple-task-review", "code_review_simple")
+	fixReviewRuns := reviewRuns * stepAttempts("simple-task-review", "fix_review")
+
+	const want = 211
+	got := implementationRuns + testerAttempts + reviewAttempts + fixReviewRuns
+	if got != want {
+		t.Fatalf("worst-case agent-run ceiling = %d (implementation=%d testing=%d review=%d fix-review=%d), want %d",
+			got, implementationRuns, testerAttempts, reviewAttempts, fixReviewRuns, want)
+	}
+
+	now := time.Now()
+	runs := make([]AgentRunInfo, 0, reviewRuns)
+	for i := range reviewRuns - 1 {
+		runs = append(runs, AgentRunInfo{Role: "review", StartedAt: now.Add(-time.Duration(i+2) * time.Hour)})
+	}
+	e := &Engine{}
+	e.SetReviewRoundsPerHour(-1)
+	if _, lifetime := e.reviewBudgetExhaustion(TaskInfo{AgentRuns: runs}); lifetime {
+		t.Fatalf("lifetime review ceiling fired after %d runs, want room for one more", len(runs))
+	}
+	runs = append(runs, AgentRunInfo{Role: "review", StartedAt: now.Add(-24 * time.Hour)})
+	if _, lifetime := e.reviewBudgetExhaustion(TaskInfo{AgentRuns: runs}); !lifetime {
+		t.Fatalf("lifetime review ceiling did not fire after %d runs", len(runs))
 	}
 }

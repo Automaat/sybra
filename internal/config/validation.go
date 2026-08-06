@@ -128,6 +128,9 @@ func validateAgentConfig(cfg *ResolvedConfig, add func(format string, a ...any))
 	if _, err := NormalizeHeadlessPermissionMode(cfg.Agent.HeadlessPermissionMode); err != nil {
 		add("agent.headless_permission_mode: %v", err)
 	}
+	if _, err := NormalizeCommitSigning(cfg.Agent.CommitSigning); err != nil {
+		add("agent.commit_signing: %v", err)
+	}
 	if mode, err := NormalizeSandboxMode(cfg.Agent.SandboxMode); err != nil {
 		add("agent.sandbox_mode: %v", err)
 	} else if mode == "enforce" && runtime.GOOS != "darwin" && runtime.GOOS != "linux" {

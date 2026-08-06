@@ -15,6 +15,8 @@ import (
 	"os/exec"
 	"sync/atomic"
 	"time"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // ── JSON-RPC envelope types ──────────────────────────────────────────────────
@@ -81,7 +83,7 @@ func main() {
 	fmt.Println("=== codex app-server --stdio spike ===")
 	fmt.Println()
 
-	cmd := exec.CommandContext(ctx, "codex", "app-server", "--stdio")
+	cmd := exec.CommandContext(ctx, providerid.Codex, "app-server", "--stdio")
 	cmd.Stderr = os.Stderr
 
 	stdin, err := cmd.StdinPipe()

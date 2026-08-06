@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 func Propose(clusters []Cluster, now time.Time) []Proposal {
@@ -76,10 +78,7 @@ func proposalTitle(kind ProposalKind, c Cluster) string {
 	if c.AffectedStep != "" {
 		base += " at " + c.AffectedStep
 	}
-	if len(base) <= 80 {
-		return base
-	}
-	return base[:77] + "..."
+	return textutil.TruncateBytesTotal(base, 80, "...")
 }
 
 func expectedImpact(c Cluster) string {

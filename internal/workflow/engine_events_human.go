@@ -146,7 +146,7 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 
 func (e *Engine) recoverMissedWaitForStatusHumanGate(taskID string, t TaskInfo, def *Definition, step *Step, action string) (bool, error) {
 	if t.Workflow == nil || step == nil || step.Type != StepRunAgent ||
-		step.Config.WaitForStatus == "" || step.Config.WaitForStatus != t.Status {
+		step.Config.WaitForStatus == "" || step.Config.WaitForStatus != string(t.Status) {
 		return false, nil
 	}
 	nextID, err := ResolveTransition(step.Next, e.transitionFields(t, t.Workflow))
@@ -171,7 +171,7 @@ func (e *Engine) recoverMissedWaitForStatusHumanGate(taskID string, t TaskInfo, 
 	if err := e.AdvanceStep(taskID, StepOutput{
 		StepID: step.ID,
 		Status: "completed",
-		Output: "recovered missed wait_for_status " + t.Status,
+		Output: "recovered missed wait_for_status " + string(t.Status),
 	}); err != nil {
 		return false, err
 	}

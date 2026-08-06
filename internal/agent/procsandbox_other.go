@@ -11,6 +11,8 @@ func sandboxExecAvailable() bool { return false }
 
 func sandboxWrapperName() string { return "host sandbox wrapper" }
 
+func sandboxUsesGitObjectOverlay() bool { return false }
+
 // materializeSandboxProfile has nothing to materialize on non-darwin.
 func materializeSandboxProfile() (string, error) {
 	return "", fmt.Errorf("sandbox: OS-level sandbox unsupported on this host")

@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // LogSummarySchemaVersion is bumped whenever the shape of LogSummary changes
@@ -330,7 +331,7 @@ func (st *analyzerState) onUser(ev *agent.ClaudeEvent) {
 		return
 	}
 	for _, r := range ev.Message.ToolResults {
-		excerpt := truncate(r.Content, 400)
+		excerpt := textutil.TruncateBytes(r.Content, 400, "…")
 		if call, ok := st.byUseID[r.ToolUseID]; ok {
 			call.trace.ResultExcerpt = excerpt
 			call.trace.IsError = r.IsError
@@ -368,7 +369,7 @@ func (st *analyzerState) onResult(ev *agent.ClaudeEvent) {
 	class := classifyResultError(ev.Result.ErrorType, ev.Result.ErrorStatus, ev.Result.Text)
 	st.errorClassCounts[class]++
 	if _, ok := st.errorClassSamples[class]; !ok {
-		st.errorClassSamples[class] = truncate(ev.Result.Text, 400)
+		st.errorClassSamples[class] = textutil.TruncateBytes(ev.Result.Text, 400, "…")
 	}
 	if class != "" {
 		st.summary.FinalError = class
@@ -564,13 +565,6 @@ func classifyByText(text string) string {
 		return "network"
 	}
 	return "unknown"
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }
 
 func itoa(n int) string {

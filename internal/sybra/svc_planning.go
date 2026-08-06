@@ -100,7 +100,7 @@ func (s *PlanningService) handlePlanReviewAction(id, action string, data map[str
 }
 
 func recoverCompletedPlanReview(t workflow.TaskInfo) (*workflow.Execution, bool, error) {
-	if t.Status != string(task.StatusPlanReview) || t.Workflow == nil ||
+	if t.Status != task.StatusPlanReview || t.Workflow == nil ||
 		t.Workflow.WorkflowID != "simple-task-plan" ||
 		t.Workflow.CurrentStep != "" ||
 		t.Workflow.State != workflow.ExecCompleted {

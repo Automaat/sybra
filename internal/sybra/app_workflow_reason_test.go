@@ -26,7 +26,7 @@ func TestTaskAdapterUpdateTaskStatusPreservesExistingHumanRequiredReason(t *test
 	}
 
 	ta := &taskAdapter{tasks: tasks}
-	if err := ta.UpdateTaskStatus(created.ID, string(task.StatusHumanRequired), ""); err != nil {
+	if err := ta.UpdateTaskStatus(created.ID, task.StatusHumanRequired, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -73,7 +73,7 @@ func TestTaskAdapterUpdateTaskStatusSynthesizesHumanRequiredReasonFromLatestRun(
 	}
 
 	ta := &taskAdapter{tasks: tasks}
-	if err := ta.UpdateTaskStatus(created.ID, string(task.StatusHumanRequired), ""); err != nil {
+	if err := ta.UpdateTaskStatus(created.ID, task.StatusHumanRequired, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -159,7 +159,7 @@ func TestTaskAdapterClearTaskStatusReasonIfIsAtomicGuard(t *testing.T) {
 	}
 
 	ta := &taskAdapter{tasks: tasks}
-	cleared, err := ta.ClearTaskStatusReasonIf(created.ID, string(task.StatusInProgress), "stale marker")
+	cleared, err := ta.ClearTaskStatusReasonIf(created.ID, task.StatusInProgress, "stale marker")
 	if err != nil || cleared {
 		t.Fatalf("mismatched clear = (%v, %v), want (false, nil)", cleared, err)
 	}
@@ -171,7 +171,7 @@ func TestTaskAdapterClearTaskStatusReasonIfIsAtomicGuard(t *testing.T) {
 		t.Fatalf("mismatched clear overwrote reason %q", current.StatusReason)
 	}
 
-	cleared, err = ta.ClearTaskStatusReasonIf(created.ID, string(task.StatusInProgress), current.StatusReason)
+	cleared, err = ta.ClearTaskStatusReasonIf(created.ID, task.StatusInProgress, current.StatusReason)
 	if err != nil || !cleared {
 		t.Fatalf("matched clear = (%v, %v), want (true, nil)", cleared, err)
 	}

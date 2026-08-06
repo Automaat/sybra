@@ -3,6 +3,8 @@ package workflow
 import (
 	"errors"
 	"strconv"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // errRetryArmingSuperseded tells boundedRetry that a concurrent state change
@@ -138,7 +140,7 @@ func (e *Engine) boundedRetry(t *TaskInfo, step *Step, p boundedRetryPolicy) boo
 			}
 			return true
 		}
-		t.Status = status
+		t.Status = taskstatus.Status(status)
 		t.StatusReason = reason
 	default:
 		if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {

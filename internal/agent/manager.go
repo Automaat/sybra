@@ -358,7 +358,13 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 // once dispatch finishes (success or failure) on a true return. This closes the
 // window between dispatch start and agent registration where a concurrent
 // dispatcher would otherwise see no running agent and start a duplicate.
-const staleDispatchClaimAge = 15 * time.Minute
+// StaleDispatchClaimAge bounds how long a dispatch claim is honoured before
+// it is treated as leaked and released. It is exported because callers that
+// wait out a contended claim must keep their retry window strictly under it:
+// the release is purely age-based and cannot tell a leaked claim from a live
+// holder, so a waiter that retries past this age can be granted a claim that
+// another dispatcher is still using.
+const StaleDispatchClaimAge = 15 * time.Minute
 
 func (m *Manager) ClaimTaskDispatch(taskID string) bool {
 	m.mu.Lock()
@@ -433,7 +439,7 @@ func (m *Manager) dispatchClaimHeldReadLocked(taskID string, now time.Time) (hel
 	if !held {
 		return false, false
 	}
-	if now.Sub(claimedAt) >= staleDispatchClaimAge {
+	if now.Sub(claimedAt) >= StaleDispatchClaimAge {
 		return false, true
 	}
 	return true, false
@@ -906,18 +912,18 @@ func (m *Manager) ProviderCanFailover(name string) bool {
 
 // ReportProviderSignal forwards a runner-side passive signal (rate-limit or
 // auth failure) to the health gate. Safe to call with a nil gate.
-func (m *Manager) ReportProviderSignal(name string, sig provider.Signal, reason string, retryAfter time.Duration) {
+func (m *Manager) ReportProviderSignal(name string, c provider.Classification) {
 	m.mu.RLock()
 	g := m.gate
 	m.mu.RUnlock()
 	if g == nil {
 		return
 	}
-	switch sig {
+	switch c.Signal {
 	case provider.SignalAuthFailure:
-		g.ReportAuthFailure(name, reason)
+		g.ReportAuthFailure(name, c.Reason)
 	case provider.SignalRateLimit:
-		g.ReportRateLimit(name, retryAfter, reason)
+		g.ReportRateLimit(name, c.RetryAfter, c.Reason, c.Source)
 	case provider.SignalNone:
 		// no-op: caller decided not to escalate this run.
 	}
@@ -979,6 +985,14 @@ func (m *Manager) effectiveMaxSubagentEvents() int {
 
 func (m *Manager) canCheckpointOnTurnCeiling(a *Agent) bool {
 	if !a.EffectiveRole().AuthorsCode() {
+		return false
+	}
+	// A read-only dispatch dir is diagnostic-only, and the checkpoint commit
+	// runs in this process rather than in the sandboxed child — so nothing
+	// else stops it writing there. On the deploy host that dir is the Sybra
+	// source checkout, which is also auto_update.repo_dir: a commit lands
+	// there permanently and breaks the ff-only merge auto-deploy relies on.
+	if a.sessionReadOnly {
 		return false
 	}
 	m.mu.RLock()

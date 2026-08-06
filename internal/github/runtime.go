@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/errclass"
 )
 
 const (
@@ -53,18 +55,8 @@ func isTransientGHError(out []byte, err error) bool {
 	if err == nil || isRateLimitedResponse(resp) {
 		return false
 	}
-	msg := strings.ToLower(string(out))
-	for _, sig := range []string{
-		"http 502", "http 503", "http 504",
-		"operation timed out", "i/o timeout", "deadline exceeded",
-		"connection reset", "connection refused",
-		"stream error", "unexpected eof", "tls handshake",
-	} {
-		if strings.Contains(msg, sig) {
-			return true
-		}
-	}
-	return false
+	msg := string(out)
+	return errclass.Matches(msg, errclass.GHOutputTransientPhrases)
 }
 
 type ttlCache[T any] struct {
@@ -431,11 +423,8 @@ func (g *ghRequestGate) pressure() (fraction float64, known bool) {
 }
 
 func isRateLimitedMessage(msg string) bool {
-	lower := strings.ToLower(msg)
-	return strings.Contains(lower, rateLimitWallMarker) ||
-		strings.Contains(lower, "secondary rate limit") ||
-		strings.Contains(lower, "api rate limit exceeded") ||
-		strings.Contains(lower, "rate limit exceeded")
+	return strings.Contains(strings.ToLower(msg), rateLimitWallMarker) ||
+		errclass.Matches(msg, errclass.GitHubRateLimitPhrases)
 }
 
 func isGraphQLRateLimitBody(body []byte) bool {

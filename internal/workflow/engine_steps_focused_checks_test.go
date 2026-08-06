@@ -431,6 +431,48 @@ func TestExecFocusedChecks_FailureReasksBelowCeiling(t *testing.T) {
 	}
 }
 
+func TestExecFocusedChecks_IdenticalFingerprintEscalatesEarly(t *testing.T) {
+	t.Parallel()
+
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	writeRepoFile(t, wt, "internal/workflow/model.go", "package workflow\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: touch workflow")
+
+	engine, tasks, _ := newFocusedChecksEngine(t, wt, []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"echo deterministic >&2; exit 1"},
+	}}, nil)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	wf := implementedExec()
+	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("first attempt err = %v, want errStepParked", err)
+	}
+	if out != (StepOutput{}) {
+		t.Fatalf("first parked output should be zero, got %+v", out)
+	}
+	now := time.Now().UTC()
+	wf.RecordStep(StepRecord{StepID: verifyChecksImplStepID, Status: "completed", StartedAt: now, EndedAt: now})
+
+	out, err = engine.execFocusedChecks("t1", newFocusedChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if err != nil {
+		t.Fatalf("second attempt: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+	ti := mustGetTaskInfo(t, tasks, "t1")
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
+	}
+	if !strings.Contains(ti.StatusReason, "repeated identical auto-fix failures") {
+		t.Fatalf("reason = %q, want identical-failure exhaustion", ti.StatusReason)
+	}
+}
+
 func TestExecFocusedChecks_FailureCeilingEscalates(t *testing.T) {
 	t.Parallel()
 
