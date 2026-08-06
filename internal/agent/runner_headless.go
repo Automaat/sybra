@@ -1715,7 +1715,7 @@ func classifyAgentError(err error) string {
 		strings.Contains(msg, "eacces") ||
 		strings.Contains(msg, "operation not permitted"):
 		return "permission_denied"
-	case errclass.IsRateLimit(msg) || strings.Contains(msg, "429") || strings.Contains(msg, "overloaded"):
+	case errclass.Matches(msg, errclass.AgentRateLimitPhrases):
 		return "rate_limit"
 	default:
 		return "crash"

@@ -5,8 +5,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/Automaat/sybra/internal/errclass"
 )
 
 // MergeErrorClass classifies a failed auto-merge attempt so AutoMergeBackoff
@@ -48,9 +46,6 @@ func ClassifyMergeError(err error) MergeErrorClass {
 	if err == nil {
 		return ""
 	}
-	// Auth and rate limit are asked first, matching errclass.Classify's own
-	// precedence; IsTransientError stays broader than errclass.Transient here
-	// because a poller that under-reports transience escalates the whole board.
 	switch {
 	case IsAuthError(err):
 		return MergeErrorAuth
@@ -60,8 +55,6 @@ func ClassifyMergeError(err error) MergeErrorClass {
 		return MergeErrorTransient
 	case isMergeBlockedMessage(err.Error()):
 		return MergeErrorBlocked
-	case errclass.Classify(err.Error()) == errclass.Transient:
-		return MergeErrorTransient
 	default:
 		return MergeErrorUnknown
 	}

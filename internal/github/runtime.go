@@ -56,10 +56,7 @@ func isTransientGHError(out []byte, err error) bool {
 		return false
 	}
 	msg := string(out)
-	return errclass.IsGateway(msg) ||
-		errclass.IsNetwork(msg) ||
-		errclass.Matches(msg, errclass.StreamPhrases) ||
-		strings.Contains(strings.ToLower(msg), "deadline exceeded")
+	return errclass.Matches(msg, errclass.GHOutputTransientPhrases)
 }
 
 type ttlCache[T any] struct {
@@ -427,7 +424,7 @@ func (g *ghRequestGate) pressure() (fraction float64, known bool) {
 
 func isRateLimitedMessage(msg string) bool {
 	return strings.Contains(strings.ToLower(msg), rateLimitWallMarker) ||
-		errclass.IsRateLimit(msg)
+		errclass.Matches(msg, errclass.GitHubRateLimitPhrases)
 }
 
 func isGraphQLRateLimitBody(body []byte) bool {

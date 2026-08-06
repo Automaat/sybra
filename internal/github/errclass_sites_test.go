@@ -25,6 +25,7 @@ func TestIsTransientGHError_PinsLiterals(t *testing.T) {
 		{out: "http2: stream error", want: true},
 		{out: "unexpected EOF", want: true},
 		{out: "net/http: TLS handshake timeout", want: true},
+		{out: "tls: first record does not look like a TLS handshake", want: true},
 
 		{out: "gh: HTTP 500", want: false},
 		{out: "gh: HTTP 404", want: false},
@@ -51,6 +52,7 @@ func TestIsRateLimitedMessage_PinsLiterals(t *testing.T) {
 		{msg: "API rate limit exceeded for user ID 1", want: true},
 		{msg: "rate limit exceeded", want: true},
 		{msg: rateLimitWallMarker, want: true},
+		{msg: "API rate limit exceeded", want: true},
 		{msg: "SECONDARY RATE LIMIT", want: true},
 
 		{msg: "connection refused", want: false},
@@ -82,6 +84,8 @@ func TestIsAuthErrorMsg_PinsLiterals(t *testing.T) {
 		// A missing-scope hint never self-heals; treating it as an auth error
 		// would hold the shared circuit open across every gh call.
 		{msg: "gh: Your token has not been granted the required scopes. To request it, run: gh auth refresh -s read:org", want: false},
+		{msg: "fatal: Authentication failed for 'https://github.com/o/r.git/'", want: false},
+		{msg: "remote: 401 Unauthorized", want: false},
 		{msg: "connection refused", want: false},
 		{msg: "", want: false},
 	} {
@@ -100,6 +104,7 @@ func TestClassifyMergeError_BlockedStaysBlocked(t *testing.T) {
 	for _, msg := range []string{
 		`Pull request is not mergeable: required status check "e2e" timed out`,
 		"base branch policy prohibits the merge; the required status check timed out",
+		"blocked by a policy: waiting for status checks; the connection timed out earlier but has recovered",
 		"gh: not mergeable: waiting for status checks",
 	} {
 		if got := ClassifyMergeError(errors.New(msg)); got != MergeErrorBlocked {

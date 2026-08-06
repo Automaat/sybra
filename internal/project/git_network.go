@@ -16,7 +16,7 @@ func IsTransientNetworkError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return errclass.IsGitTransport(err.Error())
+	return errclass.Matches(err.Error(), errclass.GitTransportPhrases)
 }
 
 // withNetworkRetry runs fn, retrying on gitOpRetryBackoffs when the failure

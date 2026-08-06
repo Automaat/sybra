@@ -717,7 +717,7 @@ func IsTransientError(err error) bool {
 	if isRateLimitedMessage(msg) {
 		return true
 	}
-	return errclass.IsNetwork(msg)
+	return errclass.Matches(msg, errclass.GitHubTransientPhrases)
 }
 
 // IsAuthError reports whether err is a GitHub authentication failure — an

@@ -31,6 +31,7 @@ func TestIsTransientNetworkError_PinsLiterals(t *testing.T) {
 		{msg: "ssh: connect to host github.com port 22: Connection timed out", want: true},
 		{msg: "recv failure: Connection reset by peer", want: true},
 		{msg: "net/http: TLS handshake timeout", want: true},
+		{msg: "tls: first record does not look like a TLS handshake", want: false},
 		{msg: "empty reply from server", want: true},
 		{msg: "early EOF", want: true},
 		{msg: "fatal: unexpected disconnect while reading sideband packet", want: true},

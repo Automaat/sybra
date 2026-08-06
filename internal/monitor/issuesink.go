@@ -314,7 +314,7 @@ func classifyGHError(op string, out []byte, err error) error {
 	}
 	out = redactSecrets(out)
 	msg := err.Error() + "\n" + string(out)
-	if errclass.IsRateLimit(msg) {
+	if errclass.Matches(msg, errclass.MonitorRateLimitPhrases) {
 		return ErrGHRateLimit
 	}
 	if detail := sanitizeGHOutput(out); detail != "" {
