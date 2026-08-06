@@ -14,8 +14,6 @@ import (
 
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/google/uuid"
-
-	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 const metaFileName = "meta.json"
