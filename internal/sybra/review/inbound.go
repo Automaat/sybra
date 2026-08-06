@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -12,9 +13,9 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
-	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/worktree"
 )
 
 func (r *Handler) createReviewTask(pr github.PullRequest, projectID string) {
@@ -130,7 +131,7 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 			"IMPORTANT: when committing, use conventional commit format "+
 			"`fix(review): address PR review comments` (type(scope) required by repo hooks). "+
 			"Sign the commit with `git commit %s`. Push the branch when done.",
-		t.ProjectID, t.PRNumber, project.CommitSignFlags(context.Background()),
+		t.ProjectID, t.PRNumber, r.signingPolicy().CommitFlags(context.Background()),
 	) + reviewHoldFixSuffix(r.cfg)
 
 	ag, err := r.agents.Run(agent.RunConfig{
@@ -201,9 +202,17 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 		// context.Background(): same dead end as StartFixReviewAgent above —
 		// reached from a Wails-bound service method with no ctx.
 		d, err := r.worktrees.PrepareForReview(context.Background(), current)
-		if err != nil {
+		switch {
+		case errors.Is(err, worktree.ErrPreparationInFlight):
+			// Never fall back to the operator's real Sybra home for a
+			// condition that clears on its own — the next tick prepares the
+			// task's own worktree instead of pointing a review agent at the
+			// live board (#1576).
+			r.logger.Info("review.worktree.busy", "task_id", current.ID, "err", err)
+			return nil
+		case err != nil:
 			r.logger.Error("review.worktree", "task_id", current.ID, "err", err)
-		} else {
+		default:
 			dir = d
 		}
 	}
@@ -729,6 +738,11 @@ func latestReviewRunStoppedByCostGuardrail(t *task.Task) bool {
 	return false
 }
 
+// defaultManualReviewReason explains the manual review phase on the board.
+// Without it a task parked by computeReviewPhase carries no status reason at
+// all, so the operator sees a needs-you badge with no stated cause.
+const defaultManualReviewReason = "no automated review exists for this PR yet — review it, or reopen the task to let an agent draft one"
+
 // applyReviewPhase persists only the fields that changed. Status is set only
 // when the result names one and it differs (so an unchanged status never
 // clears a triage-authored reason); the reason follows a status or phase change.
@@ -750,8 +764,22 @@ func (r *Handler) applyReviewPhase(t *task.Task, res reviewPhaseResult) {
 	if phaseChanged {
 		u.ReviewPhase = task.Ptr(res.Phase)
 	}
-	if res.Reason != "" && (statusChanged || phaseChanged) {
-		u.StatusReason = task.Ptr(res.Reason)
+	reason := res.Reason
+	// A phase that asserts human-required but names no reason (manual) leaves
+	// the board showing "needs you" with nothing said, which is
+	// indistinguishable from a bug.
+	//
+	// The empty reason exists so an existing triage/reconciliation blocker
+	// survives — but that only holds while the status is unchanged, since a
+	// transition clears the reason regardless. So fill on a transition (where
+	// nothing is preserved either way) or when the reason is genuinely blank,
+	// and leave an existing reason alone on a phase-only update.
+	if reason == "" && res.Status == task.StatusHumanRequired &&
+		(statusChanged || strings.TrimSpace(t.StatusReason) == "") {
+		reason = defaultManualReviewReason
+	}
+	if reason != "" && (statusChanged || phaseChanged) {
+		u.StatusReason = task.Ptr(reason)
 	}
 
 	prev := t.ReviewPhase

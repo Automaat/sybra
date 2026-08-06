@@ -168,6 +168,31 @@ describe('TaskStore', () => {
     })
   })
 
+  describe('patchOne', () => {
+    it('reloads the board when an edited task becomes unreadable', async () => {
+      const degraded = makeTask({ id: 'unreadable-a1b2c3d4', status: 'human-required', title: 'Unreadable task file: t1.md' })
+      mockGetTask.mockRejectedValue(new Error('parse task t1.md: invalid frontmatter'))
+      mockListTasks.mockResolvedValue([degraded])
+
+      await taskStore.patchOne('t1')
+
+      await vi.waitFor(() => expect(mockListTasks).toHaveBeenCalled())
+      expect(taskStore.tasks.get(degraded.id)?.title).toBe(degraded.title)
+    })
+
+    it('removes the degraded entry when the source task is repaired', async () => {
+      const degraded = makeTask({ id: 'unreadable-a1b2c3d4', status: 'human-required', filePath: '/tasks/t1.md', degraded: true })
+      taskStore.tasks.set(degraded.id, degraded)
+      const repaired = makeTask({ id: 't1', filePath: '/tasks/t1.md' })
+      mockGetTask.mockResolvedValue(repaired)
+
+      await taskStore.patchOne('t1')
+
+      expect(taskStore.tasks.has(degraded.id)).toBe(false)
+      expect(taskStore.tasks.get('t1')).toEqual(repaired)
+    })
+  })
+
   describe('create', () => {
     it('creates task and adds to map', async () => {
       const t = makeTask({ id: 'new-1', title: 'New task' })

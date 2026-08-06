@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/testutil/gitenv"
 )
 
 // TestMain fails the whole package immediately if git is missing, rather
@@ -12,9 +14,19 @@ import (
 // "exec: git" error — a stripped-down test environment should show up as a
 // red CI run, not quietly reduced coverage.
 func TestMain(m *testing.M) {
+	os.Exit(runTestMain(m))
+}
+
+func runTestMain(m *testing.M) int {
 	if _, err := exec.LookPath("git"); err != nil {
 		fmt.Fprintln(os.Stderr, "internal/sybra/completion tests require git on PATH:", err)
-		os.Exit(1)
+		return 1
 	}
-	os.Exit(m.Run())
+	cleanup, err := gitenv.Isolate()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "internal/sybra/completion tests require an isolated git config:", err)
+		return 1
+	}
+	defer cleanup()
+	return m.Run()
 }

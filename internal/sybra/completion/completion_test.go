@@ -149,6 +149,21 @@ func TestRunOutcome(t *testing.T) {
 			exitErr: errBoom,
 			want:    "failed",
 		},
+		{
+			// A runaway forked-subagent fan-out is hard-stopped outright, not an
+			// infra stall — it must flow through the bounded failed-completion
+			// path, not ResumeStalled's silent re-dispatch.
+			name: "subagent_turns_guardrail_stop_stays_a_failure",
+			role: agent.RoleImplementation,
+			agent: func() *agent.Agent {
+				ag := &agent.Agent{}
+				ag.MarkStopped()
+				ag.SetEscalationReason(agent.EscalationReasonSubagentTurns)
+				return ag
+			},
+			exitErr: errBoom,
+			want:    "failed",
+		},
 	}
 
 	for _, tc := range cases {
@@ -243,6 +258,18 @@ func TestBuildRunPatchMarksResumeZeroOutputStall(t *testing.T) {
 	t.Run("zero-output stall sets the marker", func(t *testing.T) {
 		t.Parallel()
 		ag := &agent.Agent{ID: "ag-1", TaskID: "task-1"}
+		ag.SetError(agent.ErrorKindSilentHang, watchdogreason.ZeroOutputBeforeStartup)
+
+		patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "", nil)
+
+		if patch.ResumeZeroOutputStall == nil || !*patch.ResumeZeroOutputStall {
+			t.Fatalf("ResumeZeroOutputStall = %v, want true", patch.ResumeZeroOutputStall)
+		}
+	})
+
+	t.Run("legacy rate_limit kind from an in-flight run still sets the marker", func(t *testing.T) {
+		t.Parallel()
+		ag := &agent.Agent{ID: "ag-1b", TaskID: "task-1"}
 		ag.SetError("rate_limit", watchdogreason.ZeroOutputBeforeStartup)
 
 		patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "", nil)
@@ -287,6 +314,46 @@ func TestBuildRunPatchMarksResumeZeroOutputStall(t *testing.T) {
 			t.Fatalf("ResumeZeroOutputStall = %v, want nil", patch.ResumeZeroOutputStall)
 		}
 	})
+}
+
+// TestOnComplete_SilentHangReschedulesInsteadOfClearing pins the routing the
+// whole reschedule contract rests on. The disposition alone proves nothing:
+// a silent hang that reaches the default branch still reads as "stalled", it
+// just quietly loses its same-tick re-dispatch and waits for a later sweep.
+func TestOnComplete_SilentHangReschedulesInsteadOfClearing(t *testing.T) {
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	wm := worktree.New(worktree.Config{WorktreesDir: t.TempDir(), Tasks: tasks, Logger: logger})
+	wf := &recordingWorkflow{}
+
+	created, err := tasks.CreateWithStatus("hung task", "body", "headless", task.StatusInProgress, task.Update{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{AgentID: "ag-1", Role: "implementation", Mode: "headless"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ag := &agent.Agent{ID: "ag-1", TaskID: created.ID, Mode: "headless", Provider: "claude"}
+	ag.SetError(agent.ErrorKindSilentHang, watchdogreason.ZeroOutputBeforeStartup)
+	ag.MarkStopped()
+
+	h := New(Config{Logger: logger, Tasks: tasks, Worktrees: wm, WorkflowEngine: wf})
+	h.OnComplete(ag)
+
+	if len(wf.rateLimited) != 1 || wf.rateLimited[0] != "ag-1" {
+		t.Fatalf("RescheduleRateLimitedAgent calls = %v, want [ag-1] (a silent hang must re-drive its step now)", wf.rateLimited)
+	}
+	if len(wf.completed) != 0 {
+		t.Fatalf("HandleAgentComplete called %d times, want 0 (a silent run carries no verdict)", len(wf.completed))
+	}
+	if len(wf.cleared) != 0 {
+		t.Fatalf("ClearAgentStep called %d times, want 0 (clearing drops the immediate re-dispatch)", len(wf.cleared))
+	}
 }
 
 // TestBuildRunPatchDowngradesConformanceWhenReceiptMissing covers #2009: a
@@ -571,6 +638,43 @@ func TestClassifyStall_CheckpointDisposition(t *testing.T) {
 		if !stall.Stalled || stall.RateLimited || !stall.MalformedTool || stall.ToolUseAborted || stall.StopStalled || stall.CheckpointStopped {
 			t.Fatalf("classifyStall(malformed_tool_call) = stalled=%v rateLimited=%v malformedTool=%v toolUseAborted=%v stopStalled=%v checkpointStopped=%v",
 				stall.Stalled, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.StopStalled, stall.CheckpointStopped)
+		}
+	})
+
+	// A silent hang carries no verdict either, and the watchdog no longer
+	// borrows the rate-limit kind to reach this branch (#3154), so the
+	// disposition has to recognize it on its own or the run stops being
+	// re-dispatched at all.
+	t.Run("silent hang stalls for retry without claiming a rate limit", func(t *testing.T) {
+		ag := &agent.Agent{}
+		ag.SetError(agent.ErrorKindSilentHang, watchdogreason.ZeroOutputBeforeStartup)
+
+		stall := classifyStall(ag, nil)
+		if !stall.Stalled || !stall.SilentHang || stall.RateLimited || stall.MalformedTool || stall.ToolUseAborted || stall.CheckpointStopped {
+			t.Fatalf("classifyStall(silent_hang) = stalled=%v silentHang=%v rateLimited=%v malformedTool=%v toolUseAborted=%v checkpointStopped=%v",
+				stall.Stalled, stall.SilentHang, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.CheckpointStopped)
+		}
+	})
+
+	// An initial prompt that never reached the child leaves a run holding no
+	// verdict about anything, so it must be re-dispatched rather than counted.
+	t.Run("undelivered prompt stalls for retry", func(t *testing.T) {
+		ag := &agent.Agent{}
+		ag.SetError(agent.ErrorKindPromptUndelivered, "write stdin: timed out after 2m0s, pipe closed")
+
+		stall := classifyStall(ag, errors.New("deliver initial prompt: write stdin: timed out after 2m0s, pipe closed"))
+		if !stall.Stalled || !stall.PromptUndelivered || stall.RateLimited || stall.MalformedTool || stall.ToolUseAborted || stall.CheckpointStopped {
+			t.Fatalf("classifyStall(prompt_undelivered) = stalled=%v promptUndelivered=%v rateLimited=%v malformedTool=%v toolUseAborted=%v checkpointStopped=%v",
+				stall.Stalled, stall.PromptUndelivered, stall.RateLimited, stall.MalformedTool, stall.ToolUseAborted, stall.CheckpointStopped)
+		}
+	})
+
+	t.Run("undelivered prompt is not a definitive outcome", func(t *testing.T) {
+		ag := &agent.Agent{}
+		ag.SetError(agent.ErrorKindPromptUndelivered, "write stdin: timed out after 2m0s, pipe closed")
+
+		if got := runTerminalOutcome(ag, errors.New("deliver initial prompt: timed out")); got != "" {
+			t.Fatalf("runTerminalOutcome(prompt_undelivered) = %q, want empty", got)
 		}
 	})
 

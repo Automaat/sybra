@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // DesiredState is the reducer's intended workflow definition/config snapshot.
@@ -21,11 +23,12 @@ type DesiredState struct {
 
 // ObservedState is the reducer's caller-supplied runtime snapshot.
 type ObservedState struct {
-	Task                 TaskInfo
-	Execution            *Execution
-	CompletedOutput      *StepOutput
-	Now                  time.Time
-	ReviewBudgetExceeded bool
+	Task                   TaskInfo
+	Execution              *Execution
+	CompletedOutput        *StepOutput
+	Now                    time.Time
+	ReviewBudgetExceeded   bool
+	ReviewLifetimeExceeded bool
 }
 
 type EffectKind string
@@ -144,7 +147,7 @@ func reduceCompletedStep(desired DesiredState, observed ObservedState, exec *Exe
 	if output.TerminalStatus != "" {
 		effects = append(effects, Effect{
 			Kind:         EffectSetTaskStatus,
-			Status:       output.TerminalStatus,
+			Status:       string(output.TerminalStatus),
 			StatusReason: output.TerminalReason,
 		})
 		return append(effects, newWorkflowEffect(EffectCompleteWorkflow, completeExecution(exec, ExecCompleted, observed.Now))), nil
@@ -160,9 +163,13 @@ func reduceCurrentStep(desired DesiredState, observed ObservedState, exec *Execu
 		}
 		visited[current.ID] = i
 
-		switch current.Type {
-		case StepWaitHuman:
-			if exec.State == ExecWaiting && (current.Config.Status == "" || observed.Task.Status == current.Config.Status) {
+		behavior, ok := stepReducerBehavior(current.Type)
+		if !ok {
+			return nil, fmt.Errorf("unknown step type %q", current.Type)
+		}
+		switch behavior {
+		case stepReducerWaitHuman:
+			if exec.State == ExecWaiting && (current.Config.Status == "" || observed.Task.Status == taskstatus.Status(current.Config.Status)) {
 				return cloneEffects(effects), nil
 			}
 			if current.Config.Status != "" {
@@ -175,20 +182,20 @@ func reduceCurrentStep(desired DesiredState, observed ObservedState, exec *Execu
 				Effect{Kind: EffectWaitHuman, Step: cloneStep(current), HumanActions: slices.Clone(current.Config.HumanActions)},
 			)
 			return cloneEffects(effects), nil
-		case StepSetStatus:
+		case stepReducerSetStatus:
 			if current.Config.Status != "" {
 				effects = append(effects, Effect{Kind: EffectSetTaskStatus, Status: current.Config.Status, StatusReason: current.Config.StatusReason})
-				observed.Task.Status = current.Config.Status
+				observed.Task.Status = taskstatus.Status(current.Config.Status)
 				observed.Task.StatusReason = current.Config.StatusReason
 			}
 			record := StepRecord{StepID: current.ID, Status: "completed", StartedAt: observed.Now, EndedAt: observed.Now}
 			exec.RecordStep(record)
 			effects = append(effects, newRecordEffect(record))
-		case StepCondition:
+		case stepReducerCondition:
 			record := StepRecord{StepID: current.ID, Status: "completed", StartedAt: observed.Now, EndedAt: observed.Now}
 			exec.RecordStep(record)
 			effects = append(effects, newRecordEffect(record))
-		default:
+		case stepReducerDispatch:
 			if len(effects) > 0 || observed.Execution == nil {
 				exec.CurrentStep = current.ID
 				exec.State = ExecRunning
@@ -199,6 +206,8 @@ func reduceCurrentStep(desired DesiredState, observed ObservedState, exec *Execu
 				return cloneEffects(effects), nil
 			}
 			return cloneEffects(effects), nil
+		default:
+			return nil, fmt.Errorf("unknown reducer behavior %d for step type %q", behavior, current.Type)
 		}
 
 		next, complete, err := reducerNextStep(desired, observed, exec, current)
@@ -263,12 +272,8 @@ func reducerParksExistingExecution(step *Step) bool {
 	if step == nil {
 		return false
 	}
-	switch step.Type {
-	case StepWaitHuman, StepSetStatus, StepCondition:
-		return true
-	default:
-		return false
-	}
+	behavior, ok := stepReducerBehavior(step.Type)
+	return ok && behavior != stepReducerDispatch
 }
 
 func reducerTransitionFields(desired DesiredState, observed ObservedState, exec *Execution) map[string]string {
@@ -282,7 +287,8 @@ func reducerTransitionFields(desired DesiredState, observed ObservedState, exec 
 		fields["vars.recovered"] = "true"
 	}
 	fields["config.review_until_clean"] = strconv.FormatBool(desired.ReviewUntilClean)
-	fields["task.review_budget_exceeded"] = strconv.FormatBool(observed.ReviewBudgetExceeded)
+	fields["task.review_budget_exceeded"] = strconv.FormatBool(observed.ReviewBudgetExceeded || observed.ReviewLifetimeExceeded)
+	fields["task.review_lifetime_exceeded"] = strconv.FormatBool(observed.ReviewLifetimeExceeded)
 	maps.Copy(fields, desired.TransitionExtras)
 	return fields
 }
@@ -291,13 +297,17 @@ func reducerAsyncBoundaryComplete(exec *Execution, step *Step) bool {
 	if exec == nil || step == nil {
 		return true
 	}
-	switch step.Type {
-	case StepParallel:
+	boundary, ok := stepBoundary(step.Type)
+	if !ok {
+		return true
+	}
+	switch boundary {
+	case stepBoundaryParallel:
 		if p := exec.ParallelInflight[step.ID]; p != nil {
 			return p.AllChildrenDone()
 		}
 		return false
-	case StepBestOfN:
+	case stepBoundaryBestOfN:
 		if b := exec.BestOfNInflight[step.ID]; b != nil {
 			return b.AllAttemptsDone()
 		}

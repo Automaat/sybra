@@ -107,9 +107,10 @@ func (r *Handler) cancelSettledImplementationWorkflows(ctx context.Context, task
 			upd.PRNumber = task.Ptr(pr.Number)
 		}
 		updated, err := r.tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
-			Source:   "review.pr-monitor.cancel-implement",
-			ToStatus: task.StatusInReview,
-			Extra:    upd,
+			Source:         "review.pr-monitor.cancel-implement",
+			ToStatus:       task.StatusInReview,
+			ExpectedStatus: t.Status,
+			Extra:          upd,
 		})
 		if err != nil {
 			r.logger.Error("pr-monitor.cancel-implement.status", "task_id", t.ID, "pr", pr.Number, "err", err)
@@ -291,8 +292,9 @@ func (r *Handler) reactivateLinkedOwnPR(t *task.Task, livePR bool) *task.Task {
 		return nil
 	}
 	updated, err := r.tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
-		Source:   "review.pr-monitor.reactivate-linked-pr",
-		ToStatus: task.StatusInReview,
+		Source:         "review.pr-monitor.reactivate-linked-pr",
+		ToStatus:       task.StatusInReview,
+		ExpectedStatus: t.Status,
 		Extra: task.Update{
 			StatusReason: task.Ptr(""),
 		},
@@ -569,8 +571,9 @@ func (r *Handler) reconcileHumanRequiredBlockers(tasks []task.Task, monitoredPRs
 		preTask := *t
 		tags := append(append([]string{}, t.Tags...), reconciledLatchTag)
 		updated, err := r.tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
-			Source:   "review.pr-monitor.reconcile-blocker",
-			ToStatus: task.StatusInReview,
+			Source:         "review.pr-monitor.reconcile-blocker",
+			ToStatus:       task.StatusInReview,
+			ExpectedStatus: t.Status,
 			Extra: task.Update{
 				StatusReason: task.Ptr(""),
 				Tags:         task.Ptr(tags),

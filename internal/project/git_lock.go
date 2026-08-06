@@ -38,6 +38,14 @@ func withBareRepoPushLock(barePath string, fn func() error) error {
 
 func withPathLock(locks *sync.Map, path string, fn func() error) error {
 	key := filepath.Clean(path)
+	// Git resolves macOS /var paths through the /private/var symlink when it
+	// reports a linked worktree's common directory. Canonicalize existing
+	// paths so that representation shares the lock with callers using /var.
+	// Keep the cleaned input when it does not exist yet; callers may lock a
+	// destination before creating the bare clone.
+	if resolved, err := filepath.EvalSymlinks(key); err == nil {
+		key = filepath.Clean(resolved)
+	}
 	v, _ := locks.LoadOrStore(key, &sync.Mutex{})
 	mu, ok := v.(*sync.Mutex)
 	if !ok {

@@ -55,6 +55,12 @@ type sandboxSpec struct {
 	gitShared   []string
 	gitReadonly []string
 	sandboxHome string
+	// stateDenied are paths re-locked read-only *after* the writable roots,
+	// so one run cannot change how later runs behave. claude's state dir has
+	// to stay writable — a real run writes plugins/, sessions/, session-env/,
+	// shell-snapshots/ and projects/ — so the durable-config files are
+	// carved back out rather than the directory being narrowed (#2779).
+	stateDenied []string
 	tmp         string
 	sharedCache string
 	// readOnlyDir, when non-empty, is re-locked read-only after every writable
@@ -69,14 +75,55 @@ type sandboxSpec struct {
 	gitCommonDir string
 	gitWorktrees string
 	gitObjectDir string
+	// gitLooseObjectPattern is Darwin's escaped Seatbelt regex granting only
+	// canonical objects/<hex>/<hash> files. A subpath grant on gitObjectDir
+	// would let a command redirect GIT_OBJECT_DIRECTORY to a nested store and
+	// create maintenance packs there.
+	gitLooseObjectPattern       string
+	gitLooseObjectFanoutPattern string
 
-	gitBranchRef           string
-	gitBranchRefDir        string
-	gitBranchLogDir        string
-	gitRemoteRefDir        string
-	gitRemoteLogDir        string
-	gitTagRefDir           string
-	gitTagLogDir           string
+	gitBranchRef    string
+	gitBranchRefDir string
+	gitBranchLogDir string
+	// gitBranchRefFile/gitBranchRefLockFile/gitBranchLogFile are the exact,
+	// single-file absolute paths for this task's own branch — darwin grants
+	// these via literal (not subpath) SBPL rules, since gitBranchRefDir can be
+	// shared with sibling tasks whose branch names nest under the same
+	// directory (e.g. two "fix/..." branches both live under refs/heads/fix/).
+	// Linux avoids that exposure with a bind-mounted overlay instead; Seatbelt
+	// has no filesystem-view mechanism to do the same, so darwin narrows the
+	// grant to the one file per root instead.
+	gitBranchRefFile     string
+	gitBranchRefLockFile string
+	gitBranchLogFile     string
+	// gitPackedRefsLockFile is needed by ordinary ref transactions such as
+	// stash. The packed-refs data/new files remain ungranted, so maintenance
+	// may acquire the lock but cannot publish a packed-ref rewrite.
+	gitPackedRefsLockFile string
+	// gitShallowFile/gitShallowLockFile: touched by a shallow fetch/clone
+	// (`--depth`/`--shallow-since`) — not issued by Sybra's own git calls
+	// today, but reachable if an agent runs one directly.
+	gitShallowFile     string
+	gitShallowLockFile string
+	// gitStashRefFile/_LockFile/gitStashLogFile/_LockFile: refs/stash is a
+	// single fixed-name ref directly under refs/, not per-branch — literal,
+	// like the branch ref grants, since it sits at a known, exact path.
+	gitStashRefFile         string
+	gitStashRefLockFile     string
+	gitStashLogFile         string
+	gitStashLogLockFile     string
+	gitRemoteRefDir         string
+	gitRemoteLogDir         string
+	gitRemoteLogLockPattern string
+	gitTagRefDir            string
+	gitTagLogDir            string
+	gitTagLogLockPattern    string
+	// gitNotesRefDir/gitNotesLogDir (refs/notes, logs/refs/notes): granted
+	// as whole subpaths like remote/tag refs — repo-wide annotation truth,
+	// not a task's own exclusive work.
+	gitNotesRefDir         string
+	gitNotesLogDir         string
+	gitNotesLogLockPattern string
 	gitOverlayObjectDir    string
 	gitOverlayRefDir       string
 	gitOverlayLogDir       string
@@ -91,6 +138,59 @@ type sandboxSpec struct {
 	copilotState  string
 	opencodeState string
 	toolCache     string
+	// appSupport is the macOS per-user application-data root
+	// (~/Library/Application Support). The codex CLI's in-process app-server
+	// creates its own directory there at startup, which needs write on the
+	// parent — granting only a codex-named subpath fails, measured. Without
+	// it codex dies immediately under enforce with "failed to initialize
+	// in-process app-server client: Operation not permitted". Empty off
+	// darwin, where no such path exists.
+	appSupport string
+	// claudeScratch is the Claude Code per-user scratchpad root
+	// (/tmp/claude-<uid>). Claude Code creates a per-session directory under
+	// it and writes working files there, so without the grant every such
+	// write fails EPERM and the agent retries an impossible operation
+	// instead of progressing. On Linux this sits inside os.TempDir() and is
+	// already covered; on darwin $TMPDIR is /var/folders/... while /tmp
+	// resolves to /private/tmp, so it needs its own root.
+	claudeScratch string
+
+	// readRoots, when non-empty, switches the wrapper from "everything is
+	// readable" to deny-by-default reads over exactly these roots (#2781).
+	// Empty means reads stay unrestricted, which is the posture every
+	// deployment has today. Every write root is also a read root; these are
+	// the additional read-only ones (system, toolchain, project clone).
+	//
+	// The measured trap is ~/.local/share/mise/installs: 8403 unique reads in
+	// the #2780 tracing pass, the largest non-worktree read root, because it
+	// holds the Go stdlib source every build compiles against. It appears on
+	// no command line, so it is invisible to log-derived allowlists.
+	readRoots []string
+}
+
+// writeRoots returns every path this spec grants write access to, so the read
+// allowlist can guarantee a writable root is never invisible. Empty entries
+// are dropped by the caller's dedupeRoots.
+func (s sandboxSpec) writeRoots() []string {
+	roots := []string{
+		s.worktree, s.sandboxHome, s.tmp, s.sharedCache,
+		s.claudeState, s.codexState, s.copilotState, s.opencodeState, s.toolCache,
+		s.appSupport, s.claudeScratch,
+		s.gitAdminDir, s.gitCommonDir, s.gitWorktrees, s.gitObjectDir,
+		s.gitOverlayObjectDir, s.gitOverlayRefDir, s.gitOverlayLogDir,
+		s.gitOverlayRemoteRefDir, s.gitOverlayRemoteLogDir,
+		s.gitOverlayTagRefDir, s.gitOverlayTagLogDir,
+		s.gitBranchRefDir, s.gitBranchLogDir, s.gitRemoteRefDir,
+		s.gitRemoteLogDir, s.gitTagRefDir, s.gitTagLogDir,
+		s.gitNotesRefDir, s.gitNotesLogDir,
+		s.gitBranchRefFile, s.gitBranchRefLockFile, s.gitBranchLogFile,
+		s.gitStashRefFile, s.gitStashRefLockFile, s.gitStashLogFile, s.gitStashLogLockFile,
+		s.gitShallowFile, s.gitShallowLockFile,
+	}
+	roots = append(roots, s.gitMetadata...)
+	roots = append(roots, s.gitShared...)
+	roots = append(roots, s.gitReadonly...)
+	return roots
 }
 
 // attemptEventsFrom slices the events produced since prevLen out of all,

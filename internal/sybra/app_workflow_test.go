@@ -362,6 +362,27 @@ func TestWorktreeGetterAdapter_GetWorktreePath_RecoversReadyPRWorktree(t *testin
 	}
 }
 
+func TestWorktreeGetterAdapter_ResolvePRWorktree_RecoversRemoteBranch(t *testing.T) {
+	t.Parallel()
+
+	h := newReadyPRRecoveryHarness(t)
+	adapter := &worktreeGetterAdapter{tasks: h.tasks, mgr: h.mgr}
+
+	path, ok, err := adapter.ResolvePRWorktree(context.Background(), h.task.ID)
+	if err != nil {
+		t.Fatalf("ResolvePRWorktree: %v", err)
+	}
+	if !ok {
+		t.Fatal("ResolvePRWorktree() = false, want recovered worktree")
+	}
+	if path != h.mgr.PathFor(h.task) {
+		t.Fatalf("path = %q, want %q", path, h.mgr.PathFor(h.task))
+	}
+	if _, err := os.Stat(filepath.Join(path, "fix.txt")); err != nil {
+		t.Fatalf("recovered worktree missing remote branch content: %v", err)
+	}
+}
+
 func TestBranchSyncerAdapter_SyncTaskBranch_RecoversMissingReadyPRWorktree(t *testing.T) {
 	t.Parallel()
 

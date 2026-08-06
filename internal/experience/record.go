@@ -10,6 +10,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 const (
@@ -47,7 +48,7 @@ func FromTask(t task.Task, proj project.Project) Record {
 		CreatedAt:      recordCreatedAt(t),
 		ProjectID:      proj.ID,
 		ProjectType:    string(proj.Type),
-		Title:          truncateText(t.Title, storedTextMaxRunes),
+		Title:          textutil.TruncateRunesTotal(strings.TrimSpace(t.Title), storedTextMaxRunes, "..."),
 		Tags:           boundedStrings(t.Tags, storedSliceMaxItems, storedSliceMaxRunes),
 		Size:           taskSize(t),
 		Type:           string(t.TaskType),
@@ -56,9 +57,9 @@ func FromTask(t task.Task, proj project.Project) Record {
 		Outcome:        t.Outcome,
 		Attempts:       len(t.AgentRuns),
 		FailureModes:   boundedStrings(failureModes(t), storedSliceMaxItems, storedSliceMaxRunes),
-		Strategy:       truncateText(firstNonEmpty(t.PlanBrief, t.Plan, t.Body), storedTextMaxRunes),
+		Strategy:       textutil.TruncateRunesTotal(strings.TrimSpace(firstNonEmpty(t.PlanBrief, t.Plan, t.Body)), storedTextMaxRunes, "..."),
 		VerifyCommands: boundedStrings(verifyCommands(proj), storedSliceMaxItems, storedSliceMaxRunes),
-		Caution:        truncateText(caution(t), storedTextMaxRunes),
+		Caution:        textutil.TruncateRunesTotal(strings.TrimSpace(caution(t)), storedTextMaxRunes, "..."),
 	}
 }
 
@@ -223,7 +224,7 @@ func singleLine(s string) string {
 }
 
 func promptText(s string) string {
-	return truncateText(singleLine(s), promptFieldMaxRunes)
+	return textutil.TruncateRunesTotal(strings.TrimSpace(singleLine(s)), promptFieldMaxRunes, "...")
 }
 
 func promptStrings(values []string) string {
@@ -243,22 +244,7 @@ func boundedStrings(values []string, maxItems, maxRunes int) []string {
 		if v == "" {
 			continue
 		}
-		out = append(out, truncateText(v, maxRunes))
+		out = append(out, textutil.TruncateRunesTotal(strings.TrimSpace(v), maxRunes, "..."))
 	}
 	return out
-}
-
-func truncateText(s string, maxRunes int) string {
-	s = strings.TrimSpace(s)
-	if maxRunes <= 0 {
-		return ""
-	}
-	runes := []rune(s)
-	if len(runes) <= maxRunes {
-		return s
-	}
-	if maxRunes <= 3 {
-		return string(runes[:maxRunes])
-	}
-	return string(runes[:maxRunes-3]) + "..."
 }

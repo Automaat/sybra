@@ -3,8 +3,10 @@ package workflow
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -180,7 +182,14 @@ func TestVerifyTaskNow_TimeoutFailsClosed(t *testing.T) {
 
 func TestVerifyTaskNow_ScaledTimeoutAbsorbsHostOversubscription(t *testing.T) {
 	orig := workflowCheckLoadPerCPU
-	workflowCheckLoadPerCPU = func() (float64, bool) { return 3.0, true }
+	// Stubbed at the scale ceiling, not just above 1: the assertion needs the
+	// scaled budget to clear `sleep 0.2` plus real process-spawn cost on a
+	// machine already running the rest of the suite. At load 3 the budget was
+	// 300ms against a 200ms sleep, and that 100ms margin is what made this
+	// flake under `go test ./...` while passing in isolation. At the ceiling
+	// the budget is 800ms, while the unscaled 100ms still fails without
+	// scaling — so the test proves the same thing with 4x the headroom.
+	workflowCheckLoadPerCPU = func() (float64, bool) { return verifyTimeoutScaleCeilingLoad, true }
 	t.Cleanup(func() { workflowCheckLoadPerCPU = orig })
 
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -271,6 +280,128 @@ func TestExecVerifyChecks_FailureFlags(t *testing.T) {
 	}
 }
 
+func TestBoundedTail_UnderCapKeepsEverything(t *testing.T) {
+	t.Parallel()
+	tail := &boundedTail{max: 100}
+	_, _ = io.WriteString(tail, "hello world")
+	if got := tail.String(); got != "hello world" {
+		t.Fatalf("String() = %q, want the untouched input", got)
+	}
+}
+
+// Regression: boundedTail used to keep only the last `max` bytes, so a
+// failure signal near the START of a long-running command's output (the
+// realistic shape of `go test ./internal/...`: the failing package's
+// `--- FAIL:` line, followed by many other packages' trailing `ok` lines)
+// would be evicted before it ever reached the artifact layer, independent of
+// any cap applied when persisting the artifact. Both the start and the end
+// of the stream must survive; only the middle may be elided.
+func TestBoundedTail_OverCapKeepsHeadAndTail(t *testing.T) {
+	t.Parallel()
+	tail := &boundedTail{max: 100}
+	_, _ = io.WriteString(tail, "START-MARKER "+strings.Repeat("x", 500)+" END-MARKER")
+
+	got := tail.String()
+	if !strings.Contains(got, "START-MARKER") {
+		t.Errorf("output lost the start of the stream: %q", got)
+	}
+	if !strings.Contains(got, "END-MARKER") {
+		t.Errorf("output lost the end of the stream: %q", got)
+	}
+	if !strings.Contains(got, "elided") {
+		t.Errorf("output has no elision marker despite exceeding the cap: %q", got)
+	}
+}
+
+// Regression: the artifact used to cap stored output to the last 8000 bytes
+// (tailString), which for a verbose failing command silently drops whatever
+// ran before the cut — including, in production, the actual `--- FAIL:` line
+// a human needs to diagnose the task. The stored output must never be cut.
+func TestExecVerifyChecks_LongOutputNotTruncated(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{"echo MARKER_START; yes x | head -c 9000; exit 1"})
+	rec := &recordingArtifactRecorder{}
+	engine.SetArtifactRecorder(rec)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+
+	var report *verifyChecksReport
+	for _, put := range rec.puts {
+		if put.name != "verify-checks.json" {
+			continue
+		}
+		var r verifyChecksReport
+		if err := json.Unmarshal([]byte(put.content), &r); err != nil {
+			t.Fatalf("unmarshal artifact: %v", err)
+		}
+		report = &r
+	}
+	if report == nil {
+		t.Fatalf("no verify-checks.json artifact recorded; puts: %+v", rec.puts)
+	}
+	if len(report.OutputTail) < 9000 {
+		t.Fatalf("OutputTail = %d bytes, want the full >9000-byte output preserved", len(report.OutputTail))
+	}
+	if !strings.Contains(report.OutputTail, "MARKER_START") {
+		t.Errorf("artifact lost the start of the output — the old tail-only truncation would have dropped it:\n%s", report.OutputTail[:min(200, len(report.OutputTail))])
+	}
+}
+
+// Regression: fixing the artifact-level 8000-byte cap is not enough on its
+// own — the upstream boundedTail streaming buffer that produces `output` in
+// the first place (verifyChecksMaxOutput, 64KB) used the same tail-only
+// eviction strategy, so a run large enough to exceed *that* cap (realistic
+// for `go test ./internal/...` across ~80 packages) would still lose the
+// failure signal before the artifact layer ever saw it. This drives output
+// past the 64KB streaming cap, not just the old 8KB artifact cap.
+func TestExecVerifyChecks_OutputPastStreamingCapKeepsStartAndEnd(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	// 100000 alone exceeds verifyChecksMaxOutput, independent of flake retries.
+	engine, tasks := newVerifyChecksEngine(t, wt,
+		[]string{"echo MARKER_START; yes x | head -c 100000; echo MARKER_END; exit 1"})
+	rec := &recordingArtifactRecorder{}
+	engine.SetArtifactRecorder(rec)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+
+	var report *verifyChecksReport
+	for _, put := range rec.puts {
+		if put.name != "verify-checks.json" {
+			continue
+		}
+		var r verifyChecksReport
+		if err := json.Unmarshal([]byte(put.content), &r); err != nil {
+			t.Fatalf("unmarshal artifact: %v", err)
+		}
+		report = &r
+	}
+	if report == nil {
+		t.Fatalf("no verify-checks.json artifact recorded; puts: %+v", rec.puts)
+	}
+	if !strings.Contains(report.OutputTail, "MARKER_START") {
+		t.Errorf("artifact lost the start of a >64KB run — the streaming buffer evicted it before the artifact layer ever saw it")
+	}
+	if !strings.Contains(report.OutputTail, "MARKER_END") {
+		t.Errorf("artifact lost the end of a >64KB run")
+	}
+}
+
 func TestExecVerifyChecks_BlessedTagSkips(t *testing.T) {
 	t.Parallel()
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -321,7 +452,9 @@ func TestResolveWorkflowCheckTimeout_ScalesWithHostLoad(t *testing.T) {
 
 func TestExecVerifyChecks_ScaledTimeoutAbsorbsHostOversubscription(t *testing.T) {
 	orig := workflowCheckLoadPerCPU
-	workflowCheckLoadPerCPU = func() (float64, bool) { return 3.0, true }
+	// Ceiling load, not 3.0 — see the sibling tests: a 300ms budget against a
+	// 200ms sleep left only 100ms for process spawn and flaked under suite load.
+	workflowCheckLoadPerCPU = func() (float64, bool) { return verifyTimeoutScaleCeilingLoad, true }
 	t.Cleanup(func() { workflowCheckLoadPerCPU = orig })
 
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -687,6 +820,9 @@ func TestExecVerifyChecks_DependentGoPackageFailureStillAutoFixes(t *testing.T) 
 	}
 	if wf.Variables["step.verify_checks.auto_fix"] != "1" {
 		t.Fatalf("auto-fix counter = %q, want 1", wf.Variables["step.verify_checks.auto_fix"])
+	}
+	if got := wf.Variables[verifyRetryModelVar]; got != "expensive" {
+		t.Fatalf("%s = %q, want expensive", verifyRetryModelVar, got)
 	}
 }
 

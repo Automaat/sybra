@@ -11,6 +11,8 @@ func sandboxExecAvailable() bool { return false }
 
 func sandboxWrapperName() string { return "host sandbox wrapper" }
 
+func sandboxUsesGitObjectOverlay() bool { return false }
+
 // materializeSandboxProfile has nothing to materialize on non-darwin.
 func materializeSandboxProfile() (string, error) {
 	return "", fmt.Errorf("sandbox: OS-level sandbox unsupported on this host")
@@ -26,4 +28,10 @@ func canonicalizeRoot(root string) (string, error) {
 // wrapInvocation is a no-op passthrough on non-darwin.
 func wrapInvocation(name string, args []string, _ *RunConfig) (wrappedName string, wrappedArgs []string) {
 	return name, args
+}
+
+// buildReadProfile is unreachable on non-darwin/non-linux: enforce mode fails
+// closed at sandboxExecAvailable long before a read allowlist is resolved.
+func buildReadProfile(base string, _ []string, _ string) (string, error) {
+	return base, nil
 }

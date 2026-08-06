@@ -153,6 +153,7 @@ func TestAgentView_ConcurrentWithMutation(t *testing.T) {
 			default:
 			}
 			a.SetState(StateRunning)
+			a.SetCommand("claude -p")
 			a.AddResultStats("session", float64(i), i, i, i)
 			a.AppendOutput(StreamEvent{Type: "assistant"})
 		}

@@ -1,13 +1,11 @@
 package workflow
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"sort"
 	"strconv"
@@ -16,6 +14,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/evidence"
+	"github.com/Automaat/sybra/internal/gitexec"
+	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/workflow/failureclassify"
 )
 
@@ -92,6 +93,10 @@ const (
 		"output, the expected behaviour citing the task's own words, and a code line quoted from the " +
 		"CURRENT file (file:line). Re-run the probes and produce that evidence — or, if the feature " +
 		"actually works, emit PASS with the required manual-testing evidence."
+	fixSuggestionsReask = "Your previous FAIL report was rejected because it contained fix suggestions " +
+		"instead of observed symptoms. Re-run adversarial testing and report only what you directly " +
+		"observed: commands, outputs, expected behaviour, actual behaviour, and cited evidence. Do not " +
+		"propose implementation changes; if you cannot prove a product defect, emit PASS."
 )
 
 func testingAutoRetryKey(outcome string) string {
@@ -149,7 +154,7 @@ func (e *Engine) retryOrEscalateTransient(taskID, stepID, outcome, reask, humanR
 	if parked {
 		return StepOutput{}, errStepParked
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", humanReason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, humanReason); err != nil {
 		return StepOutput{}, err
 	}
 	e.logger.Warn(logMsg, "task_id", taskID)
@@ -178,7 +183,7 @@ func (e *Engine) retryOrOpenPRForUnrunnableGate(taskID, stepID string, wfExec *E
 
 func (e *Engine) openPRForUnrunnableTestingGate(taskID, stepID string) (StepOutput, error) {
 	reason := "manual testing gate could not be run after auto-retries (harness/infra limitation, not a product defect) — opening PR for CI and human review"
-	if err := e.tasks.UpdateTaskStatus(taskID, "ready-pr", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.ReadyPR, reason); err != nil {
 		return StepOutput{}, err
 	}
 	e.logger.Warn("workflow.test.infra-failure.open-pr", "task_id", taskID)
@@ -188,7 +193,7 @@ func (e *Engine) openPRForUnrunnableTestingGate(taskID, stepID string) (StepOutp
 func (e *Engine) routeNonProductTestOutcome(taskID, stepID, outcome string, wfExec *Execution, t TaskInfo) (StepOutput, bool, error) {
 	switch outcome {
 	case testOutcomeInfraFailure:
-		if e.openPROnUnrunnableGate {
+		if e.openPROnUnrunnableGate.Load() {
 			out, err := e.retryOrOpenPRForUnrunnableGate(taskID, stepID, wfExec, t)
 			return out, true, err
 		}
@@ -203,7 +208,7 @@ func (e *Engine) routeNonProductTestOutcome(taskID, stepID, outcome string, wfEx
 		return out, true, err
 	case testOutcomeAmbiguousRequirement:
 		reason := "testing found ambiguous or contradictory requirements — human decision needed; see latest ## Test Failures"
-		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 			return StepOutput{}, true, err
 		}
 		e.logger.Warn("workflow.test.ambiguous-requirement", "task_id", taskID)
@@ -687,7 +692,7 @@ func capTextBlock(text string, maxLines, maxBytes int, suffix string, preserveLa
 		limit -= len(suffix)
 	}
 	if len(text) > limit {
-		text = trimUTF8ToBytes(text, limit)
+		text = textutil.TruncateBytesValid(text, limit, "")
 		truncated = true
 	}
 	text = strings.TrimRight(text, "\n")
@@ -2363,7 +2368,7 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	delete(wfExec.Variables, testingReaskNoteVar)
 
 	if wfExec.Variables["step."+testVerdictSourceStep+".verdict"] == "PASS" {
-		if err := e.tasks.UpdateTaskStatus(taskID, "ready-pr", "manual testing passed"); err != nil {
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.ReadyPR, "manual testing passed"); err != nil {
 			return StepOutput{}, err
 		}
 		e.logger.Info("workflow.test.passed", "task_id", taskID, "step", step.ID)
@@ -2371,21 +2376,16 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	}
 
 	if violation := wfExec.Variables["step."+testVerdictSourceStep+"."+testVerdictTaintedKey]; violation != "" {
-		// A missing-evidence report describes the runner, not the code — re-ask
-		// the tester (with the specific evidence it owes) before a human. A
-		// fix-suggestions violation already had one in-step retry and rarely
-		// improves on re-ask, so it still escalates immediately.
+		// Protocol violations describe the runner, not the code. Re-ask the
+		// tester with the specific contract it broke before involving a human.
 		if violation == testProtocolMissingEvidence {
 			return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeMissingEvidence, missingEvidenceReask,
 				"test-runner report lacked machine-checkable evidence after auto-retries — needs local reproduction",
 				"protocol violation: "+violation, "workflow.test.protocol-violation", wfExec, t)
 		}
-		reason := "test-runner report violated testing protocol after retry: contained fix suggestions instead of observed symptoms"
-		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
-			return StepOutput{}, err
-		}
-		e.logger.Warn("workflow.test.protocol-violation", "task_id", taskID, "violation", violation)
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "protocol violation: " + violation}, nil
+		return e.retryOrEscalateTransient(taskID, step.ID, testOutcomeProtocolViolation, fixSuggestionsReask,
+			"test-runner report violated testing protocol after auto-retries — needs local reproduction",
+			"protocol violation: "+violation, "workflow.test.protocol-violation", wfExec, t)
 	}
 	outcome := wfExec.Variables["step."+testVerdictSourceStep+"."+testVerdictOutcomeKey]
 	if out, handled, err := e.routeNonProductTestOutcome(taskID, step.ID, outcome, wfExec, t); handled || err != nil {
@@ -2398,7 +2398,7 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	// and must not inflate the counter. Nil means no re-dispatch has happened
 	// (first cycle or automatic implement→test loop), so all runs count.
 	attempts, duplicate := e.countValidProductTestAttempts(t, wfExec)
-	limit := e.maxTestAttempts
+	limit := int(e.maxTestAttempts.Load())
 	if limit <= 0 {
 		limit = defaultTestAttempts
 	}
@@ -2416,7 +2416,7 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 			}
 		}
 		reason := "suspected acceptance-criteria conflict after recurring product-bug test failures — human spec decision needed; see ## Test Failures"
-		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 			return StepOutput{}, err
 		}
 		if err := e.writeSpecDecision(taskID, recurring, attempts, limit); err != nil {
@@ -2437,7 +2437,7 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 			reason := fmt.Sprintf(
 				"suspected acceptance-criteria conflict: the implement/test loop failed to converge over %d product-bug attempt(s) (cap %d) — could be a contradictory spec or a hard defect the fixes keep missing; human spec decision needed; see ## Test Failures",
 				attempts, limit)
-			if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+			if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 				return StepOutput{}, err
 			}
 			if err := e.writeSpecDecision(taskID, recurring, attempts, limit); err != nil {
@@ -2447,7 +2447,7 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 			return StepOutput{StepID: step.ID, Status: "completed", Output: "escalated"}, nil
 		}
 		reason := fmt.Sprintf("manual testing found %d grounded product defects: feature still does not match the task — needs targeted local reproduction/fix from latest ## Test Failures", attempts)
-		if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 			return StepOutput{}, err
 		}
 		e.logger.Warn("workflow.test.escalate", "task_id", taskID, "attempts", attempts, "cap", limit)
@@ -2463,7 +2463,7 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	}
 	e.seedReimplementNote(e.ctx, wfExec, taskID, attempts, t)
 	reason := "manual testing found a grounded product defect — re-implementing the latest ## Test Failures repro"
-	if err := e.tasks.UpdateTaskStatus(taskID, "in-progress", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InProgress, reason); err != nil {
 		return StepOutput{}, err
 	}
 	e.logger.Info("workflow.test.reimplement", "task_id", taskID, "attempts", attempts, "cap", limit)
@@ -2514,21 +2514,17 @@ func (e *Engine) attemptDiffStat(ctx context.Context, wtPath string) string {
 	defer cancel()
 
 	base := resolveOriginBase(diffCtx, wtPath)
-	cmd := exec.CommandContext(diffCtx, "git", "diff", "--stat", base+"...HEAD")
-	cmd.Dir = wtPath
 	// Capture stderr separately so git's non-fatal advisories (safe.directory,
 	// advice.* hints) — which it can emit while still exiting 0 — never leak into
 	// the note's fenced diff-stat block presented as if part of the diff.
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	out, stderr, err := gitexec.OutputWithStderr(diffCtx, gitexec.Options{Dir: wtPath}, "diff", "--stat", base+"...HEAD")
 	if err != nil {
-		diag := singleLineDiagnostic(err, stderr.String())
+		diag := singleLineDiagnostic(err, string(stderr))
 		e.logger.Warn("workflow.test.reimplement-note", "worktree", wtPath, "base", base, "err", err, "phase", "diff-stat")
 		return "(diff unavailable: " + diag + ")"
 	}
-	if stderr.Len() > 0 {
-		e.logger.Warn("workflow.test.reimplement-note", "worktree", wtPath, "base", base, "phase", "diff-stat", "stderr", singleLineDiagnostic(nil, stderr.String()))
+	if len(stderr) > 0 {
+		e.logger.Warn("workflow.test.reimplement-note", "worktree", wtPath, "base", base, "phase", "diff-stat", "stderr", singleLineDiagnostic(nil, string(stderr)))
 	}
 	diff := capPriorAttemptDiffStat(string(out))
 	if diff == "" {
@@ -2566,7 +2562,7 @@ func singleLineDiagnostic(err error, output string) string {
 	if text == "" {
 		return "unknown error"
 	}
-	return trimUTF8ToBytes(text, 300)
+	return textutil.TruncateBytesValid(text, 300, "")
 }
 
 // recurringProductBugFingerprints returns the distinct product-bug failure

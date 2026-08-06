@@ -44,7 +44,7 @@ steps:
     config:
       role: implementation
       mode: "{{.Task.AgentMode}}"
-      model: sonnet
+      model: '{{if getvar .Vars "verify_retry_model"}}{{getvar .Vars "verify_retry_model"}}{{else}}cheap{{end}}'
       max_retries: 2
       prompt: >-
         Implement this task. When done, commit your work and push the branch to
@@ -114,6 +114,20 @@ steps:
 
         Before finishing, re-check your change against a short checklist:
         tests updated, edge cases covered, no leftover debug code.
+
+        If you made no commits because the requested change is already present
+        on the base branch, so this task is a duplicate that needs no PR,
+        declare it by setting the task's status reason to exactly one JSON
+        object and nothing else:
+
+            sybra-cli update {{.Task.ID}} --status human-required \
+              --status-reason '{"decision":"already-fixed-on-main","reason":"<one sentence>"}'
+
+        Only that exact call counts as a declaration. Writing the same JSON in
+        your response, quoting it, or describing the situation in prose does
+        not, and leaves the task for a human. Declare it only when you made no
+        commits and the change is genuinely already on the base branch; in
+        every other case park with an ordinary prose reason instead.
         {{- if .Task.PlanContract}}
 
         ## Executable Plan Contract

@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
@@ -45,8 +46,11 @@ type Handler struct {
 	worktrees      *worktree.Manager
 	WorkflowEngine *workflow.Engine
 	cfg            *config.Config
-	abTesting      func() abtest.Config
-	experience     *experience.Store
+	// signing holds the hot-reloadable commit-signing posture; see
+	// SetSigningPolicy. Empty means "not late-bound", not "auto".
+	signing    atomic.Value
+	abTesting  func() abtest.Config
+	experience *experience.Store
 	// intervention captures a genuine human-required unblock through the two
 	// automated exit paths this package owns (reconcileHumanRequiredBlockers,
 	// advanceClosedTaskPR). Late-bound via SetInterventionStore since it is
@@ -427,7 +431,7 @@ func (r *Handler) pollKnownTaskPRs(ctx context.Context) time.Duration {
 		fetchMatchers = append(fetchMatchers, reconcileMatchers...)
 	}
 	fetchMatchers = append(fetchMatchers, r.settledImplementationFetchMatchers(ctx, selection.tasks)...)
-	monitoredPRs := r.fetchKnownTaskPRs(fetchMatchers)
+	monitoredPRs := r.fetchKnownTaskPRs(fetchMatchers, selection.retainKeys)
 	// fetchKnownTaskPRs records auth failures on the shared circuit. Once it
 	// trips, back off like pollAndMonitorPRs instead of re-hammering a dead
 	// token every cycle (#1516) — the next cycle re-probes and closes on
@@ -723,7 +727,7 @@ func (r *Handler) handleKnownPRConflictsViaREST(ctx context.Context, tasks []tas
 
 	fetchMatchers := append([]github.TaskMatcher{}, matchers...)
 	fetchMatchers = append(fetchMatchers, settledImplementMatchers...)
-	monitoredPRs := r.fetchKnownTaskPRs(fetchMatchers)
+	monitoredPRs := r.fetchKnownTaskPRs(fetchMatchers, selection.retainKeys)
 	if len(matchers) > 0 {
 		var handled []github.PRIssue
 		matched := github.MatchTaskPRs(monitoredPRs, matchers)
@@ -949,7 +953,10 @@ func prRefCacheKey(repo string, number int) string {
 // status/check event at the same head, e.g. a re-run CI job failing), or a
 // failed probe evicts the cache entry and falls back to a full fetch, so a
 // stale ready-state is never reused.
-func (r *Handler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.PullRequest {
+// retain lists PR keys this tick skipped on purpose (backoff-deferred or
+// per-tick-capped). They are not fetched, but their snapshots must survive the
+// prune below or their skip counters die with them.
+func (r *Handler) fetchKnownTaskPRs(matchers []github.TaskMatcher, retain []string) []github.PullRequest {
 	fetchFn := github.FetchPRsForMonitor
 	if r.fetchKnownPRsFn != nil {
 		fetchFn = r.fetchKnownPRsFn
@@ -986,7 +993,12 @@ func (r *Handler) fetchKnownTaskPRs(matchers []github.TaskMatcher) []github.Pull
 	}
 
 	// Drop cache entries for PRs no longer linked to a monitored task.
-	r.prSnapshots.Prune(seen)
+	keep := make(map[string]struct{}, len(seen)+len(retain))
+	maps.Copy(keep, seen)
+	for _, key := range retain {
+		keep[key] = struct{}{}
+	}
+	r.prSnapshots.Prune(keep)
 
 	if len(refs) == 0 {
 		return prs
@@ -1136,8 +1148,9 @@ func (r *Handler) advanceClosedTaskPR(ctx context.Context, c github.ClosedPR, co
 	transition := func() error {
 		preTask, preErr := r.tasks.Get(c.TaskID)
 		if _, err := r.tasks.ApplyStatusEffect(c.TaskID, task.StatusEffect{
-			Source:   "review.pr-monitor.closed-pr",
-			ToStatus: landedStatus,
+			Source:         "review.pr-monitor.closed-pr",
+			ToStatus:       landedStatus,
+			ExpectedStatus: preTask.Status,
 			Extra: task.Update{
 				Outcome: task.Ptr(base),
 			},
@@ -1578,8 +1591,9 @@ func (r *Handler) cancelResolvedPRFixWorkflows(tasks []task.Task, issues []githu
 		}
 		statusReason := "pr-fix cancelled: " + reason + " resolved"
 		if _, updErr := r.tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
-			Source:   "review.pr-monitor.cancel-resolved",
-			ToStatus: task.StatusInReview,
+			Source:         "review.pr-monitor.cancel-resolved",
+			ToStatus:       task.StatusInReview,
+			ExpectedStatus: t.Status,
 			Extra: task.Update{
 				StatusReason: &statusReason,
 			},
@@ -1737,7 +1751,7 @@ func (r *Handler) includeKnownTaskPRs(ctx context.Context, tasks []task.Task, mo
 		return monitoredPRs
 	}
 
-	knownPRs := r.fetchKnownTaskPRs(matchers)
+	knownPRs := r.fetchKnownTaskPRs(matchers, selection.retainKeys)
 	if len(knownPRs) == 0 {
 		return monitoredPRs
 	}
@@ -1923,8 +1937,9 @@ func (r *Handler) adoptOrphanPRs(ctx context.Context, tasks []task.Task, prs []g
 		}
 		if match != nil {
 			updated, err := r.tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
-				Source:   "review.pr-monitor.orphan-adopt",
-				ToStatus: task.StatusInReview,
+				Source:         "review.pr-monitor.orphan-adopt",
+				ToStatus:       task.StatusInReview,
+				ExpectedStatus: t.Status,
 				Extra: task.Update{
 					PRNumber:     task.Ptr(match.Number),
 					StatusReason: task.Ptr(""),
@@ -2026,8 +2041,9 @@ func (r *Handler) adoptOrphanMergedPR(ctx context.Context, t *task.Task) {
 	const state = "MERGED"
 	base := classifyLandingOutcome(state)
 	updated, err := r.tasks.ApplyStatusEffect(taskID, task.StatusEffect{
-		Source:   "review.pr-monitor.orphan-merged-adopt",
-		ToStatus: task.StatusDone,
+		Source:         "review.pr-monitor.orphan-merged-adopt",
+		ToStatus:       task.StatusDone,
+		ExpectedStatus: t.Status,
 		Extra: task.Update{
 			PRNumber:     task.Ptr(prNum),
 			Outcome:      task.Ptr(base),
@@ -2200,4 +2216,39 @@ func prNeedsAttention(prs []github.PullRequest) bool {
 		}
 	}
 	return false
+}
+
+// SetSigningPolicy late-binds the commit-signing posture and is re-invoked on
+// every hot config reload. r.cfg is the snapshot captured when this Handler
+// was constructed and is never rewritten, so reading the posture from it
+// alone latches the startup value: a reload to "never" would keep telling
+// agents to pass -S on a key-bearing host, which is the failure the policy
+// exists to prevent.
+func (r *Handler) SetSigningPolicy(p project.SigningPolicy) {
+	if r == nil {
+		return
+	}
+	r.signing.Store(string(p))
+}
+
+// SigningPolicy exposes the resolved posture so the app layer can assert that
+// a hot reload actually reached this handler — the sink whose startup latch
+// survived the first fix.
+func (r *Handler) SigningPolicy() project.SigningPolicy { return r.signingPolicy() }
+
+// signingPolicy resolves the deployment's commit-signing posture for prompts
+// this handler builds. Falls back to the construction-time snapshot when
+// nothing has been late-bound, then to host probing, so a bare Handler built
+// in tests keeps the historical behavior.
+func (r *Handler) signingPolicy() project.SigningPolicy {
+	if r == nil {
+		return project.SigningAuto
+	}
+	if v, ok := r.signing.Load().(string); ok && v != "" {
+		return project.NormalizeSigningPolicy(v)
+	}
+	if r.cfg == nil {
+		return project.SigningAuto
+	}
+	return project.NormalizeSigningPolicy(r.cfg.CommitSigning())
 }

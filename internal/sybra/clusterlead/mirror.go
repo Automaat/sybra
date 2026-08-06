@@ -56,6 +56,11 @@ const reconcileFailureEscalateThreshold = 5
 // still gets cleaned up in bounded time instead of staying a ghost.
 const missingConfirmThreshold = 3
 
+// errFollowerUpdateStale stops an apply after its preliminary work when a
+// newer follower update already reached the canonical task before the final
+// lock-protected merge.
+var errFollowerUpdateStale = errors.New("cluster follower update is stale")
+
 // Mirror keeps the leader's canonical store in sync with follower execution
 // state via a reconcile ticker, applying every update through one authority
 // merge: execution fields are follower-authoritative, identity/assignment
@@ -215,10 +220,27 @@ func (m *Mirror) reconcileMissing(ctx context.Context, node string, client *clus
 				// permanently gating downstream rollup logic (like
 				// trackerRollup's cancelled-child check) on a ghost task the
 				// follower will never offer again.
+				// A move can race the old node's delayed 404. Take the same
+				// ownership lock as Reassign and confirm this is still the exact
+				// canonical generation we checked before deleting it.
+				unlock := lockTaskOwnership(t.ID)
+				current, cerr := m.tasks.Get(t.ID)
+				if cerr != nil {
+					unlock()
+					m.logger.Warn("cluster.mirror.reconcile_missing.refresh_failed", "node", node, "task", t.ID, "err", cerr)
+					continue
+				}
+				if current.AssignedNode != node || current.AssignmentRev != t.AssignmentRev {
+					unlock()
+					m.clearMissingStreak(node, t.ID)
+					continue
+				}
 				if derr := m.tasks.Delete(t.ID); derr != nil {
+					unlock()
 					m.logger.Warn("cluster.mirror.reconcile_missing.trash_failed", "node", node, "task", t.ID, "err", derr)
 					continue
 				}
+				unlock()
 				m.clearMissingStreak(node, t.ID)
 				m.logger.Info("cluster.mirror.reconcile_missing.trashed", "node", node, "task", t.ID, "confirmations", streak)
 				continue
@@ -269,6 +291,14 @@ func (m *Mirror) applyFollowerTask(node string, follower task.Task) bool {
 }
 
 func (m *Mirror) applyFollowerTaskWithContext(ctx context.Context, node string, follower task.Task) bool {
+	// Validate on ingest, not at Put: the id arrives from a peer over HTTP and
+	// reaches writeSidecars — which builds eight paths from it — before Put's
+	// own ValidateID runs. Rejecting here means a hostile id writes nothing.
+	if err := task.ValidateID(follower.ID); err != nil {
+		m.logger.Warn("cluster.mirror.reject.invalid_task_id", "node", node, "task", follower.ID, "err", err)
+		return false
+	}
+
 	m.applyMu.Lock()
 	defer m.applyMu.Unlock()
 
@@ -299,20 +329,45 @@ func (m *Mirror) applyFollowerTaskWithContext(ctx context.Context, node string, 
 	if !ok {
 		return false
 	}
-	merged, ok := Merge(canonical, follower)
+	_, ok = Merge(canonical, follower)
 	if !ok {
 		return false
 	}
-	if err := m.writeSidecars(merged); err != nil {
-		m.logger.Warn("cluster.mirror.sidecar.failed", "node", node, "task", follower.ID, "err", err)
-		return false
-	}
-	if _, _, err := m.tasks.Put(merged); err != nil {
+	saved, _, err := m.tasks.PutFn(follower.ID, func(cur task.Task) (task.Task, error) {
+		latest, err := mergeFollowerForNode(cur, node, follower)
+		if err != nil {
+			return task.Task{}, err
+		}
+		return latest, nil
+	})
+	if err != nil {
+		if errors.Is(err, errFollowerUpdateStale) {
+			return false
+		}
 		m.logger.Warn("cluster.mirror.apply.failed", "node", node, "task", follower.ID, "err", err)
 		return false
 	}
-	m.logger.Debug("cluster.mirror.applied", "node", node, "task", follower.ID, "status", string(merged.Status), "rev", merged.MirrorRev)
+	if err := m.writeSidecars(saved); err != nil {
+		m.logger.Warn("cluster.mirror.sidecar.failed", "node", node, "task", follower.ID, "err", err)
+		return false
+	}
+	m.logger.Debug("cluster.mirror.applied", "node", node, "task", follower.ID, "status", string(saved.Status), "rev", saved.MirrorRev)
 	return true
+}
+
+// mergeFollowerForNode makes the final, lock-protected acceptance decision.
+// A reassign can stamp a new owner while the old follower's RPCs are in
+// flight, so the reporting node must still own the freshly-read task here,
+// not only at the beginning of applyFollowerTaskWithContext.
+func mergeFollowerForNode(cur task.Task, node string, follower task.Task) (task.Task, error) {
+	if cur.AssignedNode != node {
+		return task.Task{}, errFollowerUpdateStale
+	}
+	latest, ok := Merge(cur, follower)
+	if !ok {
+		return task.Task{}, errFollowerUpdateStale
+	}
+	return latest, nil
 }
 
 // adoptFollowerTask creates the leader's first canonical record for a task
@@ -402,6 +457,20 @@ const driftRepairTimeout = 5 * time.Second
 // driftRepairTimeout first. Every failure path logs its own Warn; a failed
 // repair simply retries on the next reconcile tick.
 func (m *Mirror) repairDrift(ctx context.Context, node string, canonical task.Task) {
+	// Serialize against ownership transfer before contacting the follower. A
+	// stale repair of the former owner must never resurrect its task after a
+	// reassignment has completed.
+	unlock := lockTaskOwnership(canonical.ID)
+	defer unlock()
+	current, err := m.tasks.Get(canonical.ID)
+	if err != nil {
+		m.logger.Warn("cluster.mirror.drift_repair.refresh_failed", "task", canonical.ID, "node", node, "err", err)
+		return
+	}
+	if current.AssignedNode != node || current.AssignmentRev != canonical.AssignmentRev {
+		return
+	}
+	canonical = current
 	client, ok := m.roster.Client(node)
 	if !ok || client == nil {
 		m.logger.Warn("cluster.mirror.drift_repair.no_client", "task", canonical.ID, "node", node)

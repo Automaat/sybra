@@ -8,11 +8,11 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/llmexec"
 	"github.com/Automaat/sybra/internal/llmjob"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // defaultJudgeModel is a capable model for nuanced code-quality judgment.
@@ -128,14 +128,14 @@ func buildQualityPrompt(req JudgeRequest, dims []RubricDimension) string {
 	b.WriteString("Score each dimension 0–10 (10 = excellent). Output ONLY a single JSON object on the final line.\n\n")
 
 	fmt.Fprintf(&b, "Task: %s\n", req.Title)
-	if body := truncate(req.Body, 800); body != "" {
+	if body := textutil.TruncateBytes(req.Body, 800, "\n…(truncated)"); body != "" {
 		fmt.Fprintf(&b, "Task details: %s\n", body)
 	}
 	if req.Trajectory != "" {
 		fmt.Fprintf(&b, "How the agent worked: %s\n", req.Trajectory)
 	}
 	b.WriteString("\nDiff (may be truncated):\n")
-	b.WriteString(truncate(req.Diff, maxDiffChars))
+	b.WriteString(textutil.TruncateBytes(req.Diff, maxDiffChars, "\n…(truncated)"))
 	b.WriteString("\n\nScore these dimensions:\n")
 	for _, d := range dims {
 		fmt.Fprintf(&b, "- %s: %s\n", d.Key, d.Question)
@@ -171,7 +171,7 @@ func parseQualityVerdict(raw []byte) (QualityVerdict, error) {
 		}
 		text = *envelope.Result
 	}
-	jsonStr := judgeExtractLastJSON(text)
+	jsonStr := llmjob.ExtractLastJSONObject(text)
 	if jsonStr == "" {
 		return QualityVerdict{}, fmt.Errorf("no JSON object in result: %q", text)
 	}
@@ -228,59 +228,6 @@ func AgreesWithOutcome(v QualityVerdict, outcome string, threshold float64) bool
 	}
 }
 
-// judgeExtractLastJSON returns the last balanced {...} substring in s, or "".
-// The model may prepend prose before the final JSON object.
-func judgeExtractLastJSON(s string) string {
-	s = strings.TrimSpace(s)
-	var (
-		inString  bool
-		escape    bool
-		depth     int
-		objStart  = -1
-		lastStart = -1
-		lastEnd   = -1
-	)
-	for i := range len(s) {
-		c := s[i]
-		if escape {
-			escape = false
-			continue
-		}
-		if inString {
-			switch c {
-			case '\\':
-				escape = true
-			case '"':
-				inString = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			inString = true
-		case '{':
-			if depth == 0 {
-				objStart = i
-			}
-			depth++
-		case '}':
-			if depth == 0 {
-				continue
-			}
-			depth--
-			if depth == 0 && objStart >= 0 {
-				lastStart = objStart
-				lastEnd = i
-				objStart = -1
-			}
-		}
-	}
-	if lastStart < 0 {
-		return ""
-	}
-	return s[lastStart : lastEnd+1]
-}
-
 func clampScore(s int) int {
 	if s < 0 {
 		return 0
@@ -289,15 +236,4 @@ func clampScore(s int) int {
 		return 10
 	}
 	return s
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	// Back up to a rune boundary so the cut never splits a multibyte character.
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n] + "\n…(truncated)"
 }

@@ -84,6 +84,15 @@ func (m *Manager) SyncTaskBranch(ctx context.Context, t task.Task) (SyncResult, 
 	if !m.Exists(t) {
 		return SyncSkipped, nil
 	}
+	// Another mutating operation owns this directory. This sync is
+	// opportunistic (see the doc above), so skip rather than fail — the next
+	// checkpoint retries once the directory is free.
+	release, err := m.lockPath(m.PathFor(t))
+	if err != nil {
+		m.logger.Info("worktree.sync-branch.busy", "task_id", t.ID, "err", err)
+		return SyncSkipped, nil
+	}
+	defer release()
 	// A tracked agent is still live in this worktree: rebasing here would
 	// corrupt its in-flight edits. This sync is opportunistic (never blocks
 	// workflow advancement per the doc above), so skip rather than fail —
@@ -152,6 +161,12 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 		}
 	}
 
+	release, err := m.lockPath(m.PathFor(t))
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
 	// Adopt an externally-created worktree (e.g. one Orca already checked out)
 	// instead of creating a Sybra-managed one. Runs every agent in that
 	// directory as-is — no fetch/add/rebase/push-create/cleanup. This both
@@ -197,34 +212,10 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 
 	wtBranch = m.resolveTaskBranch(ctx, t, proj.ClonePath, wtPath, wtBranch)
 	if _, statErr := os.Stat(wtPath); statErr == nil {
-		callPhase(onPhase, "Checking worktree…")
-		usable, err := m.healOrRecreate(ctx, t.ID, proj.ClonePath, wtPath, wtBranch)
-		if err != nil {
-			return "", err
+		if dir, handled, err := m.reuseExistingWorktree(ctx, t, proj, wtPath, wtBranch, baseRef, onPhase); handled {
+			return dir, err
 		}
-		if usable {
-			if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
-				m.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
-			}
-			if err := m.reconcileAndRebase(ctx, wtPath, wtBranch, baseRef, onPhase); err != nil {
-				return "", err
-			}
-			m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
-			// Sync remote after rebase. PushSync picks the minimum mode —
-			// no-op when local matches remote, regular push for
-			// fast-forward. On divergence it returns ErrDivergedNeedsResolve
-			// instead of force-pushing; callers here only log it (see
-			// logPushSync) because this is best-effort cleanup after the
-			// main reconcile/rebase path and the remote may have advanced
-			// again since that earlier fetch.
-			callPhase(onPhase, "Syncing upstream…")
-			m.logPushSync(t.ID, wtBranch, project.PushSync(ctx, wtPath, wtBranch))
-			if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "reused worktree", onPhase); err != nil {
-				return "", err
-			}
-			return m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
-		}
-		// Worktree was wiped — fall through to create paths below.
+		// Worktree was wiped — fall through to the create paths below.
 	}
 
 	// Branch may survive a prior worktree removal — check out existing branch
@@ -268,6 +259,38 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 	m.ensureBranch(t, wtBranch)
 	m.seedWorktree(ctx, t, wtPath, wtBranch)
 	return wtPath, nil
+}
+
+// reuseExistingWorktree rebases and finalizes an already-present worktree at
+// wtPath. handled=false means healOrRecreate wiped it as unusable and the
+// caller must fall through to its create paths; handled=true means this call
+// owns the outcome, error or not.
+func (m *Manager) reuseExistingWorktree(ctx context.Context, t task.Task, proj project.Project, wtPath, wtBranch, baseRef string, onPhase func(string)) (dir string, handled bool, err error) {
+	callPhase(onPhase, "Checking worktree…")
+	usable, err := m.healOrRecreate(ctx, t.ID, proj.ClonePath, wtPath, wtBranch)
+	if err != nil {
+		return "", true, err
+	}
+	if !usable {
+		return "", false, nil
+	}
+	if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
+		m.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
+	}
+	if err := m.reconcileAndRebase(ctx, wtPath, wtBranch, baseRef, onPhase); err != nil {
+		return "", true, err
+	}
+	m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
+	// Best-effort cleanup after the main rebase: PushSync picks the minimum
+	// mode and reports divergence rather than force-pushing, and the remote may
+	// have advanced again since the earlier fetch, so only log the result.
+	callPhase(onPhase, "Syncing upstream…")
+	m.logPushSync(t.ID, wtBranch, project.PushSync(ctx, wtPath, wtBranch))
+	if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "reused worktree", onPhase); err != nil {
+		return "", true, err
+	}
+	dir, err = m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
+	return dir, true, err
 }
 
 func (m *Manager) resolveTaskBranch(ctx context.Context, t task.Task, clonePath, wtPath, wtBranch string) string {
@@ -515,8 +538,12 @@ func (m *Manager) reuseBranchConflictWorktree(ctx context.Context, taskID, clone
 	if !usable {
 		return false, nil
 	}
+	if _, err := project.CheckpointCommit(ctx, wtPath,
+		"wip: checkpoint before branch conflict recovery\n\nSybra preserved local work before preparing conflict recovery."); err != nil {
+		return false, fmt.Errorf("checkpoint branch-conflict worktree: %w", err)
+	}
 	if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
-		m.logger.Warn("branch-conflict.worktree.sanitize", "task_id", taskID, "err", err)
+		return false, fmt.Errorf("sanitize branch-conflict worktree: %w", err)
 	}
 	return true, nil
 }
@@ -591,6 +618,12 @@ func (m *Manager) finalizeWorktree(ctx context.Context, t task.Task, wtPath, wtB
 
 // PrepareForReview creates a detached-HEAD worktree for read-only PR review.
 func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, error) {
+	release, err := m.lockPath(m.PathFor(t))
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
 	proj, err := m.projects.Get(t.ProjectID)
 	if err != nil {
 		return "", fmt.Errorf("get project: %w", err)
@@ -616,8 +649,19 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 	// Check out the PR head via refs/pull/<N>/head rather than
 	// refs/remotes/origin/<branch>: a fork PR's head branch never lands under
 	// origin, so the latter fails with "invalid reference".
+	//
+	// Like reconcileAndRebase's remote fetch, a transient connectivity blip
+	// here (SSH/DNS/timeout) looks identical to a genuine failure unless
+	// distinguished — wrap it as ErrTransientFetch so ClassifyAgentStartFailure
+	// treats it as retryable instead of feeding the circuit breaker (the raw
+	// error used to fall into ClassifyAgentStartFailure's default case, which
+	// counts toward the breaker and can trip a review dispatch to
+	// human-required after a few DNS blips even though nothing needs a human).
 	ref, err := project.FetchPRHead(ctx, proj.ClonePath, t.PRNumber)
 	if err != nil {
+		if project.IsTransientNetworkError(err) {
+			return "", fmt.Errorf("%w: fetch pr head: %w", ErrTransientFetch, err)
+		}
 		return "", fmt.Errorf("fetch pr head: %w", err)
 	}
 	if err := project.CreateWorktreeDetached(ctx, proj.ClonePath, wtPath, ref); err != nil {
@@ -647,6 +691,12 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 // check out. Does not change PrepareForFix's behavior for its own PR-keyed
 // callers. Setup failures are non-gating, same rationale as PrepareForFix.
 func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string, error) {
+	release, err := m.lockPath(m.PathFor(t))
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
 	// Adopt an externally-created worktree as-is, mirroring PrepareForFix.
 	if t.WorktreeDir != "" {
 		return m.adoptWorktree(ctx, t, nil)
@@ -747,6 +797,12 @@ func (m *Manager) PrepareForBranchConflict(ctx context.Context, t task.Task) (st
 // PrepareForBranchConflictFromRemote prepares a branch-conflict recovery
 // worktree whose remote side lives on remote, e.g. fork-backed PR heads.
 func (m *Manager) PrepareForBranchConflictFromRemote(ctx context.Context, t task.Task, remote string) (string, error) {
+	release, err := m.lockPath(m.PathFor(t))
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
 	if t.WorktreeDir != "" {
 		return m.adoptWorktree(ctx, t, nil)
 	}
@@ -831,6 +887,58 @@ func (m *Manager) PrepareForBranchConflictFromRemote(ctx context.Context, t task
 	return wtPath, nil
 }
 
+// ResetForRetry discards a killed or hung agent's partial work before a clean
+// retry, under the same per-path exclusion every Prepare* takes. It aborts an
+// in-progress rebase and hard-resets the tree, so running it against a
+// directory a live preparation is inside produces exactly the half-rebased
+// tree the exclusion exists to prevent.
+//
+// dir overrides the task's own worktree path for callers that already resolved
+// one. It returns the path it actually acted on — callers log that rather than
+// their own argument, which is empty whenever they left the resolution here —
+// and whether a reset ran; a directory that does not exist is not an error.
+func (m *Manager) ResetForRetry(ctx context.Context, t task.Task, dir, ref string) (target string, reset bool, err error) {
+	target = dir
+	if target == "" {
+		target = m.PathFor(t)
+	}
+	if target == "" {
+		return "", false, nil
+	}
+
+	release, err := m.lockPath(target)
+	if err != nil {
+		return target, false, err
+	}
+	defer release()
+
+	if _, statErr := os.Stat(target); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return target, false, nil
+		}
+		return target, false, fmt.Errorf("stat clean retry worktree: %w", statErr)
+	}
+	if err := project.ResetWorktreeForRetry(ctx, target, ref); err != nil {
+		return target, false, fmt.Errorf("reset worktree for retry: %w", err)
+	}
+	return target, true, nil
+}
+
+// PruneMissingWorktree drops the bare repo's admin entry for a worktree path
+// whose directory is gone from disk. Locked on that path: the directory can be
+// missing only because another preparation has not created it yet, and pruning
+// the registration mid `git worktree add` leaves a checkout git no longer
+// tracks.
+func (m *Manager) PruneMissingWorktree(ctx context.Context, clonePath, dir string) error {
+	release, err := m.lockPath(dir)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	return project.RemoveWorktreeReconcile(ctx, clonePath, dir)
+}
+
 // RecreateFromBase discards a task's diverged branch and its worktree so the
 // next PrepareForTask rebuilds it fresh off the project's base ref. The branch
 // tip is first backed up to refs/sybra-backup/<branch> (best-effort) so the
@@ -839,6 +947,12 @@ func (m *Manager) PrepareForBranchConflictFromRemote(ctx context.Context, t task
 // genuinely cannot be reconciled, so re-implementing from a clean base is the
 // only autonomous path left.
 func (m *Manager) RecreateFromBase(ctx context.Context, t task.Task) error {
+	release, err := m.lockPath(m.PathFor(t))
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	proj, err := m.projects.Get(t.ProjectID)
 	if err != nil {
 		return fmt.Errorf("get project: %w", err)
@@ -871,6 +985,12 @@ func (m *Manager) RecreateFromBase(ctx context.Context, t task.Task) error {
 // may exist precisely because that PR broke a gating setup command (e.g. a
 // build step), so refusing to create the worktree would deadlock the task.
 func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) (string, error) {
+	release, err := m.lockPath(m.PathFor(t))
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
 	// Adopt an externally-created worktree (e.g. an Orca handoff) as-is instead
 	// of re-creating it. Without this guard PrepareForFix runs
 	// `git worktree add` at the adopted path, which fails ("already exists" /
@@ -929,6 +1049,9 @@ func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) 
 		if !project.RefExists(ctx, proj.ClonePath, originRef) {
 			prHeadRef, err := project.FetchPRHead(ctx, proj.ClonePath, prNumber)
 			if err != nil {
+				if project.IsTransientNetworkError(err) {
+					return "", fmt.Errorf("%w: fetch pr head: %w", ErrTransientFetch, err)
+				}
 				return "", fmt.Errorf("fetch pr head: %w", err)
 			}
 			reconcileTarget = freshFixReconcileTarget{ref: prHeadRef}
@@ -944,6 +1067,9 @@ func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) 
 		// so the fix agent still gets a real local branch to push.
 		prHeadRef, err := project.FetchPRHead(ctx, proj.ClonePath, prNumber)
 		if err != nil {
+			if project.IsTransientNetworkError(err) {
+				return "", fmt.Errorf("%w: fetch pr head: %w", ErrTransientFetch, err)
+			}
 			return "", fmt.Errorf("fetch pr head: %w", err)
 		}
 		if err := project.CreateWorktree(ctx, proj.ClonePath, wtPath, branch, prHeadRef); err != nil {

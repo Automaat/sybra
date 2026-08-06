@@ -12,10 +12,22 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 var prFixSentinelRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_RESULT:\s*([a-z_-]+)\s*$`)
-var prFixReasonRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_REASON:\s*(.+?)\s*$`)
+
+// prFixReasonLineRe locates where a SYBRA_PR_FIX_REASON: value begins. It is
+// intentionally a prefix match, not a single-line capture: a real diagnosis
+// is routinely more than one line, and `$` in (?m) mode ends at the next
+// newline, so a capturing group here would silently drop everything past
+// line 1 — see sentinelReason for how the value's end is actually found.
+var prFixReasonLineRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_REASON:\s*`)
+
+// prFixSentinelKeyRe matches the start of any SYBRA_PR_FIX_* sentinel line,
+// used to find where a multi-line REASON value ends: at the next sentinel
+// line, or end of output if there is none.
+var prFixSentinelKeyRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_(?:RESULT|REASON|FAILING_TEST):`)
 
 // prFixFailingTestRe matches each repeated SYBRA_PR_FIX_FAILING_TEST: line a
 // pr-fix agent emits alongside a human-required verdict for non-merge test
@@ -82,7 +94,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 		if reason != "" {
 			msg += ": " + reason
 		}
-		if err := e.tasks.UpdateTaskStatus(taskID, "in-review", msg); err != nil {
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InReview, msg); err != nil {
 			return StepOutput{}, fmt.Errorf("route pr-fix result: set in-review after flake: %w", err)
 		}
 		e.logger.Info("workflow.pr-fix.flake", "task_id", taskID, "pr", t.PRNumber, "reason", reason)
@@ -93,7 +105,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 	// state, so it must never be waved through by the re-probe below.
 	if !reviewHoldForced {
 		if msg, resolved := e.checkPRAlreadyResolved(taskID, t, reason); resolved {
-			if err := e.tasks.UpdateTaskStatus(taskID, "in-review", msg); err != nil {
+			if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InReview, msg); err != nil {
 				return StepOutput{}, fmt.Errorf("route pr-fix result: resolved-on-remote: set in-review: %w", err)
 			}
 			e.logger.Info("workflow.pr-fix.resolved-on-remote", "task_id", taskID, "pr", t.PRNumber, "agent_reason", reason)
@@ -131,7 +143,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 			"task_id", taskID, "workflow", workflowID, "reason", reason)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return StepOutput{}, fmt.Errorf("route pr-fix result: set human-required: %w", err)
 	}
 	e.logger.Warn("workflow.pr-fix.human-required", "task_id", taskID, "reason", reason)
@@ -476,10 +488,10 @@ func prFixVerdict(wfExec *Execution) (verdict PRFixVerdict, reason string) {
 
 // prFixFailingTests returns the specific failing tests a pr-fix agent named
 // via repeated SYBRA_PR_FIX_FAILING_TEST: lines alongside a human-required
-// verdict — the concrete repro info a human (or a future scoped test-fix
-// follow-up) needs, instead of just the free-text reason, which truncate()s
-// to 200 chars and would otherwise drop it. Mirrors prFixVerdict's own
-// var-first-then-reclassify lookup so both stay consistent across a resume.
+// verdict — structured repro info a human (or a future scoped test-fix
+// follow-up) can consume directly, instead of re-parsing it out of the
+// free-text reason. Mirrors prFixVerdict's own var-first-then-reclassify
+// lookup so both stay consistent across a resume.
 func prFixFailingTests(wfExec *Execution) []string {
 	if wfExec == nil {
 		return nil
@@ -560,20 +572,29 @@ func classifyPRFixResult(output string) (verdict PRFixVerdict, reason string) {
 	}
 	for _, phrase := range humanPhrases {
 		if strings.Contains(lower, phrase) {
-			return PRFixHuman, "pr-fix agent requested human review: " + truncate(firstNonEmptyLine(output), 200)
+			return PRFixHuman, "pr-fix agent requested human review: " + strings.TrimSpace(output)
 		}
 	}
 	return PRFixContinue, ""
 }
 
 // Empty when the agent gave no reason; only human-required defaults its text. EXC:FILE011:load-bearing-invariant
+// sentinelReason returns the last SYBRA_PR_FIX_REASON: value, spanning as
+// many lines as the agent wrote — the value ends at the next SYBRA_PR_FIX_*
+// sentinel line, or at the end of output if there is none. RE2 has no
+// lookahead, so the end boundary is found with a second, separate search
+// rather than a single capturing regex.
 func sentinelReason(output string) string {
-	matches := prFixReasonRe.FindAllStringSubmatch(output, -1)
-	if len(matches) == 0 {
+	starts := prFixReasonLineRe.FindAllStringIndex(output, -1)
+	if len(starts) == 0 {
 		return ""
 	}
-	m := matches[len(matches)-1]
-	return truncate(strings.TrimSpace(m[1]), 200)
+	valueStart := starts[len(starts)-1][1]
+	value := output[valueStart:]
+	if end := prFixSentinelKeyRe.FindStringIndex(value); end != nil {
+		value = value[:end[0]]
+	}
+	return strings.TrimSpace(value)
 }
 
 func extractPRFixReason(output string) string {
@@ -594,14 +615,4 @@ func extractPRFixFailingTests(output string) []string {
 		}
 	}
 	return tests
-}
-
-func firstNonEmptyLine(s string) string {
-	for line := range strings.Lines(s) {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			return line
-		}
-	}
-	return ""
 }

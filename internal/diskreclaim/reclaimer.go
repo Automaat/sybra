@@ -62,6 +62,11 @@ type Reclaimer struct {
 	running bool
 	lastRun time.Time
 	last    Outcome
+
+	// wg tracks the in-flight pass so a caller can wait for it to finish.
+	// A reclaim pass writes into the Sybra home; without this there is no
+	// way to know when it has stopped touching those directories.
+	wg sync.WaitGroup
 }
 
 // New builds a Reclaimer over cfg's resolved directories and tasks. cooldown
@@ -95,8 +100,27 @@ func (r *Reclaimer) TryRun() bool {
 	r.running = true
 	r.mu.Unlock()
 
-	go r.run()
+	// The waitgroup is driven here rather than inside run, which tests also
+	// call directly and synchronously; a Done in there would decrement an
+	// un-Added group and panic.
+	r.wg.Go(r.run)
 	return true
+}
+
+// Wait blocks until any in-flight reclaim pass has finished. A nil Reclaimer
+// returns immediately.
+//
+// A pass runs in the background and writes into the Sybra home, so anything
+// that tears those directories down — a test's temp home, a shutdown path —
+// has to wait for it first or it races a live writer.
+//
+// Deliberately unbounded: callers on a deadline should run it in a goroutine
+// they can abandon rather than have this block a shutdown budget.
+func (r *Reclaimer) Wait() {
+	if r == nil {
+		return
+	}
+	r.wg.Wait()
 }
 
 // run performs one reclaim pass: apply the safe buckets, then scan (never

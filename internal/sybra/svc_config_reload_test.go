@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/abtest"
@@ -210,7 +211,7 @@ func TestReloadFromDisk_WorkflowReviewGuardrails(t *testing.T) {
 	if !slices.Contains(result.Applied, "agent") {
 		t.Errorf("expected agent in applied, got %+v", result)
 	}
-	if !workflowBoolField(t, svc.workflowEngine, "reviewLoopDisabled") {
+	if svc.workflowEngine.ReviewUntilClean() {
 		t.Error("workflow reviewLoopDisabled = false, want true")
 	}
 	if got := workflowIntField(t, svc.workflowEngine, "maxCheckpoints"); got != 9 {
@@ -234,18 +235,9 @@ func TestApplyWorkflowGuardrails_WiresReviewRoundsPerHour(t *testing.T) {
 	cfg.Agent.ReviewRoundsPerHour = 7
 	svc.applyWorkflowGuardrails(cfg)
 
-	if got := workflowIntField(t, svc.workflowEngine, "reviewRoundsPerHour"); got != 7 {
+	if got := svc.workflowEngine.ReviewRoundsPerHour(); got != 7 {
 		t.Errorf("workflow reviewRoundsPerHour = %d, want 7", got)
 	}
-}
-
-func workflowBoolField(t *testing.T, e *workflow.Engine, name string) bool {
-	t.Helper()
-	v := reflect.ValueOf(e).Elem().FieldByName(name)
-	if !v.IsValid() {
-		t.Fatalf("workflow.Engine field %q not found", name)
-	}
-	return v.Bool()
 }
 
 func workflowIntField(t *testing.T, e *workflow.Engine, name string) int {
@@ -776,6 +768,48 @@ func TestReloadFromDisk_ReadersSeeWholePersistedSnapshots(t *testing.T) {
 	case err := <-errCh:
 		t.Fatal(err)
 	default:
+	}
+}
+
+func TestMutateLocked_PublishesImmutableAppSnapshot(t *testing.T) {
+	initial := config.DefaultConfig()
+	app := NewApp(slog.New(slog.DiscardHandler), new(slog.LevelVar), initial)
+	svc := &ConfigService{
+		cfg:       initial,
+		persisted: cloneConfig(initial),
+		publishConfig: func(next *config.Config) {
+			app.activeCfg.Store(next)
+		},
+	}
+
+	var readers sync.WaitGroup
+	done := make(chan struct{})
+	readers.Go(func() {
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				_ = app.currentConfig().Cluster.Followers
+			}
+		}
+	})
+
+	next := cloneConfig(initial)
+	next.Logging.Level = "debug"
+	svc.mu.Lock()
+	_, _, err := svc.mutateLocked(next, nil)
+	svc.mu.Unlock()
+	close(done)
+	readers.Wait()
+	if err != nil {
+		t.Fatalf("mutateLocked: %v", err)
+	}
+	if got := app.currentConfig(); got != svc.cfg {
+		t.Fatal("App did not receive the published config snapshot")
+	}
+	if app.cfg == svc.cfg {
+		t.Fatal("hot reload mutated the construction-time config snapshot")
 	}
 }
 

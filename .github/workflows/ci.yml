@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The main-branch merge queue creates a synthetic commit containing the
+  # queued group. Required checks must run for this event or GitHub cannot
+  # prove that independently-green PRs are green in combination. Keep this in
+  # sync with .github/BRANCH_PROTECTION.md.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -105,7 +111,7 @@ jobs:
 
       - name: Install nilaway
         # renovate: datasource=go depName=go.uber.org/nilaway
-        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260724203407-f4f8ac24c032
+        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260803001828-dc48a6814e08
 
       - name: Run nilaway
         run: |
@@ -255,6 +261,18 @@ jobs:
       - name: Check for ~/.sybra fallbacks outside internal/config
         run: bash scripts/check-no-home-fallback.sh
 
+  check-atomic-writes:
+    name: Atomic Record Writes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Check for hand-rolled temp-rename writes outside internal/fsutil
+        run: bash scripts/check-atomic-writes.sh
+
+      - name: Check the gate itself still catches drift
+        run: bash scripts/check-atomic-writes.test.sh
+
   check-no-viewer-user-endpoint:
     name: No /user Identity Lookups
     runs-on: ubuntu-latest
@@ -272,6 +290,19 @@ jobs:
 
       - name: Check for direct gh subprocess spawns outside github.Run/RunWithEnv
         run: bash scripts/check-gh-exec-gate.sh
+
+  check-git-exec-gate:
+    name: Git Calls Routed Through gitexec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Check for direct production Git subprocess spawns outside gitexec
+        run: |
+          bash scripts/check-git-exec-gate.sh
+          bash scripts/check-git-exec-gate.test.sh
 
   check-no-direct-status-write:
     name: No Direct Task-Status Writes
@@ -423,6 +454,11 @@ jobs:
           cat > "$SYBRA_HOME/config.yaml" <<EOF
           agent:
             provider: ${{ matrix.provider }}
+            # sybra-server refuses to start without an explicit posture, so a
+            # config that merely omits the key can never be mistaken for a
+            # contained one. "off" is correct here: this suite drives the HTTP
+            # API against fake providers and starts no real agent subprocess.
+            sandbox_mode: "off"
           server:
             auth_token: e2e-test-token
           monitor:

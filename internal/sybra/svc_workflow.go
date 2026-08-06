@@ -53,5 +53,17 @@ func (s *WorkflowService) StartWorkflow(taskID, workflowID string) error {
 
 // HandleHumanAction processes approve/reject/input for a waiting workflow step.
 func (s *WorkflowService) HandleHumanAction(taskID, action string, data map[string]string) error {
+	if isPlanReviewHumanAction(action) {
+		return s.engine.HandleHumanActionRecovering(taskID, action, data, recoverCompletedPlanReview)
+	}
 	return s.engine.HandleHumanAction(taskID, action, data)
+}
+
+func isPlanReviewHumanAction(action string) bool {
+	switch action {
+	case "approve", "reject":
+		return true
+	default:
+		return false
+	}
 }
