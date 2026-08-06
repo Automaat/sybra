@@ -20,7 +20,7 @@ import (
 // ID, so the fingerprint stays stable across ticks while the file is broken
 // (and the parse error text keeps changing).
 func checkUnreadableTasks(tasks []task.Task, now time.Time) []Finding {
-	var findings []Finding
+	findings := make([]Finding, 0, len(tasks))
 	for i := range tasks {
 		t := &tasks[i]
 		if !t.Degraded {
