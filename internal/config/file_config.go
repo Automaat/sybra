@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -14,6 +15,14 @@ const (
 	LegacySchemaVersion  = 1
 	CurrentSchemaVersion = 2
 )
+
+// ErrUnknownConfigKey marks a config.yaml that is valid YAML but names a key
+// this build does not know — typically a key removed by an upgrade, left
+// behind in an externally-rendered file. It is a statement about the schema
+// and nothing else, so callers must not read it as "the config is
+// unreadable": a diagnostic can still resolve every other value, and a client
+// can still reach the server.
+var ErrUnknownConfigKey = errors.New("unknown config key")
 
 // FileConfig preserves what the operator wrote, including whether a key was
 // omitted entirely. Resolve consumes it to produce a concrete ResolvedConfig.
@@ -119,41 +128,85 @@ func yamlNodeAt(node *yaml.Node, path ...string) (*yaml.Node, bool) {
 	return node, true
 }
 
+// ParseFileConfig parses config.yaml and fails on any unknown key.
 func ParseFileConfig(data []byte) (*FileConfig, error) {
+	cfg, schemaErr, err := parseFileConfigLenient(data)
+	switch {
+	case err != nil:
+		return nil, err
+	case schemaErr != nil:
+		return nil, schemaErr
+	case cfg == nil:
+		// parseFileConfigLenient never returns this combination. Stating it
+		// anyway is what lets the static analysis prove every caller's
+		// dereference safe, rather than leaving it to be inferred.
+		return nil, errors.New("parse config: no document")
+	}
+	return cfg, nil
+}
+
+// parseFileConfigLenient returns the parsed config and the unknown-key error
+// separately, so a diagnostic can report the bad key and still read every
+// other value. err is reserved for input this cannot parse at all.
+func parseFileConfigLenient(data []byte) (parsed *FileConfig, schemaErr, err error) {
 	var root yaml.Node
 	if err := yaml.Unmarshal(data, &root); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cfg := &FileConfig{root: &root, data: append([]byte(nil), data...)}
 	if root.Kind == 0 {
 		cfg.schemaVersion = LegacySchemaVersion
-		return cfg, nil
+		return cfg, nil, nil
 	}
 	schemaVersion, hasVersion, err := parseSchemaVersion(&root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cfg.schemaVersion = schemaVersion
 	cfg.hasSchemaVersion = hasVersion
 	validateRoot := &root
+	var skipped []string
 	if cfg.schemaVersion >= CurrentSchemaVersion {
-		normalized, warnings, err := NormalizeV2Document(&root)
+		// Lenient: an unknown key at a namespace boundary is rejected here
+		// rather than by validateKnownConfigKeys below, so a strict normalizer
+		// would abort before the caller ever sees a schema error it could
+		// report. Collect and skip; the strict wrapper turns the same keys
+		// back into a hard failure.
+		normalized, warnings, unknown, err := normalizeV2Document(&root, &unknownKeySink{lenient: true})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		skipped = unknown
 		cfg.normalizedRoot = normalized
 		cfg.warnings = warnings
 		cfg.normalizedData, err = marshalYAMLDocument(normalized)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		validateRoot = normalized
 		cfg.warnings = append(cfg.warnings, legacyFieldAliasWarnings(normalized)...)
 	}
-	if err := validateKnownConfigKeys(validateRoot, cfg.schemaVersion); err != nil {
-		return nil, err
+	return cfg, unknownKeyError(skipped, validateKnownConfigKeys(validateRoot, cfg.schemaVersion)), nil
+}
+
+// unknownKeyError merges the keys the normalizer skipped with the one the
+// schema walk rejected into a single sentinel-matching error. Reporting every
+// stale key at once matters for the case this exists for: a rendered config
+// left behind by an upgrade usually carries several, and one-per-run turns a
+// single fix into a sequence of them.
+func unknownKeyError(skipped []string, validateErr error) error {
+	if len(skipped) == 0 {
+		return validateErr
 	}
-	return cfg, nil
+	quoted := make([]string, 0, len(skipped))
+	for _, key := range skipped {
+		quoted = append(quoted, fmt.Sprintf("%q", key))
+	}
+	msg := strings.Join(quoted, ", ")
+	if validateErr != nil {
+		msg += ", " + strings.TrimPrefix(validateErr.Error(), ErrUnknownConfigKey.Error()+" ")
+	}
+	return fmt.Errorf("%w %s", ErrUnknownConfigKey, msg)
 }
 
 func parseSchemaVersion(root *yaml.Node) (version int, hasVersion bool, err error) {
@@ -471,11 +524,11 @@ func validateNodeAgainstType(node *yaml.Node, typ reflect.Type, path []string, a
 				continue
 			}
 			suggestion := nearestKey(key, knownKeys(fields, allowedAliases, allowedFieldAliases))
-			msg := fmt.Sprintf("unknown config key %q", joinPath(append(path, key)))
+			msg := fmt.Sprintf("%q", joinPath(append(path, key)))
 			if suggestion != "" {
 				msg += fmt.Sprintf(" (did you mean %q?)", suggestion)
 			}
-			return fmt.Errorf("%s", msg)
+			return fmt.Errorf("%w %s", ErrUnknownConfigKey, msg)
 		}
 	case reflect.Slice, reflect.Array:
 		if node.Kind != yaml.SequenceNode {

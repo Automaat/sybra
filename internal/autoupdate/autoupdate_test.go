@@ -13,6 +13,36 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 )
 
+func TestGitUsesWorkingDirectoryAndDisablesPrompts(t *testing.T) {
+	binDir := t.TempDir()
+	fakeGit := filepath.Join(binDir, "git")
+	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf '%s\\n%s\\n' \"$PWD\" \"$GIT_TERMINAL_PROMPT\"\n"), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	repoDir := t.TempDir()
+	out, err := git(t.Context(), repoDir, "status", "--short")
+	if err != nil {
+		t.Fatalf("git: %v", err)
+	}
+	lines := strings.Split(out, "\n")
+	if len(lines) != 2 || lines[1] != "0" {
+		t.Fatalf("git environment = %q, want working directory and prompt=0", out)
+	}
+	actualInfo, err := os.Stat(lines[0])
+	if err != nil {
+		t.Fatalf("stat actual working directory: %v", err)
+	}
+	wantInfo, err := os.Stat(repoDir)
+	if err != nil {
+		t.Fatalf("stat expected working directory: %v", err)
+	}
+	if !os.SameFile(actualInfo, wantInfo) {
+		t.Fatalf("working directory = %q, want %q", lines[0], repoDir)
+	}
+}
+
 func TestCheckAndApplyAutoModeFastForwards(t *testing.T) {
 	ctx := t.Context()
 	upstream, work := seedRepos(t)

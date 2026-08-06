@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/fsutil"
 )
 
@@ -35,7 +36,9 @@ type persisted struct {
 // Store persists provider quota snapshots and local usage events.
 type Store struct {
 	path string
-	now  func() time.Time
+	// clock drives the event-retention and cycle windows. Read without a
+	// lock; set once at construction or during test setup.
+	clock clock.Clock
 
 	mu        sync.Mutex
 	snapshots map[string]Snapshot
@@ -46,7 +49,7 @@ type Store struct {
 func NewStore(path string) (*Store, error) {
 	s := &Store{
 		path:      path,
-		now:       time.Now,
+		clock:     clock.System{},
 		snapshots: map[string]Snapshot{},
 		seen:      map[string]struct{}{},
 	}
@@ -184,7 +187,7 @@ func (s *Store) reloadLocked() error {
 	}
 	s.events = nil
 	s.seen = map[string]struct{}{}
-	cutoff := s.now().UTC().Add(-eventMaxAge)
+	cutoff := s.nowTime().UTC().Add(-eventMaxAge)
 	for i := range p.Events {
 		e := p.Events[i]
 		if e.ID == "" {
@@ -207,7 +210,7 @@ func (s *Store) updateSnapshotLocked(snapshot Snapshot) bool {
 		return false
 	}
 	if snapshot.CapturedAt.IsZero() {
-		snapshot.CapturedAt = s.now().UTC()
+		snapshot.CapturedAt = s.nowTime().UTC()
 	}
 	if snapshot.Source == "" {
 		snapshot.Source = SourceStream
@@ -228,7 +231,7 @@ func (s *Store) recordUsageLocked(e UsageEvent) bool {
 		return false
 	}
 	if e.Timestamp.IsZero() {
-		e.Timestamp = s.now().UTC()
+		e.Timestamp = s.nowTime().UTC()
 	}
 	if _, ok := s.seen[e.ID]; ok {
 		return false
@@ -256,7 +259,7 @@ func (s *Store) Summary(policy Policy) Summary {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := s.now().UTC()
+	now := s.nowTime().UTC()
 	providers := []string{ProviderClaude, ProviderCodex, ProviderCopilot, ProviderOpenCode}
 	out := make([]ProviderSummary, 0, len(providers))
 	for _, provider := range providers {
@@ -566,3 +569,5 @@ func maxFloat(a, b float64) float64 {
 	}
 	return b
 }
+
+func (s *Store) nowTime() time.Time { return clock.Or(s.clock).Now() }

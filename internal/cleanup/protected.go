@@ -12,14 +12,15 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -110,7 +111,10 @@ var protectedStoreLocker = fsutil.NewKeyedLocker()
 type ProtectedStore struct {
 	path           string
 	reminderWindow time.Duration
-	now            func() time.Time
+
+	// clock drives the reminder window. Read without a lock; set once at
+	// construction or during test setup.
+	clock clock.Clock
 }
 
 func DefaultProtectedStorePath() string {
@@ -125,7 +129,7 @@ func NewProtectedStore(path string) *ProtectedStore {
 	return &ProtectedStore{
 		path:           path,
 		reminderWindow: DefaultReminderWindow,
-		now:            time.Now,
+		clock:          clock.System{},
 	}
 }
 
@@ -228,7 +232,7 @@ func (s *ProtectedStore) Observe(obs Observation) (Finding, ObserveEvent, error)
 	}
 	defer unlock()
 
-	now := s.now().UTC()
+	now := s.nowTime().UTC()
 	rec, err := s.read()
 	if err != nil {
 		return Finding{}, ObserveUnchanged, err
@@ -320,7 +324,7 @@ func (s *ProtectedStore) ResolveMissing(kind ResourceKind, observed map[string]b
 	if err != nil {
 		return err
 	}
-	now := s.now().UTC()
+	now := s.nowTime().UTC()
 	changed := false
 	for i := range rec.Findings {
 		f := &rec.Findings[i]
@@ -370,12 +374,12 @@ func (s *ProtectedStore) Rescue(id string) (Finding, error) {
 			continue
 		}
 		f := rec.Findings[i]
-		info, err := rescueFinding(f, filepath.Join(filepath.Dir(s.path), "rescues"), s.now().UTC())
+		info, err := rescueFinding(f, filepath.Join(filepath.Dir(s.path), "rescues"), s.nowTime().UTC())
 		if err != nil {
 			return Finding{}, err
 		}
 		f.State = FindingRescued
-		f.ResolvedAt = s.now().UTC()
+		f.ResolvedAt = s.nowTime().UTC()
 		f.Rescue = info
 		rec.Findings[i] = f
 		if err := s.write(rec); err != nil {
@@ -397,7 +401,7 @@ func (s *ProtectedStore) setState(id string, state FindingState, mutate func(*Fi
 	if err != nil {
 		return Finding{}, err
 	}
-	now := s.now().UTC()
+	now := s.nowTime().UTC()
 	for i := range rec.Findings {
 		if rec.Findings[i].ID != id {
 			continue
@@ -454,13 +458,13 @@ func rescueWorktree(path, ref, bundlePath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := exec.CommandContext(ctx, "git", "-C", path, "update-ref", ref, "HEAD").Run(); err != nil {
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: path}, "update-ref", ref, "HEAD"); err != nil {
 		return fmt.Errorf("create rescue ref: %w", err)
 	}
-	if out, err := exec.CommandContext(ctx, "git", "-C", path, "bundle", "create", bundlePath, "HEAD").CombinedOutput(); err != nil {
-		return fmt.Errorf("create rescue bundle: %w: %s", err, strings.TrimSpace(string(out)))
+	if _, err := gitexec.CombinedOutput(ctx, gitexec.Options{Dir: path}, "bundle", "create", bundlePath, "HEAD"); err != nil {
+		return fmt.Errorf("create rescue bundle: %w", err)
 	}
-	if out, err := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "--verify", ref).CombinedOutput(); err != nil || strings.TrimSpace(string(out)) == "" {
+	if out, err := gitexec.Output(ctx, gitexec.Options{Dir: path}, "rev-parse", "--verify", ref); err != nil || out == "" {
 		if err == nil {
 			err = errors.New("empty rescue ref")
 		}
@@ -583,3 +587,5 @@ func ProtectedEvidenceLogPaths(logDir string, tasks []task.Task, findings []Find
 	}
 	return out
 }
+
+func (s *ProtectedStore) nowTime() time.Time { return clock.Or(s.clock).Now() }

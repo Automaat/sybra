@@ -451,7 +451,8 @@ func TestClassifyProviderError_CodexConnectivityRoutesToRateLimit(t *testing.T) 
 	sample := provider.ErrorSample{
 		Stderr: "websocket connection refused: wss://chatgpt.com/backend-api/codex/responses",
 	}
-	sig, reason, _ := classifyProviderError("codex", sample)
+	c := classifyProviderError("codex", sample)
+	sig, reason, _, _ := c.Signal, c.Reason, c.RetryAfter, c.Source
 	if sig != provider.SignalRateLimit {
 		t.Fatalf("signal = %v, want SignalRateLimit", sig)
 	}
@@ -720,6 +721,73 @@ func TestLastHeadlessResultIgnoresPriorRetryResult(t *testing.T) {
 	found, isError := a.lastHeadlessResult()
 	if found || isError {
 		t.Fatalf("lastHeadlessResult = (%v, %v), want no terminal result", found, isError)
+	}
+}
+
+// TestLastHeadlessResultSkipsPostResultBookkeeping covers the reattach
+// recovery hazard: a forked-subagent run (CLAUDE_CODE_FORK_SUBAGENT) or one
+// with CLI background bash tasks keeps emitting child turns and
+// background_tasks_changed snapshots after its top-level terminal result. If
+// the literal last event decided completion, finalizeIfCompleted would refuse
+// to finalize and reattachHeadless would stamp errReattachedGone — requeueing
+// a run that in fact finished cleanly. Only that bookkeeping is skipped: a new
+// top-level event still supersedes the result.
+func TestLastHeadlessResultSkipsPostResultBookkeeping(t *testing.T) {
+	result := StreamEvent{Type: "result", Content: "done"}
+	cases := []struct {
+		name      string
+		trailing  []StreamEvent
+		wantFound bool
+	}{
+		{
+			name:      "no trailing events",
+			wantFound: true,
+		},
+		{
+			name: "forked subagent child turns",
+			trailing: []StreamEvent{
+				{Type: "assistant", Content: "child working", parentToolUseID: "toolu_1"},
+				{Type: "result", Content: "child done", parentToolUseID: "toolu_1"},
+			},
+			wantFound: true,
+		},
+		{
+			name: "background task snapshots draining",
+			trailing: []StreamEvent{
+				{Type: "system", Subtype: "background_tasks_changed", BackgroundTaskIDs: []string{"bg-1"}},
+				{Type: "system", Subtype: "background_tasks_changed", BackgroundTaskIDs: []string{}},
+			},
+			wantFound: true,
+		},
+		{
+			name:     "new top-level turn after result",
+			trailing: []StreamEvent{{Type: "assistant", Content: "steered again"}},
+		},
+		{
+			name: "new top-level turn after subagent chatter",
+			trailing: []StreamEvent{
+				{Type: "assistant", Content: "child working", parentToolUseID: "toolu_1"},
+				{Type: "assistant", Content: "steered again"},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &Agent{}
+			a.AppendOutput(result)
+			for _, ev := range tc.trailing {
+				a.AppendOutput(ev)
+			}
+
+			found, isError := a.lastHeadlessResult()
+			if found != tc.wantFound {
+				t.Fatalf("lastHeadlessResult found = %v, want %v", found, tc.wantFound)
+			}
+			if isError {
+				t.Fatal("lastHeadlessResult isError = true, want false (clean result)")
+			}
+		})
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 const (
@@ -59,9 +61,9 @@ func (m *Manager) recordToolCallFailure(a *Agent, rec ToolCallFailureRecord) {
 			}
 		}
 	}
-	rec.ToolInputSummary = truncateToolFailureField(rec.ToolInputSummary)
-	rec.Reason = truncateToolFailureField(rec.Reason)
-	rec.ForegroundCommand = truncateToolFailureField(rec.ForegroundCommand)
+	rec.ToolInputSummary = textutil.TruncateBytes(rec.ToolInputSummary, toolFailureMaxField, "...[truncated]")
+	rec.Reason = textutil.TruncateBytes(rec.Reason, toolFailureMaxField, "...[truncated]")
+	rec.ForegroundCommand = textutil.TruncateBytes(rec.ForegroundCommand, toolFailureMaxField, "...[truncated]")
 
 	m.logger.Warn("agent.tool_failure",
 		"id", rec.AgentID,
@@ -156,22 +158,15 @@ func summarizeToolInput(input map[string]any) string {
 	for _, key := range []string{"command", "file_path", "path", "description", "url"} {
 		if v, ok := input[key]; ok {
 			if s := strings.TrimSpace(fmt.Sprint(v)); s != "" {
-				return truncateToolFailureField(s)
+				return textutil.TruncateBytes(s, toolFailureMaxField, "...[truncated]")
 			}
 		}
 	}
 	data, err := json.Marshal(input)
 	if err != nil {
-		return truncateToolFailureField(fmt.Sprint(input))
+		return textutil.TruncateBytes(fmt.Sprint(input), toolFailureMaxField, "...[truncated]")
 	}
-	return truncateToolFailureField(string(data))
-}
-
-func truncateToolFailureField(s string) string {
-	if len(s) <= toolFailureMaxField {
-		return s
-	}
-	return s[:toolFailureMaxField] + "...[truncated]"
+	return textutil.TruncateBytes(string(data), toolFailureMaxField, "...[truncated]")
 }
 
 func logApprovalToolFailure(logger *slog.Logger, agentID, toolName, toolUseID, source, reason string) {

@@ -30,6 +30,22 @@ type DetectInput struct {
 	LiveAgents    []liveAgent
 	Cfg           config.MonitorConfig
 	AllowsProject func(projectID string) bool
+	// Providers is the health of every configured provider, one entry each.
+	// Empty means the caller did not wire provider health, and the
+	// no-capacity rule stays silent rather than guessing.
+	Providers []ProviderHealth
+}
+
+// ProviderHealth is the slice of provider state the no-capacity rule needs,
+// kept as a local struct so internal/monitor does not depend on
+// internal/provider's Checker.
+type ProviderHealth struct {
+	Name    string
+	Enabled bool
+	Healthy bool
+	Reason  string
+	// Until is the rate-limit window end, zero when unknown or not throttled.
+	Until time.Time
 }
 
 // Detect runs every threshold rule against the snapshot and returns a Report
@@ -42,6 +58,7 @@ func Detect(in DetectInput) Report {
 	}
 	report.Anomalies = append(report.Anomalies, detectBoardWide(in, report.Counts)...)
 	report.Anomalies = append(report.Anomalies, detectBoardStalled(in, report.Counts)...)
+	report.Anomalies = append(report.Anomalies, detectNoProviderCapacity(in, report.Counts)...)
 	report.Anomalies = append(report.Anomalies, detectPerTask(in)...)
 	report.Anomalies = append(report.Anomalies, detectFromAudit(in)...)
 	return report
@@ -149,6 +166,65 @@ func detectBoardStalled(in DetectInput, counts Counts) []Anomaly {
 		Severity:    SeverityError,
 		RequiresLLM: false,
 		Fingerprint: Fingerprint(KindBoardStalled, "", ev),
+		Evidence:    ev,
+		DetectedAt:  in.Now,
+	}}
+}
+
+// detectNoProviderCapacity fires when every enabled provider is unhealthy and
+// there is work that would otherwise dispatch.
+//
+// The distinction that matters is "nothing to do" versus "cannot do anything":
+// an idle board and a board with nowhere to run both report dispatched:0, and
+// the only way to tell them apart was to grep provider.health.flip out of the
+// app log. The evidence carries each provider's reason and reset time so the
+// expected recovery is visible without doing that.
+func detectNoProviderCapacity(in DetectInput, counts Counts) []Anomaly {
+	if len(in.Providers) == 0 {
+		return nil
+	}
+	// Work that would dispatch if anything could run. An idle board must not
+	// raise this: a fleet with no capacity and nothing to do is not degraded.
+	pending := counts.Todo + counts.InProgress
+	if pending == 0 {
+		return nil
+	}
+
+	enabled := 0
+	reasons := make(map[string]string)
+	var until []string
+	for i := range in.Providers {
+		p := in.Providers[i]
+		if !p.Enabled {
+			continue
+		}
+		enabled++
+		if p.Healthy {
+			return nil
+		}
+		reasons[p.Name] = p.Reason
+		if !p.Until.IsZero() {
+			until = append(until, p.Name+"="+p.Until.UTC().Format(time.RFC3339))
+		}
+	}
+	if enabled == 0 {
+		return nil
+	}
+	slices.Sort(until)
+
+	ev := map[string]any{
+		"pending":           pending,
+		"enabled_providers": enabled,
+		"reasons":           reasons,
+	}
+	if len(until) > 0 {
+		ev["rate_limited_until"] = strings.Join(until, ",")
+	}
+	return []Anomaly{{
+		Kind:        KindNoProviderCapacity,
+		Severity:    SeverityError,
+		RequiresLLM: false,
+		Fingerprint: Fingerprint(KindNoProviderCapacity, "", ev),
 		Evidence:    ev,
 		DetectedAt:  in.Now,
 	}}

@@ -122,6 +122,32 @@ exit 7
 	}
 }
 
+func TestRunQuietDiscardsStdoutAndPreservesStderr(t *testing.T) {
+	bin := t.TempDir()
+	writeFakeGit(t, bin, `
+printf 'discarded stdout\n'
+if [ "$1" = fail ]; then
+  printf 'useful stderr\n' >&2
+  exit 9
+fi
+`)
+	t.Setenv("PATH", bin)
+
+	if err := RunQuiet(context.Background(), Options{}, "success"); err != nil {
+		t.Fatalf("RunQuiet success: %v", err)
+	}
+	err := RunQuiet(context.Background(), Options{}, "fail")
+	if err == nil {
+		t.Fatal("RunQuiet failure unexpectedly succeeded")
+	}
+	if got := err.Error(); strings.Contains(got, "discarded stdout") || !strings.Contains(got, "useful stderr") {
+		t.Fatalf("RunQuiet error = %q, want stderr without stdout", got)
+	}
+	if code, ok := ExitCode(err); !ok || code != 9 {
+		t.Fatalf("ExitCode = (%d, %v), want (9, true)", code, ok)
+	}
+}
+
 func TestOutputFailureIncludesStderr(t *testing.T) {
 	bin := t.TempDir()
 	writeFakeGit(t, bin, `
@@ -133,6 +159,40 @@ exit 3
 	_, err := Output(context.Background(), Options{}, "bad-output")
 	if err == nil || !strings.Contains(err.Error(), "specific stderr") {
 		t.Fatalf("Output error = %v, want captured stderr", err)
+	}
+}
+
+func TestOutputWithStderrKeepsStreamsSeparate(t *testing.T) {
+	bin := t.TempDir()
+	writeFakeGit(t, bin, `
+printf 'stdout bytes\n'
+printf 'stderr advisory\n' >&2
+if [ "$1" = fail ]; then
+  exit 4
+fi
+`)
+	t.Setenv("PATH", bin)
+
+	stdout, stderr, err := OutputWithStderr(context.Background(), Options{}, "success")
+	if err != nil {
+		t.Fatalf("OutputWithStderr success: %v", err)
+	}
+	if string(stdout) != "stdout bytes\n" || string(stderr) != "stderr advisory\n" {
+		t.Fatalf("OutputWithStderr = (%q, %q), want separate streams", stdout, stderr)
+	}
+
+	stdout, stderr, err = OutputWithStderr(context.Background(), Options{}, "fail")
+	if err == nil {
+		t.Fatal("OutputWithStderr failure unexpectedly succeeded")
+	}
+	if string(stdout) != "stdout bytes\n" || string(stderr) != "stderr advisory\n" {
+		t.Fatalf("failed OutputWithStderr = (%q, %q), want retained streams", stdout, stderr)
+	}
+	if got := err.Error(); !strings.Contains(got, "git fail") || !strings.Contains(got, "stderr advisory") {
+		t.Fatalf("OutputWithStderr error = %q, want command and stderr", got)
+	}
+	if code, ok := ExitCode(err); !ok || code != 4 {
+		t.Fatalf("ExitCode = (%d, %v), want (4, true)", code, ok)
 	}
 }
 

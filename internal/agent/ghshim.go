@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // GhShimReason is what the gh shim prints to stderr, and the agent reads, when
@@ -264,25 +266,11 @@ func shellSingleQuoteSafe(s string) bool {
 // place, so an agent already running when the manager restarts can never exec a
 // half-written or not-yet-executable shim.
 func writeExecutableAtomic(path, content string) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".gh-shim-*")
-	if err != nil {
-		return fmt.Errorf("create gh shim temp: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
-
-	if _, err := tmp.WriteString(content); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write gh shim: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close gh shim: %w", err)
-	}
-	if err := os.Chmod(tmpName, 0o755); err != nil {
-		return fmt.Errorf("chmod gh shim: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("install gh shim: %w", err)
+	// resolveGhShimDir logs this and then silently degrades — an empty dir
+	// disables the gh approval guard fleet-wide — so it is the only signal an
+	// operator gets. Keep the staging and publish steps distinguishable.
+	if err := fsutil.AtomicWriteMode(path, []byte(content), 0o755); err != nil {
+		return fmt.Errorf("write gh shim %s: %w", path, err)
 	}
 	return nil
 }

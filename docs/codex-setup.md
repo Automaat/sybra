@@ -99,7 +99,11 @@ Stdout is read as NDJSON. Sybra parses Codex event types (`agent_message`, `comm
 
 ## Commit Requirements
 
-Codex agents must commit their work before finishing — the same requirement as Claude agents. Git commit flags (`-s` for sign-off, `-S` for GPG signing) work normally inside Sybra-managed worktrees. See the orchestrator's "Agent Commit Requirement" section for the required commit block to include in every headless prompt.
+Codex agents must commit their work before finishing — the same requirement as Claude agents. See the orchestrator's "Agent Commit Requirement" section for the required commit block to include in every headless prompt.
+
+Sign-off (`-s`) always works, and is guaranteed independently by the `prepare-commit-msg` hook Sybra installs in every worktree. GPG signing (`-S`) is **host-dependent**: on a keyless host such as the Linux deploy server it fails with `gpg failed to sign the data` and parks the task. Never hardcode `-S` in a prompt — workflow prompts template `{{commitsignflags .Vars}}`, which resolves from `agent.commit_signing` (`auto` | `never` | `require`, default `auto`) and falls back to `-s`.
+
+Note that `git commit -S` on the command line overrides the `commit.gpgsign=false` Sybra pins on each clone; config is a floor for plain commits, not a way to neutralize an explicit flag.
 
 ## Skill and Prompt Compatibility
 
