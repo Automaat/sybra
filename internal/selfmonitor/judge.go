@@ -154,7 +154,7 @@ func parseJudgeVerdict(raw []byte) (Verdict, error) {
 		}
 		text = *envelope.Result
 	}
-	jsonStr := judgeExtractLastJSON(text)
+	jsonStr := llmjob.ExtractLastJSONObject(text)
 	if jsonStr == "" {
 		return Verdict{}, fmt.Errorf("no JSON object in result: %q", text)
 	}
@@ -164,57 +164,4 @@ func parseJudgeVerdict(raw []byte) (Verdict, error) {
 	}
 	_ = validateJudgeVerdict(&v)
 	return v, nil
-}
-
-// judgeExtractLastJSON returns the last balanced {...} substring in s, or "".
-// Mirrors triage.extractLastJSONObject and internal/agent/inspector.go.
-func judgeExtractLastJSON(s string) string {
-	s = strings.TrimSpace(s)
-	var (
-		inString  bool
-		escape    bool
-		depth     int
-		objStart  = -1
-		lastStart = -1
-		lastEnd   = -1
-	)
-	for i := range len(s) {
-		c := s[i]
-		if escape {
-			escape = false
-			continue
-		}
-		if inString {
-			switch c {
-			case '\\':
-				escape = true
-			case '"':
-				inString = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			inString = true
-		case '{':
-			if depth == 0 {
-				objStart = i
-			}
-			depth++
-		case '}':
-			if depth == 0 {
-				continue
-			}
-			depth--
-			if depth == 0 && objStart >= 0 {
-				lastStart = objStart
-				lastEnd = i
-				objStart = -1
-			}
-		}
-	}
-	if lastStart < 0 {
-		return ""
-	}
-	return s[lastStart : lastEnd+1]
 }

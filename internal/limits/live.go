@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 const (
@@ -391,7 +393,7 @@ func claudeUsageCycle(raw *claudeUsageWindow, windowMinutes int) (*CycleSnapshot
 }
 
 func fetchCodexLiveSnapshot(ctx context.Context, capturedAt time.Time) (Snapshot, bool, error) {
-	cmd := exec.CommandContext(ctx, "codex", "-s", "read-only", "-a", "untrusted", "app-server")
+	cmd := exec.CommandContext(ctx, providerid.Codex, "-s", "read-only", "-a", "untrusted", "app-server")
 	cmd.WaitDelay = codexWaitDelay
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

@@ -15,6 +15,7 @@ import (
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/notification"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/workflow"
 	"gopkg.in/yaml.v3"
 )
@@ -462,10 +463,10 @@ func (s *ConfigService) applyProviderHealthRuntime(cfg config.Config) {
 		return
 	}
 	s.providerHealth.SetAutoFailover(cfg.Providers.AutoFailover)
-	s.providerHealth.SetProviderEnabled("claude", cfg.Providers.Claude.Enabled)
-	s.providerHealth.SetProviderEnabled("codex", cfg.Providers.Codex.Enabled)
-	s.providerHealth.SetProviderEnabled("copilot", cfg.Providers.Copilot.Enabled)
-	s.providerHealth.SetProviderEnabled("opencode", cfg.Providers.OpenCode.Enabled)
+	s.providerHealth.SetProviderEnabled(providerid.Claude, cfg.Providers.Claude.Enabled)
+	s.providerHealth.SetProviderEnabled(providerid.Codex, cfg.Providers.Codex.Enabled)
+	s.providerHealth.SetProviderEnabled(providerid.Copilot, cfg.Providers.Copilot.Enabled)
+	s.providerHealth.SetProviderEnabled(providerid.OpenCode, cfg.Providers.OpenCode.Enabled)
 }
 
 func (s *ConfigService) applyAgentGuardrails(cfg config.Config) {

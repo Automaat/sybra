@@ -25,6 +25,7 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
@@ -641,7 +642,7 @@ func providersForRun(run task.AgentRun) []string {
 	if preferred != "" {
 		providers = append(providers, preferred)
 	}
-	for _, provider := range []string{"codex", "copilot", "claude"} {
+	for _, provider := range []string{providerid.Codex, providerid.Copilot, providerid.Claude} {
 		if provider != preferred {
 			providers = append(providers, provider)
 		}
@@ -658,10 +659,10 @@ func providerForRun(run task.AgentRun) string {
 		model = model[i+1:]
 	}
 	if strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "o3") || strings.HasPrefix(model, "o4") {
-		return "codex"
+		return providerid.Codex
 	}
 	if strings.HasPrefix(model, "claude-") || model == "sonnet" || model == "opus" || model == "haiku" {
-		return "claude"
+		return providerid.Claude
 	}
 	return ""
 }

@@ -35,6 +35,7 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/recovery"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/skillsync"
@@ -637,16 +638,16 @@ func (a *App) limitPolicy() limits.Policy {
 	p.WeeklyThresholdPercent = a.cfg.Providers.Limits.WeeklyThresholdPercent
 	p.PreferUnderused = a.cfg.Providers.Limits.PreferUnderused
 	p.SubscriptionMonthlyUSD = map[string]float64{
-		"claude":   a.cfg.Providers.Claude.MonthlySubscriptionUSD,
-		"codex":    a.cfg.Providers.Codex.MonthlySubscriptionUSD,
-		"copilot":  a.cfg.Providers.Copilot.MonthlySubscriptionUSD,
-		"opencode": a.cfg.Providers.OpenCode.MonthlySubscriptionUSD,
+		providerid.Claude:   a.cfg.Providers.Claude.MonthlySubscriptionUSD,
+		providerid.Codex:    a.cfg.Providers.Codex.MonthlySubscriptionUSD,
+		providerid.Copilot:  a.cfg.Providers.Copilot.MonthlySubscriptionUSD,
+		providerid.OpenCode: a.cfg.Providers.OpenCode.MonthlySubscriptionUSD,
 	}
 	p.ProviderEnabled = map[string]bool{
-		"claude":   a.cfg.Providers.Claude.Enabled,
-		"codex":    a.cfg.Providers.Codex.Enabled,
-		"copilot":  a.cfg.Providers.Copilot.Enabled,
-		"opencode": a.cfg.Providers.OpenCode.Enabled,
+		providerid.Claude:   a.cfg.Providers.Claude.Enabled,
+		providerid.Codex:    a.cfg.Providers.Codex.Enabled,
+		providerid.Copilot:  a.cfg.Providers.Copilot.Enabled,
+		providerid.OpenCode: a.cfg.Providers.OpenCode.Enabled,
 	}
 	return p
 }
@@ -1550,7 +1551,7 @@ func (a *App) seedDefaultLoopAgents() {
 		Prompt:       "/sybra-self-monitor",
 		IntervalSec:  21600, // 6 hours
 		AllowedTools: []string{"Bash", "Read", "Grep", "Glob"},
-		Provider:     "claude",
+		Provider:     providerid.Claude,
 		Model:        "sonnet",
 		Enabled:      false,
 	})

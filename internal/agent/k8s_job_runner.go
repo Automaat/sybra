@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 const (
@@ -155,7 +156,7 @@ func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunCon
 	var podName string
 	logProvider := a.Provider
 	if r.mode == k8sRunnerModeFake {
-		logProvider = "claude"
+		logProvider = providerid.Claude
 	}
 
 	ticker := time.NewTicker(750 * time.Millisecond)

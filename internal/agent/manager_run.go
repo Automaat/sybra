@@ -215,7 +215,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	// - not using Claude's own auto classifier
 	//
 	// Other providers do not depend on this hook for headless execution.
-	if prov.Name() == "claude" && cfg.Mode == "headless" &&
+	if prov.Name() == providerid.Claude && cfg.Mode == "headless" &&
 		cfg.RequirePermissions && cfg.approvalAddr == "" &&
 		len(cfg.AllowedTools) == 0 && cfg.HeadlessPermissionMode != "auto" {
 		return cfg, nil, fmt.Errorf("require_permissions requires a running approval server for ungated headless claude runs")
