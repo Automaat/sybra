@@ -17,6 +17,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/gitexec"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/textutil"
 )
 
@@ -939,7 +940,7 @@ func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (Ste
 
 	if high := report.highCount(); high > 0 {
 		reason := tamperReason(report)
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+		if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 			e.logger.Error("workflow.detect-tampering.status", "task_id", taskID, "err", statusErr)
 		}
 		e.logger.Warn("workflow.detect-tampering.flagged",

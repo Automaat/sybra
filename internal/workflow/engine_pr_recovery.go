@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 const readyPRRecoveryReason = "manual verification requires a live PR and the branch is already pushed — routing to PR flow instead of parking human-required"
@@ -26,7 +27,7 @@ func (e *Engine) maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID string, curr
 	if currentStep == nil || currentStep.Type != StepRunAgent || currentStep.Config.Role != "implementation" || output.Status != "completed" {
 		return nil, false, nil
 	}
-	if t.Status != "human-required" || t.PRNumber != 0 || t.ProjectID == "" {
+	if t.Status != taskstatus.HumanRequired || t.PRNumber != 0 || t.ProjectID == "" {
 		return nil, false, nil
 	}
 	if wfExec != nil && wfExec.LastAgentStepFailed() {
@@ -50,7 +51,7 @@ func (e *Engine) maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID string, curr
 	if !clean {
 		return nil, false, nil
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, "done", alreadyFixedOnMainRecoveryReason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.Done, alreadyFixedOnMainRecoveryReason); err != nil {
 		return nil, false, err
 	}
 	e.logger.Info("workflow.human-required.duplicate-recovery", "task_id", taskID)
@@ -72,7 +73,7 @@ func (e *Engine) maybeRecoverHumanRequiredByOpeningPR(taskID string, currentStep
 	if currentStep == nil || currentStep.Type != StepRunAgent || output.Status != "completed" {
 		return nil, false, nil
 	}
-	if t.Status != "human-required" || t.PRNumber != 0 || t.ProjectID == "" {
+	if t.Status != taskstatus.HumanRequired || t.PRNumber != 0 || t.ProjectID == "" {
 		return nil, false, nil
 	}
 	if !isMissingLivePRVerificationBlocker(t.StatusReason + "\n" + output.Output) {
@@ -110,7 +111,7 @@ func (e *Engine) maybeRecoverHumanRequiredByOpeningPR(taskID string, currentStep
 		return nil, false, nil
 	}
 
-	status := "ready-pr"
+	status := taskstatus.ReadyPR
 	reason := readyPRRecoveryReason
 	// Only take the link-existing-PR -> in-review shortcut when the local HEAD
 	// being recovered is the exact commit already on the remote branch. If new
@@ -124,7 +125,7 @@ func (e *Engine) maybeRecoverHumanRequiredByOpeningPR(taskID string, currentStep
 			if err := e.linkTaskPR(taskID, t, existing); err != nil {
 				return nil, false, err
 			}
-			status = "in-review"
+			status = taskstatus.InReview
 			reason = ""
 		}
 	}

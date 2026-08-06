@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/evidence"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/workflow/failureclassify"
 )
 
@@ -398,7 +399,7 @@ func (e *Engine) healToolchainAndRetry(taskID, wtPath string, cmds []string, tim
 }
 
 func (e *Engine) flagVerifyChecks(taskID string, step *Step, reason, detail string) (StepOutput, error) {
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 		return StepOutput{}, fmt.Errorf("verify-checks: set human-required: %w", statusErr)
 	}
 	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyChecks, evidence.ProofDeterministicCheck, 1, "", reason)
@@ -407,7 +408,7 @@ func (e *Engine) flagVerifyChecks(taskID string, step *Step, reason, detail stri
 }
 
 func (e *Engine) blockVerifyChecks(taskID string, step *Step, reason, detail string) (StepOutput, error) {
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, "blocked", reason); statusErr != nil {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.Blocked, reason); statusErr != nil {
 		return StepOutput{}, fmt.Errorf("verify-checks: set blocked: %w", statusErr)
 	}
 	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyChecks, evidence.ProofDeterministicCheck, 1, "", reason)

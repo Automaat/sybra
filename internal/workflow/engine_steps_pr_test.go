@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // newPRWorktree sets up a bare "origin" clone plus a worktree checked out on
@@ -181,7 +182,7 @@ type failStatusTaskProvider struct {
 	err error
 }
 
-func (f *failStatusTaskProvider) UpdateTaskStatus(string, string, string) error {
+func (f *failStatusTaskProvider) UpdateTaskStatus(string, taskstatus.Status, string) error {
 	return f.err
 }
 

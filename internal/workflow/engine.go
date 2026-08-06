@@ -17,6 +17,8 @@ import (
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 const (
@@ -36,7 +38,7 @@ type TaskInfo struct {
 	// Generation is the reducer-visible monotonic task version the effect-id
 	// scheme keys on until a dedicated persisted task-generation counter lands.
 	Generation   int64
-	Status       string
+	Status       taskstatus.Status
 	StatusReason string
 	Blocker      blocker.State
 	Role         string
@@ -126,12 +128,12 @@ type AgentRunInfo struct {
 type TaskProvider interface {
 	GetTask(id string) (TaskInfo, error)
 	ListTasks() ([]TaskInfo, error)
-	UpdateTaskStatus(id, status, reason string) error
+	UpdateTaskStatus(id string, status taskstatus.Status, reason string) error
 	// ClearTaskStatusReasonIf atomically clears a status reason only when the
 	// task still has the exact status and reason the caller observed. It keeps a
 	// stale retry cleanup from erasing a newer failure or operator decision.
-	ClearTaskStatusReasonIf(id, expectedStatus, expectedReason string) (bool, error)
-	UpdateTaskBlocker(id, status, reason string, state blocker.State) error
+	ClearTaskStatusReasonIf(id string, expectedStatus taskstatus.Status, expectedReason string) (bool, error)
+	UpdateTaskBlocker(id string, status taskstatus.Status, reason string, state blocker.State) error
 	UpdateTaskPR(id string, prNumber int) error
 	MarkTaskReviewed(id string) error
 	MarkAgentRunProtocolViolation(taskID, agentID, violation string) error
@@ -181,7 +183,7 @@ type TaskProvider interface {
 // maintenance mutation is allowed to replace.
 type WorkflowWriteFence struct {
 	Generation   int64
-	Status       string
+	Status       taskstatus.Status
 	StatusReason string
 	WorkflowID   string
 	CurrentStep  string

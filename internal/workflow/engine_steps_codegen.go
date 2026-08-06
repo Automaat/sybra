@@ -10,6 +10,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/workflow/failureclassify"
 )
 
@@ -110,7 +111,7 @@ func (e *Engine) execCodegenGate(taskID string, step *Step) (StepOutput, error) 
 }
 
 func (e *Engine) flagCodegenGate(taskID string, step *Step, reason, detail string) (StepOutput, error) {
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 		return StepOutput{}, fmt.Errorf("codegen-gate: set human-required: %w", statusErr)
 	}
 	e.recordEvidence(taskID, step.ID, evidenceCriterionCodegenGate, evidence.ProofDeterministicCheck, 1, "", detail)
