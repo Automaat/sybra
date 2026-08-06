@@ -143,7 +143,6 @@ type Scanner struct {
 	cfg       *config.Config
 	tasks     TaskLister
 	protected *ProtectedStore
-	// now is the injectable clock; defaults to time.Now.
 	// clock drives the retention window. Read without a lock; set once at
 	// construction or during test setup.
 	clock clock.Clock

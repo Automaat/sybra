@@ -77,7 +77,7 @@ type authHealthTracker struct {
 	recovered []func()
 
 	// clock is read without the mutex, including from methods that hold it.
-	// setClockForTest swaps it during setup, before any concurrent use.
+	// setAuthHealthClockForTest swaps it during setup, before concurrent use.
 	clock clock.Clock
 }
 
