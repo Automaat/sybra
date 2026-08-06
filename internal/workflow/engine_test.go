@@ -2625,6 +2625,7 @@ func TestAdvanceStep_AlreadyFixedOnMainUndeclaredStaysHumanRequired(t *testing.T
 		{name: "affirmative prose", output: alreadyFixedOnMainProse},
 		{name: "negated prose", output: "I checked whether this was already fixed on main; it is NOT. Ran out of context before committing, parking for a human."},
 		{name: "incidental main.go mention", output: "Already fixed the nil deref in main.go but could not push."},
+		{name: "verdict json quoted inside prose", output: `Per the contract I would emit {"decision": "already-fixed-on-main", "reason": "change already on base"} only if the work were landed. It is not, so I am NOT declaring that. No commits were made.`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tasks, ti := runAlreadyFixedOnMainRecovery(t, tc.output)

@@ -64,6 +64,24 @@ func TestDeclaresAlreadyFixedOnMain(t *testing.T) {
 			wantDeclared:     false,
 		},
 		{
+			name:             "json quoted inside prose is not a declaration",
+			signal:           `Per the contract I would emit {"decision": "already-fixed-on-main", "reason": "change already on base"} only if the work were already landed. It is not landed, so I am NOT declaring that.`,
+			wantAlreadyFixed: false,
+			wantDeclared:     false,
+		},
+		{
+			name:             "json trailing a prose summary is not a declaration",
+			signal:           "I could not implement the change and made no commits.\n\n{\"decision\": \"already-fixed-on-main\", \"reason\": \"example I am NOT making\"}",
+			wantAlreadyFixed: false,
+			wantDeclared:     false,
+		},
+		{
+			name:             "unrelated whole-string json is not a declaration",
+			signal:           `{"passed": true, "failed": 0}`,
+			wantAlreadyFixed: false,
+			wantDeclared:     false,
+		},
+		{
 			name:             "empty",
 			signal:           "",
 			wantAlreadyFixed: false,

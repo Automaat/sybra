@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-
-	"github.com/Automaat/sybra/internal/llmjob"
 )
 
 // Decisions an implementation agent may declare about closing its task
@@ -49,15 +47,27 @@ func parseRecoveryVerdict(text string) (recoveryVerdict, error) {
 	if payload, ok := lastFencedRecoveryPayload(text); ok {
 		return decodeRecoveryVerdict(payload)
 	}
-	if obj := llmjob.ExtractLastJSONObject(text); obj != "" {
-		var probe struct {
-			Decision string `json:"decision"`
-		}
-		if err := json.Unmarshal([]byte(obj), &probe); err == nil && strings.TrimSpace(probe.Decision) != "" {
-			return decodeRecoveryVerdict(obj)
-		}
+	// Whole-string JSON only. An object lifted out of surrounding prose is the
+	// old substring bug again: an agent that quotes the contract to say it is
+	// NOT declaring one would otherwise declare it.
+	trimmed := strings.TrimSpace(text)
+	if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") && carriesDecision(trimmed) {
+		return decodeRecoveryVerdict(trimmed)
 	}
 	return recoveryVerdict{}, errNoRecoveryDeclaration
+}
+
+// carriesDecision reports whether payload is an object with a decision key, so
+// unrelated JSON on the status-reason path reads as no declaration rather than
+// as an unreadable one.
+func carriesDecision(payload string) bool {
+	var probe struct {
+		Decision string `json:"decision"`
+	}
+	if err := json.Unmarshal([]byte(payload), &probe); err != nil {
+		return false
+	}
+	return strings.TrimSpace(probe.Decision) != ""
 }
 
 func lastFencedRecoveryPayload(text string) (string, bool) {
