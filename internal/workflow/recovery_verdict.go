@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/llmjob"
 )
 
 // Decisions an implementation agent may declare about closing its task
@@ -16,79 +18,97 @@ const (
 )
 
 // recoveryVerdict is the implementation role's structured statement about
-// whether Sybra may close the task as an already-landed duplicate. It exists
-// so the close decision reads a value the agent declared rather than a
-// substring of whatever prose the run happened to emit.
+// whether Sybra may close the task as an already-landed duplicate.
+//
+// Recovery reads this and nothing else. The predecessor scanned the run's
+// prose for phrases like "already fixed" plus a word containing "main", which
+// matched "main.go", "func main()" and "remaining", and had no notion of
+// negation: a run reporting it had checked and the change was NOT on main
+// closed the task as done.
 type recoveryVerdict struct {
 	Decision string `json:"decision"`
 	Reason   string `json:"reason,omitempty"`
 }
 
-var recoveryFenceRe = regexp.MustCompile("(?s)```\\s*sybra-recovery\\s*\\n(.*?)\\n```")
+// recoveryFenceRe tolerates up to three leading spaces on the fence so a
+// declaration nested in a list item or blockquote still parses.
+var recoveryFenceRe = regexp.MustCompile("(?ms)^[ \\t]{0,3}```[ \\t]*sybra-recovery[ \\t]*\\n(.*?)\\n[ \\t]{0,3}```")
 
-// Legacy prose signals, kept for agents whose prompt predates the declaration
-// block. Every branch token is word-anchored: an unanchored "main" also
-// matches "remaining", "maintain" and "domain", which made the old base-branch
-// signal true for almost any English sentence and left the phrase set below as
-// the only real gate.
-var (
-	fixedPhraseRe = regexp.MustCompile(`already (fixed|on main|merged|landed|satisfied)|duplicate task`)
-	basePhraseRe  = regexp.MustCompile(`\b(main|upstream|origin)\b`)
-	closePhraseRe = regexp.MustCompile(`no pr (needed|required)|safe to close|mark (as )?done`)
-)
+// errNoRecoveryDeclaration means the run declared nothing. Recovery treats it
+// as "leave the task parked", not as an error worth reporting.
+var errNoRecoveryDeclaration = errors.New("recovery verdict: no declaration")
 
-// parseRecoveryVerdict returns the verdict an implementation agent declared in
-// a fenced ```sybra-recovery``` block. declared=false means the run made no
-// declaration at all, which is the normal case for an agent on an older
-// prompt. A block that is present but unreadable returns an error instead:
-// once an agent has tried to declare and failed, falling back to guessing from
-// its prose is the behaviour this replaces.
-func parseRecoveryVerdict(text string) (v recoveryVerdict, declared bool, err error) {
-	m := recoveryFenceRe.FindStringSubmatch(text)
-	if len(m) < 2 {
-		return recoveryVerdict{}, false, nil
+// parseRecoveryVerdict reads the verdict an implementation agent declared,
+// either as a fenced sybra-recovery block or, on the status-reason path where
+// the reason is a single-line CLI argument, as a bare JSON object.
+//
+// The last fenced block wins: the prompt asks for the declaration at the end
+// of the response, and an agent that quotes the contract before answering
+// would otherwise have its quotation read as the verdict.
+func parseRecoveryVerdict(text string) (recoveryVerdict, error) {
+	if payload, ok := lastFencedRecoveryPayload(text); ok {
+		return decodeRecoveryVerdict(payload)
 	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(m[1])), &v); err != nil {
-		return recoveryVerdict{}, false, fmt.Errorf("recovery verdict: malformed json: %w", err)
+	if obj := llmjob.ExtractLastJSONObject(text); obj != "" {
+		var probe struct {
+			Decision string `json:"decision"`
+		}
+		if err := json.Unmarshal([]byte(obj), &probe); err == nil && strings.TrimSpace(probe.Decision) != "" {
+			return decodeRecoveryVerdict(obj)
+		}
+	}
+	return recoveryVerdict{}, errNoRecoveryDeclaration
+}
+
+func lastFencedRecoveryPayload(text string) (string, bool) {
+	matches := recoveryFenceRe.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return "", false
+	}
+	return matches[len(matches)-1][1], true
+}
+
+func decodeRecoveryVerdict(payload string) (recoveryVerdict, error) {
+	var v recoveryVerdict
+	if err := json.Unmarshal([]byte(strings.TrimSpace(payload)), &v); err != nil {
+		return recoveryVerdict{}, fmt.Errorf("recovery verdict: malformed json: %w", err)
 	}
 	v.Decision = strings.ToLower(strings.TrimSpace(v.Decision))
 	v.Reason = strings.TrimSpace(v.Reason)
 	switch v.Decision {
 	case recoveryDecisionAlreadyFixed, recoveryDecisionNone:
-		return v, true, nil
+		return v, nil
 	case "":
-		return recoveryVerdict{}, false, errors.New("recovery verdict: missing decision")
+		return recoveryVerdict{}, errors.New("recovery verdict: missing decision")
 	default:
-		return recoveryVerdict{}, false, fmt.Errorf("recovery verdict: unknown decision %q", v.Decision)
+		return recoveryVerdict{}, fmt.Errorf("recovery verdict: unknown decision %q", v.Decision)
 	}
 }
 
-// declaresAlreadyFixedOnMain reports whether signal says the requested change
-// is already on the base branch. A structured declaration is authoritative. In
-// its absence the legacy prose match decides, and an unreadable declaration
-// decides nothing at all, so the caller leaves the task parked.
-func declaresAlreadyFixedOnMain(signal string) (bool, error) {
-	v, declared, err := parseRecoveryVerdict(signal)
+// declaresAlreadyFixedOnMain reports whether the run declared that the
+// requested change is already on the base branch.
+//
+// ok=false with a nil error means no declaration was made, so the task stays
+// parked for a human. A non-nil error means a declaration was present and
+// unreadable, which the caller records on the task.
+func declaresAlreadyFixedOnMain(signal string) (alreadyFixed, ok bool, err error) {
+	v, err := parseRecoveryVerdict(signal)
+	if errors.Is(err, errNoRecoveryDeclaration) {
+		return false, false, nil
+	}
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
-	if declared {
-		return v.Decision == recoveryDecisionAlreadyFixed, nil
-	}
-	return looksLikeAlreadyFixedOnMainProse(signal), nil
+	return v.Decision == recoveryDecisionAlreadyFixed, true, nil
 }
 
-// looksLikeAlreadyFixedOnMainProse is the legacy heuristic: an explicit
-// already-landed phrase, corroborated by either a base-branch mention or an
-// explicit request to close. It is deliberately narrower than a bare keyword
-// scan and is only reached when the run declared nothing.
-func looksLikeAlreadyFixedOnMainProse(signal string) bool {
-	lower := strings.ToLower(strings.TrimSpace(signal))
-	if lower == "" {
-		return false
+// recoveryVerdictReason returns the agent's own justification for a declared
+// verdict, so a task closed as a duplicate records why rather than only that
+// it happened.
+func recoveryVerdictReason(signal string) string {
+	v, err := parseRecoveryVerdict(signal)
+	if err != nil {
+		return ""
 	}
-	if !fixedPhraseRe.MatchString(lower) {
-		return false
-	}
-	return basePhraseRe.MatchString(lower) || closePhraseRe.MatchString(lower)
+	return v.Reason
 }

@@ -11,6 +11,7 @@ import (
 
 const readyPRRecoveryReason = "manual verification requires a live PR and the branch is already pushed — routing to PR flow instead of parking human-required"
 const alreadyFixedOnMainRecoveryReason = "requested change already satisfies origin base and the task branch has no remaining diff — closing duplicate task as done"
+const unreadableRecoveryVerdictReason = "run emitted an unreadable sybra-recovery declaration — staying parked rather than inferring the outcome from its prose"
 
 // maybeRecoverHumanRequiredAlreadyFixedOnMain rewrites a narrow duplicate-task
 // class: an implementation step parked the task at human-required after
@@ -18,11 +19,14 @@ const alreadyFixedOnMainRecoveryReason = "requested change already satisfies ori
 // still clean with no commits ahead of the origin base. In that case Sybra has
 // enough deterministic proof to close the task itself instead of parking it.
 //
-// Agent text is only a trigger hint here. On agent-completion recovery the hint
-// must come from the current run's output, not a stale task status_reason from
-// an older human-required park. The close decision itself still requires
-// repo-state proof: no commits ahead, no uncommitted diff, and HEAD reachable
-// from the origin base.
+// The trigger is the run's own structured sybra-recovery declaration. On
+// agent-completion recovery it must come from the current run's output, not a
+// stale task status_reason from an older human-required park.
+//
+// The repo-state proof that follows (no commits ahead, no uncommitted diff,
+// HEAD reachable from the origin base) is necessary but not sufficient: it is
+// trivially true for a branch the agent never committed to, which is why the
+// declaration carries the decision.
 func (e *Engine) maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID string, currentStep *Step, wfExec *Execution, t TaskInfo, output StepOutput, duplicateSignal string) (*CompletionInfo, bool, error) {
 	if currentStep == nil || currentStep.Type != StepRunAgent || currentStep.Config.Role != "implementation" || output.Status != "completed" {
 		return nil, false, nil
@@ -33,13 +37,15 @@ func (e *Engine) maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID string, curr
 	if wfExec != nil && wfExec.LastAgentStepFailed() {
 		return nil, false, nil
 	}
-	alreadyFixed, err := declaresAlreadyFixedOnMain(duplicateSignal)
+	alreadyFixed, declared, err := declaresAlreadyFixedOnMain(duplicateSignal)
 	if err != nil {
-		// Stay parked: guessing from the prose of a run that already failed to declare is the behaviour this replaces.
 		e.logger.Warn("workflow.human-required.duplicate-recovery.unreadable-verdict", "task_id", taskID, "err", err)
+		if uerr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, unreadableRecoveryVerdictReason); uerr != nil {
+			return nil, false, uerr
+		}
 		return nil, false, nil
 	}
-	if !alreadyFixed {
+	if !declared || !alreadyFixed {
 		return nil, false, nil
 	}
 	if e.worktrees == nil {
@@ -57,7 +63,11 @@ func (e *Engine) maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID string, curr
 	if !clean {
 		return nil, false, nil
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.Done, alreadyFixedOnMainRecoveryReason); err != nil {
+	reason := alreadyFixedOnMainRecoveryReason
+	if declaredReason := recoveryVerdictReason(duplicateSignal); declaredReason != "" {
+		reason += " — agent declared: " + declaredReason
+	}
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.Done, reason); err != nil {
 		return nil, false, err
 	}
 	e.logger.Info("workflow.human-required.duplicate-recovery", "task_id", taskID)

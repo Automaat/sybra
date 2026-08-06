@@ -2438,7 +2438,13 @@ func startTestSimpleImplement(t *testing.T) (*Store, *memTasks, *mockAgents, *En
 }
 
 const missingLivePRProofReason = "manual verification blocker: no current open PR could be verified as allFlaky for the required live pr-monitor proof"
-const alreadyFixedOnMainVerdict = "Already fixed on main; no PR needed. Duplicate task, safe to close/mark done."
+const alreadyFixedOnMainVerdict = `{"decision":"already-fixed-on-main","reason":"landed in an earlier PR"}`
+
+// alreadyFixedOnMainProse is the shape recovery used to act on. It must never
+// close a task on its own now that a declaration is required.
+const alreadyFixedOnMainProse = "Already fixed on main; no PR needed. Duplicate task, safe to close/mark done."
+
+const alreadyFixedOnMainDeclaredReason = alreadyFixedOnMainRecoveryReason + " — agent declared: landed in an earlier PR"
 
 func TestAdvanceStep_ManualVerificationBlockerRoutesToReadyPR(t *testing.T) {
 	store := newInlineTestStore(t, "pr-recovery", `
@@ -2597,8 +2603,8 @@ steps:
 	if ti.Status != "done" {
 		t.Fatalf("status = %q, want done", ti.Status)
 	}
-	if ti.StatusReason != alreadyFixedOnMainRecoveryReason {
-		t.Fatalf("status reason = %q, want %q", ti.StatusReason, alreadyFixedOnMainRecoveryReason)
+	if ti.StatusReason != alreadyFixedOnMainDeclaredReason {
+		t.Fatalf("status reason = %q, want %q", ti.StatusReason, alreadyFixedOnMainDeclaredReason)
 	}
 	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
 		t.Fatalf("workflow = %+v, want completed terminal workflow", ti.Workflow)
@@ -2606,6 +2612,111 @@ steps:
 	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
 		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
 	}
+}
+
+// TestAdvanceStep_AlreadyFixedOnMainUndeclaredStaysHumanRequired pins the
+// defect this recovery was rebuilt for: prose alone, affirmative or negated,
+// must never close a task. The old scan closed on all three of these.
+func TestAdvanceStep_AlreadyFixedOnMainUndeclaredStaysHumanRequired(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		output string
+	}{
+		{name: "affirmative prose", output: alreadyFixedOnMainProse},
+		{name: "negated prose", output: "I checked whether this was already fixed on main; it is NOT. Ran out of context before committing, parking for a human."},
+		{name: "incidental main.go mention", output: "Already fixed the nil deref in main.go but could not push."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tasks, ti := runAlreadyFixedOnMainRecovery(t, tc.output)
+			if ti.Status != "human-required" {
+				t.Fatalf("status = %q, want human-required", ti.Status)
+			}
+			if ti.StatusReason != alreadyFixedOnMainVerdict {
+				t.Fatalf("status reason = %q, want the stale park reason preserved", ti.StatusReason)
+			}
+			_ = tasks
+		})
+	}
+}
+
+// TestAdvanceStep_AlreadyFixedOnMainUnreadableDeclarationRecordsReason covers
+// the run that tried to declare and produced something unparseable: it stays
+// parked, and the board says why rather than only the app log.
+func TestAdvanceStep_AlreadyFixedOnMainUnreadableDeclarationRecordsReason(t *testing.T) {
+	_, ti := runAlreadyFixedOnMainRecovery(t, "```sybra-recovery\n{\"decision\":\"close-it\"}\n```")
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
+	}
+	if ti.StatusReason != unreadableRecoveryVerdictReason {
+		t.Fatalf("status reason = %q, want %q", ti.StatusReason, unreadableRecoveryVerdictReason)
+	}
+}
+
+// runAlreadyFixedOnMainRecovery drives one implementation run to completion
+// with output and returns the task as recovery left it.
+func runAlreadyFixedOnMainRecovery(t *testing.T, output string) (*memTasks, TaskInfo) {
+	t.Helper()
+	store := newInlineTestStore(t, "pr-recovery", `
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false), ok: true})
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		ProjectID: "acme/widgets",
+	})
+	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.UpdateTaskStatus("t1", "human-required", alreadyFixedOnMainVerdict); err != nil {
+		t.Fatal(err)
+	}
+
+	agentID := agents.LastID()
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "implement",
+		AgentID: agentID,
+		Status:  "completed",
+		Output:  output,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tasks, ti
 }
 
 func TestAdvanceStep_AlreadyFixedOnMainEmptyOutputStaysHumanRequired(t *testing.T) {
@@ -2749,8 +2860,8 @@ steps:
 	if ti.Status != "done" {
 		t.Fatalf("status = %q, want done", ti.Status)
 	}
-	if ti.StatusReason != alreadyFixedOnMainRecoveryReason {
-		t.Fatalf("status reason = %q, want %q", ti.StatusReason, alreadyFixedOnMainRecoveryReason)
+	if ti.StatusReason != alreadyFixedOnMainDeclaredReason {
+		t.Fatalf("status reason = %q, want %q", ti.StatusReason, alreadyFixedOnMainDeclaredReason)
 	}
 	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
 		t.Fatalf("workflow = %+v, want completed terminal workflow", ti.Workflow)

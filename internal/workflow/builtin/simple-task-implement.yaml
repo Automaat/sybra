@@ -121,13 +121,14 @@ steps:
         then:
 
         ```sybra-recovery
-        {"decision": "already-fixed-on-main", "reason": "<one sentence>"}
+        {"decision": "<already-fixed-on-main|none>", "reason": "<one sentence>"}
         ```
 
-        Emit that block only when you made no commits and the change is
-        genuinely already on the base branch. In every other case either omit
-        the block or emit `{"decision": "none"}`. Describing the situation in
-        prose alone is not a declaration and will leave the task for a human.
+        Replace both placeholders; a verbatim copy of the line above is
+        rejected. Declare already-fixed-on-main only when you made no commits
+        and the change is genuinely already on the base branch. In every other
+        case either omit the block or declare none. Describing the situation in
+        prose alone is not a declaration and leaves the task for a human.
         {{- if .Task.PlanContract}}
 
         ## Executable Plan Contract
