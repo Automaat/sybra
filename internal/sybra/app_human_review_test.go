@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
@@ -2115,6 +2116,7 @@ func TestOnComplete_UnblockedVerdict_TamperRerouteAddsBlessTag(t *testing.T) {
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:       task.Ptr(task.StatusHumanRequired),
 		StatusReason: task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
+		Blocker:      task.Ptr(blocker.State{Kind: blocker.KindTamperDetected, Actor: blocker.ActorWorkflow}),
 		ProjectID:    task.Ptr("Automaat/sybra"),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
@@ -2177,6 +2179,7 @@ func TestOnComplete_UnblockedVerdict_TamperReadyReviewAddsBlessTag(t *testing.T)
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:       task.Ptr(task.StatusHumanRequired),
 		StatusReason: task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
+		Blocker:      task.Ptr(blocker.State{Kind: blocker.KindTamperDetected, Actor: blocker.ActorWorkflow}),
 		ProjectID:    task.Ptr("Automaat/sybra"),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)

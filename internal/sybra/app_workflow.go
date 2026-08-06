@@ -186,6 +186,8 @@ func (a *taskAdapter) UpdateTaskStatus(id string, status taskstatus.Status, reas
 	var extra task.Update
 	if reason != "" {
 		extra.StatusReason = &reason
+	} else {
+		extra.ClearStatusReason = task.Ptr(true)
 	}
 	_, err = a.tasks.Apply(task.TransitionIntent{
 		TaskID:   id,
