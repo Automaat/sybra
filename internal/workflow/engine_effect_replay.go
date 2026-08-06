@@ -35,7 +35,7 @@ func (e *Engine) ReplayPersistedEffects() {
 		slices.SortStableFunc(tasks, e.dispatchComparator())
 	} else {
 		slices.SortStableFunc(tasks, func(a, b TaskInfo) int {
-			return cmp.Compare(dispatchorder.Rank(a.Status), dispatchorder.Rank(b.Status))
+			return cmp.Compare(dispatchorder.Rank(string(a.Status)), dispatchorder.Rank(string(b.Status)))
 		})
 	}
 

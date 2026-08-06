@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // classifyTaskTimeout bounds a single classify_task step. The classifier
@@ -82,7 +84,7 @@ func (e *Engine) execClassifyTask(taskID string, step *Step, wfExec *Execution) 
 // pattern used throughout the other deterministic tail steps (e.g.
 // humanRequiredPR, execRequireSidecar).
 func (e *Engine) humanRequiredClassify(taskID string, step *Step, reason string) (StepOutput, error) {
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return StepOutput{}, fmt.Errorf("%s: set human-required: %w", step.ID, err)
 	}
 	e.logger.Warn("workflow.classify-task.human-required", "task_id", taskID, "step", step.ID, "reason", reason)

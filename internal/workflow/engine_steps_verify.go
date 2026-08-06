@@ -15,6 +15,7 @@ import (
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // errStepParked is a sentinel returned by a synchronous step that has parked
@@ -71,7 +72,7 @@ func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) 
 	newBody += "Closes " + t.Issue
 	if editErr := e.prLinker.EditBody(t.ProjectID, t.PRNumber, newBody); editErr != nil {
 		e.logger.Error("workflow.pr-close.edit", "task_id", taskID, "err", editErr)
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", "PR does not close linked issue and auto-fix failed: "+editErr.Error()); statusErr != nil {
+		if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, "PR does not close linked issue and auto-fix failed: "+editErr.Error()); statusErr != nil {
 			e.logger.Error("workflow.pr-close.status", "task_id", taskID, "err", statusErr)
 		}
 		return StepOutput{StepID: step.ID, Status: "failed", Output: "edit failed: " + editErr.Error()}, nil
@@ -229,7 +230,7 @@ func (e *Engine) execRequireSidecar(taskID string, step *Step, t TaskInfo) (Step
 			e.logger.Warn("workflow.require-sidecar.missing-soft", "task_id", taskID, "sidecar", step.Config.Sidecar)
 			return StepOutput{StepID: step.ID, Status: "completed", Output: reason + " — skipped"}, nil
 		}
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+		if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 			e.logger.Error("workflow.require-sidecar.status", "task_id", taskID, "err", statusErr)
 		}
 		e.logger.Warn("workflow.require-sidecar.missing", "task_id", taskID, "sidecar", step.Config.Sidecar)
@@ -367,7 +368,7 @@ func (e *Engine) verifyCommitsGitErrorOutput(taskID, wtPath string, err error, p
 	if diagnosis != "" {
 		reason += " (" + diagnosis + ")"
 	}
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 		e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
 	}
 	return "git error: flipped to human-required", true
@@ -454,7 +455,7 @@ func (e *Engine) verifyCommitsRecoveredRemoteAdopt(taskID, wtPath string, t Task
 func (e *Engine) verifyCommitsHandleEmptyOutput(taskID string, step *Step, wfExec *Execution, t TaskInfo, wtPath string) (StepOutput, error) {
 	if wfExec != nil && wfExec.LastAgentStepFailed() {
 		reason := "implementation agent failed before committing — no commits on branch"
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+		if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 			e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
 		}
 		e.logger.Warn("workflow.verify-commits.agent-failed", "task_id", taskID)
@@ -480,7 +481,7 @@ func (e *Engine) verifyCommitsHandleEmptyOutput(taskID string, step *Step, wfExe
 	// agent-failed case above: a human must see and explain "the agent
 	// reported success but committed nothing," never have it silently closed.
 	reason := "no commits pushed to branch"
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 		e.logger.Error("workflow.verify-commits.status", "task_id", taskID, "err", statusErr)
 	}
 	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyCommits, evidence.ProofDeterministicCheck, 1, "", reason)

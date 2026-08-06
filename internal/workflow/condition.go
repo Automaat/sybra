@@ -3,6 +3,8 @@ package workflow
 import (
 	"errors"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // KnownTriggerFields is the authoritative set of field names that engine
@@ -75,14 +77,19 @@ func isKnownField(field string) bool {
 // The main-package test TestWorkflowFieldAllowedValues_MatchEnumSources
 // cross-checks this map against those enum sources at build time so any
 // drift (adding a new Status, renaming a kind) fails CI immediately.
+// statusAllowedValues derives the condition allowlist from the status
+// vocabulary itself, so a new status cannot be added without becoming
+// conditionable.
+func statusAllowedValues() map[string]bool {
+	out := make(map[string]bool, len(taskstatus.All()))
+	for _, s := range taskstatus.All() {
+		out[string(s)] = true
+	}
+	return out
+}
+
 var FieldAllowedValues = map[string]map[string]bool{
-	"task.status": {
-		"new": true, "todo": true, "in-progress": true,
-		"ready-review": true, "in-review": true,
-		"planning": true, "plan-review": true, "testing": true,
-		"ready-pr": true, "human-required": true, "blocked": true,
-		"done": true, "cancelled": true,
-	},
+	"task.status": statusAllowedValues(),
 	"task.task_type": {
 		"umbrella": true,
 	},

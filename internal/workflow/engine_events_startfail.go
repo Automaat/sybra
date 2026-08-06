@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
@@ -78,7 +79,7 @@ func (e *Engine) isShutdownCancellationGate(taskID, stepID string, err error) bo
 // and the failing step's ID so repeated failures for that (task, step) are
 // tracked. Either may be zero-valued (nil wf, empty stepID) for callers that
 // don't have them handy — the breaker simply stays inactive for that call.
-func (e *Engine) surfaceStartFailure(taskID, currentStatus string, err error, wf *Execution, stepID string) {
+func (e *Engine) surfaceStartFailure(taskID string, currentStatus taskstatus.Status, err error, wf *Execution, stepID string) {
 	if e.isShutdownCancellationGate(taskID, stepID, err) {
 		return
 	}
@@ -93,7 +94,7 @@ func (e *Engine) surfaceStartFailure(taskID, currentStatus string, err error, wf
 	// agent can resolve, so routing it through recovery would just waste an
 	// agent run before falling back to the same human-required park anyway.
 	// See #1856.
-	if currentStatus != "human-required" && e.conflictRecovery != nil &&
+	if currentStatus != taskstatus.HumanRequired && e.conflictRecovery != nil &&
 		errors.Is(err, worktreeerr.ErrRebaseFailed) && !worktreeerr.IsDiskSpaceError(err) {
 		e.logger.Info("workflow.start-failure.branch-conflict.recover", "task_id", taskID, "step", stepID)
 		if e.tryConflictRecoveryWithFallback(taskID, func() {
@@ -107,7 +108,7 @@ func (e *Engine) surfaceStartFailure(taskID, currentStatus string, err error, wf
 	e.surfaceStartFailureClassified(taskID, currentStatus, err, wf, stepID)
 }
 
-func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err error, wf *Execution, stepID string) {
+func (e *Engine) surfaceStartFailureClassified(taskID string, currentStatus taskstatus.Status, err error, wf *Execution, stepID string) {
 	failure := ClassifyAgentStartFailure(err)
 	if failure.Reason == "" {
 		return
@@ -116,14 +117,14 @@ func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err
 	// again from here. Without this, a call driven by a stale pre-dispatch
 	// status snapshot could rewrite a status a concurrent handler resolved
 	// to something more specific (e.g. in_review) back to human-required.
-	if currentStatus == "human-required" {
+	if currentStatus == taskstatus.HumanRequired {
 		return
 	}
 	target := currentStatus
 	if failure.Permanent {
-		target = "human-required"
+		target = taskstatus.HumanRequired
 		if !failure.Blocker.IsZero() && !blocker.AllowsHumanRequired(failure.Blocker.Kind) {
-			target = "blocked"
+			target = taskstatus.Blocked
 		}
 	}
 	// A provider being rate-limited right now is a transient capacity condition,
@@ -148,9 +149,9 @@ func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err
 			// RescheduleRateLimitedAgent, HandleStatusChange) already
 			// refuses to touch a workflow whose State is ExecFailed.
 			wf.State = ExecFailed
-			target = "human-required"
+			target = taskstatus.HumanRequired
 			if !failure.Blocker.IsZero() && !blocker.AllowsHumanRequired(failure.Blocker.Kind) {
-				target = "blocked"
+				target = taskstatus.Blocked
 			}
 			failure.Reason = fmt.Sprintf("circuit breaker: %s (tripped after %d dispatch failures for step %q within %s)",
 				failure.Reason, attempts, stepID, circuitBreakerWindow)
