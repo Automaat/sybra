@@ -19,10 +19,17 @@ const (
 	// (2026-07-23 board freeze). We fence, reset the budget, retry fresh once,
 	// and only park blocked if the fresh round also exhausts.
 	watchdogZeroOutputFreshRetryVarPrefix = "watchdog.rate_limit_fresh_retry."
-	watchdogRewardHackingRetryVarPrefix   = "watchdog.reward_hacking_retry."
-	maxWatchdogRewardHackingRetries       = 1
-	transientFetchRetryVarPrefix          = "transient_fetch.retry."
-	maxTransientFetchRetries              = 2
+	// watchdogSilentHangAvoidVarPrefix names the provider whose child went
+	// silent on this step, so the very next dispatch of that step routes around
+	// it. A silent hang used to park the provider on the health gate, and the
+	// park is what pushed the retry onto a peer; dropping the park to keep the
+	// provider available to other tasks would otherwise pin this run to the
+	// provider that just produced nothing. Consumed once, by the next dispatch.
+	watchdogSilentHangAvoidVarPrefix    = "watchdog.silent_hang_avoid."
+	watchdogRewardHackingRetryVarPrefix = "watchdog.reward_hacking_retry."
+	maxWatchdogRewardHackingRetries     = 1
+	transientFetchRetryVarPrefix        = "transient_fetch.retry."
+	maxTransientFetchRetries            = 2
 	// worktreeRepairRetryVarPrefix/maxWorktreeRepairRetries bound the automated
 	// retry budget for tasks parked blocked with blocker.KindWorktreeRepair
 	// (disk-space exhaustion or a failed rebase — see start_error.go). These

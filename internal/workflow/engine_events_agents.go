@@ -457,6 +457,7 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 }
 
 func (e *Engine) rescheduleRateLimitedRunAgent(taskID, agentID string, step *Step, t TaskInfo, def *Definition) {
+	e.markSilentHangProvider(&t, step, agentID)
 	if e.shouldSkipResumeForRateLimitedProvider(&t, step, "workflow.rate-limit-reschedule.park") {
 		// Provider is still inside its rate-limit cooldown and no healthy peer is
 		// available to fail over to. Park the task without consuming a watchdog
@@ -776,6 +777,7 @@ func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, pare
 	e.clearAgentStep(taskID, agentID)
 	clearAgentRouteFromWorkflow(wfExec, agentID)
 
+	e.markSilentHangProvider(&fresh, child, agentID)
 	if e.shouldSkipResumeForRateLimitedProvider(&fresh, child, "workflow.rate-limit-reschedule.park") {
 		// See RescheduleRateLimitedAgent: park rather than burn a retry budget or
 		// trip the breaker while this child's provider is rate-limited with no

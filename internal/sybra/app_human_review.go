@@ -1308,10 +1308,14 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 	}
 
 	if parseErr != nil {
-		if ag.GetErrorKind() == "rate_limit" {
+		if kind := ag.GetErrorKind(); kind == "rate_limit" || kind == agent.ErrorKindSilentHang {
+			deferReason := "provider_rate_limited"
+			if kind == agent.ErrorKindSilentHang {
+				deferReason = "agent_silent_hang"
+			}
 			h.logger.Warn("human-review.verdict.deferred",
-				"task_id", taskID, "agent_id", ag.ID, "reason", "provider_rate_limited")
-			h.logAudit(audit.EventHumanReviewSkipped, taskID, ag.ID, map[string]any{"reason": "provider_rate_limited"})
+				"task_id", taskID, "agent_id", ag.ID, "reason", deferReason)
+			h.logAudit(audit.EventHumanReviewSkipped, taskID, ag.ID, map[string]any{"reason": deferReason})
 			return
 		}
 		// Without the zero-tool-calls check, a run that did real diagnostic

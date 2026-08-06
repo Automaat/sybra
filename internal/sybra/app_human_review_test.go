@@ -21,6 +21,7 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
+	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
@@ -3072,6 +3073,46 @@ func TestOnComplete_RateLimitedVerdictDoesNotRenderNoise(t *testing.T) {
 	for _, run := range got.AgentRuns {
 		if run.AgentID == "hr1" && run.VerdictRendered {
 			t.Fatal("rate-limited human-review must not mark verdict_rendered")
+		}
+	}
+}
+
+// TestOnComplete_SilentHangVerdictDoesNotRenderNoise mirrors the rate-limited
+// case for a review agent the watchdog killed for producing nothing. It has no
+// output at all, so without an explicit defer it reads as an unparseable
+// verdict, gets a "crashed before producing a verdict" note appended, and
+// latches verdict_rendered — retiring the review permanently over a hang that
+// is about to be re-dispatched.
+func TestOnComplete_SilentHangVerdictDoesNotRenderNoise(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("Silent review", "Body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+		t.Fatalf("flip: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{AgentID: "hr1", Role: string(agent.RoleHumanReview)}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+
+	ag := &agent.Agent{ID: "hr1", TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.SetError(agent.ErrorKindSilentHang, watchdogreason.ZeroOutputBeforeStartup)
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if strings.Contains(got.Body, "unparseable verdict") || strings.Contains(got.Body, "crashed before producing a verdict") {
+		t.Errorf("silently-hung human-review should not append verdict noise; got:\n%s", got.Body)
+	}
+	for _, run := range got.AgentRuns {
+		if run.AgentID == "hr1" && run.VerdictRendered {
+			t.Fatal("silently-hung human-review must not mark verdict_rendered")
 		}
 	}
 }

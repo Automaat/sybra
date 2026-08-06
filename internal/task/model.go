@@ -284,7 +284,7 @@ type AgentRun struct {
 	// fan-out counting existed.
 	SubagentCallCount int `json:"subagentCallCount,omitempty"`
 	// ResumeZeroOutputStall marks a run whose zero-output watchdog stall fired
-	// (errorKind "rate_limit" + errorMsg watchdogreason.ZeroOutputBeforeStartup).
+	// (errorKind "silent_hang" + errorMsg watchdogreason.ZeroOutputBeforeStartup).
 	// It is the durable poison signal agentorch.PickImplementationResumeSession
 	// counts to detect a session stuck in a resume-stall loop.
 	ResumeZeroOutputStall bool `json:"zeroOutputStall,omitempty"`

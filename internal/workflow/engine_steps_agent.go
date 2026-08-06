@@ -587,6 +587,10 @@ func (e *Engine) resolveAgentVariant(t TaskInfo, step *Step, wfExec *Execution, 
 			}
 		}
 	}
+	if routed, ok := e.routeAroundSilentHang(t, step, wfExec, provider); ok {
+		provider = routed
+		assignment.RoutingReason = "silent_hang_avoid"
+	}
 	if provider != "" && !providerAvailable(provider) {
 		e.logger.Warn(fallbackLog, "wanted", provider, "reason", "CLI not found")
 		return "", defaultModel, AgentAssignment{}, nil
@@ -595,6 +599,37 @@ func (e *Engine) resolveAgentVariant(t TaskInfo, step *Step, wfExec *Execution, 
 		assignment.RoutingReason = "cross"
 	}
 	return provider, resolvedModel, assignment, nil
+}
+
+// routeAroundSilentHang moves this one dispatch off the provider whose last run
+// on this step went silent, and consumes the hint so the step returns to normal
+// routing afterwards. The provider stays healthy for every other task, which is
+// the whole point of not reporting a silent child to the health gate — but the
+// run that just watched it produce nothing should not be handed straight back
+// to it.
+func (e *Engine) routeAroundSilentHang(t TaskInfo, step *Step, wfExec *Execution, provider string) (string, bool) {
+	if wfExec == nil || step == nil {
+		return "", false
+	}
+	avoid := wfExec.Variables[watchdogSilentHangAvoidKey(step.ID)]
+	if avoid == "" {
+		return "", false
+	}
+	wfExec.SetVar(watchdogSilentHangAvoidKey(step.ID), "")
+	effective := provider
+	if effective == "" {
+		effective = e.agents.DefaultProvider()
+	}
+	if effective != avoid {
+		return "", false
+	}
+	alt := crossProvider(effective)
+	if alt == "" || alt == avoid || !providerAvailable(alt) {
+		return "", false
+	}
+	e.logger.Info("workflow.silent-hang.reroute",
+		"task_id", t.ID, "step", step.ID, "from", avoid, "to", alt)
+	return alt, true
 }
 
 // resolveProvider resolves the step-level provider string.

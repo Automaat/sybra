@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -260,12 +261,17 @@ func (e *Engine) handleWatchdogRateLimitRetry(t *TaskInfo, step *Step) bool {
 	return e.handleWatchdogRecoveryRetry(watchdogRecoveryRateLimit, t, step)
 }
 
+// isWatchdogRateLimitReason gates the bounded retry policy that re-dispatches
+// a parked run. Silent hangs are recovered by the same policy (including its
+// fresh-session escape hatch below) even though they no longer claim the
+// provider was rate-limited, so both reasons have to match here or a hung task
+// parks forever with nothing to pick it back up.
 func isWatchdogRateLimitReason(reason string) bool {
-	return watchdogreason.IsRateLimit(reason)
+	return watchdogreason.IsRateLimit(reason) || watchdogreason.IsSilentHang(reason)
 }
 
 func watchdogRateLimitExhaustionResolution(t TaskInfo, _ *Step, attempts int) (status taskstatus.Status, reason string, terminalState ExecState) {
-	if watchdogreason.IsZeroOutputRateLimit(t.StatusReason) {
+	if watchdogreason.IsSilentHang(t.StatusReason) {
 		return taskstatus.Blocked, fmt.Sprintf("watchdog: zero-output startup retry budget exhausted after %d identical attempts", attempts+1), ExecFailed
 	}
 	return taskstatus.HumanRequired, fmt.Sprintf("watchdog: rate limit retry budget exhausted after %d clean re-dispatches", attempts), ExecFailed
@@ -425,7 +431,7 @@ func (e *Engine) watchdogRateLimitRecoverySpec() watchdogRecoverySpec {
 			onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 				retryKey := watchdogRateLimitRetryKey(step.ID)
 				freshKey := watchdogZeroOutputFreshRetryKey(step.ID)
-				if watchdogreason.IsZeroOutputRateLimit(t.StatusReason) && parseWorkflowInt(t.Workflow.Variables[freshKey]) == 0 {
+				if watchdogreason.IsSilentHang(t.StatusReason) && parseWorkflowInt(t.Workflow.Variables[freshKey]) == 0 {
 					t.Workflow.StartedAt = time.Now().UTC()
 					t.Workflow.SetVar(freshKey, "1")
 					t.Workflow.SetVar(retryKey, "0")
@@ -438,7 +444,7 @@ func (e *Engine) watchdogRateLimitRecoverySpec() watchdogRecoverySpec {
 				}
 				targetStatus, reason, terminalState := watchdogRateLimitExhaustionResolution(*t, step, attempts)
 				t.Workflow.State = terminalState
-				if watchdogreason.IsZeroOutputRateLimit(t.StatusReason) {
+				if watchdogreason.IsSilentHang(t.StatusReason) {
 					t.Workflow.StartedAt = time.Now().UTC()
 				}
 				if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
@@ -653,6 +659,41 @@ func watchdogRateLimitRetryKey(stepID string) string {
 
 func watchdogZeroOutputFreshRetryKey(stepID string) string {
 	return watchdogZeroOutputFreshRetryVarPrefix + stepID
+}
+
+func watchdogSilentHangAvoidKey(stepID string) string {
+	return watchdogSilentHangAvoidVarPrefix + stepID
+}
+
+// markSilentHangProvider records the provider of a run the watchdog killed for
+// producing no output, so the next dispatch of the same step routes around it.
+// Called before the retry gate clears the status reason, which is the only
+// evidence at this point that the stop was a silent hang rather than a real
+// rate limit.
+func (e *Engine) markSilentHangProvider(t *TaskInfo, step *Step, agentID string) {
+	if t == nil || t.Workflow == nil || step == nil || !watchdogreason.IsSilentHang(t.StatusReason) {
+		return
+	}
+	prov := runProviderByAgentID(t.AgentRuns, agentID)
+	if prov == "" {
+		return
+	}
+	t.Workflow.SetVar(watchdogSilentHangAvoidKey(step.ID), prov)
+	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+		e.logger.Error("workflow.silent-hang.avoid-persist", "task_id", t.ID, "step", step.ID, "err", err)
+	}
+}
+
+func runProviderByAgentID(runs []AgentRunInfo, agentID string) string {
+	if agentID == "" {
+		return ""
+	}
+	for i := range slices.Backward(runs) {
+		if runs[i].AgentID == agentID {
+			return normalizeExplicitWorkflowProvider(runs[i].Provider)
+		}
+	}
+	return ""
 }
 
 func worktreeRepairRetryKey(stepID string) string {
