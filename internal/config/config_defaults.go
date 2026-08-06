@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -432,6 +433,44 @@ func (c *Config) TestingMaxConcurrent() int {
 		return c.Testing.MaxConcurrent
 	}
 	return DefaultTestingMaxConcurrent
+}
+
+// derivedVerifyChecksMaxConcurrentMin/Max bound derivedVerifyChecksMaxConcurrent's
+// CPU-derived output — never a single global slot (a multi-core fleet host
+// should get some parallelism even with agent.verify_checks_max_concurrent
+// unset) and never unbounded (a full verify suite is CPU-heavy per run, so a
+// huge core count should not translate into dozens running at once).
+const (
+	derivedVerifyChecksMaxConcurrentMin = 1
+	derivedVerifyChecksMaxConcurrentMax = 8
+)
+
+// derivedVerifyChecksMaxConcurrent computes the CPU-derived default slot
+// count used when agent.verify_checks_max_concurrent is unset: roughly a
+// quarter of the host's logical CPUs, clamped to
+// [derivedVerifyChecksMaxConcurrentMin, derivedVerifyChecksMaxConcurrentMax].
+// A quarter (not e.g. half) leaves headroom for the rest of the fleet's
+// concurrent agent work (agent.max_concurrent) to actually run on the same
+// host without a verify-suite pile-up starving it of CPU.
+func derivedVerifyChecksMaxConcurrent() int {
+	n := runtime.NumCPU() / 4
+	if n < derivedVerifyChecksMaxConcurrentMin {
+		n = derivedVerifyChecksMaxConcurrentMin
+	}
+	if n > derivedVerifyChecksMaxConcurrentMax {
+		n = derivedVerifyChecksMaxConcurrentMax
+	}
+	return n
+}
+
+// VerifyChecksMaxConcurrent returns the configured
+// agent.verify_checks_max_concurrent when set (>0), otherwise a CPU-derived
+// default — see derivedVerifyChecksMaxConcurrent.
+func (c *Config) VerifyChecksMaxConcurrent() int {
+	if c != nil && c.Agent.VerifyChecksMaxConcurrent > 0 {
+		return c.Agent.VerifyChecksMaxConcurrent
+	}
+	return derivedVerifyChecksMaxConcurrent()
 }
 
 // TestingMaxAttempts returns the configured cap, bounded by the immutable
