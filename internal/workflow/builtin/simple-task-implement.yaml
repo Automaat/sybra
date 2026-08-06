@@ -120,7 +120,7 @@ steps:
         declare it by setting the task's status reason to exactly one JSON
         object and nothing else:
 
-            sybra-cli update <task-id> --status human-required \
+            sybra-cli update {{.Task.ID}} --status human-required \
               --status-reason '{"decision":"already-fixed-on-main","reason":"<one sentence>"}'
 
         Only that exact call counts as a declaration. Writing the same JSON in
