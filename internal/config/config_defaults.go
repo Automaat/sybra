@@ -454,12 +454,8 @@ const (
 // host without a verify-suite pile-up starving it of CPU.
 func derivedVerifyChecksMaxConcurrent() int {
 	n := runtime.NumCPU() / 4
-	if n < derivedVerifyChecksMaxConcurrentMin {
-		n = derivedVerifyChecksMaxConcurrentMin
-	}
-	if n > derivedVerifyChecksMaxConcurrentMax {
-		n = derivedVerifyChecksMaxConcurrentMax
-	}
+	n = max(n, derivedVerifyChecksMaxConcurrentMin)
+	n = min(n, derivedVerifyChecksMaxConcurrentMax)
 	return n
 }
 

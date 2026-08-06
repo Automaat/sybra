@@ -3192,12 +3192,8 @@ func TestConfig_VerifyChecksMaxConcurrent(t *testing.T) {
 		t.Errorf("zero-value VerifyChecksMaxConcurrent() = %d, want >= 1", derived)
 	}
 	wantDerived := runtime.NumCPU() / 4
-	if wantDerived < 1 {
-		wantDerived = 1
-	}
-	if wantDerived > 8 {
-		wantDerived = 8
-	}
+	wantDerived = max(wantDerived, 1)
+	wantDerived = min(wantDerived, 8)
 	if derived != wantDerived {
 		t.Errorf("zero-value VerifyChecksMaxConcurrent() = %d, want CPU-derived %d", derived, wantDerived)
 	}
