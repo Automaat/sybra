@@ -5,6 +5,7 @@ import (
 	"context"
 	"slices"
 
+	"github.com/Automaat/sybra/internal/backoff"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
@@ -26,14 +27,7 @@ func expBackoff(streak, maxTicks int) int {
 	if streak <= 0 || maxTicks <= 0 {
 		return 0
 	}
-	skip := 1
-	for i := 1; i < streak && skip < maxTicks; i++ {
-		skip *= 2
-		if skip >= maxTicks {
-			return maxTicks
-		}
-	}
-	return skip
+	return backoff.StepsForAttempt(streak, 1, maxTicks).Steps
 }
 
 func (r *Handler) selectKnownPRPoll(ctx context.Context, tasks []task.Task) knownPRPollSelection {

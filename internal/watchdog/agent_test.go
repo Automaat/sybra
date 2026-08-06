@@ -138,8 +138,9 @@ func TestInspectHeadless_DefersAndBacksOffUnderPressure(t *testing.T) {
 	if inspectCalled {
 		t.Fatal("inspectAgent called under machine pressure")
 	}
-	if s.ready(ag.ID, now.Add(90*time.Second)) {
-		t.Fatal("first pressure backoff expired too early")
+	firstDeadline := s.nextEligibleAt[ag.ID]
+	if delay := firstDeadline.Sub(now); delay < time.Minute || delay > 2*time.Minute {
+		t.Fatalf("first pressure backoff = %v, want jittered window [1m, 2m]", delay)
 	}
 
 	secondAttempt := now.Add(2 * time.Minute)
@@ -147,11 +148,9 @@ func TestInspectHeadless_DefersAndBacksOffUnderPressure(t *testing.T) {
 	if inspectCalled {
 		t.Fatal("inspectAgent called during second pressure defer")
 	}
-	if s.ready(ag.ID, secondAttempt.Add(3*time.Minute+30*time.Second)) {
-		t.Fatal("second pressure backoff expired too early")
-	}
-	if !s.ready(ag.ID, secondAttempt.Add(4*time.Minute)) {
-		t.Fatal("second pressure backoff did not expand to four minutes")
+	secondDeadline := s.nextEligibleAt[ag.ID]
+	if delay := secondDeadline.Sub(secondAttempt); delay < 2*time.Minute || delay > 4*time.Minute {
+		t.Fatalf("second pressure backoff = %v, want jittered window [2m, 4m]", delay)
 	}
 }
 

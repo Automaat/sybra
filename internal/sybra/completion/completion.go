@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/backoff"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/gitexec"
@@ -273,8 +274,8 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 }
 
 func (h *Handler) retryUpdateRunCompletion(ag *agent.Agent, runUpdates task.RunPatch, resultContent string, exitErr error) {
-	delay := completionUpdateRunRetryInitialDelay
-	for {
+	for attempt := 1; ; attempt++ {
+		delay := backoff.ForAttempt(attempt, completionUpdateRunRetryInitialDelay, completionUpdateRunRetryMaxDelay).Delay
 		time.Sleep(delay)
 		err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates)
 		if err == nil {
@@ -287,10 +288,6 @@ func (h *Handler) retryUpdateRunCompletion(ag *agent.Agent, runUpdates task.RunP
 			return
 		}
 		h.logger.Warn("task.update-run.deferred.retry", "task_id", ag.TaskID, "agent_id", ag.ID, "delay", delay, "err", err)
-		delay *= 2
-		if delay > completionUpdateRunRetryMaxDelay {
-			delay = completionUpdateRunRetryMaxDelay
-		}
 	}
 }
 
