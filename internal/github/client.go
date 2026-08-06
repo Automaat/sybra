@@ -706,10 +706,9 @@ func IsTransientError(err error) bool {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
-	// HTTP 5xx: sanitized gh output produces "gh: http 5xx". Kept broader than
-	// errclass.IsGateway on purpose — this predicate gates poller escalation,
-	// where treating a 500 as transient costs one retry and treating it as
-	// permanent costs a board-wide escalation storm.
+	// HTTP 5xx: sanitized gh output produces "gh: http 5xx". Broader than the
+	// gateway-only list gh output uses, because this predicate gates poller
+	// escalation: a 500 read as permanent costs a board-wide escalation storm.
 	if strings.Contains(msg, "http 5") {
 		return true
 	}

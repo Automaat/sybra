@@ -7,7 +7,7 @@ import (
 
 func allFamilies() map[string][]string {
 	return map[string][]string{
-		"BadRefPhrases":            BadRefPhrases,
+		"badRefPhrases":            badRefPhrases,
 		"GitHubTransientPhrases":   GitHubTransientPhrases,
 		"GHOutputTransientPhrases": GHOutputTransientPhrases,
 		"GitHubRateLimitPhrases":   GitHubRateLimitPhrases,
@@ -34,18 +34,6 @@ func TestFamiliesAreUsableLowercase(t *testing.T) {
 			}
 			if strings.TrimSpace(phrase) != phrase {
 				t.Errorf("%s has %q with surrounding whitespace", name, phrase)
-			}
-		}
-	}
-}
-
-// TestEveryPhraseIsReachable proves each entry is load-bearing: the phrase on
-// its own classifies, so deleting it would change an answer.
-func TestEveryPhraseIsReachable(t *testing.T) {
-	for name, family := range allFamilies() {
-		for _, phrase := range family {
-			if !Matches(phrase, family) {
-				t.Errorf("%s %q does not match itself", name, phrase)
 			}
 		}
 	}

@@ -23,11 +23,10 @@ package errclass
 
 import "strings"
 
-// Tables shared by more than one caller. Adding a phrase to one of these
-// changes every caller that composes it.
+// The one genuinely shared table, reached through IsBadRef.
 var (
 	// The twelve needles internal/project and internal/workflow each carried byte-identically.
-	BadRefPhrases = []string{
+	badRefPhrases = []string{
 		"bad object head",
 		"fatal: bad object",
 		"not a valid object name",
@@ -173,5 +172,5 @@ func Matches(text string, families ...[]string) bool {
 
 // IsBadRef reports a corrupt or unresolvable git object or ref.
 func IsBadRef(text string) bool {
-	return Matches(text, BadRefPhrases)
+	return Matches(text, badRefPhrases)
 }
