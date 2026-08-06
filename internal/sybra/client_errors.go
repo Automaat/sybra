@@ -20,3 +20,7 @@ func validationError(msg string) error {
 func conflictError(msg string) error {
 	return &clientError{status: http.StatusConflict, msg: msg}
 }
+
+func unavailableError(msg string) error {
+	return &clientError{status: http.StatusServiceUnavailable, msg: msg}
+}

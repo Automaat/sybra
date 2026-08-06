@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -86,6 +87,61 @@ func TestTaskAdapterUpdateTaskStatusSynthesizesHumanRequiredReasonFromLatestRun(
 	}
 }
 
+// TestTaskAdapterSetBlockerAndWorkflowPersistsAllFieldsAtomically guards
+// #2749's blocker-path counterpart to SetStatusAndWorkflow: a caller
+// escalating to "blocked" with a workflow-owned blocker.State alongside a
+// workflow mutation must land Status, Blocker, and Workflow in one store
+// write, not a status+blocker write followed by a separate SetWorkflow call.
+func TestTaskAdapterSetBlockerAndWorkflowPersistsAllFieldsAtomically(t *testing.T) {
+	t.Parallel()
+
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	created, err := tasks.Create("blocker+workflow", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{WorkflowID: "wf-1", State: workflow.ExecRunning, CurrentStep: "run_test"}
+	if _, err := tasks.Update(created.ID, task.Update{Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ta := &taskAdapter{tasks: tasks}
+	terminal := &workflow.Execution{WorkflowID: "wf-1", State: workflow.ExecFailed, CurrentStep: ""}
+	state := blocker.State{Kind: blocker.KindWatchdogRateLimitExhausted, Actor: blocker.ActorWorkflow, Exhausted: true}
+	if err := ta.SetBlockerAndWorkflow(created.ID, "blocked", "retry budget exhausted", state, terminal); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != task.StatusBlocked {
+		t.Fatalf("Status = %q, want %q", after.Status, task.StatusBlocked)
+	}
+	if after.StatusReason != "retry budget exhausted" {
+		t.Fatalf("StatusReason = %q, want %q", after.StatusReason, "retry budget exhausted")
+	}
+	if after.Blocker != state {
+		t.Fatalf("Blocker = %+v, want %+v", after.Blocker, state)
+	}
+	if after.Workflow == nil || after.Workflow.State != workflow.ExecFailed {
+		t.Fatalf("Workflow.State = %v, want %v", after.Workflow, workflow.ExecFailed)
+	}
+	// Exactly one generation bump for the whole call — proof it was a single
+	// store write, not a status+blocker write followed by a second one.
+	if after.Generation != before.Generation+1 {
+		t.Fatalf("Generation = %d, want %d (single atomic write)", after.Generation, before.Generation+1)
+	}
+}
 func TestTaskAdapterClearTaskStatusReasonIfIsAtomicGuard(t *testing.T) {
 	t.Parallel()
 

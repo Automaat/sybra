@@ -780,7 +780,6 @@ func trimUTF8ToBytesFromEnd(s string, limit int) string {
 	}
 	return s
 }
-
 func upsertAcceptanceLedger(body, fingerprint, report string) (nextBody string, changed bool) {
 	if fingerprint == "" || report == "" {
 		return body, false
