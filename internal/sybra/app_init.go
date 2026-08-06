@@ -1344,7 +1344,7 @@ func (a *App) initWorkflowEngine() {
 				queued[snap[i].TaskID] = snap[i]
 			}
 			toItem := func(t workflow.TaskInfo) agentqueue.Item {
-				it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: task.Status(t.Status)}
+				it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: t.Status}
 				if qit, ok := queued[t.ID]; ok {
 					it.Manual = qit.Manual
 					it.Enqueued = qit.Enqueued

@@ -913,7 +913,7 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	return 0
 }
 
-func resolveHandoffMode(fs *flag.FlagSet, stage, rawStatus string, pr int) (handoffStageConfig, task.Status, bool, error) {
+func resolveHandoffMode(fs *flag.FlagSet, stage, rawStatus string, pr int) (cfg handoffStageConfig, status task.Status, explicit bool, err error) {
 	stageProvided := false
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "stage" {

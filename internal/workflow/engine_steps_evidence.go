@@ -9,6 +9,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/evidence"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // Criterion names used across the deterministic gates and the
@@ -243,7 +244,7 @@ func (e *Engine) execRequireEvidence(taskID string, step *Step, t TaskInfo) (Ste
 // (missing/failed/stale criteria, or an unreadable evidence store).
 func (e *Engine) blockRequireEvidence(taskID string, step *Step, t TaskInfo, problem string) (StepOutput, error) {
 	reason := evidenceGateReasonPrefix + " " + problem
-	if err := e.tasks.UpdateTaskBlocker(taskID, "human-required", reason, blocker.State{
+	if err := e.tasks.UpdateTaskBlocker(taskID, taskstatus.HumanRequired, reason, blocker.State{
 		Kind:      blocker.KindOperatorDecision,
 		Actor:     blocker.ActorWorkflow,
 		Exhausted: true,

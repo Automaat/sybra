@@ -12,7 +12,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/google/uuid"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 const metaFileName = "meta.json"
@@ -37,8 +40,8 @@ func (s *Store) Put(taskID string, req UploadRequest) (Attachment, error) {
 	if s == nil {
 		return Attachment{}, errors.New("attachment store is not configured")
 	}
-	if err := validateTaskKey(taskID); err != nil {
-		return Attachment{}, err
+	if err := fsutil.ValidateKey(taskID); err != nil {
+		return Attachment{}, fmt.Errorf("task id: %w", err)
 	}
 	if err := s.validateSize(req.Data); err != nil {
 		return Attachment{}, err
@@ -68,7 +71,7 @@ func (s *Store) Put(taskID string, req UploadRequest) (Attachment, error) {
 		return Attachment{}, fmt.Errorf("create attachment dir: %w", err)
 	}
 	blobPath := filepath.Join(dir, name)
-	if err := writeFileAtomic(blobPath, req.Data, 0o600); err != nil {
+	if err := writeBlob(blobPath, req.Data, 0o600); err != nil {
 		return Attachment{}, fmt.Errorf("write attachment blob: %w", err)
 	}
 
@@ -85,7 +88,7 @@ func (s *Store) Put(taskID string, req UploadRequest) (Attachment, error) {
 		_ = os.Remove(blobPath)
 		return Attachment{}, fmt.Errorf("marshal attachment metadata: %w", err)
 	}
-	if err := writeFileAtomic(filepath.Join(dir, metaFileName), metaBytes, 0o600); err != nil {
+	if err := writeBlob(filepath.Join(dir, metaFileName), metaBytes, 0o600); err != nil {
 		_ = os.Remove(blobPath)
 		return Attachment{}, fmt.Errorf("write attachment metadata: %w", err)
 	}
@@ -97,11 +100,11 @@ func (s *Store) Import(taskID string, meta Attachment, data []byte) (Attachment,
 	if s == nil {
 		return Attachment{}, errors.New("attachment store is not configured")
 	}
-	if err := validateTaskKey(taskID); err != nil {
-		return Attachment{}, err
+	if err := fsutil.ValidateKey(taskID); err != nil {
+		return Attachment{}, fmt.Errorf("task id: %w", err)
 	}
-	if err := validateTaskKey(meta.ID); err != nil {
-		return Attachment{}, err
+	if err := fsutil.ValidateKey(meta.ID); err != nil {
+		return Attachment{}, fmt.Errorf("attachment id: %w", err)
 	}
 	if err := s.validateSize(data); err != nil {
 		return Attachment{}, err
@@ -137,7 +140,7 @@ func (s *Store) Import(taskID string, meta Attachment, data []byte) (Attachment,
 		return Attachment{}, fmt.Errorf("create attachment dir: %w", err)
 	}
 	blobPath := filepath.Join(dir, name)
-	if err := writeFileAtomic(blobPath, data, 0o600); err != nil {
+	if err := writeBlob(blobPath, data, 0o600); err != nil {
 		return Attachment{}, fmt.Errorf("write attachment blob: %w", err)
 	}
 
@@ -154,7 +157,7 @@ func (s *Store) Import(taskID string, meta Attachment, data []byte) (Attachment,
 		_ = os.RemoveAll(dir)
 		return Attachment{}, fmt.Errorf("marshal attachment metadata: %w", err)
 	}
-	if err := writeFileAtomic(filepath.Join(dir, metaFileName), metaBytes, 0o600); err != nil {
+	if err := writeBlob(filepath.Join(dir, metaFileName), metaBytes, 0o600); err != nil {
 		_ = os.RemoveAll(dir)
 		return Attachment{}, fmt.Errorf("write attachment metadata: %w", err)
 	}
@@ -166,8 +169,8 @@ func (s *Store) List(taskID string) ([]Attachment, error) {
 	if s == nil {
 		return nil, errors.New("attachment store is not configured")
 	}
-	if err := validateTaskKey(taskID); err != nil {
-		return nil, err
+	if err := fsutil.ValidateKey(taskID); err != nil {
+		return nil, fmt.Errorf("task id: %w", err)
 	}
 	taskDir, err := s.taskDir(taskID)
 	if err != nil {
@@ -213,7 +216,7 @@ func (s *Store) Path(taskID, attachmentID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !withinDir(dir, meta.Path) {
+	if !fsutil.Within(dir, meta.Path) {
 		return "", fmt.Errorf("attachment path escapes task dir: %s", attachmentID)
 	}
 	if _, err := os.Stat(meta.Path); err != nil {
@@ -227,11 +230,11 @@ func (s *Store) Delete(taskID, attachmentID string) error {
 	if s == nil {
 		return errors.New("attachment store is not configured")
 	}
-	if err := validateTaskKey(taskID); err != nil {
-		return err
+	if err := fsutil.ValidateKey(taskID); err != nil {
+		return fmt.Errorf("task id: %w", err)
 	}
-	if err := validateTaskKey(attachmentID); err != nil {
-		return err
+	if err := fsutil.ValidateKey(attachmentID); err != nil {
+		return fmt.Errorf("attachment id: %w", err)
 	}
 	mu := s.lockFor(taskID)
 	mu.Lock()
@@ -251,8 +254,8 @@ func (s *Store) DeleteTask(taskID string) error {
 	if s == nil {
 		return errors.New("attachment store is not configured")
 	}
-	if err := validateTaskKey(taskID); err != nil {
-		return err
+	if err := fsutil.ValidateKey(taskID); err != nil {
+		return fmt.Errorf("task id: %w", err)
 	}
 	mu := s.lockFor(taskID)
 	mu.Lock()
@@ -288,18 +291,18 @@ func (s *Store) lockFor(taskID string) *sync.Mutex {
 }
 
 func (s *Store) taskDir(taskID string) (string, error) {
-	return safeJoin(s.root, taskID)
+	return fsutil.SafeJoin(s.root, taskID)
 }
 
 func (s *Store) attachmentDir(taskID, attachmentID string) (string, error) {
-	if err := validateTaskKey(attachmentID); err != nil {
-		return "", err
+	if err := fsutil.ValidateKey(attachmentID); err != nil {
+		return "", fmt.Errorf("attachment id: %w", err)
 	}
 	taskDir, err := s.taskDir(taskID)
 	if err != nil {
 		return "", err
 	}
-	return safeJoin(taskDir, attachmentID)
+	return fsutil.SafeJoin(taskDir, attachmentID)
 }
 
 func (s *Store) readMeta(dir string) (Attachment, error) {
@@ -312,37 +315,6 @@ func (s *Store) readMeta(dir string) (Attachment, error) {
 		return Attachment{}, fmt.Errorf("decode attachment metadata: %w", err)
 	}
 	return meta, nil
-}
-
-func validateTaskKey(v string) error {
-	if strings.TrimSpace(v) == "" {
-		return errors.New("attachment key is required")
-	}
-	if strings.Contains(v, string(filepath.Separator)) || strings.Contains(v, "/") || strings.Contains(v, "\\") {
-		return fmt.Errorf("attachment key %q contains path separators", v)
-	}
-	if v == "." || v == ".." {
-		return fmt.Errorf("attachment key %q is invalid", v)
-	}
-	return nil
-}
-
-func safeJoin(root string, parts ...string) (string, error) {
-	base := filepath.Clean(root)
-	candidate := filepath.Join(append([]string{base}, parts...)...)
-	if !withinDir(base, candidate) && filepath.Clean(candidate) != base {
-		return "", fmt.Errorf("path escapes root: %s", candidate)
-	}
-	return candidate, nil
-}
-
-func withinDir(root, path string) bool {
-	root = filepath.Clean(root)
-	path = filepath.Clean(path)
-	if path == root {
-		return true
-	}
-	return strings.HasPrefix(path, root+string(filepath.Separator))
 }
 
 func sanitizeFileName(name string) string {
@@ -379,27 +351,12 @@ func sanitizeFileName(name string) string {
 	return sanitized
 }
 
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+// writeBlob stages an attachment payload beside its target and publishes it
+// with an explicit mode: blobs are served to the frontend, so their mode must
+// not vary with the operator's umask.
+func writeBlob(path string, data []byte, perm os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return fsutil.AtomicWriteMode(path, data, perm)
 }

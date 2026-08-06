@@ -7,16 +7,17 @@ import (
 
 	"github.com/Automaat/sybra/internal/dispatchorder"
 	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/watchdogreason"
 )
 
-func resumeSkipReasonForStatus(status string) (reason string, skip bool) {
+func resumeSkipReasonForStatus(status taskstatus.Status) (reason string, skip bool) {
 	switch status {
-	case "human-required":
+	case taskstatus.HumanRequired:
 		return "human_required", true
-	case "blocked":
+	case taskstatus.Blocked:
 		return "blocked", true
-	case "done", "cancelled":
+	case taskstatus.Done, taskstatus.Cancelled:
 		return "terminal_status", true
 	default:
 		return "", false
@@ -122,7 +123,7 @@ func (e *Engine) escalateMissingStep(taskID string, wf *Execution) {
 
 	// Status first, execution second, so a failed second write leaves the task
 	// visible and retryable rather than buried mid-escalation.
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required",
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired,
 		"Workflow step "+wf.CurrentStep+" no longer exists in "+wf.WorkflowID+
 			" — it was removed while this task was parked on it. Set the task back to"+
 			" planning to re-plan against the current workflow."); err != nil {
@@ -183,7 +184,7 @@ func (e *Engine) ResumeStalled() {
 		slices.SortStableFunc(tasks, e.dispatchComparator())
 	} else {
 		slices.SortStableFunc(tasks, func(a, b TaskInfo) int {
-			return cmp.Compare(dispatchorder.Rank(a.Status), dispatchorder.Rank(b.Status))
+			return cmp.Compare(dispatchorder.Rank(string(a.Status)), dispatchorder.Rank(string(b.Status)))
 		})
 	}
 
@@ -273,7 +274,7 @@ func (e *Engine) resumePreflightConsumesTick(t *TaskInfo, step *Step, logEvent s
 		(reason != "human_required" || !retryableWatchdogStop) &&
 		(reason != "blocked" || !retryableWorktreeRepair) {
 		e.resumeSkip.Log(e.logger, logEvent, t.ID,
-			reason+"|"+t.Status+"|"+step.ID,
+			reason+"|"+string(t.Status)+"|"+step.ID,
 			"task_id", t.ID, "reason", reason, "status", t.Status, "step", step.ID)
 		return true
 	}
@@ -301,7 +302,7 @@ func (e *Engine) resumePreflightConsumesTick(t *TaskInfo, step *Step, logEvent s
 // leaving the workflow waiting at the same time makes guarded operator
 // dispatch impossible, because a new workflow may only replace a terminal one.
 func (e *Engine) terminalizeNonRetryableRewardHacking(t *TaskInfo, step *Step) bool {
-	if t == nil || t.Workflow == nil || t.Status != "human-required" ||
+	if t == nil || t.Workflow == nil || t.Status != taskstatus.HumanRequired ||
 		!watchdogreason.IsRewardHacking(t.StatusReason) {
 		return false
 	}
@@ -351,8 +352,8 @@ func (e *Engine) resolveFreshTaskForResume(t *TaskInfo, step *Step, def *Definit
 }
 
 func (e *Engine) resumeStalledReconcileWaitHumanStatus(t TaskInfo, step *Step) {
-	if _, waitSkip := resumeSkipReasonForStatus(t.Status); step.Type == StepWaitHuman && !waitSkip && step.Config.Status != "" && t.Status != step.Config.Status {
-		if err := e.tasks.UpdateTaskStatus(t.ID, step.Config.Status, step.Config.StatusReason); err != nil {
+	if _, waitSkip := resumeSkipReasonForStatus(t.Status); step.Type == StepWaitHuman && !waitSkip && step.Config.Status != "" && t.Status != taskstatus.Status(step.Config.Status) {
+		if err := e.tasks.UpdateTaskStatus(t.ID, taskstatus.Status(step.Config.Status), step.Config.StatusReason); err != nil {
 			e.logger.Warn("workflow.resume-stalled.reconcile-status", "task_id", t.ID, "step", step.ID, "err", err)
 		} else {
 			e.logger.Info("workflow.resume-stalled.reconcile-status",

@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"slices"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
@@ -114,7 +116,7 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		Provider: c.Provider,
 	}
 	if !c.Success && c.EscalationReason == "checkpoint_failed" {
-		out.TerminalStatus = "human-required"
+		out.TerminalStatus = taskstatus.HumanRequired
 		out.TerminalReason = "checkpoint_failed: checkpoint commit failed — no durable checkpoint state created"
 	}
 	if def, ok := defs.get(); ok && e.maybeRecoverUnverifiedSkillRun(taskID, c.AgentID, spawnedStep, c.Result, def, def.StepByID(t.Workflow.CurrentStep)) {
@@ -376,7 +378,7 @@ func (e *Engine) RescheduleInterruptedAgent(taskID, agentID string) {
 	}
 	e.clearAgentStep(taskID, agentID)
 	clearAgentRouteFromWorkflow(t.Workflow, agentID)
-	if t.Status == "human-required" {
+	if t.Status == taskstatus.HumanRequired {
 		status := interruptedRecoveryStatus(t.Workflow.WorkflowID)
 		if err := e.tasks.UpdateTaskStatus(taskID, status, ""); err != nil {
 			e.logger.Error("workflow.interrupted-reschedule.unpark", "task_id", taskID, "step", step.ID, "err", err)
@@ -388,14 +390,14 @@ func (e *Engine) RescheduleInterruptedAgent(taskID, agentID string) {
 	e.rescheduleRunAgent(taskID, agentID, step, t, &def, "workflow.interrupted-reschedule", nil)
 }
 
-func interruptedRecoveryStatus(workflowID string) string {
+func interruptedRecoveryStatus(workflowID string) taskstatus.Status {
 	if workflowID == "simple-task-plan" {
-		return "planning"
+		return taskstatus.Planning
 	}
 	if workflowID == "testing-task" {
-		return "testing"
+		return taskstatus.Testing
 	}
-	return "in-progress"
+	return taskstatus.InProgress
 }
 
 // RescheduleRateLimitedAgent immediately re-drives the run_agent step that a
@@ -662,7 +664,7 @@ func (e *Engine) handlePromptUndeliveredReschedule(taskID string, t *TaskInfo, s
 		max:        maxPromptUndeliveredRetries,
 		onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 			reason := fmt.Sprintf("provider never accepted the prompt across %d attempts — the agent CLI is not reading stdin on this host", attempts+1)
-			if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+			if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 				e.resumeError.Log(e.logger, "workflow.prompt-undelivered-reschedule.human-required", taskID, err, "task_id", taskID)
 			}
 		},
@@ -733,7 +735,7 @@ func (e *Engine) handleCheckpointReschedule(taskID string, t *TaskInfo, step *St
 		max:        e.effectiveMaxCheckpoints(),
 		onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 			reason := fmt.Sprintf("checkpoint retry budget exhausted after %d handoffs", e.effectiveMaxCheckpoints())
-			if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+			if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 				e.resumeError.Log(e.logger, "workflow.checkpoint-reschedule.human-required", taskID, err, "task_id", taskID)
 			}
 		},

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 const workflowPermutationContractYAML = `id: permutation-contract
@@ -139,12 +141,12 @@ func (s *workflowPermutationScenario) complete(agentID, provider, result string)
 	})
 }
 
-func (s *workflowPermutationScenario) statusChange(status string) {
+func (s *workflowPermutationScenario) statusChange(status taskstatus.Status) {
 	ti := mustTaskInfo(s.t, s.tasks, "t1")
 	if err := s.tasks.UpdateTaskStatus("t1", status, ti.StatusReason); err != nil {
 		s.t.Fatalf("UpdateTaskStatus: %v", err)
 	}
-	s.engine.HandleStatusChange("t1", status)
+	s.engine.HandleStatusChange("t1", string(status))
 }
 
 func (s *workflowPermutationScenario) restart() {
@@ -164,7 +166,7 @@ func (s *workflowPermutationScenario) restart() {
 
 func (s *workflowPermutationScenario) result() workflowPermutationResult {
 	ti := mustTaskInfo(s.t, s.tasks, "t1")
-	result := workflowPermutationResult{TaskStatus: ti.Status, TaskReason: ti.StatusReason}
+	result := workflowPermutationResult{TaskStatus: string(ti.Status), TaskReason: ti.StatusReason}
 	if ti.Workflow == nil {
 		return result
 	}

@@ -26,6 +26,7 @@ import (
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/prompteval"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -663,7 +664,7 @@ func (m *memTasks) ListTasks() ([]TaskInfo, error) {
 	return out, nil
 }
 
-func (m *memTasks) UpdateTaskStatus(id, status, reason string) error {
+func (m *memTasks) UpdateTaskStatus(id string, status taskstatus.Status, reason string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tasks[id]
@@ -676,7 +677,7 @@ func (m *memTasks) UpdateTaskStatus(id, status, reason string) error {
 	return nil
 }
 
-func (m *memTasks) ClearTaskStatusReasonIf(id, expectedStatus, expectedReason string) (bool, error) {
+func (m *memTasks) ClearTaskStatusReasonIf(id string, expectedStatus taskstatus.Status, expectedReason string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tasks[id]
@@ -691,7 +692,7 @@ func (m *memTasks) ClearTaskStatusReasonIf(id, expectedStatus, expectedReason st
 	return true, nil
 }
 
-func (m *memTasks) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {
+func (m *memTasks) UpdateTaskBlocker(id string, status taskstatus.Status, reason string, state blocker.State) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tasks[id]
@@ -967,7 +968,7 @@ func lookupWorkflowAgentRoute(t *testing.T, engine *Engine, taskID, agentID stri
 }
 
 // SetStatus is a test helper to simulate an agent changing task status.
-func (m *memTasks) SetStatus(id, status string) {
+func (m *memTasks) SetStatus(id string, status taskstatus.Status) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if t, ok := m.tasks[id]; ok {
@@ -1650,7 +1651,7 @@ func TestResumeStalled_WatchdogHangRetriesThenEscalates(t *testing.T) {
 		name       string
 		retries    string
 		wantStarts int
-		wantStatus string
+		wantStatus taskstatus.Status
 		wantReason string
 		wantRetry  string
 		baseline   string
@@ -1739,7 +1740,7 @@ func TestResumeStalled_WatchdogStopImplementationRetriesThenEscalates(t *testing
 		reason     string
 		retries    string
 		wantStarts int
-		wantStatus string
+		wantStatus taskstatus.Status
 		wantReason string
 		wantRetry  string
 		baseline   string
@@ -1836,13 +1837,13 @@ func TestResumeStalled_WatchdogRewardHackingRetriesThenEscalates(t *testing.T) {
 	tests := []struct {
 		name       string
 		role       string
-		status     string
+		status     taskstatus.Status
 		stepID     string
 		workflowID string
 		retries    string
 		plan       string
 		wantStarts int
-		wantStatus string
+		wantStatus taskstatus.Status
 		wantReason string
 		wantRetry  string
 		wantClean  string
@@ -1947,7 +1948,7 @@ func TestResumeStalled_WorktreeRepairRetriesThenExhausts(t *testing.T) {
 		name       string
 		attempts   string
 		wantStarts int
-		wantStatus string
+		wantStatus taskstatus.Status
 		wantRetry  string
 		wantExh    bool
 	}{
@@ -3626,7 +3627,7 @@ func TestNoWorkflowField(t *testing.T) {
 
 func TestDispatchPriorityRank(t *testing.T) {
 	cases := []struct {
-		status string
+		status taskstatus.Status
 		want   int
 	}{
 		{"in-review", 0},
@@ -3642,7 +3643,7 @@ func TestDispatchPriorityRank(t *testing.T) {
 		{"", 4},
 	}
 	for _, tc := range cases {
-		if got := dispatchorder.Rank(tc.status); got != tc.want {
+		if got := dispatchorder.Rank(string(tc.status)); got != tc.want {
 			t.Errorf("dispatchorder.Rank(%q) = %d, want %d", tc.status, got, tc.want)
 		}
 	}
@@ -3654,7 +3655,7 @@ func TestResumeStalled_PrioritizesReviewOverNewWork(t *testing.T) {
 	agents := newMockAgents()
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
-	parked := func(id, status string) TaskInfo {
+	parked := func(id string, status taskstatus.Status) TaskInfo {
 		return TaskInfo{
 			ID:        id,
 			Status:    status,
@@ -3693,7 +3694,7 @@ func TestResumeStalled_DispatchComparatorOverridesDefaultOrder(t *testing.T) {
 	agents := newMockAgents()
 	engine := NewEngine(store, tasks, agents, discardLogger())
 
-	parked := func(id, status string) TaskInfo {
+	parked := func(id string, status taskstatus.Status) TaskInfo {
 		return TaskInfo{
 			ID:        id,
 			Status:    status,
@@ -3832,8 +3833,8 @@ func TestResumeStalled_WaitHumanStatusRespectsSkipStatuses(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, keep := range []string{"cancelled", "done", "human-required"} {
-		t.Run(keep, func(t *testing.T) {
+	for _, keep := range []taskstatus.Status{"cancelled", "done", "human-required"} {
+		t.Run(string(keep), func(t *testing.T) {
 			tasks := newMemTasks()
 			engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
 			tasks.Put(TaskInfo{
@@ -4272,8 +4273,8 @@ func TestRescheduleInterruptedAgent_UnparksHumanRequiredCurrentStep(t *testing.T
 }
 
 func TestRescheduleInterruptedAgent_SkipsBlockedAndTerminalStatuses(t *testing.T) {
-	for _, status := range []string{"blocked", "done", "cancelled"} {
-		t.Run(status, func(t *testing.T) {
+	for _, status := range []taskstatus.Status{"blocked", "done", "cancelled"} {
+		t.Run(string(status), func(t *testing.T) {
 			store := newTestStore(t)
 			tasks := newMemTasks()
 			agents := newMockAgents()
@@ -4330,7 +4331,7 @@ func TestRescheduleRateLimitedAgent_WatchdogRetriesThenEscalates(t *testing.T) {
 		name       string
 		retries    string
 		wantStarts int
-		wantStatus string
+		wantStatus taskstatus.Status
 		wantReason string
 		wantRetry  string
 	}{
@@ -4407,7 +4408,7 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 		retries          string
 		freshUsed        bool
 		wantStarts       int
-		wantStatus       string
+		wantStatus       taskstatus.Status
 		wantReason       string
 		wantRetry        string
 		wantFresh        string
@@ -5197,7 +5198,7 @@ func TestRescheduleRateLimitedAgent_ParallelChildWatchdogRetriesThenEscalates(t 
 		name       string
 		retries    string
 		wantStarts int
-		wantStatus string
+		wantStatus taskstatus.Status
 		wantReason string
 		wantRetry  string
 	}{
@@ -5588,7 +5589,7 @@ func TestResumeStalled_SkipsDoneStatus(t *testing.T) {
 func TestResumeStalled_SkipsTerminalStatusAfterFreshRead(t *testing.T) {
 	tests := []struct {
 		name   string
-		status string
+		status taskstatus.Status
 	}{
 		{name: "done", status: "done"},
 		{name: "cancelled", status: "cancelled"},
@@ -5636,7 +5637,7 @@ func TestResumeStalled_SkipsTerminalStatusAfterFreshRead(t *testing.T) {
 func TestRescheduleRateLimitedAgent_ParallelChildSkipsTerminalStatusAfterFreshRead(t *testing.T) {
 	tests := []struct {
 		name   string
-		status string
+		status taskstatus.Status
 	}{
 		{name: "done", status: "done"},
 		{name: "cancelled", status: "cancelled"},
@@ -7870,7 +7871,7 @@ func waitForTaskStatus(t *testing.T, tasks *memTasks, id, want string) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		ti, err := tasks.GetTask(id)
-		if err == nil && ti.Status == want {
+		if err == nil && ti.Status == taskstatus.Status(want) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
