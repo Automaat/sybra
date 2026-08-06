@@ -44,6 +44,7 @@ type Store struct {
 }
 
 const maxTaskIDAttempts = 16
+const taskLockTimeout = 2 * time.Second
 
 // NewStore creates dir if it does not exist and returns a Store rooted
 // there, along with its sidecar stores (comments, plans, code reviews).
@@ -146,7 +147,7 @@ func (s *Store) lockTask(id string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	unlock, err := s.locker.Lock(id, path)
+	unlock, err := s.locker.LockWithin(id, path, taskLockTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("lock task %s: %w", id, err)
 	}
@@ -169,7 +170,7 @@ func (s *Store) lockNewTask(id string) (func(), error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create task lock dir: %w", err)
 	}
-	unlock, err := s.locker.Lock("create:"+id, filepath.Join(dir, id))
+	unlock, err := s.locker.LockWithin("create:"+id, filepath.Join(dir, id), taskLockTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("lock new task %s: %w", id, err)
 	}

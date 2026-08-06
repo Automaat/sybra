@@ -3,6 +3,7 @@
 package fsutil
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -110,8 +111,33 @@ func TestLockFileWithin_TimesOutWhenHeld(t *testing.T) {
 	if !errors.Is(err, ErrLockTimeout) {
 		t.Fatalf("LockFileWithin error = %v, want ErrLockTimeout", err)
 	}
+	if got := err.Error(); !strings.Contains(got, path+".lock") {
+		t.Fatalf("error %q missing lock path %q", got, path+".lock")
+	}
+	if got := err.Error(); !strings.Contains(got, strconv.Itoa(os.Getpid())) {
+		t.Fatalf("error %q missing holder pid %d", got, os.Getpid())
+	}
 	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
 		t.Fatalf("LockFileWithin took %s, want bounded wait", elapsed)
+	}
+}
+
+func TestLockFileContext_CancelledWaitReturnsTypedTimeout(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "store.json")
+
+	unlock, err := LockFile(path)
+	if err != nil {
+		t.Fatalf("LockFile: %v", err)
+	}
+	defer func() { _ = unlock() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = LockFileContext(ctx, path)
+	if !errors.Is(err, ErrLockTimeout) {
+		t.Fatalf("LockFileContext error = %v, want ErrLockTimeout", err)
 	}
 }
 
