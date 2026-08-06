@@ -55,6 +55,15 @@ type CriterionEvidence struct {
 	Backend   string    `json:"backend,omitempty"`
 	StepID    string    `json:"stepId,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
+	// TreeSHA and ChecksHash bind a verify_checks entry to the exact worktree
+	// content and check-command set it was produced against, letting a later
+	// run on an unchanged tree short-circuit the suite instead of re-executing
+	// it. Empty for every other criterion and for verify_checks entries
+	// recorded before this cache existed — an empty TreeSHA/ChecksHash never
+	// matches a freshly computed key, so old entries simply miss the cache
+	// rather than false-hit.
+	TreeSHA    string `json:"treeSha,omitempty"`
+	ChecksHash string `json:"checksHash,omitempty"`
 }
 
 // Passed reports whether this proof represents a passing result.
