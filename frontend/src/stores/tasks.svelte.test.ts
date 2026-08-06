@@ -170,7 +170,7 @@ describe('TaskStore', () => {
 
   describe('patchOne', () => {
     it('reloads the board when an edited task becomes unreadable', async () => {
-      const degraded = makeTask({ id: 'unreadable-a1b2c3d4', status: 'human-required', title: 'Unreadable task file: t1.md' })
+      const degraded = makeTask({ id: 'unreadable:a1b2c3d4', status: 'human-required', title: 'Unreadable task file: t1.md' })
       mockGetTask.mockRejectedValue(new Error('parse task t1.md: invalid frontmatter'))
       mockListTasks.mockResolvedValue([degraded])
 
@@ -181,7 +181,7 @@ describe('TaskStore', () => {
     })
 
     it('removes the degraded entry when the source task is repaired', async () => {
-      const degraded = makeTask({ id: 'unreadable-a1b2c3d4', status: 'human-required', filePath: '/tasks/t1.md', degraded: true })
+      const degraded = makeTask({ id: 'unreadable:a1b2c3d4', status: 'human-required', filePath: '/tasks/t1.md', degraded: true })
       taskStore.tasks.set(degraded.id, degraded)
       const repaired = makeTask({ id: 't1', filePath: '/tasks/t1.md' })
       mockGetTask.mockResolvedValue(repaired)

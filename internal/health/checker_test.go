@@ -153,6 +153,49 @@ func TestCheckerIncludesSandboxCleanupFinding(t *testing.T) {
 	}
 }
 
+func TestCheckerIncludesUnreadableTaskFinding(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	tasksDir := t.TempDir()
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tasksDir, "bad.md"), []byte("not valid frontmatter"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
+	c.check(t.Context())
+
+	report := c.LatestReport()
+	if report == nil {
+		t.Fatal("LatestReport returned nil")
+	}
+	var found *Finding
+	for i := range report.Findings {
+		if report.Findings[i].Category == CatTaskUnreadable {
+			found = &report.Findings[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected %q finding, got %v", CatTaskUnreadable, findingCategories(report.Findings))
+	}
+	if found.Evidence["file"] != "bad.md" {
+		t.Errorf("Evidence[file] = %v, want bad.md", found.Evidence["file"])
+	}
+	if report.Score != ScoreCritical {
+		t.Errorf("Score = %q, want critical", report.Score)
+	}
+	// The check must not move or otherwise touch the broken file — repairing
+	// it in place is what makes the finding disappear.
+	if _, err := os.Stat(filepath.Join(tasksDir, "bad.md")); err != nil {
+		t.Errorf("bad.md no longer readable in the tasks dir: %v", err)
+	}
+}
+
 func TestCheckerSkipsGHAuthCheckWhenUnwired(t *testing.T) {
 	t.Parallel()
 
