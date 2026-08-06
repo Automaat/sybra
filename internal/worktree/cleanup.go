@@ -50,6 +50,16 @@ func (m *Manager) Remove(ctx context.Context, taskID string) {
 	if _, err := os.Stat(wtPath); err != nil {
 		return
 	}
+	// A preparation is mid-flight on this exact directory. Deleting it out from
+	// under a `git worktree add`/rebase is the same hazard two concurrent
+	// preparations are (#3114). Cleanup is never urgent — CleanupOrphaned's
+	// periodic sweep reaps it later — so skip rather than wait.
+	release, lockErr := m.lockPath(wtPath)
+	if lockErr != nil {
+		m.logger.Info("worktree.cleanup.busy", "task_id", taskID, "err", lockErr)
+		return
+	}
+	defer release()
 	// Never reap a worktree whose completed work never reached origin — a task
 	// bounced to a terminal status (done/cancelled) after a failed push would
 	// otherwise lose its finished-but-unpushed diff right here, before the

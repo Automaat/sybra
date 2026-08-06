@@ -61,6 +61,12 @@ func attemptBranchName(t task.Task, canonicalBranch, attemptID string) string {
 // recreated — a process restart mid-fan-out must not discard an attempt's
 // in-progress commits.
 func (m *Manager) PrepareAttempt(ctx context.Context, t task.Task, attemptID string) (dir, branch string, err error) {
+	release, err := m.lockPath(m.PathForAttempt(t, attemptID))
+	if err != nil {
+		return "", "", err
+	}
+	defer release()
+
 	proj, err := m.projects.Get(t.ProjectID)
 	if err != nil {
 		return "", "", fmt.Errorf("get project: %w", err)
@@ -134,6 +140,14 @@ func (m *Manager) PrepareAttempt(ctx context.Context, t task.Task, attemptID str
 //   - ErrPromotionDiverged: the canonical branch exists and is not an
 //     ancestor of the winner's HEAD (would discard non-attempt commits).
 func (m *Manager) PromoteAttempt(ctx context.Context, t task.Task, winnerDir, winnerBranch string) (canonicalDir string, err error) {
+	// Guards the canonical path this materializes, not the winner's attempt
+	// directory, which is only read here.
+	release, err := m.lockPath(m.PathFor(t))
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
 	if t.PRNumber != 0 {
 		return "", fmt.Errorf("%w: PR #%d", ErrPromotionHasPR, t.PRNumber)
 	}

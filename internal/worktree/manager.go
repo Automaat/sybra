@@ -68,6 +68,11 @@ type Manager struct {
 	hasLiveAgentOnly AgentChecker
 	misePath         string
 	protected        *cleanup.ProtectedStore
+	// paths serializes mutating operations per worktree directory. Not a
+	// Config field: it is process-internal state, and every Manager must have
+	// its own (a shared one would let two Managers over different worktree
+	// roots contend on identical relative paths).
+	paths pathLocks
 }
 
 func New(cfg Config) *Manager {
