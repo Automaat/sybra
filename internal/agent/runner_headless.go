@@ -15,10 +15,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Automaat/sybra/internal/errclass"
+
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/project"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // errSurviveShutdown is returned by a detached headless attempt when the
@@ -180,7 +184,7 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 		return false, err
 	}
 	defer prepared.cleanup()
-	a.SetForkSubagent(prepared.cfg.ForkSubagent && prepared.inv.name == "claude")
+	a.SetForkSubagent(prepared.cfg.ForkSubagent && prepared.inv.name == providerid.Claude)
 
 	if _, _, unrendered := a.GetPromptRender(); len(unrendered) > 0 {
 		m.logger.Warn("agent.headless.skill_unrendered", "id", a.ID, "provider", prepared.inv.name, "skills", unrendered)
@@ -232,7 +236,7 @@ func prepareHeadlessAttempt(a *Agent, cfg RunConfig) (preparedHeadlessAttempt, e
 // stdin pipe/FIFO must never be attached for them (nothing would ever read
 // or need it).
 func steerableHeadlessInvocation(cfg RunConfig, providerName string) bool {
-	return cfg.HeadlessSteerable && providerName == "claude"
+	return cfg.HeadlessSteerable && providerName == providerid.Claude
 }
 
 // stdinPromptHeadlessInvocation reports whether this attempt needs the
@@ -243,7 +247,7 @@ func steerableHeadlessInvocation(cfg RunConfig, providerName string) bool {
 // pipe path, so it's excluded here; codex/copilot still receive the prompt
 // positionally and are excluded too.
 func stdinPromptHeadlessInvocation(steerable bool, providerName string) bool {
-	return !steerable && providerName == "claude"
+	return !steerable && providerName == providerid.Claude
 }
 
 // writeAndCloseHeadlessPrompt sends the one-shot stdin prompt then closes the
@@ -320,12 +324,14 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 		// attempt instead of pressing on as if delivery succeeded.
 		if writeErr := m.writeUserMessageTimeout(a, cfg.Prompt, stdinInitialWriteTimeout); writeErr != nil {
 			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
+			a.SetError(ErrorKindPromptUndelivered, writeErr.Error())
+			a.SetExitErr(fmt.Errorf("%w: %w", errPromptUndelivered, writeErr))
 			a.convo.closeStdinPipe()
 			if cmd.Process != nil {
 				_ = cmd.Process.Kill()
 			}
 			_ = cmd.Wait()
-			return false, fmt.Errorf("deliver initial prompt: %w", writeErr)
+			return false, fmt.Errorf("deliver initial prompt: %w: %w", errPromptUndelivered, writeErr)
 		}
 	} else if promptStdin != nil {
 		m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt)
@@ -509,6 +515,8 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 		// Fail the attempt instead of pressing on as if delivery succeeded.
 		if writeErr := m.writeUserMessageTimeout(a, cfg.Prompt, stdinInitialWriteTimeout); writeErr != nil {
 			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
+			a.SetError(ErrorKindPromptUndelivered, writeErr.Error())
+			a.SetExitErr(fmt.Errorf("%w: %w", errPromptUndelivered, writeErr))
 			a.convo.closeStdinPipe()
 			if cmd.Process != nil {
 				_ = cmd.Process.Kill()
@@ -518,7 +526,7 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 				// pipe variant's kill path.
 				_ = cmd.Wait()
 			}
-			return nil, fmt.Errorf("deliver initial prompt: %w", writeErr)
+			return nil, fmt.Errorf("deliver initial prompt: %w: %w", errPromptUndelivered, writeErr)
 		}
 	} else if promptStdin != nil {
 		m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt)
@@ -1155,10 +1163,15 @@ func (m *Manager) handleMalformedToolResults(a *Agent, event StreamEvent) {
 				return
 			}
 		}
-		reason := fmt.Sprintf("tool %s rejected malformed input: %s", toolName, truncatePromptField(diag.ValidationError))
+		reason := fmt.Sprintf("tool %s rejected malformed input: %s", toolName, textutil.TruncateBytesTrimmed(strings.TrimSpace(diag.ValidationError), malformedToolPromptFieldLimit, "\n... (truncated)"))
 		a.NoteMalformedToolCall(event.toolResults[i].ToolUseID, toolName, malformedToolCallOutcomeUnrecoverable)
 		a.SetError(malformedToolCallErrorKind, reason)
-		m.ReportProviderSignal(a.GetProvider(), providerpkg.SignalRateLimit, malformedToolCallErrorKind, malformedToolFailoverCooldown)
+		m.ReportProviderSignal(a.GetProvider(), providerpkg.Classification{
+			Signal:     providerpkg.SignalRateLimit,
+			Reason:     malformedToolCallErrorKind,
+			RetryAfter: malformedToolFailoverCooldown,
+			Source:     providerpkg.CooldownFromConfig,
+		})
 		m.logger.Warn("agent.headless.tool_call_malformed.unrecoverable",
 			"id", a.ID,
 			"provider", a.GetProvider(),
@@ -1196,7 +1209,7 @@ func (m *Manager) handleHeadlessResult(ctx context.Context, a *Agent, event Stre
 	// meaningless fields for codex and log only the token counts it does
 	// report, so a healthy codex completion is distinguishable from a
 	// real crash at a glance.
-	if a.Provider == "codex" {
+	if a.Provider == providerid.Codex {
 		m.logger.Info("agent.headless.result", "id", a.ID,
 			"input_tokens", event.InputTokens, "output_tokens", event.OutputTokens, "reasoning_tokens", event.ReasoningTokens)
 	} else {
@@ -1680,6 +1693,11 @@ func classifyAgentError(err error) string {
 	if err == nil {
 		return "crash"
 	}
+	// Ahead of the substring table, which reads this as a bare i/o timeout and
+	// mislabels it git_clone.
+	if errors.Is(err, errPromptUndelivered) {
+		return ErrorKindPromptUndelivered
+	}
 	msg := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(msg, "worktree") || strings.Contains(msg, "already checked out"):
@@ -1697,7 +1715,7 @@ func classifyAgentError(err error) string {
 		strings.Contains(msg, "eacces") ||
 		strings.Contains(msg, "operation not permitted"):
 		return "permission_denied"
-	case strings.Contains(msg, "rate limit") || strings.Contains(msg, "429") || strings.Contains(msg, "overloaded"):
+	case errclass.Matches(msg, errclass.AgentRateLimitPhrases):
 		return "rate_limit"
 	default:
 		return "crash"

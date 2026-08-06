@@ -192,6 +192,23 @@ func TestClassifyAgentStartError_AgentRunningSuppressed(t *testing.T) {
 	}
 }
 
+func TestClassifyAgentStartError_PreparationInFlightSuppressed(t *testing.T) {
+	// A worktree entry point refusing to run while another mutating operation
+	// owns the same path (sybra#3114) resolves the moment that one finishes.
+	// Escalating it would park a task on a condition no human can act on.
+	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrPreparationInFlight)
+	reason, permanent := ClassifyAgentStartError(wrapped)
+	if reason != "" {
+		t.Errorf("reason = %q, want empty", reason)
+	}
+	if permanent {
+		t.Error("preparation-in-flight must not be permanent")
+	}
+	if !transientAgentStartError(wrapped) {
+		t.Error("transientAgentStartError() = false, want true")
+	}
+}
+
 func TestSurfaceStartFailure_DispatchInFlightIsNoOp(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})

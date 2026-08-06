@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/limits"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // claudeEventToConvoEvent converts a shared ClaudeEvent into a ConvoEvent for
@@ -30,9 +31,7 @@ func claudeEventToConvoEvent(e ClaudeEvent) ConvoEvent {
 			results := make([]ToolResultBlock, len(e.Message.ToolResults))
 			copy(results, e.Message.ToolResults)
 			for i := range results {
-				if len(results[i].Content) > 2000 {
-					results[i].Content = results[i].Content[:2000] + "..."
-				}
+				results[i].Content = textutil.TruncateBytes(results[i].Content, 2000, "...")
 			}
 			ev.ToolResults = results
 		}

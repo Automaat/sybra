@@ -7,6 +7,8 @@ import (
 	"maps"
 	"slices"
 	"time"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // ErrWorkflowAlreadyActive is returned by DispatchEvent when the target task
@@ -150,7 +152,7 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 }
 
 func taskRequiresTamperBless(t TaskInfo) bool {
-	return t.Status == "human-required" && IsTamperFlaggedReason(t.StatusReason)
+	return t.Status == taskstatus.HumanRequired && IsTamperFlaggedReason(t.StatusReason)
 }
 
 // surfaceInitialDispatchFailure classifies and escalates a run_agent dispatch

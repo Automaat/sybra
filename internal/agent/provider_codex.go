@@ -3,10 +3,10 @@ package agent
 import (
 	"os"
 	"strings"
-	"time"
 
 	"github.com/Automaat/sybra/internal/modeltier"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 type codexProvider struct{}
@@ -15,7 +15,7 @@ func init() {
 	registerAgentProvider(codexProvider{})
 }
 
-func (codexProvider) Name() string { return "codex" }
+func (codexProvider) Name() string { return providerid.Codex }
 
 // HonorsAllowedTools is false: the codex CLI has no per-tool allowlist. Its
 // only containment is -s/--sandbox, which is filesystem-level and unrelated to
@@ -33,7 +33,7 @@ func (codexProvider) EnforcesOutputSchema() bool { return true }
 func (codexProvider) NormalizeModel(model string) string {
 	// Codex models come from `codex debug models` and never carry a [1m]
 	// suffix — a stray suffix stays untouched and is rejected by safeArgRe.
-	if resolved, ok := modeltier.NormalizeAlias("codex", model); ok {
+	if resolved, ok := modeltier.NormalizeAlias(providerid.Codex, model); ok {
 		return resolved
 	}
 	// Unlike copilot/opencode, codex is not a multi-vendor gateway — it only
@@ -48,7 +48,7 @@ func (codexProvider) NormalizeModel(model string) string {
 	// silently truncate, codex's own "gpt-5.4[1m]" down to "gpt-5.4").
 	if strings.Contains(strings.ToLower(model), "claude") {
 		if tier, ok := modeltier.InferTier(model); ok {
-			if mapped := modeltier.Model(tier, "codex"); mapped != "" {
+			if mapped := modeltier.Model(tier, providerid.Codex); mapped != "" {
 				return mapped
 			}
 		}
@@ -94,9 +94,9 @@ func (p codexProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headles
 	}
 	args = append(args, prompt)
 	return headlessInvocation{
-		name:    "codex",
+		name:    providerid.Codex,
 		args:    args,
-		command: "codex " + strings.Join(args, " "),
+		command: providerid.Codex + " " + strings.Join(args, " "),
 	}, nil
 }
 
@@ -137,13 +137,13 @@ func (codexProvider) SessionFilePath(sessionID string) string {
 	return resolveCodexSessionFile(sessionID)
 }
 
-func (codexProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration) {
+func (codexProvider) ClassifyError(sample providerpkg.ErrorSample) providerpkg.Classification {
 	return providerpkg.ClassifyCodexError(sample)
 }
 
 // buildCodexCommand builds the display command string for a Codex agent.
 func buildCodexCommand(model, effort string, requirePerms, headless bool, p Provider) string {
-	parts := []string{"codex", "exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"}
+	parts := []string{providerid.Codex, "exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"}
 	parts = append(parts, p.SandboxArgs(requirePerms, headless)...)
 	if model != "" {
 		parts = append(parts, "--model", model)
@@ -182,5 +182,5 @@ func codexReasoningArgs(effort string) []string {
 // is no UI to serve those approval prompts, so they auto-reject and the run
 // fails. Bypass mode is used instead.
 func codexSandboxArgs(requirePerms, headless bool) []string {
-	return providerByName("codex").SandboxArgs(requirePerms, headless)
+	return providerByName(providerid.Codex).SandboxArgs(requirePerms, headless)
 }

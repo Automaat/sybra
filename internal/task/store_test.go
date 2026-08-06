@@ -1102,6 +1102,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		Result:                  Ptr("completed with result"),
 		Verdict:                 Ptr("sybra_bug"),
 		VerdictRendered:         Ptr(true),
+		RecoveryReplayRejected:  Ptr(true),
 		LogFile:                 Ptr("/tmp/sybra/agent-payload.ndjson"),
 		Provider:                Ptr("codex"),
 		Model:                   Ptr("gpt-5"),
@@ -1122,6 +1123,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		FinalCommitSource:       Ptr("fallback"),
 		SubagentCallCount:       Ptr(3),
 		ResumeZeroOutputStall:   Ptr(true),
+		TurnCount:               Ptr(17),
 	}
 	assertRunPatchCoversEveryField(t, patch)
 
@@ -1165,6 +1167,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		Result:                  "completed with result",
 		Verdict:                 "sybra_bug",
 		VerdictRendered:         true,
+		RecoveryReplayRejected:  true,
 		LogFile:                 "/tmp/sybra/agent-payload.ndjson",
 		SessionID:               "session-123",
 		ProtocolViolation:       "missing-json",
@@ -1174,6 +1177,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 		FinalCommitSource:       "fallback",
 		SubagentCallCount:       3,
 		ResumeZeroOutputStall:   true,
+		TurnCount:               17,
 	})
 }
 
@@ -1283,6 +1287,9 @@ func assertAgentRunPayload(t *testing.T, got, want AgentRun) {
 	}
 	if got.ResumeZeroOutputStall != want.ResumeZeroOutputStall {
 		t.Errorf("ResumeZeroOutputStall = %t, want %t", got.ResumeZeroOutputStall, want.ResumeZeroOutputStall)
+	}
+	if got.TurnCount != want.TurnCount {
+		t.Errorf("TurnCount = %d, want %d", got.TurnCount, want.TurnCount)
 	}
 }
 

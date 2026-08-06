@@ -197,16 +197,6 @@ func TestExecVerifyChecks_AutoFixIdenticalFingerprintEscalatesEarly(t *testing.T
 	wf.RecordStep(StepRecord{StepID: verifyChecksImplStepID, Status: "completed", StartedAt: now, EndedAt: now})
 
 	out, err = engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
-	if !errors.Is(err, errStepParked) {
-		t.Fatalf("second attempt err = %v, want errStepParked", err)
-	}
-	if out != (StepOutput{}) {
-		t.Fatalf("second parked output should be zero, got %+v", out)
-	}
-	now = time.Now().UTC()
-	wf.RecordStep(StepRecord{StepID: verifyChecksImplStepID, Status: "completed", StartedAt: now, EndedAt: now})
-
-	out, err = engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -1,6 +1,10 @@
 package agent
 
-import "time"
+import (
+	"time"
+
+	"github.com/Automaat/sybra/internal/providerid"
+)
 
 // RawSession is the provider-agnostic discovery record produced by a SessionSource.
 // State and Terminated are pre-computed so [filterSessions] requires no I/O.
@@ -35,7 +39,7 @@ func (claudeSessionSource) List() []RawSession {
 			state = inferState(s.CWD, s.SessionID)
 		}
 		result = append(result, RawSession{
-			Provider:   "claude",
+			Provider:   providerid.Claude,
 			SessionID:  s.SessionID,
 			PID:        s.PID,
 			CWD:        s.CWD,
@@ -67,7 +71,7 @@ func (codexSessionSource) List() []RawSession {
 		}
 
 		result = append(result, RawSession{
-			Provider:   "codex",
+			Provider:   providerid.Codex,
 			SessionID:  s.SessionID,
 			PID:        pid,
 			CWD:        s.CWD,

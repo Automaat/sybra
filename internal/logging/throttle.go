@@ -3,6 +3,7 @@ package logging
 import (
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // ErrorThrottle suppresses repeated identical error log entries that would
@@ -59,44 +60,76 @@ func (t *ErrorThrottle) Clear(key string) {
 	t.mu.Unlock()
 }
 
+// InfoRepeatInterval bounds how often an unchanged repeat is re-emitted at
+// DEBUG. Downgrading a repeat is not enough on its own: a condition that holds
+// for days still writes one line per poller tick at debug level — a provider
+// parked for 60 hours produces roughly 3,600 identical lines per task at the
+// default 60s maintenance interval. Re-emitting on an interval keeps the
+// "still true" signal without the volume.
+const InfoRepeatInterval = 30 * time.Minute
+
 // InfoThrottle suppresses repeated identical informational log entries that
 // would otherwise dominate the log when a benign, expected condition recurs
 // on every poller tick (e.g. a workflow step skipped every ResumeStalled scan
-// while it waits out a retry-after cooldown).
+// while it waits out a retry-after cooldown, or a provider parked for days
+// behind a provider-stated reset instant).
 //
 // On the first occurrence of a given (key, value) pair the throttle logs at
 // INFO. While the same value keeps recurring under that key the throttle
-// downgrades subsequent entries to DEBUG. A different value under the same
-// key re-arms the INFO log so state changes are never lost.
+// drops subsequent entries, re-emitting at DEBUG at most once per
+// InfoRepeatInterval. A different value under the same key re-arms the INFO
+// log immediately, so state changes are never lost or delayed.
 type InfoThrottle struct {
-	mu   sync.Mutex
-	last map[string]string
+	mu sync.Mutex
+	// last is keyed by (key, msg), not key alone: several call sites log
+	// different messages under the same task id, and a flat key let whichever
+	// ran first suppress the others as if they were repeats of it.
+	last map[string]map[string]infoEntry
+	now  func() time.Time
+}
+
+type infoEntry struct {
+	value    string
+	loggedAt time.Time
 }
 
 // NewInfoThrottle returns an empty throttle ready for use.
 func NewInfoThrottle() *InfoThrottle {
-	return &InfoThrottle{last: make(map[string]string)}
+	return &InfoThrottle{last: make(map[string]map[string]infoEntry), now: time.Now}
 }
 
 // Log emits msg under key. The first occurrence (or any change in value for
-// the given key) is logged at INFO; identical repeats are logged at DEBUG.
-// attrs are forwarded to slog as key/value pairs.
+// the given key) is logged at INFO. An unchanged repeat is emitted at DEBUG
+// only if InfoRepeatInterval has elapsed since the last emission, and is
+// otherwise dropped. attrs are forwarded to slog as key/value pairs.
 func (t *InfoThrottle) Log(logger *slog.Logger, msg, key, value string, attrs ...any) {
+	now := t.now()
 	t.mu.Lock()
-	prev, seen := t.last[key]
-	repeat := seen && prev == value
-	t.last[key] = value
+	prev, seen := t.last[key][msg]
+	repeat := seen && prev.value == value
+	quiet := repeat && now.Sub(prev.loggedAt) < InfoRepeatInterval
+	if !quiet {
+		if t.last[key] == nil {
+			t.last[key] = make(map[string]infoEntry, 1)
+		}
+		t.last[key][msg] = infoEntry{value: value, loggedAt: now}
+	}
 	t.mu.Unlock()
 
-	if repeat {
-		logger.Debug(msg, attrs...)
+	switch {
+	case quiet:
 		return
+	case repeat:
+		logger.Debug(msg, attrs...)
+	default:
+		logger.Info(msg, attrs...)
 	}
-	logger.Info(msg, attrs...)
 }
 
-// Clear forgets the last-value state for key so the next Log call re-arms
-// the INFO log even if the value matches a stale suppressed entry.
+// Clear forgets every message's state for key, so the next Log call under any
+// of them re-arms the INFO log even if the value matches a stale suppressed
+// entry. Callers clear on success, where "the condition ended" is true of all
+// the reasons they might have logged.
 func (t *InfoThrottle) Clear(key string) {
 	t.mu.Lock()
 	delete(t.last, key)

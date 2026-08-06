@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 // ErrLockUnsupported marks platforms where fsutil cannot provide a
@@ -28,8 +29,19 @@ var ErrLockUnsupported = errors.New("fsutil: cross-process file locking is not s
 // files keep CreateTemp's restrictive default, which avoids overriding the
 // caller's umask with a broader mode.
 func AtomicWrite(path string, data []byte) error {
+	return atomicWrite(path, data, nil)
+}
+
+// AtomicWriteMode is AtomicWrite with an explicit mode for the result, for
+// callers whose file must carry specific permissions — an executable shim, a
+// credential-bearing config — rather than inheriting the target's current mode.
+func AtomicWriteMode(path string, data []byte, perm os.FileMode) error {
+	return atomicWrite(path, data, &perm)
+}
+
+func atomicWrite(path string, data []byte, perm *os.FileMode) error {
 	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	f, err := os.CreateTemp(dir, tempPattern(filepath.Base(path)))
 	if err != nil {
 		return err
 	}
@@ -39,11 +51,20 @@ func AtomicWrite(path string, data []byte) error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	if info, err := os.Stat(path); err == nil {
-		if err := f.Chmod(info.Mode().Perm()); err != nil {
+	switch {
+	case perm != nil:
+		if err := f.Chmod(*perm); err != nil {
 			_ = f.Close()
 			_ = os.Remove(tmp)
 			return err
+		}
+	default:
+		if info, err := os.Stat(path); err == nil {
+			if err := f.Chmod(info.Mode().Perm()); err != nil {
+				_ = f.Close()
+				_ = os.Remove(tmp)
+				return err
+			}
 		}
 	}
 	if err := f.Sync(); err != nil {
@@ -63,6 +84,24 @@ func AtomicWrite(path string, data []byte) error {
 	return syncDir(dir)
 }
 
+// tempPattern derives a CreateTemp pattern from the target's name, keeping it
+// short enough that the random suffix cannot push the temp file past the
+// filesystem's per-name limit. Attachment names are caller-supplied and can
+// already sit near that limit, where a name-derived pattern fails with
+// ENAMETOOLONG on a write plain os.WriteFile would have accepted.
+func tempPattern(base string) string {
+	// Leaves room for CreateTemp's random digits plus ".tmp".
+	const maxBase = 64
+	if len(base) > maxBase {
+		cut := maxBase
+		for cut > 0 && !utf8.RuneStart(base[cut]) {
+			cut--
+		}
+		base = base[:cut]
+	}
+	return base + ".*.tmp"
+}
+
 // AtomicWriteNew writes data to a previously absent path without ever
 // replacing an existing file. Like AtomicWrite, readers see either no file or
 // the complete, synced contents. It returns an error satisfying
@@ -74,7 +113,7 @@ func AtomicWrite(path string, data []byte) error {
 // directory, so the link is atomic and cannot cross filesystems.
 func AtomicWriteNew(path string, data []byte) error {
 	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	f, err := os.CreateTemp(dir, tempPattern(filepath.Base(path)))
 	if err != nil {
 		return err
 	}

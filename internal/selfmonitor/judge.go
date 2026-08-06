@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/llmjob"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // judgeAttemptTimeout bounds each provider invocation, including llmjob repair
@@ -119,10 +120,7 @@ func buildJudgePrompt(f health.Finding, ls *LogSummary, t *task.Task) string {
 
 	if t != nil {
 		fmt.Fprintf(&b, "Task: %s\n", t.Title)
-		body := t.Body
-		if len(body) > 500 {
-			body = body[:500] + "…"
-		}
+		body := textutil.TruncateBytes(t.Body, 500, "…")
 		if body != "" {
 			fmt.Fprintf(&b, "Body: %s\n", body)
 		}
@@ -156,7 +154,7 @@ func parseJudgeVerdict(raw []byte) (Verdict, error) {
 		}
 		text = *envelope.Result
 	}
-	jsonStr := judgeExtractLastJSON(text)
+	jsonStr := llmjob.ExtractLastJSONObject(text)
 	if jsonStr == "" {
 		return Verdict{}, fmt.Errorf("no JSON object in result: %q", text)
 	}
@@ -166,57 +164,4 @@ func parseJudgeVerdict(raw []byte) (Verdict, error) {
 	}
 	_ = validateJudgeVerdict(&v)
 	return v, nil
-}
-
-// judgeExtractLastJSON returns the last balanced {...} substring in s, or "".
-// Mirrors triage.extractLastJSONObject and internal/agent/inspector.go.
-func judgeExtractLastJSON(s string) string {
-	s = strings.TrimSpace(s)
-	var (
-		inString  bool
-		escape    bool
-		depth     int
-		objStart  = -1
-		lastStart = -1
-		lastEnd   = -1
-	)
-	for i := range len(s) {
-		c := s[i]
-		if escape {
-			escape = false
-			continue
-		}
-		if inString {
-			switch c {
-			case '\\':
-				escape = true
-			case '"':
-				inString = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			inString = true
-		case '{':
-			if depth == 0 {
-				objStart = i
-			}
-			depth++
-		case '}':
-			if depth == 0 {
-				continue
-			}
-			depth--
-			if depth == 0 && objStart >= 0 {
-				lastStart = objStart
-				lastEnd = i
-				objStart = -1
-			}
-		}
-	}
-	if lastStart < 0 {
-		return ""
-	}
-	return s[lastStart : lastEnd+1]
 }

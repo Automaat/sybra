@@ -28,9 +28,14 @@ func (s *ConfigService) ReloadFromDisk() (ConfigMutationResult, error) {
 		return result, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.mutateLocked(next, nil)
+	result, pending, err := func() (ConfigMutationResult, pendingNotify, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.mutateLocked(next, nil)
+	}()
+	// Outside the lock: subscribers may read config back through this service.
+	pending.run()
+	return result, err
 }
 
 // configToSettings converts a *config.Config into AppSettings for validation
