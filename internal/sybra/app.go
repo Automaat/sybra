@@ -158,13 +158,50 @@ type App struct {
 	// rather than silently refusing to dispatch.
 	schedulerDisabled atomic.Bool
 	brainDisabled     atomic.Bool
+	// startupRecoveryPending is set true just before initStatusHook (the
+	// earliest dispatch observer to be wired) and stays true until
+	// RunStartupCleanup (reattach survivor agents, replay persisted effects,
+	// restart stale runs) finishes. The status-change hook and, later, the file
+	// watcher go live before that reattach completes, so dispatchTaskCreatedWorkflow,
+	// dispatchPlanningWorkflow, dispatchStatusWorkflow and dispatchInboundReviewWorkflow
+	// — the sinks that auto-start work — refuse to dispatch while this is set: until
+	// reattach runs, HasRunningAgentForTask reads an empty registry and an
+	// early dispatch could start a duplicate agent on a live worktree
+	// (#2752). Zero value (unset) reports "not pending", so an App built
+	// without going through Startup (tests, direct construction) dispatches
+	// exactly as it did before this gate existed. Cleared once
+	// RunStartupCleanup returns, followed by replayDeferredStatusChanges (for
+	// the workflow status events the window suppressed) and a nudgeDispatch so
+	// any task that changed status during the window gets picked up immediately
+	// by the board-wide reconcileRunnableBoardTasks sweep instead of waiting for
+	// the next dispatch tick.
+	startupRecoveryPending atomic.Bool
+	// deferredStatusChanges buffers the tasks whose status change was observed
+	// while startupRecoveryPending was set, so the suppressed
+	// workflowEngine.HandleStatusChange can be replayed once reattach finishes.
+	// Without the replay a run_agent step parked on wait_for_status never sees
+	// its awaited status again: agent completion deliberately does not advance
+	// such a step, board reconciliation skips tasks with an active workflow, and
+	// ResumeStalled re-runs the agent instead of comparing the persisted status
+	// to WaitForStatus. A set, not a queue — replay reads each task's current
+	// persisted status, which coalesces several transitions in the window down
+	// to the one that is still true.
+	deferredStatusMu      sync.Mutex
+	deferredStatusChanges map[string]struct{}
 	// maintenanceCleanupRunning prevents slow git cleanup from stacking across
 	// maintenance ticks. Cleanup itself runs outside the orchestrator loop.
 	maintenanceCleanupRunning atomic.Bool
 	worktreeCleanupFn         func(context.Context) // test seam; nil uses worktrees
-	recovery                  *recovery.Recovery
-	snapshotter               *tasksnapshot.Snapshotter
-	agentCompletion           *completion.Handler
+	// recoveryStartGate, if non-nil, is closed by the caller to release the
+	// recovery goroutine right before it calls RunStartupCleanup. Test seam
+	// only: it lets a test observe startupRecoveryPending's armed state with a
+	// guaranteed happens-before instead of racing the goroutine's own
+	// scheduling (Go gives no ordering guarantee between a freshly spawned
+	// goroutine and the code after the spawning call returns).
+	recoveryStartGate chan struct{}
+	recovery          *recovery.Recovery
+	snapshotter       *tasksnapshot.Snapshotter
+	agentCompletion   *completion.Handler
 	// umbrellaCloseIssue closes the umbrella GitHub issue on full roll-up.
 	// nil defaults to github.CloseIssue; overridden in tests.
 	umbrellaCloseIssue func(repo string, number int, comment string) error
@@ -360,15 +397,12 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 	a.initLoopScheduler(schedulerCtx, emit)
 	a.initFileWatcher(watcherCtx, emit)
 
-	issuesFetcher := a.initAutomations(emit)
+	issuesFetcher := a.initAutomations(schedulerCtx, emit)
 	a.wireServices(emit) //nolint:contextcheck // TaskService uses the app-bound root context; see Startup's contextcheck note.
-	if a.humanReview != nil {
-		a.wg.Go(a.humanReview.recoverRenderedUnblockedTasks)
-	}
 
 	// syncSkillsBundle's deep diagnostic logging uses context.Background()
 	// intentionally (see skillsync.Syncer.log) — not a cancellation bug.
-	a.syncSkillsBundle() //nolint:contextcheck // plain diagnostic logging inside skillsync, see its log() comment
+	a.syncSkillsBundle(project.NormalizeSigningPolicy(a.cfg.CommitSigning())) //nolint:contextcheck // plain diagnostic logging inside skillsync, see its log() comment
 	a.snapshotter = tasksnapshot.New(config.TaskSnapshotGitDir(), a.tasksDir, time.Duration(a.cfg.DefaultTaskSnapshotInterval())*time.Second, a.logger)
 	// EnsureRepo must run before RunStartupCleanup: the startup trash prune
 	// fires CommitBeforePrune, which on a fresh install would otherwise commit
@@ -398,7 +432,32 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 	lm.mintAppTokenBeforeRecovery(schedulerCtx)
 
 	a.wg.Go(func() {
+		if a.recoveryStartGate != nil {
+			<-a.recoveryStartGate
+		}
 		a.recovery.RunStartupCleanup(schedulerCtx)
+		// Startup cleanup reattaches surviving provider processes before replay
+		// can call the synchronous human-required dispatch path. Running this
+		// earlier sees an empty live-agent registry and can start a duplicate.
+		if a.humanReview != nil {
+			a.humanReview.recoverStrandedUnblockedTasks() //nolint:contextcheck // handler bounds its git/PR checks with dedicated timeouts, matching live completion.
+		}
+		// Arm dispatch now that reattach/replay/restart-stale have run, then
+		// nudge so any task that changed status during the window (buffered,
+		// not dispatched — see startupRecoveryPending) is picked up by the
+		// board-wide reconcile sweep right away instead of the next tick.
+		a.startupRecoveryPending.Store(false)
+		// Replay before the nudge: board reconciliation skips a task whose
+		// workflow is still active, so a step parked on wait_for_status has to
+		// be advanced by the deferred event itself, not by the sweep.
+		a.replayDeferredStatusChanges() //nolint:contextcheck // same engine chain as initStatusHook, which binds its own e.ctx; see Startup's contextcheck note
+		a.nudgeDispatch()
+		// After the nudge, never before it: this sweeps parks whose review
+		// spawn a previous shutdown dropped, and each one prepares a worktree.
+		// Ahead of arming, it delays every live task by its own setup time.
+		if a.humanReview != nil {
+			go a.humanReview.RespawnDroppedReviews(schedulerCtx)
+		}
 		lm.StartManagers(schedulerCtx, emit)
 		lm.StartPollers(schedulerCtx, emit, issuesFetcher)
 	})
@@ -472,6 +531,11 @@ func (a *App) Startup(ctx context.Context) error {
 		a.logger.Error("project.store.init", "err", err)
 		return fmt.Errorf("project store: %w", err)
 	}
+	signingPolicy := project.NormalizeSigningPolicy(a.cfg.CommitSigning())
+	projStore.SetSigningPolicy(signingPolicy)
+	// Fallback for the workflows no dispatcher seeds; see
+	// workflow.SetDefaultCommitSignFlags.
+	workflow.SetDefaultCommitSignFlags(signingPolicy.CommitFlags(appCtx))
 	a.projects = projStore
 	// Retrofits maintenance.auto=false onto existing clones; see #2978.
 	if err := projStore.MigrateDisableAutoMaintenance(appCtx); err != nil {
@@ -491,6 +555,15 @@ func (a *App) Startup(ctx context.Context) error {
 
 	a.emitDegradedWarnings(emit)
 	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
+	// Arm the dispatch gate before the status hook is wired — initStatusHook's
+	// handler reaches dispatchStatusWorkflow/dispatchTaskCreatedWorkflow, and
+	// the file watcher (initFileWatcher, later in startLifecycle) also observes
+	// status changes. atomic.Bool's zero value is false ("not pending"), so the
+	// gate would fail open for any init step in this window that flips a task's
+	// status. Set it here, before either observer exists. Cleared only after
+	// RunStartupCleanup's reattach populates the live agent registry (see
+	// startLifecycle and startupRecoveryPending's doc comment).
+	a.startupRecoveryPending.Store(true)
 	a.initStatusHook() //nolint:contextcheck // workflow engine uses its own e.ctx field, see Startup's contextcheck note
 	a.initLocalStores()
 	a.cleanupProtected = cleanup.DefaultProtectedStore()
@@ -861,7 +934,7 @@ func (a *App) RegisterSpotlightHotkey() {
 		}()
 	})
 
-	if err := spotlight.Register(func() {
+	a.registerSpotlight(func() {
 		projectsJSON := "[]"
 		if projects, err := a.projectSvc.ListProjects(); err == nil {
 			if data, err := json.Marshal(projects); err == nil {
@@ -869,11 +942,7 @@ func (a *App) RegisterSpotlightHotkey() {
 			}
 		}
 		spotlight.ShowPanel(projectsJSON)
-	}); err != nil {
-		a.logger.Error("spotlight.register", "err", err)
-		return
-	}
-	a.logger.Info("spotlight.registered", "hotkey", "ctrl+space")
+	})
 }
 
 // Context returns the app's running context.

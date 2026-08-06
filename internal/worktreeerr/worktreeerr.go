@@ -22,6 +22,16 @@ var ErrRebaseFailed = errors.New("worktree rebase failed")
 // rather than a real worktree conflict.
 var ErrAgentRunning = errors.New("worktree busy: agent still running for task")
 
+// ErrPreparationInFlight indicates a worktree entry point refused to run
+// because another goroutine is already inside a mutating operation on the very
+// same worktree path. The dispatch claim used to be the only thing serializing
+// those operations, and it is released on age alone (15m) — it cannot tell a
+// claim leaked by a crashed dispatcher from one a live holder is still inside,
+// so a preparation that outran the release age could be joined by a second one
+// on the same path. Callers must treat this exactly like ErrAgentRunning: a
+// transient "retry once the other one finishes" condition, never an escalation.
+var ErrPreparationInFlight = errors.New("worktree busy: preparation already in flight for this path")
+
 // RebaseBlockedReason is the human-facing status_reason written whenever
 // ErrRebaseFailed escalates a task to human-required. Shared between
 // internal/sybra's markRebaseBlocked and workflow.ClassifyAgentStartError so

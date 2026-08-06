@@ -9,12 +9,23 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/skillattr"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 const maxSkillReceiptRecoveryAttempts = 1
 
+// maxSkillReceiptZeroOutputRetries bounds re-dispatches for runs that produced
+// no turns at all. They are kept off the conformance budget — a child that
+// emitted nothing never saw the skill — but still need a ceiling so a provider
+// failing to start in a loop reaches a human instead of spinning forever.
+const maxSkillReceiptZeroOutputRetries = 3
+
 func skillReceiptRecoveryKey(stepID string) string {
 	return "step." + stepID + ".skill_receipt_retry"
+}
+
+func skillReceiptZeroOutputKey(stepID string) string {
+	return "step." + stepID + ".skill_receipt_zero_output"
 }
 
 func applySkillReceiptRecoveryAssignment(stepID string, wfExec *Execution, assignment *AgentAssignment) {
@@ -26,6 +37,24 @@ func applySkillReceiptRecoveryAssignment(stepID string, wfExec *Execution, assig
 	}
 	assignment.ForceInjectedSkill = true
 	assignment.SkillRecoveryAttempt = true
+}
+
+// clearSkillReceiptCounters drops both receipt-retry counters once a run finally
+// produces a conformance receipt, so a later unrelated miss starts from zero.
+func (e *Engine) clearSkillReceiptCounters(taskID, spawnedStep string, fresh TaskInfo) {
+	cleared := false
+	for _, key := range []string{skillReceiptRecoveryKey(spawnedStep), skillReceiptZeroOutputKey(spawnedStep)} {
+		if parseWorkflowInt(fresh.Workflow.Variables[key]) > 0 {
+			delete(fresh.Workflow.Variables, key)
+			cleared = true
+		}
+	}
+	if !cleared {
+		return
+	}
+	if err := e.tasks.SetWorkflow(taskID, fresh.Workflow); err != nil {
+		e.logger.Warn("workflow.skill-receipt.clear", "task_id", taskID, "step", spawnedStep, "err", err)
+	}
 }
 
 func agentRunInfoByID(runs []AgentRunInfo, agentID string) (AgentRunInfo, bool) {
@@ -52,21 +81,24 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 	if !ok {
 		return false
 	}
+	// No turns means the child never saw the instructions, so the missing
+	// receipt indicts the spawn rather than the agent's conformance.
+	zeroOutput := run.TurnCount == 0
 	retryKey := skillReceiptRecoveryKey(spawnedStep)
+	maxAttempts := maxSkillReceiptRecoveryAttempts
+	if zeroOutput {
+		retryKey = skillReceiptZeroOutputKey(spawnedStep)
+		maxAttempts = maxSkillReceiptZeroOutputRetries
+	}
 	retries := parseWorkflowInt(fresh.Workflow.Variables[retryKey])
 	if run.RequestedSkill == "" {
 		return false
 	}
 	if run.SkillConformance != skillattr.ConformanceUnverified {
-		if retries > 0 {
-			delete(fresh.Workflow.Variables, retryKey)
-			if err := e.tasks.SetWorkflow(taskID, fresh.Workflow); err != nil {
-				e.logger.Warn("workflow.skill-receipt.clear", "task_id", taskID, "step", spawnedStep, "err", err)
-			}
-		}
+		e.clearSkillReceiptCounters(taskID, spawnedStep, fresh)
 		return false
 	}
-	if retries >= maxSkillReceiptRecoveryAttempts {
+	if retries >= maxAttempts {
 		if present, kind := importedSidecarPresentForStep(currentStep, fresh); present {
 			delete(fresh.Workflow.Variables, retryKey)
 			if err := e.tasks.SetWorkflow(taskID, fresh.Workflow); err != nil {
@@ -94,13 +126,16 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 		}
 		summary := skillReceiptExhaustionSummary(output)
 		reason := fmt.Sprintf("mandatory workflow skill %q produced no conformance receipt after automatic recovery retry", run.RequestedSkill)
+		if zeroOutput {
+			reason = fmt.Sprintf("provider produced no output across %d attempts, so mandatory workflow skill %q never ran", maxAttempts+1, run.RequestedSkill)
+		}
 		if summary != "" {
 			reason += ": " + summary
 		}
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+		if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 			e.logger.Error("workflow.skill-receipt.human-required", "task_id", taskID, "step", spawnedStep, "err", statusErr)
 		}
-		e.logger.Warn("workflow.skill-receipt.exhausted", "task_id", taskID, "step", spawnedStep, "skill", run.RequestedSkill, "summary", summary)
+		e.logger.Warn("workflow.skill-receipt.exhausted", "task_id", taskID, "step", spawnedStep, "skill", run.RequestedSkill, "zero_output", zeroOutput, "summary", summary)
 		e.fireComplete(&CompletionInfo{
 			TaskID:     taskID,
 			WorkflowID: fresh.Workflow.WorkflowID,
@@ -116,7 +151,7 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 	}
 	switch {
 	case currentStep.Type == StepRunAgent && currentStep.ID == spawnedStep:
-		e.logger.Warn("workflow.skill-receipt.retry", "task_id", taskID, "step", spawnedStep, "skill", run.RequestedSkill)
+		e.logger.Warn("workflow.skill-receipt.retry", "task_id", taskID, "step", spawnedStep, "skill", run.RequestedSkill, "zero_output", zeroOutput)
 		e.clearAgentStep(taskID, agentID)
 		clearAgentRouteFromWorkflow(fresh.Workflow, agentID)
 		e.rescheduleRunAgent(taskID, agentID, currentStep, fresh, def, "workflow.skill-receipt-reschedule", nil)
@@ -126,7 +161,7 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 		if child == nil || child.Type != StepRunAgent {
 			return false
 		}
-		e.logger.Warn("workflow.skill-receipt.retry", "task_id", taskID, "parent", currentStep.ID, "child", spawnedStep, "skill", run.RequestedSkill)
+		e.logger.Warn("workflow.skill-receipt.retry", "task_id", taskID, "parent", currentStep.ID, "child", spawnedStep, "skill", run.RequestedSkill, "zero_output", zeroOutput)
 		e.clearAgentStep(taskID, agentID)
 		clearAgentRouteFromWorkflow(fresh.Workflow, agentID)
 		e.rescheduleSkillReceiptParallelChild(taskID, currentStep, child)

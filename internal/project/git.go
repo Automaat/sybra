@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Automaat/sybra/internal/executil"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"gopkg.in/yaml.v3"
 )
@@ -80,7 +80,7 @@ var networkGitTimeout = defaultNetworkGitTimeout
 // FetchRemoteBranch, FetchPRHead). Injecting fetchEnv() unconditionally is
 // harmless for the local ops — it only ever appends GH_TOKEN/GITHUB_TOKEN.
 func runBare(ctx context.Context, barePath string, args ...string) error {
-	return executil.RunEnv(ctx, barePath, fetchEnv(), "git", append([]string{"-c", "safe.bareRepository=all"}, args...)...)
+	return gitexec.Run(ctx, gitexec.Options{Dir: barePath, Env: fetchEnv()}, append([]string{"-c", "safe.bareRepository=all"}, args...)...)
 }
 
 func networkGitContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -90,7 +90,7 @@ func networkGitContext(ctx context.Context) (context.Context, context.CancelFunc
 func runNetworkGit(ctx context.Context, dir string, env []string, args ...string) error {
 	networkCtx, cancel := networkGitContext(ctx)
 	defer cancel()
-	return executil.RunEnv(networkCtx, dir, env, "git", args...)
+	return gitexec.Run(networkCtx, gitexec.Options{Dir: dir, Env: env}, args...)
 }
 
 func runBareFetch(ctx context.Context, barePath string, args ...string) error {
@@ -98,7 +98,7 @@ func runBareFetch(ctx context.Context, barePath string, args ...string) error {
 }
 
 func outputBare(ctx context.Context, barePath string, args ...string) (string, error) {
-	return executil.Output(ctx, barePath, "git", append([]string{"-c", "safe.bareRepository=all"}, args...)...)
+	return gitexec.Output(ctx, gitexec.Options{Dir: barePath}, append([]string{"-c", "safe.bareRepository=all"}, args...)...)
 }
 
 // LoadRepoConfig reads .sybra.yaml from the worktree root. Returns an empty
@@ -171,15 +171,12 @@ var errRefUnresolved = errors.New("ref does not resolve")
 // ref; any other failure (e.g. context cancellation) is returned as a plain
 // error so it propagates rather than triggering a fallback.
 func showFileAtRef(ctx context.Context, barePath, ref, path string) (data []byte, found bool, err error) {
-	cmd := exec.CommandContext(ctx, "git", "-c", "safe.bareRepository=all", "show", ref+":"+path)
-	cmd.Dir = barePath
-	out, runErr := cmd.Output()
+	out, runErr := gitexec.RawOutput(ctx, gitexec.Options{Dir: barePath}, "-c", "safe.bareRepository=all", "show", ref+":"+path)
 	if runErr == nil {
 		return out, true, nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(runErr, &exitErr) {
-		stderr := string(exitErr.Stderr)
+	if _, ok := gitexec.ExitCode(runErr); ok {
+		stderr := runErr.Error()
 		switch {
 		case strings.Contains(stderr, "does not exist in") || strings.Contains(stderr, "exists on disk, but not in"):
 			return nil, false, nil
@@ -200,13 +197,11 @@ func showFileAtRef(ctx context.Context, barePath, ref, path string) (data []byte
 // across concurrently-operating worktrees of one project rather than just
 // within a single worktree.
 func gitCommonDir(ctx context.Context, worktreePath string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-common-dir")
-	cmd.Dir = worktreePath
-	out, err := cmd.Output()
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return "", fmt.Errorf("resolve git dir: %w", err)
 	}
-	gitDir := strings.TrimSpace(string(out))
+	gitDir := out
 	if !filepath.IsAbs(gitDir) {
 		gitDir = filepath.Join(worktreePath, gitDir)
 	}
@@ -290,9 +285,7 @@ func InstallSignoffHook(ctx context.Context, worktreePath string) error {
 	if err := os.WriteFile(path, []byte(signoffHook), 0o755); err != nil {
 		return fmt.Errorf("write prepare-commit-msg hook: %w", err)
 	}
-	pin := exec.CommandContext(ctx, "git", "config", "core.hooksPath", hooksDir)
-	pin.Dir = worktreePath
-	if err := pin.Run(); err != nil {
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: worktreePath}, "config", "core.hooksPath", hooksDir); err != nil {
 		return fmt.Errorf("pin core.hooksPath: %w", err)
 	}
 	return nil
@@ -382,12 +375,11 @@ func CloneBare(ctx context.Context, repoURL, destPath string) error {
 // Confirmed in production: disabling only maintenance.auto still let this
 // happen via gc.auto on the very next commit to the same clone.
 //
-// This closes only the *implicit* triggers; an agent running `git
-// gc`/`git repack`/`git maintenance run` explicitly in its own worktree
-// reproduces the identical race and is not prevented here (see
-// internal/agent/manager_run.go's git-sandbox write grants, which
-// intentionally permit those paths). Exported so a startup migration can
-// retrofit already-registered projects, not just newly cloned ones.
+// Enforce-mode provider sandboxes separately make the repository-wide pack,
+// info, and packed-ref surfaces read-only, blocking explicit maintenance too.
+// This configuration still matters for trusted Sybra processes and for
+// report/off-mode runs. Exported so a startup migration can retrofit already-
+// registered projects, not just newly cloned ones.
 func DisableAutoMaintenance(ctx context.Context, barePath string) error {
 	if err := runBare(ctx, barePath, "config", "maintenance.auto", "false"); err != nil {
 		return err
@@ -431,22 +423,73 @@ func commitIdentity(ctx context.Context) (name, email string) {
 }
 
 func gitGlobalConfig(ctx context.Context, key string) string {
-	out, err := executil.Output(ctx, "", "git", "config", "--global", "--get", key)
+	out, err := gitexec.Output(ctx, gitexec.Options{}, "config", "--global", "--get", key)
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(out)
 }
 
-// DefaultBranch resolves barePath's HEAD symbolic ref (e.g.
-// refs/heads/main) and returns just the branch name (main).
+// ConfigureCommitSigning pins the clone's signing posture so a keyless host
+// cannot be talked into attempting a GPG signature. Headless agents commit
+// through their own bash calls, so the only durable floor below the prompt
+// layer is the clone's own config — and until now nothing wrote it. Hosts that
+// happened to carry commit.gpgsign=false held it as incidental state, so a
+// freshly cloned project got no protection at all.
+//
+// This does not stop an explicit `git commit -S`, which overrides config by
+// design. It stops every plain commit from inheriting a signing default the
+// host cannot honor. Under a signing policy the keys are unset rather than
+// forced true, leaving the host's own configuration authoritative.
+//
+// --replace-all/--unset-all rather than the plain forms: a config carrying a
+// key twice makes `git config <key> <value>` fail outright ("cannot overwrite
+// multiple values with a single value") and makes `--unset` exit 5 while
+// leaving both values in place, so the plain forms silently fail to establish
+// either posture.
+func ConfigureCommitSigning(ctx context.Context, barePath string, policy SigningPolicy) error {
+	signing := policy.SignsCommits(ctx)
+	for _, key := range []string{"commit.gpgsign", "tag.gpgsign"} {
+		if signing {
+			// --unset-all on an absent key exits 5; that is the desired end
+			// state, not a failure.
+			if err := runBare(ctx, barePath, "config", "--unset-all", key); err != nil && !isGitConfigKeyAbsent(err) {
+				return fmt.Errorf("unset %s: %w", key, err)
+			}
+			continue
+		}
+		if err := runBare(ctx, barePath, "config", "--replace-all", key, "false"); err != nil {
+			return fmt.Errorf("set %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
+// isGitConfigKeyAbsent reports whether err is `git config --unset-all`'s exit
+// code 5, which for --unset-all means the key was not set.
+func isGitConfigKeyAbsent(err error) bool {
+	exitErr, ok := errors.AsType[*exec.ExitError](err)
+	return ok && exitErr.ExitCode() == 5
+}
+
+// DefaultBranch resolves barePath's HEAD symbolic ref (e.g. refs/heads/main)
+// and returns the branch name it points at (main), slashes intact.
 func DefaultBranch(ctx context.Context, barePath string) (string, error) {
+	// An empty path leaves git in the Sybra process's own cwd, which answers
+	// with whatever branch that checkout is on. Every caller feeds the answer
+	// to a guard, so a project record with no clone_path would compare a real
+	// branch against an unrelated repository's instead of failing.
+	if strings.TrimSpace(barePath) == "" {
+		return "", errors.New("project has no clone path")
+	}
 	ref, err := outputBare(ctx, barePath, "symbolic-ref", "HEAD")
 	if err != nil {
 		return "", err
 	}
-	// refs/heads/main → main
-	return filepath.Base(ref), nil
+	// refs/heads/release/2.0 → release/2.0, never "2.0": a truncated name
+	// matches no branch and resolves to no ref, so every guard and base-ref
+	// built on it fails open rather than loudly.
+	return strings.TrimPrefix(ref, "refs/heads/"), nil
 }
 
 // ListTrackedFiles returns every file path tracked at ref in the bare repo,
@@ -630,15 +673,11 @@ func resolveRef(ctx context.Context, barePath, ref string) (string, bool) {
 func AutoCommitUncommitted(ctx context.Context, wtPath, message string) bool {
 	restoreProtectedPaths(ctx, wtPath)
 	removeEmbeddedGitDirs(wtPath)
-	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
-	statusCmd.Dir = wtPath
-	statusOut, err := statusCmd.Output()
-	if err != nil || len(strings.TrimSpace(string(statusOut))) == 0 {
+	statusOut, err := gitexec.Output(ctx, gitexec.Options{Dir: wtPath}, "status", "--porcelain")
+	if err != nil || statusOut == "" {
 		return false
 	}
-	add := exec.CommandContext(ctx, "git", "add", "-A")
-	add.Dir = wtPath
-	if err := add.Run(); err != nil {
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: wtPath}, "add", "-A"); err != nil {
 		return false
 	}
 	return runRecoveryCommit(ctx, wtPath, message) == nil
@@ -654,9 +693,7 @@ func restoreProtectedPaths(ctx context.Context, wtPath string) {
 		if !isSafeProtectedPath(p) {
 			continue
 		}
-		restore := exec.CommandContext(ctx, "git", "checkout", "--", ":(literal)"+p)
-		restore.Dir = wtPath
-		_ = restore.Run()
+		_ = gitexec.Run(ctx, gitexec.Options{Dir: wtPath}, "checkout", "--", ":(literal)"+p)
 	}
 }
 
@@ -720,20 +757,16 @@ func CheckpointCommit(ctx context.Context, wtPath, message string) (committed bo
 }
 
 func checkpointCommitOnce(ctx context.Context, wtPath, message string) (committed bool, err error) {
-	statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
-	statusCmd.Dir = wtPath
-	statusOut, err := statusCmd.CombinedOutput()
+	statusOut, err := gitexec.Output(ctx, gitexec.Options{Dir: wtPath}, "status", "--porcelain")
 	if err != nil {
-		return false, fmt.Errorf("git status --porcelain: %w: %s", err, strings.TrimSpace(string(statusOut)))
+		return false, err
 	}
-	if len(strings.TrimSpace(string(statusOut))) == 0 {
+	if statusOut == "" {
 		return false, nil
 	}
 
-	add := exec.CommandContext(ctx, "git", "add", "-A")
-	add.Dir = wtPath
-	if out, err := add.CombinedOutput(); err != nil {
-		return false, fmt.Errorf("git add -A: %w: %s", err, strings.TrimSpace(string(out)))
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: wtPath}, "add", "-A"); err != nil {
+		return false, err
 	}
 
 	if err := checkpointRunRecoveryCommit(ctx, wtPath, message); err != nil {
@@ -747,8 +780,8 @@ func repairCheckpointWorktree(ctx context.Context, wtPath string) error {
 	if err != nil {
 		return err
 	}
-	branchOut, _ := exec.CommandContext(ctx, "git", "-C", wtPath, "branch", "--show-current").Output()
-	_, err = RepairBareClone(ctx, commonDir, strings.TrimSpace(string(branchOut)))
+	branchOut, _ := gitexec.Output(ctx, gitexec.Options{Dir: wtPath}, "branch", "--show-current")
+	_, err = RepairBareClone(ctx, commonDir, branchOut)
 	return err
 }
 
@@ -764,9 +797,7 @@ func SanitizeWorktree(ctx context.Context, wtPath string) error {
 	// Abort stuck merge if any. No harm running this when no merge is in
 	// progress — git just errors, which we ignore (best-effort, like the
 	// rebase abort above).
-	abort := exec.CommandContext(ctx, "git", "merge", "--abort")
-	abort.Dir = wtPath
-	_ = abort.Run()
+	_ = gitexec.RunQuiet(ctx, gitexec.Options{Dir: wtPath}, "merge", "--abort")
 
 	// Auto-commit any uncommitted changes before resetting. Agents are expected
 	// to commit before finishing, but if they forget this preserves their work
@@ -776,28 +807,20 @@ func SanitizeWorktree(ctx context.Context, wtPath string) error {
 	// Discard any remaining working-tree dirt (e.g. ignored files, failed
 	// commit) so the rebase can proceed cleanly. Committed work on the branch
 	// is preserved.
-	reset := exec.CommandContext(ctx, "git", "reset", "--hard", "HEAD")
-	reset.Dir = wtPath
-	_ = reset.Run()
-	clean := exec.CommandContext(ctx, "git", "clean", "-fd")
-	clean.Dir = wtPath
-	_ = clean.Run()
+	_ = gitexec.RunQuiet(ctx, gitexec.Options{Dir: wtPath}, "reset", "--hard", "HEAD")
+	_ = gitexec.RunQuiet(ctx, gitexec.Options{Dir: wtPath}, "clean", "-fd")
 
 	// Delete local branches that shadow remote tracking refs.
 	// A local branch named "origin/foo" shadows "refs/remotes/origin/foo".
-	listCmd := exec.CommandContext(ctx, "git", "branch", "--format=%(refname:short)")
-	listCmd.Dir = wtPath
-	branchOut, err := listCmd.Output()
+	branchOut, err := gitexec.Output(ctx, gitexec.Options{Dir: wtPath}, "branch", "--format=%(refname:short)")
 	if err != nil {
 		return err
 	}
-	for line := range strings.SplitSeq(strings.TrimSpace(string(branchOut)), "\n") {
+	for line := range strings.SplitSeq(branchOut, "\n") {
 		if !strings.HasPrefix(line, "origin/") {
 			continue
 		}
-		del := exec.CommandContext(ctx, "git", "branch", "-D", line)
-		del.Dir = wtPath
-		_ = del.Run()
+		_ = gitexec.RunQuiet(ctx, gitexec.Options{Dir: wtPath}, "branch", "-D", line)
 	}
 	return nil
 }
@@ -816,19 +839,13 @@ func ResetWorktreeForRetry(ctx context.Context, wtPath, ref string) error {
 		clearRebaseState(ctx, wtPath)
 	}
 
-	abort := exec.CommandContext(ctx, "git", "merge", "--abort")
-	abort.Dir = wtPath
-	_ = abort.Run()
+	_ = gitexec.RunQuiet(ctx, gitexec.Options{Dir: wtPath}, "merge", "--abort")
 
-	reset := exec.CommandContext(ctx, "git", "reset", "--hard", ref)
-	reset.Dir = wtPath
-	if out, err := reset.CombinedOutput(); err != nil {
-		return fmt.Errorf("reset worktree to %s: %w: %s", ref, err, strings.TrimSpace(string(out)))
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: wtPath}, "reset", "--hard", ref); err != nil {
+		return fmt.Errorf("reset worktree to %s: %w", ref, err)
 	}
-	clean := exec.CommandContext(ctx, "git", "clean", "-fd")
-	clean.Dir = wtPath
-	if out, err := clean.CombinedOutput(); err != nil {
-		return fmt.Errorf("clean worktree: %w: %s", err, strings.TrimSpace(string(out)))
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: wtPath}, "clean", "-fd"); err != nil {
+		return fmt.Errorf("clean worktree: %w", err)
 	}
 	return nil
 }
@@ -845,9 +862,7 @@ func clearRebaseState(ctx context.Context, wtPath string) {
 	dir := rebaseStateDir(ctx, wtPath)
 	abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rebaseAbortTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(abortCtx, "git", "rebase", "--abort")
-	cmd.Dir = wtPath
-	if err := cmd.Run(); err != nil {
+	if err := gitexec.RunQuiet(abortCtx, gitexec.Options{Dir: wtPath}, "rebase", "--abort"); err != nil {
 		_ = os.RemoveAll(dir)
 	}
 }
@@ -856,13 +871,11 @@ func clearRebaseState(ctx context.Context, wtPath string) {
 func rebaseStateDir(ctx context.Context, wtPath string) string {
 	// git worktrees store rebase state inside the .git dir (which is a file
 	// pointing to the actual gitdir). Use rev-parse to resolve it.
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
-	cmd.Dir = wtPath
-	out, err := cmd.Output()
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: wtPath}, "rev-parse", "--git-dir")
 	if err != nil {
 		return filepath.Join(wtPath, ".git", "rebase-merge")
 	}
-	gitDir := strings.TrimSpace(string(out))
+	gitDir := out
 	// Check both rebase-merge (interactive) and rebase-apply (am-style).
 	for _, sub := range []string{"rebase-merge", "rebase-apply"} {
 		p := filepath.Join(gitDir, sub)
@@ -1005,7 +1018,7 @@ func isSybraBranchPrefix(prefix string) bool {
 // the fork — and `gh pr create` therefore open cross-repo PRs — without a
 // project-level setting.
 func PushRemote(ctx context.Context, repoPath string) string {
-	if _, err := executil.Output(ctx, repoPath, "git", "config", "--get", "remote.fork.url"); err == nil {
+	if _, err := gitexec.Output(ctx, gitexec.Options{Dir: repoPath}, "config", "--get", "remote.fork.url"); err == nil {
 		return "fork"
 	}
 	return "origin"
@@ -1013,7 +1026,7 @@ func PushRemote(ctx context.Context, repoPath string) string {
 
 // RemoteConfigured reports whether repoPath has a configured URL for remote.
 func RemoteConfigured(ctx context.Context, repoPath, remote string) bool {
-	_, err := executil.Output(ctx, repoPath, "git", "config", "--get", "remote."+remote+".url")
+	_, err := gitexec.Output(ctx, gitexec.Options{Dir: repoPath}, "config", "--get", "remote."+remote+".url")
 	return err == nil
 }
 
@@ -1022,6 +1035,21 @@ func RemoteConfigured(ctx context.Context, repoPath, remote string) bool {
 // without --no-verify) hit a transport-level failure naming this sentinel,
 // so the error message itself documents the policy.
 const forkOnlyDisabledPushURL = "sybra-disabled-do-not-push-to-upstream-use-fork"
+
+// OriginPushHasForkOnlyGuard reports whether origin's push URL is the exact
+// sentinel owned by EnforceForkOnlyPush. Foreign user-configured push URLs are
+// intentionally not treated as Sybra's guard and must retain normal Git push
+// behavior.
+func OriginPushHasForkOnlyGuard(ctx context.Context, worktreePath string) (bool, error) {
+	pushURL, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "config", "--get", "remote.origin.pushurl")
+	if err != nil {
+		if code, ok := gitexec.ExitCode(err); ok && code == 1 {
+			return false, nil
+		}
+		return false, err
+	}
+	return strings.TrimSpace(pushURL) == forkOnlyDisabledPushURL, nil
+}
 
 // EnforceForkOnlyPush configures a worktree so pushes never reach origin
 // when a "fork" remote exists. It overrides remote.origin.pushurl with a
@@ -1033,14 +1061,14 @@ const forkOnlyDisabledPushURL = "sybra-disabled-do-not-push-to-upstream-use-fork
 // pushing to origin normally. Foreign pushurl values (set by the user) are
 // left untouched.
 func EnforceForkOnlyPush(ctx context.Context, worktreePath string) error {
-	if _, err := executil.Output(ctx, worktreePath, "git", "config", "--get", "remote.fork.url"); err != nil {
-		current, getErr := executil.Output(ctx, worktreePath, "git", "config", "--get", "remote.origin.pushurl")
+	if _, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "config", "--get", "remote.fork.url"); err != nil {
+		current, getErr := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "config", "--get", "remote.origin.pushurl")
 		if getErr == nil && strings.TrimSpace(current) == forkOnlyDisabledPushURL {
-			_ = executil.Run(ctx, worktreePath, "git", "config", "--unset", "remote.origin.pushurl")
+			_ = gitexec.Run(ctx, gitexec.Options{Dir: worktreePath}, "config", "--unset", "remote.origin.pushurl")
 		}
 		return nil
 	}
-	return executil.Run(ctx, worktreePath, "git", "remote", "set-url", "--push", "origin", forkOnlyDisabledPushURL)
+	return gitexec.Run(ctx, gitexec.Options{Dir: worktreePath}, "remote", "set-url", "--push", "origin", forkOnlyDisabledPushURL)
 }
 
 // ConfigureGitHubAuth removes any credentials embedded in the origin remote
@@ -1053,12 +1081,12 @@ func ConfigureGitHubAuth(ctx context.Context, worktreePath string) error {
 	if err := stripRemoteURLCredentials(ctx, worktreePath, "origin"); err != nil {
 		return err
 	}
-	return executil.Run(ctx, worktreePath, "git", "config",
+	return gitexec.Run(ctx, gitexec.Options{Dir: worktreePath}, "config",
 		"credential.https://github.com.helper", "!gh auth git-credential")
 }
 
 func stripRemoteURLCredentials(ctx context.Context, worktreePath, remote string) error {
-	raw, err := executil.Output(ctx, worktreePath, "git", "config", "--get", "remote."+remote+".url")
+	raw, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "config", "--get", "remote."+remote+".url")
 	if err != nil {
 		return fmt.Errorf("read %s remote url: %w", remote, err)
 	}
@@ -1066,7 +1094,7 @@ func stripRemoteURLCredentials(ctx context.Context, worktreePath, remote string)
 	if !changed {
 		return nil
 	}
-	return executil.Run(ctx, worktreePath, "git", "remote", "set-url", remote, cleaned)
+	return gitexec.Run(ctx, gitexec.Options{Dir: worktreePath}, "remote", "set-url", remote, cleaned)
 }
 
 func stripHTTPSUserinfo(rawURL string) (string, bool) {
@@ -1180,11 +1208,8 @@ func DeleteBranch(ctx context.Context, barePath, branch string) error {
 // entire recreate path would only strand a task on a local-only cleanup.
 func DeleteUpstreamBranch(ctx context.Context, barePath, branch string) error {
 	remote := PushRemote(ctx, barePath)
-	cmd := exec.CommandContext(ctx, "git", "config", "--get", "remote."+remote+".url")
-	cmd.Dir = barePath
-	if err := cmd.Run(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+	if err := gitexec.RunQuiet(ctx, gitexec.Options{Dir: barePath}, "config", "--get", "remote."+remote+".url"); err != nil {
+		if code, ok := gitexec.ExitCode(err); ok && code == 1 {
 			return nil
 		}
 		return fmt.Errorf("resolve remote %s config: %w", remote, err)
@@ -1254,7 +1279,7 @@ func IsWorktreeDirty(ctx context.Context, worktreePath string) (bool, error) {
 // rather than silently destroying possibly-unpushed work (see #2593, where a
 // completed implementation was lost this way).
 func HasUnpushedCommits(ctx context.Context, worktreePath string) bool {
-	out, err := executil.Output(ctx, worktreePath, "git", "rev-list", "--count", "HEAD", "--not", "--remotes")
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "rev-list", "--count", "HEAD", "--not", "--remotes")
 	if err != nil {
 		return true
 	}
@@ -1266,7 +1291,7 @@ func HasUnpushedCommits(ctx context.Context, worktreePath string) bool {
 // promotion to materialize the canonical worktree at the winning attempt's
 // HEAD after SetBranchTo has already moved the shared branch ref.
 func HardResetWorktree(ctx context.Context, worktreePath, ref string) error {
-	return executil.Run(ctx, worktreePath, "git", "reset", "--hard", ref)
+	return gitexec.Run(ctx, gitexec.Options{Dir: worktreePath}, "reset", "--hard", ref)
 }
 
 // HeadArg returns the `gh pr create --head` value for branch: a bare branch
@@ -1277,7 +1302,7 @@ func HeadArg(ctx context.Context, worktreePath, branch string) (string, error) {
 	if PushRemote(ctx, worktreePath) != "fork" {
 		return branch, nil
 	}
-	forkURL, err := executil.Output(ctx, worktreePath, "git", "config", "--get", "remote.fork.url")
+	forkURL, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "config", "--get", "remote.fork.url")
 	if err != nil {
 		return "", fmt.Errorf("resolve fork remote url: %w", err)
 	}
@@ -1290,7 +1315,7 @@ func HeadArg(ctx context.Context, worktreePath, branch string) (string, error) {
 
 // CurrentBranch returns the checked-out branch name for a worktree.
 func CurrentBranch(ctx context.Context, worktreePath string) (string, error) {
-	branch, err := executil.Output(ctx, worktreePath, "git", "branch", "--show-current")
+	branch, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "branch", "--show-current")
 	if err != nil {
 		return "", err
 	}
@@ -1299,7 +1324,7 @@ func CurrentBranch(ctx context.Context, worktreePath string) (string, error) {
 
 // CurrentCommit returns the full SHA of HEAD for a worktree.
 func CurrentCommit(ctx context.Context, worktreePath string) (string, error) {
-	sha, err := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", "HEAD")
+	sha, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return "", err
 	}
@@ -1315,9 +1340,7 @@ func RemoteBranchHead(ctx context.Context, worktreePath, remote, branch string) 
 // isAncestor reports whether ancestor is reachable from descendant in the
 // worktree's history. Returns false when either ref is unknown.
 func isAncestor(ctx context.Context, worktreePath, ancestor, descendant string) bool {
-	cmd := exec.CommandContext(ctx, "git", "merge-base", "--is-ancestor", ancestor, descendant)
-	cmd.Dir = worktreePath
-	return cmd.Run() == nil
+	return gitexec.RunQuiet(ctx, gitexec.Options{Dir: worktreePath}, "merge-base", "--is-ancestor", ancestor, descendant) == nil
 }
 
 // remoteBranchHead queries the live head SHA of branch on remote via ls-remote.
@@ -1327,14 +1350,11 @@ func remoteBranchHead(ctx context.Context, worktreePath, remote, branch string) 
 	err := withNetworkRetry(ctx, func() error {
 		networkCtx, cancel := networkGitContext(ctx)
 		defer cancel()
-		cmd := exec.CommandContext(networkCtx, "git", "ls-remote", remote, "refs/heads/"+branch)
-		cmd.Dir = worktreePath
-		cmd.Env = fetchEnv()
-		raw, runErr := cmd.CombinedOutput()
+		raw, runErr := gitexec.Output(networkCtx, gitexec.Options{Dir: worktreePath, Env: fetchEnv()}, "ls-remote", remote, "refs/heads/"+branch)
 		if runErr != nil {
-			return fmt.Errorf("git ls-remote %s refs/heads/%s: %w: %s", remote, branch, runErr, strings.TrimSpace(string(raw)))
+			return fmt.Errorf("resolve remote branch: %w", runErr)
 		}
-		out = strings.TrimSpace(string(raw))
+		out = raw
 		return nil
 	})
 	if err != nil {
@@ -1348,7 +1368,7 @@ func remoteBranchHead(ctx context.Context, worktreePath, remote, branch string) 
 }
 
 func remoteTrackingRef(ctx context.Context, worktreePath, remote, branch string) (string, bool) {
-	sha, err := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", "refs/remotes/"+remote+"/"+branch)
+	sha, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "rev-parse", "--verify", "refs/remotes/"+remote+"/"+branch)
 	return sha, err == nil
 }
 
@@ -1414,7 +1434,7 @@ func refreshTrackingRefWithFetch(ctx context.Context, worktreePath, remote, bran
 }
 
 func reconcileWithTargetSHA(ctx context.Context, worktreePath, label, targetSHA string) error {
-	localSHA, err := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", "HEAD")
+	localSHA, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return err
 	}
@@ -1432,7 +1452,7 @@ func reconcileWithTargetSHA(ctx context.Context, worktreePath, label, targetSHA 
 		if dirty {
 			return ErrDirtyWorktree
 		}
-		return executil.Run(ctx, worktreePath, "git", "merge", "--ff-only", targetSHA)
+		return gitexec.Run(ctx, gitexec.Options{Dir: worktreePath}, "merge", "--ff-only", targetSHA)
 	}
 	return fmt.Errorf("%w: local %s vs %s %s", ErrBranchDiverged, localSHA[:min(7, len(localSHA))], label, targetSHA[:min(7, len(targetSHA))])
 }
@@ -1488,7 +1508,7 @@ func ReconcileWithNamedRemote(ctx context.Context, worktreePath, remote, branch 
 
 // ReconcileWithRef is ReconcileWithRemote for an already-fetched local ref.
 func ReconcileWithRef(ctx context.Context, worktreePath, ref string) error {
-	targetSHA, err := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", ref)
+	targetSHA, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "rev-parse", "--verify", ref)
 	if err != nil {
 		return fmt.Errorf("resolve %s: %w", ref, err)
 	}
@@ -1533,7 +1553,7 @@ func MergeDivergedRef(ctx context.Context, worktreePath, ref string) (bool, erro
 }
 
 func worktreeDirty(ctx context.Context, worktreePath string) (bool, error) {
-	out, err := executil.Output(ctx, worktreePath, "git", "status", "--porcelain")
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "status", "--porcelain")
 	if err != nil {
 		return false, err
 	}
@@ -1559,16 +1579,51 @@ func worktreeDirty(ctx context.Context, worktreePath string) (bool, error) {
 //
 // Returns ErrBranchMissing if the local branch ref does not exist.
 func PushSync(ctx context.Context, worktreePath, branch string) error {
-	if err := executil.Run(ctx, worktreePath, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+	return pushSyncToRemote(ctx, worktreePath, branch, PushRemote(ctx, worktreePath), "")
+}
+
+// RemoteURL returns a configured remote's fetch URL.
+func RemoteURL(ctx context.Context, worktreePath, remote string) (string, error) {
+	remoteURL, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "remote", "get-url", remote)
+	if err != nil {
+		return "", fmt.Errorf("resolve remote %s URL: %w", remote, err)
+	}
+	remoteURL = strings.TrimSpace(remoteURL)
+	if parsed, parseErr := url.Parse(remoteURL); parseErr == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.User != nil {
+		return "", fmt.Errorf("remote %s URL must not contain HTTP userinfo", remote)
+	}
+	return remoteURL, nil
+}
+
+// PushSyncToPinnedRemote synchronizes branch to a pre-validated source remote
+// URL without force-pushing. It is the narrow trusted Sybra workflow path for
+// publishing a same-repository PR recovery despite EnforceForkOnlyPush's
+// origin push-url sentinel. The remote must still resolve to expectedURL when
+// this runs, so an agent cannot redirect the host-credential push by editing
+// the worktree's Git configuration during its recovery run.
+func PushSyncToPinnedRemote(ctx context.Context, worktreePath, branch, remote, expectedURL string) error {
+	currentURL, err := RemoteURL(ctx, worktreePath, remote)
+	if err != nil {
+		return err
+	}
+	if expectedURL == "" || currentURL != expectedURL {
+		return fmt.Errorf("push remote %q URL changed during recovery", remote)
+	}
+	return pushSyncToRemote(ctx, worktreePath, branch, remote, expectedURL)
+}
+
+func pushSyncToRemote(ctx context.Context, worktreePath, branch, remote, pinnedPushURL string) error {
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: worktreePath}, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err != nil {
+		if code, ok := gitexec.ExitCode(err); ok && code == 1 {
 			return ErrBranchMissing
 		}
 		return err
 	}
 
-	remote := PushRemote(ctx, worktreePath)
-	localSHA, err := executil.Output(ctx, worktreePath, "git", "rev-parse", "--verify", "refs/heads/"+branch)
+	if !RemoteConfigured(ctx, worktreePath, remote) {
+		return fmt.Errorf("push remote %q is not configured", remote)
+	}
+	localSHA, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "rev-parse", "--verify", "refs/heads/"+branch)
 	if err != nil {
 		return err
 	}
@@ -1587,7 +1642,7 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 	remoteSHA, remoteOK := remoteTrackingRef(ctx, worktreePath, remote, branch)
 	if !remoteOK {
 		// Remote tracking ref unknown — first push, set upstream.
-		return pushLocked(ctx, worktreePath, "push", "-u", remote, branch)
+		return pushBranchToRemote(ctx, worktreePath, remote, branch, pinnedPushURL)
 	}
 	remoteAdvanced := beforeRefreshOK && beforeRefreshSHA != remoteSHA
 
@@ -1597,7 +1652,7 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 
 	// Fast-forward when remote SHA is reachable from local SHA.
 	if isAncestor(ctx, worktreePath, remoteSHA, localSHA) {
-		return pushLocked(ctx, worktreePath, "push", "-u", remote, branch)
+		return pushBranchToRemote(ctx, worktreePath, remote, branch, pinnedPushURL)
 	}
 
 	// Divergence path: never force-push. remoteSHA reflects the freshly
@@ -1608,6 +1663,14 @@ func PushSync(ctx context.Context, worktreePath, branch string) error {
 		return fmt.Errorf("%w: %w: local %s vs remote %s/%s %s diverged", ErrDivergedNeedsResolve, ErrRemoteAdvanced, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
 	}
 	return fmt.Errorf("%w: local %s vs remote %s/%s %s diverged", ErrDivergedNeedsResolve, localSHA[:min(7, len(localSHA))], remote, branch, remoteSHA[:min(7, len(remoteSHA))])
+}
+
+func pushBranchToRemote(ctx context.Context, worktreePath, remote, branch, pinnedPushURL string) error {
+	if pinnedPushURL == "" {
+		return pushLocked(ctx, worktreePath, "push", "-u", remote, branch)
+	}
+	refspec := "refs/heads/" + branch + ":refs/heads/" + branch
+	return pushLocked(ctx, worktreePath, "push", pinnedPushURL, refspec)
 }
 
 // pushPreflightRetryBackoffs bounds retries for a push-credential preflight
@@ -1664,7 +1727,7 @@ func SetPushAuthFailureHook(f func(err error)) {
 // hook (tests, lint) never fires on this credential-only probe.
 func PreflightPushCredentials(ctx context.Context, worktreePath string) error {
 	remote := PushRemote(ctx, worktreePath)
-	pushURL, err := executil.Output(ctx, worktreePath, "git", "remote", "get-url", "--push", remote)
+	pushURL, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "remote", "get-url", "--push", remote)
 	if err != nil {
 		return fmt.Errorf("resolve push remote %s: %w", remote, err)
 	}
@@ -1742,10 +1805,7 @@ var runGitPushProbe = execGitPushProbe
 func execGitPushProbe(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	networkCtx, cancel := networkGitContext(ctx)
 	defer cancel()
-	cmd := exec.CommandContext(networkCtx, "git", args...)
-	cmd.Dir = dir
-	cmd.Env = env
-	out, err := cmd.CombinedOutput()
+	out, err := gitexec.CombinedOutput(networkCtx, gitexec.Options{Dir: dir, Env: env}, args...)
 	return string(out), err
 }
 
@@ -1873,7 +1933,7 @@ func PruneWorktrees(ctx context.Context, barePath string) error {
 // path that no longer exists — the usual cause is a container redeploy that
 // changed the in-container mount point of the bare clone.
 func WorktreeHealthy(ctx context.Context, worktreePath string) bool {
-	_, err := executil.Output(ctx, worktreePath, "git", "rev-parse", "--git-dir")
+	_, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "rev-parse", "--git-dir")
 	return err == nil
 }
 
@@ -1914,9 +1974,9 @@ func RebaseOnto(ctx context.Context, worktreePath, ref string) error {
 	if isAncestor(ctx, worktreePath, ref, "HEAD") {
 		return nil
 	}
-	if err := executil.Run(ctx, worktreePath, "git", "rebase", ref); err != nil {
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: worktreePath}, "rebase", ref); err != nil {
 		abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rebaseAbortTimeout)
-		_ = executil.Run(abortCtx, worktreePath, "git", "rebase", "--abort")
+		_ = gitexec.Run(abortCtx, gitexec.Options{Dir: worktreePath}, "rebase", "--abort")
 		cancel()
 		return fmt.Errorf("rebase onto %s: %w", ref, err)
 	}
@@ -1936,13 +1996,13 @@ func RebaseOnto(ctx context.Context, worktreePath, ref string) error {
 // never configured one; --no-verify skips repo pre-commit hooks the same
 // way, so a failing hook can't defeat this recovery path.
 func MergeOnto(ctx context.Context, worktreePath, ref string) error {
-	if err := executil.Run(ctx, worktreePath, "git",
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: worktreePath},
 		"-c", "user.name=Sybra",
 		"-c", "user.email=sybra@localhost",
 		"-c", "commit.gpgsign=false",
 		"merge", "--no-edit", "--no-verify", "--signoff", ref); err != nil {
 		abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rebaseAbortTimeout)
-		_ = executil.Run(abortCtx, worktreePath, "git", "merge", "--abort")
+		_ = gitexec.Run(abortCtx, gitexec.Options{Dir: worktreePath}, "merge", "--abort")
 		cancel()
 		return fmt.Errorf("merge %s: %w", ref, err)
 	}
@@ -1991,36 +2051,35 @@ func (r CleanMergeResult) String() string {
 // pre-merge HEAD plus `git clean -fd` so the caller's agent fallback always
 // starts from a clean tree.
 func TryCleanMerge(ctx context.Context, wtPath, baseRef string) (CleanMergeResult, error) {
-	if err := executil.Run(ctx, wtPath, "git", "rev-parse", "--verify", baseRef); err != nil {
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: wtPath}, "rev-parse", "--verify", baseRef); err != nil {
 		return CleanMergeConflict, fmt.Errorf("resolve base ref %s: %w", baseRef, err)
 	}
 
-	preMergeHEAD, err := executil.Output(ctx, wtPath, "git", "rev-parse", "--verify", "HEAD")
+	preMergeHEAD, err := gitexec.Output(ctx, gitexec.Options{Dir: wtPath}, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return CleanMergeConflict, fmt.Errorf("resolve pre-merge HEAD: %w", err)
 	}
 	preMergeHEAD = strings.TrimSpace(preMergeHEAD)
 
-	mergeErr := executil.Run(ctx, wtPath, "git",
+	mergeErr := gitexec.Run(ctx, gitexec.Options{Dir: wtPath},
 		"-c", "user.name=Sybra",
 		"-c", "user.email=sybra@localhost",
 		"-c", "commit.gpgsign=false",
 		"merge", "--no-edit", "--no-verify", "--signoff", baseRef)
 	if mergeErr != nil {
 		conflict := false
-		var exitErr *exec.ExitError
-		if errors.As(mergeErr, &exitErr) && exitErr.ExitCode() == 1 {
+		if code, ok := gitexec.ExitCode(mergeErr); ok && code == 1 {
 			conflict = true
 		}
 
 		abortCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rebaseAbortTimeout)
 		defer cancel()
-		_ = executil.Run(abortCtx, wtPath, "git", "merge", "--abort")
+		_ = gitexec.Run(abortCtx, gitexec.Options{Dir: wtPath}, "merge", "--abort")
 
-		statusOut, statusErr := executil.Output(abortCtx, wtPath, "git", "status", "--porcelain")
+		statusOut, statusErr := gitexec.Output(abortCtx, gitexec.Options{Dir: wtPath}, "status", "--porcelain")
 		if statusErr != nil || strings.TrimSpace(statusOut) != "" {
-			_ = executil.Run(abortCtx, wtPath, "git", "reset", "--hard", preMergeHEAD)
-			_ = executil.Run(abortCtx, wtPath, "git", "clean", "-fd")
+			_ = gitexec.Run(abortCtx, gitexec.Options{Dir: wtPath}, "reset", "--hard", preMergeHEAD)
+			_ = gitexec.Run(abortCtx, gitexec.Options{Dir: wtPath}, "clean", "-fd")
 		}
 		if !conflict {
 			return CleanMergeConflict, fmt.Errorf("merge %s into worktree: %w", baseRef, mergeErr)
@@ -2028,7 +2087,7 @@ func TryCleanMerge(ctx context.Context, wtPath, baseRef string) (CleanMergeResul
 		return CleanMergeConflict, nil
 	}
 
-	postMergeHEAD, err := executil.Output(ctx, wtPath, "git", "rev-parse", "--verify", "HEAD")
+	postMergeHEAD, err := gitexec.Output(ctx, gitexec.Options{Dir: wtPath}, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return CleanMergeConflict, fmt.Errorf("resolve post-merge HEAD: %w", err)
 	}

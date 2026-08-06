@@ -8,6 +8,9 @@ import (
 	"path"
 	"sort"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 const maxPlanContractBytes = 64 * 1024
@@ -82,7 +85,7 @@ func (e *Engine) execValidatePlanContract(taskID string, step *Step, t TaskInfo)
 	}
 	if problems := ValidatePlanContractForTask(raw, taskID, t.Body); len(problems) > 0 {
 		reason := "plan contract invalid: " + strings.Join(problems, "; ")
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+		if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 			e.logger.Error("workflow.validate-plan-contract.status", "task_id", taskID, "err", statusErr)
 		}
 		e.logger.Warn("workflow.validate-plan-contract.invalid", "task_id", taskID, "problems", strings.Join(problems, "; "))
@@ -358,10 +361,7 @@ func normalizeCriterionWhitespace(s string) string {
 }
 
 func quoteProblem(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) > 140 {
-		s = s[:137] + "..."
-	}
+	s = textutil.TruncateBytesTotal(strings.TrimSpace(s), 140, "...")
 	return fmt.Sprintf("%q", s)
 }
 

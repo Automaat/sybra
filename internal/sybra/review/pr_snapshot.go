@@ -1,6 +1,10 @@
 package review
 
-import "github.com/Automaat/sybra/internal/github"
+import (
+	"time"
+
+	"github.com/Automaat/sybra/internal/github"
+)
 
 // prSnapshot is one linked PR's cross-poll-cycle bookkeeping, keyed by
 // "repo#number" (prRefCacheKey). It replaces two previously separate caches —
@@ -19,6 +23,11 @@ type prSnapshot struct {
 	ready        *github.PullRequest
 	stableStreak int
 	skipTicks    int
+	// statusChangedAt is the linked task's StatusChangedAt as of the last tick
+	// that selected this PR. Backoff is keyed on the PR, so without this a task
+	// re-entering a fixable lane would keep serving out a streak the PR earned
+	// while the task was parked and unfixable.
+	statusChangedAt time.Time
 }
 
 // PRSnapshotStore is the single owner of per-PR ("repo#number") poll-cycle
@@ -74,6 +83,30 @@ func (s *PRSnapshotStore) ClearReady(key string) {
 func (s *PRSnapshotStore) Backoff(key string) (headSHA, updatedAt string, skipTicks, stableStreak int) {
 	e := s.entries[key]
 	return e.headSHA, e.updatedAt, e.skipTicks, e.stableStreak
+}
+
+// TaskStatusAdvancedSince reports whether the linked task changed status after
+// the last tick that selected key. A task moving back into a fixable lane must
+// be re-probed immediately rather than waiting out the PR's stable streak.
+func (s *PRSnapshotStore) TaskStatusAdvancedSince(key string, statusChangedAt time.Time) bool {
+	e, ok := s.entries[key]
+	if !ok {
+		return true
+	}
+	return statusChangedAt.After(e.statusChangedAt)
+}
+
+// NoteTaskStatus advances key's stamp to statusChangedAt. The stamp only ever
+// moves forward: several tasks can share one PR, and letting an older task's
+// timestamp overwrite a newer one would leave the newer task permanently
+// "advanced" and strip the PR of its backoff for good.
+func (s *PRSnapshotStore) NoteTaskStatus(key string, statusChangedAt time.Time) {
+	e := s.get(key)
+	if !statusChangedAt.After(e.statusChangedAt) {
+		return
+	}
+	e.statusChangedAt = statusChangedAt
+	s.set(key, e)
 }
 
 // DecrementSkipTicks consumes one skip-tick for key, leaving every other

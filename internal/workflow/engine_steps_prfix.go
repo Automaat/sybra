@@ -13,6 +13,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/prepstate"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 var prFixSentinelRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_RESULT:\s*([a-z_-]+)\s*$`)
@@ -95,7 +96,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 		if reason != "" {
 			msg += ": " + reason
 		}
-		if err := e.tasks.UpdateTaskStatus(taskID, "in-review", msg); err != nil {
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InReview, msg); err != nil {
 			return StepOutput{}, fmt.Errorf("route pr-fix result: set in-review after flake: %w", err)
 		}
 		e.logger.Info("workflow.pr-fix.flake", "task_id", taskID, "pr", t.PRNumber, "reason", reason)
@@ -106,7 +107,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 	// state, so it must never be waved through by the re-probe below.
 	if !reviewHoldForced {
 		if msg, resolved := e.checkPRAlreadyResolved(taskID, t, reason); resolved {
-			if err := e.tasks.UpdateTaskStatus(taskID, "in-review", msg); err != nil {
+			if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InReview, msg); err != nil {
 				return StepOutput{}, fmt.Errorf("route pr-fix result: resolved-on-remote: set in-review: %w", err)
 			}
 			e.logger.Info("workflow.pr-fix.resolved-on-remote", "task_id", taskID, "pr", t.PRNumber, "agent_reason", reason)
@@ -144,7 +145,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 			"task_id", taskID, "workflow", workflowID, "reason", reason)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return StepOutput{}, fmt.Errorf("route pr-fix result: set human-required: %w", err)
 	}
 	e.logger.Warn("workflow.pr-fix.human-required", "task_id", taskID, "reason", reason)

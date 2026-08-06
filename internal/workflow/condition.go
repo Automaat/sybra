@@ -3,6 +3,8 @@ package workflow
 import (
 	"errors"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // KnownTriggerFields is the authoritative set of field names that engine
@@ -17,22 +19,23 @@ import (
 // dead code, since its "project.type" condition had no populating caller.
 var KnownTriggerFields = map[string]bool{
 	// Populated by engine.taskFields for every dispatch/transition.
-	"task.id":                      true,
-	"task.title":                   true,
-	"task.status":                  true,
-	"task.status_reason":           true,
-	"task.role":                    true,
-	"task.tags":                    true,
-	"task.agent_mode":              true,
-	"task.project_id":              true,
-	"task.handoff_source_provider": true,
-	"task.branch":                  true,
-	"task.pr_number":               true,
-	"task.reviewed":                true,
-	"task.review_budget_exceeded":  true,
-	"task.plan_critique":           true,
-	"task.code_review":             true,
-	"task.replan_count":            true,
+	"task.id":                       true,
+	"task.title":                    true,
+	"task.status":                   true,
+	"task.status_reason":            true,
+	"task.role":                     true,
+	"task.tags":                     true,
+	"task.agent_mode":               true,
+	"task.project_id":               true,
+	"task.handoff_source_provider":  true,
+	"task.branch":                   true,
+	"task.pr_number":                true,
+	"task.reviewed":                 true,
+	"task.review_budget_exceeded":   true,
+	"task.review_lifetime_exceeded": true,
+	"task.plan_critique":            true,
+	"task.code_review":              true,
+	"task.replan_count":             true,
 	// Supplied as extras by DispatchEvent("pr.event", ...) callers in
 	// app_reviews.go and svc_integrations.go.
 	"pr.issue_kind": true,
@@ -66,7 +69,7 @@ func isKnownField(field string) bool {
 // registered set and skip enum validation.
 //
 // Keep this in lock-step with:
-//   - task.AllStatuses() in internal/task/model.go  → "task.status"
+//   - taskstatus.All() in internal/taskstatus       → "task.status"
 //   - task.AllTaskTypes()                           → "task.task_type"
 //   - github.PRIssueKind constants in internal/github/monitor.go
 //     → "pr.issue_kind"
@@ -75,12 +78,15 @@ func isKnownField(field string) bool {
 // cross-checks this map against those enum sources at build time so any
 // drift (adding a new Status, renaming a kind) fails CI immediately.
 var FieldAllowedValues = map[string]map[string]bool{
+	// Spelled out rather than derived from taskstatus.All(): the whole point
+	// of TestWorkflowFieldAllowedValues_MatchEnumSources is to fail when this
+	// map and the vocabulary disagree, and a derived map can never disagree.
 	"task.status": {
-		"new": true, "todo": true, "in-progress": true,
-		"ready-review": true, "in-review": true,
-		"planning": true, "plan-review": true, "testing": true,
-		"ready-pr": true, "human-required": true, "blocked": true,
-		"done": true, "cancelled": true,
+		string(taskstatus.New): true, string(taskstatus.Todo): true, string(taskstatus.InProgress): true,
+		string(taskstatus.ReadyReview): true, string(taskstatus.InReview): true,
+		string(taskstatus.Planning): true, string(taskstatus.PlanReview): true, string(taskstatus.Testing): true,
+		string(taskstatus.ReadyPR): true, string(taskstatus.HumanRequired): true, string(taskstatus.Blocked): true,
+		string(taskstatus.Done): true, string(taskstatus.Cancelled): true,
 	},
 	"task.task_type": {
 		"umbrella": true,

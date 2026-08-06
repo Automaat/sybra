@@ -85,6 +85,15 @@ func (m *Manager) SyncTaskBranch(ctx context.Context, t task.Task) (SyncResult, 
 	if !m.Exists(t) {
 		return SyncSkipped, nil
 	}
+	// Another mutating operation owns this directory. This sync is
+	// opportunistic (see the doc above), so skip rather than fail — the next
+	// checkpoint retries once the directory is free.
+	release, err := m.lockPath(m.PathFor(t))
+	if err != nil {
+		m.logger.Info("worktree.sync-branch.busy", "task_id", t.ID, "err", err)
+		return SyncSkipped, nil
+	}
+	defer release()
 	// A tracked agent is still live in this worktree: rebasing here would
 	// corrupt its in-flight edits. This sync is opportunistic (never blocks
 	// workflow advancement per the doc above), so skip rather than fail —
@@ -152,6 +161,12 @@ func (m *Manager) PrepareForTask(ctx context.Context, t task.Task, onPhase func(
 			return "", fmt.Errorf("task slug: %w", err)
 		}
 	}
+
+	release, err := m.lockPath(m.PathFor(t))
+	if err != nil {
+		return "", err
+	}
+	defer release()
 
 	// Adopt an externally-created worktree (e.g. one Orca already checked out)
 	// instead of creating a Sybra-managed one. Runs every agent in that
@@ -535,8 +550,12 @@ func (m *Manager) reuseBranchConflictWorktree(ctx context.Context, taskID, clone
 	if !usable {
 		return false, nil
 	}
+	if _, err := project.CheckpointCommit(ctx, wtPath,
+		"wip: checkpoint before branch conflict recovery\n\nSybra preserved local work before preparing conflict recovery."); err != nil {
+		return false, fmt.Errorf("checkpoint branch-conflict worktree: %w", err)
+	}
 	if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
-		m.logger.Warn("branch-conflict.worktree.sanitize", "task_id", taskID, "err", err)
+		return false, fmt.Errorf("sanitize branch-conflict worktree: %w", err)
 	}
 	return true, nil
 }
@@ -622,6 +641,12 @@ func (m *Manager) recordPreparedState(ctx context.Context, taskID, wtPath, wtBra
 
 // PrepareForReview creates a detached-HEAD worktree for read-only PR review.
 func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, error) {
+	release, err := m.lockPath(m.PathFor(t))
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
 	proj, err := m.projects.Get(t.ProjectID)
 	if err != nil {
 		return "", fmt.Errorf("get project: %w", err)
@@ -689,6 +714,12 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 // check out. Does not change PrepareForFix's behavior for its own PR-keyed
 // callers. Setup failures are non-gating, same rationale as PrepareForFix.
 func (m *Manager) PrepareForBranchFix(ctx context.Context, t task.Task) (string, error) {
+	release, err := m.lockPath(m.PathFor(t))
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
 	// Adopt an externally-created worktree as-is, mirroring PrepareForFix.
 	if t.WorktreeDir != "" {
 		return m.adoptWorktree(ctx, t, nil)
@@ -789,6 +820,12 @@ func (m *Manager) PrepareForBranchConflict(ctx context.Context, t task.Task) (st
 // PrepareForBranchConflictFromRemote prepares a branch-conflict recovery
 // worktree whose remote side lives on remote, e.g. fork-backed PR heads.
 func (m *Manager) PrepareForBranchConflictFromRemote(ctx context.Context, t task.Task, remote string) (string, error) {
+	release, err := m.lockPath(m.PathFor(t))
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
 	if t.WorktreeDir != "" {
 		return m.adoptWorktree(ctx, t, nil)
 	}
@@ -873,6 +910,58 @@ func (m *Manager) PrepareForBranchConflictFromRemote(ctx context.Context, t task
 	return wtPath, nil
 }
 
+// ResetForRetry discards a killed or hung agent's partial work before a clean
+// retry, under the same per-path exclusion every Prepare* takes. It aborts an
+// in-progress rebase and hard-resets the tree, so running it against a
+// directory a live preparation is inside produces exactly the half-rebased
+// tree the exclusion exists to prevent.
+//
+// dir overrides the task's own worktree path for callers that already resolved
+// one. It returns the path it actually acted on — callers log that rather than
+// their own argument, which is empty whenever they left the resolution here —
+// and whether a reset ran; a directory that does not exist is not an error.
+func (m *Manager) ResetForRetry(ctx context.Context, t task.Task, dir, ref string) (target string, reset bool, err error) {
+	target = dir
+	if target == "" {
+		target = m.PathFor(t)
+	}
+	if target == "" {
+		return "", false, nil
+	}
+
+	release, err := m.lockPath(target)
+	if err != nil {
+		return target, false, err
+	}
+	defer release()
+
+	if _, statErr := os.Stat(target); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return target, false, nil
+		}
+		return target, false, fmt.Errorf("stat clean retry worktree: %w", statErr)
+	}
+	if err := project.ResetWorktreeForRetry(ctx, target, ref); err != nil {
+		return target, false, fmt.Errorf("reset worktree for retry: %w", err)
+	}
+	return target, true, nil
+}
+
+// PruneMissingWorktree drops the bare repo's admin entry for a worktree path
+// whose directory is gone from disk. Locked on that path: the directory can be
+// missing only because another preparation has not created it yet, and pruning
+// the registration mid `git worktree add` leaves a checkout git no longer
+// tracks.
+func (m *Manager) PruneMissingWorktree(ctx context.Context, clonePath, dir string) error {
+	release, err := m.lockPath(dir)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	return project.RemoveWorktreeReconcile(ctx, clonePath, dir)
+}
+
 // RecreateFromBase discards a task's diverged branch and its worktree so the
 // next PrepareForTask rebuilds it fresh off the project's base ref. The branch
 // tip is first backed up to refs/sybra-backup/<branch> (best-effort) so the
@@ -881,6 +970,12 @@ func (m *Manager) PrepareForBranchConflictFromRemote(ctx context.Context, t task
 // genuinely cannot be reconciled, so re-implementing from a clean base is the
 // only autonomous path left.
 func (m *Manager) RecreateFromBase(ctx context.Context, t task.Task) error {
+	release, err := m.lockPath(m.PathFor(t))
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	proj, err := m.projects.Get(t.ProjectID)
 	if err != nil {
 		return fmt.Errorf("get project: %w", err)
@@ -913,6 +1008,12 @@ func (m *Manager) RecreateFromBase(ctx context.Context, t task.Task) error {
 // may exist precisely because that PR broke a gating setup command (e.g. a
 // build step), so refusing to create the worktree would deadlock the task.
 func (m *Manager) PrepareForFix(ctx context.Context, t task.Task, prNumber int) (string, error) {
+	release, err := m.lockPath(m.PathFor(t))
+	if err != nil {
+		return "", err
+	}
+	defer release()
+
 	// Adopt an externally-created worktree (e.g. an Orca handoff) as-is instead
 	// of re-creating it. Without this guard PrepareForFix runs
 	// `git worktree add` at the adopted path, which fails ("already exists" /

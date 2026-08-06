@@ -35,6 +35,7 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/recovery"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/skillsync"
@@ -315,7 +316,53 @@ func (a *App) logAutomationsSummary() {
 		"loop_agents_enabled", loopAgentsEnabled,
 		"prompteval_runner", promptevalRunner.Name(),
 		"promptfoo_present", (&prompteval.PromptfooRunner{}).Available(),
+		"providers", a.cfg.Providers.EnabledNames(),
 	)
+	a.warnThinFailoverChain()
+}
+
+// warnThinFailoverChain says at startup when this instance has fewer than two
+// providers it can actually dispatch to. A one-leg chain has no failover at
+// all, and that is how one weekly limit plus one usage limit turned into a dead
+// board on 2026-08-05 — a state that was only visible by grepping the app log
+// for provider.health.flip after the fact.
+//
+// Health is meaningful here because initProviderHealth's ProbeOnce has already
+// run by the time the summary is logged; a nil checker means health checking is
+// off, and only the configured count is knowable.
+func (a *App) warnThinFailoverChain() {
+	enabled := a.cfg.Providers.EnabledNames()
+	switch len(enabled) {
+	case 0:
+		a.logger.Error("app.providers.none-enabled",
+			"detail", "no provider is enabled; this instance cannot dispatch at all")
+	case 1:
+		a.logger.Warn("app.providers.no-failover",
+			"enabled", enabled,
+			"detail", "one provider enabled; a single rate limit stalls the board")
+	}
+	if a.providerHealth == nil {
+		return
+	}
+	snap := a.providerHealth.Snapshot()
+	healthy := make([]string, 0, len(enabled))
+	for _, name := range enabled {
+		if st, ok := snap[name]; ok && st.Healthy {
+			healthy = append(healthy, name)
+		}
+	}
+	switch {
+	case len(healthy) == 0:
+		a.logger.Error("app.providers.no-capacity",
+			"enabled", enabled,
+			"detail", "no enabled provider is healthy; nothing can dispatch")
+	case len(healthy) < 2:
+		a.logger.Warn("app.providers.thin-capacity",
+			"enabled", enabled, "healthy", healthy,
+			"detail", "only one healthy provider; a single rate limit stalls the board")
+	default:
+		a.logger.Info("app.providers.capacity", "enabled", enabled, "healthy", healthy)
+	}
 }
 
 func (a *App) initStats() {
@@ -637,16 +684,16 @@ func (a *App) limitPolicy() limits.Policy {
 	p.WeeklyThresholdPercent = a.cfg.Providers.Limits.WeeklyThresholdPercent
 	p.PreferUnderused = a.cfg.Providers.Limits.PreferUnderused
 	p.SubscriptionMonthlyUSD = map[string]float64{
-		"claude":   a.cfg.Providers.Claude.MonthlySubscriptionUSD,
-		"codex":    a.cfg.Providers.Codex.MonthlySubscriptionUSD,
-		"copilot":  a.cfg.Providers.Copilot.MonthlySubscriptionUSD,
-		"opencode": a.cfg.Providers.OpenCode.MonthlySubscriptionUSD,
+		providerid.Claude:   a.cfg.Providers.Claude.MonthlySubscriptionUSD,
+		providerid.Codex:    a.cfg.Providers.Codex.MonthlySubscriptionUSD,
+		providerid.Copilot:  a.cfg.Providers.Copilot.MonthlySubscriptionUSD,
+		providerid.OpenCode: a.cfg.Providers.OpenCode.MonthlySubscriptionUSD,
 	}
 	p.ProviderEnabled = map[string]bool{
-		"claude":   a.cfg.Providers.Claude.Enabled,
-		"codex":    a.cfg.Providers.Codex.Enabled,
-		"copilot":  a.cfg.Providers.Copilot.Enabled,
-		"opencode": a.cfg.Providers.OpenCode.Enabled,
+		providerid.Claude:   a.cfg.Providers.Claude.Enabled,
+		providerid.Codex:    a.cfg.Providers.Codex.Enabled,
+		providerid.Copilot:  a.cfg.Providers.Copilot.Enabled,
+		providerid.OpenCode: a.cfg.Providers.OpenCode.Enabled,
 	}
 	return p
 }
@@ -678,9 +725,19 @@ func (a *App) initStatusHook() {
 
 		// Advance workflows whose current run_agent step declares a
 		// matching wait_for_status. This is how interactive agents (which
-		// never exit between turns) signal step completion.
+		// never exit between turns) signal step completion. Gated on
+		// startupRecoveryDone: a step's completion can itself fire a
+		// dispatch (e.g. maybeRecoverHumanRequiredAlreadyFixedOnMain), and
+		// HasRunningAgentForTask reads an empty registry until reattach
+		// finishes — see startupRecoveryPending's doc comment (#2752). Deferred
+		// rather than dropped: nothing else re-delivers a wait_for_status match,
+		// so a suppressed event would park the step until an operator intervenes.
 		if local && a.workflowEngine != nil {
-			a.workflowEngine.HandleStatusChange(taskID, to)
+			if a.startupRecoveryDone() {
+				a.workflowEngine.HandleStatusChange(taskID, to)
+			} else {
+				a.deferStatusChange(taskID)
+			}
 		}
 		// HandleStatusChange may reroute a human-required self-escalation back
 		// into the PR flow (missing live-PR blocker recovery). When it does the
@@ -729,8 +786,8 @@ func (a *App) initStatusHook() {
 			if a.notifier != nil {
 				a.notifier.Send(notification.LevelWarning, "Needs human", msg, taskID, "")
 			}
-			if local && a.runsScheduler() && a.humanReview != nil {
-				go a.humanReview.maybeSpawn(taskID, from)
+			if local && a.runsScheduler() && a.startupRecoveryDone() && a.humanReview != nil {
+				go a.humanReview.maybeSpawn(a.schedulerContext(), taskID, from)
 			}
 		case string(task.StatusReadyReview):
 			if !runsNoAgent {
@@ -938,7 +995,7 @@ func (a *App) initCluster() {
 //     without this branch it sits inert with no PR. Mirrors the
 //     testing/ready-review cases.
 func (a *App) dispatchStatusWorkflow(taskID string, status task.Status) {
-	if !a.runsScheduler() {
+	if !a.runsScheduler() || !a.startupRecoveryDone() {
 		return
 	}
 	if a.workflowEngine == nil {
@@ -995,14 +1052,15 @@ func expectedHumanKind(t task.Task) string {
 // owns a non-terminal workflow, so duplicate watcher/status events are harmless.
 // dispatchTaskCreatedWorkflow, dispatchPlanningWorkflow and dispatchStatusWorkflow
 // are the three sinks through which a task auto-starts work, so each gates on
-// runsScheduler itself rather than trusting its callers. Gating call sites was
-// tried and leaked twice: the watcher reaches these both via the status hook and
-// via maybeStartWorkflowForExternalTask, and because the task store writes
+// runsScheduler (and startupRecoveryDone, see its doc comment) itself rather
+// than trusting its callers. Gating call sites was tried and leaked twice: the
+// watcher reaches these both via the status hook and via
+// maybeStartWorkflowForExternalTask, and because the task store writes
 // atomically (temp file + rename) fsnotify reports every external write — even a
 // tags-only update — as CREATE, so the create path is far hotter than its name
 // suggests.
 func (a *App) dispatchTaskCreatedWorkflow(taskID string) {
-	if !a.runsScheduler() {
+	if !a.runsScheduler() || !a.startupRecoveryDone() {
 		return
 	}
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
@@ -1226,11 +1284,11 @@ func (a *App) emitDegradedWarnings(emit func(string, any)) {
 // initAutomations starts every per-machine task source in dependency order
 // and returns the GitHub issues fetcher (still consumed by
 // startBackgroundServices). Extracted so Startup stays under funlen.
-func (a *App) initAutomations(emit func(string, any)) *poll.IssuesFetcher {
+func (a *App) initAutomations(ctx context.Context, emit func(string, any)) *poll.IssuesFetcher {
 	a.initRenovate(emit)
 	a.initPromptLab()
 	a.initTriage()
-	a.initHumanReview()
+	a.initHumanReview(ctx)
 	return a.initIssuesFetcher(emit)
 }
 
@@ -1260,17 +1318,8 @@ func (a *App) initWorkflowEngine() {
 		agentLauncher,
 		a.logger,
 	)
-	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
-	a.workflowEngine.SetPRStateFetcher(prStateFetcherAdapter{})
-	a.workflowEngine.SetPRHeadFetcher(prHeadFetcherAdapter{})
-	a.workflowEngine.SetPRCreator(prCreatorAdapter{})
-	a.workflowEngine.SetPRCloser(prCloserAdapter{})
-	a.workflowEngine.SetPRFinder(prFinderAdapter{})
-	a.workflowEngine.SetPRAnyStateFinder(prFinderAdapter{})
-	a.workflowEngine.SetPRExistenceChecker(prExistenceCheckerAdapter{})
-	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
+	a.wirePRSurface()
 	a.workflowEngine.SetTaskClassifier(a.newTaskClassifierAdapter())
-	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.wireWorktreeAccess()
 	a.workflowEngine.SetAttemptNoteAppender(&attemptNoteAppenderAdapter{})
 	a.workflowEngine.SetBranchSyncer(&branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees})
@@ -1332,7 +1381,7 @@ func (a *App) initWorkflowEngine() {
 				queued[snap[i].TaskID] = snap[i]
 			}
 			toItem := func(t workflow.TaskInfo) agentqueue.Item {
-				it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: task.Status(t.Status)}
+				it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: t.Status}
 				if qit, ok := queued[t.ID]; ok {
 					it.Manual = qit.Manual
 					it.Enqueued = qit.Enqueued
@@ -1465,23 +1514,10 @@ func (a *App) configureTestingEscalation() {
 	a.warnUnboundedReviewLoop()
 }
 
-// warnUnboundedReviewLoop surfaces the one posture where the review→fix cycle
-// has no stopping condition at all: review_until_clean plus a disabled
-// per-hour review budget (agent.review_rounds_per_hour < 0) plus no
-// cumulative task-cost ceiling. Fresh installs default to a bounded budget;
-// this warning remains for explicit opt-outs.
+// warnUnboundedReviewLoop is kept for historical call sites. The shared review
+// budget now carries a fixed lifetime cap in addition to the hourly limit, so
+// review→fix cycles are always bounded even when the hourly cap is disabled.
 func (a *App) warnUnboundedReviewLoop() {
-	if !a.cfg.ReviewUntilClean() || a.cfg.Agent.ReviewRoundsPerHourLimit() > 0 || a.cfg.Agent.MaxTaskCostUSD > 0 {
-		return
-	}
-	a.logger.Warn("review.loop.unbounded",
-		"review_until_clean", true,
-		"review_rounds_per_hour", a.cfg.Agent.ReviewRoundsPerHourLimit(),
-		"max_task_cost_usd", 0,
-		"detail", "review→fix cycles until CLEAN with no per-hour review budget and no task-cost ceiling; "+
-			"set agent.max_task_cost_usd to bound it, set agent.review_rounds_per_hour to a positive value, "+
-			"or set agent.review_until_clean: false for a single review pass",
-	)
 }
 
 func (a *App) initAgentConfig() {
@@ -1552,7 +1588,7 @@ func (a *App) seedDefaultLoopAgents() {
 		Prompt:       "/sybra-self-monitor",
 		IntervalSec:  21600, // 6 hours
 		AllowedTools: []string{"Bash", "Read", "Grep", "Glob"},
-		Provider:     "claude",
+		Provider:     providerid.Claude,
 		Model:        "sonnet",
 		Enabled:      false,
 	})
@@ -1627,7 +1663,7 @@ func (a *App) newRecovery() *recovery.Recovery {
 // configuration. UserHomeDir is best-effort — when unavailable the user-home
 // destinations (~/.claude/skills, ~/.codex/skills) are silently skipped so
 // startup still succeeds in environments without a usable home dir.
-func (a *App) syncSkillsBundle() {
+func (a *App) syncSkillsBundle(signing project.SigningPolicy) {
 	userHome, err := os.UserHomeDir()
 	if err != nil {
 		a.logger.Debug("skills.sync.no_user_home", "err", err)
@@ -1639,7 +1675,7 @@ func (a *App) syncSkillsBundle() {
 		PrimaryDst:           a.skillsDir,
 		SybraHomeDir:         config.HomeDir(),
 		UserHomeDir:          userHome,
-		DowngradeCommitFlags: !project.GPGSigningAvailable(context.Background()),
+		DowngradeCommitFlags: !signing.SignsCommits(context.Background()),
 	})
 }
 
@@ -1663,4 +1699,27 @@ func (a *App) wireSidecarDir() {
 		return
 	}
 	a.workflowEngine.SetSidecarDirResolver(a.sandboxes.SybraHomeDir)
+}
+
+// wirePRSurface wires the engine's pull-request dependency group. Split out of
+// initWorkflowEngine both to keep that function within the length gate and
+// because the group is the unit that must stay complete.
+func (a *App) wirePRSurface() {
+	if err := a.workflowEngine.SetPRSurface(workflow.PRSurface{
+		Linker:           prLinkerAdapter{},
+		ReviewRequester:  prReviewRequesterAdapter{},
+		StateFetcher:     prStateFetcherAdapter{},
+		HeadFetcher:      prHeadFetcherAdapter{},
+		Creator:          prCreatorAdapter{},
+		Closer:           prCloserAdapter{},
+		Finder:           prFinderAdapter{},
+		AnyStateFinder:   prFinderAdapter{},
+		ExistenceChecker: prExistenceCheckerAdapter{},
+		ContentGenerator: prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}},
+	}); err != nil {
+		// Only reachable by forgetting a field here — a programming error, so
+		// fail at boot rather than let a PR step no-op in production. Same
+		// posture as buildPlanSchema's static-marshal panic.
+		panic("wire workflow PR surface: " + err.Error())
+	}
 }

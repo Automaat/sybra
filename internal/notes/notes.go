@@ -16,7 +16,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"unicode/utf8"
+
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // FileName is the scratchpad's name at the worktree root.
@@ -113,30 +114,7 @@ func clampNotes(body string) (string, bool) {
 	if len(body) <= seedMaxBytes {
 		return body, false
 	}
-	head := trimToRuneBoundaryEnd(body[:seedHeadBytes])
-	tail := trimToRuneBoundaryStart(body[len(body)-(seedMaxBytes-seedHeadBytes):])
+	head := textutil.TrimPartialRuneSuffix(body[:seedHeadBytes])
+	tail := textutil.TrimPartialRunePrefix(body[len(body)-(seedMaxBytes-seedHeadBytes):])
 	return head + elisionMarker + tail, true
-}
-
-// trimToRuneBoundaryStart drops a leading partial rune so s begins on a rune
-// boundary. A valid UTF-8 string with no leading continuation byte is returned
-// unchanged.
-func trimToRuneBoundaryStart(s string) string {
-	for len(s) > 0 && !utf8.RuneStart(s[0]) {
-		s = s[1:]
-	}
-	return s
-}
-
-// trimToRuneBoundaryEnd drops a trailing partial rune so s ends on a rune
-// boundary. Only an invalid encoding (RuneError with size 1) is trimmed; a
-// legitimately-present U+FFFD (size 3) is kept.
-func trimToRuneBoundaryEnd(s string) string {
-	for len(s) > 0 {
-		if r, size := utf8.DecodeLastRuneInString(s); r != utf8.RuneError || size > 1 {
-			break
-		}
-		s = s[:len(s)-1]
-	}
-	return s
 }

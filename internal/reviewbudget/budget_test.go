@@ -39,6 +39,58 @@ func TestBudget_HourlyExceeded(t *testing.T) {
 	}
 }
 
+func TestBudget_LifetimeExceeded(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	runs := []Run{
+		{Role: ReviewRole, StartedAt: now.Add(-48 * time.Hour)},
+		{Role: ReviewRole, StartedAt: now.Add(-24 * time.Hour)},
+		{Role: ReviewRole, StartedAt: now.Add(-time.Hour)},
+		{Role: "fix-review", StartedAt: now.Add(-30 * time.Minute)},
+	}
+
+	tests := []struct {
+		name  string
+		limit int
+		want  bool
+	}{
+		{"disabled when PerTask <= 0", 0, false},
+		{"under limit", 4, false},
+		{"at limit", 3, true},
+		{"over limit", 2, true},
+		{"negative disables", -1, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := Budget{PerTask: tt.limit}
+			if got := b.LifetimeSpent(runs); got != 3 {
+				t.Fatalf("LifetimeSpent() = %d, want 3", got)
+			}
+			if got := b.LifetimeExceeded(runs); got != tt.want {
+				t.Errorf("LifetimeExceeded(limit=%d) = %v, want %v", tt.limit, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBudget_Exhausted(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	runs := []Run{
+		{Role: ReviewRole, StartedAt: now.Add(-50 * time.Minute)},
+		{Role: ReviewRole, StartedAt: now.Add(-10 * time.Minute)},
+		{Role: ReviewRole, StartedAt: now.Add(-2 * time.Hour)},
+	}
+
+	if !(Budget{PerHour: 2}).Exhausted(runs, now) {
+		t.Fatal("Exhausted() = false, want true when hourly budget is spent")
+	}
+	if !(Budget{PerTask: 3}).Exhausted(runs, now) {
+		t.Fatal("Exhausted() = false, want true when lifetime budget is spent")
+	}
+	if (Budget{PerHour: 3, PerTask: 4}).Exhausted(runs, now) {
+		t.Fatal("Exhausted() = true, want false when neither budget is spent")
+	}
+}
+
 func TestBudget_HeadCovered(t *testing.T) {
 	b := Budget{PerHead: 2}
 	tests := []struct {

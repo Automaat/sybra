@@ -211,7 +211,7 @@ func TestReloadFromDisk_WorkflowReviewGuardrails(t *testing.T) {
 	if !slices.Contains(result.Applied, "agent") {
 		t.Errorf("expected agent in applied, got %+v", result)
 	}
-	if !workflowBoolField(t, svc.workflowEngine, "reviewLoopDisabled") {
+	if svc.workflowEngine.ReviewUntilClean() {
 		t.Error("workflow reviewLoopDisabled = false, want true")
 	}
 	if got := workflowIntField(t, svc.workflowEngine, "maxCheckpoints"); got != 9 {
@@ -235,18 +235,9 @@ func TestApplyWorkflowGuardrails_WiresReviewRoundsPerHour(t *testing.T) {
 	cfg.Agent.ReviewRoundsPerHour = 7
 	svc.applyWorkflowGuardrails(cfg)
 
-	if got := workflowIntField(t, svc.workflowEngine, "reviewRoundsPerHour"); got != 7 {
+	if got := svc.workflowEngine.ReviewRoundsPerHour(); got != 7 {
 		t.Errorf("workflow reviewRoundsPerHour = %d, want 7", got)
 	}
-}
-
-func workflowBoolField(t *testing.T, e *workflow.Engine, name string) bool {
-	t.Helper()
-	v := reflect.ValueOf(e).Elem().FieldByName(name)
-	if !v.IsValid() {
-		t.Fatalf("workflow.Engine field %q not found", name)
-	}
-	return v.Bool()
 }
 
 func workflowIntField(t *testing.T, e *workflow.Engine, name string) int {
@@ -807,7 +798,7 @@ func TestMutateLocked_PublishesImmutableAppSnapshot(t *testing.T) {
 	next := cloneConfig(initial)
 	next.Logging.Level = "debug"
 	svc.mu.Lock()
-	_, err := svc.mutateLocked(next, nil)
+	_, _, err := svc.mutateLocked(next, nil)
 	svc.mu.Unlock()
 	close(done)
 	readers.Wait()

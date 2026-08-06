@@ -422,17 +422,23 @@ func TestManagerRunPersistsAndReattachesLiveHeadlessAgent(t *testing.T) {
 	t.Cleanup(func() { reattachPIDPoll.Store(prev) })
 
 	binDir := t.TempDir()
+	// The child must still be alive when ReattachAll runs. Staying up for a
+	// fixed span raced a loaded runner — the process exited first and
+	// reattach correctly found nothing — so it blocks on a sentinel the test
+	// writes once it is done with the live process. The iteration cap only
+	// stops a leak if the test dies before releasing it.
+	releaseFile := filepath.Join(t.TempDir(), "release")
 	fakeClaude := filepath.Join(binDir, "claude")
-	if err := os.WriteFile(fakeClaude, []byte(`#!/bin/sh
+	if err := os.WriteFile(fakeClaude, fmt.Appendf(nil, `#!/bin/sh
 trap 'exit 130' INT TERM
-printf '%s\n' '{"type":"system","subtype":"init","session_id":"sess-lifecycle"}'
+printf '%%s\n' '{"type":"system","subtype":"init","session_id":"sess-lifecycle"}'
 i=0
-while [ "$i" -lt 5 ]; do
-  sleep 0.1
+while [ ! -f %q ] && [ "$i" -lt 1200 ]; do
+  sleep 0.05
   i=$((i + 1))
 done
-printf '%s\n' '{"type":"result","result":"done","session_id":"sess-lifecycle","total_cost_usd":0}'
-`), 0o755); err != nil {
+printf '%%s\n' '{"type":"result","result":"done","session_id":"sess-lifecycle","total_cost_usd":0}'
+`, releaseFile), 0o755); err != nil {
 		t.Fatalf("write fake claude: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -499,7 +505,10 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"sess-lifecycle","t
 		t.Fatal("expected reattached agent to rehydrate output from log")
 	}
 
-	waitForAgentDone(t, got, 5*time.Second)
+	if err := os.WriteFile(releaseFile, nil, 0o644); err != nil {
+		t.Fatalf("release fake claude: %v", err)
+	}
+	waitForAgentDone(t, got, 15*time.Second)
 	if got.GetState() != StateStopped {
 		t.Fatalf("completed reattached state = %s, want %s", got.GetState(), StateStopped)
 	}

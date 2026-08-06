@@ -50,7 +50,7 @@ func cascadeOnComplete(engine *Engine, tasks *memTasks) func(CompletionInfo) {
 			return
 		}
 		_, _ = engine.DispatchEvent(info.TaskID, "task.status_changed",
-			map[string]string{"task.status": cur.Status}, nil)
+			map[string]string{"task.status": string(cur.Status)}, nil)
 	}
 }
 

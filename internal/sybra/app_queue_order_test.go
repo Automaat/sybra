@@ -77,7 +77,7 @@ func TestInitWorkflowEngine_QueueComparatorPrefersQueuedTask(t *testing.T) {
 			queued[it.TaskID] = it
 		}
 		toItem := func(t workflow.TaskInfo) agentqueue.Item {
-			it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: task.Status(t.Status)}
+			it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: t.Status}
 			if qit, ok := queued[t.ID]; ok {
 				it.Manual = qit.Manual
 				it.Enqueued = qit.Enqueued

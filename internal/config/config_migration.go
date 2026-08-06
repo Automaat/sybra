@@ -124,15 +124,42 @@ func CanonicalFilePathForLegacy(path string) (string, bool) {
 	return "", false
 }
 
+// unknownKeySink decides what a namespace does with a key this build does not
+// know. A strict caller gets an error and stops; a diagnostic collects the
+// path and skips the key, so the rest of the document still resolves and every
+// stale key is reported in one pass rather than one per run.
+type unknownKeySink struct {
+	lenient   bool
+	collected []string
+}
+
+func (s *unknownKeySink) reject(path string) error {
+	if s == nil || !s.lenient {
+		return fmt.Errorf("%w %q", ErrUnknownConfigKey, path)
+	}
+	s.collected = append(s.collected, path)
+	return nil
+}
+
+// NormalizeV2Document rewrites a schema v2 document into the flat internal
+// shape, failing on any key it does not know.
 func NormalizeV2Document(root *yaml.Node) (*yaml.Node, []string, error) {
+	doc, warnings, _, err := normalizeV2Document(root, &unknownKeySink{})
+	return doc, warnings, err
+}
+
+// normalizeV2Document returns the unknown keys it skipped alongside the
+// document, so a lenient caller can report them without losing everything
+// else in the file.
+func normalizeV2Document(root *yaml.Node, sink *unknownKeySink) (doc *yaml.Node, warnings, unknown []string, err error) {
 	builder := newFlatConfigBuilder()
-	warnings := []string{}
+	warnings = []string{}
 	top, ok := yamlDocumentMapping(root)
 	if !ok {
 		if root == nil || root.Kind == 0 {
-			return root, nil, nil
+			return root, nil, nil, nil
 		}
-		return nil, nil, fmt.Errorf("config root must be a mapping")
+		return nil, nil, nil, fmt.Errorf("config root must be a mapping")
 	}
 	for i := 0; i+1 < len(top.Content); i += 2 {
 		keyNode := top.Content[i]
@@ -147,38 +174,38 @@ func NormalizeV2Document(root *yaml.Node) (*yaml.Node, []string, error) {
 				warnings = append(warnings, warn)
 			}
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			continue
 		}
 		switch key {
 		case "instance":
-			if err := normalizeInstanceNamespace(builder, valueNode); err != nil {
-				return nil, nil, err
+			if err := normalizeInstanceNamespace(builder, valueNode, sink); err != nil {
+				return nil, nil, nil, err
 			}
 		case "execution":
-			if err := normalizeSimpleNamespace(builder, valueNode, map[string]string{
+			if err := normalizeSimpleNamespaceSink(builder, valueNode, sink, map[string]string{
 				"agent":     "agent",
 				"providers": "providers",
 			}, "execution"); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 		case "workflow":
-			if err := normalizeSimpleNamespace(builder, valueNode, map[string]string{
+			if err := normalizeSimpleNamespaceSink(builder, valueNode, sink, map[string]string{
 				"orchestrator": "orchestrator",
 				"testing":      "testing",
 				"triage":       "triage",
 				"umbrella":     "umbrella",
 				"admission":    "admission",
 			}, "workflow"); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 		case "integrations":
-			if err := normalizeIntegrationsNamespace(builder, valueNode); err != nil {
-				return nil, nil, err
+			if err := normalizeIntegrationsNamespace(builder, valueNode, sink); err != nil {
+				return nil, nil, nil, err
 			}
 		case "supervision":
-			if err := normalizeSimpleNamespace(builder, valueNode, map[string]string{
+			if err := normalizeSimpleNamespaceSink(builder, valueNode, sink, map[string]string{
 				"human_review":      "human_review",
 				"monitor":           "monitor",
 				"watchdog":          "watchdog",
@@ -188,14 +215,14 @@ func NormalizeV2Document(root *yaml.Node) (*yaml.Node, []string, error) {
 				"harness_evolution": "harness_evolution",
 				"prompt_lab":        "prompt_lab",
 			}, "supervision"); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 		case "storage":
-			if err := normalizeStorageNamespace(builder, valueNode); err != nil {
-				return nil, nil, err
+			if err := normalizeStorageNamespace(builder, valueNode, sink); err != nil {
+				return nil, nil, nil, err
 			}
 		case "observability":
-			if err := normalizeSimpleNamespace(builder, valueNode, map[string]string{
+			if err := normalizeSimpleNamespaceSink(builder, valueNode, sink, map[string]string{
 				"logging":      "logging",
 				"audit":        "audit",
 				"metrics":      "metrics",
@@ -203,17 +230,19 @@ func NormalizeV2Document(root *yaml.Node) (*yaml.Node, []string, error) {
 				"intervention": "intervention",
 				"ab_testing":   "ab_testing",
 			}, "observability"); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 		case "routing", "server", "cluster", "auto_update", "webhook":
 			if err := builder.setTopLevel(key, valueNode, key); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 		default:
-			return nil, nil, fmt.Errorf("unknown config key %q", key)
+			if err := sink.reject(key); err != nil {
+				return nil, nil, nil, err
+			}
 		}
 	}
-	return builder.document(), warnings, nil
+	return builder.document(), warnings, sink.collected, nil
 }
 
 func MigrateRawConfig(raw []byte, toVersion int) (*MigrationResult, error) {
@@ -632,7 +661,7 @@ func normalizeLegacyTopLevel(builder *flatConfigBuilder, key string, value *yaml
 	return false, "", nil
 }
 
-func normalizeSimpleNamespace(builder *flatConfigBuilder, node *yaml.Node, allowed map[string]string, prefix string) error {
+func normalizeSimpleNamespaceSink(builder *flatConfigBuilder, node *yaml.Node, sink *unknownKeySink, allowed map[string]string, prefix string) error {
 	if node.Kind != yaml.MappingNode {
 		return fmt.Errorf("%s must be a mapping", prefix)
 	}
@@ -640,7 +669,10 @@ func normalizeSimpleNamespace(builder *flatConfigBuilder, node *yaml.Node, allow
 		key := node.Content[i].Value
 		dest, ok := allowed[key]
 		if !ok {
-			return fmt.Errorf("unknown config key %q", prefix+"."+key)
+			if err := sink.reject(prefix + "." + key); err != nil {
+				return err
+			}
+			continue
 		}
 		if err := builder.setTopLevel(dest, node.Content[i+1], prefix+"."+key); err != nil {
 			return err
@@ -649,11 +681,11 @@ func normalizeSimpleNamespace(builder *flatConfigBuilder, node *yaml.Node, allow
 	return nil
 }
 
-func normalizeInstanceNamespace(builder *flatConfigBuilder, node *yaml.Node) error {
-	return normalizeSimpleNamespace(builder, node, map[string]string{"project_types": "project_types"}, "instance")
+func normalizeInstanceNamespace(builder *flatConfigBuilder, node *yaml.Node, sink *unknownKeySink) error {
+	return normalizeSimpleNamespaceSink(builder, node, sink, map[string]string{"project_types": "project_types"}, "instance")
 }
 
-func normalizeIntegrationsNamespace(builder *flatConfigBuilder, node *yaml.Node) error {
+func normalizeIntegrationsNamespace(builder *flatConfigBuilder, node *yaml.Node, sink *unknownKeySink) error {
 	if node.Kind != yaml.MappingNode {
 		return fmt.Errorf("integrations must be a mapping")
 	}
@@ -670,7 +702,9 @@ func normalizeIntegrationsNamespace(builder *flatConfigBuilder, node *yaml.Node)
 				return err
 			}
 		default:
-			return fmt.Errorf("unknown config key %q", "integrations."+key)
+			if err := sink.reject("integrations." + key); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -704,7 +738,7 @@ func normalizeGitHubNamespace(builder *flatConfigBuilder, node *yaml.Node) error
 	return nil
 }
 
-func normalizeStorageNamespace(builder *flatConfigBuilder, node *yaml.Node) error {
+func normalizeStorageNamespace(builder *flatConfigBuilder, node *yaml.Node, sink *unknownKeySink) error {
 	if node.Kind != yaml.MappingNode {
 		return fmt.Errorf("storage must be a mapping")
 	}
@@ -729,18 +763,20 @@ func normalizeStorageNamespace(builder *flatConfigBuilder, node *yaml.Node) erro
 				return err
 			}
 		case "paths":
-			if err := normalizeStoragePathsNamespace(builder, value); err != nil {
+			if err := normalizeStoragePathsNamespace(builder, value, sink); err != nil {
 				return err
 			}
 		default:
-			return fmt.Errorf("unknown config key %q", "storage."+key)
+			if err := sink.reject("storage." + key); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-func normalizeStoragePathsNamespace(builder *flatConfigBuilder, node *yaml.Node) error {
-	return normalizeSimpleNamespace(builder, node, map[string]string{
+func normalizeStoragePathsNamespace(builder *flatConfigBuilder, node *yaml.Node, sink *unknownKeySink) error {
+	return normalizeSimpleNamespaceSink(builder, node, sink, map[string]string{
 		"tasks":       "tasks_dir",
 		"skills":      "skills_dir",
 		"repo":        "repo_dir",

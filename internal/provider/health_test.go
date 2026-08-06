@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/clock"
 )
 
 func TestParseClaudeAuthStatus(t *testing.T) {
@@ -147,7 +149,20 @@ func TestProbeCodexOldCLIMarksProviderUnhealthy(t *testing.T) {
 	}
 }
 
+// classifierNow pins the classifier tests' clock a few days before the
+// "resets Jul 1 at 5pm" fixtures, so the parsed instant is a concrete
+// sub-clamp duration instead of depending on the wall clock.
+var classifierNow = time.Date(2026, time.June, 28, 12, 0, 0, 0, time.Local)
+
+// julyFirstReset is what the Jul 1 fixtures parse to under classifierNow.
+var julyFirstReset = time.Date(2026, time.July, 1, 17, 0, 0, 0, time.Local).Sub(classifierNow)
+
 func TestClassifyClaudeError(t *testing.T) {
+	// Pin the clock: several fixtures carry "resets Jul 1 at 5pm", which is now
+	// parsed into a concrete instant rather than falling back to the fixed
+	// cooldown. julyFirstReset is that instant relative to the pinned now.
+	pinNow(t, classifierNow)
+
 	cases := []struct {
 		name           string
 		in             ErrorSample
@@ -164,8 +179,8 @@ func TestClassifyClaudeError(t *testing.T) {
 		{"stderr_rate_limit", ErrorSample{Stderr: "rate limit exceeded"}, SignalRateLimit, "rate_limited", 0},
 		{"content_session_limit", ErrorSample{Content: "You've hit your session limit · resets 4:30pm"}, SignalRateLimit, "rate_limited", 0},
 		{"content_usage_limit", ErrorSample{Content: "usage limit reached for this period"}, SignalRateLimit, "rate_limited", 0},
-		{"content_weekly_limit", ErrorSample{Content: "You've hit your weekly limit · resets Jul 1 at 5pm"}, SignalRateLimit, "weekly_limit", weeklyLimitCooldown},
-		{"stderr_weekly_limit", ErrorSample{Stderr: "You've hit your weekly limit · resets Jul 1 at 5pm"}, SignalRateLimit, "weekly_limit", weeklyLimitCooldown},
+		{"content_weekly_limit", ErrorSample{Content: "You've hit your weekly limit · resets Jul 1 at 5pm"}, SignalRateLimit, "weekly_limit", julyFirstReset},
+		{"stderr_weekly_limit", ErrorSample{Stderr: "You've hit your weekly limit · resets Jul 1 at 5pm"}, SignalRateLimit, "weekly_limit", julyFirstReset},
 		{"weekly_word_without_specific_phrase_stays_rate_limited", ErrorSample{Content: "usage limit reached · resets weekly on Monday"}, SignalRateLimit, "rate_limited", 0},
 		{"clean_content_rate_limit_exceeded", ErrorSample{Content: "rate limit exceeded", ContentIsCleanResult: true}, SignalRateLimit, "rate_limited", 0},
 		{"clean_content_rate_limit_reached", ErrorSample{Content: "rate limit reached", ContentIsCleanResult: true}, SignalRateLimit, "rate_limited", 0},
@@ -177,7 +192,7 @@ func TestClassifyClaudeError(t *testing.T) {
 		{
 			"structured_429_with_weekly_content_stays_weekly",
 			ErrorSample{ErrorStatus: 429, Content: "You've hit your weekly limit · resets Jul 1 at 5pm"},
-			SignalRateLimit, "weekly_limit", weeklyLimitCooldown,
+			SignalRateLimit, "weekly_limit", julyFirstReset,
 		},
 		{
 			"structured_rate_limit_error_type_with_weekly_stderr_stays_weekly",
@@ -187,7 +202,8 @@ func TestClassifyClaudeError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, reason, retryAfter := ClassifyClaudeError(tc.in)
+			c := ClassifyClaudeError(tc.in)
+			got, reason, retryAfter, _ := c.Signal, c.Reason, c.RetryAfter, c.Source
 			if got != tc.want {
 				t.Errorf("signal: got %v want %v", got, tc.want)
 			}
@@ -202,6 +218,11 @@ func TestClassifyClaudeError(t *testing.T) {
 }
 
 func TestClassifyCodexError(t *testing.T) {
+	// Pin the clock: several fixtures carry "resets Jul 1 at 5pm", which is now
+	// parsed into a concrete instant rather than falling back to the fixed
+	// cooldown. julyFirstReset is that instant relative to the pinned now.
+	pinNow(t, classifierNow)
+
 	cases := []struct {
 		name           string
 		in             ErrorSample
@@ -255,7 +276,7 @@ func TestClassifyCodexError(t *testing.T) {
 		{
 			"structured_429_with_weekly_content_stays_weekly",
 			ErrorSample{ErrorStatus: 429, Content: "You've hit your weekly limit · resets Jul 1 at 5pm"},
-			SignalRateLimit, "weekly_limit", weeklyLimitCooldown,
+			SignalRateLimit, "weekly_limit", julyFirstReset,
 		},
 		{
 			"structured_rate_limit_type_with_weekly_stderr_stays_weekly",
@@ -265,7 +286,8 @@ func TestClassifyCodexError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, reason, retryAfter := ClassifyCodexError(tc.in)
+			c := ClassifyCodexError(tc.in)
+			got, reason, retryAfter, _ := c.Signal, c.Reason, c.RetryAfter, c.Source
 			if got != tc.want {
 				t.Errorf("signal: got %v want %v", got, tc.want)
 			}
@@ -294,7 +316,8 @@ func TestClassifyCopilotError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _, _ := ClassifyCopilotError(tc.in)
+			c := ClassifyCopilotError(tc.in)
+			got, _, _, _ := c.Signal, c.Reason, c.RetryAfter, c.Source
 			if got != tc.want {
 				t.Errorf("got %v want %v", got, tc.want)
 			}
@@ -386,10 +409,10 @@ func TestProbeOnce_ClearsSeedBeforeGateWiring(t *testing.T) {
 	}
 }
 
-func newTestChecker(t *testing.T) (*Checker, *fakeEmitter, *fakeClock) {
+func newTestChecker(t *testing.T) (*Checker, *fakeEmitter, *clock.Fake) {
 	t.Helper()
 	fe := &fakeEmitter{}
-	clock := &fakeClock{t: time.Unix(1_700_000_000, 0).UTC()}
+	fake := clock.NewFake(time.Unix(1_700_000_000, 0).UTC())
 	c := New(Config{
 		Interval:         time.Minute,
 		ClaudeEnabled:    true,
@@ -398,25 +421,8 @@ func newTestChecker(t *testing.T) (*Checker, *fakeEmitter, *fakeClock) {
 		ClaudeRLCooldown: 15 * time.Minute,
 		CodexRLCooldown:  15 * time.Minute,
 	}, fe.emit, nil)
-	c.now = clock.Now
-	return c, fe, clock
-}
-
-type fakeClock struct {
-	mu sync.Mutex
-	t  time.Time
-}
-
-func (f *fakeClock) Now() time.Time {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.t
-}
-
-func (f *fakeClock) advance(d time.Duration) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.t = f.t.Add(d)
+	c.clock = fake
+	return c, fe, fake
 }
 
 func TestChecker_FlipsOnFailure(t *testing.T) {
@@ -521,7 +527,7 @@ func TestChecker_ProbeSuccessResetsProbeErrorStreak(t *testing.T) {
 }
 
 func TestChecker_SuppressedProbeErrorAdvancesLastCheck(t *testing.T) {
-	c, _, clock := newTestChecker(t)
+	c, _, fake := newTestChecker(t)
 	c.probeClaude = func(context.Context) (Status, error) {
 		return Status{Provider: "claude", Healthy: true, Reason: "ok"}, nil
 	}
@@ -532,7 +538,7 @@ func TestChecker_SuppressedProbeErrorAdvancesLastCheck(t *testing.T) {
 	c.checkAll(ctx)
 	healthyAt := c.Snapshot()["claude"].LastCheck
 
-	clock.advance(time.Minute)
+	fake.Advance(time.Minute)
 	c.probeClaude = func(context.Context) (Status, error) {
 		return Status{}, errors.New("context deadline exceeded")
 	}
@@ -698,13 +704,13 @@ func TestChecker_LivenessOnlyProbeDoesNotClearPassiveAuthFailure(t *testing.T) {
 }
 
 func TestChecker_RateLimitExpires(t *testing.T) {
-	c, _, clock := newTestChecker(t)
+	c, _, fake := newTestChecker(t)
 	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
-	c.ReportRateLimit("claude", 10*time.Minute, "rate_limit_error")
+	c.ReportRateLimit("claude", 10*time.Minute, "rate_limit_error", CooldownFromConfig)
 	if c.IsHealthy("claude") {
 		t.Fatalf("claude should be rate-limited")
 	}
-	clock.advance(11 * time.Minute)
+	fake.Advance(11 * time.Minute)
 	c.clearExpiredRateLimits()
 	if !c.IsHealthy("claude") {
 		t.Fatalf("rate-limit window should have expired")
@@ -773,17 +779,17 @@ func TestChecker_FlapEmitsPerFlipNotPerProbe(t *testing.T) {
 // regression that cleared the window on successful probe would release the
 // gate early and let the agent hit the real rate limit again.
 func TestChecker_ProbeHealthyPreservesActiveRateLimit(t *testing.T) {
-	c, _, clock := newTestChecker(t)
+	c, _, fake := newTestChecker(t)
 	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
 
 	// Mark rate-limited for 10m.
-	c.ReportRateLimit("claude", 10*time.Minute, "rate_limit_error")
+	c.ReportRateLimit("claude", 10*time.Minute, "rate_limit_error", CooldownFromConfig)
 	if c.IsHealthy("claude") {
 		t.Fatalf("claude should be rate-limited immediately after ReportRateLimit")
 	}
 
 	// Advance only 1 minute, well within the window.
-	clock.advance(1 * time.Minute)
+	fake.Advance(1 * time.Minute)
 
 	// Simulate an active probe that would otherwise flip us to healthy —
 	// the window must override it.
@@ -803,7 +809,7 @@ func TestChecker_ProbeHealthyPreservesActiveRateLimit(t *testing.T) {
 	}
 
 	// Advance past the window; clearExpiredRateLimits must release.
-	clock.advance(20 * time.Minute)
+	fake.Advance(20 * time.Minute)
 	c.clearExpiredRateLimits()
 	if !c.IsHealthy("claude") {
 		t.Errorf("claude should be healthy after rate-limit window expires")
@@ -865,5 +871,5 @@ func TestNilChecker_IsAnAbsentGateNotAPanic(t *testing.T) {
 		t.Errorf("Failover = %q, want empty: an absent gate has no view to fail over with", got)
 	}
 	gate.ReportAuthFailure("codex", "logged_out")
-	gate.ReportRateLimit("codex", time.Minute, "429")
+	gate.ReportRateLimit("codex", time.Minute, "429", CooldownFromConfig)
 }

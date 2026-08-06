@@ -167,8 +167,8 @@ func (m *Manager) forgetFiredStatus(id string) {
 // Comments returns the underlying CommentStore.
 func (m *Manager) Comments() *CommentStore { return m.store.Comments() }
 
-// Plans returns the underlying PlanStore.
-func (m *Manager) Plans() *PlanStore { return m.store.Plans() }
+// Plans returns the underlying plan sidecar store.
+func (m *Manager) Plans() *PlanningSidecarStore { return m.store.Plans() }
 
 // PlanDrafts returns the underlying PlanDraftStore.
 func (m *Manager) PlanDrafts() *PlanDraftStore { return m.store.PlanDrafts() }

@@ -25,6 +25,7 @@ type CompletionWorkflow interface {
 	RescheduleInterruptedAgent(taskID, agentID string)
 	RescheduleRateLimitedAgent(taskID, agentID string)
 	RescheduleCheckpointedAgent(taskID, agentID string)
+	ReschedulePromptUndeliveredAgent(taskID, agentID string)
 	DispatchEvent(taskID, event string, extra map[string]string, vars map[string]string) (string, error)
 }
 
@@ -167,6 +168,16 @@ type AttemptWorktreeManager interface {
 // the engine. Callers set this before StartWorkflowWithVars when they have
 // already prepared the worktree (e.g. PR-fix flow that needs PrepareForFix).
 const WorkflowVarDir = "_dir"
+
+// WorkflowVarBranchConflictPushRemote is the trusted origin remote for a
+// verified same-repository branch-conflict recovery. Ordinary workflow pushes
+// continue to use project.PushRemote and therefore retain the fork-only policy.
+const WorkflowVarBranchConflictPushRemote = "_branch_conflict_push_remote"
+
+// WorkflowVarBranchConflictPushURL pins the source URL captured before the
+// recovery agent started. It is required with WorkflowVarBranchConflictPushRemote
+// before the workflow may use the trusted origin push path.
+const WorkflowVarBranchConflictPushURL = "_branch_conflict_push_url"
 
 // WorkflowVarSidecarDir is the reserved variable naming a per-task directory
 // that stays writable even when the worktree does not. Verifier roles

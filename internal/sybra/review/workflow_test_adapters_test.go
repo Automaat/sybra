@@ -11,12 +11,14 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
 var (
 	errWorkflowEffectNoPersist             = errors.New("workflow effect claim requires no persistence")
 	errWorkflowStatusReasonNoLongerMatches = errors.New("workflow status reason no longer matches")
+	errWorkflowWriteFenceMismatch          = errors.New("workflow write fence mismatch")
 )
 
 // taskAdapter and agentAdapter are minimal test-only stand-ins for the real
@@ -57,8 +59,8 @@ func (a *taskAdapter) ListTasks() ([]workflow.TaskInfo, error) {
 	return infos, nil
 }
 
-func (a *taskAdapter) UpdateTaskStatus(id, status, reason string) error {
-	st, err := task.ValidateStatus(status)
+func (a *taskAdapter) UpdateTaskStatus(id string, status taskstatus.Status, reason string) error {
+	st, err := task.ValidateStatus(string(status))
 	if err != nil {
 		return err
 	}
@@ -70,10 +72,10 @@ func (a *taskAdapter) UpdateTaskStatus(id, status, reason string) error {
 	return err
 }
 
-func (a *taskAdapter) ClearTaskStatusReasonIf(id, expectedStatus, expectedReason string) (bool, error) {
+func (a *taskAdapter) ClearTaskStatusReasonIf(id string, expectedStatus taskstatus.Status, expectedReason string) (bool, error) {
 	cleared := false
 	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
-		if string(cur.Status) != expectedStatus || cur.StatusReason != expectedReason {
+		if cur.Status != expectedStatus || cur.StatusReason != expectedReason {
 			return task.Update{}, errWorkflowStatusReasonNoLongerMatches
 		}
 		empty := ""
@@ -86,8 +88,8 @@ func (a *taskAdapter) ClearTaskStatusReasonIf(id, expectedStatus, expectedReason
 	return cleared, err
 }
 
-func (a *taskAdapter) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {
-	st, err := task.ValidateStatus(status)
+func (a *taskAdapter) UpdateTaskBlocker(id string, status taskstatus.Status, reason string, state blocker.State) error {
+	st, err := task.ValidateStatus(string(status))
 	if err != nil {
 		return err
 	}
@@ -122,6 +124,10 @@ func (a *taskAdapter) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerpr
 	return a.tasks.UpdateRun(taskID, agentID, patch)
 }
 
+func (a *taskAdapter) MarkAgentRunIncomplete(taskID, agentID string) error {
+	return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{Outcome: task.Ptr(task.RunOutcomeIncomplete)})
+}
+
 func (a *taskAdapter) RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error {
 	patch := task.RunPatch{}
 	if headSHA != "" {
@@ -146,6 +152,22 @@ func (a *taskAdapter) ReplaceTaskBody(id, body string) error {
 func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
 	_, err := a.tasks.Update(id, task.Update{Workflow: &wf})
 	return err
+}
+
+func (a *taskAdapter) SetWorkflowIf(id string, fence workflow.WorkflowWriteFence, wf *workflow.Execution) (bool, error) {
+	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+		if cur.Generation != fence.Generation || cur.Status != fence.Status ||
+			cur.StatusReason != fence.StatusReason || cur.Workflow == nil ||
+			cur.Workflow.WorkflowID != fence.WorkflowID || cur.Workflow.CurrentStep != fence.CurrentStep ||
+			cur.Workflow.State != fence.State {
+			return task.Update{}, errWorkflowWriteFenceMismatch
+		}
+		return task.Update{Workflow: &wf}, nil
+	})
+	if errors.Is(err, errWorkflowWriteFenceMismatch) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
@@ -244,7 +266,7 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		ID:                    t.ID,
 		Title:                 t.Title,
 		Generation:            t.Generation,
-		Status:                string(t.Status),
+		Status:                t.Status,
 		StatusReason:          t.StatusReason,
 		Role:                  t.RunRole,
 		Tags:                  t.Tags,

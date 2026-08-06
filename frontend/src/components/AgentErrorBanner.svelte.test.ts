@@ -38,6 +38,15 @@ describe('AgentErrorBanner', () => {
     expect(screen.getByText('Git / network error')).toBeDefined()
   })
 
+  it('shows silent_hang as a hang, not as a rate limit', () => {
+    render(AgentErrorBanner, {
+      props: { agentId: 'a1', error: { kind: 'silent_hang', msg: 'zero output before startup timeout' } },
+    })
+    expect(screen.getByText('No output from agent')).toBeDefined()
+    expect(screen.queryByText('API rate limited')).toBeNull()
+    expect(screen.queryByText(/Wait a few minutes and retry, or check provider health/)).toBeNull()
+  })
+
   it('shows rate_limit error label', () => {
     render(AgentErrorBanner, {
       props: { agentId: 'a1', error: { kind: 'rate_limit', msg: '' } },

@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // Definition is a declarative workflow stored as YAML.
@@ -334,11 +336,6 @@ func stepIsAsync(stepType StepType) bool {
 	return ok && spec.async != nil
 }
 
-func stepIsResumable(stepType StepType) bool {
-	spec, ok := lookupStepSpec(stepType)
-	return ok && spec.resumable
-}
-
 func stepReducerBehavior(stepType StepType) (stepReducerKind, bool) {
 	spec, ok := lookupStepSpec(stepType)
 	return spec.reducer, ok
@@ -589,10 +586,10 @@ func validateParallelStep(s *Step, seenIDs map[string]bool) error {
 // history/A-B config, which is meaningless when picked per-attempt before any
 // attempt has run.
 var validAttemptProviders = map[string]bool{
-	"":        true,
-	"claude":  true,
-	"codex":   true,
-	"copilot": true,
+	"":                 true,
+	providerid.Claude:  true,
+	providerid.Codex:   true,
+	providerid.Copilot: true,
 }
 
 // validateBestOfNStep enforces the best_of_n step's attempt-count bounds and
