@@ -2293,6 +2293,15 @@ func TestManager_ResolveExistingRefusesUnpushableCheckout(t *testing.T) {
 				runInDirAllowFail(wt, "git", "revert", "--no-commit", "HEAD")
 			},
 		},
+		{
+			// The only marker not already subsumed by the detached-HEAD check:
+			// a conflicted `git am` stays on the branch and writes rebase-apply.
+			name: "conflicted git am",
+			breakWT: func(t *testing.T, wt string) {
+				t.Helper()
+				conflictedAm(t, wt)
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -2342,6 +2351,31 @@ func forkConflict(t *testing.T, wt, op string) {
 		runInDirAllowFail(wt, "git", "cherry-pick", other)
 	case "rebase":
 		runInDirAllowFail(wt, "git", "rebase", other)
+	}
+}
+
+// conflictedAm leaves `git am` half-applied. Unlike a conflicted rebase (which
+// detaches HEAD and is caught by the earlier check), am stays on the branch, so
+// rebase-apply is the only thing that can refuse this checkout.
+func conflictedAm(t *testing.T, wt string) {
+	t.Helper()
+	base := gitOut(t, wt, "rev-parse", "HEAD")
+	mustRunInDir(t, wt, "git", "checkout", "-q", "-b", "patchsrc", base)
+	writeFileT(t, filepath.Join(wt, "f.txt"), "patched")
+	mustRunInDir(t, wt, "git", "commit", "-q", "-am", "patch")
+	patch := gitOut(t, wt, "format-patch", "-1", "--stdout")
+
+	mustRunInDir(t, wt, "git", "checkout", "-q", "feature")
+	writeFileT(t, filepath.Join(wt, "f.txt"), "conflicting")
+	mustRunInDir(t, wt, "git", "commit", "-q", "-am", "conflicting")
+
+	cmd := exec.Command("git", "am")
+	cmd.Dir = wt
+	cmd.Stdin = strings.NewReader(patch + "\n")
+	_, _ = cmd.CombinedOutput()
+
+	if branch := gitOut(t, wt, "branch", "--show-current"); branch == "" {
+		t.Fatal("git am detached HEAD; this case no longer isolates rebase-apply")
 	}
 }
 

@@ -110,7 +110,12 @@ type humanReviewHandler struct {
 	// every workflow dispatcher that can mutate the same task worktree.
 	claimTaskDispatch func(string) (release func(), ok bool)
 
-	mu       sync.Mutex
+	mu sync.Mutex
+	// prepared records that some attempt in this human-required episode already
+	// ran PrepareForTask. Carrying it on spawn options alone was not enough:
+	// handleStructuredVerdictFailure and retryAfterCrash both build fresh
+	// options, so a re-entry reused the sanitized tree and called it untouched.
+	prepared map[string]bool
 	inflight map[string]string      // taskID -> agent ID
 	recent   []time.Time            // spawn timestamps (rolling window), global cap
 	perTask  map[string][]time.Time // taskID -> spawn timestamps (rolling window), per-task cap
@@ -352,6 +357,7 @@ func (h *humanReviewHandler) maybeSpawnWithOptions(taskID, prevStatus string, op
 	// against an already-recovered task would race the recovery flow and let
 	// the agent's unblock actions rewrite the task to the wrong state.
 	if t.Status != task.StatusHumanRequired {
+		h.forgetPrepared(taskID)
 		h.skip(taskID, "stale_status_"+string(t.Status))
 		return false
 	}
@@ -403,7 +409,7 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 	}
 
 	dir, readOnlyDir, retryable, rebuiltDir := h.dispatchDir(t)
-	rebuiltDir = rebuiltDir || opts.WorktreePrepared
+	rebuiltDir = h.notePrepared(taskID, rebuiltDir || opts.WorktreePrepared)
 	if retryable {
 		// Give back the reserved slot as claim contention does, or the retry
 		// hits the per-hour cap and the task is never examined at all. The
@@ -1614,6 +1620,30 @@ func (h *humanReviewHandler) markVerdictRendered(taskID, agentID string) {
 	}
 }
 
+// notePrepared records and returns the sticky rebuilt state for a task. Sticky
+// for the whole human-required episode: once preparation has rewritten the
+// tree, every later attempt in that episode is looking at the rewritten one.
+func (h *humanReviewHandler) notePrepared(taskID string, rebuilt bool) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if rebuilt {
+		if h.prepared == nil {
+			h.prepared = make(map[string]bool)
+		}
+		h.prepared[taskID] = true
+	}
+	return h.prepared[taskID]
+}
+
+// forgetPrepared ends the episode. Called where the task leaves
+// human-required, so a future park starts from a clean slate rather than
+// inheriting a warning about a preparation that predates it.
+func (h *humanReviewHandler) forgetPrepared(taskID string) {
+	h.mu.Lock()
+	delete(h.prepared, taskID)
+	h.mu.Unlock()
+}
+
 func (h *humanReviewHandler) skip(taskID, reason string) {
 	h.logger.Info("human-review.skip", "task_id", taskID, "reason", reason)
 	h.logAudit(audit.EventHumanReviewSkipped, taskID, "", map[string]any{"reason": reason})
@@ -1742,6 +1772,7 @@ func (h *humanReviewHandler) preRunEligible(taskID string, reservedAt time.Time,
 	}
 	if current.Status != task.StatusHumanRequired {
 		h.releaseReservedSlot(taskID, reservedAt)
+		h.forgetPrepared(taskID)
 		h.skip(taskID, "status_"+string(current.Status))
 		return false
 	}
@@ -1850,7 +1881,7 @@ func (h *humanReviewHandler) writePromptTaskDetails(b *strings.Builder, t task.T
 // mandate spends a paragraph forbidding.
 func writeRebuiltWorktreeWarning(b *strings.Builder) {
 	b.WriteString("## Worktree was rebuilt before you saw it (READ THIS FIRST)\n")
-	b.WriteString("No usable checkout was available, so this worktree went through preparation: any uncommitted work was auto-committed, the tree was reset and cleaned, and it was rebased onto a fresher base branch — or, if no checkout existed at all, it was created fresh from the base branch. Either way, **you are not looking at the state that failed.**\n\n")
+	b.WriteString("No usable checkout of the task's code was available, so worktree preparation ran. Preparation auto-commits uncommitted work, resets and cleans the tree, and rebases onto a fresher base branch; it may also have failed before reaching any of that. Either way, **you are not looking at the state that failed.**\n\n")
 	b.WriteString("- A re-run that now PASSES is not evidence the failure was flaky or transient — a base-induced failure stops reproducing on a fresher base. Say the original state was unavailable rather than calling it flaky.\n")
 	b.WriteString("- Reconstruct the failure from the agent-run output and logs below, which describe the tree as it actually was.\n")
 	b.WriteString("- If you cannot confirm the root cause against evidence you can still see, say so in your verdict instead of inferring one.\n\n")

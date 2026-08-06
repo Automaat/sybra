@@ -4259,3 +4259,78 @@ func TestHumanReviewDispatchDir_AdoptedFallbackIsNotFlaggedRebuilt(t *testing.T)
 		t.Error("rebuilt=true for an untouched worktree; the agent would distrust a correct reproduction")
 	}
 }
+
+// The provider-fallback retry and retryAfterCrash both build fresh spawn
+// options, so carrying the flag on options alone lost it: the second agent was
+// handed the tree the first one's preparation had already rewritten, with no
+// warning. The flag is sticky for the whole human-required episode instead.
+func TestHumanReviewSpawn_PreparedFlagIsStickyPerEpisode(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("sticky prepared", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	wtDir := t.TempDir()
+	prepared := false
+	h.resolveExistingWorktree = func(task.Task) (string, error) {
+		if prepared {
+			return wtDir, nil
+		}
+		return "", os.ErrNotExist
+	}
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		prepared = true
+		return wtDir, nil
+	}
+
+	var prompts []string
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		prompts = append(prompts, cfg.Prompt)
+		return &agent.Agent{ID: fmt.Sprintf("rev%d", len(prompts)), TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	if !h.maybeSpawn(tk.ID, string(task.StatusInReview)) {
+		t.Fatal("first review did not spawn")
+	}
+	// The first agent finished, as it has when the provider fallback re-spawns.
+	h.clearInflight(tk.ID)
+	// A fresh options value, as the provider fallback and crash retry both build.
+	if !h.maybeSpawnWithOptions(tk.ID, string(task.StatusInReview),
+		humanReviewSpawnOptions{IgnoreRenderedVerdict: true, RetryReason: "malformed_verdict"}) {
+		t.Fatal("retry did not spawn")
+	}
+
+	if len(prompts) != 2 {
+		t.Fatalf("got %d prompts, want 2", len(prompts))
+	}
+	for i, p := range prompts {
+		if !strings.Contains(p, "not looking at the state that failed") {
+			t.Errorf("prompt %d reused the rewritten tree without warning the agent", i)
+		}
+	}
+
+	// A later episode must not inherit the warning.
+	h.clearInflight(tk.ID)
+	h.forgetPrepared(tk.ID)
+	h.mu.Lock()
+	h.perTask = map[string][]time.Time{}
+	h.recent = nil
+	h.mu.Unlock()
+	prompts = nil
+	if !h.maybeSpawnWithOptions(tk.ID, string(task.StatusInReview),
+		humanReviewSpawnOptions{IgnoreRenderedVerdict: true}) {
+		t.Fatal("third spawn refused")
+	}
+	if strings.Contains(prompts[0], "not looking at the state that failed") {
+		t.Error("a new episode inherited a warning about a preparation that predates it")
+	}
+}
