@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/backoff"
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/diskreclaim"
@@ -132,10 +133,10 @@ func (s *liveLimitPollState) recordResult(now time.Time, result limits.LiveRefre
 			logger.Warn("limits.live_poll.invalidate", "provider", limits.ProviderClaude, "err", err)
 		}
 		s.claudeAuthFailures++
-		backoff := liveLimitAuthBackoff(s.claudeAuthFailures)
-		s.next[limits.ProviderClaude] = now.Add(backoff)
+		retryDelay := liveLimitAuthBackoff(s.claudeAuthFailures)
+		s.next[limits.ProviderClaude] = now.Add(retryDelay)
 		if !s.claudeAuthOpen {
-			logger.Warn("limits.live_poll.claude_auth", "backoff", backoff, "err", claude.Err)
+			logger.Warn("limits.live_poll.claude_auth", "backoff", retryDelay, "err", claude.Err)
 			s.claudeAuthOpen = true
 		}
 		return
@@ -149,20 +150,7 @@ func (s *liveLimitPollState) recordResult(now time.Time, result limits.LiveRefre
 }
 
 func liveLimitAuthBackoff(failures int) time.Duration {
-	if failures <= 1 {
-		return liveLimitPollInterval
-	}
-	backoff := liveLimitPollInterval
-	for range failures - 1 {
-		if backoff >= liveLimitPollAuthBackoffMax {
-			return liveLimitPollAuthBackoffMax
-		}
-		backoff *= 2
-	}
-	if backoff > liveLimitPollAuthBackoffMax {
-		return liveLimitPollAuthBackoffMax
-	}
-	return backoff
+	return backoff.ForAttempt(max(failures, 1), liveLimitPollInterval, liveLimitPollAuthBackoffMax).Delay
 }
 
 func liveLimitProviderEnabled(policy limits.Policy, providerName string) bool {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/backoff"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/pressure"
@@ -165,20 +166,7 @@ func (s *state) deferForPressure(id string, now time.Time) (deadline time.Time, 
 }
 
 func pressureInspectBackoff(defers int) time.Duration {
-	if defers <= 1 {
-		return 2 * time.Minute
-	}
-	backoff := 2 * time.Minute
-	for range defers - 1 {
-		if backoff >= maxPressureInspectBackoff {
-			return maxPressureInspectBackoff
-		}
-		backoff *= 2
-	}
-	if backoff > maxPressureInspectBackoff {
-		return maxPressureInspectBackoff
-	}
-	return backoff
+	return backoff.ForAttempt(max(defers, 1), 2*time.Minute, maxPressureInspectBackoff).Delay
 }
 
 // Watchdog monitors headless agents for stalls, budget overruns, and tool-call
