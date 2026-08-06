@@ -160,7 +160,7 @@ type codexAppServerLimitWindow struct {
 // snapshots they expose. Missing credentials/CLIs are non-fatal for the other
 // provider; callers can log the returned joined error for diagnostics.
 func (s *Store) RefreshLiveSnapshots(ctx context.Context, policy Policy, providers ...string) LiveRefreshResult {
-	now := s.now().UTC()
+	now := s.nowTime().UTC()
 	result := LiveRefreshResult{Providers: map[string]LiveProviderResult{}}
 	var snapshots []Snapshot
 
