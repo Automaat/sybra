@@ -356,7 +356,21 @@ func TestSandboxEnforce_LargeFetchUnpacksLooseObjects(t *testing.T) {
 	if after := linuxRepoWideMaintenanceState(t, h.sybraBare); after != before {
 		t.Fatalf("large fetch wrote shared pack/info state instead of loose objects\nbefore: %s\nafter: %s", before, after)
 	}
-	h.git(t, h.taskWt, "cat-file", "-e", "refs/remotes/origin/main^{commit}")
+	// Proves the fetch actually landed its ref, which is what makes the
+	// loose-object assertion above mean anything — checked inside the same
+	// sandbox, since refs/remotes is bound to a per-run overlay (#2054) and a
+	// task-scoped fetch is not allowed to publish into the shared clone.
+	inSandbox := newProviderCmd(context.Background(), &cfg, false, "git", "cat-file", "-e", "refs/remotes/origin/main^{commit}")
+	inSandbox.Dir = h.taskWt
+	inSandbox.Env = append(os.Environ(), cfg.ExtraEnv...)
+	if out, err := inSandbox.CombinedOutput(); err != nil {
+		t.Fatalf("fetched ref not visible to the sandboxed run that fetched it: %v: %s", err, out)
+	}
+	// The other half of the same contract: the ref must not reach the shared
+	// clone, where every sibling worktree would read it.
+	if h.gitShowRefExists(t, h.sybraBare, "refs/remotes/origin/main") {
+		t.Fatal("sandboxed fetch published refs/remotes/origin/main into the shared clone")
+	}
 }
 
 func linuxMaintenanceState(t *testing.T, bare string) string {
