@@ -102,6 +102,9 @@ func TestNormalizeV2DocumentStaysStrict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if cfg == nil {
+		t.Fatal("config = nil")
+	}
 	if _, _, err := NormalizeV2Document(cfg.root); err == nil {
 		t.Fatal("NormalizeV2Document accepted an unknown namespace key")
 	} else if !errors.Is(err, ErrUnknownConfigKey) {
