@@ -512,8 +512,19 @@ func newSandboxGitHarness(t *testing.T) sandboxGitHarness {
 	// there is inside a sandbox write root, which inverts every assertion in
 	// this file about writes being blocked. A checkout under /tmp reintroduces
 	// that silently, so say so instead of failing two unrelated tests.
-	if tmpRoot := os.TempDir(); strings.HasPrefix(base, tmpRoot+string(filepath.Separator)) {
-		t.Skipf("checkout lives under the sandbox tmp write root %s; run the suite from another path", tmpRoot)
+	tmpRoot, err := canonicalizeRoot(os.TempDir())
+	if err != nil {
+		t.Fatalf("canonicalize temp root: %v", err)
+	}
+	canonBase, err := canonicalizeRoot(base)
+	if err != nil {
+		t.Fatalf("canonicalize harness base: %v", err)
+	}
+	// Canonicalized on both sides, the way enforceSpec resolves the write
+	// root: a symlinked temp dir compares unequal as a raw string and would
+	// skip the skip.
+	if canonBase == tmpRoot || strings.HasPrefix(canonBase, tmpRoot+string(filepath.Separator)) {
+		t.Skipf("checkout lives under the sandbox temp write root %s; run the suite from another path", tmpRoot)
 	}
 
 	h := sandboxGitHarness{
