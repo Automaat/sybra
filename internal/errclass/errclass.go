@@ -15,7 +15,7 @@
 // with no human told; and the workflow tables read agent prose rather than a
 // transport error. Merging the answers changes retry and escalation behaviour
 // at every one of those sites and needs per-site judgement. See the follow-up
-// issue linked from #3139.
+// issue #3162.
 //
 // It is a leaf on purpose. internal/github depends on internal/clock alone, so
 // anything heavier here would cycle.
