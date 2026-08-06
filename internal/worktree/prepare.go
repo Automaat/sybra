@@ -305,38 +305,6 @@ func (m *Manager) prepareExistingWorktree(ctx context.Context, t task.Task, proj
 	return path, true, err
 }
 
-// reuseExistingWorktree rebases and finalizes an already-present worktree at
-// wtPath. handled=false means healOrRecreate wiped it as unusable and the
-// caller must fall through to its create paths; handled=true means this call
-// owns the outcome, error or not.
-func (m *Manager) reuseExistingWorktree(ctx context.Context, t task.Task, proj project.Project, wtPath, wtBranch, baseRef string, onPhase func(string)) (dir string, handled bool, err error) {
-	callPhase(onPhase, "Checking worktree…")
-	usable, err := m.healOrRecreate(ctx, t.ID, proj.ClonePath, wtPath, wtBranch)
-	if err != nil {
-		return "", true, err
-	}
-	if !usable {
-		return "", false, nil
-	}
-	if err := project.SanitizeWorktree(ctx, wtPath); err != nil {
-		m.logger.Warn("worktree.sanitize", "task_id", t.ID, "err", err)
-	}
-	if err := m.reconcileAndRebase(ctx, wtPath, wtBranch, baseRef, onPhase); err != nil {
-		return "", true, err
-	}
-	m.logger.Info("worktree.rebased", "task_id", t.ID, "path", wtPath, "base", baseRef)
-	// Best-effort cleanup after the main rebase: PushSync picks the minimum
-	// mode and reports divergence rather than force-pushing, and the remote may
-	// have advanced again since the earlier fetch, so only log the result.
-	callPhase(onPhase, "Syncing upstream…")
-	m.logPushSync(t.ID, wtBranch, project.PushSync(ctx, wtPath, wtBranch))
-	if err := m.runPrepareSetup(ctx, t.ID, wtPath, proj, "reused worktree", onPhase); err != nil {
-		return "", true, err
-	}
-	dir, err = m.finalizeWorktree(ctx, t, wtPath, wtBranch, proj)
-	return dir, true, err
-}
-
 func (m *Manager) resolveTaskBranch(ctx context.Context, t task.Task, clonePath, wtPath, wtBranch string) string {
 	other, ok := m.branchCollidesWithOtherWorktree(ctx, clonePath, wtBranch, wtPath)
 	if !ok {
