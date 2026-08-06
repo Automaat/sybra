@@ -13,6 +13,28 @@ type ProvidersConfig struct {
 	AutoFailover bool                      `yaml:"auto_failover" json:"autoFailover"`
 }
 
+// EnabledNames returns the enabled providers in failover-preference order.
+// Callers that report capacity need the same ordered list the dispatcher walks,
+// so a one-leg chain is recognisable as one.
+func (p ProvidersConfig) EnabledNames() []string {
+	ordered := []struct {
+		name  string
+		entry ProviderEntryConfig
+	}{
+		{"claude", p.Claude},
+		{"codex", p.Codex},
+		{"copilot", p.Copilot},
+		{"opencode", p.OpenCode},
+	}
+	out := make([]string, 0, len(ordered))
+	for _, e := range ordered {
+		if e.entry.Enabled {
+			out = append(out, e.name)
+		}
+	}
+	return out
+}
+
 type ProviderHealthCheckConfig struct {
 	Enabled         bool `yaml:"enabled" json:"enabled"`
 	IntervalSeconds int  `yaml:"interval_seconds" json:"intervalSeconds"`

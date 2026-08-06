@@ -315,7 +315,49 @@ func (a *App) logAutomationsSummary() {
 		"loop_agents_enabled", loopAgentsEnabled,
 		"prompteval_runner", promptevalRunner.Name(),
 		"promptfoo_present", (&prompteval.PromptfooRunner{}).Available(),
+		"providers", a.cfg.Providers.EnabledNames(),
 	)
+	a.warnThinFailoverChain()
+}
+
+// warnThinFailoverChain says at startup when this instance has fewer than two
+// providers it can actually dispatch to. A one-leg chain has no failover at
+// all, and that is how one weekly limit plus one usage limit turned into a dead
+// board on 2026-08-05 — a state that was only visible by grepping the app log
+// for provider.health.flip after the fact.
+//
+// Health is meaningful here because initProviderHealth's ProbeOnce has already
+// run by the time the summary is logged; a nil checker means health checking is
+// off, and only the configured count is knowable.
+func (a *App) warnThinFailoverChain() {
+	enabled := a.cfg.Providers.EnabledNames()
+	if len(enabled) < 2 {
+		a.logger.Warn("app.providers.no-failover",
+			"enabled", enabled,
+			"detail", "fewer than two providers enabled; a single rate limit stalls the board")
+	}
+	if a.providerHealth == nil {
+		return
+	}
+	snap := a.providerHealth.Snapshot()
+	healthy := make([]string, 0, len(enabled))
+	for _, name := range enabled {
+		if st, ok := snap[name]; ok && st.Healthy {
+			healthy = append(healthy, name)
+		}
+	}
+	switch {
+	case len(healthy) == 0:
+		a.logger.Error("app.providers.no-capacity",
+			"enabled", enabled,
+			"detail", "no enabled provider is healthy; nothing can dispatch")
+	case len(healthy) < 2:
+		a.logger.Warn("app.providers.thin-capacity",
+			"enabled", enabled, "healthy", healthy,
+			"detail", "only one healthy provider; a single rate limit stalls the board")
+	default:
+		a.logger.Info("app.providers.capacity", "enabled", enabled, "healthy", healthy)
+	}
 }
 
 func (a *App) initStats() {
