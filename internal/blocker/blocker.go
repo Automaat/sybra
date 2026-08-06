@@ -12,6 +12,7 @@ const (
 	KindOperatorDecision           Kind = "operator_decision"
 	KindCredentialRequired         Kind = "credential_required"
 	KindPolicyApproval             Kind = "policy_approval"
+	KindTamperDetected             Kind = "tamper_detected"
 	KindWorktreeRepair             Kind = "worktree_repair"
 	KindReviewFixExhausted         Kind = "review_fix_exhausted"
 	KindTriageRetryExhausted       Kind = "triage_retry_exhausted"
@@ -65,7 +66,7 @@ func (s State) IsZero() bool {
 
 func AllowsHumanRequired(kind Kind) bool {
 	switch kind {
-	case KindOperatorDecision, KindCredentialRequired, KindPolicyApproval, KindDependencyScopeUnmet, KindDependencyConditionUnmet:
+	case KindOperatorDecision, KindCredentialRequired, KindPolicyApproval, KindTamperDetected, KindDependencyScopeUnmet, KindDependencyConditionUnmet:
 		return true
 	default:
 		return false

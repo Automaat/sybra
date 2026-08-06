@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
-	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // taskAPI is the slice of task.Manager the remediator + service needs. Keeps
@@ -133,7 +133,7 @@ func (r *remediator) remediateHumanRequiredStuck(ctx context.Context, a Anomaly)
 		// unit of work. Flipping one straight to in-progress here bypasses the
 		// only umbrella-guarded dispatch choke point (agentorch.startAgent) and
 		// re-triggers the exact bug #2610 fixed. Mirrors detectLostAgents.
-		if humanReviewVerdict(a) == "human" || workflow.IsTamperFlaggedReason(t.StatusReason) || t.TaskType == task.TaskTypeUmbrella {
+		if humanReviewVerdict(a) == "human" || t.Blocker.Kind == blocker.KindTamperDetected || t.TaskType == task.TaskTypeUmbrella {
 			return r.refreshHumanRequiredStuck(a)
 		}
 		return r.retryKnownLostAgentStuck(a, t)

@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
@@ -953,7 +954,8 @@ func (h *humanReviewHandler) verifyDoneRecoveryMergedPR(current task.Task, agent
 
 func (h *humanReviewHandler) finalizeDoneRecovery(taskID string, prNumber int, mergedPR bool) error {
 	update := task.Update{
-		StatusReason: task.Ptr(""),
+		ClearStatusReason: task.Ptr(true),
+		ClearBlocker:      task.Ptr(true),
 	}
 	if mergedPR {
 		current, err := h.tasks.Get(taskID)
@@ -992,7 +994,7 @@ func humanReviewVerdictPRNumber(v verdictDecision) int {
 
 func (h *humanReviewHandler) prepareRecoveryDispatch(current task.Task, status task.Status) (task.Status, error) {
 	target := status
-	if target == task.StatusReadyPR && current.PRNumber == 0 && workflow.IsTamperFlaggedReason(current.StatusReason) {
+	if target == task.StatusReadyPR && current.PRNumber == 0 && current.Blocker.Kind == blocker.KindTamperDetected {
 		target = task.StatusInProgress
 	}
 	if target == task.StatusInReview && current.PRNumber == 0 {
@@ -1157,7 +1159,7 @@ func latestHumanReviewUnblockedVerdict(t task.Task) (agentID string, v verdictDe
 }
 
 func recoveryNeedsTamperBless(current task.Task, target task.Status) bool {
-	if !workflow.IsTamperFlaggedReason(current.StatusReason) {
+	if current.Blocker.Kind != blocker.KindTamperDetected {
 		return false
 	}
 	return target == task.StatusInProgress || target == task.StatusReadyReview

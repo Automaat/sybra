@@ -181,7 +181,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 	if t.Attachments == nil {
 		t.Attachments = []Attachment{}
 	}
-	t.TamperFlagged = isTamperFlagged(t.Status, t.StatusReason)
+	t.TamperFlagged = isTamperFlagged(t.Status, t.Blocker)
 	return t
 }
 

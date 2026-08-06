@@ -597,9 +597,16 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 	// Apply initial field overrides before the first disk write so that any
 	// watcher reading the file sees the complete task from the start.
 	applyCreateInit(&t, init, now)
+	if err := validateExplicitClear(init); err != nil {
+		return Task{}, err
+	}
+	if err := blocker.ValidateStatus(string(t.Status), t.Blocker); err != nil {
+		return Task{}, err
+	}
 	if err := normalizeSandboxEscapeHatch(&t); err != nil {
 		return Task{}, err
 	}
+	t.TamperFlagged = isTamperFlagged(t.Status, t.Blocker)
 	if err := s.createNewTask(&t, func() error {
 		return s.writeSidecars(t.ID, init, &t)
 	}); err != nil {
@@ -705,6 +712,9 @@ func applyCreateInit(t *Task, init Update, now time.Time) {
 	if init.StatusReason != nil {
 		t.StatusReason = *init.StatusReason
 	}
+	if init.Blocker != nil {
+		t.Blocker = *init.Blocker
+	}
 	if init.Body != nil {
 		t.Body = *init.Body
 	}
@@ -729,6 +739,16 @@ func applyCreateInit(t *Task, init Update, now time.Time) {
 	if init.ReasoningEffort != nil {
 		t.ReasoningEffort = *init.ReasoningEffort
 	}
+}
+
+func validateExplicitClear(u Update) error {
+	if u.ClearStatusReason != nil && *u.ClearStatusReason && u.StatusReason != nil {
+		return errors.New("task update: status_reason and clear_status_reason cannot both be set")
+	}
+	if u.ClearBlocker != nil && *u.ClearBlocker && u.Blocker != nil {
+		return errors.New("task update: blocker and clear_blocker cannot both be set")
+	}
+	return nil
 }
 
 // Put writes a fully-formed task to the store verbatim (upsert by ID),
@@ -1046,6 +1066,9 @@ func normalizeSandboxEscapeHatch(t *Task) error {
 }
 
 func applyUpdateFields(t *Task, u Update) error {
+	if err := validateExplicitClear(u); err != nil {
+		return err
+	}
 	if u.Title != nil {
 		t.Title = *u.Title
 	}
@@ -1058,18 +1081,6 @@ func applyUpdateFields(t *Task, u Update) error {
 	if u.Status != nil {
 		oldStatus := t.Status
 		t.Status = *u.Status
-		statusChanged := *u.Status != oldStatus
-		// Clear reason when status actually changes, unless a new reason is
-		// also provided. A same-value resubmission (e.g. SetStatusAndWorkflow
-		// carrying the task's current status alongside a Workflow-only update)
-		// must not wipe an unrelated reason/blocker that has nothing to do
-		// with this write — see #2749.
-		if statusChanged && u.StatusReason == nil {
-			t.StatusReason = ""
-		}
-		if statusChanged && u.Blocker == nil {
-			t.Blocker = blocker.State{}
-		}
 		// Stamp ClosedAt on transition into a terminal status; clear on exit.
 		wasTerminal := IsTerminalStatus(oldStatus)
 		isTerminal := IsTerminalStatus(t.Status)
@@ -1081,11 +1092,14 @@ func applyUpdateFields(t *Task, u Update) error {
 		}
 		// both terminal → preserve existing ClosedAt; both non-terminal → no-op
 	}
+	if u.ClearStatusReason != nil && *u.ClearStatusReason {
+		t.StatusReason = ""
+	}
 	if u.StatusReason != nil {
 		t.StatusReason = *u.StatusReason
-		if *u.StatusReason == "" && u.Blocker == nil {
-			t.Blocker = blocker.State{}
-		}
+	}
+	if u.ClearBlocker != nil && *u.ClearBlocker {
+		t.Blocker = blocker.State{}
 	}
 	if u.Blocker != nil {
 		if err := blocker.ValidateStatus(string(t.Status), *u.Blocker); err != nil {
@@ -1192,7 +1206,7 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	} else if t.StatusChangedAt.IsZero() {
 		t.StatusChangedAt = statusChangedBackfill
 	}
-	t.TamperFlagged = isTamperFlagged(t.Status, t.StatusReason)
+	t.TamperFlagged = isTamperFlagged(t.Status, t.Blocker)
 	if err := s.writeSidecars(id, u, &t); err != nil {
 		return Task{}, "", err
 	}

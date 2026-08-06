@@ -534,11 +534,10 @@ type Task struct {
 	Degraded   bool   `json:"degraded,omitempty"`
 	ParseError string `json:"parseError,omitempty"`
 	// TamperFlagged reports whether this task is parked at human-required
-	// pending a tamper bless. Derived from Status/StatusReason (never
-	// persisted) so the frontend doesn't need to duplicate
-	// workflow.TamperFlaggedReasonPrefix to decide whether to show the bless
-	// action. Recomputed on every load/update — see taskFromFrontmatter and
-	// Store.UpdateWithPrev.
+	// pending a tamper bless. Derived from Status/Blocker (never persisted) so
+	// the frontend doesn't need to duplicate the latch logic to decide whether
+	// to show the bless action. Recomputed on every load/update — see
+	// taskFromFrontmatter and Store.UpdateWithPrev.
 	TamperFlagged bool `json:"tamperFlagged"`
 }
 
@@ -551,9 +550,9 @@ func (t Task) DirName() string {
 	return t.Slug + "-" + t.ID
 }
 
-// isTamperFlagged reports whether a task's status/status_reason combination
+// isTamperFlagged reports whether a task's status/blocker combination
 // represents an unblessed tamper flag. Single source of truth for both the
 // derived Task.TamperFlagged field and BlessTampering's precondition check.
-func isTamperFlagged(status Status, statusReason string) bool {
-	return status == StatusHumanRequired && workflow.IsTamperFlaggedReason(statusReason)
+func isTamperFlagged(status Status, state blocker.State) bool {
+	return status == StatusHumanRequired && state.Kind == blocker.KindTamperDetected
 }

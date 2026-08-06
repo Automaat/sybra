@@ -41,6 +41,7 @@ func TestAllowsHumanRequired_OnlyOperatorFacingKinds(t *testing.T) {
 		KindOperatorDecision,
 		KindCredentialRequired,
 		KindPolicyApproval,
+		KindTamperDetected,
 		KindWorktreeRepair,
 		KindReviewFixExhausted,
 		KindTriageRetryExhausted,
@@ -50,6 +51,7 @@ func TestAllowsHumanRequired_OnlyOperatorFacingKinds(t *testing.T) {
 		KindOperatorDecision:     true,
 		KindCredentialRequired:   true,
 		KindPolicyApproval:       true,
+		KindTamperDetected:       true,
 		KindDependencyScopeUnmet: true,
 	}
 	for _, kind := range allKinds {
@@ -102,6 +104,11 @@ func TestValidateStatus(t *testing.T) {
 			name:   "policy_approval may reach human-required",
 			status: "human-required",
 			state:  State{Kind: KindPolicyApproval},
+		},
+		{
+			name:   "tamper_detected may reach human-required",
+			status: "human-required",
+			state:  State{Kind: KindTamperDetected},
 		},
 		{
 			name:   "dependency_scope_unmet may reach human-required",
@@ -163,6 +170,7 @@ func TestValidateStatus_IllegalTransitionProperty(t *testing.T) {
 		KindOperatorDecision,
 		KindCredentialRequired,
 		KindPolicyApproval,
+		KindTamperDetected,
 		KindWorktreeRepair,
 		KindReviewFixExhausted,
 		KindTriageRetryExhausted,

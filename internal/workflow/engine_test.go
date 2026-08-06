@@ -3771,6 +3771,7 @@ func TestStartWorkflowRejectsTamperFlaggedRestart(t *testing.T) {
 		ID:           "tamper",
 		Status:       "human-required",
 		StatusReason: TamperFlaggedReasonPrefix + " removed tests/foo_test.go",
+		Blocker:      blocker.State{Kind: blocker.KindTamperDetected, Actor: blocker.ActorWorkflow},
 		Tags:         []string{TamperBlessedTag},
 		Workflow:     originalWorkflow,
 	})

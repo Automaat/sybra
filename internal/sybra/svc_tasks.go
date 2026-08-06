@@ -21,6 +21,7 @@ import (
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
@@ -487,8 +488,8 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 	result, err := s.tasks.ApplyFn(taskID, func(t task.Task) (task.TransitionIntent, error) {
 		if !t.TamperFlagged {
 			return task.TransitionIntent{}, conflictError(
-				"task is not tamper-flagged: bless requires status=human-required with a " +
-					"status_reason starting with " + strconv.Quote(workflow.TamperFlaggedReasonPrefix),
+				"task is not tamper-flagged: bless requires status=human-required with blocker.kind=" +
+					strconv.Quote(string(blocker.KindTamperDetected)),
 			)
 		}
 		cur = t
@@ -502,7 +503,9 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 			ToStatus: task.StatusReadyReview,
 			Actor:    "svc.tasks.bless_tampering",
 			Extra: task.Update{
-				Tags: task.Ptr(merged),
+				Tags:              task.Ptr(merged),
+				ClearStatusReason: task.Ptr(true),
+				ClearBlocker:      task.Ptr(true),
 			},
 			OperatorOverride: true,
 		}, nil

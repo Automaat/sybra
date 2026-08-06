@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/taskstatus"
@@ -940,7 +941,11 @@ func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (Ste
 
 	if high := report.highCount(); high > 0 {
 		reason := tamperReason(report)
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
+		if statusErr := e.tasks.UpdateTaskBlocker(taskID, taskstatus.HumanRequired, reason, blocker.State{
+			Kind:       blocker.KindTamperDetected,
+			Actor:      blocker.ActorWorkflow,
+			NextAction: "bless_tampering",
+		}); statusErr != nil {
 			e.logger.Error("workflow.detect-tampering.status", "task_id", taskID, "err", statusErr)
 		}
 		e.logger.Warn("workflow.detect-tampering.flagged",

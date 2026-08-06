@@ -202,9 +202,8 @@ func (a *taskAdapter) ClearTaskStatusReasonIf(id string, expectedStatus taskstat
 		if cur.Status != expectedStatus || cur.StatusReason != expectedReason {
 			return task.Update{}, errWorkflowStatusReasonNoLongerMatches
 		}
-		empty := ""
 		cleared = true
-		return task.Update{StatusReason: &empty}, nil
+		return task.Update{ClearStatusReason: task.Ptr(true)}, nil
 	})
 	if errors.Is(err, errWorkflowStatusReasonNoLongerMatches) {
 		return false, nil
@@ -225,12 +224,11 @@ func (a *taskAdapter) ClearTaskStatusReasonAndSetWorkflowIf(id, expectedStatus, 
 		if string(cur.Status) != expectedStatus || cur.StatusReason != expectedReason {
 			return task.TransitionIntent{}, errWorkflowStatusReasonNoLongerMatches
 		}
-		empty := ""
 		cleared = true
 		return task.TransitionIntent{
 			ToStatus: cur.Status,
 			Actor:    "workflow.engine.clear_reason_and_set_workflow",
-			Extra:    task.Update{StatusReason: &empty, Workflow: &wf},
+			Extra:    task.Update{ClearStatusReason: task.Ptr(true), Workflow: &wf},
 		}, nil
 	})
 	if errors.Is(err, errWorkflowStatusReasonNoLongerMatches) {
