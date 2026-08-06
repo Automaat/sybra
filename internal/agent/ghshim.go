@@ -266,8 +266,11 @@ func shellSingleQuoteSafe(s string) bool {
 // place, so an agent already running when the manager restarts can never exec a
 // half-written or not-yet-executable shim.
 func writeExecutableAtomic(path, content string) error {
+	// resolveGhShimDir logs this and then silently degrades — an empty dir
+	// disables the gh approval guard fleet-wide — so it is the only signal an
+	// operator gets. Keep the staging and publish steps distinguishable.
 	if err := fsutil.AtomicWriteMode(path, []byte(content), 0o755); err != nil {
-		return fmt.Errorf("install gh shim: %w", err)
+		return fmt.Errorf("write gh shim %s: %w", path, err)
 	}
 	return nil
 }

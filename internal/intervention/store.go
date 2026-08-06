@@ -103,7 +103,7 @@ func (s *Store) Put(projectKey string, rec Record) error {
 		return fmt.Errorf("marshal intervention record: %w", err)
 	}
 	data = append(data, '\n')
-	if err := fsutil.AtomicWriteMode(path, data, 0o644); err != nil {
+	if err := fsutil.AtomicWrite(path, data); err != nil {
 		return fmt.Errorf("write intervention record: %w", err)
 	}
 	return nil

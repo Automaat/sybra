@@ -727,7 +727,7 @@ func saveState(path string, state persistedState) error {
 	if err != nil {
 		return fmt.Errorf("marshal autoupdate state: %w", err)
 	}
-	if err := fsutil.AtomicWriteMode(path, append(data, '\n'), 0o644); err != nil {
+	if err := fsutil.AtomicWrite(path, append(data, '\n')); err != nil {
 		return fmt.Errorf("write autoupdate state: %w", err)
 	}
 	return nil

@@ -1,46 +1,59 @@
 #!/usr/bin/env bash
-# Proves check-atomic-writes.sh still fails on a reintroduced hand-rolled write.
-# A drift gate that silently stops matching is worse than no gate: it reports
-# green while the thing it guards rots.
-
+# A drift gate that quietly stops matching is worse than no gate: it reports
+# green while the thing it guards rots. These cases are the spellings a
+# line-oriented regex missed, which is why the gate is an AST check. The
+# assert_accepted cases pin the other edge — an ordinary move must stay legal.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-GATE="scripts/check-atomic-writes.sh"
-PROBE="internal/fsutil/zz_atomic_write_probe.go"
-
+fixture_dir="$(mktemp -d .atomic-writes-gate-test.XXXXXX)"
 cleanup() {
-  rm -f "${PROBE}"
+  rm -rf -- "${fixture_dir}"
 }
 trap cleanup EXIT
 
-# The gate scans tracked and untracked files, so an untracked probe is enough.
-cat >"${PROBE}" <<'PROBE_EOF'
-//go:build ignore
+assert_rejected() {
+  local name="$1"
+  local source="$2"
+  local file="${fixture_dir}/${name}.go"
+  local output
 
-package fsutil
-
-import "os"
-
-func zzProbeHandRolledWrite(tmpName, path string) error {
-	return os.Rename(tmpName, path)
+  printf '%s\n' "${source}" > "${file}"
+  if output="$(bash scripts/check-atomic-writes.sh 2>&1)"; then
+    echo "ERROR: gate accepted ${name}" >&2
+    exit 1
+  fi
+  if ! grep -Fq "${file}" <<<"${output}"; then
+    echo "ERROR: gate rejected ${name} without identifying ${file}" >&2
+    echo "${output}" >&2
+    exit 1
+  fi
+  rm -f -- "${file}"
 }
-PROBE_EOF
 
-if bash "${GATE}" >/dev/null 2>&1; then
-  echo "error: ${GATE} passed with a hand-rolled temp-rename write present" >&2
-  echo "The gate has stopped matching the pattern it exists to catch." >&2
-  exit 1
-fi
+assert_accepted() {
+  local name="$1"
+  local source="$2"
+  local file="${fixture_dir}/${name}.go"
 
-cleanup
-trap - EXIT
+  printf '%s\n' "${source}" > "${file}"
+  if ! bash scripts/check-atomic-writes.sh >/dev/null 2>&1; then
+    echo "ERROR: gate rejected ${name}, which is not a hand-rolled write" >&2
+    bash scripts/check-atomic-writes.sh >&2 || true
+    exit 1
+  fi
+  rm -f -- "${file}"
+}
 
-if ! bash "${GATE}" >/dev/null 2>&1; then
-  echo "error: ${GATE} fails on the clean tree" >&2
-  bash "${GATE}" >&2 || true
-  exit 1
-fi
+assert_rejected named_tmp $'package fixture\nimport "os"\nfunc f(dir, path string) error {\n\ttmp, err := os.CreateTemp(dir, "x-*")\n\tif err != nil {\n\t\treturn err\n\t}\n\ttmpName := tmp.Name()\n\treturn os.Rename(tmpName, path)\n}'
+assert_rejected inline_name $'package fixture\nimport "os"\nfunc f(dir, path string) error {\n\tf, err := os.CreateTemp(dir, "x-*")\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn os.Rename(f.Name(), path)\n}'
+assert_rejected neutral_variable_name $'package fixture\nimport "os"\nfunc f(dir, path string) error {\n\tf, err := os.CreateTemp(dir, "x-*")\n\tif err != nil {\n\t\treturn err\n\t}\n\tstaging := f.Name()\n\treturn os.Rename(staging, path)\n}'
+assert_rejected multiline $'package fixture\nimport "os"\nfunc f(dir, path string) error {\n\tf, err := os.CreateTemp(dir, "x-*")\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn os.Rename(\n\t\tf.Name(),\n\t\tpath,\n\t)\n}'
+assert_rejected aliased_import $'package fixture\nimport osfs "os"\nfunc f(dir, path string) error {\n\tf, err := osfs.CreateTemp(dir, "x-*")\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn osfs.Rename(f.Name(), path)\n}'
+assert_rejected in_a_test_file $'package fixture\nimport "os"\nfunc f(dir, path string) error {\n\tf, err := os.CreateTemp(dir, "x-*")\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn os.Rename(f.Name(), path)\n}'
 
-echo "check-atomic-writes.test: gate catches drift and passes clean"
+assert_accepted plain_rename $'package fixture\nimport "os"\nfunc f(from, to string) error {\n\treturn os.Rename(from, to)\n}'
+assert_accepted rename_after_download $'package fixture\nimport "os"\nfunc f(dir, to string) error {\n\tstaged := dir + "/incoming"\n\treturn os.Rename(staged, to)\n}'
+
+echo "check-atomic-writes.test: all tests passed"

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 // ErrLockUnsupported marks platforms where fsutil cannot provide a
@@ -40,7 +41,7 @@ func AtomicWriteMode(path string, data []byte, perm os.FileMode) error {
 
 func atomicWrite(path string, data []byte, perm *os.FileMode) error {
 	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	f, err := os.CreateTemp(dir, tempPattern(filepath.Base(path)))
 	if err != nil {
 		return err
 	}
@@ -81,6 +82,24 @@ func atomicWrite(path string, data []byte, perm *os.FileMode) error {
 		return err
 	}
 	return syncDir(dir)
+}
+
+// tempPattern derives a CreateTemp pattern from the target's name, keeping it
+// short enough that the random suffix cannot push the temp file past the
+// filesystem's per-name limit. Attachment names are caller-supplied and can
+// already sit near that limit, where a name-derived pattern fails with
+// ENAMETOOLONG on a write plain os.WriteFile would have accepted.
+func tempPattern(base string) string {
+	// Leaves room for CreateTemp's random digits plus ".tmp".
+	const maxBase = 64
+	if len(base) > maxBase {
+		cut := maxBase
+		for cut > 0 && !utf8.RuneStart(base[cut]) {
+			cut--
+		}
+		base = base[:cut]
+	}
+	return base + ".*.tmp"
 }
 
 // AtomicWriteNew writes data to a previously absent path without ever

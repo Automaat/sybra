@@ -908,7 +908,7 @@ func WriteRawConfig(data []byte) error {
 	if err := preserveLastKnownGoodConfig(path); err != nil {
 		return err
 	}
-	return writeFileAtomicMode(path, data)
+	return writeConfigFile(path, data)
 }
 
 // Directories returns the resolved paths for all sybra data directories.
@@ -1051,14 +1051,14 @@ func readAuthTokenFile() string {
 // mirroring WriteRawConfig's crash-safety, but targeting the dedicated token
 // file instead of config.yaml.
 func writeAuthTokenFile(token string) error {
-	return writeFileAtomicMode(AuthTokenPath(), []byte(token+"\n"))
+	return writeConfigFile(AuthTokenPath(), []byte(token+"\n"))
 }
 
 func preserveLastKnownGoodConfig(path string) error {
 	data, err := os.ReadFile(path)
 	switch {
 	case err == nil:
-		return writeFileAtomicMode(LastKnownGoodConfigPath(), data)
+		return writeConfigFile(LastKnownGoodConfigPath(), data)
 	case os.IsNotExist(err):
 		return nil
 	default:
@@ -1073,12 +1073,13 @@ func RestoreLastKnownGoodConfig() error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomicMode(configPath(), data)
+	return writeConfigFile(configPath(), data)
 }
 
-// writeFileAtomicMode creates the parent directory then writes through the
-// shared helper at the config file mode.
-func writeFileAtomicMode(path string, data []byte) error {
+// writeConfigFile creates the parent directory then publishes the file at the
+// config mode. These files can carry the server auth token, so the mode is
+// explicit rather than inherited from the operator's umask.
+func writeConfigFile(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
 		return err
 	}
@@ -1829,10 +1830,7 @@ const (
 var defaultConfigStub = []byte("# Sybra configuration\nschema_version: 2\n# GitHub automations are opt-in on first run.\nintegrations:\n  github:\n    enabled: false\n")
 
 func writeDefaultConfig(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
-		return err
-	}
-	return os.WriteFile(path, defaultConfigStub, configFilePerm)
+	return writeConfigFile(path, defaultConfigStub)
 }
 
 // tightenConfigPerms retrofits the config directory and file to 0o700/0o600

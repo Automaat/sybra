@@ -308,5 +308,5 @@ func (s *Service) persist(r Report) error {
 	if err != nil {
 		return err
 	}
-	return fsutil.AtomicWriteMode(s.reportPath, data, 0o644)
+	return fsutil.AtomicWrite(s.reportPath, data)
 }

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // GoldenCase is one representative task with known-good expectations. Running the
@@ -202,5 +204,5 @@ func SaveGoldenReport(path string, rep GoldenReport) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return fsutil.AtomicWrite(path, data)
 }

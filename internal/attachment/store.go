@@ -70,7 +70,7 @@ func (s *Store) Put(taskID string, req UploadRequest) (Attachment, error) {
 		return Attachment{}, fmt.Errorf("create attachment dir: %w", err)
 	}
 	blobPath := filepath.Join(dir, name)
-	if err := writeFileAtomic(blobPath, req.Data, 0o600); err != nil {
+	if err := writeBlob(blobPath, req.Data, 0o600); err != nil {
 		return Attachment{}, fmt.Errorf("write attachment blob: %w", err)
 	}
 
@@ -87,7 +87,7 @@ func (s *Store) Put(taskID string, req UploadRequest) (Attachment, error) {
 		_ = os.Remove(blobPath)
 		return Attachment{}, fmt.Errorf("marshal attachment metadata: %w", err)
 	}
-	if err := writeFileAtomic(filepath.Join(dir, metaFileName), metaBytes, 0o600); err != nil {
+	if err := writeBlob(filepath.Join(dir, metaFileName), metaBytes, 0o600); err != nil {
 		_ = os.Remove(blobPath)
 		return Attachment{}, fmt.Errorf("write attachment metadata: %w", err)
 	}
@@ -139,7 +139,7 @@ func (s *Store) Import(taskID string, meta Attachment, data []byte) (Attachment,
 		return Attachment{}, fmt.Errorf("create attachment dir: %w", err)
 	}
 	blobPath := filepath.Join(dir, name)
-	if err := writeFileAtomic(blobPath, data, 0o600); err != nil {
+	if err := writeBlob(blobPath, data, 0o600); err != nil {
 		return Attachment{}, fmt.Errorf("write attachment blob: %w", err)
 	}
 
@@ -156,7 +156,7 @@ func (s *Store) Import(taskID string, meta Attachment, data []byte) (Attachment,
 		_ = os.RemoveAll(dir)
 		return Attachment{}, fmt.Errorf("marshal attachment metadata: %w", err)
 	}
-	if err := writeFileAtomic(filepath.Join(dir, metaFileName), metaBytes, 0o600); err != nil {
+	if err := writeBlob(filepath.Join(dir, metaFileName), metaBytes, 0o600); err != nil {
 		_ = os.RemoveAll(dir)
 		return Attachment{}, fmt.Errorf("write attachment metadata: %w", err)
 	}
@@ -381,7 +381,10 @@ func sanitizeFileName(name string) string {
 	return sanitized
 }
 
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+// writeBlob stages an attachment payload beside its target and publishes it
+// with an explicit mode: blobs are served to the frontend, so their mode must
+// not vary with the operator's umask.
+func writeBlob(path string, data []byte, perm os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
