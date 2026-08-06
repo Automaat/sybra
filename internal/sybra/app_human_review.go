@@ -882,12 +882,18 @@ func (h *humanReviewHandler) prepareRecoveryDispatch(current task.Task, status t
 // performs the same worktree/PR verification and guarded dispatch used by the
 // live completion path, so startup recovery gains no broader authority.
 func (h *humanReviewHandler) recoverStrandedUnblockedTasks() {
-	if h == nil || h.tasks == nil || h.dispatchFromHumanRequired == nil {
+	if h == nil || h.tasks == nil {
 		return
 	}
 	tasks, err := h.tasks.List()
 	if err != nil {
 		h.logger.Warn("human-review.recover-stranded.list", "err", err)
+		return
+	}
+	// The sweep spawns a review; it never dispatches a verdict's side effect,
+	// so it must not inherit the verdict replay's dependency on a dispatcher.
+	defer h.respawnDroppedReviews(tasks)
+	if h.dispatchFromHumanRequired == nil {
 		return
 	}
 	for i := range tasks {
@@ -904,7 +910,6 @@ func (h *humanReviewHandler) recoverStrandedUnblockedTasks() {
 		}
 		h.applyUnblockedRecovery(t, agentID, v, true)
 	}
-	h.respawnDroppedReviews(tasks)
 }
 
 // respawnDroppedReviews re-runs maybeSpawn for a recent park that never got a

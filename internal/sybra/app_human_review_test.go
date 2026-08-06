@@ -4106,9 +4106,10 @@ func TestRecoverStrandedUnblockedTasks_RunsTheSweep(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h.dispatchFromHumanRequired = func(id, _, _, _ string) (task.Task, error) {
-		return tasks.Get(id)
-	}
+	// Deliberately left nil: the sweep spawns a review rather than dispatching
+	// a verdict's side effect, so the verdict replay's dependency on a
+	// dispatcher must not gate it.
+	h.dispatchFromHumanRequired = nil
 	h.prepareTaskWorktree = func(task.Task) (string, error) { return t.TempDir(), nil }
 	spawned := 0
 	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
