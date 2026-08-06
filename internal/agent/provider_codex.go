@@ -96,7 +96,7 @@ func (p codexProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headles
 	return headlessInvocation{
 		name:    providerid.Codex,
 		args:    args,
-		command: "codex " + strings.Join(args, " "),
+		command: providerid.Codex + " " + strings.Join(args, " "),
 	}, nil
 }
 

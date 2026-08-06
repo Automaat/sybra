@@ -135,7 +135,7 @@ func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headless
 		name:    providerid.Claude,
 		args:    args,
 		env:     env,
-		command: "claude " + strings.Join(args, " "),
+		command: providerid.Claude + " " + strings.Join(args, " "),
 	}, nil
 }
 

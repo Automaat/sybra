@@ -71,7 +71,7 @@ func (copilotProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headles
 	return headlessInvocation{
 		name:    providerid.Copilot,
 		args:    args,
-		command: "copilot " + strings.Join(args, " "),
+		command: providerid.Copilot + " " + strings.Join(args, " "),
 	}, nil
 }
 

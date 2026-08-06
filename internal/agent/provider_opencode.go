@@ -44,7 +44,7 @@ func (p opencodeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (head
 	return headlessInvocation{
 		name:    providerid.OpenCode,
 		args:    args,
-		command: "opencode " + strings.Join(args, " "),
+		command: providerid.OpenCode + " " + strings.Join(args, " "),
 	}, nil
 }
 
