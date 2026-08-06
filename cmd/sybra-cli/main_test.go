@@ -371,7 +371,10 @@ func TestCLIWorksWithV2ObservabilityConfig(t *testing.T) {
 func TestCLIGetAndUpdateFallbackWhenConfigLoadFails(t *testing.T) {
 	dir := setupStore(t)
 	t.Setenv("SYBRA_TASKS_DIR", "")
-	if err := os.WriteFile(config.ConfigPath(), []byte("future_namespace:\n  enabled: true\n"), 0o644); err != nil {
+	// Unparseable, not merely unknown: a schema error deliberately no longer
+	// reaches the fallback (#3133), since it says nothing about whether the
+	// server is up and its write path is denied to the agents that hit it.
+	if err := os.WriteFile(config.ConfigPath(), []byte("::not yaml at all\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -432,7 +435,10 @@ func TestCLIFallbackSupportsBroadenedTaskStoreCommands(t *testing.T) {
 		t.Fatalf("seed delete task: %v", err)
 	}
 
-	if err := os.WriteFile(config.ConfigPath(), []byte("future_namespace:\n  enabled: true\n"), 0o644); err != nil {
+	// Unparseable, not merely unknown: a schema error deliberately no longer
+	// reaches the fallback (#3133), since it says nothing about whether the
+	// server is up and its write path is denied to the agents that hit it.
+	if err := os.WriteFile(config.ConfigPath(), []byte("::not yaml at all\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -876,7 +882,7 @@ func TestConfigDoctorJSONReturnsNonZeroForErrors(t *testing.T) {
 	cfg.Agent.Provider = "nope"
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit for JSON doctor errors, output:\n%s", out)
@@ -899,7 +905,7 @@ func TestConfigDoctorJSONReportsGitHubPollingStates(t *testing.T) {
 	cfg.GitHub.Polling.AssignedPRs.Enabled = false
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected status-only doctor to stay non-fatal, got %d:\n%s", code, out)
@@ -934,7 +940,7 @@ func TestConfigDoctorJSONWarnsOnHarnessEvolutionWithoutSelfMonitor(t *testing.T)
 	}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected the warning to stay non-fatal, got %d:\n%s", code, out)
@@ -958,7 +964,7 @@ func TestConfigDoctorJSONNoWarningWhenSelfMonitorEnabled(t *testing.T) {
 	cfg.SelfMonitor.Enabled = true
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected doctor to stay non-fatal, got %d:\n%s", code, out)
@@ -980,7 +986,7 @@ func TestConfigDoctorJSONReportsSandboxModeErrors(t *testing.T) {
 	cfg.Agent.SandboxMode = "definitely-not-valid"
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit for JSON doctor errors, output:\n%s", out)
@@ -1006,7 +1012,7 @@ func TestConfigDoctorJSONReportsIncompleteK8sSecretEnv(t *testing.T) {
 	}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit for an incomplete secret_env entry, output:\n%s", out)
@@ -1032,7 +1038,7 @@ func TestConfigDoctorJSONReportsAllMissingK8sSecretEnvFields(t *testing.T) {
 	}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit for an empty secret_env entry, output:\n%s", out)
@@ -1062,7 +1068,7 @@ func TestConfigDoctorJSONAcceptsCompleteK8sSecretEnv(t *testing.T) {
 	}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected a complete secret_env entry to stay non-fatal, got %d:\n%s", code, out)
@@ -1093,7 +1099,7 @@ func TestConfigDoctorJSONValidatesK8sSecretEnvRegardlessOfMode(t *testing.T) {
 	}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code == 0 {
 		t.Fatalf("expected mode: fake to still validate secret_env, output:\n%s", out)
@@ -1109,7 +1115,7 @@ func TestConfigDoctorJSONWarnsOnLowTTLWithDifferingFailedTTL(t *testing.T) {
 	cfg.Agent.K8sJobs.FailedTTL = 86400
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected a warning-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1133,7 +1139,7 @@ func TestConfigDoctorJSONAcceptsTypicalTTLDefaults(t *testing.T) {
 	cfg.Agent.K8sJobs.FailedTTL = 86400
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected typical TTL defaults to stay clean, got %d:\n%s", code, out)
@@ -1159,7 +1165,7 @@ func TestConfigDoctorJSONReportsWhitespaceOnlyK8sSecretEnvFields(t *testing.T) {
 	}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code == 0 {
 		t.Fatalf("expected a whitespace-only secret_key to be treated as missing, output:\n%s", out)
@@ -1181,7 +1187,7 @@ func TestConfigDoctorJSONAcceptsSupportedEnforceHosts(t *testing.T) {
 	cfg.Agent.SandboxMode = "enforce"
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected supported-host enforce config to stay non-fatal, got %d:\n%s", code, out)
@@ -1208,7 +1214,7 @@ func TestConfigDoctorJSONReportsConfigPermissionWarnings(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1238,7 +1244,7 @@ func TestConfigDoctorJSONAcceptsStricterConfigPermissions(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1274,7 +1280,7 @@ func TestConfigDoctorJSONReportsRoutingSummaryAndWarnings(t *testing.T) {
 	}}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only routing doctor to exit zero, got %d:\n%s", code, out)
@@ -1322,7 +1328,7 @@ func TestConfigDoctorWarnsOnNonRemappableConcreteFailoverModel(t *testing.T) {
 	cfg.Monitor.Model = "claude-fable-5"
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1351,7 +1357,7 @@ func TestConfigDoctorJSONWarnsOnABTestingWithoutEvaluation(t *testing.T) {
 	cfg.Evaluation.Enabled = false
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1375,7 +1381,7 @@ func TestConfigDoctorJSONWarnsOnRoutingWithoutEvaluation(t *testing.T) {
 	cfg.Evaluation.Enabled = false
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1405,7 +1411,7 @@ func TestConfigDoctorJSONNoExperimentEvaluationWarningWhenEvaluationEnabled(t *t
 	cfg.Evaluation.Enabled = true
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1434,7 +1440,7 @@ func TestConfigDoctorJSONWarnsOnStaleEvaluationReport(t *testing.T) {
 	cfg.Evaluation.Enabled = true
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1464,7 +1470,7 @@ func TestConfigDoctorJSONWarnsOnMissingEvaluationReport(t *testing.T) {
 	cfg.Evaluation.Enabled = true
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -3277,7 +3283,7 @@ func TestConfigDoctorReportsCapacity(t *testing.T) {
 	cfg.Providers.OpenCode.Enabled = false
 
 	_, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true, false)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 
 	var report configDoctorReport
@@ -3295,7 +3301,7 @@ func TestConfigDoctorReportsCapacity(t *testing.T) {
 	}
 
 	_, human := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, false, false)
+		return cmdConfigDoctor(cfg, false, false, nil)
 	})
 	if !strings.Contains(human, "provider capacity enabled: claude") {
 		t.Errorf("human output omits the capacity section:\n%s", human)

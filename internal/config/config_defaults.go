@@ -965,30 +965,48 @@ func (c *Config) InterventionsDir() string {
 }
 
 func Load() (*ResolvedConfig, error) {
-	return load(loadOptions{persistLoadReconciles: true})
+	cfg, _, err := load(loadOptions{persistLoadReconciles: true})
+	return cfg, err
 }
 
 // LoadNoPersist reads config.yaml and applies in-memory defaults/reconciles
 // without writing any migration back to disk. Reload paths use this to keep
 // their read-only contract and to preserve raw-editor formatting/comments.
 func LoadNoPersist() (*ResolvedConfig, error) {
-	return load(loadOptions{})
+	cfg, _, err := load(loadOptions{})
+	return cfg, err
+}
+
+// LoadLenient resolves config.yaml without failing on an unknown key, and
+// returns that key's error alongside the config rather than instead of it.
+//
+// Only a diagnostic may use this. `config doctor` exists to explain a config
+// an operator cannot get past, and refusing to run on one bad key made it
+// useless in exactly that case — reporting the key as a finding, next to every
+// other check, is the whole point. Everything that acts on the config still
+// fails closed via Load/LoadNoPersist.
+func LoadLenient() (cfg *ResolvedConfig, schemaErr, err error) {
+	return load(loadOptions{lenient: true})
 }
 
 type loadOptions struct {
 	persistLoadReconciles bool
+	lenient               bool
 }
 
-func load(opts loadOptions) (*ResolvedConfig, error) {
+func load(opts loadOptions) (resolvedCfg *ResolvedConfig, schemaErr, err error) {
 	path := configPath()
 	data, err := os.ReadFile(path)
 	existingFile := err == nil
 	var fileCfg *FileConfig
 	switch {
 	case existingFile:
-		fileCfg, err = ParseFileConfig(data)
+		fileCfg, schemaErr, err = parseFileConfigLenient(data)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
+		}
+		if schemaErr != nil && !opts.lenient {
+			return nil, nil, schemaErr
 		}
 		for _, warning := range fileCfg.Warnings() {
 			slog.Warn("config: deprecated schema v2 alias", "warning", warning)
@@ -996,11 +1014,11 @@ func load(opts loadOptions) (*ResolvedConfig, error) {
 	case os.IsNotExist(err):
 		if opts.persistLoadReconciles {
 			if writeErr := writeDefaultConfig(path); writeErr != nil {
-				return nil, writeErr
+				return nil, nil, writeErr
 			}
 		}
 	default:
-		return nil, err
+		return nil, nil, err
 	}
 	if opts.persistLoadReconciles {
 		tightenConfigPerms(path, existingFile)
@@ -1010,13 +1028,13 @@ func load(opts loadOptions) (*ResolvedConfig, error) {
 		ExistingFile:    existingFile,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := ValidateUnattendedPosture(resolved.Config); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	ensureServerAuthToken(resolved.Config, opts.persistLoadReconciles)
-	return resolved.Config, nil
+	return resolved.Config, schemaErr, nil
 }
 
 // AuthTokenPath is where sybra-server's generated bearer token is persisted
