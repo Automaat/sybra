@@ -6613,7 +6613,7 @@ steps:
     name: Gate
     type: wait_human
     config:
-      status: plan-review
+      status: human-required
       human_actions:
         - approve
     next:
@@ -6640,7 +6640,7 @@ steps:
     name: Gate Changed
     type: wait_human
     config:
-      status: plan-review
+      status: human-required
       human_actions:
         - approve
     next:
