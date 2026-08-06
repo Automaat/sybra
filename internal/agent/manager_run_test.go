@@ -122,7 +122,7 @@ func TestClaimTaskDispatch_ExpiresLeakedClaim(t *testing.T) {
 	}
 
 	m.mu.Lock()
-	m.dispatchClaims["task-1"] = time.Now().Add(-staleDispatchClaimAge - time.Minute)
+	m.dispatchClaims["task-1"] = time.Now().Add(-StaleDispatchClaimAge - time.Minute)
 	m.mu.Unlock()
 
 	if !m.ClaimTaskDispatch("task-1") {

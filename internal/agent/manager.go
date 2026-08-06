@@ -358,7 +358,13 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 // once dispatch finishes (success or failure) on a true return. This closes the
 // window between dispatch start and agent registration where a concurrent
 // dispatcher would otherwise see no running agent and start a duplicate.
-const staleDispatchClaimAge = 15 * time.Minute
+// StaleDispatchClaimAge bounds how long a dispatch claim is honoured before
+// it is treated as leaked and released. It is exported because callers that
+// wait out a contended claim must keep their retry window strictly under it:
+// the release is purely age-based and cannot tell a leaked claim from a live
+// holder, so a waiter that retries past this age can be granted a claim that
+// another dispatcher is still using.
+const StaleDispatchClaimAge = 15 * time.Minute
 
 func (m *Manager) ClaimTaskDispatch(taskID string) bool {
 	m.mu.Lock()
@@ -433,7 +439,7 @@ func (m *Manager) dispatchClaimHeldReadLocked(taskID string, now time.Time) (hel
 	if !held {
 		return false, false
 	}
-	if now.Sub(claimedAt) >= staleDispatchClaimAge {
+	if now.Sub(claimedAt) >= StaleDispatchClaimAge {
 		return false, true
 	}
 	return true, false

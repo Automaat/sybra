@@ -37,18 +37,27 @@ const (
 	humanReviewMaxAgentResult = 4000
 	humanReviewWindow         = time.Hour
 	humanReviewFallbackModel  = "haiku"
-	// humanReviewClaimRetryMax and humanReviewClaimRetryStep set the ladder
-	// that waits for a contended dispatch claim or a still-running agent.
+	// humanReviewClaimRetryMax and humanReviewClaimRetryStep set the quadratic
+	// ladder 8s, 32s, 72s, 2m8s, 3m20s, 4m48s, spanning 12m8s in total.
 	//
-	// It has to outlast what it waits for. The claim is now held across
-	// PrepareForTask — FetchOrigin, rebase, PushSync, and project setup
-	// commands with a five-minute batch timeout — and staleDispatchClaimAge is
-	// fifteen minutes. The previous 1s/4s/9s ladder gave up after fourteen
-	// seconds, so a task that flipped to human-required while its own setup
-	// was running exhausted every attempt inside that window and was never
-	// examined.
+	// Both ends of that span are load-bearing. The ladder has to outlast what
+	// it is waiting on: a claim is now held across PrepareForTask, whose
+	// project-setup batch alone runs up to five minutes, and the old 1s/4s/9s
+	// ladder gave up after fourteen seconds — inside the very preparation it
+	// was waiting on. It also has to stay strictly under
+	// agent.StaleDispatchClaimAge, whose release is purely age-based: a retry
+	// landing past that age can be handed a claim whose original holder is
+	// still preparing, putting two concurrent preparations on one worktree.
+	// Both bounds are pinned by tests.
 	humanReviewClaimRetryMax  = 6
-	humanReviewClaimRetryStep = 20 * time.Second
+	humanReviewClaimRetryStep = 8 * time.Second
+
+	// humanReviewStartupSweepAge bounds how far back the startup sweep looks
+	// for a park whose review never spawned. A restart cancels the scheduler
+	// context and silently drops any pending claim retry, so the ladder's own
+	// span plus a rebuild-and-restart is the window that matters; anything
+	// older was parked for reasons this sweep cannot infer.
+	humanReviewStartupSweepAge = 2 * time.Hour
 
 	// humanReviewMaxPerTaskPerWindow caps how many times a SINGLE task can
 	// spawn a review agent within humanReviewWindow. The global window
@@ -392,23 +401,26 @@ func lifecycleSchedule(ctx context.Context) func(time.Duration, func()) {
 }
 
 func (h *humanReviewHandler) scheduleClaimRetry(taskID, prevStatus string, opts humanReviewSpawnOptions) {
-	if opts.ClaimRetryAttempt >= humanReviewClaimRetryMax || h.schedule == nil {
-		// Exhaustion is terminal and nothing else re-triggers it:
+	if h.schedule == nil {
+		// Not exhaustion: no ladder ever ran, and one event asserting both
+		// would be unreadable.
+		h.logger.Warn("human-review.dispatch-claim.no-scheduler", "task_id", taskID)
+		return
+	}
+	if opts.ClaimRetryAttempt >= humanReviewClaimRetryMax {
+		// Terminal, and nothing else re-triggers it within this process:
 		// recoverStrandedUnblockedTasks only replays verdicts whose side
 		// effects failed, not spawns that never happened. Record it, or the
 		// only trace is an Info line.
 		h.logger.Warn("human-review.dispatch-claim.retries-exhausted",
-			"task_id", taskID, "attempts", opts.ClaimRetryAttempt, "scheduler", h.schedule != nil)
+			"task_id", taskID, "attempts", opts.ClaimRetryAttempt)
 		h.logAudit(audit.EventHumanReviewRetriesExhausted, taskID, "", map[string]any{
-			"attempts":  opts.ClaimRetryAttempt,
-			"scheduler": h.schedule != nil,
+			"attempts": opts.ClaimRetryAttempt,
 		})
 		return
 	}
 	next := opts
 	next.ClaimRetryAttempt++
-	// Quadratic: 20s, 80s, 3m, 5m20s, 8m20s, 12m, spanning 30m, which outlasts
-	// agent.staleDispatchClaimAge so even a leaked claim is reaped in time.
 	delay := time.Duration(next.ClaimRetryAttempt*next.ClaimRetryAttempt) * humanReviewClaimRetryStep
 	h.logger.Info("human-review.dispatch-claim.retry-scheduled",
 		"task_id", taskID, "attempt", next.ClaimRetryAttempt, "delay", delay)
@@ -892,6 +904,44 @@ func (h *humanReviewHandler) recoverStrandedUnblockedTasks() {
 		}
 		h.applyUnblockedRecovery(t, agentID, v, true)
 	}
+	h.respawnDroppedReviews(tasks)
+}
+
+// respawnDroppedReviews re-runs maybeSpawn for a recent park that never got a
+// review agent at all. A claim retry is armed on the scheduler context, which
+// BeginDrain cancels on every graceful shutdown and auto-update restart, and
+// lifecycleSchedule then drops the pending callback with no log and no audit.
+// Nothing above replays that: recoverStrandedUnblockedTasks needs a completed
+// verdict, and such a task has no human-review run to find one in, so it sits
+// at human-required untouched until somebody notices.
+//
+// Every eligibility rule stays inside maybeSpawn — umbrella, project, status,
+// and the verdict-rendered idempotency gate — so a park that was reviewed, or
+// was never eligible, is skipped there rather than re-decided here.
+func (h *humanReviewHandler) respawnDroppedReviews(tasks []task.Task) {
+	if h.tasks == nil {
+		return
+	}
+	for i := range tasks {
+		t := tasks[i]
+		if t.Status != task.StatusHumanRequired || hasHumanReviewRun(t) {
+			continue
+		}
+		if h.now().Sub(t.UpdatedAt) > humanReviewStartupSweepAge {
+			continue
+		}
+		h.logger.Info("human-review.startup-sweep.respawn", "task_id", t.ID, "parked_at", t.UpdatedAt)
+		h.maybeSpawn(t.ID, "")
+	}
+}
+
+func hasHumanReviewRun(t task.Task) bool {
+	for i := range t.AgentRuns {
+		if t.AgentRuns[i].Role == string(agent.RoleHumanReview) {
+			return true
+		}
+	}
+	return false
 }
 
 func recoveryReplayRejected(t task.Task, agentID string) bool {

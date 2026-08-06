@@ -275,8 +275,8 @@ func TestHumanReviewSpawn_ClaimConflictRetriesAfterRelease(t *testing.T) {
 	}
 	var scheduled func()
 	h.schedule = func(delay time.Duration, fn func()) {
-		if delay != humanReviewClaimRetryStep {
-			t.Fatalf("first retry delay = %s, want %s", delay, humanReviewClaimRetryStep)
+		if delay != 8*time.Second {
+			t.Fatalf("first retry delay = %s, want 8s", delay)
 		}
 		if scheduled != nil {
 			t.Fatal("claim conflict scheduled more than one retry")
@@ -3886,10 +3886,14 @@ func TestHumanReviewPrompt_HonorsCommitSigningPolicy(t *testing.T) {
 	}
 }
 
-// The ladder has to outlast what it waits for. A claim is now held across the
-// whole of PrepareForTask, whose setup batch alone may run five minutes, and
-// agent.staleDispatchClaimAge only reaps a leaked claim after fifteen.
-func TestScheduleClaimRetry_LadderOutlastsHeldClaim(t *testing.T) {
+// The ladder is bounded on both ends: long enough to outlast a claim held
+// across PrepareForTask (its setup batch alone runs five minutes), short
+// enough that no retry lands after agent.StaleDispatchClaimAge, where the
+// age-based release could hand it a claim a live holder is still using.
+//
+// Delays are pinned to literals, not to the constants under test, or a unit
+// typo in humanReviewClaimRetryStep passes by moving both sides at once.
+func TestScheduleClaimRetry_LadderIsBoundedOnBothEnds(t *testing.T) {
 	t.Parallel()
 	h, _, cleanup := newReviewTestEnv(t)
 	defer cleanup()
@@ -3904,19 +3908,24 @@ func TestScheduleClaimRetry_LadderOutlastsHeldClaim(t *testing.T) {
 	}
 	h.scheduleClaimRetry("t1", string(task.StatusInReview), opts)
 
-	if len(delays) != humanReviewClaimRetryMax {
-		t.Fatalf("scheduled %d retries, want %d then stop", len(delays), humanReviewClaimRetryMax)
+	want := []time.Duration{
+		8 * time.Second, 32 * time.Second, 72 * time.Second,
+		128 * time.Second, 200 * time.Second, 288 * time.Second,
+	}
+	if !slices.Equal(delays, want) {
+		t.Fatalf("ladder = %v, want %v", delays, want)
 	}
 	var span time.Duration
 	for _, d := range delays {
 		span += d
 	}
-	// 15m is agent.staleDispatchClaimAge, unexported from this package.
-	if span <= 15*time.Minute {
-		t.Errorf("ladder spans %s, gives up before a leaked claim is reaped", span)
+	// A project-setup batch alone can hold the claim for five minutes.
+	if span < 6*time.Minute {
+		t.Errorf("ladder spans %s, gives up while a normal preparation is still running", span)
 	}
-	if !slices.IsSorted(delays) {
-		t.Errorf("delays not increasing: %v", delays)
+	if span >= agent.StaleDispatchClaimAge {
+		t.Errorf("ladder spans %s, retries past the age-based claim release (%s)",
+			span, agent.StaleDispatchClaimAge)
 	}
 }
 
@@ -3987,5 +3996,129 @@ func TestScheduleClaimRetry_InProgressIsNotAudited(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Fatalf("first retry audited as exhausted: %+v", events)
+	}
+
+	// A handler with no scheduler ran no ladder at all, so calling that
+	// exhausted would give one event two incompatible meanings.
+	h.schedule = nil
+	h.scheduleClaimRetry("t2", string(task.StatusInReview), humanReviewSpawnOptions{})
+	events, err = audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Minute),
+		Until: time.Now().Add(time.Minute),
+		Type:  audit.EventHumanReviewRetriesExhausted,
+	})
+	if err != nil {
+		t.Fatalf("audit.Read: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("absent scheduler audited as exhausted: %+v", events)
+	}
+}
+
+// A pending claim retry is armed on the scheduler context, which every
+// graceful shutdown cancels, and lifecycleSchedule drops the callback without
+// a trace. Nothing else replays it — recoverStrandedUnblockedTasks needs a
+// completed verdict, and a task whose review never spawned has no run to hold
+// one — so the startup sweep is the only thing standing between a restart and
+// a park that is never examined.
+func TestRespawnDroppedReviews(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		parkedAgo   time.Duration
+		existingRun bool
+		wantSpawn   bool
+	}{
+		{name: "recent park with no review respawns", parkedAgo: time.Minute, wantSpawn: true},
+		{name: "park already reviewed is left alone", parkedAgo: time.Minute, existingRun: true},
+		{name: "park older than the sweep window is left alone", parkedAgo: 3 * time.Hour},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h, tasks, cleanup := newReviewTestEnv(t)
+			defer cleanup()
+
+			tk, err := tasks.Create("dropped review", "", task.AgentModeHeadless)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+				"project_id": "Automaat/sybra",
+				"status":     string(task.StatusHumanRequired),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.existingRun {
+				if err := tasks.AddRun(tk.ID, task.AgentRun{
+					AgentID: "prior", Role: string(agent.RoleHumanReview),
+					State: string(agent.StateStopped),
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Age the park by moving the clock, not the file: UpdatedAt is
+			// rewritten by every store mutation above.
+			h.now = func() time.Time { return time.Now().Add(tc.parkedAgo) }
+
+			h.prepareTaskWorktree = func(task.Task) (string, error) { return t.TempDir(), nil }
+			spawned := 0
+			h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+				spawned++
+				return &agent.Agent{ID: "swept", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+			}}
+
+			all, err := tasks.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.respawnDroppedReviews(all)
+
+			want := 0
+			if tc.wantSpawn {
+				want = 1
+			}
+			if spawned != want {
+				t.Errorf("sweep spawned %d reviews, want %d", spawned, want)
+			}
+		})
+	}
+}
+
+// The sweep only helps if startup actually reaches it, and startup reaches it
+// through recoverStrandedUnblockedTasks — which returns early on several
+// guards before the verdict replay it was originally written for.
+func TestRecoverStrandedUnblockedTasks_RunsTheSweep(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("dropped review", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.dispatchFromHumanRequired = func(id, _, _, _ string) (task.Task, error) {
+		return tasks.Get(id)
+	}
+	h.prepareTaskWorktree = func(task.Task) (string, error) { return t.TempDir(), nil }
+	spawned := 0
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		spawned++
+		return &agent.Agent{ID: "swept", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	h.recoverStrandedUnblockedTasks()
+
+	if spawned != 1 {
+		t.Errorf("startup recovery spawned %d reviews for a never-reviewed park, want 1", spawned)
 	}
 }
