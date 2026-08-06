@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/buildcache"
+	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/gitexec"
@@ -143,7 +144,9 @@ type Scanner struct {
 	tasks     TaskLister
 	protected *ProtectedStore
 	// now is the injectable clock; defaults to time.Now.
-	now func() time.Time
+	// clock drives the retention window. Read without a lock; set once at
+	// construction or during test setup.
+	clock clock.Clock
 	// externalRunner is the injectable external-bucket probe; defaults to
 	// shelling out to `docker system df`.
 	externalRunner func() (string, error)
@@ -152,7 +155,7 @@ type Scanner struct {
 // NewScanner builds a Scanner over cfg's resolved directories and tasks
 // (typically the CLI's live task.Manager, or a fake in tests).
 func NewScanner(cfg *config.Config, tasks TaskLister) *Scanner {
-	return &Scanner{cfg: cfg, tasks: tasks, protected: DefaultProtectedStore(), now: time.Now}
+	return &Scanner{cfg: cfg, tasks: tasks, protected: DefaultProtectedStore(), clock: clock.System{}}
 }
 
 type snapshot struct {
@@ -478,7 +481,7 @@ func (s *Scanner) ageEligible(bucketName, path string, opts Options) (ok bool, r
 	if opts.OlderThan > 0 {
 		retention = opts.OlderThan
 	}
-	if s.now().Sub(info.ModTime()) < retention {
+	if s.nowTime().Sub(info.ModTime()) < retention {
 		return false, "within retention window"
 	}
 	return true, "past retention"
@@ -589,7 +592,7 @@ func (s *Scanner) scanSandboxes(snap snapshot) Bucket {
 			continue
 		}
 		taskID := sandboxTaskIDFromDir(e.Name())
-		if ok, _ := eligible(snap, taskID, p, retention, disabled, s.now()); !ok {
+		if ok, _ := eligible(snap, taskID, p, retention, disabled, s.nowTime()); !ok {
 			continue
 		}
 		if s.sandboxWorktreeHasUnpushedCommits(snap, taskID) {
@@ -622,7 +625,7 @@ func (s *Scanner) scanGoBuildCache(snap snapshot) Bucket {
 		if isSymlink(p) {
 			continue
 		}
-		if ok, _ := eligible(snap, e.Name(), p, retention, disabled, s.now()); !ok {
+		if ok, _ := eligible(snap, e.Name(), p, retention, disabled, s.nowTime()); !ok {
 			continue
 		}
 		size, err := dirSize(p)
@@ -653,7 +656,7 @@ func (s *Scanner) scanWorktrees(snap snapshot, opts Options) Bucket {
 			continue
 		}
 		taskID := taskIDFromWorktreeDir(e.Name())
-		if ok, _ := eligible(snap, taskID, p, retention, disabled, s.now()); !ok {
+		if ok, _ := eligible(snap, taskID, p, retention, disabled, s.nowTime()); !ok {
 			continue
 		}
 		if hasUnpushedCommits(p) {
@@ -812,7 +815,7 @@ func (s *Scanner) revalidate(bucketName, path string, snap snapshot, opts Option
 		if bucketName == BucketSandboxes {
 			taskID = sandboxTaskIDFromDir(taskID)
 		}
-		if ok, reason := eligible(snap, taskID, path, retention, disabled, s.now()); !ok {
+		if ok, reason := eligible(snap, taskID, path, retention, disabled, s.nowTime()); !ok {
 			return false, reason
 		}
 		if bucketName == BucketSandboxes && s.sandboxWorktreeHasUnpushedCommits(snap, taskID) {
@@ -822,7 +825,7 @@ func (s *Scanner) revalidate(bucketName, path string, snap snapshot, opts Option
 	case BucketWorktrees:
 		retention, disabled := s.sandboxRetention()
 		taskID := taskIDFromWorktreeDir(filepath.Base(path))
-		if ok, reason := eligible(snap, taskID, path, retention, disabled, s.now()); !ok {
+		if ok, reason := eligible(snap, taskID, path, retention, disabled, s.nowTime()); !ok {
 			return false, reason
 		}
 		if hasUnpushedCommits(path) {
@@ -838,3 +841,5 @@ func (s *Scanner) revalidate(bucketName, path string, snap snapshot, opts Option
 		return false, "unhandled bucket"
 	}
 }
+
+func (s *Scanner) nowTime() time.Time { return clock.Or(s.clock).Now() }

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/providerid"
 )
@@ -95,8 +96,13 @@ type Checker struct {
 	probeCodex    func(ctx context.Context) (Status, error)
 	probeCopilot  func(ctx context.Context) (Status, error)
 	probeOpenCode func(ctx context.Context) (Status, error)
-	now           func() time.Time
+
+	// clock drives the rate-limit cooldown windows. Set once at construction
+	// (or by a test during setup) and read without the mutex.
+	clock clock.Clock
 }
+
+func (c *Checker) now() time.Time { return clock.Or(c.clock).Now() }
 
 // New constructs a Checker. Zero-value config fields are filled with defaults.
 func New(cfg Config, emit func(string, any), logger *slog.Logger) *Checker {
@@ -134,7 +140,7 @@ func New(cfg Config, emit func(string, any), logger *slog.Logger) *Checker {
 		probeCodex:    ProbeCodex,
 		probeCopilot:  ProbeCopilot,
 		probeOpenCode: ProbeOpenCode,
-		now:           time.Now,
+		clock:         clock.System{},
 	}
 	// Seed defaults so Snapshot returns something meaningful before first probe.
 	// Healthy is always seeded false, even for an enabled provider: "enabled"

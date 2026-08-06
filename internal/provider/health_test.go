@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/clock"
 )
 
 func TestParseClaudeAuthStatus(t *testing.T) {
@@ -407,10 +409,10 @@ func TestProbeOnce_ClearsSeedBeforeGateWiring(t *testing.T) {
 	}
 }
 
-func newTestChecker(t *testing.T) (*Checker, *fakeEmitter, *fakeClock) {
+func newTestChecker(t *testing.T) (*Checker, *fakeEmitter, *clock.Fake) {
 	t.Helper()
 	fe := &fakeEmitter{}
-	clock := &fakeClock{t: time.Unix(1_700_000_000, 0).UTC()}
+	fake := clock.NewFake(time.Unix(1_700_000_000, 0).UTC())
 	c := New(Config{
 		Interval:         time.Minute,
 		ClaudeEnabled:    true,
@@ -419,25 +421,8 @@ func newTestChecker(t *testing.T) (*Checker, *fakeEmitter, *fakeClock) {
 		ClaudeRLCooldown: 15 * time.Minute,
 		CodexRLCooldown:  15 * time.Minute,
 	}, fe.emit, nil)
-	c.now = clock.Now
-	return c, fe, clock
-}
-
-type fakeClock struct {
-	mu sync.Mutex
-	t  time.Time
-}
-
-func (f *fakeClock) Now() time.Time {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.t
-}
-
-func (f *fakeClock) advance(d time.Duration) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.t = f.t.Add(d)
+	c.clock = fake
+	return c, fe, fake
 }
 
 func TestChecker_FlipsOnFailure(t *testing.T) {
@@ -542,7 +527,7 @@ func TestChecker_ProbeSuccessResetsProbeErrorStreak(t *testing.T) {
 }
 
 func TestChecker_SuppressedProbeErrorAdvancesLastCheck(t *testing.T) {
-	c, _, clock := newTestChecker(t)
+	c, _, fake := newTestChecker(t)
 	c.probeClaude = func(context.Context) (Status, error) {
 		return Status{Provider: "claude", Healthy: true, Reason: "ok"}, nil
 	}
@@ -553,7 +538,7 @@ func TestChecker_SuppressedProbeErrorAdvancesLastCheck(t *testing.T) {
 	c.checkAll(ctx)
 	healthyAt := c.Snapshot()["claude"].LastCheck
 
-	clock.advance(time.Minute)
+	fake.Advance(time.Minute)
 	c.probeClaude = func(context.Context) (Status, error) {
 		return Status{}, errors.New("context deadline exceeded")
 	}
@@ -719,13 +704,13 @@ func TestChecker_LivenessOnlyProbeDoesNotClearPassiveAuthFailure(t *testing.T) {
 }
 
 func TestChecker_RateLimitExpires(t *testing.T) {
-	c, _, clock := newTestChecker(t)
+	c, _, fake := newTestChecker(t)
 	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
 	c.ReportRateLimit("claude", 10*time.Minute, "rate_limit_error", CooldownFromConfig)
 	if c.IsHealthy("claude") {
 		t.Fatalf("claude should be rate-limited")
 	}
-	clock.advance(11 * time.Minute)
+	fake.Advance(11 * time.Minute)
 	c.clearExpiredRateLimits()
 	if !c.IsHealthy("claude") {
 		t.Fatalf("rate-limit window should have expired")
@@ -794,7 +779,7 @@ func TestChecker_FlapEmitsPerFlipNotPerProbe(t *testing.T) {
 // regression that cleared the window on successful probe would release the
 // gate early and let the agent hit the real rate limit again.
 func TestChecker_ProbeHealthyPreservesActiveRateLimit(t *testing.T) {
-	c, _, clock := newTestChecker(t)
+	c, _, fake := newTestChecker(t)
 	c.setStatus("claude", Status{Provider: "claude", Healthy: true, Reason: "ok"}, true)
 
 	// Mark rate-limited for 10m.
@@ -804,7 +789,7 @@ func TestChecker_ProbeHealthyPreservesActiveRateLimit(t *testing.T) {
 	}
 
 	// Advance only 1 minute, well within the window.
-	clock.advance(1 * time.Minute)
+	fake.Advance(1 * time.Minute)
 
 	// Simulate an active probe that would otherwise flip us to healthy —
 	// the window must override it.
@@ -824,7 +809,7 @@ func TestChecker_ProbeHealthyPreservesActiveRateLimit(t *testing.T) {
 	}
 
 	// Advance past the window; clearExpiredRateLimits must release.
-	clock.advance(20 * time.Minute)
+	fake.Advance(20 * time.Minute)
 	c.clearExpiredRateLimits()
 	if !c.IsHealthy("claude") {
 		t.Errorf("claude should be healthy after rate-limit window expires")
