@@ -1819,7 +1819,20 @@ func (r *Handler) parkOrEscalateBranchConflictDispatchFailure(taskID string, dis
 	return false
 }
 
+// worktreeBusyTransient reports whether a worktree entry point refused only
+// because something else currently owns the path — a live agent, or another
+// mutating operation mid-flight. Both clear on their own within one poll
+// interval, so neither may count toward the worktree-failure circuit breaker
+// (wtFailureLimit refusals escalate the task to human-required).
+func worktreeBusyTransient(err error) bool {
+	return errors.Is(err, worktree.ErrAgentRunning) || errors.Is(err, worktree.ErrPreparationInFlight)
+}
+
 func (r *Handler) parkOrEscalateBranchFixFailure(taskID string, wtErr error) bool {
+	if worktreeBusyTransient(wtErr) {
+		r.logger.Info("pr-monitor.branch-conflict.busy", "task_id", taskID, "err", wtErr)
+		return true
+	}
 	if r.dropTerminalWorktreeFailure(taskID, wtErr) {
 		return false
 	}
@@ -2072,8 +2085,8 @@ func (r *Handler) prepareWorktree(ctx context.Context, t task.Task, issue github
 		d, wtErr = r.worktrees.PrepareForTask(ctx, t, nil)
 	}
 	if wtErr != nil {
-		if errors.Is(wtErr, worktree.ErrAgentRunning) {
-			r.logger.Warn("pr-monitor.worktree.agent-running", "task_id", t.ID, "err", wtErr)
+		if worktreeBusyTransient(wtErr) {
+			r.logger.Warn("pr-monitor.worktree.busy", "task_id", t.ID, "err", wtErr)
 			return "", false
 		}
 		if errors.Is(wtErr, project.ErrBranchDiverged) {

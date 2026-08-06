@@ -614,6 +614,15 @@ func (e *Engine) execPromoteBestOfN(taskID string, step *Step) (StepOutput, erro
 
 	canonicalDir, promErr := e.attemptWorktrees.PromoteAttempt(taskID, winner.Dir, winner.Branch)
 	if promErr != nil {
+		// The fail-closed reasons above are all judgements a human must make.
+		// A canonical path another mutating operation currently owns is not
+		// one: it frees itself, and this step is resumable, so return the
+		// error and let the next tick re-enter rather than park a human on a
+		// condition that will be gone by the time they look.
+		if e.transientOrShutdownStartError(promErr) {
+			e.logger.Info("workflow.best-of-n.promote.deferred", "task_id", taskID, "step", step.ID, "err", promErr)
+			return StepOutput{}, promErr
+		}
 		return e.humanRequiredStepOutput(taskID, step, promErr.Error())
 	}
 	// Downstream steps (e.g. a shell step pushing the now-canonical branch)

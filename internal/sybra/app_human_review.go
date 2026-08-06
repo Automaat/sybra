@@ -353,7 +353,9 @@ func (h *humanReviewHandler) dispatchDir(t task.Task) (dir string, readOnly, ret
 // read-only fallback is for a task that genuinely has no worktree, where
 // diagnosing Sybra itself is the whole job.
 func isRetryablePrepareError(err error) bool {
-	return errors.Is(err, worktree.ErrAgentRunning) || errors.Is(err, worktree.ErrTransientFetch)
+	return errors.Is(err, worktree.ErrAgentRunning) ||
+		errors.Is(err, worktree.ErrPreparationInFlight) ||
+		errors.Is(err, worktree.ErrTransientFetch)
 }
 
 // maybeSpawn is called from the status hook when a task lands in

@@ -114,6 +114,11 @@ func ClassifyAgentStartFailure(err error) AgentStartFailure {
 		// isDeferredNotFailed for why it still never feeds the breaker).
 		out.Reason = textutil.TruncateBytesTotal("work paused: machine under resource pressure — "+resourcePressureDetail(err), startReasonMaxLen, "...")
 		return out
+	case errors.Is(err, worktreeerr.ErrPreparationInFlight):
+		// Transient: another mutating worktree operation owns this path. It
+		// releases when it finishes and the next ResumeStalled tick redispatches
+		// — same treatment as ErrAgentRunning below, no reason, no escalation.
+		return out
 	case errors.Is(err, worktreeerr.ErrAgentRunning):
 		// Transient: PrepareForTask refused to rebase a worktree a tracked
 		// agent is still live in. The agent's own completion (or a later
@@ -234,6 +239,7 @@ func transientAgentStartError(err error) bool {
 		errors.Is(err, ErrResourcePressure) ||
 		errors.Is(err, worktreeerr.ErrTransientFetch) ||
 		errors.Is(err, worktreeerr.ErrAgentRunning) ||
+		errors.Is(err, worktreeerr.ErrPreparationInFlight) ||
 		errors.Is(err, provider.ErrProviderUnhealthy)
 }
 
