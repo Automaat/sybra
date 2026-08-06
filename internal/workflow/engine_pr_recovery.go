@@ -33,7 +33,13 @@ func (e *Engine) maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID string, curr
 	if wfExec != nil && wfExec.LastAgentStepFailed() {
 		return nil, false, nil
 	}
-	if !looksLikeAlreadyFixedOnMainVerdict(duplicateSignal) {
+	alreadyFixed, err := declaresAlreadyFixedOnMain(duplicateSignal)
+	if err != nil {
+		// Stay parked: guessing from the prose of a run that already failed to declare is the behaviour this replaces.
+		e.logger.Warn("workflow.human-required.duplicate-recovery.unreadable-verdict", "task_id", taskID, "err", err)
+		return nil, false, nil
+	}
+	if !alreadyFixed {
 		return nil, false, nil
 	}
 	if e.worktrees == nil {
@@ -164,29 +170,6 @@ func isMissingLivePRVerificationBlocker(reason string) bool {
 		strings.Contains(r, "required live") ||
 		strings.Contains(r, "live pr-monitor") ||
 		strings.Contains(r, "live proof")
-}
-
-func looksLikeAlreadyFixedOnMainVerdict(reason string) bool {
-	lower := strings.ToLower(strings.TrimSpace(reason))
-	if lower == "" {
-		return false
-	}
-	fixedSignal := strings.Contains(lower, "already fixed") ||
-		strings.Contains(lower, "already on main") ||
-		strings.Contains(lower, "already merged") ||
-		strings.Contains(lower, "already landed") ||
-		strings.Contains(lower, "already satisfied") ||
-		strings.Contains(lower, "duplicate task")
-	mainSignal := strings.Contains(lower, "main") ||
-		strings.Contains(lower, "origin/main") ||
-		strings.Contains(lower, "upstream") ||
-		strings.Contains(lower, "origin")
-	closeSignal := strings.Contains(lower, "no pr needed") ||
-		strings.Contains(lower, "no pr required") ||
-		strings.Contains(lower, "safe to close") ||
-		strings.Contains(lower, "mark done") ||
-		strings.Contains(lower, "mark as done")
-	return fixedSignal && (mainSignal || closeSignal)
 }
 
 func (e *Engine) branchAlreadySatisfiedOnMain(taskID, wtPath string, t TaskInfo) (bool, error) {

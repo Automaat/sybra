@@ -114,6 +114,20 @@ steps:
 
         Before finishing, re-check your change against a short checklist:
         tests updated, edge cases covered, no leftover debug code.
+
+        If you conclude the requested change is already present on the base
+        branch and this task is a duplicate that needs no PR, say so in a
+        machine-readable block at the end of your final response, and only
+        then:
+
+        ```sybra-recovery
+        {"decision": "already-fixed-on-main", "reason": "<one sentence>"}
+        ```
+
+        Emit that block only when you made no commits and the change is
+        genuinely already on the base branch. In every other case either omit
+        the block or emit `{"decision": "none"}`. Describing the situation in
+        prose alone is not a declaration and will leave the task for a human.
         {{- if .Task.PlanContract}}
 
         ## Executable Plan Contract
