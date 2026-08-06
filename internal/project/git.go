@@ -480,7 +480,7 @@ func DefaultBranch(ctx context.Context, barePath string) (string, error) {
 	// to a guard, so a project record with no clone_path would compare a real
 	// branch against an unrelated repository's instead of failing.
 	if strings.TrimSpace(barePath) == "" {
-		return "", errors.New("resolve default branch: project has no clone path")
+		return "", errors.New("project has no clone path")
 	}
 	ref, err := outputBare(ctx, barePath, "symbolic-ref", "HEAD")
 	if err != nil {

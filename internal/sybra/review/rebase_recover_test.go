@@ -284,7 +284,7 @@ func setupRebaseRecoveryHandler(t *testing.T, withConflictWorkflow bool) (*Handl
 	// feature/recover against itself.
 	clone := filepath.Join(tmp, "clone.git")
 	runGit(t, "", "clone", "--bare", repo, clone)
-	runGit(t, clone, "symbolic-ref", "HEAD", "refs/heads/main")
+	runGit(t, clone, "-c", "safe.bareRepository=all", "symbolic-ref", "HEAD", "refs/heads/main")
 
 	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
 	if err != nil {
