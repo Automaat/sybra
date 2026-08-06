@@ -452,6 +452,12 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 		// be advanced by the deferred event itself, not by the sweep.
 		a.replayDeferredStatusChanges() //nolint:contextcheck // same engine chain as initStatusHook, which binds its own e.ctx; see Startup's contextcheck note
 		a.nudgeDispatch()
+		// After the nudge, never before it: this sweeps parks whose review
+		// spawn a previous shutdown dropped, and each one prepares a worktree.
+		// Ahead of arming, it delays every live task by its own setup time.
+		if a.humanReview != nil {
+			go a.humanReview.RespawnDroppedReviews(schedulerCtx)
+		}
 		lm.StartManagers(schedulerCtx, emit)
 		lm.StartPollers(schedulerCtx, emit, issuesFetcher)
 	})

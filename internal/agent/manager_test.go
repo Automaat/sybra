@@ -854,7 +854,7 @@ func TestHasRunningAgentForTask_ExpiresStaleDispatchClaim(t *testing.T) {
 	m, _ := newTestManager(t)
 
 	m.mu.Lock()
-	m.dispatchClaims["t1"] = time.Now().Add(-staleDispatchClaimAge - time.Minute)
+	m.dispatchClaims["t1"] = time.Now().Add(-StaleDispatchClaimAge - time.Minute)
 	m.mu.Unlock()
 
 	if m.HasRunningAgentForTask("t1") {
@@ -1036,7 +1036,7 @@ func TestHasOtherRunningAgentForTask_ExpiresStaleDispatchClaim(t *testing.T) {
 	running := &Agent{ID: "a1", TaskID: "t1", State: StateRunning, cancel: func() {}}
 	m.mu.Lock()
 	m.agents["a1"] = running
-	m.dispatchClaims["t1"] = time.Now().Add(-staleDispatchClaimAge - time.Minute)
+	m.dispatchClaims["t1"] = time.Now().Add(-StaleDispatchClaimAge - time.Minute)
 	m.mu.Unlock()
 
 	if m.HasOtherRunningAgentForTask("t1", "a1") {
