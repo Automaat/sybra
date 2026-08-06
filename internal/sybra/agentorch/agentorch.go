@@ -1070,21 +1070,14 @@ func (o *Orchestrator) revertToTodoAfterGateBlock(taskID, logSuffix string) {
 }
 
 func (o *Orchestrator) resetWorktreeForCleanRetry(ctx context.Context, t task.Task, ref string) error {
-	resetDir := t.WorktreeDir
-	if resetDir == "" {
-		resetDir = o.worktrees.PathFor(t)
-	}
-	if _, statErr := os.Stat(resetDir); statErr != nil {
-		if os.IsNotExist(statErr) {
-			return nil
-		}
-		return fmt.Errorf("stat clean retry worktree: %w", statErr)
-	}
-	if err := project.ResetWorktreeForRetry(ctx, resetDir, ref); err != nil {
-		o.logger.Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", resetDir, "ref", ref, "err", err)
+	target, reset, err := o.worktrees.ResetForRetry(ctx, t, "", ref)
+	if err != nil {
+		o.logger.Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref, "err", err)
 		return err
 	}
-	o.logger.Info("worktree.clean-retry.reset", "task_id", t.ID, "path", resetDir, "ref", ref)
+	if reset {
+		o.logger.Info("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref)
+	}
 	return nil
 }
 

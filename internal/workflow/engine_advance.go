@@ -13,6 +13,8 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/reviewbudget"
+	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 const triageRetryableStatusReasonPrefix = "triage retryable: "
@@ -68,14 +70,14 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	wfExec.RecordStep(StepRecord{
 		StepID:    output.StepID,
 		Status:    output.Status,
-		Output:    truncate(output.Output, 4000),
+		Output:    textutil.TruncateBytes(output.Output, 4000, "\n... (truncated)"),
 		AgentID:   output.AgentID,
 		Provider:  output.Provider,
 		StartedAt: now,
 		EndedAt:   now,
 	})
 
-	if ctx.Task.Status == "done" || ctx.Task.Status == "cancelled" {
+	if ctx.Task.Status == taskstatus.Done || ctx.Task.Status == taskstatus.Cancelled {
 		// The task itself already landed a terminal status out-of-band (e.g.
 		// an agent's own tool call, or a merged/closed PR) independently of
 		// this Execution ever reaching ExecCompleted/ExecFailed. Persist the
@@ -100,7 +102,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		clearWatchdogRetryCounters(wfExec, output.StepID)
 	}
 	if output.Output != "" {
-		wfExec.SetVar("step."+output.StepID+".output", truncate(output.Output, 2000))
+		wfExec.SetVar("step."+output.StepID+".output", textutil.TruncateBytes(output.Output, 2000, "\n... (truncated)"))
 		// Extract the adversarial test verdict from the UNtruncated output and
 		// stash it in a tiny dedicated var. The verdict marker sits on the final
 		// line and would otherwise be lost to the 2000-byte prefix truncation
@@ -147,7 +149,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	// require_evidence gate does not block an otherwise-complete task. In the
 	// multi-pass posture the follow-up review re-records fresh evidence itself,
 	// so this refresh is scoped to the single-pass route only.
-	if e.reviewLoopDisabled && currentStep.Config.Role == "fix-review" && output.Status == "completed" {
+	if e.reviewLoopDisabled.Load() && currentStep.Config.Role == "fix-review" && output.Status == "completed" {
 		e.refreshReviewEvidenceFreshness(taskID)
 	}
 
@@ -188,7 +190,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 // through to blockRetryExhaustedTriageIfNeeded's triage instead of an
 // onExhausted callback owning the escalation outright.
 func (e *Engine) retryFailedStepIfConfigured(taskID string, def *Definition, currentStep *Step, wfExec *Execution, task TaskInfo, output StepOutput, release func()) (handled bool, err error) {
-	if output.Status != "failed" || currentStep.Config.MaxRetries == 0 || task.Status == "human-required" {
+	if output.Status != "failed" || currentStep.Config.MaxRetries == 0 || task.Status == taskstatus.HumanRequired {
 		return false, nil
 	}
 	retries := wfExec.CountStep(output.StepID)
@@ -234,7 +236,10 @@ func (e *Engine) reloadTaskAndCheckImplementRetry(taskID string, currentStep *St
 		return t, parked, nil, err
 	}
 	var recovered bool
-	comp, recovered, err = e.maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID, currentStep, wfExec, t, output, output.Output)
+	// t was reloaded above, so its reason is the one this run set when it
+	// self-escalated. The run's own response text is deliberately not a
+	// declaration channel — see maybeRecoverHumanRequiredAlreadyFixedOnMain.
+	comp, recovered, err = e.maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID, currentStep, wfExec, t, output, t.StatusReason)
 	if recovered || err != nil {
 		return t, false, comp, err
 	}
@@ -663,12 +668,12 @@ func (e *Engine) recordSyncStepOutput(taskID string, step *Step, wfExec *Executi
 	wfExec.RecordStep(StepRecord{
 		StepID:    step.ID,
 		Status:    output.Status,
-		Output:    truncate(output.Output, 4000),
+		Output:    textutil.TruncateBytes(output.Output, 4000, "\n... (truncated)"),
 		StartedAt: now,
 		EndedAt:   now,
 	})
 	if output.Output != "" {
-		wfExec.SetVar("step."+step.ID+".output", truncate(output.Output, 2000))
+		wfExec.SetVar("step."+step.ID+".output", textutil.TruncateBytes(output.Output, 2000, "\n... (truncated)"))
 	}
 
 	// Re-read task for latest state (set_status changes task).
@@ -887,21 +892,21 @@ func (e *Engine) transitionFields(t TaskInfo, wfExec *Execution) map[string]stri
 	// review cycle runs, so an engine built without SetReviewUntilClean
 	// follows the documented default instead of silently shipping
 	// single-pass review.
-	fields["config.review_until_clean"] = strconv.FormatBool(!e.reviewLoopDisabled)
-	fields["task.review_budget_exceeded"] = strconv.FormatBool(e.reviewBudgetExceeded(t))
+	fields["config.review_until_clean"] = strconv.FormatBool(!e.reviewLoopDisabled.Load())
+	hourlyExceeded, lifetimeExceeded := e.reviewBudgetExhaustion(t)
+	fields["task.review_budget_exceeded"] = strconv.FormatBool(hourlyExceeded || lifetimeExceeded)
+	fields["task.review_lifetime_exceeded"] = strconv.FormatBool(lifetimeExceeded)
 	return fields
 }
 
-// reviewBudgetExceeded reports whether t has spent its shared review budget —
-// the same reviewbudget.Budget the inbound PR-review dispatcher
-// (internal/sybra's app_orchestrator.go) enforces, so a runaway
-// review→fix→review cycle inside simple-task-review trips the same hourly or
-// lifetime caps rather than a separate per-workflow-execution counter.
-func (e *Engine) reviewBudgetExceeded(t TaskInfo) bool {
-	if e.reviewLoopDisabled {
-		return false
+// reviewBudgetExhaustion preserves which limit fired so workflows can park a
+// temporary hourly throttle differently from a permanent lifetime ceiling.
+// It uses the same reviewbudget.Budget as the inbound PR-review dispatcher.
+func (e *Engine) reviewBudgetExhaustion(t TaskInfo) (hourly, lifetime bool) {
+	if e.reviewLoopDisabled.Load() {
+		return false, false
 	}
-	limit := e.reviewRoundsPerHour
+	limit := int(e.reviewRoundsPerHour.Load())
 	if limit == 0 {
 		limit = config.DefaultReviewRoundsPerHour
 	}
@@ -910,7 +915,8 @@ func (e *Engine) reviewBudgetExceeded(t TaskInfo) bool {
 	for i := range t.AgentRuns {
 		runs[i] = reviewbudget.Run{Role: t.AgentRuns[i].Role, StartedAt: t.AgentRuns[i].StartedAt}
 	}
-	return budget.Exhausted(runs, time.Now())
+	now := time.Now()
+	return budget.HourlyExceeded(runs, now), budget.LifetimeExceeded(runs)
 }
 
 // maxCascadeDepth bounds how many workflows may chain synchronously off a
@@ -961,7 +967,7 @@ func taskFields(t TaskInfo) map[string]string {
 	fields := map[string]string{
 		"task.id":                      t.ID,
 		"task.title":                   t.Title,
-		"task.status":                  t.Status,
+		"task.status":                  string(t.Status),
 		"task.status_reason":           t.StatusReason,
 		"task.role":                    t.Role,
 		"task.tags":                    strings.Join(t.Tags, ","),
@@ -1013,7 +1019,7 @@ func (e *Engine) blockRetryExhaustedTriageIfNeeded(taskID string, step *Step, wf
 	if reason == "" {
 		return false, nil
 	}
-	if err := e.tasks.UpdateTaskBlocker(taskID, "blocked", reason, blocker.State{
+	if err := e.tasks.UpdateTaskBlocker(taskID, taskstatus.Blocked, reason, blocker.State{
 		Kind:       blocker.KindTriageRetryExhausted,
 		Actor:      blocker.ActorWorkflow,
 		Code:       "triage_retryable",
@@ -1036,9 +1042,9 @@ func (e *Engine) blockRetryExhaustedPlanningIfNeeded(taskID string, def *Definit
 	role := step.Config.Role
 	reason := fmt.Sprintf("planning %s retry budget exhausted after %d attempt(s)", role, attempts)
 	if trimmed := strings.TrimSpace(output); trimmed != "" {
-		reason += ": " + truncate(trimmed, 500)
+		reason += ": " + textutil.TruncateBytes(trimmed, 500, "\n... (truncated)")
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return true, err
 	}
 	now := time.Now().UTC()
@@ -1046,11 +1052,4 @@ func (e *Engine) blockRetryExhaustedPlanningIfNeeded(taskID string, def *Definit
 	wfExec.CompletedAt = &now
 	wfExec.CurrentStep = ""
 	return true, e.tasks.SetWorkflow(taskID, wfExec)
-}
-
-func truncate(s string, limit int) string {
-	if len(s) <= limit {
-		return s
-	}
-	return s[:limit] + "\n... (truncated)"
 }

@@ -10,6 +10,7 @@ const (
 	loopStopPrefix             = "watchdog: loop stop"
 	budgetStopPrefix           = "watchdog: budget stop"
 	rateLimitPrefix            = "watchdog: rate limit"
+	silentHangPrefix           = "watchdog: silent hang"
 	rewardHackingPrefix        = "watchdog: reward_hacking"
 	rewardHackingRetryPrefix   = "watchdog: reward-hacking retry"
 	verifyFailedPrefix         = "watchdog: verify suite still fails after loop stop:"
@@ -24,6 +25,7 @@ const (
 	KindLoopStop           Kind = "loop_stop"
 	KindBudgetStop         Kind = "budget_stop"
 	KindRateLimit          Kind = "rate_limit"
+	KindSilentHang         Kind = "silent_hang"
 	KindRewardHacking      Kind = "reward_hacking"
 	KindRewardHackingRetry Kind = "reward_hacking_retry"
 	KindVerifyFailed       Kind = "verify_failed"
@@ -58,6 +60,10 @@ func Parse(reason string) Parsed {
 		return Parsed{Kind: KindRateLimit}
 	case strings.HasPrefix(reason, rateLimitPrefix+":"):
 		return Parsed{Kind: KindRateLimit, Detail: strings.TrimSpace(strings.TrimPrefix(reason, rateLimitPrefix+":"))}
+	case reason == silentHangPrefix:
+		return Parsed{Kind: KindSilentHang}
+	case strings.HasPrefix(reason, silentHangPrefix+":"):
+		return Parsed{Kind: KindSilentHang, Detail: strings.TrimSpace(strings.TrimPrefix(reason, silentHangPrefix+":"))}
 	case reason == rewardHackingPrefix:
 		return Parsed{Kind: KindRewardHacking}
 	case strings.HasPrefix(reason, rewardHackingPrefix+":"):
@@ -89,8 +95,19 @@ func IsRewardHackingRetry(reason string) bool {
 	return Parse(reason).Kind == KindRewardHackingRetry
 }
 
-func IsZeroOutputRateLimit(reason string) bool {
+// IsSilentHang reports whether reason marks a run that produced no output at
+// all before the startup timeout.
+//
+// Two forms match. The current one is KindSilentHang. The second is the legacy
+// rate-limit wrapping this case used before it got its own kind: tasks parked
+// under the old form are already persisted on disk, and their recovery keys off
+// this predicate, so dropping the legacy match would strand every one of them
+// on the next upgrade.
+func IsSilentHang(reason string) bool {
 	parsed := Parse(reason)
+	if parsed.Kind == KindSilentHang {
+		return true
+	}
 	return parsed.Kind == KindRateLimit && parsed.Detail == ZeroOutputBeforeStartup
 }
 
@@ -125,6 +142,10 @@ func RateLimit(reason string) string {
 	return withDetail(rateLimitPrefix, reason)
 }
 
+func SilentHang(reason string) string {
+	return withDetail(silentHangPrefix, reason)
+}
+
 // IsRetryableStop reports whether a human-required watchdog stop is a
 // recoverable loop/stop verdict rather than a verified blocker. This is the
 // class ResumeStalled may safely re-dispatch for workflow-owned implementation
@@ -144,6 +165,7 @@ func isLegacyRetryableStop(reason string) bool {
 	for _, prefix := range []string{
 		budgetStopPrefix,
 		rateLimitPrefix,
+		silentHangPrefix,
 		rewardHackingPrefix,
 		rewardHackingRetryPrefix,
 		verifyFailedPrefix,

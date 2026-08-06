@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
@@ -20,10 +21,13 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/verdict"
 	"github.com/Automaat/sybra/internal/workflow"
+	"github.com/Automaat/sybra/internal/worktree"
 )
 
 // humanReviewPromptHeadTail bounds how many lines of the host log file are
@@ -35,6 +39,27 @@ const (
 	humanReviewMaxAgentResult = 4000
 	humanReviewWindow         = time.Hour
 	humanReviewFallbackModel  = "haiku"
+	// humanReviewClaimRetryMax and humanReviewClaimRetryStep set the quadratic
+	// ladder 9s, 36s, 81s, 2m24s, 3m45s, 5m24s, spanning 13m39s in total.
+	//
+	// Both ends of that span are load-bearing. The ladder has to outlast what
+	// it is waiting on: a claim is held across PrepareForTask, whose setup
+	// batch alone was measured burning its full ten-minute timeout, and the old
+	// 1s/4s/9s ladder gave up after fourteen seconds — inside the very
+	// preparation it was waiting on. It also has to stay strictly under
+	// agent.StaleDispatchClaimAge, whose release is purely age-based: a retry
+	// landing past that age can be handed a claim whose original holder is
+	// still preparing, putting two concurrent preparations on one worktree.
+	// Both bounds are pinned by tests.
+	humanReviewClaimRetryMax  = 6
+	humanReviewClaimRetryStep = 9 * time.Second
+
+	// humanReviewStartupSweepAge bounds how far back the startup sweep looks
+	// for a park whose review never spawned. A restart cancels the scheduler
+	// context and silently drops any pending claim retry, so the ladder's own
+	// span plus a rebuild-and-restart is the window that matters; anything
+	// older was parked for reasons this sweep cannot infer.
+	humanReviewStartupSweepAge = 2 * time.Hour
 
 	// humanReviewMaxPerTaskPerWindow caps how many times a SINGLE task can
 	// spawn a review agent within humanReviewWindow. The global window
@@ -60,7 +85,13 @@ type humanReviewAgentRunner interface {
 // into a side-effect. sybra_bug verdicts are retained as task notes by
 // default; richer issue filing is handled by the why-human workflow.
 type humanReviewHandler struct {
-	cfg       *config.Config
+	cfg *config.Config
+	// signing holds the hot-reloadable commit-signing posture. cfg is the
+	// construction-time snapshot and is never rewritten, so reading the
+	// posture from it alone latches the startup value — the same latch that
+	// had to be fixed in the workflow template, the project store, the review
+	// dispatcher and the skill bundle. Empty means "not late-bound".
+	signing   atomic.Value
 	abTesting func() abtest.Config
 	tasks     *task.Manager
 	agents    humanReviewAgentRunner
@@ -69,6 +100,12 @@ type humanReviewHandler struct {
 	homeDir   string
 	logFile   string
 	now       func() time.Time
+	schedule  func(time.Duration, func())
+	// lifecycle is the handler's own cancellation scope, bound at init. Spawns
+	// reach this handler from goroutines with no caller context — the status
+	// hook, the claim-retry timer, the startup sweep — so the alternative is a
+	// context.Background() at each leaf, invisible to shutdown.
+	lifecycle context.Context
 
 	// workCtx returns a non-nil WorkScrubContext when the task's project is
 	// work-typed. When set, the handler still spawns the review agent but
@@ -86,11 +123,41 @@ type humanReviewHandler struct {
 	// monitor uses. completingAgentID is excluded from the stop/wait phase.
 	landClosedPR func(ctx context.Context, taskID string, prNumber int, state, completingAgentID string) error
 	fetchPRState func(repo string, number int) (github.PRState, error)
+	// prepareTaskWorktree resolves a writable, role-appropriate checkout for
+	// recovery. Managed worktree paths are derived by worktree.Manager and are
+	// not persisted in task.WorktreeDir, so looking at that field alone sends
+	// ordinary tasks to the read-only deploy checkout (#2973).
+	prepareTaskWorktree func(task.Task) (string, error)
+	// resolveExistingWorktree returns an already-checked-out worktree without
+	// mutating it. Tried before prepareTaskWorktree, because preparation
+	// rewrites the very state a recovery agent was sent to explain (#3073).
+	resolveExistingWorktree func(task.Task) (string, error)
+	// claimTaskDispatch serializes recovery preparation and registration with
+	// every workflow dispatcher that can mutate the same task worktree.
+	claimTaskDispatch func(string) (release func(), ok bool)
 
-	mu       sync.Mutex
-	inflight map[string]string      // taskID -> agent ID
-	recent   []time.Time            // spawn timestamps (rolling window), global cap
-	perTask  map[string][]time.Time // taskID -> spawn timestamps (rolling window), per-task cap
+	// drainMu is held across agents.Run and taken by BeginDrain, so a spawn
+	// either wins it before drain and completes, or loses it and is refused.
+	// A ctx check alone cannot do that: a goroutine can pass it microseconds
+	// before cancellation and still launch a provider process afterwards —
+	// measured at up to 945ms past app.draining.
+	drainMu  sync.Mutex
+	draining bool
+
+	mu sync.Mutex
+	// prepared records that some attempt in this human-required episode already
+	// ran PrepareForTask. Carrying it on spawn options alone was not enough:
+	// handleStructuredVerdictFailure and retryAfterCrash both build fresh
+	// options, so a re-entry reused the sanitized tree and called it untouched.
+	prepared map[string]bool
+	// sweepDeclined holds tasks the live path refused for a reason the sweep
+	// cannot re-derive. In-memory by design: it mirrors an in-process decision,
+	// and after a restart it allows at most one review, which the
+	// verdict-rendered gate then closes for good.
+	sweepDeclined map[string]bool
+	inflight      map[string]string      // taskID -> agent ID
+	recent        []time.Time            // spawn timestamps (rolling window), global cap
+	perTask       map[string][]time.Time // taskID -> spawn timestamps (rolling window), per-task cap
 }
 
 var humanReviewPRNumberRE = regexp.MustCompile(`(?i)\bpr\s*#(\d+)\b`)
@@ -106,6 +173,12 @@ type humanReviewSpawnOptions struct {
 	IgnoreRenderedVerdict bool
 	SkipABVariant         bool
 	RetryReason           string
+	ClaimRetryAttempt     int
+	// WorktreePrepared records that an earlier attempt already ran
+	// PrepareForTask. A transient failure can leave the tree sanitized and
+	// rebased and still return retryable, so the retry reuses a checkout that
+	// no longer holds the evidence — and would report it as untouched.
+	WorktreePrepared bool
 }
 
 func (h *humanReviewHandler) abTestingConfig() abtest.Config {
@@ -136,6 +209,7 @@ func newHumanReviewHandler(
 		homeDir:      homeDir,
 		logFile:      logFile,
 		now:          time.Now,
+		schedule:     func(delay time.Duration, fn func()) { time.AfterFunc(delay, fn) },
 		workCtx:      workCtx,
 		fetchPRState: github.FetchPRStateViaREST,
 		inflight:     make(map[string]string),
@@ -145,7 +219,7 @@ func newHumanReviewHandler(
 
 // initHumanReview is called once during App.Startup. It is a no-op when the
 // feature is disabled or no Sybra source dir is configured.
-func (a *App) initHumanReview() {
+func (a *App) initHumanReview(ctx context.Context) {
 	if a.cfg == nil || !a.cfg.HumanReview.Enabled {
 		return
 	}
@@ -161,6 +235,28 @@ func (a *App) initHumanReview() {
 	logFile := filepath.Join(a.logDir, "sybra.log")
 	a.humanReview = newHumanReviewHandler(a.cfg, a.tasks, a.agents, a.audit, a.logger, config.HomeDir(), logFile, a.workScrubContextForTask)
 	a.humanReview.abTesting = a.abTestingConfig
+	a.humanReview.lifecycle = ctx
+	a.humanReview.schedule = lifecycleSchedule(ctx)
+	if a.worktrees != nil {
+		a.humanReview.resolveExistingWorktree = func(t task.Task) (string, error) {
+			return a.worktrees.ResolveExisting(ctx, t)
+		}
+		a.humanReview.prepareTaskWorktree = func(t task.Task) (string, error) {
+			if t.PRNumber != 0 {
+				return a.worktrees.PrepareForFix(ctx, t, t.PRNumber)
+			}
+			return a.worktrees.PrepareForTask(ctx, t, nil)
+		}
+	}
+	if a.agents != nil {
+		a.humanReview.claimTaskDispatch = func(taskID string) (func(), bool) {
+			claim, ok := a.agents.TryClaimDispatch(taskID)
+			if !ok {
+				return nil, false
+			}
+			return claim.Release, true
+		}
+	}
 	a.logger.Info("human-review.enabled", "dir", dir, "repo", a.cfg.HumanReviewRepo(), "model", a.cfg.HumanReviewModel())
 }
 
@@ -190,17 +286,94 @@ func humanReviewDispatchDir(t task.Task, sybraRepoDir string) (dir string, readO
 	return sybraRepoDir, true
 }
 
+// dispatchDir resolves where the recovery agent runs. retryable means
+// preparation failed for a reason that clears on its own, so the caller should
+// wait rather than dispatch.
+//
+// Collapsing every prepare error into the read-only Sybra-source fallback made
+// the most common entry path silently degrade: the human-required status hook
+// spawns while the agent that just failed is still winding down in the
+// registry, so PrepareForTask returns ErrAgentRunning and recovery landed on a
+// read-only dir — the exact condition writable recovery worktrees exist to
+// eliminate. Three agents on three different tasks reported the worktree as
+// read-only and returned recoverable_action: none, each having already
+// verified a fix they could not apply.
+func (h *humanReviewHandler) dispatchDir(t task.Task) (dir string, readOnly, retryable, rebuilt bool) {
+	// Non-mutating first: the tree that failed is the evidence, and every
+	// Prepare* path rewrites it before the agent reads a line of it (#3073).
+	if h.resolveExistingWorktree != nil {
+		dir, err := h.resolveExistingWorktree(t)
+		switch {
+		case err == nil && strings.TrimSpace(dir) != "":
+			h.logger.Info("human-review.worktree.reused", "task_id", t.ID, "dir", dir)
+			return dir, false, false, false
+		case errors.Is(err, worktree.ErrWorktreeBusy):
+			// Falling through to preparation would rebase the branch out from
+			// under the live run, and the read-only fallback would strand a
+			// recovery that can see the fix but not apply it.
+			h.logger.Info("human-review.worktree.busy", "task_id", t.ID, "err", err)
+			return "", false, true, false
+		case err != nil:
+			h.logger.Info("human-review.worktree.reuse-declined", "task_id", t.ID, "err", err)
+		}
+	}
+	if h.prepareTaskWorktree != nil {
+		// Rebuilt from here on, not only on success: a preparation that
+		// sanitizes the tree and then fails non-retryably has destroyed the
+		// evidence more thoroughly than one that succeeded, and the agent
+		// still needs telling.
+		dir, err := h.prepareTaskWorktree(t)
+		if err == nil && strings.TrimSpace(dir) != "" {
+			return dir, false, false, true
+		}
+		if err != nil {
+			if isRetryablePrepareError(err) {
+				// rebuilt, not clean: a transient fetch failure lands after
+				// SanitizeWorktree has already auto-committed and reset the
+				// tree, so the retry must not call the survivor untouched.
+				h.logger.Info("human-review.worktree.prepare.retryable", "task_id", t.ID, "err", err)
+				return "", false, true, true
+			}
+			h.logger.Warn("human-review.worktree.prepare", "task_id", t.ID, "err", err)
+		}
+		dir, readOnly = humanReviewDispatchDir(t, h.cfg.HumanReview.SybraRepoDir)
+		// Only warn when the fallback is the Sybra source tree. Landing back on
+		// the task's own adopted worktree means preparation refused it before
+		// touching anything, so the agent IS looking at the state that failed
+		// and must not be told otherwise — the mandate would have it distrust a
+		// correct reproduction.
+		return dir, readOnly, false, readOnly
+	}
+	dir, readOnly = humanReviewDispatchDir(t, h.cfg.HumanReview.SybraRepoDir)
+	return dir, readOnly, false, false
+}
+
+// isRetryablePrepareError reports whether a worktree preparation failure will
+// clear without intervention. A live agent finishes; a fetch blip passes. The
+// read-only fallback is for a task that genuinely has no worktree, where
+// diagnosing Sybra itself is the whole job.
+func isRetryablePrepareError(err error) bool {
+	return errors.Is(err, worktree.ErrAgentRunning) ||
+		errors.Is(err, worktree.ErrPreparationInFlight) ||
+		errors.Is(err, worktree.ErrTransientFetch)
+}
+
 // maybeSpawn is called from the status hook when a task lands in
 // human-required. Returns immediately if the feature is disabled, the task
 // already has an in-flight review, or the rolling rate limit is exceeded.
 // The bool return reports whether a review agent was actually dispatched —
 // retryAfterCrash relies on it to tell a real retry apart from a silent skip.
-func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
+func (h *humanReviewHandler) maybeSpawn(ctx context.Context, taskID, prevStatus string) bool {
+	return h.maybeSpawnWithOptions(ctx, taskID, prevStatus, humanReviewSpawnOptions{})
+}
+
+func (h *humanReviewHandler) maybeSpawnWithOptions(ctx context.Context, taskID, prevStatus string, opts humanReviewSpawnOptions) bool {
 	if h == nil {
 		return false
 	}
 	// Don't loop when an unblock flow flips blocked → todo → human-required.
 	if prevStatus == string(task.StatusBlocked) {
+		h.declineSweep(taskID)
 		h.skip(taskID, "prev_status_blocked")
 		return false
 	}
@@ -227,12 +400,19 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 	// against an already-recovered task would race the recovery flow and let
 	// the agent's unblock actions rewrite the task to the wrong state.
 	if t.Status != task.StatusHumanRequired {
+		h.allowSweep(taskID)
+		h.forgetPrepared(taskID)
 		h.skip(taskID, "stale_status_"+string(t.Status))
 		return false
 	}
 	// Idempotency gate: a prior run already produced a verdict — re-spawning
 	// on app restart or repeated status hooks would just duplicate the diagnosis.
-	if verdictAlreadyRendered(t) {
+	//
+	// IgnoreRenderedVerdict is the provider-fallback path: the caller has
+	// already marked the verdict rendered and is deliberately re-spawning
+	// after a malformed one. Honouring the gate there drops that retry
+	// permanently and audits it as a duplicate, which it is not.
+	if !opts.IgnoreRenderedVerdict && verdictAlreadyRendered(t) {
 		h.skip(taskID, "verdict_rendered")
 		return false
 	}
@@ -240,10 +420,10 @@ func (h *humanReviewHandler) maybeSpawn(taskID, prevStatus string) bool {
 		h.skip(taskID, "no_project")
 		return false
 	}
-	return h.spawnReview(t, prevStatus, humanReviewSpawnOptions{})
+	return h.spawnReview(ctx, t, prevStatus, opts)
 }
 
-func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts humanReviewSpawnOptions) bool {
+func (h *humanReviewHandler) spawnReview(ctx context.Context, t task.Task, prevStatus string, opts humanReviewSpawnOptions) bool {
 	taskID := t.ID
 	if strings.TrimSpace(t.ProjectID) == "" {
 		h.skip(taskID, "no_project")
@@ -259,14 +439,48 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 		h.skip(taskID, skipReason)
 		return false
 	}
+	if h.claimTaskDispatch != nil {
+		release, ok := h.claimTaskDispatch(taskID)
+		if !ok {
+			h.releaseReservedSlot(taskID, now)
+			h.logger.Info("human-review.dispatch-claim.contended", "task_id", taskID)
+			h.scheduleClaimRetry(ctx, taskID, prevStatus, opts)
+			return false
+		}
+		if release != nil {
+			defer release()
+		}
+	}
 
-	dir, readOnlyDir := humanReviewDispatchDir(t, h.cfg.HumanReview.SybraRepoDir)
-	prompt := h.buildPrompt(t, dir, wctx)
+	dir, readOnlyDir, retryable, rebuiltDir := h.dispatchDir(t)
+	rebuiltDir = h.notePrepared(taskID, rebuiltDir || opts.WorktreePrepared)
+	if retryable {
+		// Give back the reserved slot as claim contention does, or the retry
+		// hits the per-hour cap and the task is never examined at all. The
+		// dispatch claim itself is released by the deferred call above.
+		h.releaseReservedSlot(taskID, now)
+		next := opts
+		next.WorktreePrepared = rebuiltDir
+		h.scheduleClaimRetry(ctx, taskID, prevStatus, next)
+		return false
+	}
+	prompt := h.buildPrompt(ctx, t, dir, wctx, rebuiltDir)
 	cfg := h.spawnReviewConfig(t, taskID, prompt, dir, readOnlyDir, opts)
 	if !h.preRunEligible(taskID, now, opts.IgnoreRenderedVerdict) {
 		return false
 	}
+	// Last gate before a process is spawned, held across the spawn itself. Run
+	// only starts the process, so BeginDrain waits at most for that, never for
+	// the worktree preparation above it.
+	h.drainMu.Lock()
+	if h.draining || ctx.Err() != nil {
+		h.drainMu.Unlock()
+		h.releaseReservedSlot(taskID, now)
+		h.skip(taskID, "shutting_down")
+		return false
+	}
 	ag, err := h.agents.Run(cfg)
+	h.drainMu.Unlock()
 	if err != nil {
 		h.clearInflight(taskID)
 		h.logger.Error("human-review.spawn", "task_id", taskID, "provider", cfg.Provider, "model", cfg.Model, "err", err)
@@ -295,6 +509,63 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 		"retry_reason": opts.RetryReason,
 	})
 	return true
+}
+
+// ctx returns the handler's lifecycle scope. Callers reach the spawn chain
+// from goroutines whose own context may not be wired yet (the status hook fires
+// before initLifecycle in tests and in direct construction), so a nil argument
+// resolves here rather than reaching os/exec as a nil Context.
+func (h *humanReviewHandler) ctx(candidates ...context.Context) context.Context {
+	for _, c := range candidates {
+		if c != nil {
+			return c
+		}
+	}
+	if h.lifecycle != nil {
+		return h.lifecycle
+	}
+	return context.Background()
+}
+
+func lifecycleSchedule(ctx context.Context) func(time.Duration, func()) {
+	return func(delay time.Duration, fn func()) {
+		time.AfterFunc(delay, func() {
+			if ctx.Err() != nil {
+				return
+			}
+			fn()
+		})
+	}
+}
+
+func (h *humanReviewHandler) scheduleClaimRetry(ctx context.Context, taskID, prevStatus string, opts humanReviewSpawnOptions) {
+	if h.schedule == nil {
+		// Not exhaustion: no ladder ever ran, and one event asserting both
+		// would be unreadable.
+		h.logger.Warn("human-review.dispatch-claim.no-scheduler", "task_id", taskID)
+		return
+	}
+	if opts.ClaimRetryAttempt >= humanReviewClaimRetryMax {
+		// Not the end of the road, but the end of this attempt: a preparation
+		// can hold the claim for its fetch budget plus its setup budget,
+		// longer than any ladder that must stay under StaleDispatchClaimAge.
+		// RespawnDroppedReviews picks the task back up on the next
+		// maintenance tick; record the exhaustion so the wait is visible.
+		h.logger.Warn("human-review.dispatch-claim.retries-exhausted",
+			"task_id", taskID, "attempts", opts.ClaimRetryAttempt)
+		h.logAudit(audit.EventHumanReviewRetriesExhausted, taskID, "", map[string]any{
+			"attempts": opts.ClaimRetryAttempt,
+		})
+		return
+	}
+	next := opts
+	next.ClaimRetryAttempt++
+	delay := time.Duration(next.ClaimRetryAttempt*next.ClaimRetryAttempt) * humanReviewClaimRetryStep
+	h.logger.Info("human-review.dispatch-claim.retry-scheduled",
+		"task_id", taskID, "attempt", next.ClaimRetryAttempt, "delay", delay)
+	h.schedule(delay, func() {
+		h.maybeSpawnWithOptions(ctx, taskID, prevStatus, next)
+	})
 }
 
 func (h *humanReviewHandler) reserveSpawn(taskID string) (reservedAt time.Time, skipReason string) {
@@ -393,7 +664,7 @@ func (h *humanReviewHandler) handleStructuredVerdictFailure(current task.Task, a
 	h.mu.Lock()
 	delete(h.inflight, current.ID)
 	h.mu.Unlock()
-	return h.spawnReview(current, string(task.StatusHumanRequired), humanReviewSpawnOptions{
+	return h.spawnReview(h.ctx(), current, string(task.StatusHumanRequired), humanReviewSpawnOptions{
 		Provider:              retryProvider,
 		Model:                 retryModel,
 		IgnoreRenderedVerdict: true,
@@ -405,12 +676,12 @@ func (h *humanReviewHandler) handleStructuredVerdictFailure(current task.Task, a
 func humanReviewFallbackTarget(currentProvider string) (provider, model string, ok bool) {
 	currentProvider = strings.TrimSpace(currentProvider)
 	switch currentProvider {
-	case "claude":
-		return "codex", humanReviewFallbackModel, true
-	case "codex":
-		return "claude", humanReviewFallbackModel, true
+	case providerid.Claude:
+		return providerid.Codex, humanReviewFallbackModel, true
+	case providerid.Codex:
+		return providerid.Claude, humanReviewFallbackModel, true
 	}
-	for _, candidate := range []string{"codex", "claude"} {
+	for _, candidate := range []string{providerid.Codex, providerid.Claude} {
 		if candidate == currentProvider || !agent.ProviderSupportsOutputSchema(candidate) {
 			continue
 		}
@@ -750,12 +1021,15 @@ func (h *humanReviewHandler) prepareRecoveryDispatch(current task.Task, status t
 // performs the same worktree/PR verification and guarded dispatch used by the
 // live completion path, so startup recovery gains no broader authority.
 func (h *humanReviewHandler) recoverStrandedUnblockedTasks() {
-	if h == nil || h.tasks == nil || h.dispatchFromHumanRequired == nil {
+	if h == nil || h.tasks == nil {
 		return
 	}
 	tasks, err := h.tasks.List()
 	if err != nil {
 		h.logger.Warn("human-review.recover-stranded.list", "err", err)
+		return
+	}
+	if h.dispatchFromHumanRequired == nil {
 		return
 	}
 	for i := range tasks {
@@ -772,6 +1046,75 @@ func (h *humanReviewHandler) recoverStrandedUnblockedTasks() {
 		}
 		h.applyUnblockedRecovery(t, agentID, v, true)
 	}
+}
+
+// RespawnDroppedReviews re-runs maybeSpawn for a recent park that never got a
+// review agent at all. A claim retry is armed on the scheduler context, which
+// BeginDrain cancels on every graceful shutdown and auto-update restart, and
+// lifecycleSchedule then drops the pending callback with no log and no audit.
+// Nothing else replays that: recoverStrandedUnblockedTasks needs a completed
+// verdict, and such a task has no human-review run to find one in, so it sits
+// at human-required untouched until somebody notices.
+//
+// Every spawn runs on its own goroutine, exactly as the status hook dispatches
+// it. Running them inline serializes a full PrepareForTask per swept task, and
+// a single setup batch can burn the whole ten-minute timeout — measured live,
+// that blocked startup from arming dispatch for 9m32s and no *live* park in
+// that window got a review at all. A sweep for stale work must never delay the
+// current work.
+//
+// Eligibility mostly stays inside maybeSpawn — umbrella, project, status, and
+// the verdict-rendered idempotency gate — but one rule cannot: maybeSpawn's
+// first guard drops a park whose previous status was blocked, and a sweep
+// arriving after a restart has no way to know what the previous status was.
+// Requiring prior agent activity stands in for it. A dispatch is only wanted
+// where an agent run ended with the task parked; an unblock flow flipping
+// blocked to todo to human-required runs no agent, so it stays declined
+// instead of being resurrected by the next restart.
+func (h *humanReviewHandler) RespawnDroppedReviews(ctx context.Context) {
+	if h == nil || h.tasks == nil {
+		return
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	tasks, err := h.tasks.List()
+	if err != nil {
+		h.logger.Warn("human-review.startup-sweep.list", "err", err)
+		return
+	}
+	for i := range tasks {
+		t := tasks[i]
+		if t.Status != task.StatusHumanRequired || hasHumanReviewRun(t) {
+			continue
+		}
+		// Cheap local refusals first. Routing these through maybeSpawn instead
+		// writes a skip audit event per task per tick, forever — 21 no_project
+		// events in 200 seconds at a ten-second interval, measured.
+		if t.TaskType == task.TaskTypeUmbrella || strings.TrimSpace(t.ProjectID) == "" {
+			continue
+		}
+		if h.sweepRefused(t.ID) {
+			continue
+		}
+		if h.now().Sub(t.UpdatedAt) > humanReviewStartupSweepAge {
+			continue
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		h.logger.Info("human-review.startup-sweep.respawn", "task_id", t.ID, "parked_at", t.UpdatedAt)
+		go h.maybeSpawn(ctx, t.ID, "")
+	}
+}
+
+func hasHumanReviewRun(t task.Task) bool {
+	for i := range t.AgentRuns {
+		if t.AgentRuns[i].Role == string(agent.RoleHumanReview) {
+			return true
+		}
+	}
+	return false
 }
 
 func recoveryReplayRejected(t task.Task, agentID string) bool {
@@ -965,10 +1308,14 @@ func (h *humanReviewHandler) onComplete(ag *agent.Agent) {
 	}
 
 	if parseErr != nil {
-		if ag.GetErrorKind() == "rate_limit" {
+		if kind := ag.GetErrorKind(); kind == "rate_limit" || kind == agent.ErrorKindSilentHang {
+			deferReason := "provider_rate_limited"
+			if kind == agent.ErrorKindSilentHang {
+				deferReason = "agent_silent_hang"
+			}
 			h.logger.Warn("human-review.verdict.deferred",
-				"task_id", taskID, "agent_id", ag.ID, "reason", "provider_rate_limited")
-			h.logAudit(audit.EventHumanReviewSkipped, taskID, ag.ID, map[string]any{"reason": "provider_rate_limited"})
+				"task_id", taskID, "agent_id", ag.ID, "reason", deferReason)
+			h.logAudit(audit.EventHumanReviewSkipped, taskID, ag.ID, map[string]any{"reason": deferReason})
 			return
 		}
 		// Without the zero-tool-calls check, a run that did real diagnostic
@@ -1436,6 +1783,69 @@ func (h *humanReviewHandler) markVerdictRendered(taskID, agentID string) {
 	}
 }
 
+// BeginDrain refuses every subsequent spawn. Called from App.BeginDrain before
+// the scheduler context is cancelled, so an armed sweep or claim retry cannot
+// start a provider process while the app is shutting down.
+func (h *humanReviewHandler) BeginDrain() {
+	if h == nil {
+		return
+	}
+	h.drainMu.Lock()
+	h.draining = true
+	h.drainMu.Unlock()
+}
+
+// declineSweep records that the live path refused this park for a reason the
+// sweep cannot see. maybeSpawn's first guard drops a transition out of blocked,
+// and a sweep sees only the resulting status; prior agent activity was a poor
+// proxy for it, since any task that ever ran an agent has some.
+func (h *humanReviewHandler) declineSweep(taskID string) {
+	h.mu.Lock()
+	if h.sweepDeclined == nil {
+		h.sweepDeclined = make(map[string]bool)
+	}
+	h.sweepDeclined[taskID] = true
+	h.mu.Unlock()
+}
+
+func (h *humanReviewHandler) sweepRefused(taskID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.sweepDeclined[taskID]
+}
+
+// allowSweep ends the refusal: the task left human-required, so a future park
+// is a new episode the sweep may act on.
+func (h *humanReviewHandler) allowSweep(taskID string) {
+	h.mu.Lock()
+	delete(h.sweepDeclined, taskID)
+	h.mu.Unlock()
+}
+
+// notePrepared records and returns the sticky rebuilt state for a task. Sticky
+// for the whole human-required episode: once preparation has rewritten the
+// tree, every later attempt in that episode is looking at the rewritten one.
+func (h *humanReviewHandler) notePrepared(taskID string, rebuilt bool) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if rebuilt {
+		if h.prepared == nil {
+			h.prepared = make(map[string]bool)
+		}
+		h.prepared[taskID] = true
+	}
+	return h.prepared[taskID]
+}
+
+// forgetPrepared ends the episode. Called where the task leaves
+// human-required, so a future park starts from a clean slate rather than
+// inheriting a warning about a preparation that predates it.
+func (h *humanReviewHandler) forgetPrepared(taskID string) {
+	h.mu.Lock()
+	delete(h.prepared, taskID)
+	h.mu.Unlock()
+}
+
 func (h *humanReviewHandler) skip(taskID, reason string) {
 	h.logger.Info("human-review.skip", "task_id", taskID, "reason", reason)
 	h.logAudit(audit.EventHumanReviewSkipped, taskID, "", map[string]any{"reason": reason})
@@ -1502,7 +1912,7 @@ func (h *humanReviewHandler) retryAfterCrash(taskID string) bool {
 	h.mu.Lock()
 	delete(h.inflight, taskID)
 	h.mu.Unlock()
-	return h.maybeSpawn(taskID, "human-required")
+	return h.maybeSpawn(h.ctx(), taskID, "human-required")
 }
 
 func (h *humanReviewHandler) logAudit(evt, taskID, agentID string, data map[string]any) {
@@ -1564,6 +1974,8 @@ func (h *humanReviewHandler) preRunEligible(taskID string, reservedAt time.Time,
 	}
 	if current.Status != task.StatusHumanRequired {
 		h.releaseReservedSlot(taskID, reservedAt)
+		h.allowSweep(taskID)
+		h.forgetPrepared(taskID)
 		h.skip(taskID, "status_"+string(current.Status))
 		return false
 	}
@@ -1590,11 +2002,37 @@ func (h *humanReviewHandler) preRunEligible(taskID string, reservedAt time.Time,
 // prompt is augmented with explicit redaction rules and the verdict will be
 // routed to a local sybra task instead of a public GH issue. The regex
 // scrubber is the floor — these instructions are the semantic ceiling.
-func writeAutonomyMandate(b *strings.Builder) {
+// SetSigningPolicy late-binds the commit-signing posture and is re-invoked on
+// every hot config reload, so the recovery prompt cannot keep instructing -S
+// after an operator sets agent.commit_signing: never.
+func (h *humanReviewHandler) SetSigningPolicy(p project.SigningPolicy) {
+	if h == nil {
+		return
+	}
+	h.signing.Store(string(p))
+}
+
+// signingPolicy falls back to the construction-time snapshot when nothing has
+// been late-bound, then to host probing, so a bare handler built in tests
+// keeps the historical behavior.
+func (h *humanReviewHandler) signingPolicy() project.SigningPolicy {
+	if h == nil {
+		return project.SigningAuto
+	}
+	if v, ok := h.signing.Load().(string); ok && v != "" {
+		return project.NormalizeSigningPolicy(v)
+	}
+	if h.cfg == nil {
+		return project.SigningAuto
+	}
+	return project.NormalizeSigningPolicy(h.cfg.CommitSigning())
+}
+
+func writeAutonomyMandate(b *strings.Builder, commitSignFlags string) {
 	b.WriteString("You are Sybra's autonomy agent (Sybra is a desktop task orchestrator). A user task just transitioned to status=human-required. Your job is NOT merely to diagnose — it is to get this task PROGRESSING again without a human wherever it is safe to do so, and to make Sybra more autonomous so this class of block never needs a human again. You run with full permissions and have git, gh, and sybra-cli. Work through three phases in order:\n\n")
 	b.WriteString("1. ROOT CAUSE — determine exactly why the task landed in human-required: a deterministic check failure (lint/test/build), a workflow misfire, an un-runnable gate (e.g. a manual smoke the harness cannot perform), an ambiguous spec, a missing credential, or an external system the agent cannot reach. Re-run the exact failing command in the task's worktree to confirm; never infer 'flaky/transient/infra' from reasoning alone.\n\n")
 	b.WriteString("2. UNBLOCK — do what you safely can to move the task forward:\n")
-	b.WriteString("   - Deterministic failures you can fix (lint/test/build): fix them in the task's worktree, re-run the exact check and SEE it pass, commit + push, then return an `unblocked` verdict with the workflow status the host should resume from. Default to re-entering verification/review/testing; do NOT jump straight to `ready-pr` just because one targeted check passed.\n")
+	fmt.Fprintf(b, "   - Deterministic failures you can fix (lint/test/build): fix them in the task's worktree, re-run the exact check and SEE it pass, commit with `git commit %s`, push, then return an `unblocked` verdict with the workflow status the host should resume from. Default to re-entering verification/review/testing; do NOT jump straight to `ready-pr` just because one targeted check passed.\n", commitSignFlags)
 	b.WriteString("   - Work is complete but stuck on a gate the harness genuinely cannot run: prefer letting the harness open the PR itself — push the branch and `sybra-cli update <id> --status ready-pr` (leave pr_number unset) so the deterministic create_pr step opens it against the correct repo. Only run `gh pr create` yourself as a last resort, and if you do: ALWAYS pass `--repo <task's project id>` explicitly (e.g. `--repo kumahq/kuma`) — a bare `gh pr create` inside a fork-remote worktree (check `git remote -v` for a `fork` remote) can silently open the PR against the fork's own default branch instead of upstream, since the worktree's `origin` push is intentionally disabled. If a `fork` remote exists, also pass `--head <fork-owner>:<branch>`. Before recording `pr_number`, verify with `gh pr view <n> --repo <task's project id>` that the PR actually resolves in the PROJECT's repo, not your fork. Never fabricate or fake the verification you could not run.\n")
 	b.WriteString("   - If the task is parked on a pending GitHub review draft, pre-flight the draft before submitting anything: determine whether it is COMMENT, REQUEST_CHANGES, or APPROVE. COMMENT / REQUEST_CHANGES drafts may be submitted when that safely unblocks the task. APPROVE drafts must NEVER be auto-submitted: approval authority is human-only. If you cannot prove the draft is COMMENT or REQUEST_CHANGES, do not submit it.\n")
 	b.WriteString("   - A Sybra workflow bug: work around it to unblock the task if you safely can, then record the autonomy gap in your verdict (phase 3).\n")
@@ -1637,7 +2075,22 @@ func (h *humanReviewHandler) writePromptTaskDetails(b *strings.Builder, t task.T
 	}
 }
 
-func (h *humanReviewHandler) buildPrompt(t task.Task, dir string, wctx *WorkScrubContext) string {
+// writeRebuiltWorktreeWarning tells the agent the tree it is about to inspect
+// is not the tree that failed. The mandate orders it to re-run the exact
+// failing command and never to infer "flaky/transient" from reasoning alone —
+// but preparation auto-committed the dirty tree, reset it, and rebased it onto
+// a fresher base, so a base-induced failure simply will not reproduce. Without
+// this the harness itself manufactures the false "it passes now" evidence the
+// mandate spends a paragraph forbidding.
+func writeRebuiltWorktreeWarning(b *strings.Builder) {
+	b.WriteString("## Worktree was rebuilt before you saw it (READ THIS FIRST)\n")
+	b.WriteString("No usable checkout of the task's code was available, so worktree preparation ran. Preparation auto-commits uncommitted work, resets and cleans the tree, and rebases onto a fresher base branch; it may also have failed before reaching any of that. Either way, **you are not looking at the state that failed.**\n\n")
+	b.WriteString("- A re-run that now PASSES is not evidence the failure was flaky or transient — a base-induced failure stops reproducing on a fresher base. Say the original state was unavailable rather than calling it flaky.\n")
+	b.WriteString("- Reconstruct the failure from the agent-run output and logs below, which describe the tree as it actually was.\n")
+	b.WriteString("- If you cannot confirm the root cause against evidence you can still see, say so in your verdict instead of inferring one.\n\n")
+}
+
+func (h *humanReviewHandler) buildPrompt(ctx context.Context, t task.Task, dir string, wctx *WorkScrubContext, rebuiltDir bool) string {
 	var b strings.Builder
 	b.WriteString("# Sybra auto-review of human-required transition\n\n")
 	if wctx != nil {
@@ -1648,7 +2101,10 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, dir string, wctx *WorkScru
 		b.WriteString("- NEVER include author emails, customer names, or internal hostnames.\n")
 		b.WriteString("- DO describe the sybra bug abstractly: which workflow step misfired, which sybra subsystem is implicated, what state was inconsistent.\n\n")
 	}
-	writeAutonomyMandate(&b)
+	writeAutonomyMandate(&b, h.signingPolicy().CommitFlags(ctx))
+	if rebuiltDir {
+		writeRebuiltWorktreeWarning(&b)
+	}
 	b.WriteString("## Task\n")
 	h.writePromptTaskDetails(&b, t, dir)
 	b.WriteString("\n### Task body\n")
@@ -1673,10 +2129,7 @@ func (h *humanReviewHandler) buildPrompt(t task.Task, dir string, wctx *WorkScru
 					defaultStr(r.ProtocolViolation, "(none)"), defaultStr(r.TestOutcome, "(none)"), defaultStr(r.TestFailureFingerprint, "(none)"))
 			}
 			if r.Result != "" {
-				res := r.Result
-				if len(res) > humanReviewMaxAgentResult {
-					res = res[:humanReviewMaxAgentResult] + "\n... (truncated)"
-				}
+				res := textutil.TruncateBytes(r.Result, humanReviewMaxAgentResult, "\n... (truncated)")
 				b.WriteString("Result:\n```\n")
 				b.WriteString(strings.TrimSpace(res))
 				b.WriteString("\n```\n")

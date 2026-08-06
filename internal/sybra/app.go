@@ -397,12 +397,12 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 	a.initLoopScheduler(schedulerCtx, emit)
 	a.initFileWatcher(watcherCtx, emit)
 
-	issuesFetcher := a.initAutomations(emit)
+	issuesFetcher := a.initAutomations(schedulerCtx, emit)
 	a.wireServices(emit) //nolint:contextcheck // TaskService uses the app-bound root context; see Startup's contextcheck note.
 
 	// syncSkillsBundle's deep diagnostic logging uses context.Background()
 	// intentionally (see skillsync.Syncer.log) — not a cancellation bug.
-	a.syncSkillsBundle() //nolint:contextcheck // plain diagnostic logging inside skillsync, see its log() comment
+	a.syncSkillsBundle(project.NormalizeSigningPolicy(a.cfg.CommitSigning())) //nolint:contextcheck // plain diagnostic logging inside skillsync, see its log() comment
 	a.snapshotter = tasksnapshot.New(config.TaskSnapshotGitDir(), a.tasksDir, time.Duration(a.cfg.DefaultTaskSnapshotInterval())*time.Second, a.logger)
 	// EnsureRepo must run before RunStartupCleanup: the startup trash prune
 	// fires CommitBeforePrune, which on a fresh install would otherwise commit
@@ -452,6 +452,12 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 		// be advanced by the deferred event itself, not by the sweep.
 		a.replayDeferredStatusChanges() //nolint:contextcheck // same engine chain as initStatusHook, which binds its own e.ctx; see Startup's contextcheck note
 		a.nudgeDispatch()
+		// After the nudge, never before it: this sweeps parks whose review
+		// spawn a previous shutdown dropped, and each one prepares a worktree.
+		// Ahead of arming, it delays every live task by its own setup time.
+		if a.humanReview != nil {
+			go a.humanReview.RespawnDroppedReviews(schedulerCtx)
+		}
 		lm.StartManagers(schedulerCtx, emit)
 		lm.StartPollers(schedulerCtx, emit, issuesFetcher)
 	})
@@ -525,6 +531,11 @@ func (a *App) Startup(ctx context.Context) error {
 		a.logger.Error("project.store.init", "err", err)
 		return fmt.Errorf("project store: %w", err)
 	}
+	signingPolicy := project.NormalizeSigningPolicy(a.cfg.CommitSigning())
+	projStore.SetSigningPolicy(signingPolicy)
+	// Fallback for the workflows no dispatcher seeds; see
+	// workflow.SetDefaultCommitSignFlags.
+	workflow.SetDefaultCommitSignFlags(signingPolicy.CommitFlags(appCtx))
 	a.projects = projStore
 	// Retrofits maintenance.auto=false onto existing clones; see #2978.
 	if err := projStore.MigrateDisableAutoMaintenance(appCtx); err != nil {

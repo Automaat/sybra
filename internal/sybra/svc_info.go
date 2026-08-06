@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/version"
 )
 
@@ -61,7 +62,7 @@ func (s *InfoService) GetAvailableRuntimes() []RuntimeInfo {
 }
 
 func fetchCodexModels() []CodexModel {
-	out, err := exec.CommandContext(context.Background(), "codex", "debug", "models").Output()
+	out, err := exec.CommandContext(context.Background(), providerid.Codex, "debug", "models").Output()
 	if err != nil {
 		return nil
 	}

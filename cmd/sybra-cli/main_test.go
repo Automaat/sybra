@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -369,7 +371,10 @@ func TestCLIWorksWithV2ObservabilityConfig(t *testing.T) {
 func TestCLIGetAndUpdateFallbackWhenConfigLoadFails(t *testing.T) {
 	dir := setupStore(t)
 	t.Setenv("SYBRA_TASKS_DIR", "")
-	if err := os.WriteFile(config.ConfigPath(), []byte("future_namespace:\n  enabled: true\n"), 0o644); err != nil {
+	// Unparseable, not merely unknown: a schema error deliberately no longer
+	// reaches the fallback (#3133), since it says nothing about whether the
+	// server is up and its write path is denied to the agents that hit it.
+	if err := os.WriteFile(config.ConfigPath(), []byte("::not yaml at all\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -430,7 +435,10 @@ func TestCLIFallbackSupportsBroadenedTaskStoreCommands(t *testing.T) {
 		t.Fatalf("seed delete task: %v", err)
 	}
 
-	if err := os.WriteFile(config.ConfigPath(), []byte("future_namespace:\n  enabled: true\n"), 0o644); err != nil {
+	// Unparseable, not merely unknown: a schema error deliberately no longer
+	// reaches the fallback (#3133), since it says nothing about whether the
+	// server is up and its write path is denied to the agents that hit it.
+	if err := os.WriteFile(config.ConfigPath(), []byte("::not yaml at all\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -874,7 +882,7 @@ func TestConfigDoctorJSONReturnsNonZeroForErrors(t *testing.T) {
 	cfg.Agent.Provider = "nope"
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit for JSON doctor errors, output:\n%s", out)
@@ -897,7 +905,7 @@ func TestConfigDoctorJSONReportsGitHubPollingStates(t *testing.T) {
 	cfg.GitHub.Polling.AssignedPRs.Enabled = false
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected status-only doctor to stay non-fatal, got %d:\n%s", code, out)
@@ -932,7 +940,7 @@ func TestConfigDoctorJSONWarnsOnHarnessEvolutionWithoutSelfMonitor(t *testing.T)
 	}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected the warning to stay non-fatal, got %d:\n%s", code, out)
@@ -956,7 +964,7 @@ func TestConfigDoctorJSONNoWarningWhenSelfMonitorEnabled(t *testing.T) {
 	cfg.SelfMonitor.Enabled = true
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected doctor to stay non-fatal, got %d:\n%s", code, out)
@@ -978,7 +986,7 @@ func TestConfigDoctorJSONReportsSandboxModeErrors(t *testing.T) {
 	cfg.Agent.SandboxMode = "definitely-not-valid"
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit for JSON doctor errors, output:\n%s", out)
@@ -1004,7 +1012,7 @@ func TestConfigDoctorJSONReportsIncompleteK8sSecretEnv(t *testing.T) {
 	}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit for an incomplete secret_env entry, output:\n%s", out)
@@ -1030,7 +1038,7 @@ func TestConfigDoctorJSONReportsAllMissingK8sSecretEnvFields(t *testing.T) {
 	}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit for an empty secret_env entry, output:\n%s", out)
@@ -1060,7 +1068,7 @@ func TestConfigDoctorJSONAcceptsCompleteK8sSecretEnv(t *testing.T) {
 	}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected a complete secret_env entry to stay non-fatal, got %d:\n%s", code, out)
@@ -1091,7 +1099,7 @@ func TestConfigDoctorJSONValidatesK8sSecretEnvRegardlessOfMode(t *testing.T) {
 	}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code == 0 {
 		t.Fatalf("expected mode: fake to still validate secret_env, output:\n%s", out)
@@ -1107,7 +1115,7 @@ func TestConfigDoctorJSONWarnsOnLowTTLWithDifferingFailedTTL(t *testing.T) {
 	cfg.Agent.K8sJobs.FailedTTL = 86400
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected a warning-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1131,7 +1139,7 @@ func TestConfigDoctorJSONAcceptsTypicalTTLDefaults(t *testing.T) {
 	cfg.Agent.K8sJobs.FailedTTL = 86400
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected typical TTL defaults to stay clean, got %d:\n%s", code, out)
@@ -1157,7 +1165,7 @@ func TestConfigDoctorJSONReportsWhitespaceOnlyK8sSecretEnvFields(t *testing.T) {
 	}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code == 0 {
 		t.Fatalf("expected a whitespace-only secret_key to be treated as missing, output:\n%s", out)
@@ -1179,7 +1187,7 @@ func TestConfigDoctorJSONAcceptsSupportedEnforceHosts(t *testing.T) {
 	cfg.Agent.SandboxMode = "enforce"
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected supported-host enforce config to stay non-fatal, got %d:\n%s", code, out)
@@ -1206,7 +1214,7 @@ func TestConfigDoctorJSONReportsConfigPermissionWarnings(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1236,7 +1244,7 @@ func TestConfigDoctorJSONAcceptsStricterConfigPermissions(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1272,7 +1280,7 @@ func TestConfigDoctorJSONReportsRoutingSummaryAndWarnings(t *testing.T) {
 	}}
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only routing doctor to exit zero, got %d:\n%s", code, out)
@@ -1320,7 +1328,7 @@ func TestConfigDoctorWarnsOnNonRemappableConcreteFailoverModel(t *testing.T) {
 	cfg.Monitor.Model = "claude-fable-5"
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1349,7 +1357,7 @@ func TestConfigDoctorJSONWarnsOnABTestingWithoutEvaluation(t *testing.T) {
 	cfg.Evaluation.Enabled = false
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1373,7 +1381,7 @@ func TestConfigDoctorJSONWarnsOnRoutingWithoutEvaluation(t *testing.T) {
 	cfg.Evaluation.Enabled = false
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1403,7 +1411,7 @@ func TestConfigDoctorJSONNoExperimentEvaluationWarningWhenEvaluationEnabled(t *t
 	cfg.Evaluation.Enabled = true
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1432,7 +1440,7 @@ func TestConfigDoctorJSONWarnsOnStaleEvaluationReport(t *testing.T) {
 	cfg.Evaluation.Enabled = true
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -1462,7 +1470,7 @@ func TestConfigDoctorJSONWarnsOnMissingEvaluationReport(t *testing.T) {
 	cfg.Evaluation.Enabled = true
 
 	code, out := captureStdout(t, func() int {
-		return cmdConfigDoctor(cfg, true)
+		return cmdConfigDoctor(cfg, true, false, nil)
 	})
 	if code != 0 {
 		t.Fatalf("expected warnings-only doctor to exit zero, got %d:\n%s", code, out)
@@ -3078,5 +3086,261 @@ func TestHookCmd_FailsOpenOnBadConfig(t *testing.T) {
 	}
 	if out != "" {
 		t.Errorf("hook must produce no stdout; got %q", out)
+	}
+}
+
+// The CLI must reject a config the server would reject, rather than tolerating
+// it. Its normal path falls back to a direct task store on a load failure, so
+// a key the server understands and the CLI does not is a per-invocation
+// warning instead of a failure — that is how a deployed CLI warned "unknown
+// config key agent.sandbox_read_mode" on every call while the server ran fine.
+// The deploy preflight runs this against the live config for exactly that
+// reason.
+func TestRunCheckConfig(t *testing.T) {
+	t.Run("valid config accepted", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("SYBRA_HOME", home)
+		if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code := runCheckConfig(); code != 0 {
+			t.Fatalf("runCheckConfig() = %d, want 0 for a valid config", code)
+		}
+	})
+
+	t.Run("unknown key rejected", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("SYBRA_HOME", home)
+		configPath := filepath.Join(home, "config.yaml")
+		if err := os.WriteFile(configPath, []byte("this_key_does_not_exist: true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code := runCheckConfig(); code != 1 {
+			t.Fatalf("runCheckConfig() = %d, want 1 for an unknown config key", code)
+		}
+		// LoadNoPersist, not Load: a preflight must never rewrite the live
+		// config.yaml it is validating.
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != "this_key_does_not_exist: true\n" {
+			t.Fatalf("runCheckConfig must not rewrite an invalid config.yaml, got %q", data)
+		}
+	})
+
+	// Assert the SUCCESS case through run(): an unrecognised flag also exits
+	// 1 as an unknown command, so asserting the failure path here would pass
+	// whether or not the flag is wired at all.
+	t.Run("flag is routed by run", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("SYBRA_HOME", home)
+		if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, flag := range []string{"-check-config", "--check-config"} {
+			if code := run([]string{flag}); code != 0 {
+				t.Errorf("run(%s) = %d, want 0 — the flag is not routed", flag, code)
+			}
+		}
+	})
+
+	// Position must not matter: the CLI already strips --json and --home
+	// wherever they appear, and a caller that puts one first would otherwise
+	// have -check-config treated as a subcommand and skip the preflight
+	// entirely.
+	t.Run("flag is routed after other global flags", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("SYBRA_HOME", home)
+		if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code := run([]string{"--json", "-check-config"}); code != 0 {
+			t.Errorf("run(--json -check-config) = %d, want 0", code)
+		}
+	})
+
+	// --home must select the home the preflight validates, not be ignored.
+	t.Run("home override targets the validated config", func(t *testing.T) {
+		good := t.TempDir()
+		bad := t.TempDir()
+		t.Setenv("SYBRA_HOME", good)
+		if err := os.WriteFile(filepath.Join(good, "config.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(bad, "config.yaml"), []byte("this_key_does_not_exist: true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code := run([]string{"--home", bad, "-check-config"}); code != 1 {
+			t.Errorf("run(--home <invalid> -check-config) = %d, want 1 — the override was ignored", code)
+		}
+	})
+}
+
+// The whole point of the capacity section is that an operator diagnosing a
+// stalled board should not have to SSH to the host and grep the app log for
+// provider.health.flip. Live health lives in the server process, so an
+// unreachable server must say "unknown" rather than report a fabricated zero.
+func TestBuildCapacityReport_NoServerIsUnknownNotEmpty(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultConfig()
+	cfg.Providers.Claude.Enabled = true
+	cfg.Providers.Codex.Enabled = true
+	cfg.Providers.Copilot.Enabled = false
+	cfg.Providers.OpenCode.Enabled = false
+
+	report := buildCapacityReport(cfg, nil, time.Now())
+
+	if report.Available {
+		t.Error("capacity reported as known without a reachable server")
+	}
+	if report.Unavailable == "" {
+		t.Error("no reason given for unknown capacity")
+	}
+	if !slices.Equal(report.Enabled, []string{"claude", "codex"}) {
+		t.Errorf("enabled = %v, want the configured chain in preference order", report.Enabled)
+	}
+	if report.HealthyLegs != 0 {
+		t.Errorf("HealthyLegs = %d, want 0 when nothing was probed", report.HealthyLegs)
+	}
+}
+
+func TestAddCapacityFindings(t *testing.T) {
+	t.Parallel()
+	reset := time.Date(2026, 8, 8, 9, 41, 0, 0, time.UTC)
+
+	cases := []struct {
+		name         string
+		report       doctorCapacityReport
+		wantSeverity string
+		wantContains string
+	}{
+		{
+			name:         "single enabled provider has no failover",
+			report:       doctorCapacityReport{Enabled: []string{"claude"}, Available: true, HealthyLegs: 1},
+			wantSeverity: "warning",
+			wantContains: "no failover chain",
+		},
+		{
+			name: "every provider unhealthy is an error",
+			report: doctorCapacityReport{
+				Enabled: []string{"claude", "codex"}, Available: true, HealthyLegs: 0,
+				Providers: []doctorCapacityStatus{{Provider: "codex", ResetsAt: &reset}},
+			},
+			wantSeverity: "error",
+			wantContains: "nothing can dispatch",
+		},
+		{
+			name:         "one healthy leg is a warning",
+			report:       doctorCapacityReport{Enabled: []string{"claude", "codex"}, Available: true, HealthyLegs: 1},
+			wantSeverity: "warning",
+			wantContains: "only 1 healthy provider",
+		},
+		{
+			name:   "two healthy legs are silent",
+			report: doctorCapacityReport{Enabled: []string{"claude", "codex"}, Available: true, HealthyLegs: 2},
+		},
+		{
+			name:   "unknown capacity raises no health finding",
+			report: doctorCapacityReport{Enabled: []string{"claude", "codex"}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var got []configDoctorFinding
+			add := func(severity, format string, a ...any) {
+				got = append(got, configDoctorFinding{Severity: severity, Message: fmt.Sprintf(format, a...)})
+			}
+			report := tc.report
+			addCapacityFindings(&report, add)
+
+			if tc.wantSeverity == "" {
+				if len(got) != 0 {
+					t.Fatalf("expected no findings, got %+v", got)
+				}
+				return
+			}
+			if !slices.ContainsFunc(got, func(f configDoctorFinding) bool {
+				return f.Severity == tc.wantSeverity && strings.Contains(f.Message, tc.wantContains)
+			}) {
+				t.Fatalf("no %s finding containing %q: %+v", tc.wantSeverity, tc.wantContains, got)
+			}
+		})
+	}
+}
+
+// config doctor is the surface an operator reaches for, so the section has to
+// be in its output, not merely computed.
+func TestConfigDoctorReportsCapacity(t *testing.T) {
+	setupStore(t)
+
+	cfg := config.DefaultConfig()
+	cfg.Providers.Claude.Enabled = true
+	cfg.Providers.Codex.Enabled = false
+	cfg.Providers.Copilot.Enabled = false
+	cfg.Providers.OpenCode.Enabled = false
+
+	_, out := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, true, false, nil)
+	})
+
+	var report configDoctorReport
+	mustUnmarshal(t, out, &report)
+	if report.Capacity == nil {
+		t.Fatal("doctor report carries no capacity section")
+	}
+	if !slices.Equal(report.Capacity.Enabled, []string{"claude"}) {
+		t.Errorf("capacity.enabled = %v, want [claude]", report.Capacity.Enabled)
+	}
+	if !slices.ContainsFunc(report.Findings, func(f configDoctorFinding) bool {
+		return strings.Contains(f.Message, "no failover chain")
+	}) {
+		t.Errorf("single-provider chain raised no finding: %+v", report.Findings)
+	}
+
+	_, human := captureStdout(t, func() int {
+		return cmdConfigDoctor(cfg, false, false, nil)
+	})
+	if !strings.Contains(human, "provider capacity enabled: claude") {
+		t.Errorf("human output omits the capacity section:\n%s", human)
+	}
+}
+
+// GetProviderHealth returns an empty slice when the health-check loop is
+// disabled on the server. Reading that as "nothing is healthy" reports an
+// outage that is not happening, which is worse than reporting unknown.
+func TestBuildCapacityReport_EmptyHealthIsUnknown(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := config.DefaultConfig()
+	cfg.Providers.Claude.Enabled = true
+	cfg.Providers.Codex.Enabled = true
+	api := &apiClient{baseURL: srv.URL, token: "t", http: srv.Client()}
+
+	report := buildCapacityReport(cfg, api, time.Now())
+
+	if report.Available {
+		t.Error("empty health response reported as known capacity")
+	}
+	if !strings.Contains(report.Unavailable, "disabled") {
+		t.Errorf("unavailable reason = %q, want it to name the disabled health check", report.Unavailable)
+	}
+
+	var findings []configDoctorFinding
+	addCapacityFindings(report, func(severity, format string, a ...any) {
+		findings = append(findings, configDoctorFinding{Severity: severity, Message: fmt.Sprintf(format, a...)})
+	})
+	if slices.ContainsFunc(findings, func(f configDoctorFinding) bool { return f.Severity == "error" }) {
+		t.Errorf("disabled health checking raised an outage error: %+v", findings)
 	}
 }

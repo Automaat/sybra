@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/errclass"
+
 	"github.com/Automaat/sybra/internal/gitexec"
 )
 
@@ -25,32 +27,11 @@ var QuarantineDir string
 // It is configured by the app alongside QuarantineDir.
 var WorktreesDir string
 
-var badRefMarkers = []string{
-	"fatal: bad object",
-	"bad object head",
-	"not a valid object name",
-	"invalid object",
-	"invalid revision range",
-	"missing object",
-	"unable to read sha1 file",
-	"object file",
-	"loose object",
-	"unknown revision",
-	"ambiguous argument",
-	"reference broken",
-}
-
 func IsBadRefError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	for _, marker := range badRefMarkers {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
+	return errclass.IsBadRef(err.Error())
 }
 
 // fsckRefBatch bounds how many ref tips are passed to one `git fsck`

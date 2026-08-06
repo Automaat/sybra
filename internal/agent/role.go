@@ -66,8 +66,9 @@ func (r Role) AgentName(title string) string { return string(r) + ":" + title }
 //
 // test-runner is deliberately excluded: building and running tests legitimately
 // writes into the tree, so it stays governed by the diff-based tamper gate.
-// human-review is excluded too — despite its name it authors code, commits and
-// pushes, which is its own unresolved question (see #2791).
+// human-review is excluded too: it is a recovery author that fixes, commits,
+// and pushes after a task is already blocked, rather than an independent
+// judge of an in-flight implementation.
 func (r Role) JudgesWithoutWriting() bool {
 	switch r {
 	case RoleReview, RolePlan, RolePlanCritic, RoleEval:
@@ -104,7 +105,7 @@ func (r Role) DiagnosesBlockedTask() bool {
 // implementation, matching RoleFromName.
 func (r Role) AuthorsCode() bool {
 	switch r {
-	case RoleImplementation, RoleFixReview, RolePRFix, RoleTestFix, "":
+	case RoleImplementation, RoleFixReview, RolePRFix, RoleTestFix, RoleHumanReview, "":
 		return true
 	default:
 		return false

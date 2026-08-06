@@ -4341,3 +4341,36 @@ func TestStripHTTPSUserinfo(t *testing.T) {
 		})
 	}
 }
+
+// A branch name may contain slashes. filepath.Base turned refs/heads/release/2.0
+// into "2.0", which never equals the CurrentBranch it is compared against, so
+// every default-branch refusal silently passed on such a project — and every
+// base ref built from it named a branch that does not exist.
+func TestDefaultBranch_KeepsSlashes(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		initial string
+	}{
+		{"slashed", "release/2.0"},
+		{"plain", "main"},
+		{"two slashes", "team/release/2.0"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			bare := filepath.Join(t.TempDir(), "origin.git")
+			cmd := exec.Command("git", "init", "--bare", "-b", tt.initial, bare)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git init: %v: %s", err, out)
+			}
+
+			got, err := DefaultBranch(context.Background(), bare)
+			if err != nil {
+				t.Fatalf("DefaultBranch: %v", err)
+			}
+			if got != tt.initial {
+				t.Errorf("DefaultBranch = %q, want %q", got, tt.initial)
+			}
+		})
+	}
+}

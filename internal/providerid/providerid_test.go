@@ -29,3 +29,13 @@ func TestIsKnown(t *testing.T) {
 		}
 	}
 }
+
+// All() and IsKnown() above already pin the constants by comparing derived
+// output against the literals. List() is the remaining wire surface: it feeds
+// user-facing validation messages, and its separator is parsed by nothing, so
+// only a test keeps it from drifting.
+func TestListJoinsTheUniverseForHumans(t *testing.T) {
+	if got, want := List(), "claude, codex, copilot, opencode"; got != want {
+		t.Errorf("List() = %q, want %q", got, want)
+	}
+}

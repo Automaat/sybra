@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // foreignBranchRefRe matches Sybra-owned branch refs of the form
@@ -45,7 +47,7 @@ func (e *Engine) execValidatePlan(taskID string, step *Step, t TaskInfo) (StepOu
 		"plan references foreign task ID(s) %s — likely cross-task contamination during plan synthesis. Re-dispatch the task or edit the plan manually before approving.",
 		strings.Join(foreign, ", "),
 	)
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 		e.logger.Error("workflow.validate-plan.status", "task_id", taskID, "err", statusErr)
 	}
 	e.logger.Warn("workflow.validate-plan.foreign-refs",

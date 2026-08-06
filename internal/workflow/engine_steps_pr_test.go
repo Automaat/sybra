@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // newPRWorktree sets up a bare "origin" clone plus a worktree checked out on
@@ -180,7 +182,7 @@ type failStatusTaskProvider struct {
 	err error
 }
 
-func (f *failStatusTaskProvider) UpdateTaskStatus(string, string, string) error {
+func (f *failStatusTaskProvider) UpdateTaskStatus(string, taskstatus.Status, string) error {
 	return f.err
 }
 
@@ -1188,11 +1190,20 @@ func TestPRRetryReasonPreservesTailForLongHookOutput(t *testing.T) {
 	}
 }
 
-func TestTruncateMiddleHonorsSmallLimit(t *testing.T) {
-	for _, limit := range []int{-1, 0, 1, 5, 20} {
-		got := truncateMiddle("abcdefghijklmnopqrstuvwxyz", limit)
-		if len(got) > max(0, limit) {
-			t.Fatalf("limit %d: len(%q) = %d, want <= %d", limit, got, len(got), max(0, limit))
+// prRetryReason feeds a status_reason persisted as YAML, and hook output is
+// exactly where box-drawing table borders and arrows show up.
+func TestPRRetryReasonKeepsValidUTF8OnMultibyteHookOutput(t *testing.T) {
+	for name, detail := range map[string]string{
+		"box-drawing":  strings.Repeat("│─", 400),
+		"ellipsis run": strings.Repeat("…", 400),
+		"emoji run":    strings.Repeat("🚀", 300),
+	} {
+		got := prRetryReason(prPushRetryStatusReason, detail)
+		if !utf8.ValidString(got) {
+			t.Errorf("%s: reason is not valid UTF-8: %q", name, got)
+		}
+		if !strings.HasPrefix(got, prPushRetryStatusReason+": ") {
+			t.Errorf("%s: reason = %q, want base prefix", name, got)
 		}
 	}
 }

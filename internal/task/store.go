@@ -26,14 +26,14 @@ type Store struct {
 	dir               string
 	trashDir          string
 	comments          *CommentStore
-	plans             *PlanStore
+	plans             *PlanningSidecarStore
 	planContracts     *PlanningSidecarStore
 	planDrafts        *PlanDraftStore
-	planCritiques     *PlanCritiqueStore
+	planCritiques     *PlanningSidecarStore
 	planResearch      *PlanningSidecarStore
 	planDecisions     *PlanningSidecarStore
 	planBrief         *PlanningSidecarStore
-	codeReviews       *CodeReviewStore
+	codeReviews       *PlanningSidecarStore
 	locker            *fsutil.KeyedLocker
 	cacheMu           sync.RWMutex
 	listCache         []Task
@@ -55,14 +55,14 @@ func NewStore(dir string) (*Store, error) {
 		dir:           dir,
 		trashDir:      filepath.Join(filepath.Dir(dir), "trash"),
 		comments:      NewCommentStore(dir),
-		plans:         NewPlanStore(dir),
+		plans:         NewPlanningSidecarStore(dir, ".plan.md", "plan"),
 		planContracts: NewPlanningSidecarStore(dir, ".plan-contract.json", "plan contract"),
 		planDrafts:    NewPlanDraftStore(dir),
-		planCritiques: NewPlanCritiqueStore(dir),
+		planCritiques: NewPlanningSidecarStore(dir, ".plan-critique.md", "plan critique"),
 		planResearch:  NewPlanningSidecarStore(dir, ".plan-research.md", "plan research"),
 		planDecisions: NewPlanningSidecarStore(dir, ".plan-decisions.md", "plan decisions"),
 		planBrief:     NewPlanningSidecarStore(dir, ".plan-brief.md", "plan brief"),
-		codeReviews:   NewCodeReviewStore(dir),
+		codeReviews:   NewPlanningSidecarStore(dir, ".review.md", "code review"),
 		locker:        fsutil.NewKeyedLocker(),
 		newTaskID:     func() string { return uuid.NewString()[:8] },
 	}, nil
@@ -80,7 +80,7 @@ func (s *Store) Dir() string {
 
 // Plans returns the sidecar store for the human-readable compact plan
 // (Task.Plan).
-func (s *Store) Plans() *PlanStore {
+func (s *Store) Plans() *PlanningSidecarStore {
 	return s.plans
 }
 
@@ -98,7 +98,7 @@ func (s *Store) PlanDrafts() *PlanDraftStore {
 
 // PlanCritiques returns the sidecar store for plan-critic review output
 // (Task.PlanCritique).
-func (s *Store) PlanCritiques() *PlanCritiqueStore {
+func (s *Store) PlanCritiques() *PlanningSidecarStore {
 	return s.planCritiques
 }
 
@@ -122,7 +122,7 @@ func (s *Store) PlanBrief() *PlanningSidecarStore {
 
 // CodeReviews returns the sidecar store for code-review output
 // (Task.CodeReview).
-func (s *Store) CodeReviews() *CodeReviewStore {
+func (s *Store) CodeReviews() *PlanningSidecarStore {
 	return s.codeReviews
 }
 

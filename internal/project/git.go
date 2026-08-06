@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -429,15 +430,66 @@ func gitGlobalConfig(ctx context.Context, key string) string {
 	return strings.TrimSpace(out)
 }
 
-// DefaultBranch resolves barePath's HEAD symbolic ref (e.g.
-// refs/heads/main) and returns just the branch name (main).
+// ConfigureCommitSigning pins the clone's signing posture so a keyless host
+// cannot be talked into attempting a GPG signature. Headless agents commit
+// through their own bash calls, so the only durable floor below the prompt
+// layer is the clone's own config — and until now nothing wrote it. Hosts that
+// happened to carry commit.gpgsign=false held it as incidental state, so a
+// freshly cloned project got no protection at all.
+//
+// This does not stop an explicit `git commit -S`, which overrides config by
+// design. It stops every plain commit from inheriting a signing default the
+// host cannot honor. Under a signing policy the keys are unset rather than
+// forced true, leaving the host's own configuration authoritative.
+//
+// --replace-all/--unset-all rather than the plain forms: a config carrying a
+// key twice makes `git config <key> <value>` fail outright ("cannot overwrite
+// multiple values with a single value") and makes `--unset` exit 5 while
+// leaving both values in place, so the plain forms silently fail to establish
+// either posture.
+func ConfigureCommitSigning(ctx context.Context, barePath string, policy SigningPolicy) error {
+	signing := policy.SignsCommits(ctx)
+	for _, key := range []string{"commit.gpgsign", "tag.gpgsign"} {
+		if signing {
+			// --unset-all on an absent key exits 5; that is the desired end
+			// state, not a failure.
+			if err := runBare(ctx, barePath, "config", "--unset-all", key); err != nil && !isGitConfigKeyAbsent(err) {
+				return fmt.Errorf("unset %s: %w", key, err)
+			}
+			continue
+		}
+		if err := runBare(ctx, barePath, "config", "--replace-all", key, "false"); err != nil {
+			return fmt.Errorf("set %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
+// isGitConfigKeyAbsent reports whether err is `git config --unset-all`'s exit
+// code 5, which for --unset-all means the key was not set.
+func isGitConfigKeyAbsent(err error) bool {
+	exitErr, ok := errors.AsType[*exec.ExitError](err)
+	return ok && exitErr.ExitCode() == 5
+}
+
+// DefaultBranch resolves barePath's HEAD symbolic ref (e.g. refs/heads/main)
+// and returns the branch name it points at (main), slashes intact.
 func DefaultBranch(ctx context.Context, barePath string) (string, error) {
+	// An empty path leaves git in the Sybra process's own cwd, which answers
+	// with whatever branch that checkout is on. Every caller feeds the answer
+	// to a guard, so a project record with no clone_path would compare a real
+	// branch against an unrelated repository's instead of failing.
+	if strings.TrimSpace(barePath) == "" {
+		return "", errors.New("project has no clone path")
+	}
 	ref, err := outputBare(ctx, barePath, "symbolic-ref", "HEAD")
 	if err != nil {
 		return "", err
 	}
-	// refs/heads/main → main
-	return filepath.Base(ref), nil
+	// refs/heads/release/2.0 → release/2.0, never "2.0": a truncated name
+	// matches no branch and resolves to no ref, so every guard and base-ref
+	// built on it fails open rather than loudly.
+	return strings.TrimPrefix(ref, "refs/heads/"), nil
 }
 
 // ListTrackedFiles returns every file path tracked at ref in the bare repo,

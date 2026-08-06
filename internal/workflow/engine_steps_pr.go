@@ -12,6 +12,8 @@ import (
 
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // execPushBranch deterministically pushes the task's worktree branch to its
@@ -220,7 +222,7 @@ func (e *Engine) prWorktreeAndBranch(taskID string, step *Step, t TaskInfo) (wtP
 // completed StepOutput carrying the same reason, matching the pattern used
 // throughout the other PR-tail steps (e.g. execRequireSidecar).
 func (e *Engine) humanRequiredPR(taskID string, step *Step, reason string) (StepOutput, error) {
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return StepOutput{}, fmt.Errorf("%s: set human-required: %w", step.ID, err)
 	}
 	e.logger.Warn("workflow.pr-tail.human-required", "task_id", taskID, "step", step.ID, "reason", reason)
@@ -426,7 +428,7 @@ func (e *Engine) drainPendingConflictRecovery(taskID string) {
 
 func (e *Engine) escalatePendingConflictRecovery(taskID string) {
 	reason := "branch diverged from remote — needs manual conflict resolution (never force-pushed)"
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		e.logger.Error("workflow.pr-tail.conflict-recovery.escalate", "task_id", taskID, "err", err)
 	}
 	if _, err := e.CancelWorkflow(taskID, reason); err != nil {
@@ -479,24 +481,7 @@ func prRetryReason(base, detail string) string {
 	if detail == "" {
 		return base
 	}
-	return base + ": " + truncateMiddle(detail, 240)
-}
-
-func truncateMiddle(s string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	if len(s) <= limit {
-		return s
-	}
-	marker := "\n... (truncated) ...\n"
-	if limit <= len(marker)+2 {
-		return s[:limit]
-	}
-	keep := limit - len(marker)
-	head := keep / 2
-	tail := keep - head
-	return s[:head] + marker + s[len(s)-tail:]
+	return base + ": " + textutil.TruncateMiddle(detail, 240, "\n... (truncated) ...\n")
 }
 
 // findExistingPRForBranch checks for a PR already open on branch, mirroring
@@ -554,7 +539,7 @@ func (e *Engine) handleExistingAnyStatePRForBranch(taskID string, step *Step, wt
 		}
 		reason := fmt.Sprintf("branch already landed via merged PR #%d and has no remaining diff against base", num)
 		e.logger.Info("workflow.create-pr.merged-branch-done", "task_id", taskID, "pr", num)
-		out := StepOutput{StepID: step.ID, Status: "completed", Output: reason, TerminalStatus: "done", TerminalReason: reason}
+		out := StepOutput{StepID: step.ID, Status: "completed", Output: reason, TerminalStatus: taskstatus.Done, TerminalReason: reason}
 		return out, true
 	default:
 		return StepOutput{}, false
