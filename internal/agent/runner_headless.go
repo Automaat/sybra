@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Automaat/sybra/internal/errclass"
+
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/project"
@@ -1713,7 +1715,7 @@ func classifyAgentError(err error) string {
 		strings.Contains(msg, "eacces") ||
 		strings.Contains(msg, "operation not permitted"):
 		return "permission_denied"
-	case strings.Contains(msg, "rate limit") || strings.Contains(msg, "429") || strings.Contains(msg, "overloaded"):
+	case errclass.Matches(msg, errclass.AgentRateLimitPhrases):
 		return "rate_limit"
 	default:
 		return "crash"

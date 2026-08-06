@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/errclass"
+
 	"github.com/Automaat/sybra/internal/attribution"
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/gitexec"
@@ -726,26 +728,7 @@ func shouldRetryVerifyCommitsGitError(err error, output []byte) bool {
 	if err == nil {
 		return false
 	}
-	text := strings.ToLower(err.Error() + "\n" + string(output))
-	for _, needle := range []string{
-		"bad object head",
-		"fatal: bad object",
-		"not a valid object name",
-		"invalid object",
-		"invalid revision range",
-		"missing object",
-		"unable to read sha1 file",
-		"object file",
-		"loose object",
-		"unknown revision",
-		"ambiguous argument",
-		"reference broken",
-	} {
-		if strings.Contains(text, needle) {
-			return true
-		}
-	}
-	return false
+	return errclass.IsBadRef(err.Error() + "\n" + string(output))
 }
 
 func (e *Engine) recoverVerifyCommitsRefs(taskID, wtPath string, t TaskInfo) bool {

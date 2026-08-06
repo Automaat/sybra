@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/errclass"
+
 	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/textutil"
 )
@@ -328,27 +330,8 @@ func looksLikeGitHubRateLimit(output string) bool {
 // looksLikeGitHubRateLimit (requires "rate limit") and looksLikeAuthFailure
 // (credential problems, which are not naturally time-bounded).
 func looksLikeTransientGitHub(output string) bool {
-	lower := strings.ToLower(output)
-	patterns := []string{
-		"connection refused",
-		"connection reset",
-		"could not resolve host",
-		"no such host",
-		"no route to host",
-		"network is unreachable",
-		"temporary failure in name resolution",
-		"i/o timeout",
-		"timed out",
-		"context deadline exceeded",
-		"tls handshake",
-		"tls:",
-	}
-	for _, p := range patterns {
-		if strings.Contains(lower, p) {
-			return true
-		}
-	}
-	return looksLikeGatewayStatus(lower)
+	return errclass.Matches(output, errclass.WorkflowTransientPhrases) ||
+		looksLikeGatewayStatus(strings.ToLower(output))
 }
 
 // looksLikeGatewayStatus matches HTTP 502/503 responses regardless of how the
@@ -391,22 +374,5 @@ func isStatusBoundary(b byte) bool {
 // limits or network blips, a broken token does not self-heal, so callers must
 // bound how many times they retry before escalating to a human.
 func looksLikeAuthFailure(output string) bool {
-	lower := strings.ToLower(output)
-	patterns := []string{
-		"bad credentials",
-		"authentication failed",
-		"failed to log in",
-		"gh auth",
-		"gh_token is invalid",
-		"github_token is invalid",
-		"token has expired",
-		"could not read username for 'https://github.com'",
-		"401 unauthorized",
-	}
-	for _, p := range patterns {
-		if strings.Contains(lower, p) {
-			return true
-		}
-	}
-	return false
+	return errclass.Matches(output, errclass.WorkflowAuthPhrases)
 }

@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/errclass"
+
 	"github.com/Automaat/sybra/internal/clock"
 )
 
@@ -272,12 +274,8 @@ func (t *authHealthTracker) applyFailureBackoffLocked() {
 // ObserveCallResult can classify a combined stdout+stderr blob the same way
 // IsAuthError classifies a wrapped error.
 func isAuthErrorMsg(msg string) bool {
-	msg = strings.ToLower(msg)
-	return strings.Contains(msg, "http 401") ||
-		strings.Contains(msg, "bad credentials") ||
-		strings.Contains(msg, "gh auth login") ||
-		strings.Contains(msg, "gh_token environment variable") ||
-		strings.Contains(msg, authCircuitOpenMarker)
+	return strings.Contains(strings.ToLower(msg), authCircuitOpenMarker) ||
+		errclass.Matches(msg, errclass.GitHubAuthPhrases)
 }
 
 // authCircuitOpenMarker tags the synthetic error returned while the circuit
