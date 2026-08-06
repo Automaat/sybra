@@ -12154,8 +12154,14 @@ func TestResumeStalled_ParkOnAnotherStepIsLogged(t *testing.T) {
 	if got := parks(); got != 1 {
 		t.Fatalf("park on implement logged %d times, want 1", got)
 	}
-	if got := recordAttr(records[len(records)-1], "step"); got != "implement" {
-		t.Errorf("step attr = %q, want implement — an operator cannot tell which step is parked", got)
+	var step string
+	for _, r := range records {
+		if recordAttr(r, "reason") == "provider_rate_limited" {
+			step = recordAttr(r, "step")
+		}
+	}
+	if step != "implement" {
+		t.Errorf("step attr = %q, want implement — an operator cannot tell which step is parked", step)
 	}
 
 	records = nil
