@@ -23,7 +23,12 @@ func (e *Engine) shouldSkipResumeForRateLimitedProvider(t *TaskInfo, step *Step)
 	if !e.agents.ProviderRateLimited(prov) || e.agents.ProviderCanFailover(prov) {
 		return false
 	}
-	e.logger.Debug("workflow.resume-stalled.skip",
+	// Deduped, not Debug: a park can now last days (provider-stated reset
+	// instants land three days out), so the direct Debug call was both
+	// invisible at the default level and 3,600 lines per task at debug level.
+	// Keying the value on the provider re-arms INFO when the park moves to a
+	// different one.
+	e.resumeSkip.Log(e.logger, "workflow.resume-stalled.skip", t.ID, "provider_rate_limited:"+prov,
 		"task_id", t.ID, "reason", "provider_rate_limited", "provider", prov)
 	return true
 }

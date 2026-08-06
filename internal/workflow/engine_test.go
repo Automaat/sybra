@@ -5405,9 +5405,9 @@ func TestResumeStalled_SkipsWorkflowRetryUntil(t *testing.T) {
 // skip-reason logs are visible at the default (INFO) log level instead of
 // being silently swallowed at Debug: a dropped/skipped resume was previously
 // invisible in production logs. The first occurrence of a given skip under a
-// task logs at INFO; identical repeats on later ticks are throttled to Debug
-// so a long-lived cooldown (e.g. a multi-hour retry_after window) doesn't
-// flood the log with a duplicate INFO line every tick.
+// task logs at INFO; identical repeats on later ticks are dropped, so a
+// long-lived cooldown (a multi-hour retry_after window, or a multi-day
+// provider park) does not write a line per maintenance tick at any level.
 func TestResumeStalled_SkipLogsPromotedToThrottledInfo(t *testing.T) {
 	var records []slog.Record
 	logger := slog.New(&demotionRecordHandler{records: &records})
@@ -5455,14 +5455,70 @@ func TestResumeStalled_SkipLogsPromotedToThrottledInfo(t *testing.T) {
 		t.Fatalf("reason = %q, want retry_after", got)
 	}
 
+	// A repeat inside logging.InfoRepeatInterval is dropped outright, not
+	// downgraded: a park that lasts days would otherwise write one line per
+	// maintenance tick at debug level. Re-emission after the interval is
+	// covered by the logging package's own clock-seamed test.
 	records = nil
-	engine.ResumeStalled()
-	repeat := skipRecords()
-	if len(repeat) != 1 {
-		t.Fatalf("got %d skip records after repeat tick, want 1: %+v", len(repeat), repeat)
+	for range 5 {
+		engine.ResumeStalled()
 	}
-	if repeat[0].Level != slog.LevelDebug {
-		t.Fatalf("repeat skip level = %v, want Debug (throttled)", repeat[0].Level)
+	if repeat := skipRecords(); len(repeat) != 0 {
+		t.Fatalf("got %d skip records from repeat ticks, want 0: %+v", len(repeat), repeat)
+	}
+}
+
+// A rate-limited provider is the one skip reason that can hold for days, and
+// it was the one reason logged straight to Debug instead of through the
+// throttle — invisible at the default level, and one line per tick at debug.
+func TestResumeStalled_RateLimitedProviderSkipIsThrottled(t *testing.T) {
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimited(true)
+	engine := NewEngine(store, tasks, agents, logger)
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+
+	skips := func() []slog.Record {
+		var out []slog.Record
+		for _, r := range records {
+			if r.Message == "workflow.resume-stalled.skip" &&
+				recordAttr(r, "reason") == "provider_rate_limited" {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+
+	engine.ResumeStalled()
+	first := skips()
+	if len(first) != 1 {
+		t.Fatalf("got %d park records on the first tick, want 1: %+v", len(first), first)
+	}
+	if first[0].Level != slog.LevelInfo {
+		t.Errorf("park logged at %v, want Info so it is visible at the default level", first[0].Level)
+	}
+
+	records = nil
+	for range 20 {
+		engine.ResumeStalled()
+	}
+	if repeat := skips(); len(repeat) != 0 {
+		t.Errorf("got %d park records from repeat ticks, want 0: %+v", len(repeat), repeat)
 	}
 }
 
