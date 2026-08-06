@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/skillinvoke"
 	bundledskills "github.com/Automaat/sybra/internal/skills"
@@ -189,11 +190,11 @@ func providerSkillVisible(providerName, home, skillName string) bool {
 	}
 	var names []string
 	switch strings.ToLower(strings.TrimSpace(providerName)) {
-	case "claude":
+	case providerid.Claude:
 		names = discoverClaudeSkillsInHome(home)
-	case "codex":
+	case providerid.Codex:
 		names = discoverNativeCodexSkillsInHome(home)
-	case "copilot":
+	case providerid.Copilot:
 		names = discoverNativeCopilotSkillsInHome(home)
 	default:
 		return false
@@ -435,7 +436,7 @@ var (
 	runCodexPluginListJSON  = func() ([]byte, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return exec.CommandContext(ctx, "codex", "plugin", "list", "--json").Output()
+		return exec.CommandContext(ctx, providerid.Codex, "plugin", "list", "--json").Output()
 	}
 )
 

@@ -191,7 +191,7 @@ func (a *App) replayDeferredStatusChanges() {
 			continue
 		}
 		if t2.Status == task.StatusHumanRequired && a.runsScheduler() && a.humanReview != nil {
-			go a.humanReview.maybeSpawn(taskID, "")
+			go a.humanReview.maybeSpawn(a.schedulerContext(), taskID, "")
 		}
 	}
 }
@@ -218,10 +218,19 @@ func (a *App) maintenancePass(ctx context.Context) {
 	a.queueDrainPass(ctx)
 	// Recover in-progress tasks whose agent died — runs continuously, not just at
 	// startup, to catch agents that finished without advancing the workflow.
-	if a.runsScheduler() {
+	if a.runsScheduler() && a.recovery != nil {
 		a.recovery.RestartStaleInProgress(ctx)
 	}
-	a.recovery.ReconcileLostPRNumber(ctx)
+	// Continuously, not just at startup: a preparation can hold the dispatch
+	// claim for its fetch budget plus its setup budget, longer than any ladder
+	// that must stay under agent.StaleDispatchClaimAge. Exhaustion therefore
+	// has to be recoverable, and this is what recovers it.
+	if a.humanReview != nil {
+		go a.humanReview.RespawnDroppedReviews(ctx)
+	}
+	if a.recovery != nil {
+		a.recovery.ReconcileLostPRNumber(ctx)
+	}
 	// Re-attempt enrichment for URL stubs orphaned by a failed/interrupted
 	// initial fetch — otherwise they keep the enrich-pending marker (and their
 	// raw-URL title) forever and never dispatch a workflow. The eventual
@@ -352,14 +361,18 @@ const maxReviewAttemptsPerHead = 2
 
 // reviewBudget builds the single durable-AgentRuns-backed budget bounding
 // automated review dispatch: PerHour catches a runaway loop across any head,
-// PerHead catches repeated review of one unchanged commit. A nil cfg (tests)
-// uses the default per-hour limit.
+// PerTask puts a hard ceiling on lifetime review churn, and PerHead catches
+// repeated review of one unchanged commit. A nil cfg (tests) uses the defaults.
 func (a *App) reviewBudget() reviewbudget.Budget {
 	perHour := config.DefaultReviewRoundsPerHour
 	if a.cfg != nil {
 		perHour = a.cfg.Agent.ReviewRoundsPerHourLimit()
 	}
-	return reviewbudget.Budget{PerHour: perHour, PerHead: maxReviewAttemptsPerHead}
+	return reviewbudget.Budget{
+		PerHour: perHour,
+		PerTask: config.DefaultReviewRoundsPerTask,
+		PerHead: maxReviewAttemptsPerHead,
+	}
 }
 
 // taskReviewRuns adapts t's durable AgentRuns history into the role/timestamp
@@ -391,6 +404,24 @@ func (a *App) parkReviewRateLimited(t task.Task, limit int) {
 		},
 	}); err != nil {
 		a.logger.Error("workflow.dispatch.inbound-review.rate-limit-park", "task_id", t.ID, "err", err)
+	}
+}
+
+func (a *App) parkReviewLifetimeLimited(t task.Task, limit int) {
+	spent := a.reviewBudget().LifetimeSpent(taskReviewRuns(t))
+	a.logger.Error("workflow.dispatch.inbound-review.task-limit",
+		"task_id", t.ID, "repo", t.ProjectID, "pr", t.PRNumber,
+		"rounds", spent, "limit", limit)
+	reason := fmt.Sprintf("review lifetime limit: %d rounds spent on PR #%d", limit, t.PRNumber)
+	if _, err := a.tasks.Apply(task.TransitionIntent{
+		TaskID:   t.ID,
+		ToStatus: task.StatusHumanRequired,
+		Actor:    "orchestrator.review_task_limit.park",
+		Extra: task.Update{
+			StatusReason: task.Ptr(reason),
+		},
+	}); err != nil {
+		a.logger.Error("workflow.dispatch.inbound-review.task-limit-park", "task_id", t.ID, "err", err)
 	}
 }
 
@@ -471,12 +502,15 @@ func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) 
 	// The blast-radius cap, and the only gate here that bounds a loop we have
 	// not thought of: the per-head budget below assumes the head is a
 	// meaningful key, and every other gate assumes the phase machine is sane.
-	// Rate rather than lifetime total, so a PR legitimately re-reviewed after
-	// each push over weeks is never blocked while a runaway is stopped inside
-	// the hour. Counted off the durable AgentRuns list, so a restart cannot
-	// launder it. Checked before the GitHub call — it needs no network.
+	// Counted off the durable AgentRuns list, so a restart cannot launder it.
+	// Checked before the GitHub call — it needs no network.
 	budget := a.reviewBudget()
-	if budget.HourlyExceeded(taskReviewRuns(t), time.Now()) {
+	runs := taskReviewRuns(t)
+	if budget.LifetimeExceeded(runs) {
+		a.parkReviewLifetimeLimited(t, budget.PerTask)
+		return
+	}
+	if budget.HourlyExceeded(runs, time.Now()) {
 		a.parkReviewRateLimited(t, budget.PerHour)
 		return
 	}

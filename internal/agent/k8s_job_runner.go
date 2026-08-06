@@ -12,13 +12,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path"
 	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 const (
@@ -155,7 +156,7 @@ func (r *k8sJobRunner) Run(ctx context.Context, m *Manager, a *Agent, cfg RunCon
 	var podName string
 	logProvider := a.Provider
 	if r.mode == k8sRunnerModeFake {
-		logProvider = "claude"
+		logProvider = providerid.Claude
 	}
 
 	ticker := time.NewTicker(750 * time.Millisecond)
@@ -566,10 +567,9 @@ func syncK8sGitWorkspace(ctx context.Context, dir string) error {
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	out, err := cmd.CombinedOutput()
+	out, err := gitexec.CombinedOutput(ctx, gitexec.Options{Dir: dir}, args...)
 	if err != nil {
-		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
 }

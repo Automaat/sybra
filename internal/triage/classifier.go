@@ -10,6 +10,7 @@ import (
 	"github.com/Automaat/sybra/internal/llmjob"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -49,7 +50,7 @@ func claudeModelOverride(model string) map[string]string {
 	if strings.TrimSpace(model) == "" {
 		return nil
 	}
-	return map[string]string{"claude": model}
+	return map[string]string{providerid.Claude: model}
 }
 
 func buildPrompt(t task.Task, projects []project.Project) string {

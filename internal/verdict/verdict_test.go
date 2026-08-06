@@ -109,6 +109,11 @@ func TestParse(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "non-dispatchable recovery action",
+			input:   `{"decision":"unblocked","reason":"x","recoverable_action":"planning","confidence":"medium"}`,
+			wantErr: true,
+		},
+		{
 			name:    "invalid confidence",
 			input:   `{"decision":"human","reason":"x","recoverable_action":"none","confidence":"certain"}`,
 			wantErr: true,

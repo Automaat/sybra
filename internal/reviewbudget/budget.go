@@ -28,13 +28,15 @@ type Run struct {
 	StartedAt time.Time
 }
 
-// Budget bounds one task's automated review-role dispatches two ways:
+// Budget bounds one task's automated review-role dispatches three ways:
 // PerHour caps them in a rolling hour (catches a runaway loop regardless of
-// which head SHA it targets); PerHead caps attempts against one specific PR
-// head SHA (catches repeated review of an unchanged commit). Either field
-// <=0 disables that half of the budget.
+// which head SHA it targets); PerTask caps them across the task's lifetime
+// (puts a hard ceiling on long-lived review/fix churn); PerHead caps attempts
+// against one specific PR head SHA (catches repeated review of an unchanged
+// commit). Any field <=0 disables that dimension.
 type Budget struct {
 	PerHour int
+	PerTask int
 	PerHead int
 }
 
@@ -59,6 +61,30 @@ func (b Budget) HourlyExceeded(runs []Run, now time.Time) bool {
 		return false
 	}
 	return b.HourlySpent(runs, now) >= b.PerHour
+}
+
+// LifetimeSpent counts every review-role run in the task's durable history.
+func (b Budget) LifetimeSpent(runs []Run) int {
+	spent := 0
+	for i := range runs {
+		if runs[i].Role == ReviewRole {
+			spent++
+		}
+	}
+	return spent
+}
+
+// LifetimeExceeded reports whether the lifetime review budget is spent.
+func (b Budget) LifetimeExceeded(runs []Run) bool {
+	if b.PerTask <= 0 {
+		return false
+	}
+	return b.LifetimeSpent(runs) >= b.PerTask
+}
+
+// Exhausted reports whether any review budget dimension is spent.
+func (b Budget) Exhausted(runs []Run, now time.Time) bool {
+	return b.HourlyExceeded(runs, now) || b.LifetimeExceeded(runs)
 }
 
 // HeadCovered reports whether head's review budget is already spent, given

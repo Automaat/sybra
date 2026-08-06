@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 func TestClassifyTamperPath(t *testing.T) {
@@ -939,7 +941,7 @@ func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 
 	cases := []struct {
 		name   string
-		status string
+		status taskstatus.Status
 		want   string
 	}{
 		{"flagged_ends_workflow", "human-required", ""},
@@ -947,7 +949,7 @@ func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := ResolveTransition(tamper.Next, map[string]string{"task.status": tc.status})
+			got, err := ResolveTransition(tamper.Next, map[string]string{"task.status": string(tc.status)})
 			if err != nil {
 				t.Fatalf("ResolveTransition: %v", err)
 			}

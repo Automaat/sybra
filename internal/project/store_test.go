@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/gitexec"
 )
 
 func TestNewStore(t *testing.T) {
@@ -216,10 +218,12 @@ func TestStoreCreateDoesNotHoldMetadataLockDuringClone(t *testing.T) {
 
 	cloneStarted := make(chan struct{})
 	releaseClone := make(chan struct{})
-	store.cloneBare = func(_ context.Context, _ string, dest string) error {
+	store.cloneBare = func(ctx context.Context, _ string, dest string) error {
 		close(cloneStarted)
 		<-releaseClone
-		return os.MkdirAll(dest, 0o755)
+		// A real bare repo, not a bare directory: Create configures commit
+		// signing on the clone before publishing it.
+		return gitexec.Run(ctx, gitexec.Options{}, "init", "--bare", dest)
 	}
 
 	created := make(chan error, 1)
@@ -268,10 +272,12 @@ func TestStoreCreateDeleteDuringCloneLeavesNoClone(t *testing.T) {
 	}
 	cloneStarted := make(chan struct{})
 	releaseClone := make(chan struct{})
-	store.cloneBare = func(_ context.Context, _ string, dest string) error {
+	store.cloneBare = func(ctx context.Context, _ string, dest string) error {
 		close(cloneStarted)
 		<-releaseClone
-		return os.MkdirAll(dest, 0o755)
+		// A real bare repo, not a bare directory: Create configures commit
+		// signing on the clone before publishing it.
+		return gitexec.Run(ctx, gitexec.Options{}, "init", "--bare", dest)
 	}
 
 	created := make(chan error, 1)

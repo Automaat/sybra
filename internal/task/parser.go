@@ -60,6 +60,13 @@ func ParseBytes(data []byte) (Task, error) {
 			return Task{}, err
 		}
 	}
+	if IsDegradedID(t.ID) {
+		// Reserved for Store.List's synthetic unreadable-file entries. Such an
+		// ID is not mintable (ValidateID rejects the colon), so it can only be
+		// hand-written — accepting it would put a second, addressable task on
+		// the board under an ID a degraded card may already occupy.
+		return Task{}, fmt.Errorf("task id %q uses the reserved unreadable-entry prefix %q", t.ID, degradedIDPrefix)
+	}
 	return t, nil
 }
 

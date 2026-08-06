@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/provider"
+
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/limits"
 )
@@ -704,12 +706,12 @@ func TestHasRunningAgentForTask(t *testing.T) {
 
 type stubGate struct{ rateLimited bool }
 
-func (s stubGate) IsHealthy(string) bool                         { return !s.rateLimited }
-func (s stubGate) RateLimited(string) bool                       { return s.rateLimited }
-func (s stubGate) Failover(string) string                        { return "" }
-func (s stubGate) Reason(string) string                          { return "" }
-func (s stubGate) ReportAuthFailure(string, string)              {}
-func (s stubGate) ReportRateLimit(string, time.Duration, string) {}
+func (s stubGate) IsHealthy(string) bool                                                  { return !s.rateLimited }
+func (s stubGate) RateLimited(string) bool                                                { return s.rateLimited }
+func (s stubGate) Failover(string) string                                                 { return "" }
+func (s stubGate) Reason(string) string                                                   { return "" }
+func (s stubGate) ReportAuthFailure(string, string)                                       {}
+func (s stubGate) ReportRateLimit(string, time.Duration, string, provider.CooldownSource) {}
 
 func TestProviderRateLimited(t *testing.T) {
 	m, _ := newTestManager(t)
@@ -852,7 +854,7 @@ func TestHasRunningAgentForTask_ExpiresStaleDispatchClaim(t *testing.T) {
 	m, _ := newTestManager(t)
 
 	m.mu.Lock()
-	m.dispatchClaims["t1"] = time.Now().Add(-staleDispatchClaimAge - time.Minute)
+	m.dispatchClaims["t1"] = time.Now().Add(-StaleDispatchClaimAge - time.Minute)
 	m.mu.Unlock()
 
 	if m.HasRunningAgentForTask("t1") {
@@ -1034,7 +1036,7 @@ func TestHasOtherRunningAgentForTask_ExpiresStaleDispatchClaim(t *testing.T) {
 	running := &Agent{ID: "a1", TaskID: "t1", State: StateRunning, cancel: func() {}}
 	m.mu.Lock()
 	m.agents["a1"] = running
-	m.dispatchClaims["t1"] = time.Now().Add(-staleDispatchClaimAge - time.Minute)
+	m.dispatchClaims["t1"] = time.Now().Add(-StaleDispatchClaimAge - time.Minute)
 	m.mu.Unlock()
 
 	if m.HasOtherRunningAgentForTask("t1", "a1") {

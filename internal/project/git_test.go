@@ -1737,33 +1737,6 @@ func TestInstallHooks_RepoConfigPriority(t *testing.T) {
 	}
 }
 
-func TestInstallHooks_UnsetsGitObjectEnv(t *testing.T) {
-	t.Parallel()
-	_, wtPath := initWorktree(t)
-
-	checks := &ChecksConfig{PrePush: []string{
-		`test -z "$GIT_OBJECT_DIRECTORY"`,
-		`test -z "$GIT_ALTERNATE_OBJECT_DIRECTORIES"`,
-	}}
-	if err := InstallHooks(context.Background(), wtPath, checks); err != nil {
-		t.Fatalf("InstallHooks: %v", err)
-	}
-
-	gitDir, err := gitCommonDir(context.Background(), wtPath)
-	if err != nil {
-		t.Fatalf("gitCommonDir: %v", err)
-	}
-	cmd := exec.Command(filepath.Join(gitDir, "hooks", "pre-push"))
-	cmd.Dir = wtPath
-	cmd.Env = append(os.Environ(),
-		"GIT_OBJECT_DIRECTORY=/some/sandbox/overlay/objects",
-		"GIT_ALTERNATE_OBJECT_DIRECTORIES=/some/other/repo/objects",
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("pre-push hook should scrub Git object environment: %v: %s", err, out)
-	}
-}
-
 func TestInstallHooks_NilChecks(t *testing.T) {
 	t.Parallel()
 	_, wtPath := initWorktree(t)
@@ -1926,6 +1899,47 @@ func TestInstallHooks_ScrubsSybraControlPlaneEnv(t *testing.T) {
 	)
 	if out, err := hook.CombinedOutput(); err != nil {
 		t.Fatalf("pre-push hook should scrub Sybra control-plane env: %v: %s", err, out)
+	}
+}
+
+// TestInstallHooks_UnsetsGitObjectEnv is the regression guard for a hook
+// that inherits GIT_OBJECT_DIRECTORY/GIT_ALTERNATE_OBJECT_DIRECTORIES from a
+// sandboxed caller's environment (e.g. Sybra's own per-task git object
+// overlay) and leaks them into whatever repo the hook's own commands touch —
+// corrupting a completely unrelated repo's object store. GIT_OBJECT_DIRECTORY
+// alone was unset for a while; GIT_ALTERNATE_OBJECT_DIRECTORIES was not,
+// which still let a fresh repo's git commands resolve objects through an
+// unrelated alternate.
+func TestInstallHooks_UnsetsGitObjectEnv(t *testing.T) {
+	t.Parallel()
+	_, wtPath := initWorktree(t)
+
+	checks := &ChecksConfig{
+		PrePush: []string{
+			`test -z "$GIT_OBJECT_DIRECTORY"`,
+			`test -z "$GIT_ALTERNATE_OBJECT_DIRECTORIES"`,
+		},
+	}
+	if err := InstallHooks(context.Background(), wtPath, checks); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
+	}
+
+	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	cmd.Dir = wtPath
+	out, _ := cmd.Output()
+	gitDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(wtPath, gitDir)
+	}
+	hookPath := filepath.Join(gitDir, "hooks", "pre-push")
+	hook := exec.Command(hookPath)
+	hook.Dir = wtPath
+	hook.Env = append(os.Environ(),
+		"GIT_OBJECT_DIRECTORY=/some/sandbox/overlay/objects",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES=/some/other/repo/objects",
+	)
+	if out, err := hook.CombinedOutput(); err != nil {
+		t.Fatalf("pre-push hook should unset GIT_OBJECT_DIRECTORY/GIT_ALTERNATE_OBJECT_DIRECTORIES: %v: %s", err, out)
 	}
 }
 
@@ -4337,6 +4351,39 @@ func TestStripHTTPSUserinfo(t *testing.T) {
 			got, changed := stripHTTPSUserinfo(tc.in)
 			if got != tc.want || changed != tc.changed {
 				t.Errorf("stripHTTPSUserinfo(%q) = (%q,%v), want (%q,%v)", tc.in, got, changed, tc.want, tc.changed)
+			}
+		})
+	}
+}
+
+// A branch name may contain slashes. filepath.Base turned refs/heads/release/2.0
+// into "2.0", which never equals the CurrentBranch it is compared against, so
+// every default-branch refusal silently passed on such a project — and every
+// base ref built from it named a branch that does not exist.
+func TestDefaultBranch_KeepsSlashes(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name    string
+		initial string
+	}{
+		{"slashed", "release/2.0"},
+		{"plain", "main"},
+		{"two slashes", "team/release/2.0"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			bare := filepath.Join(t.TempDir(), "origin.git")
+			cmd := exec.Command("git", "init", "--bare", "-b", tt.initial, bare)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git init: %v: %s", err, out)
+			}
+
+			got, err := DefaultBranch(context.Background(), bare)
+			if err != nil {
+				t.Fatalf("DefaultBranch: %v", err)
+			}
+			if got != tt.initial {
+				t.Errorf("DefaultBranch = %q, want %q", got, tt.initial)
 			}
 		})
 	}

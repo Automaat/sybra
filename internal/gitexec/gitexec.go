@@ -5,6 +5,7 @@
 package gitexec
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -38,6 +39,20 @@ func Run(ctx context.Context, opts Options, args ...string) error {
 	return err
 }
 
+// RunQuiet executes Git for side effects without retaining stdout. It is for
+// commands whose successful output can be large and is intentionally ignored;
+// stderr is still captured and included in failure diagnostics.
+func RunQuiet(ctx context.Context, opts Options, args ...string) error {
+	cmd := command(ctx, opts, args...)
+	cmd.Stdout = io.Discard
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return commandError(args, err, stderr.Bytes())
+	}
+	return nil
+}
+
 // Output executes Git and returns trimmed stdout. Failures include captured
 // stderr in the returned diagnostic error.
 func Output(ctx context.Context, opts Options, args ...string) (string, error) {
@@ -52,6 +67,20 @@ func Output(ctx context.Context, opts Options, args ...string) (string, error) {
 // byte-sensitive output such as patches; most callers should use Output.
 func RawOutput(ctx context.Context, opts Options, args ...string) ([]byte, error) {
 	return output(ctx, opts, args...)
+}
+
+// OutputWithStderr executes Git and returns raw stdout and stderr separately.
+// It is for callers that must inspect non-fatal stderr emitted by a successful
+// command while keeping stdout byte-exact.
+func OutputWithStderr(ctx context.Context, opts Options, args ...string) (stdoutBytes, stderrBytes []byte, runErr error) {
+	cmd := command(ctx, opts, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return stdout.Bytes(), stderr.Bytes(), commandError(args, err, stderr.Bytes())
+	}
+	return stdout.Bytes(), stderr.Bytes(), nil
 }
 
 // CombinedOutput executes Git and returns raw interleaved stdout and stderr.

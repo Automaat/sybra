@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // Store is a project-partitioned, fingerprint-deduplicated, filesystem-backed
@@ -101,7 +103,7 @@ func (s *Store) Put(projectKey string, rec Record) error {
 		return fmt.Errorf("marshal intervention record: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := fsutil.AtomicWrite(path, data); err != nil {
 		return fmt.Errorf("write intervention record: %w", err)
 	}
 	return nil
@@ -160,49 +162,11 @@ func readRecord(path string) (Record, error) {
 }
 
 func (s *Store) projectDir(projectKey string) (string, error) {
-	safe, err := sanitizeProjectKey(projectKey)
+	safe, err := fsutil.ProjectKeyDir(projectKey)
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(s.dir, safe), nil
-}
-
-// sanitizeProjectKey validates projectKey is either an opaque work-project
-// hash (see ProjectKey) or an "owner/repo" shape, then maps it to a
-// filesystem-safe directory name. Mirrors
-// internal/experience/store.go:sanitizeProjectID.
-func sanitizeProjectKey(projectKey string) (string, error) {
-	id := strings.TrimSpace(projectKey)
-	if id == "" {
-		return "", fmt.Errorf("project key is empty")
-	}
-	if isOpaqueWorkProjectKey(id) {
-		return id, nil
-	}
-	if filepath.Clean(id) != id || strings.Contains(id, `\`) {
-		return "", fmt.Errorf("invalid project key %q", projectKey)
-	}
-	owner, repo, ok := strings.Cut(id, "/")
-	if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
-		return "", fmt.Errorf("invalid project key %q", projectKey)
-	}
-	if owner == "." || owner == ".." || repo == "." || repo == ".." {
-		return "", fmt.Errorf("invalid project key %q", projectKey)
-	}
-	return "gh-" + hex.EncodeToString([]byte(owner)) + "-" + hex.EncodeToString([]byte(repo)), nil
-}
-
-func isOpaqueWorkProjectKey(id string) bool {
-	const prefix = "work-"
-	if !strings.HasPrefix(id, prefix) || len(id) != len(prefix)+64 {
-		return false
-	}
-	for _, r := range id[len(prefix):] {
-		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 // fingerprintFileName maps an arbitrary fingerprint string to a

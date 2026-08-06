@@ -8,6 +8,7 @@ import (
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
@@ -111,7 +112,12 @@ func ClassifyAgentStartFailure(err error) AgentStartFailure {
 		// dispatch-plumbing sentinels above, this names an operator-visible
 		// machine condition, so it DOES surface a status_reason (see
 		// isDeferredNotFailed for why it still never feeds the breaker).
-		out.Reason = truncateReason("work paused: machine under resource pressure — " + resourcePressureDetail(err))
+		out.Reason = textutil.TruncateBytesTotal("work paused: machine under resource pressure — "+resourcePressureDetail(err), startReasonMaxLen, "...")
+		return out
+	case errors.Is(err, worktreeerr.ErrPreparationInFlight):
+		// Transient: another mutating worktree operation owns this path. It
+		// releases when it finishes and the next ResumeStalled tick redispatches
+		// — same treatment as ErrAgentRunning below, no reason, no escalation.
 		return out
 	case errors.Is(err, worktreeerr.ErrAgentRunning):
 		// Transient: PrepareForTask refused to rebase a worktree a tracked
@@ -204,7 +210,7 @@ func ClassifyAgentStartFailure(err error) AgentStartFailure {
 	default:
 		out.Reason = "agent start failed: " + err.Error()
 	}
-	out.Reason = truncateReason(out.Reason)
+	out.Reason = textutil.TruncateBytesTotal(out.Reason, startReasonMaxLen, "...")
 	return out
 }
 
@@ -233,6 +239,7 @@ func transientAgentStartError(err error) bool {
 		errors.Is(err, ErrResourcePressure) ||
 		errors.Is(err, worktreeerr.ErrTransientFetch) ||
 		errors.Is(err, worktreeerr.ErrAgentRunning) ||
+		errors.Is(err, worktreeerr.ErrPreparationInFlight) ||
 		errors.Is(err, provider.ErrProviderUnhealthy)
 }
 
@@ -266,18 +273,6 @@ func resourcePressureDetail(err error) string {
 		return "local resource pressure"
 	}
 	return detail
-}
-
-// truncateReason caps a status_reason to startReasonMaxLen bytes with an
-// ASCII ellipsis so the UI banner stays one line. Byte (not rune) bound so
-// the caller can compare against len(reason) without surprises from
-// multi-byte runes.
-func truncateReason(s string) string {
-	if len(s) <= startReasonMaxLen {
-		return s
-	}
-	const tail = "..."
-	return s[:startReasonMaxLen-len(tail)] + tail
 }
 
 // FormatStartFailure is a tiny helper for callers that want to log the same

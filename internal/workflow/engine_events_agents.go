@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"slices"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
@@ -114,7 +116,7 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		Provider: c.Provider,
 	}
 	if !c.Success && c.EscalationReason == "checkpoint_failed" {
-		out.TerminalStatus = "human-required"
+		out.TerminalStatus = taskstatus.HumanRequired
 		out.TerminalReason = "checkpoint_failed: checkpoint commit failed — no durable checkpoint state created"
 	}
 	if def, ok := defs.get(); ok && e.maybeRecoverUnverifiedSkillRun(taskID, c.AgentID, spawnedStep, c.Result, def, def.StepByID(t.Workflow.CurrentStep)) {
@@ -376,7 +378,7 @@ func (e *Engine) RescheduleInterruptedAgent(taskID, agentID string) {
 	}
 	e.clearAgentStep(taskID, agentID)
 	clearAgentRouteFromWorkflow(t.Workflow, agentID)
-	if t.Status == "human-required" {
+	if t.Status == taskstatus.HumanRequired {
 		status := interruptedRecoveryStatus(t.Workflow.WorkflowID)
 		if err := e.tasks.UpdateTaskStatus(taskID, status, ""); err != nil {
 			e.logger.Error("workflow.interrupted-reschedule.unpark", "task_id", taskID, "step", step.ID, "err", err)
@@ -388,14 +390,14 @@ func (e *Engine) RescheduleInterruptedAgent(taskID, agentID string) {
 	e.rescheduleRunAgent(taskID, agentID, step, t, &def, "workflow.interrupted-reschedule", nil)
 }
 
-func interruptedRecoveryStatus(workflowID string) string {
+func interruptedRecoveryStatus(workflowID string) taskstatus.Status {
 	if workflowID == "simple-task-plan" {
-		return "planning"
+		return taskstatus.Planning
 	}
 	if workflowID == "testing-task" {
-		return "testing"
+		return taskstatus.Testing
 	}
-	return "in-progress"
+	return taskstatus.InProgress
 }
 
 // RescheduleRateLimitedAgent immediately re-drives the run_agent step that a
@@ -455,7 +457,8 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 }
 
 func (e *Engine) rescheduleRateLimitedRunAgent(taskID, agentID string, step *Step, t TaskInfo, def *Definition) {
-	if e.shouldSkipResumeForRateLimitedProvider(&t, step) {
+	e.markSilentHangProvider(&t, step, agentID)
+	if e.shouldSkipResumeForRateLimitedProvider(&t, step, "workflow.rate-limit-reschedule.park") {
 		// Provider is still inside its rate-limit cooldown and no healthy peer is
 		// available to fail over to. Park the task without consuming a watchdog
 		// retry budget or feeding the circuit breaker — ResumeStalled re-drives
@@ -589,6 +592,12 @@ func (e *Engine) rescheduleRunAgent(taskID, agentID string, step *Step, t TaskIn
 		return
 	}
 
+	// This route logs its own park via shouldSkipResumeForRateLimitedProvider
+	// (beforeDispatch above) and fires before ResumeStalled ever sees the task,
+	// so it needs its own re-arm: without it a second park here is dropped
+	// entirely rather than logged.
+	e.resumeSkip.Clear(taskID)
+
 	e.logger.Info(logPrefix, "task_id", taskID, "step", step.ID)
 	comp, rErr := e.executeSteps(taskID, def, step, t.Workflow)
 	rErr = normalizeExecuteStepsErr(rErr)
@@ -641,6 +650,80 @@ func (e *Engine) checkpointRescheduleKey(stepID string) string {
 	return "step." + stepID + ".checkpoint_count"
 }
 
+// maxPromptUndeliveredRetries bounds re-dispatches for runs whose prompt never
+// reached the provider child. The stall lane skips HandleAgentComplete, so
+// nothing else counts these — without a ceiling a wedged CLI would burn a
+// two-minute write timeout per tick forever instead of reaching a human.
+const maxPromptUndeliveredRetries = 3
+
+func promptUndeliveredKey(stepID string) string {
+	return "step." + stepID + ".prompt_undelivered"
+}
+
+func (e *Engine) handlePromptUndeliveredReschedule(taskID string, t *TaskInfo, step *Step) bool {
+	if t.Workflow == nil {
+		return true
+	}
+	return e.boundedRetry(t, step, boundedRetryPolicy{
+		name:       "prompt-undelivered-reschedule",
+		applies:    func(*Engine, *TaskInfo, *Step) bool { return true },
+		counterKey: promptUndeliveredKey,
+		max:        maxPromptUndeliveredRetries,
+		onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
+			reason := fmt.Sprintf("provider never accepted the prompt across %d attempts — the agent CLI is not reading stdin on this host", attempts+1)
+			if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
+				e.resumeError.Log(e.logger, "workflow.prompt-undelivered-reschedule.human-required", taskID, err, "task_id", taskID)
+			}
+		},
+	})
+}
+
+// ReschedulePromptUndeliveredAgent re-drives a run_agent step whose provider
+// child never read the prompt, charging each attempt against a per-step budget
+// so a persistently wedged CLI escalates instead of looping.
+func (e *Engine) ReschedulePromptUndeliveredAgent(taskID, agentID string) {
+	if taskID == "" {
+		e.clearAgentStep(taskID, agentID)
+		e.logger.Warn("workflow.prompt-undelivered-reschedule.untracked", "agent_id", agentID)
+		return
+	}
+	t, err := e.tasks.GetTask(taskID)
+	if err != nil || t.Workflow == nil || t.Workflow.CurrentStep == "" {
+		e.clearAgentStep(taskID, agentID)
+		return
+	}
+	if _, skip := resumeSkipReasonForStatus(t.Status); t.Workflow.State == ExecCompleted || t.Workflow.State == ExecFailed || skip {
+		e.clearAgentStep(taskID, agentID)
+		return
+	}
+	def, err := e.store.Get(t.Workflow.WorkflowID)
+	if err != nil {
+		e.clearAgentStep(taskID, agentID)
+		return
+	}
+	step := def.StepByID(t.Workflow.CurrentStep)
+	if step == nil {
+		e.clearAgentStep(taskID, agentID)
+		return
+	}
+	spawnedStep, tracked := e.lookupAgentStep(taskID, agentID)
+	if step.Type != StepRunAgent || (tracked && spawnedStep != step.ID) {
+		// Block attempts still charge the budget so a wedged CLI cannot loop
+		// inside a parallel/best-of-n child; ResumeStalled respawns the attempt.
+		e.clearAgentStep(taskID, agentID)
+		clearAgentRouteFromWorkflow(t.Workflow, agentID)
+		if tracked {
+			e.handlePromptUndeliveredReschedule(taskID, &t, step)
+		}
+		return
+	}
+	e.clearAgentStep(taskID, agentID)
+	clearAgentRouteFromWorkflow(t.Workflow, agentID)
+	e.rescheduleRunAgent(taskID, agentID, step, t, &def, "workflow.prompt-undelivered-reschedule", func(t *TaskInfo, step *Step) bool {
+		return e.handlePromptUndeliveredReschedule(taskID, t, step)
+	})
+}
+
 func (e *Engine) effectiveMaxCheckpoints() int {
 	if e.maxCheckpoints > 0 {
 		return e.maxCheckpoints
@@ -659,7 +742,7 @@ func (e *Engine) handleCheckpointReschedule(taskID string, t *TaskInfo, step *St
 		max:        e.effectiveMaxCheckpoints(),
 		onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 			reason := fmt.Sprintf("checkpoint retry budget exhausted after %d handoffs", e.effectiveMaxCheckpoints())
-			if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+			if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 				e.resumeError.Log(e.logger, "workflow.checkpoint-reschedule.human-required", taskID, err, "task_id", taskID)
 			}
 		},
@@ -694,7 +777,8 @@ func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, pare
 	e.clearAgentStep(taskID, agentID)
 	clearAgentRouteFromWorkflow(wfExec, agentID)
 
-	if e.shouldSkipResumeForRateLimitedProvider(&fresh, child) {
+	e.markSilentHangProvider(&fresh, child, agentID)
+	if e.shouldSkipResumeForRateLimitedProvider(&fresh, child, "workflow.rate-limit-reschedule.park") {
 		// See RescheduleRateLimitedAgent: park rather than burn a retry budget or
 		// trip the breaker while this child's provider is rate-limited with no
 		// failover peer. The parent stays inflight; ResumeStalled retries later.
@@ -717,6 +801,8 @@ func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, pare
 		Workflow: wfExec,
 	}
 	dir := wfExec.Variables[WorkflowVarDir]
+	// This route never reaches rescheduleRunAgent, so it re-arms for itself.
+	e.resumeSkip.Clear(taskID)
 	e.logger.Info("workflow.rate-limit-reschedule.parallel",
 		"task_id", taskID, "parent", parent.ID, "child", child.ID)
 	spawnErr := e.spawnParallelChild(taskID, parent, child, wfExec, ctx, dir, status)

@@ -78,6 +78,17 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 	if !strings.Contains(joined, "sync_git_objects") || !strings.Contains(joined, shellQuote("/data/home/.sybra-git-overlay/objects")) || !strings.Contains(joined, shellQuote("/data/clones/repo.git/objects")) {
 		t.Fatalf("sync wrapper must merge task-private objects back into the shared clone: %s", joined)
 	}
+	for _, path := range []string{
+		"/data/home/.sybra-git-overlay/objects/pack",
+		"/data/home/.sybra-git-overlay/objects/info",
+	} {
+		if !strings.Contains(joined, "--ro-bind "+path+" "+path) {
+			t.Fatalf("maintenance surface %q must be re-locked read-only: %s", path, joined)
+		}
+	}
+	if strings.Contains(joined, `for pack in "$src"/pack/pack-*`) {
+		t.Fatalf("sync wrapper must never publish task-private pack files: %s", joined)
+	}
 	if !strings.Contains(joined, "--ro-bind /data/clones/repo.git/worktrees /data/clones/repo.git/worktrees") {
 		t.Fatalf("shared worktrees dir must remain read-only: %s", joined)
 	}

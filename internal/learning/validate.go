@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/llmjob"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // maxBucketItems and maxItemChars bound every free-text bucket so a digest
@@ -41,9 +44,9 @@ type rawDigest struct {
 // parseDigestJSON extracts the last balanced JSON object from the
 // summarizer's free-form output and unmarshals it into a rawDigest.
 func parseDigestJSON(text string) (rawDigest, error) {
-	jsonStr := extractLastJSON(text)
+	jsonStr := llmjob.ExtractLastJSONObject(text)
 	if jsonStr == "" {
-		return rawDigest{}, fmt.Errorf("no JSON object in summarizer output: %q", truncateForError(text))
+		return rawDigest{}, fmt.Errorf("no JSON object in summarizer output: %q", textutil.TruncateBytes(text, 200, "…"))
 	}
 	var rd rawDigest
 	if err := json.Unmarshal([]byte(jsonStr), &rd); err != nil {
@@ -157,67 +160,4 @@ func mentionsLowSample(text string) bool {
 		}
 	}
 	return false
-}
-
-func truncateForError(s string) string {
-	const maxChars = 200
-	if len(s) <= maxChars {
-		return s
-	}
-	return s[:maxChars] + "…"
-}
-
-// extractLastJSON returns the last balanced {...} substring in s, or "".
-// Mirrors evaluation.judgeExtractLastJSON / selfmonitor.judgeExtractLastJSON —
-// each LLM-output-parsing package keeps its own copy rather than sharing a
-// dependency across otherwise-independent judge/summarizer packages.
-func extractLastJSON(s string) string {
-	s = strings.TrimSpace(s)
-	var (
-		inString  bool
-		escape    bool
-		depth     int
-		objStart  = -1
-		lastStart = -1
-		lastEnd   = -1
-	)
-	for i := range len(s) {
-		c := s[i]
-		if escape {
-			escape = false
-			continue
-		}
-		if inString {
-			switch c {
-			case '\\':
-				escape = true
-			case '"':
-				inString = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			inString = true
-		case '{':
-			if depth == 0 {
-				objStart = i
-			}
-			depth++
-		case '}':
-			if depth == 0 {
-				continue
-			}
-			depth--
-			if depth == 0 && objStart >= 0 {
-				lastStart = objStart
-				lastEnd = i
-				objStart = -1
-			}
-		}
-	}
-	if lastStart < 0 {
-		return ""
-	}
-	return s[lastStart : lastEnd+1]
 }
