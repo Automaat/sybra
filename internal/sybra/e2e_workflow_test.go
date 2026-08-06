@@ -22,6 +22,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	synapsegithub "github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
@@ -1332,6 +1333,7 @@ steps:
 	if _, err := env.tasks.Update(created.ID, task.Update{
 		Status:       task.Ptr(task.StatusHumanRequired),
 		StatusReason: task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
+		Blocker:      &blocker.State{Kind: blocker.KindTamperDetected},
 		ProjectID:    task.Ptr("owner/repo"),
 	}); err != nil {
 		t.Fatal(err)
