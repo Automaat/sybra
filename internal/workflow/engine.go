@@ -17,6 +17,8 @@ import (
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 const (
@@ -36,7 +38,7 @@ type TaskInfo struct {
 	// Generation is the reducer-visible monotonic task version the effect-id
 	// scheme keys on until a dedicated persisted task-generation counter lands.
 	Generation   int64
-	Status       string
+	Status       taskstatus.Status
 	StatusReason string
 	Blocker      blocker.State
 	Role         string
@@ -126,12 +128,12 @@ type AgentRunInfo struct {
 type TaskProvider interface {
 	GetTask(id string) (TaskInfo, error)
 	ListTasks() ([]TaskInfo, error)
-	UpdateTaskStatus(id, status, reason string) error
+	UpdateTaskStatus(id string, status taskstatus.Status, reason string) error
 	// ClearTaskStatusReasonIf atomically clears a status reason only when the
 	// task still has the exact status and reason the caller observed. It keeps a
 	// stale retry cleanup from erasing a newer failure or operator decision.
-	ClearTaskStatusReasonIf(id, expectedStatus, expectedReason string) (bool, error)
-	UpdateTaskBlocker(id, status, reason string, state blocker.State) error
+	ClearTaskStatusReasonIf(id string, expectedStatus taskstatus.Status, expectedReason string) (bool, error)
+	UpdateTaskBlocker(id string, status taskstatus.Status, reason string, state blocker.State) error
 	UpdateTaskPR(id string, prNumber int) error
 	MarkTaskReviewed(id string) error
 	MarkAgentRunProtocolViolation(taskID, agentID, violation string) error
@@ -181,7 +183,7 @@ type TaskProvider interface {
 // maintenance mutation is allowed to replace.
 type WorkflowWriteFence struct {
 	Generation   int64
-	Status       string
+	Status       taskstatus.Status
 	StatusReason string
 	WorkflowID   string
 	CurrentStep  string
@@ -678,20 +680,91 @@ func (e *Engine) SetAdmissionDecisionHook(hook func(TaskInfo, AdmissionDecision)
 // Defs returns the workflow definition store.
 func (e *Engine) Defs() *Store { return e.store }
 
+// PRSurface is the pull-request dependency group: every collaborator the
+// engine needs to open, find, link, close and re-review a PR.
+//
+// It exists because the engine is constructed empty and assembled through 46
+// Set* calls, so a dependency the wiring forgot is not a compile error or a
+// startup failure — it is a nil field that turns a step into a silently
+// skipped branch, weeks later and far from the omission. Grouping the surface
+// lets SetPRSurface reject a partial wiring at startup, where it is
+// attributable.
+//
+// The individual setters below survive as test seams: tests legitimately wire
+// one collaborator and leave the rest nil, so the per-field nil guards must
+// stay until a group has no seam left.
+type PRSurface struct {
+	Linker           PRLinker
+	ReviewRequester  PRReviewRequester
+	StateFetcher     PRStateFetcher
+	HeadFetcher      PRHeadFetcher
+	Creator          PRCreator
+	Closer           PRCloser
+	Finder           PRFinder
+	AnyStateFinder   PRAnyStateFinder
+	ExistenceChecker PRExistenceChecker
+	ContentGenerator PRContentGenerator
+}
+
+// SetPRSurface wires the whole PR dependency group and reports every missing
+// member at once, so a wiring omission surfaces at startup rather than as a
+// step that quietly does nothing. Production must use this; the per-field
+// setters are for tests.
+func (e *Engine) SetPRSurface(s PRSurface) error {
+	var missing []string
+	for _, dep := range []struct {
+		name  string
+		isNil bool
+	}{
+		{"Linker", s.Linker == nil},
+		{"ReviewRequester", s.ReviewRequester == nil},
+		{"StateFetcher", s.StateFetcher == nil},
+		{"HeadFetcher", s.HeadFetcher == nil},
+		{"Creator", s.Creator == nil},
+		{"Closer", s.Closer == nil},
+		{"Finder", s.Finder == nil},
+		{"AnyStateFinder", s.AnyStateFinder == nil},
+		{"ExistenceChecker", s.ExistenceChecker == nil},
+		{"ContentGenerator", s.ContentGenerator == nil},
+	} {
+		if dep.isNil {
+			missing = append(missing, dep.name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("workflow: PR surface missing %s", strings.Join(missing, ", "))
+	}
+	e.prLinker = s.Linker
+	e.prReviewers = s.ReviewRequester
+	e.prStates = s.StateFetcher
+	e.prHeads = s.HeadFetcher
+	e.prCreator = s.Creator
+	e.prCloser = s.Closer
+	e.prFinder = s.Finder
+	e.prAnyStateFinder = s.AnyStateFinder
+	e.prExistence = s.ExistenceChecker
+	e.prContentGen = s.ContentGenerator
+	return nil
+}
+
 // SetPRLinker wires an implementation of PRLinker used by the
 // `ensure_pr_closes_issue` step. Leaving it unset makes the step a no-op.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRLinker(l PRLinker) { e.prLinker = l }
 
 // SetPRReviewRequester wires an implementation used by rerequest_review.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRReviewRequester(r PRReviewRequester) { e.prReviewers = r }
 
 // SetPRStateFetcher wires an implementation used by `route_pr_fix_result` to
 // re-probe the live PR before parking human-required. Leaving it unset skips
 // the re-probe and trusts the agent's sentinel as-is.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRStateFetcher(f PRStateFetcher) { e.prStates = f }
 
 // SetPRHeadFetcher wires an implementation used by `push_branch` to verify a
 // push landed. Leaving it unset skips the verification.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRHeadFetcher(f PRHeadFetcher) { e.prHeads = f }
 
 // SetPushCredentialPreflighter wires the push-auth preflight used before
@@ -704,28 +777,34 @@ func (e *Engine) SetPushCredentialPreflighter(p PushCredentialPreflighter) {
 // SetPRCreator wires an implementation of `gh pr create` used by the
 // `create_pr` step. Leaving it unset flips the task to human-required when
 // create_pr is reached, since a PR cannot be opened without it.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRCreator(c PRCreator) { e.prCreator = c }
 
 // SetPRCloser wires best-effort cleanup for superseded PRs after a task is
 // relinked to a replacement PR.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRCloser(c PRCloser) { e.prCloser = c }
 
 // SetPRFinder wires the open-PR-by-branch lookup used by create_pr's
 // idempotency guard. Leaving it unset skips the guard.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRFinder(f PRFinder) { e.prFinder = f }
 
 // SetPRAnyStateFinder wires the all-state branch lookup used by create_pr's
 // squash-merge duplicate guard. Leaving it unset skips the guard.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRAnyStateFinder(f PRAnyStateFinder) { e.prAnyStateFinder = f }
 
 // SetPRExistenceChecker wires the pr_number-belongs-to-repo verification used
 // by link_pr_and_review's Path 1. Leaving it unset skips the check and
 // trusts task.pr_number outright, matching the engine's pre-existing
 // behavior.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRExistenceChecker(c PRExistenceChecker) { e.prExistence = c }
 
 // SetPRContentGenerator wires the LLM-backed title/body drafter used by the
 // `create_pr` step. Leaving it unset falls back to a templated title/body.
+// Test seam: production wires this through SetPRSurface.
 func (e *Engine) SetPRContentGenerator(g PRContentGenerator) { e.prContentGen = g }
 
 // SetWorktreeGetter wires a WorktreeGetter used by steps that need the task's

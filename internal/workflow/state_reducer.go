@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // DesiredState is the reducer's intended workflow definition/config snapshot.
@@ -145,7 +147,7 @@ func reduceCompletedStep(desired DesiredState, observed ObservedState, exec *Exe
 	if output.TerminalStatus != "" {
 		effects = append(effects, Effect{
 			Kind:         EffectSetTaskStatus,
-			Status:       output.TerminalStatus,
+			Status:       string(output.TerminalStatus),
 			StatusReason: output.TerminalReason,
 		})
 		return append(effects, newWorkflowEffect(EffectCompleteWorkflow, completeExecution(exec, ExecCompleted, observed.Now))), nil
@@ -167,7 +169,7 @@ func reduceCurrentStep(desired DesiredState, observed ObservedState, exec *Execu
 		}
 		switch behavior {
 		case stepReducerWaitHuman:
-			if exec.State == ExecWaiting && (current.Config.Status == "" || observed.Task.Status == current.Config.Status) {
+			if exec.State == ExecWaiting && (current.Config.Status == "" || observed.Task.Status == taskstatus.Status(current.Config.Status)) {
 				return cloneEffects(effects), nil
 			}
 			if current.Config.Status != "" {
@@ -183,7 +185,7 @@ func reduceCurrentStep(desired DesiredState, observed ObservedState, exec *Execu
 		case stepReducerSetStatus:
 			if current.Config.Status != "" {
 				effects = append(effects, Effect{Kind: EffectSetTaskStatus, Status: current.Config.Status, StatusReason: current.Config.StatusReason})
-				observed.Task.Status = current.Config.Status
+				observed.Task.Status = taskstatus.Status(current.Config.Status)
 				observed.Task.StatusReason = current.Config.StatusReason
 			}
 			record := StepRecord{StepID: current.ID, Status: "completed", StartedAt: observed.Now, EndedAt: observed.Now}

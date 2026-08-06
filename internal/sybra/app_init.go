@@ -316,7 +316,53 @@ func (a *App) logAutomationsSummary() {
 		"loop_agents_enabled", loopAgentsEnabled,
 		"prompteval_runner", promptevalRunner.Name(),
 		"promptfoo_present", (&prompteval.PromptfooRunner{}).Available(),
+		"providers", a.cfg.Providers.EnabledNames(),
 	)
+	a.warnThinFailoverChain()
+}
+
+// warnThinFailoverChain says at startup when this instance has fewer than two
+// providers it can actually dispatch to. A one-leg chain has no failover at
+// all, and that is how one weekly limit plus one usage limit turned into a dead
+// board on 2026-08-05 — a state that was only visible by grepping the app log
+// for provider.health.flip after the fact.
+//
+// Health is meaningful here because initProviderHealth's ProbeOnce has already
+// run by the time the summary is logged; a nil checker means health checking is
+// off, and only the configured count is knowable.
+func (a *App) warnThinFailoverChain() {
+	enabled := a.cfg.Providers.EnabledNames()
+	switch len(enabled) {
+	case 0:
+		a.logger.Error("app.providers.none-enabled",
+			"detail", "no provider is enabled; this instance cannot dispatch at all")
+	case 1:
+		a.logger.Warn("app.providers.no-failover",
+			"enabled", enabled,
+			"detail", "one provider enabled; a single rate limit stalls the board")
+	}
+	if a.providerHealth == nil {
+		return
+	}
+	snap := a.providerHealth.Snapshot()
+	healthy := make([]string, 0, len(enabled))
+	for _, name := range enabled {
+		if st, ok := snap[name]; ok && st.Healthy {
+			healthy = append(healthy, name)
+		}
+	}
+	switch {
+	case len(healthy) == 0:
+		a.logger.Error("app.providers.no-capacity",
+			"enabled", enabled,
+			"detail", "no enabled provider is healthy; nothing can dispatch")
+	case len(healthy) < 2:
+		a.logger.Warn("app.providers.thin-capacity",
+			"enabled", enabled, "healthy", healthy,
+			"detail", "only one healthy provider; a single rate limit stalls the board")
+	default:
+		a.logger.Info("app.providers.capacity", "enabled", enabled, "healthy", healthy)
+	}
 }
 
 func (a *App) initStats() {
@@ -1272,17 +1318,8 @@ func (a *App) initWorkflowEngine() {
 		agentLauncher,
 		a.logger,
 	)
-	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
-	a.workflowEngine.SetPRStateFetcher(prStateFetcherAdapter{})
-	a.workflowEngine.SetPRHeadFetcher(prHeadFetcherAdapter{})
-	a.workflowEngine.SetPRCreator(prCreatorAdapter{})
-	a.workflowEngine.SetPRCloser(prCloserAdapter{})
-	a.workflowEngine.SetPRFinder(prFinderAdapter{})
-	a.workflowEngine.SetPRAnyStateFinder(prFinderAdapter{})
-	a.workflowEngine.SetPRExistenceChecker(prExistenceCheckerAdapter{})
-	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
+	a.wirePRSurface()
 	a.workflowEngine.SetTaskClassifier(a.newTaskClassifierAdapter())
-	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
 	a.wireWorktreeAccess()
 	a.workflowEngine.SetAttemptNoteAppender(&attemptNoteAppenderAdapter{})
 	a.workflowEngine.SetBranchSyncer(&branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees})
@@ -1344,7 +1381,7 @@ func (a *App) initWorkflowEngine() {
 				queued[snap[i].TaskID] = snap[i]
 			}
 			toItem := func(t workflow.TaskInfo) agentqueue.Item {
-				it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: task.Status(t.Status)}
+				it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: t.Status}
 				if qit, ok := queued[t.ID]; ok {
 					it.Manual = qit.Manual
 					it.Enqueued = qit.Enqueued
@@ -1662,4 +1699,27 @@ func (a *App) wireSidecarDir() {
 		return
 	}
 	a.workflowEngine.SetSidecarDirResolver(a.sandboxes.SybraHomeDir)
+}
+
+// wirePRSurface wires the engine's pull-request dependency group. Split out of
+// initWorkflowEngine both to keep that function within the length gate and
+// because the group is the unit that must stay complete.
+func (a *App) wirePRSurface() {
+	if err := a.workflowEngine.SetPRSurface(workflow.PRSurface{
+		Linker:           prLinkerAdapter{},
+		ReviewRequester:  prReviewRequesterAdapter{},
+		StateFetcher:     prStateFetcherAdapter{},
+		HeadFetcher:      prHeadFetcherAdapter{},
+		Creator:          prCreatorAdapter{},
+		Closer:           prCloserAdapter{},
+		Finder:           prFinderAdapter{},
+		AnyStateFinder:   prFinderAdapter{},
+		ExistenceChecker: prExistenceCheckerAdapter{},
+		ContentGenerator: prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}},
+	}); err != nil {
+		// Only reachable by forgetting a field here — a programming error, so
+		// fail at boot rather than let a PR step no-op in production. Same
+		// posture as buildPlanSchema's static-marshal panic.
+		panic("wire workflow PR surface: " + err.Error())
+	}
 }

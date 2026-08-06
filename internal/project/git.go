@@ -474,6 +474,11 @@ func isGitConfigKeyAbsent(err error) bool {
 
 // DefaultBranch resolves barePath's HEAD symbolic ref (e.g.
 // refs/heads/main) and returns just the branch name (main).
+//
+// Truncating at the last slash is wrong for a branch name that contains one —
+// refs/heads/release/2.0 yields "2.0" — but several callers depend on the
+// current behaviour, so fixing it is tracked separately. Comparisons that must
+// be exact use DefaultBranchName.
 func DefaultBranch(ctx context.Context, barePath string) (string, error) {
 	ref, err := outputBare(ctx, barePath, "symbolic-ref", "HEAD")
 	if err != nil {
@@ -481,6 +486,18 @@ func DefaultBranch(ctx context.Context, barePath string) (string, error) {
 	}
 	// refs/heads/main → main
 	return filepath.Base(ref), nil
+}
+
+// DefaultBranchName returns the full default branch name, slashes intact, for
+// callers that compare it against a CurrentBranch. DefaultBranch cannot be used
+// there: it truncates release/2.0 to 2.0, which never matches, silently
+// disabling any guard built on the comparison.
+func DefaultBranchName(ctx context.Context, barePath string) (string, error) {
+	ref, err := outputBare(ctx, barePath, "symbolic-ref", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimPrefix(ref, "refs/heads/"), nil
 }
 
 // ListTrackedFiles returns every file path tracked at ref in the bare repo,

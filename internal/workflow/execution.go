@@ -4,6 +4,8 @@ import (
 	"maps"
 	"slices"
 	"time"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 const maxEffectLog = 200
@@ -576,6 +578,6 @@ type StepOutput struct {
 	// for non-retryable failures like checkpoint_failed, where Sybra must park
 	// human-required without redispatching or running downstream steps on
 	// phantom durable state.
-	TerminalStatus string
+	TerminalStatus taskstatus.Status
 	TerminalReason string
 }

@@ -32,6 +32,7 @@ import (
 	"github.com/Automaat/sybra/internal/modeltier"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/skillsync"
@@ -215,7 +216,7 @@ func run(args []string) int {
 		if err != nil {
 			return fatal(jsonOut, "load config: %v", err)
 		}
-		return cmdConfig(cfg, rest, jsonOut)
+		return cmdConfig(cfg, rest, jsonOut, allowHTTPForHome(homeOverride, home))
 	}
 
 	cfg, err := loadCLIConfig()
@@ -246,12 +247,16 @@ func run(args []string) int {
 		return fatal(jsonOut, "%v", err)
 	}
 
-	// HTTP auto-detect is only safe on the untouched default path. Any resolved
-	// home override — --home, SYBRA_CONTROL_HOME, or SYBRA_HOME — means the
-	// caller explicitly targeted an on-disk store, so reaching some unrelated
-	// reachable server would violate that contract.
-	allowHTTP := homeOverride == "" && !home.fromControlHome && !home.fromSybraHome
-	return dispatch(cmd, rest, cfg, store, projStore, allowHTTP, jsonOut)
+	return dispatch(cmd, rest, cfg, store, projStore, allowHTTPForHome(homeOverride, home), jsonOut)
+}
+
+// allowHTTPForHome reports whether HTTP auto-detect is safe. It is only safe on
+// the untouched default path. Any resolved home override — --home,
+// SYBRA_CONTROL_HOME, or SYBRA_HOME — means the caller explicitly targeted an
+// on-disk store, so reaching some unrelated reachable server would violate that
+// contract.
+func allowHTTPForHome(homeOverride string, home homeResolution) bool {
+	return homeOverride == "" && !home.fromControlHome && !home.fromSybraHome
 }
 
 func isReadOnlyConfigCommand(cmd string) bool {
@@ -414,7 +419,7 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 	case "progress":
 		return cmdProgress(store, projStore, rest, jsonOut)
 	case "config":
-		return cmdConfig(cfg, rest, jsonOut)
+		return cmdConfig(cfg, rest, jsonOut, allowHTTP)
 	case "doctor":
 		return cmdDoctor(cfg, store, rest, jsonOut)
 	case "trash":
@@ -913,7 +918,7 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	return 0
 }
 
-func resolveHandoffMode(fs *flag.FlagSet, stage, rawStatus string, pr int) (handoffStageConfig, task.Status, bool, error) {
+func resolveHandoffMode(fs *flag.FlagSet, stage, rawStatus string, pr int) (cfg handoffStageConfig, status task.Status, explicit bool, err error) {
 	stageProvided := false
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "stage" {
@@ -1090,15 +1095,15 @@ func handoffStageSourceRequirementList() string {
 }
 
 func normalizeHandoffSourceProvider(raw string) (string, error) {
-	provider := strings.ToLower(strings.TrimSpace(raw))
-	switch provider {
+	name := strings.ToLower(strings.TrimSpace(raw))
+	switch name {
 	case "none", "clear":
-		provider = ""
+		name = ""
 	}
-	if _, err := task.ValidateAgentProvider(provider); err != nil {
+	if _, err := task.ValidateAgentProvider(name); err != nil {
 		return "", err
 	}
-	return provider, nil
+	return name, nil
 }
 
 // resolveWorktreeDir resolves the handoff worktree (default: cwd) to an
@@ -3091,7 +3096,7 @@ func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdConfig(cfg *config.Config, args []string, jsonOut bool) int {
+func cmdConfig(cfg *config.Config, args []string, jsonOut, allowHTTP bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: config <dump|explain|doctor|migrate>")
 	}
@@ -3101,7 +3106,7 @@ func cmdConfig(cfg *config.Config, args []string, jsonOut bool) int {
 	case "explain":
 		return cmdConfigExplain(cfg, args[1:], jsonOut)
 	case "doctor":
-		return cmdConfigDoctor(cfg, jsonOut)
+		return cmdConfigDoctor(cfg, jsonOut, allowHTTP)
 	case "migrate":
 		return cmdConfigMigrate(args[1:], jsonOut)
 	default:
@@ -3186,6 +3191,34 @@ type configDoctorFinding struct {
 type configDoctorReport struct {
 	Findings []configDoctorFinding `json:"findings"`
 	Routing  config.RoutingSummary `json:"routing"`
+	Capacity *doctorCapacityReport `json:"capacity,omitempty"`
+}
+
+// doctorCapacityReport answers "can this instance dispatch to anything right
+// now, and if not, when?" without an SSH session and a grep for
+// provider.health.flip — which is the whole reason #3045 exists.
+//
+// Live health lives in the running server's provider.Checker, and the CLI is a
+// separate process, so this is only populated when the server is reachable.
+// Unavailable is the honest answer otherwise: reporting "0 healthy" from a
+// process that cannot see the checker would read as an outage.
+type doctorCapacityReport struct {
+	Available   bool                   `json:"available"`
+	Unavailable string                 `json:"unavailable,omitempty"`
+	Enabled     []string               `json:"enabled"`
+	Providers   []doctorCapacityStatus `json:"providers,omitempty"`
+	HealthyLegs int                    `json:"healthyLegs"`
+}
+
+type doctorCapacityStatus struct {
+	Provider   string     `json:"provider"`
+	Healthy    bool       `json:"healthy"`
+	Reason     string     `json:"reason,omitempty"`
+	Detail     string     `json:"detail,omitempty"`
+	ResetsAt   *time.Time `json:"resetsAt,omitempty"`
+	ResetsIn   string     `json:"resetsIn,omitempty"`
+	LastCheck  time.Time  `json:"lastCheck,omitzero"`
+	Configured bool       `json:"configured"`
 }
 
 type configMigrateReport struct {
@@ -3275,7 +3308,94 @@ func cmdConfigMigrate(args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
+// buildCapacityReport asks the running server what it can actually dispatch to.
+// Live health lives in the server's provider.Checker; the CLI is a separate
+// process, so an unreachable server yields Available=false rather than a
+// fabricated zero-capacity reading.
+func buildCapacityReport(cfg *config.Config, api *apiClient, now time.Time) *doctorCapacityReport {
+	report := &doctorCapacityReport{Enabled: cfg.Providers.EnabledNames()}
+	if api == nil {
+		report.Unavailable = "no reachable sybra server; live provider health is only known inside the server process"
+		return report
+	}
+	statuses, handled, err := viaAPI[[]provider.Status](api, "IntegrationService", "GetProviderHealth")
+	if !handled || err != nil {
+		report.Unavailable = "sybra server did not return provider health"
+		if err != nil {
+			report.Unavailable = fmt.Sprintf("sybra server did not return provider health: %v", err)
+		}
+		return report
+	}
+	if len(statuses) == 0 {
+		// GetProviderHealth returns an empty slice when the health-check loop
+		// is disabled. Reading that as "nothing is healthy" reports an outage
+		// that is not happening.
+		report.Unavailable = "provider health checking is disabled on the sybra server (providers.health_check.enabled)"
+		return report
+	}
+	report.Available = true
+	byName := make(map[string]provider.Status, len(statuses))
+	for _, st := range statuses {
+		byName[st.Provider] = st
+	}
+	for _, name := range report.Enabled {
+		st, probed := byName[name]
+		entry := doctorCapacityStatus{
+			Provider:   name,
+			Healthy:    probed && st.Healthy,
+			Reason:     st.Reason,
+			Detail:     st.Detail,
+			LastCheck:  st.LastCheck,
+			Configured: true,
+		}
+		if !probed {
+			entry.Reason = "not probed"
+		}
+		if !st.RateLimitedUntil.IsZero() {
+			resets := st.RateLimitedUntil
+			entry.ResetsAt = &resets
+			entry.ResetsIn = resets.Sub(now).Round(time.Second).String()
+		}
+		if entry.Healthy {
+			report.HealthyLegs++
+		}
+		report.Providers = append(report.Providers, entry)
+	}
+	return report
+}
+
+// addCapacityFindings raises the two states an operator needs to act on: no
+// usable provider at all, and a failover chain with only one leg. One weekly
+// limit plus one usage limit is how a single-leg chain became a dead board.
+func addCapacityFindings(report *doctorCapacityReport, add func(severity, format string, a ...any)) {
+	if len(report.Enabled) < 2 {
+		add("warning", "provider capacity: %d provider(s) enabled (%s) — no failover chain",
+			len(report.Enabled), strings.Join(report.Enabled, ", "))
+	}
+	if !report.Available {
+		return
+	}
+	switch {
+	case report.HealthyLegs == 0:
+		add("error", "provider capacity: no enabled provider is healthy — nothing can dispatch")
+	case report.HealthyLegs < 2:
+		add("warning", "provider capacity: only %d healthy provider — a single limit stalls the board", report.HealthyLegs)
+	}
+}
+
+// resolveCapacity reaches the running server for live provider health, if the
+// caller is on the default path where auto-detect is safe at all.
+func resolveCapacity(cfg *config.Config, allowHTTP bool) *doctorCapacityReport {
+	var api *apiClient
+	if allowHTTP {
+		if c, ok := newAPIClient(cfg); ok && c.reachable(context.Background()) {
+			api = c
+		}
+	}
+	return buildCapacityReport(cfg, api, time.Now())
+}
+
+func cmdConfigDoctor(cfg *config.Config, jsonOut, allowHTTP bool) int {
 	var findings []configDoctorFinding
 	add := func(severity, format string, a ...any) {
 		findings = append(findings, configDoctorFinding{Severity: severity, Message: fmt.Sprintf(format, a...)})
@@ -3319,6 +3439,10 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 	addAutonomyPipelineFindings(cfg, add)
 
 	addK8sFailedTTLFindings(cfg, add)
+
+	capacity := resolveCapacity(cfg, allowHTTP)
+	addCapacityFindings(capacity, add)
+
 	for _, warning := range routing.Warnings {
 		add("warning", "routing: %s", warning)
 	}
@@ -3334,7 +3458,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		}
 	}
 
-	report := configDoctorReport{Findings: findings, Routing: routing}
+	report := configDoctorReport{Findings: findings, Routing: routing, Capacity: capacity}
 	if jsonOut {
 		if code := printJSON(report); code != 0 {
 			return code
@@ -3361,6 +3485,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 			fmt.Printf("  - %s/%s %s %s (%s)\n", variant.ExperimentID, variant.VariantID, variant.Provider, variant.Model, variant.Reason)
 		}
 	}
+	renderCapacityReport(report.Capacity)
 	for _, f := range findings {
 		fmt.Printf("[%s] %s\n", f.Severity, f.Message)
 	}
@@ -3368,6 +3493,36 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		return 1
 	}
 	return 0
+}
+
+func renderCapacityReport(report *doctorCapacityReport) {
+	if report == nil {
+		return
+	}
+	enabled := "none"
+	if len(report.Enabled) > 0 {
+		enabled = strings.Join(report.Enabled, " -> ")
+	}
+	fmt.Printf("provider capacity enabled: %s\n", enabled)
+	if !report.Available {
+		fmt.Printf("provider capacity: unknown (%s)\n", report.Unavailable)
+		return
+	}
+	fmt.Printf("provider capacity healthy: %d/%d\n", report.HealthyLegs, len(report.Enabled))
+	for _, p := range report.Providers {
+		state := "healthy"
+		if !p.Healthy {
+			state = "UNHEALTHY"
+		}
+		line := fmt.Sprintf("  - %s: %s", p.Provider, state)
+		if p.Reason != "" {
+			line += " (" + p.Reason + ")"
+		}
+		if p.ResetsAt != nil {
+			line += fmt.Sprintf(" resets %s (in %s)", p.ResetsAt.Format(time.RFC3339), p.ResetsIn)
+		}
+		fmt.Println(line)
+	}
 }
 
 func addGitHubPollingFindings(cfg *config.Config, add func(severity, format string, a ...any)) {

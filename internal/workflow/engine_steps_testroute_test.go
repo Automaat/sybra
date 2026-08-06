@@ -17,6 +17,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/notes"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 func TestExtractTestVerdict(t *testing.T) {
@@ -3109,7 +3110,7 @@ func TestExecRouteTestResult_NonReimplementRoutesDoNotSeedNote(t *testing.T) {
 		taskID string
 		task   TaskInfo
 		wf     *Execution
-		status string
+		status taskstatus.Status
 	}{
 		{
 			name:   "pass_to_ready_pr",
@@ -3410,7 +3411,7 @@ func TestRouteTestResult_DistinctFailureLoopUsesBoundedDefaultBackstop(t *testin
 		taskID     string
 		attempts   int
 		wantOutput string
-		wantStatus string
+		wantStatus taskstatus.Status
 	}{
 		{
 			name:       "one below backstop still reimplements",

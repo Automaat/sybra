@@ -7,8 +7,11 @@ export {
     DepCondition,
     Priority,
     ReviewComment,
-    Status,
     Task,
     TaskType,
     Update
+} from "./models.js";
+
+export type {
+    Status
 } from "./models.js";

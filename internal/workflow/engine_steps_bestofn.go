@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/llmjob"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/textutil"
 )
 
@@ -406,7 +407,7 @@ func (e *Engine) preflightRunAgentBudget(taskID string, def *Definition, step *S
 // same declarative path as every other mechanical gate (verify_commits,
 // detect_tampering, ...), rather than force-ending the execution directly.
 func (e *Engine) failStepClosed(taskID string, def *Definition, step *Step, wfExec *Execution, reason string) (*CompletionInfo, error) {
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
@@ -536,7 +537,7 @@ func outermostBraceSpan(s string) string {
 // Next-evaluation (`when task.status == human-required goto ""`) ends the
 // workflow — the same mechanical pattern as verify_commits/detect_tampering.
 func (e *Engine) humanRequiredStepOutput(taskID string, step *Step, reason string) (StepOutput, error) {
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return StepOutput{}, err
 	}
 	return StepOutput{StepID: step.ID, Status: "failed", Output: reason}, nil

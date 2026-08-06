@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/fsutil"
 )
 
@@ -38,7 +39,7 @@ func TestStore_ReloadPrunesExpiredEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.now = func() time.Time { return now }
+	s.clock = clock.NewFake(now)
 	if err := s.reloadLocked(); err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +74,7 @@ func TestStore_RecordUsageFlushesPrunedEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.now = func() time.Time { return now }
+	s.clock = clock.NewFake(now)
 
 	if err := s.RecordUsage(UsageEvent{ID: "new", Provider: ProviderClaude, Timestamp: now}); err != nil {
 		t.Fatal(err)
@@ -144,7 +145,7 @@ func TestStore_InvalidateLiveExactSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 14, 22, 0, 0, 0, time.UTC)
-	s.now = func() time.Time { return now }
+	s.clock = clock.NewFake(now)
 	if err := s.UpdateSnapshot(Snapshot{
 		Provider:   ProviderClaude,
 		Source:     SourceLivePoll,
@@ -178,7 +179,7 @@ func TestStore_InvalidateLiveExactSnapshot_FallsBackForRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 14, 22, 0, 0, 0, time.UTC)
-	s.now = func() time.Time { return now }
+	s.clock = clock.NewFake(now)
 
 	if err := s.UpdateSnapshot(Snapshot{
 		Provider:   ProviderClaude,

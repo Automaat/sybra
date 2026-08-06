@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -146,7 +147,7 @@ func (q *Queue) Restore(it Item) bool {
 }
 
 func (q *Queue) offer(it Item, restore bool) bool {
-	if !safeTaskID(it.TaskID) {
+	if fsutil.ValidateKey(it.TaskID) != nil {
 		q.log.Warn("agentqueue.offer.unsafe-task-id", "task_id", it.TaskID)
 		return false
 	}
@@ -192,7 +193,7 @@ func earliestEnqueued(existing, incoming time.Time) time.Time {
 // Remove drops taskID from the queue and its store file, if present. An
 // unsafe or absent TaskID is a no-op.
 func (q *Queue) Remove(taskID string) {
-	if !safeTaskID(taskID) {
+	if fsutil.ValidateKey(taskID) != nil {
 		return
 	}
 

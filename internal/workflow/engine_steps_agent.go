@@ -15,6 +15,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillinvoke"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // importSidecarIfConfigured reads the file the agent produced (template
@@ -189,7 +190,7 @@ func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
 	if stepID != "" {
 		reason += " after step " + stepID
 	}
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 		e.logger.Error("workflow.import-sidecar.required.status", "task_id", taskID, "step", stepID, "kind", kind, "err", statusErr)
 	}
 }
@@ -710,7 +711,7 @@ var providerAvailable = func(provider string) bool {
 
 func (e *Engine) execWaitHuman(taskID string, step *Step, wfExec *Execution) error {
 	if step.Config.Status != "" {
-		if err := e.tasks.UpdateTaskStatus(taskID, step.Config.Status, step.Config.StatusReason); err != nil {
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.Status(step.Config.Status), step.Config.StatusReason); err != nil {
 			return err
 		}
 	}
@@ -765,7 +766,7 @@ func (e *Engine) maybeAutoApprovePlanReview(taskID string, step *Step) {
 }
 
 func (e *Engine) shouldAutoApprovePlanReview(t TaskInfo) bool {
-	if t.Status != "plan-review" || t.Workflow == nil ||
+	if t.Status != taskstatus.PlanReview || t.Workflow == nil ||
 		t.Workflow.WorkflowID != "simple-task-plan" ||
 		t.Workflow.State != ExecWaiting ||
 		t.Workflow.CurrentStep != "review_plan" {
@@ -791,7 +792,7 @@ func (e *Engine) shouldAutoApprovePlanReview(t TaskInfo) bool {
 }
 
 func (e *Engine) execSetStatus(taskID string, step *Step) (StepOutput, error) {
-	if err := e.tasks.UpdateTaskStatus(taskID, step.Config.Status, step.Config.StatusReason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.Status(step.Config.Status), step.Config.StatusReason); err != nil {
 		return StepOutput{}, err
 	}
 
@@ -835,7 +836,7 @@ func (e *Engine) execShell(step *Step, ctx TemplateContext) (StepOutput, error) 
 	cmd.Env = append(cmd.Environ(),
 		"SYBRA_TASK_ID="+ti.ID,
 		"SYBRA_TASK_TITLE="+ti.Title,
-		"SYBRA_TASK_STATUS="+ti.Status,
+		"SYBRA_TASK_STATUS="+string(ti.Status),
 		"SYBRA_TASK_PROJECT="+ti.ProjectID,
 		"SYBRA_TASK_BRANCH="+ti.Branch,
 		fmt.Sprintf("SYBRA_TASK_PR=%d", ti.PRNumber),
