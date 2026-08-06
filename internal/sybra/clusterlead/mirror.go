@@ -292,6 +292,14 @@ func (m *Mirror) applyFollowerTask(node string, follower task.Task) bool {
 }
 
 func (m *Mirror) applyFollowerTaskWithContext(ctx context.Context, node string, follower task.Task) bool {
+	// Validate on ingest, not at Put: the id arrives from a peer over HTTP and
+	// reaches writeSidecars — which builds eight paths from it — before Put's
+	// own ValidateID runs. Rejecting here means a hostile id writes nothing.
+	if err := task.ValidateID(follower.ID); err != nil {
+		m.logger.Warn("cluster.mirror.reject.invalid_task_id", "node", node, "task", follower.ID, "err", err)
+		return false
+	}
+
 	m.applyMu.Lock()
 	defer m.applyMu.Unlock()
 
