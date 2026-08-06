@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/prepstate"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // initBareWithCommit creates a bare repo containing a single commit on
@@ -359,6 +360,85 @@ func TestCleanupOrphaned(t *testing.T) {
 	// Active task's dir should remain
 	if _, err := os.Stat(filepath.Join(dir, tk.DirName())); err != nil {
 		t.Error("active task dir should remain")
+	}
+}
+
+func TestCleanupOrphaned_PreservesInflightAttemptAndReapsFinishedAttempt(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+	tk, err := store.Create("best of n task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{BestOfNInflight: map[string]*workflow.BestOfNInflight{
+		"attempts": {
+			ParentStepID: "attempts",
+			Attempts: map[string]*workflow.AttemptStatus{
+				"attempt_1": {AttemptID: "attempt_1", Status: "pending"},
+			},
+		},
+	}}
+	if _, err := store.Update(tk.ID, task.Update{Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+
+	inflightDir := filepath.Join(dir, attemptDirName(tk, "attempt_1"))
+	finishedDir := filepath.Join(dir, attemptDirName(tk, "attempt_2"))
+	makePushedGitDir(t, inflightDir)
+	makePushedGitDir(t, finishedDir)
+
+	m := New(Config{WorktreesDir: dir, Tasks: taskMgr, Logger: discardLogger()})
+	m.CleanupOrphaned(context.Background())
+
+	if _, err := os.Stat(inflightDir); err != nil {
+		t.Fatalf("in-flight attempt removed unexpectedly: %v", err)
+	}
+	if _, err := os.Stat(finishedDir); !os.IsNotExist(err) {
+		t.Fatalf("finished attempt still exists after cleanup: %v", err)
+	}
+}
+
+func TestCleanupOrphaned_PreservesDeletedTaskAttemptWithLiveAgent(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+	tk, err := store.Create("deleted best of n task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptDir := filepath.Join(dir, attemptDirName(tk, "attempt_1"))
+	makePushedGitDir(t, attemptDir)
+	if err := taskMgr.Delete(tk.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	live := true
+	m := New(Config{
+		WorktreesDir: dir,
+		Tasks:        taskMgr,
+		Logger:       discardLogger(),
+		AgentChecker: func(taskID string) bool { return live && taskID == tk.ID },
+	})
+	m.CleanupOrphaned(context.Background())
+	if _, err := os.Stat(attemptDir); err != nil {
+		t.Fatalf("deleted task's live attempt removed unexpectedly: %v", err)
+	}
+
+	live = false
+	m.CleanupOrphaned(context.Background())
+	if _, err := os.Stat(attemptDir); !os.IsNotExist(err) {
+		t.Fatalf("deleted task's finished attempt still exists after cleanup: %v", err)
 	}
 }
 

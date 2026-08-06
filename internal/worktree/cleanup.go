@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/cleanup"
@@ -15,8 +16,9 @@ import (
 )
 
 var (
-	bareTaskIDRe   = regexp.MustCompile(`^[0-9a-f]{8}$`)
-	suffixTaskIDRe = regexp.MustCompile(`-([0-9a-f]{8})$`)
+	bareTaskIDRe    = regexp.MustCompile(`^[0-9a-f]{8}$`)
+	suffixTaskIDRe  = regexp.MustCompile(`-([0-9a-f]{8})$`)
+	attemptSuffixRe = regexp.MustCompile(`^attempt_[1-9]\d*$`)
 )
 
 const worktreeQuarantineDirName = ".quarantine"
@@ -25,6 +27,9 @@ const worktreeQuarantineDirName = ".quarantine"
 // name: task.Task.DirName() is either the bare 8-hex-char ID (no slug yet) or
 // "<slug>-<8hex-id>". Anything else returns "" (no match).
 func taskIDFromWorktreeDir(name string) string {
+	if idx := strings.LastIndex(name, "-"); idx >= 0 && attemptSuffixRe.MatchString(name[idx+1:]) {
+		name = name[:idx]
+	}
 	if bareTaskIDRe.MatchString(name) {
 		return name
 	}
@@ -32,6 +37,11 @@ func taskIDFromWorktreeDir(name string) string {
 		return m[1]
 	}
 	return ""
+}
+
+func isAttemptWorktreeDir(name string, t task.Task) bool {
+	prefix := t.DirName() + "-"
+	return strings.HasPrefix(name, prefix) && attemptSuffixRe.MatchString(strings.TrimPrefix(name, prefix))
 }
 
 // Remove cleans up the worktree for a task via git worktree remove.
@@ -103,8 +113,22 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 	}
 
 	active := make(map[string]*task.Task, len(tasks))
+	activeByID := make(map[string]*task.Task, len(tasks))
+	inflightAttempts := make(map[string]bool)
 	for i := range tasks {
 		active[tasks[i].DirName()] = &tasks[i]
+		activeByID[tasks[i].ID] = &tasks[i]
+		if tasks[i].Workflow == nil {
+			continue
+		}
+		for _, parent := range tasks[i].Workflow.BestOfNInflight {
+			if parent == nil {
+				continue
+			}
+			for attemptID := range parent.Attempts {
+				inflightAttempts[attemptDirName(tasks[i], attemptID)] = true
+			}
+		}
 	}
 	observedProtected := make(map[string]bool)
 
@@ -118,13 +142,33 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 		name := e.Name()
 		wtPath := filepath.Join(m.dir, name)
 
-		t, exists := active[name]
+		t := active[name]
+		ownerID := taskIDFromWorktreeDir(name)
+		isAttempt := false
+		if t == nil {
+			if owner := activeByID[ownerID]; owner != nil && isAttemptWorktreeDir(name, *owner) {
+				t = owner
+				isAttempt = true
+			}
+		}
 		switch {
-		case !exists:
+		case isAttempt && inflightAttempts[name]:
+			// The parent task's status is not enough to identify a live fan-out:
+			// attempt agents can finish independently, leaving gaps where no
+			// agent is registered. The persisted attempt record is the durable
+			// ownership signal across those gaps and process restarts.
+			continue
+		case ownerID != "" && m.hasAgent != nil && m.hasAgent(ownerID):
+			// A live task agent protects canonical and attempt worktrees even if
+			// the task snapshot disappeared between List and this sweep.
+			continue
+		case isAttempt:
+			// The task still exists but no fan-out owns this attempt anymore.
+			// CleanupAttempts normally removes it after promotion/failure; this
+			// sweep remains the backstop when that best-effort cleanup lost a race.
+		case t == nil:
 			// Task deleted — remove worktree directory.
 		case !task.IsTerminalStatus(t.Status):
-			continue
-		case m.hasAgent != nil && m.hasAgent(t.ID):
 			continue
 		}
 
