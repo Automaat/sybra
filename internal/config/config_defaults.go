@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -966,7 +967,7 @@ func (c *Config) InterventionsDir() string {
 
 func Load() (*ResolvedConfig, error) {
 	cfg, _, err := load(loadOptions{persistLoadReconciles: true})
-	return cfg, err
+	return requireResolved(cfg, err)
 }
 
 // LoadNoPersist reads config.yaml and applies in-memory defaults/reconciles
@@ -974,7 +975,20 @@ func Load() (*ResolvedConfig, error) {
 // their read-only contract and to preserve raw-editor formatting/comments.
 func LoadNoPersist() (*ResolvedConfig, error) {
 	cfg, _, err := load(loadOptions{})
-	return cfg, err
+	return requireResolved(cfg, err)
+}
+
+// requireResolved turns "no error but no config" into an error, so callers
+// that dereference the result do not have to prove the combination is
+// impossible.
+func requireResolved(cfg *ResolvedConfig, err error) (*ResolvedConfig, error) {
+	switch {
+	case err != nil:
+		return nil, err
+	case cfg == nil:
+		return nil, errors.New("load config: no configuration resolved")
+	}
+	return cfg, nil
 }
 
 // LoadLenient resolves config.yaml without failing on an unknown key, and

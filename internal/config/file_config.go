@@ -131,11 +131,13 @@ func yamlNodeAt(node *yaml.Node, path ...string) (*yaml.Node, bool) {
 // ParseFileConfig parses config.yaml and fails on any unknown key.
 func ParseFileConfig(data []byte) (*FileConfig, error) {
 	cfg, schemaErr, err := parseFileConfigLenient(data)
-	if err != nil {
+	switch {
+	case err != nil:
 		return nil, err
-	}
-	if schemaErr != nil {
+	case schemaErr != nil:
 		return nil, schemaErr
+	case cfg == nil:
+		return nil, errors.New("parse config: no document")
 	}
 	return cfg, nil
 }
