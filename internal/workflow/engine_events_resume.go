@@ -235,6 +235,13 @@ func (e *Engine) resumeStalledTask(t *TaskInfo) {
 		return
 	}
 
+	// The resume won its claim, so every skip reason logged for this task is
+	// over. Without this the throttle never re-arms and a LATER park is logged
+	// nowhere for thirty minutes — worse than the per-tick Debug it replaced.
+	// Clearing on a merely-passing preflight is wrong: the claim can still be
+	// lost below, and that re-armed an INFO line on every single tick.
+	e.resumeSkip.Clear(t.ID)
+
 	// handleTransientFetchRetry runs only after the resume preflight passes,
 	// so the retry budget tracks actual restart attempts —
 	// a tick that loses the claim to a concurrent goroutine (already
@@ -281,7 +288,7 @@ func (e *Engine) resumePreflightConsumesTick(t *TaskInfo, step *Step, logEvent s
 	if e.agents.HasRunningAgent(t.ID) {
 		return true
 	}
-	if e.shouldSkipResumeForRateLimitedProvider(t, step) {
+	if e.shouldSkipResumeForRateLimitedProvider(t, step, logEvent) {
 		return true
 	}
 	if retryableWatchdogStop && e.handleWatchdogStopRetry(t, step) {

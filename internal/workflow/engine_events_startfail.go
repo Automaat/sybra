@@ -12,7 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
-func (e *Engine) shouldSkipResumeForRateLimitedProvider(t *TaskInfo, step *Step) bool {
+func (e *Engine) shouldSkipResumeForRateLimitedProvider(t *TaskInfo, step *Step, logEvent string) bool {
 	// Don't re-dispatch a single-agent step to the same provider while it is
 	// rate-limited; do continue when failover can route this run to a healthy
 	// peer. Parallel children are checked at child spawn time because each child
@@ -21,11 +21,22 @@ func (e *Engine) shouldSkipResumeForRateLimitedProvider(t *TaskInfo, step *Step)
 		return false
 	}
 	prov := resolveProvider(step.Config.Provider, t.Workflow, e.agents.DefaultProvider(), *t)
+	if prov == "" {
+		// resolveProvider yields "" for a step with no provider key and for
+		// `ab`/`cross` without provenance — 9 of the 14 builtin run_agent steps.
+		// ProviderRateLimited substitutes the default internally, so the line is
+		// already about that provider and would otherwise refuse to name it.
+		prov = e.agents.DefaultProvider()
+	}
 	if !e.agents.ProviderRateLimited(prov) || e.agents.ProviderCanFailover(prov) {
 		return false
 	}
-	e.logger.Debug("workflow.resume-stalled.skip",
-		"task_id", t.ID, "reason", "provider_rate_limited", "provider", prov)
+	// Deduped, not Debug: a park can now last days (provider-stated reset
+	// instants land three days out), so the direct Debug call was both
+	// invisible at the default level and 3,600 lines per task at debug level.
+	// Keying the value on the provider re-arms INFO when the park moves.
+	e.resumeSkip.Log(e.logger, logEvent, t.ID, "provider_rate_limited|"+prov+"|"+step.ID,
+		"task_id", t.ID, "reason", "provider_rate_limited", "provider", prov, "step", step.ID)
 	return true
 }
 
