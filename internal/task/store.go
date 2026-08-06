@@ -368,6 +368,24 @@ type sidecarIndex struct {
 	drafts              map[string]map[string]string
 }
 
+type sidecarSpec struct {
+	suffix string
+	assign func(*sidecarIndex, string, string)
+}
+
+var sidecarSpecs = []sidecarSpec{
+	{suffix: ".plan-critique.md", assign: func(idx *sidecarIndex, id, text string) { idx.critiques[id] = text }},
+	{suffix: ".plan-contract.json", assign: func(idx *sidecarIndex, id, text string) { idx.contracts[id] = text }},
+	{suffix: ".plan-research.md", assign: func(idx *sidecarIndex, id, text string) { idx.research[id] = text }},
+	{suffix: ".plan-decisions.md", assign: func(idx *sidecarIndex, id, text string) { idx.decisions[id] = text }},
+	{suffix: ".plan-brief.md", assign: func(idx *sidecarIndex, id, text string) { idx.briefs[id] = text }},
+	{suffix: ".plan.md", assign: func(idx *sidecarIndex, id, text string) { idx.plans[id] = text }},
+	{suffix: ".review.md", assign: func(idx *sidecarIndex, id, text string) { idx.reviews[id] = text }},
+	{suffix: ".current-test-failures.md", assign: func(idx *sidecarIndex, id, text string) { idx.currentTestFailures[id] = text }},
+	{suffix: ".acceptance-ledger.md", assign: func(idx *sidecarIndex, id, text string) { idx.acceptanceLedgers[id] = text }},
+	{suffix: ".spec-decision.md", assign: func(idx *sidecarIndex, id, text string) { idx.specDecisions[id] = text }},
+}
+
 // loadSidecarsFromEntries reads sidecar contents for every recognized
 // suffix in a single pass. Read failures on individual sidecars are
 // logged and skipped — matches the prior `_ = err` behavior of the
@@ -395,110 +413,59 @@ func loadSidecarsFromEntries(dir string, entries []os.DirEntry) *sidecarIndex {
 		if !strings.HasSuffix(base, ".md") && !strings.HasSuffix(base, ".json") {
 			continue
 		}
-		// Order matters: plan-draft and plan-critique both have
-		// ".plan" in them, so check the more specific suffix first.
-		switch {
-		case IsPlanDraftFile(base):
-			// IsPlanDraftFile already guarantees the prefix is present,
-			// but using Cut + the found flag keeps the lint clean and is
-			// resilient if the helper's contract loosens later.
-			id, rest, found := strings.Cut(base, PlanDraftSidecarPrefix)
-			if !found {
-				continue
-			}
-			name := strings.TrimSuffix(rest, ".md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			if idx.drafts[id] == nil {
-				idx.drafts[id] = map[string]string{}
-			}
-			idx.drafts[id][name] = string(data)
-		case strings.HasSuffix(base, ".plan-critique.md"):
-			id := strings.TrimSuffix(base, ".plan-critique.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.critiques[id] = string(data)
-		case strings.HasSuffix(base, ".plan-contract.json"):
-			id := strings.TrimSuffix(base, ".plan-contract.json")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.contracts[id] = string(data)
-		case strings.HasSuffix(base, ".plan-research.md"):
-			id := strings.TrimSuffix(base, ".plan-research.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.research[id] = string(data)
-		case strings.HasSuffix(base, ".plan-decisions.md"):
-			id := strings.TrimSuffix(base, ".plan-decisions.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.decisions[id] = string(data)
-		case strings.HasSuffix(base, ".plan-brief.md"):
-			id := strings.TrimSuffix(base, ".plan-brief.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.briefs[id] = string(data)
-		case strings.HasSuffix(base, ".plan.md"):
-			id := strings.TrimSuffix(base, ".plan.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.plans[id] = string(data)
-		case strings.HasSuffix(base, ".review.md"):
-			id := strings.TrimSuffix(base, ".review.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.reviews[id] = string(data)
-		case strings.HasSuffix(base, ".current-test-failures.md"):
-			id := strings.TrimSuffix(base, ".current-test-failures.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.currentTestFailures[id] = string(data)
-		case strings.HasSuffix(base, ".acceptance-ledger.md"):
-			id := strings.TrimSuffix(base, ".acceptance-ledger.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.acceptanceLedgers[id] = string(data)
-		case strings.HasSuffix(base, ".spec-decision.md"):
-			id := strings.TrimSuffix(base, ".spec-decision.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.specDecisions[id] = string(data)
+		if loadPlanDraftSidecar(dir, base, idx) {
+			continue
 		}
+		loadIndexedSidecar(dir, base, idx)
 	}
 	return idx
+}
+
+func loadPlanDraftSidecar(dir, base string, idx *sidecarIndex) bool {
+	if !IsPlanDraftFile(base) {
+		return false
+	}
+	// IsPlanDraftFile already guarantees the prefix is present,
+	// but using Cut + the found flag keeps the lint clean and is
+	// resilient if the helper's contract loosens later.
+	id, rest, found := strings.Cut(base, PlanDraftSidecarPrefix)
+	if !found {
+		return true
+	}
+	text, ok := readOptionalSidecarFile(dir, base)
+	if !ok {
+		return true
+	}
+	name := strings.TrimSuffix(rest, ".md")
+	if idx.drafts[id] == nil {
+		idx.drafts[id] = map[string]string{}
+	}
+	idx.drafts[id][name] = text
+	return true
+}
+
+func loadIndexedSidecar(dir, base string, idx *sidecarIndex) bool {
+	for _, spec := range sidecarSpecs {
+		if !strings.HasSuffix(base, spec.suffix) {
+			continue
+		}
+		text, ok := readOptionalSidecarFile(dir, base)
+		if !ok {
+			return true
+		}
+		spec.assign(idx, strings.TrimSuffix(base, spec.suffix), text)
+		return true
+	}
+	return false
+}
+
+func readOptionalSidecarFile(dir, base string) (string, bool) {
+	data, err := os.ReadFile(filepath.Join(dir, base))
+	if err != nil {
+		slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
+		return "", false
+	}
+	return string(data), true
 }
 
 // Get reads task id and populates its planning/review sidecar fields

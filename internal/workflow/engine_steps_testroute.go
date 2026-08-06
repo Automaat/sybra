@@ -715,10 +715,7 @@ func capHeadTailText(text string, maxBytes int, elision string) string {
 		headBytes = maxBytes / 2
 	}
 	head := trimUTF8ToBytes(text, headBytes)
-	tailBudget := maxBytes - len(elision) - len(head)
-	if tailBudget < 0 {
-		tailBudget = 0
-	}
+	tailBudget := max(0, maxBytes-len(elision)-len(head))
 	tail := trimUTF8ToBytesFromEnd(text, tailBudget)
 	return strings.TrimRight(head, "\n") + elision + strings.TrimLeft(tail, "\n")
 }

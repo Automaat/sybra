@@ -2792,6 +2792,11 @@ func TestE2E_ImplementPromptBoundedAcrossFiveFailedAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
+		"status": string(task.StatusInProgress),
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := env.startWorkflow(created.ID, "test-implement-prompt-bounded"); err != nil {
 		t.Fatal(err)
