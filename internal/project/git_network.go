@@ -2,8 +2,9 @@ package project
 
 import (
 	"context"
-	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/errclass"
 )
 
 // transientNetworkMarkers are substrings of git/ssh/curl transport failures
@@ -13,25 +14,6 @@ import (
 // delay reporting) a permanent failure, but a false negative would wrongly
 // classify a transient outage as a content conflict and escalate a task to
 // human-required on a perfectly clean branch.
-var transientNetworkMarkers = []string{
-	"connection refused",
-	"connection reset",
-	"connection timed out",
-	"failed to connect",
-	"couldn't connect to server",
-	"could not resolve host",
-	"couldn't resolve host",
-	"network is unreachable",
-	"operation timed out",
-	"temporary failure in name resolution",
-	"no route to host",
-	"ssh: connect to host",
-	"recv failure",
-	"tls handshake timeout",
-	"empty reply from server",
-	"early eof",
-	"unexpected disconnect while reading sideband packet",
-}
 
 var gitOpRetrySleepContext = sleepWithContext
 
@@ -42,13 +24,7 @@ func IsTransientNetworkError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	for _, marker := range transientNetworkMarkers {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
+	return errclass.IsGitTransport(err.Error())
 }
 
 // withNetworkRetry runs fn, retrying on gitOpRetryBackoffs when the failure

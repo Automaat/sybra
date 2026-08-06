@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Automaat/sybra/internal/errclass"
+
 	"github.com/Automaat/sybra/internal/attribution"
 	"github.com/Automaat/sybra/internal/github"
 )
@@ -312,7 +314,7 @@ func classifyGHError(op string, out []byte, err error) error {
 	}
 	out = redactSecrets(out)
 	msg := err.Error() + "\n" + string(out)
-	if strings.Contains(msg, "API rate limit exceeded") || strings.Contains(msg, "secondary rate limit") {
+	if errclass.IsRateLimit(msg) {
 		return ErrGHRateLimit
 	}
 	if detail := sanitizeGHOutput(out); detail != "" {

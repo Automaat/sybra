@@ -1,0 +1,128 @@
+package errclass
+
+import (
+	"errors"
+	"testing"
+)
+
+func TestClassify(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+		want Class
+	}{
+		{name: "empty", text: "", want: Unknown},
+		{name: "unrecognized fails closed to unknown", text: "the flux capacitor is misaligned", want: Unknown},
+
+		{name: "dial tcp", text: "Get \"https://api.github.com\": dial tcp 140.82.121.6:443: connect: connection refused", want: Transient},
+		{name: "i/o timeout", text: "read tcp: i/o timeout", want: Transient},
+		{name: "context deadline exceeded", text: "context deadline exceeded", want: Transient},
+		{name: "dns", text: "fatal: could not resolve host: github.com", want: Transient},
+		{name: "gateway 502", text: "gh: HTTP 502", want: Transient},
+		{name: "gateway 503", text: "gh: HTTP 503 Service Unavailable", want: Transient},
+		{name: "git sideband", text: "fatal: unexpected disconnect while reading sideband packet", want: Transient},
+
+		{name: "secondary rate limit", text: "You have exceeded a secondary rate limit", want: RateLimited},
+		{name: "api rate limit exceeded", text: "API rate limit exceeded for user", want: RateLimited},
+		{name: "too many requests", text: "HTTP 429: Too Many Requests", want: RateLimited},
+
+		{name: "bad credentials", text: "gh: Bad credentials (HTTP 401)", want: Auth},
+		{name: "http 401", text: "gh: HTTP 401", want: Auth},
+		{name: "401 unauthorized", text: "remote: 401 Unauthorized", want: Auth},
+		{name: "token expired", text: "the token has expired", want: Auth},
+
+		{name: "auth outranks rate limit", text: "Bad credentials; also rate limit exceeded", want: Auth},
+		{name: "rate limit outranks transient", text: "connection reset; api rate limit exceeded", want: RateLimited},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Classify(tc.text); got != tc.want {
+				t.Fatalf("Classify(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestClassifyIsCaseInsensitive pins the defect that made internal/monitor
+// miss GitHub's own capitalization and retry against an exhausted token.
+func TestClassifyIsCaseInsensitive(t *testing.T) {
+	for _, text := range []string{
+		"Secondary rate limit",
+		"SECONDARY RATE LIMIT",
+		"API rate limit exceeded",
+		"api rate limit exceeded",
+	} {
+		if got := Classify(text); got != RateLimited {
+			t.Fatalf("Classify(%q) = %q, want %q", text, got, RateLimited)
+		}
+	}
+}
+
+// TestStreamPhrasesAreNotNetwork pins why truncated-response phrases sit in
+// their own family: a GraphQL parse defect must escalate, not retry.
+func TestStreamPhrasesAreNotNetwork(t *testing.T) {
+	const parseDefect = "parse graphql response: unexpected EOF"
+	if IsNetwork(parseDefect) {
+		t.Fatal("IsNetwork matched a parse defect, which would stop it escalating")
+	}
+	if Classify(parseDefect) != Unknown {
+		t.Fatalf("Classify(%q) = %q, want %q", parseDefect, Classify(parseDefect), Unknown)
+	}
+	if !Matches(parseDefect, StreamPhrases) {
+		t.Fatal("StreamPhrases should still match for callers reading raw transport output")
+	}
+}
+
+// TestPlainHTTP500IsNotGateway pins the narrower of the two answers the merged
+// sites gave: a bare 500 is usually a real server-side bug.
+func TestPlainHTTP500IsNotGateway(t *testing.T) {
+	if IsGateway("gh: HTTP 500") {
+		t.Fatal("IsGateway matched a plain 500")
+	}
+}
+
+func TestClassifyErr(t *testing.T) {
+	if got := ClassifyErr(nil); got != Unknown {
+		t.Fatalf("ClassifyErr(nil) = %q, want %q", got, Unknown)
+	}
+	if got := ClassifyErr(errors.New("connection refused")); got != Transient {
+		t.Fatalf("ClassifyErr = %q, want %q", got, Transient)
+	}
+	if !Is(errors.New("Bad credentials"), Auth) {
+		t.Fatal("Is(auth error, Auth) = false")
+	}
+}
+
+// TestFamiliesAreLowercase guards the tables themselves: an uppercase entry
+// can never match, since matching lowercases the input.
+func TestFamiliesAreLowercase(t *testing.T) {
+	families := map[string][]string{
+		"NetworkPhrases":      NetworkPhrases,
+		"DNSPhrases":          DNSPhrases,
+		"TLSPhrases":          TLSPhrases,
+		"GatewayPhrases":      GatewayPhrases,
+		"RateLimitPhrases":    RateLimitPhrases,
+		"AuthPhrases":         AuthPhrases,
+		"GitTransportPhrases": GitTransportPhrases,
+		"StreamPhrases":       StreamPhrases,
+	}
+	for name, family := range families {
+		for _, phrase := range family {
+			if phrase != lower(phrase) {
+				t.Errorf("%s contains %q, which is not lowercase and can never match", name, phrase)
+			}
+			if phrase == "" {
+				t.Errorf("%s contains an empty phrase, which matches everything", name)
+			}
+		}
+	}
+}
+
+func lower(s string) string {
+	b := []byte(s)
+	for i := range b {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 'a' - 'A'
+		}
+	}
+	return string(b)
+}

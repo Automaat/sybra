@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/errclass"
 )
 
 // execer abstracts command execution for testing.
@@ -704,7 +706,10 @@ func IsTransientError(err error) bool {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
-	// HTTP 5xx: sanitized gh output produces "gh: http 5xx"
+	// HTTP 5xx: sanitized gh output produces "gh: http 5xx". Kept broader than
+	// errclass.IsGateway on purpose — this predicate gates poller escalation,
+	// where treating a 500 as transient costs one retry and treating it as
+	// permanent costs a board-wide escalation storm.
 	if strings.Contains(msg, "http 5") {
 		return true
 	}
@@ -712,13 +717,7 @@ func IsTransientError(err error) bool {
 	if isRateLimitedMessage(msg) {
 		return true
 	}
-	return strings.Contains(msg, "dial tcp") ||
-		strings.Contains(msg, "i/o timeout") ||
-		strings.Contains(msg, "context deadline exceeded") ||
-		strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "tls handshake timeout") ||
-		strings.Contains(msg, "no route to host")
+	return errclass.IsNetwork(msg)
 }
 
 // IsAuthError reports whether err is a GitHub authentication failure — an
