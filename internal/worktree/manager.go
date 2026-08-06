@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/cleanup"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -117,8 +118,14 @@ func (m *Manager) Exists(t task.Task) bool {
 	return err == nil
 }
 
+// ErrWorktreeBusy reports that a worktree exists but an agent is still writing
+// to it, so it must not be handed to a second one. Callers should retry rather
+// than fall back to preparation, which would rebase the branch out from under
+// the live run.
+var ErrWorktreeBusy = errors.New("worktree has a live agent")
+
 // ResolveExisting returns the task's worktree path if one is already checked
-// out and git can resolve it, without touching a single byte of it.
+// out and usable as-is, without touching a single byte of it.
 //
 // Every Prepare* entry point rewrites what it returns: SanitizeWorktree
 // auto-commits the dirty tree and then `reset --hard` / `clean -fd`s it,
@@ -127,22 +134,60 @@ func (m *Manager) Exists(t task.Task) bool {
 // to explain a failure — it hands the diagnosis a different tree on a
 // different base, and a base-induced failure simply stops reproducing (#3073).
 //
-// Health here is deliberately just "git resolves it". Being on an unexpected
-// branch is not a reason to fall through to preparation: a half-merged or
-// conflicted checkout IS the state that failed, and preparation would destroy
-// exactly the evidence the caller came for.
-func (m *Manager) ResolveExisting(ctx context.Context, t task.Task) (string, bool) {
+// "Usable" is narrower than "resolvable". A detached HEAD or an interrupted
+// rebase passes `rev-parse --git-dir` but cannot be pushed from, and a
+// recovery agent is under orders to fix, commit and push: its commit would
+// land unreferenced and the next Prepare* would drop the verified fix. Those
+// fall through to preparation. Merely being on an *unexpected* branch does
+// not — that is a half-merged checkout, which is the state that failed.
+func (m *Manager) ResolveExisting(ctx context.Context, t task.Task) (string, error) {
 	if m == nil {
-		return "", false
+		return "", os.ErrNotExist
 	}
 	path := m.PathFor(t)
 	if _, err := os.Stat(path); err != nil {
-		return "", false
+		return "", err
 	}
 	if !project.WorktreeHealthy(ctx, path) {
-		return "", false
+		return "", fmt.Errorf("resolve existing worktree %s: %w", path, os.ErrNotExist)
 	}
-	return path, true
+	// Reuse skips PrepareForTask, and with it the only live-agent guard on this
+	// path. Without this check a task parked mid-run hands its own worktree to
+	// the recovery agent while the implementer is still committing into it.
+	if m.hasLiveAgentOnly != nil && m.hasLiveAgentOnly(t.ID) {
+		return "", fmt.Errorf("resolve existing worktree %s: %w", path, ErrWorktreeBusy)
+	}
+	if err := pushableCheckout(ctx, path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// pushableCheckout rejects the states that pass WorktreeHealthy but leave an
+// agent unable to publish its fix: a detached HEAD (PrepareForReview creates
+// the same path detached) and an interrupted rebase or merge.
+func pushableCheckout(ctx context.Context, path string) error {
+	branch, err := project.CurrentBranch(ctx, path)
+	if err != nil {
+		return fmt.Errorf("resolve existing worktree %s: %w", path, err)
+	}
+	if branch == "" {
+		return fmt.Errorf("resolve existing worktree %s: detached HEAD: %w", path, os.ErrInvalid)
+	}
+	gitDir, err := gitexec.Output(ctx, gitexec.Options{Dir: path}, "rev-parse", "--git-dir")
+	if err != nil {
+		return fmt.Errorf("resolve existing worktree %s: %w", path, err)
+	}
+	gitDir = strings.TrimSpace(gitDir)
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(path, gitDir)
+	}
+	for _, marker := range []string{"rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD"} {
+		if _, err := os.Stat(filepath.Join(gitDir, marker)); err == nil {
+			return fmt.Errorf("resolve existing worktree %s: %s in progress: %w", path, marker, os.ErrInvalid)
+		}
+	}
+	return nil
 }
 
 // ValidatePath checks that path is within the worktrees directory and is a directory.

@@ -2183,9 +2183,9 @@ func TestManager_ResolveExistingLeavesTheTreeUntouched(t *testing.T) {
 	headBefore := gitOut(t, wt, "rev-parse", "HEAD")
 	statusBefore := gitOut(t, wt, "status", "--porcelain")
 
-	got, ok := m.ResolveExisting(context.Background(), tk)
-	if !ok {
-		t.Fatalf("healthy worktree not resolved: %q", got)
+	got, err := m.ResolveExisting(context.Background(), tk)
+	if err != nil {
+		t.Fatalf("healthy worktree not resolved: %v", err)
 	}
 	if got != wt {
 		t.Errorf("resolved %q, want %q", got, wt)
@@ -2210,7 +2210,7 @@ func TestManager_ResolveExistingRejectsMissingAndNonGit(t *testing.T) {
 	}
 	m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
 
-	if got, ok := m.ResolveExisting(context.Background(), task.Task{ID: "absent"}); ok {
+	if got, err := m.ResolveExisting(context.Background(), task.Task{ID: "absent"}); err == nil {
 		t.Errorf("resolved a worktree that does not exist: %q", got)
 	}
 
@@ -2219,8 +2219,85 @@ func TestManager_ResolveExistingRejectsMissingAndNonGit(t *testing.T) {
 	if err := os.MkdirAll(notRepo, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := m.ResolveExisting(context.Background(), bare); ok {
+	if got, err := m.ResolveExisting(context.Background(), bare); err == nil {
 		t.Errorf("resolved a directory git cannot resolve: %q", got)
+	}
+}
+
+// Reuse skips PrepareForTask, and with it the ErrAgentRunning guard that is the
+// only thing stopping a second agent from editing a checkout the first is still
+// committing into.
+func TestManager_ResolveExistingRefusesLiveAgent(t *testing.T) {
+	dir := t.TempDir()
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(Config{
+		WorktreesDir:     dir,
+		Tasks:            task.NewManager(store, nil),
+		Logger:           discardLogger(),
+		LiveAgentChecker: func(string) bool { return true },
+	})
+
+	tk := task.Task{ID: "busy"}
+	makePushedGitDir(t, filepath.Join(dir, tk.DirName()))
+
+	got, err := m.ResolveExisting(context.Background(), tk)
+	if !errors.Is(err, ErrWorktreeBusy) {
+		t.Fatalf("ResolveExisting = %q, %v; want ErrWorktreeBusy", got, err)
+	}
+}
+
+// A recovery agent is ordered to fix, commit and push. These two states pass
+// WorktreeHealthy and then cannot be pushed from at all — the commit lands
+// unreferenced and the next Prepare* drops the verified fix.
+func TestManager_ResolveExistingRefusesUnpushableCheckout(t *testing.T) {
+	cases := []struct {
+		name    string
+		breakWT func(t *testing.T, wt string)
+	}{
+		{
+			name: "detached HEAD",
+			breakWT: func(t *testing.T, wt string) {
+				t.Helper()
+				mustRunInDir(t, wt, "git", "checkout", "--detach")
+			},
+		},
+		{
+			name: "interrupted rebase",
+			breakWT: func(t *testing.T, wt string) {
+				t.Helper()
+				gitDir := gitOut(t, wt, "rev-parse", "--absolute-git-dir")
+				if err := os.MkdirAll(filepath.Join(gitDir, "rebase-merge"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			store, err := task.NewStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
+
+			tk := task.Task{ID: "unpushable"}
+			wt := filepath.Join(dir, tk.DirName())
+			makePushedGitDir(t, wt)
+			if _, err := m.ResolveExisting(context.Background(), tk); err != nil {
+				t.Fatalf("healthy worktree refused before the break: %v", err)
+			}
+			tc.breakWT(t, wt)
+
+			got, err := m.ResolveExisting(context.Background(), tk)
+			if err == nil {
+				t.Fatalf("ResolveExisting returned %q for a checkout that cannot be pushed from", got)
+			}
+		})
 	}
 }
 

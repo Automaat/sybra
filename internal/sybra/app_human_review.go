@@ -105,7 +105,7 @@ type humanReviewHandler struct {
 	// resolveExistingWorktree returns an already-checked-out worktree without
 	// mutating it. Tried before prepareTaskWorktree, because preparation
 	// rewrites the very state a recovery agent was sent to explain (#3073).
-	resolveExistingWorktree func(task.Task) (string, bool)
+	resolveExistingWorktree func(task.Task) (string, error)
 	// claimTaskDispatch serializes recovery preparation and registration with
 	// every workflow dispatcher that can mutate the same task worktree.
 	claimTaskDispatch func(string) (release func(), ok bool)
@@ -188,7 +188,7 @@ func (a *App) initHumanReview(ctx context.Context) {
 	a.humanReview.abTesting = a.abTestingConfig
 	a.humanReview.schedule = lifecycleSchedule(ctx)
 	if a.worktrees != nil {
-		a.humanReview.resolveExistingWorktree = func(t task.Task) (string, bool) {
+		a.humanReview.resolveExistingWorktree = func(t task.Task) (string, error) {
 			return a.worktrees.ResolveExisting(ctx, t)
 		}
 		a.humanReview.prepareTaskWorktree = func(t task.Task) (string, error) {
@@ -252,12 +252,26 @@ func (h *humanReviewHandler) dispatchDir(t task.Task) (dir string, readOnly, ret
 	// Non-mutating first: the tree that failed is the evidence, and every
 	// Prepare* path rewrites it before the agent reads a line of it (#3073).
 	if h.resolveExistingWorktree != nil {
-		if dir, ok := h.resolveExistingWorktree(t); ok {
+		dir, err := h.resolveExistingWorktree(t)
+		switch {
+		case err == nil && strings.TrimSpace(dir) != "":
 			h.logger.Info("human-review.worktree.reused", "task_id", t.ID, "dir", dir)
 			return dir, false, false, false
+		case errors.Is(err, worktree.ErrWorktreeBusy):
+			// Falling through to preparation would rebase the branch out from
+			// under the live run, and the read-only fallback would strand a
+			// recovery that can see the fix but not apply it.
+			h.logger.Info("human-review.worktree.busy", "task_id", t.ID, "err", err)
+			return "", false, true, false
+		case err != nil:
+			h.logger.Info("human-review.worktree.reuse-declined", "task_id", t.ID, "err", err)
 		}
 	}
 	if h.prepareTaskWorktree != nil {
+		// Rebuilt from here on, not only on success: a preparation that
+		// sanitizes the tree and then fails non-retryably has destroyed the
+		// evidence more thoroughly than one that succeeded, and the agent
+		// still needs telling.
 		dir, err := h.prepareTaskWorktree(t)
 		if err == nil && strings.TrimSpace(dir) != "" {
 			return dir, false, false, true
@@ -269,6 +283,8 @@ func (h *humanReviewHandler) dispatchDir(t task.Task) (dir string, readOnly, ret
 			}
 			h.logger.Warn("human-review.worktree.prepare", "task_id", t.ID, "err", err)
 		}
+		dir, readOnly = humanReviewDispatchDir(t, h.cfg.HumanReview.SybraRepoDir)
+		return dir, readOnly, false, true
 	}
 	dir, readOnly = humanReviewDispatchDir(t, h.cfg.HumanReview.SybraRepoDir)
 	return dir, readOnly, false, false
@@ -1818,7 +1834,7 @@ func (h *humanReviewHandler) writePromptTaskDetails(b *strings.Builder, t task.T
 // mandate spends a paragraph forbidding.
 func writeRebuiltWorktreeWarning(b *strings.Builder) {
 	b.WriteString("## Worktree was rebuilt before you saw it (READ THIS FIRST)\n")
-	b.WriteString("No usable checkout existed, so this worktree was prepared from scratch: uncommitted work was auto-committed, the tree was reset and cleaned, and it was rebased onto a fresher base branch. **You are not looking at the state that failed.**\n\n")
+	b.WriteString("No usable checkout was available, so this worktree went through preparation: any uncommitted work was auto-committed, the tree was reset and cleaned, and it was rebased onto a fresher base branch — or, if no checkout existed at all, it was created fresh from the base branch. Either way, **you are not looking at the state that failed.**\n\n")
 	b.WriteString("- A re-run that now PASSES is not evidence the failure was flaky or transient — a base-induced failure stops reproducing on a fresher base. Say the original state was unavailable rather than calling it flaky.\n")
 	b.WriteString("- Reconstruct the failure from the agent-run output and logs below, which describe the tree as it actually was.\n")
 	b.WriteString("- If you cannot confirm the root cause against evidence you can still see, say so in your verdict instead of inferring one.\n\n")

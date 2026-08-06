@@ -3,6 +3,7 @@ package sybra
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -207,7 +208,7 @@ func TestHumanReviewDispatchDir_ReusesExistingWorktreeUnmutated(t *testing.T) {
 	defer cleanup()
 
 	existing := t.TempDir()
-	h.resolveExistingWorktree = func(task.Task) (string, bool) { return existing, true }
+	h.resolveExistingWorktree = func(task.Task) (string, error) { return existing, nil }
 	h.prepareTaskWorktree = func(task.Task) (string, error) {
 		t.Fatal("preparation ran against a healthy existing worktree, rewriting the evidence")
 		return "", nil
@@ -233,7 +234,7 @@ func TestHumanReviewDispatchDir_PreparedWorktreeIsFlaggedRebuilt(t *testing.T) {
 	defer cleanup()
 
 	prepared := t.TempDir()
-	h.resolveExistingWorktree = func(task.Task) (string, bool) { return "", false }
+	h.resolveExistingWorktree = func(task.Task) (string, error) { return "", os.ErrNotExist }
 	h.prepareTaskWorktree = func(task.Task) (string, error) { return prepared, nil }
 
 	dir, _, _, rebuilt := h.dispatchDir(task.Task{ID: "parked-task"})
@@ -251,6 +252,105 @@ func TestHumanReviewDispatchDir_PreparedWorktreeIsFlaggedRebuilt(t *testing.T) {
 	clean := h.buildPrompt(task.Task{ID: "t1", ProjectID: "Automaat/sybra"}, dir, nil, false)
 	if strings.Contains(clean, "not looking at the state that failed") {
 		t.Error("prompt warns about a rebuild that did not happen")
+	}
+}
+
+// dispatchDir computing the flag correctly is worth nothing if spawnReview
+// drops it. Assert against the prompt the agent is actually handed.
+func TestHumanReviewSpawn_RebuiltWarningReachesTheAgent(t *testing.T) {
+	cases := []struct {
+		name        string
+		reuse       bool
+		wantWarning bool
+	}{
+		{name: "reused worktree carries no warning", reuse: true},
+		{name: "prepared worktree carries the warning", wantWarning: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, tasks, cleanup := newReviewTestEnv(t)
+			defer cleanup()
+
+			tk, err := tasks.Create("rebuilt warning", "", task.AgentModeHeadless)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+				"project_id": "Automaat/sybra",
+				"status":     string(task.StatusHumanRequired),
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			wtDir := t.TempDir()
+			h.resolveExistingWorktree = func(task.Task) (string, error) {
+				if tc.reuse {
+					return wtDir, nil
+				}
+				return "", os.ErrNotExist
+			}
+			h.prepareTaskWorktree = func(task.Task) (string, error) { return wtDir, nil }
+
+			var prompt string
+			h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+				prompt = cfg.Prompt
+				return &agent.Agent{ID: "rev", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+			}}
+
+			if !h.maybeSpawn(tk.ID, string(task.StatusInReview)) {
+				t.Fatal("review did not spawn")
+			}
+			got := strings.Contains(prompt, "not looking at the state that failed")
+			if got != tc.wantWarning {
+				t.Errorf("prompt warns = %v, want %v", got, tc.wantWarning)
+			}
+		})
+	}
+}
+
+// Reuse skips PrepareForTask, and with it the ErrAgentRunning guard that #3108
+// turned into a retry. A busy worktree must stay retryable, or the recovery
+// agent edits a checkout the implementer is still committing into.
+func TestHumanReviewDispatchDir_BusyWorktreeIsRetryable(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	h.resolveExistingWorktree = func(task.Task) (string, error) {
+		return "", fmt.Errorf("resolve: %w", worktree.ErrWorktreeBusy)
+	}
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		t.Fatal("preparation ran against a worktree with a live agent")
+		return "", nil
+	}
+
+	dir, readOnly, retryable, _ := h.dispatchDir(task.Task{ID: "busy-task"})
+	if !retryable {
+		t.Errorf("retryable=false for a busy worktree; recovery falls back instead of waiting")
+	}
+	if dir != "" || readOnly {
+		t.Errorf("got dir=%q readOnly=%v, want an empty retryable result", dir, readOnly)
+	}
+}
+
+// A preparation that sanitizes the tree and then fails non-retryably has
+// destroyed the evidence more thoroughly than one that succeeded, so the
+// read-only fallback still has to carry the warning.
+func TestHumanReviewDispatchDir_FailedPrepareStillFlagsRebuilt(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	h.resolveExistingWorktree = func(task.Task) (string, error) { return "", os.ErrNotExist }
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		return "", errors.New("reconcile failed after sanitize")
+	}
+
+	dir, readOnly, _, rebuilt := h.dispatchDir(task.Task{ID: "t1"})
+	if dir != h.cfg.HumanReview.SybraRepoDir || !readOnly {
+		t.Fatalf("got dir=%q readOnly=%v, want the read-only fallback", dir, readOnly)
+	}
+	if !rebuilt {
+		t.Error("rebuilt=false after a preparation that already mutated the tree")
 	}
 }
 
