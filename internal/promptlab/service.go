@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/stats"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // Options configures one Run.
@@ -82,5 +84,5 @@ func SaveRunResult(dir string, result RunResult) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "last-run.json"), data, 0o600)
+	return fsutil.AtomicWrite(filepath.Join(dir, "last-run.json"), data)
 }
