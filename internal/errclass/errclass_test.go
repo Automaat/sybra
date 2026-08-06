@@ -80,6 +80,24 @@ func TestPlainHTTP500IsNotGateway(t *testing.T) {
 	}
 }
 
+// TestIsBadRef pins the twelve needles that lived byte-identically in
+// internal/project and internal/workflow.
+func TestIsBadRef(t *testing.T) {
+	for _, text := range []string{
+		"fatal: bad object HEAD",
+		"error: object file .git/objects/ab/cdef is empty",
+		"fatal: ambiguous argument 'origin/main...HEAD': unknown revision or path not in the working tree",
+		"fatal: Invalid revision range origin/main...HEAD",
+	} {
+		if !IsBadRef(text) {
+			t.Fatalf("IsBadRef(%q) = false, want true", text)
+		}
+	}
+	if IsBadRef("connection refused") {
+		t.Fatal("IsBadRef matched a network error")
+	}
+}
+
 func TestClassifyErr(t *testing.T) {
 	if got := ClassifyErr(nil); got != Unknown {
 		t.Fatalf("ClassifyErr(nil) = %q, want %q", got, Unknown)
@@ -103,6 +121,7 @@ func TestFamiliesAreLowercase(t *testing.T) {
 		"RateLimitPhrases":    RateLimitPhrases,
 		"AuthPhrases":         AuthPhrases,
 		"GitTransportPhrases": GitTransportPhrases,
+		"BadRefPhrases":       BadRefPhrases,
 		"StreamPhrases":       StreamPhrases,
 	}
 	for name, family := range families {

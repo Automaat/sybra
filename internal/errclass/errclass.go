@@ -108,6 +108,24 @@ var (
 		"could not read username for 'https://github.com'",
 	}
 
+	// BadRefPhrases are corrupt or unresolvable git object/ref errors, which
+	// clear on a re-fetch. The same twelve lived byte-identically in
+	// internal/project and internal/workflow.
+	BadRefPhrases = []string{
+		"bad object head",
+		"fatal: bad object",
+		"not a valid object name",
+		"invalid object",
+		"invalid revision range",
+		"missing object",
+		"unable to read sha1 file",
+		"object file",
+		"loose object",
+		"unknown revision",
+		"ambiguous argument",
+		"reference broken",
+	}
+
 	// GitTransportPhrases are git-remote transport failures with no
 	// equivalent outside a fetch or push.
 	GitTransportPhrases = []string{
@@ -126,6 +144,11 @@ func IsNetwork(text string) bool {
 // generic network families.
 func IsGitTransport(text string) bool {
 	return matches(text, NetworkPhrases, DNSPhrases, TLSPhrases, GitTransportPhrases)
+}
+
+// IsBadRef reports a corrupt or unresolvable git object or ref.
+func IsBadRef(text string) bool {
+	return matches(text, BadRefPhrases)
 }
 
 // IsGateway reports a retryable 5xx gateway response.
