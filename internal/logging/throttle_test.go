@@ -150,9 +150,10 @@ func TestInfoThrottle_LongParkDoesNotLogPerTick(t *testing.T) {
 	if info != 1 {
 		t.Errorf("INFO lines = %d, want 1 (the park starting)", info)
 	}
-	// 60h at one re-emission per 30m, minus the tick that logged at INFO.
-	if want := int(park/InfoRepeatInterval) - 1; debug != want {
-		t.Errorf("DEBUG lines = %d, want %d", debug, want)
+	// Literal, not derived from InfoRepeatInterval: pinning a constant to
+	// itself lets any value pass, including one longer than the park.
+	if debug != 119 {
+		t.Errorf("DEBUG lines = %d, want 119 (60h at one re-emission per 30m, less the INFO tick)", debug)
 	}
 	if total := info + debug; total >= ticks {
 		t.Errorf("%d lines for %d ticks: repeats are not being suppressed", total, ticks)

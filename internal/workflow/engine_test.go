@@ -5481,17 +5481,19 @@ func TestResumeStalled_RateLimitedProviderSkipIsThrottled(t *testing.T) {
 	agents.SetProviderRateLimited(true)
 	engine := NewEngine(store, tasks, agents, logger)
 
-	tasks.Put(TaskInfo{
-		ID:        "t1",
-		Status:    "in-progress",
-		AgentMode: "headless",
-		Workflow: &Execution{
-			WorkflowID:  "test-simple",
-			CurrentStep: "implement",
-			State:       ExecWaiting,
-			StartedAt:   time.Now().UTC(),
-		},
-	})
+	for _, id := range []string{"t1", "t2"} {
+		tasks.Put(TaskInfo{
+			ID:        id,
+			Status:    "in-progress",
+			AgentMode: "headless",
+			Workflow: &Execution{
+				WorkflowID:  "test-simple",
+				CurrentStep: "implement",
+				State:       ExecWaiting,
+				StartedAt:   time.Now().UTC(),
+			},
+		})
+	}
 
 	skips := func() []slog.Record {
 		var out []slog.Record
@@ -5506,11 +5508,21 @@ func TestResumeStalled_RateLimitedProviderSkipIsThrottled(t *testing.T) {
 
 	engine.ResumeStalled()
 	first := skips()
-	if len(first) != 1 {
-		t.Fatalf("got %d park records on the first tick, want 1: %+v", len(first), first)
+	// One per task: keying the throttle on anything coarser would hide every
+	// parked task in the fleet behind whichever one parked first.
+	if len(first) != 2 {
+		t.Fatalf("got %d park records on the first tick, want one per task: %+v", len(first), first)
 	}
-	if first[0].Level != slog.LevelInfo {
-		t.Errorf("park logged at %v, want Info so it is visible at the default level", first[0].Level)
+	for _, r := range first {
+		if r.Level != slog.LevelInfo {
+			t.Errorf("park logged at %v, want Info so it is visible at the default level", r.Level)
+		}
+		// test-simple's implement step declares no provider, and 9 of the 14
+		// builtin run_agent steps are the same. Reporting an empty provider
+		// defeats the whole point of promoting this line out of Debug.
+		if got := recordAttr(r, "provider"); got != "claude" {
+			t.Errorf("provider = %q, want the default the park is actually about", got)
+		}
 	}
 
 	records = nil
@@ -5519,6 +5531,72 @@ func TestResumeStalled_RateLimitedProviderSkipIsThrottled(t *testing.T) {
 	}
 	if repeat := skips(); len(repeat) != 0 {
 		t.Errorf("got %d park records from repeat ticks, want 0: %+v", len(repeat), repeat)
+	}
+}
+
+// A park that ends and recurs must be logged again. The throttle only re-arms
+// on Clear, and nothing called it — so a second park was invisible at INFO and
+// suppressed at DEBUG, which is strictly worse than the per-tick Debug line
+// this replaced.
+func TestResumeStalled_LaterParkIsLoggedAgain(t *testing.T) {
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimitedFor("claude", true)
+	engine := NewEngine(store, tasks, agents, logger)
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+
+	parkRecords := func() int {
+		n := 0
+		for _, r := range records {
+			if recordAttr(r, "reason") == "provider_rate_limited" {
+				n++
+			}
+		}
+		return n
+	}
+
+	engine.ResumeStalled()
+	if got := parkRecords(); got != 1 {
+		t.Fatalf("first park logged %d times, want 1", got)
+	}
+
+	// The park ends, the resume proceeds, and that run finishes — the state a
+	// task is in when a later park hits it.
+	agents.SetProviderRateLimitedFor("claude", false)
+	engine.ResumeStalled()
+	agents.SimulateComplete("t1")
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+
+	records = nil
+	agents.SetProviderRateLimitedFor("claude", true)
+	engine.ResumeStalled()
+	if got := parkRecords(); got != 1 {
+		t.Errorf("second park logged %d times, want 1: the throttle never re-armed", got)
 	}
 }
 

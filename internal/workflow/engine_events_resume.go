@@ -280,7 +280,7 @@ func (e *Engine) resumePreflightConsumesTick(t *TaskInfo, step *Step, logEvent s
 	if e.agents.HasRunningAgent(t.ID) {
 		return true
 	}
-	if e.shouldSkipResumeForRateLimitedProvider(t, step) {
+	if e.shouldSkipResumeForRateLimitedProvider(t, step, logEvent) {
 		return true
 	}
 	if retryableWatchdogStop && e.handleWatchdogStopRetry(t, step) {
@@ -292,6 +292,11 @@ func (e *Engine) resumePreflightConsumesTick(t *TaskInfo, step *Step, logEvent s
 	if e.handleWatchdogRetries(t, step) {
 		return true
 	}
+	// Reaching here means the preflight passed and the resume proceeds, so the
+	// skip condition has ended. Without this the throttle never re-arms and a
+	// LATER park on the same task is logged nowhere for thirty minutes — worse
+	// than the per-tick Debug it replaced, which at least logged every park.
+	e.resumeSkip.Clear(t.ID)
 	return false
 }
 
