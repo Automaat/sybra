@@ -92,19 +92,7 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		}
 	}
 
-	status := "completed"
-	if !c.Success {
-		status = "failed"
-	}
-
-	if c.Success {
-		if def, ok := defs.get(); ok {
-			e.importSidecarIfConfiguredFromDef(taskID, spawnedStep, t, def)
-		} else {
-			e.logger.Info("workflow.agent-complete.bail",
-				"task_id", taskID, "agent_id", c.AgentID, "reason", "workflow-definition-unavailable", "current_step", spawnedStep)
-		}
-	}
+	status := e.importOrAdoptSidecarStatus(taskID, spawnedStep, t, c, &defs)
 
 	e.recordAgentCompletionTrace(taskID, spawnedStep, c, status)
 
@@ -143,6 +131,29 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		}
 	}
 	e.clearAgentStep(taskID, c.AgentID)
+}
+
+// importOrAdoptSidecarStatus resolves the step status a completed agent run
+// should be recorded with. A successful run imports its sidecars and
+// completes normally. A failed run gets one more chance: if it still left a
+// complete, valid set of sidecar artifacts on disk (e.g. aborted_streaming
+// after all plan files were saved), adopting them turns the step into a
+// completed one instead of burning a retry attempt re-doing already-finished
+// work.
+func (e *Engine) importOrAdoptSidecarStatus(taskID, spawnedStep string, t TaskInfo, c AgentCompletion, defs *completionDefinitionCache) string {
+	if c.Success {
+		if def, ok := defs.get(); ok {
+			e.importSidecarIfConfiguredFromDef(taskID, spawnedStep, t, def)
+		} else {
+			e.logger.Info("workflow.agent-complete.bail",
+				"task_id", taskID, "agent_id", c.AgentID, "reason", "workflow-definition-unavailable", "current_step", spawnedStep)
+		}
+		return "completed"
+	}
+	if def, ok := defs.get(); ok && e.adoptSidecarsFromFailedRun(taskID, spawnedStep, t, def) {
+		return "completed"
+	}
+	return "failed"
 }
 
 func (e *Engine) handleAgentCompleteInitialBail(taskID string, t TaskInfo, c AgentCompletion) bool {

@@ -479,3 +479,165 @@ func TestImportSidecars_WritesMultiplePlanningArtifacts(t *testing.T) {
 		t.Errorf("PlanContract = %q, want %q", got.PlanContract, contract)
 	}
 }
+
+func newImportSidecarsFixture(t *testing.T, files map[string]string) (*Engine, *memTasks, string) {
+	t.Helper()
+	store := newTestStoreWith(t, "test-import-sidecars.yaml")
+	dir := t.TempDir()
+	vars := map[string]string{}
+	for name, key := range map[string]string{
+		"research.md":   "research_path",
+		"decisions.md":  "decisions_path",
+		"plan.md":       "plan_path",
+		"brief.md":      "brief_path",
+		"contract.json": "contract_path",
+	} {
+		vars[key] = filepath.Join(dir, name)
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: "planning",
+		Workflow: &Execution{
+			WorkflowID:  "test-import-sidecars",
+			CurrentStep: "plan",
+			Variables:   vars,
+		},
+	})
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	return engine, tasks, dir
+}
+
+func TestAdoptSidecarsFromFailedRun_AdoptsCompleteValidSet(t *testing.T) {
+	engine, tasks, _ := newImportSidecarsFixture(t, map[string]string{
+		"research.md":   "# Research\n",
+		"decisions.md":  "# Decisions\n",
+		"plan.md":       "# Execution Plan\n",
+		"brief.md":      "# Final Brief\n",
+		"contract.json": validPlanContract("t1"),
+	})
+	info, _ := tasks.GetTask("t1")
+	def, err := engine.store.Get("test-import-sidecars")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if ok := engine.adoptSidecarsFromFailedRun("t1", "plan", info, &def); !ok {
+		t.Fatal("adoptSidecarsFromFailedRun() = false, want true for a complete valid artifact set")
+	}
+
+	got, _ := tasks.GetTask("t1")
+	if got.Plan != "# Execution Plan\n" || got.PlanContract == "" {
+		t.Errorf("sidecars not adopted: plan=%q contract=%q", got.Plan, got.PlanContract)
+	}
+}
+
+func TestAdoptSidecarsFromFailedRun_RefusesOnMissingArtifact(t *testing.T) {
+	engine, tasks, _ := newImportSidecarsFixture(t, map[string]string{
+		"research.md":  "# Research\n",
+		"decisions.md": "# Decisions\n",
+		"plan.md":      "# Execution Plan\n",
+		// brief.md intentionally absent
+		"contract.json": validPlanContract("t1"),
+	})
+	info, _ := tasks.GetTask("t1")
+	def, err := engine.store.Get("test-import-sidecars")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if ok := engine.adoptSidecarsFromFailedRun("t1", "plan", info, &def); ok {
+		t.Fatal("adoptSidecarsFromFailedRun() = true, want false when a declared sidecar is missing")
+	}
+	got, _ := tasks.GetTask("t1")
+	if got.Plan != "" || got.PlanContract != "" {
+		t.Errorf("partial adoption occurred: plan=%q contract=%q", got.Plan, got.PlanContract)
+	}
+}
+
+func TestAdoptSidecarsFromFailedRun_RefusesOnInvalidContract(t *testing.T) {
+	engine, tasks, _ := newImportSidecarsFixture(t, map[string]string{
+		"research.md":   "# Research\n",
+		"decisions.md":  "# Decisions\n",
+		"plan.md":       "# Execution Plan\n",
+		"brief.md":      "# Final Brief\n",
+		"contract.json": `{"task_id": "t1"}`, // missing required fields
+	})
+	info, _ := tasks.GetTask("t1")
+	def, err := engine.store.Get("test-import-sidecars")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if ok := engine.adoptSidecarsFromFailedRun("t1", "plan", info, &def); ok {
+		t.Fatal("adoptSidecarsFromFailedRun() = true, want false for an invalid plan contract")
+	}
+	got, _ := tasks.GetTask("t1")
+	if got.Plan != "" {
+		t.Errorf("adoption occurred despite invalid contract: plan=%q", got.Plan)
+	}
+}
+
+func TestHandleAgentComplete_FailedRunAdoptsSidecarsInsteadOfConsumingRetry(t *testing.T) {
+	engine, tasks, _ := newImportSidecarsFixture(t, map[string]string{
+		"research.md":   "# Research\n",
+		"decisions.md":  "# Decisions\n",
+		"plan.md":       "# Execution Plan\n",
+		"brief.md":      "# Final Brief\n",
+		"contract.json": validPlanContract("t1"),
+	})
+	info, _ := tasks.GetTask("t1")
+	info.Workflow.AgentRoutes = map[string]string{"a1": "plan"}
+	if err := tasks.SetWorkflow("t1", info.Workflow); err != nil {
+		t.Fatal(err)
+	}
+
+	engine.HandleAgentComplete("t1", AgentCompletion{
+		AgentID: "a1",
+		Success: false,
+		Result:  "[Read]",
+	})
+
+	got, _ := tasks.GetTask("t1")
+	if got.Plan == "" || got.PlanContract == "" {
+		t.Fatalf("sidecars not adopted after failed run: plan=%q contract=%q", got.Plan, got.PlanContract)
+	}
+	if got.Workflow == nil || got.Workflow.CountStep("plan") != 1 {
+		t.Errorf("plan step retry count = %d, want 1 (adoption must not look like a burned retry)", got.Workflow.CountStep("plan"))
+	}
+	if got.Status == "human-required" {
+		t.Errorf("task escalated to human-required despite adoptable sidecars, reason=%q", got.StatusReason)
+	}
+}
+
+func TestHandleAgentComplete_FailedRunWithIncompleteArtifactsStillFails(t *testing.T) {
+	engine, tasks, _ := newImportSidecarsFixture(t, map[string]string{
+		"research.md":  "# Research\n",
+		"decisions.md": "# Decisions\n",
+		// plan.md, brief.md, contract.json intentionally absent
+	})
+	info, _ := tasks.GetTask("t1")
+	info.Workflow.AgentRoutes = map[string]string{"a1": "plan"}
+	if err := tasks.SetWorkflow("t1", info.Workflow); err != nil {
+		t.Fatal(err)
+	}
+
+	engine.HandleAgentComplete("t1", AgentCompletion{
+		AgentID: "a1",
+		Success: false,
+		Result:  "aborted",
+	})
+
+	got, _ := tasks.GetTask("t1")
+	if got.Plan != "" || got.PlanContract != "" {
+		t.Errorf("sidecars adopted despite incomplete artifact set: plan=%q contract=%q", got.Plan, got.PlanContract)
+	}
+	if got.Workflow == nil || got.Workflow.CountStep("plan") != 1 {
+		t.Errorf("plan step retry count = %d, want 1 for a genuine failed attempt", got.Workflow.CountStep("plan"))
+	}
+}

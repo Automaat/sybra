@@ -49,6 +49,87 @@ func (e *Engine) importSidecarIfConfiguredFromDef(taskID, stepID string, info Ta
 	}
 }
 
+// adoptSidecarsFromFailedRun checks whether a run_agent step that just ended
+// in failure (e.g. aborted_streaming, denied-tool noise) nonetheless left a
+// complete, valid set of sidecar artifacts on disk — the case where the
+// agent finished writing everything it was asked for and only died
+// afterwards. A step's declared import_sidecars are treated as a single set:
+// downstream guard steps (require_plan, require_sidecar, ...) already fail
+// the task to human-required if any individual sidecar turns out missing, so
+// adoption only pays off when every declared sidecar — not just the ones
+// marked required at the import step — is present and non-empty, and a
+// plan_contract among them validates. On success it adopts them exactly as a
+// successful run would and reports true so the caller can treat the step as
+// completed instead of burning a retry attempt re-doing already-finished
+// work. Reports false (no adoption, no side effects) on any missing/empty
+// artifact or invalid contract, leaving the ordinary failed/retry path
+// untouched.
+func (e *Engine) adoptSidecarsFromFailedRun(taskID, stepID string, info TaskInfo, def *Definition) bool {
+	if info.Workflow == nil || def == nil {
+		return false
+	}
+	step := def.StepByID(stepID)
+	if step == nil || step.Type != StepRunAgent {
+		return false
+	}
+	imports := step.Config.sidecarImports()
+	if len(imports) == 0 {
+		return false
+	}
+	var contract string
+	hasContract := false
+	for _, cfg := range imports {
+		content, ok := e.probeSidecarContent(taskID, stepID, step, info, cfg)
+		if !ok {
+			return false
+		}
+		if cfg.Kind == "plan_contract" {
+			contract, hasContract = content, true
+		}
+	}
+	if hasContract {
+		if problems := ValidatePlanContractForTask(contract, taskID, info.Body); len(problems) > 0 {
+			e.logger.Info("workflow.adopt-sidecars.invalid-contract",
+				"task_id", taskID, "step", stepID, "problems", strings.Join(problems, "; "))
+			return false
+		}
+	}
+	e.importSidecarIfConfiguredFromDef(taskID, stepID, info, def)
+	e.logger.Info("workflow.adopt-sidecars.recovered", "task_id", taskID, "step", stepID)
+	return true
+}
+
+// probeSidecarContent renders and reads a single sidecar import's source
+// file without writing anything or mutating task status — used to check
+// completeness before committing to adoptSidecarsFromFailedRun's write path.
+func (e *Engine) probeSidecarContent(taskID, stepID string, step *Step, info TaskInfo, cfg ImportSidecar) (string, bool) {
+	path, rErr := RenderTemplate(cfg.From, TemplateContext{
+		Task:     info,
+		Step:     *step,
+		Vars:     info.Workflow.Variables,
+		Workflow: info.Workflow,
+	})
+	if rErr != nil {
+		return "", false
+	}
+	content, readErr := os.ReadFile(path)
+	if readErr != nil {
+		dirVarUnresolved := worktreeDirTemplatePattern.MatchString(cfg.From) && strings.TrimSpace(info.Workflow.Variables[WorkflowVarDir]) == ""
+		if dirVarUnresolved {
+			if _, recovered, ok := e.recoverSidecarFromTaskWorktree(taskID, stepID, step, info, cfg); ok {
+				content, readErr = recovered, nil
+			}
+		}
+		if readErr != nil {
+			return "", false
+		}
+	}
+	if strings.TrimSpace(string(content)) == "" {
+		return "", false
+	}
+	return string(content), true
+}
+
 func (c StepConfig) sidecarImports() []ImportSidecar {
 	var out []ImportSidecar
 	if c.ImportSidecar != nil {
