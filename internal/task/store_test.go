@@ -731,6 +731,69 @@ func TestStoreCreateFull_ValidatesAndFlagsTamperBlocker(t *testing.T) {
 	}
 }
 
+func TestStoreCreateFull_SandboxOffRequiresReason(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	off := false
+	if _, err := store.CreateFull("sandbox off", "", AgentModeHeadless, Update{
+		Sandbox: &off,
+	}); err == nil {
+		t.Fatal("CreateFull sandbox off without reason err = nil, want validation failure")
+	}
+
+	reason := "docker-in-docker e2e needs host mounts"
+	created, err := store.CreateFull("sandbox off", "", AgentModeHeadless, Update{
+		Sandbox:          &off,
+		SandboxOffReason: Ptr("  " + reason + "  "),
+	})
+	if err != nil {
+		t.Fatalf("CreateFull sandbox off with reason: %v", err)
+	}
+	if created.Sandbox == nil || *created.Sandbox {
+		t.Fatalf("Sandbox = %v, want false", created.Sandbox)
+	}
+	if created.SandboxOffReason != reason {
+		t.Fatalf("SandboxOffReason = %q, want %q", created.SandboxOffReason, reason)
+	}
+}
+
+func TestStoreUpdate_SandboxOffRequiresReason(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("sandbox update", "", AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	off := false
+	if _, err := store.Update(created.ID, Update{Sandbox: &off}); err == nil {
+		t.Fatal("Update sandbox off without reason err = nil, want validation failure")
+	}
+
+	reason := "docker-in-docker e2e needs host mounts"
+	updated, err := store.Update(created.ID, Update{
+		Sandbox:          &off,
+		SandboxOffReason: Ptr("  " + reason + "  "),
+	})
+	if err != nil {
+		t.Fatalf("Update sandbox off with reason: %v", err)
+	}
+	if updated.Sandbox == nil || *updated.Sandbox {
+		t.Fatalf("Sandbox = %v, want false", updated.Sandbox)
+	}
+	if updated.SandboxOffReason != reason {
+		t.Fatalf("SandboxOffReason = %q, want %q", updated.SandboxOffReason, reason)
+	}
+}
+
 // TestStoreUpdateTestingCycleStartedAt_AutoStamp verifies that UpdateWithPrev
 // automatically stamps TestingCycleStartedAt when a task moves out of
 // human-required. This covers all callers (CLI, GUI, engine) uniformly.
