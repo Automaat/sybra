@@ -87,6 +87,9 @@ func (e *Engine) resolveExecutionDefinition(taskID string, t TaskInfo) (Definiti
 		return Definition{}, fmt.Errorf("set workflow definition blocker: %w", blockerErr)
 	}
 	failed := t.Workflow.Clone()
+	if failed == nil {
+		return Definition{}, fmt.Errorf("fail workflow after snapshot loss: task %s lost active workflow", taskID)
+	}
 	failed.State = ExecFailed
 	if setErr := e.tasks.SetWorkflow(taskID, failed); setErr != nil {
 		return Definition{}, fmt.Errorf("fail workflow after snapshot loss: %w", setErr)
