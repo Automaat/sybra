@@ -336,6 +336,7 @@ func (e *Engine) terminalizeNonRetryableRewardHacking(t *TaskInfo, step *Step) b
 		"task_id", t.ID, "step", step.ID)
 	return true
 }
+
 // resolveFreshTaskForResume re-reads the task to guard against stale snapshots
 // from concurrent ResumeStalled calls: by the time we pass the preflight, a
 // prior goroutine may have already advanced the workflow past this step. It

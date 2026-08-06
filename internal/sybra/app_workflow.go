@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -1213,8 +1212,7 @@ func (a *agentAdapter) recreateManagedWorktreeForRetry(t task.Task, taskID strin
 			"task_id", taskID, "role", role, "project", proj.ID, "branch", t.Branch, "err", fetchErr)
 	}
 	remoteRef := "refs/remotes/origin/" + t.Branch
-	if out, revErr := exec.CommandContext(context.Background(), "git", "-c", "safe.bareRepository=all", "-C", proj.ClonePath, "rev-parse", "--verify", remoteRef).CombinedOutput(); revErr == nil {
-		remoteHead := strings.TrimSpace(string(out))
+	if remoteHead, ok := project.ResolveBareRef(context.Background(), proj.ClonePath, remoteRef); ok {
 		if remoteHead != "" {
 			if err := project.SetBranchTo(context.Background(), proj.ClonePath, t.Branch, remoteHead); err != nil {
 				return t, "", fmt.Errorf("reset task branch %s to pushed tip %s: %w", t.Branch, remoteHead, err)
