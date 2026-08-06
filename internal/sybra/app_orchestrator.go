@@ -226,7 +226,7 @@ func (a *App) maintenancePass(ctx context.Context) {
 	// that must stay under agent.StaleDispatchClaimAge. Exhaustion therefore
 	// has to be recoverable, and this is what recovers it.
 	if a.humanReview != nil {
-		a.humanReview.RespawnDroppedReviews(ctx)
+		go a.humanReview.RespawnDroppedReviews(ctx)
 	}
 	if a.recovery != nil {
 		a.recovery.ReconcileLostPRNumber(ctx)

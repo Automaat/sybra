@@ -4029,16 +4029,17 @@ func TestRespawnDroppedReviews(t *testing.T) {
 		name        string
 		parkedAgo   time.Duration
 		existingRun bool
-		noAgentRuns bool
+		declined    bool
 		wantSpawn   bool
 	}{
 		{name: "recent park with no review respawns", parkedAgo: time.Minute, wantSpawn: true},
 		{name: "park already reviewed is left alone", parkedAgo: time.Minute, existingRun: true},
 		{name: "park older than the sweep window is left alone", parkedAgo: 3 * time.Hour},
 		// maybeSpawn's prev_status_blocked guard cannot fire for a sweep, which
-		// does not know the transition. A park with no agent activity is the
-		// unblock flow, and it must stay declined across a restart.
-		{name: "park with no agent activity is left alone", parkedAgo: time.Minute, noAgentRuns: true},
+		// never sees the transition. Prior agent activity was a poor proxy —
+		// any task that ever ran an agent has some — so the live path records
+		// its refusal instead.
+		{name: "park the live path declined is left alone", parkedAgo: time.Minute, declined: true},
 	}
 
 	for _, tc := range cases {
@@ -4065,12 +4066,16 @@ func TestRespawnDroppedReviews(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if !tc.noAgentRuns {
-				if err := tasks.AddRun(tk.ID, task.AgentRun{
-					AgentID: "impl", Role: string(agent.RoleImplementation),
-					State: string(agent.StateStopped),
-				}); err != nil {
-					t.Fatal(err)
+			if err := tasks.AddRun(tk.ID, task.AgentRun{
+				AgentID: "impl", Role: string(agent.RoleImplementation),
+				State: string(agent.StateStopped),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.declined {
+				// Exactly what the live path does on a blocked transition.
+				if h.maybeSpawn(context.Background(), tk.ID, string(task.StatusBlocked)) {
+					t.Fatal("live path spawned on a blocked transition")
 				}
 			}
 			// Age the park by moving the clock, not the file: UpdatedAt is
@@ -4394,4 +4399,122 @@ func TestMaintenancePass_RunsTheDroppedReviewSweep(t *testing.T) {
 		t.Fatal("maintenance tick does not sweep dropped reviews")
 	}
 	waitForHumanReviewRun(t, tasks, tk.ID)
+}
+
+// A context check alone loses the race: a goroutine can pass it microseconds
+// before cancellation and still launch a provider process — measured at up to
+// 945ms past app.draining, in 9 of 14 randomized SIGTERM trials. BeginDrain
+// takes the lock the spawn holds across agents.Run, so the outcome is decided
+// rather than raced.
+func TestHumanReviewSpawn_BeginDrainRefusesEvenWithLiveContext(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("drain race", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.prepareTaskWorktree = func(task.Task) (string, error) { return t.TempDir(), nil }
+	started := 0
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		started++
+		return &agent.Agent{ID: "late", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	h.BeginDrain()
+
+	// Context deliberately still live, as it is for a goroutine that got past
+	// the ctx check just before schedulerCancel ran.
+	if h.maybeSpawn(context.Background(), tk.ID, string(task.StatusInReview)) {
+		t.Fatal("spawned after BeginDrain")
+	}
+	if started != 0 {
+		t.Errorf("started %d provider agents after drain, want 0", started)
+	}
+}
+
+// A permanently-ineligible park was re-swept on every tick, writing a skip
+// audit event each time — 21 no_project events in 200 seconds at a ten-second
+// interval. The sweep refuses those locally instead.
+func TestRespawnDroppedReviews_SkipsIneligibleWithoutAuditing(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	auditDir := t.TempDir()
+	auditLog, err := audit.NewLogger(auditDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = auditLog.Close() })
+	h.audit = auditLog
+
+	for _, seed := range []struct {
+		title  string
+		fields map[string]any
+	}{
+		{"no project", map[string]any{"status": string(task.StatusHumanRequired)}},
+		{"umbrella", map[string]any{
+			"status": string(task.StatusHumanRequired), "project_id": "Automaat/sybra",
+			"task_type": string(task.TaskTypeUmbrella),
+		}},
+	} {
+		tk, err := tasks.Create(seed.title, "", task.AgentModeHeadless)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tasks.UpdateMap(tk.ID, seed.fields); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	h.agents = &fakeHumanReviewAgentRunner{run: func(agent.RunConfig) (*agent.Agent, error) {
+		t.Error("sweep spawned a review for an ineligible task")
+		return nil, errors.New("unreachable")
+	}}
+
+	for range 5 {
+		h.RespawnDroppedReviews(context.Background())
+	}
+
+	events, err := audit.Read(auditDir, audit.Query{
+		Since: time.Now().Add(-time.Minute),
+		Until: time.Now().Add(time.Minute),
+		Type:  audit.EventHumanReviewSkipped,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Errorf("sweep wrote %d skip events for permanently-ineligible tasks, want 0", len(events))
+	}
+}
+
+// The handler gate is only reached if App.BeginDrain calls it, and it must be
+// called before schedulerCancel — after it, the spawn goroutine may already
+// have won the race the gate exists to decide.
+func TestAppBeginDrain_RefusesHumanReviewSpawns(t *testing.T) {
+	h, _, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	a := &App{cfg: h.cfg, logger: slog.New(slog.DiscardHandler), humanReview: h}
+	a.lifecycle.Store(uint32(lifecycleStateRunning))
+
+	if !a.BeginDrain() {
+		t.Fatal("BeginDrain did not transition out of running")
+	}
+
+	h.drainMu.Lock()
+	draining := h.draining
+	h.drainMu.Unlock()
+	if !draining {
+		t.Error("App.BeginDrain did not close the human-review spawn gate")
+	}
 }

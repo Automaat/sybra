@@ -132,10 +132,23 @@ type humanReviewHandler struct {
 	// every workflow dispatcher that can mutate the same task worktree.
 	claimTaskDispatch func(string) (release func(), ok bool)
 
+	// drainMu is held across agents.Run and taken by BeginDrain, so a spawn
+	// either wins it before drain and completes, or loses it and is refused.
+	// A ctx check alone cannot do that: a goroutine can pass it microseconds
+	// before cancellation and still launch a provider process afterwards —
+	// measured at up to 945ms past app.draining.
+	drainMu  sync.Mutex
+	draining bool
+
 	mu       sync.Mutex
-	inflight map[string]string      // taskID -> agent ID
-	recent   []time.Time            // spawn timestamps (rolling window), global cap
-	perTask  map[string][]time.Time // taskID -> spawn timestamps (rolling window), per-task cap
+	inflight map[string]string // taskID -> agent ID
+	// sweepDeclined holds tasks the live path refused for a reason the sweep
+	// cannot re-derive. In-memory by design: it mirrors an in-process decision,
+	// and after a restart it allows at most one review, which the
+	// verdict-rendered gate then closes for good.
+	sweepDeclined map[string]bool
+	recent        []time.Time            // spawn timestamps (rolling window), global cap
+	perTask       map[string][]time.Time // taskID -> spawn timestamps (rolling window), per-task cap
 }
 
 var humanReviewPRNumberRE = regexp.MustCompile(`(?i)\bpr\s*#(\d+)\b`)
@@ -309,6 +322,7 @@ func (h *humanReviewHandler) maybeSpawnWithOptions(ctx context.Context, taskID, 
 	}
 	// Don't loop when an unblock flow flips blocked → todo → human-required.
 	if prevStatus == string(task.StatusBlocked) {
+		h.declineSweep(taskID)
 		h.skip(taskID, "prev_status_blocked")
 		return false
 	}
@@ -335,6 +349,7 @@ func (h *humanReviewHandler) maybeSpawnWithOptions(ctx context.Context, taskID, 
 	// against an already-recovered task would race the recovery flow and let
 	// the agent's unblock actions rewrite the task to the wrong state.
 	if t.Status != task.StatusHumanRequired {
+		h.allowSweep(taskID)
 		h.skip(taskID, "stale_status_"+string(t.Status))
 		return false
 	}
@@ -399,15 +414,18 @@ func (h *humanReviewHandler) spawnReview(ctx context.Context, t task.Task, prevS
 	if !h.preRunEligible(taskID, now, opts.IgnoreRenderedVerdict) {
 		return false
 	}
-	// Last gate before a process is spawned. A sweep or claim retry armed
-	// before BeginDrain otherwise starts provider agents, and writes their runs
-	// and verdicts, after the app has begun shutting down.
-	if err := ctx.Err(); err != nil {
+	// Last gate before a process is spawned, held across the spawn itself. Run
+	// only starts the process, so BeginDrain waits at most for that, never for
+	// the worktree preparation above it.
+	h.drainMu.Lock()
+	if h.draining || ctx.Err() != nil {
+		h.drainMu.Unlock()
 		h.releaseReservedSlot(taskID, now)
 		h.skip(taskID, "shutting_down")
 		return false
 	}
 	ag, err := h.agents.Run(cfg)
+	h.drainMu.Unlock()
 	if err != nil {
 		h.clearInflight(taskID)
 		h.logger.Error("human-review.spawn", "task_id", taskID, "provider", cfg.Provider, "model", cfg.Model, "err", err)
@@ -1012,7 +1030,16 @@ func (h *humanReviewHandler) RespawnDroppedReviews(ctx context.Context) {
 	}
 	for i := range tasks {
 		t := tasks[i]
-		if t.Status != task.StatusHumanRequired || hasHumanReviewRun(t) || len(t.AgentRuns) == 0 {
+		if t.Status != task.StatusHumanRequired || hasHumanReviewRun(t) {
+			continue
+		}
+		// Cheap local refusals first. Routing these through maybeSpawn instead
+		// writes a skip audit event per task per tick, forever — 21 no_project
+		// events in 200 seconds at a ten-second interval, measured.
+		if t.TaskType == task.TaskTypeUmbrella || strings.TrimSpace(t.ProjectID) == "" {
+			continue
+		}
+		if h.sweepRefused(t.ID) {
 			continue
 		}
 		if h.now().Sub(t.UpdatedAt) > humanReviewStartupSweepAge {
@@ -1697,6 +1724,45 @@ func (h *humanReviewHandler) markVerdictRendered(taskID, agentID string) {
 	}
 }
 
+// BeginDrain refuses every subsequent spawn. Called from App.BeginDrain before
+// the scheduler context is cancelled, so an armed sweep or claim retry cannot
+// start a provider process while the app is shutting down.
+func (h *humanReviewHandler) BeginDrain() {
+	if h == nil {
+		return
+	}
+	h.drainMu.Lock()
+	h.draining = true
+	h.drainMu.Unlock()
+}
+
+// declineSweep records that the live path refused this park for a reason the
+// sweep cannot see. maybeSpawn's first guard drops a transition out of blocked,
+// and a sweep sees only the resulting status; prior agent activity was a poor
+// proxy for it, since any task that ever ran an agent has some.
+func (h *humanReviewHandler) declineSweep(taskID string) {
+	h.mu.Lock()
+	if h.sweepDeclined == nil {
+		h.sweepDeclined = make(map[string]bool)
+	}
+	h.sweepDeclined[taskID] = true
+	h.mu.Unlock()
+}
+
+func (h *humanReviewHandler) sweepRefused(taskID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.sweepDeclined[taskID]
+}
+
+// allowSweep ends the refusal: the task left human-required, so a future park
+// is a new episode the sweep may act on.
+func (h *humanReviewHandler) allowSweep(taskID string) {
+	h.mu.Lock()
+	delete(h.sweepDeclined, taskID)
+	h.mu.Unlock()
+}
+
 func (h *humanReviewHandler) skip(taskID, reason string) {
 	h.logger.Info("human-review.skip", "task_id", taskID, "reason", reason)
 	h.logAudit(audit.EventHumanReviewSkipped, taskID, "", map[string]any{"reason": reason})
@@ -1825,6 +1891,7 @@ func (h *humanReviewHandler) preRunEligible(taskID string, reservedAt time.Time,
 	}
 	if current.Status != task.StatusHumanRequired {
 		h.releaseReservedSlot(taskID, reservedAt)
+		h.allowSweep(taskID)
 		h.skip(taskID, "status_"+string(current.Status))
 		return false
 	}

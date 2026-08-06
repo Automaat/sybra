@@ -75,6 +75,10 @@ func (a *App) BeginDrain() bool {
 			if a.workflowEngine != nil {
 				a.workflowEngine.SetAutoDispatch(false)
 			}
+			// Before schedulerCancel below: this takes the lock a spawn holds
+			// across agents.Run, so an armed sweep or claim retry is refused
+			// rather than racing the cancellation.
+			a.humanReview.BeginDrain()
 			if a.schedulerCancel != nil {
 				a.schedulerCancel()
 			}
