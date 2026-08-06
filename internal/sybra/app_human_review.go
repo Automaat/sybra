@@ -946,9 +946,14 @@ func (h *humanReviewHandler) recoverStrandedUnblockedTasks() {
 // that window got a review at all. A sweep for stale work must never delay the
 // current work.
 //
-// Every eligibility rule stays inside maybeSpawn — umbrella, project, status,
-// and the verdict-rendered idempotency gate — so a park that was reviewed, or
-// was never eligible, is skipped there rather than re-decided here.
+// Eligibility mostly stays inside maybeSpawn — umbrella, project, status, and
+// the verdict-rendered idempotency gate — but one rule cannot: maybeSpawn's
+// first guard drops a park whose previous status was blocked, and a sweep
+// arriving after a restart has no way to know what the previous status was.
+// Requiring prior agent activity stands in for it. A dispatch is only wanted
+// where an agent run ended with the task parked; an unblock flow flipping
+// blocked to todo to human-required runs no agent, so it stays declined
+// instead of being resurrected by the next restart.
 func (h *humanReviewHandler) RespawnDroppedReviews(ctx context.Context) {
 	if h == nil || h.tasks == nil {
 		return
@@ -963,7 +968,7 @@ func (h *humanReviewHandler) RespawnDroppedReviews(ctx context.Context) {
 	}
 	for i := range tasks {
 		t := tasks[i]
-		if t.Status != task.StatusHumanRequired || hasHumanReviewRun(t) {
+		if t.Status != task.StatusHumanRequired || hasHumanReviewRun(t) || len(t.AgentRuns) == 0 {
 			continue
 		}
 		if h.now().Sub(t.UpdatedAt) > humanReviewStartupSweepAge {

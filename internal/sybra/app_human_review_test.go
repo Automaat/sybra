@@ -4028,11 +4028,16 @@ func TestRespawnDroppedReviews(t *testing.T) {
 		name        string
 		parkedAgo   time.Duration
 		existingRun bool
+		noAgentRuns bool
 		wantSpawn   bool
 	}{
 		{name: "recent park with no review respawns", parkedAgo: time.Minute, wantSpawn: true},
 		{name: "park already reviewed is left alone", parkedAgo: time.Minute, existingRun: true},
 		{name: "park older than the sweep window is left alone", parkedAgo: 3 * time.Hour},
+		// maybeSpawn's prev_status_blocked guard cannot fire for a sweep, which
+		// does not know the transition. A park with no agent activity is the
+		// unblock flow, and it must stay declined across a restart.
+		{name: "park with no agent activity is left alone", parkedAgo: time.Minute, noAgentRuns: true},
 	}
 
 	for _, tc := range cases {
@@ -4054,6 +4059,14 @@ func TestRespawnDroppedReviews(t *testing.T) {
 			if tc.existingRun {
 				if err := tasks.AddRun(tk.ID, task.AgentRun{
 					AgentID: "prior", Role: string(agent.RoleHumanReview),
+					State: string(agent.StateStopped),
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !tc.noAgentRuns {
+				if err := tasks.AddRun(tk.ID, task.AgentRun{
+					AgentID: "impl", Role: string(agent.RoleImplementation),
 					State: string(agent.StateStopped),
 				}); err != nil {
 					t.Fatal(err)
@@ -4090,21 +4103,21 @@ func TestRespawnDroppedReviews(t *testing.T) {
 			}
 			// A spawn's last store write, so its goroutine is done before the
 			// harness removes the store's temp dir underneath it.
-			waitForAgentRun(t, tasks, tk.ID)
+			waitForHumanReviewRun(t, tasks, tk.ID)
 		})
 	}
 }
 
-func waitForAgentRun(t *testing.T, tasks *task.Manager, id string) {
+func waitForHumanReviewRun(t *testing.T, tasks *task.Manager, id string) {
 	t.Helper()
 	for range 200 {
 		got, err := tasks.Get(id)
-		if err == nil && len(got.AgentRuns) > 0 {
+		if err == nil && hasHumanReviewRun(got) {
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	t.Fatal("spawned agent never recorded a run")
+	t.Fatal("spawned review agent never recorded a run")
 }
 
 // Measured live: running the sweep inline serialized one full PrepareForTask
