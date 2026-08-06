@@ -403,10 +403,12 @@ func (w *Watchdog) inspectHeadless(ctx context.Context, s *state, now time.Time,
 	// crossed an app restart still classifies correctly: fromRecord bumps
 	// LastEventAt to reattach wall-clock, so an empty-log survivor would no
 	// longer satisfy the timestamp equality even though it has produced nothing.
-	// Route it through the provider-health signal path instead, exactly like
-	// stopForRateLimit: this marks the provider unhealthy for its cooldown
-	// window so the reschedule can fail over to a working peer, rather than
-	// retrying the identical broken provider.
+	// Route it through handleZeroOutputStall instead, which tags the run so the
+	// completion handler re-dispatches it at once, and leaves provider health
+	// alone: a child that said nothing is no evidence about the account's
+	// quota. The re-dispatch still routes around the provider that went silent
+	// (workflow.routeAroundSilentHang), so a wedged CLI does not get handed the
+	// same run again.
 	if trigger == "stall" && ag.OutputLen() == 0 {
 		w.handleZeroOutputStall(ag, stall, total, t.Status)
 		return

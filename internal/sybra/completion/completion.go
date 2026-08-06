@@ -552,8 +552,9 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 // Returns false if the caller should return immediately. Signal kills and
 // Sybra-initiated stops stall for recovery; rate limits, silent hangs,
 // malformed tool calls, and rejected-tool/user interruptions immediately
-// re-drive the same step so provider failover can choose a healthy peer. Auth failures fall through
-// (need human login) and take the normal failed path.
+// re-drive the same step, where a rate limit fails over on the health gate and
+// a silent hang is routed around its provider by the engine. Auth failures
+// fall through (need human login) and take the normal failed path.
 //
 // Load-bearing: PR #722's SIGINT-first path lets default Go binaries (e.g.
 // fake-claude in tests) exit with code 2 (NOT WaitStatus.Signaled), so

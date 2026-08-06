@@ -14,8 +14,9 @@ import (
 // recordingWorkflow captures the workflow.CompletionWorkflow calls OnComplete
 // makes, so a test can assert on advancement vs. suppression.
 type recordingWorkflow struct {
-	completed []workflow.AgentCompletion
-	cleared   []string
+	completed   []workflow.AgentCompletion
+	cleared     []string
+	rateLimited []string
 }
 
 func (r *recordingWorkflow) HandleAgentComplete(_ string, c workflow.AgentCompletion) {
@@ -28,7 +29,9 @@ func (r *recordingWorkflow) ClearAgentStep(_, agentID string) {
 
 func (r *recordingWorkflow) RescheduleInterruptedAgent(_, _ string) {}
 
-func (r *recordingWorkflow) RescheduleRateLimitedAgent(_, _ string) {}
+func (r *recordingWorkflow) RescheduleRateLimitedAgent(_, agentID string) {
+	r.rateLimited = append(r.rateLimited, agentID)
+}
 
 func (r *recordingWorkflow) RescheduleCheckpointedAgent(_, _ string) {}
 

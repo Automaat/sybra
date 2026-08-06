@@ -4714,6 +4714,100 @@ func TestResumeStalled_SilentHangReasonRecovers(t *testing.T) {
 	}
 }
 
+// TestRescheduleRateLimitedAgent_SilentHangRoutesAroundTheProvider pins the
+// failover the health-gate park used to buy for the hung run itself. Parking
+// the provider is what pushed the retry onto a peer; now that a silent child
+// leaves provider health alone (so other tasks keep dispatching), this run has
+// to route around the provider that produced nothing, or it just hands the
+// same wedged CLI another 15 minutes.
+func TestRescheduleRateLimitedAgent_SilentHangRoutesAroundTheProvider(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.defaultProvider = "claude"
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: watchdogreason.SilentHang(watchdogreason.ZeroOutputBeforeStartup),
+		AgentMode:    "headless",
+		AgentRuns: []AgentRunInfo{
+			{AgentID: "hung-agent", Role: "implementation", Provider: "claude"},
+		},
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+	setWorkflowAgentRoute(t, tasks, "t1", "hung-agent", "implement")
+
+	engine.RescheduleRateLimitedAgent("t1", "hung-agent")
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("replacement agent starts = %d, want 1", got)
+	}
+	if p := agents.LastCall().Provider; p == "claude" || p == "" {
+		t.Fatalf("re-dispatched provider = %q, want a peer of the provider that went silent", p)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if v := got.Workflow.Variables[watchdogSilentHangAvoidKey("implement")]; v != "" {
+		t.Fatalf("avoid var = %q, want it consumed by the dispatch it steered", v)
+	}
+}
+
+// TestRescheduleRateLimitedAgent_RealRateLimitKeepsItsProvider guards the other
+// side: a genuine rate limit is already handled by the health gate's failover,
+// so it must not pick up the silent-hang reroute and start crossing providers
+// on its own.
+func TestRescheduleRateLimitedAgent_RealRateLimitKeepsItsProvider(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.defaultProvider = "claude"
+	engine := NewEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: watchdogreason.RateLimit("org-level quota exhausted"),
+		AgentMode:    "headless",
+		AgentRuns: []AgentRunInfo{
+			{AgentID: "limited-agent", Role: "implementation", Provider: "claude"},
+		},
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+	setWorkflowAgentRoute(t, tasks, "t1", "limited-agent", "implement")
+
+	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if v := got.Workflow.Variables[watchdogSilentHangAvoidKey("implement")]; v != "" {
+		t.Fatalf("avoid var = %q, want empty for a real rate limit", v)
+	}
+}
+
 func TestIsWatchdogRateLimitReason_CoversBothParkedForms(t *testing.T) {
 	t.Parallel()
 

@@ -316,6 +316,46 @@ func TestBuildRunPatchMarksResumeZeroOutputStall(t *testing.T) {
 	})
 }
 
+// TestOnComplete_SilentHangReschedulesInsteadOfClearing pins the routing the
+// whole reschedule contract rests on. The disposition alone proves nothing:
+// a silent hang that reaches the default branch still reads as "stalled", it
+// just quietly loses its same-tick re-dispatch and waits for a later sweep.
+func TestOnComplete_SilentHangReschedulesInsteadOfClearing(t *testing.T) {
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	wm := worktree.New(worktree.Config{WorktreesDir: t.TempDir(), Tasks: tasks, Logger: logger})
+	wf := &recordingWorkflow{}
+
+	created, err := tasks.CreateWithStatus("hung task", "body", "headless", task.StatusInProgress, task.Update{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{AgentID: "ag-1", Role: "implementation", Mode: "headless"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ag := &agent.Agent{ID: "ag-1", TaskID: created.ID, Mode: "headless", Provider: "claude"}
+	ag.SetError(agent.ErrorKindSilentHang, watchdogreason.ZeroOutputBeforeStartup)
+	ag.MarkStopped()
+
+	h := New(Config{Logger: logger, Tasks: tasks, Worktrees: wm, WorkflowEngine: wf})
+	h.OnComplete(ag)
+
+	if len(wf.rateLimited) != 1 || wf.rateLimited[0] != "ag-1" {
+		t.Fatalf("RescheduleRateLimitedAgent calls = %v, want [ag-1] (a silent hang must re-drive its step now)", wf.rateLimited)
+	}
+	if len(wf.completed) != 0 {
+		t.Fatalf("HandleAgentComplete called %d times, want 0 (a silent run carries no verdict)", len(wf.completed))
+	}
+	if len(wf.cleared) != 0 {
+		t.Fatalf("ClearAgentStep called %d times, want 0 (clearing drops the immediate re-dispatch)", len(wf.cleared))
+	}
+}
+
 // TestBuildRunPatchDowngradesConformanceWhenReceiptMissing covers #2009: a
 // process can exit cleanly and produce a plausible result without the
 // mandatory workflow skill's transcript ever proving it was followed. The

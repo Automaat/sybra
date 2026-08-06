@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -658,6 +659,41 @@ func watchdogRateLimitRetryKey(stepID string) string {
 
 func watchdogZeroOutputFreshRetryKey(stepID string) string {
 	return watchdogZeroOutputFreshRetryVarPrefix + stepID
+}
+
+func watchdogSilentHangAvoidKey(stepID string) string {
+	return watchdogSilentHangAvoidVarPrefix + stepID
+}
+
+// markSilentHangProvider records the provider of a run the watchdog killed for
+// producing no output, so the next dispatch of the same step routes around it.
+// Called before the retry gate clears the status reason, which is the only
+// evidence at this point that the stop was a silent hang rather than a real
+// rate limit.
+func (e *Engine) markSilentHangProvider(t *TaskInfo, step *Step, agentID string) {
+	if t == nil || t.Workflow == nil || step == nil || !watchdogreason.IsSilentHang(t.StatusReason) {
+		return
+	}
+	prov := runProviderByAgentID(t.AgentRuns, agentID)
+	if prov == "" {
+		return
+	}
+	t.Workflow.SetVar(watchdogSilentHangAvoidKey(step.ID), prov)
+	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+		e.logger.Error("workflow.silent-hang.avoid-persist", "task_id", t.ID, "step", step.ID, "err", err)
+	}
+}
+
+func runProviderByAgentID(runs []AgentRunInfo, agentID string) string {
+	if agentID == "" {
+		return ""
+	}
+	for i := range slices.Backward(runs) {
+		if runs[i].AgentID == agentID {
+			return normalizeExplicitWorkflowProvider(runs[i].Provider)
+		}
+	}
+	return ""
 }
 
 func worktreeRepairRetryKey(stepID string) string {
