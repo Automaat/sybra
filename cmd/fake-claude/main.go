@@ -76,6 +76,10 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/Automaat/sybra/internal/gitexec"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // scenarioFileLockSuffix is appended to FAKE_CLAUDE_SCENARIO_FILE to derive a
@@ -139,40 +143,14 @@ func main() {
 }
 
 func writeCaptureLog(logFile string, data []byte) error {
-	dir := filepath.Dir(logFile)
-	tmp, err := os.CreateTemp(dir, ".claude-args-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpName)
-		}
-	}()
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, logFile); err != nil {
-		return err
-	}
-	cleanup = false
-	return nil
+	return fsutil.AtomicWriteMode(logFile, data, 0o644)
 }
 
 var scenarioHandlers = map[string]func(string){
 	"success":                          func(string) { runSuccess() },
 	"no_receipt":                       func(string) { runSuccessNoReceipt() },
 	"high_cost":                        func(string) { runHighCost() },
+	"high_cost_mid_stream":             func(string) { runHighCostMidStream() },
 	"write_sidecar_success":            runWriteSidecarSuccess,
 	"write_sidecar_success_no_receipt": runWriteSidecarSuccessNoReceipt,
 	"revise_plan_sidecars":             runRevisePlanSidecars,
@@ -333,10 +311,8 @@ func runBestOfNJudge() {
 }
 
 func runGitIn(dir string, args ...string) {
-	cmd := exec.CommandContext(context.Background(), "git", args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		emitResult("best_of_n_attempt: git " + strings.Join(args, " ") + " failed: " + err.Error() + ": " + string(out))
+	if _, err := gitexec.CombinedOutput(context.Background(), gitexec.Options{Dir: dir}, args...); err != nil {
+		emitResult("best_of_n_attempt: " + err.Error())
 		os.Exit(1)
 	}
 }
@@ -487,13 +463,7 @@ git push origin "HEAD:refs/heads/$branch" >/dev/null 2>&1
 }
 
 func gitOutput(dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(context.Background(), "git", args...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-	}
-	return strings.TrimSpace(string(out)), nil
+	return gitexec.Output(context.Background(), gitexec.Options{Dir: dir}, args...)
 }
 
 func runEvaluate(taskID string) {
@@ -887,6 +857,28 @@ func runHighCost() {
 	event := resultEvent("over budget")
 	event["total_cost_usd"] = 11.0
 	emit(event)
+}
+
+// runHighCostMidStream emits an assistant event whose own usage block alone
+// prices well over any reasonable MaxCostUSD, with no total_cost_usd anywhere
+// — proving the mid-stream live-cost ceiling (not the terminal-result cost
+// check) is what stops the run. A trailing result line must never be reached
+// if the pre-emption works.
+func runHighCostMidStream() {
+	emitSystem()
+	emit(map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{"type": "text", "text": "working on it"},
+			},
+			"usage": map[string]any{
+				"input_tokens":  5000000,
+				"output_tokens": 0,
+			},
+		},
+	})
+	emitResult("should never complete")
 }
 
 func runMalformedToolCallOnce() {

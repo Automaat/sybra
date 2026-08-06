@@ -652,6 +652,45 @@ func isWorkflowOwnedBlock(t *task.Task) bool {
 	return t.Blocker.Actor == blocker.ActorWorkflow
 }
 
+// clearGateTagOnHandedOffChildren strips the gating tag from a child that has
+// already run an implementation agent.
+//
+// Once implementation starts, the umbrella gate has handed the child to its
+// own workflow: Awaiting excludes it via hasStartedImplementation, so the gate
+// will never release it again. But the tag it left behind still makes
+// skipTaskCreatedWorkflow refuse the child, and ResumeStalled skips a terminal
+// workflow — so nothing owns the task and it sits in todo forever. Measured on
+// the server: six children stranded this way since 2026-08-01, none of them
+// waiting on an unmet dependency.
+//
+// Clearing the tag is the narrow fix: it hands the child back to the normal
+// dispatcher at exactly the point the gate stopped owning it, and is a no-op
+// for children the gate is still legitimately holding or the workflow parked.
+func (a *App) clearGateTagOnHandedOffChildren(tasks []task.Task) {
+	for i := range tasks {
+		t := &tasks[i]
+		if t.UmbrellaIssue == "" || !slices.Contains(t.Tags, umbrellaGatedTag) {
+			continue
+		}
+		// todo only. A child parked `blocked` with implementation history was
+		// put there deliberately by the workflow (watchdog exhaustion,
+		// sybra#2538) and its tag is what marks it as not the gate's to
+		// release — clearing it there would re-release work that was stopped
+		// on purpose. A gated child sitting in todo has no such owner.
+		if t.Status != task.StatusTodo || !hasStartedImplementation(t) {
+			continue
+		}
+		newTags := slices.DeleteFunc(slices.Clone(t.Tags), func(s string) bool {
+			return s == umbrellaGatedTag
+		})
+		if _, err := a.tasks.Update(t.ID, task.Update{Tags: &newTags}); err != nil {
+			a.logger.Warn("umbrella.gate.stale-tag-clear", "task_id", t.ID, "err", err)
+			continue
+		}
+		a.logger.Info("umbrella.gate.stale-tag-cleared", "task_id", t.ID, "umbrella", t.UmbrellaIssue)
+	}
+}
+
 // isRunningChild reports whether a child status occupies a parallelism slot —
 // i.e. it has been released and is somewhere in the pipeline but not finished.
 func isRunningChild(s task.Status) bool {
@@ -740,6 +779,8 @@ func (a *App) releaseCapped(ctx context.Context, ready []string, byID map[string
 // long rather than up to 30s per stuck release.
 const pushReleaseTimeout = 5 * time.Second
 
+const blockedTrackerChildrenCompleteReason = "children complete, tracker blocked — needs release"
+
 // pushReleaseToHomeNode forwards a just-released child's new state to its
 // home follower when the task isn't homed locally. The local a.tasks.Update
 // above only ever touches this leader's own canonical copy; Mirror only pulls
@@ -810,9 +851,6 @@ func (a *App) rollupTrackers(states map[string]*umbrellaState, cyclic map[string
 		if st.tracker == nil {
 			continue
 		}
-		if st.tracker.Status == task.StatusBlocked {
-			continue
-		}
 		// A tracker is "settled" once it has outlived the creation window, so a
 		// childless tally that just reflects children still being materialized
 		// is not mistaken for a completed umbrella. A zero CreatedAt (e.g. a
@@ -820,6 +858,24 @@ func (a *App) rollupTrackers(states map[string]*umbrellaState, cyclic map[string
 		// infinitely old, so it never bypasses the guard.
 		settled := !st.tracker.CreatedAt.IsZero() &&
 			time.Since(st.tracker.CreatedAt) > umbrellaSettleDelay
+		if st.tracker.Status == task.StatusBlocked {
+			// A blocked tracker can be owned by an operator or another workflow
+			// path. Preserve that ownership while work remains, but once every
+			// materialized child is done stamp an explicit, actionable reason
+			// instead of leaving an invisible permanent dead end. Do not close
+			// the umbrella or override the blocked status: release remains an
+			// operator decision.
+			desired, _, doClose := trackerRollup(st, cyclic[key], settled)
+			if desired == task.StatusDone && doClose &&
+				st.tracker.StatusReason != blockedTrackerChildrenCompleteReason {
+				if _, err := a.tasks.Update(st.tracker.ID, task.Update{
+					StatusReason: task.Ptr(blockedTrackerChildrenCompleteReason),
+				}); err != nil {
+					a.logger.Error("umbrella.tracker.blocked_complete.update.failed", "task_id", st.tracker.ID, "err", err)
+				}
+			}
+			continue
+		}
 		desired, reason, doClose := trackerRollup(st, cyclic[key], settled)
 		if body := umbrellaTrackerBody(st.tracker.Body, st.children); body != st.tracker.Body {
 			if _, err := a.tasks.Update(st.tracker.ID, task.Update{

@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 const probeTimeout = 10 * time.Second
@@ -31,17 +33,17 @@ var codexVersionRe = regexp.MustCompile(`\d+\.\d+(?:\.\d+)*`)
 func ProbeClaude(ctx context.Context) (Status, error) {
 	cctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, "claude", "auth", "status", "--json")
+	cmd := exec.CommandContext(cctx, providerid.Claude, "auth", "status", "--json")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	if err != nil {
 		if isLoggedOutStderr(stderr.String()) {
-			return Status{Provider: "claude", Healthy: false, Reason: "logged_out", LastCheck: time.Now()}, nil
+			return Status{Provider: providerid.Claude, Healthy: false, Reason: "logged_out", LastCheck: time.Now()}, nil
 		}
 		if _, ok := errors.AsType[*exec.ExitError](err); !ok {
-			return Status{Provider: "claude", Healthy: false, Reason: "probe_error", Detail: err.Error(), LastCheck: time.Now()}, err
+			return Status{Provider: providerid.Claude, Healthy: false, Reason: "probe_error", Detail: err.Error(), LastCheck: time.Now()}, err
 		}
 		// Fall through: claude may have printed JSON on stdout even with non-zero exit.
 	}
@@ -52,7 +54,7 @@ func ProbeClaude(ctx context.Context) (Status, error) {
 func ProbeCodex(ctx context.Context) (Status, error) {
 	cctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, "codex", "login", "status")
+	cmd := exec.CommandContext(cctx, providerid.Codex, "login", "status")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -63,10 +65,10 @@ func ProbeCodex(ctx context.Context) (Status, error) {
 	}
 	if err != nil {
 		if isLoggedOutStderr(stderr.String()) || isLoggedOutStderr(stdout.String()) {
-			return Status{Provider: "codex", Healthy: false, Reason: "logged_out", LastCheck: time.Now()}, nil
+			return Status{Provider: providerid.Codex, Healthy: false, Reason: "logged_out", LastCheck: time.Now()}, nil
 		}
 		if _, ok := errors.AsType[*exec.ExitError](err); !ok {
-			return Status{Provider: "codex", Healthy: false, Reason: "probe_error", Detail: err.Error(), LastCheck: time.Now()}, err
+			return Status{Provider: providerid.Codex, Healthy: false, Reason: "probe_error", Detail: err.Error(), LastCheck: time.Now()}, err
 		}
 	}
 	st, perr := parseCodexLoginStatus(raw)
@@ -74,12 +76,9 @@ func ProbeCodex(ctx context.Context) (Status, error) {
 		// Reuse cctx so the login and version probes share one probeTimeout
 		// budget rather than allowing ProbeCodex to run for up to 2× of it.
 		if v := probeCodexVersion(cctx); v != "" && !codexVersionAtLeast(v, minCodexVersion) {
-			warning := fmt.Sprintf("codex %s is older than %s; the gpt-5.6 models require %s+ — upgrade codex or pin an older model", v, minCodexVersion, minCodexVersion)
-			if st.Detail != "" {
-				st.Detail += " — " + warning
-			} else {
-				st.Detail = warning
-			}
+			st.Healthy = false
+			st.Reason = "cli_too_old"
+			st.Detail = fmt.Sprintf("codex %s is older than %s; the gpt-5.6 models require %s+ — upgrade codex or disable the provider", v, minCodexVersion, minCodexVersion)
 		}
 	}
 	return st, perr
@@ -102,17 +101,17 @@ var copilotTokenEnvVars = []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_T
 func ProbeCopilot(ctx context.Context) (Status, error) {
 	cctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, "copilot", "--version")
+	cmd := exec.CommandContext(cctx, providerid.Copilot, "--version")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		if isLoggedOutStderr(stderr.String()) {
-			return Status{Provider: "copilot", Healthy: false, Reason: "logged_out", LastCheck: time.Now()}, nil
+			return Status{Provider: providerid.Copilot, Healthy: false, Reason: "logged_out", LastCheck: time.Now()}, nil
 		}
-		return Status{Provider: "copilot", Healthy: false, Reason: "probe_error", Detail: err.Error(), LastCheck: time.Now()}, err
+		return Status{Provider: providerid.Copilot, Healthy: false, Reason: "probe_error", Detail: err.Error(), LastCheck: time.Now()}, err
 	}
-	st := Status{Provider: "copilot", Healthy: true, Reason: "ok", LastCheck: time.Now()}
+	st := Status{Provider: providerid.Copilot, Healthy: true, Reason: "ok", LastCheck: time.Now()}
 	if env := copilotTokenEnvVar(); env != "" {
 		st.Detail = "token: " + env
 	} else {
@@ -128,17 +127,17 @@ func ProbeCopilot(ctx context.Context) (Status, error) {
 func ProbeOpenCode(ctx context.Context) (Status, error) {
 	cctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, "opencode", "--version")
+	cmd := exec.CommandContext(cctx, providerid.OpenCode, "--version")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		if isLoggedOutStderr(stderr.String()) {
-			return Status{Provider: "opencode", Healthy: false, Reason: "logged_out", LastCheck: time.Now()}, nil
+			return Status{Provider: providerid.OpenCode, Healthy: false, Reason: "logged_out", LastCheck: time.Now()}, nil
 		}
-		return Status{Provider: "opencode", Healthy: false, Reason: "probe_error", Detail: err.Error(), LastCheck: time.Now()}, err
+		return Status{Provider: providerid.OpenCode, Healthy: false, Reason: "probe_error", Detail: err.Error(), LastCheck: time.Now()}, err
 	}
-	st := Status{Provider: "opencode", Healthy: true, Reason: "ok", LastCheck: time.Now()}
+	st := Status{Provider: providerid.OpenCode, Healthy: true, Reason: "ok", LastCheck: time.Now()}
 	if v := strings.TrimSpace(stdout.String()); v != "" {
 		st.Detail = v
 	}
@@ -161,7 +160,7 @@ func copilotTokenEnvVar() string {
 func probeCodexVersion(ctx context.Context) string {
 	cctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(cctx, "codex", "--version").Output()
+	out, err := exec.CommandContext(cctx, providerid.Codex, "--version").Output()
 	if err != nil {
 		return ""
 	}
@@ -228,7 +227,7 @@ type claudeAuthStatusJSON struct {
 }
 
 func parseClaudeAuthStatus(raw []byte) (Status, error) {
-	st := Status{Provider: "claude", LastCheck: time.Now()}
+	st := Status{Provider: providerid.Claude, LastCheck: time.Now()}
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
 		st.Reason = "probe_error"
@@ -254,7 +253,7 @@ func parseClaudeAuthStatus(raw []byte) (Status, error) {
 }
 
 func parseCodexLoginStatus(raw []byte) (Status, error) {
-	st := Status{Provider: "codex", LastCheck: time.Now()}
+	st := Status{Provider: providerid.Codex, LastCheck: time.Now()}
 	text := strings.ToLower(strings.TrimSpace(string(raw)))
 	if text == "" {
 		st.Reason = "probe_error"

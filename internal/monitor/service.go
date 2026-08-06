@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -77,17 +78,21 @@ type Deps struct {
 // Service runs the monitor loop. It is constructed once at app startup and
 // runs until its context is cancelled.
 type Service struct {
-	cfg                 config.MonitorConfig
-	tasks               taskAPI
-	audit               auditAPI
-	agents              agentLister
-	observerOnly        bool
-	dispatcher          Dispatcher
-	sink                IssueSink
-	emit                EmitFunc
-	logger              *slog.Logger
-	now                 func() time.Time
-	allowsProject       func(string) bool
+	cfg           config.MonitorConfig
+	tasks         taskAPI
+	audit         auditAPI
+	agents        agentLister
+	observerOnly  bool
+	dispatcher    Dispatcher
+	sink          IssueSink
+	emit          EmitFunc
+	logger        *slog.Logger
+	now           func() time.Time
+	allowsProject func(string) bool
+	// providerHealth reports every configured provider's state. Late-bound
+	// (SetProviderHealth); nil keeps the no-capacity rule silent rather than
+	// guessing that a fleet with no reported providers has no capacity.
+	providerHealth      func() []ProviderHealth
 	downgradeLLMForTask func(taskID string) bool
 	fetchPRState        func(repo string, number int) (github.PRState, error)
 	landClosedPR        func(context.Context, string, int, string) error
@@ -227,6 +232,7 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 		LiveAgents:    live,
 		Cfg:           s.cfg,
 		AllowsProject: s.allowsProject,
+		Providers:     s.snapshotProviders(),
 	})
 	report.Anomalies = SortAnomalies(report.Anomalies)
 	s.applyDowngradeLLM(report.Anomalies)
@@ -282,8 +288,9 @@ func (s *Service) closeMergedHumanRequiredPRs(ctx context.Context, tasks []task.
 			}
 		} else {
 			if _, err := s.tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
-				Source:   "monitor.close-merged-human-required-pr",
-				ToStatus: task.StatusDone,
+				Source:         "monitor.close-merged-human-required-pr",
+				ToStatus:       task.StatusDone,
+				ExpectedStatus: t.Status,
 				Extra: task.Update{
 					StatusReason: task.Ptr("monitor: linked PR already merged"),
 					Outcome:      task.Ptr("merged"),
@@ -355,6 +362,7 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 		LiveAgents:    live,
 		Cfg:           s.cfg,
 		AllowsProject: s.allowsProject,
+		Providers:     s.snapshotProviders(),
 	})
 	report.Anomalies = SortAnomalies(report.Anomalies)
 	return report, nil
@@ -372,6 +380,17 @@ func (s *Service) LastReport() (Report, bool) {
 // agent-driven filing path (which produces hard-to-scrub LLM output) into the
 // deterministic-body path where the issue sink applies redaction. No-op when
 // the closure is unset.
+// SetProviderHealth late-binds the provider-health snapshot the no-capacity
+// rule reads. Left unset the rule stays silent.
+func (s *Service) SetProviderHealth(fn func() []ProviderHealth) { s.providerHealth = fn }
+
+func (s *Service) snapshotProviders() []ProviderHealth {
+	if s == nil || s.providerHealth == nil {
+		return nil
+	}
+	return s.providerHealth()
+}
+
 func (s *Service) applyDowngradeLLM(anoms []Anomaly) {
 	if s.downgradeLLMForTask == nil {
 		return
@@ -409,6 +428,19 @@ func (s *Service) applyRemediations(ctx context.Context, anoms []Anomaly) remedi
 	return res
 }
 
+// isTransientCapacityRefusal reports whether a dispatch failure was a
+// self-healing capacity throttle rather than a refusal that needs a human.
+// UnhealthyError.RateLimited is the reliable signal — a rate limit is not
+// always tagged with Until, so a zero Until would otherwise read as "not a
+// rate limit".
+func isTransientCapacityRefusal(err error) bool {
+	var unhealthy *provider.UnhealthyError
+	if errors.As(err, &unhealthy) {
+		return unhealthy.RateLimited
+	}
+	return false
+}
+
 func (s *Service) dispatchLLMAnomalies(ctx context.Context, now time.Time, anoms []Anomaly) []string {
 	cooldown := time.Duration(s.cfg.IssueCooldownMinutes) * time.Minute
 	var out []string
@@ -429,6 +461,21 @@ func (s *Service) dispatchLLMAnomalies(ctx context.Context, now time.Time, anoms
 		}
 		agentID, err := s.dispatcher.Dispatch(ctx, a)
 		if err != nil {
+			// A dispatch refused for want of provider capacity never ran, so
+			// it must not consume the anomaly's cooldown. Charging the fleet's
+			// outage to the task is what leaves an anomaly unexamined for a
+			// full cooldown window after every rate limit.
+			//
+			// Only a transient throttle, not every unhealthy provider: a
+			// permanent refusal (logged out, disabled in config) does not
+			// self-heal, so releasing there would retry it every tick until a
+			// human intervenes.
+			if isTransientCapacityRefusal(err) {
+				s.state.releaseDispatch(a.Fingerprint)
+				s.logger.Warn("monitor.dispatch.no-capacity",
+					"kind", a.Kind, "fingerprint", a.Fingerprint, "err", err)
+				continue
+			}
 			s.logger.Warn("monitor.dispatch.failed", "kind", a.Kind, "fingerprint", a.Fingerprint, "err", err)
 			continue
 		}

@@ -71,9 +71,11 @@ is intentional and much cheaper than duplicating the global searches.
 ## Lifting the ceiling: GitHub App auth
 
 A personal token gets 5,000 REST req/hr. A GitHub App **installation token**
-gets 15,000 REST req/hr (and higher GraphQL headroom). Sybra mints a short-lived
-installation token, refreshes it every 30m, and injects it into the `gh`
-subprocess via `GH_TOKEN` — no call site changes.
+gets 15,000 REST req/hr (and higher GraphQL headroom). Sybra mints short-lived
+installation tokens, refreshes its cache every 30m, and gives GitHub
+subprocesses a fresh token at the point of use. Agent runs do not carry a raw
+`GH_TOKEN` for their whole lifetime; the agent `gh` shim mints one immediately
+before execing the real `gh` binary.
 
 ```yaml
 github:

@@ -53,6 +53,14 @@ import (
 )
 
 func main() {
+	// Unattended: an unset agent.sandbox_mode resolves to "report", which
+	// never wraps the spawn, so an omitted key is indistinguishable from a
+	// deliberately unsandboxed one. Set before any config load so the
+	// requirement covers startup, -check-config, and every later hot reload
+	// through the same validator — a boot-only check is defeated by the
+	// config watcher re-applying an edited file.
+	config.RequireExplicitSandboxMode(true)
+
 	checkConfig := flag.Bool("check-config", false, "load and validate the live config (SYBRA_HOME/config.yaml), then exit without starting the server: 0 if valid, 1 otherwise")
 	flag.Parse()
 	if *checkConfig {

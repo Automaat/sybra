@@ -212,13 +212,10 @@ func TestStore_SafePath_AbsoluteAndWeirdPaths(t *testing.T) {
 	}
 }
 
-// TestStore_ParseFile_WarnOnInvalidFieldsButReturn confirms the read path
-// stays non-disruptive: a hand-edited user workflow with an unknown field
-// still loads (so the app boots and the user can fix it in the GUI),
-// while the Save path remains strict (enforced by other tests). This
-// split is deliberate — failing Load on any invalid workflow would
-// cascade a single bad file into a crashed app startup.
-func TestStore_ParseFile_WarnOnInvalidFieldsButReturn(t *testing.T) {
+// TestStore_ParseFile_SkipsInvalidDefinitions confirms a bad hand-edited
+// workflow cannot enter the dispatchable definition set, while List stays
+// non-disruptive for the rest of the app and valid workflow files.
+func TestStore_ParseFile_SkipsInvalidDefinitions(t *testing.T) {
 	t.Parallel()
 	s, err := NewStore(t.TempDir())
 	if err != nil {
@@ -248,25 +245,51 @@ steps:
 		t.Fatalf("write hand-edited: %v", err)
 	}
 
-	// List must still return the def (warn-not-fail on load).
+	// List skips invalid definitions instead of letting them reach engine
+	// dispatch. A malformed file must not make the entire store unavailable.
 	defs, err := s.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	var found *Definition
-	for i := range defs {
-		if defs[i].ID == "hand-edited" {
-			found = &defs[i]
-			break
-		}
+	if len(defs) != 0 {
+		t.Fatalf("List returned %d definitions, want invalid workflow skipped", len(defs))
 	}
-	if found == nil {
-		t.Fatal("hand-edited workflow should still load despite invalid field")
-		return
+	if _, err := s.Get("hand-edited"); err == nil {
+		t.Fatal("Get should reject an invalid workflow definition")
+	}
+}
+
+func TestStore_ParseFile_RejectsParallelChildWorktree(t *testing.T) {
+	t.Parallel()
+	s := mustNewStore(t)
+	raw := `id: parallel-worktree
+name: Invalid Parallel Worktree
+trigger:
+  on: task.created
+steps:
+  - id: parallel
+    type: parallel
+    parallel:
+      - id: first
+        type: run_agent
+        config:
+          needs_worktree: true
+      - id: second
+        type: run_agent
+`
+	path := filepath.Join(s.Dir(), "parallel-worktree.yaml")
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write hand-edited workflow: %v", err)
 	}
 
-	// But Save must reject the same definition — strict write-path check.
-	if err := s.Save(*found); err == nil {
-		t.Error("Save should reject workflow with unknown field")
+	if _, err := s.Get("parallel-worktree"); err == nil {
+		t.Fatal("Get should reject a parallel child with needs_worktree")
+	}
+	defs, err := s.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(defs) != 0 {
+		t.Fatalf("List returned %d definitions, want invalid workflow skipped", len(defs))
 	}
 }

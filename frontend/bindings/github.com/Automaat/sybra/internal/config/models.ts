@@ -66,11 +66,29 @@ export class AgentDefaults {
     "turnMultiplier": number;
 
     /**
+     * MaxSubagentEvents caps forked-subagent assistant events (CLAUDE_CODE_FORK_SUBAGENT
+     * parent_tool_use_id turns) per run, independent of MaxAssistantEvents which
+     * only counts top-level turns. 0 disables the ceiling. A breach hard-stops
+     * the run outright — there is no auto-continue/human-escalation path.
+     */
+    "maxSubagentEvents": number;
+
+    /**
      * RequirePermissions sets the default permission requirement for agents.
      * nil means not configured (falls back to true — safe default).
      * Set to false in config to opt all tasks into skip-permissions mode.
      */
     "requirePermissions": boolean | null;
+
+    /**
+     * CommitSigning declares this deployment's posture on GPG-signing agent
+     * commits: "auto" (default — sign when the host resolves a signing key),
+     * "never", or "require". Empty means auto. An explicit "never" is what
+     * keeps a keyless unattended host from ever being told to pass -S, and
+     * keeps that guarantee from silently flipping if a key later appears on
+     * the host.
+     */
+    "commitSigning": string;
 
     /**
      * ReviewUntilClean keeps simple-task-review cycling review→fix→review
@@ -90,10 +108,9 @@ export class AgentDefaults {
      * review→fix loop (reviewbudget.Budget is their single owner) — it bounds
      * "how much automated review is too much" regardless of whether a PR
      * exists yet, which is why it lives here rather than under GitHubConfig.
-     * 0 uses the default; negative disables the cap. Rate-based rather than a
-     * lifetime total so a long-lived PR that is legitimately re-reviewed after
-     * each push is never blocked, while a runaway loop is stopped within the
-     * hour (#2164 sustained ~5/hour for 23 hours).
+     * 0 uses the default; negative disables the hourly cap. A fixed lifetime
+     * ceiling still applies through the shared review budget so long-lived churn
+     * cannot run forever.
      */
     "reviewRoundsPerHour": number;
 
@@ -208,6 +225,17 @@ export class AgentDefaults {
     "sandboxMode": string;
 
     /**
+     * SandboxReadMode layers read-visibility on top of SandboxMode: "off"
+     * (default) leaves reads unrestricted, "report" logs the resolved read
+     * allowlist without restricting the spawn, "enforce" denies reads outside
+     * it. Kept separate from sandbox_mode so upgrading a write-enforcing
+     * deployment cannot silently escalate it into the highest-breakage tier,
+     * where one missing read path fails the run closed. Consulted only when
+     * SandboxMode is "enforce". Empty treated as "off".
+     */
+    "sandboxReadMode": string;
+
+    /**
      * HeadlessSteerable controls whether headless claude runs launch with the
      * stdin/stream-json shape that accepts mid-run steer messages (instead of
      * the legacy one-shot `-p <prompt>` invocation). nil means not configured
@@ -309,8 +337,14 @@ export class AgentDefaults {
         if (!("turnMultiplier" in $$source)) {
             this["turnMultiplier"] = 0;
         }
+        if (!("maxSubagentEvents" in $$source)) {
+            this["maxSubagentEvents"] = 0;
+        }
         if (!("requirePermissions" in $$source)) {
             this["requirePermissions"] = null;
+        }
+        if (!("commitSigning" in $$source)) {
+            this["commitSigning"] = "";
         }
         if (!("reviewUntilClean" in $$source)) {
             this["reviewUntilClean"] = null;
@@ -354,6 +388,9 @@ export class AgentDefaults {
         if (!("sandboxMode" in $$source)) {
             this["sandboxMode"] = "";
         }
+        if (!("sandboxReadMode" in $$source)) {
+            this["sandboxReadMode"] = "";
+        }
         if (!("headlessSteerable" in $$source)) {
             this["headlessSteerable"] = null;
         }
@@ -386,30 +423,30 @@ export class AgentDefaults {
      * Creates a new AgentDefaults instance from a string or object.
      */
     static createFrom($$source: any = {}): AgentDefaults {
-        const $$createField28_0 = $$createType0;
-        const $$createField29_0 = $$createType1;
-        const $$createField30_0 = $$createType2;
-        const $$createField31_0 = $$createType3;
-        const $$createField32_0 = $$createType4;
-        const $$createField33_0 = $$createType5;
+        const $$createField31_0 = $$createType0;
+        const $$createField32_0 = $$createType1;
+        const $$createField33_0 = $$createType2;
+        const $$createField34_0 = $$createType3;
+        const $$createField35_0 = $$createType4;
+        const $$createField36_0 = $$createType5;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("roleEffort" in $$parsedSource) {
-            $$parsedSource["roleEffort"] = $$createField28_0($$parsedSource["roleEffort"]);
+            $$parsedSource["roleEffort"] = $$createField31_0($$parsedSource["roleEffort"]);
         }
         if ("playwrightMcp" in $$parsedSource) {
-            $$parsedSource["playwrightMcp"] = $$createField29_0($$parsedSource["playwrightMcp"]);
+            $$parsedSource["playwrightMcp"] = $$createField32_0($$parsedSource["playwrightMcp"]);
         }
         if ("k8sJobs" in $$parsedSource) {
-            $$parsedSource["k8sJobs"] = $$createField30_0($$parsedSource["k8sJobs"]);
+            $$parsedSource["k8sJobs"] = $$createField33_0($$parsedSource["k8sJobs"]);
         }
         if ("queue" in $$parsedSource) {
-            $$parsedSource["queue"] = $$createField31_0($$parsedSource["queue"]);
+            $$parsedSource["queue"] = $$createField34_0($$parsedSource["queue"]);
         }
         if ("classReservations" in $$parsedSource) {
-            $$parsedSource["classReservations"] = $$createField32_0($$parsedSource["classReservations"]);
+            $$parsedSource["classReservations"] = $$createField35_0($$parsedSource["classReservations"]);
         }
         if ("evidence" in $$parsedSource) {
-            $$parsedSource["evidence"] = $$createField33_0($$parsedSource["evidence"]);
+            $$parsedSource["evidence"] = $$createField36_0($$parsedSource["evidence"]);
         }
         return new AgentDefaults($$parsedSource as Partial<AgentDefaults>);
     }
@@ -704,9 +741,9 @@ export class GitHubConfig {
 
     /**
      * App configures GitHub App installation-token auth. When enabled, Sybra
-     * mints a short-lived installation token and injects it into the gh
-     * subprocess (GH_TOKEN), raising the REST ceiling to 15k/hr. Unset = fall
-     * back to gh's own auth.
+     * mints short-lived installation tokens for GitHub subprocesses and the
+     * agent gh shim, raising the REST ceiling to 15k/hr without parking stale
+     * tokens in long-lived agent environments. Unset = fall back to gh's own auth.
      */
     "app": GitHubAppConfig;
 

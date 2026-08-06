@@ -4,6 +4,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // skillReceiptExhaustionSummary condenses the last failed skill output into a
@@ -233,14 +235,17 @@ func trimReceiptSummary(s string) string {
 	if s == "" {
 		return ""
 	}
-	s = strings.Join(strings.Fields(s), " ")
+	// Sanitize whether or not the cut fires: this reaches a persisted YAML
+	// status_reason, so a short line carrying a malformed byte serializes as
+	// an unreadable !!binary block just as a truncated one does.
+	s = strings.ToValidUTF8(strings.Join(strings.Fields(s), " "), "\uFFFD")
 	if !isUsefulReceiptDetail(s) {
 		return ""
 	}
-	if len(s) > 160 {
-		return strings.TrimSpace(trimUTF8ToBytes(s, 157)) + "..."
+	if len(s) <= 160 {
+		return s
 	}
-	return s
+	return textutil.TruncateBytesTrimmed(s, 157, "...")
 }
 
 func isUsefulReceiptDetail(s string) bool {

@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -104,13 +104,11 @@ func renderContextFile(t task.Task, wtPath, branch string) string {
 // SanitizeWorktree's `git add -A` auto-commit and pushed to the PR. The
 // "already present" case returns nil.
 func addToInfoExclude(ctx context.Context, wtPath, entry string) error {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--git-path", "info/exclude")
-	cmd.Dir = wtPath
-	out, err := cmd.Output()
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: wtPath}, "rev-parse", "--git-path", "info/exclude")
 	if err != nil {
 		return fmt.Errorf("resolve info/exclude: %w", err)
 	}
-	excludePath := strings.TrimSpace(string(out))
+	excludePath := out
 	if !filepath.IsAbs(excludePath) {
 		excludePath = filepath.Join(wtPath, excludePath)
 	}

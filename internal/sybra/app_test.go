@@ -100,9 +100,12 @@ func setupManualQueueApp(t *testing.T, taskDir, queueDir string, maxConcurrent i
 	fakebin := t.TempDir()
 	fakeClaude := filepath.Join(fakebin, "claude")
 	if err := os.WriteFile(fakeClaude, []byte("#!/usr/bin/env bash\n"+
-		"trap 'exit 0' TERM INT\n"+
+		"child=''\n"+
+		"trap 'test -z \"$child\" || { kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; }; exit 0' TERM INT\n"+
+		"sleep 5 &\n"+
+		"child=$!\n"+
 		"printf '{\"type\":\"system\",\"session_id\":\"fake-session\"}\\n'\n"+
-		"sleep 5\n"+
+		"wait \"$child\"\n"+
 		"printf '{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"fake-session\",\"result\":\"done\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0}}\\n'\n"),
 		0o755); err != nil {
 		t.Fatalf("write fake claude: %v", err)
@@ -311,6 +314,13 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 			t.Fatalf("attachments.DeleteTask(%s): %v", id, err)
 		}
 	})
+	// t.Cleanup runs last-added-first: registering this after every t.TempDir()
+	// above (including setupApp's WorktreesDir) joins CreateTask's background
+	// workflow goroutine before any of those dirs are removed, closing a race
+	// where a goroutine still mid-write when the context cancels loses to
+	// RemoveAll ("directory not empty") — reproduced live under the OS
+	// sandbox's added scheduling latency.
+	t.Cleanup(wg.Wait)
 	return svc, a
 }
 

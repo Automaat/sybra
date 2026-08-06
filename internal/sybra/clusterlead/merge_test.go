@@ -12,15 +12,16 @@ func TestMergeAuthoritySplit(t *testing.T) {
 	t1 := t0.Add(time.Hour)
 
 	canonical := task.Task{
-		ID:           "task-1",
-		ProjectID:    "owner/repo",
-		AssignedNode: "pet-box",
-		Title:        "leader ingested title",
-		Issue:        "https://github.com/owner/repo/issues/9",
-		Status:       task.StatusTodo,
-		CreatedAt:    t0,
-		UpdatedAt:    t0,
-		MirrorRev:    4,
+		ID:            "task-1",
+		ProjectID:     "owner/repo",
+		AssignedNode:  "pet-box",
+		Title:         "leader ingested title",
+		Issue:         "https://github.com/owner/repo/issues/9",
+		Status:        task.StatusTodo,
+		CreatedAt:     t0,
+		UpdatedAt:     t0,
+		AssignmentRev: 6,
+		MirrorRev:     4,
 	}
 	follower := task.Task{
 		ID:            "task-1",
@@ -62,6 +63,9 @@ func TestMergeAuthoritySplit(t *testing.T) {
 		out.Title != "leader ingested title" || out.Issue != canonical.Issue ||
 		!out.CreatedAt.Equal(t0) {
 		t.Errorf("identity fields must stay leader-authoritative: %+v", out)
+	}
+	if out.AssignmentRev != canonical.AssignmentRev {
+		t.Errorf("AssignmentRev = %d, want leader-owned %d", out.AssignmentRev, canonical.AssignmentRev)
 	}
 
 	if out.Status != task.StatusInReview || out.StatusReason != "review drafted" ||

@@ -11,6 +11,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 const focusedChecksReaskNoteVar = "focused_checks_reask_note"
@@ -88,7 +89,7 @@ func (e *Engine) execFocusedChecks(taskID string, step *Step, wfExec *Execution,
 	failedCmd, output, runErr := e.runVerifyCommands(ctx, taskID, wtPath, cmds)
 
 	report.FailedCmd = failedCmd
-	report.OutputTail = tailString(output, verifyChecksOutputTail)
+	report.OutputTail = output
 	if err := e.recordFocusedChecksReport(taskID, step.ID, report); err != nil {
 		e.logger.Warn("workflow.focused-checks.artifact", "task_id", taskID, "err", err)
 	}
@@ -366,7 +367,7 @@ func (e *Engine) recordFocusedChecksReport(taskID, stepID string, report focused
 }
 
 func (e *Engine) flagFocusedChecks(taskID string, step *Step, reason, detail string) (StepOutput, error) {
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 		return StepOutput{}, fmt.Errorf("focused-checks: set human-required: %w", statusErr)
 	}
 	e.recordEvidence(taskID, step.ID, evidenceCriterionFocusedChecks, evidence.ProofDeterministicCheck, 1, "", detail)
@@ -383,13 +384,20 @@ func (e *Engine) reaskFocusedChecks(taskID string, step *Step, wfExec *Execution
 	if wfExec == nil || wfExec.CountStep(verifyChecksImplStepID) == 0 {
 		return e.flagFocusedChecks(taskID, step, reason, failedCmd)
 	}
+	fingerprint := autoFixFailureFingerprint(failedCmd, output)
 	armed, attempt, err := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
-		counterKey: "step." + step.ID + ".auto_fix",
-		max:        verifyChecksAutoFixCeiling,
-		rewindStep: verifyChecksImplStepID,
-		backoff:    autoFixBackoff,
+		counterKey:  "step." + step.ID + ".auto_fix",
+		max:         verifyChecksAutoFixCeiling,
+		rewindStep:  verifyChecksImplStepID,
+		backoff:     autoFixBackoff,
+		fingerprint: fingerprint,
+		// One prior identical occurrence means this is repeat #2. Re-running
+		// the same deterministic failure again only spends another author run.
+		maxSameFingerprintRuns: 1,
+		attemptProducedWork:    lastAuthorRunProducedWork,
 		onArm: func(wfExec *Execution, attempt int) {
 			wfExec.SetVar(focusedChecksReaskNoteVar, buildFocusedChecksReaskNote(selected, changedFiles, failedCmd, output))
+			wfExec.SetVar(verifyRetryModelVar, "expensive")
 		},
 		reason: func(int) string { return reason },
 	})
@@ -397,7 +405,7 @@ func (e *Engine) reaskFocusedChecks(taskID string, step *Step, wfExec *Execution
 		return StepOutput{}, fmt.Errorf("focused-checks: rewind to implement: %w", err)
 	}
 	if !armed {
-		exhausted := fmt.Sprintf("%s — escalating after %d auto-fix attempts without passing",
+		exhausted := fmt.Sprintf("%s — escalating after repeated identical auto-fix failures or %d attempts without passing",
 			reason, verifyChecksAutoFixCeiling)
 		return e.flagFocusedChecks(taskID, step, exhausted, "auto-fix-exhausted: "+trimDiffLine(failedCmd))
 	}

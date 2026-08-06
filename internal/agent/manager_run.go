@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/google/uuid"
 )
 
@@ -64,6 +66,7 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 	id := uuid.NewString()[:8]
 	ctx, cancel := context.WithCancel(ctx)
 	a := newRunningAgent(id, cfg, prov, cancel)
+	a.SetToolCallRecorder(m.recordToolCall)
 	cfg = injectProcessOwnerEnv(cfg, processOwnerForAgent(a))
 	if m.survives() && willDetach(cfg) {
 		a.setDetached(true)
@@ -212,7 +215,7 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	// - not using Claude's own auto classifier
 	//
 	// Other providers do not depend on this hook for headless execution.
-	if prov.Name() == "claude" && cfg.Mode == "headless" &&
+	if prov.Name() == providerid.Claude && cfg.Mode == "headless" &&
 		cfg.RequirePermissions && cfg.approvalAddr == "" &&
 		len(cfg.AllowedTools) == 0 && cfg.HeadlessPermissionMode != "auto" {
 		return cfg, nil, fmt.Errorf("require_permissions requires a running approval server for ungated headless claude runs")
@@ -357,7 +360,12 @@ func (m *Manager) injectGitHubToken(cfg *RunConfig) {
 		return
 	}
 	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GH_TOKEN", "GITHUB_TOKEN")
-	cfg.ExtraEnv = append(cfg.ExtraEnv, "GH_TOKEN="+token, "GITHUB_TOKEN="+token)
+	// Do not snapshot the short-lived App token into the provider process env:
+	// agents can run longer than GitHub installation tokens live, and a stale
+	// GH_TOKEN wins over the credential helper even after Sybra refreshes its
+	// cache. Override any ambient token to empty here; the PATH-level gh shim
+	// mints a fresh token for each short-lived gh child process instead.
+	cfg.ExtraEnv = append(cfg.ExtraEnv, "GH_TOKEN=", "GITHUB_TOKEN=")
 }
 
 func (m *Manager) injectGolangciCache(cfg *RunConfig) error {
@@ -511,6 +519,9 @@ func (m *Manager) buildEnforceSpec(cfg *RunConfig, gitCtx context.Context, workt
 		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
 	}
 	cfg.sandbox = enforceSpec(canonWorktree, gitMetadata, canonSandboxHome, canonTmp, canonSharedCache, profilePath, "", gitRoots, gitOverlay)
+	if err := m.applySandboxReadMode(cfg); err != nil {
+		return err
+	}
 	m.logger.Info("agent.sandbox.enforce", "task_id", cfg.TaskID,
 		"worktree", canonWorktree, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
 		"git_metadata", cfg.sandbox.gitMetadata,
@@ -646,57 +657,202 @@ func enforceSpec(
 	gitRoots gitSandboxRoots,
 	gitOverlay gitSandboxOverlay,
 ) sandboxSpec {
+	branchRefFile, branchRefLockFile, branchLogFile, _ := gitBranchSingleFiles(gitRoots)
+	commonFiles := gitCommonDirSingleFiles(gitRoots)
 	return sandboxSpec{
-		mode:                   "enforce",
-		worktree:               worktree,
-		gitMetadata:            slices.Clone(gitMetadata),
-		gitShared:              slices.Clone(gitRoots.sharedWritable),
-		gitReadonly:            slices.Clone(gitRoots.sharedReadonly),
-		sandboxHome:            sandboxHome,
-		tmp:                    tmp,
-		sharedCache:            sharedCache,
-		profilePath:            profilePath,
-		readOnlyDir:            readOnlyDir,
-		gitAdminDir:            gitRoots.adminDir,
-		gitCommonDir:           gitRoots.commonDir,
-		gitWorktrees:           gitRoots.worktreesDir,
-		gitObjectDir:           gitRoots.objectDir,
-		gitBranchRef:           gitRoots.branchRef,
-		gitBranchRefDir:        gitRoots.branchRefDir,
-		gitBranchLogDir:        gitRoots.branchLogDir,
-		gitRemoteRefDir:        gitRoots.remoteRefDir,
-		gitRemoteLogDir:        gitRoots.remoteLogDir,
-		gitTagRefDir:           gitRoots.tagRefDir,
-		gitTagLogDir:           gitRoots.tagLogDir,
-		gitOverlayObjectDir:    gitOverlay.objectDir,
-		gitOverlayRefDir:       gitOverlay.branchRefDir,
-		gitOverlayLogDir:       gitOverlay.branchLogDir,
-		gitOverlayRefFile:      gitOverlay.branchRefFile,
-		gitOverlayRemoteRefDir: gitOverlay.remoteRefDir,
-		gitOverlayRemoteLogDir: gitOverlay.remoteLogDir,
-		gitOverlayTagRefDir:    gitOverlay.tagRefDir,
-		gitOverlayTagLogDir:    gitOverlay.tagLogDir,
-		claudeState:            agentStateRoot(".claude", sandboxHome),
-		codexState:             agentStateRoot(".codex", sandboxHome),
-		copilotState:           agentStateRoot(".copilot", sandboxHome),
-		opencodeState:          agentStateRoot(filepath.Join(".local", "share", "opencode"), sandboxHome),
-		toolCache:              agentStateRoot(".cache", sandboxHome),
+		mode:                        "enforce",
+		worktree:                    worktree,
+		gitMetadata:                 slices.Clone(gitMetadata),
+		gitShared:                   slices.Clone(gitRoots.sharedWritable),
+		gitReadonly:                 slices.Clone(gitRoots.sharedReadonly),
+		sandboxHome:                 sandboxHome,
+		tmp:                         tmp,
+		sharedCache:                 sharedCache,
+		profilePath:                 profilePath,
+		readOnlyDir:                 readOnlyDir,
+		gitAdminDir:                 gitRoots.adminDir,
+		gitCommonDir:                gitRoots.commonDir,
+		gitWorktrees:                gitRoots.worktreesDir,
+		gitObjectDir:                gitRoots.objectDir,
+		gitLooseObjectPattern:       gitLooseObjectPattern(gitRoots.objectDir),
+		gitLooseObjectFanoutPattern: gitLooseObjectFanoutPattern(gitRoots.objectDir),
+		gitBranchRef:                gitRoots.branchRef,
+		gitBranchRefDir:             gitRoots.branchRefDir,
+		gitBranchLogDir:             gitRoots.branchLogDir,
+		gitBranchRefFile:            branchRefFile,
+		gitBranchRefLockFile:        branchRefLockFile,
+		gitBranchLogFile:            branchLogFile,
+		gitPackedRefsLockFile:       commonFiles.packedRefsLock,
+		gitShallowFile:              commonFiles.shallow,
+		gitShallowLockFile:          commonFiles.shallowLock,
+		gitStashRefFile:             commonFiles.stashRef,
+		gitStashRefLockFile:         commonFiles.stashRefLock,
+		gitStashLogFile:             commonFiles.stashLog,
+		gitStashLogLockFile:         commonFiles.stashLogLock,
+		gitRemoteRefDir:             gitRoots.remoteRefDir,
+		gitRemoteLogDir:             gitRoots.remoteLogDir,
+		gitRemoteLogLockPattern:     gitLogLockPattern(gitRoots.remoteLogDir),
+		gitTagRefDir:                gitRoots.tagRefDir,
+		gitTagLogDir:                gitRoots.tagLogDir,
+		gitTagLogLockPattern:        gitLogLockPattern(gitRoots.tagLogDir),
+		gitNotesRefDir:              gitRoots.notesRefDir,
+		gitNotesLogDir:              gitRoots.notesLogDir,
+		gitNotesLogLockPattern:      gitLogLockPattern(gitRoots.notesLogDir),
+		gitOverlayObjectDir:         gitOverlay.objectDir,
+		gitOverlayRefDir:            gitOverlay.branchRefDir,
+		gitOverlayLogDir:            gitOverlay.branchLogDir,
+		gitOverlayRefFile:           gitOverlay.branchRefFile,
+		gitOverlayRemoteRefDir:      gitOverlay.remoteRefDir,
+		gitOverlayRemoteLogDir:      gitOverlay.remoteLogDir,
+		gitOverlayTagRefDir:         gitOverlay.tagRefDir,
+		gitOverlayTagLogDir:         gitOverlay.tagLogDir,
+		// Only projects/ — not the whole state dir. Sealing the root closes
+		// settings.json, whose PreToolUse hooks would otherwise execute in
+		// every later run, including verifier roles, and survive worktree
+		// cleanup. projects/ has to stay writable because --resume reads the
+		// session transcript from there: measured on the server, a fully
+		// read-only ~/.claude still completes a run but fails resume with
+		// "No conversation found with session ID" (#2779).
+		claudeState:   agentStateRoot(".claude", sandboxHome),
+		stateDenied:   claudeDurableConfigPaths(agentStateRoot(".claude", sandboxHome)),
+		codexState:    agentStateRoot(".codex", sandboxHome),
+		copilotState:  agentStateRoot(".copilot", sandboxHome),
+		opencodeState: agentStateRoot(filepath.Join(".local", "share", "opencode"), sandboxHome),
+		toolCache:     agentStateRoot(".cache", sandboxHome),
+		appSupport:    providerAppSupportRoot(),
+		claudeScratch: claudeScratchRoot(),
+	}
+}
+
+func gitLooseObjectPattern(objectDir string) string {
+	if objectDir == "" {
+		return ""
+	}
+	canonicalName := "(" + strings.Repeat("[0-9a-f]", 38) + "|" + strings.Repeat("[0-9a-f]", 62) + ")"
+	return "^" + regexp.QuoteMeta(objectDir) + `/(tmp_obj_[^/]+|[0-9a-f][0-9a-f]/(tmp_obj_[^/]+|` + canonicalName + `))$`
+}
+
+func gitLogLockPattern(logDir string) string {
+	if logDir == "" {
+		return ""
+	}
+	return "^" + regexp.QuoteMeta(logDir) + `/.*\.lock$`
+}
+
+func gitLooseObjectFanoutPattern(objectDir string) string {
+	if objectDir == "" {
+		return ""
+	}
+	canonicalName := "(" + strings.Repeat("[0-9a-f]", 38) + "|" + strings.Repeat("[0-9a-f]", 62) + ")"
+	return "^" + regexp.QuoteMeta(objectDir) + `/[0-9a-f][0-9a-f]/` + canonicalName + `$`
+}
+
+// gitBranchSingleFiles derives the exact, single-file absolute paths for the
+// current branch's ref, its lock, and its reflog (plus the reflog's own lock
+// — `git reflog expire`, part of `git gc`, locks it same as the ref) from
+// roots' already-resolved directories — narrow enough to grant directly on
+// darwin (see sandboxSpec's gitBranchRefFile doc). Empty on a detached HEAD,
+// matching roots.branchRef.
+func gitBranchSingleFiles(roots gitSandboxRoots) (refFile, refLockFile, logFile, logLockFile string) {
+	if roots.branchRef == "" || roots.branchRefDir == "" || roots.branchLogDir == "" {
+		return "", "", "", ""
+	}
+	name := filepath.Base(roots.branchRef)
+	refFile = filepath.Join(roots.branchRefDir, name)
+	logFile = filepath.Join(roots.branchLogDir, name)
+	return refFile, refFile + ".lock", logFile, logFile + ".lock"
+}
+
+// gitCommonDirFiles holds the few shared bare-clone files ordinary task work
+// may update. Repository-wide maintenance files (packed-refs, gc.pid, info/)
+// are deliberately absent: enforce-mode agents must not mutate them.
+type gitCommonDirFiles struct {
+	packedRefsLock       string
+	shallow, shallowLock string
+	// stashRef/stashRefLock/stashLog/stashLogLock: refs/stash is a single,
+	// fixed-name ref directly under refs/ (like refs/heads/<name> but with
+	// no branch-name variability), repo-wide shared like remotes/tags
+	// rather than per-branch — `git stash` fails closed without these.
+	stashRef, stashRefLock string
+	stashLog, stashLogLock string
+}
+
+// gitCommonDirSingleFiles derives the shared paths retained for ordinary
+// workflows. shallow(.lock) is touched by shallow fetch/clone operations.
+func gitCommonDirSingleFiles(roots gitSandboxRoots) gitCommonDirFiles {
+	if roots.commonDir == "" {
+		return gitCommonDirFiles{}
+	}
+	shallow := filepath.Join(roots.commonDir, "shallow")
+	packedRefs := filepath.Join(roots.commonDir, "packed-refs")
+	stashRef := filepath.Join(roots.commonDir, "refs", "stash")
+	stashLog := filepath.Join(roots.commonDir, "logs", "refs", "stash")
+	return gitCommonDirFiles{
+		packedRefsLock: packedRefs + ".lock",
+		shallow:        shallow,
+		shallowLock:    shallow + ".lock",
+		stashRef:       stashRef,
+		stashRefLock:   stashRef + ".lock",
+		stashLog:       stashLog,
+		stashLogLock:   stashLog + ".lock",
 	}
 }
 
 func injectSandboxGitEnv(cfg *RunConfig, roots gitSandboxRoots, overlay gitSandboxOverlay) error {
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
+	var err error
+	cfg.ExtraEnv, err = appendGitConfigEnv(cfg.ExtraEnv, "fetch.unpackLimit", "100000000")
+	if err != nil {
+		return err
+	}
+	if !sandboxUsesGitObjectOverlay() {
+		if roots.objectDir != "" {
+			// Trusted assignments are appended last by every provider runner, so
+			// they override any ambient object-store redirection inherited by the
+			// Sybra process. Darwin writes directly to the shared object store.
+			cfg.ExtraEnv = append(cfg.ExtraEnv,
+				"GIT_OBJECT_DIRECTORY="+roots.objectDir,
+				"GIT_ALTERNATE_OBJECT_DIRECTORIES=",
+			)
+		}
+		return nil
+	}
 	if roots.objectDir == "" && overlay.objectDir == "" {
 		return nil
 	}
 	if roots.objectDir == "" || overlay.objectDir == "" {
 		return fmt.Errorf("incomplete sandbox git object paths: shared=%q overlay=%q", roots.objectDir, overlay.objectDir)
 	}
-	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
 	cfg.ExtraEnv = append(cfg.ExtraEnv,
 		"GIT_OBJECT_DIRECTORY="+overlay.objectDir,
 		"GIT_ALTERNATE_OBJECT_DIRECTORIES="+roots.objectDir,
 	)
 	return nil
+}
+
+func appendGitConfigEnv(env []string, key, value string) ([]string, error) {
+	countText := os.Getenv("GIT_CONFIG_COUNT")
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "GIT_CONFIG_COUNT="); ok {
+			countText = v
+		}
+	}
+	count := 0
+	if countText != "" {
+		parsed, err := strconv.Atoi(countText)
+		if err != nil || parsed < 0 || parsed > 1000 {
+			return nil, fmt.Errorf("invalid GIT_CONFIG_COUNT %q", countText)
+		}
+		count = parsed
+	}
+	countKey := "GIT_CONFIG_KEY_" + strconv.Itoa(count)
+	countValue := "GIT_CONFIG_VALUE_" + strconv.Itoa(count)
+	env = stripEnvKeys(env, "GIT_CONFIG_COUNT", countKey, countValue)
+	return append(env,
+		"GIT_CONFIG_COUNT="+strconv.Itoa(count+1),
+		countKey+"="+key,
+		countValue+"="+value,
+	), nil
 }
 
 func (m *Manager) resolveGitMetadataRoots(taskID, worktree string) []string {
@@ -783,6 +939,228 @@ func dedupeGitRoots(roots []string) []string {
 		out = append(out, root)
 	}
 	return out
+}
+
+// applySandboxReadMode resolves the read-visibility posture onto an
+// already-built enforce spec. It mirrors the write sandbox's report/enforce
+// split for the same reason: "report" resolves and logs the allowlist but
+// leaves cfg.sandbox.readRoots empty, so a defective read allowlist can only
+// ever affect a deployment that explicitly asked for read enforcement.
+//
+// An invalid value degrades to "off" rather than erroring. Failing the run
+// closed on a typo would take down every agent at once, which is a strictly
+// worse outcome than leaving reads at today's posture.
+func (m *Manager) applySandboxReadMode(cfg *RunConfig) error {
+	requested := cfg.SandboxReadMode
+	if strings.TrimSpace(requested) == "" {
+		m.mu.RLock()
+		requested = m.defaultSandboxReadMode
+		m.mu.RUnlock()
+	}
+	mode, err := config.NormalizeSandboxReadMode(requested)
+	if err != nil {
+		m.logger.Warn("agent.sandbox.read.invalid", "task_id", cfg.TaskID, "value", requested, "err", err)
+		return nil
+	}
+	if mode == "off" {
+		return nil
+	}
+	roots := m.resolveSandboxReadRoots(cfg)
+	if mode != "enforce" {
+		m.logger.Info("agent.sandbox.read.report", "task_id", cfg.TaskID, "role", string(cfg.Role), "read_roots", roots)
+		return nil
+	}
+	profilePath, err := buildReadProfile(cfg.sandbox.profilePath, roots, cfg.sandbox.sandboxHome)
+	if err != nil {
+		m.logger.Error("agent.sandbox.read.failed", "task_id", cfg.TaskID, "err", err)
+		return fmt.Errorf("agent.Run: sandbox read profile: %w", err)
+	}
+	cfg.sandbox.profilePath = profilePath
+	cfg.sandbox.readRoots = roots
+	m.logger.Info("agent.sandbox.read.enforce", "task_id", cfg.TaskID, "role", string(cfg.Role), "read_roots", roots)
+	return nil
+}
+
+// systemReadRoots are the OS roots every provider CLI and toolchain needs to
+// exec at all. /opt is deliberately absent: on the server it holds the live
+// deploy checkout (/opt/sybra/src), which the #2780 trace measured as read by
+// exactly zero toolchain steps, so granting it would re-open the one root
+// this restriction exists to close.
+var systemReadRoots = []string{
+	"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/var/lib", "/private/var/db",
+}
+
+// toolchainReadSubdirs are home-relative roots that hold the language
+// toolchains themselves. mise's install tree is the load-bearing one: it
+// carries the Go stdlib source that every compile reads, and it never appears
+// on a command line, so it is absent from any log-derived allowlist (#2780).
+var toolchainReadSubdirs = []string{
+	filepath.Join(".local", "share", "mise"),
+	filepath.Join(".local", "state", "mise"),
+	filepath.Join(".local", "bin"),
+	filepath.Join(".config", "mise"),
+	filepath.Join(".config", "go"),
+	filepath.Join(".config", "gh"),
+}
+
+// homeRootReadFiles sit directly in the operator home rather than under a
+// grantable directory, so granting only directories silently breaks them.
+// .claude.json holds the claude CLI's account state; without it the CLI
+// reports "Not logged in · Please run /login". .gitconfig carries the
+// credential helper that authenticates pushes.
+var homeRootReadFiles = []string{
+	".claude.json",
+	".gitconfig",
+}
+
+// homeStateLinks are the provider state dirs as spelled in the home
+// directory. They are added *uncanonicalized*, in addition to their resolved
+// targets, because on the server ~/.claude is a symlink to /data/sybra/claude:
+// granting only the resolved target leaves the symlink itself absent from the
+// mount namespace, so every tilde-relative lookup the CLI makes still fails.
+// That failure is silent and authentication-shaped rather than an EROFS.
+//
+// .agents is not a provider state dir but codex's skills tree (~/.agents/skills,
+// 37 reads in a single traced codex run); without it codex loses every skill.
+var homeStateLinks = []string{
+	".claude",
+	".codex",
+	".copilot",
+	".agents",
+	filepath.Join(".local", "share", "opencode"),
+}
+
+// resolveSandboxReadRoots returns the additional read-only roots for a run,
+// on top of the write roots (which are always readable). Roots that do not
+// exist on this host are skipped rather than failing the run: the list spans
+// two platforms and several optional toolchains, and a fail-closed miss here
+// would break every agent rather than deny one path.
+//
+// Roles are carved out only where the #2780 audit measured a structural need:
+// monitor reads the Sybra board by design (213 reads), and a read-only Dir
+// (human-review's deploy-checkout fallback) must stay readable to be
+// reviewable. The orchestrator's own memory needs no entry — it lives under
+// ~/.claude, already a write root.
+func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
+	var roots []string
+	// Both the pre-resolution spelling and the resolved target are granted
+	// whenever they differ. Granting only the target is a hard break: /bin,
+	// /sbin, /lib and /lib64 are symlinks into /usr on the deploy host, so a
+	// canonicalized-only allowlist leaves /bin absent from the mount
+	// namespace and every "#!/bin/sh" shebang fails with ENOENT. The same
+	// applies to ~/.claude, a symlink to /data/sybra/claude there.
+	add := func(p string) {
+		if strings.TrimSpace(p) == "" {
+			return
+		}
+		canon, err := canonicalizeRoot(p)
+		if err != nil {
+			return
+		}
+		if canon != p {
+			roots = append(roots, p)
+		}
+		roots = append(roots, canon)
+	}
+	for _, p := range systemReadRoots {
+		add(p)
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		for _, sub := range toolchainReadSubdirs {
+			add(filepath.Join(home, sub))
+		}
+		for _, f := range homeRootReadFiles {
+			add(filepath.Join(home, f))
+		}
+		for _, l := range homeStateLinks {
+			add(filepath.Join(home, l))
+		}
+	}
+	add(cfg.sandbox.readOnlyDir)
+	if cfg.Role == RoleMonitor {
+		add(config.HomeDir())
+	}
+	// Every write root must also be readable. On Linux a later rw bind would
+	// cover this anyway, but darwin's seatbelt evaluates file-read* and
+	// file-write* independently, so the set has to be explicit to work on
+	// both platforms from one resolved list.
+	//
+	// Routed through add() rather than appended raw: seatbelt matches
+	// subpaths literally, so an unresolved /var/... root would not match the
+	// /private/var/... path the process actually opens on darwin.
+	for _, p := range cfg.sandbox.writeRoots() {
+		add(p)
+	}
+	return dedupeRoots(roots...)
+}
+
+// providerAppSupportRoot returns the macOS per-user application-data root, or
+// "" where it does not exist (Linux, or a home that has none).
+//
+// Granted because the codex CLI's in-process app-server creates a directory
+// under it at startup. Narrower grants were measured and do not work: naming
+// a codex-specific subpath still fails, because creating that subdirectory
+// requires write on the parent.
+// claudeScratchRoot returns the Claude Code per-user scratchpad root, or ""
+// when it cannot be established safely.
+//
+// Claude Code writes its per-session working files under /tmp/claude-<uid>.
+// On darwin that is not covered by the tmp root: os.TempDir() resolves to
+// $TMPDIR (/var/folders/.../T) while /tmp resolves to /private/tmp, so the
+// scratchpad is invisible to the sandbox and every write there fails EPERM.
+// Measured: an agent retried the same denied mkdir eight times in thirty
+// seconds rather than progressing.
+//
+// Resolves /tmp explicitly rather than os.TempDir(): the location Claude Code
+// uses is /tmp, so deriving it from $TMPDIR would grant a
+// /var/folders/.../claude-<uid> directory if one happened to exist and leave
+// the real scratchpad denied.
+//
+// Refuses a symlink. /tmp is world-writable, so any local process can
+// pre-create /tmp/claude-<uid> pointing anywhere; canonicalizing that would
+// hand the agent a writable root outside /tmp — defeating the boundary this
+// sandbox exists to enforce. Bailing out costs the scratchpad grant, which
+// degrades to the EPERM this fixes, rather than silently widening the
+// sandbox.
+func claudeScratchRoot() string {
+	return resolveScratchRoot(filepath.Join("/tmp", fmt.Sprintf("claude-%d", os.Getuid())))
+}
+
+// resolveScratchRoot validates and canonicalizes one scratchpad path. Split
+// from claudeScratchRoot so the symlink refusal is testable without touching
+// the real /tmp/claude-<uid> on a developer machine.
+func resolveScratchRoot(root string) string {
+	if fi, err := os.Lstat(root); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+			return ""
+		}
+	} else if !os.IsNotExist(err) {
+		return ""
+	}
+	canon, err := canonicalizeCreatedRoot(root, 0o700)
+	if err != nil {
+		return ""
+	}
+	// canonicalizeCreatedRoot resolves symlinks. Accept only the path itself
+	// or darwin's /private-prefixed alias of it, so a link that slipped in
+	// between the Lstat and here cannot widen the grant.
+	if canon != root && canon != filepath.Join("/private", root) {
+		return ""
+	}
+	return canon
+}
+
+func providerAppSupportRoot() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	root := filepath.Join(home, "Library", "Application Support")
+	canon, err := canonicalizeRoot(root)
+	if err != nil {
+		return ""
+	}
+	return canon
 }
 
 func agentStateRoot(sub, fallback string) string {
@@ -902,6 +1280,7 @@ func newRunningAgent(id string, cfg RunConfig, prov Provider, cancel context.Can
 		LastEventAt:            now,
 		cancel:                 cancel,
 		sessionCWD:             cfg.Dir,
+		sessionReadOnly:        cfg.ReadOnlyDir,
 		sandboxHomeDir:         cfg.resolvedSandboxHome,
 		MaxTurns:               cfg.MaxTurns,
 		oneShot:                cfg.OneShot,
@@ -1368,3 +1747,75 @@ func (m *Manager) providerForRun(name string) (string, error) {
 // safeArgRe matches only characters safe to embed in a shell command
 // without quoting: alphanumerics, dot, underscore, hyphen, forward-slash.
 var safeArgRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
+
+// claudeDurableConfigPaths lists the parts of claude's state dir that decide
+// how *future* runs behave: settings.json carries PreToolUse hooks, and
+// hooks/ holds their scripts. A run that edits either changes every later
+// run, including independent verifier roles, and survives worktree cleanup —
+// the one thing a per-task sandbox is supposed to prevent.
+//
+// Everything else in the dir stays writable because the CLI genuinely uses
+// it: a single multi-turn run writes plugins/, projects/, sessions/,
+// session-env/ and shell-snapshots/. Narrowing to an allowlist instead broke
+// runs outright (#2779).
+//
+// Absent paths are materialized rather than skipped. Skipping them looks
+// harmless — there is nothing there to protect — but the enclosing directory
+// is writable, so a run could simply create settings.json and persist hooks
+// that way. An empty settings file and an empty hooks dir are both no-ops to
+// the CLI, and both are then bindable.
+func claudeDurableConfigPaths(stateRoot string) []string {
+	if strings.TrimSpace(stateRoot) == "" {
+		return nil
+	}
+	var out []string
+	for _, f := range []struct {
+		name string
+		dir  bool
+		seed string
+	}{
+		{name: "settings.json", seed: "{}\n"},
+		{name: "settings.local.json", seed: "{}\n"},
+		{name: "hooks", dir: true},
+	} {
+		p := filepath.Join(stateRoot, f.name)
+		if err := materializeDenyTarget(p, f.dir, f.seed); err != nil {
+			// Only skip what cannot be created: binding a nonexistent path
+			// fails the spawn, and failing the run closed over a config file
+			// is worse than leaving that one path writable.
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// materializeDenyTarget makes path exist so it can be bound read-only,
+// leaving any existing content untouched.
+func materializeDenyTarget(path string, dir bool, seed string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	if dir {
+		return os.MkdirAll(path, 0o700)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(seed), 0o600)
+}
+
+// recordToolCall writes one ledger record, best-effort. A ledger write must
+// never disturb a run: this sits on the stream path, and losing an
+// observation is strictly preferable to failing the agent that made it.
+func (m *Manager) recordToolCall(r toolledger.Record) {
+	if m == nil {
+		return
+	}
+	m.mu.RLock()
+	ledger := m.toolLedger
+	m.mu.RUnlock()
+	if err := ledger.Log(r); err != nil {
+		m.logger.Warn("agent.tool_ledger.write_failed", "agent_id", r.AgentID, "tool", r.Tool, "err", err)
+	}
+}

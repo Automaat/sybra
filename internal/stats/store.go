@@ -1,8 +1,10 @@
 package stats
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/json"
+	"fmt"
 	"os"
 	"slices"
 	"sync"
@@ -12,72 +14,192 @@ import (
 	"github.com/Automaat/sybra/internal/skillattr"
 )
 
+const storeLockTimeout = 2 * time.Second
+
 // Store persists RunRecords to a JSON file and computes aggregates in memory.
 type Store struct {
-	path string
-	mu   sync.Mutex
-	runs []RunRecord
+	path         string
+	mu           sync.Mutex
+	runs         []RunRecord
+	legacyFormat bool
+	offset       int64
 }
 
 func NewStore(path string) (*Store, error) {
 	s := &Store{path: path}
+	unlock, err := fsutil.LockFileWithin(path, storeLockTimeout)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = unlock() }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.reloadLocked(); err != nil {
 		return nil, err
+	}
+	if s.legacyFormat {
+		if err := s.rewriteLocked(); err != nil {
+			return nil, err
+		}
 	}
 	return s, nil
 }
 
-// Record appends r and persists it. s.runs is populated once at NewStore
-// time and never re-read afterward on the query paths, so a naive
-// append-and-flush here would silently drop any run written by another
-// process (sybra-cli and the GUI server each hold their own Store over the
-// same path) in the gap since this process last loaded the file. Reloading
-// from disk under the cross-process flock, immediately before appending,
-// closes that gap: the in-memory s.runs is resynced to the authoritative
-// on-disk state before this run is added.
+// Record appends r as one NDJSON line while holding the cross-process lock.
+// This avoids repeatedly decoding and atomically rewriting the full history
+// on every agent completion. The lock is acquired before s.mu so a stalled
+// peer process cannot block in-process stats readers.
 func (s *Store) Record(r RunRecord) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	unlock, err := fsutil.LockFile(s.path)
+	unlock, err := fsutil.LockFileWithin(s.path, storeLockTimeout)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = unlock() }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if err := s.reloadLocked(); err != nil {
+	if err := s.syncLocked(); err != nil {
+		return err
+	}
+	if err := s.appendLocked([]RunRecord{r}); err != nil {
 		return err
 	}
 	s.runs = append(s.runs, r)
-	return s.flush()
+	return nil
 }
 
-// reloadLocked re-reads s.path into s.runs. Read-modify-write callers
-// (Record) must hold both s.mu and the cross-process file lock across the
-// whole critical section; NewStore calls it unlocked because it runs before
-// s is returned to any caller, so nothing else can observe or race it yet.
+// reloadLocked re-reads both legacy JSON arrays and the current NDJSON format
+// into s.runs. Callers must hold s.mu; callers that may race another process
+// must also hold the cross-process file lock.
 func (s *Store) reloadLocked() error {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			s.runs = nil
+			s.offset = 0
 			return nil
 		}
 		return err
 	}
-	if len(data) == 0 {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
 		s.runs = nil
+		s.legacyFormat = false
+		s.offset = int64(len(data))
 		return nil
 	}
-	var runs []RunRecord
-	if err := json.Unmarshal(data, &runs); err != nil {
+	if trimmed[0] == '[' {
+		if err := json.Unmarshal(trimmed, &s.runs); err != nil {
+			return err
+		}
+		s.legacyFormat = true
+		s.offset = int64(len(data))
+		return nil
+	}
+	data, err = repairIncompleteTail(s.path, data)
+	if err != nil {
+		return err
+	}
+	runs, err := parseNDJSON(data, 1)
+	if err != nil {
 		return err
 	}
 	s.runs = runs
+	s.legacyFormat = false
+	s.offset = int64(len(data))
 	return nil
 }
 
+// syncLocked incrementally loads records appended by another process since
+// offset. It must hold both the file lock and s.mu.
+func (s *Store) syncLocked() error {
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		if os.IsNotExist(err) && s.offset == 0 {
+			return nil
+		}
+		return err
+	}
+	if int64(len(data)) < s.offset {
+		return s.reloadLocked()
+	}
+	data, err = repairIncompleteTail(s.path, data)
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) < s.offset {
+		return s.reloadLocked()
+	}
+	if int64(len(data)) == s.offset {
+		return nil
+	}
+	firstLine := bytes.Count(data[:s.offset], []byte{'\n'}) + 1
+	runs, err := parseNDJSON(data[s.offset:], firstLine)
+	if err != nil {
+		return err
+	}
+	s.runs = append(s.runs, runs...)
+	s.offset = int64(len(data))
+	return nil
+}
+
+// syncForRead makes already-open stores observe another process's append.
+// It avoids taking the file lock when the file has not grown, keeping normal
+// UI and evaluation reads independent from a peer that merely holds the lock.
+func (s *Store) syncForRead() {
+	info, err := os.Stat(s.path)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	offset := s.offset
+	s.mu.Unlock()
+	if info.Size() <= offset {
+		return
+	}
+	unlock, err := fsutil.LockFileWithin(s.path, storeLockTimeout)
+	if err != nil {
+		return
+	}
+	defer func() { _ = unlock() }()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_ = s.syncLocked()
+}
+
+func parseNDJSON(data []byte, firstLine int) ([]RunRecord, error) {
+	lines := bytes.Split(data, []byte{'\n'})
+	runs := make([]RunRecord, 0, len(lines))
+	for i, line := range lines {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var r RunRecord
+		if err := json.Unmarshal(line, &r); err != nil {
+			return nil, fmt.Errorf("parse stats record on line %d: %w", firstLine+i, err)
+		}
+		runs = append(runs, r)
+	}
+	return runs, nil
+}
+
+// repairIncompleteTail removes only an unterminated final NDJSON record. A
+// crashed writer can leave that suffix behind; newline-terminated malformed
+// records remain an error so genuine data corruption is not hidden.
+func repairIncompleteTail(path string, data []byte) ([]byte, error) {
+	if len(data) == 0 || data[len(data)-1] == '\n' {
+		return data, nil
+	}
+	end := bytes.LastIndexByte(data, '\n') + 1
+	if err := os.Truncate(path, int64(end)); err != nil {
+		return nil, fmt.Errorf("truncate incomplete stats record: %w", err)
+	}
+	return data[:end], nil
+}
+
 func (s *Store) Len() int {
+	s.syncForRead()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.runs)
@@ -87,6 +209,7 @@ func (s *Store) Len() int {
 // compute scorecards over an arbitrary time window (Query only exposes fixed
 // windows and the last 50 runs).
 func (s *Store) All() []RunRecord {
+	s.syncForRead()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.runs)
@@ -97,6 +220,7 @@ func (s *Store) Query() StatsResponse {
 }
 
 func (s *Store) QueryAt(now time.Time) StatsResponse {
+	s.syncForRead()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -197,12 +321,63 @@ func normalizedRunRecord(r RunRecord) RunRecord {
 	return r
 }
 
-func (s *Store) flush() error {
-	data, err := json.Marshal(s.runs)
+// appendLocked appends records in one write so a locked peer never observes a
+// partially written record. Callers must hold both the file lock and s.mu.
+func (s *Store) appendLocked(records []RunRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	data, err := marshalNDJSON(records)
 	if err != nil {
 		return err
 	}
-	return fsutil.AtomicWrite(s.path, data)
+	f, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	start := s.offset
+	n, err := f.Write(data)
+	if err == nil && n != len(data) {
+		err = fmt.Errorf("short stats append: wrote %d of %d bytes", n, len(data))
+	}
+	if err != nil {
+		_ = f.Truncate(start)
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	s.offset += int64(len(data))
+	return nil
+}
+
+// rewriteLocked is used only to migrate the legacy JSON array format. Normal
+// writes never rewrite the accumulated history.
+func (s *Store) rewriteLocked() error {
+	data, err := marshalNDJSON(s.runs)
+	if err != nil {
+		return err
+	}
+	if err := fsutil.AtomicWrite(s.path, data); err != nil {
+		return err
+	}
+	s.legacyFormat = false
+	s.offset = int64(len(data))
+	return nil
+}
+
+func marshalNDJSON(records []RunRecord) ([]byte, error) {
+	var data bytes.Buffer
+	for i := range records {
+		line, err := json.Marshal(records[i])
+		if err != nil {
+			return nil, err
+		}
+		data.Write(line)
+		data.WriteByte('\n')
+	}
+	return data.Bytes(), nil
 }
 
 // roleReviewLabel mirrors agent.RoleReview and bestOfNAssignmentUnit mirrors

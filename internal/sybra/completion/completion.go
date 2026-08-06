@@ -20,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/loopagent"
@@ -29,6 +30,7 @@ import (
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/verdict"
 	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -258,8 +260,24 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates); err != nil {
 		h.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
-	h.salvageInterruptedReview(ag)
-	h.markCompletedReview(ag, exitErr)
+
+	// Resolved before any review-side-effect or routing side effect below: a
+	// parked adoption may only persist its run and clear the workflow step.
+	// markCompletedReview/salvageInterruptedReview set Task.Reviewed/CodeReview
+	// without the workflow engine recording review evidence (that only happens
+	// on advancement, which parked adoption skips) — running them here would
+	// leave the resumed simple-task-review workflow believing review already
+	// happened while require_evidence still finds the criterion missing,
+	// parking the task again. handleFixReviewCompletion in particular pushes
+	// the survivor's branch (and under review-hold rewrites the task's
+	// status), which must not happen behind a human's or the monitor's
+	// deliberate parking.
+	parked, parkedAdoption := h.parkedAdoption(ag)
+
+	if !parkedAdoption {
+		h.salvageInterruptedReview(ag)
+		h.markCompletedReview(ag, exitErr)
+	}
 
 	// Human-review agents are out-of-band diagnostics — they must not
 	// feed into the workflow engine (which would advance the step that
@@ -272,14 +290,30 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 		return
 	}
 
-	if ag.EffectiveRole() == agent.RoleFixReview && exitErr == nil {
+	stall := classifyStall(ag, exitErr)
+
+	if !parkedAdoption && ag.EffectiveRole() == agent.RoleFixReview && exitErr == nil && !stall.Stalled {
 		h.handleFixReviewCompletion(ag)
 	}
 
-	if !h.notifyWorkflowEngine(ag, resultContent, exitErr) {
+	if parkedAdoption {
+		// Reattach adopted this survivor over a parked/terminal task status to
+		// save its uncommitted work (see agent.ParksLiveAgent). Its result is
+		// already persisted above, but the workflow engine gates advancement on
+		// Workflow.State alone — letting it advance here would run the next
+		// step (e.g. set_ready_review) and drag a task a human or the monitor
+		// deliberately parked back into the pipeline.
+		h.logger.Warn("agent.completion.parked-adoption",
+			"task_id", ag.TaskID, "agent_id", ag.ID, "task_status", parked)
+		if h.workflowEngine != nil {
+			h.workflowEngine.ClearAgentStep(ag.TaskID, ag.ID)
+		}
+	} else if !h.notifyWorkflowEngine(ag, resultContent, exitErr, stall) {
 		return
 	}
-
+	// Import evidence even when workflow advancement was suppressed above: the
+	// terminal-task cleanup below removes the managed worktree, and anything
+	// written to .sybra/evidence while Sybra was down would otherwise be lost.
 	if ag.EffectiveRole() == agent.RoleTestRunner {
 		h.importEvidenceForAgent(ag)
 	}
@@ -294,6 +328,31 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 			go h.sandboxes.Remove(ag.TaskID)
 		}
 	}
+}
+
+// parkedAdoption reports whether ag is a survivor that reattach adopted over a
+// parked/terminal task status AND whose task is still parked, meaning its
+// completion must not advance the workflow. Returns the blocking status for
+// logging.
+//
+// The live status is re-read rather than trusting the reattach-time snapshot:
+// a human who parked the task while the app was down may since have put it
+// back in flight, in which case this is an ordinary completion and has to
+// advance normally. A task that cannot be read at all is treated as still
+// parked — advancing on an unknown status is the unsafe direction.
+func (h *Handler) parkedAdoption(ag *agent.Agent) (string, bool) {
+	parked := ag.AdoptedParkedStatus()
+	if parked == "" {
+		return "", false
+	}
+	t, err := h.tasks.Get(ag.TaskID)
+	if err != nil {
+		return parked, true
+	}
+	if !agent.ParksLiveAgent(string(t.Status)) {
+		return "", false
+	}
+	return string(t.Status), true
 }
 
 func terminalResultContent(ag *agent.Agent) string {
@@ -416,6 +475,7 @@ func addRunMetadata(updates *task.RunPatch, ag *agent.Agent) {
 		updates.SkillConformance = task.Ptr(ag.SkillConformance)
 	}
 	updates.SubagentCallCount = task.Ptr(ag.GetSubagentCallCount())
+	updates.TurnCount = task.Ptr(ag.GetTurnCount())
 }
 
 func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiumRequests float64, resultContent string, exitErr error) task.RunPatch {
@@ -439,10 +499,7 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 			ag.SkillConformance = skillattr.ConformanceRecovered
 		}
 	}
-	truncated := resultContent
-	if len(truncated) > maxResultLen {
-		truncated = truncated[:maxResultLen] + "\n... (truncated)"
-	}
+	truncated := textutil.TruncateBytes(resultContent, maxResultLen, "\n... (truncated)")
 	runUpdates := task.RunPatch{
 		State:           task.Ptr(string(state)),
 		CostUSD:         task.Ptr(cost),
@@ -476,16 +533,16 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 	if sha := h.captureHeadSHA(ag.TaskID); sha != "" {
 		runUpdates.HeadSHA = task.Ptr(sha)
 	}
-	// Watchdog.handleZeroOutputStall reports the signal with the bare
-	// zeroOutputReason constant (internal/watchdog/agent.go), not the
-	// "watchdog: rate limit: ..." string watchdogreason.RateLimit wraps it in
-	// for the task's StatusReason — RecordProviderSignal persists exactly the
-	// reason string it is handed, so ag.GetErrorMsg() here is the bare
-	// constant. Comparing directly against it (not via
-	// watchdogreason.IsZeroOutputRateLimit, which checks the wrapped form)
-	// is intentional.
+	// Watchdog.handleZeroOutputStall records the bare zeroOutputReason constant
+	// (internal/watchdog/agent.go), not the "watchdog: silent hang: ..." string
+	// watchdogreason.SilentHang wraps it in for the task's StatusReason, so
+	// ag.GetErrorMsg() here is the bare constant. Comparing directly against it
+	// (not via watchdogreason.IsSilentHang, which checks the wrapped form) is
+	// intentional. The "rate_limit" kind is still accepted because a run that
+	// stalled before this build shipped carries the kind this case borrowed
+	// then, and its resume must still be recognized.
 	errKind, errMsg := ag.GetError()
-	if errKind == "rate_limit" && errMsg == watchdogreason.ZeroOutputBeforeStartup {
+	if (errKind == agent.ErrorKindSilentHang || errKind == "rate_limit") && errMsg == watchdogreason.ZeroOutputBeforeStartup {
 		runUpdates.ResumeZeroOutputStall = task.Ptr(true)
 	}
 	return runUpdates
@@ -493,10 +550,11 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 
 // notifyWorkflowEngine advances the workflow engine for a completed agent.
 // Returns false if the caller should return immediately. Signal kills and
-// Sybra-initiated stops stall for recovery; rate limits, malformed tool calls,
-// and rejected-tool/user interruptions immediately re-drive the same step so
-// provider failover can choose a healthy peer. Auth failures fall through
-// (need human login) and take the normal failed path.
+// Sybra-initiated stops stall for recovery; rate limits, silent hangs,
+// malformed tool calls, and rejected-tool/user interruptions immediately
+// re-drive the same step, where a rate limit fails over on the health gate and
+// a silent hang is routed around its provider by the engine. Auth failures
+// fall through (need human login) and take the normal failed path.
 //
 // Load-bearing: PR #722's SIGINT-first path lets default Go binaries (e.g.
 // fake-claude in tests) exit with code 2 (NOT WaitStatus.Signaled), so
@@ -510,21 +568,22 @@ func (h *Handler) buildRunPatch(ag *agent.Agent, state agent.State, cost, premiu
 // process, but its work already finished cleanly via a terminal result event
 // — treating it as a stall would silently re-queue already-completed work
 // instead of finalizing it.
-func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, exitErr error) bool {
+func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, exitErr error, stall stallDisposition) bool {
 	if h.workflowEngine == nil {
 		return true
 	}
-	stall := classifyStall(ag, exitErr)
 	if stall.Stalled {
 		h.logger.Warn("agent.completion.stall",
 			"task_id", ag.TaskID, "agent_id", ag.ID,
-			"signaled", isSignalKill(exitErr), "stopped", stall.StopStalled, "rate_limited", stall.RateLimited, "malformed_tool", stall.MalformedTool, "tool_use_aborted", stall.ToolUseAborted, "user_interrupted", stall.UserInterrupted, "checkpoint", stall.CheckpointStopped)
+			"signaled", isSignalKill(exitErr), "stopped", stall.StopStalled, "rate_limited", stall.RateLimited, "silent_hang", stall.SilentHang, "malformed_tool", stall.MalformedTool, "tool_use_aborted", stall.ToolUseAborted, "user_interrupted", stall.UserInterrupted, "checkpoint", stall.CheckpointStopped, "prompt_undelivered", stall.PromptUndelivered)
 		switch {
 		case stall.CheckpointStopped:
 			h.workflowEngine.RescheduleCheckpointedAgent(ag.TaskID, ag.ID)
 		case stall.ToolUseAborted || stall.UserInterrupted:
 			h.workflowEngine.RescheduleInterruptedAgent(ag.TaskID, ag.ID)
-		case stall.RateLimited || stall.MalformedTool:
+		case stall.PromptUndelivered:
+			h.workflowEngine.ReschedulePromptUndeliveredAgent(ag.TaskID, ag.ID)
+		case stall.RateLimited || stall.SilentHang || stall.MalformedTool:
 			h.workflowEngine.RescheduleRateLimitedAgent(ag.TaskID, ag.ID)
 		default:
 			h.workflowEngine.ClearAgentStep(ag.TaskID, ag.ID)
@@ -542,8 +601,9 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 }
 
 // classifyStall reports whether a completion is a retryable stall: signal
-// kill, stop-before-result, provider rate limit, malformed tool call, or
-// rejected-tool interruption rather than the agent's actual terminal outcome.
+// kill, stop-before-result, provider rate limit, malformed tool call,
+// rejected-tool interruption, or an undelivered prompt rather than the agent's
+// actual terminal outcome.
 // buildRunPatch and
 // notifyWorkflowEngine both key off this so the persisted AgentRun.Outcome and
 // the workflow's Success signal can never diverge: a stalled run is retried,
@@ -551,28 +611,35 @@ func (h *Handler) notifyWorkflowEngine(ag *agent.Agent, resultContent string, ex
 type stallDisposition struct {
 	Stalled           bool
 	RateLimited       bool
+	SilentHang        bool
 	MalformedTool     bool
 	ToolUseAborted    bool
 	UserInterrupted   bool
+	PromptUndelivered bool
 	StopStalled       bool
 	CheckpointStopped bool
 }
 
 func classifyStall(ag *agent.Agent, exitErr error) stallDisposition {
 	out := stallDisposition{
-		RateLimited:     isRateLimitedRun(ag, exitErr),
-		MalformedTool:   ag.GetErrorKind() == "malformed_tool_call",
-		ToolUseAborted:  isToolUseAbortedRun(ag),
-		UserInterrupted: isUserInterruptedRun(ag),
+		RateLimited:       isRateLimitedRun(ag, exitErr),
+		SilentHang:        isSilentHangRun(ag),
+		MalformedTool:     ag.GetErrorKind() == "malformed_tool_call",
+		ToolUseAborted:    isToolUseAbortedRun(ag),
+		UserInterrupted:   isUserInterruptedRun(ag),
+		PromptUndelivered: ag.GetErrorKind() == agent.ErrorKindPromptUndelivered,
 	}
-	// Cost guardrails intentionally hard-stop the subprocess, but they are a
-	// budget failure, not an infra stall. Let them flow through the bounded
-	// failed-completion path instead of ClearAgentStep/ResumeStalled.
+	// Cost and forked-subagent-turn guardrails intentionally hard-stop the
+	// subprocess, but they are a budget/runaway failure, not an infra stall.
+	// Let them flow through the bounded failed-completion path instead of
+	// ClearAgentStep/ResumeStalled — otherwise the runaway workflow step is
+	// silently re-dispatched on the next sweep, defeating the ceiling.
 	costStopped := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCost
+	subagentTurnsStopped := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonSubagentTurns
 	checkpointFailed := ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpointFailed
 	out.CheckpointStopped = ag.WasStopped() && ag.GetEscalationReason() == agent.EscalationReasonCheckpoint
-	out.StopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped && !checkpointFailed && !out.CheckpointStopped
-	out.Stalled = isSignalKill(exitErr) || out.StopStalled || out.RateLimited || out.MalformedTool || out.ToolUseAborted || out.UserInterrupted || out.CheckpointStopped
+	out.StopStalled = ag.WasStopped() && !ag.WasCompletedByResult() && !costStopped && !subagentTurnsStopped && !checkpointFailed && !out.CheckpointStopped
+	out.Stalled = isSignalKill(exitErr) || out.StopStalled || out.RateLimited || out.SilentHang || out.MalformedTool || out.ToolUseAborted || out.UserInterrupted || out.CheckpointStopped || out.PromptUndelivered
 	return out
 }
 
@@ -654,11 +721,7 @@ func interruptedReviewAssistantTranscript(ag *agent.Agent) string {
 	if b.Len() == 0 {
 		return ""
 	}
-	transcript := b.String()
-	if len(transcript) > interruptedReviewMaxLen {
-		transcript = transcript[:interruptedReviewMaxLen] + "\n\n... (truncated)"
-	}
-	return transcript
+	return textutil.TruncateBytes(b.String(), interruptedReviewMaxLen, "\n\n... (truncated)")
 }
 
 // handleFixReviewCompletion routes a finished manual fix-review agent. Without
@@ -792,11 +855,11 @@ func (h *Handler) captureHeadSHA(taskID string) string {
 	if err != nil || !h.worktrees.Exists(t) {
 		return ""
 	}
-	out, err := exec.CommandContext(context.Background(), "git", "-C", h.worktrees.PathFor(t), "rev-parse", "HEAD").Output()
+	out, err := gitexec.Output(context.Background(), gitexec.Options{Dir: h.worktrees.PathFor(t)}, "rev-parse", "HEAD")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return out
 }
 
 // runOutcome derives the stats.RunRecord outcome for a completed agent run.
@@ -961,6 +1024,14 @@ func estimatedRunCost(ag *agent.Agent, cost, premiumRequests float64) float64 {
 // as an exit-0 result, so the agent error kind is authoritative.
 func isRateLimitedRun(ag *agent.Agent, exitErr error) bool {
 	return ag.GetErrorKind() == "rate_limit"
+}
+
+// isSilentHangRun reports whether the watchdog killed this run for producing no
+// output at all. It shares the rate-limited run's immediate-reschedule branch
+// (neither carries a verdict, and both re-drive the same step) without sharing
+// its provider-health verdict.
+func isSilentHangRun(ag *agent.Agent) bool {
+	return ag.GetErrorKind() == agent.ErrorKindSilentHang
 }
 
 func isToolUseAbortedRun(ag *agent.Agent) bool {

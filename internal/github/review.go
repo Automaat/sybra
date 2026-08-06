@@ -13,9 +13,10 @@ import (
 // query instead of fanning out multiple search legs in one GraphQL request; the
 // combined form times out at GitHub's edge for accounts with many open review
 // requests.
-const reviewSummaryQuery = `query($q: String!) {
+const reviewSummaryQuery = `query($q: String!, $after: String) {
   viewer { login }
-  search(query: $q, type: ISSUE, first: 50) {
+  search(query: $q, type: ISSUE, first: 50, after: $after) {
+    pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
         number
@@ -152,7 +153,11 @@ type gqlReviewSummaryResponse struct {
 			Login string `json:"login"`
 		} `json:"viewer"`
 		Search struct {
-			Nodes []gqlPR `json:"nodes"`
+			Nodes    []gqlPR `json:"nodes"`
+			PageInfo struct {
+				HasNextPage bool   `json:"hasNextPage"`
+				EndCursor   string `json:"endCursor"`
+			} `json:"pageInfo"`
 		} `json:"search"`
 	} `json:"data"`
 	Errors []struct {
@@ -569,22 +574,38 @@ func fetchAssignedReviewSummaryWith(e execer) (ReviewSummary, error) {
 }
 
 func fetchReviewSearchWith(e execer, query string) ([]PullRequest, error) {
-	resp, err := runGHAPIWith(e, "", "graphql",
-		"-f", "query="+reviewSummaryQuery,
-		"-f", "q="+query)
-	if err != nil {
-		return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(resp.body), err)
-	}
+	var all []PullRequest
+	var after, viewer string
+	for range maxSearchPages {
+		args := []string{"-f", "query=" + reviewSummaryQuery, "-f", "q=" + query}
+		if after != "" {
+			args = append(args, "-F", "after="+after)
+		}
+		resp, err := runGHAPIWith(e, "", append([]string{"graphql"}, args...)...)
+		if err != nil {
+			return nil, fmt.Errorf("gh api graphql: %s: %w", sanitizeGHOutput(resp.body), err)
+		}
 
-	var gqlResp gqlReviewSummaryResponse
-	if err := json.Unmarshal(resp.body, &gqlResp); err != nil {
-		return nil, fmt.Errorf("parse graphql response: %w", err)
+		var gqlResp gqlReviewSummaryResponse
+		if err := json.Unmarshal(resp.body, &gqlResp); err != nil {
+			return nil, fmt.Errorf("parse graphql response: %w", err)
+		}
+		if len(gqlResp.Errors) > 0 {
+			return nil, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
+		}
+		if viewer == "" {
+			viewer = gqlResp.Data.Viewer.Login
+		}
+		all = append(all, convertPRs(gqlResp.Data.Search.Nodes, viewer)...)
+		if !gqlResp.Data.Search.PageInfo.HasNextPage {
+			return all, nil
+		}
+		after = gqlResp.Data.Search.PageInfo.EndCursor
+		if after == "" {
+			return nil, fmt.Errorf("graphql: search has next page without cursor")
+		}
 	}
-	if len(gqlResp.Errors) > 0 {
-		return nil, fmt.Errorf("graphql: %s", gqlResp.Errors[0].Message)
-	}
-
-	return convertPRs(gqlResp.Data.Search.Nodes, gqlResp.Data.Viewer.Login), nil
+	return nil, fmt.Errorf("graphql: search exceeded %d pages", maxSearchPages)
 }
 
 func approvedOnly(prs []PullRequest) []PullRequest {

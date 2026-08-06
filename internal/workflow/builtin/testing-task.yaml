@@ -85,7 +85,7 @@ steps:
     config:
       role: test-runner
       mode: headless
-      model: sonnet
+      model: supercheap
       provider: cross
       needs_worktree: true
       max_retries: 1

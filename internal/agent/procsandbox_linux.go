@@ -26,6 +26,11 @@ func sandboxExecAvailable() bool {
 
 func sandboxWrapperName() string { return "bwrap" }
 
+// Linux bind-mounts branch refs into an overlay and publishes them only after
+// sandboxSyncShell has copied the corresponding objects into the shared
+// store, so object staging is safe and required on this platform.
+func sandboxUsesGitObjectOverlay() bool { return true }
+
 func materializeSandboxProfile() (string, error) {
 	return "", nil
 }
@@ -59,10 +64,24 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		// the new namespace's pid 1 automatically (see bwrap(1)), so no
 		// additional init flag is needed.
 		"--unshare-pid",
-		"--ro-bind", "/", "/",
+	}
+	if len(cfg.sandbox.readRoots) == 0 {
+		wrapped = append(wrapped, "--ro-bind", "/", "/")
+	} else {
+		// Deny-by-default reads (#2781): bind only the allowlisted roots
+		// instead of the whole filesystem, so nothing else is even visible.
+		// --ro-bind-try, not --ro-bind: the list spans two platforms and
+		// several optional toolchains, and bwrap aborts the whole spawn on a
+		// single missing source. A root that does not exist here contributes
+		// nothing to read, so skipping it is safe; failing is not.
+		for _, root := range cfg.sandbox.readRoots {
+			wrapped = append(wrapped, "--ro-bind-try", root, root)
+		}
+	}
+	wrapped = append(wrapped,
 		"--dev", "/dev",
 		"--proc", "/proc",
-	}
+	)
 	roots := dedupeRoots(
 		cfg.sandbox.worktree,
 		cfg.sandbox.sandboxHome,
@@ -73,6 +92,8 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		cfg.sandbox.copilotState,
 		cfg.sandbox.opencodeState,
 		cfg.sandbox.toolCache,
+		cfg.sandbox.appSupport,
+		cfg.sandbox.claudeScratch,
 	)
 	roots = dedupeRoots(append(roots, cfg.sandbox.gitShared...)...)
 	for _, root := range roots {
@@ -105,6 +126,21 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 	if cfg.sandbox.gitOverlayTagLogDir != "" && cfg.sandbox.gitTagLogDir != "" {
 		wrapped = append(wrapped, "--bind", cfg.sandbox.gitOverlayTagLogDir, cfg.sandbox.gitTagLogDir)
 	}
+	// The object overlay remains writable for loose objects, but explicit
+	// maintenance must not create packs or commit-graph metadata that the
+	// post-run publisher could copy into the shared clone.
+	if cfg.sandbox.gitOverlayObjectDir != "" {
+		for _, dir := range []string{"pack", "info"} {
+			path := filepath.Join(cfg.sandbox.gitOverlayObjectDir, dir)
+			wrapped = append(wrapped, "--ro-bind", path, path)
+		}
+	}
+	// Re-lock the durable-config paths after every writable bind above:
+	// bwrap resolves overlapping entries in argument order, so these must
+	// come last to win over the state dir that contains them.
+	for _, p := range dedupeRoots(cfg.sandbox.stateDenied...) {
+		wrapped = append(wrapped, "--ro-bind", p, p)
+	}
 	// Re-lock readOnlyDir last: bwrap resolves overlapping bind entries in
 	// argument order, so this must come after every writable --bind above to
 	// win even when readOnlyDir sits inside a writable root (e.g. nested
@@ -126,7 +162,7 @@ func sandboxSyncShell(bwrapArgs []string, cfg *RunConfig) (wrappedName string, w
 		`  src=$1`,
 		`  dst=$2`,
 		`  [ -d "$src" ] || return 0`,
-		`  mkdir -p "$dst" "$dst/pack" || return $?`,
+		`  mkdir -p "$dst" || return $?`,
 		`  for hexdir in "$src"/[0-9a-f][0-9a-f]; do`,
 		`    [ -d "$hexdir" ] || continue`,
 		`    base=$(basename "$hexdir")`,
@@ -135,10 +171,6 @@ func sandboxSyncShell(bwrapArgs []string, cfg *RunConfig) (wrappedName string, w
 		`      [ -f "$obj" ] || continue`,
 		`      cp -p "$obj" "$dst/$base/" || return $?`,
 		`    done`,
-		`  done`,
-		`  for pack in "$src"/pack/pack-*; do`,
-		`    [ -f "$pack" ] || continue`,
-		`    cp -p "$pack" "$dst/pack/" || return $?`,
 		`  done`,
 		`}`,
 		`"$@"`,
@@ -158,4 +190,11 @@ func sandboxSyncShell(bwrapArgs []string, cfg *RunConfig) (wrappedName string, w
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+// buildReadProfile is a no-op on Linux: bwrap expresses the read allowlist as
+// mount arguments (see wrapInvocation) rather than a profile file, so there is
+// nothing to materialize.
+func buildReadProfile(base string, _ []string, _ string) (string, error) {
+	return base, nil
 }

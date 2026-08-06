@@ -45,6 +45,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.ABTesting.EnabledValue() {
 		t.Fatal("ABTesting.EnabledValue() = true, want false until explicitly opted in")
 	}
+	if cfg.Agent.MaxTaskCostUSD <= 0 {
+		t.Errorf("Agent.MaxTaskCostUSD = %v, want a positive default so the cumulative-per-task cost gate is enabled out of the box", cfg.Agent.MaxTaskCostUSD)
+	}
+	if cfg.Agent.MaxSubagentEvents <= 0 {
+		t.Errorf("Agent.MaxSubagentEvents = %d, want a positive default so a runaway forked-subagent fan-out is bounded out of the box", cfg.Agent.MaxSubagentEvents)
+	}
 }
 
 func TestDefaultConfigMatchesEmptyFileResolution(t *testing.T) {
@@ -3101,13 +3107,18 @@ func TestTestingMaxAttemptsDefault(t *testing.T) {
 	if got := cfg.TestingMaxAttempts(); got != DefaultTestingMaxAttempts {
 		t.Errorf("zero-value TestingMaxAttempts() = %d, want %d", got, DefaultTestingMaxAttempts)
 	}
-	if DefaultTestingMaxAttempts != 25 {
-		t.Errorf("DefaultTestingMaxAttempts = %d, want 25", DefaultTestingMaxAttempts)
+	if DefaultTestingMaxAttempts != 5 {
+		t.Errorf("DefaultTestingMaxAttempts = %d, want 5", DefaultTestingMaxAttempts)
+	}
+
+	cfg.Testing.MaxAttempts = 3
+	if got := cfg.TestingMaxAttempts(); got != 3 {
+		t.Errorf("configured TestingMaxAttempts() = %d, want 3", got)
 	}
 
 	cfg.Testing.MaxAttempts = 10
-	if got := cfg.TestingMaxAttempts(); got != 10 {
-		t.Errorf("configured TestingMaxAttempts() = %d, want 10", got)
+	if got := cfg.TestingMaxAttempts(); got != DefaultTestingMaxAttempts {
+		t.Errorf("configured TestingMaxAttempts() above safety ceiling = %d, want %d", got, DefaultTestingMaxAttempts)
 	}
 }
 

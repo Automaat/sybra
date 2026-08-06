@@ -2,6 +2,7 @@ package watchdog
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -217,7 +218,7 @@ type Watchdog struct {
 	// recordProviderSignal forwards a watchdog-detected provider signal through
 	// the same agent-manager helper the runner uses, so the agent error kind and
 	// provider health gate stay in sync across both paths.
-	recordProviderSignal func(*agent.Agent, provider.Signal, string, time.Duration)
+	recordProviderSignal func(*agent.Agent, provider.Classification)
 	// hasLiveHeadlessAgent reports whether a task has a registered live
 	// headless agent. checkDwell uses it to skip escalating a task whose
 	// headless run is mid-flight but hasn't touched the task file recently —
@@ -240,10 +241,23 @@ type Watchdog struct {
 	verifyNow func(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error)
 }
 
-func (w *Watchdog) applyStatusEffect(taskID, source string, status task.Status, reason string) error {
+// applyStatusEffect moves taskID to status, gated on the caller's
+// expectedStatus precondition when non-empty. A watchdog-tracked agent can be
+// running against a task in in-progress or planning status (see
+// EffectiveRole/retriableRewardHackingStatus), so agent.go's own call sites
+// thread the status observed on the freshest task read available at the point
+// of inspection (inspectHeadless's w.tasks.Get, or the target status a retry
+// path is restoring) rather than assuming in-progress; dwell.go/runrate.go,
+// which already list-scanned and filtered the task, pass the status they
+// observed there.
+func (w *Watchdog) applyStatusEffect(taskID, source string, status, expectedStatus task.Status, reason string) error {
+	if expectedStatus == "" {
+		return fmt.Errorf("watchdog apply status effect: expected status is required")
+	}
 	_, err := w.tasks.ApplyStatusEffect(taskID, task.StatusEffect{
-		Source:   source,
-		ToStatus: status,
+		Source:         source,
+		ToStatus:       status,
+		ExpectedStatus: expectedStatus,
 		Extra: task.Update{
 			StatusReason: task.Ptr(reason),
 		},
@@ -362,7 +376,7 @@ func (w *Watchdog) inspectHeadless(ctx context.Context, s *state, now time.Time,
 	}
 
 	if reason := hardDeadlineBreach(ag, stall, total, sl, budget); reason != "" {
-		w.hardStop(ag, reason, stall, total)
+		w.hardStop(ag, reason, stall, total, t.Status)
 		return
 	}
 
@@ -389,12 +403,14 @@ func (w *Watchdog) inspectHeadless(ctx context.Context, s *state, now time.Time,
 	// crossed an app restart still classifies correctly: fromRecord bumps
 	// LastEventAt to reattach wall-clock, so an empty-log survivor would no
 	// longer satisfy the timestamp equality even though it has produced nothing.
-	// Route it through the provider-health signal path instead, exactly like
-	// stopForRateLimit: this marks the provider unhealthy for its cooldown
-	// window so the reschedule can fail over to a working peer, rather than
-	// retrying the identical broken provider.
+	// Route it through handleZeroOutputStall instead, which tags the run so the
+	// completion handler re-dispatches it at once, and leaves provider health
+	// alone: a child that said nothing is no evidence about the account's
+	// quota. The re-dispatch still routes around the provider that went silent
+	// (workflow.routeAroundSilentHang), so a wedged CLI does not get handed the
+	// same run again.
 	if trigger == "stall" && ag.OutputLen() == 0 {
-		w.handleZeroOutputStall(ag, stall, total)
+		w.handleZeroOutputStall(ag, stall, total, t.Status)
 		return
 	}
 
@@ -501,7 +517,7 @@ func (w *Watchdog) reapTaskAgentForStatus(ag *agent.Agent) bool {
 	if t.TaskType == task.TaskTypeUmbrella {
 		return false
 	}
-	if !shouldReleaseTaskAgentForStatus(t.Status) || isHumanReviewAgent(ag) {
+	if !shouldReleaseTaskAgentForStatus(t.Status) || ag.EffectiveRole().DiagnosesBlockedTask() {
 		return false
 	}
 	w.logger.Warn("agent.watchdog.status_release",
@@ -514,21 +530,6 @@ func (w *Watchdog) reapTaskAgentForStatus(ag *agent.Agent) bool {
 
 func shouldReleaseTaskAgentForStatus(status task.Status) bool {
 	return status == task.StatusHumanRequired || task.IsTerminalStatus(status)
-}
-
-// isHumanReviewAgent reports whether ag is the human-review agent
-// (internal/sybra/app_human_review.go), which app.go dispatches the moment a
-// task transitions to human-required specifically to diagnose and unblock
-// it. The status-release reapers above must not kill it just because the
-// task's status is — by design — human-required; if it gets stuck itself,
-// the normal stall/budget/loop triggers in inspectHeadless still apply. This
-// mirrors the same exclusion App.releaseTaskAgents already applies at the
-// point of the status transition (internal/sybra/app_init.go) — a role-based
-// check, not a timing-based one, so it can't be widened by a future status
-// change to spare an unrelated agent that raced onto an already-terminal
-// task, which is unconditionally an orphan under this reaper's contract.
-func isHumanReviewAgent(ag *agent.Agent) bool {
-	return ag.EffectiveRole() == agent.RoleHumanReview
 }
 
 func (w *Watchdog) stopForRelease(ag *agent.Agent) error {
@@ -603,12 +604,12 @@ func (w *Watchdog) stopAlreadyCompleted(ag *agent.Agent) bool {
 	return true
 }
 
-func (w *Watchdog) hardStop(ag *agent.Agent, reason string, stall, total time.Duration) {
+func (w *Watchdog) hardStop(ag *agent.Agent, reason string, stall, total time.Duration, expectedStatus task.Status) {
 	w.logger.Warn("agent.watchdog.hard_deadline",
 		"id", ag.ID, "task_id", ag.TaskID, "reason", reason,
 		"stall_sec", int(stall.Seconds()), "total_sec", int(total.Seconds()))
 	if ag.TaskID != "" {
-		if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.hard-stop", task.StatusInProgress, "watchdog hang: "+reason+" deadline exceeded"); err != nil {
+		if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.hard-stop", task.StatusInProgress, expectedStatus, "watchdog hang: "+reason+" deadline exceeded"); err != nil {
 			w.logger.Error("agent.watchdog.hard_deadline.task.update", "task_id", ag.TaskID, "err", err)
 		}
 	}
@@ -662,7 +663,7 @@ func (w *Watchdog) inspect(ctx context.Context, ag *agent.Agent, t task.Task, tr
 		"reason_kind", verdict.ReasonKind)
 
 	w.emit(events.AgentStuck(ag.ID), verdict)
-	w.applyVerdict(ctx, ag, trigger, verdict)
+	w.applyVerdict(ctx, ag, trigger, verdict, t.Status)
 
 	// Acknowledge a loop-triggered inspection that left the agent running, so the
 	// same unchanged signature does not re-trigger every debounce window. Skip
@@ -674,18 +675,18 @@ func (w *Watchdog) inspect(ctx context.Context, ag *agent.Agent, t task.Task, tr
 	}
 }
 
-func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger string, verdict agent.InspectorVerdict) {
+func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger string, verdict agent.InspectorVerdict, expectedStatus task.Status) {
 	switch verdict.Recommendation {
 	case "stop":
 		if verdict.ReasonKind == "rate_limit" {
-			w.stopForRateLimit(ag, trigger, verdict)
+			w.stopForRateLimit(ag, trigger, verdict, expectedStatus)
 			return
 		}
 		if w.stopAlreadyCompleted(ag) {
 			return
 		}
 		if ag.TaskID != "" && (trigger == "loop" || trigger == "budget") && verdict.ReasonKind == "" {
-			w.stopAndVerifyAmbiguousLoop(ctx, ag, trigger, verdict)
+			w.stopAndVerifyAmbiguousLoop(ctx, ag, trigger, verdict, expectedStatus)
 			return
 		}
 		// #2229 plus #2687: reward_hacking stops are retryable only when the
@@ -715,10 +716,7 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 			status := task.StatusHumanRequired
 			if trigger == "stall" || ((trigger == "loop" || trigger == "budget") && verdict.ReasonKind == "generic_stall") {
 				status = task.StatusInProgress
-				reason = "watchdog hang"
-				if verdict.Reason != "" {
-					reason = "watchdog hang: " + verdict.Reason
-				}
+				reason = watchdogreason.Hang(verdict.Reason)
 			} else {
 				switch {
 				case verdict.ReasonKind == "reward_hacking":
@@ -736,7 +734,7 @@ func (w *Watchdog) applyVerdict(ctx context.Context, ag *agent.Agent, trigger st
 					reason = "watchdog: " + verdict.Reason
 				}
 			}
-			if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.stop", status, reason); err != nil {
+			if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.stop", status, expectedStatus, reason); err != nil {
 				w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 			}
 		}
@@ -800,12 +798,12 @@ const killForVerifyTimeout = 10 * time.Second
 // so the completion callback sees an intended recovery path immediately,
 // matching the stall/generic_stall convention, rather than leaving the task
 // on its pre-stop status for the duration of the verify re-run.
-func (w *Watchdog) stopAndVerifyAmbiguousLoop(ctx context.Context, ag *agent.Agent, trigger string, verdict agent.InspectorVerdict) {
+func (w *Watchdog) stopAndVerifyAmbiguousLoop(ctx context.Context, ag *agent.Agent, trigger string, verdict agent.InspectorVerdict, expectedStatus task.Status) {
 	judgeReason := watchdogreason.LoopStop(verdict.Reason)
 	if trigger == "budget" {
 		judgeReason = watchdogreason.BudgetStop(verdict.Reason)
 	}
-	if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.verify.pending", task.StatusInProgress, "watchdog hang: verifying before deciding — "+judgeReason); err != nil {
+	if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.verify.pending", task.StatusInProgress, expectedStatus, watchdogreason.Hang("verifying before deciding — "+judgeReason)); err != nil {
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
 	confirmedStopped := true
@@ -818,7 +816,7 @@ func (w *Watchdog) stopAndVerifyAmbiguousLoop(ctx context.Context, ag *agent.Age
 	if confirmedStopped {
 		status, reason = w.verdictStatusFromVerify(ctx, ag.TaskID, judgeReason)
 	}
-	if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.verify.result", status, reason); err != nil {
+	if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.verify.result", status, task.StatusInProgress, reason); err != nil {
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
 }
@@ -841,7 +839,7 @@ func (w *Watchdog) verdictStatusFromVerify(ctx context.Context, taskID, judgeRea
 		return task.StatusHumanRequired, judgeReason
 	}
 	if passed {
-		return task.StatusInProgress, "watchdog hang: verify suite passed on re-check — loop stop was a false positive"
+		return task.StatusInProgress, watchdogreason.Hang("verify suite passed on re-check — loop stop was a false positive")
 	}
 	return task.StatusHumanRequired, "watchdog: verify suite still fails after loop stop: " + trimTail(failedCmd, output, 500)
 }
@@ -869,16 +867,20 @@ func trimTail(failedCmd, output string, n int) string {
 // so it applies the same cooldown/failover as the clean-429 case. The task is
 // left in-progress — human-required is reserved for genuine reward-hacking
 // loops per #1310's scoping.
-func (w *Watchdog) stopForRateLimit(ag *agent.Agent, trigger string, verdict agent.InspectorVerdict) {
+func (w *Watchdog) stopForRateLimit(ag *agent.Agent, trigger string, verdict agent.InspectorVerdict, expectedStatus task.Status) {
 	reason := watchdogreason.RateLimit(verdict.Reason)
 	if ag.TaskID == "" {
 		w.logger.Warn("agent.watchdog.rate_limit.untracked",
 			"id", ag.ID, "trigger", trigger, "provider", ag.Provider, "reason", verdict.Reason)
-	} else if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.rate-limit", task.StatusInProgress, reason); err != nil {
+	} else if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.rate-limit", task.StatusInProgress, expectedStatus, reason); err != nil {
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
 	if w.recordProviderSignal != nil {
-		w.recordProviderSignal(ag, provider.SignalRateLimit, reason, 0)
+		w.recordProviderSignal(ag, provider.Classification{
+			Signal: provider.SignalRateLimit,
+			Reason: reason,
+			Source: provider.CooldownFromConfig,
+		})
 	}
 	if err := w.stopAgent(ag.ID); err != nil {
 		w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
@@ -944,11 +946,8 @@ func hasUnaddressedReviewFinding(codeReview string) bool {
 // to its active workflow status with a distinct status-reason prefix the
 // workflow engine recognizes on the next ResumeStalled tick.
 func (w *Watchdog) stopForRewardHackingRetry(ag *agent.Agent, verdict agent.InspectorVerdict, status task.Status) {
-	reason := rewardHackingRetryStatusReason
-	if verdict.Reason != "" {
-		reason = rewardHackingRetryStatusReason + ": " + verdict.Reason
-	}
-	if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.reward-hacking-retry", status, reason); err != nil {
+	reason := watchdogreason.RewardHackingRetry(verdict.Reason)
+	if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.reward-hacking-retry", status, status, reason); err != nil {
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
 	if err := w.stopAgent(ag.ID); err != nil {
@@ -957,41 +956,37 @@ func (w *Watchdog) stopForRewardHackingRetry(ag *agent.Agent, verdict agent.Insp
 	w.logger.Info("agent.watchdog.reward_hacking.retry", "id", ag.ID, "task_id", ag.TaskID, "reason", verdict.Reason)
 }
 
-// rewardHackingRetryStatusReason must stay in sync with
-// internal/workflow/engine_events.go's watchdogRewardHackingStatusPrefix —
-// that constant is what handleWatchdogRewardHackingRetry pattern-matches on
-// to recognize and bound this specific retry path.
-const rewardHackingRetryStatusReason = "watchdog: reward-hacking retry"
-
-// zeroOutputReason is the provider-health detail recorded for a zero-output
-// startup hang (see inspectHeadless). Kept distinct from the generic
-// "rate_limited" reason so provider health status/logs can tell the two
-// apart even though both share the SignalRateLimit health-gate bucket.
+// zeroOutputReason is the detail recorded on the task and the agent for a
+// zero-output startup hang (see inspectHeadless).
 const zeroOutputReason = watchdogreason.ZeroOutputBeforeStartup
 
 // handleZeroOutputStall handles a "stall" trigger on a headless agent that
-// never produced any output at all. This reuses stopForRateLimit's recovery
-// machinery: mark the task retryable (not human-required), report a
-// provider-health signal so the health gate parks this provider for its
-// cooldown and the next dispatch can fail over to a healthy peer, and stop
-// the hung process. Reusing the "rate_limit" signal/error-kind is what makes
-// the completion handler's isRateLimitedRun check reschedule the run
-// immediately (RescheduleRateLimitedAgent) instead of leaving it for the
-// same-provider "watchdog hang" retry budget that #1913 exhausted for
-// nothing.
-func (w *Watchdog) handleZeroOutputStall(ag *agent.Agent, stall, total time.Duration) {
+// never produced any output at all: mark the task retryable (not
+// human-required), tag the agent so the completion handler re-dispatches the
+// run immediately, and stop the hung process.
+//
+// The agent gets ErrorKindSilentHang rather than a provider-health signal. The
+// two used to be one call: this path reported provider.SignalRateLimit purely
+// to reach the completion handler's reschedule branch and skip the
+// same-provider "watchdog hang" retry budget that #1913 exhausted for nothing.
+// That borrowed signal also parked the whole provider for its rate-limit
+// cooldown, so one task hanging three times in a morning made a healthy
+// provider unavailable to every other task for 45 minutes, and with the peer
+// provider genuinely capped there was nowhere left to fail over (#3154). A
+// silent child says nothing about the provider's quota, so nothing here
+// touches provider health; the reschedule is preserved by the error kind
+// instead.
+func (w *Watchdog) handleZeroOutputStall(ag *agent.Agent, stall, total time.Duration, expectedStatus task.Status) {
 	w.logger.Warn("agent.watchdog.zero_output_stall",
 		"id", ag.ID, "task_id", ag.TaskID, "provider", ag.Provider,
 		"stall_sec", int(stall.Seconds()), "total_sec", int(total.Seconds()))
-	reason := watchdogreason.RateLimit(zeroOutputReason)
+	reason := watchdogreason.SilentHang(zeroOutputReason)
 	if ag.TaskID == "" {
 		w.logger.Warn("agent.watchdog.zero_output_stall.untracked", "id", ag.ID, "provider", ag.Provider)
-	} else if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.zero-output-stall", task.StatusInProgress, reason); err != nil {
+	} else if err := w.applyStatusEffect(ag.TaskID, "watchdog.agent.zero-output-stall", task.StatusInProgress, expectedStatus, reason); err != nil {
 		w.logger.Error("agent.watchdog.task.update", "task_id", ag.TaskID, "err", err)
 	}
-	if w.recordProviderSignal != nil {
-		w.recordProviderSignal(ag, provider.SignalRateLimit, zeroOutputReason, 0)
-	}
+	ag.SetError(agent.ErrorKindSilentHang, zeroOutputReason)
 	if err := w.stopAgent(ag.ID); err != nil {
 		w.logger.Error("agent.watchdog.stop.failed", "id", ag.ID, "err", err)
 	}

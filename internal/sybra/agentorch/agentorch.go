@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -20,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/project"
@@ -493,9 +493,13 @@ func (o *Orchestrator) logSandboxEscapeHatch(taskID string, t task.Task) {
 	if t.Sandbox == nil || *t.Sandbox {
 		return
 	}
-	o.logger.Warn("agent.sandbox.escape_hatch", "task_id", taskID)
+	// An empty reason is itself the signal: `"reason":""` in the audit line
+	// marks an unexplained bypass as plainly as a separate flag would.
+	reason := strings.TrimSpace(t.SandboxOffReason)
+	o.logger.Warn("agent.sandbox.escape_hatch", "task_id", taskID, "reason", reason)
 	o.LogAudit(audit.EventAgentSandboxDisabled, taskID, "", map[string]any{
 		"configured_default": o.cfg.DefaultSandboxMode(),
+		"reason":             reason,
 	})
 }
 
@@ -1066,21 +1070,14 @@ func (o *Orchestrator) revertToTodoAfterGateBlock(taskID, logSuffix string) {
 }
 
 func (o *Orchestrator) resetWorktreeForCleanRetry(ctx context.Context, t task.Task, ref string) error {
-	resetDir := t.WorktreeDir
-	if resetDir == "" {
-		resetDir = o.worktrees.PathFor(t)
-	}
-	if _, statErr := os.Stat(resetDir); statErr != nil {
-		if os.IsNotExist(statErr) {
-			return nil
-		}
-		return fmt.Errorf("stat clean retry worktree: %w", statErr)
-	}
-	if err := project.ResetWorktreeForRetry(ctx, resetDir, ref); err != nil {
-		o.logger.Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", resetDir, "ref", ref, "err", err)
+	target, reset, err := o.worktrees.ResetForRetry(ctx, t, "", ref)
+	if err != nil {
+		o.logger.Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref, "err", err)
 		return err
 	}
-	o.logger.Info("worktree.clean-retry.reset", "task_id", t.ID, "path", resetDir, "ref", ref)
+	if reset {
+		o.logger.Info("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref)
+	}
 	return nil
 }
 
@@ -1517,13 +1514,11 @@ func CurrentWorktreeHead(ctx context.Context, dir string) string {
 	if dir == "" {
 		return ""
 	}
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "HEAD")
-	cmd.Dir = dir
-	out, err := cmd.Output()
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: dir}, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return out
 }
 
 // FirstNonEmpty returns the first non-empty string among vals, or "" if all

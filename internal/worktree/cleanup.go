@@ -4,13 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/cleanup"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -19,6 +18,8 @@ var (
 	bareTaskIDRe   = regexp.MustCompile(`^[0-9a-f]{8}$`)
 	suffixTaskIDRe = regexp.MustCompile(`-([0-9a-f]{8})$`)
 )
+
+const worktreeQuarantineDirName = ".quarantine"
 
 // taskIDFromWorktreeDir extracts the owning task ID from a worktree directory
 // name: task.Task.DirName() is either the bare 8-hex-char ID (no slug yet) or
@@ -49,6 +50,16 @@ func (m *Manager) Remove(ctx context.Context, taskID string) {
 	if _, err := os.Stat(wtPath); err != nil {
 		return
 	}
+	// A preparation is mid-flight on this exact directory. Deleting it out from
+	// under a `git worktree add`/rebase is the same hazard two concurrent
+	// preparations are (#3114). Cleanup is never urgent — CleanupOrphaned's
+	// periodic sweep reaps it later — so skip rather than wait.
+	release, lockErr := m.lockPath(wtPath)
+	if lockErr != nil {
+		m.logger.Info("worktree.cleanup.busy", "task_id", taskID, "err", lockErr)
+		return
+	}
+	defer release()
 	// Never reap a worktree whose completed work never reached origin — a task
 	// bounced to a terminal status (done/cancelled) after a failed push would
 	// otherwise lose its finished-but-unpushed diff right here, before the
@@ -93,6 +104,9 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 		if !e.IsDir() {
 			continue
 		}
+		if e.Name() == worktreeQuarantineDirName {
+			continue
+		}
 		name := e.Name()
 		wtPath := filepath.Join(m.dir, name)
 
@@ -100,35 +114,22 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 		switch {
 		case !exists:
 			// Task deleted — remove worktree directory.
-		case t.Status != task.StatusDone:
+		case !task.IsTerminalStatus(t.Status):
 			continue
 		case m.hasAgent != nil && m.hasAgent(t.ID):
 			continue
 		}
 
-		if project.HasUnpushedCommits(ctx, wtPath) {
-			m.observeProtectedWorktree(ctx, wtPath, taskIDFromWorktreeDir(name), observedProtected)
+		// This sweep is the backstop for every worktree Remove skipped, so it
+		// must take the same per-path exclusion Remove does — otherwise the
+		// hazard is relocated here rather than avoided.
+		release, lockErr := m.lockPath(wtPath)
+		if lockErr != nil {
+			m.logger.Info("worktree.orphan-cleanup.busy", "path", wtPath, "err", lockErr)
 			continue
 		}
-
-		removed := false
-		if exists && t.ProjectID != "" {
-			if proj, perr := m.projects.Get(t.ProjectID); perr == nil {
-				if err := project.RemoveWorktree(ctx, proj.ClonePath, wtPath); err != nil {
-					m.logger.Error("worktree.orphan-cleanup", "path", wtPath, "err", err)
-				} else {
-					removed = true
-				}
-			}
-		}
-		if !removed {
-			// Task deleted or project lookup failed — force-remove and prune after.
-			if err := os.RemoveAll(wtPath); err != nil {
-				m.logger.Error("worktree.orphan-cleanup", "path", wtPath, "err", err)
-				continue
-			}
-		}
-		m.logger.Info("worktree.orphan-cleaned", "path", wtPath)
+		m.reapOrphanedWorktree(ctx, wtPath, name, t, observedProtected)
+		release()
 	}
 	m.resolveProtectedWorktrees(observedProtected)
 
@@ -145,6 +146,34 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 			m.logger.Warn("worktree.prune", "project", projects[i].ID, "err", err)
 		}
 	}
+}
+
+// reapOrphanedWorktree removes one swept worktree directory. Caller holds the
+// path lock. A nil t is a directory whose task no longer exists.
+func (m *Manager) reapOrphanedWorktree(ctx context.Context, wtPath, name string, t *task.Task, observedProtected map[string]bool) {
+	if project.HasUnpushedCommits(ctx, wtPath) {
+		m.observeProtectedWorktree(ctx, wtPath, taskIDFromWorktreeDir(name), observedProtected)
+		return
+	}
+
+	removed := false
+	if t != nil && t.ProjectID != "" {
+		if proj, perr := m.projects.Get(t.ProjectID); perr == nil {
+			if err := project.RemoveWorktree(ctx, proj.ClonePath, wtPath); err != nil {
+				m.logger.Error("worktree.orphan-cleanup", "path", wtPath, "err", err)
+			} else {
+				removed = true
+			}
+		}
+	}
+	if !removed {
+		// Task deleted or project lookup failed — force-remove and prune after.
+		if err := os.RemoveAll(wtPath); err != nil {
+			m.logger.Error("worktree.orphan-cleanup", "path", wtPath, "err", err)
+			return
+		}
+	}
+	m.logger.Info("worktree.orphan-cleaned", "path", wtPath)
 }
 
 func (m *Manager) observeProtectedWorktree(ctx context.Context, path, taskID string, observed map[string]bool) {
@@ -191,11 +220,11 @@ func (m *Manager) resolveProtectedWorktrees(observed map[string]bool) {
 func worktreeHead(ctx context.Context, path string) string {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", path, "rev-parse", "HEAD").Output()
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: path}, "rev-parse", "HEAD")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return out
 }
 
 func worktreeObservedState(ctx context.Context, path string) string {
@@ -309,6 +338,35 @@ func (m *Manager) RepairAll(ctx context.Context) {
 	}
 }
 
+// refuseRecreateWithLocalWork stops healOrRecreate from wiping a worktree
+// that still holds commits origin has never seen or uncommitted filesystem
+// state.
+//
+// Remove and CleanupOrphaned already refuse in that case (#2593), but the
+// branch-mismatch recreate path deleted unconditionally. A worktree can be
+// healthy yet on an unexpected branch — precisely the state a merge or
+// conflict resolution leaves — and wiping it discards work an agent already
+// did and verified, with the only record being the original push failure.
+//
+// Failing loudly is the point: the task surfaces a real error a human can act
+// on while the local state still exists.
+func (m *Manager) refuseRecreateWithLocalWork(ctx context.Context, taskID, wtPath, reason string) error {
+	if project.HasUnpushedCommits(ctx, wtPath) {
+		m.logger.Error("worktree.recreate.unpushed-commits", "task_id", taskID, "path", wtPath, "reason", reason)
+		return fmt.Errorf("refusing to recreate %s worktree %s: it holds commits that never reached a remote", reason, wtPath)
+	}
+	dirty, err := project.IsWorktreeDirty(ctx, wtPath)
+	if err != nil {
+		m.logger.Error("worktree.recreate.inspect-local-work", "task_id", taskID, "path", wtPath, "reason", reason, "err", err)
+		return fmt.Errorf("refusing to recreate %s worktree %s: cannot verify that its local state is clean: %w", reason, wtPath, err)
+	}
+	if dirty {
+		m.logger.Error("worktree.recreate.uncommitted-work", "task_id", taskID, "path", wtPath, "reason", reason)
+		return fmt.Errorf("refusing to recreate %s worktree %s: it holds uncommitted work", reason, wtPath)
+	}
+	return nil
+}
+
 // healOrRecreate ensures the worktree at wtPath has resolvable git metadata
 // and sits on wantBranch. Returns (true, nil) if the worktree is usable on
 // return, (false, nil) if it was wiped and the caller should re-create it, or
@@ -320,8 +378,10 @@ func (m *Manager) healOrRecreate(ctx context.Context, taskID, clonePath, wtPath,
 		return true, nil
 	}
 	if healthy {
+		if err := m.refuseRecreateWithLocalWork(ctx, taskID, wtPath, "branch-mismatch"); err != nil {
+			return false, err
+		}
 		m.logger.Warn("worktree.branch-mismatch-recreate", "task_id", taskID, "path", wtPath, "branch", wantBranch)
-		m.logger.Warn("worktree.unrepairable-recreate", "task_id", taskID, "path", wtPath)
 		_ = project.RemoveWorktree(ctx, clonePath, wtPath)
 		if err := os.RemoveAll(wtPath); err != nil {
 			return false, fmt.Errorf("remove mismatched-branch worktree %s: %w", wtPath, err)
@@ -337,13 +397,34 @@ func (m *Manager) healOrRecreate(ctx context.Context, taskID, clonePath, wtPath,
 		m.logger.Info("worktree.repaired", "task_id", taskID, "path", wtPath)
 		return true, nil
 	}
-	m.logger.Warn("worktree.unrepairable-recreate", "task_id", taskID, "path", wtPath)
-	_ = project.RemoveWorktree(ctx, clonePath, wtPath)
-	if err := os.RemoveAll(wtPath); err != nil {
-		return false, fmt.Errorf("remove unhealthy worktree %s: %w", wtPath, err)
+	// Broken linked-worktree metadata makes git status and reachability
+	// unreadable. Preserve the entire checkout before recreating: unreadable is
+	// not evidence that its filesystem contents are disposable.
+	quarantined, err := m.quarantineWorktreeDir(wtPath)
+	if err != nil {
+		return false, fmt.Errorf("quarantine unhealthy worktree %s: %w", wtPath, err)
 	}
+	m.logger.Warn("worktree.unrepairable-recreate", "task_id", taskID, "path", wtPath, "quarantine", quarantined)
+	_ = project.RemoveWorktree(ctx, clonePath, wtPath)
 	_ = project.PruneWorktrees(ctx, clonePath)
 	return false, nil
+}
+
+func (m *Manager) quarantineWorktreeDir(wtPath string) (string, error) {
+	root := filepath.Join(m.dir, worktreeQuarantineDirName)
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	slot, err := os.MkdirTemp(root, filepath.Base(wtPath)+"-")
+	if err != nil {
+		return "", err
+	}
+	destination := filepath.Join(slot, "worktree")
+	if err := os.Rename(wtPath, destination); err != nil {
+		_ = os.Remove(slot)
+		return "", err
+	}
+	return destination, nil
 }
 
 // onExpectedBranch reports whether wtPath is currently checked out on

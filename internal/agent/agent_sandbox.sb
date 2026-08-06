@@ -19,7 +19,97 @@
   (subpath (param "CODEX_STATE"))
   (subpath (param "COPILOT_STATE"))
   (subpath (param "OPENCODE_STATE"))
-  (subpath (param "TOOL_CACHE")))
+  (subpath (param "TOOL_CACHE"))
+  ;; APP_SUPPORT is the macOS per-user application-data root. codex's
+  ;; in-process app-server creates its own directory there at startup, so it
+  ;; needs write on the parent; a codex-named subpath alone was measured to
+  ;; fail. Unused slots resolve to a never-written sentinel.
+  (subpath (param "APP_SUPPORT"))
+  ;; CLAUDE_SCRATCH is Claude Code's per-user scratchpad root
+  ;; (/tmp/claude-<uid>). Granted narrowly rather than opening /tmp, which is
+  ;; world-writable and shared with every process on the host.
+  (subpath (param "CLAUDE_SCRATCH"))
+  ;; GIT_ADMIN_DIR is this task's own linked-worktree admin directory under
+  ;; the shared bare clone (worktrees/<branch>/ — HEAD, index, logs/HEAD).
+  ;; WORKTREE only covers the checkout; a linked worktree's actual gitdir
+  ;; lives outside it, so every git write (add/commit/fetch/push) failed
+  ;; EPERM without this. Scoped to just this task's own admin subdirectory,
+  ;; not the shared bare-clone root or sibling worktrees, so one task cannot
+  ;; write another's refs.
+  (subpath (param "GIT_ADMIN_DIR"))
+  ;; Only canonical loose objects are writable. The 256 fanout directories
+  ;; are pre-created before spawn, and fetch.unpackLimit is forced high so
+  ;; normal fetches also use this content-addressed path. A regex (not a broad
+  ;; objects/ subpath) prevents nested GIT_OBJECT_DIRECTORY bypasses.
+  (regex (param "GIT_LOOSE_OBJECT_PATTERN"))
+  ;; GIT_BRANCH_REF_FILE/_LOCK_FILE/GIT_BRANCH_LOG_FILE are the exact ref,
+  ;; ref-lock, and reflog files for this task's own branch — literal, not
+  ;; subpath: the branch's parent ref directory can be shared with sibling
+  ;; tasks whose branch names nest under the same path segment (two "fix/..."
+  ;; branches both live under refs/heads/fix/), so granting the directory
+  ;; would let one task write another's ref. Linux avoids this with a bind-
+  ;; mounted overlay; Seatbelt has no filesystem-view mechanism to do the
+  ;; same, so this narrows the grant to the three files a commit touches.
+  (literal (param "GIT_BRANCH_REF_FILE"))
+  (literal (param "GIT_BRANCH_REF_LOCK_FILE"))
+  (literal (param "GIT_BRANCH_LOG_FILE"))
+  ;; GIT_STASH_REF_FILE/_LOCK_FILE/_LOG_FILE/_LOG_LOCK_FILE: refs/stash is a
+  ;; single, fixed-name ref directly under refs/ (unlike refs/heads/<name>,
+  ;; there is no branch-name variability), so it is granted as an exact
+  ;; literal the same way the branch's own ref/reflog are — `git stash`
+  ;; fails closed (fatal: cannot lock ref 'refs/stash') without this.
+  (literal (param "GIT_STASH_REF_FILE"))
+  (literal (param "GIT_STASH_REF_LOCK_FILE"))
+  (literal (param "GIT_STASH_LOG_FILE"))
+  ;; `git stash pop` drops the applied entry through the stash reflog lock.
+  ;; This single fixed-name exception is required for the ordinary stash
+  ;; workflow; branch and namespace reflog expiry remains blocked below.
+  (literal (param "GIT_STASH_LOG_LOCK_FILE"))
+  ;; Ordinary ref transactions (notably stash) take the repository-wide
+  ;; packed-refs lock even when they do not rewrite packed refs. The data and
+  ;; staging files remain ungranted, so pack-refs cannot publish a rewrite.
+  (literal (param "GIT_PACKED_REFS_LOCK_FILE"))
+  ;; GIT_REMOTE_REF_DIR/_LOG_DIR, GIT_TAG_REF_DIR/_LOG_DIR, and
+  ;; GIT_NOTES_REF_DIR/_LOG_DIR are granted as whole subpaths, unlike the
+  ;; per-file branch-ref/stash grants above: unlike a branch (one task's
+  ;; own, exclusive work), remote-tracking refs, tags, and notes are shared
+  ;; truth every task fetching/annotating the same origin converges on, so a
+  ;; write here is idempotent rather than destructive to a sibling task's own
+  ;; state — the same tradeoff Linux's overlay-and-sync makes safe by a
+  ;; different mechanism.
+  (subpath (param "GIT_REMOTE_REF_DIR"))
+  (subpath (param "GIT_REMOTE_LOG_DIR"))
+  (subpath (param "GIT_TAG_REF_DIR"))
+  (subpath (param "GIT_TAG_LOG_DIR"))
+  (subpath (param "GIT_NOTES_REF_DIR"))
+  (subpath (param "GIT_NOTES_LOG_DIR"))
+  ;; GIT_SHALLOW_FILE/_LOCK_FILE: touched by a shallow fetch/clone
+  ;; (`--depth`/`--shallow-since`) — not issued by Sybra's own git calls
+  ;; today, but reachable if an agent runs one directly.
+  (literal (param "GIT_SHALLOW_FILE"))
+  (literal (param "GIT_SHALLOW_LOCK_FILE"))
+  )
+;; Ordinary ref updates append reflogs without a separate reflog lock. Reflog
+;; expiry instead creates *.lock beside the shared log and renames it over the
+;; original. Keep those locks unavailable so a crafted gc/reflog-expire cannot
+;; truncate shared history before a later maintenance step is denied.
+(deny file-write*
+  (regex (param "GIT_REMOTE_LOG_LOCK_PATTERN"))
+  (regex (param "GIT_TAG_LOG_LOCK_PATTERN"))
+  (regex (param "GIT_NOTES_LOG_LOCK_PATTERN")))
+;; Git publishes a loose object by renaming a root-level tmp_obj_* file into
+;; its fanout directory. It never needs to unlink an already-published loose
+;; object. Denying unlink only at the canonical fanout path blocks prune-
+;; packed/maintenance from deleting shared objects while preserving publish.
+(deny file-write-unlink (regex (param "GIT_LOOSE_OBJECT_FANOUT_PATTERN")))
+;; Device sinks. Writing to these is a no-op by definition, so allowing them
+;; adds no blast radius, but denying them breaks essentially all tooling:
+;; every `>/dev/null` redirect fails, which took out git with
+;; "fatal: could not open '/dev/null' for reading and writing".
+;; Linux is unaffected — bwrap's --dev mounts a fresh writable /dev.
+(allow file-write*
+  (literal "/dev/null")
+  (literal "/dev/zero"))
 ;; READONLY_DIR re-denies writes for a run whose Dir must stay read-only
 ;; (RunConfig.ReadOnlyDir) even though it sits inside one of the allowed
 ;; roots above (TMP in particular is the whole system temp dir, so a
@@ -30,3 +120,15 @@
 ;; order. Set to a fixed, never-written-to sentinel when unused so it never
 ;; shadows a legitimate writable root.
 (deny file-write* (subpath (param "READONLY_DIR")))
+;; Durable claude config: settings.json carries PreToolUse hooks and hooks/
+;; holds their scripts, so a run that edits either changes how every later run
+;; behaves and survives worktree cleanup. The state dir itself must stay
+;; writable — a real run writes plugins/, sessions/, session-env/,
+;; shell-snapshots/ and projects/ — so these are carved back out of it.
+;; Seatbelt resolves the most specific applicable rule, so these win over the
+;; broader CLAUDE_STATE allow regardless of order. Unused slots point at a
+;; never-written sentinel.
+(deny file-write*
+  (subpath (param "STATE_DENY_1"))
+  (subpath (param "STATE_DENY_2"))
+  (subpath (param "STATE_DENY_3")))

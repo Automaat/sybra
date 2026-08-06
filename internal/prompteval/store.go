@@ -34,13 +34,10 @@ func New(dir string) *Store {
 // validateKey rejects a variantID/digest that is empty, contains a path
 // separator, "..", or any character outside [A-Za-z0-9._-].
 func validateKey(key string) error {
-	if key == "" {
-		return fmt.Errorf("prompteval: key must not be empty")
+	if err := fsutil.ValidateKey(key); err != nil {
+		return fmt.Errorf("prompteval: %w", err)
 	}
 	if !validKey.MatchString(key) {
-		return fmt.Errorf("prompteval: invalid key %q", key)
-	}
-	if key == "." || key == ".." {
 		return fmt.Errorf("prompteval: invalid key %q", key)
 	}
 	return nil

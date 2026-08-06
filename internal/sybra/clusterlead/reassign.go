@@ -58,6 +58,8 @@ func mayHaveLiveAgent(t task.Task) bool {
 // the push then fails, the move is rolled back so the task is never left
 // pointing at a node that never received it.
 func (a *Assigner) Reassign(ctx context.Context, taskID, node string) error {
+	unlock := a.lockOwnership(taskID)
+	defer unlock()
 	node = strings.TrimSpace(node)
 	if node == "" {
 		return fmt.Errorf("%w: %q", ErrUnknownNode, node)
@@ -137,6 +139,10 @@ func (a *Assigner) stampNode(taskID, override, assigned string) (task.Task, erro
 	cur.NodeOverride = override
 	cur.AssignedNode = assigned
 	cur.WorktreeDir = ""
+	// Advance the persisted ownership revision even when an ABA move returns
+	// to the same node name. UpdatedAt records the ordinary task write.
+	cur.AssignmentRev++
+	cur.UpdatedAt = time.Now().UTC()
 	cur.MirrorRev = 0
 	cur.MirrorUpdatedAt = nil
 	saved, _, err := a.tasks.Put(cur)
@@ -152,10 +158,14 @@ func (a *Assigner) rollbackNode(taskID string, previous, moved task.Task) {
 		a.logger.Error("cluster.reassign.rollback.failed", "task", taskID, "err", err)
 		return
 	}
-	if cur.AssignedNode != moved.AssignedNode {
+	if cur.AssignedNode != moved.AssignedNode || cur.AssignmentRev != moved.AssignmentRev {
 		return
 	}
 	cur.AssignedNode = previous.AssignedNode
+	// A rollback is still an ownership change. Advance the revision so an
+	// RPC response from the failed assignment cannot apply afterwards.
+	cur.AssignmentRev++
+	cur.UpdatedAt = time.Now().UTC()
 	cur.NodeOverride = previous.NodeOverride
 	cur.WorktreeDir = previous.WorktreeDir
 	cur.MirrorRev = previous.MirrorRev

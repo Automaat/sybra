@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 const (
@@ -498,6 +500,9 @@ func validateRepoState(ctx context.Context, cfg Config) error {
 	if _, err := git(ctx, cfg.RepoDir, "rev-parse", "--is-inside-work-tree"); err != nil {
 		return fmt.Errorf("not a git worktree: %w", err)
 	}
+	if err := ensureGitObjectDatabaseWritable(ctx, cfg.RepoDir); err != nil {
+		return err
+	}
 	branch, err := git(ctx, cfg.RepoDir, "branch", "--show-current")
 	if err != nil {
 		return fmt.Errorf("current branch: %w", err)
@@ -516,6 +521,67 @@ func validateRepoState(ctx context.Context, cfg Config) error {
 		return errors.New("worktree is dirty")
 	}
 	return nil
+}
+
+func ensureGitObjectDatabaseWritable(ctx context.Context, repoDir string) error {
+	objectsRel, err := git(ctx, repoDir, "rev-parse", "--git-path", "objects")
+	if err != nil {
+		return fmt.Errorf("git object database path: %w", err)
+	}
+	objectsDir := objectsRel
+	if !filepath.IsAbs(objectsDir) {
+		objectsDir = filepath.Join(repoDir, objectsRel)
+	}
+	if info, err := os.Stat(objectsDir); err != nil {
+		return fmt.Errorf("git object database is unavailable: %w", err)
+	} else if !info.IsDir() {
+		return fmt.Errorf("git object database is not a directory: %s", objectsDir)
+	}
+	if err := probeWritableDir(objectsDir); err != nil {
+		return fmt.Errorf("git object database is not writable; repair repo ownership/permissions for %s: %w", objectsDir, err)
+	}
+	entries, err := os.ReadDir(objectsDir)
+	if err != nil {
+		return fmt.Errorf("read git object database: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.IsDir() || !shouldProbeObjectSubdir(name) {
+			continue
+		}
+		dir := filepath.Join(objectsDir, name)
+		if err := probeWritableDir(dir); err != nil {
+			return fmt.Errorf("git object fanout directory is not writable; repair repo ownership/permissions for %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+func shouldProbeObjectSubdir(name string) bool {
+	return (len(name) == 2 && isHexByte(name)) || name == "pack" || name == "info"
+}
+
+func probeWritableDir(dir string) error {
+	f, err := os.CreateTemp(dir, ".sybra-write-check-*")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	closeErr := f.Close()
+	removeErr := os.Remove(name)
+	if closeErr != nil {
+		return closeErr
+	}
+	return removeErr
+}
+
+func isHexByte(s string) bool {
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 func repoBlockReason(ctx context.Context, cfg Config) string {
@@ -566,12 +632,9 @@ func gitRun(ctx context.Context, dir, name string, args ...string) error {
 }
 
 func git(ctx context.Context, dir, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{name}, args...)...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	out, err := cmd.CombinedOutput()
+	out, err := gitexec.CombinedOutput(ctx, gitexec.Options{Dir: dir}, append([]string{name}, args...)...)
 	if err != nil {
-		return "", fmt.Errorf("git %s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -664,26 +727,7 @@ func saveState(path string, state persistedState) error {
 	if err != nil {
 		return fmt.Errorf("marshal autoupdate state: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("create autoupdate state temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer func() {
-		_ = os.Remove(tmpPath)
-	}()
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write autoupdate state temp file: %w", err)
-	}
-	if err := tmp.Chmod(0o644); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod autoupdate state temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close autoupdate state temp file: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := fsutil.AtomicWrite(path, append(data, '\n')); err != nil {
 		return fmt.Errorf("write autoupdate state: %w", err)
 	}
 	return nil

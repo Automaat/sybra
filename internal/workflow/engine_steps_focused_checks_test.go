@@ -130,7 +130,14 @@ func TestExecFocusedChecks_PassIsClean(t *testing.T) {
 
 func TestExecFocusedChecks_ScaledTimeoutAbsorbsHostOversubscription(t *testing.T) {
 	orig := workflowCheckLoadPerCPU
-	workflowCheckLoadPerCPU = func() (float64, bool) { return 3.0, true }
+	// Stubbed at the scale ceiling, not just above 1: the assertion needs the
+	// scaled budget to clear `sleep 0.2` plus real process-spawn cost on a
+	// machine already running the rest of the suite. At load 3 the budget was
+	// 300ms against a 200ms sleep, and that 100ms margin is what made this
+	// flake under `go test ./...` while passing in isolation. At the ceiling
+	// the budget is 800ms, while the unscaled 100ms still fails without
+	// scaling — so the test proves the same thing with 4x the headroom.
+	workflowCheckLoadPerCPU = func() (float64, bool) { return verifyTimeoutScaleCeilingLoad, true }
 	t.Cleanup(func() { workflowCheckLoadPerCPU = orig })
 
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -315,6 +322,9 @@ func TestExecFocusedChecks_FailureReasksImplement(t *testing.T) {
 	if wf.Variables["step.focused_checks.auto_fix"] != "1" {
 		t.Fatalf("auto_fix counter = %q, want 1", wf.Variables["step.focused_checks.auto_fix"])
 	}
+	if got := wf.Variables[verifyRetryModelVar]; got != "expensive" {
+		t.Fatalf("%s = %q, want expensive", verifyRetryModelVar, got)
+	}
 	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "in-progress" {
 		t.Fatalf("status = %q, want in-progress", ti.Status)
 	}
@@ -337,7 +347,55 @@ func TestExecFocusedChecks_FailureReasksImplement(t *testing.T) {
 	}
 }
 
-func TestExecFocusedChecks_FailureReasksPastOldCap(t *testing.T) {
+// Regression: the artifact used to cap stored output to the last 8000 bytes
+// (tailString), which silently drops whatever ran before the cut. For a
+// verbose command this reliably discards the actual failure signal near the
+// start of the output. The stored output must never be cut.
+func TestExecFocusedChecks_LongOutputNotTruncated(t *testing.T) {
+	t.Parallel()
+
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	writeRepoFile(t, wt, "internal/workflow/model.go", "package workflow\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: touch workflow")
+
+	engine, tasks, rec := newFocusedChecksEngine(t, wt, []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Packages: []string{"./internal/workflow/..."},
+		Commands: []string{"echo MARKER_START; yes x | head -c 9000; exit 1"},
+	}}, nil)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	wf := implementedExec()
+	_, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+
+	var report *focusedChecksReport
+	for _, put := range rec.puts {
+		if put.name != "focused-checks.json" {
+			continue
+		}
+		var r focusedChecksReport
+		if err := json.Unmarshal([]byte(put.content), &r); err != nil {
+			t.Fatalf("unmarshal artifact: %v", err)
+		}
+		report = &r
+	}
+	if report == nil {
+		t.Fatalf("no focused-checks.json artifact recorded; puts: %+v", rec.puts)
+	}
+	if len(report.OutputTail) < 9000 {
+		t.Fatalf("OutputTail = %d bytes, want the full >9000-byte output preserved", len(report.OutputTail))
+	}
+	if !strings.Contains(report.OutputTail, "MARKER_START") {
+		t.Errorf("artifact lost the start of the output — the old tail-only truncation would have dropped it")
+	}
+}
+
+func TestExecFocusedChecks_FailureReasksBelowCeiling(t *testing.T) {
 	t.Parallel()
 
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -352,10 +410,10 @@ func TestExecFocusedChecks_FailureReasksPastOldCap(t *testing.T) {
 	}}, nil)
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	// Past the old cap of 2, a code-fixable focused-check failure keeps being
-	// re-asked; it escalates only at verifyChecksAutoFixCeiling.
+	// A code-fixable focused-check failure below the generic ceiling keeps
+	// being re-asked.
 	wf := implementedExec()
-	wf.Variables["step.focused_checks.auto_fix"] = "9"
+	wf.Variables["step.focused_checks.auto_fix"] = "2"
 	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
 	if !errors.Is(err, errStepParked) {
 		t.Fatalf("err = %v, want errStepParked (keep re-asking, never escalate)", err)
@@ -366,11 +424,53 @@ func TestExecFocusedChecks_FailureReasksPastOldCap(t *testing.T) {
 	if wf.CurrentStep != verifyChecksImplStepID || wf.State != ExecWaiting {
 		t.Fatalf("workflow after rewind = %+v, want implement/ExecWaiting", wf)
 	}
-	if got := wf.Variables["step.focused_checks.auto_fix"]; got != "10" {
-		t.Fatalf("auto_fix counter = %q, want 10", got)
+	if got := wf.Variables["step.focused_checks.auto_fix"]; got != "3" {
+		t.Fatalf("auto_fix counter = %q, want 3", got)
 	}
 	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "in-progress" {
 		t.Fatalf("status = %q, want in-progress (never escalated to human)", ti.Status)
+	}
+}
+
+func TestExecFocusedChecks_IdenticalFingerprintEscalatesEarly(t *testing.T) {
+	t.Parallel()
+
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	writeRepoFile(t, wt, "internal/workflow/model.go", "package workflow\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: touch workflow")
+
+	engine, tasks, _ := newFocusedChecksEngine(t, wt, []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"echo deterministic >&2; exit 1"},
+	}}, nil)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	wf := implementedExec()
+	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("first attempt err = %v, want errStepParked", err)
+	}
+	if out != (StepOutput{}) {
+		t.Fatalf("first parked output should be zero, got %+v", out)
+	}
+	now := time.Now().UTC()
+	wf.RecordStep(StepRecord{StepID: verifyChecksImplStepID, Status: "completed", StartedAt: now, EndedAt: now})
+
+	out, err = engine.execFocusedChecks("t1", newFocusedChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if err != nil {
+		t.Fatalf("second attempt: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+	ti := mustGetTaskInfo(t, tasks, "t1")
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
+	}
+	if !strings.Contains(ti.StatusReason, "repeated identical auto-fix failures") {
+		t.Fatalf("reason = %q, want identical-failure exhaustion", ti.StatusReason)
 	}
 }
 

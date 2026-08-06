@@ -25,10 +25,10 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	synapsegithub "github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/sybra/completion"
 	"github.com/Automaat/sybra/internal/task"
-	"github.com/Automaat/sybra/internal/testutil/loadscale"
 	"github.com/Automaat/sybra/internal/triage"
 
 	"github.com/Automaat/sybra/internal/workflow"
@@ -309,6 +309,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
 	t.Setenv("FAKE_CLAUDE_SCENARIO", scenario)
 	t.Setenv("FAKE_CODEX_SCENARIO", scenario)
+	unsetGitFixtureEnv(t)
 
 	// Use os.MkdirTemp instead of t.TempDir to avoid cleanup races with
 	// background goroutines (agent processes, sybra-cli writes).
@@ -460,23 +461,83 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	return env
 }
 
+func unsetGitFixtureEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"GIT_DIR",
+		"GIT_WORK_TREE",
+		"GIT_COMMON_DIR",
+		"GIT_INDEX_FILE",
+		"GIT_OBJECT_DIRECTORY",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	} {
+		value, had := os.LookupEnv(key)
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatalf("unset %s: %v", key, err)
+		}
+		t.Cleanup(func() {
+			if !had {
+				_ = os.Unsetenv(key)
+				return
+			}
+			_ = os.Setenv(key, value)
+		})
+	}
+}
+
 // waitFor polls a condition with timeout. The timeout is scaled by
 // e2eTimeoutScale so CI runners (slow fork/exec, container I/O variance) and
 // locally-loaded hosts (e.g. a fleet of concurrent agents) don't have to be
 // defended against per-test.
 func waitFor(t *testing.T, timeout time.Duration, desc string, fn func() bool) {
 	t.Helper()
-	scale := e2eTimeoutScale()
-	scaled := clampToReportingDeadline(time.Duration(int64(timeout) * scale))
-	deadline := time.After(scaled)
+	waitForWithScale(t, timeout, desc, fn, e2eTimeoutScale)
+}
+
+// waitForWithScale is waitFor with the deadline scaler injected, so the
+// adaptive behaviour can be tested without mutating SYBRA_E2E_TIMEOUT_SCALE —
+// that variable is process-global and every concurrently running test's budget
+// reads it, so a test that sets it starves its neighbours.
+func waitForWithScale(t *testing.T, timeout time.Duration, desc string, fn func() bool, scaleFn func() int64) {
+	t.Helper()
+	if budget, scale, ok := awaitCondition(timeout, fn, scaleFn); !ok {
+		t.Fatalf("timeout waiting for: %s (after %s, scale=%d)\n%s", desc, budget, scale, e2eGoroutineDump())
+	}
+}
+
+// awaitCondition polls fn until it holds or its budget is exhausted,
+// reporting the budget and scale so the caller can describe the failure.
+//
+// The budget is spent in *intended* time — the time this loop asked to sleep
+// — not wall-clock. That is the fix for #2811: the load-average scaler is a
+// lagging and, on darwin, frequently blind signal, because a suite that
+// oversubscribes the host through process spawning and I/O leaves
+// load-per-CPU under 1 while wall-clock waits inflate several-fold. Counting
+// intended time makes the deadline mean "this many polls' worth of chances",
+// which is what the test actually cares about, and immune to how slow the
+// host is while it takes them.
+//
+// A wall-clock backstop still applies so a pathologically slow host cannot let
+// one wait consume the whole binary timeout.
+func awaitCondition(timeout time.Duration, fn func() bool, scaleFn func() int64) (time.Duration, int64, bool) {
+	const pollInterval = 50 * time.Millisecond
+	scale := scaleFn()
+	budget := time.Duration(int64(timeout) * scale)
+	maxWall := clampToReportingDeadline(time.Duration(int64(timeout) * e2eTimeoutScaleCeiling))
+	start := time.Now()
+	var slept time.Duration
 	for {
-		select {
-		case <-deadline:
-			t.Fatalf("timeout waiting for: %s (after %s, scale=%d)\n%s", desc, scaled, scale, e2eGoroutineDump())
-		case <-time.After(50 * time.Millisecond):
-			if fn() {
-				return
-			}
+		// Sleep before the first check, matching the original select-based
+		// loop. Polling immediately on entry would let a condition that is
+		// only transiently true at t=0 report success before the behaviour
+		// under test has happened at all.
+		time.Sleep(pollInterval)
+		slept += pollInterval
+		if fn() {
+			return budget, scale, true
+		}
+		if slept >= budget || time.Since(start) >= maxWall {
+			return budget, scale, false
 		}
 	}
 }
@@ -590,40 +651,6 @@ func dropParkedTestGoroutines(dump string) string {
 		out += fmt.Sprintf("\n\n(%d goroutines parked in t.Parallel omitted — they hold nothing)\n", parked)
 	}
 	return out
-}
-
-func e2eTimeoutScale() int64 {
-	return e2eTimeoutScaleResolve()
-}
-
-const (
-	e2eTimeoutScaleCeiling = 20
-	e2eCITimeoutScaleFloor = 12
-)
-
-func e2eTimeoutScaleResolve() int64 {
-	if v := strings.TrimSpace(os.Getenv("SYBRA_E2E_TIMEOUT_SCALE")); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			return n
-		}
-	}
-	factor := loadscale.HostOversubscriptionFactor(e2eTimeoutScaleCeiling)
-	// CI runners carry a known-bad baseline (slow fork/exec, container I/O
-	// variance) even when the load average looks idle, so they get a fixed
-	// floor on top of the measured factor. Local/dev runs (including a fleet
-	// of concurrent agents on darwin/linux) have no such baseline — they
-	// scale purely off measured host load, same as CI does above the floor.
-	if os.Getenv("CI") == "" && os.Getenv("GITHUB_ACTIONS") == "" {
-		return factor
-	}
-	scaled := e2eCITimeoutScaleFloor * factor
-	if scaled < e2eCITimeoutScaleFloor {
-		return e2eCITimeoutScaleFloor
-	}
-	if scaled > e2eTimeoutScaleCeiling {
-		return e2eTimeoutScaleCeiling
-	}
-	return scaled
 }
 
 func TestE2E_HeadlessAgent_Success(t *testing.T) {
@@ -972,6 +999,64 @@ func TestE2E_HeadlessAgent_CostHardStopRetriesBoundedPath(t *testing.T) {
 	})
 }
 
+// TestE2E_HeadlessAgent_CostHardStopPreemptsMidStream verifies the mid-stream
+// live-cost ceiling: the fake claude "high_cost_mid_stream" scenario reports
+// no total_cost_usd anywhere and emits a single assistant event whose own
+// usage block alone prices well over MaxCostUSD, followed by a result line
+// that must never be reached. Only the pre-emptive live estimate (not the
+// terminal-result cost check) can stop a run like this.
+func TestE2E_HeadlessAgent_CostHardStopPreemptsMidStream(t *testing.T) {
+	env := setupE2EMulti(t, []string{"high_cost_mid_stream", "triage"})
+	env.agents.SetGuardrails(agent.Guardrails{MaxCostUSD: 1.0})
+
+	h := completion.New(completion.Config{
+		Logger:         e2eLogger(t),
+		Tasks:          env.tasks,
+		Worktrees:      worktree.New(worktree.Config{WorktreesDir: env.worktreesDir, Tasks: env.tasks, Logger: e2eLogger(t), AgentChecker: env.agents.HasRunningAgentForTask}),
+		WorkflowEngine: env.engine,
+	})
+	env.onAgentComplete = h.OnComplete
+
+	created, err := env.tasks.Create("cost mid-stream pre-empt task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 10*time.Second, "mid-stream cost-preempted triage retries through failed-completion path", func() bool {
+		tk, err := env.tasks.Get(created.ID)
+		if err != nil || tk.Workflow == nil {
+			return false
+		}
+		return tk.Workflow.CurrentStep != "triage"
+	})
+
+	// Step movement alone does not prove the live pre-emption fired: the
+	// high_cost_mid_stream scenario's trailing result reports a trivial cost, so
+	// a run that ignored the mid-stream usage would complete triage *successfully*
+	// and advance the step identically. Assert the discriminating signal — that a
+	// triage run was hard-stopped with the cost escalation reason, forcing the
+	// bounded failed-completion retry that dispatched the second ("triage")
+	// scenario. Only the mid-stream live estimate can set this here.
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var costStopped bool
+	for _, run := range tk.AgentRuns {
+		if run.EscalationReason == agent.EscalationReasonCost {
+			costStopped = true
+			break
+		}
+	}
+	if !costStopped {
+		t.Fatalf("no AgentRun recorded EscalationReason=%q — mid-stream live-cost pre-emption never fired; runs=%+v",
+			agent.EscalationReasonCost, tk.AgentRuns)
+	}
+}
+
 // TestE2E_HeadlessAgent_StopCompletedAgent_AdvancesWorkflow verifies that
 // when the watchdog reaps a finished-but-alive agent via StopCompletedAgent
 // (clean terminal result emitted, process never exited), the workflow still
@@ -1251,7 +1336,7 @@ steps:
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if spawned := h.maybeSpawn(created.ID, string(task.StatusTodo)); !spawned {
+	if spawned := h.maybeSpawn(context.Background(), created.ID, string(task.StatusTodo)); !spawned {
 		t.Fatal("expected initial human-review spawn")
 	}
 
@@ -2502,6 +2587,9 @@ func TestE2E_TestingTaskWorkflow_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
+		t.Fatal(err)
+	}
 
 	wfID, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
 		map[string]string{"task.status": string(task.StatusTesting)},
@@ -2542,6 +2630,9 @@ func TestE2E_TestingTaskWorkflow_LongPassVerdictSurvivesTruncation(t *testing.T)
 
 	created, err := env.tasks.Create("manual test long pass", "", "headless")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2803,6 +2894,9 @@ func TestE2E_TestingTaskWorkflow_InfraFailureOpensPRAtCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
 		map[string]string{"task.status": string(task.StatusTesting)},
@@ -2998,6 +3092,9 @@ func TestE2E_Codex_TestVerdict_Pass_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
 		map[string]string{"task.status": string(task.StatusTesting)},
@@ -3036,6 +3133,9 @@ func TestE2E_Codex_TestVerdict_Pass_JSON_WithTrailingEmptyItem(t *testing.T) {
 
 	created, err := env.tasks.Create("codex json verdict pass with trailing item", "", "headless")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3135,6 +3235,9 @@ func TestE2E_Codex_TestVerdict_Pass_JSON_WithMandatorySkillReceiptPreamble(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
 		map[string]string{"task.status": string(task.StatusTesting)},
@@ -3193,7 +3296,21 @@ func TestE2E_WaitHuman_InvalidActionRejected(t *testing.T) {
 
 	before, _ := env.tasks.Get(created.ID)
 	historyBefore := len(before.Workflow.StepHistory)
-	updatedBefore := before.UpdatedAt
+	stepBefore := before.Workflow.CurrentStep
+	stateBefore := before.Workflow.State
+
+	// An unrelated write, standing in for the lease renewals and effect-log
+	// appends the engine performs on its own schedule. It bumps UpdatedAt
+	// without touching the state machine, which is exactly the interleaving
+	// that used to fail this test: the rejection was correct, but a timestamp
+	// comparison cannot tell "the bogus action mutated the task" apart from
+	// "something else wrote while we were looking". Doing it deliberately
+	// makes the distinction part of what the test pins.
+	if _, err := env.tasks.Update(created.ID, task.Update{
+		StatusReason: task.Ptr("concurrent write during invalid-action handling"),
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	err = env.engine.HandleHumanAction(created.ID, "bogus", nil)
 	if err == nil {
@@ -3213,8 +3330,9 @@ func TestE2E_WaitHuman_InvalidActionRejected(t *testing.T) {
 	if got := len(after.Workflow.StepHistory); got != historyBefore {
 		t.Errorf("step_history len = %d, want %d", got, historyBefore)
 	}
-	if !after.UpdatedAt.Equal(updatedBefore) {
-		t.Errorf("UpdatedAt changed from %v to %v", updatedBefore, after.UpdatedAt)
+	if after.Workflow.CurrentStep != stepBefore || after.Workflow.State != stateBefore {
+		t.Errorf("workflow moved from %s/%s to %s/%s",
+			stepBefore, stateBefore, after.Workflow.CurrentStep, after.Workflow.State)
 	}
 	if _, set := after.Workflow.Variables["human_action"]; set {
 		t.Errorf("human_action unexpectedly set: %q", after.Workflow.Variables["human_action"])
@@ -4428,6 +4546,7 @@ func runCmd(t *testing.T, dir, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
+	scrubGitFixtureEnv(cmd)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%s %v failed: %v\n%s", name, args, err, string(out))
 	}
@@ -4437,11 +4556,46 @@ func readCommandOutput(t *testing.T, dir, name string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
+	scrubGitFixtureEnv(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s %v failed: %v\n%s", name, args, err, string(out))
 	}
 	return string(out)
+}
+
+func scrubGitFixtureEnv(cmd *exec.Cmd) {
+	if filepath.Base(cmd.Path) != "git" {
+		return
+	}
+	cmd.Env = os.Environ()
+	cmd.Env = withoutEnvKeys(cmd.Env,
+		"GIT_DIR",
+		"GIT_WORK_TREE",
+		"GIT_COMMON_DIR",
+		"GIT_INDEX_FILE",
+		"GIT_OBJECT_DIRECTORY",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	)
+}
+
+func withoutEnvKeys(env []string, keys ...string) []string {
+	if len(env) == 0 || len(keys) == 0 {
+		return env
+	}
+	blocked := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		blocked[key] = struct{}{}
+	}
+	filtered := env[:0]
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if _, skip := blocked[name]; skip {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	return filtered
 }
 
 func initRepoWithOriginMain(t *testing.T, dir string) {
@@ -4511,7 +4665,7 @@ func (g *scriptedGate) ReportAuthFailure(provider, reason string) {
 	g.reason[provider] = reason
 }
 
-func (g *scriptedGate) ReportRateLimit(provider string, retryAfter time.Duration, reason string) {
+func (g *scriptedGate) ReportRateLimit(provider string, retryAfter time.Duration, reason string, _ provider.CooldownSource) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.healthy[provider] = false
@@ -4570,7 +4724,7 @@ func (g *cooldownGate) ReportAuthFailure(provider, reason string) {
 	g.limitedTo[provider] = time.Now().Add(5 * time.Minute)
 }
 
-func (g *cooldownGate) ReportRateLimit(provider string, retryAfter time.Duration, reason string) {
+func (g *cooldownGate) ReportRateLimit(provider string, retryAfter time.Duration, reason string, _ provider.CooldownSource) {
 	if retryAfter <= 0 {
 		retryAfter = 200 * time.Millisecond
 	}
@@ -4992,7 +5146,7 @@ func TestE2E_VerifyCommits_BranchAtBaseMarksHumanRequired(t *testing.T) {
 	// so only "success" (implement) remains in the queue. The default
 	// classifier verdict (env.classifier) already routes to status=todo,
 	// matching the old "triage" fake-claude scenario.
-	env := setupE2EMultiProvider(t, "claude", []string{"success"})
+	env := setupE2EMultiProvider(t, "claude", []string{"success", "success"})
 	loadBuiltinWorkflow(t, env, "simple-task-plan")
 	loadBuiltinWorkflow(t, env, "simple-task-implement")
 
@@ -5014,7 +5168,35 @@ func TestE2E_VerifyCommits_BranchAtBaseMarksHumanRequired(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Wait for AgentRoutes to drain, not just for the rearm to land.
+	// rearm_no_commit_author persists the workflow while the finished agent's
+	// route is still on the record, and clearAgentStep removes it in a second,
+	// separate write. Proceeding between those two writes leaves an engine
+	// writer live for this task while the mutation below runs.
+	waitFor(t, 30*time.Second, "verify_commits parks one no-commit retry", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil && tk.Workflow != nil &&
+			tk.Workflow.WorkflowID == "simple-task-implement" &&
+			tk.Workflow.CurrentStep == "implement" &&
+			tk.Workflow.State == workflow.ExecWaiting &&
+			len(tk.Workflow.AgentRoutes) == 0 &&
+			tk.Workflow.Variables["step.verify_commits.no_commit_retry"] == "1"
+	})
+	// Mutate under the per-task lock. A Get followed by a whole-Execution
+	// Update is a lost update against any concurrent engine writer, and the
+	// field most likely to be clobbered back is AgentRoutes — a route to an
+	// agent that will never complete wedges ResumeStalled permanently.
+	if _, err := env.tasks.UpdateFn(created.ID, func(cur task.Task) (task.Update, error) {
+		wf := cur.Workflow
+		wf.SetVar("workflow.retry_after", time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
+		return task.Update{Workflow: &wf}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	env.engine.ResumeStalled()
+
 	waitFor(t, 30*time.Second, "implement workflow completes after verify_commits", func() bool {
+		env.engine.ResumeStalled()
 		tk, gErr := env.tasks.Get(created.ID)
 		return gErr == nil && tk.Workflow != nil &&
 			tk.Workflow.WorkflowID == "simple-task-implement" &&
@@ -5275,7 +5457,7 @@ steps:
     name: Review Gate
     type: wait_human
     config:
-      status: plan-review
+      status: human-required
       human_actions:
         - approve
     next:
@@ -5331,7 +5513,7 @@ steps:
     name: Gate
     type: wait_human
     config:
-      status: plan-review
+      status: human-required
       human_actions:
         - approve
         - reject
@@ -5912,7 +6094,7 @@ steps:
     name: Loop Gate
     type: wait_human
     config:
-      status: plan-review
+      status: human-required
       human_actions:
         - approve
         - reject
@@ -5927,7 +6109,7 @@ steps:
     name: Gate
     type: wait_human
     config:
-      status: plan-review
+      status: human-required
       human_actions:
         - approve
     next:
@@ -5948,7 +6130,7 @@ steps:
     name: Gate
     type: wait_human
     config:
-      status: plan-review
+      status: human-required
       human_actions:
         - approve
     next:
@@ -6095,7 +6277,7 @@ func TestE2E_RateLimitCooldownWindowCorrectness(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"success", "success"})
 	g := newCooldownGate()
 	env.agents.SetHealthGate(g)
-	g.ReportRateLimit("claude", 200*time.Millisecond, "rate_limited")
+	g.ReportRateLimit("claude", 200*time.Millisecond, "rate_limited", provider.CooldownFromConfig)
 
 	ag1, err := env.agents.Run(agent.RunConfig{
 		TaskID:   "cooldown-1",

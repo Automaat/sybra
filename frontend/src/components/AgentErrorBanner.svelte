@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Component } from 'svelte'
-  import { ArrowUpDown, Cloud, Ban, Clock, AlertTriangle, RotateCcw, ChevronRight } from '@lucide/svelte'
+  import { ArrowUpDown, Cloud, Ban, Clock, EyeOff, AlertTriangle, RotateCcw, ChevronRight } from '@lucide/svelte'
   import { agentStore } from '../stores/agents.svelte.js'
 
   interface ErrorEvent {
@@ -58,6 +58,14 @@
       icon: Clock,
       what: 'The API provider rate limit was reached.',
       todo: 'Wait a few minutes and retry, or check provider health.',
+      color: 'bg-warning-50 border-warning-400 dark:bg-warning-950 dark:border-warning-600',
+      iconColor: 'text-warning-500',
+    },
+    silent_hang: {
+      label: 'No output from agent',
+      icon: EyeOff,
+      what: 'The agent process started but produced no output before the startup timeout, so the watchdog stopped it.',
+      todo: 'The task is rescheduled automatically. Provider quota is not the cause — read the run log for what the process was doing.',
       color: 'bg-warning-50 border-warning-400 dark:bg-warning-950 dark:border-warning-600',
       iconColor: 'text-warning-500',
     },

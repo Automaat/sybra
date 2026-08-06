@@ -16,6 +16,16 @@ type ClaudeMessage struct {
 	Text        string            // joined text blocks only
 	ToolUses    []ToolUseBlock    // tool_use blocks (structured)
 	ToolResults []ToolResultBlock // tool_result blocks (structured, untruncated)
+	// InputTokens/OutputTokens/CacheCreationInputTokens/CacheReadInputTokens
+	// carry an assistant message's own `usage` block, when the CLI reports one
+	// (real Claude Code assistant events do). Zero for a "user" message and for
+	// any assistant event that predates/omits usage. Lets a mid-stream cost
+	// ceiling bank spend at assistant-event granularity instead of only at the
+	// terminal result event.
+	InputTokens              int
+	OutputTokens             int
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
 }
 
 // ClaudeResult holds fields from "result" events.
@@ -150,6 +160,10 @@ type claudeUsage struct {
 
 type claudeMessagePayload struct {
 	Content []claudeContentBlock `json:"content"`
+	// Usage carries an assistant message's own token usage, when the CLI
+	// reports one — nil for a "user" message and for older/fixture events
+	// that omit it.
+	Usage *claudeUsage `json:"usage"`
 }
 
 type claudeContentBlock struct {
@@ -1027,11 +1041,18 @@ func extractAssistantContentTyped(msg *claudeMessagePayload) ClaudeMessage {
 			tools = append(tools, tb)
 		}
 	}
-	return ClaudeMessage{
+	out := ClaudeMessage{
 		Role:     "assistant",
 		Text:     strings.Join(textParts, "\n"),
 		ToolUses: tools,
 	}
+	if msg.Usage != nil {
+		out.InputTokens = msg.Usage.InputTokens
+		out.OutputTokens = msg.Usage.OutputTokens
+		out.CacheCreationInputTokens = msg.Usage.CacheCreationInputTokens
+		out.CacheReadInputTokens = msg.Usage.CacheReadInputTokens
+	}
+	return out
 }
 
 // extractToolResults parses tool_result blocks from a "user" message.

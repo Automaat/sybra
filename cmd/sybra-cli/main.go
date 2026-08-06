@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
@@ -27,10 +26,13 @@ import (
 	"github.com/Automaat/sybra/internal/codexhook"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/gitexec"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/issueref"
 	"github.com/Automaat/sybra/internal/modeltier"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/skillsync"
@@ -47,12 +49,58 @@ import (
 var hookTaskIDRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
 
 var (
-	loadCLIConfig          = config.Load
-	loadCLIConfigNoPersist = config.LoadNoPersist
+	loadCLIConfig        = config.Load
+	loadCLIConfigLenient = config.LoadLenient
+	enableCLIAppAuth     = github.EnableAppAuth
+	refreshCLIAppToken   = github.RefreshAppToken
+	currentCLIAppToken   = github.CurrentAppToken
 )
 
 func main() {
 	os.Exit(run(os.Args[1:]))
+}
+
+// runCheckConfigWithHome applies --home before validating, so the preflight
+// checks the home the caller named rather than whatever SYBRA_HOME happens to
+// hold.
+func runCheckConfigWithHome(homeOverride string, homeErr, jsonOut bool) int {
+	if homeErr {
+		return fatal(jsonOut, "--home requires a value")
+	}
+	if homeOverride != "" {
+		if err := os.Setenv("SYBRA_HOME", homeOverride); err != nil {
+			return fatal(jsonOut, "set SYBRA_HOME: %v", err)
+		}
+	}
+	return runCheckConfig()
+}
+
+// runCheckConfig mirrors sybra-server's -check-config so the deploy preflight
+// can assert both binaries accept the live config, not just the server.
+//
+// They can disagree: the CLI tolerates a config it cannot parse by falling
+// back to a direct task store, so a key the server understands and the CLI
+// does not produces a warning on every invocation rather than a failure. That
+// is how a deployed CLI ended up warning "unknown config key
+// agent.sandbox_read_mode" on every call while the server ran happily — and
+// agents run sybra-cli from inside their worktrees to read and update task
+// state, so a CLI silently dropping the resolved config is a state-drift
+// hazard sitting in the middle of every workflow.
+//
+// LoadNoPersist, not Load, for the same reason the server uses it: a preflight
+// must never mutate the live config.yaml.
+func runCheckConfig() int {
+	cfg, err := config.LoadNoPersist()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config: invalid:", err)
+		return 1
+	}
+	if err := cfg.ValidateCluster(); err != nil {
+		fmt.Fprintln(os.Stderr, "config: invalid:", err)
+		return 1
+	}
+	fmt.Println("config: ok")
+	return 0
 }
 
 type homeResolution struct {
@@ -61,34 +109,64 @@ type homeResolution struct {
 	fromSybraHome   bool
 }
 
+// globalFlags are the flags accepted before, after, or around a subcommand.
+type globalFlags struct {
+	jsonOut      bool
+	checkConfig  bool
+	homeOverride string
+	homeErr      bool
+}
+
+// parseGlobalFlags strips the global flags from args wherever they appear and
+// returns the remainder as the subcommand and its arguments.
+func parseGlobalFlags(args []string) (flags globalFlags, rest []string) {
+	var g globalFlags
+	filtered := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--json":
+			g.jsonOut = true
+		case a == "--home":
+			// Take the tail as a slice rather than indexing: slicing at i+1 is
+			// always valid here, so the emptiness check is provably sufficient
+			// and the bounds analysis stays happy.
+			rest := args[i+1:]
+			if len(rest) == 0 {
+				g.homeErr = true
+				continue
+			}
+			g.homeOverride = rest[0]
+			i++
+		case strings.HasPrefix(a, "--home="):
+			g.homeOverride = strings.TrimPrefix(a, "--home=")
+		case a == "-check-config" || a == "--check-config":
+			g.checkConfig = true
+		default:
+			filtered = append(filtered, a)
+		}
+	}
+	return g, filtered
+}
+
 func run(args []string) int {
 	if len(args) == 0 {
 		usage()
 		return 1
 	}
 
-	// Extract global --json and --home flags before subcommand.
-	jsonOut := false
-	filtered := make([]string, 0, len(args))
-	homeOverride := ""
-	homeErr := false
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		switch {
-		case a == "--json":
-			jsonOut = true
-		case a == "--home":
-			if i+1 >= len(args) {
-				homeErr = true
-				continue
-			}
-			i++
-			homeOverride = args[i]
-		case strings.HasPrefix(a, "--home="):
-			homeOverride = strings.TrimPrefix(a, "--home=")
-		default:
-			filtered = append(filtered, a)
-		}
+	globals, filtered := parseGlobalFlags(args)
+	jsonOut, checkConfig := globals.jsonOut, globals.checkConfig
+	homeOverride, homeErr := globals.homeOverride, globals.homeErr
+
+	// After the global-flag pass, so position does not matter: the preflight is
+	// invoked as `sybra-cli -check-config` today, but `--home DIR
+	// -check-config` must validate DIR rather than silently treating the flag
+	// as a subcommand. Handled before the home/config plumbing below because
+	// runCheckConfig does its own strict load and must not inherit the
+	// task-store fallback that exists for ordinary commands.
+	if checkConfig {
+		return runCheckConfigWithHome(homeOverride, homeErr, jsonOut)
 	}
 
 	// Detect the hook subcommand before config.Load can abort: codex lifecycle
@@ -134,11 +212,18 @@ func run(args []string) int {
 	}
 
 	if isReadOnlyConfigCommand(cmd) {
-		cfg, err := loadCLIConfigNoPersist()
+		cfg, schemaErr, err := loadCLIConfigLenient()
 		if err != nil {
 			return fatal(jsonOut, "load config: %v", err)
 		}
-		return cmdConfig(cfg, rest, jsonOut)
+		// Only `config doctor` survives a bad key. It is the command an
+		// operator reaches for once the config stops loading, so dying on that
+		// key leaves them with nothing; it reports the key as a finding
+		// instead, beside every other check. The rest still fail closed.
+		if schemaErr != nil && !isConfigDoctor(rest) {
+			return fatal(jsonOut, "load config: %v", schemaErr)
+		}
+		return cmdConfig(cfg, rest, jsonOut, allowHTTPForHome(homeOverride, home), schemaErr)
 	}
 
 	cfg, err := loadCLIConfig()
@@ -160,21 +245,33 @@ func run(args []string) int {
 		return cmdHook(cfg, filtered[1:])
 	}
 
+	if cmd == "github-app-token" {
+		return cmdGithubAppToken(cfg, jsonOut)
+	}
+
 	store, projStore, err := openStores(cfg)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
 
-	// HTTP auto-detect is only safe on the untouched default path. Any resolved
-	// home override — --home, SYBRA_CONTROL_HOME, or SYBRA_HOME — means the
-	// caller explicitly targeted an on-disk store, so reaching some unrelated
-	// reachable server would violate that contract.
-	allowHTTP := homeOverride == "" && !home.fromControlHome && !home.fromSybraHome
-	return dispatch(cmd, rest, cfg, store, projStore, allowHTTP, jsonOut)
+	return dispatch(cmd, rest, cfg, store, projStore, allowHTTPForHome(homeOverride, home), jsonOut)
+}
+
+// allowHTTPForHome reports whether HTTP auto-detect is safe. It is only safe on
+// the untouched default path. Any resolved home override — --home,
+// SYBRA_CONTROL_HOME, or SYBRA_HOME — means the caller explicitly targeted an
+// on-disk store, so reaching some unrelated reachable server would violate that
+// contract.
+func allowHTTPForHome(homeOverride string, home homeResolution) bool {
+	return homeOverride == "" && !home.fromControlHome && !home.fromSybraHome
 }
 
 func isReadOnlyConfigCommand(cmd string) bool {
 	return cmd == "config"
+}
+
+func isConfigDoctor(args []string) bool {
+	return len(args) > 0 && args[0] == "doctor"
 }
 
 func resolveHome(homeOverride string) homeResolution {
@@ -254,11 +351,11 @@ func currentWorktreeRevision() string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", wd, "rev-parse", "HEAD").Output()
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: wd}, "rev-parse", "HEAD")
 	if err != nil {
 		return ""
 	}
-	return string(out)
+	return out
 }
 
 func shortRevision(rev string) string {
@@ -333,7 +430,7 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 	case "progress":
 		return cmdProgress(store, projStore, rest, jsonOut)
 	case "config":
-		return cmdConfig(cfg, rest, jsonOut)
+		return cmdConfig(cfg, rest, jsonOut, allowHTTP, nil)
 	case "doctor":
 		return cmdDoctor(cfg, store, rest, jsonOut)
 	case "trash":
@@ -354,11 +451,52 @@ func openStores(cfg *config.Config) (*task.Manager, *project.Store, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("open project store: %w", err)
 	}
+	projStore.SetSigningPolicy(project.NormalizeSigningPolicy(cfg.CommitSigning()))
 	return task.NewManager(rawStore, nil), projStore, nil
+}
+
+func cmdGithubAppToken(cfg *config.Config, jsonOut bool) int {
+	app := cfg.GitHub.App
+	if !app.Enabled {
+		return fatal(jsonOut, "github.app is not enabled")
+	}
+	if err := enableCLIAppAuth(github.AppCredentials{
+		AppID:          app.AppID,
+		InstallationID: app.InstallationID,
+		PrivateKeyPath: app.PrivateKeyPath,
+	}); err != nil {
+		return fatal(jsonOut, "enable github app auth: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := refreshCLIAppToken(ctx); err != nil {
+		return fatal(jsonOut, "refresh github app token: %v", err)
+	}
+	token := currentCLIAppToken()
+	if token == "" {
+		return fatal(jsonOut, "github app token is unavailable")
+	}
+	if jsonOut {
+		if err := json.NewEncoder(os.Stdout).Encode(map[string]string{"token": token}); err != nil {
+			return fatal(jsonOut, "write github app token json: %v", err)
+		}
+		return 0
+	}
+	fmt.Fprintln(os.Stdout, token)
+	return 0
 }
 
 func dispatchTaskStoreFallback(cmd string, rest []string, jsonOut bool, loadErr error) (code int, handled bool) {
 	if !supportsTaskStoreFallback(cmd) {
+		return 0, false
+	}
+	// An unknown key says nothing about whether the server is reachable, so
+	// the fallback's premise does not hold. Its write path is also the one an
+	// agent cannot use: agents run `sybra-cli update` from inside a sandboxed
+	// worktree where the task store is read-only. Failing here names the key;
+	// falling back turned one stale key into agents that could not update
+	// their own tasks.
+	if errors.Is(loadErr, config.ErrUnknownConfigKey) {
 		return 0, false
 	}
 	store, tasksDir, err := openFallbackTaskStore()
@@ -809,7 +947,7 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	return 0
 }
 
-func resolveHandoffMode(fs *flag.FlagSet, stage, rawStatus string, pr int) (handoffStageConfig, task.Status, bool, error) {
+func resolveHandoffMode(fs *flag.FlagSet, stage, rawStatus string, pr int) (cfg handoffStageConfig, status task.Status, explicit bool, err error) {
 	stageProvided := false
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "stage" {
@@ -875,10 +1013,12 @@ const handoffManualTag = "handoff-manual"
 
 // handoffStageDef is one entry in the handoff-stage registry: a canonical
 // name, its input aliases, and the tags that route a task into the matching
-// Sybra lane (simple-task-handoff-<name>.yaml) on creation. Adding a stage
-// is a data edit here — handoffStageConfigFor, its error message, and the
-// --stage usage text all derive from this slice, so nothing else needs to
-// change to keep a new stage reachable.
+// Sybra lane on creation. The builtin workflow IDs are expanded from the
+// single handoff template at internal/workflow/builtin/simple-task-handoff.yaml.
+// Adding a stage is a data edit here plus a matching template variant there —
+// handoffStageConfigFor, its error message, and the --stage usage text all
+// derive from this slice, so nothing else needs to change to keep a new stage
+// reachable.
 type handoffStageDef struct {
 	name           string
 	aliases        []string
@@ -984,15 +1124,15 @@ func handoffStageSourceRequirementList() string {
 }
 
 func normalizeHandoffSourceProvider(raw string) (string, error) {
-	provider := strings.ToLower(strings.TrimSpace(raw))
-	switch provider {
+	name := strings.ToLower(strings.TrimSpace(raw))
+	switch name {
 	case "none", "clear":
-		provider = ""
+		name = ""
 	}
-	if _, err := task.ValidateAgentProvider(provider); err != nil {
+	if _, err := task.ValidateAgentProvider(name); err != nil {
 		return "", err
 	}
-	return provider, nil
+	return name, nil
 }
 
 // resolveWorktreeDir resolves the handoff worktree (default: cwd) to an
@@ -1087,11 +1227,11 @@ func printHandoffStatusResult(t task.Task, status task.Status, projectID, dir st
 // deriveProjectID reads the origin remote of a git worktree and converts it to
 // a Sybra project id (owner/repo).
 func deriveProjectID(dir string) (string, error) {
-	out, err := exec.CommandContext(context.Background(), "git", "-C", dir, "remote", "get-url", "origin").Output()
+	out, err := gitexec.Output(context.Background(), gitexec.Options{Dir: dir}, "remote", "get-url", "origin")
 	if err != nil {
 		return "", fmt.Errorf("git remote get-url origin: %w", err)
 	}
-	owner, repo, err := project.ParseGitHubURL(strings.TrimSpace(string(out)))
+	owner, repo, err := project.ParseGitHubURL(out)
 	if err != nil {
 		return "", err
 	}
@@ -1134,7 +1274,7 @@ func cmdInstallSkills(cfg *config.Config, jsonOut bool) int {
 		PrimaryDst:           cfg.SkillsDir,
 		SybraHomeDir:         config.HomeDir(),
 		UserHomeDir:          home,
-		DowngradeCommitFlags: !project.GPGSigningAvailable(context.Background()),
+		DowngradeCommitFlags: !project.NormalizeSigningPolicy(cfg.CommitSigning()).SignsCommits(context.Background()),
 	})
 
 	dsts := []string{
@@ -1606,10 +1746,11 @@ func cmdReopen(s *task.Manager, args []string, jsonOut bool) int {
 			extra.ProjectID = task.Ptr(*projectID)
 		}
 		result, err := s.Apply(task.TransitionIntent{
-			TaskID:   id,
-			ToStatus: task.StatusTodo,
-			Actor:    "cli.reopen",
-			Extra:    extra,
+			TaskID:           id,
+			ToStatus:         task.StatusTodo,
+			Actor:            "cli.reopen",
+			Extra:            extra,
+			OperatorOverride: true,
 		})
 		if err != nil {
 			return fatal(jsonOut, "%v", err)
@@ -1747,7 +1888,7 @@ func printJSON(v any) int {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
-		fmt.Fprintf(os.Stderr, `{"error":"%v"}`+"\n", err)
+		writeJSONError(err.Error())
 		return 1
 	}
 	return 0
@@ -1756,11 +1897,23 @@ func printJSON(v any) int {
 func fatal(jsonOut bool, format string, args ...any) int {
 	msg := fmt.Sprintf(format, args...)
 	if jsonOut {
-		fmt.Fprintf(os.Stderr, `{"error":"%s"}`+"\n", msg)
+		writeJSONError(msg)
 	} else {
 		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
 	}
 	return 1
+}
+
+// writeJSONError marshals rather than interpolating: several messages quote a
+// config key or a path, and a raw double quote inside the string literal makes
+// the object unparseable for the agents that run this with --json.
+func writeJSONError(msg string) {
+	encoded, err := json.Marshal(map[string]string{"error": msg})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
+		return
+	}
+	fmt.Fprintln(os.Stderr, string(encoded))
 }
 
 func filterProject(tasks []task.Task, projectID string) []task.Task {
@@ -2525,6 +2678,9 @@ Commands:
            Open a PR for an already-pushed branch and link it, in one step. Runs
            gh in --dir (default cwd), so it must sit inside the repo clone. Lets
            a Kubernetes agent Job open its own PR instead of the server doing it.
+  github-app-token
+           Print a freshly minted GitHub App installation token for Sybra's
+           configured github.app block. Intended for Sybra's agent gh shim.
   delete   <id>
            Soft-deletes: moves the task file and its sidecars into the trash
            dir instead of unlinking them. See trash list / trash restore.
@@ -2936,31 +3092,24 @@ func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
 	// the read-only commands below but must be set consistently.
 	env := tasksnapshot.BuildEnv(gitDir, cfg.TasksDir)
 
-	verify := exec.CommandContext(ctx, "git", "rev-parse", "--git-dir")
-	verify.Env = env
-	if err := verify.Run(); err != nil {
+	opts := gitexec.Options{Env: env}
+	if err := gitexec.Run(ctx, opts, "rev-parse", "--git-dir"); err != nil {
 		return fatal(jsonOut, "tasks snapshot history unavailable — snapshotting is disabled or has not run yet (%v)", err)
 	}
 
 	// Detect an empty repo by HEAD resolvability, not a locale-dependent
 	// stderr string: `rev-parse --verify --quiet HEAD` exits non-zero with no
 	// output when no commits exist yet, which is a valid empty history.
-	head := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", "HEAD")
-	head.Env = env
-	hasCommits := head.Run() == nil
+	hasCommits := gitexec.RunQuiet(ctx, opts, "rev-parse", "--verify", "--quiet", "HEAD") == nil
 
 	var entries []taskHistoryEntry
 	if hasCommits {
 		const sep = "\x1f"
-		logCmd := exec.CommandContext(ctx, "git", "log", "--date=iso-strict", "--pretty=format:%h"+sep+"%ad"+sep+"%s", fmt.Sprintf("-n%d", *limit))
-		logCmd.Env = env
-		var stdout, stderr bytes.Buffer
-		logCmd.Stdout = &stdout
-		logCmd.Stderr = &stderr
-		if err := logCmd.Run(); err != nil {
-			return fatal(jsonOut, "tasks snapshot history unavailable: %v: %s", err, strings.TrimSpace(stderr.String()))
+		stdout, err := gitexec.RawOutput(ctx, opts, "log", "--date=iso-strict", "--pretty=format:%h"+sep+"%ad"+sep+"%s", fmt.Sprintf("-n%d", *limit))
+		if err != nil {
+			return fatal(jsonOut, "tasks snapshot history unavailable: %v", err)
 		}
-		for line := range strings.SplitSeq(strings.TrimRight(stdout.String(), "\n"), "\n") {
+		for line := range strings.SplitSeq(strings.TrimRight(string(stdout), "\n"), "\n") {
 			if line == "" {
 				continue
 			}
@@ -2988,7 +3137,7 @@ func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdConfig(cfg *config.Config, args []string, jsonOut bool) int {
+func cmdConfig(cfg *config.Config, args []string, jsonOut, allowHTTP bool, schemaErr error) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: config <dump|explain|doctor|migrate>")
 	}
@@ -2998,7 +3147,7 @@ func cmdConfig(cfg *config.Config, args []string, jsonOut bool) int {
 	case "explain":
 		return cmdConfigExplain(cfg, args[1:], jsonOut)
 	case "doctor":
-		return cmdConfigDoctor(cfg, jsonOut)
+		return cmdConfigDoctor(cfg, jsonOut, allowHTTP, schemaErr)
 	case "migrate":
 		return cmdConfigMigrate(args[1:], jsonOut)
 	default:
@@ -3083,6 +3232,34 @@ type configDoctorFinding struct {
 type configDoctorReport struct {
 	Findings []configDoctorFinding `json:"findings"`
 	Routing  config.RoutingSummary `json:"routing"`
+	Capacity *doctorCapacityReport `json:"capacity,omitempty"`
+}
+
+// doctorCapacityReport answers "can this instance dispatch to anything right
+// now, and if not, when?" without an SSH session and a grep for
+// provider.health.flip — which is the whole reason #3045 exists.
+//
+// Live health lives in the running server's provider.Checker, and the CLI is a
+// separate process, so this is only populated when the server is reachable.
+// Unavailable is the honest answer otherwise: reporting "0 healthy" from a
+// process that cannot see the checker would read as an outage.
+type doctorCapacityReport struct {
+	Available   bool                   `json:"available"`
+	Unavailable string                 `json:"unavailable,omitempty"`
+	Enabled     []string               `json:"enabled"`
+	Providers   []doctorCapacityStatus `json:"providers,omitempty"`
+	HealthyLegs int                    `json:"healthyLegs"`
+}
+
+type doctorCapacityStatus struct {
+	Provider   string     `json:"provider"`
+	Healthy    bool       `json:"healthy"`
+	Reason     string     `json:"reason,omitempty"`
+	Detail     string     `json:"detail,omitempty"`
+	ResetsAt   *time.Time `json:"resetsAt,omitempty"`
+	ResetsIn   string     `json:"resetsIn,omitempty"`
+	LastCheck  time.Time  `json:"lastCheck,omitzero"`
+	Configured bool       `json:"configured"`
 }
 
 type configMigrateReport struct {
@@ -3172,12 +3349,105 @@ func cmdConfigMigrate(args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
+// buildCapacityReport asks the running server what it can actually dispatch to.
+// Live health lives in the server's provider.Checker; the CLI is a separate
+// process, so an unreachable server yields Available=false rather than a
+// fabricated zero-capacity reading.
+func buildCapacityReport(cfg *config.Config, api *apiClient, now time.Time) *doctorCapacityReport {
+	report := &doctorCapacityReport{Enabled: cfg.Providers.EnabledNames()}
+	if api == nil {
+		report.Unavailable = "no reachable sybra server; live provider health is only known inside the server process"
+		return report
+	}
+	statuses, handled, err := viaAPI[[]provider.Status](api, "IntegrationService", "GetProviderHealth")
+	if !handled || err != nil {
+		report.Unavailable = "sybra server did not return provider health"
+		if err != nil {
+			report.Unavailable = fmt.Sprintf("sybra server did not return provider health: %v", err)
+		}
+		return report
+	}
+	if len(statuses) == 0 {
+		// GetProviderHealth returns an empty slice when the health-check loop
+		// is disabled. Reading that as "nothing is healthy" reports an outage
+		// that is not happening.
+		report.Unavailable = "provider health checking is disabled on the sybra server (providers.health_check.enabled)"
+		return report
+	}
+	report.Available = true
+	byName := make(map[string]provider.Status, len(statuses))
+	for _, st := range statuses {
+		byName[st.Provider] = st
+	}
+	for _, name := range report.Enabled {
+		st, probed := byName[name]
+		entry := doctorCapacityStatus{
+			Provider:   name,
+			Healthy:    probed && st.Healthy,
+			Reason:     st.Reason,
+			Detail:     st.Detail,
+			LastCheck:  st.LastCheck,
+			Configured: true,
+		}
+		if !probed {
+			entry.Reason = "not probed"
+		}
+		if !st.RateLimitedUntil.IsZero() {
+			resets := st.RateLimitedUntil
+			entry.ResetsAt = &resets
+			entry.ResetsIn = resets.Sub(now).Round(time.Second).String()
+		}
+		if entry.Healthy {
+			report.HealthyLegs++
+		}
+		report.Providers = append(report.Providers, entry)
+	}
+	return report
+}
+
+// addCapacityFindings raises the two states an operator needs to act on: no
+// usable provider at all, and a failover chain with only one leg. One weekly
+// limit plus one usage limit is how a single-leg chain became a dead board.
+func addCapacityFindings(report *doctorCapacityReport, add func(severity, format string, a ...any)) {
+	if len(report.Enabled) < 2 {
+		add("warning", "provider capacity: %d provider(s) enabled (%s) — no failover chain",
+			len(report.Enabled), strings.Join(report.Enabled, ", "))
+	}
+	if !report.Available {
+		return
+	}
+	switch {
+	case report.HealthyLegs == 0:
+		add("error", "provider capacity: no enabled provider is healthy — nothing can dispatch")
+	case report.HealthyLegs < 2:
+		add("warning", "provider capacity: only %d healthy provider — a single limit stalls the board", report.HealthyLegs)
+	}
+}
+
+// resolveCapacity reaches the running server for live provider health, if the
+// caller is on the default path where auto-detect is safe at all.
+func resolveCapacity(cfg *config.Config, allowHTTP bool) *doctorCapacityReport {
+	var api *apiClient
+	if allowHTTP {
+		if c, ok := newAPIClient(cfg); ok && c.reachable(context.Background()) {
+			api = c
+		}
+	}
+	return buildCapacityReport(cfg, api, time.Now())
+}
+
+func cmdConfigDoctor(cfg *config.Config, jsonOut, allowHTTP bool, schemaErr error) int {
 	var findings []configDoctorFinding
 	add := func(severity, format string, a ...any) {
 		findings = append(findings, configDoctorFinding{Severity: severity, Message: fmt.Sprintf(format, a...)})
 	}
 	routing := config.BuildRoutingSummary(cfg)
+
+	// Reported first: it is the reason every other command is failing, and the
+	// values below were resolved without it.
+	if schemaErr != nil {
+		add("error", "config schema: %v (this key is ignored; remove it from config.yaml)", schemaErr)
+	}
 
 	addConfigPermFindings(add)
 
@@ -3216,6 +3486,10 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 	addAutonomyPipelineFindings(cfg, add)
 
 	addK8sFailedTTLFindings(cfg, add)
+
+	capacity := resolveCapacity(cfg, allowHTTP)
+	addCapacityFindings(capacity, add)
+
 	for _, warning := range routing.Warnings {
 		add("warning", "routing: %s", warning)
 	}
@@ -3231,7 +3505,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		}
 	}
 
-	report := configDoctorReport{Findings: findings, Routing: routing}
+	report := configDoctorReport{Findings: findings, Routing: routing, Capacity: capacity}
 	if jsonOut {
 		if code := printJSON(report); code != 0 {
 			return code
@@ -3258,6 +3532,7 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 			fmt.Printf("  - %s/%s %s %s (%s)\n", variant.ExperimentID, variant.VariantID, variant.Provider, variant.Model, variant.Reason)
 		}
 	}
+	renderCapacityReport(report.Capacity)
 	for _, f := range findings {
 		fmt.Printf("[%s] %s\n", f.Severity, f.Message)
 	}
@@ -3265,6 +3540,36 @@ func cmdConfigDoctor(cfg *config.Config, jsonOut bool) int {
 		return 1
 	}
 	return 0
+}
+
+func renderCapacityReport(report *doctorCapacityReport) {
+	if report == nil {
+		return
+	}
+	enabled := "none"
+	if len(report.Enabled) > 0 {
+		enabled = strings.Join(report.Enabled, " -> ")
+	}
+	fmt.Printf("provider capacity enabled: %s\n", enabled)
+	if !report.Available {
+		fmt.Printf("provider capacity: unknown (%s)\n", report.Unavailable)
+		return
+	}
+	fmt.Printf("provider capacity healthy: %d/%d\n", report.HealthyLegs, len(report.Enabled))
+	for _, p := range report.Providers {
+		state := "healthy"
+		if !p.Healthy {
+			state = "UNHEALTHY"
+		}
+		line := fmt.Sprintf("  - %s: %s", p.Provider, state)
+		if p.Reason != "" {
+			line += " (" + p.Reason + ")"
+		}
+		if p.ResetsAt != nil {
+			line += fmt.Sprintf(" resets %s (in %s)", p.ResetsAt.Format(time.RFC3339), p.ResetsIn)
+		}
+		fmt.Println(line)
+	}
 }
 
 func addGitHubPollingFindings(cfg *config.Config, add func(severity, format string, a ...any)) {

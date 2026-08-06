@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/evidence"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/workflow/failureclassify"
 )
 
@@ -26,11 +29,9 @@ const verifyChecksDefaultTimeout = 10 * time.Minute
 
 // verifyChecksMaxOutput bounds how much command output is retained in memory.
 // A noisy or malicious verify command must not be able to OOM the engine, so
-// output streams into a fixed-size tail buffer rather than a growing slice.
+// output streams into a fixed-size head+tail buffer (see boundedTail) rather
+// than a growing slice.
 const verifyChecksMaxOutput = 64 * 1024
-
-// verifyChecksOutputTail caps how much of that buffer is stored in the artifact.
-const verifyChecksOutputTail = 8000
 
 // verifyBlessedTag lets a human accept a verify failure (e.g. a known-flaky
 // suite) and let the task proceed instead of re-blocking on every re-dispatch.
@@ -39,6 +40,7 @@ const verifyBlessedTag = "verify-blessed"
 const (
 	verifyChecksImplStepID = "implement"
 	verifyReaskNoteVar     = "verify_reask_note"
+	verifyRetryModelVar    = "verify_retry_model"
 	// verifyChecksAutoFixBackoff is the base re-dispatch delay before the next
 	// auto-fix attempt; autoFixBackoff grows it with the attempt count up to
 	// autoFixBackoffMax.
@@ -46,7 +48,7 @@ const (
 	autoFixBackoffMax          = 15 * time.Minute
 	// verifyChecksAutoFixCeiling bounds auto-fix re-asks so a deterministic
 	// failure no agent can fix reaches a human instead of looping forever.
-	verifyChecksAutoFixCeiling = 20
+	verifyChecksAutoFixCeiling = 3
 	// Full verify suites are CPU-heavy and already serialized by workflow
 	// retries; a single local slot prevents one saturated host from piling
 	// multiple suites on top of each other and timing them all out.
@@ -190,7 +192,7 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 	}
 
 	report := verifyChecksReport{
-		Commands: cmds, FailedCmd: failedCmd, OutputTail: tailString(output, verifyChecksOutputTail),
+		Commands: cmds, FailedCmd: failedCmd, OutputTail: output,
 	}
 	classification := e.classifyVerifyFailure(taskID, wtPath, failedCmd, output)
 	if classification != nil {
@@ -397,7 +399,7 @@ func (e *Engine) healToolchainAndRetry(taskID, wtPath string, cmds []string, tim
 }
 
 func (e *Engine) flagVerifyChecks(taskID string, step *Step, reason, detail string) (StepOutput, error) {
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 		return StepOutput{}, fmt.Errorf("verify-checks: set human-required: %w", statusErr)
 	}
 	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyChecks, evidence.ProofDeterministicCheck, 1, "", reason)
@@ -406,7 +408,7 @@ func (e *Engine) flagVerifyChecks(taskID string, step *Step, reason, detail stri
 }
 
 func (e *Engine) blockVerifyChecks(taskID string, step *Step, reason, detail string) (StepOutput, error) {
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, "blocked", reason); statusErr != nil {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.Blocked, reason); statusErr != nil {
 		return StepOutput{}, fmt.Errorf("verify-checks: set blocked: %w", statusErr)
 	}
 	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyChecks, evidence.ProofDeterministicCheck, 1, "", reason)
@@ -828,6 +830,62 @@ func autoFixBackoff(attempts int) time.Duration {
 	return backoff
 }
 
+// verifyDiagnosticName is the sidecar a verify escalation leaves behind.
+const verifyDiagnosticName = ".sybra-verify-%s.md"
+
+// writeVerifyDiagnostic persists the failing command and the highest-signal
+// excerpt, returning the path it wrote or "".
+//
+// status_reason records the command trimmed to a single line and drops the
+// diagnostic entirely, so whoever picks the task up next — a human, or the
+// human-review autonomy agent whose mandate tells it to "re-run the exact
+// failing command" — gets a command but not the finding, and has to re-run a
+// multi-minute suite to learn what it already said. The re-ask path has built
+// this excerpt all along; only the escalation threw it away.
+//
+// Best-effort: a task that cannot be escalated because a sidecar would not
+// write is strictly worse than one escalated without it.
+func (e *Engine) writeVerifyDiagnostic(taskID, failedCmd, output string) string {
+	dir := e.resolveSidecarDir(taskID)
+	if dir == "" || taskID == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("# Verify failure — task ")
+	b.WriteString(taskID)
+	b.WriteString("\n\n## Failing command\n\n```\n")
+	b.WriteString(failedCmd)
+	b.WriteString("\n```\n")
+	if excerpt := highestSignalVerifyFailureExcerpt(failedCmd, output); excerpt != "" {
+		b.WriteString("\n## Highest-signal failure excerpt\n\n```\n")
+		b.WriteString(excerpt)
+		b.WriteString("\n```\n")
+	}
+	// The structured excerpt only covers frontend commands, so a Go lint or
+	// test failure — the majority of what escalates — would otherwise record
+	// nothing but the command. Mirror buildVerifyReaskNote and keep the tail.
+	if tail := tailString(strings.TrimSpace(output), 3000); tail != "" {
+		b.WriteString("\n## Output tail\n\n```\n")
+		b.WriteString(tail)
+		b.WriteString("\n```\n")
+	}
+	path := filepath.Join(dir, fmt.Sprintf(verifyDiagnosticName, taskID))
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		e.logger.Warn("workflow.verify-checks.diagnostic", "task_id", taskID, "err", err)
+		return ""
+	}
+	return path
+}
+
+// withDiagnostic appends a pointer to the sidecar so status_reason stays short
+// while still leading somewhere with the actual finding.
+func withDiagnostic(reason, path string) string {
+	if path == "" {
+		return reason
+	}
+	return reason + " — diagnostic: " + path
+}
+
 // autoFixOrFlagVerifyChecks rewinds the workflow to the implementation step and
 // re-asks the agent to fix a code-fixable verify failure at its root cause,
 // looping instead of escalating an ordinary lint/test failure the agent can fix
@@ -837,15 +895,25 @@ func autoFixBackoff(attempts int) time.Duration {
 // ran), escalates to human-required.
 func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Execution, t TaskInfo, reason, failedCmd, output string) (StepOutput, error) {
 	if wfExec == nil || wfExec.CountStep(verifyChecksImplStepID) == 0 {
-		return e.flagVerifyChecks(taskID, step, reason, failedCmd)
+		diag := e.writeVerifyDiagnostic(taskID, failedCmd, output)
+		return e.flagVerifyChecks(taskID, step, withDiagnostic(reason, diag), failedCmd)
 	}
+	fingerprint := autoFixFailureFingerprint(failedCmd, output)
 	armed, attempt, err := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
-		counterKey: "step." + step.ID + ".auto_fix",
-		max:        verifyChecksAutoFixCeiling,
-		rewindStep: verifyChecksImplStepID,
-		backoff:    autoFixBackoff,
+		counterKey:  "step." + step.ID + ".auto_fix",
+		max:         verifyChecksAutoFixCeiling,
+		rewindStep:  verifyChecksImplStepID,
+		backoff:     autoFixBackoff,
+		fingerprint: fingerprint,
+		// The first occurrence earns one autonomous repair attempt. If the
+		// exact command and failure evidence survive that code-author run, the
+		// second occurrence proves the repair made no progress and must stop
+		// the loop immediately.
+		maxSameFingerprintRuns: 1,
+		attemptProducedWork:    lastAuthorRunProducedWork,
 		onArm: func(wfExec *Execution, attempt int) {
 			wfExec.SetVar(verifyReaskNoteVar, buildVerifyReaskNote(failedCmd, output))
+			wfExec.SetVar(verifyRetryModelVar, "expensive")
 		},
 		reason: func(attempt int) string {
 			return fmt.Sprintf("auto-fixing failed verify check (attempt %d): %s", attempt, trimDiffLine(failedCmd))
@@ -855,13 +923,23 @@ func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Ex
 		return StepOutput{}, fmt.Errorf("verify-checks: rewind to implement: %w", err)
 	}
 	if !armed {
-		exhausted := fmt.Sprintf("%s — escalating after %d auto-fix attempts without passing",
+		exhausted := fmt.Sprintf("%s — escalating after repeated identical auto-fix failures or %d attempts without passing",
 			reason, verifyChecksAutoFixCeiling)
-		return e.flagVerifyChecks(taskID, step, exhausted, "auto-fix-exhausted: "+trimDiffLine(failedCmd))
+		diag := e.writeVerifyDiagnostic(taskID, failedCmd, output)
+		return e.flagVerifyChecks(taskID, step, withDiagnostic(exhausted, diag), "auto-fix-exhausted: "+trimDiffLine(failedCmd))
 	}
 	e.logger.Info("workflow.verify-checks.auto-fix",
 		"task_id", taskID, "attempt", attempt, "cmd", trimDiffLine(failedCmd))
 	return StepOutput{}, errStepParked
+}
+
+func autoFixFailureFingerprint(failedCmd, output string) string {
+	excerpt := highestSignalVerifyFailureExcerpt(failedCmd, output)
+	if excerpt == "" {
+		excerpt = tailString(strings.TrimSpace(output), 1200)
+	}
+	h := sha256.Sum256([]byte(strings.TrimSpace(failedCmd) + "\n" + excerpt))
+	return hex.EncodeToString(h[:])
 }
 
 func buildVerifyReaskNote(failedCmd, output string) string {
@@ -1237,8 +1315,8 @@ func ownedByNpm(dir string) bool {
 // that passes on any attempt moves on. A non-nil err means the suite could not
 // even be prepared/run cleanly (ctx timeout/cancel or isolated-cache prep
 // failure) and is never retried — the budget is already spent; the caller
-// decides the policy. Output streams into a fixed-size tail buffer so a flood
-// of stdout/stderr cannot exhaust memory.
+// decides the policy. Output streams into a fixed-size head+tail buffer (see
+// boundedTail) so a flood of stdout/stderr cannot exhaust memory.
 func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, cmds []string) (failedCmd, output string, err error) {
 	tail := &boundedTail{max: verifyChecksMaxOutput}
 	cmdEnv, err := verifyCommandEnv(ctx, taskID, wtPath, cmds...)
@@ -1281,21 +1359,51 @@ func (e *Engine) runVerifyCommands(ctx context.Context, taskID, wtPath string, c
 	return "", tail.String(), nil
 }
 
-// boundedTail is a concurrency-safe io.Writer that retains only the last `max`
-// bytes written. os/exec writes stdout and stderr from separate goroutines when
-// they share a non-*os.File writer, so Write must be guarded.
+// boundedTail is a concurrency-safe io.Writer that retains only `max` bytes
+// total, so a flood of stdout/stderr cannot exhaust memory. os/exec writes
+// stdout and stderr from separate goroutines when they share a non-*os.File
+// writer, so Write must be guarded.
+//
+// It keeps the first half and the last half of the stream rather than a plain
+// tail: `go test ./internal/...` across ~80 packages reports the failing
+// package near where it fails, then keeps emitting `ok` lines for every
+// package that finishes afterward — a tail-only buffer reliably evicts the
+// one line (`--- FAIL: TestXxx`) a human needs to diagnose the run.
 type boundedTail struct {
-	mu  sync.Mutex
-	max int
-	buf []byte
+	mu         sync.Mutex
+	max        int
+	buf        []byte // accumulates here until total exceeds max
+	head       []byte // frozen first-half once truncation begins
+	tail       []byte // rolling last-half once truncation begins
+	total      int
+	truncating bool
 }
 
 func (b *boundedTail) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.buf = append(b.buf, p...)
-	if len(b.buf) > b.max {
-		b.buf = b.buf[len(b.buf)-b.max:]
+	b.total += len(p)
+	if !b.truncating {
+		b.buf = append(b.buf, p...)
+		if len(b.buf) <= b.max {
+			return len(p), nil
+		}
+		b.truncating = true
+		half := min(b.max/2, len(b.buf))
+		b.head = append([]byte(nil), b.buf[:half]...)
+		rest := b.buf[half:]
+		tailCap := b.max - len(b.head)
+		if len(rest) > tailCap {
+			rest = rest[len(rest)-tailCap:]
+		}
+		b.tail = append([]byte(nil), rest...)
+		b.buf = nil
+		return len(p), nil
+	}
+	tailCap := b.max - len(b.head)
+	b.tail = append(b.tail, p...)
+	if len(b.tail) > tailCap {
+		b.tail = b.tail[len(b.tail)-tailCap:]
 	}
 	return len(p), nil
 }
@@ -1303,7 +1411,11 @@ func (b *boundedTail) Write(p []byte) (int, error) {
 func (b *boundedTail) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return string(b.buf)
+	if !b.truncating {
+		return string(b.buf)
+	}
+	elided := b.total - len(b.head) - len(b.tail)
+	return string(b.head) + fmt.Sprintf("\n...(%d bytes elided)...\n", elided) + string(b.tail)
 }
 
 // tailString returns the last n bytes of s, prefixed with an elision marker
