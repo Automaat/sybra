@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/providerid"
 	"gopkg.in/yaml.v3"
 
 	"github.com/Automaat/sybra/internal/fsutil"
@@ -753,7 +754,7 @@ func defaultSeedConfig() *Config {
 			MaxSizeMB: DefaultAttachmentMaxSizeMB,
 		},
 		Agent: AgentDefaults{
-			Provider:         "claude",
+			Provider:         providerid.Claude,
 			MaxConcurrent:    25,
 			MaxCostUSD:       5.0,
 			MaxTurns:         150,

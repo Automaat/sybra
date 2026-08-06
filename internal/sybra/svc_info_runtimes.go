@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/textutil"
 )
 
@@ -34,9 +35,9 @@ type runtimeTextProbe struct {
 
 var knownRuntimeSpecs = []runtimeSpec{
 	{
-		id:          "claude",
+		id:          providerid.Claude,
 		name:        "Claude Code",
-		binary:      "claude",
+		binary:      providerid.Claude,
 		versionArgs: []string{runtimeVersionArg},
 		attachmentProbe: &runtimeTextProbe{
 			args:       []string{"--help"},
@@ -44,16 +45,16 @@ var knownRuntimeSpecs = []runtimeSpec{
 		},
 	},
 	{
-		id:          "codex",
+		id:          providerid.Codex,
 		name:        "Codex",
-		binary:      "codex",
+		binary:      providerid.Codex,
 		versionArgs: []string{runtimeVersionArg},
 		attachmentProbe: &runtimeTextProbe{
 			args:       []string{"exec", "--help"},
 			substrings: []string{"--image <file>"},
 		},
 	},
-	{id: "opencode", name: "OpenCode", binary: "opencode", versionArgs: []string{runtimeVersionArg}},
+	{id: providerid.OpenCode, name: "OpenCode", binary: providerid.OpenCode, versionArgs: []string{runtimeVersionArg}},
 	{id: "hermes", name: "Hermes", binary: "hermes", informationalOnly: true, versionArgs: []string{runtimeVersionArg}},
 }
 

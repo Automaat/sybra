@@ -3,6 +3,8 @@ package stats
 import (
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 const copilotAICreditUSD = 0.01
@@ -159,9 +161,9 @@ func EstimateAgentCost(u AgentUsage) float64 {
 		return u.CostUSD
 	}
 	switch u.Provider {
-	case "copilot":
+	case providerid.Copilot:
 		return EstimateCopilotCost(u.PremiumRequests)
-	case "codex", "claude":
+	case providerid.Codex, providerid.Claude:
 		return EstimateCostDetailed(u.Model, u.InputTokens, u.OutputTokens,
 			u.CacheCreate, u.CacheRead, u.ReasoningTokens, u.StartedAt)
 	default:

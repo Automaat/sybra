@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/llmjob"
 )
 
 // DefaultMaxParallel bounds how many children of one umbrella run at once when
@@ -474,7 +476,8 @@ func buildPlanSchema(subs []SubIssue) string {
 
 // ParsePlan extracts a Plan from a model's raw stdout. It tolerates the claude
 // `--output-format json` envelope ({"result":"..."}) and a surrounding code
-// fence or prose by extracting the first balanced JSON object.
+// fence or prose by extracting the last balanced JSON object — a model that
+// reasons before answering emits its real plan last.
 func ParsePlan(raw string) (Plan, error) {
 	text := raw
 	var env struct {
@@ -484,8 +487,8 @@ func ParsePlan(raw string) (Plan, error) {
 		text = env.Result
 	}
 
-	obj, ok := firstJSONObject(text)
-	if !ok {
+	obj := llmjob.ExtractLastJSONObject(text)
+	if obj == "" {
 		return Plan{}, fmt.Errorf("planner output contains no JSON object")
 	}
 	var plan Plan
@@ -493,39 +496,6 @@ func ParsePlan(raw string) (Plan, error) {
 		return Plan{}, fmt.Errorf("parse planner JSON: %w", err)
 	}
 	return plan, nil
-}
-
-// firstJSONObject returns the first brace-balanced JSON object substring in s,
-// ignoring braces inside string literals. ok is false when none is found.
-func firstJSONObject(s string) (string, bool) {
-	start := strings.IndexByte(s, '{')
-	if start < 0 {
-		return "", false
-	}
-	depth := 0
-	inStr := false
-	escaped := false
-	for i := start; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case escaped:
-			escaped = false
-		case c == '\\' && inStr:
-			escaped = true
-		case c == '"':
-			inStr = !inStr
-		case inStr:
-			// skip
-		case c == '{':
-			depth++
-		case c == '}':
-			depth--
-			if depth == 0 {
-				return s[start : i+1], true
-			}
-		}
-	}
-	return "", false
 }
 
 // resolve rewrites every child and dependency ref to its canonical sub-issue

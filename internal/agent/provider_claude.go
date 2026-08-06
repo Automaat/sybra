@@ -9,6 +9,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/modeltier"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 type claudeProvider struct {
@@ -19,7 +20,7 @@ func init() {
 	registerAgentProvider(claudeProvider{})
 }
 
-func (claudeProvider) Name() string { return "claude" }
+func (claudeProvider) Name() string { return providerid.Claude }
 
 // HonorsAllowedTools is true here alone: claudePermissionArgs turns the list
 // into --allowedTools. Every other provider inherits the false default.
@@ -40,7 +41,7 @@ func (claudeProvider) NormalizeModel(model string) string {
 	// Stripping before safeArgRe keeps the validator strict — it intentionally
 	// rejects '[' and ']'. Scoped to the Claude path; Codex strings untouched.
 	model = stripContextSuffix(model)
-	if resolved, ok := modeltier.NormalizeAlias("claude", model); ok {
+	if resolved, ok := modeltier.NormalizeAlias(providerid.Claude, model); ok {
 		return resolved
 	}
 	return model
@@ -131,10 +132,10 @@ func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headless
 		env = append(env, "CLAUDE_CODE_RETRY_WATCHDOG="+strconv.Itoa(cfg.RetryWatchdog))
 	}
 	return headlessInvocation{
-		name:    "claude",
+		name:    providerid.Claude,
 		args:    args,
 		env:     env,
-		command: "claude " + strings.Join(args, " "),
+		command: providerid.Claude + " " + strings.Join(args, " "),
 	}, nil
 }
 
@@ -152,7 +153,7 @@ func (claudeProvider) ClassifyError(sample providerpkg.ErrorSample) providerpkg.
 
 // buildClaudeCommand builds the display command string for a Claude agent.
 func buildClaudeCommand(model, effort string, allowedTools []string, requirePerms bool, mode string) string {
-	parts := []string{"claude"}
+	parts := []string{providerid.Claude}
 	parts = append(parts, claudePermissionArgs(allowedTools, requirePerms, mode)...)
 	parts = append(parts, effortArgs(effort)...)
 	if model != "" {

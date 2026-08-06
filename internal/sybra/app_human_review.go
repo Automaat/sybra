@@ -21,11 +21,13 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/verdict"
 	"github.com/Automaat/sybra/internal/workflow"
+	"github.com/Automaat/sybra/internal/worktree"
 )
 
 // humanReviewPromptHeadTail bounds how many lines of the host log file are
@@ -228,17 +230,42 @@ func humanReviewDispatchDir(t task.Task, sybraRepoDir string) (dir string, readO
 	return sybraRepoDir, true
 }
 
-func (h *humanReviewHandler) dispatchDir(t task.Task) (dir string, readOnly bool) {
+// dispatchDir resolves where the recovery agent runs. retryable means
+// preparation failed for a reason that clears on its own, so the caller should
+// wait rather than dispatch.
+//
+// Collapsing every prepare error into the read-only Sybra-source fallback made
+// the most common entry path silently degrade: the human-required status hook
+// spawns while the agent that just failed is still winding down in the
+// registry, so PrepareForTask returns ErrAgentRunning and recovery landed on a
+// read-only dir — the exact condition writable recovery worktrees exist to
+// eliminate. Three agents on three different tasks reported the worktree as
+// read-only and returned recoverable_action: none, each having already
+// verified a fix they could not apply.
+func (h *humanReviewHandler) dispatchDir(t task.Task) (dir string, readOnly, retryable bool) {
 	if h.prepareTaskWorktree != nil {
 		dir, err := h.prepareTaskWorktree(t)
 		if err == nil && strings.TrimSpace(dir) != "" {
-			return dir, false
+			return dir, false, false
 		}
 		if err != nil {
+			if isRetryablePrepareError(err) {
+				h.logger.Info("human-review.worktree.prepare.retryable", "task_id", t.ID, "err", err)
+				return "", false, true
+			}
 			h.logger.Warn("human-review.worktree.prepare", "task_id", t.ID, "err", err)
 		}
 	}
-	return humanReviewDispatchDir(t, h.cfg.HumanReview.SybraRepoDir)
+	dir, readOnly = humanReviewDispatchDir(t, h.cfg.HumanReview.SybraRepoDir)
+	return dir, readOnly, false
+}
+
+// isRetryablePrepareError reports whether a worktree preparation failure will
+// clear without intervention. A live agent finishes; a fetch blip passes. The
+// read-only fallback is for a task that genuinely has no worktree, where
+// diagnosing Sybra itself is the whole job.
+func isRetryablePrepareError(err error) bool {
+	return errors.Is(err, worktree.ErrAgentRunning) || errors.Is(err, worktree.ErrTransientFetch)
 }
 
 // maybeSpawn is called from the status hook when a task lands in
@@ -332,7 +359,15 @@ func (h *humanReviewHandler) spawnReview(t task.Task, prevStatus string, opts hu
 		}
 	}
 
-	dir, readOnlyDir := h.dispatchDir(t)
+	dir, readOnlyDir, retryable := h.dispatchDir(t)
+	if retryable {
+		// Give back the reserved slot as claim contention does, or the retry
+		// hits the per-hour cap and the task is never examined at all. The
+		// dispatch claim itself is released by the deferred call above.
+		h.releaseReservedSlot(taskID, now)
+		h.scheduleClaimRetry(taskID, prevStatus, opts)
+		return false
+	}
 	prompt := h.buildPrompt(t, dir, wctx)
 	cfg := h.spawnReviewConfig(t, taskID, prompt, dir, readOnlyDir, opts)
 	if !h.preRunEligible(taskID, now, opts.IgnoreRenderedVerdict) {
@@ -502,12 +537,12 @@ func (h *humanReviewHandler) handleStructuredVerdictFailure(current task.Task, a
 func humanReviewFallbackTarget(currentProvider string) (provider, model string, ok bool) {
 	currentProvider = strings.TrimSpace(currentProvider)
 	switch currentProvider {
-	case "claude":
-		return "codex", humanReviewFallbackModel, true
-	case "codex":
-		return "claude", humanReviewFallbackModel, true
+	case providerid.Claude:
+		return providerid.Codex, humanReviewFallbackModel, true
+	case providerid.Codex:
+		return providerid.Claude, humanReviewFallbackModel, true
 	}
-	for _, candidate := range []string{"codex", "claude"} {
+	for _, candidate := range []string{providerid.Codex, providerid.Claude} {
 		if candidate == currentProvider || !agent.ProviderSupportsOutputSchema(candidate) {
 			continue
 		}

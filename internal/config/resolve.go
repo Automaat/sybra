@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // Environment holds the supported config env overrides so Resolve is
@@ -194,7 +196,7 @@ func applyResolvedDefaults(cfg *ResolvedConfig, file *FileConfig) {
 		cfg.Triage.PollSeconds = 60
 	}
 	if cfg.Agent.Provider == "" {
-		cfg.Agent.Provider = "claude"
+		cfg.Agent.Provider = providerid.Claude
 	}
 	applyProvidersDefaults(cfg)
 	applyMonitorDefaults(cfg, file)
