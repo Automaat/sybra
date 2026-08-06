@@ -2633,11 +2633,37 @@ func TestAdvanceStep_AlreadyFixedOnMainUndeclaredStaysHumanRequired(t *testing.T
 			if ti.Status != "human-required" {
 				t.Fatalf("status = %q, want human-required", ti.Status)
 			}
-			if ti.StatusReason != alreadyFixedOnMainVerdict {
-				t.Fatalf("status reason = %q, want the stale park reason preserved", ti.StatusReason)
+			if ti.StatusReason != alreadyFixedOnMainProse {
+				t.Fatalf("status reason = %q, want the park reason preserved", ti.StatusReason)
 			}
 			_ = tasks
 		})
+	}
+}
+
+// TestAdvanceStep_AlreadyFixedOnMainResponseTextIsNotAChannel pins the channel
+// split: only the status reason declares. A response that is nothing but the
+// JSON object used to close a task whose reason refused to declare one.
+func TestAdvanceStep_AlreadyFixedOnMainResponseTextIsNotAChannel(t *testing.T) {
+	_, ti := runAlreadyFixedOnMainRecoveryWithReason(t,
+		alreadyFixedOnMainVerdict,
+		"I am NOT declaring a recovery verdict. I made no commits and a human must review this.")
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
+	}
+}
+
+// TestAdvanceStep_AlreadyFixedOnMainLongDeclaredReasonIsBounded keeps an
+// agent-authored reason out of the task frontmatter at full length.
+func TestAdvanceStep_AlreadyFixedOnMainLongDeclaredReasonIsBounded(t *testing.T) {
+	long := strings.Repeat("x", 5000)
+	_, ti := runAlreadyFixedOnMainRecoveryWithReason(t, "",
+		`{"decision":"already-fixed-on-main","reason":"`+long+`"}`)
+	if ti.Status != "done" {
+		t.Fatalf("status = %q, want done", ti.Status)
+	}
+	if len(ti.StatusReason) > len(alreadyFixedOnMainRecoveryReason)+maxDeclaredReasonBytes+64 {
+		t.Fatalf("status reason is %d bytes, want the declared reason bounded", len(ti.StatusReason))
 	}
 }
 
@@ -2645,7 +2671,7 @@ func TestAdvanceStep_AlreadyFixedOnMainUndeclaredStaysHumanRequired(t *testing.T
 // the run that tried to declare and produced something unparseable: it stays
 // parked, and the board says why rather than only the app log.
 func TestAdvanceStep_AlreadyFixedOnMainUnreadableDeclarationRecordsReason(t *testing.T) {
-	_, ti := runAlreadyFixedOnMainRecovery(t, `{"decision":"close-it"}`)
+	_, ti := runAlreadyFixedOnMainRecoveryWithReason(t, "", `{"decision":"close-it"}`)
 	if ti.Status != "human-required" {
 		t.Fatalf("status = %q, want human-required", ti.Status)
 	}
@@ -2657,6 +2683,13 @@ func TestAdvanceStep_AlreadyFixedOnMainUnreadableDeclarationRecordsReason(t *tes
 // runAlreadyFixedOnMainRecovery drives one implementation run to completion
 // with output and returns the task as recovery left it.
 func runAlreadyFixedOnMainRecovery(t *testing.T, output string) (*memTasks, TaskInfo) {
+	t.Helper()
+	return runAlreadyFixedOnMainRecoveryWithReason(t, output, alreadyFixedOnMainProse)
+}
+
+// runAlreadyFixedOnMainRecoveryWithReason drives one implementation run whose
+// response text is output and whose park reason is parkReason.
+func runAlreadyFixedOnMainRecoveryWithReason(t *testing.T, output, parkReason string) (*memTasks, TaskInfo) {
 	t.Helper()
 	store := newInlineTestStore(t, "pr-recovery", `
 id: pr-recovery
@@ -2700,7 +2733,7 @@ steps:
 	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
 		t.Fatal(err)
 	}
-	if err := tasks.UpdateTaskStatus("t1", "human-required", alreadyFixedOnMainVerdict); err != nil {
+	if err := tasks.UpdateTaskStatus("t1", "human-required", parkReason); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2772,7 +2805,7 @@ steps:
 			if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
 				t.Fatal(err)
 			}
-			if err := tasks.UpdateTaskStatus("t1", "human-required", alreadyFixedOnMainVerdict); err != nil {
+			if err := tasks.UpdateTaskStatus("t1", "human-required", alreadyFixedOnMainProse); err != nil {
 				t.Fatal(err)
 			}
 
@@ -2794,8 +2827,8 @@ steps:
 			if ti.Status != "human-required" {
 				t.Fatalf("status = %q, want human-required", ti.Status)
 			}
-			if ti.StatusReason != alreadyFixedOnMainVerdict {
-				t.Fatalf("status reason = %q, want stale human-required reason preserved", ti.StatusReason)
+			if ti.StatusReason != alreadyFixedOnMainProse {
+				t.Fatalf("status reason = %q, want the park reason preserved", ti.StatusReason)
 			}
 			if ti.Workflow == nil || ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
 				t.Fatalf("workflow = %+v, want completed terminal workflow", ti.Workflow)

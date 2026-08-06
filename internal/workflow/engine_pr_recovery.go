@@ -7,10 +7,16 @@ import (
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 const readyPRRecoveryReason = "manual verification requires a live PR and the branch is already pushed — routing to PR flow instead of parking human-required"
 const alreadyFixedOnMainRecoveryReason = "requested change already satisfies origin base and the task branch has no remaining diff — closing duplicate task as done"
+
+// maxDeclaredReasonBytes bounds the agent's own text before it reaches the
+// task's YAML frontmatter.
+const maxDeclaredReasonBytes = 400
+
 const unreadableRecoveryVerdictReason = "run emitted an unreadable recovery declaration — staying parked rather than inferring the outcome from its prose"
 
 // maybeRecoverHumanRequiredAlreadyFixedOnMain rewrites a narrow duplicate-task
@@ -19,9 +25,10 @@ const unreadableRecoveryVerdictReason = "run emitted an unreadable recovery decl
 // still clean with no commits ahead of the origin base. In that case Sybra has
 // enough deterministic proof to close the task itself instead of parking it.
 //
-// The trigger is the run's own structured declaration, set as the task's
-// whole status reason. On agent-completion recovery it must come from the
-// current run, not a stale status_reason from an older human-required park.
+// The trigger is the run's structured declaration, set as the task's whole
+// status reason through the CLI. The run's response text is not a channel:
+// accepting it there let a response that was only the JSON object close a
+// task whose reason explicitly refused to declare one.
 //
 // The repo-state proof that follows (no commits ahead, no uncommitted diff,
 // HEAD reachable from the origin base) is necessary but not sufficient: it is
@@ -65,7 +72,7 @@ func (e *Engine) maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID string, curr
 	}
 	reason := alreadyFixedOnMainRecoveryReason
 	if declaredReason := recoveryVerdictReason(duplicateSignal); declaredReason != "" {
-		reason += " — agent declared: " + declaredReason
+		reason += " — agent declared: " + textutil.TruncateBytes(declaredReason, maxDeclaredReasonBytes, "…")
 	}
 	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.Done, reason); err != nil {
 		return nil, false, err

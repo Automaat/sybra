@@ -236,7 +236,10 @@ func (e *Engine) reloadTaskAndCheckImplementRetry(taskID string, currentStep *St
 		return t, parked, nil, err
 	}
 	var recovered bool
-	comp, recovered, err = e.maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID, currentStep, wfExec, t, output, output.Output)
+	// t was reloaded above, so its reason is the one this run set when it
+	// self-escalated. The run's own response text is deliberately not a
+	// declaration channel — see maybeRecoverHumanRequiredAlreadyFixedOnMain.
+	comp, recovered, err = e.maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID, currentStep, wfExec, t, output, t.StatusReason)
 	if recovered || err != nil {
 		return t, false, comp, err
 	}
