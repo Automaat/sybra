@@ -16,7 +16,11 @@ trap cleanup EXIT
 assert_rejected() {
   local name="$1"
   local source="$2"
-  local file="${fixture_dir}/${name}.go"
+  local file="${fixture_dir}/${name}"
+  case "${file}" in
+    *.go) ;;
+    *) file="${file}.go" ;;
+  esac
   local output
 
   printf '%s\n' "${source}" > "${file}"
@@ -35,7 +39,11 @@ assert_rejected() {
 assert_accepted() {
   local name="$1"
   local source="$2"
-  local file="${fixture_dir}/${name}.go"
+  local file="${fixture_dir}/${name}"
+  case "${file}" in
+    *.go) ;;
+    *) file="${file}.go" ;;
+  esac
 
   printf '%s\n' "${source}" > "${file}"
   if ! bash scripts/check-atomic-writes.sh >/dev/null 2>&1; then
@@ -51,7 +59,7 @@ assert_rejected inline_name $'package fixture\nimport "os"\nfunc f(dir, path str
 assert_rejected neutral_variable_name $'package fixture\nimport "os"\nfunc f(dir, path string) error {\n\tf, err := os.CreateTemp(dir, "x-*")\n\tif err != nil {\n\t\treturn err\n\t}\n\tstaging := f.Name()\n\treturn os.Rename(staging, path)\n}'
 assert_rejected multiline $'package fixture\nimport "os"\nfunc f(dir, path string) error {\n\tf, err := os.CreateTemp(dir, "x-*")\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn os.Rename(\n\t\tf.Name(),\n\t\tpath,\n\t)\n}'
 assert_rejected aliased_import $'package fixture\nimport osfs "os"\nfunc f(dir, path string) error {\n\tf, err := osfs.CreateTemp(dir, "x-*")\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn osfs.Rename(f.Name(), path)\n}'
-assert_rejected in_a_test_file $'package fixture\nimport "os"\nfunc f(dir, path string) error {\n\tf, err := os.CreateTemp(dir, "x-*")\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn os.Rename(f.Name(), path)\n}'
+assert_rejected fixture_test.go $'package fixture\nimport "os"\nfunc f(dir, path string) error {\n\tf, err := os.CreateTemp(dir, "x-*")\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn os.Rename(f.Name(), path)\n}'
 
 assert_accepted plain_rename $'package fixture\nimport "os"\nfunc f(from, to string) error {\n\treturn os.Rename(from, to)\n}'
 assert_accepted rename_after_download $'package fixture\nimport "os"\nfunc f(dir, to string) error {\n\tstaged := dir + "/incoming"\n\treturn os.Rename(staged, to)\n}'

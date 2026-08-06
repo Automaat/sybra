@@ -113,7 +113,7 @@ func tempPattern(base string) string {
 // directory, so the link is atomic and cannot cross filesystems.
 func AtomicWriteNew(path string, data []byte) error {
 	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	f, err := os.CreateTemp(dir, tempPattern(filepath.Base(path)))
 	if err != nil {
 		return err
 	}
