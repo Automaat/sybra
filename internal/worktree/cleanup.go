@@ -27,7 +27,7 @@ const worktreeQuarantineDirName = ".quarantine"
 // name: task.Task.DirName() is either the bare 8-hex-char ID (no slug yet) or
 // "<slug>-<8hex-id>". Anything else returns "" (no match).
 func taskIDFromWorktreeDir(name string) string {
-	if idx := strings.LastIndex(name, "-"); idx >= 0 && attemptSuffixRe.MatchString(name[idx+1:]) {
+	if idx := strings.LastIndex(name, "-"); idx >= 0 && isAttemptSuffix(name[idx+1:]) {
 		name = name[:idx]
 	}
 	if bareTaskIDRe.MatchString(name) {
@@ -39,9 +39,13 @@ func taskIDFromWorktreeDir(name string) string {
 	return ""
 }
 
-func isAttemptWorktreeDir(name string, t task.Task) bool {
-	prefix := t.DirName() + "-"
-	return strings.HasPrefix(name, prefix) && attemptSuffixRe.MatchString(strings.TrimPrefix(name, prefix))
+func isAttemptSuffix(name string) bool {
+	return attemptSuffixRe.MatchString(name)
+}
+
+func isAttemptWorktreeDir(name string) bool {
+	idx := strings.LastIndex(name, "-")
+	return idx >= 0 && isAttemptSuffix(name[idx+1:])
 }
 
 // Remove cleans up the worktree for a task via git worktree remove.
@@ -125,8 +129,19 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 			if parent == nil {
 				continue
 			}
-			for attemptID := range parent.Attempts {
+			for attemptID, attempt := range parent.Attempts {
+				// The computed name protects the prepare-before-persist window. The
+				// persisted path remains authoritative after a task slug changes.
 				inflightAttempts[attemptDirName(tasks[i], attemptID)] = true
+				if attempt == nil || attempt.Dir == "" {
+					continue
+				}
+				cleanDir := filepath.Clean(attempt.Dir)
+				name := filepath.Base(cleanDir)
+				if filepath.Clean(filepath.Dir(cleanDir)) == filepath.Clean(m.dir) &&
+					taskIDFromWorktreeDir(name) == tasks[i].ID && isAttemptWorktreeDir(name) {
+					inflightAttempts[name] = true
+				}
 			}
 		}
 	}
@@ -146,21 +161,21 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 		ownerID := taskIDFromWorktreeDir(name)
 		isAttempt := false
 		if t == nil {
-			if owner := activeByID[ownerID]; owner != nil && isAttemptWorktreeDir(name, *owner) {
+			if owner := activeByID[ownerID]; owner != nil && isAttemptWorktreeDir(name) {
 				t = owner
 				isAttempt = true
 			}
 		}
 		switch {
-		case isAttempt && inflightAttempts[name]:
+		case ownerID != "" && m.hasAgent != nil && m.hasAgent(ownerID):
+			// A live task agent protects canonical and attempt worktrees even if
+			// the task snapshot disappeared between List and this sweep.
+			continue
+		case isAttempt && inflightAttempts[name] && !task.IsTerminalStatus(t.Status):
 			// The parent task's status is not enough to identify a live fan-out:
 			// attempt agents can finish independently, leaving gaps where no
 			// agent is registered. The persisted attempt record is the durable
 			// ownership signal across those gaps and process restarts.
-			continue
-		case ownerID != "" && m.hasAgent != nil && m.hasAgent(ownerID):
-			// A live task agent protects canonical and attempt worktrees even if
-			// the task snapshot disappeared between List and this sweep.
 			continue
 		case isAttempt:
 			// The task still exists but no fan-out owns this attempt anymore.

@@ -442,6 +442,78 @@ func TestCleanupOrphaned_PreservesDeletedTaskAttemptWithLiveAgent(t *testing.T) 
 	}
 }
 
+func TestCleanupOrphaned_ReapsTerminalTaskAttemptWithStaleInflightRecord(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+	tk, err := store.Create("terminal best of n task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{BestOfNInflight: map[string]*workflow.BestOfNInflight{
+		"attempts": {
+			ParentStepID: "attempts",
+			Attempts: map[string]*workflow.AttemptStatus{
+				"attempt_1": {AttemptID: "attempt_1", Status: "completed"},
+			},
+		},
+	}}
+	done := task.StatusDone
+	if _, err := store.Update(tk.ID, task.Update{Workflow: &wf, Status: &done}); err != nil {
+		t.Fatal(err)
+	}
+	attemptDir := filepath.Join(dir, attemptDirName(tk, "attempt_1"))
+	makePushedGitDir(t, attemptDir)
+
+	m := New(Config{WorktreesDir: dir, Tasks: taskMgr, Logger: discardLogger()})
+	m.CleanupOrphaned(context.Background())
+
+	if _, err := os.Stat(attemptDir); !os.IsNotExist(err) {
+		t.Fatalf("terminal task's stale attempt still exists after cleanup: %v", err)
+	}
+}
+
+func TestCleanupOrphaned_PreservesInflightAttemptAfterSlugChange(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+	tk, err := store.Create("old slug", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptDir := filepath.Join(dir, attemptDirName(tk, "attempt_1"))
+	wf := &workflow.Execution{BestOfNInflight: map[string]*workflow.BestOfNInflight{
+		"attempts": {
+			ParentStepID: "attempts",
+			Attempts: map[string]*workflow.AttemptStatus{
+				"attempt_1": {AttemptID: "attempt_1", Dir: attemptDir, Status: "pending"},
+			},
+		},
+	}}
+	newSlug := "new-slug"
+	if _, err := store.Update(tk.ID, task.Update{Workflow: &wf, Slug: &newSlug}); err != nil {
+		t.Fatal(err)
+	}
+	makePushedGitDir(t, attemptDir)
+
+	m := New(Config{WorktreesDir: dir, Tasks: taskMgr, Logger: discardLogger()})
+	m.CleanupOrphaned(context.Background())
+
+	if _, err := os.Stat(attemptDir); err != nil {
+		t.Fatalf("renamed task's in-flight attempt removed unexpectedly: %v", err)
+	}
+}
+
 // TestManager_HasUnpushedCommits proves the resolver sandbox cleanup relies
 // on (#2593): it locates taskID's own worktree by ID and reports whether it
 // holds commits not on origin, and fails safe (false — nothing to protect)
