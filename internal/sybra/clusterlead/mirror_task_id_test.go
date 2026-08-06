@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"slices"
+
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -48,10 +50,10 @@ func TestApplyFollowerTaskRejectsUnsafeIDsWithoutWriting(t *testing.T) {
 				t.Fatalf("applyFollowerTask accepted id %q", tt.id)
 			}
 
-			after := treeSnapshot(t, dir)
-			if len(after) != len(before) {
-				t.Fatalf("id %q wrote %d new paths under the tasks dir:\nbefore=%v\nafter=%v",
-					tt.id, len(after)-len(before), before, after)
+			// Compare the whole listing, not its length: a regression that
+			// removed one path and added another would balance out.
+			if after := treeSnapshot(t, dir); !slices.Equal(after, before) {
+				t.Fatalf("id %q changed the tasks tree:\nbefore=%v\nafter=%v", tt.id, before, after)
 			}
 		})
 	}

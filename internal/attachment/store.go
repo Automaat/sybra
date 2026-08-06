@@ -39,7 +39,7 @@ func (s *Store) Put(taskID string, req UploadRequest) (Attachment, error) {
 		return Attachment{}, errors.New("attachment store is not configured")
 	}
 	if err := fsutil.ValidateKey(taskID); err != nil {
-		return Attachment{}, err
+		return Attachment{}, fmt.Errorf("task id: %w", err)
 	}
 	if err := s.validateSize(req.Data); err != nil {
 		return Attachment{}, err
@@ -99,10 +99,10 @@ func (s *Store) Import(taskID string, meta Attachment, data []byte) (Attachment,
 		return Attachment{}, errors.New("attachment store is not configured")
 	}
 	if err := fsutil.ValidateKey(taskID); err != nil {
-		return Attachment{}, err
+		return Attachment{}, fmt.Errorf("task id: %w", err)
 	}
 	if err := fsutil.ValidateKey(meta.ID); err != nil {
-		return Attachment{}, err
+		return Attachment{}, fmt.Errorf("attachment id: %w", err)
 	}
 	if err := s.validateSize(data); err != nil {
 		return Attachment{}, err
@@ -168,7 +168,7 @@ func (s *Store) List(taskID string) ([]Attachment, error) {
 		return nil, errors.New("attachment store is not configured")
 	}
 	if err := fsutil.ValidateKey(taskID); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("task id: %w", err)
 	}
 	taskDir, err := s.taskDir(taskID)
 	if err != nil {
@@ -229,10 +229,10 @@ func (s *Store) Delete(taskID, attachmentID string) error {
 		return errors.New("attachment store is not configured")
 	}
 	if err := fsutil.ValidateKey(taskID); err != nil {
-		return err
+		return fmt.Errorf("task id: %w", err)
 	}
 	if err := fsutil.ValidateKey(attachmentID); err != nil {
-		return err
+		return fmt.Errorf("attachment id: %w", err)
 	}
 	mu := s.lockFor(taskID)
 	mu.Lock()
@@ -253,7 +253,7 @@ func (s *Store) DeleteTask(taskID string) error {
 		return errors.New("attachment store is not configured")
 	}
 	if err := fsutil.ValidateKey(taskID); err != nil {
-		return err
+		return fmt.Errorf("task id: %w", err)
 	}
 	mu := s.lockFor(taskID)
 	mu.Lock()
@@ -294,7 +294,7 @@ func (s *Store) taskDir(taskID string) (string, error) {
 
 func (s *Store) attachmentDir(taskID, attachmentID string) (string, error) {
 	if err := fsutil.ValidateKey(attachmentID); err != nil {
-		return "", err
+		return "", fmt.Errorf("attachment id: %w", err)
 	}
 	taskDir, err := s.taskDir(taskID)
 	if err != nil {
