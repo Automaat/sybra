@@ -5,7 +5,16 @@ import (
 	"strings"
 )
 
-var all = []string{"claude", "codex", "copilot", "opencode"}
+// Provider ids, so callers switching on one cannot drift from the universe
+// below by way of a typo.
+const (
+	Claude   = "claude"
+	Codex    = "codex"
+	Copilot  = "copilot"
+	OpenCode = "opencode"
+)
+
+var all = []string{Claude, Codex, Copilot, OpenCode}
 
 // List returns the provider universe as a comma-separated string for use in
 // human-readable validation messages, so those messages stay single-sourced.

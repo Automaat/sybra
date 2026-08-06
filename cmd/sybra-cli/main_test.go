@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -3297,5 +3299,42 @@ func TestConfigDoctorReportsCapacity(t *testing.T) {
 	})
 	if !strings.Contains(human, "provider capacity enabled: claude") {
 		t.Errorf("human output omits the capacity section:\n%s", human)
+	}
+}
+
+// GetProviderHealth returns an empty slice when the health-check loop is
+// disabled on the server. Reading that as "nothing is healthy" reports an
+// outage that is not happening, which is worse than reporting unknown.
+func TestBuildCapacityReport_EmptyHealthIsUnknown(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := config.DefaultConfig()
+	cfg.Providers.Claude.Enabled = true
+	cfg.Providers.Codex.Enabled = true
+	api := &apiClient{baseURL: srv.URL, token: "t", http: srv.Client()}
+
+	report := buildCapacityReport(cfg, api, time.Now())
+
+	if report.Available {
+		t.Error("empty health response reported as known capacity")
+	}
+	if !strings.Contains(report.Unavailable, "disabled") {
+		t.Errorf("unavailable reason = %q, want it to name the disabled health check", report.Unavailable)
+	}
+
+	var findings []configDoctorFinding
+	addCapacityFindings(report, func(severity, format string, a ...any) {
+		findings = append(findings, configDoctorFinding{Severity: severity, Message: fmt.Sprintf(format, a...)})
+	})
+	if slices.ContainsFunc(findings, func(f configDoctorFinding) bool { return f.Severity == "error" }) {
+		t.Errorf("disabled health checking raised an outage error: %+v", findings)
 	}
 }

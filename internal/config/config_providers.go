@@ -1,5 +1,7 @@
 package config
 
+import "github.com/Automaat/sybra/internal/providerid"
+
 // ProvidersConfig groups per-machine routing for CLI providers (claude, codex,
 // copilot, opencode) and their background health-check loop. A missing block defaults to
 // "all providers enabled, health check on, auto-failover on, 300s interval".
@@ -15,24 +17,36 @@ type ProvidersConfig struct {
 
 // EnabledNames returns the enabled providers in failover-preference order.
 // Callers that report capacity need the same ordered list the dispatcher walks,
-// so a one-leg chain is recognisable as one.
+// so a one-leg chain is recognisable as one. The universe and its order come
+// from providerid.All rather than a second local list, which would drift the
+// first time a provider is added or reordered.
 func (p ProvidersConfig) EnabledNames() []string {
-	ordered := []struct {
-		name  string
-		entry ProviderEntryConfig
-	}{
-		{"claude", p.Claude},
-		{"codex", p.Codex},
-		{"copilot", p.Copilot},
-		{"opencode", p.OpenCode},
-	}
-	out := make([]string, 0, len(ordered))
-	for _, e := range ordered {
-		if e.entry.Enabled {
-			out = append(out, e.name)
+	universe := providerid.All()
+	out := make([]string, 0, len(universe))
+	for _, name := range universe {
+		if entry, ok := p.entryFor(name); ok && entry.Enabled {
+			out = append(out, name)
 		}
 	}
 	return out
+}
+
+// entryFor maps a provider id onto its config block. The false return is the
+// drift alarm: a provider added to providerid.All without a block here is
+// silently absent from every capacity report otherwise.
+func (p ProvidersConfig) entryFor(name string) (ProviderEntryConfig, bool) {
+	switch name {
+	case providerid.Claude:
+		return p.Claude, true
+	case providerid.Codex:
+		return p.Codex, true
+	case providerid.Copilot:
+		return p.Copilot, true
+	case providerid.OpenCode:
+		return p.OpenCode, true
+	default:
+		return ProviderEntryConfig{}, false
+	}
 }
 
 type ProviderHealthCheckConfig struct {

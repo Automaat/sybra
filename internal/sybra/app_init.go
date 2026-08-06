@@ -331,10 +331,14 @@ func (a *App) logAutomationsSummary() {
 // off, and only the configured count is knowable.
 func (a *App) warnThinFailoverChain() {
 	enabled := a.cfg.Providers.EnabledNames()
-	if len(enabled) < 2 {
+	switch len(enabled) {
+	case 0:
+		a.logger.Error("app.providers.none-enabled",
+			"detail", "no provider is enabled; this instance cannot dispatch at all")
+	case 1:
 		a.logger.Warn("app.providers.no-failover",
 			"enabled", enabled,
-			"detail", "fewer than two providers enabled; a single rate limit stalls the board")
+			"detail", "one provider enabled; a single rate limit stalls the board")
 	}
 	if a.providerHealth == nil {
 		return

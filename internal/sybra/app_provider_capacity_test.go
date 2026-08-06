@@ -21,7 +21,9 @@ func TestWarnThinFailoverChain(t *testing.T) {
 	}{
 		{name: "two providers are silent", enabled: []string{"claude", "codex"}},
 		{name: "one provider warns", enabled: []string{"claude"}, wantMsg: "app.providers.no-failover"},
-		{name: "none enabled warns", wantMsg: "app.providers.no-failover"},
+		// Distinct from one provider: there is no "single rate limit" to blame
+		// when nothing is enabled, and the instance cannot dispatch at all.
+		{name: "none enabled is its own error", wantMsg: "app.providers.none-enabled"},
 	}
 
 	for _, tc := range cases {
@@ -43,7 +45,8 @@ func TestWarnThinFailoverChain(t *testing.T) {
 
 			var got string
 			for _, r := range records {
-				if r.Message == "app.providers.no-failover" {
+				switch r.Message {
+				case "app.providers.no-failover", "app.providers.none-enabled":
 					got = r.Message
 				}
 			}
@@ -79,7 +82,7 @@ func TestLogAutomationsSummary_CarriesProvidersAndWarning(t *testing.T) {
 				}
 				return true
 			})
-		case "app.providers.no-failover":
+		case "app.providers.no-failover", "app.providers.none-enabled":
 			warned = true
 		}
 	}

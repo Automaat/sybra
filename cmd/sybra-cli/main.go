@@ -3326,6 +3326,13 @@ func buildCapacityReport(cfg *config.Config, api *apiClient, now time.Time) *doc
 		}
 		return report
 	}
+	if len(statuses) == 0 {
+		// GetProviderHealth returns an empty slice when the health-check loop
+		// is disabled. Reading that as "nothing is healthy" reports an outage
+		// that is not happening.
+		report.Unavailable = "provider health checking is disabled on the sybra server (providers.health_check.enabled)"
+		return report
+	}
 	report.Available = true
 	byName := make(map[string]provider.Status, len(statuses))
 	for _, st := range statuses {
