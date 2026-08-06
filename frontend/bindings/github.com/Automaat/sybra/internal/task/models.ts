@@ -13,6 +13,9 @@ import * as attachment$0 from "../attachment/models.js";
 import * as blocker$0 from "../blocker/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as taskstatus$0 from "../taskstatus/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as workflow$0 from "../workflow/models.js";
 
 /**
@@ -331,31 +334,12 @@ export class ReviewComment {
 }
 
 /**
- * Status is a task's position in its lifecycle (see the pipeline diagram in
- * the root CLAUDE.md). Transitions are enforced by the workflow engine and
- * callers should validate untrusted input with ValidateStatus rather than
- * casting a string directly.
+ * Status re-exports the task status vocabulary from internal/taskstatus.
+ * The type and constants live in a leaf package so internal/workflow can use
+ * them too; internal/task imports internal/workflow, so they cannot live here.
+ * These aliases keep every existing caller and the Wails bindings unchanged.
  */
-export enum Status {
-    /**
-     * The Go zero value for the underlying type of the enum.
-     */
-    $zero = "",
-
-    StatusNew = "new",
-    StatusTodo = "todo",
-    StatusInProgress = "in-progress",
-    StatusReadyReview = "ready-review",
-    StatusInReview = "in-review",
-    StatusPlanning = "planning",
-    StatusPlanReview = "plan-review",
-    StatusTesting = "testing",
-    StatusReadyPR = "ready-pr",
-    StatusHumanRequired = "human-required",
-    StatusBlocked = "blocked",
-    StatusDone = "done",
-    StatusCancelled = "cancelled",
-};
+export type Status = taskstatus$0.Status;
 
 /**
  * Task is the in-memory representation of a task markdown file: YAML
@@ -669,7 +653,7 @@ export class Task {
             this["title"] = "";
         }
         if (!("status" in $$source)) {
-            this["status"] = Status.$zero;
+            this["status"] = taskstatus$0.Status.$zero;
         }
         if (!("taskType" in $$source)) {
             this["taskType"] = TaskType.$zero;
