@@ -175,6 +175,9 @@ func TestLockedEntryPointsRefuseHeldPath(t *testing.T) {
 	if _, err := h.m.PrepareForFix(context.Background(), tk, 1); !errors.Is(err, ErrPreparationInFlight) {
 		t.Errorf("PrepareForFix err = %v, want ErrPreparationInFlight", err)
 	}
+	if err := h.m.PruneMissingWorktree(context.Background(), h.proj.ClonePath, h.m.PathFor(tk)); !errors.Is(err, ErrPreparationInFlight) {
+		t.Errorf("PruneMissingWorktree err = %v, want ErrPreparationInFlight", err)
+	}
 	if _, _, err := h.m.PrepareAttempt(context.Background(), tk, "att1"); err != nil {
 		t.Errorf("PrepareAttempt on a different path must not be refused: %v", err)
 	}

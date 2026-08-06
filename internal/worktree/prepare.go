@@ -923,6 +923,21 @@ func (m *Manager) ResetForRetry(ctx context.Context, t task.Task, dir, ref strin
 	return true, nil
 }
 
+// PruneMissingWorktree drops the bare repo's admin entry for a worktree path
+// whose directory is gone from disk. Locked on that path: the directory can be
+// missing only because another preparation has not created it yet, and pruning
+// the registration mid `git worktree add` leaves a checkout git no longer
+// tracks.
+func (m *Manager) PruneMissingWorktree(ctx context.Context, clonePath, dir string) error {
+	release, err := m.lockPath(dir)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	return project.RemoveWorktreeReconcile(ctx, clonePath, dir)
+}
+
 // RecreateFromBase discards a task's diverged branch and its worktree so the
 // next PrepareForTask rebuilds it fresh off the project's base ref. The branch
 // tip is first backed up to refs/sybra-backup/<branch> (best-effort) so the

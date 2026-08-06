@@ -1157,7 +1157,7 @@ func (a *agentAdapter) reprepareProvidedWorktreeDir(t task.Task, taskID string, 
 	if err != nil {
 		return t, "", false, err
 	}
-	if rErr := project.RemoveWorktreeReconcile(context.Background(), proj.ClonePath, dir); rErr != nil {
+	if rErr := a.agentOrch.Worktrees().PruneMissingWorktree(context.Background(), proj.ClonePath, dir); rErr != nil {
 		return t, "", false, fmt.Errorf("reconcile missing worktree dir %s: %w", dir, rErr)
 	}
 	resolvedDir, cleanRetryReset, err = a.reprepareMissingWorktreeDir(t, taskID, role, dir, claim)
