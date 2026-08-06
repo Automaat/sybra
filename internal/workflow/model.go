@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/providerid"
 	"gopkg.in/yaml.v3"
 )
 
@@ -230,6 +231,138 @@ const (
 	StepRequireEvidence StepType = "require_evidence"
 )
 
+type stepReducerKind uint8
+
+const (
+	stepReducerDispatch stepReducerKind = iota
+	stepReducerWaitHuman
+	stepReducerSetStatus
+	stepReducerCondition
+)
+
+type stepAsyncHandler func(*Engine, string, *Definition, *Step, *Execution, TemplateContext, EffectID) (bool, *CompletionInfo, error)
+type stepSyncHandler func(*Engine, string, *Step, *Execution, TemplateContext, TaskInfo) (StepOutput, error)
+
+type stepBoundaryKind uint8
+
+const (
+	stepBoundaryNone stepBoundaryKind = iota
+	stepBoundaryParallel
+	stepBoundaryBestOfN
+)
+
+type stepSpec struct {
+	async     stepAsyncHandler
+	sync      stepSyncHandler
+	reducer   stepReducerKind
+	boundary  stepBoundaryKind
+	resumable bool
+}
+
+var stepRegistry = map[StepType]stepSpec{}
+
+func init() {
+	stepRegistry = map[StepType]stepSpec{
+		StepRunAgent:             {async: execAsyncRunAgentStep, reducer: stepReducerDispatch, resumable: true},
+		StepWaitHuman:            {async: execAsyncWaitHumanStep, reducer: stepReducerWaitHuman},
+		StepSetStatus:            {sync: bindSyncTaskStep((*Engine).execSetStatus), reducer: stepReducerSetStatus},
+		StepCondition:            {sync: bindSyncExecTaskStep((*Engine).execCondition), reducer: stepReducerCondition},
+		StepShell:                {sync: bindSyncTemplateStep((*Engine).execShell), reducer: stepReducerDispatch},
+		StepEnsurePRClosesIssue:  {sync: bindSyncTaskInfoStep((*Engine).execEnsurePRClosesIssue), reducer: stepReducerDispatch},
+		StepStampPRAttribution:   {sync: bindSyncTaskInfoStep((*Engine).execStampPRAttribution), reducer: stepReducerDispatch},
+		StepRerequestReview:      {sync: bindSyncTaskInfoStep((*Engine).execRerequestReview), reducer: stepReducerDispatch},
+		StepVerifyCommits:        {sync: bindSyncExecTaskInfoStep((*Engine).execVerifyCommits), reducer: stepReducerDispatch},
+		StepLinkPRAndReview:      {sync: bindSyncExecTaskInfoStep((*Engine).execLinkPRAndReview), reducer: stepReducerDispatch},
+		StepEvaluate:             {sync: bindSyncExecTaskInfoStep((*Engine).execEvaluate), reducer: stepReducerDispatch},
+		StepRequireSidecar:       {sync: bindSyncTaskInfoStep((*Engine).execRequireSidecar), reducer: stepReducerDispatch},
+		StepClearPlanArtifacts:   {sync: bindSyncTaskInfoStep((*Engine).execClearPlanArtifacts), reducer: stepReducerDispatch},
+		StepValidatePlan:         {sync: bindSyncTaskInfoStep((*Engine).execValidatePlan), reducer: stepReducerDispatch},
+		StepValidatePlanContract: {sync: bindSyncTaskInfoStep((*Engine).execValidatePlanContract), reducer: stepReducerDispatch},
+		StepTriageReview:         {sync: bindSyncTaskInfoStep((*Engine).execTriageReview), reducer: stepReducerDispatch},
+		StepFlagPlanCritique:     {sync: bindSyncTaskInfoStep((*Engine).execFlagPlanCritique), reducer: stepReducerDispatch},
+		StepDetectTampering:      {sync: bindSyncTaskInfoStep((*Engine).execDetectTampering), reducer: stepReducerDispatch},
+		StepVerifyChecks:         {sync: bindSyncExecTaskInfoStep((*Engine).execVerifyChecks), reducer: stepReducerDispatch, resumable: true},
+		StepFocusedChecks:        {sync: bindSyncExecTaskInfoStep((*Engine).execFocusedChecks), reducer: stepReducerDispatch},
+		StepRoutePRFixResult:     {sync: bindSyncExecTaskInfoStep((*Engine).execRoutePRFixResult), reducer: stepReducerDispatch},
+		StepRouteTestResult:      {sync: bindSyncExecTaskInfoStep((*Engine).execRouteTestResult), reducer: stepReducerDispatch},
+		StepParallel:             {async: execAsyncParallelStep, reducer: stepReducerDispatch, boundary: stepBoundaryParallel, resumable: true},
+		StepSyncBranch:           {sync: bindSyncTaskStep((*Engine).execSyncBranch), reducer: stepReducerDispatch},
+		StepCodegenGate:          {sync: bindSyncTaskStep((*Engine).execCodegenGate), reducer: stepReducerDispatch},
+		StepResumeWorkflow:       {sync: bindSyncExecStep((*Engine).execResumeWorkflow), reducer: stepReducerDispatch},
+		StepBestOfN:              {async: execAsyncBestOfNStep, reducer: stepReducerDispatch, boundary: stepBoundaryBestOfN, resumable: true},
+		StepPromoteBestOfN:       {sync: bindSyncTaskStep((*Engine).execPromoteBestOfN), reducer: stepReducerDispatch, resumable: true},
+		StepPushBranch:           {sync: bindSyncExecTaskInfoStep((*Engine).execPushBranch), reducer: stepReducerDispatch, resumable: true},
+		StepCreatePR:             {sync: bindSyncExecTaskInfoStep((*Engine).execCreatePR), reducer: stepReducerDispatch, resumable: true},
+		StepClassifyTask:         {sync: bindSyncExecStep((*Engine).execClassifyTask), reducer: stepReducerDispatch, resumable: true},
+		StepAdmissionPreflight:   {sync: bindSyncExecTaskInfoStep((*Engine).execAdmissionPreflight), reducer: stepReducerDispatch, resumable: true},
+		StepRequireEvidence:      {sync: bindSyncTaskInfoStep((*Engine).execRequireEvidence), reducer: stepReducerDispatch},
+	}
+}
+
+func bindSyncTaskStep(fn func(*Engine, string, *Step) (StepOutput, error)) stepSyncHandler {
+	return func(e *Engine, taskID string, step *Step, _ *Execution, _ TemplateContext, _ TaskInfo) (StepOutput, error) {
+		return fn(e, taskID, step)
+	}
+}
+
+func bindSyncTaskInfoStep(fn func(*Engine, string, *Step, TaskInfo) (StepOutput, error)) stepSyncHandler {
+	return func(e *Engine, taskID string, step *Step, _ *Execution, _ TemplateContext, t TaskInfo) (StepOutput, error) {
+		return fn(e, taskID, step, t)
+	}
+}
+
+func bindSyncTemplateStep(fn func(*Engine, *Step, TemplateContext) (StepOutput, error)) stepSyncHandler {
+	return func(e *Engine, _ string, step *Step, _ *Execution, ctx TemplateContext, _ TaskInfo) (StepOutput, error) {
+		return fn(e, step, ctx)
+	}
+}
+
+func bindSyncExecStep(fn func(*Engine, string, *Step, *Execution) (StepOutput, error)) stepSyncHandler {
+	return func(e *Engine, taskID string, step *Step, wfExec *Execution, _ TemplateContext, _ TaskInfo) (StepOutput, error) {
+		return fn(e, taskID, step, wfExec)
+	}
+}
+
+func bindSyncExecTaskStep(fn func(*Engine, *Step, *Execution, TaskInfo) (StepOutput, error)) stepSyncHandler {
+	return func(e *Engine, _ string, step *Step, wfExec *Execution, _ TemplateContext, t TaskInfo) (StepOutput, error) {
+		return fn(e, step, wfExec, t)
+	}
+}
+
+func bindSyncExecTaskInfoStep(fn func(*Engine, string, *Step, *Execution, TaskInfo) (StepOutput, error)) stepSyncHandler {
+	return func(e *Engine, taskID string, step *Step, wfExec *Execution, _ TemplateContext, t TaskInfo) (StepOutput, error) {
+		return fn(e, taskID, step, wfExec, t)
+	}
+}
+
+func lookupStepSpec(stepType StepType) (stepSpec, bool) {
+	spec, ok := stepRegistry[stepType]
+	return spec, ok
+}
+
+func requireStepSpec(stepType StepType) (stepSpec, error) {
+	spec, ok := lookupStepSpec(stepType)
+	if !ok {
+		return stepSpec{}, fmt.Errorf("unknown step type %q", stepType)
+	}
+	return spec, nil
+}
+
+func stepIsAsync(stepType StepType) bool {
+	spec, ok := lookupStepSpec(stepType)
+	return ok && spec.async != nil
+}
+
+func stepReducerBehavior(stepType StepType) (stepReducerKind, bool) {
+	spec, ok := lookupStepSpec(stepType)
+	return spec.reducer, ok
+}
+
+func stepBoundary(stepType StepType) (stepBoundaryKind, bool) {
+	spec, ok := lookupStepSpec(stepType)
+	return spec.boundary, ok
+}
+
 // Best-of-N attempt count bounds enforced by Definition.Validate. A floor of
 // 2 makes "best-of-N" meaningful (a single attempt has nothing to judge); the
 // cap bounds worst-case fan-out cost/dispatch time per task.
@@ -418,7 +551,8 @@ func (d *Definition) Validate() error {
 }
 
 // validateParallelStep enforces that a `parallel` step has at least two
-// run_agent children, no nested parallels, and globally-unique child IDs.
+// run_agent children without worktree preparation or nested parallels, and
+// globally-unique child IDs.
 // The constraints exist because the engine's step bookkeeping (persisted agent
 // routes, ImportSidecar lookup, retry counter) is keyed by step ID —
 // duplicates would cause cross-step state to clobber each other.
@@ -441,6 +575,14 @@ func validateParallelStep(s *Step, seenIDs map[string]bool) error {
 		if len(c.Parallel) > 0 {
 			return fmt.Errorf("step %q: parallel child %q nests another parallel block (not supported)", s.ID, c.ID)
 		}
+		// Parallel children share the parent workflow directory. Preparing a
+		// worktree here can block StartAgent for minutes and, unlike a regular
+		// run_agent step, dispatch must keep the child route durable while the
+		// parent is still being established. Reject this unsupported shape rather
+		// than letting a user-authored workflow stall the engine.
+		if c.Config.NeedsWorktree {
+			return fmt.Errorf("step %q: parallel child %q cannot set needs_worktree", s.ID, c.ID)
+		}
 		if c.Config.MaxRetries > maxRetries {
 			return fmt.Errorf("step %q: child %q max_retries %d exceeds limit %d", s.ID, c.ID, c.Config.MaxRetries, maxRetries)
 		}
@@ -461,10 +603,10 @@ func validateParallelStep(s *Step, seenIDs map[string]bool) error {
 // history/A-B config, which is meaningless when picked per-attempt before any
 // attempt has run.
 var validAttemptProviders = map[string]bool{
-	"":        true,
-	"claude":  true,
-	"codex":   true,
-	"copilot": true,
+	"":                 true,
+	providerid.Claude:  true,
+	providerid.Codex:   true,
+	providerid.Copilot: true,
 }
 
 // validateBestOfNStep enforces the best_of_n step's attempt-count bounds and

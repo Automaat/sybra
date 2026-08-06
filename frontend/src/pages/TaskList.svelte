@@ -14,7 +14,7 @@
     type UmbrellaProgress,
   } from '../lib/umbrella-progress.js'
   import { navStore } from '../lib/navigation.svelte.js'
-  import { matchesQuery, matchesProject, matchesTags, matchesAgentMode } from '../lib/task-filters.js'
+  import { matchesQuery, matchesProject, matchesTags } from '../lib/task-filters.js'
   import TaskTimeline from '../components/TaskTimeline.svelte'
   import StatusPicker from '../components/StatusPicker.svelte'
   import PriorityPicker from '../components/PriorityPicker.svelte'
@@ -96,7 +96,6 @@
       if (!matchesQuery(t, searchQuery)) return false
       if (!matchesProject(t, selectedProjectId)) return false
       if (!matchesTags(t, selectedTags)) return false
-      if (!matchesAgentMode(t, selectedAgentMode)) return false
       return true
     })
   }
@@ -118,7 +117,6 @@
         if (!matchesQuery(t, searchQuery)) return false
         if (!matchesProject(t, selectedProjectId)) return false
         if (!matchesTags(t, selectedTags)) return false
-        if (!matchesAgentMode(t, selectedAgentMode)) return false
         return true
       })
       .sort((a, b) => reviewPhaseRank(a) - reviewPhaseRank(b))
@@ -265,13 +263,25 @@
   // Filter state
   let searchQuery = $state('')
   let selectedProjectId = $state('')
+  let mobileProjectQuery = $state('')
   let selectedTags = $state<string[]>([])
-  let selectedAgentMode = $state('')
   let showDone = $state(false)
   // Derived: unique tags across all tasks
   const allTags = $derived(
     [...new Set(taskStore.list.flatMap((t: Task) => t.tags ?? []))].sort()
   )
+  const sortedProjects = $derived(
+    [...projectStore.list].sort((a, b) =>
+      a.repo.localeCompare(b.repo, undefined, { sensitivity: 'base' })
+      || a.owner.localeCompare(b.owner, undefined, { sensitivity: 'base' }),
+    ),
+  )
+  const mobileMatchingProjects = $derived.by(() => {
+    const query = mobileProjectQuery.trim().toLowerCase()
+    return query
+      ? sortedProjects.filter((p) => `${p.owner}/${p.repo}`.toLowerCase().includes(query))
+      : sortedProjects
+  })
 
   function filteredByStatuses(statuses: string[]): Task[] {
     return taskStore.list.filter((t: Task) => {
@@ -280,7 +290,6 @@
       if (!matchesQuery(t, searchQuery)) return false
       if (!matchesProject(t, selectedProjectId)) return false
       if (!matchesTags(t, selectedTags)) return false
-      if (!matchesAgentMode(t, selectedAgentMode)) return false
       return true
     })
   }
@@ -305,7 +314,6 @@
       if (!matchesQuery(t, searchQuery)) return false
       if (!matchesProject(t, selectedProjectId)) return false
       if (!matchesTags(t, selectedTags)) return false
-      if (!matchesAgentMode(t, selectedAgentMode)) return false
       return true
     }).sort((a, b) => {
       const statusDiff = (statusOrder[a.status] ?? 99) - (statusOrder[b.status] ?? 99)
@@ -324,14 +332,14 @@
   const needYouCount = $derived(allFilteredTasks.filter((t: Task) => activeTaskNeedsUserAttention(t)).length)
 
   const hasActiveFilters = $derived(
-    Boolean(searchQuery) || Boolean(selectedProjectId) || selectedTags.length > 0 || Boolean(selectedAgentMode)
+    Boolean(searchQuery) || Boolean(selectedProjectId) || selectedTags.length > 0
   )
 
   function clearFilters() {
     searchQuery = ''
     selectedProjectId = ''
+    mobileProjectQuery = ''
     selectedTags = []
-    selectedAgentMode = ''
   }
 
   function addTag(tag: string) {
@@ -344,11 +352,6 @@
     selectedTags = selectedTags.filter((t) => t !== tag)
   }
 
-  const agentModes = [
-    { value: '', label: 'All' },
-    { value: 'headless', label: 'Headless' },
-    { value: 'interactive', label: 'Interactive' },
-  ]
 </script>
 
 {#if statusPickerOpen && focusedTask}
@@ -404,7 +407,6 @@
     bind:searchQuery
     bind:selectedProjectId
     bind:selectedTags
-    bind:selectedAgentMode
     bind:showDone
     {allTags}
     {hasActiveFilters}
@@ -472,34 +474,24 @@
     {#if projectStore.list.length > 0}
       <div class="flex flex-col gap-2">
         <span class="text-xs font-semibold uppercase tracking-wider text-surface-500">Project</span>
+        <input
+          bind:value={mobileProjectQuery}
+          type="text"
+          placeholder="Find project..."
+          aria-label="Find project"
+          class="rounded-lg border border-surface-300 bg-surface-100 px-3 py-3 text-base outline-none focus:border-primary-400 focus:ring-1 focus:ring-primary-400 dark:border-surface-600 dark:bg-surface-700 dark:focus:border-primary-500 dark:focus:ring-primary-500"
+        />
         <select
           bind:value={selectedProjectId}
           class="rounded-lg border border-surface-300 bg-surface-100 px-3 py-3 text-base dark:border-surface-600 dark:bg-surface-700"
         >
           <option value="">All projects</option>
-          {#each projectStore.list as p (p.id)}
+          {#each mobileMatchingProjects as p (p.id)}
             <option value={p.id}>{p.owner}/{p.repo}</option>
           {/each}
         </select>
       </div>
     {/if}
-
-    <div class="flex flex-col gap-2">
-      <span class="text-xs font-semibold uppercase tracking-wider text-surface-500">Agent mode</span>
-      <div class="flex rounded-lg border border-surface-300 dark:border-surface-700">
-        {#each agentModes as mode}
-          <button
-            type="button"
-            class="tap flex-1 px-3 py-2.5 text-sm font-medium transition-colors first:rounded-l-lg last:rounded-r-lg {selectedAgentMode === mode.value
-              ? 'bg-primary-500 text-white dark:bg-primary-600'
-              : 'bg-surface-50 text-surface-600 active:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:active:bg-surface-700'}"
-            onclick={() => (selectedAgentMode = mode.value)}
-          >
-            {mode.label}
-          </button>
-        {/each}
-      </div>
-    </div>
 
     {#if allTags.length > 0}
       <div class="flex flex-col gap-2">

@@ -57,6 +57,20 @@ steps:
           operator: equals
           value: human-required
         goto: ""
+      - goto: push_recovered_branch
+
+  # The agent only resolves and commits the merge. Sybra publishes it through
+  # its deterministic, non-force push path so fork-only safeguards stay in
+  # effect for agent subprocesses.
+  - id: push_recovered_branch
+    name: Push Recovered Branch
+    type: push_branch
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
       - goto: verify_commits
 
   # Mechanical check (no LLM): verifies the branch has at least one commit

@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // execParallel spawns every child of a `parallel` block concurrently, all
@@ -111,26 +113,11 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	childCtx := parentCtx
 	childCtx.Step = *child
 
-	mode := child.Config.Mode
-	if strings.Contains(mode, "{{") {
-		if rendered, rErr := RenderTemplate(mode, childCtx); rErr == nil {
-			mode = rendered
-		}
-	}
-	// Parallel children must run as headless one-shot so the parent can
-	// advance. Interactive dispatch no longer exists — coerce empty and any
-	// legacy interactive value to headless before AdmitDispatch so the
-	// resource-pressure gate sees the real mode (matches spawnBestOfNAttempt).
-	if mode == "" || mode == "interactive" {
-		mode = "headless"
-	}
+	mode := resolveRunAgentMode(child.Config.Mode, childCtx)
 	if admit, reason := e.agents.AdmitDispatch(taskID, child.Config.Role, mode); !admit {
 		return fmt.Errorf("%w: %s", ErrResourcePressure, reason)
 	}
-	model := child.Config.Model
-	if model == "" {
-		model = "sonnet"
-	}
+	model := resolveRunAgentModel(child.Config.Model, childCtx)
 
 	provider, model, assignment, err := e.resolveAgentVariant(childCtx.Task, child, wfExec, model, "workflow.parallel.cross-provider.fallback")
 	if err != nil {
@@ -240,7 +227,7 @@ func (e *Engine) advanceParallelChild(taskID string, def *Definition, parent, ch
 	status.AgentID = output.AgentID
 	status.Provider = output.Provider
 	status.Status = output.Status
-	status.Output = truncate(output.Output, 4000)
+	status.Output = textutil.TruncateBytes(output.Output, 4000, "\n... (truncated)")
 
 	// Wait for the rest of the cohort.
 	if !rec.AllChildrenDone() {
@@ -287,12 +274,12 @@ func (e *Engine) finalizeParallelParent(taskID string, def *Definition, parent *
 	wfExec.RecordStep(StepRecord{
 		StepID:    parent.ID,
 		Status:    parentStatus,
-		Output:    truncate(parentOutput, 4000),
+		Output:    textutil.TruncateBytes(parentOutput, 4000, "\n... (truncated)"),
 		StartedAt: rec.StartedAt,
 		EndedAt:   now,
 	})
 	if parentOutput != "" {
-		wfExec.SetVar("step."+parent.ID+".output", truncate(parentOutput, 2000))
+		wfExec.SetVar("step."+parent.ID+".output", textutil.TruncateBytes(parentOutput, 2000, "\n... (truncated)"))
 	}
 
 	t, err := e.tasks.GetTask(taskID)

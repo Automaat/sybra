@@ -47,6 +47,17 @@ chmod +x "$FAKEBIN/claude" "$FAKEBIN/codex" "$FAKEBIN/copilot"
 # --- seed mock data (idempotent) -------------------------------------------
 SYBRA_HOME="$DEV_HOME" "$REPO_ROOT/scripts/dev-mock/seed.sh"
 
+# sybra-server refuses to start without an explicit sandbox posture, so an
+# omitted key can never be mistaken for a contained one. "off" is right here:
+# the fake provider CLIs above are shell stubs that spawn nothing real. The
+# existence check keeps a hand-edited dev config from being clobbered.
+if [ ! -e "$DEV_HOME/config.yaml" ]; then
+  cat >"$DEV_HOME/config.yaml" <<'YAML'
+agent:
+  sandbox_mode: "off"
+YAML
+fi
+
 # --- run the server --------------------------------------------------------
 echo "sybra-server → http://localhost:${SYBRA_PORT:-8080}  (home: $DEV_HOME)"
 echo "Now run 'mise run dev:web' in another terminal for the HMR frontend."

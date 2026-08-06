@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // execClearPlanArtifacts wipes the previous planning cycle's outputs before the
@@ -54,7 +56,7 @@ func (e *Engine) execClearPlanArtifacts(taskID string, step *Step, t TaskInfo) (
 		reason := "replan blocked: could not clear " + strings.Join(failed, ", ") +
 			" — the next cycle would re-import the previous plan's content"
 		e.logger.Warn("workflow.clear-plan-artifacts.blocked", "task_id", taskID, "step", step.ID, "failed", strings.Join(failed, ", "))
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+		if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 			e.logger.Error("workflow.clear-plan-artifacts.status", "task_id", taskID, "err", statusErr)
 			// The status flip is what halts the workflow at the human-required
 			// edge; if it fails, that edge never fires and the unconditional
@@ -90,12 +92,19 @@ func (e *Engine) clearWorktreeGlob(taskID string, step *Step, t TaskInfo, glob s
 		// nothing, exactly the half-cleared state this step exists to catch.
 		return 0, errors.New("worktree glob is empty")
 	}
+	// Scratch artifacts live in the sidecar dir once one is seeded — verifier
+	// roles cannot write the worktree (#2791) — so clear them where they
+	// actually are. Falling back to the worktree keeps pre-#2791 executions,
+	// whose files really are in the tree, clearable on replan.
 	dir := ""
 	if t.Workflow != nil {
-		dir = strings.TrimSpace(t.Workflow.Variables[WorkflowVarDir])
+		dir = strings.TrimSpace(t.Workflow.Variables[WorkflowVarSidecarDir])
+		if dir == "" {
+			dir = strings.TrimSpace(t.Workflow.Variables[WorkflowVarDir])
+		}
 	}
 	if dir == "" {
-		return 0, fmt.Errorf("worktree files matching %s (worktree dir unknown)", glob)
+		return 0, fmt.Errorf("scratch files matching %s (no sidecar or worktree dir known)", glob)
 	}
 	// List the dir rather than stat it. Only a genuinely absent worktree is safe
 	// to pass, since it holds no stale files to serve; every other error has to

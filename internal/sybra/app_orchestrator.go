@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -122,6 +123,79 @@ func (a *App) runsOrchestratorBrain() bool {
 	return !a.brainDisabled.Load()
 }
 
+// startupRecoveryDone reports whether it is safe for a dispatch-triggering
+// path (status hook, watcher) to start a workflow — see
+// startupRecoveryPending's doc comment for why this window matters.
+func (a *App) startupRecoveryDone() bool {
+	return !a.startupRecoveryPending.Load()
+}
+
+// deferStatusChange records a status change the startup gate suppressed so
+// replayDeferredStatusChanges can re-deliver it once reattach finishes.
+func (a *App) deferStatusChange(taskID string) {
+	if taskID == "" {
+		return
+	}
+	a.deferredStatusMu.Lock()
+	if a.deferredStatusChanges == nil {
+		a.deferredStatusChanges = make(map[string]struct{})
+	}
+	a.deferredStatusChanges[taskID] = struct{}{}
+	a.deferredStatusMu.Unlock()
+	// The gate can clear between the hook's check and this record, after the
+	// drain already ran — replay right away rather than strand the event until
+	// the next restart. The drain empties the set under the same lock, so at
+	// most one caller ever delivers a given entry.
+	if a.startupRecoveryDone() {
+		a.replayDeferredStatusChanges()
+	}
+}
+
+// replayDeferredStatusChanges re-delivers the status changes suppressed during
+// startup recovery, using each task's *current* persisted status rather than
+// the status recorded at suppression time: a task that moved several times in
+// the window only needs the transition that still holds, and a step waiting on
+// a status it already passed must not be advanced by a stale event.
+func (a *App) replayDeferredStatusChanges() {
+	a.deferredStatusMu.Lock()
+	pending := a.deferredStatusChanges
+	a.deferredStatusChanges = nil
+	a.deferredStatusMu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
+	for _, taskID := range slices.Sorted(maps.Keys(pending)) {
+		t, err := a.tasks.Get(taskID)
+		if err != nil {
+			a.logger.Warn("app.status-hook.replay.get", "task_id", taskID, "err", err)
+			continue
+		}
+		if !a.runsTaskLocally(t) {
+			continue
+		}
+		a.logger.Info("app.status-hook.replay", "task_id", taskID, "status", string(t.Status))
+		if a.workflowEngine != nil {
+			a.workflowEngine.HandleStatusChange(taskID, string(t.Status))
+		}
+		// HandleStatusChange can reroute a human-required self-escalation back
+		// into the PR flow, so re-read before deciding whether the automatic
+		// human-review dispatch — suppressed for this task by the same startup
+		// gate that deferred the status change — still applies. Without this,
+		// a task that lands in human-required during the recovery window never
+		// gets its review agent (see #2752): initStatusHook's own
+		// maybeSpawn call was skipped at delivery time (startupRecoveryDone was
+		// false), and nothing else re-fires it.
+		t2, err := a.tasks.Get(taskID)
+		if err != nil {
+			a.logger.Warn("app.status-hook.replay.reget", "task_id", taskID, "err", err)
+			continue
+		}
+		if t2.Status == task.StatusHumanRequired && a.runsScheduler() && a.humanReview != nil {
+			go a.humanReview.maybeSpawn(a.schedulerContext(), taskID, "")
+		}
+	}
+}
+
 const clusterHealthProbeInterval = 30 * time.Second
 
 func (a *App) clusterHealthLoop(ctx context.Context) {
@@ -144,10 +218,19 @@ func (a *App) maintenancePass(ctx context.Context) {
 	a.queueDrainPass(ctx)
 	// Recover in-progress tasks whose agent died — runs continuously, not just at
 	// startup, to catch agents that finished without advancing the workflow.
-	if a.runsScheduler() {
+	if a.runsScheduler() && a.recovery != nil {
 		a.recovery.RestartStaleInProgress(ctx)
 	}
-	a.recovery.ReconcileLostPRNumber(ctx)
+	// Continuously, not just at startup: a preparation can hold the dispatch
+	// claim for its fetch budget plus its setup budget, longer than any ladder
+	// that must stay under agent.StaleDispatchClaimAge. Exhaustion therefore
+	// has to be recoverable, and this is what recovers it.
+	if a.humanReview != nil {
+		go a.humanReview.RespawnDroppedReviews(ctx)
+	}
+	if a.recovery != nil {
+		a.recovery.ReconcileLostPRNumber(ctx)
+	}
 	// Re-attempt enrichment for URL stubs orphaned by a failed/interrupted
 	// initial fetch — otherwise they keep the enrich-pending marker (and their
 	// raw-URL title) forever and never dispatch a workflow. The eventual
@@ -155,7 +238,7 @@ func (a *App) maintenancePass(ctx context.Context) {
 	if a.taskSvc != nil {
 		a.taskSvc.ReconcilePendingEnrichment()
 	}
-	a.worktrees.CleanupOrphaned(ctx)
+	a.startWorktreeCleanup(ctx)
 	if a.sandboxes != nil && a.tasks != nil {
 		if tasks, err := a.tasks.List(); err == nil {
 			var hasAgent func(string) bool
@@ -173,6 +256,26 @@ func (a *App) maintenancePass(ctx context.Context) {
 	}
 }
 
+// startWorktreeCleanup keeps slow bare-repo pruning out of the orchestrator's
+// select loop. A hung remote operation can still delay this best-effort
+// maintenance work, but it can no longer stop dispatch or queue nudges.
+func (a *App) startWorktreeCleanup(ctx context.Context) {
+	if a.worktrees == nil && a.worktreeCleanupFn == nil {
+		return
+	}
+	if !a.maintenanceCleanupRunning.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer a.maintenanceCleanupRunning.Store(false)
+		if a.worktreeCleanupFn != nil {
+			a.worktreeCleanupFn(ctx)
+			return
+		}
+		a.worktrees.CleanupOrphaned(ctx)
+	}()
+}
+
 func (a *App) queueDrainPass(ctx context.Context) {
 	// Draining the manual queue is the resume path for an agent an operator
 	// already explicitly started, not auto-dispatch — an agent-only instance
@@ -183,6 +286,19 @@ func (a *App) queueDrainPass(ctx context.Context) {
 		return
 	}
 	a.reconcileRunnableBoardTasks(ctx)
+	// A repair pass, not a dispatch decision, so it rides the slower recovery
+	// tick rather than the fast one. Lists once here rather than inside the
+	// pass, so the recovery tick does not pay for a second full store scan.
+	if a.tasks != nil {
+		tasks, err := a.tasks.List()
+		if err != nil {
+			// Logged rather than swallowed: a silent skip here leaves tasks
+			// stranded exactly as before, with nothing in the log to say why.
+			a.logger.Warn("umbrella.gate.stale-tag-scan", "err", err)
+		} else {
+			a.clearGateTagOnHandedOffChildren(tasks)
+		}
+	}
 	if a.workflowEngine != nil {
 		var workflowRecovery workflowRecoveryLoop = a.workflowEngine
 		workflowRecovery.ReplayPersistedEffects()
@@ -245,14 +361,18 @@ const maxReviewAttemptsPerHead = 2
 
 // reviewBudget builds the single durable-AgentRuns-backed budget bounding
 // automated review dispatch: PerHour catches a runaway loop across any head,
-// PerHead catches repeated review of one unchanged commit. A nil cfg (tests)
-// uses the default per-hour limit.
+// PerTask puts a hard ceiling on lifetime review churn, and PerHead catches
+// repeated review of one unchanged commit. A nil cfg (tests) uses the defaults.
 func (a *App) reviewBudget() reviewbudget.Budget {
 	perHour := config.DefaultReviewRoundsPerHour
 	if a.cfg != nil {
 		perHour = a.cfg.Agent.ReviewRoundsPerHourLimit()
 	}
-	return reviewbudget.Budget{PerHour: perHour, PerHead: maxReviewAttemptsPerHead}
+	return reviewbudget.Budget{
+		PerHour: perHour,
+		PerTask: config.DefaultReviewRoundsPerTask,
+		PerHead: maxReviewAttemptsPerHead,
+	}
 }
 
 // taskReviewRuns adapts t's durable AgentRuns history into the role/timestamp
@@ -287,6 +407,24 @@ func (a *App) parkReviewRateLimited(t task.Task, limit int) {
 	}
 }
 
+func (a *App) parkReviewLifetimeLimited(t task.Task, limit int) {
+	spent := a.reviewBudget().LifetimeSpent(taskReviewRuns(t))
+	a.logger.Error("workflow.dispatch.inbound-review.task-limit",
+		"task_id", t.ID, "repo", t.ProjectID, "pr", t.PRNumber,
+		"rounds", spent, "limit", limit)
+	reason := fmt.Sprintf("review lifetime limit: %d rounds spent on PR #%d", limit, t.PRNumber)
+	if _, err := a.tasks.Apply(task.TransitionIntent{
+		TaskID:   t.ID,
+		ToStatus: task.StatusHumanRequired,
+		Actor:    "orchestrator.review_task_limit.park",
+		Extra: task.Update{
+			StatusReason: task.Ptr(reason),
+		},
+	}); err != nil {
+		a.logger.Error("workflow.dispatch.inbound-review.task-limit-park", "task_id", t.ID, "err", err)
+	}
+}
+
 // fetchPRHeadSHAFunc returns the PR-head lookup, overridable in tests. The
 // context-aware form is mandatory here: this runs inline on the orchestrator
 // loop, and gh's global request gate is held across the whole subprocess, so an
@@ -305,7 +443,16 @@ func (a *App) fetchPRFunc() func(ctx context.Context, repo string, number int) (
 	return github.FetchPRMetaContext
 }
 
+// dispatchInboundReviewWorkflow is the fourth workflow-dispatch sink (alongside
+// dispatchTaskCreatedWorkflow, dispatchPlanningWorkflow and dispatchStatusWorkflow).
+// It gates on runsScheduler/startupRecoveryDone itself rather than trusting its
+// callers: HasRunningAgentForTask (used below) is unreliable before reattach
+// repopulates the live agent registry, so dispatching during the recovery window
+// reopens the duplicate-agent race the gate closes for the other three sinks.
 func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) {
+	if !a.runsScheduler() || !a.startupRecoveryDone() {
+		return
+	}
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {
 		return
 	}
@@ -355,12 +502,15 @@ func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) 
 	// The blast-radius cap, and the only gate here that bounds a loop we have
 	// not thought of: the per-head budget below assumes the head is a
 	// meaningful key, and every other gate assumes the phase machine is sane.
-	// Rate rather than lifetime total, so a PR legitimately re-reviewed after
-	// each push over weeks is never blocked while a runaway is stopped inside
-	// the hour. Counted off the durable AgentRuns list, so a restart cannot
-	// launder it. Checked before the GitHub call — it needs no network.
+	// Counted off the durable AgentRuns list, so a restart cannot launder it.
+	// Checked before the GitHub call — it needs no network.
 	budget := a.reviewBudget()
-	if budget.HourlyExceeded(taskReviewRuns(t), time.Now()) {
+	runs := taskReviewRuns(t)
+	if budget.LifetimeExceeded(runs) {
+		a.parkReviewLifetimeLimited(t, budget.PerTask)
+		return
+	}
+	if budget.HourlyExceeded(runs, time.Now()) {
 		a.parkReviewRateLimited(t, budget.PerHour)
 		return
 	}
@@ -411,7 +561,7 @@ func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) 
 }
 
 func (a *App) dispatchPlanningWorkflow(taskID string) {
-	if !a.runsScheduler() {
+	if !a.runsScheduler() || !a.startupRecoveryDone() {
 		return
 	}
 	if a.workflowEngine == nil || a.tasks == nil || a.agents == nil {

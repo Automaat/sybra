@@ -148,6 +148,35 @@ func TestExecCodegenGate_DriftCommits(t *testing.T) {
 	}
 }
 
+// Regression: the artifact used to cap stored output to the last 8000 bytes
+// (tailString), which silently drops whatever ran before the cut. The stored
+// output must never be cut.
+func TestExecCodegenGate_LongOutputNotTruncated(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, tasks := newCodegenGateEngine(t, wt, []string{"echo MARKER_START; yes x | head -c 9000"})
+	rec := &recordingArtifactRecorder{}
+	engine.SetArtifactRecorder(rec)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("Output = %q, want clean", out.Output)
+	}
+	if len(rec.puts) != 1 || rec.puts[0].name != "codegen-gate.json" {
+		t.Fatalf("artifacts = %+v, want one codegen-gate.json artifact", rec.puts)
+	}
+	if len(rec.puts[0].content) < 9000 {
+		t.Fatalf("artifact content = %d bytes, want the full >9000-byte output preserved", len(rec.puts[0].content))
+	}
+	if !strings.Contains(rec.puts[0].content, "MARKER_START") {
+		t.Errorf("artifact lost the start of the output — the old tail-only truncation would have dropped it")
+	}
+}
+
 func TestExecCodegenGate_UsesTaskScopedGoBuildCache(t *testing.T) {
 	t.Setenv("SYBRA_HOME", t.TempDir())
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
@@ -247,7 +276,14 @@ func TestExecCodegenGate_TimeoutFlagsHumanRequired(t *testing.T) {
 
 func TestExecCodegenGate_ScaledTimeoutAbsorbsHostOversubscription(t *testing.T) {
 	orig := workflowCheckLoadPerCPU
-	workflowCheckLoadPerCPU = func() (float64, bool) { return 3.0, true }
+	// Stubbed at the scale ceiling, not just above 1: the assertion needs the
+	// scaled budget to clear `sleep 0.2` plus real process-spawn cost on a
+	// machine already running the rest of the suite. At load 3 the budget was
+	// 300ms against a 200ms sleep, and that 100ms margin is what made this
+	// flake under `go test ./...` while passing in isolation. At the ceiling
+	// the budget is 800ms, while the unscaled 100ms still fails without
+	// scaling — so the test proves the same thing with 4x the headroom.
+	workflowCheckLoadPerCPU = func() (float64, bool) { return verifyTimeoutScaleCeilingLoad, true }
 	t.Cleanup(func() { workflowCheckLoadPerCPU = orig })
 
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})

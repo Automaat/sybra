@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // newPRWorktree sets up a bare "origin" clone plus a worktree checked out on
@@ -168,6 +170,108 @@ func (f *fakePushPreflighter) PreflightPushCredentials(_ context.Context, wtPath
 	return f.err
 }
 
+type fakePRWorktreeResolver struct {
+	path         string
+	err          error
+	resolveCalls int
+	getCalls     int
+}
+
+type failStatusTaskProvider struct {
+	*memTasks
+	err error
+}
+
+func (f *failStatusTaskProvider) UpdateTaskStatus(string, taskstatus.Status, string) error {
+	return f.err
+}
+
+func (f *fakePRWorktreeResolver) GetWorktreePath(string) (string, bool) {
+	f.getCalls++
+	return "", false
+}
+
+func (f *fakePRWorktreeResolver) ResolvePRWorktree(context.Context, string) (path string, found bool, err error) {
+	f.resolveCalls++
+	return f.path, f.path != "", f.err
+}
+
+func TestExecPushBranch_RecoversMissingWorktreeOnce(t *testing.T) {
+	_, wtPath := newPRWorktree(t, "feat/existing-pr")
+	commitFile(t, wtPath, "change.txt", "feat: task work")
+	local := headSHA(t, wtPath)
+
+	tasks := newMemTasks()
+	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"}
+	tasks.Put(task)
+	resolver := &fakePRWorktreeResolver{path: wtPath}
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(resolver)
+	engine.SetPRHeadFetcher(&fakePRHeadFetcher{sha: local})
+
+	out, err := engine.execPushBranch("t1", newPushBranchStep(), &Execution{Variables: map[string]string{}}, task)
+	if err != nil {
+		t.Fatalf("execPushBranch: %v", err)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("status = %q, want completed", out.Status)
+	}
+	if resolver.resolveCalls != 1 || resolver.getCalls != 0 {
+		t.Fatalf("resolver calls = %d, getter calls = %d; want one resolve and no fallback get", resolver.resolveCalls, resolver.getCalls)
+	}
+}
+
+func TestExecCreatePR_WorktreeRecoveryErrorIsPrecise(t *testing.T) {
+	tasks := newMemTasks()
+	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets"}
+	tasks.Put(task)
+	resolver := &fakePRWorktreeResolver{err: errors.New("prepare branch: remote ref missing")}
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(resolver)
+
+	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
+	if err != nil {
+		t.Fatalf("execCreatePR: %v", err)
+	}
+	if resolver.resolveCalls != 1 || resolver.getCalls != 0 {
+		t.Fatalf("resolver calls = %d, getter calls = %d; want one resolve and no fallback get", resolver.resolveCalls, resolver.getCalls)
+	}
+	if !strings.Contains(out.Output, "could not prepare worktree: prepare branch: remote ref missing") {
+		t.Fatalf("output = %q, want underlying prepare error", out.Output)
+	}
+	if reason := tasks.Reason("t1"); reason != out.Output {
+		t.Fatalf("status reason = %q, want %q", reason, out.Output)
+	}
+}
+
+func TestExecCreatePR_WorktreeRecoveryPropagatesStatusFailure(t *testing.T) {
+	baseTasks := newMemTasks()
+	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets"}
+	baseTasks.Put(task)
+	tasks := &failStatusTaskProvider{memTasks: baseTasks, err: errors.New("persist status: disk full")}
+	resolver := &fakePRWorktreeResolver{err: errors.New("prepare branch: remote ref missing")}
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(resolver)
+
+	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
+	if err == nil || !strings.Contains(err.Error(), "persist status: disk full") {
+		t.Fatalf("err = %v, want status persistence failure", err)
+	}
+	if out != (StepOutput{}) {
+		t.Fatalf("output = %+v, want zero output on status persistence failure", out)
+	}
+	if resolver.resolveCalls != 1 {
+		t.Fatalf("resolver calls = %d, want 1", resolver.resolveCalls)
+	}
+	stored, getErr := baseTasks.GetTask("t1")
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	if stored.Status != "ready-pr" {
+		t.Fatalf("status = %q, want unchanged ready-pr", stored.Status)
+	}
+}
+
 func TestExecPushBranch_Success(t *testing.T) {
 	_, wtPath := newPRWorktree(t, "feat/existing-pr")
 	commitFile(t, wtPath, "change.txt", "feat: task work")
@@ -189,6 +293,43 @@ func TestExecPushBranch_Success(t *testing.T) {
 	ti, _ := tasks.GetTask("t1")
 	if ti.Status != "ready-pr" {
 		t.Errorf("task status = %q, want unchanged ready-pr", ti.Status)
+	}
+}
+
+// Branch-conflict recovery may target origin for a same-repository PR even
+// when the worktree has the fork-only origin push sentinel installed. The
+// deterministic workflow is the trusted exception; an agent subprocess still
+// uses the normal PushSync path and remains blocked by that sentinel.
+func TestExecPushBranch_BranchConflictUsesTrustedSelectedRemote(t *testing.T) {
+	bare, wtPath := newPRWorktree(t, "feat/existing-pr")
+	commitFile(t, wtPath, "change.txt", "feat: recovered merge")
+	if out, err := exec.Command("git", "-C", wtPath, "config", "remote.origin.pushurl", "sybra-disabled-do-not-push-to-upstream-use-fork").CombinedOutput(); err != nil {
+		t.Fatalf("install origin push sentinel: %v\n%s", err, out)
+	}
+	originURL, err := project.RemoteURL(context.Background(), wtPath, "origin")
+	if err != nil {
+		t.Fatalf("resolve origin URL: %v", err)
+	}
+
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+
+	wfExec := &Execution{WorkflowID: "branch-conflict-fix", Variables: map[string]string{
+		WorkflowVarBranchConflictPushRemote: "origin",
+		WorkflowVarBranchConflictPushURL:    originURL,
+	}}
+	out, err := engine.execPushBranch("t1", newPushBranchStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
+	if err != nil {
+		t.Fatalf("execPushBranch: %v", err)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("status = %q, want completed", out.Status)
+	}
+	if got := strings.TrimSpace(runGitAt(t, bare, "rev-parse", "feat/existing-pr")); got != headSHA(t, wtPath) {
+		t.Fatalf("bare remote head = %q, want trusted recovered branch head", got)
 	}
 }
 
@@ -1049,11 +1190,20 @@ func TestPRRetryReasonPreservesTailForLongHookOutput(t *testing.T) {
 	}
 }
 
-func TestTruncateMiddleHonorsSmallLimit(t *testing.T) {
-	for _, limit := range []int{-1, 0, 1, 5, 20} {
-		got := truncateMiddle("abcdefghijklmnopqrstuvwxyz", limit)
-		if len(got) > max(0, limit) {
-			t.Fatalf("limit %d: len(%q) = %d, want <= %d", limit, got, len(got), max(0, limit))
+// prRetryReason feeds a status_reason persisted as YAML, and hook output is
+// exactly where box-drawing table borders and arrows show up.
+func TestPRRetryReasonKeepsValidUTF8OnMultibyteHookOutput(t *testing.T) {
+	for name, detail := range map[string]string{
+		"box-drawing":  strings.Repeat("│─", 400),
+		"ellipsis run": strings.Repeat("…", 400),
+		"emoji run":    strings.Repeat("🚀", 300),
+	} {
+		got := prRetryReason(prPushRetryStatusReason, detail)
+		if !utf8.ValidString(got) {
+			t.Errorf("%s: reason is not valid UTF-8: %q", name, got)
+		}
+		if !strings.HasPrefix(got, prPushRetryStatusReason+": ") {
+			t.Errorf("%s: reason = %q, want base prefix", name, got)
 		}
 	}
 }

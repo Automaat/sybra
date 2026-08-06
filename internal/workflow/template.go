@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"text/template"
 )
 
@@ -33,10 +34,26 @@ func RenderTemplate(tmpl string, ctx TemplateContext) (string, error) {
 var templateFuncs = template.FuncMap{
 	"shellquote":          shellQuote,
 	"getvar":              getVar,
+	"commitsignflags":     commitSignFlagsVar,
+	"sidecardir":          sidecarDirVar,
 	"recoveredorprev":     recoveredOrPrev,
 	"plancontractjson":    PlanContractPromptJSON,
 	"currenttestfailures": currentTestFailures,
 	"acceptanceledger":    acceptanceLedger,
+}
+
+// sidecarDirVar returns the directory workflow scratch output belongs in: the
+// writable per-task sandbox dir when one is set, otherwise the worktree.
+//
+// Verifier roles run against a read-only worktree so they cannot alter the
+// code they judge (#2791), which means their own output cannot live there.
+// The fallback keeps every flow working when no resolver is wired — the
+// pre-#2791 behaviour — so this is safe to use unconditionally in templates.
+func sidecarDirVar(vars map[string]string) string {
+	if v := strings.TrimSpace(vars[WorkflowVarSidecarDir]); v != "" {
+		return v
+	}
+	return vars[WorkflowVarDir]
 }
 
 // currentTestFailures returns the current "## Test Failures" section from a
@@ -99,6 +116,45 @@ func getVar(vars map[string]string, key string) string {
 	return vars[key]
 }
 
+// WorkflowVarCommitSignFlags names the variable a dispatcher seeds with the
+// host's resolved commit flags.
+const WorkflowVarCommitSignFlags = "commit_sign_flags"
+
+// defaultCommitSignFlags backs commitSignFlagsVar for the workflows no
+// dispatcher seeds. Package-level rather than an Engine field because
+// templates render through the free RenderTemplate from seven call sites, none
+// of which carry an Engine; the value is a single process-wide deployment
+// posture, so there is nothing per-execution to thread.
+var defaultCommitSignFlags atomic.Value
+
+// SetDefaultCommitSignFlags installs the fallback commit flags for prompts
+// whose workflow never seeds WorkflowVarCommitSignFlags. Wired from config at
+// startup. Unset keeps "-s".
+func SetDefaultCommitSignFlags(flags string) {
+	if flags = strings.TrimSpace(flags); flags != "" {
+		defaultCommitSignFlags.Store(flags)
+	}
+}
+
+// commitSignFlagsVar returns the git commit flags a prompt should instruct an
+// agent to use.
+//
+// Prefer this over a bare getvar: only the pr-fix dispatcher seeds the
+// variable, so getvar renders an empty string — and therefore a broken
+// `git commit ` — in every other workflow. The final "-s" fallback also fails
+// in the safe direction, since an unsignable `-S` hard-fails the commit and
+// parks the task, while a missing one costs only a signature no gate requires.
+// DCO sign-off is enforced independently by the prepare-commit-msg hook.
+func commitSignFlagsVar(vars map[string]string) string {
+	if v := strings.TrimSpace(vars[WorkflowVarCommitSignFlags]); v != "" {
+		return v
+	}
+	if v, ok := defaultCommitSignFlags.Load().(string); ok && v != "" {
+		return v
+	}
+	return "-s"
+}
+
 // shellQuote wraps a string in single quotes with proper escaping for bash.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
@@ -116,4 +172,11 @@ func recoveredOrPrev(wf *Execution, prev *StepRecord) string {
 		return ""
 	}
 	return prev.Output
+}
+
+// DefaultCommitSignFlags reports the configured fallback. Exported for the
+// app-layer hot-reload test, which has no other way to observe that a reload
+// reached this sink.
+func DefaultCommitSignFlags() string {
+	return commitSignFlagsVar(nil)
 }

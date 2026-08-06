@@ -77,6 +77,48 @@ func TestBuiltinSimpleTaskPlan_ApprovalStartsImplementation(t *testing.T) {
 	}
 }
 
+func TestBuiltinWorkflowModelRouting(t *testing.T) {
+	t.Parallel()
+
+	plan := mustBuiltinDefinition(t, "simple-task-plan")
+	critique := plan.StepByID("critique_plan")
+	if critique == nil {
+		t.Fatal("critique_plan step not found in simple-task-plan")
+	}
+	if got := critique.Config.Model; got != "supercheap" {
+		t.Fatalf("critique_plan model = %q, want supercheap", got)
+	}
+
+	testingDef := mustBuiltinDefinition(t, "testing-task")
+	runTest := testingDef.StepByID("run_test")
+	if runTest == nil {
+		t.Fatal("run_test step not found in testing-task")
+	}
+	if got := runTest.Config.Model; got != "supercheap" {
+		t.Fatalf("run_test model = %q, want supercheap", got)
+	}
+
+	implement := mustBuiltinDefinition(t, "simple-task-implement").StepByID("implement")
+	if implement == nil {
+		t.Fatal("implement step not found in simple-task-implement")
+	}
+	wantTemplate := `{{if getvar .Vars "verify_retry_model"}}{{getvar .Vars "verify_retry_model"}}{{else}}cheap{{end}}`
+	if got := strings.TrimSpace(implement.Config.Model); got != wantTemplate {
+		t.Fatalf("implement model = %q, want %q", got, wantTemplate)
+	}
+	if !strings.Contains(implement.Config.Model, verifyRetryModelVar) {
+		t.Fatalf("implement model = %q, want %q reference", implement.Config.Model, verifyRetryModelVar)
+	}
+
+	bestOfN := mustBuiltinDefinition(t, "simple-task-best-of-n-implement").StepByID("attempts")
+	if bestOfN == nil {
+		t.Fatal("attempts step not found in simple-task-best-of-n-implement")
+	}
+	if got := bestOfN.Config.Model; got != "cheap" {
+		t.Fatalf("attempts model = %q, want cheap", got)
+	}
+}
+
 // TestBuiltinSimpleTask_MaybeCritiqueReplanSkip locks the behavior that
 // critique_plan runs only on the first plan pass. On replan (after a human
 // reject), `vars.step.review_plan.output` exists, so maybe_critique must
@@ -1862,5 +1904,57 @@ func TestBuiltinBestOfN_DeclaresMechanicalSteps(t *testing.T) {
 	}
 	if !sawPromote {
 		t.Error("simple-task-best-of-n-implement has no promote_best_of_n step")
+	}
+}
+
+// TestBuiltinDefinitions_NeverHardcodeCommitSignFlags is the repo-wide
+// acceptance probe for the commit-signing invariant: no builtin workflow
+// prompt may hardcode -S. A keyless host cannot satisfy it, and `git commit
+// -S` overrides the clone's commit.gpgsign=false, so a hardcoded flag parks
+// the task with "gpg failed to sign the data". The per-step guard in
+// TestBuiltinPRFix_TestFixPromptCarriesFailingTests only covered pr-fix's
+// test_fix step, which is how simple-task-review's hardcoded -S survived.
+func TestBuiltinDefinitions_NeverHardcodeCommitSignFlags(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	for _, def := range defs {
+		for _, step := range def.Steps {
+			prompt := step.Config.Prompt
+			if prompt == "" {
+				continue
+			}
+			for line := range strings.Lines(prompt) {
+				// "commit", not "git commit": prompts also spell this as a
+				// bare "# commit -s to complete the merge".
+				if !strings.Contains(line, "commit") {
+					continue
+				}
+				if strings.Contains(line, "-S") {
+					t.Fatalf("builtin %q step %q hardcodes commit sign flags; template {{commitsignflags .Vars}} instead:\n%s",
+						def.ID, step.ID, line)
+				}
+			}
+		}
+	}
+}
+
+// An unseeded commit_sign_flags must render as -s, not as an empty string
+// that produces a broken `git commit `. Only the pr-fix dispatcher seeds the
+// variable, so every other workflow relies on this fallback.
+func TestCommitSignFlagsVar_DefaultsToSignoffOnly(t *testing.T) {
+	t.Parallel()
+
+	if got := commitSignFlagsVar(nil); got != "-s" {
+		t.Errorf("commitSignFlagsVar(nil) = %q, want -s", got)
+	}
+	if got := commitSignFlagsVar(map[string]string{WorkflowVarCommitSignFlags: "  "}); got != "-s" {
+		t.Errorf("commitSignFlagsVar(blank) = %q, want -s", got)
+	}
+	if got := commitSignFlagsVar(map[string]string{WorkflowVarCommitSignFlags: "-s -S"}); got != "-s -S" {
+		t.Errorf("commitSignFlagsVar(seeded) = %q, want -s -S", got)
 	}
 }

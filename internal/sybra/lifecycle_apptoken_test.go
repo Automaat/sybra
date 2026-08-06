@@ -11,6 +11,16 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 )
 
+func TestAppTokenRefreshIntervalReachesEarlyRenewWindow(t *testing.T) {
+	// Keep this in sync with internal/github/appauth.go's unexported
+	// appTokenRenewBefore; two attempts in that window leave a retry after an
+	// initial early mint failure.
+	const renewBefore = 5 * time.Minute
+	if appTokenRefreshInterval*2 > renewBefore {
+		t.Fatalf("appTokenRefreshInterval = %v, want two attempts within %v early-renew window", appTokenRefreshInterval, renewBefore)
+	}
+}
+
 // TestMintAppTokenBeforeRecovery_DisabledIsNoop pins the "no App auth
 // configured" branch: nothing is enabled and no token is minted, matching
 // startAppAuthLoop's prior no-op behavior for this case.

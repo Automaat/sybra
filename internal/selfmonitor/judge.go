@@ -6,13 +6,20 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/health"
 	"github.com/Automaat/sybra/internal/llmexec"
 	"github.com/Automaat/sybra/internal/llmjob"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 )
+
+// judgeAttemptTimeout bounds each provider invocation, including llmjob repair
+// attempts. A judge is advisory: a wedged CLI must not freeze the sequential
+// self-monitor loop indefinitely.
+const judgeAttemptTimeout = 2 * time.Minute
 
 // Judge classifies a single health Finding given its distilled log summary
 // and optional task context. Returns a filled Verdict; callers should treat
@@ -40,15 +47,20 @@ func (j *ClaudeJudge) Judge(ctx context.Context, f health.Finding, ls *LogSummar
 
 	prompt := buildJudgePrompt(f, ls, t)
 
-	v, _, err := llmjob.Run(ctx, prompt, llmjob.Spec[Verdict]{
-		Name:     "selfmonitor-judge",
-		Tier:     selfMonitorTier(model),
-		Validate: validateJudgeVerdict,
-	}, llmexec.Options{Logger: j.Logger, Gate: j.Gate})
+	v, _, err := llmjob.Run(ctx, prompt, judgeJobSpec(model), llmexec.Options{Logger: j.Logger, Gate: j.Gate})
 	if err != nil {
 		return Verdict{Classification: VerdictPending}, err
 	}
 	return v, nil
+}
+
+func judgeJobSpec(model string) llmjob.Spec[Verdict] {
+	return llmjob.Spec[Verdict]{
+		Name:           "selfmonitor-judge",
+		Tier:           selfMonitorTier(model),
+		Validate:       validateJudgeVerdict,
+		AttemptTimeout: judgeAttemptTimeout,
+	}
 }
 
 func selfMonitorTier(model string) llmjob.Tier {
@@ -108,10 +120,7 @@ func buildJudgePrompt(f health.Finding, ls *LogSummary, t *task.Task) string {
 
 	if t != nil {
 		fmt.Fprintf(&b, "Task: %s\n", t.Title)
-		body := t.Body
-		if len(body) > 500 {
-			body = body[:500] + "…"
-		}
+		body := textutil.TruncateBytes(t.Body, 500, "…")
 		if body != "" {
 			fmt.Fprintf(&b, "Body: %s\n", body)
 		}
@@ -145,7 +154,7 @@ func parseJudgeVerdict(raw []byte) (Verdict, error) {
 		}
 		text = *envelope.Result
 	}
-	jsonStr := judgeExtractLastJSON(text)
+	jsonStr := llmjob.ExtractLastJSONObject(text)
 	if jsonStr == "" {
 		return Verdict{}, fmt.Errorf("no JSON object in result: %q", text)
 	}
@@ -155,57 +164,4 @@ func parseJudgeVerdict(raw []byte) (Verdict, error) {
 	}
 	_ = validateJudgeVerdict(&v)
 	return v, nil
-}
-
-// judgeExtractLastJSON returns the last balanced {...} substring in s, or "".
-// Mirrors triage.extractLastJSONObject and internal/agent/inspector.go.
-func judgeExtractLastJSON(s string) string {
-	s = strings.TrimSpace(s)
-	var (
-		inString  bool
-		escape    bool
-		depth     int
-		objStart  = -1
-		lastStart = -1
-		lastEnd   = -1
-	)
-	for i := range len(s) {
-		c := s[i]
-		if escape {
-			escape = false
-			continue
-		}
-		if inString {
-			switch c {
-			case '\\':
-				escape = true
-			case '"':
-				inString = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			inString = true
-		case '{':
-			if depth == 0 {
-				objStart = i
-			}
-			depth++
-		case '}':
-			if depth == 0 {
-				continue
-			}
-			depth--
-			if depth == 0 && objStart >= 0 {
-				lastStart = objStart
-				lastEnd = i
-				objStart = -1
-			}
-		}
-	}
-	if lastStart < 0 {
-		return ""
-	}
-	return s[lastStart : lastEnd+1]
 }

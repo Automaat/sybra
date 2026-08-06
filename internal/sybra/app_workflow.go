@@ -26,13 +26,17 @@ import (
 	"github.com/Automaat/sybra/internal/skillinvoke"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/triage"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
-var errWorkflowEffectNoPersist = errors.New("workflow effect claim requires no persistence")
+var (
+	errWorkflowEffectNoPersist             = errors.New("workflow effect claim requires no persistence")
+	errWorkflowStatusReasonNoLongerMatches = errors.New("workflow status reason no longer matches")
+)
 
 // Compile-time interface checks.
 var (
@@ -173,8 +177,8 @@ func (a *taskAdapter) ListTasks() ([]workflow.TaskInfo, error) {
 	return infos, nil
 }
 
-func (a *taskAdapter) UpdateTaskStatus(id, status, reason string) error {
-	st, err := task.ValidateStatus(status)
+func (a *taskAdapter) UpdateTaskStatus(id string, status taskstatus.Status, reason string) error {
+	st, err := task.ValidateStatus(string(status))
 	if err != nil {
 		return err
 	}
@@ -192,8 +196,24 @@ func (a *taskAdapter) UpdateTaskStatus(id, status, reason string) error {
 	return err
 }
 
-func (a *taskAdapter) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {
-	st, err := task.ValidateStatus(status)
+func (a *taskAdapter) ClearTaskStatusReasonIf(id string, expectedStatus taskstatus.Status, expectedReason string) (bool, error) {
+	cleared := false
+	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+		if cur.Status != expectedStatus || cur.StatusReason != expectedReason {
+			return task.Update{}, errWorkflowStatusReasonNoLongerMatches
+		}
+		empty := ""
+		cleared = true
+		return task.Update{StatusReason: &empty}, nil
+	})
+	if errors.Is(err, errWorkflowStatusReasonNoLongerMatches) {
+		return false, nil
+	}
+	return cleared, err
+}
+
+func (a *taskAdapter) UpdateTaskBlocker(id string, status taskstatus.Status, reason string, state blocker.State) error {
+	st, err := task.ValidateStatus(string(status))
 	if err != nil {
 		return err
 	}
@@ -291,6 +311,14 @@ func (a *taskAdapter) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerpr
 	return a.tasks.UpdateRun(taskID, agentID, patch)
 }
 
+// MarkAgentRunIncomplete corrects a run's recorded outcome after the fact. The
+// completion handler derives success from a clean exit alone, which it must:
+// whether a code-author run produced commits is only known later, once the
+// branch is inspected.
+func (a *taskAdapter) MarkAgentRunIncomplete(taskID, agentID string) error {
+	return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{Outcome: task.Ptr(task.RunOutcomeIncomplete)})
+}
+
 func (a *taskAdapter) RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error {
 	patch := task.RunPatch{}
 	if headSHA != "" {
@@ -315,6 +343,24 @@ func (a *taskAdapter) ReplaceTaskBody(id, body string) error {
 func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
 	_, err := a.tasks.Update(id, task.Update{Workflow: &wf})
 	return err
+}
+
+var errWorkflowWriteFenceMismatch = errors.New("workflow write fence mismatch")
+
+func (a *taskAdapter) SetWorkflowIf(id string, fence workflow.WorkflowWriteFence, wf *workflow.Execution) (bool, error) {
+	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+		if cur.Generation != fence.Generation || cur.Status != fence.Status ||
+			cur.StatusReason != fence.StatusReason || cur.Workflow == nil ||
+			cur.Workflow.WorkflowID != fence.WorkflowID || cur.Workflow.CurrentStep != fence.CurrentStep ||
+			cur.Workflow.State != fence.State {
+			return task.Update{}, errWorkflowWriteFenceMismatch
+		}
+		return task.Update{Workflow: &wf}, nil
+	})
+	if errors.Is(err, errWorkflowWriteFenceMismatch) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
@@ -457,7 +503,7 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		ID:                    t.ID,
 		Title:                 t.Title,
 		Generation:            t.Generation,
-		Status:                string(t.Status),
+		Status:                t.Status,
 		StatusReason:          t.StatusReason,
 		Blocker:               t.Blocker,
 		Role:                  t.RunRole,
@@ -525,6 +571,8 @@ func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 			TestFailureFingerprint: runs[i].TestFailureFingerprint,
 			HeadSHA:                runs[i].HeadSHA,
 			FinalCommitSource:      runs[i].FinalCommitSource,
+			SubagentCallCount:      runs[i].SubagentCallCount,
+			TurnCount:              runs[i].TurnCount,
 		}
 	}
 	return out
@@ -848,6 +896,10 @@ func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {
 	return path, ok
 }
 
+func (a *worktreeGetterAdapter) ResolvePRWorktree(ctx context.Context, taskID string) (path string, found bool, err error) {
+	return ensureReadyPRWorktree(ctx, a.tasks, a.mgr, taskID)
+}
+
 func (*attemptNoteAppenderAdapter) AppendReimplementNote(ctx context.Context, _, wtPath, marker, note string) error {
 	return worktree.AppendNote(ctx, wtPath, marker, note)
 }
@@ -985,6 +1037,10 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// NOTES.md; verifier roles (review/test-runner/eval) share the same
 		// worktree but must stay independent of the implementer's scratchpad.
 		SeedWorkingMemory: r.AuthorsCode(),
+		// Verifier roles judge a worktree they must not alter. Enforced at the
+		// OS level rather than through the tool allowlist, which cannot express
+		// it — Bash reaches the same files (#2791).
+		ReadOnlyDir: r.JudgesWithoutWriting(),
 		// fork_subagent is a task-level opt-in, but must never reach a
 		// verifier role (review/test-runner/eval) — a forked subagent's own
 		// token spend would multiply on every independent check, and a
@@ -1101,7 +1157,7 @@ func (a *agentAdapter) reprepareProvidedWorktreeDir(t task.Task, taskID string, 
 	if err != nil {
 		return t, "", false, err
 	}
-	if rErr := project.RemoveWorktreeReconcile(context.Background(), proj.ClonePath, dir); rErr != nil {
+	if rErr := a.agentOrch.Worktrees().PruneMissingWorktree(context.Background(), proj.ClonePath, dir); rErr != nil {
 		return t, "", false, fmt.Errorf("reconcile missing worktree dir %s: %w", dir, rErr)
 	}
 	resolvedDir, cleanRetryReset, err = a.reprepareMissingWorktreeDir(t, taskID, role, dir, claim)
@@ -1259,32 +1315,18 @@ func (a *agentAdapter) classifyDirectDispatchWorktreeErr(taskID string, wtErr er
 }
 
 func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) (bool, error) {
-	target := dir
-	if target == "" {
-		if t.WorktreeDir != "" {
-			target = t.WorktreeDir
-		} else {
-			target = a.agentOrch.Worktrees().PathFor(t)
-		}
-	}
-	if target == "" {
-		return false, nil
-	}
-	if _, err := os.Stat(target); err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("stat clean retry worktree: %w", err)
-	}
 	// context.Background(): StartAgent implements workflow.AgentDispatcher,
 	// a fixed interface signature with no ctx parameter (see the earlier
 	// comment on the PrepareForTask call in this file).
-	if err := project.ResetWorktreeForRetry(context.Background(), target, ref); err != nil {
+	target, reset, err := a.agentOrch.Worktrees().ResetForRetry(context.Background(), t, dir, ref)
+	if err != nil {
 		a.agentOrch.Logger().Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref, "err", err)
 		return false, err
 	}
-	a.agentOrch.Logger().Info("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref)
-	return true, nil
+	if reset {
+		a.agentOrch.Logger().Info("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref)
+	}
+	return reset, nil
 }
 
 func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg agent.RunConfig, ag *agent.Agent) error {

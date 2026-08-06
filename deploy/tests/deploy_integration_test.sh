@@ -76,7 +76,7 @@ new_env() {
   cp -a "$FIXTURE_SRC" "$root/src"
   ( cd "$root/src" && git init -q && git config user.email t@t.com && git config user.name t && git add -A && git commit -q -m init )
 
-  unset FAKE_CHECK_CONFIG FAKE_NPM_FAIL FAKE_SANDBOX_SMOKE_FAIL FAKE_HEALTH_MODE FAKE_LISTEN_ADDR
+  unset FAKE_CHECK_CONFIG FAKE_CHECK_CONFIG_CLI FAKE_NPM_FAIL FAKE_SANDBOX_SMOKE_FAIL FAKE_HEALTH_MODE FAKE_LISTEN_ADDR
   unset SYBRA_HEALTH_URL SYBRA_HEALTH_QUARANTINE_THRESHOLD SYBRA_DEPLOY_LOCK_WAIT_SEC
   unset SYBRA_HEALTH_TIMEOUT_SEC SYBRA_HEALTH_INTERVAL_SEC
 
@@ -99,6 +99,7 @@ bump_commit() {
 
 run_build() { timeout 90 bash "$DEPLOY_BIN/sybra-build.sh"; }
 run_healthcheck() { timeout 30 bash "$DEPLOY_BIN/sybra-healthcheck.sh"; }
+run_repair_src() { timeout 30 bash "$DEPLOY_BIN/sybra-repair-src.sh"; }
 
 # start_fake_server backgrounds the just-built candidate's server binary on a
 # scenario-local port and waits for it to accept connections. Prints the pid.
@@ -157,6 +158,42 @@ seed_last_good() {
   run_healthcheck >"$root/seed-health.log" 2>&1
   stop_fake_server "$srv"
   echo "$rel"
+}
+
+# The CLI can disagree with the server about the same config: it tolerates a
+# config it cannot parse by falling back to a direct task store, so a schema
+# drift is a per-invocation warning rather than a failure. Agents run sybra-cli
+# from inside their worktrees to read and update task state, so a CLI silently
+# dropping the resolved config is a state-drift hazard in the middle of every
+# workflow — the preflight must reject that build, not ship it.
+scenario_cli_config_incompatibility() {
+  local root="$1"
+  new_env "$root"
+
+  local seeded; seeded="$(seed_last_good "$root")"
+  assert_eq "cli-config-incompat: seed promoted to last-good" "$seeded" "$(last_good_target)"
+
+  bump_commit "$root" "cli-rejects-config"
+  export FAKE_CHECK_CONFIG=ok
+  export FAKE_CHECK_CONFIG_CLI=fail
+  run_build >"$root/build-cli.log" 2>&1
+  assert_eq "cli-config-incompat: rejected candidate still exits 0" "0" "$?"
+  assert_eq "cli-config-incompat: current unchanged when only the CLI rejects" "$seeded" "$(current_target)"
+  assert_contains "cli-config-incompat: logs the CLI preflight rejection" "$(cat "$root/build-cli.log")" "config-preflight-cli"
+
+  # Deterministic, so the next attempt short-circuits rather than rebuilding.
+  run_build >"$root/build-cli2.log" 2>&1
+  assert_eq "cli-config-incompat: quarantined retry exits 0" "0" "$?"
+  assert_contains "cli-config-incompat: quarantined retry skips rebuild" "$(cat "$root/build-cli2.log")" "Skipping rebuild"
+
+  export FAKE_CHECK_CONFIG_CLI=ok
+  mkdir -p "$SYBRA_HOME"
+  echo "marker: cli-fixed" >"$SYBRA_HOME/config.yaml"
+  run_build >"$root/build-cli3.log" 2>&1
+  assert_eq "cli-config-incompat: activates once the CLI accepts" "0" "$?"
+  if [[ "$(current_target)" == "$seeded" ]]; then
+    fail "cli-config-incompat: current should advance after the CLI accepts the config"
+  fi
 }
 
 scenario_config_incompatibility() {
@@ -291,6 +328,18 @@ scenario_successful_activation() {
   assert_eq "success: release promoted to last-good" "$cur" "$(last_good_target)"
 }
 
+scenario_repair_src_preflight() {
+  local root="$1"
+  new_env "$root"
+  export SYBRA_REPAIR_ALLOW_ANY_SRC=1
+  export SYBRA_SERVICE_USER="$(id -un)"
+  export SYBRA_SERVICE_GROUP="$(id -gn)"
+
+  run_repair_src >"$root/repair.log" 2>&1
+  assert_eq "repair-src: exits 0 for isolated checkout" "0" "$?"
+  assert_contains "repair-src: logs ownership status" "$(cat "$root/repair.log")" "source ownership"
+}
+
 scenario_health_check_failure() {
   local root="$1"
   new_env "$root"
@@ -384,9 +433,11 @@ main() {
   echo "test root: $TMPBASE"
 
   scenario_config_incompatibility "$TMPBASE/config-incompat"
+  scenario_cli_config_incompatibility "$TMPBASE/cli-config-incompat"
   scenario_build_failure "$TMPBASE/build-failure"
   scenario_build_failure_persistent "$TMPBASE/build-failure-persistent"
   scenario_lock_contention "$TMPBASE/lock-contention"
+  scenario_repair_src_preflight "$TMPBASE/repair-src"
   scenario_successful_activation "$TMPBASE/success"
   scenario_health_check_failure "$TMPBASE/health-failure"
   scenario_rollback_preserves_quarantine "$TMPBASE/rollback-quarantine"

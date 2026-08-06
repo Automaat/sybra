@@ -239,31 +239,6 @@ func TestAdversarialSchemaRejectsDuplicateCoverage(t *testing.T) {
 	}
 }
 
-func TestFirstJSONObject(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name, in, want string
-		ok             bool
-	}{
-		{"plain", `{"a":1}`, `{"a":1}`, true},
-		{"prose around", "sure:\n{\"a\":1}\ndone", `{"a":1}`, true},
-		{"code fence", "```json\n{\"a\":1}\n```", `{"a":1}`, true},
-		{"nested", `{"a":{"b":2}}`, `{"a":{"b":2}}`, true},
-		{"brace in string", `{"a":"}"}`, `{"a":"}"}`, true},
-		{"escaped quote in string", `{"a":"x\"}y"}`, `{"a":"x\"}y"}`, true},
-		{"none", "no json here", "", false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
-			got, ok := firstJSONObject(c.in)
-			if ok != c.ok || got != c.want {
-				t.Fatalf("firstJSONObject(%q) = (%q,%v), want (%q,%v)", c.in, got, ok, c.want, c.ok)
-			}
-		})
-	}
-}
-
 func TestParsePlan(t *testing.T) {
 	t.Parallel()
 	want := `{"children":[{"issue":"o/r#1","dependsOn":[]}],"maxParallel":3}`
@@ -273,6 +248,10 @@ func TestParsePlan(t *testing.T) {
 		{"plain json", want},
 		{"claude envelope", `{"type":"result","result":"` + strings.ReplaceAll(want, `"`, `\"`) + `"}`},
 		{"fenced in prose", "Here is the plan:\n```json\n" + want + "\n```"},
+		// A reasoning model emits a decoy object before its real answer, so
+		// the last balanced object is the plan — not the first.
+		{"decoy object first", `{"children":[{"issue":"o/r#99","dependsOn":[]}],"maxParallel":1}` + "\nOn reflection:\n" + want},
+		{"brace inside a string value", `{"note":"} not a close"}` + "\n" + want},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

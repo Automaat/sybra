@@ -57,10 +57,12 @@ func (a *App) recoverDegradedUmbrellas() {
 		if a.umbrellaRecoverFn != nil {
 			recoverFn = a.umbrellaRecoverFn
 		}
-		a.wg.Go(func() {
+		if !a.goWhileRunning(func() {
 			defer a.clearUmbrellaRecoveryInFlight(key)
 			recoverFn(tracker)
-		})
+		}) {
+			a.clearUmbrellaRecoveryInFlight(key)
+		}
 	}
 }
 

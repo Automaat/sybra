@@ -9,6 +9,17 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
+func TestJudgeJobSpecBoundsEachProviderAttempt(t *testing.T) {
+	const model = "claude-haiku-4-5-20251001"
+	spec := judgeJobSpec(model)
+	if got, want := spec.AttemptTimeout, judgeAttemptTimeout; got != want {
+		t.Errorf("AttemptTimeout = %s, want %s", got, want)
+	}
+	if got, want := spec.Tier, selfMonitorTier(model); got != want {
+		t.Errorf("Tier = %v, want %v", got, want)
+	}
+}
+
 // stubJudge satisfies the Judge interface for unit tests.
 type stubJudge struct {
 	verdict Verdict
@@ -186,49 +197,6 @@ func TestParseJudgeVerdict_ExtractsLastJSONObject(t *testing.T) {
 			}
 			if v.RootCause != tt.wantRootCause {
 				t.Errorf("RootCause = %q, want %q", v.RootCause, tt.wantRootCause)
-			}
-		})
-	}
-}
-
-func TestJudgeExtractLastJSON_ReturnsLastObject(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{
-			name:  "single object",
-			input: `{"a":"b"}`,
-			want:  `{"a":"b"}`,
-		},
-		{
-			name:  "prose then object",
-			input: `some text {"classification":"confirmed"}`,
-			want:  `{"classification":"confirmed"}`,
-		},
-		{
-			name:  "two objects, returns last",
-			input: `{"first":1} more text {"second":2}`,
-			want:  `{"second":2}`,
-		},
-		{
-			name:  "no object",
-			input: `plain text only`,
-			want:  "",
-		},
-		{
-			name:  "nested object",
-			input: `{"outer":{"inner":1}}`,
-			want:  `{"outer":{"inner":1}}`,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := judgeExtractLastJSON(tt.input)
-			if got != tt.want {
-				t.Errorf("judgeExtractLastJSON(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

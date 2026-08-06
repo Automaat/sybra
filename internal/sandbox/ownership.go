@@ -53,7 +53,7 @@ func writeOwnerRecord(taskDir string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(taskDir, ownerFileName), data, 0o600)
+	return fsutil.AtomicWrite(filepath.Join(taskDir, ownerFileName), data)
 }
 
 func readOwnerRecord(taskDir string) (ownerRecord, bool) {

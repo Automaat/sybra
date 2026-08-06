@@ -1,5 +1,5 @@
 # Stage 1: Build web frontend
-FROM node:24-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS frontend-builder
+FROM node:24-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
@@ -7,7 +7,7 @@ COPY frontend/ ./
 RUN npm run build:web
 
 # Stage 2: Build sybra-server binary
-FROM golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651 AS go-builder
+FROM golang:1.26.5-bookworm@sha256:6c5605ab3a9a9fb3c4eafe5b3d63cdbf3881caf113262b67862547b54a9db599 AS go-builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
@@ -42,7 +42,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/sybra-server ./cmd/sybra
 # install` ever lands in Layer F+G, the apt cache silently regenerates
 # on every sybra commit and image size balloons. The linter catches that
 # before it reaches main.
-FROM node:24-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS runtime
+FROM node:24-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS runtime
 
 # Pipe failures in subsequent RUN blocks should fail the build.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -71,7 +71,7 @@ RUN apt-get update \
 # script that could change or be compromised without any diff in this
 # repo).
 # renovate: datasource=github-releases depName=smykla-skalski/klaudiush
-ARG KLAUDIUSH_VERSION=v1.36.2
+ARG KLAUDIUSH_VERSION=v1.37.0
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "${ARCH}" in \
          amd64|arm64) KLAUDIUSH_ARCH="${ARCH}" ;; \
@@ -92,11 +92,11 @@ RUN ARCH="$(dpkg --print-architecture)" \
 
 # --- Layer C: node CLIs (claude code + codex + opencode), pinned for cache stability ---
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-ARG CLAUDE_CODE_VERSION=2.1.217
+ARG CLAUDE_CODE_VERSION=2.1.220
 # renovate: datasource=npm depName=@openai/codex
-ARG CODEX_VERSION=0.145.0
+ARG CODEX_VERSION=0.146.0
 # renovate: datasource=npm depName=opencode-ai
-ARG OPENCODE_VERSION=1.18.4
+ARG OPENCODE_VERSION=1.18.10
 RUN npm install -g \
         "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
         "@openai/codex@${CODEX_VERSION}" \
@@ -115,7 +115,7 @@ RUN npm install -g \
 # own tool (npm ci, uv sync, cargo build, ./.sybra/bootstrap.sh …).
 #
 # renovate: datasource=github-releases depName=jdx/mise
-ARG MISE_VERSION=v2026.7.13
+ARG MISE_VERSION=v2026.8.1
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "${ARCH}" in \
          amd64) MISE_ARCH=x64 ;; \
@@ -176,7 +176,7 @@ ENV SYBRA_PORT=8080
 ENV SYBRA_STATIC_DIR=/app/web
 ENV HOME=/home/sybra
 
-USER sybra
+USER ${SYBRA_UID}:${SYBRA_GID}
 WORKDIR /home/sybra
 
 EXPOSE 8080

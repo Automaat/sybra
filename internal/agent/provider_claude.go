@@ -6,10 +6,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/Automaat/sybra/internal/modeltier"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 type claudeProvider struct {
@@ -20,7 +20,7 @@ func init() {
 	registerAgentProvider(claudeProvider{})
 }
 
-func (claudeProvider) Name() string { return "claude" }
+func (claudeProvider) Name() string { return providerid.Claude }
 
 // HonorsAllowedTools is true here alone: claudePermissionArgs turns the list
 // into --allowedTools. Every other provider inherits the false default.
@@ -41,7 +41,7 @@ func (claudeProvider) NormalizeModel(model string) string {
 	// Stripping before safeArgRe keeps the validator strict — it intentionally
 	// rejects '[' and ']'. Scoped to the Claude path; Codex strings untouched.
 	model = stripContextSuffix(model)
-	if resolved, ok := modeltier.NormalizeAlias("claude", model); ok {
+	if resolved, ok := modeltier.NormalizeAlias(providerid.Claude, model); ok {
 		return resolved
 	}
 	return model
@@ -74,16 +74,26 @@ func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headless
 	if cfg.OutputSchema != "" {
 		args = append(args, "--json-schema", cfg.OutputSchema)
 	}
-	if cfg.MCPConfigJSON != "" {
-		mcpJSON, err := wrapMCPConfigWithOwnership(cfg.MCPConfigJSON, mcpOwnerForAgent(a))
-		if err != nil {
-			return headlessInvocation{}, err
-		}
-		// --strict-mcp-config always pairs with --mcp-config: without it Claude
-		// also loads any project/user-level MCP servers, which would leak an
-		// operator's unrelated MCP tools into an unattended test-runner run.
-		args = append(args, "--mcp-config", mcpJSON, "--strict-mcp-config")
+	// Pin the MCP surface on every run, not only the ones that attach a server
+	// of their own. Without --strict-mcp-config Claude also loads whatever
+	// project/user-level MCP servers the host account happens to have
+	// connected, so an unattended agent inherits the operator's tools — a
+	// window where Gmail, Calendar and Drive connectors were offered to
+	// headless runs is what prompted this (#2790). Attaching it only alongside
+	// a per-run config left every other run open.
+	//
+	// The empty document is what makes the flag usable standalone:
+	// --strict-mcp-config means "use exactly these servers", so with no
+	// servers declared it means "none".
+	mcpJSON := cfg.MCPConfigJSON
+	if strings.TrimSpace(mcpJSON) == "" {
+		mcpJSON = emptyMCPConfigJSON
 	}
+	wrapped, err := wrapMCPConfigWithOwnership(mcpJSON, mcpOwnerForAgent(a))
+	if err != nil {
+		return headlessInvocation{}, err
+	}
+	args = append(args, "--mcp-config", wrapped, "--strict-mcp-config")
 	// Wire the same PreToolUse approval hook the conversational runner uses
 	// whenever this run requires permission gating. Without this, a headless
 	// agent under require_permissions:true has no path to approve a tool
@@ -122,10 +132,10 @@ func (claudeProvider) BuildHeadlessInvocation(a *Agent, cfg RunConfig) (headless
 		env = append(env, "CLAUDE_CODE_RETRY_WATCHDOG="+strconv.Itoa(cfg.RetryWatchdog))
 	}
 	return headlessInvocation{
-		name:    "claude",
+		name:    providerid.Claude,
 		args:    args,
 		env:     env,
-		command: "claude " + strings.Join(args, " "),
+		command: providerid.Claude + " " + strings.Join(args, " "),
 	}, nil
 }
 
@@ -137,13 +147,13 @@ func (claudeProvider) ParseHeadlessLine(line []byte) (StreamEvent, error) {
 	return claudeEventToStreamEvent(ce), nil
 }
 
-func (claudeProvider) ClassifyError(sample providerpkg.ErrorSample) (providerpkg.Signal, string, time.Duration) {
+func (claudeProvider) ClassifyError(sample providerpkg.ErrorSample) providerpkg.Classification {
 	return providerpkg.ClassifyClaudeError(sample)
 }
 
 // buildClaudeCommand builds the display command string for a Claude agent.
 func buildClaudeCommand(model, effort string, allowedTools []string, requirePerms bool, mode string) string {
-	parts := []string{"claude"}
+	parts := []string{providerid.Claude}
 	parts = append(parts, claudePermissionArgs(allowedTools, requirePerms, mode)...)
 	parts = append(parts, effortArgs(effort)...)
 	if model != "" {
@@ -176,7 +186,44 @@ func effortArgs(effort string) []string {
 // wakeup and then ends its turn strands itself — zero commits, clean exit —
 // which verify_commits cannot tell apart from a task with nothing to do.
 func claudePermissionArgs(allowed []string, requirePerms bool, mode string) []string {
-	return append(claudePermissionModeArgs(allowed, requirePerms, mode), "--disallowedTools", "ScheduleWakeup")
+	return append(claudePermissionModeArgs(allowed, requirePerms, mode),
+		"--disallowedTools", strings.Join(headlessDeniedTools, ","))
+}
+
+// headlessDeniedTools names tools a Sybra headless run has no legitimate use
+// for. Denial rather than an allowlist is deliberate: a non-empty
+// --allowedTools outranks agent.require_permissions entirely (see the
+// precedence in claudePermissionModeArgs), so an allowlist would silently
+// switch the permission layer off as a side effect of shrinking the surface.
+//
+// Each entry is denied because the capability is either meaningless for a
+// single-shot process or already owned by Sybra itself, not merely because a
+// log sample happened not to exercise it. Tools that are plausibly useful but
+// unused — WebFetch, WebSearch, Workflow — are deliberately left available:
+// absence of use over one window is not evidence a capability is unwanted,
+// and the sample is dominated by the orchestrator role.
+var headlessDeniedTools = []string{
+	// A headless run is one `claude -p` process that reads a stream and
+	// exits, so nothing re-invokes it later. A run that schedules a wakeup
+	// and ends its turn strands itself — zero commits, clean exit — which
+	// verify_commits cannot tell apart from a task with nothing to do.
+	"ScheduleWakeup",
+	// Scheduling belongs to the operator's own cron, outside Sybra entirely
+	// (see the orchestrator brain in CLAUDE.md). An agent creating cron
+	// entries would outlive the task that spawned it.
+	"CronCreate", "CronDelete", "CronList",
+	// Sybra owns worktree lifecycle: it prepares one per task before the
+	// agent starts and cleans it up after. An agent moving itself between
+	// worktrees would invalidate the tamper baseline its review is diffed
+	// against.
+	"EnterWorktree", "ExitWorktree",
+	// Task state is mutated through sybra-cli, which applies the same
+	// validation the GUI does. These bypass it.
+	"TaskGet", "TaskList",
+	// No notebooks in any project Sybra drives.
+	"NotebookEdit",
+	// Outward-facing side effects with no task-scoped meaning.
+	"PushNotification", "RemoteTrigger", "DesignSync",
 }
 
 func claudePermissionModeArgs(allowed []string, requirePerms bool, mode string) []string {

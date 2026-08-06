@@ -15,6 +15,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillinvoke"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // importSidecarIfConfigured reads the file the agent produced (template
@@ -157,6 +158,9 @@ func (e *Engine) recoverSidecarFromTaskWorktree(taskID, stepID string, step *Ste
 		vars = map[string]string{}
 	}
 	vars[WorkflowVarDir] = wtPath
+	if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
+		vars[WorkflowVarSidecarDir] = sidecar
+	}
 	recoveredPath, rErr := RenderTemplate(cfg.From, TemplateContext{
 		Task:     info,
 		Step:     *step,
@@ -171,6 +175,9 @@ func (e *Engine) recoverSidecarFromTaskWorktree(taskID, stepID string, step *Ste
 		return "", nil, false
 	}
 	info.Workflow.SetVar(WorkflowVarDir, wtPath)
+	if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
+		info.Workflow.SetVar(WorkflowVarSidecarDir, sidecar)
+	}
 	if setErr := e.tasks.SetWorkflow(taskID, info.Workflow); setErr != nil {
 		e.logger.Warn("workflow.import-sidecar.recover.persist", "task_id", taskID, "step", stepID, "err", setErr)
 	}
@@ -183,13 +190,25 @@ func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
 	if stepID != "" {
 		reason += " after step " + stepID
 	}
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); statusErr != nil {
+	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 		e.logger.Error("workflow.import-sidecar.required.status", "task_id", taskID, "step", stepID, "kind", kind, "err", statusErr)
 	}
 }
 
 func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, effectIDs ...EffectID) error {
 	prepareTestVerdictAttemptVars(wfExec, step.ID, ctx.Task.Body)
+	// Seed the sidecar dir before anything renders a template. Setting it only
+	// after dispatch would leave the first run of a verifier role resolving
+	// {{sidecardir .Vars}} to the worktree — which that role cannot write —
+	// and the sandbox denial surfaces as an empty sidecar rather than an
+	// error. ctx carries its own copy of the vars, so both must be updated.
+	if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
+		wfExec.SetVar(WorkflowVarSidecarDir, sidecar)
+		if ctx.Vars == nil {
+			ctx.Vars = map[string]string{}
+		}
+		ctx.Vars[WorkflowVarSidecarDir] = sidecar
+	}
 	routeMu := e.taskRouteMutex(taskID)
 	routeMu.Lock()
 	defer routeMu.Unlock()
@@ -206,10 +225,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		return e.tasks.SetWorkflow(taskID, wfExec)
 	}
 
-	model := step.Config.Model
-	if model == "" {
-		model = "sonnet"
-	}
+	model := resolveRunAgentModel(step.Config.Model, ctx)
 
 	provider, model, assignment, err := e.resolveAgentVariant(ctx.Task, step, wfExec, model, "workflow.cross-provider.fallback")
 	if err != nil {
@@ -230,6 +246,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 				e.agents.StopAgentsForTask(taskID, step.Config.Role)
 			} else {
 				wfExec.State = ExecWaiting
+				wfExec.SetVar(watchdogReaskDeliveredKey(step.ID), "1")
 				e.logger.Info("workflow.reuse-agent", "task_id", taskID, "step", step.ID, "agent_id", agentID)
 				return e.tasks.SetWorkflow(taskID, wfExec)
 			}
@@ -308,9 +325,26 @@ func resolveRunAgentMode(mode string, ctx TemplateContext) string {
 	return mode
 }
 
+func resolveRunAgentModel(model string, ctx TemplateContext) string {
+	if strings.Contains(model, "{{") {
+		rendered, err := RenderTemplate(model, ctx)
+		if err == nil {
+			model = rendered
+		}
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "sonnet"
+	}
+	return model
+}
+
 func (e *Engine) persistStartedAgent(taskID string, step *Step, wfExec *Execution, agentID, provider, startedDir, baselineRef, cleanRetryKey, cleanRetryRef, dir string) error {
 	if startedDir != "" && (step.Config.NeedsWorktree || dir != "") {
 		wfExec.SetVar(WorkflowVarDir, startedDir)
+		if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
+			wfExec.SetVar(WorkflowVarSidecarDir, sidecar)
+		}
 	}
 	if baselineRef != "" {
 		wfExec.SetVar(tamperBaselineVar(step.ID), baselineRef)
@@ -553,6 +587,10 @@ func (e *Engine) resolveAgentVariant(t TaskInfo, step *Step, wfExec *Execution, 
 			}
 		}
 	}
+	if routed, ok := e.routeAroundSilentHang(t, step, wfExec, provider); ok {
+		provider = routed
+		assignment.RoutingReason = "silent_hang_avoid"
+	}
 	if provider != "" && !providerAvailable(provider) {
 		e.logger.Warn(fallbackLog, "wanted", provider, "reason", "CLI not found")
 		return "", defaultModel, AgentAssignment{}, nil
@@ -561,6 +599,37 @@ func (e *Engine) resolveAgentVariant(t TaskInfo, step *Step, wfExec *Execution, 
 		assignment.RoutingReason = "cross"
 	}
 	return provider, resolvedModel, assignment, nil
+}
+
+// routeAroundSilentHang moves this one dispatch off the provider whose last run
+// on this step went silent, and consumes the hint so the step returns to normal
+// routing afterwards. The provider stays healthy for every other task, which is
+// the whole point of not reporting a silent child to the health gate — but the
+// run that just watched it produce nothing should not be handed straight back
+// to it.
+func (e *Engine) routeAroundSilentHang(t TaskInfo, step *Step, wfExec *Execution, provider string) (string, bool) {
+	if wfExec == nil || step == nil {
+		return "", false
+	}
+	avoid := wfExec.Variables[watchdogSilentHangAvoidKey(step.ID)]
+	if avoid == "" {
+		return "", false
+	}
+	wfExec.SetVar(watchdogSilentHangAvoidKey(step.ID), "")
+	effective := provider
+	if effective == "" {
+		effective = e.agents.DefaultProvider()
+	}
+	if effective != avoid {
+		return "", false
+	}
+	alt := crossProvider(effective)
+	if alt == "" || alt == avoid || !providerAvailable(alt) {
+		return "", false
+	}
+	e.logger.Info("workflow.silent-hang.reroute",
+		"task_id", t.ID, "step", step.ID, "from", avoid, "to", alt)
+	return alt, true
 }
 
 // resolveProvider resolves the step-level provider string.
@@ -624,7 +693,7 @@ func crossProvider(provider string) string {
 	order := providerid.All()
 	start := slices.Index(order, author)
 	if start < 0 {
-		start = slices.Index(order, "claude")
+		start = slices.Index(order, providerid.Claude)
 	}
 	firstDifferent := ""
 	for i := 1; i <= len(order); i++ {
@@ -644,14 +713,14 @@ func crossProvider(provider string) string {
 
 func normalizeWorkflowProvider(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "", "claude":
-		return "claude"
-	case "codex":
-		return "codex"
-	case "copilot":
-		return "copilot"
-	case "opencode":
-		return "opencode"
+	case "", providerid.Claude:
+		return providerid.Claude
+	case providerid.Codex:
+		return providerid.Codex
+	case providerid.Copilot:
+		return providerid.Copilot
+	case providerid.OpenCode:
+		return providerid.OpenCode
 	default:
 		return ""
 	}
@@ -677,7 +746,7 @@ var providerAvailable = func(provider string) bool {
 
 func (e *Engine) execWaitHuman(taskID string, step *Step, wfExec *Execution) error {
 	if step.Config.Status != "" {
-		if err := e.tasks.UpdateTaskStatus(taskID, step.Config.Status, step.Config.StatusReason); err != nil {
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.Status(step.Config.Status), step.Config.StatusReason); err != nil {
 			return err
 		}
 	}
@@ -732,7 +801,7 @@ func (e *Engine) maybeAutoApprovePlanReview(taskID string, step *Step) {
 }
 
 func (e *Engine) shouldAutoApprovePlanReview(t TaskInfo) bool {
-	if t.Status != "plan-review" || t.Workflow == nil ||
+	if t.Status != taskstatus.PlanReview || t.Workflow == nil ||
 		t.Workflow.WorkflowID != "simple-task-plan" ||
 		t.Workflow.State != ExecWaiting ||
 		t.Workflow.CurrentStep != "review_plan" {
@@ -758,7 +827,7 @@ func (e *Engine) shouldAutoApprovePlanReview(t TaskInfo) bool {
 }
 
 func (e *Engine) execSetStatus(taskID string, step *Step) (StepOutput, error) {
-	if err := e.tasks.UpdateTaskStatus(taskID, step.Config.Status, step.Config.StatusReason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.Status(step.Config.Status), step.Config.StatusReason); err != nil {
 		return StepOutput{}, err
 	}
 
@@ -802,7 +871,7 @@ func (e *Engine) execShell(step *Step, ctx TemplateContext) (StepOutput, error) 
 	cmd.Env = append(cmd.Environ(),
 		"SYBRA_TASK_ID="+ti.ID,
 		"SYBRA_TASK_TITLE="+ti.Title,
-		"SYBRA_TASK_STATUS="+ti.Status,
+		"SYBRA_TASK_STATUS="+string(ti.Status),
 		"SYBRA_TASK_PROJECT="+ti.ProjectID,
 		"SYBRA_TASK_BRANCH="+ti.Branch,
 		fmt.Sprintf("SYBRA_TASK_PR=%d", ti.PRNumber),

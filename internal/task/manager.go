@@ -167,8 +167,8 @@ func (m *Manager) forgetFiredStatus(id string) {
 // Comments returns the underlying CommentStore.
 func (m *Manager) Comments() *CommentStore { return m.store.Comments() }
 
-// Plans returns the underlying PlanStore.
-func (m *Manager) Plans() *PlanStore { return m.store.Plans() }
+// Plans returns the underlying plan sidecar store.
+func (m *Manager) Plans() *PlanningSidecarStore { return m.store.Plans() }
 
 // PlanDrafts returns the underlying PlanDraftStore.
 func (m *Manager) PlanDrafts() *PlanDraftStore { return m.store.PlanDrafts() }
@@ -276,6 +276,37 @@ func (m *Manager) Put(t Task) (Task, bool, error) {
 		m.onStatusHook(saved.ID, prevStatus, newStatus)
 	}
 	return saved, !existed, nil
+}
+
+// PutFn atomically reads an existing task and writes the fully-formed
+// replacement computed by fn. The callback runs under both Manager's per-task
+// mutex and Store's cross-process task lock, making it safe to merge a stale
+// long-running operation with the latest leader-side edit immediately before
+// the write. It preserves Put's lifecycle events and status-hook behaviour.
+func (m *Manager) PutFn(id string, fn func(cur Task) (Task, error)) (Task, bool, error) {
+	mu := m.lockFor(id)
+	mu.Lock()
+
+	saved, prev, err := m.store.PutFn(id, fn)
+	if err != nil {
+		mu.Unlock()
+		return saved, false, err
+	}
+
+	prevStatus := string(prev.Status)
+	newStatus := string(saved.Status)
+	fireHook := m.onStatusHook != nil && newStatus != prevStatus
+	if fireHook {
+		m.recordFiredStatus(saved.ID, newStatus)
+	}
+	mu.Unlock()
+
+	metrics.TaskUpdated()
+	m.emitter.Emit(events.TaskUpdated, saved.FilePath)
+	if fireHook {
+		m.onStatusHook(saved.ID, prevStatus, newStatus)
+	}
+	return saved, false, nil
 }
 
 // Update applies field updates to a task and emits task:updated.

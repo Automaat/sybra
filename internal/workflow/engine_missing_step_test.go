@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // missingStepDef registers a workflow whose only step is NOT the one tasks are
@@ -118,9 +120,9 @@ func TestResumeStalled_MissingStepRetriesPartialEscalation(t *testing.T) {
 func TestResumeStalled_MissingStepSkipsQuietCases(t *testing.T) {
 	cases := []struct {
 		name       string
-		status     string
+		status     taskstatus.Status
 		hasAgent   bool
-		wantStatus string
+		wantStatus taskstatus.Status
 	}{
 		{name: "cancelled", status: "cancelled", wantStatus: "cancelled"},
 		{name: "done", status: "done", wantStatus: "done"},

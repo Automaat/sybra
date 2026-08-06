@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,6 +32,11 @@ var issueOutboxMaxDepth = 200
 // generous number of chances without retrying forever against a
 // misconfiguration nobody is going to fix.
 var issueOutboxMaxAttempts = 20
+
+var (
+	issueOutboxFlushBatchSize = 10
+	issueOutboxItemTimeout    = 15 * time.Second
+)
 
 // issueSubmitter is the subset of *GHIssueSink a DurableGHIssueSink wraps.
 // Narrowed to an interface so tests can substitute a fake without a real gh
@@ -150,6 +156,10 @@ type DurableGHIssueSink struct {
 	// opportunistic flush never both retry the same pending item and file it
 	// twice.
 	mu sync.Mutex
+	// flushMu prevents concurrent callers from retrying the same loaded batch,
+	// but is deliberately separate from mu: network calls must not block store
+	// readers or persistence.
+	flushMu sync.Mutex
 	// replayed counts filings that succeeded after being queued — the
 	// "replay" metric surfaced by internal/metrics. Read without mu since
 	// atomic.Int64 is self-synchronizing.
@@ -248,19 +258,34 @@ func (d *DurableGHIssueSink) OldestPendingAge(now time.Time) time.Duration {
 // succeed are removed; items that fail again are re-persisted with a bumped
 // attempt count, or dropped once issueOutboxMaxAttempts is exceeded.
 func (d *DurableGHIssueSink) flushPending(ctx context.Context) {
+	d.flushMu.Lock()
+	defer d.flushMu.Unlock()
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	pending := d.store.load(d.logger)
+	d.mu.Unlock()
+	if len(pending) > issueOutboxFlushBatchSize {
+		pending = pending[:issueOutboxFlushBatchSize]
+	}
 	for i := range pending {
 		it := &pending[i]
-		created, _, err := d.inner.SubmitIssue(ctx, it.Title, it.Body, it.ExtraLabels)
+		itemCtx, cancel := context.WithTimeout(ctx, issueOutboxItemTimeout)
+		created, _, err := d.inner.SubmitIssue(itemCtx, it.Title, it.Body, it.ExtraLabels)
+		cancel()
+		d.mu.Lock()
+		current, ok := d.lookup(it.Fingerprint)
+		if !ok || !reflect.DeepEqual(current, *it) {
+			d.mu.Unlock()
+			continue
+		}
 		if err == nil {
 			if delErr := d.store.del(it.Fingerprint); delErr != nil {
 				d.logger.Warn("monitor.issue_outbox.retry.cleanup-failed", "sink", d.name, "fingerprint", it.Fingerprint, "err", delErr)
+				d.mu.Unlock()
 				continue
 			}
 			d.replayed.Add(1)
 			d.logger.Info("monitor.issue_outbox.retry.succeeded", "sink", d.name, "fingerprint", it.Fingerprint, "created", created, "attempts", it.Attempts+1)
+			d.mu.Unlock()
 			continue
 		}
 		it.Attempts++
@@ -271,11 +296,13 @@ func (d *DurableGHIssueSink) flushPending(ctx context.Context) {
 				d.logger.Warn("monitor.issue_outbox.retry.cleanup-failed", "sink", d.name, "fingerprint", it.Fingerprint, "err", delErr)
 			}
 			d.logger.Error("monitor.issue_outbox.retry.exhausted", "sink", d.name, "fingerprint", it.Fingerprint, "title", it.Title, "attempts", it.Attempts, "err", it.LastError)
+			d.mu.Unlock()
 			continue
 		}
 		if putErr := d.store.put(*it); putErr != nil {
 			d.logger.Warn("monitor.issue_outbox.retry.persist-failed", "sink", d.name, "fingerprint", it.Fingerprint, "err", putErr)
 		}
+		d.mu.Unlock()
 	}
 }
 

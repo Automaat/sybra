@@ -13,6 +13,9 @@ import * as attachment$0 from "../attachment/models.js";
 import * as blocker$0 from "../blocker/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as taskstatus$0 from "../taskstatus/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as workflow$0 from "../workflow/models.js";
 
 /**
@@ -105,6 +108,13 @@ export class AgentRun {
      * instead of body-text patterns which can collide with user content.
      */
     "verdictRendered"?: boolean;
+
+    /**
+     * RecoveryReplayRejected records that startup replay evaluated this exact
+     * unblocked verdict and permanently rejected it. It is keyed to the run so
+     * a newer verdict with identical wording still gets its own evaluation.
+     */
+    "recoveryReplayRejected"?: boolean;
     "logFile": string;
     "sessionId"?: string;
 
@@ -152,11 +162,17 @@ export class AgentRun {
 
     /**
      * ResumeZeroOutputStall marks a run whose zero-output watchdog stall fired
-     * (errorKind "rate_limit" + errorMsg watchdogreason.ZeroOutputBeforeStartup).
+     * (errorKind "silent_hang" + errorMsg watchdogreason.ZeroOutputBeforeStartup).
      * It is the durable poison signal agentorch.PickImplementationResumeSession
      * counts to detect a session stuck in a resume-stall loop.
      */
     "zeroOutputStall"?: boolean;
+
+    /**
+     * TurnCount is zero when the child produced nothing, so the run holds no
+     * evidence about its instructions and must not spend a conformance budget.
+     */
+    "turnCount"?: number;
 
     /** Creates a new AgentRun instance. */
     constructor($$source: Partial<AgentRun> = {}) {
@@ -318,31 +334,12 @@ export class ReviewComment {
 }
 
 /**
- * Status is a task's position in its lifecycle (see the pipeline diagram in
- * the root CLAUDE.md). Transitions are enforced by the workflow engine and
- * callers should validate untrusted input with ValidateStatus rather than
- * casting a string directly.
+ * Status re-exports the task status vocabulary from internal/taskstatus.
+ * The type and constants live in a leaf package so internal/workflow can use
+ * them too; internal/task imports internal/workflow, so they cannot live here.
+ * These aliases keep every existing caller and the Wails bindings unchanged.
  */
-export enum Status {
-    /**
-     * The Go zero value for the underlying type of the enum.
-     */
-    $zero = "",
-
-    StatusNew = "new",
-    StatusTodo = "todo",
-    StatusInProgress = "in-progress",
-    StatusReadyReview = "ready-review",
-    StatusInReview = "in-review",
-    StatusPlanning = "planning",
-    StatusPlanReview = "plan-review",
-    StatusTesting = "testing",
-    StatusReadyPR = "ready-pr",
-    StatusHumanRequired = "human-required",
-    StatusBlocked = "blocked",
-    StatusDone = "done",
-    StatusCancelled = "cancelled",
-};
+export type Status = taskstatus$0.Status;
 
 /**
  * Task is the in-memory representation of a task markdown file: YAML
@@ -549,6 +546,14 @@ export class Task {
     "sandbox"?: boolean | null;
 
     /**
+     * SandboxOffReason explains why Sandbox is false. Disabling the sandbox
+     * hands a task's agents unrestricted write access to the host, so the
+     * audit trail needs to say why rather than only that it happened.
+     * Meaningful only alongside Sandbox=false; ignored otherwise.
+     */
+    "sandboxOffReason"?: string;
+
+    /**
      * ReasoningEffort sets the reasoning level for this task's agents
      * (low/medium/high/xhigh). Empty = model default. Applied across providers:
      * codex via -c model_reasoning_effort=<v>, claude and copilot via --effort.
@@ -588,6 +593,7 @@ export class Task {
     "statusChangedAt": string;
     "assignedNode"?: string;
     "nodeOverride"?: string;
+    "assignmentRev"?: number;
     "generation"?: number;
     "mirrorRev"?: number;
     "mirrorUpdatedAt"?: string | null;
@@ -617,6 +623,15 @@ export class Task {
     "filePath": string;
 
     /**
+     * Degraded marks a synthetic, read-only board entry created for a task file
+     * that could not be parsed. It is never persisted and must never be
+     * dispatched or mirrored; fixing the source file makes the entry disappear
+     * on the next List.
+     */
+    "degraded"?: boolean;
+    "parseError"?: string;
+
+    /**
      * TamperFlagged reports whether this task is parked at human-required
      * pending a tamper bless. Derived from Status/StatusReason (never
      * persisted) so the frontend doesn't need to duplicate
@@ -638,7 +653,7 @@ export class Task {
             this["title"] = "";
         }
         if (!("status" in $$source)) {
-            this["status"] = Status.$zero;
+            this["status"] = taskstatus$0.Status.$zero;
         }
         if (!("taskType" in $$source)) {
             this["taskType"] = TaskType.$zero;
@@ -710,11 +725,11 @@ export class Task {
         const $$createField14_0 = $$createType1;
         const $$createField19_0 = $$createType0;
         const $$createField20_0 = $$createType3;
-        const $$createField41_0 = $$createType5;
-        const $$createField42_0 = $$createType7;
-        const $$createField43_0 = $$createType9;
-        const $$createField44_0 = $$createType11;
-        const $$createField61_0 = $$createType12;
+        const $$createField42_0 = $$createType5;
+        const $$createField43_0 = $$createType7;
+        const $$createField44_0 = $$createType9;
+        const $$createField45_0 = $$createType11;
+        const $$createField63_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -732,19 +747,19 @@ export class Task {
             $$parsedSource["dependsOnConditions"] = $$createField20_0($$parsedSource["dependsOnConditions"]);
         }
         if ("attachments" in $$parsedSource) {
-            $$parsedSource["attachments"] = $$createField41_0($$parsedSource["attachments"]);
+            $$parsedSource["attachments"] = $$createField42_0($$parsedSource["attachments"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField42_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField43_0($$parsedSource["agentRuns"]);
         }
         if ("effectLog" in $$parsedSource) {
-            $$parsedSource["effectLog"] = $$createField43_0($$parsedSource["effectLog"]);
+            $$parsedSource["effectLog"] = $$createField44_0($$parsedSource["effectLog"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField44_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField45_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField61_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField63_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -814,6 +829,7 @@ export class Update {
     "MaxTurns": number | null;
     "ForkSubagent": boolean | null;
     "Sandbox": boolean | null;
+    "SandboxOffReason": string | null;
     "ReasoningEffort": string | null;
     "Outcome": string | null;
     "MergeCommit": string | null;
@@ -946,6 +962,9 @@ export class Update {
         if (!("Sandbox" in $$source)) {
             this["Sandbox"] = null;
         }
+        if (!("SandboxOffReason" in $$source)) {
+            this["SandboxOffReason"] = null;
+        }
         if (!("ReasoningEffort" in $$source)) {
             this["ReasoningEffort"] = null;
         }
@@ -977,8 +996,8 @@ export class Update {
         const $$createField8_0 = $$createType15;
         const $$createField12_0 = $$createType14;
         const $$createField30_0 = $$createType16;
-        const $$createField45_0 = $$createType17;
-        const $$createField46_0 = $$createType18;
+        const $$createField46_0 = $$createType17;
+        const $$createField47_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("Blocker" in $$parsedSource) {
             $$parsedSource["Blocker"] = $$createField4_0($$parsedSource["Blocker"]);
@@ -996,10 +1015,10 @@ export class Update {
             $$parsedSource["Workflow"] = $$createField30_0($$parsedSource["Workflow"]);
         }
         if ("Attachments" in $$parsedSource) {
-            $$parsedSource["Attachments"] = $$createField45_0($$parsedSource["Attachments"]);
+            $$parsedSource["Attachments"] = $$createField46_0($$parsedSource["Attachments"]);
         }
         if ("EffectLog" in $$parsedSource) {
-            $$parsedSource["EffectLog"] = $$createField46_0($$parsedSource["EffectLog"]);
+            $$parsedSource["EffectLog"] = $$createField47_0($$parsedSource["EffectLog"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }
