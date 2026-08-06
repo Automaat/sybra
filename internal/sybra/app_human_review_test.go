@@ -235,7 +235,7 @@ func TestHumanReviewSpawn_HoldsDispatchClaimAcrossPreparationAndRun(t *testing.T
 		return &agent.Agent{ID: "human-recovery", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
 	}}
 
-	if !h.maybeSpawn(tk.ID, string(task.StatusInReview)) {
+	if !h.maybeSpawn(context.Background(), tk.ID, string(task.StatusInReview)) {
 		t.Fatal("human review was not spawned")
 	}
 	if held {
@@ -275,8 +275,8 @@ func TestHumanReviewSpawn_ClaimConflictRetriesAfterRelease(t *testing.T) {
 	}
 	var scheduled func()
 	h.schedule = func(delay time.Duration, fn func()) {
-		if delay != 8*time.Second {
-			t.Fatalf("first retry delay = %s, want 8s", delay)
+		if delay != 9*time.Second {
+			t.Fatalf("first retry delay = %s, want 9s", delay)
 		}
 		if scheduled != nil {
 			t.Fatal("claim conflict scheduled more than one retry")
@@ -300,7 +300,7 @@ func TestHumanReviewSpawn_ClaimConflictRetriesAfterRelease(t *testing.T) {
 		return &agent.Agent{ID: "retried-human-review", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
 	}}
 
-	if h.maybeSpawn(tk.ID, string(task.StatusInReview)) {
+	if h.maybeSpawn(context.Background(), tk.ID, string(task.StatusInReview)) {
 		t.Fatal("human review spawned despite a conflicting dispatch claim")
 	}
 	if prepareCalls != 0 || runCalls != 0 {
@@ -370,7 +370,7 @@ func TestHumanReviewSpawn_ClaimConflictRetryIsBounded(t *testing.T) {
 		fn()
 	}
 
-	if h.maybeSpawn(tk.ID, string(task.StatusInReview)) {
+	if h.maybeSpawn(context.Background(), tk.ID, string(task.StatusInReview)) {
 		t.Fatal("human review spawned despite persistent claim conflicts")
 	}
 	if scheduled != humanReviewClaimRetryMax {
@@ -408,7 +408,7 @@ func TestBuildPrompt_NoFencedVerdictInstruction(t *testing.T) {
 	}
 
 	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
-	prompt := h.buildPrompt(tk, dir, nil)
+	prompt := h.buildPrompt(context.Background(), tk, dir, nil)
 	if strings.Contains(prompt, "sybra-verdict") {
 		t.Errorf("prompt still instructs a fenced sybra-verdict block:\n%s", prompt)
 	}
@@ -432,7 +432,7 @@ func TestBuildPrompt_RequiresVerificationBeforeTransient(t *testing.T) {
 	}
 
 	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
-	prompt := h.buildPrompt(tk, dir, nil)
+	prompt := h.buildPrompt(context.Background(), tk, dir, nil)
 	if !strings.Contains(prompt, "actually re-run the exact failing command") {
 		t.Errorf("prompt does not require re-running the failing command before calling it transient:\n%s", prompt)
 	}
@@ -463,7 +463,7 @@ func TestBuildPrompt_DraftApproveRequiresHumanSubmission(t *testing.T) {
 	}
 
 	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
-	prompt := h.buildPrompt(tk, dir, nil)
+	prompt := h.buildPrompt(context.Background(), tk, dir, nil)
 	for _, want := range []string{
 		"pre-flight the draft before submitting anything",
 		"APPROVE drafts must NEVER be auto-submitted",
@@ -493,7 +493,7 @@ func TestBuildPrompt_RequiresRecheckingSupersededFailures(t *testing.T) {
 	}
 
 	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
-	prompt := h.buildPrompt(tk, dir, nil)
+	prompt := h.buildPrompt(context.Background(), tk, dir, nil)
 	if !strings.Contains(prompt, "supersedes the wording the failure quotes") {
 		t.Errorf("prompt does not require rechecking superseded test-runner FAILs:\n%s", prompt)
 	}
@@ -2375,7 +2375,7 @@ func TestBuildPrompt_IncludesUnblockAndAutonomyMandate(t *testing.T) {
 		Branch: "feat/queue", WorktreeDir: "/data/worktrees/queue",
 	}
 	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
-	p := h.buildPrompt(tk, dir, nil)
+	p := h.buildPrompt(context.Background(), tk, dir, nil)
 	for _, want := range []string{
 		"UNBLOCK", "AUTONOMY", "ROOT CAUSE", "unblocked",
 		"never fabricate", "/data/worktrees/queue", "feat/queue",
@@ -3145,7 +3145,7 @@ func TestMaybeSpawn_IdempotencyGate_SkipsWhenVerdictRendered(t *testing.T) {
 	}
 
 	// Must not panic (agents is nil) and must skip.
-	h.maybeSpawn(tk.ID, "")
+	h.maybeSpawn(context.Background(), tk.ID, "")
 
 	h.mu.Lock()
 	_, busy := h.inflight[tk.ID]
@@ -3173,7 +3173,7 @@ func TestMaybeSpawn_SkipsWhenTaskNoLongerHumanRequired(t *testing.T) {
 		t.Fatalf("update task: %v", err)
 	}
 
-	h.maybeSpawn(tk.ID, string(task.StatusTodo))
+	h.maybeSpawn(context.Background(), tk.ID, string(task.StatusTodo))
 
 	h.mu.Lock()
 	_, busy := h.inflight[tk.ID]
@@ -3214,7 +3214,7 @@ func TestMaybeSpawn_RechecksStatusBeforeRun(t *testing.T) {
 	}
 	h.agents = runner
 
-	if spawned := h.maybeSpawn(tk.ID, string(task.StatusTodo)); spawned {
+	if spawned := h.maybeSpawn(context.Background(), tk.ID, string(task.StatusTodo)); spawned {
 		t.Fatal("maybeSpawn = true, want false after task left human-required before Run")
 	}
 	if runCalls != 0 {
@@ -3283,7 +3283,7 @@ func TestMaybeSpawn_IdempotencyGate_IgnoresRenderedVerdictBeforeTestingCycle(t *
 				p = true
 			}
 		}()
-		h.maybeSpawn(tk.ID, "")
+		h.maybeSpawn(context.Background(), tk.ID, "")
 		return false
 	}()
 	if !panicked {
@@ -3326,7 +3326,7 @@ func TestMaybeSpawn_IdempotencyGate_SpawnsWhenVerdictSetButNotRendered(t *testin
 				p = true
 			}
 		}()
-		h.maybeSpawn(tk.ID, "")
+		h.maybeSpawn(context.Background(), tk.ID, "")
 		return false
 	}()
 	if !panicked {
@@ -3370,7 +3370,7 @@ func TestMaybeSpawn_IdempotencyGate_PreexistingAutoReviewTextDoesNotBlock(t *tes
 				p = true
 			}
 		}()
-		h.maybeSpawn(tk.ID, "")
+		h.maybeSpawn(context.Background(), tk.ID, "")
 		return false
 	}()
 	if !panicked {
@@ -3409,7 +3409,7 @@ func TestMaybeSpawn_IdempotencyGate_SpawnsWhenNoVerdict(t *testing.T) {
 				p = true
 			}
 		}()
-		h.maybeSpawn(tk.ID, "")
+		h.maybeSpawn(context.Background(), tk.ID, "")
 		return false
 	}()
 	if !panicked {
@@ -3440,7 +3440,7 @@ func TestMaybeSpawn_SkipsUmbrellaTracker(t *testing.T) {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 
-	if spawned := h.maybeSpawn(tk.ID, string(task.StatusInProgress)); spawned {
+	if spawned := h.maybeSpawn(context.Background(), tk.ID, string(task.StatusInProgress)); spawned {
 		t.Error("expected maybeSpawn to report no spawn for an umbrella tracker")
 	}
 
@@ -3465,7 +3465,7 @@ func TestMaybeSpawn_SkipsProjectlessTask(t *testing.T) {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 
-	h.maybeSpawn(tk.ID, "")
+	h.maybeSpawn(context.Background(), tk.ID, "")
 
 	h.mu.Lock()
 	_, busy := h.inflight[tk.ID]
@@ -3491,7 +3491,7 @@ func TestMaybeSpawn_SkipsStaleNonHumanRequiredTask(t *testing.T) {
 		t.Fatalf("flip to blocked: %v", err)
 	}
 
-	h.maybeSpawn(tk.ID, string(task.StatusHumanRequired))
+	h.maybeSpawn(context.Background(), tk.ID, string(task.StatusHumanRequired))
 
 	h.mu.Lock()
 	_, busy := h.inflight[tk.ID]
@@ -3828,7 +3828,7 @@ func TestHumanReviewSpawn_ContendedFallbackRetryIgnoresRenderedVerdict(t *testin
 	}}
 
 	opts := humanReviewSpawnOptions{IgnoreRenderedVerdict: true}
-	if h.maybeSpawnWithOptions(tk.ID, string(task.StatusHumanRequired), opts) {
+	if h.maybeSpawnWithOptions(context.Background(), tk.ID, string(task.StatusHumanRequired), opts) {
 		t.Fatal("spawned despite a conflicting dispatch claim")
 	}
 	if scheduled == nil {
@@ -3872,7 +3872,7 @@ func TestHumanReviewPrompt_HonorsCommitSigningPolicy(t *testing.T) {
 	// Go through the real prompt builder, not writeAutonomyMandate directly:
 	// asserting on a value this test supplies is what made the original test
 	// unable to catch the defect it appeared to cover.
-	prompt := h.buildPrompt(task.Task{ID: "t1", ProjectID: "Automaat/sybra"}, t.TempDir(), nil)
+	prompt := h.buildPrompt(context.Background(), task.Task{ID: "t1", ProjectID: "Automaat/sybra"}, t.TempDir(), nil)
 	for line := range strings.Lines(prompt) {
 		if strings.Contains(line, "commit") && strings.Contains(line, "-S") {
 			t.Errorf("mandate instructs GPG signing under the never policy:\n%s", line)
@@ -3903,14 +3903,14 @@ func TestScheduleClaimRetry_LadderIsBoundedOnBothEnds(t *testing.T) {
 
 	opts := humanReviewSpawnOptions{}
 	for range humanReviewClaimRetryMax {
-		h.scheduleClaimRetry("t1", string(task.StatusInReview), opts)
+		h.scheduleClaimRetry(context.Background(), "t1", string(task.StatusInReview), opts)
 		opts.ClaimRetryAttempt++
 	}
-	h.scheduleClaimRetry("t1", string(task.StatusInReview), opts)
+	h.scheduleClaimRetry(context.Background(), "t1", string(task.StatusInReview), opts)
 
 	want := []time.Duration{
-		8 * time.Second, 32 * time.Second, 72 * time.Second,
-		128 * time.Second, 200 * time.Second, 288 * time.Second,
+		9 * time.Second, 36 * time.Second, 81 * time.Second,
+		144 * time.Second, 225 * time.Second, 324 * time.Second,
 	}
 	if !slices.Equal(delays, want) {
 		t.Fatalf("ladder = %v, want %v", delays, want)
@@ -3919,8 +3919,8 @@ func TestScheduleClaimRetry_LadderIsBoundedOnBothEnds(t *testing.T) {
 	for _, d := range delays {
 		span += d
 	}
-	// A project-setup batch alone can hold the claim for five minutes.
-	if span < 6*time.Minute {
+	// A setup batch alone was measured holding the claim for ten minutes.
+	if span < 11*time.Minute {
 		t.Errorf("ladder spans %s, gives up while a normal preparation is still running", span)
 	}
 	if span >= agent.StaleDispatchClaimAge {
@@ -3946,7 +3946,7 @@ func TestScheduleClaimRetry_ExhaustionIsAudited(t *testing.T) {
 	h.audit = auditLog
 	h.schedule = func(time.Duration, func()) {}
 
-	h.scheduleClaimRetry("t1", string(task.StatusInReview),
+	h.scheduleClaimRetry(context.Background(), "t1", string(task.StatusInReview),
 		humanReviewSpawnOptions{ClaimRetryAttempt: humanReviewClaimRetryMax})
 
 	events, err := audit.Read(auditDir, audit.Query{
@@ -3984,7 +3984,7 @@ func TestScheduleClaimRetry_InProgressIsNotAudited(t *testing.T) {
 	h.audit = auditLog
 	h.schedule = func(time.Duration, func()) {}
 
-	h.scheduleClaimRetry("t1", string(task.StatusInReview), humanReviewSpawnOptions{})
+	h.scheduleClaimRetry(context.Background(), "t1", string(task.StatusInReview), humanReviewSpawnOptions{})
 
 	events, err := audit.Read(auditDir, audit.Query{
 		Since: time.Now().Add(-time.Minute),
@@ -4001,7 +4001,7 @@ func TestScheduleClaimRetry_InProgressIsNotAudited(t *testing.T) {
 	// A handler with no scheduler ran no ladder at all, so calling that
 	// exhausted would give one event two incompatible meanings.
 	h.schedule = nil
-	h.scheduleClaimRetry("t2", string(task.StatusInReview), humanReviewSpawnOptions{})
+	h.scheduleClaimRetry(context.Background(), "t2", string(task.StatusInReview), humanReviewSpawnOptions{})
 	events, err = audit.Read(auditDir, audit.Query{
 		Since: time.Now().Add(-time.Minute),
 		Until: time.Now().Add(time.Minute),
@@ -4063,63 +4063,93 @@ func TestRespawnDroppedReviews(t *testing.T) {
 			// rewritten by every store mutation above.
 			h.now = func() time.Time { return time.Now().Add(tc.parkedAgo) }
 
-			h.prepareTaskWorktree = func(task.Task) (string, error) { return t.TempDir(), nil }
-			spawned := 0
+			// Pre-created: the spawn runs on its own goroutine, so calling
+			// t.TempDir() from inside it races the harness's own cleanup.
+			wtDir := t.TempDir()
+			h.prepareTaskWorktree = func(task.Task) (string, error) { return wtDir, nil }
+			spawns := make(chan string, 4)
 			h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
-				spawned++
+				spawns <- cfg.TaskID
 				return &agent.Agent{ID: "swept", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
 			}}
 
-			all, err := tasks.List()
-			if err != nil {
-				t.Fatal(err)
-			}
-			h.respawnDroppedReviews(all)
+			h.RespawnDroppedReviews(context.Background())
 
-			want := 0
-			if tc.wantSpawn {
-				want = 1
+			if !tc.wantSpawn {
+				select {
+				case id := <-spawns:
+					t.Fatalf("sweep spawned a review for %s that it should have skipped", id)
+				case <-time.After(200 * time.Millisecond):
+				}
+				return
 			}
-			if spawned != want {
-				t.Errorf("sweep spawned %d reviews, want %d", spawned, want)
+			select {
+			case <-spawns:
+			case <-time.After(5 * time.Second):
+				t.Fatal("sweep never spawned a review for a recent never-reviewed park")
 			}
+			// A spawn's last store write, so its goroutine is done before the
+			// harness removes the store's temp dir underneath it.
+			waitForAgentRun(t, tasks, tk.ID)
 		})
 	}
 }
 
-// The sweep only helps if startup actually reaches it, and startup reaches it
-// through recoverStrandedUnblockedTasks — which returns early on several
-// guards before the verdict replay it was originally written for.
-func TestRecoverStrandedUnblockedTasks_RunsTheSweep(t *testing.T) {
+func waitForAgentRun(t *testing.T, tasks *task.Manager, id string) {
+	t.Helper()
+	for range 200 {
+		got, err := tasks.Get(id)
+		if err == nil && len(got.AgentRuns) > 0 {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("spawned agent never recorded a run")
+}
+
+// Measured live: running the sweep inline serialized one full PrepareForTask
+// per swept task, and a single setup batch burned its whole ten-minute timeout
+// — startup did not arm dispatch for 9m32s, and no live park in that window
+// got a review at all. A sweep for stale work must not delay the current work.
+func TestRespawnDroppedReviews_DoesNotBlockOnPreparation(t *testing.T) {
 	t.Parallel()
 	h, tasks, cleanup := newReviewTestEnv(t)
 	defer cleanup()
 
-	tk, err := tasks.Create("dropped review", "", task.AgentModeHeadless)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
-		"project_id": "Automaat/sybra",
-		"status":     string(task.StatusHumanRequired),
-	}); err != nil {
-		t.Fatal(err)
+	for range 3 {
+		tk, err := tasks.Create("dropped review", "", task.AgentModeHeadless)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+			"project_id": "Automaat/sybra",
+			"status":     string(task.StatusHumanRequired),
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	// Deliberately left nil: the sweep spawns a review rather than dispatching
-	// a verdict's side effect, so the verdict replay's dependency on a
-	// dispatcher must not gate it.
-	h.dispatchFromHumanRequired = nil
-	h.prepareTaskWorktree = func(task.Task) (string, error) { return t.TempDir(), nil }
-	spawned := 0
-	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
-		spawned++
-		return &agent.Agent{ID: "swept", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	// Both fail after unblocking: the spawn goroutines outlive the assertion,
+	// and a successful one would still be writing to the task store while the
+	// harness removes it.
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		<-release
+		return "", errors.New("torn down")
+	}
+	h.agents = &fakeHumanReviewAgentRunner{run: func(agent.RunConfig) (*agent.Agent, error) {
+		return nil, errors.New("torn down")
 	}}
 
-	h.recoverStrandedUnblockedTasks()
-
-	if spawned != 1 {
-		t.Errorf("startup recovery spawned %d reviews for a never-reviewed park, want 1", spawned)
+	done := make(chan struct{})
+	go func() {
+		h.RespawnDroppedReviews(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sweep blocked on worktree preparation; startup cannot arm dispatch behind it")
 	}
 }

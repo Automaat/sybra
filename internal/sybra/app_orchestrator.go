@@ -191,7 +191,7 @@ func (a *App) replayDeferredStatusChanges() {
 			continue
 		}
 		if t2.Status == task.StatusHumanRequired && a.runsScheduler() && a.humanReview != nil {
-			go a.humanReview.maybeSpawn(taskID, "")
+			go a.humanReview.maybeSpawn(a.schedulerContext(), taskID, "")
 		}
 	}
 }

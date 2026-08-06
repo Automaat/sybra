@@ -1336,7 +1336,7 @@ steps:
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if spawned := h.maybeSpawn(created.ID, string(task.StatusTodo)); !spawned {
+	if spawned := h.maybeSpawn(context.Background(), created.ID, string(task.StatusTodo)); !spawned {
 		t.Fatal("expected initial human-review spawn")
 	}
 

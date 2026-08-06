@@ -740,7 +740,7 @@ func (a *App) initStatusHook() {
 				a.notifier.Send(notification.LevelWarning, "Needs human", msg, taskID, "")
 			}
 			if local && a.runsScheduler() && a.startupRecoveryDone() && a.humanReview != nil {
-				go a.humanReview.maybeSpawn(taskID, from)
+				go a.humanReview.maybeSpawn(a.schedulerContext(), taskID, from)
 			}
 		case string(task.StatusReadyReview):
 			if !runsNoAgent {

@@ -33,6 +33,18 @@ func lifecycleBaseContext(ctx context.Context) context.Context {
 	return context.WithoutCancel(ctx)
 }
 
+// schedulerContext is schedulerCtx with a nil guard. Background automations
+// reach it from goroutines that can fire before initLifecycle has run — the
+// status hook and the board sweep both go live during startup, and in tests an
+// App is often constructed without a lifecycle at all — and a nil context
+// reaches os/exec as a panic, not an error.
+func (a *App) schedulerContext() context.Context {
+	if a == nil || a.schedulerCtx == nil {
+		return context.Background()
+	}
+	return a.schedulerCtx
+}
+
 func (a *App) initLifecycle(ctx context.Context) (appCtx, schedulerCtx, watcherCtx context.Context) {
 	base := lifecycleBaseContext(ctx)
 	a.ctx, a.cancel = context.WithCancel(base)
