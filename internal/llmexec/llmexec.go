@@ -161,22 +161,22 @@ func candidates(preferred string) []string {
 
 func normalizeProvider(p string) string {
 	switch strings.ToLower(strings.TrimSpace(p)) {
-	case "", "claude":
-		return "claude"
-	case "codex":
-		return "codex"
-	case "copilot":
-		return "copilot"
-	case "opencode":
-		return "opencode"
+	case "", providerid.Claude:
+		return providerid.Claude
+	case providerid.Codex:
+		return providerid.Codex
+	case providerid.Copilot:
+		return providerid.Copilot
+	case providerid.OpenCode:
+		return providerid.OpenCode
 	default:
 		return ""
 	}
 }
 
 func binaryName(p string) string {
-	if p == "copilot" {
-		return "copilot"
+	if p == providerid.Copilot {
+		return providerid.Copilot
 	}
 	return p
 }
@@ -185,7 +185,7 @@ func runProvider(ctx context.Context, p, prompt, model string, disableTools bool
 	effectivePrompt := prompt
 	schemaPath := ""
 	if strings.TrimSpace(schema) != "" {
-		if p == "codex" {
+		if p == providerid.Codex {
 			path, schemaErr := writeSchemaTempFile(schema)
 			if schemaErr != nil {
 				return nil, "", fmt.Errorf("%w: %w", errSchemaDelivery, schemaErr)
@@ -233,7 +233,7 @@ func writeSchemaTempFile(schema string) (string, error) {
 
 func invocation(p, prompt, model string, disableTools bool, schemaPath string) (name string, args []string, stdin string) {
 	switch p {
-	case "codex":
+	case providerid.Codex:
 		args := []string{
 			"exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules",
 			"--dangerously-bypass-approvals-and-sandbox",
@@ -245,20 +245,20 @@ func invocation(p, prompt, model string, disableTools bool, schemaPath string) (
 			args = append(args, "--output-schema", schemaPath)
 		}
 		args = append(args, "-")
-		return "codex", args, prompt
-	case "copilot":
+		return providerid.Codex, args, prompt
+	case providerid.Copilot:
 		args := []string{"-p", prompt, "--output-format", "json", "--allow-all-tools", "--no-ask-user"}
 		if model != "" {
 			args = append(args, "--model", model)
 		}
-		return "copilot", args, ""
-	case "opencode":
+		return providerid.Copilot, args, ""
+	case providerid.OpenCode:
 		args := []string{"run", "--format", "json", "--auto"}
 		if model != "" {
 			args = append(args, "--model", model)
 		}
 		args = append(args, prompt)
-		return "opencode", args, ""
+		return providerid.OpenCode, args, ""
 	default:
 		args := []string{"-p", prompt, "--output-format", "json"}
 		if disableTools {
@@ -269,19 +269,19 @@ func invocation(p, prompt, model string, disableTools bool, schemaPath string) (
 		if model != "" {
 			args = append(args, "--model", model)
 		}
-		return "claude", args, ""
+		return providerid.Claude, args, ""
 	}
 }
 
 func parseProviderText(p string, raw []byte) (text string, costUSD float64, err error) {
 	switch p {
-	case "codex":
+	case providerid.Codex:
 		text, err := parseCodexText(raw)
 		return text, 0, err
-	case "copilot":
+	case providerid.Copilot:
 		text, err := parseCopilotText(raw)
 		return text, 0, err
-	case "opencode":
+	case providerid.OpenCode:
 		text, err := parseOpenCodeText(raw)
 		return text, 0, err
 	default:
@@ -438,11 +438,11 @@ func firstNonEmpty(values ...string) string {
 func classifyError(p, stderrOut, content string) provider.Classification {
 	sample := provider.ErrorSample{Stderr: stderrOut, Content: content}
 	switch p {
-	case "codex":
+	case providerid.Codex:
 		return provider.ClassifyCodexError(sample)
-	case "copilot":
+	case providerid.Copilot:
 		return provider.ClassifyCopilotError(sample)
-	case "opencode":
+	case providerid.OpenCode:
 		return provider.ClassifyOpenCodeError(sample)
 	default:
 		return provider.ClassifyClaudeError(sample)
@@ -462,7 +462,7 @@ func overloaded(parts ...string) bool {
 var overloadedStatusCode = regexp.MustCompile(`\b529\b`)
 
 func schemaFlagRejected(providerName, schema string, parts ...string) bool {
-	if providerName != "codex" || strings.TrimSpace(schema) == "" {
+	if providerName != providerid.Codex || strings.TrimSpace(schema) == "" {
 		return false
 	}
 	for _, part := range parts {

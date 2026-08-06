@@ -657,7 +657,7 @@ func crossProvider(provider string) string {
 	order := providerid.All()
 	start := slices.Index(order, author)
 	if start < 0 {
-		start = slices.Index(order, "claude")
+		start = slices.Index(order, providerid.Claude)
 	}
 	firstDifferent := ""
 	for i := 1; i <= len(order); i++ {
@@ -677,14 +677,14 @@ func crossProvider(provider string) string {
 
 func normalizeWorkflowProvider(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "", "claude":
-		return "claude"
-	case "codex":
-		return "codex"
-	case "copilot":
-		return "copilot"
-	case "opencode":
-		return "opencode"
+	case "", providerid.Claude:
+		return providerid.Claude
+	case providerid.Codex:
+		return providerid.Codex
+	case providerid.Copilot:
+		return providerid.Copilot
+	case providerid.OpenCode:
+		return providerid.OpenCode
 	default:
 		return ""
 	}

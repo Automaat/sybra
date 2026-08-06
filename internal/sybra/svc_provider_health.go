@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // GetProviderHealth returns the current health snapshot for all providers as
@@ -50,13 +51,13 @@ func (s *IntegrationService) SetProviderEnabled(name string, enabled bool) error
 		return fmt.Errorf("provider health check disabled")
 	}
 	switch name {
-	case "claude":
+	case providerid.Claude:
 		s.cfg.Providers.Claude.Enabled = enabled
-	case "codex":
+	case providerid.Codex:
 		s.cfg.Providers.Codex.Enabled = enabled
-	case "copilot":
+	case providerid.Copilot:
 		s.cfg.Providers.Copilot.Enabled = enabled
-	case "opencode":
+	case providerid.OpenCode:
 		s.cfg.Providers.OpenCode.Enabled = enabled
 	default:
 		return fmt.Errorf("unknown provider %q", name)

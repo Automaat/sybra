@@ -1,12 +1,16 @@
 package limits
 
-import "time"
+import (
+	"time"
+
+	"github.com/Automaat/sybra/internal/providerid"
+)
 
 const (
-	ProviderClaude   = "claude"
-	ProviderCodex    = "codex"
-	ProviderCopilot  = "copilot"
-	ProviderOpenCode = "opencode"
+	ProviderClaude   = providerid.Claude
+	ProviderCodex    = providerid.Codex
+	ProviderCopilot  = providerid.Copilot
+	ProviderOpenCode = providerid.OpenCode
 
 	SourceStream       = "stream"
 	SourceSessionFiles = "session-files"
