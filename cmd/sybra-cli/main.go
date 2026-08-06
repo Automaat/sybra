@@ -49,11 +49,11 @@ import (
 var hookTaskIDRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
 
 var (
-	loadCLIConfig          = config.Load
-	loadCLIConfigNoPersist = config.LoadNoPersist
-	enableCLIAppAuth       = github.EnableAppAuth
-	refreshCLIAppToken     = github.RefreshAppToken
-	currentCLIAppToken     = github.CurrentAppToken
+	loadCLIConfig        = config.Load
+	loadCLIConfigLenient = config.LoadLenient
+	enableCLIAppAuth     = github.EnableAppAuth
+	refreshCLIAppToken   = github.RefreshAppToken
+	currentCLIAppToken   = github.CurrentAppToken
 )
 
 func main() {
@@ -212,11 +212,18 @@ func run(args []string) int {
 	}
 
 	if isReadOnlyConfigCommand(cmd) {
-		cfg, err := loadCLIConfigNoPersist()
+		cfg, schemaErr, err := loadCLIConfigLenient()
 		if err != nil {
 			return fatal(jsonOut, "load config: %v", err)
 		}
-		return cmdConfig(cfg, rest, jsonOut, allowHTTPForHome(homeOverride, home))
+		// Only `config doctor` survives a bad key. It is the command an
+		// operator reaches for once the config stops loading, so dying on that
+		// key leaves them with nothing; it reports the key as a finding
+		// instead, beside every other check. The rest still fail closed.
+		if schemaErr != nil && !isConfigDoctor(rest) {
+			return fatal(jsonOut, "load config: %v", schemaErr)
+		}
+		return cmdConfig(cfg, rest, jsonOut, allowHTTPForHome(homeOverride, home), schemaErr)
 	}
 
 	cfg, err := loadCLIConfig()
@@ -261,6 +268,10 @@ func allowHTTPForHome(homeOverride string, home homeResolution) bool {
 
 func isReadOnlyConfigCommand(cmd string) bool {
 	return cmd == "config"
+}
+
+func isConfigDoctor(args []string) bool {
+	return len(args) > 0 && args[0] == "doctor"
 }
 
 func resolveHome(homeOverride string) homeResolution {
@@ -419,7 +430,7 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 	case "progress":
 		return cmdProgress(store, projStore, rest, jsonOut)
 	case "config":
-		return cmdConfig(cfg, rest, jsonOut, allowHTTP)
+		return cmdConfig(cfg, rest, jsonOut, allowHTTP, nil)
 	case "doctor":
 		return cmdDoctor(cfg, store, rest, jsonOut)
 	case "trash":
@@ -477,6 +488,15 @@ func cmdGithubAppToken(cfg *config.Config, jsonOut bool) int {
 
 func dispatchTaskStoreFallback(cmd string, rest []string, jsonOut bool, loadErr error) (code int, handled bool) {
 	if !supportsTaskStoreFallback(cmd) {
+		return 0, false
+	}
+	// An unknown key says nothing about whether the server is reachable, so
+	// the fallback's premise does not hold. Its write path is also the one an
+	// agent cannot use: agents run `sybra-cli update` from inside a sandboxed
+	// worktree where the task store is read-only. Failing here names the key;
+	// falling back turned one stale key into agents that could not update
+	// their own tasks.
+	if errors.Is(loadErr, config.ErrUnknownConfigKey) {
 		return 0, false
 	}
 	store, tasksDir, err := openFallbackTaskStore()
@@ -1859,7 +1879,7 @@ func printJSON(v any) int {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
-		fmt.Fprintf(os.Stderr, `{"error":"%v"}`+"\n", err)
+		writeJSONError(err.Error())
 		return 1
 	}
 	return 0
@@ -1868,11 +1888,23 @@ func printJSON(v any) int {
 func fatal(jsonOut bool, format string, args ...any) int {
 	msg := fmt.Sprintf(format, args...)
 	if jsonOut {
-		fmt.Fprintf(os.Stderr, `{"error":"%s"}`+"\n", msg)
+		writeJSONError(msg)
 	} else {
 		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
 	}
 	return 1
+}
+
+// writeJSONError marshals rather than interpolating: several messages quote a
+// config key or a path, and a raw double quote inside the string literal makes
+// the object unparseable for the agents that run this with --json.
+func writeJSONError(msg string) {
+	encoded, err := json.Marshal(map[string]string{"error": msg})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
+		return
+	}
+	fmt.Fprintln(os.Stderr, string(encoded))
 }
 
 func filterProject(tasks []task.Task, projectID string) []task.Task {
@@ -3096,7 +3128,7 @@ func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdConfig(cfg *config.Config, args []string, jsonOut, allowHTTP bool) int {
+func cmdConfig(cfg *config.Config, args []string, jsonOut, allowHTTP bool, schemaErr error) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: config <dump|explain|doctor|migrate>")
 	}
@@ -3106,7 +3138,7 @@ func cmdConfig(cfg *config.Config, args []string, jsonOut, allowHTTP bool) int {
 	case "explain":
 		return cmdConfigExplain(cfg, args[1:], jsonOut)
 	case "doctor":
-		return cmdConfigDoctor(cfg, jsonOut, allowHTTP)
+		return cmdConfigDoctor(cfg, jsonOut, allowHTTP, schemaErr)
 	case "migrate":
 		return cmdConfigMigrate(args[1:], jsonOut)
 	default:
@@ -3395,12 +3427,18 @@ func resolveCapacity(cfg *config.Config, allowHTTP bool) *doctorCapacityReport {
 	return buildCapacityReport(cfg, api, time.Now())
 }
 
-func cmdConfigDoctor(cfg *config.Config, jsonOut, allowHTTP bool) int {
+func cmdConfigDoctor(cfg *config.Config, jsonOut, allowHTTP bool, schemaErr error) int {
 	var findings []configDoctorFinding
 	add := func(severity, format string, a ...any) {
 		findings = append(findings, configDoctorFinding{Severity: severity, Message: fmt.Sprintf(format, a...)})
 	}
 	routing := config.BuildRoutingSummary(cfg)
+
+	// Reported first: it is the reason every other command is failing, and the
+	// values below were resolved without it.
+	if schemaErr != nil {
+		add("error", "config schema: %v (this key is ignored; remove it from config.yaml)", schemaErr)
+	}
 
 	addConfigPermFindings(add)
 
