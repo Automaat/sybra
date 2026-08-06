@@ -21,7 +21,7 @@ merge queue rule with these values:
 | Maximum merge group size | 5 | Merges at most five successful queue entries at once |
 | Minimum merge group size | 1 | A single successful queue entry is never stranded |
 | Minimum wait | 0 minutes | Does not delay a ready entry waiting for a larger merge group |
-| Status-check timeout | 45 minutes | Exceeds the longest required job timeout |
+| Status-check timeout | 45 minutes | Allows normal required-check duration while bounding stalled CI |
 | Grouping strategy | Head green | The group's combined head must pass every required check |
 
 Keep the classic `main` branch protection's required status checks enabled.
