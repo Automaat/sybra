@@ -29,8 +29,12 @@ func TestAdoptRefusesSlashedDefaultBranch(t *testing.T) {
 			if err == nil {
 				t.Fatal("adopted a worktree sitting on the default branch")
 			}
-			if !strings.Contains(err.Error(), defaultBranch) {
-				t.Errorf("refusal %q does not name the default branch %q", err, defaultBranch)
+			// The full phrase, not just the branch name: the name alone also
+			// appears in the temp-dir path every adoption error carries, so a
+			// substring check passes on any failure at all.
+			want := `checked out on default branch "` + defaultBranch + `"`
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("refusal %q is not the default-branch refusal for %q", err, defaultBranch)
 			}
 
 			// Control: the refusal must come from the branch being the default

@@ -475,6 +475,13 @@ func isGitConfigKeyAbsent(err error) bool {
 // DefaultBranch resolves barePath's HEAD symbolic ref (e.g. refs/heads/main)
 // and returns the branch name it points at (main), slashes intact.
 func DefaultBranch(ctx context.Context, barePath string) (string, error) {
+	// An empty path leaves git in the Sybra process's own cwd, which answers
+	// with whatever branch that checkout is on. Every caller feeds the answer
+	// to a guard, so a project record with no clone_path would compare a real
+	// branch against an unrelated repository's instead of failing.
+	if strings.TrimSpace(barePath) == "" {
+		return "", errors.New("resolve default branch: project has no clone path")
+	}
 	ref, err := outputBare(ctx, barePath, "symbolic-ref", "HEAD")
 	if err != nil {
 		return "", err
