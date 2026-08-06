@@ -4267,3 +4267,131 @@ func TestHumanReviewSpawn_RetryablePrepareSchedulesRetry(t *testing.T) {
 		t.Errorf("agent runs after retry = %d, want 1", runCalls)
 	}
 }
+
+// A spawn armed before BeginDrain must not start a provider process after it.
+// Measured live: a six-way sweep interrupted by SIGTERM started ten agents and
+// wrote their runs and verdicts after app.draining.
+func TestHumanReviewSpawn_RefusesAfterDrain(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("drain", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.prepareTaskWorktree = func(task.Task) (string, error) { return t.TempDir(), nil }
+	started := 0
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		started++
+		return &agent.Agent{ID: "late", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if h.maybeSpawn(ctx, tk.ID, string(task.StatusInReview)) {
+		t.Fatal("spawned after the scheduler context was cancelled")
+	}
+	if started != 0 {
+		t.Errorf("started %d provider agents during shutdown, want 0", started)
+	}
+}
+
+// A single PrepareForTask can hold the claim for its fetch budget plus its
+// setup budget — measured at 14m44s — while the ladder must stay under
+// StaleDispatchClaimAge (15m). Exhaustion therefore cannot be terminal: the
+// sweep has to pick the task back up rather than leave it parked forever.
+func TestRespawnDroppedReviews_RecoversAnExhaustedLadder(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("exhausted ladder", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: "impl", Role: string(agent.RoleImplementation), State: string(agent.StateStopped),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The ladder runs out while the claim is still held.
+	h.schedule = func(time.Duration, func()) {}
+	h.claimTaskDispatch = func(string) (func(), bool) { return nil, false }
+	h.scheduleClaimRetry(context.Background(), tk.ID, string(task.StatusInReview),
+		humanReviewSpawnOptions{ClaimRetryAttempt: humanReviewClaimRetryMax})
+
+	// The preparation finishes and the claim frees.
+	wtDir := t.TempDir()
+	h.claimTaskDispatch = func(string) (func(), bool) { return func() {}, true }
+	h.prepareTaskWorktree = func(task.Task) (string, error) { return wtDir, nil }
+	spawns := make(chan string, 2)
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		spawns <- cfg.TaskID
+		return &agent.Agent{ID: "swept", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	h.RespawnDroppedReviews(context.Background())
+
+	select {
+	case <-spawns:
+	case <-time.After(5 * time.Second):
+		t.Fatal("an exhausted ladder is never retried; the task stays parked forever")
+	}
+	waitForHumanReviewRun(t, tasks, tk.ID)
+}
+
+// The recovery is only real if the maintenance tick reaches it. Startup alone
+// leaves an exhausted ladder parked until the next restart.
+func TestMaintenancePass_RunsTheDroppedReviewSweep(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("swept on tick", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: "impl", Role: string(agent.RoleImplementation), State: string(agent.StateStopped),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	wtDir := t.TempDir()
+	h.prepareTaskWorktree = func(task.Task) (string, error) { return wtDir, nil }
+	spawns := make(chan string, 2)
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		spawns <- cfg.TaskID
+		return &agent.Agent{ID: "swept", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	a := &App{cfg: h.cfg, logger: slog.New(slog.DiscardHandler), humanReview: h}
+	a.maintenancePass(context.Background())
+
+	select {
+	case <-spawns:
+	case <-time.After(5 * time.Second):
+		t.Fatal("maintenance tick does not sweep dropped reviews")
+	}
+	waitForHumanReviewRun(t, tasks, tk.ID)
+}

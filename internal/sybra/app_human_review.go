@@ -399,6 +399,14 @@ func (h *humanReviewHandler) spawnReview(ctx context.Context, t task.Task, prevS
 	if !h.preRunEligible(taskID, now, opts.IgnoreRenderedVerdict) {
 		return false
 	}
+	// Last gate before a process is spawned. A sweep or claim retry armed
+	// before BeginDrain otherwise starts provider agents, and writes their runs
+	// and verdicts, after the app has begun shutting down.
+	if err := ctx.Err(); err != nil {
+		h.releaseReservedSlot(taskID, now)
+		h.skip(taskID, "shutting_down")
+		return false
+	}
 	ag, err := h.agents.Run(cfg)
 	if err != nil {
 		h.clearInflight(taskID)
@@ -465,10 +473,11 @@ func (h *humanReviewHandler) scheduleClaimRetry(ctx context.Context, taskID, pre
 		return
 	}
 	if opts.ClaimRetryAttempt >= humanReviewClaimRetryMax {
-		// Terminal, and nothing else re-triggers it within this process:
-		// recoverStrandedUnblockedTasks only replays verdicts whose side
-		// effects failed, not spawns that never happened. Record it, or the
-		// only trace is an Info line.
+		// Not the end of the road, but the end of this attempt: a preparation
+		// can hold the claim for its fetch budget plus its setup budget,
+		// longer than any ladder that must stay under StaleDispatchClaimAge.
+		// RespawnDroppedReviews picks the task back up on the next
+		// maintenance tick; record the exhaustion so the wait is visible.
 		h.logger.Warn("human-review.dispatch-claim.retries-exhausted",
 			"task_id", taskID, "attempts", opts.ClaimRetryAttempt)
 		h.logAudit(audit.EventHumanReviewRetriesExhausted, taskID, "", map[string]any{

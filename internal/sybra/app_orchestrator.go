@@ -218,10 +218,19 @@ func (a *App) maintenancePass(ctx context.Context) {
 	a.queueDrainPass(ctx)
 	// Recover in-progress tasks whose agent died — runs continuously, not just at
 	// startup, to catch agents that finished without advancing the workflow.
-	if a.runsScheduler() {
+	if a.runsScheduler() && a.recovery != nil {
 		a.recovery.RestartStaleInProgress(ctx)
 	}
-	a.recovery.ReconcileLostPRNumber(ctx)
+	// Continuously, not just at startup: a preparation can hold the dispatch
+	// claim for its fetch budget plus its setup budget, longer than any ladder
+	// that must stay under agent.StaleDispatchClaimAge. Exhaustion therefore
+	// has to be recoverable, and this is what recovers it.
+	if a.humanReview != nil {
+		a.humanReview.RespawnDroppedReviews(ctx)
+	}
+	if a.recovery != nil {
+		a.recovery.ReconcileLostPRNumber(ctx)
+	}
 	// Re-attempt enrichment for URL stubs orphaned by a failed/interrupted
 	// initial fetch — otherwise they keep the enrich-pending marker (and their
 	// raw-URL title) forever and never dispatch a workflow. The eventual
