@@ -1,13 +1,14 @@
 package experience
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 const defaultMaxPerProject = 50
@@ -105,7 +106,7 @@ func (s *Store) Delete(projectID string) error {
 }
 
 func (s *Store) projectDir(projectID string) (string, error) {
-	safe, err := sanitizeProjectID(projectID)
+	safe, err := fsutil.ProjectKeyDir(projectID)
 	if err != nil {
 		return "", err
 	}
@@ -177,40 +178,6 @@ func sortRecords(records []Record) {
 		}
 		return records[i].TaskID < records[j].TaskID
 	})
-}
-
-func sanitizeProjectID(projectID string) (string, error) {
-	id := strings.TrimSpace(projectID)
-	if id == "" {
-		return "", fmt.Errorf("project id is empty")
-	}
-	if isOpaqueWorkProjectKey(id) {
-		return id, nil
-	}
-	if filepath.Clean(id) != id || strings.Contains(id, `\`) {
-		return "", fmt.Errorf("invalid project id %q", projectID)
-	}
-	owner, repo, ok := strings.Cut(id, "/")
-	if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
-		return "", fmt.Errorf("invalid project id %q", projectID)
-	}
-	if owner == "." || owner == ".." || repo == "." || repo == ".." {
-		return "", fmt.Errorf("invalid project id %q", projectID)
-	}
-	return "gh-" + hex.EncodeToString([]byte(owner)) + "-" + hex.EncodeToString([]byte(repo)), nil
-}
-
-func isOpaqueWorkProjectKey(id string) bool {
-	const prefix = "work-"
-	if !strings.HasPrefix(id, prefix) || len(id) != len(prefix)+64 {
-		return false
-	}
-	for _, r := range id[len(prefix):] {
-		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 func sanitizeRecordID(recordID string) (string, error) {

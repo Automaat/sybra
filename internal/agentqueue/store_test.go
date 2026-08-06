@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -243,7 +244,7 @@ func TestStore_SafeTaskID(t *testing.T) {
 		{".hidden", true},
 	}
 	for _, tt := range tests {
-		if got := safeTaskID(tt.id); got != tt.want {
+		if got := fsutil.ValidateKey(tt.id) == nil; got != tt.want {
 			t.Errorf("safeTaskID(%q) = %v, want %v", tt.id, got, tt.want)
 		}
 	}

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 func TestStoreProjectScopingIdempotencyOrderingAndLimit(t *testing.T) {
@@ -92,16 +94,16 @@ func TestStoreRejectsUnsafeIDsAndDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"", "../repo", "owner/../repo", "owner/repo/extra", "owner\\repo", "work-zzzz"} {
-		if _, err := sanitizeProjectID(id); err == nil {
-			t.Fatalf("sanitizeProjectID(%q) succeeded, want error", id)
+		if _, err := fsutil.ProjectKeyDir(id); err == nil {
+			t.Fatalf("fsutil.ProjectKeyDir(%q) succeeded, want error", id)
 		}
 	}
-	if got, err := sanitizeProjectID("owner/repo"); err != nil || got != "gh-6f776e6572-7265706f" {
-		t.Fatalf("sanitizeProjectID(owner/repo) = %q, %v; want encoded key", got, err)
+	if got, err := fsutil.ProjectKeyDir("owner/repo"); err != nil || got != "gh-6f776e6572-7265706f" {
+		t.Fatalf("fsutil.ProjectKeyDir(owner/repo) = %q, %v; want encoded key", got, err)
 	}
 	opaqueKey := "work-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	if got, err := sanitizeProjectID(opaqueKey); err != nil || got != opaqueKey {
-		t.Fatalf("sanitizeProjectID(opaque work key) = %q, %v; want same key", got, err)
+	if got, err := fsutil.ProjectKeyDir(opaqueKey); err != nil || got != opaqueKey {
+		t.Fatalf("fsutil.ProjectKeyDir(opaque work key) = %q, %v; want same key", got, err)
 	}
 	if err := store.Put("owner/repo", Record{TaskID: "task-1", CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
