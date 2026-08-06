@@ -21,6 +21,7 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/verdict"
 	"github.com/Automaat/sybra/internal/workflow"
+	"github.com/Automaat/sybra/internal/worktree"
 )
 
 // setupUnblockedRecoveryWorktree creates a clone checked out on branch, with
@@ -172,7 +173,7 @@ func TestHumanReviewDispatchDir_PreparesManagedWorktree(t *testing.T) {
 		return wantDir, nil
 	}
 
-	dir, readOnly := h.dispatchDir(task.Task{ID: "managed-task"})
+	dir, readOnly, _ := h.dispatchDir(task.Task{ID: "managed-task"})
 	if !called {
 		t.Fatal("managed worktree preparer was not called")
 	}
@@ -189,7 +190,7 @@ func TestHumanReviewDispatchDir_PrepareFailureFallsBackReadOnly(t *testing.T) {
 		return "", errors.New("worktree unavailable")
 	}
 
-	dir, readOnly := h.dispatchDir(task.Task{ID: "fallback-task"})
+	dir, readOnly, _ := h.dispatchDir(task.Task{ID: "fallback-task"})
 	if dir != h.cfg.HumanReview.SybraRepoDir || !readOnly {
 		t.Fatalf("got dir=%q readOnly=%v, want dir=%q readOnly=true", dir, readOnly, h.cfg.HumanReview.SybraRepoDir)
 	}
@@ -3883,5 +3884,105 @@ func TestHumanReviewPrompt_HonorsCommitSigningPolicy(t *testing.T) {
 	h.SetSigningPolicy(project.SigningRequire)
 	if got := h.signingPolicy().CommitFlags(context.Background()); got != "-s -S" {
 		t.Errorf("after reload to require, flags = %q, want -s -S", got)
+	}
+}
+
+// The human-required status hook spawns while the agent that just failed is
+// still winding down in the registry, so PrepareForTask returns
+// ErrAgentRunning on the most common entry path into recovery. Falling back to
+// the read-only Sybra source there is the exact condition writable recovery
+// worktrees exist to eliminate — three agents on three tasks each verified a
+// fix and then reported they could not apply it.
+func TestHumanReviewDispatchDir_RetryableErrorsDoNotFallBackReadOnly(t *testing.T) {
+	tests := []struct {
+		name          string
+		prepareErr    error
+		wantRetryable bool
+	}{
+		{"live agent still winding down", worktree.ErrAgentRunning, true},
+		{"transient fetch blip", worktree.ErrTransientFetch, true},
+		{
+			// A task that genuinely has no worktree is what the read-only
+			// fallback is for: diagnosing Sybra itself.
+			name:          "permanent failure still falls back",
+			prepareErr:    errors.New("no worktree and no branch"),
+			wantRetryable: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _, cleanup := newReviewTestEnv(t)
+			defer cleanup()
+			h.cfg.HumanReview.SybraRepoDir = "/opt/sybra/src"
+			h.prepareTaskWorktree = func(task.Task) (string, error) { return "", tc.prepareErr }
+
+			dir, readOnly, retryable := h.dispatchDir(task.Task{ID: "t1"})
+			if retryable != tc.wantRetryable {
+				t.Fatalf("retryable = %v, want %v", retryable, tc.wantRetryable)
+			}
+			if tc.wantRetryable {
+				if dir != "" || readOnly {
+					t.Errorf("retryable prepare returned dir=%q readOnly=%v, want no dispatch", dir, readOnly)
+				}
+				return
+			}
+			if dir != "/opt/sybra/src" || !readOnly {
+				t.Errorf("permanent failure gave dir=%q readOnly=%v, want the read-only fallback", dir, readOnly)
+			}
+		})
+	}
+}
+
+// Classifying the error is not enough: the spawn path must actually wait
+// instead of dispatching. Without this the agent still runs, just against the
+// read-only fallback.
+func TestHumanReviewSpawn_RetryablePrepareSchedulesRetry(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	tk, err := tasks.Create("retryable prepare", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	prepareCalls := 0
+	h.prepareTaskWorktree = func(task.Task) (string, error) {
+		prepareCalls++
+		if prepareCalls == 1 {
+			return "", worktree.ErrAgentRunning
+		}
+		return t.TempDir(), nil
+	}
+	var scheduled func()
+	h.schedule = func(_ time.Duration, fn func()) { scheduled = fn }
+	runCalls := 0
+	h.agents = &fakeHumanReviewAgentRunner{run: func(cfg agent.RunConfig) (*agent.Agent, error) {
+		runCalls++
+		if cfg.ReadOnlyDir {
+			t.Error("dispatched read-only after a retryable prepare failure")
+		}
+		return &agent.Agent{ID: "recovered", TaskID: cfg.TaskID, StartedAt: time.Now().UTC()}, nil
+	}}
+
+	if h.maybeSpawn(tk.ID, string(task.StatusInReview)) {
+		t.Fatal("spawned despite a retryable prepare failure")
+	}
+	if runCalls != 0 {
+		t.Fatalf("agent ran %d times before the retry", runCalls)
+	}
+	if scheduled == nil {
+		t.Fatal("retryable prepare did not schedule a retry")
+	}
+
+	scheduled()
+
+	if runCalls != 1 {
+		t.Errorf("agent runs after retry = %d, want 1", runCalls)
 	}
 }
