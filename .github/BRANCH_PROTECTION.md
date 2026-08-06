@@ -17,10 +17,10 @@ merge queue rule with these values:
 | Setting | Value | Reason |
 | --- | --- | --- |
 | Merge method | Squash | Matches Sybra's pull-request merge policy |
-| Build concurrency | 5 | Keeps a useful batch in flight |
-| Maximum group size | 5 | Five independent PRs share one combined CI run |
-| Minimum group size | 5 | Holds concurrently-ready PRs for one combined CI run |
-| Minimum wait | 5 minutes | Releases a smaller group automatically, so a lone PR is never stranded |
+| Build concurrency | 5 | Runs up to five speculative CI builds concurrently instead of serially |
+| Maximum merge group size | 5 | Merges at most five successful queue entries at once |
+| Minimum merge group size | 1 | A single successful queue entry is never stranded |
+| Minimum wait | 0 minutes | Does not delay a ready entry waiting for a larger merge group |
 | Status-check timeout | 45 minutes | Exceeds the longest required job timeout |
 | Grouping strategy | Head green | The group's combined head must pass every required check |
 
@@ -36,9 +36,11 @@ a fresh full CI run after every preceding merge.
 
 1. Confirm `.github/workflows/ci.yml` still handles both `pull_request` and
    `merge_group` events.
-2. Queue two small independent pull requests and confirm GitHub creates one
-   merge group containing both.
-3. Confirm all required checks run against the merge-group commit before either
-   pull request reaches `main`.
+2. Queue two small independent pull requests and confirm their speculative
+   merge-group builds can run concurrently.
+3. Confirm the later synthetic branch contains the current base plus both
+   queued changes and passes all required checks before the later pull request
+   reaches `main`.
 4. Queue two pull requests whose combination fails a required check and confirm
-   neither is merged as a successful group.
+   the later pull request cannot merge behind the first until its cumulative
+   synthetic branch passes.
