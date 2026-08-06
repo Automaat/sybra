@@ -19,8 +19,8 @@ merge queue rule with these values:
 | Merge method | Squash | Matches Sybra's pull-request merge policy |
 | Build concurrency | 5 | Keeps a useful batch in flight |
 | Maximum group size | 5 | Five independent PRs share one combined CI run |
-| Minimum group size | 1 | A single ready PR is never stranded |
-| Minimum wait | 5 minutes | Gives concurrently-ready PRs a short batching window |
+| Minimum group size | 5 | Holds concurrently-ready PRs for one combined CI run |
+| Minimum wait | 5 minutes | Releases a smaller group automatically, so a lone PR is never stranded |
 | Status-check timeout | 45 minutes | Exceeds the longest required job timeout |
 | Grouping strategy | Head green | The group's combined head must pass every required check |
 
