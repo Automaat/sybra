@@ -34,8 +34,8 @@ func (e *Engine) shouldSkipResumeForRateLimitedProvider(t *TaskInfo, step *Step,
 	// instants land three days out), so the direct Debug call was both
 	// invisible at the default level and 3,600 lines per task at debug level.
 	// Keying the value on the provider re-arms INFO when the park moves.
-	e.resumeSkip.Log(e.logger, logEvent, t.ID, "provider_rate_limited|"+prov,
-		"task_id", t.ID, "reason", "provider_rate_limited", "provider", prov)
+	e.resumeSkip.Log(e.logger, logEvent, t.ID, "provider_rate_limited|"+prov+"|"+step.ID,
+		"task_id", t.ID, "reason", "provider_rate_limited", "provider", prov, "step", step.ID)
 	return true
 }
 

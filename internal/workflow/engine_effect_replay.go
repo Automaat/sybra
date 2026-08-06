@@ -148,6 +148,11 @@ func (e *Engine) replayPendingEffect(t *TaskInfo, step *Step, def *Definition) b
 		return true
 	}
 
+	// Winning the claim is not enough to re-arm — the no-op branch above wins it
+	// on every tick of a park. Only an actual dispatch ends one, and once this
+	// route dispatches, ResumeStalled's own Clear is unreachable because its
+	// preflight short-circuits on HasRunningAgent.
+	e.resumeSkip.Clear(fresh.ID)
 	e.logger.Info("workflow.effect-replay", "task_id", fresh.ID, "step", step.ID, "effect", rec.ID.String())
 	comp, rErr := e.executeSteps(fresh.ID, def, step, fresh.Workflow)
 	rErr = normalizeExecuteStepsErr(rErr)

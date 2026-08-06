@@ -455,7 +455,7 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 }
 
 func (e *Engine) rescheduleRateLimitedRunAgent(taskID, agentID string, step *Step, t TaskInfo, def *Definition) {
-	if e.shouldSkipResumeForRateLimitedProvider(&t, step, "workflow.rate-limited-reschedule.skip") {
+	if e.shouldSkipResumeForRateLimitedProvider(&t, step, "workflow.rate-limit-reschedule.park") {
 		// Provider is still inside its rate-limit cooldown and no healthy peer is
 		// available to fail over to. Park the task without consuming a watchdog
 		// retry budget or feeding the circuit breaker — ResumeStalled re-drives
@@ -774,7 +774,7 @@ func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, pare
 	e.clearAgentStep(taskID, agentID)
 	clearAgentRouteFromWorkflow(wfExec, agentID)
 
-	if e.shouldSkipResumeForRateLimitedProvider(&fresh, child, "workflow.rate-limited-reschedule.skip") {
+	if e.shouldSkipResumeForRateLimitedProvider(&fresh, child, "workflow.rate-limit-reschedule.park") {
 		// See RescheduleRateLimitedAgent: park rather than burn a retry budget or
 		// trip the breaker while this child's provider is rate-limited with no
 		// failover peer. The parent stays inflight; ResumeStalled retries later.
@@ -797,6 +797,8 @@ func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, pare
 		Workflow: wfExec,
 	}
 	dir := wfExec.Variables[WorkflowVarDir]
+	// This route never reaches rescheduleRunAgent, so it re-arms for itself.
+	e.resumeSkip.Clear(taskID)
 	e.logger.Info("workflow.rate-limit-reschedule.parallel",
 		"task_id", taskID, "parent", parent.ID, "child", child.ID)
 	spawnErr := e.spawnParallelChild(taskID, parent, child, wfExec, ctx, dir, status)
