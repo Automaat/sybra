@@ -894,33 +894,34 @@ func (m *Manager) PrepareForBranchConflictFromRemote(ctx context.Context, t task
 // tree the exclusion exists to prevent.
 //
 // dir overrides the task's own worktree path for callers that already resolved
-// one. Reports whether a reset ran; a directory that does not exist is not an
-// error.
-func (m *Manager) ResetForRetry(ctx context.Context, t task.Task, dir, ref string) (bool, error) {
-	target := dir
+// one. It returns the path it actually acted on — callers log that rather than
+// their own argument, which is empty whenever they left the resolution here —
+// and whether a reset ran; a directory that does not exist is not an error.
+func (m *Manager) ResetForRetry(ctx context.Context, t task.Task, dir, ref string) (target string, reset bool, err error) {
+	target = dir
 	if target == "" {
 		target = m.PathFor(t)
 	}
 	if target == "" {
-		return false, nil
+		return "", false, nil
 	}
 
 	release, err := m.lockPath(target)
 	if err != nil {
-		return false, err
+		return target, false, err
 	}
 	defer release()
 
 	if _, statErr := os.Stat(target); statErr != nil {
 		if os.IsNotExist(statErr) {
-			return false, nil
+			return target, false, nil
 		}
-		return false, fmt.Errorf("stat clean retry worktree: %w", statErr)
+		return target, false, fmt.Errorf("stat clean retry worktree: %w", statErr)
 	}
 	if err := project.ResetWorktreeForRetry(ctx, target, ref); err != nil {
-		return false, fmt.Errorf("reset worktree for retry: %w", err)
+		return target, false, fmt.Errorf("reset worktree for retry: %w", err)
 	}
-	return true, nil
+	return target, true, nil
 }
 
 // PruneMissingWorktree drops the bare repo's admin entry for a worktree path

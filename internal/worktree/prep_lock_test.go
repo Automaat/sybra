@@ -157,7 +157,7 @@ func TestLockedEntryPointsRefuseHeldPath(t *testing.T) {
 	}
 	defer release()
 
-	if _, err := h.m.ResetForRetry(context.Background(), tk, "", "HEAD"); !errors.Is(err, ErrPreparationInFlight) {
+	if _, _, err := h.m.ResetForRetry(context.Background(), tk, "", "HEAD"); !errors.Is(err, ErrPreparationInFlight) {
 		t.Errorf("ResetForRetry err = %v, want ErrPreparationInFlight", err)
 	}
 	if err := h.m.RecreateFromBase(context.Background(), tk); !errors.Is(err, ErrPreparationInFlight) {
@@ -200,13 +200,18 @@ func TestResetForRetry_ResetsWhenPathIsFree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// No worktree yet: nothing to reset, and that is not an error.
-	reset, err := h.m.ResetForRetry(context.Background(), tk, "", "HEAD")
+	// No worktree yet: nothing to reset, and that is not an error. The
+	// resolved path still comes back, since callers log it rather than the
+	// empty dir argument they passed.
+	target, reset, err := h.m.ResetForRetry(context.Background(), tk, "", "HEAD")
 	if err != nil {
 		t.Fatalf("ResetForRetry with no worktree: %v", err)
 	}
 	if reset {
 		t.Error("reset = true with no worktree on disk, want false")
+	}
+	if want := h.m.PathFor(tk); target != want {
+		t.Errorf("resolved path = %q, want %q", target, want)
 	}
 
 	dir, err := h.m.PrepareForTask(context.Background(), tk, nil)
@@ -218,12 +223,15 @@ func TestResetForRetry_ResetsWhenPathIsFree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reset, err = h.m.ResetForRetry(context.Background(), tk, "", "HEAD")
+	target, reset, err = h.m.ResetForRetry(context.Background(), tk, "", "HEAD")
 	if err != nil {
 		t.Fatalf("ResetForRetry: %v", err)
 	}
 	if !reset {
 		t.Error("reset = false on an existing worktree, want true")
+	}
+	if target != dir {
+		t.Errorf("resolved path = %q, want the prepared worktree %q", target, dir)
 	}
 	if _, err := os.Stat(stray); !os.IsNotExist(err) {
 		t.Errorf("stray file survived the reset: %v", err)

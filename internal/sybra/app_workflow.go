@@ -1318,13 +1318,13 @@ func (a *agentAdapter) resetWorktreeForRetry(t task.Task, dir, ref string) (bool
 	// context.Background(): StartAgent implements workflow.AgentDispatcher,
 	// a fixed interface signature with no ctx parameter (see the earlier
 	// comment on the PrepareForTask call in this file).
-	reset, err := a.agentOrch.Worktrees().ResetForRetry(context.Background(), t, dir, ref)
+	target, reset, err := a.agentOrch.Worktrees().ResetForRetry(context.Background(), t, dir, ref)
 	if err != nil {
-		a.agentOrch.Logger().Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", dir, "ref", ref, "err", err)
+		a.agentOrch.Logger().Warn("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref, "err", err)
 		return false, err
 	}
 	if reset {
-		a.agentOrch.Logger().Info("worktree.clean-retry.reset", "task_id", t.ID, "ref", ref)
+		a.agentOrch.Logger().Info("worktree.clean-retry.reset", "task_id", t.ID, "path", target, "ref", ref)
 	}
 	return reset, nil
 }
