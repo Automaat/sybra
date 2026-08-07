@@ -1000,6 +1000,26 @@ func (m *memTasks) CompleteWorkflowEffect(id string, claim EffectClaim) (EffectC
 	return result, nil
 }
 
+func (m *memTasks) ReleaseWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return EffectClaimResult{}, fmt.Errorf("task %s not found", id)
+	}
+	if t.Workflow == nil {
+		return EffectClaimResult{}, fmt.Errorf("task %s has no workflow", id)
+	}
+	wf := t.Workflow.Clone()
+	result, err := wf.ReleaseEffect(claim)
+	result.Workflow = wf
+	if err != nil {
+		return result, err
+	}
+	t.Workflow = wf
+	return result, nil
+}
+
 func (m *memTasks) WriteSidecar(id, kind, content string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -9811,6 +9831,62 @@ func TestExecRunAgent_PanicClearsDispatchingClaim(t *testing.T) {
 	}
 	if engine.hasTrackedAgentForTaskStep("t1", "triage") {
 		t.Fatal("pending step start leaked after panic")
+	}
+}
+
+func TestExecRunAgent_PreStartFailureReleasesClaimedEffect(t *testing.T) {
+	tasks := newMemTasks()
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	step := &Step{
+		ID:   "implement",
+		Type: StepRunAgent,
+		Config: StepConfig{
+			Role:   "implementation",
+			Prompt: "{{",
+			Mode:   "headless",
+		},
+	}
+	wf := &Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "implement",
+		State:       ExecRunning,
+		Variables:   map[string]string{},
+	}
+	ti := TaskInfo{
+		ID:         "t1",
+		Status:     "in-progress",
+		AgentMode:  "headless",
+		Generation: 1,
+		Workflow:   wf.Clone(),
+	}
+	tasks.Put(ti)
+
+	claim := engine.effectClaimForStep(ti, step, effectPosStepAction)
+	if _, err := tasks.ClaimWorkflowEffect("t1", claim); err != nil {
+		t.Fatalf("ClaimWorkflowEffect: %v", err)
+	}
+
+	if err := engine.execRunAgent("t1", step, wf.Clone(), TemplateContext{
+		Task:     ti,
+		Step:     *step,
+		Vars:     wf.Variables,
+		Workflow: wf,
+	}, claim.EffectID); err == nil {
+		t.Fatal("execRunAgent error = nil, want prompt render failure")
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("workflow = nil, want persisted workflow")
+	}
+	if len(got.Workflow.EffectLog) != 0 {
+		t.Fatalf("EffectLog = %+v, want claimed effect released on pre-start failure", got.Workflow.EffectLog)
+	}
+	if _, err := tasks.ClaimWorkflowEffect("t1", claim); err != nil {
+		t.Fatalf("ClaimWorkflowEffect after release: %v, want success", err)
 	}
 }
 
