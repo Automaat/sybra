@@ -99,6 +99,7 @@ func (a *App) certifyPreparedRunEnvironment(ctx context.Context, environment age
 			Requirements: []autonomy.CapabilityRequirement{
 				{Capability: autonomy.CapabilitySourceRead, Action: "implementation.dispatch", Scope: "task"},
 				{Capability: autonomy.CapabilitySourceWrite, Action: "implementation.dispatch", Scope: "task"},
+				{Capability: autonomy.CapabilityScratchWrite, Action: "implementation.dispatch", Scope: "task"},
 				{Capability: autonomy.CapabilitySandboxMechanism, Action: "implementation.dispatch", Scope: "host"},
 				{Capability: autonomy.CapabilityProviderCapacity, Action: "implementation.dispatch", Scope: "provider"},
 			},

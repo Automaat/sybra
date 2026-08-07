@@ -298,12 +298,17 @@ func (s *Service) probe(ctx context.Context, req Request, capability autonomy.Ca
 		}
 		return ProbeResult{Available: true, Evidence: "source roots readable"}, nil
 	case autonomy.CapabilitySourceWrite:
-		for _, root := range append([]string{req.WorkDir}, req.ScratchRoots...) {
+		if err := probeWrite(req.WorkDir); err != nil {
+			return ProbeResult{Code: "source_write_unavailable"}, err
+		}
+		return ProbeResult{Available: true, Evidence: "source root writable"}, nil
+	case autonomy.CapabilityScratchWrite:
+		for _, root := range req.ScratchRoots {
 			if err := probeWrite(root); err != nil {
-				return ProbeResult{Code: "source_write_unavailable"}, err
+				return ProbeResult{Code: "scratch_write_unavailable"}, err
 			}
 		}
-		return ProbeResult{Available: true, Evidence: "required source and scratch roots writable"}, nil
+		return ProbeResult{Available: true, Evidence: "required scratch roots writable"}, nil
 	case autonomy.CapabilityGitAdminWrite:
 		gitDir, common, err := gitDirs(ctx, req.WorkDir)
 		if err != nil {
@@ -555,41 +560,50 @@ func fileIdentity(path string) string {
 	if err != nil {
 		return path + "|missing"
 	}
-	file, err := os.Open(resolved)
-	if err != nil {
-		return resolved + "|unavailable|" + err.Error()
-	}
-	defer file.Close()
 	info, err := os.Stat(resolved)
 	if err != nil {
 		return resolved + "|unavailable|" + err.Error()
 	}
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return resolved + "|unavailable|" + err.Error()
-	}
-	return resolved + "|" + info.Mode().String() + "|" + strconv.FormatInt(info.Size(), 10) + "|" + hex.EncodeToString(hash.Sum(nil))
+	return resolved + "|" + info.Mode().String() + "|" + strconv.FormatInt(info.Size(), 10) + "|" + strconv.FormatInt(info.ModTime().UnixNano(), 10)
 }
 
+// directoryIdentity deliberately caps traversal so fingerprint lookup remains
+// cheap on repositories with very large ref namespaces. The current HEAD is
+// fingerprinted separately, and clone generation covers shared-clone refresh.
 func directoryIdentity(path string) string {
+	const maxEntries = 256
 	hash := sha256.New()
-	err := filepath.WalkDir(path, func(candidate string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		relative, err := filepath.Rel(path, candidate)
-		if err != nil {
-			return err
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		_, _ = io.WriteString(hash, relative+"|"+entry.Type().String()+"|"+strconv.FormatInt(info.Size(), 10)+"|"+strconv.FormatInt(info.ModTime().UnixNano(), 10)+"\n")
-		return nil
-	})
+	entries, err := os.ReadDir(path)
 	if err != nil {
 		return path + "|unavailable|" + err.Error()
+	}
+	written := 0
+	for _, entry := range entries {
+		if written == maxEntries {
+			_, _ = io.WriteString(hash, "truncated\n")
+			break
+		}
+		if err := writeEntryIdentity(hash, entry.Name(), entry); err != nil {
+			return path + "|unavailable|" + err.Error()
+		}
+		written++
+		if !entry.IsDir() {
+			continue
+		}
+		children, readErr := os.ReadDir(filepath.Join(path, entry.Name()))
+		if readErr != nil {
+			return path + "|unavailable|" + readErr.Error()
+		}
+		for _, child := range children {
+			if written == maxEntries {
+				_, _ = io.WriteString(hash, "truncated\n")
+				break
+			}
+			if err := writeEntryIdentity(hash, entry.Name()+"/"+child.Name(), child); err != nil {
+				return path + "|unavailable|" + err.Error()
+			}
+			written++
+		}
 	}
 	return hex.EncodeToString(hash.Sum(nil))
 }

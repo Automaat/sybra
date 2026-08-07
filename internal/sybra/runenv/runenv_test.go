@@ -87,7 +87,7 @@ func TestCachedCertificateInvalidatesWhenScratchRootBecomesReadOnly(t *testing.T
 	t.Cleanup(func() { _ = os.Chmod(scratch, 0o755) })
 	_, err := service.Certify(context.Background(), req)
 	var failure CertificationError
-	if !errors.As(err, &failure) || failure.Code != "source_write_unavailable" {
+	if !errors.As(err, &failure) || failure.Code != "scratch_write_unavailable" || failure.Capability != autonomy.CapabilityScratchWrite {
 		t.Fatalf("failure = %#v / %v", failure, err)
 	}
 }
@@ -100,10 +100,37 @@ func TestVerifierNeverReceivesSourceWriteProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Certify: %v", err)
 	}
+	hasScratchWrite := false
 	for _, observation := range cert.Observations {
 		if observation.Capability == autonomy.CapabilitySourceWrite || observation.Capability == autonomy.CapabilityGitAdminWrite {
 			t.Fatalf("verifier certificate includes mutation capability: %+v", observation)
 		}
+		if observation.Capability == autonomy.CapabilityScratchWrite {
+			hasScratchWrite = true
+		}
+	}
+	if !hasScratchWrite {
+		t.Fatal("verifier certificate omitted scratch-write capability")
+	}
+}
+
+func TestScratchWriteIsCertifiedWithoutSourceWrite(t *testing.T) {
+	workDir := t.TempDir()
+	req := Request{
+		TaskID:       "judge",
+		Action:       "review.dispatch",
+		WorkDir:      workDir,
+		ScratchRoots: []string{filepath.Join(t.TempDir(), "missing")},
+		Requirements: []autonomy.CapabilityRequirement{{
+			Capability: autonomy.CapabilityScratchWrite,
+			Action:     "review.dispatch",
+			Scope:      "task",
+		}},
+	}
+	_, err := New(Deps{}).Certify(context.Background(), req)
+	var failure CertificationError
+	if !errors.As(err, &failure) || failure.Capability != autonomy.CapabilityScratchWrite || failure.Code != "scratch_write_unavailable" {
+		t.Fatalf("failure = %#v / %v", failure, err)
 	}
 }
 

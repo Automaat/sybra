@@ -123,6 +123,7 @@ func (r Role) CapabilityRequirements(action string) []autonomy.CapabilityRequire
 	}
 	requirements := []autonomy.CapabilityRequirement{
 		{Capability: autonomy.CapabilitySourceRead, Action: action, Scope: "task", Repairable: true},
+		{Capability: autonomy.CapabilityScratchWrite, Action: action, Scope: "task", Repairable: true},
 		{Capability: autonomy.CapabilityObjectStore, Action: action, Scope: "project", Repairable: true},
 		{Capability: autonomy.CapabilityCheckoutHealth, Action: action, Scope: "task", Repairable: true},
 		{Capability: autonomy.CapabilitySandboxMechanism, Action: action, Scope: "host"},

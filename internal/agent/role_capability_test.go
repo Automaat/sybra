@@ -26,10 +26,17 @@ func TestEveryRoleDeclaresValidCapabilities(t *testing.T) {
 func TestVerifierCapabilityContractDoesNotGrantAuthoritativeSourceWrite(t *testing.T) {
 	t.Parallel()
 	for _, role := range []Role{RoleReview, RolePlan, RolePlanCritic, RoleEval, RoleTestRunner} {
+		hasScratchWrite := false
 		for _, requirement := range role.CapabilityRequirements("verify") {
 			if requirement.Capability == "source_write" {
 				t.Errorf("verifier role %q received source_write", role)
 			}
+			if requirement.Capability == "scratch_write" {
+				hasScratchWrite = true
+			}
+		}
+		if !hasScratchWrite {
+			t.Errorf("verifier role %q did not receive scratch_write", role)
 		}
 	}
 }
