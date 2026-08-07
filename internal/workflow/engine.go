@@ -797,6 +797,8 @@ func (d Dependencies) missing() []string {
 		namedDependency{"Execution.Classifier", d.Execution.Classifier},
 		namedDependency{"Execution.CostBudget", d.Execution.CostBudget},
 		namedDependency{"Execution.AttemptWorktrees", d.Execution.AttemptWorktrees},
+		namedDependency{"Execution.Verification", d.Execution.Verification},
+		namedDependency{"Execution.VerificationCommands", d.Execution.VerificationCommands},
 	)...)
 	return missing
 }
