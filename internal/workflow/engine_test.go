@@ -2621,322 +2621,47 @@ const alreadyFixedOnMainProse = "Already fixed on main; no PR needed. Duplicate 
 
 const alreadyFixedOnMainDeclaredReason = alreadyFixedOnMainRecoveryReason + " — agent declared: landed in an earlier PR"
 
-func TestAdvanceStep_ManualVerificationBlockerRoutesToReadyPR(t *testing.T) {
-	store := newInlineTestStore(t, "pr-recovery", `
-id: pr-recovery
-name: PR Recovery
-trigger:
-  on: task.created
-steps:
-  - id: implement
-    name: Implement
-    type: run_agent
-    config:
-      role: implementation
-      mode: headless
-      prompt: "implement"
-    next:
-      - when:
-          field: task.status
-          operator: equals
-          value: human-required
-        goto: ""
-      - goto: verify
-  - id: verify
-    name: Verify
-    type: set_status
-    config:
-      status: done
-    next:
-      - goto: ""
-`)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	var completed []CompletionInfo
-	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
-
-	_, wtPath := newPRWorktree(t, "feat/live-proof")
-	commitFile(t, wtPath, "proof.txt", "proof")
-	runGit(t, wtPath, "push", "-u", "origin", "feat/live-proof")
-
-	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	tasks.Put(TaskInfo{
-		ID:        "t1",
-		Status:    "in-progress",
-		AgentMode: "headless",
-		ProjectID: "acme/widgets",
-		Branch:    "feat/live-proof",
-	})
-	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
-		t.Fatal(err)
-	}
-	if err := tasks.UpdateTaskStatus("t1", "human-required", missingLivePRProofReason); err != nil {
-		t.Fatal(err)
-	}
-
-	agentID := agents.LastID()
-	agents.SimulateComplete("t1")
-	if err := engine.AdvanceStep("t1", StepOutput{
-		StepID:  "implement",
-		AgentID: agentID,
-		Status:  "completed",
-		Output:  missingLivePRProofReason,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	ti, err := tasks.GetTask("t1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ti.Status != "ready-pr" {
-		t.Fatalf("status = %q, want ready-pr", ti.Status)
-	}
-	if ti.StatusReason != readyPRRecoveryReason {
-		t.Fatalf("status reason = %q, want %q", ti.StatusReason, readyPRRecoveryReason)
-	}
-	if ti.PRNumber != 0 {
-		t.Fatalf("pr number = %d, want 0", ti.PRNumber)
-	}
-	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted {
-		t.Fatalf("workflow = %+v, want completed", ti.Workflow)
-	}
-	if ti.Workflow.CurrentStep != "" {
-		t.Fatalf("current step = %q, want empty", ti.Workflow.CurrentStep)
-	}
-	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
-		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
-	}
-}
-
-func TestAdvanceStep_AlreadyFixedOnMainMarksDone(t *testing.T) {
-	store := newInlineTestStore(t, "pr-recovery", `
-id: pr-recovery
-name: PR Recovery
-trigger:
-  on: task.created
-steps:
-  - id: implement
-    name: Implement
-    type: run_agent
-    config:
-      role: implementation
-      mode: headless
-      prompt: "implement"
-    next:
-      - when:
-          field: task.status
-          operator: equals
-          value: human-required
-        goto: ""
-      - goto: verify
-  - id: verify
-    name: Verify
-    type: set_status
-    config:
-      status: done
-    next:
-      - goto: ""
-`)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false), ok: true})
-	var completed []CompletionInfo
-	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
-
-	tasks.Put(TaskInfo{
-		ID:           "t1",
-		Status:       "in-progress",
-		AgentMode:    "headless",
-		ProjectID:    "acme/widgets",
-		StatusReason: "",
-	})
-	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
-		t.Fatal(err)
-	}
-	if err := tasks.UpdateTaskStatus("t1", "human-required", alreadyFixedOnMainVerdict); err != nil {
-		t.Fatal(err)
-	}
-
-	agentID := agents.LastID()
-	agents.SimulateComplete("t1")
-	if err := engine.AdvanceStep("t1", StepOutput{
-		StepID:  "implement",
-		AgentID: agentID,
-		Status:  "completed",
-		Output:  alreadyFixedOnMainVerdict,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	ti, err := tasks.GetTask("t1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ti.Status != "done" {
-		t.Fatalf("status = %q, want done", ti.Status)
-	}
-	if ti.StatusReason != alreadyFixedOnMainDeclaredReason {
-		t.Fatalf("status reason = %q, want %q", ti.StatusReason, alreadyFixedOnMainDeclaredReason)
-	}
-	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
-		t.Fatalf("workflow = %+v, want completed terminal workflow", ti.Workflow)
-	}
-	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
-		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
-	}
-}
-
-// TestAdvanceStep_AlreadyFixedOnMainUndeclaredStaysHumanRequired pins the
-// defect this recovery was rebuilt for: prose alone, affirmative or negated,
-// must never close a task. The old scan closed on all three of these.
-func TestAdvanceStep_AlreadyFixedOnMainUndeclaredStaysHumanRequired(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		output string
+// TestManualVerificationBlockerRecovery covers the missing-live-PR-proof
+// recovery across both triggers (AdvanceStep and HandleStatusChange) and both
+// outcomes (no PR found → ready-pr; PR found → link and go straight to
+// in-review). Adding a new manual-verification-blocker case is one table
+// entry instead of a copy-pasted ~90-line test function.
+func TestManualVerificationBlockerRecovery(t *testing.T) {
+	cases := []struct {
+		name            string
+		viaStatusChange bool
+		prFound         bool
+		wantStatus      taskstatus.Status
+		wantReason      string
+		wantPR          int
 	}{
-		{name: "affirmative prose", output: alreadyFixedOnMainProse},
-		{name: "negated prose", output: "I checked whether this was already fixed on main; it is NOT. Ran out of context before committing, parking for a human."},
-		{name: "incidental main.go mention", output: "Already fixed the nil deref in main.go but could not push."},
-		{name: "verdict json quoted inside prose", output: `Per the contract I would emit {"decision": "already-fixed-on-main", "reason": "change already on base"} only if the work were landed. It is not, so I am NOT declaring that. No commits were made.`},
-		{name: "verdict fence quoted and disclaimed", output: quotedFenceDisclaimed},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			tasks, ti := runAlreadyFixedOnMainRecovery(t, tc.output)
-			if ti.Status != "human-required" {
-				t.Fatalf("status = %q, want human-required", ti.Status)
-			}
-			if ti.StatusReason != alreadyFixedOnMainProse {
-				t.Fatalf("status reason = %q, want the park reason preserved", ti.StatusReason)
-			}
-			_ = tasks
-		})
-	}
-}
-
-// TestAdvanceStep_AlreadyFixedOnMainResponseTextIsNotAChannel pins the channel
-// split: only the status reason declares. A response that is nothing but the
-// JSON object used to close a task whose reason refused to declare one.
-func TestAdvanceStep_AlreadyFixedOnMainResponseTextIsNotAChannel(t *testing.T) {
-	_, ti := runAlreadyFixedOnMainRecoveryWithReason(t,
-		alreadyFixedOnMainVerdict,
-		"I am NOT declaring a recovery verdict. I made no commits and a human must review this.")
-	if ti.Status != "human-required" {
-		t.Fatalf("status = %q, want human-required", ti.Status)
-	}
-}
-
-// TestAdvanceStep_AlreadyFixedOnMainLongDeclaredReasonIsBounded keeps an
-// agent-authored reason out of the task frontmatter at full length.
-func TestAdvanceStep_AlreadyFixedOnMainLongDeclaredReasonIsBounded(t *testing.T) {
-	long := strings.Repeat("x", 5000)
-	_, ti := runAlreadyFixedOnMainRecoveryWithReason(t, "",
-		`{"decision":"already-fixed-on-main","reason":"`+long+`"}`)
-	if ti.Status != "done" {
-		t.Fatalf("status = %q, want done", ti.Status)
-	}
-	if len(ti.StatusReason) > len(alreadyFixedOnMainRecoveryReason)+maxDeclaredReasonBytes+64 {
-		t.Fatalf("status reason is %d bytes, want the declared reason bounded", len(ti.StatusReason))
-	}
-}
-
-// TestAdvanceStep_AlreadyFixedOnMainUnreadableDeclarationRecordsReason covers
-// the run that tried to declare and produced something unparseable: it stays
-// parked, and the board says why rather than only the app log.
-func TestAdvanceStep_AlreadyFixedOnMainUnreadableDeclarationRecordsReason(t *testing.T) {
-	_, ti := runAlreadyFixedOnMainRecoveryWithReason(t, "", `{"decision":"close-it"}`)
-	if ti.Status != "human-required" {
-		t.Fatalf("status = %q, want human-required", ti.Status)
-	}
-	if ti.StatusReason != unreadableRecoveryVerdictReason {
-		t.Fatalf("status reason = %q, want %q", ti.StatusReason, unreadableRecoveryVerdictReason)
-	}
-}
-
-// runAlreadyFixedOnMainRecovery drives one implementation run to completion
-// with output and returns the task as recovery left it.
-func runAlreadyFixedOnMainRecovery(t *testing.T, output string) (*memTasks, TaskInfo) {
-	t.Helper()
-	return runAlreadyFixedOnMainRecoveryWithReason(t, output, alreadyFixedOnMainProse)
-}
-
-// runAlreadyFixedOnMainRecoveryWithReason drives one implementation run whose
-// response text is output and whose park reason is parkReason.
-func runAlreadyFixedOnMainRecoveryWithReason(t *testing.T, output, parkReason string) (*memTasks, TaskInfo) {
-	t.Helper()
-	store := newInlineTestStore(t, "pr-recovery", `
-id: pr-recovery
-name: PR Recovery
-trigger:
-  on: task.created
-steps:
-  - id: implement
-    name: Implement
-    type: run_agent
-    config:
-      role: implementation
-      mode: headless
-      prompt: "implement"
-    next:
-      - when:
-          field: task.status
-          operator: equals
-          value: human-required
-        goto: ""
-      - goto: verify
-  - id: verify
-    name: Verify
-    type: set_status
-    config:
-      status: done
-    next:
-      - goto: ""
-`)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false), ok: true})
-
-	tasks.Put(TaskInfo{
-		ID:        "t1",
-		Status:    "in-progress",
-		AgentMode: "headless",
-		ProjectID: "acme/widgets",
-	})
-	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
-		t.Fatal(err)
-	}
-	if err := tasks.UpdateTaskStatus("t1", "human-required", parkReason); err != nil {
-		t.Fatal(err)
+		{
+			name:       "AdvanceStep with no PR routes to ready-pr",
+			wantStatus: "ready-pr",
+			wantReason: readyPRRecoveryReason,
+		},
+		{
+			name:       "AdvanceStep with an existing PR links it and moves to in-review",
+			prFound:    true,
+			wantStatus: "in-review",
+			wantPR:     42,
+		},
+		{
+			name:            "HandleStatusChange with no PR routes to ready-pr",
+			viaStatusChange: true,
+			wantStatus:      "ready-pr",
+			wantReason:      readyPRRecoveryReason,
+		},
+		{
+			name:            "HandleStatusChange with an existing PR links it and moves to in-review",
+			viaStatusChange: true,
+			prFound:         true,
+			wantStatus:      "in-review",
+			wantPR:          42,
+		},
 	}
 
-	agentID := agents.LastID()
-	agents.SimulateComplete("t1")
-	if err := engine.AdvanceStep("t1", StepOutput{
-		StepID:  "implement",
-		AgentID: agentID,
-		Status:  "completed",
-		Output:  output,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	ti, err := tasks.GetTask("t1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return tasks, ti
-}
-
-func TestAdvanceStep_AlreadyFixedOnMainEmptyOutputStaysHumanRequired(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		output string
-	}{
-		{name: "empty", output: ""},
-		{name: "whitespace", output: " \n\t "},
-	} {
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newInlineTestStore(t, "pr-recovery", `
 id: pr-recovery
@@ -2969,7 +2694,232 @@ steps:
 			tasks := newMemTasks()
 			agents := newMockAgents()
 			engine := NewTestEngine(store, tasks, agents, discardLogger())
+			var completed []CompletionInfo
+			engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
+
+			_, wtPath := newPRWorktree(t, "feat/live-proof")
+			commitFile(t, wtPath, "proof.txt", "proof")
+			runGit(t, wtPath, "push", "-u", "origin", "feat/live-proof")
+
+			engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
+			if tc.prFound {
+				engine.SetPRFinder(&fakePRFinder{number: 42, found: true})
+			}
+			tasks.Put(TaskInfo{
+				ID:        "t1",
+				Status:    "in-progress",
+				AgentMode: "headless",
+				ProjectID: "acme/widgets",
+				Branch:    "feat/live-proof",
+			})
+			if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
+				t.Fatal(err)
+			}
+			if err := tasks.UpdateTaskStatus("t1", "human-required", missingLivePRProofReason); err != nil {
+				t.Fatal(err)
+			}
+
+			if tc.viaStatusChange {
+				engine.HandleStatusChange("t1", "human-required")
+			} else {
+				agentID := agents.LastID()
+				agents.SimulateComplete("t1")
+				if err := engine.AdvanceStep("t1", StepOutput{
+					StepID:  "implement",
+					AgentID: agentID,
+					Status:  "completed",
+					Output:  missingLivePRProofReason,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			ti, err := tasks.GetTask("t1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ti.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", ti.Status, tc.wantStatus)
+			}
+			if ti.StatusReason != tc.wantReason {
+				t.Fatalf("status reason = %q, want %q", ti.StatusReason, tc.wantReason)
+			}
+			if ti.PRNumber != tc.wantPR {
+				t.Fatalf("pr number = %d, want %d", ti.PRNumber, tc.wantPR)
+			}
+			if ti.Workflow == nil || ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
+				t.Fatalf("workflow = %+v, want completed terminal workflow", ti.Workflow)
+			}
+			if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
+				t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
+			}
+		})
+	}
+}
+
+// alreadyFixedOnMainCase is one declarative entry in the already-fixed-on-main
+// recovery scenario table: it sets up a task parked human-required with
+// parkReason, drives it back through the pr-recovery workflow either via a
+// completed run_agent output or a raw status-change re-probe, and asserts
+// where it lands. Adding a new already-fixed-on-main case is one table entry
+// instead of a copy-pasted ~90-line test function.
+type alreadyFixedOnMainCase struct {
+	name             string
+	parkReason       string // defaults to alreadyFixedOnMainProse
+	output           string // AdvanceStep's StepOutput.Output; ignored when viaStatusChange
+	viaStatusChange  bool   // trigger via HandleStatusChange instead of AdvanceStep
+	wantStatus       taskstatus.Status
+	wantReason       string // exact expected status_reason
+	wantReasonMaxLen int    // when >0, checked instead of wantReason (bounded-length reasons)
+	wantCompleted    bool
+}
+
+func TestAlreadyFixedOnMainRecovery(t *testing.T) {
+	long := strings.Repeat("x", 5000)
+	duplicateReason := "need human decision about product direction"
+	cases := []alreadyFixedOnMainCase{
+		{
+			name:          "declared verdict via AdvanceStep marks done",
+			parkReason:    alreadyFixedOnMainVerdict,
+			output:        alreadyFixedOnMainVerdict,
+			wantStatus:    "done",
+			wantReason:    alreadyFixedOnMainDeclaredReason,
+			wantCompleted: true,
+		},
+		{
+			name:       "affirmative prose undeclared stays human-required",
+			output:     alreadyFixedOnMainProse,
+			wantStatus: "human-required",
+			wantReason: alreadyFixedOnMainProse,
+		},
+		{
+			name:       "negated prose undeclared stays human-required",
+			output:     "I checked whether this was already fixed on main; it is NOT. Ran out of context before committing, parking for a human.",
+			wantStatus: "human-required",
+			wantReason: alreadyFixedOnMainProse,
+		},
+		{
+			name:       "incidental main.go mention undeclared stays human-required",
+			output:     "Already fixed the nil deref in main.go but could not push.",
+			wantStatus: "human-required",
+			wantReason: alreadyFixedOnMainProse,
+		},
+		{
+			name:       "verdict json quoted inside prose stays human-required",
+			output:     `Per the contract I would emit {"decision": "already-fixed-on-main", "reason": "change already on base"} only if the work were landed. It is not, so I am NOT declaring that. No commits were made.`,
+			wantStatus: "human-required",
+			wantReason: alreadyFixedOnMainProse,
+		},
+		{
+			name:       "verdict fence quoted and disclaimed stays human-required",
+			output:     quotedFenceDisclaimed,
+			wantStatus: "human-required",
+			wantReason: alreadyFixedOnMainProse,
+		},
+		{
+			// Pins the channel split: only the status reason declares. A
+			// response that is nothing but the JSON object used to close a
+			// task whose reason refused to declare one.
+			name:       "response text is not a declaration channel",
+			parkReason: "I am NOT declaring a recovery verdict. I made no commits and a human must review this.",
+			output:     alreadyFixedOnMainVerdict,
+			wantStatus: "human-required",
+			wantReason: "I am NOT declaring a recovery verdict. I made no commits and a human must review this.",
+		},
+		{
+			// Keeps an agent-authored reason out of the task frontmatter at
+			// full length; the declaration lives in the status reason set
+			// before recovery runs, not in this run's (empty) output.
+			name:             "long declared reason is bounded",
+			parkReason:       `{"decision":"already-fixed-on-main","reason":"` + long + `"}`,
+			output:           "",
+			wantStatus:       "done",
+			wantReasonMaxLen: len(alreadyFixedOnMainRecoveryReason) + maxDeclaredReasonBytes + 64,
+		},
+		{
+			// The run tried to declare and produced something unparseable:
+			// it stays parked, and the board says why rather than only the
+			// app log.
+			name:       "unreadable declaration records reason",
+			parkReason: `{"decision":"close-it"}`,
+			output:     "",
+			wantStatus: "human-required",
+			wantReason: unreadableRecoveryVerdictReason,
+		},
+		{
+			name:       "empty output stays human-required",
+			output:     "",
+			wantStatus: "human-required",
+			wantReason: alreadyFixedOnMainProse,
+		},
+		{
+			name:       "whitespace-only output stays human-required",
+			output:     " \n\t ",
+			wantStatus: "human-required",
+			wantReason: alreadyFixedOnMainProse,
+		},
+		{
+			name:            "declared verdict via HandleStatusChange marks done",
+			parkReason:      alreadyFixedOnMainVerdict,
+			viaStatusChange: true,
+			wantStatus:      "done",
+			wantReason:      alreadyFixedOnMainDeclaredReason,
+			wantCompleted:   true,
+		},
+		{
+			// An ordinary human-required park (not an already-fixed-on-main
+			// signal) must never be treated as a duplicate-close: the
+			// recovery requires the explicit duplicate signal, not just any
+			// echoed reason.
+			name:       "non-duplicate human-required reason requires duplicate signal",
+			parkReason: duplicateReason,
+			output:     duplicateReason,
+			wantStatus: "human-required",
+			wantReason: duplicateReason,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parkReason := tc.parkReason
+			if parkReason == "" {
+				parkReason = alreadyFixedOnMainProse
+			}
+
+			store := newInlineTestStore(t, "pr-recovery", `
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 			engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false), ok: true})
+			var completed []CompletionInfo
+			engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
 
 			tasks.Put(TaskInfo{
 				ID:        "t1",
@@ -2980,420 +2930,48 @@ steps:
 			if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
 				t.Fatal(err)
 			}
-			if err := tasks.UpdateTaskStatus("t1", "human-required", alreadyFixedOnMainProse); err != nil {
+			if err := tasks.UpdateTaskStatus("t1", "human-required", parkReason); err != nil {
 				t.Fatal(err)
 			}
 
-			agentID := agents.LastID()
-			agents.SimulateComplete("t1")
-			if err := engine.AdvanceStep("t1", StepOutput{
-				StepID:  "implement",
-				AgentID: agentID,
-				Status:  "completed",
-				Output:  tc.output,
-			}); err != nil {
-				t.Fatal(err)
+			if tc.viaStatusChange {
+				engine.HandleStatusChange("t1", "human-required")
+			} else {
+				agentID := agents.LastID()
+				agents.SimulateComplete("t1")
+				if err := engine.AdvanceStep("t1", StepOutput{
+					StepID:  "implement",
+					AgentID: agentID,
+					Status:  "completed",
+					Output:  tc.output,
+				}); err != nil {
+					t.Fatal(err)
+				}
 			}
 
 			ti, err := tasks.GetTask("t1")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if ti.Status != "human-required" {
-				t.Fatalf("status = %q, want human-required", ti.Status)
+			if ti.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", ti.Status, tc.wantStatus)
 			}
-			if ti.StatusReason != alreadyFixedOnMainProse {
-				t.Fatalf("status reason = %q, want the park reason preserved", ti.StatusReason)
+			if tc.wantReasonMaxLen > 0 {
+				if len(ti.StatusReason) > tc.wantReasonMaxLen {
+					t.Fatalf("status reason is %d bytes, want the declared reason bounded to %d", len(ti.StatusReason), tc.wantReasonMaxLen)
+				}
+			} else if ti.StatusReason != tc.wantReason {
+				t.Fatalf("status reason = %q, want %q", ti.StatusReason, tc.wantReason)
 			}
 			if ti.Workflow == nil || ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
 				t.Fatalf("workflow = %+v, want completed terminal workflow", ti.Workflow)
 			}
+			// Only the "marks done" cases originally asserted on the
+			// completion callback; the rest never registered on it.
+			if tc.wantCompleted && (len(completed) != 1 || completed[0].WorkflowID != "pr-recovery") {
+				t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
+			}
 		})
-	}
-}
-
-func TestHandleStatusChange_AlreadyFixedOnMainMarksDone(t *testing.T) {
-	store := newInlineTestStore(t, "pr-recovery", `
-id: pr-recovery
-name: PR Recovery
-trigger:
-  on: task.created
-steps:
-  - id: implement
-    name: Implement
-    type: run_agent
-    config:
-      role: implementation
-      mode: headless
-      prompt: "implement"
-    next:
-      - when:
-          field: task.status
-          operator: equals
-          value: human-required
-        goto: ""
-      - goto: verify
-  - id: verify
-    name: Verify
-    type: set_status
-    config:
-      status: done
-    next:
-      - goto: ""
-`)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false), ok: true})
-	var completed []CompletionInfo
-	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
-
-	tasks.Put(TaskInfo{
-		ID:        "t1",
-		Status:    "in-progress",
-		AgentMode: "headless",
-		ProjectID: "acme/widgets",
-	})
-	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
-		t.Fatal(err)
-	}
-	if err := tasks.UpdateTaskStatus("t1", "human-required", alreadyFixedOnMainVerdict); err != nil {
-		t.Fatal(err)
-	}
-
-	engine.HandleStatusChange("t1", "human-required")
-
-	ti, err := tasks.GetTask("t1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ti.Status != "done" {
-		t.Fatalf("status = %q, want done", ti.Status)
-	}
-	if ti.StatusReason != alreadyFixedOnMainDeclaredReason {
-		t.Fatalf("status reason = %q, want %q", ti.StatusReason, alreadyFixedOnMainDeclaredReason)
-	}
-	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
-		t.Fatalf("workflow = %+v, want completed terminal workflow", ti.Workflow)
-	}
-	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
-		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
-	}
-}
-
-func TestAdvanceStep_AlreadyFixedOnMainRequiresDuplicateSignal(t *testing.T) {
-	store := newInlineTestStore(t, "pr-recovery", `
-id: pr-recovery
-name: PR Recovery
-trigger:
-  on: task.created
-steps:
-  - id: implement
-    name: Implement
-    type: run_agent
-    config:
-      role: implementation
-      mode: headless
-      prompt: "implement"
-    next:
-      - when:
-          field: task.status
-          operator: equals
-          value: human-required
-        goto: ""
-      - goto: verify
-  - id: verify
-    name: Verify
-    type: set_status
-    config:
-      status: done
-    next:
-      - goto: ""
-`)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false), ok: true})
-
-	tasks.Put(TaskInfo{
-		ID:        "t1",
-		Status:    "in-progress",
-		AgentMode: "headless",
-		ProjectID: "acme/widgets",
-	})
-	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
-		t.Fatal(err)
-	}
-	reason := "need human decision about product direction"
-	if err := tasks.UpdateTaskStatus("t1", "human-required", reason); err != nil {
-		t.Fatal(err)
-	}
-
-	agentID := agents.LastID()
-	agents.SimulateComplete("t1")
-	if err := engine.AdvanceStep("t1", StepOutput{
-		StepID:  "implement",
-		AgentID: agentID,
-		Status:  "completed",
-		Output:  reason,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	ti, err := tasks.GetTask("t1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ti.Status != "human-required" {
-		t.Fatalf("status = %q, want human-required", ti.Status)
-	}
-	if ti.StatusReason != reason {
-		t.Fatalf("status reason = %q, want %q", ti.StatusReason, reason)
-	}
-	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
-		t.Fatalf("workflow = %+v, want completed terminal workflow", ti.Workflow)
-	}
-}
-
-func TestAdvanceStep_ManualVerificationBlockerLinksExistingPR(t *testing.T) {
-	store := newInlineTestStore(t, "pr-recovery", `
-id: pr-recovery
-name: PR Recovery
-trigger:
-  on: task.created
-steps:
-  - id: implement
-    name: Implement
-    type: run_agent
-    config:
-      role: implementation
-      mode: headless
-      prompt: "implement"
-    next:
-      - when:
-          field: task.status
-          operator: equals
-          value: human-required
-        goto: ""
-      - goto: verify
-  - id: verify
-    name: Verify
-    type: set_status
-    config:
-      status: done
-    next:
-      - goto: ""
-`)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	var completed []CompletionInfo
-	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
-
-	_, wtPath := newPRWorktree(t, "feat/live-proof")
-	commitFile(t, wtPath, "proof.txt", "proof")
-	runGit(t, wtPath, "push", "-u", "origin", "feat/live-proof")
-
-	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetPRFinder(&fakePRFinder{number: 42, found: true})
-	tasks.Put(TaskInfo{
-		ID:        "t1",
-		Status:    "in-progress",
-		AgentMode: "headless",
-		ProjectID: "acme/widgets",
-		Branch:    "feat/live-proof",
-	})
-	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
-		t.Fatal(err)
-	}
-	if err := tasks.UpdateTaskStatus("t1", "human-required", missingLivePRProofReason); err != nil {
-		t.Fatal(err)
-	}
-
-	agentID := agents.LastID()
-	agents.SimulateComplete("t1")
-	if err := engine.AdvanceStep("t1", StepOutput{
-		StepID:  "implement",
-		AgentID: agentID,
-		Status:  "completed",
-		Output:  missingLivePRProofReason,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	ti, err := tasks.GetTask("t1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ti.Status != "in-review" {
-		t.Fatalf("status = %q, want in-review", ti.Status)
-	}
-	if ti.StatusReason != "" {
-		t.Fatalf("status reason = %q, want empty", ti.StatusReason)
-	}
-	if ti.PRNumber != 42 {
-		t.Fatalf("pr number = %d, want 42", ti.PRNumber)
-	}
-	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted {
-		t.Fatalf("workflow = %+v, want completed", ti.Workflow)
-	}
-	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
-		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
-	}
-}
-
-func TestHandleStatusChange_ManualVerificationBlockerRoutesToReadyPR(t *testing.T) {
-	store := newInlineTestStore(t, "pr-recovery", `
-id: pr-recovery
-name: PR Recovery
-trigger:
-  on: task.created
-steps:
-  - id: implement
-    name: Implement
-    type: run_agent
-    config:
-      role: implementation
-      mode: headless
-      prompt: "implement"
-    next:
-      - when:
-          field: task.status
-          operator: equals
-          value: human-required
-        goto: ""
-      - goto: verify
-  - id: verify
-    name: Verify
-    type: set_status
-    config:
-      status: done
-    next:
-      - goto: ""
-`)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	var completed []CompletionInfo
-	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
-
-	_, wtPath := newPRWorktree(t, "feat/live-proof")
-	commitFile(t, wtPath, "proof.txt", "proof")
-	runGit(t, wtPath, "push", "-u", "origin", "feat/live-proof")
-
-	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	tasks.Put(TaskInfo{
-		ID:        "t1",
-		Status:    "in-progress",
-		AgentMode: "headless",
-		ProjectID: "acme/widgets",
-		Branch:    "feat/live-proof",
-	})
-	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
-		t.Fatal(err)
-	}
-	if err := tasks.UpdateTaskStatus("t1", "human-required", missingLivePRProofReason); err != nil {
-		t.Fatal(err)
-	}
-
-	engine.HandleStatusChange("t1", "human-required")
-
-	ti, err := tasks.GetTask("t1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ti.Status != "ready-pr" {
-		t.Fatalf("status = %q, want ready-pr", ti.Status)
-	}
-	if ti.StatusReason != readyPRRecoveryReason {
-		t.Fatalf("status reason = %q, want %q", ti.StatusReason, readyPRRecoveryReason)
-	}
-	if ti.PRNumber != 0 {
-		t.Fatalf("pr number = %d, want 0", ti.PRNumber)
-	}
-	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted {
-		t.Fatalf("workflow = %+v, want completed", ti.Workflow)
-	}
-	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
-		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
-	}
-}
-
-func TestHandleStatusChange_ManualVerificationBlockerLinksExistingPR(t *testing.T) {
-	store := newInlineTestStore(t, "pr-recovery", `
-id: pr-recovery
-name: PR Recovery
-trigger:
-  on: task.created
-steps:
-  - id: implement
-    name: Implement
-    type: run_agent
-    config:
-      role: implementation
-      mode: headless
-      prompt: "implement"
-    next:
-      - when:
-          field: task.status
-          operator: equals
-          value: human-required
-        goto: ""
-      - goto: verify
-  - id: verify
-    name: Verify
-    type: set_status
-    config:
-      status: done
-    next:
-      - goto: ""
-`)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	var completed []CompletionInfo
-	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
-
-	_, wtPath := newPRWorktree(t, "feat/live-proof")
-	commitFile(t, wtPath, "proof.txt", "proof")
-	runGit(t, wtPath, "push", "-u", "origin", "feat/live-proof")
-
-	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetPRFinder(&fakePRFinder{number: 42, found: true})
-	tasks.Put(TaskInfo{
-		ID:        "t1",
-		Status:    "in-progress",
-		AgentMode: "headless",
-		ProjectID: "acme/widgets",
-		Branch:    "feat/live-proof",
-	})
-	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
-		t.Fatal(err)
-	}
-	if err := tasks.UpdateTaskStatus("t1", "human-required", missingLivePRProofReason); err != nil {
-		t.Fatal(err)
-	}
-
-	engine.HandleStatusChange("t1", "human-required")
-
-	ti, err := tasks.GetTask("t1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ti.Status != "in-review" {
-		t.Fatalf("status = %q, want in-review", ti.Status)
-	}
-	if ti.StatusReason != "" {
-		t.Fatalf("status reason = %q, want empty", ti.StatusReason)
-	}
-	if ti.PRNumber != 42 {
-		t.Fatalf("pr number = %d, want 42", ti.PRNumber)
-	}
-	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted {
-		t.Fatalf("workflow = %+v, want completed", ti.Workflow)
-	}
-	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
-		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
 	}
 }
 
@@ -6868,11 +6446,12 @@ func TestShellStep_ContextCancelKillsCommand(t *testing.T) {
 	parentCtx, cancel := context.WithCancel(context.Background())
 	engine.SetContext(parentCtx)
 
+	marker := filepath.Join(t.TempDir(), "started")
 	step := &Step{
 		ID:   "long-sleep",
 		Type: StepShell,
 		Config: StepConfig{
-			Command: "sleep 30",
+			Command: fmt.Sprintf("touch %q && sleep 30", marker),
 		},
 	}
 	ctx := TemplateContext{
@@ -6881,10 +6460,15 @@ func TestShellStep_ContextCancelKillsCommand(t *testing.T) {
 		Vars: make(map[string]string),
 	}
 
-	// Cancel after 200ms; the sleep would otherwise run 30 seconds.
+	// Cancel once the subprocess has actually started (touched its marker);
+	// the sleep would otherwise run 30 seconds.
 	go func() {
-		time.Sleep(200 * time.Millisecond)
-		cancel()
+		if pollUntil(5*time.Second, 10*time.Millisecond, func() bool {
+			_, err := os.Stat(marker)
+			return err == nil
+		}) {
+			cancel()
+		}
 	}()
 
 	start := time.Now()
@@ -8711,13 +8295,11 @@ func autoApproveReviewStep() *Step {
 
 func waitForTaskStatus(t *testing.T, tasks *memTasks, id, want string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	if pollUntil(2*time.Second, 10*time.Millisecond, func() bool {
 		ti, err := tasks.GetTask(id)
-		if err == nil && ti.Status == taskstatus.Status(want) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+		return err == nil && ti.Status == taskstatus.Status(want)
+	}) {
+		return
 	}
 	ti, _ := tasks.GetTask(id)
 	t.Fatalf("timed out waiting for status %q, got %q", want, ti.Status)
@@ -8725,8 +8307,7 @@ func waitForTaskStatus(t *testing.T, tasks *memTasks, id, want string) {
 
 func assertRemainsPlanReviewWaiting(t *testing.T, tasks *memTasks, id string, window time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(window)
-	for time.Now().Before(deadline) {
+	check := func() bool {
 		ti, err := tasks.GetTask(id)
 		if err != nil {
 			t.Fatal(err)
@@ -8734,8 +8315,9 @@ func assertRemainsPlanReviewWaiting(t *testing.T, tasks *memTasks, id string, wi
 		if ti.Status != "plan-review" || ti.Workflow == nil || ti.Workflow.State != ExecWaiting {
 			t.Fatalf("task left plan-review wait state: status=%q workflow=%+v", ti.Status, ti.Workflow)
 		}
-		time.Sleep(10 * time.Millisecond)
+		return false // never satisfied: keep polling for the full window
 	}
+	pollUntil(window, 10*time.Millisecond, check)
 }
 
 func TestPlanReuse_ApproveRepairsMissedWaitForStatus(t *testing.T) {
@@ -11295,9 +10877,12 @@ func TestRecordFinalCommitState_ContextCancelDoesNotHang(t *testing.T) {
 	})
 	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
+	marker := filepath.Join(t.TempDir(), "rev-parse-started")
+	t.Setenv("WORKFLOW_TEST_MARKER", marker)
 	wtDir := makeGitRepo(t, true /* withExtraCommit */)
 	withFakeGit(t, `#!/bin/sh
 if [ "$1" = "rev-parse" ] && [ "$2" = "--verify" ] && [ "$3" = "HEAD^{commit}" ]; then
+  touch "$WORKFLOW_TEST_MARKER"
   sleep 30
 fi
 exec "{{REAL_GIT}}" "$@"
@@ -11306,8 +10891,12 @@ exec "{{REAL_GIT}}" "$@"
 	parentCtx, cancel := context.WithCancel(context.Background())
 	engine.SetContext(parentCtx)
 	go func() {
-		time.Sleep(200 * time.Millisecond)
-		cancel()
+		if pollUntil(5*time.Second, 10*time.Millisecond, func() bool {
+			_, err := os.Stat(marker)
+			return err == nil
+		}) {
+			cancel()
+		}
 	}()
 
 	wfExec := &Execution{StepHistory: []StepRecord{{StepID: "implement", Status: "completed", AgentID: "a1"}}}

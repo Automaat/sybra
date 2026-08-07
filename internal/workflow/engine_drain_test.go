@@ -40,6 +40,20 @@ func TestExecClassifyTask_BackoffAbandonsOnDrain(t *testing.T) {
 	classifyTaskRetryBackoffs = []time.Duration{time.Hour, time.Hour, time.Hour}
 	t.Cleanup(func() { classifyTaskRetryBackoffs = restore })
 
+	// Signal the moment the first attempt fails and enters the backoff wait,
+	// so the test can begin draining exactly then instead of guessing with a
+	// fixed sleep.
+	enteredBackoff := make(chan struct{}, 1)
+	restoreWait := classifyTaskWait
+	classifyTaskWait = func(ctx context.Context, d time.Duration) {
+		select {
+		case enteredBackoff <- struct{}{}:
+		default:
+		}
+		restoreWait(ctx, d)
+	}
+	t.Cleanup(func() { classifyTaskWait = restoreWait })
+
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "new"})
 	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
@@ -58,7 +72,11 @@ func TestExecClassifyTask_BackoffAbandonsOnDrain(t *testing.T) {
 	}()
 
 	// Let the first attempt fail and enter the backoff, then begin draining.
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-enteredBackoff:
+	case <-time.After(10 * time.Second):
+		t.Fatal("execClassifyTask never entered the retry backoff")
+	}
 	beginDrain()
 
 	select {

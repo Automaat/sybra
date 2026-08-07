@@ -654,12 +654,11 @@ func TestExecVerifyChecks_BackpressureParksWhilePeerVerifyInFlight(t *testing.T)
 
 	waitForFile := func(path string) {
 		t.Helper()
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			if _, err := os.Stat(path); err == nil {
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
+		if pollUntil(2*time.Second, 10*time.Millisecond, func() bool {
+			_, err := os.Stat(path)
+			return err == nil
+		}) {
+			return
 		}
 		t.Fatalf("timed out waiting for %s", path)
 	}
