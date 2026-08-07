@@ -31,7 +31,7 @@ func NoopEmitter() EventEmitter { return noopEmitter{} }
 // StatusChangeHook is invoked synchronously on every status transition
 // that happens through Manager.Update. Empty `from` means previous state
 // could not be read.
-type StatusChangeHook func(taskID, from, to string)
+type StatusChangeHook func(taskID, from, to string, snapshot Task)
 
 // DeleteHook is invoked after a task is successfully deleted.
 type DeleteHook func(taskID string)
@@ -136,7 +136,7 @@ func (m *Manager) OnExternalUpdate(path string) {
 	m.recordFiredStatus(id, newStatus)
 	unlock()
 
-	m.onStatusHook(id, prev, newStatus)
+	m.onStatusHook(id, prev, newStatus, t)
 }
 
 func (m *Manager) recordFiredStatus(id, status string) {
@@ -198,6 +198,14 @@ func (m *Manager) Create(title, body, mode string) (Task, error) {
 // CreateFull persists a new task with initial field overrides applied atomically
 // before the first emit, ensuring file-watchers see a complete task from the start.
 func (m *Manager) CreateFull(title, body, mode string, init Update) (Task, error) {
+	if err := validateTypedAutonomyEvidence(init); err != nil {
+		return Task{}, fmt.Errorf("task: create-full: %w", err)
+	}
+	if init.Status != nil {
+		if err := validateHumanRequiredTransition(StatusNew, *init.Status, init); err != nil {
+			return Task{}, fmt.Errorf("task: create-full: %w", err)
+		}
+	}
 	t, err := m.store.CreateFull(title, body, mode, init)
 	if err != nil {
 		return t, err
@@ -221,6 +229,9 @@ func (m *Manager) CreateFull(title, body, mode string, init Update) (Task, error
 func (m *Manager) CreateWithStatus(title, body, mode string, status Status, extra Update) (Task, error) {
 	if extra.Status != nil {
 		return Task{}, fmt.Errorf("task: create-with-status: extra.status must be nil; pass status instead")
+	}
+	if err := validateHumanRequiredTransition(StatusNew, status, extra); err != nil {
+		return Task{}, fmt.Errorf("task: create-with-status: %w", err)
 	}
 	extra.Status = &status
 	return m.CreateFull(title, body, mode, extra)
@@ -267,7 +278,7 @@ func (m *Manager) Put(t Task) (Task, bool, error) {
 		m.emitter.Emit(events.TaskCreated, saved.FilePath)
 	}
 	if fireHook {
-		m.onStatusHook(saved.ID, prevStatus, newStatus)
+		m.onStatusHook(saved.ID, prevStatus, newStatus, saved)
 	}
 	return saved, !existed, nil
 }
@@ -297,7 +308,7 @@ func (m *Manager) PutFn(id string, fn func(cur Task) (Task, error)) (Task, bool,
 	metrics.TaskUpdated()
 	m.emitter.Emit(events.TaskUpdated, saved.FilePath)
 	if fireHook {
-		m.onStatusHook(saved.ID, prevStatus, newStatus)
+		m.onStatusHook(saved.ID, prevStatus, newStatus, saved)
 	}
 	return saved, false, nil
 }
@@ -331,6 +342,17 @@ func (m *Manager) UpdateFn(id string, fn func(cur Task) (Update, error)) (Task, 
 		unlock()
 		return cur, err
 	}
+	if u.Status != nil {
+		if err := validateHumanRequiredTransition(cur.Status, *u.Status, u); err != nil {
+			unlock()
+			return cur, fmt.Errorf("task: update: %w", err)
+		}
+	} else if cur.Status == StatusHumanRequired && u.AutonomyOutcome != nil {
+		if err := validateHumanRequiredTransition(cur.Status, cur.Status, u); err != nil {
+			unlock()
+			return cur, fmt.Errorf("task: update: %w", err)
+		}
+	}
 
 	t, prev, err := m.store.UpdateWithPrev(id, u)
 	if err != nil {
@@ -357,7 +379,7 @@ func (m *Manager) UpdateFn(id string, fn func(cur Task) (Update, error)) (Task, 
 	unlock()
 
 	if fireHook {
-		m.onStatusHook(id, prevStatus, newStat)
+		m.onStatusHook(id, prevStatus, newStat, t)
 	}
 	metrics.TaskUpdated()
 	m.emitter.Emit(events.TaskUpdated, t.FilePath)
@@ -371,7 +393,26 @@ func (m *Manager) UpdateMap(id string, raw map[string]any) (Task, error) {
 	if err != nil {
 		return Task{}, err
 	}
-	return m.Update(id, u)
+	// UpdateMap is the raw operator boundary used by CLI/Wails callers. Attach
+	// explicit operator evidence here so a direct status request cannot create
+	// an untyped human-required record even when the caller only knows the
+	// legacy status/status_reason vocabulary.
+	if u.Status != nil && *u.Status == StatusHumanRequired && u.Escalation == nil {
+		message := "operator moved task to human-required"
+		if u.StatusReason != nil && strings.TrimSpace(*u.StatusReason) != "" {
+			message = *u.StatusReason
+		}
+		u.Escalation = OperatorDecisionEvidence("operator.raw_status_change", message)
+		u.AutonomyOutcome = HumanRequiredOutcome()
+	}
+	return m.UpdateFn(id, func(cur Task) (Update, error) {
+		if u.Status != nil {
+			if err := validateHumanRequiredTransition(cur.Status, *u.Status, u); err != nil {
+				return Update{}, fmt.Errorf("task: update-map: %w", err)
+			}
+		}
+		return u, nil
+	})
 }
 
 // AppendBody appends markdown to a task body under the per-task mutation lock.
@@ -519,7 +560,7 @@ func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) 
 		m.emitter.Emit(events.TaskUpdated, t.FilePath)
 	}
 	if fireHook {
-		m.onStatusHook(taskID, prevStatus, newStatus)
+		m.onStatusHook(taskID, prevStatus, newStatus, t)
 	}
 	return nil
 }

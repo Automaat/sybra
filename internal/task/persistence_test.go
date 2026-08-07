@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -256,6 +257,16 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.RefIssue = "owner/repo#999"
 	case "StatusReason":
 		task.StatusReason = "testing"
+	case "Escalation":
+		task.Escalation = autonomy.EscalationReason{
+			Code:       "operator.decision",
+			Owner:      autonomy.FailureOwnerOperatorDecision,
+			Provenance: autonomy.ProvenanceOperator,
+			ObservedAt: now,
+			Message:    "choose an option",
+		}
+	case "AutonomyOutcome":
+		task.AutonomyOutcome = autonomy.OutcomeHumanRequired
 	case "Blocker":
 		task.Blocker = blocker.State{
 			Kind:       blocker.KindWorktreeRepair,

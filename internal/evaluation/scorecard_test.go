@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 func TestCompute(t *testing.T) {
@@ -1827,5 +1828,28 @@ func TestReportNotesOmitsSkillParityNoteWhenAllConformanceKnown(t *testing.T) {
 func TestIsAuthorRole_IncludesTestFix(t *testing.T) {
 	if !isAuthorRole("test-fix") {
 		t.Error("isAuthorRole(\"test-fix\") = false, want true")
+	}
+}
+
+func TestComputePersistsTypedAutonomyCodes(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC)
+	events := []audit.Event{{
+		Timestamp: now,
+		Type:      audit.EventTaskStatusChanged,
+		TaskID:    "task-1",
+		Data: map[string]any{
+			"from":                string(taskstatus.InProgress),
+			"to":                  string(taskstatus.Blocked),
+			"autonomy_outcome":    "quarantined",
+			"failure_owner":       "machine",
+			"escalation_code":     "runenv.worktree_unwritable",
+			"evidence_provenance": "filesystem",
+		},
+	}}
+	sc := Compute(nil, events, now.Add(-time.Hour), now.Add(time.Hour))
+	if sc.AutonomyOutcomes["quarantined"] != 1 || sc.FailureOwners["machine"] != 1 ||
+		sc.EscalationCodes["runenv.worktree_unwritable"] != 1 {
+		t.Fatalf("typed autonomy counts = outcomes:%v owners:%v codes:%v", sc.AutonomyOutcomes, sc.FailureOwners, sc.EscalationCodes)
 	}
 }

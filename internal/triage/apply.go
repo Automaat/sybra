@@ -67,6 +67,8 @@ func Apply(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project
 
 // ApplyWithOptions writes the classifier verdict to the task with explicit
 // deterministic routing options supplied by the caller.
+//
+//nolint:funlen // Triage classification and its single atomic transition are reviewed as one policy unit.
 func ApplyWithOptions(mgr *task.Manager, t task.Task, v Verdict, projects []project.Project, opts ApplyOptions) (task.Task, error) {
 	updates := make(map[string]any, 8)
 
@@ -181,11 +183,33 @@ func ApplyWithOptions(mgr *task.Manager, t task.Task, v Verdict, projects []proj
 		updates["status_reason"] = umbrellaNormalTypeStatusReason
 	}
 
-	updated, err := mgr.UpdateMap(t.ID, updates)
+	statusValue, ok := updates["status"].(string)
+	if !ok {
+		return task.Task{}, fmt.Errorf("update task: triage status is missing or invalid")
+	}
+	delete(updates, "status")
+	extra, err := task.UpdateFromMap(updates)
 	if err != nil {
 		return task.Task{}, fmt.Errorf("update task: %w", err)
 	}
-	return updated, nil
+	validatedStatus, err := task.ValidateStatus(statusValue)
+	if err != nil {
+		return task.Task{}, fmt.Errorf("update task: %w", err)
+	}
+	if validatedStatus == task.StatusHumanRequired {
+		extra.Escalation = task.OperatorDecisionRequired("triage.umbrella_expansion_decision", umbrellaNormalTypeStatusReason)
+		extra.AutonomyOutcome = task.HumanRequiredOutcome()
+	}
+	result, err := mgr.Apply(task.TransitionIntent{
+		TaskID:   t.ID,
+		ToStatus: validatedStatus,
+		Actor:    "triage.apply",
+		Extra:    extra,
+	})
+	if err != nil {
+		return task.Task{}, fmt.Errorf("update task: %w", err)
+	}
+	return result.Task, nil
 }
 
 func isPRFixTask(t task.Task) bool {

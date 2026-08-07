@@ -898,16 +898,20 @@ func recordExpandFailure(tasks *task.Manager, umb github.Issue, tracker existing
 		})
 		newTags = append(newTags, ExpandFailTag(count))
 		toStatus := cur.Status
+		extra := task.Update{
+			Tags:         task.Ptr(newTags),
+			StatusReason: task.Ptr(formatExpandFailureReason(count, cause)),
+		}
 		if count >= ExpandFailThreshold {
-			toStatus = task.StatusHumanRequired
+			toStatus = task.StatusBlocked
+			reason := formatExpandFailureReason(count, cause)
+			extra.Escalation = task.MachineFailure("umbrella.expansion_exhausted", reason)
+			extra.AutonomyOutcome = task.QuarantinedOutcome()
 		}
 		return task.TransitionIntent{
 			ToStatus: toStatus,
 			Actor:    "umbrella.expand.record-failure",
-			Extra: task.Update{
-				Tags:         task.Ptr(newTags),
-				StatusReason: task.Ptr(formatExpandFailureReason(count, cause)),
-			},
+			Extra:    extra,
 		}, nil
 	})
 	if err != nil {

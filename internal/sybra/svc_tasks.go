@@ -932,6 +932,8 @@ func (s *TaskService) startCreatedWorkflow(t task.Task) {
 // Moving a task to "in-progress" when its workflow is terminal (completed or
 // failed) and no agent is running restarts the workflow — allowing the user to
 // retry implementation after a human-required escalation.
+//
+//nolint:funlen // Field decoding and one atomic transition are intentionally audited together.
 func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, error) {
 	cur, _ := s.tasks.Get(id)
 	decisionReason := ""
@@ -998,7 +1000,39 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 			}
 		}
 	}
-	t, err := s.tasks.UpdateMap(id, updates)
+	var t task.Task
+	var err error
+	if statusText, hasStatus := updates["status"].(string); hasStatus {
+		localUpdates := make(map[string]any, len(updates)-1)
+		for key, value := range updates {
+			if key != "status" {
+				localUpdates[key] = value
+			}
+		}
+		extra, parseErr := task.UpdateFromMap(localUpdates)
+		if parseErr != nil {
+			return t, parseErr
+		}
+		status, statusErr := task.ValidateStatus(statusText)
+		if statusErr != nil {
+			return t, statusErr
+		}
+		if status == task.StatusHumanRequired {
+			display := decisionReason
+			if strings.TrimSpace(display) == "" {
+				display = "operator moved task to human-required"
+			}
+			extra.Escalation = task.OperatorDecisionEvidence("operator.manual_status_change", display)
+			extra.AutonomyOutcome = task.HumanRequiredOutcome()
+		}
+		result, applyErr := s.tasks.Apply(task.TransitionIntent{
+			TaskID: id, ToStatus: status, Actor: "svc.tasks.update",
+			Extra: extra, OperatorOverride: true,
+		})
+		t, err = result.Task, applyErr
+	} else {
+		t, err = s.tasks.UpdateMap(id, updates)
+	}
 	if err != nil {
 		return t, translateTaskLockTimeout(err)
 	}
@@ -1189,6 +1223,7 @@ func (s *TaskService) dispatchFromHumanRequiredAllowingAgent(id, target, reason,
 	return result, nil
 }
 
+//nolint:funlen // Dispatch preconditions and the resulting atomic transition must stay contiguous.
 func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, reason, exceptAgentID string) (task.Task, error) {
 	cur, err := s.tasks.Get(id)
 	if err != nil {
@@ -1242,14 +1277,18 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 			cur.Workflow.WorkflowID, cur.Workflow.State))
 	}
 
-	updates := map[string]any{
-		"status":        target,
-		"status_reason": reason,
-	}
+	extra := task.Update{StatusReason: task.Ptr(reason)}
 	if spec.clearWorkflow {
-		updates["workflow"] = (*workflow.Execution)(nil)
+		extra.Workflow = task.Ptr[*workflow.Execution](nil)
 	}
-	if _, err := s.tasks.UpdateMap(id, updates); err != nil {
+	if _, err := s.tasks.Apply(task.TransitionIntent{
+		TaskID:           id,
+		ToStatus:         task.Status(target),
+		Actor:            "svc.tasks.dispatch-human-required",
+		ExpectedStatus:   task.Ptr(task.StatusHumanRequired),
+		Extra:            extra,
+		OperatorOverride: true,
+	}); err != nil {
 		return task.Task{}, translateTaskLockTimeout(err)
 	}
 
@@ -1274,17 +1313,22 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 			} else {
 				s.logger.Error("task.dispatch.failed", "task_id", id, "target", target, "err", failure)
 				revertReason := fmt.Sprintf("%s (dispatch to %s failed: %s)", reason, target, failure)
-				if _, revertErr := s.tasks.UpdateMap(id, map[string]any{
-					"status":        string(task.StatusHumanRequired),
-					"status_reason": revertReason,
+				if _, revertErr := s.tasks.Apply(task.TransitionIntent{
+					TaskID: id, ToStatus: task.StatusBlocked, Actor: "svc.tasks.dispatch-failure",
+					Extra: task.Update{
+						StatusReason:    task.Ptr(revertReason),
+						Escalation:      task.MachineFailure("dispatch.workflow_start_failed", revertReason),
+						AutonomyOutcome: task.QuarantinedOutcome(),
+					},
+					OperatorOverride: true,
 				}); revertErr != nil {
 					s.logger.Error("task.dispatch.revert-failed", "task_id", id, "target", target, "err", revertErr)
 					s.logDispatchAudit(id, target, string(cur.Status), reason, "revert-failed")
-					return task.Task{}, translateTaskLockTimeout(fmt.Errorf("dispatch to %s failed (%s) and revert to human-required also failed: %w", target, failure, revertErr))
+					return task.Task{}, translateTaskLockTimeout(fmt.Errorf("dispatch to %s failed (%s) and quarantine also failed: %w", target, failure, revertErr))
 				}
-				// The bounce back to human-required is the event an operator most
-				// needs a durable record of — log it, not just the success path.
-				s.logDispatchAudit(id, target, string(cur.Status), reason, "reverted")
+				// A control-plane dispatch failure is machine-owned. Quarantine it
+				// instead of manufacturing another request for human judgment.
+				s.logDispatchAudit(id, target, string(cur.Status), reason, "quarantined")
 				return task.Task{}, conflictError(fmt.Sprintf("dispatch to %q failed: %s", target, failure))
 			}
 		}

@@ -5,6 +5,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/dispatchorder"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/taskstatus"
@@ -128,7 +129,8 @@ func (e *Engine) escalateMissingStep(taskID string, wf *Execution) {
 		" planning to re-plan against the current workflow."
 	failed := *wf
 	failed.State = ExecFailed
-	if err := e.tasks.SetStatusAndWorkflow(taskID, string(taskstatus.HumanRequired), reason, &failed); err != nil {
+	escalation := autonomy.NewEscalation("workflow.step_removed", autonomy.FailureOwnerOperatorDecision, autonomy.ProvenanceControlPlane, reason)
+	if err := e.tasks.SetEscalationAndWorkflow(taskID, string(taskstatus.HumanRequired), reason, escalation, autonomy.OutcomeHumanRequired, &failed); err != nil {
 		e.logger.Warn("workflow.resume-stalled.step-missing.escalate", "task_id", taskID, "err", err)
 		return
 	}

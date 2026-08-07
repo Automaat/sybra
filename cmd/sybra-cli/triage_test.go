@@ -82,7 +82,12 @@ func TestCmdTriageClassifyRefusesNonNewTask(t *testing.T) {
 	}
 	humanRequired := task.StatusHumanRequired
 	tags := []string{promptlab.ProposalTag, "requires-human"}
-	created, err = mgr.Update(created.ID, task.Update{Status: &humanRequired, Tags: &tags})
+	created, err = mgr.Update(created.ID, task.Update{
+		Status:          &humanRequired,
+		Tags:            &tags,
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+	})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}

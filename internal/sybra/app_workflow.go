@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/experience"
@@ -175,6 +176,11 @@ func (a *taskAdapter) UpdateTaskStatus(id string, status taskstatus.Status, reas
 	if reason != "" {
 		extra.StatusReason = &reason
 	}
+	if st == task.StatusHumanRequired {
+		st = task.StatusBlocked
+		extra.Escalation = task.MachineFailure("workflow.untyped_escalation", reason)
+		extra.AutonomyOutcome = task.QuarantinedOutcome()
+	}
 	_, err = a.tasks.Apply(task.TransitionIntent{
 		TaskID:   id,
 		ToStatus: st,
@@ -236,13 +242,19 @@ func (a *taskAdapter) UpdateTaskBlocker(id string, status taskstatus.Status, rea
 	if reason != "" {
 		reasonPtr = &reason
 	}
+	escalation, outcome := typedBlockerEscalation(st, state, reason)
+	if st == task.StatusHumanRequired && !blocker.AllowsHumanRequired(state.Kind) {
+		st = task.StatusBlocked
+	}
 	_, err = a.tasks.Apply(task.TransitionIntent{
 		TaskID:   id,
 		ToStatus: st,
 		Actor:    "workflow.engine.update_blocker",
 		Extra: task.Update{
-			Blocker:      &state,
-			StatusReason: reasonPtr,
+			Blocker:         &state,
+			StatusReason:    reasonPtr,
+			Escalation:      escalation,
+			AutonomyOutcome: outcome,
 		},
 	})
 	return err
@@ -380,10 +392,38 @@ func (a *taskAdapter) SetStatusAndWorkflow(id, status, reason string, wf *workfl
 	if reason != "" {
 		extra.StatusReason = &reason
 	}
+	if st == task.StatusHumanRequired {
+		st = task.StatusBlocked
+		extra.Escalation = task.MachineFailure("workflow.untyped_escalation", reason)
+		extra.AutonomyOutcome = task.QuarantinedOutcome()
+	}
 	_, err = a.tasks.Apply(task.TransitionIntent{
 		TaskID:   id,
 		ToStatus: st,
 		Actor:    "workflow.engine.set_status_and_workflow",
+		Extra:    extra,
+	})
+	return err
+}
+
+func (a *taskAdapter) SetEscalationAndWorkflow(id, status, reason string, escalation autonomy.EscalationReason, outcome autonomy.Outcome, wf *workflow.Execution) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	reason = a.normalizeHumanRequiredReason(id, st, reason)
+	extra := task.Update{
+		Workflow:        &wf,
+		Escalation:      &escalation,
+		AutonomyOutcome: &outcome,
+	}
+	if reason != "" {
+		extra.StatusReason = &reason
+	}
+	_, err = a.tasks.Apply(task.TransitionIntent{
+		TaskID:   id,
+		ToStatus: st,
+		Actor:    "workflow.engine.set_escalation_and_workflow",
 		Extra:    extra,
 	})
 	return err
@@ -404,17 +444,45 @@ func (a *taskAdapter) SetBlockerAndWorkflow(id, status, reason string, state blo
 	if reason != "" {
 		reasonPtr = &reason
 	}
+	escalation, outcome := typedBlockerEscalation(st, state, reason)
+	if st == task.StatusHumanRequired && !blocker.AllowsHumanRequired(state.Kind) {
+		st = task.StatusBlocked
+	}
 	_, err = a.tasks.Apply(task.TransitionIntent{
 		TaskID:   id,
 		ToStatus: st,
 		Actor:    "workflow.engine.set_blocker_and_workflow",
 		Extra: task.Update{
-			Blocker:      &state,
-			StatusReason: reasonPtr,
-			Workflow:     &wf,
+			Blocker:         &state,
+			StatusReason:    reasonPtr,
+			Workflow:        &wf,
+			Escalation:      escalation,
+			AutonomyOutcome: outcome,
 		},
 	})
 	return err
+}
+
+func typedBlockerEscalation(status task.Status, state blocker.State, reason string) (*autonomy.EscalationReason, *autonomy.Outcome) {
+	if status != task.StatusHumanRequired {
+		return nil, nil
+	}
+	owner := blocker.FailureOwner(state.Kind)
+	if owner == autonomy.FailureOwnerUnknown {
+		// An unclassified workflow blocker is not evidence that a human owns
+		// the failure. Treat it as control-plane debt and quarantine it.
+		owner = autonomy.FailureOwnerMachine
+	}
+	code := "workflow.blocker."
+	if state.Kind == "" {
+		code += "unknown"
+	} else {
+		code += string(state.Kind)
+	}
+	if owner.AllowsHumanRequired() {
+		return task.ControlPlaneFailure(code, owner, reason), task.HumanRequiredOutcome()
+	}
+	return task.ControlPlaneFailure(code, owner, reason), task.QuarantinedOutcome()
 }
 
 var errWorkflowWriteFenceMismatch = errors.New("workflow write fence mismatch")

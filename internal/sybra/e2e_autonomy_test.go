@@ -60,12 +60,13 @@ func testAutonomyNoDuplicateDispatchOnRestart(t *testing.T) {
 
 	restored1 := rebuildEngineFromEnv(t, env)
 	restored1.ResumeStalled()
-	waitFor(t, 15*time.Second, "first restart drives the workflow to completion", func() bool {
+	waitFor(t, 15*time.Second, "first restart drives the workflow to terminal quarantine", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
-		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecFailed &&
+			tk.Status == task.StatusBlocked
 	})
 
-	// A second ResumeStalled against the SAME persisted completed state must
+	// A second ResumeStalled against the SAME persisted terminal state must
 	// be a synchronous no-op (resumeStalledTask returns immediately for
 	// ExecCompleted/ExecFailed) — never a second dispatch of "implement".
 	restored2 := rebuildEngineFromEnv(t, env)
@@ -146,11 +147,8 @@ func assertKnownProviderAndModel(t *testing.T, label string, ag *agent.Agent) {
 
 // testAutonomyNoMachineBlockerInHumanRequired proves that when the
 // mechanical evaluate step (link_pr_and_review found no PR to link) parks a
-// task human-required, the status_reason is a real, operator-readable
-// sentence — never empty, and never a raw internal error/sentinel string an
-// operator can't act on. Reuses the exact deterministic eval-chain fixture
-// TestE2E_EvalChain_NoPRFlipsHumanRequired already proves lands here, adding
-// the machine-blocker assertion that test doesn't make.
+// task as a typed machine-owned quarantine. Its status_reason remains a
+// readable sentence rather than a raw internal error/sentinel string.
 func testAutonomyNoMachineBlockerInHumanRequired(t *testing.T) {
 	env := setupE2EMulti(t, []string{"success"})
 	if err := os.WriteFile(
@@ -168,21 +166,23 @@ func testAutonomyNoMachineBlockerInHumanRequired(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	waitFor(t, 20*time.Second, "eval chain workflow completes", func() bool {
+	waitFor(t, 20*time.Second, "eval chain workflow reaches terminal quarantine", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
-		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecFailed &&
+			tk.Status == task.StatusBlocked
 	})
 
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tk.Status != task.StatusHumanRequired {
-		t.Fatalf("task status = %q, want human-required (see TestE2E_EvalChain_NoPRFlipsHumanRequired)", tk.Status)
+	if tk.Status != task.StatusBlocked {
+		t.Fatalf("task status = %q, want blocked machine quarantine", tk.Status)
 	}
+	assertMachineQuarantine(t, tk, "workflow.evaluate_no_pr")
 	reason := strings.TrimSpace(tk.StatusReason)
 	if reason == "" {
-		t.Fatal("task parked human-required with no status_reason — an operator has nothing to act on")
+		t.Fatal("task quarantined with no readable status_reason")
 	}
 	lower := strings.ToLower(reason)
 	for _, sentinel := range []string{

@@ -64,8 +64,8 @@ func TestRecoverStaleBranchConflict_EscalatesWhenWorkflowAlreadyActive(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required when recovery dispatch is rejected", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want blocked when recovery dispatch is rejected", got.Status)
 	}
 	if r.prTracker.Retries(tk.ID, github.PRIssueConflict) != 0 {
 		t.Fatal("conflict issue was marked handled even though dispatch was rejected")
@@ -119,8 +119,8 @@ func TestRecoverStaleBranchConflict_EscalatesWhenNoWorkflowMatches(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required when no conflict workflow matches", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want blocked when no conflict workflow matches", got.Status)
 	}
 	if r.prTracker.Retries(tk.ID, github.PRIssueConflict) != 0 {
 		t.Fatal("conflict issue was marked handled even though no workflow matched")
@@ -256,8 +256,8 @@ func TestRecoverStaleBranchConflict_ProceedsPastNonConflictParkedPRFix(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required (proves it proceeded past the parked-fix guard to the exhausted-conflict path)", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want blocked (proves it proceeded past the parked-fix guard to the exhausted-conflict path)", got.Status)
 	}
 }
 
@@ -736,8 +736,8 @@ func TestRecoverBranchConflictNoPR_AtCapEscalates(t *testing.T) {
 	// human-review agent — can tell an exhausted recovery loop apart from a
 	// fresh, first-time conflict instead of just seeing the generic
 	// worktreeerr.RebaseBlockedReason.
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want blocked", got.Status)
 	}
 	wantReason := fmt.Sprintf("branch conflict recovery attempted %d time(s) and failed", github.MaxRetries)
 	if !strings.Contains(got.StatusReason, wantReason) {
@@ -762,7 +762,7 @@ func TestRecoverBranchConflictNoPR_MissingBranchEscalates(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Status == task.StatusHumanRequired {
+		if got.Status == task.StatusBlocked {
 			t.Fatalf("call %d: escalated before the circuit limit", i+1)
 		}
 	}
@@ -773,8 +773,8 @@ func TestRecoverBranchConflictNoPR_MissingBranchEscalates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required after the circuit trips", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want blocked after the circuit trips", got.Status)
 	}
 }
 
@@ -1023,7 +1023,7 @@ func TestRecoverBranchConflictNoPR_WorktreeFailuresTripCircuitBreaker(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Status == task.StatusHumanRequired {
+		if got.Status == task.StatusBlocked {
 			t.Fatalf("call %d: escalated too early", i+1)
 		}
 	}
@@ -1035,8 +1035,8 @@ func TestRecoverBranchConflictNoPR_WorktreeFailuresTripCircuitBreaker(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q after circuit break, want human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q after circuit break, want blocked", got.Status)
 	}
 	if n := r.wtFailures[tk.ID]; n != 0 {
 		t.Fatalf("wtFailures[%s] = %d after circuit trip, want 0", tk.ID, n)
@@ -1080,8 +1080,8 @@ func TestRecoverBranchConflictNoPR_RecreateBudgetExhaustedEscalates(t *testing.T
 	if r.RecoverStaleBranchConflict(tk.ID) {
 		t.Fatal("want false: both conflict-recovery and recreate budgets exhausted must escalate")
 	}
-	if got, _ := r.tasks.Get(tk.ID); got.Status != task.StatusHumanRequired {
-		t.Errorf("status = %q, want human-required", got.Status)
+	if got, _ := r.tasks.Get(tk.ID); got.Status != task.StatusBlocked {
+		t.Errorf("status = %q, want blocked", got.Status)
 	}
 }
 
@@ -1261,8 +1261,8 @@ func TestDispatchBranchConflictRecovery_NonRateLimitCooldownParksThenEscalates(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q after dispatch-failure budget exhausted, want human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q after dispatch-failure budget exhausted, want blocked", got.Status)
 	}
 	if !strings.Contains(got.StatusReason, "branch-conflict-fix dispatch failed") {
 		t.Fatalf("status_reason = %q, want it to mention the exhausted dispatch retries", got.StatusReason)

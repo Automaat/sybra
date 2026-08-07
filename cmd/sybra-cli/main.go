@@ -831,6 +831,35 @@ func updateTaskViaAPIOrFS(s *task.Manager, api *apiClient, id string, updates ma
 	if updated, handled, apiErr := viaAPI[task.Task](api, "TaskService", "UpdateTask", id, updates); handled {
 		return updated, true, apiErr
 	}
+	if statusText, hasStatus := updates["status"].(string); hasStatus {
+		localUpdates := make(map[string]any, len(updates)-1)
+		for key, value := range updates {
+			if key != "status" {
+				localUpdates[key] = value
+			}
+		}
+		extra, err := task.UpdateFromMap(localUpdates)
+		if err != nil {
+			return task.Task{}, false, err
+		}
+		status, err := task.ValidateStatus(statusText)
+		if err != nil {
+			return task.Task{}, false, err
+		}
+		if status == task.StatusHumanRequired {
+			display := "operator moved task to human-required"
+			if extra.StatusReason != nil && strings.TrimSpace(*extra.StatusReason) != "" {
+				display = *extra.StatusReason
+			}
+			extra.Escalation = task.OperatorDecisionEvidence("operator.cli_status_change", display)
+			extra.AutonomyOutcome = task.HumanRequiredOutcome()
+		}
+		result, err := s.Apply(task.TransitionIntent{
+			TaskID: id, ToStatus: status, Actor: "sybra-cli.update",
+			Extra: extra, OperatorOverride: true,
+		})
+		return result.Task, false, err
+	}
 	updated, err := s.UpdateMap(id, updates)
 	return updated, false, err
 }
@@ -923,6 +952,10 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	init.WorktreeDir = task.Ptr(dir)
 	if *pr > 0 {
 		init.PRNumber = task.Ptr(*pr)
+	}
+	if rawStatusMode && status == task.StatusHumanRequired {
+		init.Escalation = task.OperatorDecisionEvidence("operator.handoff_status", "operator created a human-required handoff")
+		init.AutonomyOutcome = task.HumanRequiredOutcome()
 	}
 
 	var (

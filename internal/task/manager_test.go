@@ -92,7 +92,7 @@ func TestManagerUpdateInvokesStatusHook(t *testing.T) {
 		id, from, to string
 	}
 	var got []change
-	m.SetStatusChangeHook(func(id, from, to string) {
+	m.SetStatusChangeHook(func(id, from, to string, _ Task) {
 		got = append(got, change{id, from, to})
 	})
 
@@ -122,6 +122,42 @@ func TestManagerUpdateInvokesStatusHook(t *testing.T) {
 	}
 	if got[0].id != task.ID {
 		t.Errorf("id = %q, want %q", got[0].id, task.ID)
+	}
+}
+
+func TestManagerStatusHookReceivesWrittenSnapshot(t *testing.T) {
+	m, _ := newTestManager(t)
+	created, err := m.Create("Title", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	captured := make(chan Task, 1)
+	m.SetStatusChangeHook(func(_ string, _, to string, snapshot Task) {
+		if to != string(StatusInProgress) {
+			return
+		}
+		close(entered)
+		<-release
+		captured <- snapshot
+	})
+	firstDone := make(chan error, 1)
+	go func() {
+		_, updateErr := m.Update(created.ID, Update{Status: Ptr(StatusInProgress)})
+		firstDone <- updateErr
+	}()
+	<-entered
+	if _, err := m.Update(created.ID, Update{Status: Ptr(StatusBlocked)}); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := <-captured; snapshot.Status != StatusInProgress {
+		t.Fatalf("first hook snapshot status = %q, want %q", snapshot.Status, StatusInProgress)
 	}
 }
 
@@ -195,7 +231,7 @@ func TestManagerOnExternalUpdateDoesNotDoubleFireRacingInProcessWrite(t *testing
 		mu   sync.Mutex
 		fire []string
 	)
-	m.SetStatusChangeHook(func(id, from, to string) {
+	m.SetStatusChangeHook(func(id, from, to string, _ Task) {
 		mu.Lock()
 		fire = append(fire, from+"->"+to)
 		mu.Unlock()
@@ -286,7 +322,7 @@ func TestManagerAppendBodyDoesNotDeadlockOnSelfRoutedEmit(t *testing.T) {
 	// OnExternalUpdate only takes lockFor(id) when a status-change hook is
 	// registered — without one it returns before locking and the reentrant
 	// path this test targets would never be exercised.
-	m.SetStatusChangeHook(func(string, string, string) {})
+	m.SetStatusChangeHook(func(string, string, string, Task) {})
 	m.emitter = EmitterFunc(func(event string, data any) {
 		if event != events.TaskUpdated {
 			return
@@ -322,7 +358,7 @@ func TestManagerAddRunWithStatusEmitsUpdatedAndHook(t *testing.T) {
 	}
 
 	var hookCalls int
-	m.SetStatusChangeHook(func(id, from, to string) {
+	m.SetStatusChangeHook(func(id, from, to string, _ Task) {
 		hookCalls++
 		if id != task.ID || from != string(StatusTodo) || to != string(StatusInProgress) {
 			t.Fatalf("hook got (%s,%s,%s)", id, from, to)
@@ -531,7 +567,7 @@ func TestManagerAppendBodyDoesNotDeadlockOnReentrantEmit(t *testing.T) {
 	}
 	m := NewManager(store, nil)
 	m.emitter = &reentrantEmitter{m: m}
-	m.SetStatusChangeHook(func(string, string, string) {})
+	m.SetStatusChangeHook(func(string, string, string, Task) {})
 
 	task, err := m.Create("Title", "", "headless")
 	if err != nil {
@@ -564,7 +600,7 @@ func TestManagerDeleteDoesNotDeadlockOnReentrantEmit(t *testing.T) {
 	}
 	m := NewManager(store, nil)
 	m.emitter = &reentrantEmitter{m: m}
-	m.SetStatusChangeHook(func(string, string, string) {})
+	m.SetStatusChangeHook(func(string, string, string, Task) {})
 
 	task, err := m.Create("Title", "", "headless")
 	if err != nil {
@@ -596,7 +632,7 @@ func TestManagerOnExternalUpdateWaitsForBusyWriterAndStillFires(t *testing.T) {
 		hookMu sync.Mutex
 		fired  []string
 	)
-	m.SetStatusChangeHook(func(_ string, from, to string) {
+	m.SetStatusChangeHook(func(_ string, from, to string, _ Task) {
 		hookMu.Lock()
 		fired = append(fired, from+"->"+to)
 		hookMu.Unlock()

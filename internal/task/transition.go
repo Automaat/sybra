@@ -209,7 +209,7 @@ type applyOutcome struct {
 // the original single-function Apply did by returning early).
 func (m *Manager) fireApplyOutcome(id string, outcome applyOutcome) {
 	if outcome.fireHook {
-		m.onStatusHook(id, outcome.prevStatus, outcome.newStatus)
+		m.onStatusHook(id, outcome.prevStatus, outcome.newStatus, outcome.result.Task)
 	}
 	if outcome.result.Applied {
 		metrics.TaskUpdated()
@@ -260,6 +260,9 @@ func (m *Manager) applyLocked(cur Task, intent TransitionIntent) (applyOutcome, 
 	stepID := strings.TrimSpace(intent.IdempotencyKey)
 	if stepID != "" && statusEffectApplied(cur.EffectLog, cur.Generation-1, stepID) {
 		return applyOutcome{result: TransitionResult{Task: cur, Applied: false}}, nil
+	}
+	if err := validateHumanRequiredTransition(cur.Status, intent.ToStatus, intent.Extra); err != nil {
+		return applyOutcome{}, err
 	}
 
 	u := intent.Extra

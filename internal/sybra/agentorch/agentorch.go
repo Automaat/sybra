@@ -1110,10 +1110,12 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 		logger.Warn("worktree.rebase-block.disk-space", "task_id", taskID)
 		if _, uerr := tasks.Apply(task.TransitionIntent{
 			TaskID:   taskID,
-			ToStatus: task.StatusHumanRequired,
+			ToStatus: task.StatusBlocked,
 			Actor:    "agentorch.mark_rebase_blocked.disk_space",
 			Extra: task.Update{
-				StatusReason: task.Ptr(worktreeerr.DiskSpaceExhaustedReason),
+				StatusReason:    task.Ptr(worktreeerr.DiskSpaceExhaustedReason),
+				Escalation:      task.MachineFailure("runenv.disk_space_exhausted", worktreeerr.DiskSpaceExhaustedReason),
+				AutonomyOutcome: task.QuarantinedOutcome(),
 			},
 		}); uerr != nil {
 			logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)
@@ -1149,16 +1151,19 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 		// recovery loop apart from a fresh, first-time conflict. This must run
 		// after the remote PR re-probe above, because an externally resolved PR
 		// should still flip back to in-review instead of staying parked.
-		if t, err := tasks.Get(taskID); err == nil && t.Status == task.StatusHumanRequired && t.StatusReason != "" {
+		if t, err := tasks.Get(taskID); err == nil &&
+			(t.Status == task.StatusHumanRequired || t.Status == task.StatusBlocked) && t.StatusReason != "" {
 			return true
 		}
 	}
 	if _, uerr := tasks.Apply(task.TransitionIntent{
 		TaskID:   taskID,
-		ToStatus: task.StatusHumanRequired,
+		ToStatus: task.StatusBlocked,
 		Actor:    "agentorch.mark_rebase_blocked.parked",
 		Extra: task.Update{
-			StatusReason: task.Ptr(worktreeerr.RebaseBlockedReason),
+			StatusReason:    task.Ptr(worktreeerr.RebaseBlockedReason),
+			Escalation:      task.MachineFailure("git.rebase_repair_exhausted", worktreeerr.RebaseBlockedReason),
+			AutonomyOutcome: task.QuarantinedOutcome(),
 		},
 	}); uerr != nil {
 		logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)

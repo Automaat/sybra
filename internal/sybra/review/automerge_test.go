@@ -1635,9 +1635,11 @@ func TestHandleTaskPRIssues_CancelsStalePlanWorkflowForLinkedPR(t *testing.T) {
 		Variables:   map[string]string{"step.flag_plan_critique_verdict.output": "verdict: REJECT"},
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
-		Status:   task.Ptr(task.StatusHumanRequired),
-		PRNumber: task.Ptr(17669),
-		Workflow: &waitingPlan,
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		PRNumber:        task.Ptr(17669),
+		Workflow:        &waitingPlan,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1915,8 +1917,10 @@ func TestEscalateExhaustedFix(t *testing.T) {
 	t.Run("already human-required is left untouched", func(t *testing.T) {
 		r, tasks, id := newHandler(t)
 		if _, err := tasks.Update(id, task.Update{
-			Status:       task.Ptr(task.StatusHumanRequired),
-			StatusReason: task.Ptr("set by a human"),
+			Status:          task.Ptr(task.StatusHumanRequired),
+			Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+			AutonomyOutcome: task.HumanRequiredOutcome(),
+			StatusReason:    task.Ptr("set by a human"),
 		}); err != nil {
 			t.Fatalf("pre-set: %v", err)
 		}

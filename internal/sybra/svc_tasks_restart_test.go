@@ -38,8 +38,10 @@ func TestUpdateTask_InProgressDispatchesByTrigger(t *testing.T) {
 	// Plan must be present so simple-task-implement has something to feed
 	// the implement agent (matches the post-planning state of fa6919fc).
 	if _, err := a.tasks.Update(tk.ID, task.Update{
-		Plan:   task.Ptr("# Plan\n\nDo the thing.\n"),
-		Status: task.Ptr(task.StatusHumanRequired),
+		Plan:            task.Ptr("# Plan\n\nDo the thing.\n"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
 	}); err != nil {
 		t.Fatal(err)
 	}

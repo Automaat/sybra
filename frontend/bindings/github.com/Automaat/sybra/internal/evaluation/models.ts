@@ -1142,6 +1142,15 @@ export class Scorecard {
     "autonomyRate": number;
 
     /**
+     * Typed autonomy control-plane signals. These maps preserve stable codes
+     * from task.status_changed audit events; display text is intentionally not
+     * copied into evaluation output or parsed for policy.
+     */
+    "autonomyOutcomes"?: { [_ in string]?: number };
+    "failureOwners"?: { [_ in string]?: number };
+    "escalationCodes"?: { [_ in string]?: number };
+
+    /**
      * Reliability (from stats run outcomes). AgentRuns counts every run;
      * AgentStalls the retried subset (stats.OutcomeStalled); AgentResolvedRuns
      * those that reached a definitive result, which is FailureRate's
@@ -1298,7 +1307,19 @@ export class Scorecard {
      * Creates a new Scorecard instance from a string or object.
      */
     static createFrom($$source: any = {}): Scorecard {
+        const $$createField14_0 = $$createType32;
+        const $$createField15_0 = $$createType32;
+        const $$createField16_0 = $$createType32;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("autonomyOutcomes" in $$parsedSource) {
+            $$parsedSource["autonomyOutcomes"] = $$createField14_0($$parsedSource["autonomyOutcomes"]);
+        }
+        if ("failureOwners" in $$parsedSource) {
+            $$parsedSource["failureOwners"] = $$createField15_0($$parsedSource["failureOwners"]);
+        }
+        if ("escalationCodes" in $$parsedSource) {
+            $$parsedSource["escalationCodes"] = $$createField16_0($$parsedSource["escalationCodes"]);
+        }
         return new Scorecard($$parsedSource as Partial<Scorecard>);
     }
 }
@@ -1331,7 +1352,7 @@ export class TaskPhases {
      * Creates a new TaskPhases instance from a string or object.
      */
     static createFrom($$source: any = {}): TaskPhases {
-        const $$createField2_0 = $$createType32;
+        const $$createField2_0 = $$createType33;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("byPhase" in $$parsedSource) {
             $$parsedSource["byPhase"] = $$createField2_0($$parsedSource["byPhase"]);
@@ -1468,3 +1489,4 @@ const $$createType29 = config$0.SLOTargets.createFrom;
 const $$createType30 = SLOStatus.createFrom;
 const $$createType31 = $Create.Array($$createType30);
 const $$createType32 = $Create.Map($Create.Any, $Create.Any);
+const $$createType33 = $Create.Map($Create.Any, $Create.Any);

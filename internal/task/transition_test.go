@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/events"
 )
 
@@ -15,7 +16,7 @@ func TestManagerApply_Success(t *testing.T) {
 	m, emitter := newTestManager(t)
 
 	var transitions []string
-	m.SetStatusChangeHook(func(_ string, from, to string) {
+	m.SetStatusChangeHook(func(_ string, from, to string, _ Task) {
 		transitions = append(transitions, from+"->"+to)
 	})
 
@@ -218,7 +219,7 @@ func TestManagerApply_IdempotentReplay(t *testing.T) {
 	m, emitter := newTestManager(t)
 
 	var fireCount int
-	m.SetStatusChangeHook(func(string, string, string) { fireCount++ })
+	m.SetStatusChangeHook(func(string, string, string, Task) { fireCount++ })
 
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
@@ -276,6 +277,10 @@ func TestManagerApply_SameIdempotencyKeyReappliesAfterGenerationAdvances(t *test
 		ToStatus:       StatusHumanRequired,
 		Actor:          "test.actor",
 		IdempotencyKey: "retry-once",
+		Extra: Update{
+			Escalation:      OperatorDecisionRequired("test.operator_decision", "operator decision required"),
+			AutonomyOutcome: HumanRequiredOutcome(),
+		},
 	}
 	first, err := m.Apply(intent)
 	if err != nil {
@@ -298,6 +303,185 @@ func TestManagerApply_SameIdempotencyKeyReappliesAfterGenerationAdvances(t *test
 	}
 	if len(second.Task.EffectLog) != 2 {
 		t.Fatalf("effect log len = %d, want 2", len(second.Task.EffectLog))
+	}
+}
+
+func TestHumanRequiredGuardRejectsMissingAndMachineOwnedReasons(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		extra Update
+	}{
+		{name: "missing", extra: Update{}},
+		{name: "machine", extra: Update{
+			Escalation:      MachineFailure("runenv.unwritable", "source is read-only"),
+			AutonomyOutcome: HumanRequiredOutcome(),
+		}},
+		{name: "wrong outcome", extra: Update{
+			Escalation:      OperatorDecisionRequired("operator.choose", "choose a recovery"),
+			AutonomyOutcome: QuarantinedOutcome(),
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m, _ := newTestManager(t)
+			created, err := m.Create("Title", "", "headless")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = m.Apply(TransitionIntent{
+				TaskID: created.ID, ToStatus: StatusHumanRequired,
+				Actor: "test.guard", Extra: tt.extra,
+			})
+			if err == nil {
+				t.Fatal("machine/malformed escalation entered human-required")
+			}
+			got, getErr := m.Get(created.ID)
+			if getErr != nil {
+				t.Fatal(getErr)
+			}
+			if got.Status == StatusHumanRequired {
+				t.Fatal("rejected transition mutated task")
+			}
+		})
+	}
+}
+
+func TestHumanRequiredGuardPersistsTypedReason(t *testing.T) {
+	t.Parallel()
+	m, _ := newTestManager(t)
+	created, err := m.Create("Title", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason := OperatorAuthorityRequired("github.credentials_required", "configure credentials")
+	result, err := m.Apply(TransitionIntent{
+		TaskID: created.ID, ToStatus: StatusHumanRequired, Actor: "test.guard",
+		Extra: Update{Escalation: reason, AutonomyOutcome: HumanRequiredOutcome()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Task.Escalation.Code != "github.credentials_required" ||
+		result.Task.AutonomyOutcome != "human_required" {
+		t.Fatalf("typed escalation not persisted: %#v / %q", result.Task.Escalation, result.Task.AutonomyOutcome)
+	}
+}
+
+func TestHumanRequiredGuardRejectsMachineOwnedReasonOnSameStatus(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	created, err := mgr.Create("Title", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := mgr.Apply(TransitionIntent{
+		TaskID: created.ID, ToStatus: StatusHumanRequired, Actor: "test",
+		Extra: Update{
+			Escalation:      OperatorDecisionRequired("test.operator_decision", "choose a path"),
+			AutonomyOutcome: HumanRequiredOutcome(),
+		}, OperatorOverride: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = mgr.Apply(TransitionIntent{
+		TaskID: first.Task.ID, ToStatus: StatusHumanRequired, Actor: "test",
+		Extra: Update{
+			Escalation:      MachineFailure("test.machine_failure", "repairable locally"),
+			AutonomyOutcome: HumanRequiredOutcome(),
+		}, OperatorOverride: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot transition to human-required") {
+		t.Fatalf("same-status machine escalation error = %v; want eligibility rejection", err)
+	}
+}
+
+func TestHumanRequiredGuardRejectsContradictoryOutcomeOnSameStatus(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	created, err := mgr.Create("Title", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := mgr.Apply(TransitionIntent{
+		TaskID: created.ID, ToStatus: StatusHumanRequired, Actor: "test",
+		Extra: Update{
+			Escalation:      OperatorDecisionRequired("test.operator_decision", "choose a path"),
+			AutonomyOutcome: HumanRequiredOutcome(),
+		}, OperatorOverride: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = mgr.Apply(TransitionIntent{
+		TaskID: first.Task.ID, ToStatus: StatusHumanRequired, Actor: "test",
+		Extra: Update{AutonomyOutcome: QuarantinedOutcome()}, OperatorOverride: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires autonomy outcome human_required") {
+		t.Fatalf("same-status contradictory outcome error = %v", err)
+	}
+}
+
+func TestManagerUpdateMapCannotBypassHumanRequiredGuard(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	created, err := mgr.Create("Title", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := mgr.UpdateMap(created.ID, map[string]any{"status": string(StatusHumanRequired)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Escalation.Code != "operator.raw_status_change" ||
+		updated.Escalation.Owner != autonomy.FailureOwnerOperatorDecision ||
+		updated.AutonomyOutcome != autonomy.OutcomeHumanRequired {
+		t.Fatalf("raw update persisted untyped evidence: %#v / %q", updated.Escalation, updated.AutonomyOutcome)
+	}
+}
+
+func TestManagerCreateFullPersistsTypedHumanRequiredEvidence(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	status := StatusHumanRequired
+	created, err := mgr.CreateFull("Title", "", "headless", Update{
+		Status:          &status,
+		Escalation:      OperatorDecisionRequired("test.operator_decision", "choose a path"),
+		AutonomyOutcome: HumanRequiredOutcome(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Escalation.Code != "test.operator_decision" || created.AutonomyOutcome != "human_required" {
+		t.Fatalf("typed create evidence = %#v / %q", created.Escalation, created.AutonomyOutcome)
+	}
+}
+
+func TestManagerCreateFullRejectsMalformedTypedEvidence(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	unknown := autonomy.Outcome("future_value")
+	tests := []Update{
+		{Escalation: OperatorDecisionRequired("test.operator_decision", "choose")},
+		{AutonomyOutcome: &unknown},
+	}
+	for _, init := range tests {
+		if _, err := mgr.CreateFull("Title", "", "headless", init); err == nil {
+			t.Fatalf("CreateFull(%#v) accepted malformed autonomy evidence", init)
+		}
+	}
+}
+
+func TestHumanRequiredGuardRejectsStatuslessContradictoryOutcome(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	status := StatusHumanRequired
+	created, err := mgr.CreateFull("Title", "", "headless", Update{
+		Status:          &status,
+		Escalation:      OperatorDecisionRequired("test.operator_decision", "choose"),
+		AutonomyOutcome: HumanRequiredOutcome(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Update(created.ID, Update{AutonomyOutcome: QuarantinedOutcome()}); err == nil {
+		t.Fatal("status-less update replaced human_required outcome with quarantined")
 	}
 }
 

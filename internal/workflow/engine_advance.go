@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evidence"
@@ -803,6 +804,22 @@ func execAsyncWaitHumanStep(e *Engine, taskID string, _ *Definition, step *Step,
 // be rejected as re-entrant (the bug that left synchronous mechanical workflows
 // — e.g. simple-task-handoff — never starting their successor).
 func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfExec *Execution, t TaskInfo) (*Step, *CompletionInfo, error) {
+	// A deterministic step may quarantine the task through the conservative
+	// typed adapter. Blocked is terminal for the active workflow: evaluating
+	// its ordinary next edge could run a set_status step that erases the
+	// quarantine before an operator or reconciler can inspect it.
+	if t.Status == taskstatus.Blocked {
+		now := time.Now().UTC()
+		wfExec.State = ExecFailed
+		wfExec.CompletedAt = &now
+		wfExec.CurrentStep = ""
+		e.logger.Info("workflow.quarantined", "task_id", taskID, "workflow", def.ID)
+		if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, nil
+	}
+
 	fields := e.transitionFields(t, wfExec)
 	nextID, tErr := ResolveTransition(current.Next, fields)
 	if tErr != nil {
@@ -1007,5 +1024,6 @@ func (e *Engine) blockRetryExhaustedPlanningIfNeeded(taskID string, def *Definit
 	wfExec.State = ExecFailed
 	wfExec.CompletedAt = &now
 	wfExec.CurrentStep = ""
-	return true, e.tasks.SetStatusAndWorkflow(taskID, string(taskstatus.HumanRequired), reason, wfExec)
+	escalation := autonomy.NewEscalation("planning.retry_exhausted", autonomy.FailureOwnerSpecification, autonomy.ProvenanceControlPlane, reason)
+	return true, e.tasks.SetEscalationAndWorkflow(taskID, string(taskstatus.HumanRequired), reason, escalation, autonomy.OutcomeHumanRequired, wfExec)
 }

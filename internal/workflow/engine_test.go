@@ -20,6 +20,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/attribution"
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/config"
@@ -561,6 +562,8 @@ type memTasks struct {
 	mu               sync.Mutex
 	tasks            map[string]*TaskInfo
 	reasons          map[string]string
+	escalations      map[string]autonomy.EscalationReason
+	outcomes         map[string]autonomy.Outcome
 	steers           map[string]string
 	gets             map[string]int
 	onGet            func(id string, t *TaskInfo, count int)
@@ -574,10 +577,12 @@ type memTasks struct {
 
 func newMemTasks() *memTasks {
 	return &memTasks{
-		tasks:   make(map[string]*TaskInfo),
-		reasons: make(map[string]string),
-		steers:  make(map[string]string),
-		gets:    make(map[string]int),
+		tasks:       make(map[string]*TaskInfo),
+		reasons:     make(map[string]string),
+		escalations: make(map[string]autonomy.EscalationReason),
+		outcomes:    make(map[string]autonomy.Outcome),
+		steers:      make(map[string]string),
+		gets:        make(map[string]int),
 	}
 }
 
@@ -915,6 +920,30 @@ func (m *memTasks) SetStatusAndWorkflow(id, status, reason string, wf *Execution
 		hook(id)
 	}
 	return nil
+}
+
+func (m *memTasks) SetEscalationAndWorkflow(id, status, reason string, escalation autonomy.EscalationReason, outcome autonomy.Outcome, wf *Execution) error {
+	if err := m.SetStatusAndWorkflow(id, status, reason, wf); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.escalations[id] = escalation
+	m.outcomes[id] = outcome
+	return nil
+}
+
+func assertWorkflowMachineQuarantine(t *testing.T, tasks *memTasks, id, code string) {
+	t.Helper()
+	tasks.mu.Lock()
+	defer tasks.mu.Unlock()
+	escalation := tasks.escalations[id]
+	if escalation.Code != code || escalation.Owner != autonomy.FailureOwnerMachine || escalation.Provenance != autonomy.ProvenanceControlPlane {
+		t.Fatalf("escalation = %+v, want typed machine-owned %s", escalation, code)
+	}
+	if outcome := tasks.outcomes[id]; outcome != autonomy.OutcomeQuarantined {
+		t.Fatalf("autonomy outcome = %q, want %q", outcome, autonomy.OutcomeQuarantined)
+	}
 }
 
 func (m *memTasks) SetBlockerAndWorkflow(id, status, reason string, state blocker.State, wf *Execution) error {
@@ -1457,13 +1486,41 @@ func TestFullLifecycle_DirectImplement(t *testing.T) {
 		t.Errorf("evaluate spawned an agent (calls before=%d, after=%d) — should be mechanical", implCallCount, got)
 	}
 
-	// Workflow should be completed; mechanical evaluate flips to human-required.
+	// Workflow should fail closed; mechanical evaluate records a machine quarantine
+	// and must not emit the ordinary completion cascade.
 	ti, _ = tasks.GetTask("t1")
-	if ti.Workflow.State != ExecCompleted {
-		t.Fatalf("expected completed, got %q (current step %q)", ti.Workflow.State, ti.Workflow.CurrentStep)
+	if ti.Workflow.State != ExecFailed {
+		t.Fatalf("expected failed quarantine, got %q (current step %q)", ti.Workflow.State, ti.Workflow.CurrentStep)
 	}
-	if ti.Status != "human-required" {
-		t.Errorf("task status = %q, want human-required", ti.Status)
+	if ti.Status != "blocked" {
+		t.Errorf("task status = %q, want blocked", ti.Status)
+	}
+	assertWorkflowMachineQuarantine(t, tasks, "t1", "workflow.evaluate_no_pr")
+}
+
+func TestResolveNext_BlockedTaskFailsWithoutCompletionOrNextStep(t *testing.T) {
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.Blocked})
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	current := &Step{ID: "quarantine", Next: []Transition{{GoTo: "erase_quarantine"}}}
+	def := &Definition{ID: "blocked-terminal", Steps: []Step{
+		*current,
+		{ID: "erase_quarantine", Type: StepSetStatus, Config: StepConfig{Status: "in-progress"}},
+	}}
+	wfExec := &Execution{WorkflowID: def.ID, CurrentStep: current.ID, State: ExecRunning}
+
+	next, completion, err := engine.resolveNext("t1", def, current, wfExec, TaskInfo{ID: "t1", Status: taskstatus.Blocked})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next != nil {
+		t.Fatalf("next step = %q, want nil for blocked task", next.ID)
+	}
+	if completion != nil {
+		t.Fatalf("completion = %+v, want nil for quarantined workflow", completion)
+	}
+	if wfExec.State != ExecFailed || wfExec.CurrentStep != "" || wfExec.CompletedAt == nil {
+		t.Fatalf("workflow = %+v, want failed quarantine without next step", wfExec)
 	}
 }
 
@@ -1606,8 +1663,8 @@ func TestFullLifecycle_PlanPath(t *testing.T) {
 	}
 
 	ti, _ = tasks.GetTask("t1")
-	if ti.Workflow.State != ExecCompleted {
-		t.Fatalf("expected completed, got %q", ti.Workflow.State)
+	if ti.Workflow.State != ExecFailed {
+		t.Fatalf("expected failed quarantine, got %q", ti.Workflow.State)
 	}
 }
 
@@ -2504,7 +2561,7 @@ func TestImplementRetry_ExhaustedFallsThrough(t *testing.T) {
 	}
 }
 
-func TestImplementRetry_SkipsWhenTaskAlreadyHumanRequired(t *testing.T) {
+func TestImplementRetry_SkipsAndQuarantinesWhenTaskAlreadyHumanRequired(t *testing.T) {
 	_, tasks, agents, engine := startTestSimpleImplement(t)
 
 	agentID := agents.RunningAgentID("t1")
@@ -2525,11 +2582,12 @@ func TestImplementRetry_SkipsWhenTaskAlreadyHumanRequired(t *testing.T) {
 		t.Fatalf("implementation calls = %d, want no retry after human-required", got)
 	}
 	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "human-required" {
-		t.Fatalf("status = %q, want human-required", ti.Status)
+	if ti.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked machine quarantine", ti.Status)
 	}
-	if ti.Workflow.State != ExecCompleted {
-		t.Fatalf("workflow state = %q, want completed after terminal transition", ti.Workflow.State)
+	assertWorkflowMachineQuarantine(t, tasks, "t1", "workflow.evaluate_no_pr")
+	if ti.Workflow.State != ExecFailed {
+		t.Fatalf("workflow state = %q, want failed quarantine after terminal transition", ti.Workflow.State)
 	}
 }
 
@@ -7545,7 +7603,7 @@ func TestExecRunAgent_ProviderShutoutEmitsSignal(t *testing.T) {
 	}
 }
 
-func TestHandleAgentComplete_CompletedWorkflowIsNoop(t *testing.T) {
+func TestHandleAgentComplete_FailedQuarantinedWorkflowIsNoop(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -7556,7 +7614,7 @@ func TestHandleAgentComplete_CompletedWorkflowIsNoop(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Run through full lifecycle to completion.
+	// Run through the lifecycle until evaluate quarantines the task.
 	agents.SimulateComplete("t1")
 	_ = engine.AdvanceStep("t1", StepOutput{StepID: "triage", Status: "completed"})
 	agents.SimulateComplete("t1")
@@ -7565,15 +7623,15 @@ func TestHandleAgentComplete_CompletedWorkflowIsNoop(t *testing.T) {
 	_ = engine.AdvanceStep("t1", StepOutput{StepID: "evaluate", Status: "completed"})
 
 	ti, _ := tasks.GetTask("t1")
-	if ti.Workflow.State != ExecCompleted {
-		t.Fatalf("precondition: expected completed, got %q", ti.Workflow.State)
+	if ti.Workflow.State != ExecFailed {
+		t.Fatalf("precondition: expected failed quarantine, got %q", ti.Workflow.State)
 	}
 	if ti.Workflow.CurrentStep != "" {
 		t.Fatalf("precondition: expected empty current step after completion, got %q", ti.Workflow.CurrentStep)
 	}
 	historyBefore := len(ti.Workflow.StepHistory)
 
-	// Another agent complete on an already-completed workflow should not
+	// Another agent complete on an already-failed workflow should not
 	// start new agents, mutate step history, or record an error.
 	callsBefore := agents.CallCount()
 	engine.HandleAgentComplete("t1", AgentCompletion{AgentID: "stale-agent", Result: "late result", Success: true})
@@ -7587,8 +7645,8 @@ func TestHandleAgentComplete_CompletedWorkflowIsNoop(t *testing.T) {
 		t.Errorf("StepHistory len = %d, want %d — stale completion must not append",
 			got, historyBefore)
 	}
-	if tiAfter.Workflow.State != ExecCompleted {
-		t.Errorf("State = %q, want ExecCompleted — stale completion must not mutate state",
+	if tiAfter.Workflow.State != ExecFailed {
+		t.Errorf("State = %q, want ExecFailed — stale completion must not mutate state",
 			tiAfter.Workflow.State)
 	}
 	if tiAfter.Workflow.CurrentStep != "" {
@@ -7792,8 +7850,8 @@ steps:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ti.Status != "human-required" {
-		t.Fatalf("Status = %q, want human-required", ti.Status)
+	if ti.Status != "blocked" {
+		t.Fatalf("Status = %q, want blocked quarantine", ti.Status)
 	}
 	if !strings.Contains(ti.StatusReason, "no conformance receipt after automatic recovery retry") {
 		t.Fatalf("StatusReason = %q, want receipt-retry exhaustion", ti.StatusReason)
@@ -11705,7 +11763,7 @@ func newEngineForEval(t *testing.T, tasks *memTasks) *Engine {
 	return NewTestEngine(store, tasks, agents, discardLogger())
 }
 
-func TestExecEvaluate_LastAgentFailedFlipsHumanRequired(t *testing.T) {
+func TestExecEvaluate_LastAgentFailedQuarantines(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	engine := newEngineForEval(t, tasks)
@@ -11723,9 +11781,10 @@ func TestExecEvaluate_LastAgentFailedFlipsHumanRequired(t *testing.T) {
 		t.Errorf("step Status = %q, want completed", out.Status)
 	}
 	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "human-required" {
-		t.Errorf("task status = %q, want human-required", ti.Status)
+	if ti.Status != "blocked" {
+		t.Errorf("task status = %q, want blocked", ti.Status)
 	}
+	assertWorkflowMachineQuarantine(t, tasks, "t1", "workflow.evaluate_no_pr")
 	if got := tasks.Reason("t1"); got != "rate limit exceeded" {
 		t.Errorf("reason = %q, want %q", got, "rate limit exceeded")
 	}
@@ -11754,7 +11813,7 @@ func TestExecEvaluate_LastAgentFailedKeepsFullReason(t *testing.T) {
 	}
 }
 
-func TestExecEvaluate_LastAgentSucceededFlipsHumanRequiredWithDefault(t *testing.T) {
+func TestExecEvaluate_LastAgentSucceededQuarantinesWithDefault(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	engine := newEngineForEval(t, tasks)
@@ -11768,9 +11827,10 @@ func TestExecEvaluate_LastAgentSucceededFlipsHumanRequiredWithDefault(t *testing
 		t.Fatal(err)
 	}
 	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "human-required" {
-		t.Errorf("task status = %q, want human-required", ti.Status)
+	if ti.Status != "blocked" {
+		t.Errorf("task status = %q, want blocked", ti.Status)
 	}
+	assertWorkflowMachineQuarantine(t, tasks, "t1", "workflow.evaluate_no_pr")
 	if got := tasks.Reason("t1"); got != "commits pushed but no PR created" {
 		t.Errorf("reason = %q, want %q", got, "commits pushed but no PR created")
 	}
@@ -11898,23 +11958,24 @@ func TestExecEvaluate_PRCreateAuthFailureRetriesThenEscalates(t *testing.T) {
 		}
 	}
 
-	// After exhausting the budget, it escalates to human-required instead of
+	// After exhausting the budget, it records a machine quarantine instead of
 	// retrying a broken credential forever.
 	wfExec := newWfExec(strconv.Itoa(maxPRCreateAuthRetries))
 	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr"}); err != nil {
 		t.Fatal(err)
 	}
 	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "human-required" {
-		t.Errorf("task status = %q, want human-required", ti.Status)
+	if ti.Status != "blocked" {
+		t.Errorf("task status = %q, want blocked", ti.Status)
 	}
+	assertWorkflowMachineQuarantine(t, tasks, "t1", "workflow.evaluate_no_pr")
 	wantReason := fmt.Sprintf("PR creation failing due to invalid or expired GitHub credentials after %d retries", maxPRCreateAuthRetries)
 	if got := tasks.Reason("t1"); got != wantReason {
 		t.Errorf("reason = %q, want %q", got, wantReason)
 	}
 }
 
-func TestExecEvaluate_PRCreatePushedNoPRRetriesThenEscalates(t *testing.T) {
+func TestExecEvaluate_PRCreatePushedNoPRRetriesThenQuarantines(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
 	engine := newEngineForEval(t, tasks)
@@ -11954,15 +12015,16 @@ func TestExecEvaluate_PRCreatePushedNoPRRetriesThenEscalates(t *testing.T) {
 		}
 	}
 
-	// After exhausting the budget, it escalates to human-required.
+	// After exhausting the budget, it records a machine quarantine.
 	wfExec := newWfExec(strconv.Itoa(maxPRCreatePushedNoPRRetries))
 	if _, err := engine.execEvaluate("t1", newEvaluateStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr"}); err != nil {
 		t.Fatal(err)
 	}
 	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "human-required" {
-		t.Errorf("task status = %q, want human-required", ti.Status)
+	if ti.Status != "blocked" {
+		t.Errorf("task status = %q, want blocked", ti.Status)
 	}
+	assertWorkflowMachineQuarantine(t, tasks, "t1", "workflow.evaluate_no_pr")
 	wantReason := fmt.Sprintf("commits pushed but no PR created after %d retries", maxPRCreatePushedNoPRRetries)
 	if got := tasks.Reason("t1"); got != wantReason {
 		t.Errorf("reason = %q, want %q", got, wantReason)
@@ -11999,9 +12061,10 @@ func TestExecEvaluate_EmptyHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "human-required" {
-		t.Errorf("task status = %q, want human-required", ti.Status)
+	if ti.Status != "blocked" {
+		t.Errorf("task status = %q, want blocked", ti.Status)
 	}
+	assertWorkflowMachineQuarantine(t, tasks, "t1", "workflow.evaluate_no_pr")
 	if got := tasks.Reason("t1"); got != "no agent result to evaluate" {
 		t.Errorf("reason = %q, want %q", got, "no agent result to evaluate")
 	}
@@ -12027,7 +12090,7 @@ func TestExecEvaluate_FailedWithEmptyOutput(t *testing.T) {
 
 func TestExecEvaluate_NoPRFallsThrough(t *testing.T) {
 	// When ProjectID+Branch are set but gh pr list finds nothing, the step must
-	// still fall through to human-required (not panic or error).
+	// still fall through to a machine quarantine (not panic or error).
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", ProjectID: "owner/repo", Branch: "feature-branch"})
 	engine := newEngineForEval(t, tasks)
@@ -12042,9 +12105,10 @@ func TestExecEvaluate_NoPRFallsThrough(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _ := tasks.GetTask("t1")
-	if got.Status != "human-required" {
-		t.Errorf("status = %q, want human-required", got.Status)
+	if got.Status != "blocked" {
+		t.Errorf("status = %q, want blocked", got.Status)
 	}
+	assertWorkflowMachineQuarantine(t, tasks, "t1", "workflow.evaluate_no_pr")
 }
 
 func newLinkPRStep() *Step {

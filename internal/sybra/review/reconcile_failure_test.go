@@ -80,9 +80,9 @@ func TestRecordReconcileFailure_EscalatesPersistentFailure(t *testing.T) {
 	if gerr != nil {
 		t.Fatal(gerr)
 	}
-	if got.Status != task.StatusHumanRequired {
+	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want %q after %d consecutive failures — a warn-log is not an alarm",
-			got.Status, task.StatusHumanRequired, reconcileFailureLimit)
+			got.Status, task.StatusBlocked, reconcileFailureLimit)
 	}
 	if got.StatusReason == "" {
 		t.Error("StatusReason is empty; the operator cannot tell why this stopped")
@@ -204,9 +204,9 @@ func TestReconcileReviewTask_RoutesFailureThroughCircuit(t *testing.T) {
 	if gerr != nil {
 		t.Fatal(gerr)
 	}
-	if got.Status != task.StatusHumanRequired {
+	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want %q — reconcileReviewTask swallowed a permanently failing read, "+
-			"leaving the task dispatchable (the #2164 loop)", got.Status, task.StatusHumanRequired)
+			"leaving the task dispatchable (the #2164 loop)", got.Status, task.StatusBlocked)
 	}
 }
 
@@ -264,7 +264,7 @@ func TestRecordReconcileFailure_DoesNotClobberOperatorNote(t *testing.T) {
 		r.recordReconcileFailure(&got, err)
 	}
 	escalated := mustGet(t, tasks, tk.ID)
-	if escalated.Status != task.StatusHumanRequired {
+	if escalated.Status != task.StatusBlocked {
 		t.Fatalf("precondition: want escalated, got %q", escalated.Status)
 	}
 
@@ -337,7 +337,7 @@ func TestRecordReconcileFailure_ParkedTaskLeavesNoStaleCounter(t *testing.T) {
 		got := mustGet(t, tasks, tk.ID)
 		r.recordReconcileFailure(&got, err)
 	}
-	if mustGet(t, tasks, tk.ID).Status != task.StatusHumanRequired {
+	if mustGet(t, tasks, tk.ID).Status != task.StatusBlocked {
 		t.Fatal("precondition: want escalated")
 	}
 
@@ -364,8 +364,10 @@ func TestReconcileReviewPhases_DoesNotUnparkTheRateBreaker(t *testing.T) {
 
 	reason := RateLimitParkReason + ": 3 rounds within an hour on PR #151"
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(reason),
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -451,7 +451,9 @@ func (a *App) escalateUnmetCondition(t *task.Task, cond task.DepCondition, state
 		ToStatus: task.StatusHumanRequired,
 		Actor:    "umbrella.gate.condition.escalate",
 		Extra: task.Update{
-			StatusReason: task.Ptr(reason),
+			StatusReason:    task.Ptr(reason),
+			Escalation:      task.SpecificationRequired("umbrella.dependency_condition_unmet", reason),
+			AutonomyOutcome: task.HumanRequiredOutcome(),
 			Blocker: task.Ptr(blocker.State{
 				Kind:       blocker.KindDependencyConditionUnmet,
 				Code:       cond.Ref,
@@ -510,8 +512,10 @@ func (a *App) holdScopeVerdictBlocked(ready []string, byID map[string]*task.Task
 			ToStatus: task.StatusHumanRequired,
 			Actor:    "umbrella.gate.scope_verdict.hold",
 			Extra: task.Update{
-				StatusReason: task.Ptr(reason),
-				Blocker:      task.Ptr(t.Blocker),
+				StatusReason:    task.Ptr(reason),
+				Escalation:      task.SpecificationRequired("umbrella.dependency_scope_unmet", reason),
+				AutonomyOutcome: task.HumanRequiredOutcome(),
+				Blocker:         task.Ptr(t.Blocker),
 			},
 		}); err != nil {
 			a.logger.Error("umbrella.gate.scope_verdict.hold_failed", "task_id", id, "err", err)
@@ -898,9 +902,16 @@ func (a *App) rollupTrackers(states map[string]*umbrellaState, cyclic map[string
 			TaskID:   st.tracker.ID,
 			ToStatus: desired,
 			Actor:    "umbrella.gate.tracker_rollup",
-			Extra: task.Update{
-				StatusReason: task.Ptr(reason),
-			},
+			Extra: func() task.Update {
+				extra := task.Update{
+					StatusReason: task.Ptr(reason),
+				}
+				if desired == task.StatusHumanRequired {
+					extra.Escalation = task.SpecificationRequired("umbrella.rollup_requires_decision", reason)
+					extra.AutonomyOutcome = task.HumanRequiredOutcome()
+				}
+				return extra
+			}(),
 		}); err != nil {
 			a.logger.Error("umbrella.tracker.update.failed", "task_id", st.tracker.ID, "err", err)
 			continue
@@ -1043,7 +1054,7 @@ func trackerRollup(st *umbrellaState, cyclic, settled bool) (status task.Status,
 	case st.anyHR:
 		return task.StatusHumanRequired, "umbrella child needs attention", false
 	case st.anyBlocked:
-		return task.StatusHumanRequired, "umbrella child is blocked", false
+		return task.StatusInProgress, "umbrella child is quarantined", false
 	case unresolvedCancellation:
 		return task.StatusHumanRequired, "umbrella child was cancelled", false
 	case expandFailing:
