@@ -34,6 +34,7 @@ export enum Kind {
     KindReviewFixExhausted = "review_fix_exhausted",
     KindTriageRetryExhausted = "triage_retry_exhausted",
     KindWatchdogRateLimitExhausted = "watchdog_rate_limit_exhausted",
+    KindRunEnvironment = "run_environment",
 
     /**
      * KindDependencyScopeUnmet marks a task blocked on a depends_on issue
