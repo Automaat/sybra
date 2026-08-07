@@ -611,6 +611,9 @@ func agentRunEnvironmentFailed(ag *agent.Agent) bool {
 	outputs := ag.Output()
 	for i := range outputs {
 		event := &outputs[i]
+		if event.Type != "result" && event.ErrorType == "" && event.TerminalReason == "" {
+			continue
+		}
 		diagnostic := strings.Join([]string{event.Content, event.ErrorType, event.TerminalReason}, " ")
 		if runenv.IsEnvironmentFailure(errors.New(diagnostic)) {
 			return true

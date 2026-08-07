@@ -31,6 +31,16 @@ func TestAgentRunEnvironmentFailedReadsExitAndStreamDiagnostics(t *testing.T) {
 			ag.AppendOutput(agent.StreamEvent{Type: "result", Content: "commit failed: gpg failed to sign the data"})
 			return ag
 		}, want: true},
+		{name: "assistant prose is not a diagnostic", agent: func() *agent.Agent {
+			ag := &agent.Agent{}
+			ag.AppendOutput(agent.StreamEvent{Type: "assistant", Content: "I fixed the read-only file system handling"})
+			return ag
+		}, want: false},
+		{name: "structured error is a diagnostic", agent: func() *agent.Agent {
+			ag := &agent.Agent{}
+			ag.AppendOutput(agent.StreamEvent{Type: "system", ErrorType: "read-only file system"})
+			return ag
+		}, want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
