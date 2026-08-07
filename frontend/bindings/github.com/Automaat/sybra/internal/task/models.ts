@@ -1018,8 +1018,8 @@ export class Update {
         const $$createField10_0 = $$createType15;
         const $$createField14_0 = $$createType14;
         const $$createField32_0 = $$createType16;
-        const $$createField48_0 = $$createType17;
-        const $$createField49_0 = $$createType18;
+        const $$createField51_0 = $$createType17;
+        const $$createField52_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("Blocker" in $$parsedSource) {
             $$parsedSource["Blocker"] = $$createField5_0($$parsedSource["Blocker"]);
@@ -1037,10 +1037,10 @@ export class Update {
             $$parsedSource["Workflow"] = $$createField32_0($$parsedSource["Workflow"]);
         }
         if ("Attachments" in $$parsedSource) {
-            $$parsedSource["Attachments"] = $$createField48_0($$parsedSource["Attachments"]);
+            $$parsedSource["Attachments"] = $$createField51_0($$parsedSource["Attachments"]);
         }
         if ("EffectLog" in $$parsedSource) {
-            $$parsedSource["EffectLog"] = $$createField49_0($$parsedSource["EffectLog"]);
+            $$parsedSource["EffectLog"] = $$createField52_0($$parsedSource["EffectLog"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }
