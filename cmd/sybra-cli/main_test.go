@@ -284,6 +284,42 @@ func TestGetCompactOmitsPlanningSupportSidecars(t *testing.T) {
 	}
 }
 
+func TestGetPrintsSidecarHeadingsOnce(t *testing.T) {
+	dir := setupStore(t)
+
+	store, err := task.NewStore(filepath.Join(dir, "tasks"))
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	manager := task.NewManager(store, nil)
+	created, err := manager.Create("sidecar task", "body", "headless")
+	if err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	if err := store.CurrentTestFailures().Write(created.ID, "## Test Failures\n\nfailing assertion"); err != nil {
+		t.Fatalf("write current test failures: %v", err)
+	}
+	if err := store.AcceptanceLedgers().Write(created.ID, "## Acceptance Ledger\n\nledger entry"); err != nil {
+		t.Fatalf("write acceptance ledger: %v", err)
+	}
+	if err := store.SpecDecisions().Write(created.ID, "## Spec Decision Needed\n\nneeds a call"); err != nil {
+		t.Fatalf("write spec decision: %v", err)
+	}
+
+	code, out := runCLI(t, "get", created.ID)
+	if code != 0 {
+		t.Fatalf("get exit %d: %s", code, out)
+	}
+	if strings.Contains(out, "## Current Test Failures") {
+		t.Fatalf("get output duplicated current test failures heading:\n%s", out)
+	}
+	for _, heading := range []string{"## Test Failures", "## Acceptance Ledger", "## Spec Decision Needed"} {
+		if strings.Count(out, heading) != 1 {
+			t.Fatalf("heading %q count = %d, want 1\n%s", heading, strings.Count(out, heading), out)
+		}
+	}
+}
+
 func validCLIPlanContract(taskID, extra string) string {
 	return fmt.Sprintf(`{
   "task_id": %q,

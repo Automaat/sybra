@@ -460,8 +460,8 @@ func TestBuiltinSimpleTaskImplement_DisclosesDownstreamVerification(t *testing.T
 		t.Fatalf("downstream verification contract not found in implement prompt, got:\n%s", prompt)
 	}
 	for _, block := range []string{
-		"{{- if currenttestfailures .Task.Body}}",
-		"{{- if acceptanceledger .Task.Body}}",
+		"{{- if currenttestfailures .Task.CurrentTestFailures}}",
+		"{{- if acceptanceledger .Task.AcceptanceLedger}}",
 		`{{getvar .Vars "verify_reask_note"}}`,
 		`{{getvar .Vars "watchdog_reask_note"}}`,
 	} {

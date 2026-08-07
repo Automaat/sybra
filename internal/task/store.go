@@ -23,24 +23,27 @@ import (
 // task's own frontmatter+body. Safe for concurrent use within a process; see
 // lockTask for the cross-process locking story.
 type Store struct {
-	dir               string
-	trashDir          string
-	comments          *CommentStore
-	plans             *PlanningSidecarStore
-	planContracts     *PlanningSidecarStore
-	planDrafts        *PlanDraftStore
-	planCritiques     *PlanningSidecarStore
-	planResearch      *PlanningSidecarStore
-	planDecisions     *PlanningSidecarStore
-	planBrief         *PlanningSidecarStore
-	codeReviews       *PlanningSidecarStore
-	locker            *fsutil.KeyedLocker
-	cacheMu           sync.RWMutex
-	listCache         []Task
-	listValid         bool
-	listSnapshot      map[string]listFileState
-	newTaskID         func() string
-	refreshBeforeLock func()
+	dir                 string
+	trashDir            string
+	comments            *CommentStore
+	plans               *PlanningSidecarStore
+	planContracts       *PlanningSidecarStore
+	planDrafts          *PlanDraftStore
+	planCritiques       *PlanningSidecarStore
+	planResearch        *PlanningSidecarStore
+	planDecisions       *PlanningSidecarStore
+	planBrief           *PlanningSidecarStore
+	codeReviews         *PlanningSidecarStore
+	locker              *fsutil.KeyedLocker
+	cacheMu             sync.RWMutex
+	listCache           []Task
+	listValid           bool
+	listSnapshot        map[string]listFileState
+	newTaskID           func() string
+	refreshBeforeLock   func()
+	currentTestFailures *PlanningSidecarStore
+	acceptanceLedgers   *PlanningSidecarStore
+	specDecisions       *PlanningSidecarStore
 }
 
 const maxTaskIDAttempts = 16
@@ -53,19 +56,22 @@ func NewStore(dir string) (*Store, error) {
 		return nil, fmt.Errorf("create tasks dir: %w", err)
 	}
 	return &Store{
-		dir:           dir,
-		trashDir:      filepath.Join(filepath.Dir(dir), "trash"),
-		comments:      NewCommentStore(dir),
-		plans:         NewPlanningSidecarStore(dir, ".plan.md", "plan"),
-		planContracts: NewPlanningSidecarStore(dir, ".plan-contract.json", "plan contract"),
-		planDrafts:    NewPlanDraftStore(dir),
-		planCritiques: NewPlanningSidecarStore(dir, ".plan-critique.md", "plan critique"),
-		planResearch:  NewPlanningSidecarStore(dir, ".plan-research.md", "plan research"),
-		planDecisions: NewPlanningSidecarStore(dir, ".plan-decisions.md", "plan decisions"),
-		planBrief:     NewPlanningSidecarStore(dir, ".plan-brief.md", "plan brief"),
-		codeReviews:   NewPlanningSidecarStore(dir, ".review.md", "code review"),
-		locker:        fsutil.NewKeyedLocker(),
-		newTaskID:     func() string { return uuid.NewString()[:8] },
+		dir:                 dir,
+		trashDir:            filepath.Join(filepath.Dir(dir), "trash"),
+		comments:            NewCommentStore(dir),
+		plans:               NewPlanningSidecarStore(dir, ".plan.md", "plan"),
+		planContracts:       NewPlanningSidecarStore(dir, ".plan-contract.json", "plan contract"),
+		planDrafts:          NewPlanDraftStore(dir),
+		planCritiques:       NewPlanningSidecarStore(dir, ".plan-critique.md", "plan critique"),
+		planResearch:        NewPlanningSidecarStore(dir, ".plan-research.md", "plan research"),
+		planDecisions:       NewPlanningSidecarStore(dir, ".plan-decisions.md", "plan decisions"),
+		planBrief:           NewPlanningSidecarStore(dir, ".plan-brief.md", "plan brief"),
+		codeReviews:         NewPlanningSidecarStore(dir, ".review.md", "code review"),
+		locker:              fsutil.NewKeyedLocker(),
+		newTaskID:           func() string { return uuid.NewString()[:8] },
+		currentTestFailures: NewPlanningSidecarStore(dir, ".current-test-failures.md", "current test failures"),
+		acceptanceLedgers:   NewPlanningSidecarStore(dir, ".acceptance-ledger.md", "acceptance ledger"),
+		specDecisions:       NewPlanningSidecarStore(dir, ".spec-decision.md", "spec decision"),
 	}, nil
 }
 
@@ -125,6 +131,24 @@ func (s *Store) PlanBrief() *PlanningSidecarStore {
 // (Task.CodeReview).
 func (s *Store) CodeReviews() *PlanningSidecarStore {
 	return s.codeReviews
+}
+
+// CurrentTestFailures returns the sidecar store for the latest bounded test
+// failure report.
+func (s *Store) CurrentTestFailures() *PlanningSidecarStore {
+	return s.currentTestFailures
+}
+
+// AcceptanceLedgers returns the sidecar store for the bounded acceptance
+// failure ledger.
+func (s *Store) AcceptanceLedgers() *PlanningSidecarStore {
+	return s.acceptanceLedgers
+}
+
+// SpecDecisions returns the sidecar store for the latest spec-decision
+// escalation summary.
+func (s *Store) SpecDecisions() *PlanningSidecarStore {
+	return s.specDecisions
 }
 
 // lockTask serializes read/modify/write calls for a single task file, both
@@ -191,6 +215,9 @@ var sidecarFileSuffixes = []string{
 	".plan-decisions.md",
 	".plan-brief.md",
 	".review.md",
+	".current-test-failures.md",
+	".acceptance-ledger.md",
+	".spec-decision.md",
 }
 
 // IsSidecarFile reports whether a filename (basename) belongs to a sidecar
@@ -260,6 +287,9 @@ func (s *Store) List() ([]Task, error) {
 		t.PlanDecisions = sidecars.decisions[t.ID]
 		t.PlanBrief = sidecars.briefs[t.ID]
 		t.CodeReview = sidecars.reviews[t.ID]
+		t.CurrentTestFailures = sidecars.currentTestFailures[t.ID]
+		t.AcceptanceLedger = sidecars.acceptanceLedgers[t.ID]
+		t.SpecDecision = sidecars.specDecisions[t.ID]
 		if drafts, ok := sidecars.drafts[t.ID]; ok {
 			t.PlanDrafts = drafts
 		} else {
@@ -325,14 +355,35 @@ func degradedTask(path string, parseErr error) Task {
 // sidecarIndex holds sidecar contents loaded in a single ReadDir pass,
 // indexed by task ID. Used by List to amortize sidecar I/O.
 type sidecarIndex struct {
-	plans     map[string]string
-	contracts map[string]string
-	critiques map[string]string
-	research  map[string]string
-	decisions map[string]string
-	briefs    map[string]string
-	reviews   map[string]string
-	drafts    map[string]map[string]string
+	plans               map[string]string
+	contracts           map[string]string
+	critiques           map[string]string
+	research            map[string]string
+	decisions           map[string]string
+	briefs              map[string]string
+	reviews             map[string]string
+	currentTestFailures map[string]string
+	acceptanceLedgers   map[string]string
+	specDecisions       map[string]string
+	drafts              map[string]map[string]string
+}
+
+type sidecarSpec struct {
+	suffix string
+	assign func(*sidecarIndex, string, string)
+}
+
+var sidecarSpecs = []sidecarSpec{
+	{suffix: ".plan-critique.md", assign: func(idx *sidecarIndex, id, text string) { idx.critiques[id] = text }},
+	{suffix: ".plan-contract.json", assign: func(idx *sidecarIndex, id, text string) { idx.contracts[id] = text }},
+	{suffix: ".plan-research.md", assign: func(idx *sidecarIndex, id, text string) { idx.research[id] = text }},
+	{suffix: ".plan-decisions.md", assign: func(idx *sidecarIndex, id, text string) { idx.decisions[id] = text }},
+	{suffix: ".plan-brief.md", assign: func(idx *sidecarIndex, id, text string) { idx.briefs[id] = text }},
+	{suffix: ".plan.md", assign: func(idx *sidecarIndex, id, text string) { idx.plans[id] = text }},
+	{suffix: ".review.md", assign: func(idx *sidecarIndex, id, text string) { idx.reviews[id] = text }},
+	{suffix: ".current-test-failures.md", assign: func(idx *sidecarIndex, id, text string) { idx.currentTestFailures[id] = text }},
+	{suffix: ".acceptance-ledger.md", assign: func(idx *sidecarIndex, id, text string) { idx.acceptanceLedgers[id] = text }},
+	{suffix: ".spec-decision.md", assign: func(idx *sidecarIndex, id, text string) { idx.specDecisions[id] = text }},
 }
 
 // loadSidecarsFromEntries reads sidecar contents for every recognized
@@ -342,14 +393,17 @@ type sidecarIndex struct {
 // abort the whole task list.
 func loadSidecarsFromEntries(dir string, entries []os.DirEntry) *sidecarIndex {
 	idx := &sidecarIndex{
-		plans:     map[string]string{},
-		contracts: map[string]string{},
-		critiques: map[string]string{},
-		research:  map[string]string{},
-		decisions: map[string]string{},
-		briefs:    map[string]string{},
-		reviews:   map[string]string{},
-		drafts:    map[string]map[string]string{},
+		plans:               map[string]string{},
+		contracts:           map[string]string{},
+		critiques:           map[string]string{},
+		research:            map[string]string{},
+		decisions:           map[string]string{},
+		briefs:              map[string]string{},
+		reviews:             map[string]string{},
+		currentTestFailures: map[string]string{},
+		acceptanceLedgers:   map[string]string{},
+		specDecisions:       map[string]string{},
+		drafts:              map[string]map[string]string{},
 	}
 	for _, e := range entries {
 		if e.IsDir() {
@@ -359,86 +413,59 @@ func loadSidecarsFromEntries(dir string, entries []os.DirEntry) *sidecarIndex {
 		if !strings.HasSuffix(base, ".md") && !strings.HasSuffix(base, ".json") {
 			continue
 		}
-		// Order matters: plan-draft and plan-critique both have
-		// ".plan" in them, so check the more specific suffix first.
-		switch {
-		case IsPlanDraftFile(base):
-			// IsPlanDraftFile already guarantees the prefix is present,
-			// but using Cut + the found flag keeps the lint clean and is
-			// resilient if the helper's contract loosens later.
-			id, rest, found := strings.Cut(base, PlanDraftSidecarPrefix)
-			if !found {
-				continue
-			}
-			name := strings.TrimSuffix(rest, ".md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			if idx.drafts[id] == nil {
-				idx.drafts[id] = map[string]string{}
-			}
-			idx.drafts[id][name] = string(data)
-		case strings.HasSuffix(base, ".plan-critique.md"):
-			id := strings.TrimSuffix(base, ".plan-critique.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.critiques[id] = string(data)
-		case strings.HasSuffix(base, ".plan-contract.json"):
-			id := strings.TrimSuffix(base, ".plan-contract.json")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.contracts[id] = string(data)
-		case strings.HasSuffix(base, ".plan-research.md"):
-			id := strings.TrimSuffix(base, ".plan-research.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.research[id] = string(data)
-		case strings.HasSuffix(base, ".plan-decisions.md"):
-			id := strings.TrimSuffix(base, ".plan-decisions.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.decisions[id] = string(data)
-		case strings.HasSuffix(base, ".plan-brief.md"):
-			id := strings.TrimSuffix(base, ".plan-brief.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.briefs[id] = string(data)
-		case strings.HasSuffix(base, ".plan.md"):
-			id := strings.TrimSuffix(base, ".plan.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.plans[id] = string(data)
-		case strings.HasSuffix(base, ".review.md"):
-			id := strings.TrimSuffix(base, ".review.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.reviews[id] = string(data)
+		if loadPlanDraftSidecar(dir, base, idx) {
+			continue
 		}
+		loadIndexedSidecar(dir, base, idx)
 	}
 	return idx
+}
+
+func loadPlanDraftSidecar(dir, base string, idx *sidecarIndex) bool {
+	if !IsPlanDraftFile(base) {
+		return false
+	}
+	// IsPlanDraftFile already guarantees the prefix is present,
+	// but using Cut + the found flag keeps the lint clean and is
+	// resilient if the helper's contract loosens later.
+	id, rest, found := strings.Cut(base, PlanDraftSidecarPrefix)
+	if !found {
+		return true
+	}
+	text, ok := readOptionalSidecarFile(dir, base)
+	if !ok {
+		return true
+	}
+	name := strings.TrimSuffix(rest, ".md")
+	if idx.drafts[id] == nil {
+		idx.drafts[id] = map[string]string{}
+	}
+	idx.drafts[id][name] = text
+	return true
+}
+
+func loadIndexedSidecar(dir, base string, idx *sidecarIndex) bool {
+	for _, spec := range sidecarSpecs {
+		if !strings.HasSuffix(base, spec.suffix) {
+			continue
+		}
+		text, ok := readOptionalSidecarFile(dir, base)
+		if !ok {
+			return true
+		}
+		spec.assign(idx, strings.TrimSuffix(base, spec.suffix), text)
+		return true
+	}
+	return false
+}
+
+func readOptionalSidecarFile(dir, base string) (string, bool) {
+	data, err := os.ReadFile(filepath.Join(dir, base))
+	if err != nil {
+		slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
+		return "", false
+	}
+	return string(data), true
 }
 
 // Get reads task id and populates its planning/review sidecar fields
@@ -483,6 +510,15 @@ func (s *Store) loadSidecars(t *Task) error {
 		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
 	}
 	if t.CodeReview, err = s.codeReviews.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.CurrentTestFailures, err = s.currentTestFailures.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.AcceptanceLedger, err = s.acceptanceLedgers.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.SpecDecision, err = s.specDecisions.Read(t.ID); err != nil {
 		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
 	}
 	if t.PlanDrafts, err = s.planDrafts.List(t.ID); err != nil {
@@ -946,6 +982,24 @@ func (s *Store) writeSidecars(id string, u Update, t *Task) error {
 			return fmt.Errorf("write code review: %w", err)
 		}
 		t.CodeReview = *u.CodeReview
+	}
+	if u.CurrentTestFailures != nil {
+		if err := s.currentTestFailures.Write(id, *u.CurrentTestFailures); err != nil {
+			return fmt.Errorf("write current test failures: %w", err)
+		}
+		t.CurrentTestFailures = *u.CurrentTestFailures
+	}
+	if u.AcceptanceLedger != nil {
+		if err := s.acceptanceLedgers.Write(id, *u.AcceptanceLedger); err != nil {
+			return fmt.Errorf("write acceptance ledger: %w", err)
+		}
+		t.AcceptanceLedger = *u.AcceptanceLedger
+	}
+	if u.SpecDecision != nil {
+		if err := s.specDecisions.Write(id, *u.SpecDecision); err != nil {
+			return fmt.Errorf("write spec decision: %w", err)
+		}
+		t.SpecDecision = *u.SpecDecision
 	}
 	return nil
 }

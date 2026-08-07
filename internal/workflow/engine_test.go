@@ -25,6 +25,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/dispatchorder"
 	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/taskstatus"
@@ -727,7 +728,6 @@ func (m *memTasks) ClearTaskStatusReasonAndSetWorkflowIf(id, expectedStatus, exp
 	t.Workflow = wf.Clone()
 	return true, nil
 }
-
 func (m *memTasks) UpdateTaskBlocker(id string, status taskstatus.Status, reason string, state blocker.State) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -943,7 +943,6 @@ func (m *memTasks) SetBlockerAndWorkflow(id, status, reason string, state blocke
 	}
 	return nil
 }
-
 func (m *memTasks) SetWorkflowIf(id string, fence WorkflowWriteFence, wf *Execution) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1024,6 +1023,9 @@ func (m *memTasks) ReleaseWorkflowEffect(id string, claim EffectClaim) (EffectCl
 func (m *memTasks) WriteSidecar(id, kind, content string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.appendErr != nil {
+		return m.appendErr
+	}
 	t, ok := m.tasks[id]
 	if !ok {
 		return fmt.Errorf("task %s not found", id)
@@ -1050,6 +1052,12 @@ func (m *memTasks) WriteSidecar(id, kind, content string) error {
 		t.PlanDecisions = content
 	case "plan_brief":
 		t.PlanBrief = content
+	case "current_test_failures":
+		t.CurrentTestFailures = content
+	case "acceptance_ledger":
+		t.AcceptanceLedger = content
+	case "spec_decision":
+		t.SpecDecision = content
 	default:
 		return fmt.Errorf("unknown sidecar kind %q", kind)
 	}
@@ -9690,11 +9698,17 @@ func newVerifyCommitsStep() *Step {
 func makeGitRepo(t *testing.T, withExtraCommit bool) string {
 	t.Helper()
 	dir := t.TempDir()
+	remoteDir := filepath.Join(t.TempDir(), "origin.git")
+	gitEnv := slices.DeleteFunc(slices.Clone(os.Environ()), func(s string) bool {
+		return strings.HasPrefix(s, "GIT_OBJECT_DIRECTORY=") ||
+			strings.HasPrefix(s, "GIT_ALTERNATE_OBJECT_DIRECTORIES=")
+	})
 
 	run := func(args ...string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
+		cmd.Env = gitEnv
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
@@ -9712,10 +9726,23 @@ func makeGitRepo(t *testing.T, withExtraCommit bool) string {
 	run("add", "README.md")
 	run("commit", "-m", "init")
 
-	// Teach git about a local "remote" so origin/main resolves.
-	// We use the repo itself as its own origin (bare clone not needed for tests).
-	run("remote", "add", "origin", dir)
-	run("fetch", "origin")
+	// Use the same bare-clone helper the app/worktree tests use; local Git on
+	// this host rejects "repo points origin at itself" setups.
+	if err := project.CloneBare(context.Background(), dir, remoteDir); err != nil {
+		t.Fatalf("CloneBare: %v", err)
+	}
+	runBare := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "safe.bareRepository=all", "-C", remoteDir}, args...)...)
+		cmd.Env = gitEnv
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runBare("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+	runBare("fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
+	run("remote", "add", "origin", remoteDir)
+	run("fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
 
 	if withExtraCommit {
 		f2 := filepath.Join(dir, "change.txt")

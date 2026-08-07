@@ -716,7 +716,7 @@ func TestCurrentTestFailuresTemplateFunc(t *testing.T) {
 		t.Fatalf("currentTestFailures = %q, want empty", got)
 	}
 
-	body := "## Problem\ntext\n\n## Test Failures\n\ndefect details\n"
+	body := "## Test Failures\n\ndefect details\n"
 	if got := currentTestFailures(body); got != "## Test Failures\n\ndefect details" {
 		t.Fatalf("currentTestFailures = %q", got)
 	}
@@ -1906,8 +1906,11 @@ func TestAdvanceStep_StructuredFailureMarkdownIsAppendedAtomically(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got.Body, "## Test Failures") || !strings.Contains(got.Body, "Observed output:") {
-		t.Fatalf("task body missing structured failure report:\n%s", got.Body)
+	if got.Body != initialBody {
+		t.Fatalf("task body should stay unchanged; got:\n%s", got.Body)
+	}
+	if !strings.Contains(got.CurrentTestFailures, "## Test Failures") || !strings.Contains(got.CurrentTestFailures, "Observed output:") {
+		t.Fatalf("current_test_failures sidecar missing structured failure report:\n%s", got.CurrentTestFailures)
 	}
 	if got.AgentRuns[0].TestOutcome != testOutcomeProductBug {
 		t.Fatalf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeProductBug)
@@ -1964,11 +1967,11 @@ func TestAdvanceStep_StructuredFailureAppendsAfterUnrelatedBodyDelta(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got.Body, "## Test Failures are stale") || !strings.Contains(got.Body, "## Test Failures") {
-		t.Fatalf("body should preserve unrelated delta and append test report:\n%s", got.Body)
+	if got.Body != currentBody {
+		t.Fatalf("body should preserve unrelated delta without appending a new report:\n%s", got.Body)
 	}
-	if strings.Count(got.Body, "\n\n## Test Failures\n") != 1 {
-		t.Fatalf("body should append exactly one test report section:\n%s", got.Body)
+	if !strings.Contains(got.CurrentTestFailures, "## Test Failures") || !strings.Contains(got.CurrentTestFailures, "HTTP/1.1 500 Internal Server Error") {
+		t.Fatalf("current_test_failures sidecar missing latest structured report:\n%s", got.CurrentTestFailures)
 	}
 	if got.Status != "in-progress" {
 		t.Fatalf("status = %q, want in-progress", got.Status)
@@ -2018,14 +2021,17 @@ func TestAdvanceStep_PlainTextFailureMarkdownIsAppendedAtomically(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got.Body, "## Test Failures") || !strings.Contains(got.Body, "Observed output:") {
-		t.Fatalf("task body missing plain-text failure report:\n%s", got.Body)
+	if got.Body != initialBody {
+		t.Fatalf("task body should stay unchanged; got:\n%s", got.Body)
 	}
-	if !strings.Contains(got.Body, testVerdictFail) {
-		t.Fatalf("task body should preserve verdict-shaped observed output:\n%s", got.Body)
+	if !strings.Contains(got.CurrentTestFailures, "## Test Failures") || !strings.Contains(got.CurrentTestFailures, "Observed output:") {
+		t.Fatalf("current_test_failures sidecar missing plain-text failure report:\n%s", got.CurrentTestFailures)
 	}
-	if count := strings.Count(got.Body, testVerdictFail); count != 1 {
-		t.Fatalf("task body should strip only the final verdict marker, count=%d:\n%s", count, got.Body)
+	if !strings.Contains(got.CurrentTestFailures, testVerdictFail) {
+		t.Fatalf("sidecar should preserve verdict-shaped observed output:\n%s", got.CurrentTestFailures)
+	}
+	if count := strings.Count(got.CurrentTestFailures, testVerdictFail); count != 1 {
+		t.Fatalf("sidecar should strip only the final verdict marker, count=%d:\n%s", count, got.CurrentTestFailures)
 	}
 	if got.AgentRuns[0].TestOutcome != testOutcomeProductBug {
 		t.Fatalf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeProductBug)
@@ -2079,20 +2085,14 @@ func TestAdvanceStep_NewFailureReportArchivesPriorTestFailuresSection(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count := strings.Count(got.Body, "## Test Failures\n"); count != 1 {
-		t.Fatalf("body should have exactly one live '## Test Failures' section, got %d:\n%s", count, got.Body)
+	if got.Body != initialBody {
+		t.Fatalf("body should stay unchanged when failures move to sidecars:\n%s", got.Body)
 	}
-	if !strings.Contains(got.Body, "## Resolved Test Failures (historical)") {
-		t.Fatalf("body should archive the prior section under a distinct heading:\n%s", got.Body)
+	if !strings.Contains(got.CurrentTestFailures, "still-open defect") {
+		t.Fatalf("sidecar should contain the new failure report:\n%s", got.CurrentTestFailures)
 	}
-	if !strings.Contains(got.Body, "Old defect from cycle 1, already fixed.") {
-		t.Fatalf("body should preserve archived section content:\n%s", got.Body)
-	}
-	if !strings.Contains(got.Body, "still-open defect") {
-		t.Fatalf("body should contain the new failure report:\n%s", got.Body)
-	}
-	if strings.Index(got.Body, "## Resolved Test Failures") > strings.Index(got.Body, "still-open defect") {
-		t.Fatalf("archived section should precede the current failure report:\n%s", got.Body)
+	if strings.Contains(got.CurrentTestFailures, "Old defect from cycle 1") {
+		t.Fatalf("sidecar should not inherit stale body failures:\n%s", got.CurrentTestFailures)
 	}
 }
 
@@ -2141,18 +2141,12 @@ func TestAdvanceStep_BodyDeltaFailureReportArchivesPriorTestFailuresSection(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count := strings.Count(got.Body, "## Test Failures\n"); count != 1 {
-		t.Fatalf("body should have exactly one live '## Test Failures' section, got %d:\n%s", count, got.Body)
+	if got.Body != currentBody {
+		t.Fatalf("body should preserve the runner-written delta without rewrite:\n%s", got.Body)
 	}
-	if !strings.Contains(got.Body, "## Resolved Test Failures (historical)") {
-		t.Fatalf("body should archive the prior section under a distinct heading:\n%s", got.Body)
-	}
-	if !strings.Contains(got.Body, "Old defect from cycle 1, already fixed.") {
-		t.Fatalf("body should preserve archived section content:\n%s", got.Body)
-	}
-	if current := currentTestFailures(got.Body); !strings.Contains(current, "HTTP/1.1 500 Internal Server Error") ||
+	if current := currentTestFailures(got.CurrentTestFailures); !strings.Contains(current, "HTTP/1.1 500 Internal Server Error") ||
 		strings.Contains(current, "Old defect from cycle 1") {
-		t.Fatalf("currentTestFailures should return only the current delta report, got:\n%s\n\nbody:\n%s", current, got.Body)
+		t.Fatalf("currentTestFailures should return only the current sidecar report, got:\n%s\n\nbody:\n%s", current, got.Body)
 	}
 	if got.AgentRuns[0].TestOutcome != testOutcomeProductBug {
 		t.Fatalf("test outcome = %q, want %q", got.AgentRuns[0].TestOutcome, testOutcomeProductBug)
@@ -2205,15 +2199,14 @@ func TestAdvanceStep_ArchivedFailureRewriteResetsBodyDeltaStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	delta, ok := testFailureBodyDelta(got.Body, got.Workflow, testVerdictSourceStep)
-	if !ok {
-		t.Fatal("testFailureBodyDelta should remain available after archiving prior failures")
+	if got.Body != initialBody {
+		t.Fatalf("body should stay unchanged when the live report moves to a sidecar:\n%s", got.Body)
 	}
-	if current := currentTestFailures(delta); !strings.Contains(current, "still-open defect") {
-		t.Fatalf("delta should start at the live rewritten failure report, got:\n%s\n\nbody:\n%s", delta, got.Body)
+	if current := currentTestFailures(got.CurrentTestFailures); !strings.Contains(current, "still-open defect") {
+		t.Fatalf("sidecar should carry the live rewritten failure report, got:\n%s\n\nbody:\n%s", current, got.Body)
 	}
-	if strings.Contains(delta, "Old defect from cycle 1") {
-		t.Fatalf("delta should not include archived historical failures, got:\n%s", delta)
+	if strings.Contains(got.CurrentTestFailures, "Old defect from cycle 1") {
+		t.Fatalf("sidecar should not include archived historical failures, got:\n%s", got.CurrentTestFailures)
 	}
 }
 
@@ -2806,11 +2799,11 @@ func TestRouteTestResult_DuplicateFailureEscalatesWithoutAnotherRetry(t *testing
 		}
 	}
 	ti, _ = tasks.GetTask("t-dup")
-	if !strings.Contains(ti.Body, specDecisionHeading) {
-		t.Errorf("body = %q, want a spec-decision section appended", ti.Body)
+	if !strings.Contains(ti.SpecDecision, specDecisionHeading) {
+		t.Errorf("specDecision = %q, want a spec-decision section", ti.SpecDecision)
 	}
-	if !strings.Contains(ti.Body, fp) {
-		t.Errorf("body = %q, want the recurring fingerprint referenced", ti.Body)
+	if !strings.Contains(ti.SpecDecision, fp) {
+		t.Errorf("specDecision = %q, want the recurring fingerprint referenced", ti.SpecDecision)
 	}
 }
 
@@ -2853,8 +2846,8 @@ func TestRouteTestResult_DuplicateFailureEscalatesWhenSpecDecisionAppendFails(t 
 	if reason := tasks.Reason("t-dup-append-fails"); !strings.Contains(reason, "suspected acceptance-criteria conflict") {
 		t.Errorf("reason = %q, want spec-decision reframing", reason)
 	}
-	if strings.Contains(ti.Body, specDecisionHeading) {
-		t.Errorf("body = %q, want no spec-decision section when append fails", ti.Body)
+	if ti.SpecDecision != "" {
+		t.Errorf("specDecision = %q, want empty when sidecar write fails", ti.SpecDecision)
 	}
 }
 
@@ -2888,17 +2881,17 @@ func TestRouteTestResult_DuplicateFailureSpecDecisionIsIdempotent(t *testing.T) 
 	}
 	route()
 	ti := mustGetTaskInfo(t, tasks, "t-dup-idem")
-	first := ti.Body
+	first := ti.SpecDecision
 	if strings.Count(first, specDecisionHeading) != 1 {
-		t.Fatalf("body = %q, want exactly one spec-decision section", first)
+		t.Fatalf("specDecision = %q, want exactly one spec-decision section", first)
 	}
 	route()
 	ti = mustGetTaskInfo(t, tasks, "t-dup-idem")
-	if ti.Body != first {
-		t.Errorf("body changed on idempotent rerun:\nfirst: %q\nsecond: %q", first, ti.Body)
+	if ti.SpecDecision != first {
+		t.Errorf("specDecision changed on idempotent rerun:\nfirst: %q\nsecond: %q", first, ti.SpecDecision)
 	}
-	if strings.Count(ti.Body, specDecisionHeading) != 1 {
-		t.Errorf("body = %q, want exactly one spec-decision section after rerun", ti.Body)
+	if strings.Count(ti.SpecDecision, specDecisionHeading) != 1 {
+		t.Errorf("specDecision = %q, want exactly one section after rerun", ti.SpecDecision)
 	}
 }
 
@@ -2924,9 +2917,10 @@ func TestExecRouteTestResult_ReimplementSeedsNote(t *testing.T) {
 
 	taskID := "t-reimplement-note"
 	tasks.Put(TaskInfo{
-		ID:     taskID,
-		Status: "testing",
-		Body:   report.String(),
+		ID:                  taskID,
+		Status:              "testing",
+		Body:                "## Problem\nInvestigate the failing feature.\n",
+		CurrentTestFailures: report.String(),
 		AgentRuns: []AgentRunInfo{
 			{AgentID: "run-1", Role: testRunnerRole, StartedAt: now, TestOutcome: testOutcomeProductBug, TestFailureFingerprint: "fp-1"},
 		},
@@ -3229,8 +3223,8 @@ func TestRouteTestResult_FailAtCapWithRecurringClassReframesAsSpecDecision(t *te
 	if reason := tasks.Reason("t-cap-recur"); !strings.Contains(reason, "suspected acceptance-criteria conflict") {
 		t.Errorf("reason = %q, want spec-decision reframing", reason)
 	}
-	if !strings.Contains(ti.Body, specDecisionHeading) {
-		t.Errorf("body = %q, want a spec-decision section appended", ti.Body)
+	if !strings.Contains(ti.SpecDecision, specDecisionHeading) {
+		t.Errorf("specDecision = %q, want a spec-decision section", ti.SpecDecision)
 	}
 }
 
@@ -3380,8 +3374,8 @@ func TestRouteTestResult_FailAtCapWithDistinctFailuresAfterImplementationReframe
 	if strings.Contains(reason, "recurring class") || strings.Contains(reason, "recurring product-bug failure class(es)") {
 		t.Errorf("reason = %q, must not report a count of recurring classes", reason)
 	}
-	if strings.Count(ti.Body, specDecisionHeading) != 1 {
-		t.Errorf("body = %q, want exactly one spec-decision section", ti.Body)
+	if strings.Count(ti.SpecDecision, specDecisionHeading) != 1 {
+		t.Errorf("specDecision = %q, want exactly one section", ti.SpecDecision)
 	}
 }
 
@@ -3484,8 +3478,8 @@ func TestRouteTestResult_FailAtCapWithoutInterveningCodeAuthorUsesGenericReason(
 	if strings.Contains(reason, "suspected acceptance-criteria conflict") {
 		t.Errorf("reason = %q, must not use spec-decision reframing without an author gap", reason)
 	}
-	if strings.Contains(ti.Body, specDecisionHeading) {
-		t.Errorf("body = %q, must not gain a spec-decision section without an author gap", ti.Body)
+	if ti.SpecDecision != "" {
+		t.Errorf("specDecision = %q, must stay empty without an author gap", ti.SpecDecision)
 	}
 }
 
@@ -3519,8 +3513,8 @@ func TestRouteTestResult_FailAtCapSpecDecisionEscalatesWhenAppendFails(t *testin
 	if reason := tasks.Reason("t-cap-append-fails"); !strings.Contains(reason, "suspected acceptance-criteria conflict") {
 		t.Errorf("reason = %q, want spec-decision reframing despite append failure", reason)
 	}
-	if strings.Contains(ti.Body, specDecisionHeading) {
-		t.Errorf("body = %q, want no spec-decision section when append fails", ti.Body)
+	if ti.SpecDecision != "" {
+		t.Errorf("specDecision = %q, want empty when sidecar write fails", ti.SpecDecision)
 	}
 }
 
@@ -3542,8 +3536,8 @@ func TestRouteTestResult_EmptyRecurringSpecDecisionSectionIsIdempotent(t *testin
 	if strings.Contains(section1, "Recurring fingerprint(s): .") || strings.Contains(section1, "Recurring fingerprint(s): \n") {
 		t.Errorf("section = %q, must not render a blank fingerprint list", section1)
 	}
-	if !strings.Contains(section1, testFailuresHeading) {
-		t.Errorf("section = %q, want a pointer to the latest %q section", section1, testFailuresHeading)
+	if !strings.Contains(section1, "current test failures sidecar") {
+		t.Errorf("section = %q, want a pointer to the current test failures sidecar", section1)
 	}
 
 	e, tasks := makeTestEngine(t)
@@ -3572,17 +3566,17 @@ func TestRouteTestResult_EmptyRecurringSpecDecisionSectionIsIdempotent(t *testin
 	}
 	route()
 	ti := mustGetTaskInfo(t, tasks, "t-cap-empty-idem")
-	first := ti.Body
+	first := ti.SpecDecision
 	if strings.Count(first, specDecisionHeading) != 1 {
-		t.Fatalf("body = %q, want exactly one spec-decision section", first)
+		t.Fatalf("specDecision = %q, want exactly one spec-decision section", first)
 	}
 	route()
 	ti = mustGetTaskInfo(t, tasks, "t-cap-empty-idem")
-	if ti.Body != first {
-		t.Errorf("body changed on idempotent rerun:\nfirst: %q\nsecond: %q", first, ti.Body)
+	if ti.SpecDecision != first {
+		t.Errorf("specDecision changed on idempotent rerun:\nfirst: %q\nsecond: %q", first, ti.SpecDecision)
 	}
-	if strings.Count(ti.Body, specDecisionHeading) != 1 {
-		t.Errorf("body = %q, want exactly one spec-decision section after rerun", ti.Body)
+	if strings.Count(ti.SpecDecision, specDecisionHeading) != 1 {
+		t.Errorf("specDecision = %q, want exactly one section after rerun", ti.SpecDecision)
 	}
 }
 
@@ -3622,8 +3616,8 @@ func TestRouteTestResult_ReDispatchDoesNotUsePriorCycleForSpecDecision(t *testin
 	if reason := tasks.Reason("t-redispatch-spec"); strings.Contains(reason, "suspected acceptance-criteria conflict") {
 		t.Errorf("reason = %q, must not reframe as spec-decision from prior-cycle evidence", reason)
 	}
-	if strings.Contains(ti.Body, specDecisionHeading) {
-		t.Errorf("body = %q, must not gain a spec-decision section from prior-cycle evidence", ti.Body)
+	if ti.SpecDecision != "" {
+		t.Errorf("specDecision = %q, must stay empty for prior-cycle evidence", ti.SpecDecision)
 	}
 }
 
@@ -3729,40 +3723,56 @@ func TestPrepareTestStepCompletionLedgerCoexistsWithTestFailures(t *testing.T) {
 
 	prepareTestVerdictAttemptVars(wfExec, testVerdictSourceStep, body)
 	output := buildOutput(report1)
-	if err := e.prepareTestStepCompletion(taskID, TaskInfo{ID: taskID}, &output, wfExec, &body); err != nil {
+	taskInfo := TaskInfo{ID: taskID}
+	if err := e.prepareTestStepCompletion(taskID, taskInfo, &output, wfExec, &body); err != nil {
 		t.Fatalf("first prepareTestStepCompletion: %v", err)
 	}
-	if current := currentTestFailures(body); current == "" || !strings.Contains(current, "threshold 3 still passes on one event") {
-		t.Fatalf("currentTestFailures = %q, want live report preserved in body:\n%s", current, body)
+	ti, err := tasks.GetTask(taskID)
+	if err != nil {
+		t.Fatalf("GetTask(%s): %v", taskID, err)
 	}
-	if strings.Count(body, acceptanceLedgerHeading) != 1 {
-		t.Fatalf("body = %q, want one acceptance ledger section", body)
+	taskInfo.CurrentTestFailures = ti.CurrentTestFailures
+	taskInfo.AcceptanceLedger = ti.AcceptanceLedger
+	if current := currentTestFailures(taskInfo.CurrentTestFailures); current == "" || !strings.Contains(current, "threshold 3 still passes on one event") {
+		t.Fatalf("currentTestFailures = %q, want live report preserved in sidecar", current)
+	}
+	if strings.Contains(body, testFailuresHeading) {
+		t.Fatalf("body still contains live test failures heading:\n%s", body)
+	}
+	if strings.Count(taskInfo.AcceptanceLedger, acceptanceLedgerHeading) != 1 {
+		t.Fatalf("acceptance ledger = %q, want one acceptance ledger section", taskInfo.AcceptanceLedger)
 	}
 	fp1 := wfExec.Variables["step."+testVerdictSourceStep+"."+testFailureFingerprintKey]
 	if fp1 == "" {
 		t.Fatalf("wfExec fingerprint empty after first completion; body:\n%s", body)
 	}
-	if strings.Count(body, ledgerEntryMarker(fp1)) != 1 {
-		t.Fatalf("body = %q, want one ledger marker for %s", body, fp1)
+	if strings.Count(taskInfo.AcceptanceLedger, ledgerEntryMarker(fp1)) != 1 {
+		t.Fatalf("acceptance ledger = %q, want one ledger marker for %s", taskInfo.AcceptanceLedger, fp1)
 	}
 
 	prepareTestVerdictAttemptVars(wfExec, testVerdictSourceStep, body)
 	output = buildOutput(report2)
-	if err := e.prepareTestStepCompletion(taskID, TaskInfo{ID: taskID}, &output, wfExec, &body); err != nil {
+	if err := e.prepareTestStepCompletion(taskID, taskInfo, &output, wfExec, &body); err != nil {
 		t.Fatalf("second prepareTestStepCompletion: %v", err)
 	}
+	ti, err = tasks.GetTask(taskID)
+	if err != nil {
+		t.Fatalf("GetTask(%s): %v", taskID, err)
+	}
+	taskInfo.CurrentTestFailures = ti.CurrentTestFailures
+	taskInfo.AcceptanceLedger = ti.AcceptanceLedger
 	fp2 := wfExec.Variables["step."+testVerdictSourceStep+"."+testFailureFingerprintKey]
 	if fp2 != fp1 {
 		t.Fatalf("fingerprint drifted across wording-only change: first=%q second=%q", fp1, fp2)
 	}
-	if current := currentTestFailures(body); current == "" || !strings.Contains(current, "every prior defect must stay fixed at once") {
-		t.Fatalf("currentTestFailures = %q, want latest live report preserved in body:\n%s", current, body)
+	if current := currentTestFailures(taskInfo.CurrentTestFailures); current == "" || !strings.Contains(current, "every prior defect must stay fixed at once") {
+		t.Fatalf("currentTestFailures = %q, want latest live report preserved in sidecar", current)
 	}
-	if strings.Count(body, acceptanceLedgerHeading) != 1 {
-		t.Fatalf("body = %q, want one acceptance ledger section after wording-drift rerun", body)
+	if body != "## Problem\nKeep all prior product-bug acceptance criteria green." {
+		t.Fatalf("body should stay unchanged after wording-drift rerun: %q", body)
 	}
-	if strings.Count(body, ledgerEntryMarker(fp1)) != 1 {
-		t.Fatalf("body = %q, want deduped acceptance ledger entry for %s", body, fp1)
+	if strings.Count(taskInfo.AcceptanceLedger, ledgerEntryMarker(fp1)) != 1 {
+		t.Fatalf("acceptance ledger = %q, want deduped acceptance ledger entry for %s", taskInfo.AcceptanceLedger, fp1)
 	}
 }
 

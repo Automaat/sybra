@@ -130,6 +130,7 @@ func (e *Engine) escalateMissingStep(taskID string, wf *Execution) {
 	failed.State = ExecFailed
 	if err := e.tasks.SetStatusAndWorkflow(taskID, "human-required", reason, &failed); err != nil {
 		e.logger.Warn("workflow.resume-stalled.step-missing.escalate", "task_id", taskID, "err", err)
+		return
 	}
 }
 

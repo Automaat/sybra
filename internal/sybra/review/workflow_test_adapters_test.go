@@ -103,7 +103,6 @@ func (a *taskAdapter) ClearTaskStatusReasonAndSetWorkflowIf(id, expectedStatus, 
 	}
 	return cleared, err
 }
-
 func (a *taskAdapter) UpdateTaskBlocker(id string, status taskstatus.Status, reason string, state blocker.State) error {
 	st, err := task.ValidateStatus(string(status))
 	if err != nil {
@@ -206,7 +205,6 @@ func (a *taskAdapter) SetBlockerAndWorkflow(id, status, reason string, state blo
 	_, err = a.tasks.Update(id, u)
 	return err
 }
-
 func (a *taskAdapter) SetWorkflowIf(id string, fence workflow.WorkflowWriteFence, wf *workflow.Execution) (bool, error) {
 	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
 		if cur.Generation != fence.Generation || cur.Status != fence.Status ||
@@ -349,8 +347,14 @@ func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
 		u.PlanDecisions = &content
 	case "plan_brief":
 		u.PlanBrief = &content
+	case "current_test_failures":
+		u.CurrentTestFailures = &content
+	case "acceptance_ledger":
+		u.AcceptanceLedger = &content
+	case "spec_decision":
+		u.SpecDecision = &content
 	default:
-		return fmt.Errorf("unknown sidecar kind %q (want plan|plan_contract|code_review|plan_critique|plan_research|plan_decisions|plan_brief|plan_draft.<name>)", kind)
+		return fmt.Errorf("unknown sidecar kind %q (want plan|plan_contract|code_review|plan_critique|plan_research|plan_decisions|plan_brief|current_test_failures|acceptance_ledger|spec_decision|plan_draft.<name>)", kind)
 	}
 	_, err := a.tasks.Update(id, u)
 	return err
@@ -378,6 +382,9 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		PlanDecisions:         t.PlanDecisions,
 		PlanBrief:             t.PlanBrief,
 		CodeReview:            t.CodeReview,
+		CurrentTestFailures:   t.CurrentTestFailures,
+		AcceptanceLedger:      t.AcceptanceLedger,
+		SpecDecision:          t.SpecDecision,
 		PlanDrafts:            t.PlanDrafts,
 		Issue:                 t.Issue,
 		Reviewed:              t.Reviewed,

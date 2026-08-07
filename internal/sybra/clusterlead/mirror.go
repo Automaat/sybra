@@ -3,7 +3,6 @@ package clusterlead
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -339,9 +338,6 @@ func (m *Mirror) applyFollowerTaskWithContext(ctx context.Context, node string, 
 		if err != nil {
 			return task.Task{}, err
 		}
-		if err := m.writeSidecars(latest); err != nil {
-			return task.Task{}, fmt.Errorf("write follower sidecars: %w", err)
-		}
 		return latest, nil
 	})
 	if err != nil {
@@ -349,6 +345,10 @@ func (m *Mirror) applyFollowerTaskWithContext(ctx context.Context, node string, 
 			return false
 		}
 		m.logger.Warn("cluster.mirror.apply.failed", "node", node, "task", follower.ID, "err", err)
+		return false
+	}
+	if err := m.writeSidecars(saved); err != nil {
+		m.logger.Warn("cluster.mirror.sidecar.failed", "node", node, "task", follower.ID, "err", err)
 		return false
 	}
 	m.logger.Debug("cluster.mirror.applied", "node", node, "task", follower.ID, "status", string(saved.Status), "rev", saved.MirrorRev)
@@ -389,12 +389,12 @@ func (m *Mirror) adoptFollowerTask(ctx context.Context, node string, follower ta
 	followerUpdated := adopted.UpdatedAt
 	adopted.MirrorUpdatedAt = &followerUpdated
 	adopted.UpdatedAt = time.Now().UTC()
-	if err := m.writeSidecars(adopted); err != nil {
-		m.logger.Warn("cluster.mirror.adopt.sidecar_failed", "node", node, "task", adopted.ID, "err", err)
-		return false
-	}
 	if _, _, err := m.tasks.Put(adopted); err != nil {
 		m.logger.Warn("cluster.mirror.adopt.failed", "node", node, "task", adopted.ID, "err", err)
+		return false
+	}
+	if err := m.writeSidecars(adopted); err != nil {
+		m.logger.Warn("cluster.mirror.adopt.sidecar_failed", "node", node, "task", adopted.ID, "err", err)
 		return false
 	}
 	m.logger.Info("cluster.mirror.adopted", "node", node, "task", adopted.ID, "status", string(adopted.Status))
@@ -598,6 +598,15 @@ func (m *Mirror) writeSidecars(t task.Task) error {
 	if err := store.CodeReviews().Write(t.ID, t.CodeReview); err != nil {
 		return err
 	}
+	if err := store.CurrentTestFailures().Write(t.ID, t.CurrentTestFailures); err != nil {
+		return err
+	}
+	if err := store.AcceptanceLedgers().Write(t.ID, t.AcceptanceLedger); err != nil {
+		return err
+	}
+	if err := store.SpecDecisions().Write(t.ID, t.SpecDecision); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -639,6 +648,9 @@ func Merge(canonical, follower task.Task) (task.Task, bool) {
 	out.PlanDecisions = follower.PlanDecisions
 	out.PlanBrief = follower.PlanBrief
 	out.CodeReview = follower.CodeReview
+	out.CurrentTestFailures = follower.CurrentTestFailures
+	out.AcceptanceLedger = follower.AcceptanceLedger
+	out.SpecDecision = follower.SpecDecision
 	out.Attachments = follower.Attachments
 
 	out.MirrorRev = canonical.MirrorRev + 1
