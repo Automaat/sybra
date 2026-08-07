@@ -3,6 +3,7 @@ package artifact
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -53,6 +54,22 @@ func TestPutListRead(t *testing.T) {
 	}
 	if gotMeta.StepID != "plan" {
 		t.Errorf("StepID = %q, want plan", gotMeta.StepID)
+	}
+}
+
+func TestStoreLockTableReclaimsBurst(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	var wg sync.WaitGroup
+	for i := range 200 {
+		wg.Go(func() {
+			unlock := s.locks.LockLocal(fmt.Sprintf("task-%d", i))
+			unlock()
+		})
+	}
+	wg.Wait()
+	if got := s.locks.Len(); got != 0 {
+		t.Fatalf("lock entries = %d, want burst tasks reclaimed", got)
 	}
 }
 
@@ -197,11 +214,8 @@ func TestDelete(t *testing.T) {
 		t.Fatalf("second Delete: %v", err)
 	}
 
-	s.mu.Lock()
-	_, exists := s.locks["del-task"]
-	s.mu.Unlock()
-	if exists {
-		t.Error("lock entry not pruned after Delete")
+	if got := s.locks.Len(); got != 0 {
+		t.Errorf("lock entries = %d, want zero after Delete", got)
 	}
 
 	metas, err := s.List("del-task")

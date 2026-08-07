@@ -3,6 +3,7 @@ package attachment
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -55,6 +56,25 @@ func TestStorePutListPathDelete(t *testing.T) {
 	}
 	if _, err := store.Path("task-1", meta.ID); err == nil {
 		t.Fatal("Path after Delete returned nil error, want failure")
+	}
+}
+
+func TestStoreLockTableReclaimsBurst(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir(), 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := range 200 {
+		wg.Go(func() {
+			unlock := store.locks.LockLocal(fmt.Sprintf("task-%d", i))
+			unlock()
+		})
+	}
+	wg.Wait()
+	if got := store.locks.Len(); got != 0 {
+		t.Fatalf("lock entries = %d, want burst tasks reclaimed", got)
 	}
 }
 

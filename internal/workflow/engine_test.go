@@ -5205,10 +5205,9 @@ func TestRescheduleRateLimitedAgent_SkippedInflightDoesNotConsumeWatchdogRetry(t
 	})
 	setWorkflowAgentRoute(t, tasks, "t1", "limited-agent", "implement")
 
-	mu := engine.taskInflightMutex("t1")
-	mu.Lock()
+	unlockInflight := engine.acquireInflight("t1")
 	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
-	mu.Unlock()
+	unlockInflight()
 
 	if got := agents.CallCount(); got != 0 {
 		t.Fatalf("unexpected replacement agent starts = %d, want 0", got)
@@ -9295,8 +9294,7 @@ func TestResumeStalled_SkipsInflightDispatch(t *testing.T) {
 	// Simulate the original dispatch being mid-flight inside AdvanceStep —
 	// the per-task advance mutex is held, no agent registered yet (worktree
 	// still being created in the real system, fake-claude hasn't started).
-	heldMu := engine.taskInflightMutex("t1")
-	heldMu.Lock()
+	unlockInflight := engine.acquireInflight("t1")
 
 	before := agents.CallCount()
 	engine.ResumeStalled()
@@ -9307,11 +9305,33 @@ func TestResumeStalled_SkipsInflightDispatch(t *testing.T) {
 
 	// Once the original dispatch finishes and releases the advance mutex,
 	// a subsequent tick is allowed to resume — that's the real recovery path.
-	heldMu.Unlock()
+	unlockInflight()
 
 	engine.ResumeStalled()
 	if got := agents.CallCount(); got != before+1 {
 		t.Errorf("ResumeStalled after inflight cleared: calls %d → %d (want +1)", before, got)
+	}
+}
+
+func TestEngineKeyedLocksReclaimBurst(t *testing.T) {
+	t.Parallel()
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	var wg sync.WaitGroup
+	for i := range 200 {
+		wg.Go(func() {
+			key := fmt.Sprintf("task-%d", i)
+			unlockInflight := engine.inflightLocks.LockLocal(key)
+			unlockInflight()
+			unlockRoute := engine.routeLocks.LockLocal(key)
+			unlockRoute()
+		})
+	}
+	wg.Wait()
+	if got := engine.inflightLocks.Len(); got != 0 {
+		t.Fatalf("inflight lock entries = %d, want burst tasks reclaimed", got)
+	}
+	if got := engine.routeLocks.Len(); got != 0 {
+		t.Fatalf("route lock entries = %d, want burst tasks reclaimed", got)
 	}
 }
 

@@ -6,7 +6,6 @@ import (
 	"maps"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/blocker"
@@ -28,7 +27,7 @@ const triageRetryableStatusReasonPrefix = "triage retryable: "
 // double-delivered callback — from triggering "step not found" errors that
 // would otherwise spam the log and re-persist the task file on every hit.
 func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
-	e.acquireInflight(taskID) // blocks until any concurrent advance releases
+	unlockInflight := e.acquireInflight(taskID) // blocks until any concurrent advance releases
 
 	// Use an idempotent release so we can unlock before executeSteps while
 	// still having a defer as a safety net for early-return paths. Releasing
@@ -40,7 +39,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	release := func() {
 		if !released {
 			released = true
-			e.releaseInflight(taskID)
+			unlockInflight()
 		}
 	}
 	defer release()
@@ -314,47 +313,13 @@ func (e *Engine) executeNextSteps(taskID string, def *Definition, step *Step, wf
 // acquireInflight serializes AdvanceStep for a task. Blocks (rather than
 // returning false) so simultaneous parallel-child completions from
 // different agent goroutines are processed sequentially instead of one
-// silently being dropped. Always returns true; the bool return is kept
-// so callers can preserve the "skip on already-advancing" log line.
+// silently being dropped. It returns the release function for that hold.
 //
 // Re-entry within the same goroutine is not supported — every AdvanceStep
-// path defers releaseInflight before any callback that could re-enter.
-func (e *Engine) acquireInflight(taskID string) bool {
-	mu := e.taskInflightMutex(taskID)
-	mu.Lock()
-	return true
-}
-
-// releaseInflight unlocks the per-task advance mutex.
-func (e *Engine) releaseInflight(taskID string) {
-	mu := e.taskInflightMutex(taskID)
-	mu.Unlock()
-}
-
-// taskInflightMutex returns the lazily-initialized per-task mutex used by
-// acquire/releaseInflight. Old taskInflightMutex entries linger for the
-// life of the process; tasks with hundreds of millions of IDs would leak
-// memory, but task IDs are bounded by the human workload so this is fine.
-func (e *Engine) taskInflightMutex(taskID string) *sync.Mutex {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	mu, ok := e.inflightMutexes[taskID]
-	if !ok {
-		mu = &sync.Mutex{}
-		e.inflightMutexes[taskID] = mu
-	}
-	return mu
-}
-
-func (e *Engine) taskRouteMutex(taskID string) *sync.Mutex {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	mu, ok := e.routeMutexes[taskID]
-	if !ok {
-		mu = &sync.Mutex{}
-		e.routeMutexes[taskID] = mu
-	}
-	return mu
+// path defers the returned release function before any callback that could
+// re-enter.
+func (e *Engine) acquireInflight(taskID string) func() {
+	return e.inflightLocks.LockLocal(taskID)
 }
 
 // advanceContext bundles everything AdvanceStep needs to act on a single

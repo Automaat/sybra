@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evidence"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/project"
@@ -478,8 +479,8 @@ type Engine struct {
 	ctx              context.Context
 	drainCtx         context.Context
 	mu               sync.Mutex
-	inflightMutexes  map[string]*sync.Mutex     // taskID → advance serializer (parallel-aware)
-	routeMutexes     map[string]*sync.Mutex     // taskID → serialize run_agent route publication vs completion reads
+	inflightLocks    fsutil.KeyedLocker         // taskID → advance serializer (parallel-aware)
+	routeLocks       fsutil.KeyedLocker         // taskID → serialize run_agent route publication vs completion reads
 	dispatching      map[string]struct{}        // taskID → workflow-engine dispatch/resume attempt in progress before StartAgent owns the shared manager claim
 	starting         map[string]struct{}        // taskID → StartWorkflowWithVars in progress
 	humanAction      map[string]struct{}        // taskID → HandleHumanAction in progress
@@ -593,8 +594,6 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		now:              func() time.Time { return time.Now().UTC() },
 		logger:           logger,
 		ctx:              context.Background(),
-		inflightMutexes:  make(map[string]*sync.Mutex),
-		routeMutexes:     make(map[string]*sync.Mutex),
 		dispatching:      make(map[string]struct{}),
 		starting:         make(map[string]struct{}),
 		humanAction:      make(map[string]struct{}),

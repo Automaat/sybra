@@ -39,12 +39,12 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 	// during which no agent is yet registered — without this guard the ticker
 	// would spawn a duplicate and the second agent's completion would corrupt
 	// the workflow at the wait_human gate.
-	// inflightMutexes is a non-blocking probe: TryLock distinguishes "another
+	// inflightLocks is a non-blocking probe: TryLock distinguishes "another
 	// goroutine currently holds the advance lock" from "free".
-	mu := e.taskInflightMutex(taskID)
-	advancing := !mu.TryLock()
+	probeUnlock, idle := e.inflightLocks.TryLockLocal(taskID)
+	advancing := !idle
 	if !advancing {
-		mu.Unlock()
+		probeUnlock()
 	}
 
 	// Retire orphaned routes before interpreting them as "agent still pending"

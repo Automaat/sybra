@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/backoff"
 	"github.com/Automaat/sybra/internal/errclass"
 
 	"github.com/Automaat/sybra/internal/clock"
@@ -260,14 +261,8 @@ func (t *authHealthTracker) observeFailure(state AuthState, reason string) {
 func (t *authHealthTracker) applyFailureBackoffLocked() {
 	t.hadFailure = true
 	t.consecutiveFailures++
-	backoff := authCircuitBaseBackoff
-	for i := 1; i < t.consecutiveFailures && backoff < authCircuitMaxBackoff; i++ {
-		backoff *= 2
-	}
-	if backoff > authCircuitMaxBackoff {
-		backoff = authCircuitMaxBackoff
-	}
-	t.nextAttempt = t.now().Add(backoff)
+	delay := backoff.ForAttempt(t.consecutiveFailures, authCircuitBaseBackoff, authCircuitMaxBackoff).Delay
+	t.nextAttempt = t.now().Add(delay)
 }
 
 // isAuthErrorMsg is IsAuthError's message-matching core, factored out so

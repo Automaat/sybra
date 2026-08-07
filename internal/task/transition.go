@@ -138,17 +138,16 @@ func (m *Manager) Apply(intent TransitionIntent) (TransitionResult, error) {
 		return TransitionResult{}, fmt.Errorf("transition: intent.Extra.Status must be nil; set ToStatus instead")
 	}
 
-	mu := m.lockFor(id)
-	mu.Lock()
+	unlock := m.lock(id)
 
 	cur, err := m.store.Get(id)
 	if err != nil {
-		mu.Unlock()
+		unlock()
 		return TransitionResult{}, err
 	}
 
 	outcome, err := m.applyLocked(cur, intent)
-	mu.Unlock()
+	unlock()
 	if err != nil {
 		return TransitionResult{}, err
 	}
@@ -171,23 +170,22 @@ func (m *Manager) ApplyFn(id string, fn func(cur Task) (TransitionIntent, error)
 		return TransitionResult{}, fmt.Errorf("transition: task id is required")
 	}
 
-	mu := m.lockFor(id)
-	mu.Lock()
+	unlock := m.lock(id)
 
 	cur, err := m.store.Get(id)
 	if err != nil {
-		mu.Unlock()
+		unlock()
 		return TransitionResult{}, err
 	}
 	intent, err := fn(cur)
 	if err != nil {
-		mu.Unlock()
+		unlock()
 		return TransitionResult{}, err
 	}
 	intent.TaskID = id
 
 	outcome, err := m.applyLocked(cur, intent)
-	mu.Unlock()
+	unlock()
 	if err != nil {
 		return TransitionResult{}, err
 	}

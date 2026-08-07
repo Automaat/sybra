@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/fsutil"
@@ -22,7 +21,7 @@ const metaFileName = "meta.json"
 type Store struct {
 	root         string
 	maxSizeBytes int64
-	locks        sync.Map // taskID -> *sync.Mutex
+	locks        fsutil.KeyedLocker
 }
 
 // NewStore constructs a local attachment store rooted at dir.
@@ -56,9 +55,8 @@ func (s *Store) Put(taskID string, req UploadRequest) (Attachment, error) {
 		contentType = "application/octet-stream"
 	}
 
-	mu := s.lockFor(taskID)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := s.locks.LockLocal(taskID)
+	defer unlock()
 
 	id := "att_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	dir, err := s.attachmentDir(taskID, id)
@@ -123,9 +121,8 @@ func (s *Store) Import(taskID string, meta Attachment, data []byte) (Attachment,
 		createdAt = time.Now().UTC()
 	}
 
-	mu := s.lockFor(taskID)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := s.locks.LockLocal(taskID)
+	defer unlock()
 
 	dir, err := s.attachmentDir(taskID, meta.ID)
 	if err != nil {
@@ -234,9 +231,8 @@ func (s *Store) Delete(taskID, attachmentID string) error {
 	if err := fsutil.ValidateKey(attachmentID); err != nil {
 		return fmt.Errorf("attachment id: %w", err)
 	}
-	mu := s.lockFor(taskID)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := s.locks.LockLocal(taskID)
+	defer unlock()
 	dir, err := s.attachmentDir(taskID, attachmentID)
 	if err != nil {
 		return err
@@ -255,9 +251,8 @@ func (s *Store) DeleteTask(taskID string) error {
 	if err := fsutil.ValidateKey(taskID); err != nil {
 		return fmt.Errorf("task id: %w", err)
 	}
-	mu := s.lockFor(taskID)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := s.locks.LockLocal(taskID)
+	defer unlock()
 	dir, err := s.taskDir(taskID)
 	if err != nil {
 		return err
@@ -276,16 +271,6 @@ func (s *Store) validateSize(data []byte) error {
 		return fmt.Errorf("attachment exceeds max size of %d bytes", s.maxSizeBytes)
 	}
 	return nil
-}
-
-func (s *Store) lockFor(taskID string) *sync.Mutex {
-	existing, _ := s.locks.LoadOrStore(taskID, &sync.Mutex{})
-	if mu, ok := existing.(*sync.Mutex); ok {
-		return mu
-	}
-	mu := &sync.Mutex{}
-	s.locks.Store(taskID, mu)
-	return mu
 }
 
 func (s *Store) taskDir(taskID string) (string, error) {
