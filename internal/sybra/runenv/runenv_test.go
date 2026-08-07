@@ -15,6 +15,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/autonomy"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/providerid"
 )
@@ -569,6 +570,7 @@ func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = gitexec.WithoutRepoOverrides(nil)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
 	}
@@ -577,6 +579,7 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = gitexec.WithoutRepoOverrides(nil)
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("git %v: %v", args, err)

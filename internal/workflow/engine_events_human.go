@@ -34,7 +34,7 @@ func (e *Engine) HandleHumanActionRecovering(
 		if !ok {
 			return err
 		}
-		if err := e.tasks.SetWorkflow(taskID, wf); err != nil {
+		if err := e.persistWorkflow(taskID, wf); err != nil {
 			return err
 		}
 		return e.handleHumanAction(taskID, action, data)
@@ -133,7 +133,7 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 		wfExec.SetVar("human."+k, v)
 	}
 
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if err := e.persistWorkflow(taskID, wfExec); err != nil {
 		return err
 	}
 

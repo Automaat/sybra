@@ -194,7 +194,7 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 	if kind == "plan_draft" {
 		kind = "plan_draft." + stepID
 	}
-	if writeErr := e.tasks.WriteSidecar(taskID, kind, string(content)); writeErr != nil {
+	if writeErr := e.storeSidecar(taskID, kind, string(content)); writeErr != nil {
 		e.logger.Error("workflow.import-sidecar.write", "task_id", taskID, "step", stepID, "kind", kind, "err", writeErr)
 		return
 	}
@@ -260,7 +260,7 @@ func (e *Engine) recoverSidecarFromTaskWorktree(taskID, stepID string, step *Ste
 	if sidecar := e.resolveSidecarDir(taskID); sidecar != "" {
 		info.Workflow.SetVar(WorkflowVarSidecarDir, sidecar)
 	}
-	if setErr := e.tasks.SetWorkflow(taskID, info.Workflow); setErr != nil {
+	if setErr := e.persistWorkflow(taskID, info.Workflow); setErr != nil {
 		e.logger.Warn("workflow.import-sidecar.recover.persist", "task_id", taskID, "step", stepID, "err", setErr)
 	}
 	e.logger.Info("workflow.import-sidecar.recovered-dir", "task_id", taskID, "step", stepID, "dir", wtPath)
@@ -272,7 +272,7 @@ func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
 	if stepID != "" {
 		reason += " after step " + stepID
 	}
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
+	if statusErr := e.persistStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 		e.logger.Error("workflow.import-sidecar.required.status", "task_id", taskID, "step", stepID, "kind", kind, "err", statusErr)
 	}
 }
@@ -385,7 +385,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 				wfExec.State = ExecWaiting
 				wfExec.SetVar(watchdogReaskDeliveredKey(step.ID), "1")
 				e.logger.Info("workflow.reuse-agent", "task_id", taskID, "step", step.ID, "agent_id", agentID)
-				return e.tasks.SetWorkflow(taskID, wfExec)
+				return e.persistWorkflow(taskID, wfExec)
 			}
 		}
 	}
@@ -506,7 +506,7 @@ func (e *Engine) persistStartedAgent(taskID string, step *Step, wfExec *Executio
 	wfExec.SetAgentRoute(agentID, step.ID)
 	wfExec.State = ExecWaiting
 	e.logger.Info("workflow.run-agent", "task_id", taskID, "step", step.ID, "role", step.Config.Role, "agent_id", agentID, "provider", provider)
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if err := e.persistWorkflow(taskID, wfExec); err != nil {
 		return e.deferStartedAgentRoute(taskID, step.ID, agentID, err)
 	}
 	e.clearPendingAgentStep(taskID, agentID)
@@ -518,15 +518,15 @@ func (e *Engine) parkRunAgentStartError(taskID, stepID string, wfExec *Execution
 	case errors.Is(err, ErrDispatchInFlight):
 		wfExec.State = ExecWaiting
 		e.logger.Info("workflow.run-agent.dispatch-in-flight", "task_id", taskID, "step", stepID)
-		return true, e.tasks.SetWorkflow(taskID, wfExec)
+		return true, e.persistWorkflow(taskID, wfExec)
 	case errors.Is(err, ErrTestRunnerBusy):
 		wfExec.State = ExecWaiting
 		e.logger.Info("workflow.run-agent.test-runner-busy", "task_id", taskID, "step", stepID)
-		return true, e.tasks.SetWorkflow(taskID, wfExec)
+		return true, e.persistWorkflow(taskID, wfExec)
 	case errors.Is(err, ErrAgentPoolBusy):
 		wfExec.State = ExecWaiting
 		e.logger.Info("workflow.run-agent.agent-pool-busy", "task_id", taskID, "step", stepID)
-		return true, e.tasks.SetWorkflow(taskID, wfExec)
+		return true, e.persistWorkflow(taskID, wfExec)
 	default:
 		return false, nil
 	}
@@ -913,7 +913,7 @@ func (e *Engine) execWaitHuman(taskID string, step *Step, wfExec *Execution) err
 		if err != nil {
 			return err
 		}
-	} else if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	} else if err := e.persistWorkflow(taskID, wfExec); err != nil {
 		return err
 	}
 	e.maybeAutoApprovePlanReview(taskID, step)
@@ -987,7 +987,7 @@ func (e *Engine) shouldAutoApprovePlanReview(t TaskInfo) bool {
 }
 
 func (e *Engine) execSetStatus(taskID string, step *Step) (StepOutput, error) {
-	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.Status(step.Config.Status), step.Config.StatusReason); err != nil {
+	if err := e.persistStatus(taskID, taskstatus.Status(step.Config.Status), step.Config.StatusReason); err != nil {
 		return StepOutput{}, err
 	}
 

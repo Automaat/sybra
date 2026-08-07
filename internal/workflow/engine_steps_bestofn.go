@@ -101,7 +101,7 @@ func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec 
 	e.clearAgentStepsForTask(taskID)
 
 	wfExec.State = ExecWaiting
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if err := e.persistWorkflow(taskID, wfExec); err != nil {
 		return nil, err
 	}
 
@@ -149,7 +149,7 @@ func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec 
 	allDone := rec.AllAttemptsDone()
 	var persistErr error
 	if !allDone {
-		persistErr = e.tasks.SetWorkflow(taskID, wfExec)
+		persistErr = e.persistWorkflow(taskID, wfExec)
 	}
 	unlockInflight()
 	if persistErr != nil {
@@ -221,7 +221,7 @@ func (e *Engine) spawnBestOfNAttempt(taskID string, step *Step, wfExec *Executio
 	stepKey := bestOfNAttemptStepKey(step.ID, attemptID)
 	wfExec.SetAgentRoute(agentID, stepKey)
 	e.setPendingAgentStepLocked(taskID, agentID, stepKey)
-	err = e.tasks.SetWorkflow(taskID, wfExec)
+	err = e.persistWorkflow(taskID, wfExec)
 	e.mu.Unlock()
 	if err != nil {
 		return e.deferStartedAgentRoute(taskID, stepKey, agentID, err)
@@ -254,7 +254,7 @@ func (e *Engine) advanceBestOfNAttempt(taskID string, def *Definition, parent *S
 		status.Retries++
 		status.Status = "pending"
 		status.Output = output.Output
-		if sErr := e.tasks.SetWorkflow(taskID, wfExec); sErr != nil {
+		if sErr := e.persistWorkflow(taskID, wfExec); sErr != nil {
 			return nil, sErr
 		}
 		t, gErr := e.tasks.GetTask(taskID)
@@ -268,7 +268,7 @@ func (e *Engine) advanceBestOfNAttempt(taskID string, def *Definition, parent *S
 			status.Output = "respawn failed: " + spawnErr.Error()
 			e.logger.Error("workflow.best-of-n.respawn", "task_id", taskID, "parent", parent.ID, "attempt", attemptID, "err", spawnErr)
 		}
-		return nil, e.tasks.SetWorkflow(taskID, wfExec)
+		return nil, e.persistWorkflow(taskID, wfExec)
 	}
 
 	status.AgentID = output.AgentID
@@ -279,7 +279,7 @@ func (e *Engine) advanceBestOfNAttempt(taskID string, def *Definition, parent *S
 	if !rec.AllAttemptsDone() {
 		e.logger.Debug("workflow.best-of-n.attempt-done",
 			"task_id", taskID, "parent", parent.ID, "attempt", attemptID, "status", status.Status)
-		return nil, e.tasks.SetWorkflow(taskID, wfExec)
+		return nil, e.persistWorkflow(taskID, wfExec)
 	}
 
 	return e.finalizeBestOfNParent(taskID, def, parent, wfExec)
@@ -404,7 +404,7 @@ func (e *Engine) preflightRunAgentBudget(taskID string, def *Definition, step *S
 // same declarative path as every other mechanical gate (verify_commits,
 // detect_tampering, ...), rather than force-ending the execution directly.
 func (e *Engine) failStepClosed(taskID string, def *Definition, step *Step, wfExec *Execution, reason string) (*CompletionInfo, error) {
-	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
+	if err := e.persistStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
@@ -534,7 +534,7 @@ func outermostBraceSpan(s string) string {
 // Next-evaluation (`when task.status == human-required goto ""`) ends the
 // workflow — the same mechanical pattern as verify_commits/detect_tampering.
 func (e *Engine) humanRequiredStepOutput(taskID string, step *Step, reason string) (StepOutput, error) {
-	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
+	if err := e.persistStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return StepOutput{}, err
 	}
 	return StepOutput{StepID: step.ID, Status: "failed", Output: reason}, nil
@@ -645,7 +645,7 @@ func (e *Engine) execPromoteBestOfN(taskID string, step *Step) (StepOutput, erro
 	// wfExec (fetched fresh at the top of this step) so we don't clobber any
 	// variables the judge step itself set.
 	delete(wfExec.BestOfNInflight, step.Config.BestOfNStep)
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if err := e.persistWorkflow(taskID, wfExec); err != nil {
 		return StepOutput{}, err
 	}
 

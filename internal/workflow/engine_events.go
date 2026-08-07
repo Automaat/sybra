@@ -108,7 +108,7 @@ func (e *Engine) resolveExecutionDefinition(taskID string, t TaskInfo) (Definiti
 		return Definition{}, fmt.Errorf("fail workflow after snapshot loss: task %s lost active workflow", taskID)
 	}
 	failed.State = ExecFailed
-	if setErr := e.tasks.SetWorkflow(taskID, failed); setErr != nil {
+	if setErr := e.persistWorkflow(taskID, failed); setErr != nil {
 		return Definition{}, fmt.Errorf("fail workflow after snapshot loss: %w", setErr)
 	}
 	e.logger.Warn("workflow.definition-snapshot.unavailable",

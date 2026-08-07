@@ -24,7 +24,7 @@ func (e *Engine) execFlagPlanCritique(taskID string, step *Step, t TaskInfo) (St
 		"## ⚠️ Plan Critic Verdict: %s\n\nThe plan critic did not approve this plan as written — review the findings in the critique sidecar before approving.",
 		verdict,
 	)
-	if err := e.tasks.AppendTaskBody(taskID, note); err != nil {
+	if err := e.appendBodyNote(taskID, note); err != nil {
 		e.logger.Error("workflow.flag-plan-critique.append", "task_id", taskID, "err", err)
 		return StepOutput{}, err
 	}

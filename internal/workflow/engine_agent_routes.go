@@ -79,7 +79,7 @@ func (e *Engine) clearAgentStep(taskID, agentID string) {
 			if tasks[i].Workflow == nil || !clearAgentRouteFromWorkflow(tasks[i].Workflow, agentID) {
 				continue
 			}
-			_ = e.tasks.SetWorkflow(tasks[i].ID, tasks[i].Workflow)
+			_ = e.persistWorkflow(tasks[i].ID, tasks[i].Workflow)
 		}
 		return
 	}
@@ -90,7 +90,7 @@ func (e *Engine) clearAgentStep(taskID, agentID string) {
 	if !clearAgentRouteFromWorkflow(t.Workflow, agentID) {
 		return
 	}
-	_ = e.tasks.SetWorkflow(taskID, t.Workflow)
+	_ = e.persistWorkflow(taskID, t.Workflow)
 }
 
 // enterCompletion marks taskID as having a completion in flight and returns the
@@ -192,7 +192,7 @@ func (e *Engine) pruneStaleAgentRoutes(taskID string, step *Step) {
 			"route_step", t.Workflow.AgentRoutes[agentID])
 		clearAgentRouteFromWorkflow(t.Workflow, agentID)
 	}
-	if err := e.tasks.SetWorkflow(taskID, t.Workflow); err != nil {
+	if err := e.persistWorkflow(taskID, t.Workflow); err != nil {
 		e.logger.Warn("workflow.resume-stalled.stale-route.clear",
 			"task_id", taskID, "step", step.ID, "err", err)
 		return
@@ -329,6 +329,6 @@ func (e *Engine) clearAgentStepsForTask(taskID string) {
 		return
 	}
 	t.Workflow.ClearAgentRoutes()
-	_ = e.tasks.SetWorkflow(taskID, t.Workflow)
+	_ = e.persistWorkflow(taskID, t.Workflow)
 	e.clearPendingAgentStepsForTask(taskID)
 }

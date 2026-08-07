@@ -307,7 +307,7 @@ func goBuildCacheDir() string {
 func gitStatusClean(path string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	out, err := gitexec.Output(ctx, gitexec.Options{Dir: path}, "status", "--porcelain")
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: path, Env: gitexec.WithoutRepoOverrides(nil)}, "status", "--porcelain")
 	if err != nil {
 		return false
 	}

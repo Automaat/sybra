@@ -61,7 +61,7 @@ func (e *Engine) execResumeWorkflow(taskID string, step *Step, wfExec *Execution
 		status = ""
 	}
 	if status != "" {
-		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.Status(status), reason); err != nil {
+		if err := e.persistStatus(taskID, taskstatus.Status(status), reason); err != nil {
 			e.logger.Warn("workflow.resume.restore-status", "task_id", taskID, "status", status, "err", err)
 		}
 	}
@@ -90,7 +90,7 @@ func (e *Engine) execResumeWorkflow(taskID string, step *Step, wfExec *Execution
 	wfExec.State = ExecCompleted
 	wfExec.CompletedAt = &now
 	wfExec.CurrentStep = ""
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if err := e.persistWorkflow(taskID, wfExec); err != nil {
 		return StepOutput{}, err
 	}
 

@@ -120,7 +120,38 @@ func runGitOrFail(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.CommandContext(t.Context(), "git", args...)
 	cmd.Dir = dir
+	cmd.Env = scrubGitFixtureEnv(os.Environ())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
 	}
+}
+
+func scrubGitFixtureEnv(env []string) []string {
+	return withoutEnvKeys(env,
+		"GIT_DIR",
+		"GIT_WORK_TREE",
+		"GIT_COMMON_DIR",
+		"GIT_INDEX_FILE",
+		"GIT_OBJECT_DIRECTORY",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	)
+}
+
+func withoutEnvKeys(env []string, keys ...string) []string {
+	if len(env) == 0 || len(keys) == 0 {
+		return env
+	}
+	blocked := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		blocked[key] = struct{}{}
+	}
+	filtered := make([]string, 0, len(env))
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if _, skip := blocked[name]; skip {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	return filtered
 }

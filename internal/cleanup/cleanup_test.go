@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,13 +59,43 @@ func writeFileAt(t *testing.T, path string, size int, mtime time.Time) {
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(scrubGitFixtureEnv(os.Environ()),
 		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.local",
 		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.local",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
+}
+
+func scrubGitFixtureEnv(env []string) []string {
+	return withoutEnvKeys(env,
+		"GIT_DIR",
+		"GIT_WORK_TREE",
+		"GIT_COMMON_DIR",
+		"GIT_INDEX_FILE",
+		"GIT_OBJECT_DIRECTORY",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	)
+}
+
+func withoutEnvKeys(env []string, keys ...string) []string {
+	if len(env) == 0 || len(keys) == 0 {
+		return env
+	}
+	blocked := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		blocked[key] = struct{}{}
+	}
+	filtered := make([]string, 0, len(env))
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if _, skip := blocked[name]; skip {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	return filtered
 }
 
 // makeGitWorktree creates a real, initialized git repo at path with one
@@ -76,7 +107,7 @@ func runGit(t *testing.T, dir string, args ...string) {
 func makeGitWorktree(t *testing.T, path string, dirty bool) {
 	t.Helper()
 	mustMkdir(t, path)
-	runGit(t, path, "init", "-q")
+	runGit(t, path, "init", "-q", "-b", "main")
 	if err := os.WriteFile(filepath.Join(path, "f.txt"), []byte("a"), 0o644); err != nil {
 		t.Fatalf("seed file: %v", err)
 	}
@@ -84,9 +115,10 @@ func makeGitWorktree(t *testing.T, path string, dirty bool) {
 	runGit(t, path, "commit", "-q", "-m", "init")
 
 	originDir := t.TempDir()
-	runGit(t, originDir, "init", "-q", "--bare")
+	runGit(t, originDir, "init", "-q", "--bare", "-b", "main")
 	runGit(t, path, "remote", "add", "origin", originDir)
-	runGit(t, path, "push", "-q", "-u", "origin", "HEAD:refs/heads/main")
+	runGit(t, path, "push", "-q", "-u", "origin", "main")
+	runGit(t, path, "fetch", "-q", "origin")
 
 	if dirty {
 		if err := os.WriteFile(filepath.Join(path, "f.txt"), []byte("b"), 0o644); err != nil {

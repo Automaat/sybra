@@ -405,7 +405,7 @@ func (e *Engine) recordFocusedChecksReport(taskID, stepID string, report focused
 }
 
 func (e *Engine) flagFocusedChecks(taskID string, step *Step, reason, detail string) (StepOutput, error) {
-	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
+	if statusErr := e.persistStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 		return StepOutput{}, fmt.Errorf("focused-checks: set human-required: %w", statusErr)
 	}
 	e.recordEvidence(taskID, step.ID, evidenceCriterionFocusedChecks, evidence.ProofDeterministicCheck, 1, "", detail)

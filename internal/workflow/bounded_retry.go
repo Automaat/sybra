@@ -143,7 +143,7 @@ func (e *Engine) boundedRetry(t *TaskInfo, step *Step, p boundedRetryPolicy) boo
 		t.Status = taskstatus.Status(status)
 		t.StatusReason = reason
 	default:
-		if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+		if err := e.persistWorkflow(t.ID, t.Workflow); err != nil {
 			if p.onPersistError != nil {
 				p.onPersistError(e, t, step, err)
 			} else {

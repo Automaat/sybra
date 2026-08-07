@@ -55,7 +55,7 @@ func (e *Engine) clearSkillReceiptCounters(taskID, spawnedStep string, fresh Tas
 	if !cleared {
 		return
 	}
-	if err := e.tasks.SetWorkflow(taskID, fresh.Workflow); err != nil {
+	if err := e.persistWorkflow(taskID, fresh.Workflow); err != nil {
 		e.logger.Warn("workflow.skill-receipt.clear", "task_id", taskID, "step", spawnedStep, "err", err)
 	}
 }
@@ -104,7 +104,7 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 	if retries >= maxAttempts {
 		if present, kind := importedSidecarPresentForStep(currentStep, fresh); present {
 			delete(fresh.Workflow.Variables, retryKey)
-			if err := e.tasks.SetWorkflow(taskID, fresh.Workflow); err != nil {
+			if err := e.persistWorkflow(taskID, fresh.Workflow); err != nil {
 				e.logger.Warn("workflow.skill-receipt.sidecar-present.persist", "task_id", taskID, "step", spawnedStep, "err", err)
 			}
 			e.logger.Warn("workflow.skill-receipt.sidecar-present",
@@ -146,7 +146,7 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 	}
 	e.captureSkillReceiptDiagnostics(taskID, spawnedStep, currentStep, fresh)
 	fresh.Workflow.SetVar(retryKey, strconv.Itoa(retries+1))
-	if err := e.tasks.SetWorkflow(taskID, fresh.Workflow); err != nil {
+	if err := e.persistWorkflow(taskID, fresh.Workflow); err != nil {
 		e.logger.Error("workflow.skill-receipt.persist", "task_id", taskID, "step", spawnedStep, "err", err)
 		return true
 	}
@@ -247,7 +247,7 @@ func (e *Engine) rescheduleSkillReceiptParallelChild(taskID string, parent, chil
 		status.Output = "reschedule failed: " + spawnErr.Error()
 		status.AgentID = ""
 	}
-	if setErr := e.tasks.SetWorkflow(taskID, wfExec); setErr != nil {
+	if setErr := e.persistWorkflow(taskID, wfExec); setErr != nil {
 		e.logger.Error("workflow.skill-receipt.parallel.set", "task_id", taskID, "parent", parent.ID, "child", child.ID, "err", setErr)
 	}
 	if spawnErr != nil {

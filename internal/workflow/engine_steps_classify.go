@@ -57,7 +57,7 @@ func (e *Engine) execClassifyTask(taskID string, step *Step, wfExec *Execution) 
 		if errors.Is(e.ctx.Err(), context.Canceled) || errors.Is(e.ctx.Err(), context.DeadlineExceeded) {
 			e.logger.Warn("workflow.classify-task.canceled", "task_id", taskID, "step", step.ID, "err", err)
 			wfExec.State = ExecWaiting
-			if setErr := e.tasks.SetWorkflow(taskID, wfExec); setErr != nil {
+			if setErr := e.persistWorkflow(taskID, wfExec); setErr != nil {
 				return StepOutput{}, setErr
 			}
 			return StepOutput{}, errStepParked
@@ -84,7 +84,7 @@ func (e *Engine) execClassifyTask(taskID string, step *Step, wfExec *Execution) 
 // pattern used throughout the other deterministic tail steps (e.g.
 // humanRequiredPR, execRequireSidecar).
 func (e *Engine) humanRequiredClassify(taskID string, step *Step, reason string) (StepOutput, error) {
-	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
+	if err := e.persistStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return StepOutput{}, fmt.Errorf("%s: set human-required: %w", step.ID, err)
 	}
 	e.logger.Warn("workflow.classify-task.human-required", "task_id", taskID, "step", step.ID, "reason", reason)

@@ -47,7 +47,7 @@ func (e *Engine) maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID string, curr
 	alreadyFixed, declared, err := declaresAlreadyFixedOnMain(duplicateSignal)
 	if err != nil {
 		e.logger.Warn("workflow.human-required.duplicate-recovery.unreadable-verdict", "task_id", taskID, "err", err)
-		if uerr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, unreadableRecoveryVerdictReason); uerr != nil {
+		if uerr := e.persistStatus(taskID, taskstatus.HumanRequired, unreadableRecoveryVerdictReason); uerr != nil {
 			return nil, false, uerr
 		}
 		return nil, false, nil
@@ -74,7 +74,7 @@ func (e *Engine) maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID string, curr
 	if declaredReason := recoveryVerdictReason(duplicateSignal); declaredReason != "" {
 		reason += " — agent declared: " + textutil.TruncateBytes(declaredReason, maxDeclaredReasonBytes, "…")
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.Done, reason); err != nil {
+	if err := e.persistStatus(taskID, taskstatus.Done, reason); err != nil {
 		return nil, false, err
 	}
 	e.logger.Info("workflow.human-required.duplicate-recovery", "task_id", taskID)
@@ -152,7 +152,7 @@ func (e *Engine) maybeRecoverHumanRequiredByOpeningPR(taskID string, currentStep
 			reason = ""
 		}
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, status, reason); err != nil {
+	if err := e.persistStatus(taskID, status, reason); err != nil {
 		return nil, false, err
 	}
 	e.logger.Info("workflow.human-required.pr-recovery", "task_id", taskID, "status", status, "branch", branch)
@@ -208,7 +208,7 @@ func (e *Engine) completeWorkflowForStatusRedirect(taskID string, wfExec *Execut
 	wfExec.State = ExecCompleted
 	wfExec.CompletedAt = &now
 	wfExec.CurrentStep = ""
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if err := e.persistWorkflow(taskID, wfExec); err != nil {
 		return nil, err
 	}
 	return &CompletionInfo{

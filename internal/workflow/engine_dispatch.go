@@ -142,7 +142,7 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 	}
 	wfExec.DefinitionHash = defHash
 
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if err := e.persistWorkflow(taskID, wfExec); err != nil {
 		return nil, fmt.Errorf("set workflow on task: %w", err)
 	}
 
@@ -429,7 +429,7 @@ func (e *Engine) CancelWorkflow(taskID, reason string) (string, error) {
 	if reason != "" {
 		wfExec.SetVar("cancel_reason", reason)
 	}
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if err := e.persistWorkflow(taskID, wfExec); err != nil {
 		return priorStep, err
 	}
 	e.logger.Info("workflow.cancelled",

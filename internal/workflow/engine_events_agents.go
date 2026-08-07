@@ -366,7 +366,7 @@ func (e *Engine) RescheduleInterruptedAgent(taskID, agentID string) {
 	if reason, skip := resumeSkipReasonForStatus(t.Status); skip && reason != "human_required" {
 		e.clearAgentStep(taskID, agentID)
 		clearAgentRouteFromWorkflow(t.Workflow, agentID)
-		if err := e.tasks.SetWorkflow(taskID, t.Workflow); err != nil {
+		if err := e.persistWorkflow(taskID, t.Workflow); err != nil {
 			e.logger.Error("workflow.interrupted-reschedule.clear-route", "task_id", taskID, "agent_id", agentID, "reason", reason, "err", err)
 		}
 		return
@@ -390,7 +390,7 @@ func (e *Engine) RescheduleInterruptedAgent(taskID, agentID string) {
 	clearAgentRouteFromWorkflow(t.Workflow, agentID)
 	if t.Status == taskstatus.HumanRequired {
 		status := interruptedRecoveryStatus(t.Workflow.WorkflowID)
-		if err := e.tasks.UpdateTaskStatus(taskID, status, ""); err != nil {
+		if err := e.persistStatus(taskID, status, ""); err != nil {
 			e.logger.Error("workflow.interrupted-reschedule.unpark", "task_id", taskID, "step", step.ID, "err", err)
 			return
 		}
@@ -681,7 +681,7 @@ func (e *Engine) handlePromptUndeliveredReschedule(taskID string, t *TaskInfo, s
 		max:        maxPromptUndeliveredRetries,
 		onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 			reason := fmt.Sprintf("provider never accepted the prompt across %d attempts — the agent CLI is not reading stdin on this host", attempts+1)
-			if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
+			if err := e.persistStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 				e.resumeError.Log(e.logger, "workflow.prompt-undelivered-reschedule.human-required", taskID, err, "task_id", taskID)
 			}
 		},
@@ -752,7 +752,7 @@ func (e *Engine) handleCheckpointReschedule(taskID string, t *TaskInfo, step *St
 		max:        e.effectiveMaxCheckpoints(),
 		onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 			reason := fmt.Sprintf("checkpoint retry budget exhausted after %d handoffs", e.effectiveMaxCheckpoints())
-			if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
+			if err := e.persistStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 				e.resumeError.Log(e.logger, "workflow.checkpoint-reschedule.human-required", taskID, err, "task_id", taskID)
 			}
 		},
@@ -823,7 +823,7 @@ func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, pare
 	} else {
 		clearCircuitBreakerFailures(wfExec, child.ID)
 	}
-	if setErr := e.tasks.SetWorkflow(taskID, wfExec); setErr != nil {
+	if setErr := e.persistWorkflow(taskID, wfExec); setErr != nil {
 		e.logger.Error("workflow.rate-limit-reschedule.parallel.set", "task_id", taskID, "parent", parent.ID, "child", child.ID, "err", setErr)
 	}
 	if spawnErr != nil {

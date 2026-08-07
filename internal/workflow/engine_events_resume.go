@@ -354,7 +354,7 @@ func (e *Engine) resolveFreshTaskForResume(t *TaskInfo, step *Step, def *Definit
 
 func (e *Engine) resumeStalledReconcileWaitHumanStatus(t TaskInfo, step *Step) {
 	if _, waitSkip := resumeSkipReasonForStatus(t.Status); step.Type == StepWaitHuman && !waitSkip && step.Config.Status != "" && t.Status != taskstatus.Status(step.Config.Status) {
-		if err := e.tasks.UpdateTaskStatus(t.ID, taskstatus.Status(step.Config.Status), step.Config.StatusReason); err != nil {
+		if err := e.persistStatus(t.ID, taskstatus.Status(step.Config.Status), step.Config.StatusReason); err != nil {
 			e.logger.Warn("workflow.resume-stalled.reconcile-status", "task_id", t.ID, "step", step.ID, "err", err)
 		} else {
 			e.logger.Info("workflow.resume-stalled.reconcile-status",
@@ -403,7 +403,7 @@ func (e *Engine) resumeStalledRerouteStaleConditionBranch(t *TaskInfo, def *Defi
 	wf.CompletedAt = nil
 	wf.ClearStepRecords(condition.ID)
 	wf.ClearStepRecords(step.ID)
-	if err := e.tasks.SetWorkflow(t.ID, wf); err != nil {
+	if err := e.persistWorkflow(t.ID, wf); err != nil {
 		e.logger.Warn("workflow.resume-stalled.condition-reroute.persist",
 			"task_id", t.ID, "condition", condition.ID, "step", step.ID, "err", err)
 		return true

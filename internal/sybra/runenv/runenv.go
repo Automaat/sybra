@@ -414,7 +414,7 @@ func probeWrite(dir string) error {
 }
 
 func gitDirs(ctx context.Context, workDir string) (gitDir, common string, err error) {
-	gitDir, err = gitexec.Output(ctx, gitexec.Options{Dir: workDir}, "rev-parse", "--path-format=absolute", "--git-dir")
+	gitDir, err = gitexec.Output(ctx, gitexec.Options{Dir: workDir, Env: gitexec.WithoutRepoOverrides(nil)}, "rev-parse", "--path-format=absolute", "--git-dir")
 	if err != nil {
 		return "", "", err
 	}
@@ -436,10 +436,10 @@ func probeCheckouts(ctx context.Context, req Request) error {
 		if _, _, err := gitDirs(ctx, root); err != nil {
 			return err
 		}
-		if _, err := gitexec.Output(ctx, gitexec.Options{Dir: root}, "rev-parse", "--verify", "HEAD^{commit}"); err != nil {
+		if _, err := gitexec.Output(ctx, gitexec.Options{Dir: root, Env: gitexec.WithoutRepoOverrides(nil)}, "rev-parse", "--verify", "HEAD^{commit}"); err != nil {
 			return err
 		}
-		if _, err := gitexec.Output(ctx, gitexec.Options{Dir: root}, "cat-file", "-e", "HEAD^{tree}"); err != nil {
+		if _, err := gitexec.Output(ctx, gitexec.Options{Dir: root, Env: gitexec.WithoutRepoOverrides(nil)}, "cat-file", "-e", "HEAD^{tree}"); err != nil {
 			return err
 		}
 		if err := probeIndexObjects(ctx, root); err != nil {
@@ -469,7 +469,7 @@ func requestGitRoots(req Request) []string {
 }
 
 func probeIndexObjects(ctx context.Context, workDir string) error {
-	staged, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: workDir}, "ls-files", "--stage", "-z")
+	staged, err := gitexec.RawOutput(ctx, gitexec.Options{Dir: workDir, Env: gitexec.WithoutRepoOverrides(nil)}, "ls-files", "--stage", "-z")
 	if err != nil {
 		return err
 	}
@@ -492,7 +492,7 @@ func probeIndexObjects(ctx context.Context, workDir string) error {
 	if objectIDs.Len() == 0 {
 		return nil
 	}
-	out, err := gitexec.Output(ctx, gitexec.Options{Dir: workDir, Stdin: strings.NewReader(objectIDs.String())}, "cat-file", "--batch-check=%(objectname) %(objecttype)")
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: workDir, Env: gitexec.WithoutRepoOverrides(nil), Stdin: strings.NewReader(objectIDs.String())}, "cat-file", "--batch-check=%(objectname) %(objecttype)")
 	if err != nil {
 		return err
 	}
@@ -543,7 +543,7 @@ func fingerprint(ctx context.Context, req Request) (string, error) {
 			fileIdentity(filepath.Join(common, "packed-refs")),
 			objectStoreIdentity(filepath.Join(common, "objects")),
 		)
-		if head, err := gitexec.Output(ctx, gitexec.Options{Dir: root}, "rev-parse", "HEAD"); err == nil {
+		if head, err := gitexec.Output(ctx, gitexec.Options{Dir: root, Env: gitexec.WithoutRepoOverrides(nil)}, "rev-parse", "HEAD"); err == nil {
 			parts = append(parts, head)
 		}
 	}

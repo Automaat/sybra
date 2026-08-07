@@ -156,7 +156,7 @@ func (e *Engine) adoptExistingPROnConflict(taskID, repo, headArg string, createE
 
 func (e *Engine) linkTaskPR(taskID string, t TaskInfo, newPR int) error {
 	oldPR := t.PRNumber
-	if err := e.tasks.UpdateTaskPR(taskID, newPR); err != nil {
+	if err := e.linkPRNumber(taskID, newPR); err != nil {
 		return err
 	}
 	if oldPR == 0 || oldPR == newPR || t.ProjectID == "" || e.pr.Closer == nil {
@@ -223,7 +223,7 @@ func (e *Engine) prWorktreeAndBranch(taskID string, step *Step, t TaskInfo) (wtP
 // completed StepOutput carrying the same reason, matching the pattern used
 // throughout the other PR-tail steps (e.g. execRequireSidecar).
 func (e *Engine) humanRequiredPR(taskID string, step *Step, reason string) (StepOutput, error) {
-	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
+	if err := e.persistStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return StepOutput{}, fmt.Errorf("%s: set human-required: %w", step.ID, err)
 	}
 	e.logger.Warn("workflow.pr-tail.human-required", "task_id", taskID, "step", step.ID, "reason", reason)
@@ -429,7 +429,7 @@ func (e *Engine) drainPendingConflictRecovery(taskID string) {
 
 func (e *Engine) escalatePendingConflictRecovery(taskID string) {
 	reason := "branch diverged from remote — needs manual conflict resolution (never force-pushed)"
-	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
+	if err := e.persistStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		e.logger.Error("workflow.pr-tail.conflict-recovery.escalate", "task_id", taskID, "err", err)
 	}
 	if _, err := e.CancelWorkflow(taskID, reason); err != nil {

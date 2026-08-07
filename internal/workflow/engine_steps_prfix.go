@@ -97,7 +97,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 		if reason != "" {
 			msg += ": " + reason
 		}
-		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InReview, msg); err != nil {
+		if err := e.persistStatus(taskID, taskstatus.InReview, msg); err != nil {
 			return StepOutput{}, fmt.Errorf("route pr-fix result: set in-review after flake: %w", err)
 		}
 		e.logger.Info("workflow.pr-fix.flake", "task_id", taskID, "pr", t.PRNumber, "reason", reason)
@@ -108,7 +108,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 	// state, so it must never be waved through by the re-probe below.
 	if !reviewHoldForced {
 		if msg, resolved := e.checkPRAlreadyResolved(taskID, t, reason); resolved {
-			if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InReview, msg); err != nil {
+			if err := e.persistStatus(taskID, taskstatus.InReview, msg); err != nil {
 				return StepOutput{}, fmt.Errorf("route pr-fix result: resolved-on-remote: set in-review: %w", err)
 			}
 			e.logger.Info("workflow.pr-fix.resolved-on-remote", "task_id", taskID, "pr", t.PRNumber, "agent_reason", reason)
@@ -146,7 +146,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 			"task_id", taskID, "workflow", workflowID, "reason", reason)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
+	if err := e.persistStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return StepOutput{}, fmt.Errorf("route pr-fix result: set human-required: %w", err)
 	}
 	e.logger.Warn("workflow.pr-fix.human-required", "task_id", taskID, "reason", reason)
@@ -160,7 +160,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 	if !reviewHoldForced {
 		if tests := prFixFailingTests(wfExec); len(tests) > 0 {
 			note := "## PR-Fix: Failing Tests\n\n" + reason + "\n\n- " + strings.Join(tests, "\n- ")
-			if err := e.tasks.AppendTaskBody(taskID, note); err != nil {
+			if err := e.appendBodyNote(taskID, note); err != nil {
 				e.logger.Warn("workflow.pr-fix.failing-tests.append", "task_id", taskID, "err", err)
 			}
 		}
@@ -297,7 +297,7 @@ func (e *Engine) tryRecoverResolvedMerge(taskID string, step *Step, wfExec *Exec
 	}
 	if wfExec != nil {
 		wfExec.SetVar(resolvedMergeCheckpointVar(step.ID), "true")
-		if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		if err := e.persistWorkflow(taskID, wfExec); err != nil {
 			out, err := e.humanRequiredPR(taskID, step, "resolved merge conflict commit landed but recovery state could not be persisted: "+trimDiffLine(err.Error()))
 			return out, err, true
 		}

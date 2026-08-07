@@ -169,13 +169,13 @@ func (e *Engine) surfaceStartFailureClassified(taskID string, currentStatus task
 			e.logger.Warn("workflow.circuit-breaker.tripped",
 				"task_id", taskID, "step", stepID, "attempts", attempts)
 		}
-		if setErr := e.tasks.SetWorkflow(taskID, wf); setErr != nil {
+		if setErr := e.persistWorkflow(taskID, wf); setErr != nil {
 			e.logger.Error("workflow.circuit-breaker.persist", "task_id", taskID, "step", stepID, "err", setErr)
 		}
 	}
 	var uErr error
 	if failure.Blocker.IsZero() {
-		uErr = e.tasks.UpdateTaskStatus(taskID, target, failure.Reason)
+		uErr = e.persistStatus(taskID, target, failure.Reason)
 	} else {
 		uErr = e.tasks.UpdateTaskBlocker(taskID, target, failure.Reason, failure.Blocker)
 	}
@@ -281,7 +281,7 @@ func (e *Engine) clearCircuitBreakerOnSuccess(taskID string, wf *Execution, step
 		return
 	}
 	clearCircuitBreakerFailures(wf, stepID)
-	if err := e.tasks.SetWorkflow(taskID, wf); err != nil {
+	if err := e.persistWorkflow(taskID, wf); err != nil {
 		e.logger.Error("workflow.circuit-breaker.clear", "task_id", taskID, "step", stepID, "err", err)
 	}
 }

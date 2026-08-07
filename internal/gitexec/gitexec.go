@@ -18,6 +18,15 @@ import (
 
 const terminalPromptEnv = "GIT_TERMINAL_PROMPT=0"
 
+var repoOverrideEnvKeys = []string{
+	"GIT_DIR",
+	"GIT_WORK_TREE",
+	"GIT_COMMON_DIR",
+	"GIT_INDEX_FILE",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+}
+
 // Options configures one Git invocation.
 //
 // A nil Env inherits the current process environment. A non-nil Env, including
@@ -158,6 +167,32 @@ func overlayEnv(env []string, entry string) []string {
 		}
 	}
 	return append(out, entry)
+}
+
+// WithoutRepoOverrides returns env with the Git repository-shaping variables
+// removed. Passing nil starts from the current process environment.
+func WithoutRepoOverrides(env []string) []string {
+	if env == nil {
+		env = os.Environ()
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	blocked := make(map[string]struct{}, len(repoOverrideEnvKeys))
+	for _, key := range repoOverrideEnvKeys {
+		blocked[key] = struct{}{}
+	}
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok {
+			if _, skip := blocked[key]; skip {
+				continue
+			}
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
 
 func commandError(args []string, err error, output []byte) error {

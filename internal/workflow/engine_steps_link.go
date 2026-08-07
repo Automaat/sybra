@@ -54,7 +54,7 @@ func (e *Engine) execLinkPRAndReview(taskID string, step *Step, wfExec *Executio
 		if err := e.linkTaskPR(taskID, t, prNumber); err != nil {
 			return StepOutput{}, fmt.Errorf("link pr: %w", err)
 		}
-		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InReview, ""); err != nil {
+		if err := e.persistStatus(taskID, taskstatus.InReview, ""); err != nil {
 			return StepOutput{}, fmt.Errorf("set in-review: %w", err)
 		}
 		msg := fmt.Sprintf("pr #%d found via %s → in-review", prNumber, source)
@@ -164,7 +164,7 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 				if linkErr := e.linkTaskPR(taskID, t, prNum); linkErr != nil {
 					return StepOutput{}, fmt.Errorf("evaluate: link pr: %w", linkErr)
 				}
-				if linkErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.InReview, ""); linkErr != nil {
+				if linkErr := e.persistStatus(taskID, taskstatus.InReview, ""); linkErr != nil {
 					return StepOutput{}, fmt.Errorf("evaluate: set in-review: %w", linkErr)
 				}
 				msg := fmt.Sprintf("pr #%d found via late gh pr list → in-review", prNum)

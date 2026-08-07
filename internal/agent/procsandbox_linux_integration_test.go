@@ -537,7 +537,7 @@ func newSandboxGitHarness(t *testing.T) sandboxGitHarness {
 	}
 	h.remoteBare = filepath.Join(h.sandboxHome, "remote.git")
 
-	h.gitRaw(t, "", "init", "--bare", h.remoteBare)
+	h.gitRaw(t, "", "init", "--bare", "-b", "main", h.remoteBare)
 	h.gitRaw(t, "", "init", "-b", "main", h.src)
 	h.gitRaw(t, h.src, "config", "user.email", "test@test.com")
 	h.gitRaw(t, h.src, "config", "user.name", "Test")
@@ -548,6 +548,7 @@ func newSandboxGitHarness(t *testing.T) sandboxGitHarness {
 	h.gitRaw(t, h.src, "commit", "-m", "init")
 	h.gitRaw(t, h.src, "remote", "add", "origin", h.remoteBare)
 	h.gitRaw(t, h.src, "push", "-u", "origin", "main")
+	h.gitBare(t, h.remoteBare, "symbolic-ref", "HEAD", "refs/heads/main")
 
 	if err := project.CloneBare(context.Background(), h.remoteBare, h.sybraBare); err != nil {
 		t.Fatalf("CloneBare: %v", err)
@@ -613,6 +614,7 @@ func (h sandboxGitHarness) gitRefPath(t *testing.T, dir string) string {
 func (h sandboxGitHarness) gitShowRefExists(t *testing.T, gitDir, ref string) bool {
 	t.Helper()
 	cmd := exec.Command("git", "-c", "safe.bareRepository=all", "--git-dir="+gitDir, "show-ref", "--verify", "--quiet", ref)
+	cmd.Env = scrubGitFixtureEnv(os.Environ())
 	err := cmd.Run()
 	if err == nil {
 		return true
@@ -630,6 +632,7 @@ func (h sandboxGitHarness) gitShowRefExists(t *testing.T, gitDir, ref string) bo
 func (h sandboxGitHarness) writeLooseObject(t *testing.T, gitDir, body string) string {
 	t.Helper()
 	cmd := exec.Command("git", "-c", "safe.bareRepository=all", "--git-dir="+gitDir, "hash-object", "-w", "--stdin")
+	cmd.Env = scrubGitFixtureEnv(os.Environ())
 	cmd.Stdin = strings.NewReader(body)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -644,6 +647,7 @@ func (h sandboxGitHarness) gitRaw(t *testing.T, dir string, args ...string) stri
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	cmd.Env = scrubGitFixtureEnv(os.Environ())
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v (dir=%s): %v\n%s", args, dir, err, out)

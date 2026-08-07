@@ -83,11 +83,11 @@ func (e *Engine) handleWatchdogHangReadyPR(t *TaskInfo, step *Step) bool {
 	t.Workflow.CompletedAt = &now
 	t.Workflow.CurrentStep = ""
 	t.Workflow.SetVar("cancel_reason", "watchdog hang: implementation superseded by linked PR already open and green")
-	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+	if err := e.persistWorkflow(t.ID, t.Workflow); err != nil {
 		e.logger.Error("workflow.watchdog-hang.ready-pr.persist", "task_id", t.ID, "step", step.ID, "pr", t.PRNumber, "err", err)
 		return true
 	}
-	if err := e.tasks.UpdateTaskStatus(t.ID, taskstatus.InReview, ""); err != nil {
+	if err := e.persistStatus(t.ID, taskstatus.InReview, ""); err != nil {
 		e.logger.Error("workflow.watchdog-hang.ready-pr.status", "task_id", t.ID, "step", step.ID, "pr", t.PRNumber, "err", err)
 		return true
 	}
@@ -349,7 +349,7 @@ func (e *Engine) watchdogHangRecoverySpec() watchdogRecoverySpec {
 				t.Workflow.SetVar(watchdogReaskNoteVarForStep(step), buildWatchdogReaskNoteForStep(e.withManualTestConfig(*t), step, attempt))
 			},
 			onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
-				return e.tasks.UpdateTaskStatus(t.ID, t.Status, "")
+				return e.persistStatus(t.ID, t.Status, "")
 			},
 			onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 				targetStatus, reason, terminalState := watchdogHangExhaustionResolution(*t, step, attempts, e.openPROnUnrunnableGate.Load())
@@ -357,10 +357,10 @@ func (e *Engine) watchdogHangRecoverySpec() watchdogRecoverySpec {
 				t.Workflow.State = terminalState
 				t.Workflow.CompletedAt = &now
 				t.Workflow.CurrentStep = ""
-				if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+				if err := e.persistWorkflow(t.ID, t.Workflow); err != nil {
 					e.logger.Error("workflow.watchdog-hang.persist", "task_id", t.ID, "step", step.ID, "err", err)
 				}
-				if err := e.tasks.UpdateTaskStatus(t.ID, targetStatus, reason); err != nil {
+				if err := e.persistStatus(t.ID, targetStatus, reason); err != nil {
 					e.logger.Error("workflow.watchdog-hang.escalate", "task_id", t.ID, "step", step.ID, "err", err)
 					return
 				}
@@ -392,15 +392,15 @@ func (e *Engine) watchdogRewardHackingRecoverySpec(t *TaskInfo, step *Step) (wat
 				t.Workflow.SetVar(watchdogReaskNoteVar, profile.note(attempt))
 			},
 			onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
-				return e.tasks.UpdateTaskStatus(t.ID, t.Status, "")
+				return e.persistStatus(t.ID, t.Status, "")
 			},
 			onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 				reason := profile.exhaustedReason(attempts)
 				t.Workflow.State = ExecFailed
-				if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+				if err := e.persistWorkflow(t.ID, t.Workflow); err != nil {
 					e.logger.Error("workflow.watchdog-reward-hacking.persist", "task_id", t.ID, "step", step.ID, "err", err)
 				}
-				if err := e.tasks.UpdateTaskStatus(t.ID, taskstatus.HumanRequired, reason); err != nil {
+				if err := e.persistStatus(t.ID, taskstatus.HumanRequired, reason); err != nil {
 					e.logger.Error("workflow.watchdog-reward-hacking.escalate", "task_id", t.ID, "step", step.ID, "err", err)
 					return
 				}
@@ -443,7 +443,7 @@ func (e *Engine) watchdogRateLimitRecoverySpec() watchdogRecoverySpec {
 						t.Workflow.SetVar(freshKey, "1")
 						t.Workflow.SetVar(retryKey, "0")
 						t.Workflow.SetVar(sinceKey, since.Format(time.RFC3339))
-						if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+						if err := e.persistWorkflow(t.ID, t.Workflow); err != nil {
 							e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)
 							return
 						}
@@ -456,14 +456,14 @@ func (e *Engine) watchdogRateLimitRecoverySpec() watchdogRecoverySpec {
 				if watchdogreason.IsSilentHang(t.StatusReason) {
 					t.Workflow.StartedAt = e.now()
 				}
-				if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+				if err := e.persistWorkflow(t.ID, t.Workflow); err != nil {
 					e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)
 				}
 				var escalateErr error
 				if targetStatus == taskstatus.Blocked {
 					escalateErr = e.tasks.UpdateTaskBlocker(t.ID, targetStatus, reason, blocker.State{Kind: blocker.KindWatchdogRateLimitExhausted, Actor: blocker.ActorWorkflow, Exhausted: true})
 				} else {
-					escalateErr = e.tasks.UpdateTaskStatus(t.ID, targetStatus, reason)
+					escalateErr = e.persistStatus(t.ID, targetStatus, reason)
 				}
 				if escalateErr != nil {
 					e.logger.Error("workflow.watchdog-rate-limit.escalate", "task_id", t.ID, "step", step.ID, "err", escalateErr)
@@ -488,7 +488,7 @@ func (e *Engine) watchdogStopRecoverySpec() watchdogRecoverySpec {
 				t.Workflow.SetVar(watchdogReaskNoteVarForStep(step), buildWatchdogStopReaskNote(t.StatusReason, attempt))
 			},
 			onArmed: func(e *Engine, t *TaskInfo, step *Step, attempt int) error {
-				if err := e.tasks.UpdateTaskStatus(t.ID, taskstatus.InProgress, ""); err != nil {
+				if err := e.persistStatus(t.ID, taskstatus.InProgress, ""); err != nil {
 					return err
 				}
 				t.Status = taskstatus.InProgress
@@ -498,10 +498,10 @@ func (e *Engine) watchdogStopRecoverySpec() watchdogRecoverySpec {
 			onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 				reason := fmt.Sprintf("watchdog stop: retry budget exhausted after %d clean re-dispatches", attempts)
 				t.Workflow.State = ExecFailed
-				if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+				if err := e.persistWorkflow(t.ID, t.Workflow); err != nil {
 					e.logger.Error("workflow.watchdog-stop.persist", "task_id", t.ID, "step", step.ID, "err", err)
 				}
-				if err := e.tasks.UpdateTaskStatus(t.ID, taskstatus.HumanRequired, reason); err != nil {
+				if err := e.persistStatus(t.ID, taskstatus.HumanRequired, reason); err != nil {
 					e.logger.Error("workflow.watchdog-stop.escalate", "task_id", t.ID, "step", step.ID, "err", err)
 					return
 				}
@@ -576,7 +576,7 @@ func (e *Engine) handleTransientFetchRetry(t *TaskInfo, step *Step) bool {
 		max:        maxTransientFetchRetries,
 		onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 			reason := fmt.Sprintf("agent start blocked: transient network retry budget exhausted after %d attempts reconciling worktree with remote", attempts)
-			if err := e.tasks.UpdateTaskStatus(t.ID, taskstatus.HumanRequired, reason); err != nil {
+			if err := e.persistStatus(t.ID, taskstatus.HumanRequired, reason); err != nil {
 				e.logger.Error("workflow.transient-fetch.escalate", "task_id", t.ID, "step", step.ID, "err", err)
 				return
 			}
@@ -594,7 +594,7 @@ func (e *Engine) clearTransientFetchRetry(taskID string, wf *Execution, stepID s
 		return
 	}
 	delete(wf.Variables, retryKey)
-	if err := e.tasks.SetWorkflow(taskID, wf); err != nil {
+	if err := e.persistWorkflow(taskID, wf); err != nil {
 		e.logger.Error("workflow.transient-fetch.clear", "task_id", taskID, "step", stepID, "err", err)
 	}
 }
@@ -607,7 +607,7 @@ func (e *Engine) clearWatchdogReaskNote(taskID string, wf *Execution) {
 		return
 	}
 	delete(wf.Variables, watchdogReaskNoteVar)
-	if err := e.tasks.SetWorkflow(taskID, wf); err != nil {
+	if err := e.persistWorkflow(taskID, wf); err != nil {
 		e.logger.Error("workflow.watchdog-hang.reask-clear", "task_id", taskID, "err", err)
 	}
 }
@@ -621,7 +621,7 @@ func (e *Engine) clearDeliveredWatchdogReaskNote(taskID string, step *Step, wf *
 	}
 	delete(wf.Variables, watchdogReaskDeliveredKey(step.ID))
 	e.clearWatchdogReaskNote(taskID, wf)
-	if err := e.tasks.SetWorkflow(taskID, wf); err != nil {
+	if err := e.persistWorkflow(taskID, wf); err != nil {
 		e.logger.Error("workflow.watchdog-reask.delivery-clear", "task_id", taskID, "step", step.ID, "err", err)
 	}
 }
@@ -693,7 +693,7 @@ func (e *Engine) markSilentHangProvider(t *TaskInfo, step *Step, agentID string)
 		return
 	}
 	t.Workflow.SetVar(watchdogSilentHangAvoidKey(step.ID), prov)
-	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+	if err := e.persistWorkflow(t.ID, t.Workflow); err != nil {
 		e.logger.Error("workflow.silent-hang.avoid-persist", "task_id", t.ID, "step", step.ID, "err", err)
 	}
 }

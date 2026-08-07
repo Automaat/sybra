@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,13 +74,43 @@ func writeFileAt(t *testing.T, path string, size int, mtime time.Time) {
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(scrubGitFixtureEnv(os.Environ()),
 		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.local",
 		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.local",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
+}
+
+func scrubGitFixtureEnv(env []string) []string {
+	return withoutEnvKeys(env,
+		"GIT_DIR",
+		"GIT_WORK_TREE",
+		"GIT_COMMON_DIR",
+		"GIT_INDEX_FILE",
+		"GIT_OBJECT_DIRECTORY",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	)
+}
+
+func withoutEnvKeys(env []string, keys ...string) []string {
+	if len(env) == 0 || len(keys) == 0 {
+		return env
+	}
+	blocked := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		blocked[key] = struct{}{}
+	}
+	filtered := make([]string, 0, len(env))
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		if _, skip := blocked[name]; skip {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	return filtered
 }
 
 // makeCleanGitWorktree creates a real, initialized, clean git repo at path,
@@ -90,7 +121,7 @@ func runGit(t *testing.T, dir string, args ...string) {
 func makeCleanGitWorktree(t *testing.T, path string) {
 	t.Helper()
 	mustMkdir(t, path)
-	runGit(t, path, "init", "-q")
+	runGit(t, path, "init", "-q", "-b", "main")
 	if err := os.WriteFile(filepath.Join(path, "f.txt"), []byte("a"), 0o644); err != nil {
 		t.Fatalf("seed file: %v", err)
 	}
@@ -98,9 +129,10 @@ func makeCleanGitWorktree(t *testing.T, path string) {
 	runGit(t, path, "commit", "-q", "-m", "init")
 
 	origin := t.TempDir()
-	runGit(t, origin, "init", "-q", "--bare")
+	runGit(t, origin, "init", "-q", "--bare", "-b", "main")
 	runGit(t, path, "remote", "add", "origin", origin)
-	runGit(t, path, "push", "-q", "-u", "origin", "HEAD:refs/heads/main")
+	runGit(t, path, "push", "-q", "-u", "origin", "main")
+	runGit(t, path, "fetch", "-q", "origin")
 }
 
 func TestReclaimerRunReclaimsSafeBucketsOnly(t *testing.T) {

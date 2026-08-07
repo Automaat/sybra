@@ -159,7 +159,7 @@ func indexUsable(ctx context.Context, checkoutPath string) error {
 // runQuietGit runs git in dir and discards successful output. On failure the
 // shared execution boundary includes Git's diagnostic output in the error.
 func runQuietGit(ctx context.Context, dir string, args ...string) error {
-	return gitexec.RunQuiet(ctx, gitexec.Options{Dir: dir}, args...)
+	return gitexec.RunQuiet(ctx, gitexec.Options{Dir: dir, Env: gitexec.WithoutRepoOverrides(nil)}, args...)
 }
 
 // bareRefTips lists the object ids every ref points at. They are the roots
@@ -314,7 +314,7 @@ func rebuildWorktreeIndexes(ctx context.Context, barePath string, report *Repair
 			continue
 		}
 		QuarantineRef(barePath, "worktrees/"+entry.Name()+"/index", quarantined)
-		if err := gitexec.RunQuiet(ctx, gitexec.Options{Dir: checkoutPath}, "reset", "--mixed", "HEAD"); err != nil {
+		if err := gitexec.RunQuiet(ctx, gitexec.Options{Dir: checkoutPath, Env: gitexec.WithoutRepoOverrides(nil)}, "reset", "--mixed", "HEAD"); err != nil {
 			_ = os.Rename(quarantined, indexPath)
 			continue
 		}

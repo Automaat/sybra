@@ -81,7 +81,7 @@ var networkGitTimeout = defaultNetworkGitTimeout
 // FetchRemoteBranch, FetchPRHead). Injecting fetchEnv() unconditionally is
 // harmless for the local ops — it only ever appends GH_TOKEN/GITHUB_TOKEN.
 func runBare(ctx context.Context, barePath string, args ...string) error {
-	return gitexec.Run(ctx, gitexec.Options{Dir: barePath, Env: fetchEnv()}, append([]string{"-c", "safe.bareRepository=all"}, args...)...)
+	return gitexec.Run(ctx, gitexec.Options{Dir: barePath, Env: gitexec.WithoutRepoOverrides(fetchEnv())}, append([]string{"-c", "safe.bareRepository=all"}, args...)...)
 }
 
 func networkGitContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -91,7 +91,7 @@ func networkGitContext(ctx context.Context) (context.Context, context.CancelFunc
 func runNetworkGit(ctx context.Context, dir string, env []string, args ...string) error {
 	networkCtx, cancel := networkGitContext(ctx)
 	defer cancel()
-	return gitexec.Run(networkCtx, gitexec.Options{Dir: dir, Env: env}, args...)
+	return gitexec.Run(networkCtx, gitexec.Options{Dir: dir, Env: gitexec.WithoutRepoOverrides(env)}, args...)
 }
 
 func runBareFetch(ctx context.Context, barePath string, args ...string) error {
@@ -99,7 +99,7 @@ func runBareFetch(ctx context.Context, barePath string, args ...string) error {
 }
 
 func outputBare(ctx context.Context, barePath string, args ...string) (string, error) {
-	return gitexec.Output(ctx, gitexec.Options{Dir: barePath}, append([]string{"-c", "safe.bareRepository=all"}, args...)...)
+	return gitexec.Output(ctx, gitexec.Options{Dir: barePath, Env: gitexec.WithoutRepoOverrides(nil)}, append([]string{"-c", "safe.bareRepository=all"}, args...)...)
 }
 
 // LoadRepoConfig reads .sybra.yaml from the worktree root. Returns an empty
@@ -1280,7 +1280,7 @@ func IsWorktreeDirty(ctx context.Context, worktreePath string) (bool, error) {
 // rather than silently destroying possibly-unpushed work (see #2593, where a
 // completed implementation was lost this way).
 func HasUnpushedCommits(ctx context.Context, worktreePath string) bool {
-	out, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "rev-list", "--count", "HEAD", "--not", "--remotes")
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath, Env: gitexec.WithoutRepoOverrides(nil)}, "rev-list", "--count", "HEAD", "--not", "--remotes")
 	if err != nil {
 		return true
 	}

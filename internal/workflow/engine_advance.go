@@ -90,7 +90,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		e.logger.Debug("workflow.advance.skip",
 			"task_id", taskID, "reason", "task_terminal",
 			"status", ctx.Task.Status, "step_id", output.StepID)
-		return e.tasks.SetWorkflow(taskID, wfExec)
+		return e.persistWorkflow(taskID, wfExec)
 	}
 	if output.Status == "completed" {
 		// A clean completion means this fix_review round is done — the
@@ -137,7 +137,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	// Mark task reviewed after a review-role step succeeds.
 	// Persisted so a re-triggered workflow run skips code_review (idempotent).
 	if currentStep.Config.Role == "review" && output.Status == "completed" {
-		if mErr := e.tasks.MarkTaskReviewed(taskID); mErr != nil {
+		if mErr := e.markReviewed(taskID); mErr != nil {
 			e.logger.Warn("workflow.mark-reviewed.failed", "task_id", taskID, "err", mErr)
 		}
 		e.recordEvidence(taskID, currentStep.ID, evidenceCriterionReview, evidence.ProofReviewFinding, 0, "", output.Output)
@@ -197,7 +197,7 @@ func (e *Engine) retryFailedStepIfConfigured(taskID string, def *Definition, cur
 	if retries <= currentStep.Config.MaxRetries {
 		e.logger.Info("workflow.retry", "task_id", taskID, "step", output.StepID,
 			"attempt", retries, "max", currentStep.Config.MaxRetries)
-		if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		if err := e.persistWorkflow(taskID, wfExec); err != nil {
 			return true, err
 		}
 		release()
@@ -686,7 +686,7 @@ func (e *Engine) prepareStepTemplateContext(taskID string, step *Step, wfExec *E
 		return ctx, nil
 	}
 	wfExec.Recovered = false
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if err := e.persistWorkflow(taskID, wfExec); err != nil {
 		return TemplateContext{}, err
 	}
 	return ctx, nil
@@ -814,7 +814,7 @@ func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfEx
 		wfExec.CompletedAt = &now
 		wfExec.CurrentStep = ""
 		e.logger.Info("workflow.quarantined", "task_id", taskID, "workflow", def.ID)
-		if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		if err := e.persistWorkflow(taskID, wfExec); err != nil {
 			return nil, nil, err
 		}
 		return nil, nil, nil
@@ -825,7 +825,7 @@ func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfEx
 	if tErr != nil {
 		e.logger.Error("workflow.transition.failed", "task_id", taskID, "step", current.ID, "err", tErr)
 		wfExec.State = ExecFailed
-		_ = e.tasks.SetWorkflow(taskID, wfExec)
+		_ = e.persistWorkflow(taskID, wfExec)
 		return nil, nil, tErr
 	}
 
@@ -835,7 +835,7 @@ func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfEx
 		wfExec.CompletedAt = &now
 		wfExec.CurrentStep = ""
 		e.logger.Info("workflow.completed", "task_id", taskID, "workflow", def.ID)
-		if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+		if err := e.persistWorkflow(taskID, wfExec); err != nil {
 			return nil, nil, err
 		}
 		return nil, &CompletionInfo{
@@ -852,7 +852,7 @@ func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfEx
 
 	wfExec.CurrentStep = nextStep.ID
 	wfExec.State = ExecRunning
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if err := e.persistWorkflow(taskID, wfExec); err != nil {
 		return nil, nil, err
 	}
 	return nextStep, nil, nil

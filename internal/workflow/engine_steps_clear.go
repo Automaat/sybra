@@ -37,7 +37,7 @@ func (e *Engine) execClearPlanArtifacts(taskID string, step *Step, t TaskInfo) (
 	var failed []string
 	for _, kind := range kinds {
 		// Empty content is the delete (task.PlanningSidecarStore.Write).
-		if err := e.tasks.WriteSidecar(taskID, kind, ""); err != nil {
+		if err := e.storeSidecar(taskID, kind, ""); err != nil {
 			e.logger.Error("workflow.clear-plan-artifacts.sidecar", "task_id", taskID, "step", step.ID, "kind", kind, "err", err)
 			failed = append(failed, kind+" sidecar")
 		}
@@ -56,7 +56,7 @@ func (e *Engine) execClearPlanArtifacts(taskID string, step *Step, t TaskInfo) (
 		reason := "replan blocked: could not clear " + strings.Join(failed, ", ") +
 			" — the next cycle would re-import the previous plan's content"
 		e.logger.Warn("workflow.clear-plan-artifacts.blocked", "task_id", taskID, "step", step.ID, "failed", strings.Join(failed, ", "))
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
+		if statusErr := e.persistStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 			e.logger.Error("workflow.clear-plan-artifacts.status", "task_id", taskID, "err", statusErr)
 			// The status flip is what halts the workflow at the human-required
 			// edge; if it fails, that edge never fires and the unconditional

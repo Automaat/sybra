@@ -58,7 +58,7 @@ func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec
 	// Persist the inflight record before spawning so an agent that
 	// completes mid-loop finds the parent record on AdvanceStep.
 	wfExec.State = ExecWaiting
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if err := e.persistWorkflow(taskID, wfExec); err != nil {
 		return nil, err
 	}
 
@@ -97,7 +97,7 @@ func (e *Engine) execParallel(taskID string, def *Definition, step *Step, wfExec
 		return e.finalizeParallelParent(taskID, def, step, wfExec)
 	}
 
-	return nil, e.tasks.SetWorkflow(taskID, wfExec)
+	return nil, e.persistWorkflow(taskID, wfExec)
 }
 
 // spawnParallelChild spawns one child agent of a parallel block. Mirrors
@@ -152,7 +152,7 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	status.Status = "pending"
 	wfExec.SetAgentRoute(agentID, child.ID)
 	e.setPendingAgentStepLocked(taskID, agentID, child.ID)
-	err = e.tasks.SetWorkflow(taskID, wfExec)
+	err = e.persistWorkflow(taskID, wfExec)
 	e.mu.Unlock()
 	if err != nil {
 		return e.deferStartedAgentRoute(taskID, child.ID, agentID, err)
@@ -198,7 +198,7 @@ func (e *Engine) advanceParallelChild(taskID string, def *Definition, parent, ch
 		e.logger.Info("workflow.parallel.retry",
 			"task_id", taskID, "parent", parent.ID, "child", child.ID,
 			"attempt", status.Retries, "max", child.Config.MaxRetries)
-		if sErr := e.tasks.SetWorkflow(taskID, wfExec); sErr != nil {
+		if sErr := e.persistWorkflow(taskID, wfExec); sErr != nil {
 			return nil, sErr
 		}
 		// Re-spawn just this child. Reuse the parent's template context
@@ -220,7 +220,7 @@ func (e *Engine) advanceParallelChild(taskID string, def *Definition, parent, ch
 			status.Output = "respawn failed: " + spawnErr.Error()
 			e.logger.Error("workflow.parallel.respawn", "task_id", taskID, "parent", parent.ID, "child", child.ID, "err", spawnErr)
 		}
-		return nil, e.tasks.SetWorkflow(taskID, wfExec)
+		return nil, e.persistWorkflow(taskID, wfExec)
 	}
 
 	// Terminal status — update slot.
@@ -234,7 +234,7 @@ func (e *Engine) advanceParallelChild(taskID string, def *Definition, parent, ch
 		e.logger.Debug("workflow.parallel.child-done",
 			"task_id", taskID, "parent", parent.ID, "child", child.ID,
 			"status", status.Status)
-		return nil, e.tasks.SetWorkflow(taskID, wfExec)
+		return nil, e.persistWorkflow(taskID, wfExec)
 	}
 
 	// Last child done: collapse the parent and return any synchronous

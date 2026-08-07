@@ -153,7 +153,7 @@ func (e *Engine) retryOrEscalateTransient(taskID, stepID, outcome, reask, humanR
 	if parked {
 		return StepOutput{}, errStepParked
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, humanReason); err != nil {
+	if err := e.persistStatus(taskID, taskstatus.HumanRequired, humanReason); err != nil {
 		return StepOutput{}, err
 	}
 	e.logger.Warn(logMsg, "task_id", taskID)
@@ -182,7 +182,7 @@ func (e *Engine) retryOrOpenPRForUnrunnableGate(taskID, stepID string, wfExec *E
 
 func (e *Engine) openPRForUnrunnableTestingGate(taskID, stepID string) (StepOutput, error) {
 	reason := "manual testing gate could not be run after auto-retries (harness/infra limitation, not a product defect) — opening PR for CI and human review"
-	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.ReadyPR, reason); err != nil {
+	if err := e.persistStatus(taskID, taskstatus.ReadyPR, reason); err != nil {
 		return StepOutput{}, err
 	}
 	e.logger.Warn("workflow.test.infra-failure.open-pr", "task_id", taskID)
@@ -207,7 +207,7 @@ func (e *Engine) routeNonProductTestOutcome(taskID, stepID, outcome string, wfEx
 		return out, true, err
 	case testOutcomeAmbiguousRequirement:
 		reason := "testing found ambiguous or contradictory requirements — human decision needed; see latest ## Test Failures"
-		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
+		if err := e.persistStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 			return StepOutput{}, true, err
 		}
 		e.logger.Warn("workflow.test.ambiguous-requirement", "task_id", taskID)
@@ -521,7 +521,7 @@ func (e *Engine) prepareTestStepCompletion(taskID string, t TaskInfo, output *St
 		report := currentTestFailureReport(output.Output, t.CurrentTestFailures, wfExec, output.StepID)
 		if nextLedger, changed := upsertAcceptanceLedger(t.AcceptanceLedger, fingerprint, report); changed {
 			nextLedger = clampWorkflowSidecar(nextLedger)
-			if err := e.tasks.WriteSidecar(taskID, "acceptance_ledger", nextLedger); err != nil {
+			if err := e.storeSidecar(taskID, "acceptance_ledger", nextLedger); err != nil {
 				return fmt.Errorf("write acceptance ledger: %w", err)
 			}
 			t.AcceptanceLedger = nextLedger
@@ -570,7 +570,7 @@ func (e *Engine) appendTestFailureReport(taskID string, output StepOutput, wfExe
 		return nil
 	}
 	report = clampWorkflowSidecar(strings.TrimSpace(report))
-	if err := e.tasks.WriteSidecar(taskID, "current_test_failures", report); err != nil {
+	if err := e.storeSidecar(taskID, "current_test_failures", report); err != nil {
 		return fmt.Errorf("write current test failures: %w", err)
 	}
 	return nil
@@ -2330,7 +2330,7 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	delete(wfExec.Variables, testingReaskNoteVar)
 
 	if wfExec.Variables["step."+testVerdictSourceStep+".verdict"] == "PASS" {
-		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.ReadyPR, "manual testing passed"); err != nil {
+		if err := e.persistStatus(taskID, taskstatus.ReadyPR, "manual testing passed"); err != nil {
 			return StepOutput{}, err
 		}
 		e.logger.Info("workflow.test.passed", "task_id", taskID, "step", step.ID)
@@ -2378,7 +2378,7 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 			}
 		}
 		reason := "suspected acceptance-criteria conflict after recurring product-bug test failures — human spec decision needed; see ## Test Failures"
-		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
+		if err := e.persistStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 			return StepOutput{}, err
 		}
 		if err := e.writeSpecDecision(taskID, recurring, attempts, limit); err != nil {
@@ -2399,7 +2399,7 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 			reason := fmt.Sprintf(
 				"suspected acceptance-criteria conflict: the implement/test loop failed to converge over %d product-bug attempt(s) (cap %d) — could be a contradictory spec or a hard defect the fixes keep missing; human spec decision needed; see ## Test Failures",
 				attempts, limit)
-			if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
+			if err := e.persistStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 				return StepOutput{}, err
 			}
 			if err := e.writeSpecDecision(taskID, recurring, attempts, limit); err != nil {
@@ -2409,7 +2409,7 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 			return StepOutput{StepID: step.ID, Status: "completed", Output: "escalated"}, nil
 		}
 		reason := fmt.Sprintf("manual testing found %d grounded product defects: feature still does not match the task — needs targeted local reproduction/fix from latest ## Test Failures", attempts)
-		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
+		if err := e.persistStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 			return StepOutput{}, err
 		}
 		e.logger.Warn("workflow.test.escalate", "task_id", taskID, "attempts", attempts, "cap", limit)
@@ -2420,12 +2420,12 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 	// test-failure re-implementation must NOT re-run agentic code review — mark
 	// the task reviewed so simple-task-review's maybe_review short-circuits
 	// straight to testing on the next pass. Idempotent if already set.
-	if err := e.tasks.MarkTaskReviewed(taskID); err != nil {
+	if err := e.markReviewed(taskID); err != nil {
 		e.logger.Warn("workflow.test.mark-reviewed", "task_id", taskID, "err", err)
 	}
 	e.seedReimplementNote(e.ctx, wfExec, taskID, attempts, t)
 	reason := "manual testing found a grounded product defect — re-implementing the latest ## Test Failures repro"
-	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InProgress, reason); err != nil {
+	if err := e.persistStatus(taskID, taskstatus.InProgress, reason); err != nil {
 		return StepOutput{}, err
 	}
 	e.logger.Info("workflow.test.reimplement", "task_id", taskID, "attempts", attempts, "cap", limit)
@@ -2659,7 +2659,7 @@ func buildSpecDecisionSection(fingerprints []string, attempts, limit int) string
 }
 
 func (e *Engine) writeSpecDecision(taskID string, fingerprints []string, attempts, limit int) error {
-	if err := e.tasks.WriteSidecar(taskID, "spec_decision", clampWorkflowSidecar(buildSpecDecisionSection(fingerprints, attempts, limit))); err != nil {
+	if err := e.storeSidecar(taskID, "spec_decision", clampWorkflowSidecar(buildSpecDecisionSection(fingerprints, attempts, limit))); err != nil {
 		return fmt.Errorf("write spec decision: %w", err)
 	}
 	return nil

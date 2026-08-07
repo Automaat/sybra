@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/gitexec"
 )
 
 func testLogger() *slog.Logger {
@@ -40,7 +42,7 @@ func writeFile(t *testing.T, path, content string) {
 func gitLogCount(t *testing.T, gitDir, workTree string) int {
 	t.Helper()
 	cmd := exec.Command("git", "log", "--oneline")
-	cmd.Env = append(os.Environ(), "GIT_DIR="+gitDir, "GIT_WORK_TREE="+workTree)
+	cmd.Env = append(gitexec.WithoutRepoOverrides(nil), "GIT_DIR="+gitDir, "GIT_WORK_TREE="+workTree)
 	out, err := cmd.Output()
 	if err != nil {
 		// No commits yet is reported as an error by `git log`.
@@ -271,7 +273,7 @@ func TestCommit_RmThenRestoreRoundTrip(t *testing.T) {
 	// Recovery path: git checkout the pre-delete commit against this
 	// work-tree, exactly as documented in docs/tasks-snapshots.md.
 	cmd := exec.Command("git", "checkout", "HEAD~1", "--", ".")
-	cmd.Env = append(os.Environ(), "GIT_DIR="+gitDir, "GIT_WORK_TREE="+workTree)
+	cmd.Env = append(gitexec.WithoutRepoOverrides(nil), "GIT_DIR="+gitDir, "GIT_WORK_TREE="+workTree)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git checkout restore: %v: %s", err, out)
 	}
