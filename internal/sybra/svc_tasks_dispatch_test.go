@@ -85,7 +85,7 @@ func setupDispatchTestService(t *testing.T, launcher *fakeAgentLauncher) (*TaskS
 	svc, a := setupTaskService(t)
 	launcher.tasks = a.tasks
 	ta := &taskAdapter{tasks: a.tasks}
-	svc.workflowEngine = workflow.NewEngine(mustWorkflowStore(t), ta, launcher, a.logger)
+	svc.workflowEngine = workflow.NewTestEngine(mustWorkflowStore(t), ta, launcher, a.logger)
 	return svc, a
 }
 
@@ -1190,7 +1190,7 @@ func TestDispatchFromHumanRequired_FailsClosedOnNoMatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc.workflowEngine = workflow.NewEngine(emptyStore, ta, launcher, a.logger)
+	svc.workflowEngine = workflow.NewTestEngine(emptyStore, ta, launcher, a.logger)
 	tk := newHumanRequiredTask(t, a, 0)
 
 	_, err = svc.DispatchFromHumanRequired(tk.ID, "in-progress", "retry please")
@@ -1218,7 +1218,7 @@ func TestDispatchFromHumanRequired_ReadyPRAuthorStillFailsClosedOnNoMatch(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc.workflowEngine = workflow.NewEngine(emptyStore, ta, launcher, a.logger)
+	svc.workflowEngine = workflow.NewTestEngine(emptyStore, ta, launcher, a.logger)
 	tk := newHumanRequiredTask(t, a, 42)
 	_, err = a.tasks.Update(tk.ID, task.Update{RunRole: task.Ptr(string(agent.RoleImplementation))})
 	if err != nil {

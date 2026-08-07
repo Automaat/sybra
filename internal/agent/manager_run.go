@@ -1077,6 +1077,9 @@ func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 		}
 	}
 	add(cfg.sandbox.readOnlyDir)
+	for _, p := range cfg.ReadOnlyPaths {
+		add(p)
+	}
 	if cfg.Role == RoleMonitor {
 		add(config.HomeDir())
 	}

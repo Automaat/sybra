@@ -3,6 +3,8 @@ package workflow
 import (
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/clock"
 )
 
 // TestRewindRetry_PolicyMatrix exercises rewindRetry's shared shape in
@@ -27,7 +29,9 @@ func TestRewindRetry_PolicyMatrix(t *testing.T) {
 
 	t.Run("under cap arms and rewinds", func(t *testing.T) {
 		tasks := newMemTasks()
-		engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+		engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+		fakeClock := clock.NewFake(time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC))
+		engine.SetClock(fakeClock)
 		wf := newExec("")
 		ti := TaskInfo{ID: "t1", Status: "in-progress", Workflow: wf}
 		tasks.Put(ti)
@@ -66,6 +70,9 @@ func TestRewindRetry_PolicyMatrix(t *testing.T) {
 		if wf.Variables[workflowRetryAfterVar] == "" {
 			t.Fatal("retry-after not set")
 		}
+		if got, ok := workflowRetryAfter(wf); !ok || !got.Equal(fakeClock.Now().Add(time.Minute)) {
+			t.Fatalf("retry-after = %v, %t; want %v from injected clock", got, ok, fakeClock.Now().Add(time.Minute))
+		}
 		if wf.CurrentStep != "implement" {
 			t.Fatalf("CurrentStep = %q, want implement", wf.CurrentStep)
 		}
@@ -86,7 +93,7 @@ func TestRewindRetry_PolicyMatrix(t *testing.T) {
 
 	t.Run("at cap does not arm and leaves counter untouched", func(t *testing.T) {
 		tasks := newMemTasks()
-		engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+		engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 		wf := newExec("2")
 		ti := TaskInfo{ID: "t1", Status: "in-progress", Workflow: wf}
 		tasks.Put(ti)
@@ -123,7 +130,7 @@ func TestRewindRetry_PolicyMatrix(t *testing.T) {
 	t.Run("persist failure reports armed with error", func(t *testing.T) {
 		tasks := newMemTasks()
 		tasks.failSetWorkflow = true
-		engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+		engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 		wf := newExec("")
 		ti := TaskInfo{ID: "t1", Status: "in-progress", Workflow: wf}
 		tasks.Put(ti)

@@ -44,7 +44,7 @@ func TestResumeStalled_MissingStepEscalatesOnce(t *testing.T) {
 		},
 	})
 
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.ResumeStalled()
 
 	ti, _ := tasks.GetTask("t1")
@@ -90,7 +90,7 @@ func TestResumeStalled_MissingStepRetriesAfterPersistFailure(t *testing.T) {
 		},
 	})
 
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	tasks.failSetWorkflow = true
 	engine.ResumeStalled()
@@ -150,7 +150,7 @@ func TestResumeStalled_MissingStepSkipsQuietCases(t *testing.T) {
 				agents.running["t1"] = "agent-1"
 			}
 
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 			engine.ResumeStalled()
 
 			ti, _ := tasks.GetTask("t1")

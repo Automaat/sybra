@@ -69,11 +69,11 @@ func (e *Engine) execLinkPRAndReview(taskID string, step *Step, wfExec *Executio
 	// silently flip the task to in-review against a PR nobody but the agent
 	// will ever look at.
 	if t.PRNumber > 0 {
-		if t.ProjectID == "" || e.prExistence == nil {
+		if t.ProjectID == "" || e.pr.ExistenceChecker == nil {
 			return setInReview(t.PRNumber, "task.pr_number")
 		}
 		ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
-		exists, verifyErr := e.prExistence.PRExists(ctx, t.ProjectID, t.PRNumber)
+		exists, verifyErr := e.pr.ExistenceChecker.PRExists(ctx, t.ProjectID, t.PRNumber)
 		cancel()
 		switch {
 		case exists:
@@ -240,7 +240,7 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 func (e *Engine) parkStepForRetry(taskID string, wfExec *Execution, t TaskInfo, stepID, statusReason, logEvent string, logAttrs ...any) (StepOutput, error) {
 	wfExec.CurrentStep = stepID
 	wfExec.State = ExecWaiting
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(prCreateRetryBackoff).Format(time.RFC3339))
+	wfExec.SetVar(workflowRetryAfterVar, e.now().Add(prCreateRetryBackoff).Format(time.RFC3339))
 	if err := e.tasks.SetStatusAndWorkflow(taskID, string(t.Status), statusReason, wfExec); err != nil {
 		return StepOutput{}, err
 	}
@@ -275,7 +275,7 @@ func (e *Engine) maybeParkImplementGitHubRetry(taskID string, step *Step, wfExec
 	wfExec.CurrentStep = step.ID
 	wfExec.State = ExecWaiting
 	wfExec.SetVar(implementPushAttemptsVar, strconv.Itoa(attempts+1))
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(prCreateRetryBackoff).Format(time.RFC3339))
+	wfExec.SetVar(workflowRetryAfterVar, e.now().Add(prCreateRetryBackoff).Format(time.RFC3339))
 	if err := e.tasks.SetStatusAndWorkflow(taskID, "in-progress", implementPushRetryStatusReason, wfExec); err != nil {
 		return false, err
 	}

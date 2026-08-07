@@ -611,6 +611,9 @@ export class Task {
     "planDecisions"?: string;
     "planBrief"?: string;
     "codeReview"?: string;
+    "currentTestFailures"?: string;
+    "acceptanceLedger"?: string;
+    "specDecision"?: string;
 
     /**
      * PlanDrafts holds per-provider raw plan outputs during dual- (or N-)
@@ -729,7 +732,7 @@ export class Task {
         const $$createField43_0 = $$createType7;
         const $$createField44_0 = $$createType9;
         const $$createField45_0 = $$createType11;
-        const $$createField63_0 = $$createType12;
+        const $$createField66_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -759,7 +762,7 @@ export class Task {
             $$parsedSource["workflow"] = $$createField45_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField63_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField66_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -826,6 +829,9 @@ export class Update {
     "PlanDecisions": string | null;
     "PlanBrief": string | null;
     "CodeReview": string | null;
+    "CurrentTestFailures": string | null;
+    "AcceptanceLedger": string | null;
+    "SpecDecision": string | null;
     "MaxTurns": number | null;
     "ForkSubagent": boolean | null;
     "Sandbox": boolean | null;
@@ -953,6 +959,15 @@ export class Update {
         if (!("CodeReview" in $$source)) {
             this["CodeReview"] = null;
         }
+        if (!("CurrentTestFailures" in $$source)) {
+            this["CurrentTestFailures"] = null;
+        }
+        if (!("AcceptanceLedger" in $$source)) {
+            this["AcceptanceLedger"] = null;
+        }
+        if (!("SpecDecision" in $$source)) {
+            this["SpecDecision"] = null;
+        }
         if (!("MaxTurns" in $$source)) {
             this["MaxTurns"] = null;
         }
@@ -996,8 +1011,8 @@ export class Update {
         const $$createField8_0 = $$createType15;
         const $$createField12_0 = $$createType14;
         const $$createField30_0 = $$createType16;
-        const $$createField46_0 = $$createType17;
-        const $$createField47_0 = $$createType18;
+        const $$createField49_0 = $$createType17;
+        const $$createField50_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("Blocker" in $$parsedSource) {
             $$parsedSource["Blocker"] = $$createField4_0($$parsedSource["Blocker"]);
@@ -1015,10 +1030,10 @@ export class Update {
             $$parsedSource["Workflow"] = $$createField30_0($$parsedSource["Workflow"]);
         }
         if ("Attachments" in $$parsedSource) {
-            $$parsedSource["Attachments"] = $$createField46_0($$parsedSource["Attachments"]);
+            $$parsedSource["Attachments"] = $$createField49_0($$parsedSource["Attachments"]);
         }
         if ("EffectLog" in $$parsedSource) {
-            $$parsedSource["EffectLog"] = $$createField47_0($$parsedSource["EffectLog"]);
+            $$parsedSource["EffectLog"] = $$createField50_0($$parsedSource["EffectLog"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }

@@ -41,7 +41,7 @@ func writeCycle1Artifacts(t *testing.T, dir string) {
 func clearTestEnv(t *testing.T, dir string) (*Engine, *memTasks, TaskInfo) {
 	t.Helper()
 	tasks := newMemTasks()
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	info := TaskInfo{
 		ID:            "t1",
 		Plan:          "cycle 1 plan",
@@ -137,7 +137,7 @@ func TestClearPlanArtifacts_LeavesUnrelatedWorktreeFilesAlone(t *testing.T) {
 // affirmation reaches a human gate that then auto-approves it.
 func TestClearPlanArtifacts_UnknownWorktreeEscalatesRatherThanReplanning(t *testing.T) {
 	tasks := newMemTasks()
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	info := TaskInfo{
 		ID:       "t1",
 		Plan:     "cycle 1 plan",
@@ -220,7 +220,7 @@ func TestClearPlanArtifacts_UnreadableWorktreeEscalates(t *testing.T) {
 // halt the workflow with a hard error instead of quietly reporting completed.
 func TestClearPlanArtifacts_StatusUpdateFailureIsHardError(t *testing.T) {
 	tasks := newMemTasks()
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	// The task is never Put, so UpdateTaskStatus fails with "not found" —
 	// standing in for a store write failure at exactly the point it matters.
 	info := TaskInfo{

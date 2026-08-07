@@ -958,7 +958,7 @@ func TestApp_StatusHook_AdvancesWorkflow(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wfDir, "test-status-hook.yaml"), []byte(waitForStatusWorkflowYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	engine := workflow.NewEngine(
+	engine := workflow.NewTestEngine(
 		wfStore,
 		&taskAdapter{tasks: app.tasks},
 		&agentAdapter{agents: app.agents, agentOrch: app.agentOrch, tasks: app.tasks},

@@ -140,7 +140,6 @@ func TestLockFileContext_CancelledWaitReturnsTypedTimeout(t *testing.T) {
 		t.Fatalf("LockFileContext error = %v, want ErrLockTimeout", err)
 	}
 }
-
 func TestLockFileWithin_RetriesUntilReleased(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "store.json")

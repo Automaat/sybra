@@ -30,16 +30,11 @@ const (
 	// silent-hang exhaustion streak began (set by the first exhaustion, left
 	// untouched by every later fresh round it grants). A repeated
 	// zero-output-before-startup stall is provider capacity unavailability,
-	// not a task defect: a task (778422ef, 2026-08-06) was permanently
-	// blocked after two identical stall/retry cycles that landed entirely inside a
-	// multi-hour claude outage — the provider's own lightweight health probe
-	// kept flipping healthy between attempts, so every real dispatch was let
-	// through and burned real retry budget hanging again, even though no
-	// peer provider was ever actually available to fail over to. The outage
-	// resolved on its own within the hour, well inside maxSilentHangWait.
-	// Bounding the wait by elapsed time instead of attempt count lets the
-	// retry ride out an outage of ordinary length instead of latching a
-	// permanent deadlock a human has to notice and clear by hand.
+	// not a task defect: a lightweight health probe can flip healthy between
+	// attempts while every real dispatch still hangs and no peer provider is
+	// available for failover. Bounding the wait by elapsed time instead of
+	// attempt count lets the retry ride out a transient outage instead of
+	// latching a permanent deadlock a human has to notice and clear by hand.
 	watchdogSilentHangSinceVarPrefix = "watchdog.silent_hang_since."
 	// maxSilentHangWait caps how long a step may keep granting fresh
 	// silent-hang rounds before finally escalating to blocked. Chosen to

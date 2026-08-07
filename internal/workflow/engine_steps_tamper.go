@@ -895,10 +895,10 @@ func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (Ste
 			0, "human bless ("+TamperBlessedTag+" tag)", "blessed")
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "blessed"}, nil
 	}
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree getter configured"}, nil
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree for task"}, nil
 	}
@@ -1306,7 +1306,9 @@ func documentedDeletionAllowlist(body string) tamperDeletionAllowlist {
 		"## File Deletions",
 		"## Removed Files",
 	} {
-		start, end, ok := topLevelSectionRange(body, heading)
+		start, end, ok := topLevelSectionRange(body, func(line string) bool {
+			return strings.EqualFold(line, heading)
+		})
 		if !ok {
 			continue
 		}

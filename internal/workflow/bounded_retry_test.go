@@ -31,7 +31,7 @@ func TestBoundedRetry_PolicyMatrix(t *testing.T) {
 
 	t.Run("applies false is a no-op", func(t *testing.T) {
 		tasks := newMemTasks()
-		engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+		engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 		ti, step := newTaskStep("")
 		tasks.Put(*ti)
 
@@ -51,7 +51,7 @@ func TestBoundedRetry_PolicyMatrix(t *testing.T) {
 
 	t.Run("busy skips without consuming budget", func(t *testing.T) {
 		tasks := newMemTasks()
-		engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+		engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 		ti, step := newTaskStep("")
 		tasks.Put(*ti)
 
@@ -72,7 +72,7 @@ func TestBoundedRetry_PolicyMatrix(t *testing.T) {
 
 	t.Run("under cap arms a retry", func(t *testing.T) {
 		tasks := newMemTasks()
-		engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+		engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 		ti, step := newTaskStep("")
 		tasks.Put(*ti)
 
@@ -111,7 +111,7 @@ func TestBoundedRetry_PolicyMatrix(t *testing.T) {
 
 	t.Run("at cap escalates via onExhausted and never arms", func(t *testing.T) {
 		tasks := newMemTasks()
-		engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+		engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 		ti, step := newTaskStep("2")
 		tasks.Put(*ti)
 
@@ -149,7 +149,7 @@ func TestBoundedRetry_PolicyMatrix(t *testing.T) {
 	t.Run("persist error uses onPersistError override instead of the default log", func(t *testing.T) {
 		tasks := newMemTasks()
 		tasks.failSetWorkflow = true
-		engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+		engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 		ti, step := newTaskStep("")
 		tasks.Put(*ti)
 
@@ -173,7 +173,7 @@ func TestBoundedRetry_PolicyMatrix(t *testing.T) {
 
 	t.Run("onArmed error is reported as handled without a retry log", func(t *testing.T) {
 		tasks := newMemTasks()
-		engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+		engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 		ti, step := newTaskStep("")
 		tasks.Put(*ti)
 

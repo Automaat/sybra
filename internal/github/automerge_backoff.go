@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/backoff"
 )
 
 // MergeErrorClass classifies a failed auto-merge attempt so AutoMergeBackoff
@@ -163,10 +165,10 @@ func (b *AutoMergeBackoff) RecordFailure(repo string, number int, headSHA, state
 	}
 	entry.attempts++
 	base, ceiling := mergeBackoffWindow(class)
-	delay := expoBackoff(base, entry.attempts, ceiling)
-	entry.nextTry = b.now().Add(delay)
+	computed := backoff.ForAttempt(entry.attempts, base, ceiling)
+	entry.nextTry = b.now().Add(computed.Delay)
 	b.entries[key] = entry
-	return delay >= ceiling
+	return computed.AtCeiling
 }
 
 // Clear drops backoff state for repo#number, reporting whether an entry
@@ -196,18 +198,4 @@ func (b *AutoMergeBackoff) Class(repo string, number int) MergeErrorClass {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.entries[autoMergeBackoffKey(repo, number)].class
-}
-
-func expoBackoff(base time.Duration, attempts int, ceiling time.Duration) time.Duration {
-	d := base
-	for i := 1; i < attempts; i++ {
-		d *= 2
-		if d >= ceiling {
-			return ceiling
-		}
-	}
-	if d > ceiling {
-		return ceiling
-	}
-	return d
 }

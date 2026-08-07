@@ -53,7 +53,7 @@ func leaseFor(t *testing.T, tasks *memTasks, id string) *time.Time {
 func TestReclaimOrphanedEffectLeases_ReleasesDeadOwnersClaim(t *testing.T) {
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(newInlineTestStore(t, "noop", noopWorkflowYAML), tasks, agents, discardLogger())
+	engine := NewTestEngine(newInlineTestStore(t, "noop", noopWorkflowYAML), tasks, agents, discardLogger())
 
 	future := time.Now().UTC().Add(20 * time.Minute)
 	tasks.Put(orphanedLeaseTask("t1", "workflow-engine-1-1", future, nil))
@@ -71,7 +71,7 @@ func TestReclaimOrphanedEffectLeases_ReleasesDeadOwnersClaim(t *testing.T) {
 func TestReclaimOrphanedEffectLeases_SkipsTaskWithLiveAgent(t *testing.T) {
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(newInlineTestStore(t, "noop", noopWorkflowYAML), tasks, agents, discardLogger())
+	engine := NewTestEngine(newInlineTestStore(t, "noop", noopWorkflowYAML), tasks, agents, discardLogger())
 
 	future := time.Now().UTC().Add(20 * time.Minute)
 	tasks.Put(orphanedLeaseTask("t1", "workflow-engine-1-1", future, nil))
@@ -153,7 +153,7 @@ func TestReclaimOrphanedEffectLeases_LeavesClaimsItMustNotTouch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tasks := newMemTasks()
 			agents := newMockAgents()
-			engine := NewEngine(newInlineTestStore(t, "noop", noopWorkflowYAML), tasks, agents, discardLogger())
+			engine := NewTestEngine(newInlineTestStore(t, "noop", noopWorkflowYAML), tasks, agents, discardLogger())
 
 			tk := orphanedLeaseTask("t1", tc.owner(engine), tc.expires, nil)
 			if tc.arrange != nil {
@@ -174,7 +174,7 @@ func TestReclaimOrphanedEffectLeases_LeavesClaimsItMustNotTouch(t *testing.T) {
 // An instance that never dispatches must not rewrite the board's effect log.
 func TestReclaimOrphanedEffectLeases_NoopWhenDispatchDisabled(t *testing.T) {
 	tasks := newMemTasks()
-	engine := NewEngine(newInlineTestStore(t, "noop", noopWorkflowYAML), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newInlineTestStore(t, "noop", noopWorkflowYAML), tasks, newMockAgents(), discardLogger())
 	engine.SetAutoDispatch(false)
 
 	tasks.Put(orphanedLeaseTask("t1", "workflow-engine-1-1", time.Now().UTC().Add(20*time.Minute), nil))
@@ -191,7 +191,7 @@ func TestReclaimOrphanedEffectLeases_NoopWhenDispatchDisabled(t *testing.T) {
 // the orphan is reclaimed.
 func TestReclaimOrphanedEffectLeases_UnfencesSubsequentClaim(t *testing.T) {
 	tasks := newMemTasks()
-	engine := NewEngine(newInlineTestStore(t, "noop", noopWorkflowYAML), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newInlineTestStore(t, "noop", noopWorkflowYAML), tasks, newMockAgents(), discardLogger())
 
 	future := time.Now().UTC().Add(20 * time.Minute)
 	tasks.Put(orphanedLeaseTask("t1", "workflow-engine-1-1", future, nil))

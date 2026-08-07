@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/backoff"
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/diskreclaim"
@@ -47,6 +48,7 @@ import (
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
+	"github.com/Automaat/sybra/internal/workflowpr"
 )
 
 const (
@@ -132,10 +134,10 @@ func (s *liveLimitPollState) recordResult(now time.Time, result limits.LiveRefre
 			logger.Warn("limits.live_poll.invalidate", "provider", limits.ProviderClaude, "err", err)
 		}
 		s.claudeAuthFailures++
-		backoff := liveLimitAuthBackoff(s.claudeAuthFailures)
-		s.next[limits.ProviderClaude] = now.Add(backoff)
+		retryDelay := liveLimitAuthBackoff(s.claudeAuthFailures)
+		s.next[limits.ProviderClaude] = now.Add(retryDelay)
 		if !s.claudeAuthOpen {
-			logger.Warn("limits.live_poll.claude_auth", "backoff", backoff, "err", claude.Err)
+			logger.Warn("limits.live_poll.claude_auth", "backoff", retryDelay, "err", claude.Err)
 			s.claudeAuthOpen = true
 		}
 		return
@@ -149,20 +151,7 @@ func (s *liveLimitPollState) recordResult(now time.Time, result limits.LiveRefre
 }
 
 func liveLimitAuthBackoff(failures int) time.Duration {
-	if failures <= 1 {
-		return liveLimitPollInterval
-	}
-	backoff := liveLimitPollInterval
-	for range failures - 1 {
-		if backoff >= liveLimitPollAuthBackoffMax {
-			return liveLimitPollAuthBackoffMax
-		}
-		backoff *= 2
-	}
-	if backoff > liveLimitPollAuthBackoffMax {
-		return liveLimitPollAuthBackoffMax
-	}
-	return backoff
+	return backoff.ForAttempt(max(failures, 1), liveLimitPollInterval, liveLimitPollAuthBackoffMax).Delay
 }
 
 func liveLimitProviderEnabled(policy limits.Policy, providerName string) bool {
@@ -1312,21 +1301,19 @@ func (a *App) initWorkflowEngine() {
 		a.logger.Error("workflow.sync-builtins", "err", syncErr)
 	}
 	agentLauncher := a.newWorkflowAgentLauncher()
-	a.workflowEngine = workflow.NewEngine(
+	if a.sandboxes == nil {
+		panic("wire workflow engine: sandbox manager is nil")
+	}
+	a.workflowEngine, err = workflow.NewEngine(
 		wfStore,
 		&taskAdapter{tasks: a.tasks, projects: a.projects},
 		agentLauncher,
 		a.logger,
+		a.workflowDependencies(agentLauncher),
 	)
-	a.wirePRSurface()
-	a.workflowEngine.SetTaskClassifier(a.newTaskClassifierAdapter())
-	a.wireWorktreeAccess()
-	a.workflowEngine.SetAttemptNoteAppender(&attemptNoteAppenderAdapter{})
-	a.workflowEngine.SetBranchSyncer(&branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees})
-	a.workflowEngine.SetCheckConfigGetter(&checkConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
-	a.workflowEngine.SetCostBudgetChecker(agentLauncher)
-	a.workflowEngine.SetAttemptWorktreeManager(&attemptWorktreeAdapter{tasks: a.tasks, mgr: a.worktrees})
-	a.workflowEngine.SetManualTestConfigGetter(&manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
+	if err != nil {
+		panic("wire workflow engine: " + err.Error())
+	}
 	a.configureWorkflowPolicies()
 	if a.cfg.Evaluation.Offline.Enabled {
 		gate := prompteval.NewGate(prompteval.New(config.PromptEvalDir()), a.cfg.Evaluation.Offline)
@@ -1411,9 +1398,38 @@ func (a *App) initWorkflowEngine() {
 	// to the completion.Handler constructed there.
 }
 
+func (a *App) workflowDependencies(agentLauncher *agentAdapter) workflow.Dependencies {
+	return workflow.Dependencies{
+		PR: workflow.PRSurface{
+			Linker:           workflowpr.LinkerAdapter{},
+			ReviewRequester:  workflowpr.ReviewRequesterAdapter{},
+			StateFetcher:     workflowpr.StateFetcherAdapter{},
+			HeadFetcher:      workflowpr.HeadFetcherAdapter{},
+			Creator:          workflowpr.CreatorAdapter{},
+			Closer:           workflowpr.CloserAdapter{},
+			Finder:           workflowpr.FinderAdapter{},
+			AnyStateFinder:   workflowpr.FinderAdapter{},
+			ExistenceChecker: workflowpr.ExistenceCheckerAdapter{},
+			ContentGenerator: workflowpr.ContentGeneratorAdapter{Gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}},
+		},
+		Execution: workflow.ExecutionSurface{
+			Worktrees:        &worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees},
+			SidecarDir:       a.sandboxes.SybraHomeDir,
+			AttemptNotes:     &attemptNoteAppenderAdapter{},
+			BranchSyncer:     &branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees},
+			Checks:           &checkConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees},
+			ManualTests:      &manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees},
+			Classifier:       a.newTaskClassifierAdapter(),
+			CostBudget:       agentLauncher,
+			AttemptWorktrees: &attemptWorktreeAdapter{tasks: a.tasks, mgr: a.worktrees},
+		},
+	}
+}
+
 func (a *App) configureWorkflowPolicies() {
 	a.configureTestingEscalation()
 	a.workflowEngine.SetMaxCheckpoints(a.cfg.MaxCheckpoints())
+	a.workflowEngine.SetVerifyChecksMaxConcurrent(a.cfg.VerifyChecksMaxConcurrent())
 	a.workflowEngine.SetABTestingConfig(a.abTestingConfig())
 	a.configurePlanAutoApproval()
 	a.configureAdmissionPolicy()
@@ -1677,49 +1693,4 @@ func (a *App) syncSkillsBundle(signing project.SigningPolicy) {
 		UserHomeDir:          userHome,
 		DowngradeCommitFlags: !signing.SignsCommits(context.Background()),
 	})
-}
-
-// wireWorktreeAccess gives the engine both halves of a task's filesystem: the
-// worktree it operates in, and the writable scratch dir used when that
-// worktree is read-only.
-func (a *App) wireWorktreeAccess() {
-	if a == nil || a.workflowEngine == nil {
-		return
-	}
-	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
-	a.wireSidecarDir()
-}
-
-// wireSidecarDir points workflow scratch output at the per-task sandbox home.
-// Verifier roles run against a read-only worktree, so their own output has to
-// land somewhere still writable; that home is already an allowed write root
-// under the OS sandbox, so this needs no new hole.
-func (a *App) wireSidecarDir() {
-	if a == nil || a.workflowEngine == nil || a.sandboxes == nil {
-		return
-	}
-	a.workflowEngine.SetSidecarDirResolver(a.sandboxes.SybraHomeDir)
-}
-
-// wirePRSurface wires the engine's pull-request dependency group. Split out of
-// initWorkflowEngine both to keep that function within the length gate and
-// because the group is the unit that must stay complete.
-func (a *App) wirePRSurface() {
-	if err := a.workflowEngine.SetPRSurface(workflow.PRSurface{
-		Linker:           prLinkerAdapter{},
-		ReviewRequester:  prReviewRequesterAdapter{},
-		StateFetcher:     prStateFetcherAdapter{},
-		HeadFetcher:      prHeadFetcherAdapter{},
-		Creator:          prCreatorAdapter{},
-		Closer:           prCloserAdapter{},
-		Finder:           prFinderAdapter{},
-		AnyStateFinder:   prFinderAdapter{},
-		ExistenceChecker: prExistenceCheckerAdapter{},
-		ContentGenerator: prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}},
-	}); err != nil {
-		// Only reachable by forgetting a field here — a programming error, so
-		// fail at boot rather than let a PR step no-op in production. Same
-		// posture as buildPlanSchema's static-marshal panic.
-		panic("wire workflow PR surface: " + err.Error())
-	}
 }

@@ -59,7 +59,7 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 }
 
 func (e *Engine) handleWatchdogHangReadyPR(t *TaskInfo, step *Step) bool {
-	if e.prStates == nil || t == nil || t.Workflow == nil || step == nil {
+	if e.pr.StateFetcher == nil || t == nil || t.Workflow == nil || step == nil {
 		return false
 	}
 	if t.ProjectID == "" || t.PRNumber <= 0 {
@@ -68,7 +68,7 @@ func (e *Engine) handleWatchdogHangReadyPR(t *TaskInfo, step *Step) bool {
 	if t.Workflow.WorkflowID != "simple-task-implement" || step.ID != "implement" {
 		return false
 	}
-	state, err := e.prStates.FetchPRState(t.ProjectID, t.PRNumber)
+	state, err := e.pr.StateFetcher.FetchPRState(t.ProjectID, t.PRNumber)
 	if err != nil {
 		e.logger.Warn("workflow.watchdog-hang.ready-pr.fetch", "task_id", t.ID, "pr", t.PRNumber, "err", err)
 		return false
@@ -433,12 +433,13 @@ func (e *Engine) watchdogRateLimitRecoverySpec() watchdogRecoverySpec {
 				freshKey := watchdogZeroOutputFreshRetryKey(step.ID)
 				if watchdogreason.IsSilentHang(t.StatusReason) {
 					sinceKey := watchdogSilentHangSinceKey(step.ID)
+					now := e.now()
 					since, err := time.Parse(time.RFC3339, t.Workflow.Variables[sinceKey])
 					if err != nil {
-						since = time.Now().UTC()
+						since = now
 					}
-					if time.Since(since) < maxSilentHangWait {
-						t.Workflow.StartedAt = time.Now().UTC()
+					if now.Sub(since) < maxSilentHangWait {
+						t.Workflow.StartedAt = now
 						t.Workflow.SetVar(freshKey, "1")
 						t.Workflow.SetVar(retryKey, "0")
 						t.Workflow.SetVar(sinceKey, since.Format(time.RFC3339))
@@ -453,7 +454,7 @@ func (e *Engine) watchdogRateLimitRecoverySpec() watchdogRecoverySpec {
 				targetStatus, reason, terminalState := watchdogRateLimitExhaustionResolution(*t, step, attempts)
 				t.Workflow.State = terminalState
 				if watchdogreason.IsSilentHang(t.StatusReason) {
-					t.Workflow.StartedAt = time.Now().UTC()
+					t.Workflow.StartedAt = e.now()
 				}
 				if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 					e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)

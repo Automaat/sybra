@@ -1963,7 +1963,10 @@ type RunConfig struct {
 	// source checkout when the task has no worktree of its own) so a live
 	// deploy/build checkout can never be written to by that run. Ignored
 	// outside sandbox enforce mode.
-	ReadOnlyDir        bool
+	ReadOnlyDir bool
+	// ReadOnlyPaths are explicit additional inspection roots for a read-only
+	// role (for example, the candidate worktrees a best-of-N judge compares).
+	ReadOnlyPaths      []string
 	Provider           string // "claude", "codex", or "copilot"
 	Model              string // requested model: tier alias or full provider model ID
 	ExperimentID       string
