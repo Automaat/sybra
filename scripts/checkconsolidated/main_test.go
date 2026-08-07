@@ -2,6 +2,7 @@ package main
 
 import (
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
 	"testing"
@@ -17,7 +18,7 @@ func findingsFor(t *testing.T, path, source string) []finding {
 	if err != nil {
 		t.Fatalf("parse fixture: %v", err)
 	}
-	info := collectTypeInfo("fixture", fset, []*ast.File{file})
+	info := collectTypeInfo("fixture", fset, []*ast.File{file}, importer.Default())
 	return inspectFile(fset, path, file, info)
 }
 
@@ -99,6 +100,23 @@ func shortID() string { return uuid.NewString()[:8] }
 	}
 }
 
+func TestTracksUnresolvedCallThroughAssignments(t *testing.T) {
+	t.Parallel()
+	findings := findingsFor(t, "internal/example/drift.go", `package example
+import "github.com/google/uuid"
+type record struct { ID any }
+func shortID() (string, any) {
+	id := uuid.NewString()
+	var item record
+	item.ID = uuid.NewString()
+	return id[:8], item.ID[:8]
+}
+`)
+	if got := countKind(findings, kindStringTruncation); got != 2 {
+		t.Fatalf("truncation findings = %d, want 2: %#v", got, findings)
+	}
+}
+
 func TestDetectsAssignmentBraceCounterReturningSpan(t *testing.T) {
 	t.Parallel()
 	findings := findingsFor(t, "internal/example/drift.go", `package example
@@ -125,6 +143,24 @@ func payload(raw []byte) []byte {
 	for end, char := range raw {
 		switch char { case '{': depth++; case '}': depth-- }
 		if depth == 0 { candidate := raw[start:end]; return candidate }
+	}
+	return nil
+}
+`)
+	if got := countKind(findings, kindJSONExtraction); got != 1 {
+		t.Fatalf("JSON findings = %d, want 1: %#v", got, findings)
+	}
+}
+
+func TestDetectsLookupTableBraceDelta(t *testing.T) {
+	t.Parallel()
+	findings := findingsFor(t, "internal/example/drift.go", `package example
+func payload(raw []byte) []byte {
+	deltas := map[byte]int{'{': 1, '}': -1}
+	depth, start := 0, 0
+	for end, char := range raw {
+		depth += deltas[char]
+		if depth == 0 { return raw[start:end] }
 	}
 	return nil
 }

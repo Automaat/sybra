@@ -11,7 +11,9 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -97,6 +99,10 @@ func buildAllowances() map[allowanceKey]allowance {
 	add(kindStringTruncation, "internal/sybra/app.go", "UUID strings are canonical ASCII tokens; this slice selects the fixed-width Kubernetes smoke-test identifier.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/task/comment.go", "UUID strings are canonical ASCII tokens; this slice selects the fixed-width short comment identifier.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/task/store.go", "UUID strings are canonical ASCII tokens; this slice selects the fixed-width short task identifier.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "cmd/sybra-cli/evaluation.go", "SHA-256 digests are hexadecimal ASCII; this slice produces a display-only short digest.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/monitor/detector.go", "Monitor body parsing slices at positions found by exact ASCII marker delimiters.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/project/git.go", "Git revisions are hexadecimal ASCII and these produce display-only short SHAs.", map[string]int{"slice": 3})
+	add(kindStringTruncation, "internal/sybra/e2e_bootstrap_test.go", "E2E fixture selects the fixed-width ASCII task-ID suffix used by the worktree naming contract.", map[string]int{"slice": 1})
 
 	add(kindStringTruncation, "internal/agent/procsandbox_darwin_integration_test.go", "Integration fixtures split fixed-format sandbox profile text and byte buffers.", map[string]int{"slice": 3})
 	add(kindStringTruncation, "internal/project/repair_test.go", "Git-repair fixtures deliberately mutate fixed-format object/ref data.", map[string]int{"slice": 5})
@@ -513,12 +519,17 @@ func main() {
 	}
 
 	var findings []finding
+	imports, err := newModuleImporter(fset)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "check-consolidated-primitives:", err)
+		os.Exit(1)
+	}
 	for key, files := range groups {
 		asts := make([]*ast.File, 0, len(files))
 		for _, file := range files {
 			asts = append(asts, file.file)
 		}
-		info := collectTypeInfo(key, fset, asts)
+		info := collectTypeInfo(key, fset, asts, imports)
 		for _, file := range files {
 			findings = append(findings, inspectFile(fset, file.path, file.file, info)...)
 		}
@@ -586,10 +597,43 @@ func canonicalPackage(kind findingKind) string {
 	}
 }
 
-func collectTypeInfo(pkgPath string, fset *token.FileSet, files []*ast.File) *types.Info {
+func newModuleImporter(fset *token.FileSet) (types.Importer, error) {
+	cmd := exec.Command("go", "list", "-deps", "-test", "-export", "-f={{if .Export}}{{.ImportPath}}|{{.Export}}{{end}}", "./...")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("load module export index: %w", err)
+	}
+	exports := make(map[string]string)
+	for line := range strings.SplitSeq(string(output), "\n") {
+		path, exportPath, ok := strings.Cut(line, "|")
+		if ok && path != "" && exportPath != "" && !strings.Contains(path, " [") {
+			exports[path] = exportPath
+		}
+	}
+	return importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
+		if exportPath := exports[path]; exportPath != "" {
+			return os.Open(exportPath)
+		}
+		// A mutually exclusive build-tagged file may import a package absent
+		// from the host platform's batch index. Resolve that uncommon miss
+		// individually rather than leaving its call-result types unknown.
+		cmd := exec.Command("go", "list", "-export", "-f={{.Export}}", path)
+		output, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("resolve export data for %s: %w", path, err)
+		}
+		exportPath := strings.TrimSpace(string(output))
+		if exportPath == "" {
+			return nil, fmt.Errorf("resolve export data for %s: empty export path", path)
+		}
+		return os.Open(exportPath)
+	}), nil
+}
+
+func collectTypeInfo(pkgPath string, fset *token.FileSet, files []*ast.File, imports types.Importer) *types.Info {
 	info := &types.Info{Types: make(map[ast.Expr]types.TypeAndValue)}
 	config := types.Config{
-		Importer: importer.Default(),
+		Importer: imports,
 		// Module-local and generated imports may be unavailable to the source
 		// importer. Retain partial local type facts instead of failing open.
 		Error: func(error) {},
@@ -606,7 +650,7 @@ func inspectFile(fset *token.FileSet, path string, file *ast.File, info *types.I
 		return nil
 	}
 	var out []finding
-	stringNames, stringFields := collectStringNames(file)
+	stringNames, stringFields := collectStringNames(file, info)
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch n := node.(type) {
 		case *ast.SliceExpr:
@@ -678,7 +722,7 @@ func isImportPath(file *ast.File, lit *ast.BasicLit) bool {
 	return false
 }
 
-func collectStringNames(file *ast.File) (map[string]struct{}, map[string]struct{}) {
+func collectStringNames(file *ast.File, info *types.Info) (map[string]struct{}, map[string]struct{}) {
 	names := make(map[string]struct{})
 	fields := make(map[string]struct{})
 	ast.Inspect(file, func(node ast.Node) bool {
@@ -707,19 +751,17 @@ func collectStringNames(file *ast.File) (map[string]struct{}, map[string]struct{
 					return true
 				}
 				for i, rhs := range n.Rhs {
-					if !isStringExpr(rhs, nil, names, fields) {
+					if !isStringExpr(rhs, info, names, fields) && !isUnresolvedCall(rhs, info) {
 						continue
 					}
-					if id, ok := n.Lhs[i].(*ast.Ident); ok {
-						names[id.Name] = struct{}{}
-					}
+					rememberStringTarget(n.Lhs[i], names, fields)
 				}
 			case *ast.ValueSpec:
 				if len(n.Names) != len(n.Values) {
 					return true
 				}
 				for i, value := range n.Values {
-					if isStringExpr(value, nil, names, fields) {
+					if isStringExpr(value, info, names, fields) || isUnresolvedCall(value, info) {
 						names[n.Names[i].Name] = struct{}{}
 					}
 				}
@@ -728,6 +770,15 @@ func collectStringNames(file *ast.File) (map[string]struct{}, map[string]struct{
 		})
 	}
 	return names, fields
+}
+
+func rememberStringTarget(expr ast.Expr, names, fields map[string]struct{}) {
+	switch target := expr.(type) {
+	case *ast.Ident:
+		names[target.Name] = struct{}{}
+	case *ast.SelectorExpr:
+		fields[target.Sel.Name] = struct{}{}
+	}
 }
 
 func isStringExpr(expr ast.Expr, info *types.Info, names, fields map[string]struct{}) bool {
@@ -818,9 +869,9 @@ func extractsJSONByBraces(fn *ast.FuncDecl) bool {
 				return true
 			}
 			if n.Tok == token.ADD_ASSIGN {
-				braceDirections[id.Name] |= 1
+				braceDirections[id.Name] |= compoundDirection(false, n.Rhs[0])
 			} else if n.Tok == token.SUB_ASSIGN {
-				braceDirections[id.Name] |= 2
+				braceDirections[id.Name] |= compoundDirection(true, n.Rhs[0])
 			} else if n.Tok == token.ASSIGN {
 				braceDirections[id.Name] |= assignmentDirection(id.Name, n.Rhs[0])
 			}
@@ -847,15 +898,59 @@ func assignmentDirection(name string, expr ast.Expr) uint8 {
 		id, ok := expr.(*ast.Ident)
 		return ok && id.Name == name
 	}
-	isOne := func(expr ast.Expr) bool {
-		lit, ok := expr.(*ast.BasicLit)
-		return ok && lit.Kind == token.INT && lit.Value == "1"
+	if bin.Op == token.ADD {
+		if isName(bin.X) {
+			return compoundDirection(false, bin.Y)
+		}
+		if isName(bin.Y) {
+			return compoundDirection(false, bin.X)
+		}
 	}
-	if bin.Op == token.ADD && ((isName(bin.X) && isOne(bin.Y)) || (isOne(bin.X) && isName(bin.Y))) {
+	if bin.Op == token.SUB && isName(bin.X) {
+		return compoundDirection(true, bin.Y)
+	}
+	return 0
+}
+
+func compoundDirection(subtract bool, delta ast.Expr) uint8 {
+	sign := integerSign(delta)
+	if sign == 0 {
+		// A dynamic delta can move in either direction. Treat it as both so a
+		// lookup-table or helper-computed brace delta cannot evade the gate.
+		return 3
+	}
+	if subtract {
+		sign = -sign
+	}
+	if sign > 0 {
 		return 1
 	}
-	if bin.Op == token.SUB && isName(bin.X) && isOne(bin.Y) {
-		return 2
+	return 2
+}
+
+func integerSign(expr ast.Expr) int {
+	switch value := expr.(type) {
+	case *ast.BasicLit:
+		if value.Kind != token.INT {
+			return 0
+		}
+		n, err := strconv.ParseInt(value.Value, 0, 64)
+		if err != nil || n == 0 {
+			return 0
+		}
+		if n > 0 {
+			return 1
+		}
+		return -1
+	case *ast.UnaryExpr:
+		if value.Op == token.SUB {
+			return -integerSign(value.X)
+		}
+		if value.Op == token.ADD {
+			return integerSign(value.X)
+		}
+	case *ast.ParenExpr:
+		return integerSign(value.X)
 	}
 	return 0
 }
