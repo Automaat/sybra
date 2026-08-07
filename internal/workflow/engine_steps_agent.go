@@ -434,16 +434,26 @@ func bestOfNAttemptReadRoots(wfExec *Execution) []string {
 		return nil
 	}
 	var roots []string
+	seen := make(map[string]struct{})
 	for _, parent := range wfExec.BestOfNInflight {
 		if parent == nil {
 			continue
 		}
 		for _, attempt := range parent.Attempts {
-			if attempt != nil && attempt.Status == "completed" && strings.TrimSpace(attempt.Dir) != "" {
-				roots = append(roots, attempt.Dir)
+			if attempt == nil || attempt.Status != "completed" {
+				continue
+			}
+			dir := strings.TrimSpace(attempt.Dir)
+			if dir == "" {
+				continue
+			}
+			if _, ok := seen[dir]; !ok {
+				seen[dir] = struct{}{}
+				roots = append(roots, dir)
 			}
 		}
 	}
+	slices.Sort(roots)
 	return roots
 }
 
