@@ -120,7 +120,8 @@ if [ "$1" = "api" ]; then
 fi
 token=${GH_TOKEN:-$GITHUB_TOKEN}
 if [ '%[4]s' = verifier ]; then
-	token_file=${0%%/*}/.token
+	shim_path=$(command -v "$0" 2>/dev/null || printf '%%s\n' "$0")
+	token_file=${shim_path%%/*}/.token
 	if [ -f "$token_file" ]; then
 		token="$(cat "$token_file" 2>/dev/null || true)"
 	fi

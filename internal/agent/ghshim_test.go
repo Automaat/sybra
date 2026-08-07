@@ -223,6 +223,35 @@ func TestVerifierGhShimUsesRotatedManagerToken(t *testing.T) {
 	}
 }
 
+func TestVerifierGhShimUsesRotatedManagerTokenWhenInvokedThroughPath(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ghDir := t.TempDir()
+	realGh := filepath.Join(ghDir, "gh")
+	if err := os.WriteFile(realGh, []byte("#!/bin/sh\nprintf 'GH=%s GITHUB=%s\\n' \"$GH_TOKEN\" \"$GITHUB_TOKEN\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{ghShimDir: shimDir, logger: slog.New(slog.DiscardHandler)}
+	m.SetGHVerifierAppToken(func() string { return "rotated-restricted-token" })
+	t.Setenv("GH_TOKEN", "stale-restricted-token")
+	t.Setenv("GITHUB_TOKEN", "stale-restricted-token")
+	t.Setenv("PATH", filepath.Join(shimDir, "verifier")+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ghCommand := "gh"
+	cmd := exec.Command(ghCommand, "pr", "view", "1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run verifier gh through PATH: %v: %s", err, output)
+	}
+	if !strings.Contains(string(output), "GH=rotated-restricted-token GITHUB=rotated-restricted-token") {
+		t.Fatalf("PATH-invoked shim did not use rotated token: %q", output)
+	}
+}
+
 func TestGhShim_UsesResolvedSybraCLIWhenInvocationPathOmitsIt(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	ghDir := t.TempDir()
