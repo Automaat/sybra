@@ -69,11 +69,11 @@ func (e *Engine) execLinkPRAndReview(taskID string, step *Step, wfExec *Executio
 	// silently flip the task to in-review against a PR nobody but the agent
 	// will ever look at.
 	if t.PRNumber > 0 {
-		if t.ProjectID == "" || e.prExistence == nil {
+		if t.ProjectID == "" || e.pr.ExistenceChecker == nil {
 			return setInReview(t.PRNumber, "task.pr_number")
 		}
 		ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
-		exists, verifyErr := e.prExistence.PRExists(ctx, t.ProjectID, t.PRNumber)
+		exists, verifyErr := e.pr.ExistenceChecker.PRExists(ctx, t.ProjectID, t.PRNumber)
 		cancel()
 		switch {
 		case exists:

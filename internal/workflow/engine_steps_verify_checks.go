@@ -314,19 +314,16 @@ func (e *Engine) verifyChecksCacheHit(taskID string, step *Step, wtPath, treeSHA
 }
 
 func (e *Engine) loadVerifyChecksInputs(taskID string) (cmds []string, wtPath string, timeout time.Duration, skip string) {
-	if e.checks == nil {
-		return nil, "", 0, "skipped: no check config getter"
-	}
 	timeout = resolveWorkflowCheckTimeout(e.verifyTimeout)
-	cmds = e.checks.VerifyCommands(e.ctx, taskID)
+	cmds = e.execution.Checks.VerifyCommands(e.ctx, taskID)
 	if len(cmds) == 0 {
 		return nil, "", 0, "skipped: no verify commands configured"
 	}
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return nil, "", 0, "skipped: no worktree getter configured"
 	}
 	var ok bool
-	wtPath, ok = e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok = e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return nil, "", 0, "skipped: no worktree for task"
 	}
@@ -389,14 +386,14 @@ func (e *Engine) parkVerifyChecksForBackpressure(taskID string, step *Step, wfEx
 // must treat that the same as "could not verify" and fall back to their own
 // default behavior rather than treat it as a pass.
 func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error) {
-	if e.checks == nil || e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return false, false, "", "", nil
 	}
-	cmds := e.checks.VerifyCommands(ctx, taskID)
+	cmds := e.execution.Checks.VerifyCommands(ctx, taskID)
 	if len(cmds) == 0 {
 		return false, false, "", "", nil
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return false, false, "", "", nil
 	}
@@ -445,7 +442,7 @@ func (e *Engine) runVerifySuiteWithRetry(parent context.Context, taskID, wtPath 
 
 func (e *Engine) healToolchainAndRetry(taskID, wtPath string, cmds []string, timeout time.Duration, stepID string) (attempted bool, failedCmd, output string, runErr error) {
 	setupCtx, cancel := context.WithTimeout(e.ctx, timeout)
-	setup := e.checks.SetupCommands(setupCtx, taskID)
+	setup := e.execution.Checks.SetupCommands(setupCtx, taskID)
 	if len(setup) == 0 {
 		cancel()
 		return false, "", "", nil

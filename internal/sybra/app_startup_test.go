@@ -316,7 +316,7 @@ steps:
 		t.Fatal(err)
 	}
 
-	engine := workflow.NewEngine(wfStore, &taskAdapter{tasks: taskMgr}, &recordingAgentLauncher{}, discardLogger())
+	engine := workflow.NewTestEngine(wfStore, &taskAdapter{tasks: taskMgr}, &recordingAgentLauncher{}, discardLogger())
 	app := &App{
 		cfg:            config.DefaultConfig(),
 		workflowEngine: engine,

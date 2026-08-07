@@ -2457,10 +2457,10 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 }
 
 func (e *Engine) seedReimplementNote(ctx context.Context, wfExec *Execution, taskID string, attempts int, t TaskInfo) {
-	if e.attemptNotes == nil || e.worktrees == nil {
+	if e.execution.AttemptNotes == nil || e.execution.Worktrees == nil {
 		return
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return
 	}
@@ -2488,7 +2488,7 @@ func (e *Engine) seedReimplementNote(ctx context.Context, wfExec *Execution, tas
 			"Latest rejection reason:\n\n%s\n",
 		attempts, marker, diffStat, quoteMarkdownBlock(reason),
 	)
-	if err := e.attemptNotes.AppendReimplementNote(ctx, taskID, wtPath, marker, section); err != nil {
+	if err := e.execution.AttemptNotes.AppendReimplementNote(ctx, taskID, wtPath, marker, section); err != nil {
 		e.logger.Warn("workflow.test.reimplement-note", "task_id", taskID, "worktree", wtPath, "attempts", attempts, "err", err)
 		return
 	}

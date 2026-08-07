@@ -59,7 +59,7 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 }
 
 func (e *Engine) handleWatchdogHangReadyPR(t *TaskInfo, step *Step) bool {
-	if e.prStates == nil || t == nil || t.Workflow == nil || step == nil {
+	if e.pr.StateFetcher == nil || t == nil || t.Workflow == nil || step == nil {
 		return false
 	}
 	if t.ProjectID == "" || t.PRNumber <= 0 {
@@ -68,7 +68,7 @@ func (e *Engine) handleWatchdogHangReadyPR(t *TaskInfo, step *Step) bool {
 	if t.Workflow.WorkflowID != "simple-task-implement" || step.ID != "implement" {
 		return false
 	}
-	state, err := e.prStates.FetchPRState(t.ProjectID, t.PRNumber)
+	state, err := e.pr.StateFetcher.FetchPRState(t.ProjectID, t.PRNumber)
 	if err != nil {
 		e.logger.Warn("workflow.watchdog-hang.ready-pr.fetch", "task_id", t.ID, "pr", t.PRNumber, "err", err)
 		return false

@@ -55,10 +55,10 @@ func (e *Engine) maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID string, curr
 	if !declared || !alreadyFixed {
 		return nil, false, nil
 	}
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return nil, false, nil
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok || wtPath == "" {
 		return nil, false, nil
 	}
@@ -102,10 +102,10 @@ func (e *Engine) maybeRecoverHumanRequiredByOpeningPR(taskID string, currentStep
 	if !isMissingLivePRVerificationBlocker(t.StatusReason + "\n" + output.Output) {
 		return nil, false, nil
 	}
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return nil, false, nil
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok || wtPath == "" {
 		return nil, false, nil
 	}

@@ -389,7 +389,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 
 	ta := &taskAdapter{tasks: taskMgr}
 	aa := &agentAdapter{agents: agentMgr, agentOrch: agentOrch, tasks: taskMgr}
-	engine = workflow.NewEngine(wfStore, ta, aa, logger)
+	engine = workflow.NewTestEngine(wfStore, ta, aa, logger)
 	engine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: taskMgr, mgr: wm})
 	classifier := newE2EFakeClassifier()
 	engine.SetTaskClassifier(&taskClassifierAdapter{tasks: taskMgr, classifier: classifier})
@@ -4688,7 +4688,7 @@ func rebuildEngineFromEnv(t *testing.T, env *e2eEnv) *workflow.Engine {
 
 	ta := &taskAdapter{tasks: taskMgr}
 	aa := &agentAdapter{agents: agentMgr, agentOrch: agentOrch, tasks: taskMgr}
-	engine = workflow.NewEngine(env.wfStore, ta, aa, e2eLogger(t))
+	engine = workflow.NewTestEngine(env.wfStore, ta, aa, e2eLogger(t))
 	engine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: taskMgr, mgr: wm})
 	engine.SetPRLinker(nil)
 	if env.classifier != nil {

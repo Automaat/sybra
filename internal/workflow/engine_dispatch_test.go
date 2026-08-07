@@ -27,7 +27,7 @@ func TestExecPushBranch_DivergedRecovery_NestedStartWorkflowFails(t *testing.T) 
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr"})
 	store := newTestStoreWith(t, "test-push-first.yaml", "test-recovery-target.yaml")
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 
 	var nestedErr error
@@ -62,7 +62,7 @@ func TestExecPushBranch_DivergedRecovery_ReplaceWorkflowSucceeds(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr"})
 	store := newTestStoreWith(t, "test-push-first.yaml", "test-recovery-target.yaml")
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 
 	var replaceErr error

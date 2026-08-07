@@ -205,9 +205,9 @@ func TestExecPushBranch_RecoversMissingWorktreeOnce(t *testing.T) {
 	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"}
 	tasks.Put(task)
 	resolver := &fakePRWorktreeResolver{path: wtPath}
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(resolver)
-	engine.SetPRHeadFetcher(&fakePRHeadFetcher{sha: local})
+	engine.setPRHeadFetcherForTest(&fakePRHeadFetcher{sha: local})
 
 	out, err := engine.execPushBranch("t1", newPushBranchStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
@@ -226,7 +226,7 @@ func TestExecCreatePR_WorktreeRecoveryErrorIsPrecise(t *testing.T) {
 	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets"}
 	tasks.Put(task)
 	resolver := &fakePRWorktreeResolver{err: errors.New("prepare branch: remote ref missing")}
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(resolver)
 
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
@@ -250,7 +250,7 @@ func TestExecCreatePR_WorktreeRecoveryPropagatesStatusFailure(t *testing.T) {
 	baseTasks.Put(task)
 	tasks := &failStatusTaskProvider{memTasks: baseTasks, err: errors.New("persist status: disk full")}
 	resolver := &fakePRWorktreeResolver{err: errors.New("prepare branch: remote ref missing")}
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(resolver)
 
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
@@ -279,9 +279,9 @@ func TestExecPushBranch_Success(t *testing.T) {
 
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetPRHeadFetcher(&fakePRHeadFetcher{sha: local})
+	engine.setPRHeadFetcherForTest(&fakePRHeadFetcher{sha: local})
 
 	out, err := engine.execPushBranch("t1", newPushBranchStep(), &Execution{Variables: map[string]string{}}, TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
 	if err != nil {
@@ -313,9 +313,9 @@ func TestExecPushBranch_BranchConflictUsesTrustedSelectedRemote(t *testing.T) {
 
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+	engine.setPushCredentialPreflighterForTest(&fakePushPreflighter{})
 
 	wfExec := &Execution{WorkflowID: "branch-conflict-fix", Variables: map[string]string{
 		WorkflowVarBranchConflictPushRemote: "origin",
@@ -344,10 +344,10 @@ func TestExecPushBranch_PreflightFailureFallsThroughToSuccessfulPush(t *testing.
 
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	preflight := &fakePushPreflighter{err: errors.New("github push credential preflight failed: gh auth status: Bad credentials")}
-	engine.SetPushCredentialPreflighter(preflight)
+	engine.setPushCredentialPreflighterForTest(preflight)
 
 	wfExec := &Execution{Variables: map[string]string{}}
 	out, err := engine.execPushBranch("t1", newPushBranchStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
@@ -387,10 +387,10 @@ func TestExecPushBranch_PreflightAndPushBothFailParksForRetry(t *testing.T) {
 
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	preflight := &fakePushPreflighter{err: errors.New("github push credential preflight failed: gh auth status: Bad credentials")}
-	engine.SetPushCredentialPreflighter(preflight)
+	engine.setPushCredentialPreflighterForTest(preflight)
 
 	wfExec := &Execution{Variables: map[string]string{}}
 	_, err := engine.execPushBranch("t1", newPushBranchStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
@@ -421,7 +421,7 @@ func TestExecPushBranch_PreflightAndPushBothFailParksForRetry(t *testing.T) {
 func TestExecPushBranch_NoWorktreeFlipsHumanRequired(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr", Branch: "main", PRNumber: 5})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{ok: false})
 
 	out, err := engine.execPushBranch("t1", newPushBranchStep(), &Execution{Variables: map[string]string{}}, TaskInfo{ID: "t1", Status: "ready-pr", Branch: "main", PRNumber: 5})
@@ -456,7 +456,7 @@ func TestExecPushBranch_DivergedFlipsHumanRequired(t *testing.T) {
 
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 
 	out, err := engine.execPushBranch("t1", newPushBranchStep(), &Execution{Variables: map[string]string{}}, TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5})
@@ -487,7 +487,7 @@ func TestExecPushBranch_DivergedRecoveredParksInsteadOfHumanRequired(t *testing.
 
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 
 	var recoveredTaskID string
@@ -524,7 +524,7 @@ func TestExecPushBranch_DivergedRecoveryDeclinesFallsBackToHumanRequired(t *test
 
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	engine.SetConflictRecovery(func(string) bool { return false })
 
@@ -550,7 +550,7 @@ func TestExecPushBranch_DivergedRecoveryDeclinesFallsBackToHumanRequired(t *test
 func TestConflictRecovery_DeferredWhileMarkerHeld(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 
 	var calls int
 	engine.SetConflictRecovery(func(string) bool { calls++; return true })
@@ -596,7 +596,7 @@ func TestDrainPendingConflictRecovery_DeclineEscalates(t *testing.T) {
 			State:       ExecRunning,
 		},
 	})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetConflictRecovery(func(string) bool { return false })
 
 	engine.mu.Lock()
@@ -625,7 +625,7 @@ func TestDrainPendingConflictRecovery_DeclineEscalates(t *testing.T) {
 func TestTryConflictRecovery_ExportedWrapperQueuesWhileMarkerHeld(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 
 	var calls int
 	engine.SetConflictRecovery(func(string) bool { calls++; return true })
@@ -670,7 +670,7 @@ func TestTryConflictRecovery_NilSafe(t *testing.T) {
 func TestTryConflictRecovery_NoRecoveryWiredReturnsFalse(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 
 	if engine.TryConflictRecovery("t1") {
 		t.Fatal("TryConflictRecovery with no recovery wired = true, want false")
@@ -688,7 +688,7 @@ func TestTryConflictRecovery_NoRecoveryWiredReturnsFalse(t *testing.T) {
 func TestQueueConflictRecoveryRetry_DrainedByLaterMarkerRelease(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 
 	var calls int
 	engine.SetConflictRecovery(func(string) bool { calls++; return true })
@@ -720,13 +720,13 @@ func TestExecCreatePR_Success(t *testing.T) {
 	tasks := newMemTasks()
 	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets", ProjectType: "pet", Title: "feat(x): y", Body: "body"}
 	tasks.Put(task)
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	creator := &fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)}
 	engine.SetPRCreator(creator)
 	reviewer := &fakePRReviewRequester{}
-	engine.SetPRReviewRequester(reviewer)
-	engine.SetPRContentGenerator(&fakePRContentGenerator{title: "feat(x): y", body: "## Motivation\n\nz\n\n## Implementation information\n\nw"})
+	engine.setPRReviewRequesterForTest(reviewer)
+	engine.setPRContentGeneratorForTest(&fakePRContentGenerator{title: "feat(x): y", body: "## Motivation\n\nz\n\n## Implementation information\n\nw"})
 
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
@@ -766,10 +766,10 @@ func TestExecCreatePR_CopilotReviewFailureDoesNotBlockPR(t *testing.T) {
 	tasks := newMemTasks()
 	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets", ProjectType: "pet", Title: "feat(x): y", Body: "body"}
 	tasks.Put(task)
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	engine.SetPRCreator(&fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)})
-	engine.SetPRReviewRequester(&fakePRReviewRequester{copilotErr: errors.New("copilot unavailable")})
+	engine.setPRReviewRequesterForTest(&fakePRReviewRequester{copilotErr: errors.New("copilot unavailable")})
 
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
@@ -803,11 +803,11 @@ func TestExecCreatePR_ClosesSupersededLinkedPR(t *testing.T) {
 		Body:        "body",
 	}
 	tasks.Put(task)
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	engine.SetPRCreator(&fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)})
 	closer := &fakePRCloser{}
-	engine.SetPRCloser(closer)
+	engine.setPRCloserForTest(closer)
 
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
@@ -847,10 +847,10 @@ func TestExecCreatePR_SupersededCloseFailureDoesNotBlockRelink(t *testing.T) {
 		Body:        "body",
 	}
 	tasks.Put(task)
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	engine.SetPRCreator(&fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)})
-	engine.SetPRCloser(&fakePRCloser{err: errors.New("github unavailable")})
+	engine.setPRCloserForTest(&fakePRCloser{err: errors.New("github unavailable")})
 
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
@@ -872,7 +872,7 @@ func TestExecCreatePR_ExistingPRShortCircuitsWithoutCreating(t *testing.T) {
 	tasks := newMemTasks()
 	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets", ProjectType: "pet", Title: "feat(x): y", Body: "body"}
 	tasks.Put(task)
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	finder := &fakePRFinder{number: 77, found: true}
 	engine.SetPRFinder(finder)
@@ -925,10 +925,10 @@ func TestExecCreatePR_MergedSameBranchWithAppliedPatchMarksDoneWithoutCreating(t
 	tasks := newMemTasks()
 	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets", ProjectType: "pet", Title: "feat(x): y", Body: "body"}
 	tasks.Put(task)
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	anyState := &fakePRAnyStateFinder{number: 77, state: "MERGED", found: true}
-	engine.SetPRAnyStateFinder(anyState)
+	engine.setPRAnyStateFinderForTest(anyState)
 	creator := &fakePRCreator{number: 999, headSHA: headSHA(t, wtPath)}
 	engine.SetPRCreator(creator)
 
@@ -964,9 +964,9 @@ func TestExecCreatePR_MergedSameBranchWithRemainingPatchStillCreates(t *testing.
 	tasks := newMemTasks()
 	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets", ProjectType: "pet", Title: "feat(x): y", Body: "body"}
 	tasks.Put(task)
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetPRAnyStateFinder(&fakePRAnyStateFinder{number: 77, state: "MERGED", found: true})
+	engine.setPRAnyStateFinderForTest(&fakePRAnyStateFinder{number: 77, state: "MERGED", found: true})
 	creator := &fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)}
 	engine.SetPRCreator(creator)
 
@@ -996,7 +996,7 @@ func TestExecCreatePR_FinderErrorFallsThroughToCreate(t *testing.T) {
 	tasks := newMemTasks()
 	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets", ProjectType: "pet", Title: "feat(x): y", Body: "body"}
 	tasks.Put(task)
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	// A lookup failure must be treated as "no PR found" so create_pr proceeds
 	// rather than getting stuck — matching the best-effort docstring.
@@ -1027,11 +1027,11 @@ func TestExecCreatePR_DraftForNonPetProject(t *testing.T) {
 	tasks := newMemTasks()
 	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets", ProjectType: "work", Title: "feat(x): y", Body: "body"}
 	tasks.Put(task)
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	creator := &fakePRCreator{number: 7, headSHA: headSHA(t, wtPath)}
 	engine.SetPRCreator(creator)
-	engine.SetPRContentGenerator(&fakePRContentGenerator{title: "feat(x): y", body: "## Motivation\n\nz\n\n## Implementation information\n\nw"})
+	engine.setPRContentGeneratorForTest(&fakePRContentGenerator{title: "feat(x): y", body: "## Motivation\n\nz\n\n## Implementation information\n\nw"})
 
 	if _, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task); err != nil {
 		t.Fatalf("execCreatePR: %v", err)
@@ -1048,11 +1048,11 @@ func TestExecCreatePR_ContentFallbackWhenGeneratorUnset(t *testing.T) {
 	tasks := newMemTasks()
 	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets", ProjectType: "pet", Title: "feat(x): y", Body: "body text"}
 	tasks.Put(task)
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	creator := &fakePRCreator{number: 9, headSHA: headSHA(t, wtPath)}
 	engine.SetPRCreator(creator)
-	// No SetPRContentGenerator call — engine must fall back.
+	// No setPRContentGeneratorForTest call — engine must fall back.
 
 	if _, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task); err != nil {
 		t.Fatalf("execCreatePR: %v", err)
@@ -1072,7 +1072,7 @@ func TestExecCreatePR_NoCreatorFlipsHumanRequired(t *testing.T) {
 	tasks := newMemTasks()
 	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets"}
 	tasks.Put(task)
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	// No PRCreator wired.
 
@@ -1089,7 +1089,7 @@ func TestExecCreatePR_NoProjectFlipsHumanRequired(t *testing.T) {
 	tasks := newMemTasks()
 	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch"}
 	tasks.Put(task)
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 
 	if _, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task); err != nil {
 		t.Fatalf("execCreatePR: %v", err)
@@ -1107,10 +1107,10 @@ func TestExecCreatePR_CreateErrorRateLimitParksForRetry(t *testing.T) {
 	tasks := newMemTasks()
 	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets"}
 	tasks.Put(task)
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	engine.SetPRCreator(&fakePRCreator{err: errors.New("GitHub API rate limit exceeded")})
-	engine.SetPRContentGenerator(&fakePRContentGenerator{title: "t", body: "## Motivation\n\n## Implementation information\n"})
+	engine.setPRContentGeneratorForTest(&fakePRContentGenerator{title: "t", body: "## Motivation\n\n## Implementation information\n"})
 
 	wfExec := &Execution{Variables: map[string]string{}}
 	_, err := engine.execCreatePR("t1", newCreatePRStep(), wfExec, task)
@@ -1126,7 +1126,7 @@ func TestExecCreatePR_CreateErrorRateLimitParksForRetry(t *testing.T) {
 func TestClassifyPRGitError_AuthFailureEscalatesAfterMaxRetries(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	step := newCreatePRStep()
 	task := TaskInfo{ID: "t1", Status: "ready-pr"}
 
@@ -1150,7 +1150,7 @@ func TestClassifyPRGitError_AuthFailureEscalatesAfterMaxRetries(t *testing.T) {
 func TestClassifyPRGitError_GitHTTPSUsernamePromptIsAuthFailure(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	step := newCreatePRStep()
 	task := TaskInfo{ID: "t1", Status: "ready-pr"}
 	wfExec := &Execution{Variables: map[string]string{}}
@@ -1216,7 +1216,7 @@ func TestPRRetryReasonKeepsValidUTF8OnMultibyteHookOutput(t *testing.T) {
 func TestClassifyPRGitError_UnclassifiedFailureParksOnceThenEscalates(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "ready-pr"})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	step := newPushBranchStep()
 	task := TaskInfo{ID: "t1", Status: "ready-pr"}
 
@@ -1261,11 +1261,11 @@ func TestExecCreatePR_AdoptsExistingPROnAlreadyExistsConflict(t *testing.T) {
 	tasks := newMemTasks()
 	task := TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/my-branch", ProjectID: "acme/widgets", ProjectType: "pet", Title: "feat(x): y", Body: "body"}
 	tasks.Put(task)
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	engine.SetPRFinder(&raceThenFoundFinder{})
 	engine.SetPRCreator(&fakePRCreator{err: errors.New(`a pull request for branch "acme:feat/my-branch" into branch "main" already exists: https://github.com/acme/widgets/pull/55`)})
-	engine.SetPRContentGenerator(&fakePRContentGenerator{title: "feat(x): y", body: "## Motivation\n\nz\n\n## Implementation information\n\nw"})
+	engine.setPRContentGeneratorForTest(&fakePRContentGenerator{title: "feat(x): y", body: "## Motivation\n\nz\n\n## Implementation information\n\nw"})
 
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {

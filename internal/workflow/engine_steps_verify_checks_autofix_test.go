@@ -529,9 +529,9 @@ steps:
 `)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{cmds: []string{lintVerifyCommand("internal/foo/foo.go")}})
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{cmds: []string{lintVerifyCommand("internal/foo/foo.go")}})
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 
 	if err := engine.StartWorkflow("t1", "verify-lint-repair"); err != nil {

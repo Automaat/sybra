@@ -252,7 +252,7 @@ func TestE2E_BestOfN_PromotesWinnerCleansUpLosers(t *testing.T) {
 	awa := &attemptWorktreeAdapter{tasks: taskMgr, mgr: wm}
 	ara := &artifactRecorderAdapter{store: artifactStore}
 
-	engine = workflow.NewEngine(wfStore, ta, aa, logger)
+	engine = workflow.NewTestEngine(wfStore, ta, aa, logger)
 	engine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: taskMgr, mgr: wm})
 	engine.SetAttemptWorktreeManager(awa)
 	engine.SetCostBudgetChecker(aa)

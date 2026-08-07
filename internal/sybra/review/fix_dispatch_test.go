@@ -79,7 +79,7 @@ func TestDispatchPRIssueWithOptions_RecoversRetryableHumanRequiredPRFix(t *testi
 	launcher := &countingFailingAgentLauncher{
 		err: &provider.UnhealthyError{Provider: "claude", Reason: provider.RateLimitReason, RateLimited: true},
 	}
-	engine := workflow.NewEngine(wfStore, &taskAdapter{tasks: tasks}, launcher, slog.New(slog.DiscardHandler))
+	engine := workflow.NewTestEngine(wfStore, &taskAdapter{tasks: tasks}, launcher, slog.New(slog.DiscardHandler))
 	handler := &Handler{
 		logger:         slog.New(slog.DiscardHandler),
 		emit:           func(string, any) {},
@@ -184,7 +184,7 @@ func TestDispatchPRIssueWithOptions_DoesNotRewritePermanentFailure(t *testing.T)
 	}
 
 	launcher := &countingFailingAgentLauncher{err: workflow.ErrNoProjectAssigned}
-	engine := workflow.NewEngine(wfStore, &taskAdapter{tasks: tasks}, launcher, slog.New(slog.DiscardHandler))
+	engine := workflow.NewTestEngine(wfStore, &taskAdapter{tasks: tasks}, launcher, slog.New(slog.DiscardHandler))
 	handler := &Handler{
 		logger:         slog.New(slog.DiscardHandler),
 		emit:           func(string, any) {},

@@ -26,7 +26,7 @@ type syncBranchReport struct {
 
 // execSyncBranch runs a proactive, best-effort sync of the task's worktree
 // branch against the project's default branch. It never blocks workflow
-// advancement: a nil BranchSyncer, a missing worktree, a sync error, or even
+// advancement: a skipped sync, a missing worktree, a sync error, or even
 // a panic inside the syncer all resolve to a completed step with the outcome
 // recorded in the step output and (when a recorder is wired) a generic
 // artifact — never an error return, and never a task status change.
@@ -38,14 +38,10 @@ func (e *Engine) execSyncBranch(taskID string, step *Step) (out StepOutput, err 
 		}
 	}()
 
-	if e.branchSyncer == nil {
-		return e.recordSyncBranch(taskID, step, syncResultSkipped, "no branch syncer configured")
-	}
-
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
 
-	result, syncErr := e.branchSyncer.SyncTaskBranch(ctx, taskID)
+	result, syncErr := e.execution.BranchSyncer.SyncTaskBranch(ctx, taskID)
 	if syncErr != nil {
 		e.logger.Warn("workflow.sync-branch.result", "task_id", taskID, "result", result, "err", syncErr)
 		return e.recordSyncBranch(taskID, step, result, syncErr.Error())

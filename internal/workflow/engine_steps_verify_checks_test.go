@@ -49,22 +49,22 @@ func newVerifyChecksStep() *Step { return &Step{ID: "verify_checks", Type: StepV
 
 func newVerifyChecksEngine(t *testing.T, wt string, cmds []string) (*Engine, *memTasks) {
 	t.Helper()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{cmds: cmds})
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{cmds: cmds})
 	return engine, engine.tasks.(*memTasks)
 }
 
-func TestExecVerifyChecks_NoGetterSkips(t *testing.T) {
+func TestExecVerifyChecks_DefaultGetterSkips(t *testing.T) {
 	t.Parallel()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: t.TempDir(), ok: true})
 
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out.Output != "skipped: no check config getter" {
+	if out.Output != "skipped: no verify commands configured" {
 		t.Errorf("Output = %q, want skip", out.Output)
 	}
 }
@@ -85,7 +85,7 @@ func TestExecVerifyChecks_NoCommandsSkips(t *testing.T) {
 
 func TestVerifyTaskNow_NoGetterNotVerified(t *testing.T) {
 	t.Parallel()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: t.TempDir(), ok: true})
 
 	verified, passed, _, _, err := engine.VerifyTaskNow(t.Context(), "t1")
@@ -112,9 +112,9 @@ func TestVerifyTaskNow_NoCommandsNotVerified(t *testing.T) {
 
 func TestVerifyTaskNow_NoWorktreeNotVerified(t *testing.T) {
 	t.Parallel()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{ok: false})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{cmds: []string{"true"}})
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{cmds: []string{"true"}})
 
 	verified, passed, _, _, err := engine.VerifyTaskNow(t.Context(), "t1")
 	if err != nil {
@@ -363,10 +363,10 @@ func TestExecVerifyChecks_CommandChangeForcesRerun(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
 	getter := &fakeCheckGetter{cmds: []string{"echo run >> " + counter}}
-	engine.SetCheckConfigGetter(getter)
+	engine.setCheckConfigGetterForTest(getter)
 	engine.SetEvidenceRecorder(newFakeEvidenceRecorder())
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
@@ -623,7 +623,7 @@ func TestExecVerifyChecks_BackpressureParksWhilePeerVerifyInFlight(t *testing.T)
 		t.Fatal(err)
 	}
 	var logs bytes.Buffer
-	engine := NewEngine(store, newMemTasks(), newMockAgents(), slog.New(slog.NewTextHandler(&logs, nil)))
+	engine := NewTestEngine(store, newMemTasks(), newMockAgents(), slog.New(slog.NewTextHandler(&logs, nil)))
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{
 		ok: true,
 		paths: map[string]string{
@@ -631,7 +631,7 @@ func TestExecVerifyChecks_BackpressureParksWhilePeerVerifyInFlight(t *testing.T)
 			"t2": wt2,
 		},
 	})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{cmdsByTask: map[string][]string{
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{cmdsByTask: map[string][]string{
 		"t1": {blocking},
 		"t2": {"true"},
 	}})
@@ -735,9 +735,9 @@ func TestExecVerifyChecks_BackpressureParksWhilePeerVerifyInFlight(t *testing.T)
 
 func newVerifyChecksEngineWithSetup(t *testing.T, wt string, cmds, setup []string) (*Engine, *memTasks) {
 	t.Helper()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{cmds: cmds, setup: setup})
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{cmds: cmds, setup: setup})
 	return engine, engine.tasks.(*memTasks)
 }
 
@@ -965,7 +965,7 @@ func TestRunVerifyCommands_DeadlineReturnsCtxErr(t *testing.T) {
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	failed, _, err := engine.runVerifyCommands(ctx, "t1", wt, []string{"sleep 20"})
 	if err == nil {
 		t.Fatal("expected a context error on deadline, got nil")
@@ -981,7 +981,7 @@ func TestRunVerifyCommands_DeadlineReturnsCtxErr(t *testing.T) {
 func TestRunVerifyCommands_GOCACHEIsPerTaskWhileGOMODCACHEStaysShared(t *testing.T) {
 	t.Setenv("SYBRA_HOME", t.TempDir())
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	ctx := context.Background()
 	cmd := `printf '%s|%s' "$GOCACHE" "$GOMODCACHE"`
 
@@ -1266,7 +1266,7 @@ func TestEnsureNodeToolchain_RepairsCorruptBin(t *testing.T) {
 
 	fakeNPM(t, "marker-npm-ci-ran")
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
 	engine.ensureNodeToolchain(context.Background(), "t1", dir, "npm run build:web", tail)
 
@@ -1286,7 +1286,7 @@ func TestEnsureNodeToolchain_RepairsMissingBin(t *testing.T) {
 
 	fakeNPM(t, "marker-npm-ci-ran")
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
 	engine.ensureNodeToolchain(context.Background(), "t1", dir, "npm run build:web", tail)
 
@@ -1306,7 +1306,7 @@ func TestEnsureNodeToolchain_IntactBinSkipsRepair(t *testing.T) {
 
 	fakeNPM(t, "marker-npm-ci-ran")
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
 	engine.ensureNodeToolchain(context.Background(), "t1", dir, "npm run build:web", tail)
 
@@ -1330,7 +1330,7 @@ func TestEnsureNodeToolchain_ResolvesCdPrefix(t *testing.T) {
 
 	fakeNPM(t, "marker-npm-ci-ran")
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
 	engine.ensureNodeToolchain(context.Background(), "t1", root, "(cd frontend && mise exec -- npm run build:web)", tail)
 
@@ -1351,7 +1351,7 @@ func TestEnsureNodeToolchain_CdSubstringIsNotAFalseMatch(t *testing.T) {
 	writeTestFile(t, filepath.Join(binDir, "vite"), "#!/bin/sh\necho vite\n") // intact
 	fakeNPM(t, "marker-npm-ci-ran")
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
 	engine.ensureNodeToolchain(context.Background(), "t1", root, "npm run test:cd main", tail)
 
@@ -1374,7 +1374,7 @@ func TestEnsureNodeToolchain_QuotedDirWithSpace(t *testing.T) {
 	writeTestFile(t, filepath.Join(binDir, "vite"), "") // corrupt
 	fakeNPM(t, "marker-npm-ci-ran")
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
 	engine.ensureNodeToolchain(context.Background(), "t1", root, `cd "my dir" && npm run build`, tail)
 
@@ -1396,7 +1396,7 @@ func TestEnsureNodeToolchain_ChainedCdRepairsEachLeg(t *testing.T) {
 	// Shared fake npm on PATH; it drops the marker in whichever cwd it runs.
 	fakeNPM(t, "marker-npm-ci-ran")
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
 	engine.ensureNodeToolchain(context.Background(), "t1", root,
 		"(cd frontend && npm run build) && (cd backend && npm test)", tail)
@@ -1423,7 +1423,7 @@ func TestEnsureNodeToolchain_TraversalIsRejected(t *testing.T) {
 	if err := os.MkdirAll(wt, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
 	engine.ensureNodeToolchain(context.Background(), "t1", wt, "cd ../outside && npm run build", tail)
 
@@ -1436,7 +1436,7 @@ func TestEnsureNodeToolchain_NonNodeDirSkips(t *testing.T) {
 	dir := t.TempDir() // no package.json
 	fakeNPM(t, "marker-npm-ci-ran")
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
 	engine.ensureNodeToolchain(context.Background(), "t1", dir, "go test ./...", tail)
 
@@ -1649,7 +1649,7 @@ func TestRepairCorruptedNodeModules_RepairsPartialInstall(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.repairCorruptedNodeModules(context.Background(), "t1", wt)
 
 	if _, err := os.Stat(filepath.Join(nm, ".bin")); err != nil {
@@ -1753,7 +1753,7 @@ func TestRepairCorruptedNodeModules_UsesSubdirMiseConfig(t *testing.T) {
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	if failed := engine.repairCorruptedNodeModules(context.Background(), "t1", wt); failed {
 		t.Fatal("repairCorruptedNodeModules reported failure; want subdir mise config to drive npm repair")
 	}
@@ -1782,7 +1782,7 @@ func TestRepairCorruptedNodeModules_LeavesHealthyInstallAlone(t *testing.T) {
 	// No fake npm on PATH — if the engine tried to repair a healthy install
 	// it would fail loudly (npm ci would error or hit the network); a
 	// successful, silent no-op proves the healthy install was left alone.
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.repairCorruptedNodeModules(context.Background(), "t1", wt)
 }
 
@@ -1811,7 +1811,7 @@ func TestRepairCorruptedNodeModules_SkipsPnpmWorkspace(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.repairCorruptedNodeModules(context.Background(), "t1", wt)
 
 	if _, err := os.Stat(filepath.Join(frontend, "invoked")); err == nil {
@@ -2028,7 +2028,7 @@ func TestRepairTornNodeModules_RepairsWhenTorn(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "marker")
 	fakeNpmOnPath(t, marker)
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.repairTornNodeModules(t.Context(), "t1", wt)
 
 	out, err := os.ReadFile(marker)
@@ -2056,7 +2056,7 @@ func TestRepairTornNodeModules_RepairsRootProject(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "marker")
 	fakeNpmOnPath(t, marker)
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.repairTornNodeModules(t.Context(), "t1", wt)
 
 	out, err := os.ReadFile(marker)
@@ -2081,7 +2081,7 @@ func TestRepairTornNodeModules_SkipsWithoutLockfile(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "marker")
 	fakeNpmOnPath(t, marker)
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.repairTornNodeModules(t.Context(), "t1", wt)
 
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
@@ -2112,7 +2112,7 @@ func TestRepairTornNodeModules_LogsRepairFailure(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), logger)
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), logger)
 	engine.repairTornNodeModules(t.Context(), "t1", wt)
 
 	if !strings.Contains(logBuf.String(), "workflow.verify-checks.npm-repair-failed") {
@@ -2154,7 +2154,7 @@ esac
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.repairTornNodeModules(t.Context(), "t1", wt)
 
 	if _, err := os.Stat(lifecycleMarker); !os.IsNotExist(err) {
@@ -2182,7 +2182,7 @@ func TestRepairTornNodeModules_SkipsWhenHealthy(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "marker")
 	fakeNpmOnPath(t, marker)
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.repairTornNodeModules(t.Context(), "t1", wt)
 
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {

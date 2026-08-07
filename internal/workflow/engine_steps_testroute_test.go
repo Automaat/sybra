@@ -1696,7 +1696,7 @@ func makeTestEngine(t *testing.T) (*Engine, *memTasks) {
 	t.Helper()
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetTestingMaxAttempts(3)
 	return engine, tasks
 }
@@ -1791,7 +1791,7 @@ func makeTestingTaskEngine(t *testing.T) (*Engine, *memTasks, *mockAgents) {
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	return engine, tasks, agents
 }
 
@@ -2909,7 +2909,7 @@ func TestExecRouteTestResult_ReimplementSeedsNote(t *testing.T) {
 	wtPath := makeGitRepo(t, true)
 	e.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	appender := &recordingAttemptNoteAppender{}
-	e.SetAttemptNoteAppender(appender)
+	e.setAttemptNoteAppenderForTest(appender)
 
 	now := time.Now().UTC()
 	var report strings.Builder
@@ -3003,7 +3003,7 @@ func TestExecRouteTestResult_ReimplementNoteIdempotent(t *testing.T) {
 	wtPath := makeGitRepo(t, true)
 	e.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	appender := &recordingAttemptNoteAppender{}
-	e.SetAttemptNoteAppender(appender)
+	e.setAttemptNoteAppenderForTest(appender)
 
 	now := time.Now().UTC()
 	taskID := "t-reimplement-idem"
@@ -3061,7 +3061,7 @@ func TestExecRouteTestResult_AppenderErrorFailsOpen(t *testing.T) {
 	e, tasks := makeTestEngine(t)
 	e.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, true), ok: true})
 	appender := &recordingAttemptNoteAppender{err: errors.New("disk full")}
-	e.SetAttemptNoteAppender(appender)
+	e.setAttemptNoteAppenderForTest(appender)
 
 	now := time.Now().UTC()
 	taskID := "t-reimplement-appender-error"
@@ -3144,7 +3144,7 @@ func TestExecRouteTestResult_NonReimplementRoutesDoNotSeedNote(t *testing.T) {
 			e, tasks := makeTestEngine(t)
 			e.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, true), ok: true})
 			appender := &recordingAttemptNoteAppender{}
-			e.SetAttemptNoteAppender(appender)
+			e.setAttemptNoteAppenderForTest(appender)
 			tasks.Put(tt.task)
 
 			out, err := e.execRouteTestResult(tt.taskID, &Step{ID: "route_test"}, tt.wf, mustGetTaskInfo(t, tasks, tt.taskID))
