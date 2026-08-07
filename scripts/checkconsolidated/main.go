@@ -57,7 +57,7 @@ type gateError struct {
 // occurrence has the same semantics.
 var allowances = buildAllowances()
 
-func buildAllowances() map[allowanceKey]allowance {
+func buildAllowances() map[allowanceKey]allowance { //nolint:funlen // The explicit exception ledger is intentionally centralized for review.
 	out := make(map[allowanceKey]allowance)
 	add := func(kind findingKind, path, reason string, counts map[string]int) {
 		for value, count := range counts {
@@ -779,9 +779,9 @@ func isImportPath(file *ast.File, lit *ast.BasicLit) bool {
 	return false
 }
 
-func collectStringNames(file *ast.File, info *types.Info) (map[string]struct{}, map[string]struct{}) {
-	names := make(map[string]struct{})
-	fields := make(map[string]struct{})
+func collectStringNames(file *ast.File, info *types.Info) (names, fields map[string]struct{}) {
+	names = make(map[string]struct{})
+	fields = make(map[string]struct{})
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch n := node.(type) {
 		case *ast.Field:
@@ -922,10 +922,13 @@ func extractsJSONByBraces(fn *ast.FuncDecl) bool {
 			if !ok {
 				return true
 			}
-			if n.Tok == token.INC {
+			switch n.Tok {
+			case token.INC:
 				braceDirections[id.Name] |= 1
-			} else if n.Tok == token.DEC {
+			case token.DEC:
 				braceDirections[id.Name] |= 2
+			default:
+				// No other token is valid for ast.IncDecStmt.
 			}
 		case *ast.AssignStmt:
 			if len(n.Lhs) != 1 || len(n.Rhs) != 1 {
@@ -935,12 +938,15 @@ func extractsJSONByBraces(fn *ast.FuncDecl) bool {
 			if !ok {
 				return true
 			}
-			if n.Tok == token.ADD_ASSIGN {
+			switch n.Tok {
+			case token.ADD_ASSIGN:
 				braceDirections[id.Name] |= compoundDirection(false, n.Rhs[0])
-			} else if n.Tok == token.SUB_ASSIGN {
+			case token.SUB_ASSIGN:
 				braceDirections[id.Name] |= compoundDirection(true, n.Rhs[0])
-			} else if n.Tok == token.ASSIGN {
+			case token.ASSIGN:
 				braceDirections[id.Name] |= assignmentDirection(id.Name, n.Rhs[0])
+			default:
+				// Other assignment operators cannot encode a signed brace delta.
 			}
 		}
 		return true
@@ -1032,7 +1038,7 @@ func isBraceLiteral(expr ast.Expr) bool {
 }
 
 func bodyHasBothBraces(body *ast.BlockStmt) bool {
-	open, close := false, false
+	open, closeBrace := false, false
 	ast.Inspect(body, func(node ast.Node) bool {
 		lit, ok := node.(*ast.BasicLit)
 		if !ok || (lit.Kind != token.STRING && lit.Kind != token.CHAR) {
@@ -1041,9 +1047,9 @@ func bodyHasBothBraces(body *ast.BlockStmt) bool {
 		value, err := strconv.Unquote(lit.Value)
 		if err == nil {
 			open = open || value == "{"
-			close = close || value == "}"
+			closeBrace = closeBrace || value == "}"
 		}
 		return true
 	})
-	return open && close
+	return open && closeBrace
 }
