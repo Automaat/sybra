@@ -95,7 +95,7 @@ func TestCachedCertificateInvalidatesWhenScratchRootBecomesReadOnly(t *testing.T
 func TestVerifierNeverReceivesSourceWriteProbe(t *testing.T) {
 	bare, worktree := linkedWorktree(t)
 	service := New(Deps{ProbeSandbox: healthyProbe(false), ProbeProvider: healthyProbe(false), ProbeNetwork: healthyProbe(false)})
-	req := Request{TaskID: "judge", ProjectID: "owner/repo", Action: "review.dispatch", WorkDir: worktree, CloneDir: bare, Provider: providerid.Codex, SandboxMode: "report", SigningPolicy: project.SigningNever, Requirements: agent.RoleReview.CapabilityRequirements("review.dispatch")}
+	req := Request{TaskID: "judge", ProjectID: "owner/repo", Action: "review.dispatch", WorkDir: worktree, ScratchRoots: []string{t.TempDir()}, CloneDir: bare, Provider: providerid.Codex, SandboxMode: "report", SigningPolicy: project.SigningNever, Requirements: agent.RoleReview.CapabilityRequirements("review.dispatch")}
 	cert, err := service.Certify(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Certify: %v", err)
@@ -121,6 +121,22 @@ func TestScratchWriteIsCertifiedWithoutSourceWrite(t *testing.T) {
 		Action:       "review.dispatch",
 		WorkDir:      workDir,
 		ScratchRoots: []string{filepath.Join(t.TempDir(), "missing")},
+		Requirements: []autonomy.CapabilityRequirement{{
+			Capability: autonomy.CapabilityScratchWrite,
+			Action:     "review.dispatch",
+			Scope:      "task",
+		}},
+	}
+	_, err := New(Deps{}).Certify(context.Background(), req)
+	var failure CertificationError
+	if !errors.As(err, &failure) || failure.Capability != autonomy.CapabilityScratchWrite || failure.Code != "scratch_write_unavailable" {
+		t.Fatalf("failure = %#v / %v", failure, err)
+	}
+}
+
+func TestScratchWriteRejectsMissingRoots(t *testing.T) {
+	req := Request{
+		TaskID: "judge", Action: "review.dispatch", WorkDir: t.TempDir(),
 		Requirements: []autonomy.CapabilityRequirement{{
 			Capability: autonomy.CapabilityScratchWrite,
 			Action:     "review.dispatch",
@@ -527,7 +543,7 @@ func healthyProbe(contained bool) func(context.Context, string) (ProbeResult, er
 }
 
 func authorRequest(bare, worktree string) Request {
-	return Request{TaskID: "task", ProjectID: "owner/repo", Action: "implementation.dispatch", WorkDir: worktree, CloneDir: bare, Provider: providerid.Codex, SandboxMode: "report", SigningPolicy: project.SigningNever, Requirements: agent.RoleImplementation.CapabilityRequirements("implementation.dispatch")}
+	return Request{TaskID: "task", ProjectID: "owner/repo", Action: "implementation.dispatch", WorkDir: worktree, ScratchRoots: []string{filepath.Dir(worktree)}, CloneDir: bare, Provider: providerid.Codex, SandboxMode: "report", SigningPolicy: project.SigningNever, Requirements: agent.RoleImplementation.CapabilityRequirements("implementation.dispatch")}
 }
 
 func linkedWorktree(t *testing.T) (bare, worktree string) {

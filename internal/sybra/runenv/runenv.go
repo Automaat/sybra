@@ -317,6 +317,9 @@ func (s *Service) probe(ctx context.Context, req Request, capability autonomy.Ca
 		}
 		return ProbeResult{Available: true, Evidence: "source root writable"}, nil
 	case autonomy.CapabilityScratchWrite:
+		if len(req.ScratchRoots) == 0 {
+			return ProbeResult{Code: "scratch_write_unavailable"}, errors.New("scratch roots are not declared")
+		}
 		for _, root := range req.ScratchRoots {
 			if err := probeWrite(root); err != nil {
 				return ProbeResult{Code: "scratch_write_unavailable"}, err
