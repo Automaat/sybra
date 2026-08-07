@@ -277,7 +277,10 @@ func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
 }
 
 func resolveRunAgentDir(step *Step, wfExec *Execution, ctx TemplateContext) (string, error) {
-	dir := wfExec.Variables[WorkflowVarDir]
+	dir := ""
+	if wfExec != nil {
+		dir = wfExec.Variables[WorkflowVarDir]
+	}
 	if step.Config.Dir == "" {
 		return dir, nil
 	}
@@ -292,6 +295,9 @@ func resolveRunAgentDir(step *Step, wfExec *Execution, ctx TemplateContext) (str
 }
 
 func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, effectIDs ...EffectID) (runErr error) {
+	if wfExec == nil {
+		wfExec = &Execution{Variables: maps.Clone(ctx.Vars)}
+	}
 	prepareTestVerdictAttemptVars(wfExec, step.ID, ctx.Task.Body)
 	// Seed the sidecar dir before anything renders a template. Setting it only
 	// after dispatch would leave the first run of a verifier role resolving
