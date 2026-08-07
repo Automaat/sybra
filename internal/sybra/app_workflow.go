@@ -172,20 +172,24 @@ func (a *taskAdapter) UpdateTaskStatus(id string, status taskstatus.Status, reas
 		return err
 	}
 	reason = a.normalizeHumanRequiredReason(id, st, reason)
-	var extra task.Update
-	if reason != "" {
-		extra.StatusReason = &reason
-	}
-	if st == task.StatusHumanRequired {
-		st = task.StatusBlocked
-		extra.Escalation = task.MachineFailure("workflow.untyped_escalation", reason)
-		extra.AutonomyOutcome = task.QuarantinedOutcome()
-	}
-	_, err = a.tasks.Apply(task.TransitionIntent{
-		TaskID:   id,
-		ToStatus: st,
-		Actor:    "workflow.engine.update_status",
-		Extra:    extra,
+	_, err = a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		target := st
+		extra := task.Update{}
+		if reason != "" {
+			extra.StatusReason = &reason
+		} else if cur.Status != st && !(st == task.StatusHumanRequired && cur.Status == task.StatusBlocked) {
+			extra.ClearStatusReason = task.Ptr(true)
+		}
+		if st == task.StatusHumanRequired {
+			target = task.StatusBlocked
+			extra.Escalation = task.MachineFailure("workflow.untyped_escalation", reason)
+			extra.AutonomyOutcome = task.QuarantinedOutcome()
+		}
+		return task.TransitionIntent{
+			ToStatus: target,
+			Actor:    "workflow.engine.update_status",
+			Extra:    extra,
+		}, nil
 	})
 	return err
 }
