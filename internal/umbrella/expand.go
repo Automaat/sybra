@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // expandIssueLocker serializes one umbrella's critical section across both
@@ -951,11 +952,8 @@ func clearExpandFailure(tasks *task.Manager, trackerID string) error {
 func formatExpandFailureReason(count int, cause error) string {
 	reason := fmt.Sprintf("umbrella expansion failed (attempt %d): %v", count, cause)
 	const maxLen = 200
-	if len(reason) <= maxLen {
-		return reason
-	}
 	const tail = "..."
-	return reason[:maxLen-len(tail)] + tail
+	return textutil.TruncateBytesTotal(reason, maxLen, tail)
 }
 
 // childProjectID returns the repo a child should be worked in: the sub-issue's

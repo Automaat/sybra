@@ -974,7 +974,7 @@ func resolveHandoffMode(fs *flag.FlagSet, stage, rawStatus string, pr int) (cfg 
 		}
 		return handoffStageConfig{}, "", false, handoffStageUsageError(stage)
 	}
-	if pr > 0 && stageCfg.name != "ready-pr" {
+	if pr > 0 && stageCfg.name != string(task.StatusReadyPR) {
 		return handoffStageConfig{}, "", false, fmt.Errorf("--pr is only valid with --stage ready-pr so the PR stays linked to an internal Sybra task")
 	}
 	return stageCfg, "", false, nil
@@ -1031,16 +1031,16 @@ type handoffStageDef struct {
 
 var handoffStageRegistry = []handoffStageDef{
 	// implement: simple-task-handoff → in-progress → implement → review → testing → PR
-	{name: "implement", aliases: []string{"", "in-progress"}, tags: []string{"handoff"},
+	{name: "implement", aliases: []string{"", string(task.StatusInProgress)}, tags: []string{"handoff"},
 		usage: "have a plan -> Sybra implements, reviews, tests, opens the PR"},
 	// review: simple-task-handoff-review → ready-review → review → testing → PR
-	{name: "review", aliases: []string{"ready-review", "agentic-review"}, tags: []string{"handoff", "handoff-review"},
+	{name: "review", aliases: []string{string(task.StatusReadyReview), "agentic-review"}, tags: []string{"handoff", "handoff-review"},
 		usage: "implemented locally -> Sybra enters agentic review", requiresSource: true},
 	// testing: simple-task-handoff-testing → testing → adversarial test → PR
-	{name: "testing", aliases: []string{"test"}, tags: []string{"handoff", "handoff-testing"},
+	{name: string(task.StatusTesting), aliases: []string{"test"}, tags: []string{"handoff", "handoff-testing"},
 		usage: "reviewed locally -> Sybra tests, then opens the PR", requiresSource: true},
 	// ready-pr: simple-task-handoff-ready-pr → ready-pr → open/update PR
-	{name: "ready-pr", aliases: []string{"open-pr", "create-pr"}, tags: []string{"handoff", "handoff-ready-pr"},
+	{name: string(task.StatusReadyPR), aliases: []string{"open-pr", "create-pr"}, tags: []string{"handoff", "handoff-ready-pr"},
 		usage: "tested locally -> Sybra opens or updates the PR; pass --pr N\n" +
 			strings.Repeat(" ", 19) + "only to link an existing same-branch PR"},
 }
@@ -1077,7 +1077,7 @@ func handoffStageUsageError(stage string) error {
 
 func isExternalPRHandoffStage(stage string) bool {
 	switch strings.ToLower(strings.TrimSpace(stage)) {
-	case "pr", "in-review", "pull-request", "pull_request":
+	case "pr", string(task.StatusInReview), "pull-request", "pull_request":
 		return true
 	default:
 		return false
@@ -1206,10 +1206,10 @@ func printHandoffResult(t task.Task, stage, projectID, dir string) {
 	case "review":
 		fmt.Printf("  worktree: %s\n", dir)
 		fmt.Println("  Sybra will skip to review and open the PR from this worktree.")
-	case "testing":
+	case string(task.StatusTesting):
 		fmt.Printf("  worktree: %s\n", dir)
 		fmt.Println("  Sybra will skip straight to adversarial testing of this worktree.")
-	case "ready-pr":
+	case string(task.StatusReadyPR):
 		fmt.Printf("  worktree: %s\n", dir)
 		fmt.Println("  Sybra will skip straight to opening or updating the PR from this worktree.")
 	default:

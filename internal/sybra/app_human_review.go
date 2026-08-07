@@ -1244,17 +1244,17 @@ func (h *humanReviewHandler) verifyUnblocked(t task.Task) bool {
 
 func safeHumanReviewRecoveryStatus(action string) (task.Status, bool) {
 	switch strings.TrimSpace(action) {
-	case "in-progress":
+	case string(task.StatusInProgress):
 		return task.StatusInProgress, true
-	case "ready-review":
+	case string(task.StatusReadyReview):
 		return task.StatusReadyReview, true
-	case "in-review":
+	case string(task.StatusInReview):
 		return task.StatusInReview, true
-	case "testing":
+	case string(task.StatusTesting):
 		return task.StatusTesting, true
-	case "ready-pr":
+	case string(task.StatusReadyPR):
 		return task.StatusReadyPR, true
-	case "done":
+	case string(task.StatusDone):
 		return task.StatusDone, true
 	default:
 		return "", false
@@ -1912,7 +1912,7 @@ func (h *humanReviewHandler) retryAfterCrash(taskID string) bool {
 	h.mu.Lock()
 	delete(h.inflight, taskID)
 	h.mu.Unlock()
-	return h.maybeSpawn(h.ctx(), taskID, "human-required")
+	return h.maybeSpawn(h.ctx(), taskID, string(task.StatusHumanRequired))
 }
 
 func (h *humanReviewHandler) logAudit(evt, taskID, agentID string, data map[string]any) {

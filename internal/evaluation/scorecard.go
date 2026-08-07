@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/runacct"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // Skill-conformance cohort buckets. See skillConformanceBucket.
@@ -577,7 +578,7 @@ func scanTaskSignals(events []audit.Event) map[string]*taskSignals {
 		switch e.Type {
 		case audit.EventTaskStatusChanged:
 			s := sig(e.TaskID)
-			if strVal(e.Data, "to") == "human-required" {
+			if strVal(e.Data, "to") == string(taskstatus.HumanRequired) {
 				// A request for intervention, not evidence one happened —
 				// see EventInterventionRecorded/EventPlanApproved below for
 				// the actual resolution provenance (issue #2727).

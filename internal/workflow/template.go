@@ -6,7 +6,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"text/template"
-	"unicode/utf8"
+
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 const (
@@ -205,26 +206,9 @@ func clampPromptInline(body string) string {
 	if len(body) <= promptInlineMaxBytes {
 		return body
 	}
-	head := trimPromptRuneBoundaryEnd(body[:promptInlineHeadBytes])
-	tail := trimPromptRuneBoundaryStart(body[len(body)-(promptInlineMaxBytes-promptInlineHeadBytes):])
+	head := textutil.TruncateBytes(body, promptInlineHeadBytes, "")
+	tail := textutil.TailBytes(body, promptInlineMaxBytes-promptInlineHeadBytes)
 	return head + promptInlineElision + tail
-}
-
-func trimPromptRuneBoundaryStart(s string) string {
-	for len(s) > 0 && !utf8.RuneStart(s[0]) {
-		s = s[1:]
-	}
-	return s
-}
-
-func trimPromptRuneBoundaryEnd(s string) string {
-	for len(s) > 0 {
-		if r, size := utf8.DecodeLastRuneInString(s); r != utf8.RuneError || size > 1 {
-			break
-		}
-		s = s[:len(s)-1]
-	}
-	return s
 }
 
 // DefaultCommitSignFlags reports the configured fallback. Exported for the

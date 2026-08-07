@@ -8,6 +8,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/runacct"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // costThresholds per agent role. Empty string key covers implementation agents.
@@ -199,7 +200,7 @@ func checkStatusBounce(events []audit.Event, now time.Time) []Finding {
 		if from == "" || to == "" {
 			continue
 		}
-		if to == "human-required" && isExpectedHumanRequired(e) {
+		if to == string(taskstatus.HumanRequired) && isExpectedHumanRequired(e) {
 			continue
 		}
 

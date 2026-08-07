@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/watchdogreason"
 )
 
@@ -837,7 +838,7 @@ func (w *Watchdog) verdictStatusFromVerify(ctx context.Context, taskID, judgeRea
 func trimTail(failedCmd, output string, n int) string {
 	tail := output
 	if len(tail) > n {
-		tail = "…" + strings.ToValidUTF8(tail[len(tail)-n:], "")
+		tail = "…" + strings.ToValidUTF8(textutil.TailBytes(tail, n), "")
 	}
 	if tail == "" {
 		return failedCmd

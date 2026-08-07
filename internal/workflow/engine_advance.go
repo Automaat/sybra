@@ -985,7 +985,7 @@ func (e *Engine) blockRetryExhaustedTriageIfNeeded(taskID string, step *Step, wf
 	wfExec.State = ExecFailed
 	wfExec.CompletedAt = &now
 	wfExec.CurrentStep = ""
-	return true, e.tasks.SetBlockerAndWorkflow(taskID, "blocked", reason, blocker.State{
+	return true, e.tasks.SetBlockerAndWorkflow(taskID, string(taskstatus.Blocked), reason, blocker.State{
 		Kind:       blocker.KindTriageRetryExhausted,
 		Actor:      blocker.ActorWorkflow,
 		Code:       "triage_retryable",
@@ -1007,5 +1007,5 @@ func (e *Engine) blockRetryExhaustedPlanningIfNeeded(taskID string, def *Definit
 	wfExec.State = ExecFailed
 	wfExec.CompletedAt = &now
 	wfExec.CurrentStep = ""
-	return true, e.tasks.SetStatusAndWorkflow(taskID, "human-required", reason, wfExec)
+	return true, e.tasks.SetStatusAndWorkflow(taskID, string(taskstatus.HumanRequired), reason, wfExec)
 }
