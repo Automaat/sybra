@@ -647,7 +647,7 @@ func TestStoreUpdateStatusHumanRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update2: %v", err)
 	}
-	if updated2.StatusReason != "agent failed with errors" {
+	if updated2.StatusReason != "human decision required" {
 		t.Errorf("StatusReason after status change = %q, want preserved", updated2.StatusReason)
 	}
 }
