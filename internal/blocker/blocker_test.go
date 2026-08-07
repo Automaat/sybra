@@ -3,6 +3,8 @@ package blocker
 import (
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 func TestStateIsZero(t *testing.T) {
@@ -107,7 +109,7 @@ func TestValidateStatus(t *testing.T) {
 		},
 		{
 			name:   "tamper_detected may reach human-required",
-			status: "human-required",
+			status: string(taskstatus.HumanRequired),
 			state:  State{Kind: KindTamperDetected},
 		},
 		{
