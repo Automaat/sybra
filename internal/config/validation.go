@@ -116,6 +116,9 @@ func validateAgentConfig(cfg *ResolvedConfig, add func(format string, a ...any))
 	if cfg.Agent.MaxConcurrent < 1 || cfg.Agent.MaxConcurrent > 100 {
 		add("agent.max_concurrent: maxConcurrent must be 1–100")
 	}
+	if cfg.Agent.VerifyChecksMaxConcurrent < 0 || cfg.Agent.VerifyChecksMaxConcurrent > 100 {
+		add("agent.verify_checks_max_concurrent: verifyChecksMaxConcurrent must be 0–100")
+	}
 	if cfg.Agent.LogRetentionDays < -1 {
 		add("agent.log_retention_days: logRetentionDays must be -1 or greater")
 	}

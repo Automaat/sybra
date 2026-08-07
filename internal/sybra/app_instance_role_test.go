@@ -178,7 +178,7 @@ steps:
 			}
 			ta := &taskAdapter{tasks: a.tasks}
 			aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
-			a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+			a.workflowEngine = workflow.NewTestEngine(wfStore, ta, aa, a.logger)
 			a.applyInstanceRole()
 			a.initStatusHook()
 
@@ -246,7 +246,7 @@ steps:
 			}
 			ta := &taskAdapter{tasks: a.tasks}
 			aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
-			a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+			a.workflowEngine = workflow.NewTestEngine(wfStore, ta, aa, a.logger)
 			a.applyInstanceRole()
 
 			created, err := a.tasks.Create("todo plan-contract probe", "", "headless")
@@ -325,7 +325,7 @@ steps:
 				}
 				ta := &taskAdapter{tasks: a.tasks}
 				aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
-				a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+				a.workflowEngine = workflow.NewTestEngine(wfStore, ta, aa, a.logger)
 				a.applyInstanceRole()
 
 				created, err := a.tasks.Create("dispatch sink probe", "", "headless")

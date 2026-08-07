@@ -21,7 +21,9 @@ import (
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/project"
@@ -433,6 +435,13 @@ func isMissingArtifactError(err error) bool {
 	return errors.Is(err, artifact.ErrNotFound)
 }
 
+func translateTaskLockTimeout(err error) error {
+	if err == nil || !errors.Is(err, fsutil.ErrLockTimeout) {
+		return err
+	}
+	return unavailableError(err.Error())
+}
+
 // BlessTampering records a human bless for a tamper-flagged task and sends it
 // back to the review workflow.
 func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
@@ -466,7 +475,7 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 				return merged, nil
 			})
 			if putErr != nil {
-				return task.Task{}, putErr
+				return task.Task{}, translateTaskLockTimeout(putErr)
 			}
 			s.logger.Info("cluster.task.tamper_bless.forwarded", "task_id", taskID, "node", current.AssignedNode)
 			return result, nil
@@ -479,8 +488,8 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 	result, err := s.tasks.ApplyFn(taskID, func(t task.Task) (task.TransitionIntent, error) {
 		if !t.TamperFlagged {
 			return task.TransitionIntent{}, conflictError(
-				"task is not tamper-flagged: bless requires status=human-required with a " +
-					"status_reason starting with " + strconv.Quote(workflow.TamperFlaggedReasonPrefix),
+				"task is not tamper-flagged: bless requires status=human-required with blocker.kind=" +
+					strconv.Quote(string(blocker.KindTamperDetected)),
 			)
 		}
 		cur = t
@@ -494,13 +503,15 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 			ToStatus: task.StatusReadyReview,
 			Actor:    "svc.tasks.bless_tampering",
 			Extra: task.Update{
-				Tags: task.Ptr(merged),
+				Tags:              task.Ptr(merged),
+				ClearStatusReason: task.Ptr(true),
+				ClearBlocker:      task.Ptr(true),
 			},
 			OperatorOverride: true,
 		}, nil
 	})
 	if err != nil {
-		return result.Task, err
+		return result.Task, translateTaskLockTimeout(err)
 	}
 	updated := result.Task
 
@@ -723,7 +734,7 @@ func (s *TaskService) AssignTask(t task.Task) error {
 	t.MirrorUpdatedAt = nil
 	saved, created, err := s.tasks.Put(t)
 	if err != nil {
-		return fmt.Errorf("assign task: %w", err)
+		return translateTaskLockTimeout(fmt.Errorf("assign task: %w", err))
 	}
 	if s.audit != nil && created {
 		_ = s.audit.Log(audit.Event{
@@ -853,7 +864,7 @@ func (s *TaskService) CreateTaskWithInit(title, body, mode string, init task.Upd
 	}
 	t, err := s.tasks.CreateFull(title, body, mode, createInit)
 	if err != nil {
-		return t, err
+		return t, translateTaskLockTimeout(err)
 	}
 
 	if prRepo != "" {
@@ -924,6 +935,8 @@ func (s *TaskService) startCreatedWorkflow(t task.Task) {
 // Moving a task to "in-progress" when its workflow is terminal (completed or
 // failed) and no agent is running restarts the workflow — allowing the user to
 // retry implementation after a human-required escalation.
+//
+//nolint:funlen // Field decoding and one atomic transition are intentionally audited together.
 func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, error) {
 	cur, _ := s.tasks.Get(id)
 	decisionReason := ""
@@ -983,16 +996,48 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 					return merged, nil
 				})
 				if putErr != nil {
-					return cur, putErr
+					return cur, translateTaskLockTimeout(putErr)
 				}
 				s.logger.Info("cluster.task.status_update.forwarded", "task_id", id, "node", cur.AssignedNode, "status", status)
 				return t, nil
 			}
 		}
 	}
-	t, err := s.tasks.UpdateMap(id, updates)
+	var t task.Task
+	var err error
+	if statusText, hasStatus := updates["status"].(string); hasStatus {
+		localUpdates := make(map[string]any, len(updates)-1)
+		for key, value := range updates {
+			if key != "status" {
+				localUpdates[key] = value
+			}
+		}
+		extra, parseErr := task.UpdateFromMap(localUpdates)
+		if parseErr != nil {
+			return t, parseErr
+		}
+		status, statusErr := task.ValidateStatus(statusText)
+		if statusErr != nil {
+			return t, statusErr
+		}
+		if status == task.StatusHumanRequired {
+			display := decisionReason
+			if strings.TrimSpace(display) == "" {
+				display = "operator moved task to human-required"
+			}
+			extra.Escalation = task.OperatorDecisionEvidence("operator.manual_status_change", display)
+			extra.AutonomyOutcome = task.HumanRequiredOutcome()
+		}
+		result, applyErr := s.tasks.Apply(task.TransitionIntent{
+			TaskID: id, ToStatus: status, Actor: "svc.tasks.update",
+			Extra: extra, OperatorOverride: true,
+		})
+		t, err = result.Task, applyErr
+	} else {
+		t, err = s.tasks.UpdateMap(id, updates)
+	}
 	if err != nil {
-		return t, err
+		return t, translateTaskLockTimeout(err)
 	}
 	s.appendManualHumanRequiredDecision(cur, t, decisionReason)
 	s.wg.Go(func() {
@@ -1181,6 +1226,7 @@ func (s *TaskService) dispatchFromHumanRequiredAllowingAgent(id, target, reason,
 	return result, nil
 }
 
+//nolint:funlen // Dispatch preconditions and the resulting atomic transition must stay contiguous.
 func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, reason, exceptAgentID string) (task.Task, error) {
 	cur, err := s.tasks.Get(id)
 	if err != nil {
@@ -1215,7 +1261,7 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 			})
 			s.followerStatusMu.Unlock()
 			if localErr != nil {
-				return task.Task{}, localErr
+				return task.Task{}, translateTaskLockTimeout(localErr)
 			}
 			s.logDispatchAudit(id, target, string(cur.Status), reason, "forwarded")
 			return local, nil
@@ -1234,15 +1280,22 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 			cur.Workflow.WorkflowID, cur.Workflow.State))
 	}
 
-	updates := map[string]any{
-		"status":        target,
-		"status_reason": reason,
+	extra := task.Update{
+		StatusReason: task.Ptr(reason),
+		ClearBlocker: task.Ptr(true),
 	}
 	if spec.clearWorkflow {
-		updates["workflow"] = (*workflow.Execution)(nil)
+		extra.Workflow = task.Ptr[*workflow.Execution](nil)
 	}
-	if _, err := s.tasks.UpdateMap(id, updates); err != nil {
-		return task.Task{}, err
+	if _, err := s.tasks.Apply(task.TransitionIntent{
+		TaskID:           id,
+		ToStatus:         task.Status(target),
+		Actor:            "svc.tasks.dispatch-human-required",
+		ExpectedStatus:   task.Ptr(task.StatusHumanRequired),
+		Extra:            extra,
+		OperatorOverride: true,
+	}); err != nil {
+		return task.Task{}, translateTaskLockTimeout(err)
 	}
 
 	if spec.dispatches {
@@ -1266,17 +1319,22 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 			} else {
 				s.logger.Error("task.dispatch.failed", "task_id", id, "target", target, "err", failure)
 				revertReason := fmt.Sprintf("%s (dispatch to %s failed: %s)", reason, target, failure)
-				if _, revertErr := s.tasks.UpdateMap(id, map[string]any{
-					"status":        string(task.StatusHumanRequired),
-					"status_reason": revertReason,
+				if _, revertErr := s.tasks.Apply(task.TransitionIntent{
+					TaskID: id, ToStatus: task.StatusBlocked, Actor: "svc.tasks.dispatch-failure",
+					Extra: task.Update{
+						StatusReason:    task.Ptr(revertReason),
+						Escalation:      task.MachineFailure("dispatch.workflow_start_failed", revertReason),
+						AutonomyOutcome: task.QuarantinedOutcome(),
+					},
+					OperatorOverride: true,
 				}); revertErr != nil {
 					s.logger.Error("task.dispatch.revert-failed", "task_id", id, "target", target, "err", revertErr)
 					s.logDispatchAudit(id, target, string(cur.Status), reason, "revert-failed")
-					return task.Task{}, fmt.Errorf("dispatch to %s failed (%s) and revert to human-required also failed: %w", target, failure, revertErr)
+					return task.Task{}, translateTaskLockTimeout(fmt.Errorf("dispatch to %s failed (%s) and quarantine also failed: %w", target, failure, revertErr))
 				}
-				// The bounce back to human-required is the event an operator most
-				// needs a durable record of — log it, not just the success path.
-				s.logDispatchAudit(id, target, string(cur.Status), reason, "reverted")
+				// A control-plane dispatch failure is machine-owned. Quarantine it
+				// instead of manufacturing another request for human judgment.
+				s.logDispatchAudit(id, target, string(cur.Status), reason, "quarantined")
 				return task.Task{}, conflictError(fmt.Sprintf("dispatch to %q failed: %s", target, failure))
 			}
 		}
@@ -1365,21 +1423,26 @@ func (s *TaskService) logDispatchAudit(id, target, previousStatus, reason, outco
 // DeleteTask removes a task file from disk and cleans up its worktree.
 func (s *TaskService) DeleteTask(id string) error {
 	s.logger.Info("task.delete", "task_id", id)
+	deleted, err := s.tasks.Get(id)
+	if err != nil {
+		s.logger.Error("task.delete.failed", "task_id", id, "err", err)
+		return err
+	}
+	if err := s.tasks.Delete(id); err != nil {
+		s.logger.Error("task.delete.failed", "task_id", id, "err", err)
+		return translateTaskLockTimeout(err)
+	}
 	s.agents.KillAgentsForTask(id, 10*time.Second)
 	if s.sandboxes != nil {
 		s.sandboxes.Remove(id)
 	}
 	// context.Background(): DeleteTask is a Wails-bound method with no ctx.
-	s.worktrees.Remove(context.Background(), id)
+	s.worktrees.RemoveTask(context.Background(), deleted)
 	if s.audit != nil {
 		_ = s.audit.Log(audit.Event{
 			Type:   audit.EventTaskDeleted,
 			TaskID: id,
 		})
-	}
-	if err := s.tasks.Delete(id); err != nil {
-		s.logger.Error("task.delete.failed", "task_id", id, "err", err)
-		return err
 	}
 	return nil
 }

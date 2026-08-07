@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/taskstatus"
@@ -895,10 +896,10 @@ func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (Ste
 			0, "human bless ("+TamperBlessedTag+" tag)", "blessed")
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "blessed"}, nil
 	}
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree getter configured"}, nil
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree for task"}, nil
 	}
@@ -940,7 +941,11 @@ func (e *Engine) execDetectTampering(taskID string, step *Step, t TaskInfo) (Ste
 
 	if high := report.highCount(); high > 0 {
 		reason := tamperReason(report)
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
+		if statusErr := e.tasks.UpdateTaskBlocker(taskID, taskstatus.HumanRequired, reason, blocker.State{
+			Kind:       blocker.KindTamperDetected,
+			Actor:      blocker.ActorWorkflow,
+			NextAction: "bless_tampering",
+		}); statusErr != nil {
 			e.logger.Error("workflow.detect-tampering.status", "task_id", taskID, "err", statusErr)
 		}
 		e.logger.Warn("workflow.detect-tampering.flagged",
@@ -1306,7 +1311,9 @@ func documentedDeletionAllowlist(body string) tamperDeletionAllowlist {
 		"## File Deletions",
 		"## Removed Files",
 	} {
-		start, end, ok := topLevelSectionRange(body, heading)
+		start, end, ok := topLevelSectionRange(body, func(line string) bool {
+			return strings.EqualFold(line, heading)
+		})
 		if !ok {
 			continue
 		}

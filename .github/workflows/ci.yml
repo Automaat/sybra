@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The main-branch merge queue creates a synthetic commit containing the
+  # queued group. Required checks must run for this event or GitHub cannot
+  # prove that independently-green PRs are green in combination. Keep this in
+  # sync with .github/BRANCH_PROTECTION.md.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -14,7 +20,7 @@ jobs:
     name: Go Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
@@ -29,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
@@ -57,7 +63,7 @@ jobs:
     name: Frontend Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
@@ -80,7 +86,7 @@ jobs:
     name: Go Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
@@ -96,7 +102,7 @@ jobs:
     name: Nilaway
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
@@ -105,7 +111,7 @@ jobs:
 
       - name: Install nilaway
         # renovate: datasource=go depName=go.uber.org/nilaway
-        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260803001828-dc48a6814e08
+        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260807080650-10f479b6bb41
 
       - name: Run nilaway
         run: |
@@ -144,7 +150,7 @@ jobs:
     name: Dockerfile Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       # Uses the mise-pinned hadolint rather than hadolint-action's bundled
       # binary. The action shipped an older hadolint than mise.toml, so a
@@ -162,7 +168,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # Only same-repo PRs check out the head branch (so regenerated files
           # can be pushed back). Fork PRs and push/tag events resolve to an
@@ -241,7 +247,7 @@ jobs:
     name: API Shim Sync
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Check HTTP-allowlisted methods have api.ts/api-http.ts shims
         run: bash scripts/check-api-shim-sync.sh
@@ -250,16 +256,24 @@ jobs:
     name: No Operator-Home Fallbacks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Check for ~/.sybra fallbacks outside internal/config
         run: bash scripts/check-no-home-fallback.sh
 
+  check-repo-hygiene:
+    name: Repository Hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Check tracked runtime/build artifacts stay out of the repo
+        run: bash scripts/check-repo-hygiene.sh
   check-atomic-writes:
     name: Atomic Record Writes
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Check for hand-rolled temp-rename writes outside internal/fsutil
         run: bash scripts/check-atomic-writes.sh
@@ -267,11 +281,22 @@ jobs:
       - name: Check the gate itself still catches drift
         run: bash scripts/check-atomic-writes.test.sh
 
+  check-consolidated-primitives:
+    name: Consolidated Primitive Drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Check truncation, JSON extraction, task status, and provider boundaries
+        run: bash scripts/check-consolidated-primitives.sh
+
   check-no-viewer-user-endpoint:
     name: No /user Identity Lookups
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Check for /user identity lookups outside viewerLoginE
         run: bash scripts/check-no-viewer-user-endpoint.sh
@@ -280,7 +305,7 @@ jobs:
     name: gh Calls Routed Through ghGate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Check for direct gh subprocess spawns outside github.Run/RunWithEnv
         run: bash scripts/check-gh-exec-gate.sh
@@ -289,7 +314,7 @@ jobs:
     name: Git Calls Routed Through gitexec
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
@@ -302,16 +327,25 @@ jobs:
     name: No Direct Task-Status Writes
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: "Check for direct task.Update{Status: ...} writes outside the transition API"
         run: bash scripts/check-no-direct-status-write.sh
+
+  check-no-direct-workflow-write:
+    name: No Direct Task-Workflow Writes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: "Check for direct task.Update{Workflow: ...} writes outside the transition API"
+        run: bash scripts/check-no-direct-workflow-write.sh
 
   test-release-scripts:
     name: Release Scripts Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Run resolve-release-version.sh tests
         run: bash scripts/resolve-release-version.test.sh
@@ -323,7 +357,7 @@ jobs:
     name: Autonomy SLO Gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
@@ -334,7 +368,7 @@ jobs:
     name: Build
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
@@ -353,7 +387,7 @@ jobs:
     name: Doc Version Sync
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - run: |
           GO_VERSION=$(grep '^go ' go.mod | awk '{print $2}')
           MISE_GO_VERSION=$(grep '^go = ' mise.toml | awk -F'"' '{print $2}')
@@ -374,7 +408,7 @@ jobs:
     name: Go Module Integrity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
@@ -391,7 +425,7 @@ jobs:
     name: npm Lockfile Integrity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
@@ -408,7 +442,7 @@ jobs:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
@@ -428,7 +462,7 @@ jobs:
       matrix:
         provider: [claude, codex]
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
@@ -535,7 +569,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
 
@@ -554,7 +588,7 @@ jobs:
       # Dockerfile and uses load: false, so nothing k3d could import survives it.
       # Hence load: true and a build of our own here.
       - name: Build agent image
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           tags: sybra-server:poc

@@ -39,11 +39,11 @@ const (
 // human can fix the linkage manually.
 //
 // The step is a no-op when any of these are missing: task.Issue,
-// task.PRNumber, task.ProjectID, engine.prLinker. It also skips when
+// task.PRNumber, task.ProjectID, engine.pr.Linker. It also skips when
 // the issue lives in a different repo than the PR (cross-repo linking
 // needs explicit support GitHub handles but this check does not).
 func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
-	if e.prLinker == nil {
+	if e.pr.Linker == nil {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no pr linker configured"}, nil
 	}
 	if t.Issue == "" || t.PRNumber == 0 || t.ProjectID == "" {
@@ -58,7 +58,7 @@ func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) 
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: cross-repo issue link"}, nil
 	}
 
-	issues, body, err := e.prLinker.GetClosingIssues(t.ProjectID, t.PRNumber)
+	issues, body, err := e.pr.Linker.GetClosingIssues(t.ProjectID, t.PRNumber)
 	if err != nil {
 		e.logger.Error("workflow.pr-close.fetch", "task_id", taskID, "err", err)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "fetch failed: " + err.Error()}, nil
@@ -72,7 +72,7 @@ func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) 
 		newBody += "\n\n"
 	}
 	newBody += "Closes " + t.Issue
-	if editErr := e.prLinker.EditBody(t.ProjectID, t.PRNumber, newBody); editErr != nil {
+	if editErr := e.pr.Linker.EditBody(t.ProjectID, t.PRNumber, newBody); editErr != nil {
 		e.logger.Error("workflow.pr-close.edit", "task_id", taskID, "err", editErr)
 		if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, "PR does not close linked issue and auto-fix failed: "+editErr.Error()); statusErr != nil {
 			e.logger.Error("workflow.pr-close.status", "task_id", taskID, "err", statusErr)
@@ -92,7 +92,7 @@ func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) 
 			prVerifySleep(prVerifyBackoffs[attempt-1])
 		}
 		var verified []int
-		verified, _, verifyErr = e.prLinker.GetClosingIssues(t.ProjectID, t.PRNumber)
+		verified, _, verifyErr = e.pr.Linker.GetClosingIssues(t.ProjectID, t.PRNumber)
 		if verifyErr == nil && slices.Contains(verified, issueNum) {
 			e.logger.Info("workflow.pr-close.linked", "task_id", taskID, "pr", t.PRNumber, "issue", issueNum, "attempt", attempt)
 			return StepOutput{StepID: step.ID, Status: "completed", Output: fmt.Sprintf("linked issue #%d", issueNum)}, nil
@@ -120,14 +120,14 @@ func (e *Engine) execEnsurePRClosesIssue(taskID string, step *Step, t TaskInfo) 
 // no-op when the PR linker is unset or the task carries no PR/project, and it
 // never blocks the workflow — a fetch/edit failure is logged and completed.
 func (e *Engine) execStampPRAttribution(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
-	if e.prLinker == nil {
+	if e.pr.Linker == nil {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no pr linker configured"}, nil
 	}
 	if t.PRNumber == 0 || t.ProjectID == "" {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: missing pr or project"}, nil
 	}
 
-	_, body, err := e.prLinker.GetClosingIssues(t.ProjectID, t.PRNumber)
+	_, body, err := e.pr.Linker.GetClosingIssues(t.ProjectID, t.PRNumber)
 	if err != nil {
 		e.logger.Error("workflow.pr-attribution.fetch", "task_id", taskID, "err", err)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "fetch failed: " + err.Error()}, nil
@@ -140,7 +140,7 @@ func (e *Engine) execStampPRAttribution(taskID string, step *Step, t TaskInfo) (
 		}
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "already stamped"}, nil
 	}
-	if editErr := e.prLinker.EditBody(t.ProjectID, t.PRNumber, stamped); editErr != nil {
+	if editErr := e.pr.Linker.EditBody(t.ProjectID, t.PRNumber, stamped); editErr != nil {
 		e.logger.Error("workflow.pr-attribution.edit", "task_id", taskID, "err", editErr)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "edit failed: " + editErr.Error()}, nil
 	}
@@ -149,14 +149,14 @@ func (e *Engine) execStampPRAttribution(taskID string, step *Step, t TaskInfo) (
 }
 
 func (e *Engine) execRerequestReview(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
-	if e.prReviewers == nil {
+	if e.pr.ReviewRequester == nil {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no pr review requester configured"}, nil
 	}
 	if t.PRNumber == 0 || t.ProjectID == "" {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: missing pr or project"}, nil
 	}
 
-	reviewers, err := e.prReviewers.RerequestReview(t.ProjectID, t.PRNumber)
+	reviewers, err := e.pr.ReviewRequester.RerequestReview(t.ProjectID, t.PRNumber)
 	if err != nil {
 		e.logger.Warn("workflow.rerequest-review.failed", "task_id", taskID, "pr", t.PRNumber, "err", err)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "request failed: " + err.Error()}, nil
@@ -273,10 +273,10 @@ func originBaseCandidates(ctx context.Context, wtPath string) []string {
 }
 
 func (e *Engine) execVerifyCommits(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree getter configured"}, nil
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "skipped: no worktree for task"}, nil
 	}
@@ -527,20 +527,16 @@ func (e *Engine) rearmNoCommitAuthorRun(taskID string, wfExec *Execution, t Task
 	}
 	wfExec.SetVar(counterKey, "1")
 	wfExec.SetVar(verifyReaskNoteVar, noCommitReaskNote(run))
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(verifyChecksAutoFixBackoff).Format(time.RFC3339))
+	wfExec.SetVar(workflowRetryAfterVar, e.now().Add(verifyChecksAutoFixBackoff).Format(time.RFC3339))
 	wfExec.ClearStepRecords(stepID)
 	wfExec.CurrentStep = stepID
 	wfExec.State = ExecWaiting
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		e.logger.Error("workflow.verify-commits.no-commit-retry.workflow", "task_id", taskID, "err", err)
-		return false
-	}
 	reason := "retrying implementation once after no commits were produced"
 	if run.SubagentCallCount > 0 {
 		reason = "retrying implementation once after a background subagent handoff produced no commits"
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, reason); err != nil {
-		e.logger.Error("workflow.verify-commits.no-commit-retry.status", "task_id", taskID, "err", err)
+	if err := e.tasks.SetStatusAndWorkflow(taskID, string(t.Status), reason, wfExec); err != nil {
+		e.logger.Error("workflow.verify-commits.no-commit-retry.persist", "task_id", taskID, "err", err)
 		return false
 	}
 	e.logger.Warn("workflow.verify-commits.no-commit-retry",
@@ -753,11 +749,6 @@ func (e *Engine) recoverVerifyCommitsRefs(taskID, wtPath string, t TaskInfo) boo
 	refspecs := []string{"+" + "refs/heads/" + branch + ":refs/remotes/origin/" + branch}
 	if baseBranch, ok := strings.CutPrefix(baseRef, "origin/"); ok && baseBranch != "" && baseBranch != "HEAD" {
 		refspecs = append(refspecs, "+"+"refs/heads/"+baseBranch+":refs/remotes/origin/"+baseBranch)
-	}
-
-	_ = gitDo(ctx, wtPath, "update-ref", "-d", "refs/remotes/origin/"+branch)
-	if baseBranch, ok := strings.CutPrefix(baseRef, "origin/"); ok && baseBranch != "" && baseBranch != "HEAD" {
-		_ = gitDo(ctx, wtPath, "update-ref", "-d", "refs/remotes/origin/"+baseBranch)
 	}
 
 	args := []string{"fetch", "--no-tags", "--no-recurse-submodules"}

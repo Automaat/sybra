@@ -197,6 +197,12 @@ type AgentDefaults struct {
 	// Evidence gates the workflow engine's require_evidence completion gate
 	// (agent.evidence.enabled — see config_evidence.go).
 	Evidence EvidenceConfig `yaml:"evidence" json:"evidence"`
+	// VerifyChecksMaxConcurrent bounds how many verify_checks suites (the
+	// project's `checks.verify` commands) run at once across the whole
+	// process. 0 (default) falls back to a CPU-derived value — see
+	// (*Config).VerifyChecksMaxConcurrent. Full verify suites are CPU-heavy,
+	// so this stays well below agent.max_concurrent rather than matching it.
+	VerifyChecksMaxConcurrent int `yaml:"verify_checks_max_concurrent" json:"verifyChecksMaxConcurrent"`
 }
 
 // QueueConfig configures the agent-dispatch admission queue.

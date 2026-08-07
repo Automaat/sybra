@@ -138,17 +138,16 @@ func (m *Manager) Apply(intent TransitionIntent) (TransitionResult, error) {
 		return TransitionResult{}, fmt.Errorf("transition: intent.Extra.Status must be nil; set ToStatus instead")
 	}
 
-	mu := m.lockFor(id)
-	mu.Lock()
+	unlock := m.lock(id)
 
 	cur, err := m.store.Get(id)
 	if err != nil {
-		mu.Unlock()
+		unlock()
 		return TransitionResult{}, err
 	}
 
 	outcome, err := m.applyLocked(cur, intent)
-	mu.Unlock()
+	unlock()
 	if err != nil {
 		return TransitionResult{}, err
 	}
@@ -171,23 +170,22 @@ func (m *Manager) ApplyFn(id string, fn func(cur Task) (TransitionIntent, error)
 		return TransitionResult{}, fmt.Errorf("transition: task id is required")
 	}
 
-	mu := m.lockFor(id)
-	mu.Lock()
+	unlock := m.lock(id)
 
 	cur, err := m.store.Get(id)
 	if err != nil {
-		mu.Unlock()
+		unlock()
 		return TransitionResult{}, err
 	}
 	intent, err := fn(cur)
 	if err != nil {
-		mu.Unlock()
+		unlock()
 		return TransitionResult{}, err
 	}
 	intent.TaskID = id
 
 	outcome, err := m.applyLocked(cur, intent)
-	mu.Unlock()
+	unlock()
 	if err != nil {
 		return TransitionResult{}, err
 	}
@@ -211,7 +209,7 @@ type applyOutcome struct {
 // the original single-function Apply did by returning early).
 func (m *Manager) fireApplyOutcome(id string, outcome applyOutcome) {
 	if outcome.fireHook {
-		m.onStatusHook(id, outcome.prevStatus, outcome.newStatus)
+		m.onStatusHook(id, outcome.prevStatus, outcome.newStatus, outcome.result.Task)
 	}
 	if outcome.result.Applied {
 		metrics.TaskUpdated()
@@ -262,6 +260,9 @@ func (m *Manager) applyLocked(cur Task, intent TransitionIntent) (applyOutcome, 
 	stepID := strings.TrimSpace(intent.IdempotencyKey)
 	if stepID != "" && statusEffectApplied(cur.EffectLog, cur.Generation-1, stepID) {
 		return applyOutcome{result: TransitionResult{Task: cur, Applied: false}}, nil
+	}
+	if err := validateHumanRequiredTransition(cur.Status, intent.ToStatus, intent.Extra); err != nil {
+		return applyOutcome{}, err
 	}
 
 	u := intent.Extra

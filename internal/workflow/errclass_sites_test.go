@@ -3,7 +3,24 @@ package workflow
 import (
 	"errors"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/errclass"
 )
+
+// These predicate-shaped helpers exist only to keep the pre-#3162 literal
+// pinning tests readable. Production callers classify once and switch on the
+// four-way result; none use these adapters.
+func looksLikeGitHubRateLimit(output string) bool {
+	return errclass.Classify(output, errclass.WorkflowProseRetryBiased) == errclass.RateLimited
+}
+
+func looksLikeTransientGitHub(output string) bool {
+	return errclass.Classify(output, errclass.WorkflowProseRetryBiased) == errclass.Transient
+}
+
+func looksLikeAuthFailure(output string) bool {
+	return errclass.Classify(output, errclass.WorkflowProseRetryBiased) == errclass.Auth
+}
 
 // TestShouldRetryVerifyCommitsGitError_PinsLiterals pins the twelve bad-ref
 // needles this predicate carried before it moved onto errclass. It had no test

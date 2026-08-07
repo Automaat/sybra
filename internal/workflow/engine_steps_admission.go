@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
@@ -89,14 +90,15 @@ func (e *Engine) execAdmissionPreflight(taskID string, step *Step, wfExec *Execu
 // identical error moments later in the same workflow), while a genuine auth
 // failure or otherwise unclassifiable credential problem escalates to a
 // terminal blocker.KindCredentialRequired — the same distinction
-// looksLikeAuthFailure draws (a broken token does not self-heal, a network
-// blip does).
+// the workflow prose policy draws (a broken token does not self-heal, a
+// network blip does).
 func (e *Engine) classifyAdmissionCredentialError(taskID string, step *Step, wfExec *Execution, t TaskInfo, err error) (StepOutput, error) {
 	msg := err.Error()
-	switch {
-	case looksLikeGitHubRateLimit(msg):
+	class := errclass.Classify(msg, errclass.WorkflowProseRetryBiased)
+	switch class {
+	case errclass.RateLimited:
 		return e.parkStepForRetry(taskID, wfExec, t, step.ID, prCreateRetryStatusReason, "workflow.admission-preflight.rate-limit")
-	case looksLikeTransientGitHub(msg):
+	case errclass.Transient:
 		return e.parkStepForRetry(taskID, wfExec, t, step.ID, prCreateTransientStatusReason, "workflow.admission-preflight.transient")
 	default:
 		return e.blockAdmission(taskID, step, t, blocker.KindCredentialRequired,
@@ -135,10 +137,10 @@ func (e *Engine) checkAdmissionOversize(raw string) string {
 // transient vs permanent. A not-yet-existing worktree is not a failure here —
 // see the doc comment on execAdmissionPreflight.
 func (e *Engine) checkAdmissionCredentials(taskID string) error {
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return nil
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return nil
 	}

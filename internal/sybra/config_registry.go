@@ -74,6 +74,12 @@ var configRegistry = []configRegistryEntry{
 	// no-op — the store/UI would show it Applied while the engine kept enforcing
 	// the old value. Same rationale as the admission entry below.
 	{Path: "agent.evidence", Policy: configPolicyRestart, Visibility: configVisibilityUI},
+	// restart, not hot, same reason as agent.evidence above: the workflow
+	// engine's verify_checks slot channel (Engine.verifyChecksSlots) is
+	// lazily sized from Engine.verifyChecksMaxConcurrent on first use and
+	// never resized afterward, so a hot-apply of a config change after the
+	// first verify_checks dispatch would be a silent no-op.
+	{Path: "agent.verify_checks_max_concurrent", Policy: configPolicyRestart, Visibility: configVisibilityUI},
 	{Path: "testing", Policy: configPolicyHot, Visibility: configVisibilityUI},
 	{Path: "notification", Policy: configPolicyHot, Visibility: configVisibilityUI, ApplyGroup: configApplyNotification},
 	{Path: "orchestrator", Policy: configPolicyRestart, Visibility: configVisibilityUI},

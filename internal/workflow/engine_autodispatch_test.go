@@ -90,5 +90,5 @@ func newAutoDispatchEngine(t *testing.T) (*Engine, *mockAgents) {
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
-	return NewEngine(store, tasks, agents, discardLogger()), agents
+	return NewTestEngine(store, tasks, agents, discardLogger()), agents
 }

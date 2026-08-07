@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/attachment"
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/taskstatus"
@@ -362,9 +363,15 @@ type Task struct {
 	// append "Closes <url>" to the task's PR body, by findActiveDuplicate for
 	// dedup, and by the umbrella gate/DAG for state tracking. Never overwrite
 	// this after creation to attach an unrelated reference — use RefIssue.
-	Issue        string        `json:"issue"`
-	StatusReason string        `json:"statusReason"`
-	Blocker      blocker.State `json:"blocker,omitzero"`
+	Issue        string `json:"issue"`
+	StatusReason string `json:"statusReason"`
+	// Escalation is the policy authority for the current human-required state.
+	// StatusReason remains display text and must never be parsed back into a
+	// failure owner or recovery decision. Legacy files load with an explicit
+	// unknown/legacy adapter (see taskFromFrontmatter).
+	Escalation      autonomy.EscalationReason `json:"escalation,omitzero"`
+	AutonomyOutcome autonomy.Outcome          `json:"autonomyOutcome,omitempty"`
+	Blocker         blocker.State             `json:"blocker,omitzero"`
 	// HandoffSourceProvider records which local agent provider produced the
 	// work before a handoff skipped directly into review/testing/PR. Workflow
 	// steps with provider=cross use it when there is no Sybra-authored run
@@ -516,10 +523,13 @@ type Task struct {
 	// Planning sidecars. Plan is the human-readable compact plan; PlanContract
 	// is the machine-validated JSON contract consumed by implementation agents.
 	// The remaining sidecars hold review/evidence material.
-	PlanResearch  string `json:"planResearch,omitempty"`
-	PlanDecisions string `json:"planDecisions,omitempty"`
-	PlanBrief     string `json:"planBrief,omitempty"`
-	CodeReview    string `json:"codeReview,omitempty"`
+	PlanResearch        string `json:"planResearch,omitempty"`
+	PlanDecisions       string `json:"planDecisions,omitempty"`
+	PlanBrief           string `json:"planBrief,omitempty"`
+	CodeReview          string `json:"codeReview,omitempty"`
+	CurrentTestFailures string `json:"currentTestFailures,omitempty"`
+	AcceptanceLedger    string `json:"acceptanceLedger,omitempty"`
+	SpecDecision        string `json:"specDecision,omitempty"`
 	// PlanDrafts holds per-provider raw plan outputs during dual- (or N-)
 	// provider planning. Keys are typically the parallel child step ID
 	// (e.g. "plan_claude", "plan_codex"). Populated from PlanDraftStore on
@@ -534,11 +544,10 @@ type Task struct {
 	Degraded   bool   `json:"degraded,omitempty"`
 	ParseError string `json:"parseError,omitempty"`
 	// TamperFlagged reports whether this task is parked at human-required
-	// pending a tamper bless. Derived from Status/StatusReason (never
-	// persisted) so the frontend doesn't need to duplicate
-	// workflow.TamperFlaggedReasonPrefix to decide whether to show the bless
-	// action. Recomputed on every load/update — see taskFromFrontmatter and
-	// Store.UpdateWithPrev.
+	// pending a tamper bless. Derived from Status/Blocker (never persisted) so
+	// the frontend doesn't need to duplicate the latch logic to decide whether
+	// to show the bless action. Recomputed on every load/update — see
+	// taskFromFrontmatter and Store.UpdateWithPrev.
 	TamperFlagged bool `json:"tamperFlagged"`
 }
 
@@ -551,9 +560,9 @@ func (t Task) DirName() string {
 	return t.Slug + "-" + t.ID
 }
 
-// isTamperFlagged reports whether a task's status/status_reason combination
+// isTamperFlagged reports whether a task's status/blocker combination
 // represents an unblessed tamper flag. Single source of truth for both the
 // derived Task.TamperFlagged field and BlessTampering's precondition check.
-func isTamperFlagged(status Status, statusReason string) bool {
-	return status == StatusHumanRequired && workflow.IsTamperFlaggedReason(statusReason)
+func isTamperFlagged(status Status, state blocker.State) bool {
+	return status == StatusHumanRequired && state.Kind == blocker.KindTamperDetected
 }

@@ -6,7 +6,10 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
 	"time"
+
+	"github.com/Automaat/sybra/internal/autonomy"
 
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/taskstatus"
@@ -121,9 +124,6 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 		fresh.Workflow.CurrentStep = ""
 		fresh.Workflow.State = ExecCompleted
 		fresh.Workflow.CompletedAt = &now
-		if err := e.tasks.SetWorkflow(taskID, fresh.Workflow); err != nil {
-			e.logger.Warn("workflow.skill-receipt.clear", "task_id", taskID, "step", spawnedStep, "err", err)
-		}
 		summary := skillReceiptExhaustionSummary(output)
 		reason := fmt.Sprintf("mandatory workflow skill %q produced no conformance receipt after automatic recovery retry", run.RequestedSkill)
 		if zeroOutput {
@@ -132,8 +132,9 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 		if summary != "" {
 			reason += ": " + summary
 		}
-		if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
-			e.logger.Error("workflow.skill-receipt.human-required", "task_id", taskID, "step", spawnedStep, "err", statusErr)
+		escalation := autonomy.NewEscalation("workflow.skill_receipt_exhausted", autonomy.FailureOwnerMachine, autonomy.ProvenanceControlPlane, reason)
+		if err := e.tasks.SetEscalationAndWorkflow(taskID, string(taskstatus.Blocked), reason, escalation, autonomy.OutcomeQuarantined, fresh.Workflow); err != nil {
+			e.logger.Error("workflow.skill-receipt.human-required", "task_id", taskID, "step", spawnedStep, "err", err)
 		}
 		e.logger.Warn("workflow.skill-receipt.exhausted", "task_id", taskID, "step", spawnedStep, "skill", run.RequestedSkill, "zero_output", zeroOutput, "summary", summary)
 		e.fireComplete(&CompletionInfo{
@@ -211,8 +212,8 @@ func taskSidecarContent(t TaskInfo, kind string) string {
 }
 
 func (e *Engine) rescheduleSkillReceiptParallelChild(taskID string, parent, child *Step) {
-	e.acquireInflight(taskID)
-	defer e.releaseInflight(taskID)
+	unlockInflight := e.acquireInflight(taskID)
+	defer unlockInflight()
 
 	fresh, err := e.tasks.GetTask(taskID)
 	_, skip := resumeSkipReasonForStatus(fresh.Status)

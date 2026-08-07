@@ -19,6 +19,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/workflow/failureclassify"
 )
 
@@ -41,6 +42,7 @@ const (
 	verifyChecksImplStepID = "implement"
 	verifyReaskNoteVar     = "verify_reask_note"
 	verifyRetryModelVar    = "verify_retry_model"
+	verifyAutoFixRunIDVar  = "verify_auto_fix.rewound_run_agent_id"
 	// verifyChecksAutoFixBackoff is the base re-dispatch delay before the next
 	// auto-fix attempt; autoFixBackoff grows it with the attempt count up to
 	// autoFixBackoffMax.
@@ -50,10 +52,13 @@ const (
 	// failure no agent can fix reaches a human instead of looping forever.
 	verifyChecksAutoFixCeiling = 3
 	// Full verify suites are CPU-heavy and already serialized by workflow
-	// retries; a single local slot prevents one saturated host from piling
-	// multiple suites on top of each other and timing them all out.
-	verifyChecksBackoff       = 1 * time.Minute
-	verifyChecksMaxConcurrent = 1
+	// retries; local slots prevent one saturated host from piling multiple
+	// suites on top of each other and timing them all out. The fallback slot
+	// count when the engine has no configured/derived value is deliberately
+	// conservative (a single slot) — see verifyChecksSlot and
+	// config.Config.VerifyChecksMaxConcurrent for the CPU-derived default.
+	verifyChecksBackoff              = 1 * time.Minute
+	verifyChecksDefaultMaxConcurrent = 1
 )
 
 const verifyChecksBusyReason = "verify suite deferred: another local verify run is already in flight"
@@ -154,6 +159,14 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 	if skip != "" {
 		return stepDone(step, skip)
 	}
+
+	treeSHA, checksHash := e.verifyChecksCacheKey(e.ctx, wtPath, cmds)
+	if treeSHA != "" {
+		if out, hit := e.verifyChecksCacheHit(taskID, step, wtPath, treeSHA, checksHash); hit {
+			return out, nil
+		}
+	}
+
 	slot := e.verifyChecksSlot()
 	releaseVerifySlot, ok := e.acquireVerifyChecksSlot(slot)
 	if !ok {
@@ -241,25 +254,77 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 	}
 
 	e.logger.Info("workflow.verify-checks.clean", "task_id", taskID, "commands", len(cmds))
-	e.recordEvidence(taskID, step.ID, evidenceCriterionVerifyChecks, evidence.ProofDeterministicCheck,
-		0, strings.Join(cmds, " && "), report.OutputTail)
+	e.recordVerifyChecksEvidence(taskID, step.ID, strings.Join(cmds, " && "), report.OutputTail, treeSHA, checksHash)
 	return stepDone(step, "clean")
 }
 
-func (e *Engine) loadVerifyChecksInputs(taskID string) (cmds []string, wtPath string, timeout time.Duration, skip string) {
-	if e.checks == nil {
-		return nil, "", 0, "skipped: no check config getter"
+// verifyChecksCacheKey computes the (tree SHA, verify-commands hash) memo key
+// for a verify_checks run. treeSHA is "" on any error resolving the worktree
+// tree (dirty index race, git failure, etc.) — the caller treats that as a
+// definite cache miss rather than risk matching an empty/incomplete key.
+// checksHash never fails (a pure digest of the resolved command strings), so
+// it is always populated once cmds is non-empty.
+func (e *Engine) verifyChecksCacheKey(ctx context.Context, wtPath string, cmds []string) (treeSHA, checksHash string) {
+	checksHash = evidence.Digest(strings.Join(cmds, "\x00"))
+	sha, err := currentWorktreeTree(ctx, wtPath)
+	if err != nil {
+		return "", checksHash
 	}
+	return sha, checksHash
+}
+
+// verifyChecksCacheHit re-stamps existing verify_checks evidence to the
+// current HEAD and reports a hit when the durable evidence store already
+// holds a passing entry for this exact (tree SHA, commands hash) — letting an
+// unchanged tree skip the suite entirely, before it ever contends for a
+// concurrency slot. Only ever a cache HIT for a PASSING prior run (an
+// entry.Passed() check gates it); a failing run is never memoized in the
+// first place (see the exit-0-only recordVerifyChecksEvidence call site), so
+// there is nothing here to re-run a known-bad state against a fresh key.
+// Mirrors refreshReviewEvidenceFreshness's re-stamp-in-place shape. Any read
+// or write failure along the way is a miss, never a hit — the memo must stay
+// strictly additive and never let a broken lookup substitute for a suite that
+// never actually ran against this tree.
+func (e *Engine) verifyChecksCacheHit(taskID string, step *Step, wtPath, treeSHA, checksHash string) (StepOutput, bool) {
+	if e.evidenceRecorder == nil {
+		return StepOutput{}, false
+	}
+	ce, err := e.evidenceRecorder.Evidence(taskID)
+	if err != nil {
+		return StepOutput{}, false
+	}
+	entry, ok := ce.ByCriterion(evidenceCriterionVerifyChecks)
+	if !ok || !entry.Passed() || entry.TreeSHA == "" || entry.TreeSHA != treeSHA || entry.ChecksHash != checksHash {
+		return StepOutput{}, false
+	}
+
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+	entry.FinalRev = revParseCommit(ctx, wtPath, "HEAD")
+	entry.StepID = step.ID
+	entry.Timestamp = time.Now().UTC()
+	if err := e.evidenceRecorder.AppendCriterion(taskID, entry); err != nil {
+		e.logger.Warn("workflow.evidence.refresh-failed",
+			"task_id", taskID, "criterion", evidenceCriterionVerifyChecks, "err", err)
+		return StepOutput{}, false
+	}
+
+	e.logger.Info("workflow.verify-checks.cached", "task_id", taskID, "tree_sha", treeSHA)
+	out, _ := stepDone(step, "clean (cached: "+treeSHA+")")
+	return out, true
+}
+
+func (e *Engine) loadVerifyChecksInputs(taskID string) (cmds []string, wtPath string, timeout time.Duration, skip string) {
 	timeout = resolveWorkflowCheckTimeout(e.verifyTimeout)
-	cmds = e.checks.VerifyCommands(e.ctx, taskID)
+	cmds = e.execution.Checks.VerifyCommands(e.ctx, taskID)
 	if len(cmds) == 0 {
 		return nil, "", 0, "skipped: no verify commands configured"
 	}
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return nil, "", 0, "skipped: no worktree getter configured"
 	}
 	var ok bool
-	wtPath, ok = e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok = e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return nil, "", 0, "skipped: no worktree for task"
 	}
@@ -283,7 +348,11 @@ func (e *Engine) verifyChecksSlot() chan struct{} {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.verifyChecksSlots == nil {
-		e.verifyChecksSlots = make(chan struct{}, verifyChecksMaxConcurrent)
+		n := e.verifyChecksMaxConcurrent
+		if n <= 0 {
+			n = verifyChecksDefaultMaxConcurrent
+		}
+		e.verifyChecksSlots = make(chan struct{}, n)
 	}
 	return e.verifyChecksSlots
 }
@@ -300,11 +369,8 @@ func (e *Engine) acquireVerifyChecksSlot(slot chan struct{}) (release func(), ok
 func (e *Engine) parkVerifyChecksForBackpressure(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
 	wfExec.CurrentStep = step.ID
 	wfExec.State = ExecWaiting
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(verifyChecksBackoff).Format(time.RFC3339))
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		return StepOutput{}, err
-	}
-	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, verifyChecksBusyReason); err != nil {
+	wfExec.SetVar(workflowRetryAfterVar, e.now().Add(verifyChecksBackoff).Format(time.RFC3339))
+	if err := e.tasks.SetStatusAndWorkflow(taskID, string(t.Status), verifyChecksBusyReason, wfExec); err != nil {
 		return StepOutput{}, err
 	}
 	e.logger.Warn("workflow.verify-checks.backpressure", "task_id", taskID, "step", step.ID)
@@ -321,14 +387,14 @@ func (e *Engine) parkVerifyChecksForBackpressure(taskID string, step *Step, wfEx
 // must treat that the same as "could not verify" and fall back to their own
 // default behavior rather than treat it as a pass.
 func (e *Engine) VerifyTaskNow(ctx context.Context, taskID string) (verified, passed bool, failedCmd, output string, err error) {
-	if e.checks == nil || e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return false, false, "", "", nil
 	}
-	cmds := e.checks.VerifyCommands(ctx, taskID)
+	cmds := e.execution.Checks.VerifyCommands(ctx, taskID)
 	if len(cmds) == 0 {
 		return false, false, "", "", nil
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return false, false, "", "", nil
 	}
@@ -377,7 +443,7 @@ func (e *Engine) runVerifySuiteWithRetry(parent context.Context, taskID, wtPath 
 
 func (e *Engine) healToolchainAndRetry(taskID, wtPath string, cmds []string, timeout time.Duration, stepID string) (attempted bool, failedCmd, output string, runErr error) {
 	setupCtx, cancel := context.WithTimeout(e.ctx, timeout)
-	setup := e.checks.SetupCommands(setupCtx, taskID)
+	setup := e.execution.Checks.SetupCommands(setupCtx, taskID)
 	if len(setup) == 0 {
 		cancel()
 		return false, "", "", nil
@@ -898,6 +964,7 @@ func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Ex
 		diag := e.writeVerifyDiagnostic(taskID, failedCmd, output)
 		return e.flagVerifyChecks(taskID, step, withDiagnostic(reason, diag), failedCmd)
 	}
+	rewoundRunAgentID := verifyAutoFixRewoundRunAgentID(wfExec, t)
 	fingerprint := autoFixFailureFingerprint(failedCmd, output)
 	armed, attempt, err := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
 		counterKey:  "step." + step.ID + ".auto_fix",
@@ -914,6 +981,9 @@ func (e *Engine) autoFixOrFlagVerifyChecks(taskID string, step *Step, wfExec *Ex
 		onArm: func(wfExec *Execution, attempt int) {
 			wfExec.SetVar(verifyReaskNoteVar, buildVerifyReaskNote(failedCmd, output))
 			wfExec.SetVar(verifyRetryModelVar, "expensive")
+			if rewoundRunAgentID != "" {
+				wfExec.SetVar(verifyAutoFixRunIDVar, rewoundRunAgentID)
+			}
 		},
 		reason: func(attempt int) string {
 			return fmt.Sprintf("auto-fixing failed verify check (attempt %d): %s", attempt, trimDiffLine(failedCmd))
@@ -963,6 +1033,23 @@ func buildVerifyReaskNote(failedCmd, output string) string {
 	b.WriteString(tailString(strings.TrimSpace(output), 3000))
 	b.WriteString("\n```")
 	return b.String()
+}
+
+func verifyAutoFixRewoundRunAgentID(wfExec *Execution, t TaskInfo) string {
+	if wfExec != nil {
+		if rec := wfExec.RecordForStep(verifyChecksImplStepID); rec != nil && strings.TrimSpace(rec.AgentID) != "" {
+			return rec.AgentID
+		}
+	}
+	for i := range slices.Backward(t.AgentRuns) {
+		role := strings.TrimSpace(t.AgentRuns[i].Role)
+		if role == "" || role == "implementation" {
+			if id := strings.TrimSpace(t.AgentRuns[i].AgentID); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
 }
 
 // miseConfigNames are the mise config filenames that gate `mise exec` behind
@@ -1419,10 +1506,10 @@ func (b *boundedTail) String() string {
 }
 
 // tailString returns the last n bytes of s, prefixed with an elision marker
-// when truncated. Debug output — not rune-aligned at the cut.
+// when truncated. The shared helper keeps the cut rune-aligned.
 func tailString(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return "…(truncated)…\n" + s[len(s)-n:]
+	return "…(truncated)…\n" + textutil.TailBytes(s, n)
 }

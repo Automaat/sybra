@@ -38,13 +38,14 @@ func TestAuthCircuitBackoffScheduleWithoutSleeping(t *testing.T) {
 			if !open {
 				t.Fatal("circuit should be open right after a failure")
 			}
-			if got := retryAfter.Sub(fake.Now()); got != tt.wantBackoff {
-				t.Fatalf("retryAfter is %v out, want %v", got, tt.wantBackoff)
+			gotBackoff := retryAfter.Sub(fake.Now())
+			if gotBackoff < tt.wantBackoff/2 || gotBackoff > tt.wantBackoff {
+				t.Fatalf("retryAfter is %v out, want jittered window [%v, %v]", gotBackoff, tt.wantBackoff/2, tt.wantBackoff)
 			}
 
 			// One tick short of the window the circuit is still open; one tick
 			// past it, closed — the boundary a sleep-based test cannot pin.
-			fake.Advance(tt.wantBackoff - time.Nanosecond)
+			fake.Advance(gotBackoff - time.Nanosecond)
 			if open, _ := AuthCircuitOpen(); !open {
 				t.Error("circuit closed one nanosecond early")
 			}
@@ -79,7 +80,7 @@ func TestAuthCircuitBackoffStopsAtTheCeiling(t *testing.T) {
 	ObserveCallResult([]byte("Bad credentials"), authFail)
 
 	_, retryAfter := AuthCircuitOpen()
-	if got := retryAfter.Sub(fake.Now()); got != authCircuitMaxBackoff {
-		t.Errorf("backoff after 20 failures = %v, want the %v ceiling", got, authCircuitMaxBackoff)
+	if got := retryAfter.Sub(fake.Now()); got < authCircuitMaxBackoff/2 || got > authCircuitMaxBackoff {
+		t.Errorf("backoff after 20 failures = %v, want capped jitter window [%v, %v]", got, authCircuitMaxBackoff/2, authCircuitMaxBackoff)
 	}
 }

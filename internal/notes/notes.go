@@ -114,7 +114,7 @@ func clampNotes(body string) (string, bool) {
 	if len(body) <= seedMaxBytes {
 		return body, false
 	}
-	head := textutil.TrimPartialRuneSuffix(body[:seedHeadBytes])
-	tail := textutil.TrimPartialRunePrefix(body[len(body)-(seedMaxBytes-seedHeadBytes):])
+	head := textutil.TruncateBytes(body, seedHeadBytes, "")
+	tail := textutil.TailBytes(body, seedMaxBytes-seedHeadBytes)
 	return head + elisionMarker + tail, true
 }

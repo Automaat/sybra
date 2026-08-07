@@ -165,6 +165,20 @@ func TestAtomicWrite_RenameFailCleansUpTemp(t *testing.T) {
 	}
 }
 
+// BenchmarkAtomicWrite measures the fsync round-trip AtomicWrite pays per
+// call, so the task store's write volume can be judged against it.
+func BenchmarkAtomicWrite(b *testing.B) {
+	dir := b.TempDir()
+	path := filepath.Join(dir, "file.txt")
+	data := []byte("benchmark payload for a typical task markdown file, roughly a couple hundred bytes of frontmatter and body text")
+	b.ResetTimer()
+	for range b.N {
+		if err := AtomicWrite(path, data); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestRemoveAllForce(t *testing.T) {
 	t.Parallel()
 	if os.Geteuid() == 0 {

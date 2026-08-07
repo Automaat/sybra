@@ -5,6 +5,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/dispatchorder"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/taskstatus"
@@ -16,7 +17,7 @@ func resumeSkipReasonForStatus(status taskstatus.Status) (reason string, skip bo
 	case taskstatus.HumanRequired:
 		return "human_required", true
 	case taskstatus.Blocked:
-		return "blocked", true
+		return string(taskstatus.Blocked), true
 	case taskstatus.Done, taskstatus.Cancelled:
 		return "terminal_status", true
 	default:
@@ -39,12 +40,12 @@ func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason str
 	// during which no agent is yet registered — without this guard the ticker
 	// would spawn a duplicate and the second agent's completion would corrupt
 	// the workflow at the wait_human gate.
-	// inflightMutexes is a non-blocking probe: TryLock distinguishes "another
+	// inflightLocks is a non-blocking probe: TryLock distinguishes "another
 	// goroutine currently holds the advance lock" from "free".
-	mu := e.taskInflightMutex(taskID)
-	advancing := !mu.TryLock()
+	probeUnlock, idle := e.inflightLocks.TryLockLocal(taskID)
+	advancing := !idle
 	if !advancing {
-		mu.Unlock()
+		probeUnlock()
 	}
 
 	// Retire orphaned routes before interpreting them as "agent still pending"
@@ -116,27 +117,22 @@ func (e *Engine) shouldSkipResumeAfterFreshRead(taskID string, wf *Execution) (T
 // before its human-required skip, so leaving the execution waiting would
 // re-escalate (and rewrite the task file) on every maintenance tick. Failing it
 // also unblocks the operator, since approve/reject cannot resolve a step the
-// definition no longer has.
+// definition no longer has. Status + workflow must land atomically: a partial
+// write strands the task at human-required with a still-waiting execution that
+// the planning dispatcher refuses to re-plan over.
 func (e *Engine) escalateMissingStep(taskID string, wf *Execution) {
 	e.logger.Warn("workflow.resume-stalled.step-missing",
 		"task_id", taskID, "workflow_id", wf.WorkflowID, "step", wf.CurrentStep)
 
-	// Status first, execution second, so a failed second write leaves the task
-	// visible and retryable rather than buried mid-escalation.
-	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired,
-		"Workflow step "+wf.CurrentStep+" no longer exists in "+wf.WorkflowID+
-			" — it was removed while this task was parked on it. Set the task back to"+
-			" planning to re-plan against the current workflow."); err != nil {
-		e.logger.Warn("workflow.resume-stalled.step-missing.escalate", "task_id", taskID, "err", err)
-		return
-	}
-	// Failing the execution is what makes the task recoverable: the planning
-	// dispatcher only starts a fresh workflow when the old one is completed or
-	// failed, so a waiting execution would reject the operator's re-plan.
+	reason := "Workflow step " + wf.CurrentStep + " no longer exists in " + wf.WorkflowID +
+		" — it was removed while this task was parked on it. Set the task back to" +
+		" planning to re-plan against the current workflow."
 	failed := *wf
 	failed.State = ExecFailed
-	if err := e.tasks.SetWorkflow(taskID, &failed); err != nil {
-		e.logger.Warn("workflow.resume-stalled.step-missing.fail", "task_id", taskID, "err", err)
+	escalation := autonomy.NewEscalation("workflow.step_removed", autonomy.FailureOwnerOperatorDecision, autonomy.ProvenanceControlPlane, reason)
+	if err := e.tasks.SetEscalationAndWorkflow(taskID, string(taskstatus.HumanRequired), reason, escalation, autonomy.OutcomeHumanRequired, &failed); err != nil {
+		e.logger.Warn("workflow.resume-stalled.step-missing.escalate", "task_id", taskID, "err", err)
+		return
 	}
 }
 
@@ -147,12 +143,10 @@ func (e *Engine) escalateMissingStep(taskID string, wf *Execution) {
 // so a failure here would discard the run.
 //
 // human-required is deliberately not skipped, unlike in the resumable path.
-// escalateMissingStep writes the status before the execution, so an escalation
-// whose second write failed sits at human-required with a live execution, which
-// the planning dispatcher refuses to re-plan — the operator would be stuck
-// following advice that cannot work. Re-entering here retries it. Nothing loops:
-// once both writes land, ResumeStalled's own ExecFailed check skips the task
-// before it ever reaches this function.
+// A failed atomic escalation leaves the task unchanged, so re-entering here on
+// the next tick is the intended retry path. Nothing loops: once both writes
+// land, ResumeStalled's own ExecFailed check skips the task before it ever
+// reaches this function.
 func (e *Engine) handleMissingStep(t *TaskInfo) {
 	if reason, skip := resumeSkipReasonForStatus(t.Status); skip && reason != "human_required" {
 		return
@@ -265,7 +259,7 @@ func (e *Engine) resumeStalledTask(t *TaskInfo) {
 }
 
 func (e *Engine) resumePreflightConsumesTick(t *TaskInfo, step *Step, logEvent string) bool {
-	if retryAt, ok := workflowRetryAfter(t.Workflow); ok && time.Now().Before(retryAt) {
+	if retryAt, ok := workflowRetryAfter(t.Workflow); ok && e.now().Before(retryAt) {
 		retryAtStr := retryAt.Format(time.RFC3339)
 		e.resumeSkip.Log(e.logger, logEvent, t.ID,
 			"retry_after|"+step.ID+"|"+retryAtStr,
@@ -279,7 +273,7 @@ func (e *Engine) resumePreflightConsumesTick(t *TaskInfo, step *Step, logEvent s
 	retryableWorktreeRepair := e.canRetryWorktreeRepair(t, step)
 	if reason, skip := resumeSkipReasonForStatus(t.Status); skip &&
 		(reason != "human_required" || !retryableWatchdogStop) &&
-		(reason != "blocked" || !retryableWorktreeRepair) {
+		(reason != string(taskstatus.Blocked) || !retryableWorktreeRepair) {
 		e.resumeSkip.Log(e.logger, logEvent, t.ID,
 			reason+"|"+string(t.Status)+"|"+step.ID,
 			"task_id", t.ID, "reason", reason, "status", t.Status, "step", step.ID)

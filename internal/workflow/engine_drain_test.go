@@ -42,7 +42,7 @@ func TestExecClassifyTask_BackoffAbandonsOnDrain(t *testing.T) {
 
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "new"})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetTaskClassifier(&ctxCancelClassifier{})
 
 	engineCtx, cancelEngine := context.WithCancel(t.Context())

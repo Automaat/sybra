@@ -1,6 +1,7 @@
 package agentorch
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -13,8 +14,11 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/agentqueue"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -204,6 +208,36 @@ func TestStartPRFixAgent_TaskCostExceededBlocksDispatch(t *testing.T) {
 	}
 	if !errors.Is(err, workflow.ErrTaskCostExceeded) {
 		t.Fatalf("err = %v, want wrapping workflow.ErrTaskCostExceeded", err)
+	}
+}
+
+func TestStartErrorInvalidatesRunEnvironmentCertificate(t *testing.T) {
+	t.Parallel()
+	probes := 0
+	service := runenv.New(runenv.Deps{
+		ProbeProvider: func(context.Context, string) (runenv.ProbeResult, error) {
+			probes++
+			return runenv.ProbeResult{Available: true}, nil
+		},
+	})
+	req := runenv.Request{
+		TaskID: "task", Action: "pr-fix.dispatch", WorkDir: t.TempDir(), Provider: providerid.Codex,
+		Requirements: []autonomy.CapabilityRequirement{{
+			Capability: autonomy.CapabilityProviderCapacity,
+			Action:     "pr-fix.dispatch",
+			Scope:      "provider",
+		}},
+	}
+	if _, err := service.Certify(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	o := &Orchestrator{runenv: service}
+	o.invalidateRunEnvironmentOnStartError(req.TaskID, errors.New("provider start: read-only file system"))
+	if _, err := service.Certify(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if probes != 2 {
+		t.Fatalf("provider probes = %d, want recertification after environment-shaped start error", probes)
 	}
 }
 

@@ -258,7 +258,7 @@ func TestExecRoutePRFixResult_HumanRequiredStopsBeforeRelink(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
 		CurrentStep: "route_pr_fix_result",
@@ -304,14 +304,14 @@ func TestExecRoutePRFixResult_RecoversResolvedUnmergedConflict(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{focused: []project.FocusedCheck{{
 		Name:     "workflow",
 		Paths:    []string{"internal/workflow/**"},
 		Commands: []string{"true"},
 	}}})
-	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+	engine.setPushCredentialPreflighterForTest(&fakePushPreflighter{})
 
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
@@ -399,14 +399,14 @@ func TestExecRoutePRFixResult_RecoversResolvedButUnstagedConflict(t *testing.T) 
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{focused: []project.FocusedCheck{{
 		Name:     "workflow",
 		Paths:    []string{"internal/workflow/**"},
 		Commands: []string{"true"},
 	}}})
-	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+	engine.setPushCredentialPreflighterForTest(&fakePushPreflighter{})
 
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
@@ -494,15 +494,15 @@ func TestExecRoutePRFixResult_ResolvedMergePushRetryKeepsCheckpointContext(t *te
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{focused: []project.FocusedCheck{{
 		Name:     "workflow",
 		Paths:    []string{"internal/workflow/**"},
 		Commands: []string{"true"},
 	}}})
 	preflight := &fakePushPreflighter{}
-	engine.SetPushCredentialPreflighter(preflight)
+	engine.setPushCredentialPreflighterForTest(preflight)
 
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
@@ -580,14 +580,14 @@ func TestExecRoutePRFixResult_ResolvedMergeRejectsUnexpectedDirtyPath(t *testing
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{focused: []project.FocusedCheck{{
 		Name:     "workflow",
 		Paths:    []string{"internal/workflow/**"},
 		Commands: []string{"true"},
 	}}})
-	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+	engine.setPushCredentialPreflighterForTest(&fakePushPreflighter{})
 
 	beforeSHA := headSHA(t, wtPath)
 	wf := &Execution{
@@ -650,14 +650,14 @@ func TestExecRoutePRFixResult_HumanRequiredApprovalStopSkipsResolvedMergeRecover
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{focused: []project.FocusedCheck{{
 		Name:     "workflow",
 		Paths:    []string{"internal/workflow/**"},
 		Commands: []string{"true"},
 	}}})
-	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+	engine.setPushCredentialPreflighterForTest(&fakePushPreflighter{})
 
 	beforeSHA := headSHA(t, wtPath)
 	wf := &Execution{
@@ -720,14 +720,14 @@ func TestExecRoutePRFixResult_ResolvedUnmergedWithFailingTestsRoutesToTestFix(t 
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{focused: []project.FocusedCheck{{
 		Name:     "workflow",
 		Paths:    []string{"internal/workflow/**"},
 		Commands: []string{"true"},
 	}}})
-	engine.SetPushCredentialPreflighter(&fakePushPreflighter{})
+	engine.setPushCredentialPreflighterForTest(&fakePushPreflighter{})
 
 	beforeSHA := headSHA(t, wtPath)
 	wf := &Execution{
@@ -779,8 +779,8 @@ func TestExecRoutePRFixResult_ResolvedUnmergedWithFailingTestsRoutesToTestFix(t 
 func TestResolvedMergeFocusedCommandsReturnsChangedFilesError(t *testing.T) {
 	t.Parallel()
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
-	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: []project.FocusedCheck{{
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{focused: []project.FocusedCheck{{
 		Name:     "workflow",
 		Paths:    []string{"internal/workflow/**"},
 		Commands: []string{"true"},
@@ -861,7 +861,7 @@ func TestExecRoutePRFixResult_HumanRequiredWithFailingTestsRoutesToTestFix(t *te
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
 		CurrentStep: "route_pr_fix_result",
@@ -908,7 +908,7 @@ func TestExecRoutePRFixResult_TestFixOwnHumanRequiredParksImmediately(t *testing
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
 		CurrentStep: "route_test_fix_result",
@@ -955,7 +955,7 @@ func TestExecRoutePRFixResult_HumanRequiredWithoutFailingTestsNoNote(t *testing.
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
 		CurrentStep: "route_pr_fix_result",
@@ -988,7 +988,7 @@ func TestExecRoutePRFixResult_NoPRRemoteOutageResumesRecovery(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "branch-conflict-fix",
 		CurrentStep: "route_result",
@@ -1037,7 +1037,7 @@ func TestExecRoutePRFixResult_FlakeRoutesToInReviewWithoutCommit(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
 		CurrentStep: "route_pr_fix_result",
@@ -1078,7 +1078,7 @@ func TestExecRoutePRFixResult_ReviewHoldParkBeatsFlake(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
 		CurrentStep: "route_pr_fix_result",
@@ -1116,8 +1116,8 @@ func TestExecRoutePRFixResult_ReProbesResolvedRemotePR(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
-	engine.SetPRStateFetcher(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}})
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.setPRStateFetcherForTest(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}})
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
 		CurrentStep: "route_pr_fix_result",
@@ -1157,8 +1157,8 @@ func TestExecRoutePRFixResult_ReviewHoldParkIgnoresResolvedRemotePR(t *testing.T
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
-	engine.SetPRStateFetcher(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}})
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.setPRStateFetcherForTest(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}})
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
 		CurrentStep: "route_pr_fix_result",
@@ -1195,7 +1195,7 @@ func TestExecRoutePRFixResult_ReviewHoldParkWinsOverContinue(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	// The agent pushed in review-hold push mode and reported `continue`; the
 	// deterministic park var must still route the task to human-required so the
 	// drafted pending review isn't silently left unsubmitted.
@@ -1239,7 +1239,7 @@ func TestExecRoutePRFixResult_ReviewHoldParkIgnoresFailingTestLines(t *testing.T
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "pr-fix",
 		CurrentStep: "route_pr_fix_result",
@@ -1391,7 +1391,7 @@ func TestAdvanceStep_PRFixHumanRequiredUsesUntruncatedOutput(t *testing.T) {
 
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	if err := engine.StartWorkflow("t1", "pr-fix-route-test"); err != nil {
 		t.Fatalf("start workflow: %v", err)
@@ -1466,7 +1466,7 @@ func TestAdvanceStep_TestFixHumanRequiredUsesUntruncatedOutput(t *testing.T) {
 
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	if err := engine.StartWorkflow("t1", "test-fix-route-test"); err != nil {
 		t.Fatalf("start workflow: %v", err)
@@ -1515,5 +1515,30 @@ func TestIsCodeAuthorRun_IncludesTestFix(t *testing.T) {
 	t.Parallel()
 	if !isCodeAuthorRun(AgentRunInfo{Role: "test-fix"}) {
 		t.Error("isCodeAuthorRun({Role: \"test-fix\"}) = false, want true")
+	}
+}
+
+func TestPRFixShouldResumeNoPRRecovery_UsesSharedClassification(t *testing.T) {
+	t.Parallel()
+	withoutPR := TaskInfo{}
+	for _, tc := range []struct {
+		reason string
+		want   bool
+	}{
+		{"connection refused", true},
+		{"remote unreachable", true},
+		{"GitHub transport unavailable", true},
+		{"missing credential", false},
+		{"authentication failed", false},
+		{"permission denied", false},
+		{"unknown preparation failure", false},
+	} {
+		if got := prFixShouldResumeNoPRRecovery(withoutPR, tc.reason); got != tc.want {
+			t.Errorf("prFixShouldResumeNoPRRecovery(%q) = %v, want %v", tc.reason, got, tc.want)
+		}
+	}
+	withPR := TaskInfo{PRNumber: 42}
+	if prFixShouldResumeNoPRRecovery(withPR, "connection refused") {
+		t.Fatal("task with PR must not resume no-PR recovery")
 	}
 }

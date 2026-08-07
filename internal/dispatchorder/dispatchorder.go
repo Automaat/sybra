@@ -7,17 +7,19 @@
 // take the typed value directly.
 package dispatchorder
 
+import "github.com/Automaat/sybra/internal/taskstatus"
+
 // Rank ranks a task's pipeline status for dispatch ordering: lower ranks are
 // dispatched sooner. Unknown statuses rank last (4).
 func Rank(status string) int {
 	switch status {
-	case "in-review", "ready-pr":
+	case string(taskstatus.InReview), string(taskstatus.ReadyPR):
 		return 0
-	case "ready-review", "testing":
+	case string(taskstatus.ReadyReview), string(taskstatus.Testing):
 		return 1
-	case "in-progress":
+	case string(taskstatus.InProgress):
 		return 2
-	case "planning", "plan-review":
+	case string(taskstatus.Planning), string(taskstatus.PlanReview):
 		return 3
 	default:
 		return 4

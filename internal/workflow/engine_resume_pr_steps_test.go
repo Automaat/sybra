@@ -56,11 +56,11 @@ func TestResumeStalled_ResumesParkedCreatePR(t *testing.T) {
 		},
 	})
 
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
 	creator := &fakePRCreator{number: 42, headSHA: headSHA(t, wtPath)}
 	engine.SetPRCreator(creator)
-	engine.SetPRContentGenerator(&fakePRContentGenerator{title: "feat(x): y", body: "## Motivation\n\nz\n\n## Implementation information\n\nw"})
+	engine.setPRContentGeneratorForTest(&fakePRContentGenerator{title: "feat(x): y", body: "## Motivation\n\nz\n\n## Implementation information\n\nw"})
 
 	engine.ResumeStalled()
 
@@ -140,9 +140,9 @@ func TestResumeStalled_ResumesParkedPushBranch(t *testing.T) {
 		},
 	})
 
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtPath, ok: true})
-	engine.SetPRHeadFetcher(&fakePRHeadFetcher{sha: local})
+	engine.setPRHeadFetcherForTest(&fakePRHeadFetcher{sha: local})
 
 	engine.ResumeStalled()
 
@@ -182,7 +182,7 @@ func TestResumeStalled_ResumesParkedAdmissionPreflight(t *testing.T) {
 		},
 	})
 
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetAdmissionConfig(config.AdmissionConfig{Enabled: true})
 
 	engine.ResumeStalled()

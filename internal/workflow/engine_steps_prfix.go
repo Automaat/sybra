@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/errclass"
+	"github.com/Automaat/sybra/internal/prepstate"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/taskstatus"
 )
@@ -86,6 +88,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 		reviewHoldForced = true
 	}
 	if verdict == PRFixContinue {
+		e.recordPreparedWorktreeState(taskID, wfExec, t)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "continue"}, nil
 	}
 	// A flake has no commit to verify, so parking or verify_commits would punish the honest answer. EXC:FILE011:load-bearing-invariant
@@ -173,15 +176,29 @@ func prFixShouldResumeNoPRRecovery(t TaskInfo, reason string) bool {
 	if reason == "" {
 		return false
 	}
-	lower := strings.ToLower(reason)
-	if strings.Contains(lower, "missing credential") || strings.Contains(lower, "authentication") || strings.Contains(lower, "permission denied") {
-		return false
+	return errclass.Classify(reason, errclass.PRFixProseRetryBiased) == errclass.Transient
+}
+
+func (e *Engine) recordPreparedWorktreeState(taskID string, wfExec *Execution, t TaskInfo) {
+	if wfExec == nil || wfExec.WorkflowID != "branch-conflict-fix" {
+		return
 	}
-	if project.IsTransientNetworkError(errors.New(reason)) {
-		return true
+	dir := wfExec.Variables[WorkflowVarDir]
+	if dir == "" {
+		return
 	}
-	return strings.Contains(lower, "remote unreachable") ||
-		(strings.Contains(lower, "transport") && strings.Contains(lower, "github"))
+	branch := t.Branch
+	if branch == "" {
+		branch = strings.TrimSpace(t.Branch)
+	}
+	wrote, err := prepstate.WriteVerified(e.ctx, dir, branch)
+	if err != nil {
+		e.logger.Warn("workflow.pr-fix.prep-state-write", "task_id", taskID, "workflow", wfExec.WorkflowID, "dir", dir, "branch", branch, "err", err)
+		return
+	}
+	if wrote {
+		e.logger.Info("workflow.pr-fix.prep-state-written", "task_id", taskID, "workflow", wfExec.WorkflowID, "dir", dir, "branch", branch)
+	}
 }
 
 func prFixAllowsResolvedMergeRecovery(reason string) bool {
@@ -203,20 +220,16 @@ func prFixAllowsResolvedMergeRecovery(reason string) bool {
 }
 
 func (e *Engine) tryRecoverResolvedMerge(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error, bool) {
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return StepOutput{}, nil, false
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return StepOutput{}, nil, false
 	}
 	if wfExec != nil && wfExec.Variables[resolvedMergeCheckpointVar(step.ID)] == "true" {
 		return e.pushRecoveredResolvedMergeCommit(taskID, step, wfExec, t, wtPath)
 	}
-	if e.checks == nil {
-		return StepOutput{}, nil, false
-	}
-
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
 	resolved, err := project.ResolvedUnmergedPaths(ctx, wtPath)
@@ -312,7 +325,7 @@ func (e *Engine) pushRecoveredResolvedMergeCommit(taskID string, step *Step, wfE
 	if out, err, ok := e.pushTaskBranch(taskID, step, wfExec, t, wtPath, branch); !ok {
 		return out, err, true
 	}
-	if e.prHeads != nil && t.PRNumber > 0 && t.ProjectID != "" {
+	if e.pr.HeadFetcher != nil && t.PRNumber > 0 && t.ProjectID != "" {
 		e.verifyPushedHead(taskID, wtPath, t)
 	}
 	e.logger.Info("workflow.pr-fix.recovered-resolved-merge", "task_id", taskID, "branch", branch)
@@ -348,7 +361,7 @@ func (e *Engine) resolvedMergeFocusedCommands(ctx context.Context, taskID, wtPat
 			files = append(files, file)
 		}
 	}
-	_, commands = selectFocusedChecks(e.checks.FocusedChecks(ctx, taskID), files)
+	_, commands = selectFocusedChecks(e.execution.Checks.FocusedChecks(ctx, taskID), files)
 	return commands, files, nil
 }
 
@@ -421,10 +434,10 @@ func cleanGitRelPath(file string) (string, bool) {
 // must never count as resolved, so any fetch error falls through to the
 // normal human-required park.
 func (e *Engine) checkPRAlreadyResolved(taskID string, t TaskInfo, agentReason string) (msg string, resolved bool) {
-	if e.prStates == nil || t.ProjectID == "" || t.PRNumber <= 0 {
+	if e.pr.StateFetcher == nil || t.ProjectID == "" || t.PRNumber <= 0 {
 		return "", false
 	}
-	state, err := e.prStates.FetchPRState(t.ProjectID, t.PRNumber)
+	state, err := e.pr.StateFetcher.FetchPRState(t.ProjectID, t.PRNumber)
 	if err != nil {
 		e.logger.Warn("workflow.pr-fix.resolved-probe-failed", "task_id", taskID, "pr", t.PRNumber, "err", err)
 		return "", false

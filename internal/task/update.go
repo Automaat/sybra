@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/issueref"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -19,7 +20,11 @@ type Update struct {
 	Slug                  *string
 	Status                *Status
 	StatusReason          *string
+	ClearStatusReason     *bool
+	Escalation            *autonomy.EscalationReason
+	AutonomyOutcome       *autonomy.Outcome
 	Blocker               *blocker.State
+	ClearBlocker          *bool
 	BlockedByIssue        *string
 	UmbrellaIssue         *string
 	DependsOn             *[]string
@@ -53,6 +58,9 @@ type Update struct {
 	PlanDecisions         *string
 	PlanBrief             *string
 	CodeReview            *string
+	CurrentTestFailures   *string
+	AcceptanceLedger      *string
+	SpecDecision          *string
 	MaxTurns              *int
 	ForkSubagent          *bool
 	Sandbox               *bool
@@ -72,7 +80,10 @@ func (u Update) writesSidecar() bool {
 		u.PlanResearch != nil ||
 		u.PlanDecisions != nil ||
 		u.PlanBrief != nil ||
-		u.CodeReview != nil
+		u.CodeReview != nil ||
+		u.CurrentTestFailures != nil ||
+		u.AcceptanceLedger != nil ||
+		u.SpecDecision != nil
 }
 
 // Ptr returns a pointer to v. Convenience for building Update literals.
@@ -100,6 +111,7 @@ func applyMapField(u *Update, k string, v any) error {
 	case "title", "slug", "status_reason", "blocked_by_issue", "umbrella_issue", "body",
 		"project_id", "branch", "worktree_dir", "issue", "ref_issue", "run_role", "plan", "plan_critique",
 		"plan_contract", "plan_research", "plan_decisions", "plan_brief", "code_review",
+		"current_test_failures", "acceptance_ledger", "spec_decision",
 		"review_phase", "reviewed_head_sha", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
 		return applyPlainStringField(u, k, v)
 	case "depends_on":
@@ -112,6 +124,8 @@ func applyMapField(u *Update, k string, v any) error {
 		return applyPriorityField(u, v)
 	case "status":
 		return applyStatusField(u, k, v)
+	case "clear_status_reason", "clear_blocker":
+		return applyClearField(u, k, v)
 	case "agent_mode":
 		return applyAgentModeField(u, k, v)
 	case "task_type":
@@ -170,6 +184,22 @@ func applyMapField(u *Update, k string, v any) error {
 		return applyBlockerField(u, v)
 	default:
 		return fmt.Errorf("unknown task field %q", k)
+	}
+	return nil
+}
+
+func applyClearField(u *Update, k string, v any) error {
+	b, ok := v.(bool)
+	if !ok {
+		return fmt.Errorf("field %q: want bool, got %T", k, v)
+	}
+	switch k {
+	case "clear_status_reason":
+		u.ClearStatusReason = &b
+	case "clear_blocker":
+		u.ClearBlocker = &b
+	default:
+		return fmt.Errorf("unknown clear field %q", k)
 	}
 	return nil
 }
@@ -285,6 +315,12 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.PlanBrief = &s
 	case "code_review":
 		u.CodeReview = &s
+	case "current_test_failures":
+		u.CurrentTestFailures = &s
+	case "acceptance_ledger":
+		u.AcceptanceLedger = &s
+	case "spec_decision":
+		u.SpecDecision = &s
 	case "review_phase":
 		u.ReviewPhase = &s
 	case "reviewed_head_sha":

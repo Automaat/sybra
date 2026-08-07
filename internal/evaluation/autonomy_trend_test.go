@@ -113,6 +113,11 @@ func TestComputeAutonomyTrend_SnapshotsMatchDirectCompute(t *testing.T) {
 	if trend.LastMonth.TasksLanded != wantLastMonth.TasksLanded || trend.LastMonth.AutonomousLandings != wantLastMonth.AutonomousLandings || trend.LastMonth.AutonomyRate != wantLastMonth.AutonomyRate {
 		t.Errorf("LastMonth = %+v, want landed=%d autonomous=%d rate=%v", trend.LastMonth, wantLastMonth.TasksLanded, wantLastMonth.AutonomousLandings, wantLastMonth.AutonomyRate)
 	}
+	wantMergedPRs := wantLastMonth.Merged + wantLastMonth.MergedWithEdits
+	if trend.LastMonth.MergedPRs != wantMergedPRs || trend.LastMonth.CostPerMergedUSD != wantLastMonth.CostPerMergedUSD || trend.LastMonth.TokensPerMergedPR != wantLastMonth.TokensPerMergedPR {
+		t.Errorf("LastMonth cost-efficiency fields = %+v, want mergedPRs=%d costPerMerged=%v tokensPerMerged=%v",
+			trend.LastMonth, wantMergedPRs, wantLastMonth.CostPerMergedUSD, wantLastMonth.TokensPerMergedPR)
+	}
 	if trend.LastMonth.TasksLanded != 3 {
 		t.Errorf("LastMonth.TasksLanded = %d, want 3 (autonomous, human-touched, older-in-month)", trend.LastMonth.TasksLanded)
 	}

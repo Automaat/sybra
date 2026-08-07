@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/google/uuid"
@@ -23,27 +24,31 @@ import (
 // task's own frontmatter+body. Safe for concurrent use within a process; see
 // lockTask for the cross-process locking story.
 type Store struct {
-	dir               string
-	trashDir          string
-	comments          *CommentStore
-	plans             *PlanningSidecarStore
-	planContracts     *PlanningSidecarStore
-	planDrafts        *PlanDraftStore
-	planCritiques     *PlanningSidecarStore
-	planResearch      *PlanningSidecarStore
-	planDecisions     *PlanningSidecarStore
-	planBrief         *PlanningSidecarStore
-	codeReviews       *PlanningSidecarStore
-	locker            *fsutil.KeyedLocker
-	cacheMu           sync.RWMutex
-	listCache         []Task
-	listValid         bool
-	listSnapshot      map[string]listFileState
-	newTaskID         func() string
-	refreshBeforeLock func()
+	dir                 string
+	trashDir            string
+	comments            *CommentStore
+	plans               *PlanningSidecarStore
+	planContracts       *PlanningSidecarStore
+	planDrafts          *PlanDraftStore
+	planCritiques       *PlanningSidecarStore
+	planResearch        *PlanningSidecarStore
+	planDecisions       *PlanningSidecarStore
+	planBrief           *PlanningSidecarStore
+	codeReviews         *PlanningSidecarStore
+	locker              *fsutil.KeyedLocker
+	cacheMu             sync.RWMutex
+	listCache           []Task
+	listValid           bool
+	listSnapshot        map[string]listFileState
+	newTaskID           func() string
+	refreshBeforeLock   func()
+	currentTestFailures *PlanningSidecarStore
+	acceptanceLedgers   *PlanningSidecarStore
+	specDecisions       *PlanningSidecarStore
 }
 
 const maxTaskIDAttempts = 16
+const taskLockTimeout = 2 * time.Second
 
 // NewStore creates dir if it does not exist and returns a Store rooted
 // there, along with its sidecar stores (comments, plans, code reviews).
@@ -52,19 +57,22 @@ func NewStore(dir string) (*Store, error) {
 		return nil, fmt.Errorf("create tasks dir: %w", err)
 	}
 	return &Store{
-		dir:           dir,
-		trashDir:      filepath.Join(filepath.Dir(dir), "trash"),
-		comments:      NewCommentStore(dir),
-		plans:         NewPlanningSidecarStore(dir, ".plan.md", "plan"),
-		planContracts: NewPlanningSidecarStore(dir, ".plan-contract.json", "plan contract"),
-		planDrafts:    NewPlanDraftStore(dir),
-		planCritiques: NewPlanningSidecarStore(dir, ".plan-critique.md", "plan critique"),
-		planResearch:  NewPlanningSidecarStore(dir, ".plan-research.md", "plan research"),
-		planDecisions: NewPlanningSidecarStore(dir, ".plan-decisions.md", "plan decisions"),
-		planBrief:     NewPlanningSidecarStore(dir, ".plan-brief.md", "plan brief"),
-		codeReviews:   NewPlanningSidecarStore(dir, ".review.md", "code review"),
-		locker:        fsutil.NewKeyedLocker(),
-		newTaskID:     func() string { return uuid.NewString()[:8] },
+		dir:                 dir,
+		trashDir:            filepath.Join(filepath.Dir(dir), "trash"),
+		comments:            NewCommentStore(dir),
+		plans:               NewPlanningSidecarStore(dir, ".plan.md", "plan"),
+		planContracts:       NewPlanningSidecarStore(dir, ".plan-contract.json", "plan contract"),
+		planDrafts:          NewPlanDraftStore(dir),
+		planCritiques:       NewPlanningSidecarStore(dir, ".plan-critique.md", "plan critique"),
+		planResearch:        NewPlanningSidecarStore(dir, ".plan-research.md", "plan research"),
+		planDecisions:       NewPlanningSidecarStore(dir, ".plan-decisions.md", "plan decisions"),
+		planBrief:           NewPlanningSidecarStore(dir, ".plan-brief.md", "plan brief"),
+		codeReviews:         NewPlanningSidecarStore(dir, ".review.md", "code review"),
+		locker:              fsutil.NewKeyedLocker(),
+		newTaskID:           func() string { return uuid.NewString()[:8] },
+		currentTestFailures: NewPlanningSidecarStore(dir, ".current-test-failures.md", "current test failures"),
+		acceptanceLedgers:   NewPlanningSidecarStore(dir, ".acceptance-ledger.md", "acceptance ledger"),
+		specDecisions:       NewPlanningSidecarStore(dir, ".spec-decision.md", "spec decision"),
 	}, nil
 }
 
@@ -126,6 +134,24 @@ func (s *Store) CodeReviews() *PlanningSidecarStore {
 	return s.codeReviews
 }
 
+// CurrentTestFailures returns the sidecar store for the latest bounded test
+// failure report.
+func (s *Store) CurrentTestFailures() *PlanningSidecarStore {
+	return s.currentTestFailures
+}
+
+// AcceptanceLedgers returns the sidecar store for the bounded acceptance
+// failure ledger.
+func (s *Store) AcceptanceLedgers() *PlanningSidecarStore {
+	return s.acceptanceLedgers
+}
+
+// SpecDecisions returns the sidecar store for the latest spec-decision
+// escalation summary.
+func (s *Store) SpecDecisions() *PlanningSidecarStore {
+	return s.specDecisions
+}
+
 // lockTask serializes read/modify/write calls for a single task file, both
 // within this process and across others. sybra-cli and the recovery sweep
 // run task.Store in separate OS processes from the GUI server against the
@@ -146,7 +172,7 @@ func (s *Store) lockTask(id string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	unlock, err := s.locker.Lock(id, path)
+	unlock, err := s.locker.LockWithin(id, path, taskLockTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("lock task %s: %w", id, err)
 	}
@@ -169,7 +195,7 @@ func (s *Store) lockNewTask(id string) (func(), error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create task lock dir: %w", err)
 	}
-	unlock, err := s.locker.Lock("create:"+id, filepath.Join(dir, id))
+	unlock, err := s.locker.LockWithin("create:"+id, filepath.Join(dir, id), taskLockTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("lock new task %s: %w", id, err)
 	}
@@ -190,6 +216,9 @@ var sidecarFileSuffixes = []string{
 	".plan-decisions.md",
 	".plan-brief.md",
 	".review.md",
+	".current-test-failures.md",
+	".acceptance-ledger.md",
+	".spec-decision.md",
 }
 
 // IsSidecarFile reports whether a filename (basename) belongs to a sidecar
@@ -259,6 +288,9 @@ func (s *Store) List() ([]Task, error) {
 		t.PlanDecisions = sidecars.decisions[t.ID]
 		t.PlanBrief = sidecars.briefs[t.ID]
 		t.CodeReview = sidecars.reviews[t.ID]
+		t.CurrentTestFailures = sidecars.currentTestFailures[t.ID]
+		t.AcceptanceLedger = sidecars.acceptanceLedgers[t.ID]
+		t.SpecDecision = sidecars.specDecisions[t.ID]
 		if drafts, ok := sidecars.drafts[t.ID]; ok {
 			t.PlanDrafts = drafts
 		} else {
@@ -277,13 +309,28 @@ func (s *Store) List() ([]Task, error) {
 	return tasks, nil
 }
 
+// degradedIDPrefix namespaces Store.List's synthetic entries for task files
+// that could not be parsed. The colon is deliberately outside the character
+// set ValidateID accepts, so a synthetic ID can never be minted, persisted,
+// or collide with a real task ID; safePath additionally refuses to resolve
+// one to a file, which is what keeps the degraded card read-only by
+// construction rather than by convention.
+const degradedIDPrefix = "unreadable:"
+
+// IsDegradedID reports whether id is one of Store.List's synthetic
+// unreadable-task identifiers rather than a real, addressable task ID.
+func IsDegradedID(id string) bool {
+	return strings.HasPrefix(id, degradedIDPrefix)
+}
+
 // degradedTask exposes an unreadable task file without trusting any of its
-// frontmatter. The generated ID is deterministic for its filename but cannot
-// address a real task file, making the entry read-only by construction.
+// frontmatter. The generated ID is deterministic for its filename and
+// unaddressable by construction (see degradedIDPrefix), so the entry is
+// read-only and can never be confused with a real task.
 func degradedTask(path string, parseErr error) Task {
 	base := filepath.Base(path)
 	sum := sha256.Sum256([]byte(base))
-	id := fmt.Sprintf("unreadable-%x", sum[:8])
+	id := fmt.Sprintf("%s%x", degradedIDPrefix, sum[:8])
 	modified := time.Time{}
 	if info, err := os.Stat(path); err == nil {
 		modified = info.ModTime().UTC()
@@ -296,6 +343,7 @@ func degradedTask(path string, parseErr error) Task {
 		Status:          StatusHumanRequired,
 		AgentMode:       AgentModeHeadless,
 		StatusReason:    reason,
+		Escalation:      autonomy.LegacyReason(reason),
 		Body:            reason,
 		CreatedAt:       modified,
 		UpdatedAt:       modified,
@@ -309,14 +357,35 @@ func degradedTask(path string, parseErr error) Task {
 // sidecarIndex holds sidecar contents loaded in a single ReadDir pass,
 // indexed by task ID. Used by List to amortize sidecar I/O.
 type sidecarIndex struct {
-	plans     map[string]string
-	contracts map[string]string
-	critiques map[string]string
-	research  map[string]string
-	decisions map[string]string
-	briefs    map[string]string
-	reviews   map[string]string
-	drafts    map[string]map[string]string
+	plans               map[string]string
+	contracts           map[string]string
+	critiques           map[string]string
+	research            map[string]string
+	decisions           map[string]string
+	briefs              map[string]string
+	reviews             map[string]string
+	currentTestFailures map[string]string
+	acceptanceLedgers   map[string]string
+	specDecisions       map[string]string
+	drafts              map[string]map[string]string
+}
+
+type sidecarSpec struct {
+	suffix string
+	assign func(*sidecarIndex, string, string)
+}
+
+var sidecarSpecs = []sidecarSpec{
+	{suffix: ".plan-critique.md", assign: func(idx *sidecarIndex, id, text string) { idx.critiques[id] = text }},
+	{suffix: ".plan-contract.json", assign: func(idx *sidecarIndex, id, text string) { idx.contracts[id] = text }},
+	{suffix: ".plan-research.md", assign: func(idx *sidecarIndex, id, text string) { idx.research[id] = text }},
+	{suffix: ".plan-decisions.md", assign: func(idx *sidecarIndex, id, text string) { idx.decisions[id] = text }},
+	{suffix: ".plan-brief.md", assign: func(idx *sidecarIndex, id, text string) { idx.briefs[id] = text }},
+	{suffix: ".plan.md", assign: func(idx *sidecarIndex, id, text string) { idx.plans[id] = text }},
+	{suffix: ".review.md", assign: func(idx *sidecarIndex, id, text string) { idx.reviews[id] = text }},
+	{suffix: ".current-test-failures.md", assign: func(idx *sidecarIndex, id, text string) { idx.currentTestFailures[id] = text }},
+	{suffix: ".acceptance-ledger.md", assign: func(idx *sidecarIndex, id, text string) { idx.acceptanceLedgers[id] = text }},
+	{suffix: ".spec-decision.md", assign: func(idx *sidecarIndex, id, text string) { idx.specDecisions[id] = text }},
 }
 
 // loadSidecarsFromEntries reads sidecar contents for every recognized
@@ -326,14 +395,17 @@ type sidecarIndex struct {
 // abort the whole task list.
 func loadSidecarsFromEntries(dir string, entries []os.DirEntry) *sidecarIndex {
 	idx := &sidecarIndex{
-		plans:     map[string]string{},
-		contracts: map[string]string{},
-		critiques: map[string]string{},
-		research:  map[string]string{},
-		decisions: map[string]string{},
-		briefs:    map[string]string{},
-		reviews:   map[string]string{},
-		drafts:    map[string]map[string]string{},
+		plans:               map[string]string{},
+		contracts:           map[string]string{},
+		critiques:           map[string]string{},
+		research:            map[string]string{},
+		decisions:           map[string]string{},
+		briefs:              map[string]string{},
+		reviews:             map[string]string{},
+		currentTestFailures: map[string]string{},
+		acceptanceLedgers:   map[string]string{},
+		specDecisions:       map[string]string{},
+		drafts:              map[string]map[string]string{},
 	}
 	for _, e := range entries {
 		if e.IsDir() {
@@ -343,86 +415,59 @@ func loadSidecarsFromEntries(dir string, entries []os.DirEntry) *sidecarIndex {
 		if !strings.HasSuffix(base, ".md") && !strings.HasSuffix(base, ".json") {
 			continue
 		}
-		// Order matters: plan-draft and plan-critique both have
-		// ".plan" in them, so check the more specific suffix first.
-		switch {
-		case IsPlanDraftFile(base):
-			// IsPlanDraftFile already guarantees the prefix is present,
-			// but using Cut + the found flag keeps the lint clean and is
-			// resilient if the helper's contract loosens later.
-			id, rest, found := strings.Cut(base, PlanDraftSidecarPrefix)
-			if !found {
-				continue
-			}
-			name := strings.TrimSuffix(rest, ".md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			if idx.drafts[id] == nil {
-				idx.drafts[id] = map[string]string{}
-			}
-			idx.drafts[id][name] = string(data)
-		case strings.HasSuffix(base, ".plan-critique.md"):
-			id := strings.TrimSuffix(base, ".plan-critique.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.critiques[id] = string(data)
-		case strings.HasSuffix(base, ".plan-contract.json"):
-			id := strings.TrimSuffix(base, ".plan-contract.json")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.contracts[id] = string(data)
-		case strings.HasSuffix(base, ".plan-research.md"):
-			id := strings.TrimSuffix(base, ".plan-research.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.research[id] = string(data)
-		case strings.HasSuffix(base, ".plan-decisions.md"):
-			id := strings.TrimSuffix(base, ".plan-decisions.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.decisions[id] = string(data)
-		case strings.HasSuffix(base, ".plan-brief.md"):
-			id := strings.TrimSuffix(base, ".plan-brief.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.briefs[id] = string(data)
-		case strings.HasSuffix(base, ".plan.md"):
-			id := strings.TrimSuffix(base, ".plan.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.plans[id] = string(data)
-		case strings.HasSuffix(base, ".review.md"):
-			id := strings.TrimSuffix(base, ".review.md")
-			data, err := os.ReadFile(filepath.Join(dir, base))
-			if err != nil {
-				slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
-				continue
-			}
-			idx.reviews[id] = string(data)
+		if loadPlanDraftSidecar(dir, base, idx) {
+			continue
 		}
+		loadIndexedSidecar(dir, base, idx)
 	}
 	return idx
+}
+
+func loadPlanDraftSidecar(dir, base string, idx *sidecarIndex) bool {
+	if !IsPlanDraftFile(base) {
+		return false
+	}
+	// IsPlanDraftFile already guarantees the prefix is present,
+	// but using Cut + the found flag keeps the lint clean and is
+	// resilient if the helper's contract loosens later.
+	id, rest, found := strings.Cut(base, PlanDraftSidecarPrefix)
+	if !found {
+		return true
+	}
+	text, ok := readOptionalSidecarFile(dir, base)
+	if !ok {
+		return true
+	}
+	name := strings.TrimSuffix(rest, ".md")
+	if idx.drafts[id] == nil {
+		idx.drafts[id] = map[string]string{}
+	}
+	idx.drafts[id][name] = text
+	return true
+}
+
+func loadIndexedSidecar(dir, base string, idx *sidecarIndex) bool {
+	for _, spec := range sidecarSpecs {
+		if !strings.HasSuffix(base, spec.suffix) {
+			continue
+		}
+		text, ok := readOptionalSidecarFile(dir, base)
+		if !ok {
+			return true
+		}
+		spec.assign(idx, strings.TrimSuffix(base, spec.suffix), text)
+		return true
+	}
+	return false
+}
+
+func readOptionalSidecarFile(dir, base string) (string, bool) {
+	data, err := os.ReadFile(filepath.Join(dir, base))
+	if err != nil {
+		slog.Default().Warn("task.sidecar.read.skip", "file", base, "err", err)
+		return "", false
+	}
+	return string(data), true
 }
 
 // Get reads task id and populates its planning/review sidecar fields
@@ -434,15 +479,54 @@ func (s *Store) Get(id string) (Task, error) {
 	if err != nil {
 		return Task{}, err
 	}
-	t.Plan, _ = s.plans.Read(t.ID)
-	t.PlanContract, _ = s.planContracts.Read(t.ID)
-	t.PlanCritique, _ = s.planCritiques.Read(t.ID)
-	t.PlanResearch, _ = s.planResearch.Read(t.ID)
-	t.PlanDecisions, _ = s.planDecisions.Read(t.ID)
-	t.PlanBrief, _ = s.planBrief.Read(t.ID)
-	t.CodeReview, _ = s.codeReviews.Read(t.ID)
-	t.PlanDrafts, _ = s.planDrafts.List(t.ID)
+	if err := s.loadSidecars(&t); err != nil {
+		return Task{}, err
+	}
 	return t, nil
+}
+
+// loadSidecars populates t's planning/review sidecar fields from disk. Each
+// sidecar store's Read/List already turns "sidecar absent" into a nil error
+// with a zero value, so any error still returned here is a genuine read
+// failure (e.g. a transient EIO) — propagate it instead of discarding it,
+// since silently treating it as "no plan/review exists" would erase real
+// content from the engine's view of the task.
+func (s *Store) loadSidecars(t *Task) error {
+	var err error
+	if t.Plan, err = s.plans.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanContract, err = s.planContracts.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanCritique, err = s.planCritiques.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanResearch, err = s.planResearch.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanDecisions, err = s.planDecisions.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanBrief, err = s.planBrief.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.CodeReview, err = s.codeReviews.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.CurrentTestFailures, err = s.currentTestFailures.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.AcceptanceLedger, err = s.acceptanceLedgers.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.SpecDecision, err = s.specDecisions.Read(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	if t.PlanDrafts, err = s.planDrafts.List(t.ID); err != nil {
+		return fmt.Errorf("load sidecars for %s: %w", t.ID, err)
+	}
+	return nil
 }
 
 // read parses just the task file for id, skipping the sidecar fan-out that
@@ -476,6 +560,12 @@ func (s *Store) read(id string) (Task, error) {
 // routinely call sybra-cli with task IDs they parsed from prompts, so the
 // untrusted-input surface is real even though the GUI generates IDs itself.
 func (s *Store) safePath(id string) (string, error) {
+	if IsDegradedID(id) {
+		// Synthetic List-only entry for an unparseable file: it has no task
+		// file of its own, and resolving it would let an update/delete issued
+		// against the degraded board card land on some unrelated real task.
+		return "", fmt.Errorf("task ID %q is a synthetic unreadable-file entry and has no task file", id)
+	}
 	path := filepath.Clean(filepath.Join(s.dir, id+".md"))
 	if !strings.HasPrefix(path, filepath.Clean(s.dir)+string(filepath.Separator)) {
 		return "", fmt.Errorf("invalid task ID %q", id)
@@ -545,9 +635,16 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 	// Apply initial field overrides before the first disk write so that any
 	// watcher reading the file sees the complete task from the start.
 	applyCreateInit(&t, init, now)
+	if err := validateExplicitClear(init); err != nil {
+		return Task{}, err
+	}
+	if err := blocker.ValidateStatus(string(t.Status), t.Blocker); err != nil {
+		return Task{}, err
+	}
 	if err := normalizeSandboxEscapeHatch(&t); err != nil {
 		return Task{}, err
 	}
+	t.TamperFlagged = isTamperFlagged(t.Status, t.Blocker)
 	if err := s.createNewTask(&t, func() error {
 		return s.writeSidecars(t.ID, init, &t)
 	}); err != nil {
@@ -653,6 +750,15 @@ func applyCreateInit(t *Task, init Update, now time.Time) {
 	if init.StatusReason != nil {
 		t.StatusReason = *init.StatusReason
 	}
+	if init.Blocker != nil {
+		t.Blocker = *init.Blocker
+	}
+	if init.Escalation != nil {
+		t.Escalation = *init.Escalation
+	}
+	if init.AutonomyOutcome != nil {
+		t.AutonomyOutcome = *init.AutonomyOutcome
+	}
 	if init.Body != nil {
 		t.Body = *init.Body
 	}
@@ -677,6 +783,16 @@ func applyCreateInit(t *Task, init Update, now time.Time) {
 	if init.ReasoningEffort != nil {
 		t.ReasoningEffort = *init.ReasoningEffort
 	}
+}
+
+func validateExplicitClear(u Update) error {
+	if u.ClearStatusReason != nil && *u.ClearStatusReason && u.StatusReason != nil {
+		return errors.New("task update: status_reason and clear_status_reason cannot both be set")
+	}
+	if u.ClearBlocker != nil && *u.ClearBlocker && u.Blocker != nil {
+		return errors.New("task update: blocker and clear_blocker cannot both be set")
+	}
+	return nil
 }
 
 // Put writes a fully-formed task to the store verbatim (upsert by ID),
@@ -756,11 +872,13 @@ func (s *Store) putLocked(t Task) (Task, error) {
 	// so an incoming MirrorRev past the on-disk value is race-free proof
 	// even if an unrelated edit bumped UpdatedAt in the gap between Merge's
 	// snapshot and this write reaching the lock above.
-	if existing, err := s.read(t.ID); err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			slog.Default().Warn("task.store.put.read_existing_failed", "id", t.ID, "err", err)
+	existing, existingErr := s.read(t.ID)
+	switch {
+	case existingErr != nil:
+		if !errors.Is(existingErr, os.ErrNotExist) {
+			slog.Default().Warn("task.store.put.read_existing_failed", "id", t.ID, "err", existingErr)
 		}
-	} else if existing.Status != t.Status {
+	case existing.Status != t.Status:
 		if t.MirrorUpdatedAt != nil && t.MirrorRev > existing.MirrorRev {
 			if !t.UpdatedAt.After(existing.UpdatedAt) {
 				// now alone isn't guaranteed to advance past existing.UpdatedAt
@@ -774,6 +892,8 @@ func (s *Store) putLocked(t Task) (Task, error) {
 			}
 		} else if !t.UpdatedAt.After(existing.UpdatedAt) {
 			t.Status = existing.Status
+			t.Escalation = existing.Escalation
+			t.AutonomyOutcome = existing.AutonomyOutcome
 			t.UpdatedAt = existing.UpdatedAt
 			t.StatusChangedAt = existing.StatusChangedAt
 			// A rejected write's MirrorRev/MirrorUpdatedAt must not reach
@@ -782,6 +902,22 @@ func (s *Store) putLocked(t Task) (Task, error) {
 			// on the next mirror-authoritative Put for this task.
 			t.MirrorRev = existing.MirrorRev
 			t.MirrorUpdatedAt = existing.MirrorUpdatedAt
+		}
+	case t.Status == StatusHumanRequired && t.Escalation.IsZero() && !existing.Escalation.IsZero():
+		t.Escalation = existing.Escalation
+		t.AutonomyOutcome = existing.AutonomyOutcome
+	}
+	if t.Status == StatusHumanRequired {
+		legacyContinuation := existingErr == nil &&
+			existing.Status == StatusHumanRequired &&
+			existing.Escalation.Provenance == autonomy.ProvenanceLegacy &&
+			t.Escalation == existing.Escalation &&
+			t.AutonomyOutcome == ""
+		if !legacyContinuation {
+			extra := Update{Escalation: &t.Escalation, AutonomyOutcome: &t.AutonomyOutcome}
+			if err := validateHumanRequiredTransition(StatusTodo, t.Status, extra); err != nil {
+				return Task{}, fmt.Errorf("task: put: %w", err)
+			}
 		}
 	}
 	if t.StatusChangedAt.IsZero() {
@@ -895,6 +1031,24 @@ func (s *Store) writeSidecars(id string, u Update, t *Task) error {
 		}
 		t.CodeReview = *u.CodeReview
 	}
+	if u.CurrentTestFailures != nil {
+		if err := s.currentTestFailures.Write(id, *u.CurrentTestFailures); err != nil {
+			return fmt.Errorf("write current test failures: %w", err)
+		}
+		t.CurrentTestFailures = *u.CurrentTestFailures
+	}
+	if u.AcceptanceLedger != nil {
+		if err := s.acceptanceLedgers.Write(id, *u.AcceptanceLedger); err != nil {
+			return fmt.Errorf("write acceptance ledger: %w", err)
+		}
+		t.AcceptanceLedger = *u.AcceptanceLedger
+	}
+	if u.SpecDecision != nil {
+		if err := s.specDecisions.Write(id, *u.SpecDecision); err != nil {
+			return fmt.Errorf("write spec decision: %w", err)
+		}
+		t.SpecDecision = *u.SpecDecision
+	}
 	return nil
 }
 
@@ -993,7 +1147,11 @@ func normalizeSandboxEscapeHatch(t *Task) error {
 	return nil
 }
 
+//nolint:funlen // Centralized field application keeps persistence validation exhaustive.
 func applyUpdateFields(t *Task, u Update) error {
+	if err := validateExplicitClear(u); err != nil {
+		return err
+	}
 	if u.Title != nil {
 		t.Title = *u.Title
 	}
@@ -1006,12 +1164,12 @@ func applyUpdateFields(t *Task, u Update) error {
 	if u.Status != nil {
 		oldStatus := t.Status
 		t.Status = *u.Status
-		// Clear reason when status changes unless a new reason is also provided.
-		if u.StatusReason == nil {
-			t.StatusReason = ""
+		statusChanged := *u.Status != oldStatus
+		if statusChanged && u.Escalation == nil && t.Status != StatusHumanRequired {
+			t.Escalation = autonomy.EscalationReason{}
 		}
-		if u.Blocker == nil {
-			t.Blocker = blocker.State{}
+		if statusChanged && u.AutonomyOutcome == nil {
+			t.AutonomyOutcome = ""
 		}
 		// Stamp ClosedAt on transition into a terminal status; clear on exit.
 		wasTerminal := IsTerminalStatus(oldStatus)
@@ -1024,11 +1182,26 @@ func applyUpdateFields(t *Task, u Update) error {
 		}
 		// both terminal → preserve existing ClosedAt; both non-terminal → no-op
 	}
+	if u.ClearStatusReason != nil && *u.ClearStatusReason {
+		t.StatusReason = ""
+	}
 	if u.StatusReason != nil {
 		t.StatusReason = *u.StatusReason
-		if *u.StatusReason == "" && u.Blocker == nil {
-			t.Blocker = blocker.State{}
+	}
+	if u.ClearBlocker != nil && *u.ClearBlocker {
+		t.Blocker = blocker.State{}
+	}
+	if u.Escalation != nil {
+		if err := u.Escalation.Validate(); err != nil {
+			return fmt.Errorf("typed escalation: %w", err)
 		}
+		if u.AutonomyOutcome == nil || !u.AutonomyOutcome.IsKnown() {
+			return errors.New("typed escalation requires a known autonomy outcome")
+		}
+		t.Escalation = *u.Escalation
+	}
+	if u.AutonomyOutcome != nil {
+		t.AutonomyOutcome = *u.AutonomyOutcome
 	}
 	if u.Blocker != nil {
 		if err := blocker.ValidateStatus(string(t.Status), *u.Blocker); err != nil {
@@ -1135,7 +1308,7 @@ func (s *Store) UpdateWithPrev(id string, u Update) (Task, Status, error) {
 	} else if t.StatusChangedAt.IsZero() {
 		t.StatusChangedAt = statusChangedBackfill
 	}
-	t.TamperFlagged = isTamperFlagged(t.Status, t.StatusReason)
+	t.TamperFlagged = isTamperFlagged(t.Status, t.Blocker)
 	if err := s.writeSidecars(id, u, &t); err != nil {
 		return Task{}, "", err
 	}

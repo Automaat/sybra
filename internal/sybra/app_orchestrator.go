@@ -400,7 +400,9 @@ func (a *App) parkReviewRateLimited(t task.Task, limit int) {
 		ToStatus: task.StatusHumanRequired,
 		Actor:    "orchestrator.review_rate_limit.park",
 		Extra: task.Update{
-			StatusReason: task.Ptr(reason),
+			StatusReason:    task.Ptr(reason),
+			Escalation:      task.PolicyRequired("review.hourly_budget_exhausted", reason),
+			AutonomyOutcome: task.HumanRequiredOutcome(),
 		},
 	}); err != nil {
 		a.logger.Error("workflow.dispatch.inbound-review.rate-limit-park", "task_id", t.ID, "err", err)
@@ -418,7 +420,9 @@ func (a *App) parkReviewLifetimeLimited(t task.Task, limit int) {
 		ToStatus: task.StatusHumanRequired,
 		Actor:    "orchestrator.review_task_limit.park",
 		Extra: task.Update{
-			StatusReason: task.Ptr(reason),
+			StatusReason:    task.Ptr(reason),
+			Escalation:      task.PolicyRequired("review.lifetime_budget_exhausted", reason),
+			AutonomyOutcome: task.HumanRequiredOutcome(),
 		},
 	}); err != nil {
 		a.logger.Error("workflow.dispatch.inbound-review.task-limit-park", "task_id", t.ID, "err", err)
@@ -595,7 +599,9 @@ func (a *App) dispatchPlanningWorkflow(taskID string) {
 			ToStatus: task.StatusHumanRequired,
 			Actor:    "orchestrator.planning.blocked",
 			Extra: task.Update{
-				StatusReason: task.Ptr(reason),
+				StatusReason:    task.Ptr(reason),
+				Escalation:      task.SpecificationRequired("planning.critique_blocked", reason),
+				AutonomyOutcome: task.HumanRequiredOutcome(),
 			},
 		}); err != nil {
 			a.logger.Error("workflow.dispatch.planning.blocked", "task_id", taskID, "err", err)

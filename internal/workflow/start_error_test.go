@@ -10,10 +10,59 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
+
+type machineStartError struct{ code string }
+
+func (f machineStartError) Error() string              { return "certification failed: " + f.code }
+func (f machineStartError) MachineFailureCode() string { return f.code }
+
+type transientMachineStartError struct{ machineStartError }
+
+func (transientMachineStartError) MachineFailureTransient() bool { return true }
+
+type credentialMachineStartError struct{ machineStartError }
+
+func (credentialMachineStartError) MachineFailureRequiresCredentials() bool { return true }
+
+func TestClassifyAgentStartFailureKeepsRunEnvironmentMachineOwned(t *testing.T) {
+	failure := ClassifyAgentStartFailure(machineStartError{code: "checkout_unhealthy"})
+	if !failure.Permanent || failure.Blocker.Kind != blocker.KindRunEnvironment || blocker.AllowsHumanRequired(failure.Blocker.Kind) {
+		t.Fatalf("classification = %#v", failure)
+	}
+	if failure.Blocker.Code != "checkout_unhealthy" {
+		t.Fatalf("blocker code = %q", failure.Blocker.Code)
+	}
+}
+
+func TestClassifyAgentStartFailureKeepsTransientEnvironmentRetryable(t *testing.T) {
+	err := transientMachineStartError{machineStartError{code: "provider_unavailable"}}
+	failure := ClassifyAgentStartFailure(err)
+	if failure.Permanent || !failure.Blocker.IsZero() {
+		t.Fatalf("classification = %#v", failure)
+	}
+	if !strings.Contains(failure.Reason, "transient run environment unavailable") {
+		t.Fatalf("reason = %q", failure.Reason)
+	}
+	if !transientAgentStartError(err) || !isDeferredNotFailed(err) {
+		t.Fatal("transient machine failure must be deferred without feeding the breaker")
+	}
+}
+
+func TestClassifyAgentStartFailureRoutesCredentialEnvironmentFailureToAuthority(t *testing.T) {
+	err := credentialMachineStartError{machineStartError{code: "github_auth_misconfigured"}}
+	failure := ClassifyAgentStartFailure(err)
+	if !failure.Permanent || failure.Blocker.Kind != blocker.KindCredentialRequired || !blocker.AllowsHumanRequired(failure.Blocker.Kind) {
+		t.Fatalf("classification = %#v", failure)
+	}
+	if failure.Blocker.Code != "github_auth_misconfigured" {
+		t.Fatalf("blocker code = %q", failure.Blocker.Code)
+	}
+}
 
 func TestClassifyAgentStartError(t *testing.T) {
 	cases := []struct {
@@ -212,7 +261,7 @@ func TestClassifyAgentStartError_PreparationInFlightSuppressed(t *testing.T) {
 func TestSurfaceStartFailure_DispatchInFlightIsNoOp(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
 
 	engine.surfaceStartFailure("t1", "in-progress", ErrDispatchInFlight, nil, "")
 
@@ -228,7 +277,7 @@ func TestSurfaceStartFailure_DispatchInFlightIsNoOp(t *testing.T) {
 func TestSurfaceStartFailure_TransientKeepsStatus(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
 
 	engine.surfaceStartFailure("t1", "in-progress", errors.New("git fetch: timeout"), nil, "")
 
@@ -249,7 +298,7 @@ func TestSurfaceStartFailure_TransientFetchKeepsStatus(t *testing.T) {
 	// retry once connectivity recovers.
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
 
 	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrTransientFetch)
 	engine.surfaceStartFailure("t1", "in-progress", wrapped, nil, "")
@@ -277,7 +326,7 @@ func TestIsTransientFetchReason(t *testing.T) {
 func TestSurfaceStartFailure_PermanentFlipsToHumanRequired(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
 
 	wrapped := fmt.Errorf("worktree required: %w", project.ErrProjectNotRegistered)
 	engine.surfaceStartFailure("t1", "in-progress", wrapped, nil, "")
@@ -304,7 +353,7 @@ func TestSurfaceStartFailure_RebaseFailedFlipsToBlocked(t *testing.T) {
 	// internal/recovery/recovery_test.go.
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
 
 	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed)
 	engine.surfaceStartFailure("t1", "in-progress", wrapped, nil, "")
@@ -330,7 +379,7 @@ func TestSurfaceStartFailure_RebaseFailedFlipsToBlocked(t *testing.T) {
 func TestSurfaceStartFailure_DiskSpaceErrorSkipsConflictRecovery(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
 
 	var recoveryCalled bool
 	engine.SetConflictRecovery(func(string) bool {
@@ -369,7 +418,7 @@ func TestSurfaceStartFailure_DiskSpaceErrorSkipsConflictRecovery(t *testing.T) {
 func TestSurfaceStartFailure_RebaseFailedRecoversInsteadOfHumanRequired(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
 
 	var recoveredTaskID string
 	engine.SetConflictRecovery(func(taskID string) bool {
@@ -400,7 +449,7 @@ func TestSurfaceStartFailure_RebaseFailedRecoversInsteadOfHumanRequired(t *testi
 func TestSurfaceStartFailure_RebaseFailedRecoveryDeclinesFallsBackToBlocked(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
 	engine.SetConflictRecovery(func(string) bool { return false })
 
 	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed)
@@ -425,7 +474,7 @@ func TestSurfaceStartFailure_RebaseFailedRecoveryDeclinesFallsBackToBlocked(t *t
 func TestSurfaceStartFailure_RebaseFailedRecoveryDeferredWhileMarkerHeld(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
 
 	var calls int
 	engine.SetConflictRecovery(func(string) bool { calls++; return true })
@@ -471,7 +520,7 @@ func TestSurfaceStartFailure_RebaseFailedDeferredDeclineKeepsOriginalReason(t *t
 			Variables:   map[string]string{},
 		},
 	})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
 	engine.SetConflictRecovery(func(string) bool { return false })
 
 	engine.mu.Lock()
@@ -506,7 +555,7 @@ func TestSurfaceStartFailure_RebaseFailedDeferredDeclineKeepsOriginalReason(t *t
 func TestSurfaceStartFailure_NilErrIsNoOp(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
 
 	engine.surfaceStartFailure("t1", "in-progress", nil, nil, "")
 
@@ -524,7 +573,7 @@ func TestSurfaceStartFailure_CircuitBreakerTripsAfterRepeatedFailures(t *testing
 	// forever.
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
 
 	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed)
 	wf := &Execution{CurrentStep: "run_test", State: ExecRunning, Variables: map[string]string{}}
@@ -557,7 +606,7 @@ func TestSurfaceStartFailure_CircuitBreakerTripsAfterRepeatedFailures(t *testing
 func TestSurfaceStartFailure_TransientRateLimitDoesNotTripBreaker(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
 
 	rateLimited := &provider.UnhealthyError{Provider: "claude", Reason: provider.RateLimitReason}
 	wf := &Execution{CurrentStep: "implement", State: ExecRunning, Variables: map[string]string{}}
@@ -580,7 +629,7 @@ func TestSurfaceStartFailure_TransientRateLimitDoesNotTripBreaker(t *testing.T) 
 func TestSurfaceStartFailure_QuotaRateLimitDoesNotTripBreaker(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
 
 	quotaLimited := &provider.UnhealthyError{
 		Provider:    "codex",
@@ -606,19 +655,22 @@ func TestSurfaceStartFailure_QuotaRateLimitDoesNotTripBreaker(t *testing.T) {
 func TestSurfaceStartFailure_CircuitBreakerResetsAfterWindow(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
+	fakeClock := clock.NewFake(time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC))
+	engine.SetClock(fakeClock)
 
 	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed)
-	old := time.Now().Add(-2 * circuitBreakerWindow).Format(time.RFC3339)
+	firstFailureAt := fakeClock.Now().Format(time.RFC3339)
 	wf := &Execution{
 		CurrentStep: "run_test",
 		State:       ExecRunning,
 		Variables: map[string]string{
-			circuitBreakerFirstKey("run_test"):   old,
+			circuitBreakerFirstKey("run_test"):   firstFailureAt,
 			circuitBreakerFailureKey("run_test"): strconv.Itoa(maxCircuitBreakerFailures),
 		},
 	}
 
+	fakeClock.Advance(2 * circuitBreakerWindow)
 	engine.surfaceStartFailure("t1", "todo", wrapped, wf, "run_test")
 
 	if wf.State == ExecFailed {
@@ -643,7 +695,7 @@ func TestSurfaceStartFailure_CircuitBreakerResetsAfterWindow(t *testing.T) {
 func TestSurfaceStartFailure_ShutdownCancellationDoesNotTripBreaker(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
 	shutdownCtx, cancel := context.WithCancel(context.Background())
 	cancel() // simulate the app context already cancelled by graceful shutdown
 	engine.SetContext(shutdownCtx)
@@ -686,7 +738,7 @@ func TestSurfaceStartFailure_ShutdownCancellationDoesNotTripBreaker(t *testing.T
 func TestSurfaceStartFailure_ShutdownCancellationSkipsConflictRecoveryToo(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
 	shutdownCtx, cancel := context.WithCancel(context.Background())
 	cancel() // simulate the app context already cancelled by graceful shutdown
 	engine.SetContext(shutdownCtx)
@@ -725,7 +777,7 @@ func TestSurfaceStartFailure_ShutdownCancellationSkipsConflictRecoveryToo(t *tes
 func TestSurfaceStartFailure_ContextCanceledStillTripsBreakerWhenNotShuttingDown(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
 	engine.SetContext(context.Background()) // healthy, not cancelled
 
 	wrapped := fmt.Errorf("fetch origin: %w", context.Canceled)
@@ -759,7 +811,7 @@ func TestHandleAgentComplete_CircuitBreakerAttributesNextStepNotCompletedStep(t 
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
@@ -791,7 +843,7 @@ func TestHandleAgentComplete_CircuitBreakerAttributesNextStepNotCompletedStep(t 
 func TestSurfaceStartFailure_AlreadyHumanRequiredIsNoOp(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "human-required", StatusReason: "existing reason"})
-	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(nil, tasks, newMockAgents(), discardLogger())
 
 	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed)
 	engine.surfaceStartFailure("t1", "human-required", wrapped, nil, "")

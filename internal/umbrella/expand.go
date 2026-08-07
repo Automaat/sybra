@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 // expandIssueLocker serializes one umbrella's critical section across both
@@ -897,16 +898,20 @@ func recordExpandFailure(tasks *task.Manager, umb github.Issue, tracker existing
 		})
 		newTags = append(newTags, ExpandFailTag(count))
 		toStatus := cur.Status
+		extra := task.Update{
+			Tags:         task.Ptr(newTags),
+			StatusReason: task.Ptr(formatExpandFailureReason(count, cause)),
+		}
 		if count >= ExpandFailThreshold {
-			toStatus = task.StatusHumanRequired
+			toStatus = task.StatusBlocked
+			reason := formatExpandFailureReason(count, cause)
+			extra.Escalation = task.MachineFailure("umbrella.expansion_exhausted", reason)
+			extra.AutonomyOutcome = task.QuarantinedOutcome()
 		}
 		return task.TransitionIntent{
 			ToStatus: toStatus,
 			Actor:    "umbrella.expand.record-failure",
-			Extra: task.Update{
-				Tags:         task.Ptr(newTags),
-				StatusReason: task.Ptr(formatExpandFailureReason(count, cause)),
-			},
+			Extra:    extra,
 		}, nil
 	})
 	if err != nil {
@@ -951,11 +956,8 @@ func clearExpandFailure(tasks *task.Manager, trackerID string) error {
 func formatExpandFailureReason(count int, cause error) string {
 	reason := fmt.Sprintf("umbrella expansion failed (attempt %d): %v", count, cause)
 	const maxLen = 200
-	if len(reason) <= maxLen {
-		return reason
-	}
 	const tail = "..."
-	return reason[:maxLen-len(tail)] + tail
+	return textutil.TruncateBytesTotal(reason, maxLen, tail)
 }
 
 // childProjectID returns the repo a child should be worked in: the sub-issue's

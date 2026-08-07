@@ -151,7 +151,7 @@ func TestAssignTaskSemanticallyIdenticalPushIsNoOp(t *testing.T) {
 		mu    sync.Mutex
 		fired []string
 	)
-	svc.tasks.SetStatusChangeHook(func(_, _, to string) {
+	svc.tasks.SetStatusChangeHook(func(_, _, to string, _ task.Task) {
 		mu.Lock()
 		fired = append(fired, to)
 		mu.Unlock()
@@ -218,7 +218,7 @@ func TestAssignTaskDispatchesStageStatus(t *testing.T) {
 
 	var mu sync.Mutex
 	var fired []string
-	svc.tasks.SetStatusChangeHook(func(_, _, to string) {
+	svc.tasks.SetStatusChangeHook(func(_, _, to string, _ task.Task) {
 		mu.Lock()
 		fired = append(fired, to)
 		mu.Unlock()

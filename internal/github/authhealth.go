@@ -2,10 +2,10 @@ package github
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/backoff"
 	"github.com/Automaat/sybra/internal/errclass"
 
 	"github.com/Automaat/sybra/internal/clock"
@@ -260,22 +260,15 @@ func (t *authHealthTracker) observeFailure(state AuthState, reason string) {
 func (t *authHealthTracker) applyFailureBackoffLocked() {
 	t.hadFailure = true
 	t.consecutiveFailures++
-	backoff := authCircuitBaseBackoff
-	for i := 1; i < t.consecutiveFailures && backoff < authCircuitMaxBackoff; i++ {
-		backoff *= 2
-	}
-	if backoff > authCircuitMaxBackoff {
-		backoff = authCircuitMaxBackoff
-	}
-	t.nextAttempt = t.now().Add(backoff)
+	delay := backoff.ForAttempt(t.consecutiveFailures, authCircuitBaseBackoff, authCircuitMaxBackoff).Delay
+	t.nextAttempt = t.now().Add(delay)
 }
 
 // isAuthErrorMsg is IsAuthError's message-matching core, factored out so
 // ObserveCallResult can classify a combined stdout+stderr blob the same way
 // IsAuthError classifies a wrapped error.
 func isAuthErrorMsg(msg string) bool {
-	return strings.Contains(strings.ToLower(msg), authCircuitOpenMarker) ||
-		errclass.Matches(msg, errclass.GitHubAuthPhrases)
+	return errclass.Classify(msg, errclass.GitHubCircuitEscalationBiased) == errclass.Auth
 }
 
 // authCircuitOpenMarker tags the synthetic error returned while the circuit
@@ -283,7 +276,7 @@ func isAuthErrorMsg(msg string) bool {
 // outbox, push-preflight retry, poller circuits) treats a suppressed call the
 // same way it treats a real one instead of mistaking it for an unrelated
 // failure.
-const authCircuitOpenMarker = "github auth circuit open"
+const authCircuitOpenMarker = errclass.GitHubAuthCircuitMarker
 
 // NewAuthCircuitOpenError builds the synthetic error a gh invocation
 // chokepoint returns when it suppresses a call instead of shelling out.

@@ -98,7 +98,12 @@ func TestOnComplete_ParkedAdoptionSuppressesWorkflowAdvance(t *testing.T) {
 			wm := worktree.New(worktree.Config{WorktreesDir: t.TempDir(), Tasks: tasks, Logger: logger})
 			wf := &recordingWorkflow{}
 
-			created, err := tasks.CreateWithStatus("survivor task", "body", "headless", tc.liveStatus, task.Update{})
+			init := task.Update{}
+			if tc.liveStatus == task.StatusHumanRequired {
+				init.Escalation = task.OperatorDecisionEvidence("test.parked_adoption", "parked before reattachment")
+				init.AutonomyOutcome = task.HumanRequiredOutcome()
+			}
+			created, err := tasks.CreateWithStatus("survivor task", "body", "headless", tc.liveStatus, init)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -255,7 +260,12 @@ func TestOnComplete_ParkedAdoptionSkipsReviewSideEffects(t *testing.T) {
 			wm := worktree.New(worktree.Config{WorktreesDir: t.TempDir(), Tasks: tasks, Logger: logger})
 			wf := &recordingWorkflow{}
 
-			created, err := tasks.CreateWithStatus("review task", "body", "headless", tc.liveStatus, task.Update{})
+			init := task.Update{}
+			if tc.liveStatus == task.StatusHumanRequired {
+				init.Escalation = task.OperatorDecisionEvidence("test.parked_adoption", "parked before reattachment")
+				init.AutonomyOutcome = task.HumanRequiredOutcome()
+			}
+			created, err := tasks.CreateWithStatus("review task", "body", "headless", tc.liveStatus, init)
 			if err != nil {
 				t.Fatal(err)
 			}

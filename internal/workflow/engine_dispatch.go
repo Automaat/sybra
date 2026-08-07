@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
@@ -133,7 +134,7 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 		CurrentStep:    start.ID,
 		State:          ExecRunning,
 		Variables:      variables,
-		StartedAt:      time.Now().UTC(),
+		StartedAt:      e.now(),
 	}
 	defHash, err := e.store.SaveSnapshot(def)
 	if err != nil {
@@ -158,7 +159,7 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 }
 
 func taskRequiresTamperBless(t TaskInfo) bool {
-	return t.Status == taskstatus.HumanRequired && IsTamperFlaggedReason(t.StatusReason)
+	return t.Status == taskstatus.HumanRequired && t.Blocker.Kind == blocker.KindTamperDetected
 }
 
 // surfaceInitialDispatchFailure classifies and escalates a run_agent dispatch

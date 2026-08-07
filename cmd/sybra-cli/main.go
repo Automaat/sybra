@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,6 +27,7 @@ import (
 	"github.com/Automaat/sybra/internal/codexhook"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/issueref"
@@ -674,6 +676,15 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 	if t.CodeReview != "" {
 		fmt.Printf("\n## Code Review\n\n%s\n", t.CodeReview)
 	}
+	if t.CurrentTestFailures != "" {
+		fmt.Printf("\n%s\n", t.CurrentTestFailures)
+	}
+	if t.AcceptanceLedger != "" {
+		fmt.Printf("\n%s\n", t.AcceptanceLedger)
+	}
+	if t.SpecDecision != "" {
+		fmt.Printf("\n%s\n", t.SpecDecision)
+	}
 	return 0
 }
 
@@ -820,6 +831,35 @@ func updateTaskViaAPIOrFS(s *task.Manager, api *apiClient, id string, updates ma
 	if updated, handled, apiErr := viaAPI[task.Task](api, "TaskService", "UpdateTask", id, updates); handled {
 		return updated, true, apiErr
 	}
+	if statusText, hasStatus := updates["status"].(string); hasStatus {
+		localUpdates := make(map[string]any, len(updates)-1)
+		for key, value := range updates {
+			if key != "status" {
+				localUpdates[key] = value
+			}
+		}
+		extra, err := task.UpdateFromMap(localUpdates)
+		if err != nil {
+			return task.Task{}, false, err
+		}
+		status, err := task.ValidateStatus(statusText)
+		if err != nil {
+			return task.Task{}, false, err
+		}
+		if status == task.StatusHumanRequired {
+			display := "operator moved task to human-required"
+			if extra.StatusReason != nil && strings.TrimSpace(*extra.StatusReason) != "" {
+				display = *extra.StatusReason
+			}
+			extra.Escalation = task.OperatorDecisionEvidence("operator.cli_status_change", display)
+			extra.AutonomyOutcome = task.HumanRequiredOutcome()
+		}
+		result, err := s.Apply(task.TransitionIntent{
+			TaskID: id, ToStatus: status, Actor: "sybra-cli.update",
+			Extra: extra, OperatorOverride: true,
+		})
+		return result.Task, false, err
+	}
 	updated, err := s.UpdateMap(id, updates)
 	return updated, false, err
 }
@@ -913,6 +953,10 @@ func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool)
 	if *pr > 0 {
 		init.PRNumber = task.Ptr(*pr)
 	}
+	if rawStatusMode && status == task.StatusHumanRequired {
+		init.Escalation = task.OperatorDecisionEvidence("operator.handoff_status", "operator created a human-required handoff")
+		init.AutonomyOutcome = task.HumanRequiredOutcome()
+	}
 
 	var (
 		t   task.Task
@@ -963,7 +1007,7 @@ func resolveHandoffMode(fs *flag.FlagSet, stage, rawStatus string, pr int) (cfg 
 		}
 		return handoffStageConfig{}, "", false, handoffStageUsageError(stage)
 	}
-	if pr > 0 && stageCfg.name != "ready-pr" {
+	if pr > 0 && stageCfg.name != string(task.StatusReadyPR) {
 		return handoffStageConfig{}, "", false, fmt.Errorf("--pr is only valid with --stage ready-pr so the PR stays linked to an internal Sybra task")
 	}
 	return stageCfg, "", false, nil
@@ -1020,16 +1064,16 @@ type handoffStageDef struct {
 
 var handoffStageRegistry = []handoffStageDef{
 	// implement: simple-task-handoff → in-progress → implement → review → testing → PR
-	{name: "implement", aliases: []string{"", "in-progress"}, tags: []string{"handoff"},
+	{name: "implement", aliases: []string{"", string(task.StatusInProgress)}, tags: []string{"handoff"},
 		usage: "have a plan -> Sybra implements, reviews, tests, opens the PR"},
 	// review: simple-task-handoff-review → ready-review → review → testing → PR
-	{name: "review", aliases: []string{"ready-review", "agentic-review"}, tags: []string{"handoff", "handoff-review"},
+	{name: "review", aliases: []string{string(task.StatusReadyReview), "agentic-review"}, tags: []string{"handoff", "handoff-review"},
 		usage: "implemented locally -> Sybra enters agentic review", requiresSource: true},
 	// testing: simple-task-handoff-testing → testing → adversarial test → PR
-	{name: "testing", aliases: []string{"test"}, tags: []string{"handoff", "handoff-testing"},
+	{name: string(task.StatusTesting), aliases: []string{"test"}, tags: []string{"handoff", "handoff-testing"},
 		usage: "reviewed locally -> Sybra tests, then opens the PR", requiresSource: true},
 	// ready-pr: simple-task-handoff-ready-pr → ready-pr → open/update PR
-	{name: "ready-pr", aliases: []string{"open-pr", "create-pr"}, tags: []string{"handoff", "handoff-ready-pr"},
+	{name: string(task.StatusReadyPR), aliases: []string{"open-pr", "create-pr"}, tags: []string{"handoff", "handoff-ready-pr"},
 		usage: "tested locally -> Sybra opens or updates the PR; pass --pr N\n" +
 			strings.Repeat(" ", 19) + "only to link an existing same-branch PR"},
 }
@@ -1066,7 +1110,7 @@ func handoffStageUsageError(stage string) error {
 
 func isExternalPRHandoffStage(stage string) bool {
 	switch strings.ToLower(strings.TrimSpace(stage)) {
-	case "pr", "in-review", "pull-request", "pull_request":
+	case "pr", string(task.StatusInReview), "pull-request", "pull_request":
 		return true
 	default:
 		return false
@@ -1195,10 +1239,10 @@ func printHandoffResult(t task.Task, stage, projectID, dir string) {
 	case "review":
 		fmt.Printf("  worktree: %s\n", dir)
 		fmt.Println("  Sybra will skip to review and open the PR from this worktree.")
-	case "testing":
+	case string(task.StatusTesting):
 		fmt.Printf("  worktree: %s\n", dir)
 		fmt.Println("  Sybra will skip straight to adversarial testing of this worktree.")
-	case "ready-pr":
+	case string(task.StatusReadyPR):
 		fmt.Printf("  worktree: %s\n", dir)
 		fmt.Println("  Sybra will skip straight to opening or updating the PR from this worktree.")
 	default:
@@ -1892,7 +1936,28 @@ func fatal(jsonOut bool, format string, args ...any) int {
 	} else {
 		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
 	}
+	if len(args) == 1 {
+		if err, ok := args[0].(error); ok && isRetryableCLIError(err) {
+			return 75
+		}
+	}
 	return 1
+}
+
+func isRetryableCLIError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, fsutil.ErrLockTimeout) {
+		return true
+	}
+	var ae *apiError
+	if errors.As(err, &ae) {
+		return ae.Status == http.StatusServiceUnavailable
+	}
+	type statusErr interface{ HTTPStatus() int }
+	var se statusErr
+	return errors.As(err, &se) && se.HTTPStatus() == http.StatusServiceUnavailable
 }
 
 // writeJSONError marshals rather than interpolating: several messages quote a

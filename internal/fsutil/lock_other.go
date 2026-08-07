@@ -3,10 +3,29 @@
 package fsutil
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
 )
+
+// LockTimeoutError mirrors the unix build's typed timeout so callers can
+// compile on every platform.
+type LockTimeoutError struct {
+	Path      string
+	HolderPID int
+}
+
+func (e *LockTimeoutError) Error() string {
+	if e == nil {
+		return ErrLockTimeout.Error()
+	}
+	return ErrLockTimeout.Error()
+}
+
+func (e *LockTimeoutError) Is(target error) bool {
+	return target == ErrLockTimeout
+}
 
 // LockFile is unimplemented on non-unix platforms (flock has no direct
 // equivalent without a platform-specific syscall). Sybra's GUI/server/CLI
@@ -14,6 +33,11 @@ import (
 // packages that import fsutil (e.g. `go vet ./...` on a Windows dev machine)
 // still compile.
 func LockFile(_ string) (func() error, error) {
+	return nil, fmt.Errorf("%w", ErrLockUnsupported)
+}
+
+// LockFileContext is unimplemented on non-unix platforms; see LockFile.
+func LockFileContext(_ context.Context, _ string) (func() error, error) {
 	return nil, fmt.Errorf("%w", ErrLockUnsupported)
 }
 

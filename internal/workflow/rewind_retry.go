@@ -110,7 +110,7 @@ func (e *Engine) rewindRetry(taskID string, wfExec *Execution, t TaskInfo, p rew
 		wfExec.SetVar(fpKey, p.fingerprint)
 		wfExec.SetVar(fpCountKey, strconv.Itoa(count))
 	}
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(p.backoff(attempts)).Format(time.RFC3339))
+	wfExec.SetVar(workflowRetryAfterVar, e.now().Add(p.backoff(attempts)).Format(time.RFC3339))
 	if p.onArm != nil {
 		p.onArm(wfExec, attempt)
 	}
@@ -118,10 +118,7 @@ func (e *Engine) rewindRetry(taskID string, wfExec *Execution, t TaskInfo, p rew
 	wfExec.CurrentStep = p.rewindStep
 	wfExec.State = ExecWaiting
 
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		return true, attempt, err
-	}
-	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, p.reason(attempt)); err != nil {
+	if err := e.tasks.SetStatusAndWorkflow(taskID, string(t.Status), p.reason(attempt), wfExec); err != nil {
 		return true, attempt, err
 	}
 	return true, attempt, nil

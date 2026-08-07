@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"math/rand/v2"
@@ -62,6 +63,9 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 	if err != nil {
 		return nil, err
 	}
+	if err := m.certifyPreparedRun(ctx, cfg, prov.Name()); err != nil {
+		return nil, err
+	}
 
 	id := uuid.NewString()[:8]
 	ctx, cancel := context.WithCancel(ctx)
@@ -85,6 +89,52 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 
 	m.emit(events.AgentState(id), a)
 	return a, nil
+}
+
+func (m *Manager) certifyPreparedRun(ctx context.Context, cfg RunConfig, providerName string) error {
+	m.mu.RLock()
+	preflight := m.runEnvironmentPreflight
+	m.mu.RUnlock()
+	if preflight == nil {
+		return nil
+	}
+	return preflight(ctx, RunEnvironment{
+		TaskID: cfg.TaskID, Role: cfg.Role, Dir: cfg.Dir, ReadOnlyPaths: slices.Clone(cfg.ReadOnlyPaths), Provider: providerName,
+		SandboxMode:  cfg.SandboxMode,
+		ScratchRoots: preparedScratchRoots(cfg),
+	})
+}
+
+func preparedScratchRoots(cfg RunConfig) []string {
+	roots := []string{
+		cfg.resolvedSandboxHome,
+		os.TempDir(),
+		sharedBuildCacheDir(),
+		buildcache.TaskGoBuildDir(cfg.TaskID),
+		buildcache.SharedGoModDir(),
+		buildcache.SharedNPMDir(),
+	}
+	if cfg.resolvedSandboxHome != "" {
+		roots = append(roots, filepath.Join(cfg.resolvedSandboxHome, "golangci-lint-cache"))
+	}
+	return compactPaths(roots)
+}
+
+func compactPaths(paths []string) []string {
+	seen := make(map[string]struct{}, len(paths))
+	result := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		result = append(result, path)
+	}
+	return result
 }
 
 // jitterDispatch sleeps a uniform random [0, dispatchJitterMs] duration so a
@@ -385,6 +435,46 @@ func sharedBuildCacheDir() string {
 	return buildcache.SharedRoot()
 }
 
+// CertificationScratchRoots resolves and materializes the mutable roots that
+// prepareRunConfig will expose to a task-scoped provider process. Keeping this
+// projection on Manager prevents the run-environment gate from guessing at
+// private sandbox-home and build-cache policy.
+func (m *Manager) CertificationScratchRoots(taskID string) ([]string, error) {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return nil, errors.New("certification scratch roots require a task id")
+	}
+	m.mu.RLock()
+	resolve := m.sandboxHome
+	m.mu.RUnlock()
+	if resolve == nil {
+		return nil, errors.New("certification scratch roots require a sandbox home resolver")
+	}
+	sandboxHome, err := resolve(taskID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve sandbox home: %w", err)
+	}
+	if strings.TrimSpace(sandboxHome) == "" {
+		return nil, errors.New("sandbox home resolver returned an empty path")
+	}
+	sharedCache := sharedBuildCacheDir()
+	roots := compactPaths([]string{
+		sandboxHome,
+		os.TempDir(),
+		sharedCache,
+		buildcache.TaskGoBuildDir(taskID),
+		buildcache.SharedGoModDir(),
+		buildcache.SharedNPMDir(),
+		filepath.Join(sandboxHome, "golangci-lint-cache"),
+	})
+	for _, root := range roots {
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			return nil, fmt.Errorf("create certification scratch root %q: %w", root, err)
+		}
+	}
+	return roots, nil
+}
+
 func (m *Manager) injectSharedBuildCache(cfg *RunConfig) error {
 	if cfg.resolvedSandboxHome == "" {
 		return nil
@@ -518,12 +608,13 @@ func (m *Manager) buildEnforceSpec(cfg *RunConfig, gitCtx context.Context, workt
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
 	}
-	cfg.sandbox = enforceSpec(canonWorktree, gitMetadata, canonSandboxHome, canonTmp, canonSharedCache, profilePath, "", gitRoots, gitOverlay)
+	cfg.sandbox = enforceSpec(canonWorktree, gitMetadata, canonSandboxHome, canonTmp, sandboxTmpAlias(canonTmp), canonSharedCache, profilePath, "", gitRoots, gitOverlay)
 	if err := m.applySandboxReadMode(cfg); err != nil {
 		return err
 	}
 	m.logger.Info("agent.sandbox.enforce", "task_id", cfg.TaskID,
 		"worktree", canonWorktree, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
+		"tmp_alias", cfg.sandbox.tmpAlias,
 		"git_metadata", cfg.sandbox.gitMetadata,
 		"git_shared", cfg.sandbox.gitShared,
 		"git_readonly", cfg.sandbox.gitReadonly,
@@ -566,9 +657,11 @@ func (m *Manager) injectReadOnlyProcessSandbox(cfg *RunConfig, mode string) erro
 		return nil
 	}
 	if mode != "enforce" {
+		logTmp := m.reportSandboxRoot(cfg.TaskID, "tmp", tmp)
 		m.logger.Info("agent.sandbox.report.readonly_dir", "task_id", cfg.TaskID, "dir", dir,
 			"sandbox_home", m.reportSandboxRoot(cfg.TaskID, "sandbox_home", sandboxHome),
-			"tmp", m.reportSandboxRoot(cfg.TaskID, "tmp", tmp),
+			"tmp", logTmp,
+			"tmp_alias", sandboxTmpAlias(logTmp),
 			"shared_cache", m.reportSandboxRoot(cfg.TaskID, "shared_cache", sharedCache))
 		cfg.sandbox = sandboxSpec{mode: "off"}
 		return nil
@@ -612,9 +705,10 @@ func (m *Manager) injectReadOnlyProcessSandbox(cfg *RunConfig, mode string) erro
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
 	}
-	cfg.sandbox = enforceSpec("", nil, canonSandboxHome, canonTmp, canonSharedCache, profilePath, canonDir, gitSandboxRoots{}, gitSandboxOverlay{})
+	cfg.sandbox = enforceSpec("", nil, canonSandboxHome, canonTmp, sandboxTmpAlias(canonTmp), canonSharedCache, profilePath, canonDir, gitSandboxRoots{}, gitSandboxOverlay{})
 	m.logger.Info("agent.sandbox.enforce.readonly_dir", "task_id", cfg.TaskID,
 		"dir", canonDir, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
+		"tmp_alias", cfg.sandbox.tmpAlias,
 		"shared_cache", canonSharedCache, "claude_state", cfg.sandbox.claudeState,
 		"codex_state", cfg.sandbox.codexState, "copilot_state", cfg.sandbox.copilotState,
 		"opencode_state", cfg.sandbox.opencodeState, "tool_cache", cfg.sandbox.toolCache,
@@ -630,7 +724,7 @@ func (m *Manager) logProcessSandboxReport(taskID, worktree, sandboxHome, tmp, sh
 	logTmp := m.reportSandboxRoot(taskID, "tmp", tmp)
 	logShared := m.reportSandboxRoot(taskID, "shared_cache", sharedCache)
 	m.logger.Info("agent.sandbox.report", "task_id", taskID,
-		"worktree", logWorktree, "sandbox_home", logSandboxHome, "tmp", logTmp, "shared_cache", logShared,
+		"worktree", logWorktree, "sandbox_home", logSandboxHome, "tmp", logTmp, "tmp_alias", sandboxTmpAlias(logTmp), "shared_cache", logShared,
 		"git_admin", gitRoots.adminDir, "git_common", gitRoots.commonDir, "git_worktrees", gitRoots.worktreesDir)
 }
 
@@ -653,7 +747,7 @@ func canonicalizeCreatedRoot(root string, perm os.FileMode) (string, error) {
 func enforceSpec(
 	worktree string,
 	gitMetadata []string,
-	sandboxHome, tmp, sharedCache, profilePath, readOnlyDir string,
+	sandboxHome, tmp, tmpAlias, sharedCache, profilePath, readOnlyDir string,
 	gitRoots gitSandboxRoots,
 	gitOverlay gitSandboxOverlay,
 ) sandboxSpec {
@@ -667,6 +761,7 @@ func enforceSpec(
 		gitReadonly:                 slices.Clone(gitRoots.sharedReadonly),
 		sandboxHome:                 sandboxHome,
 		tmp:                         tmp,
+		tmpAlias:                    tmpAlias,
 		sharedCache:                 sharedCache,
 		profilePath:                 profilePath,
 		readOnlyDir:                 readOnlyDir,
@@ -1077,6 +1172,9 @@ func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 		}
 	}
 	add(cfg.sandbox.readOnlyDir)
+	for _, p := range cfg.ReadOnlyPaths {
+		add(p)
+	}
 	if cfg.Role == RoleMonitor {
 		add(config.HomeDir())
 	}

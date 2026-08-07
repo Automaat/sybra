@@ -16,8 +16,10 @@ import (
 
 	"github.com/Automaat/sybra/internal/buildcache"
 	"github.com/Automaat/sybra/internal/notes"
+	"github.com/Automaat/sybra/internal/prepstate"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // initBareWithCommit creates a bare repo containing a single commit on
@@ -358,6 +360,157 @@ func TestCleanupOrphaned(t *testing.T) {
 	// Active task's dir should remain
 	if _, err := os.Stat(filepath.Join(dir, tk.DirName())); err != nil {
 		t.Error("active task dir should remain")
+	}
+}
+
+func TestCleanupOrphaned_PreservesInflightAttemptAndReapsFinishedAttempt(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+	tk, err := store.Create("best of n task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{BestOfNInflight: map[string]*workflow.BestOfNInflight{
+		"attempts": {
+			ParentStepID: "attempts",
+			Attempts: map[string]*workflow.AttemptStatus{
+				"attempt_1": {AttemptID: "attempt_1", Status: "pending"},
+			},
+		},
+	}}
+	if _, err := store.Update(tk.ID, task.Update{Workflow: &wf}); err != nil {
+		t.Fatal(err)
+	}
+
+	inflightDir := filepath.Join(dir, attemptDirName(tk, "attempt_1"))
+	finishedDir := filepath.Join(dir, attemptDirName(tk, "attempt_2"))
+	makePushedGitDir(t, inflightDir)
+	makePushedGitDir(t, finishedDir)
+
+	m := New(Config{WorktreesDir: dir, Tasks: taskMgr, Logger: discardLogger()})
+	m.CleanupOrphaned(context.Background())
+
+	if _, err := os.Stat(inflightDir); err != nil {
+		t.Fatalf("in-flight attempt removed unexpectedly: %v", err)
+	}
+	if _, err := os.Stat(finishedDir); !os.IsNotExist(err) {
+		t.Fatalf("finished attempt still exists after cleanup: %v", err)
+	}
+}
+
+func TestCleanupOrphaned_PreservesDeletedTaskAttemptWithLiveAgent(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+	tk, err := store.Create("deleted best of n task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptDir := filepath.Join(dir, attemptDirName(tk, "attempt_1"))
+	makePushedGitDir(t, attemptDir)
+	if err := taskMgr.Delete(tk.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	live := true
+	m := New(Config{
+		WorktreesDir: dir,
+		Tasks:        taskMgr,
+		Logger:       discardLogger(),
+		AgentChecker: func(taskID string) bool { return live && taskID == tk.ID },
+	})
+	m.CleanupOrphaned(context.Background())
+	if _, err := os.Stat(attemptDir); err != nil {
+		t.Fatalf("deleted task's live attempt removed unexpectedly: %v", err)
+	}
+
+	live = false
+	m.CleanupOrphaned(context.Background())
+	if _, err := os.Stat(attemptDir); !os.IsNotExist(err) {
+		t.Fatalf("deleted task's finished attempt still exists after cleanup: %v", err)
+	}
+}
+
+func TestCleanupOrphaned_ReapsTerminalTaskAttemptWithStaleInflightRecord(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+	tk, err := store.Create("terminal best of n task", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &workflow.Execution{BestOfNInflight: map[string]*workflow.BestOfNInflight{
+		"attempts": {
+			ParentStepID: "attempts",
+			Attempts: map[string]*workflow.AttemptStatus{
+				"attempt_1": {AttemptID: "attempt_1", Status: "completed"},
+			},
+		},
+	}}
+	done := task.StatusDone
+	if _, err := store.Update(tk.ID, task.Update{Workflow: &wf, Status: &done}); err != nil {
+		t.Fatal(err)
+	}
+	attemptDir := filepath.Join(dir, attemptDirName(tk, "attempt_1"))
+	makePushedGitDir(t, attemptDir)
+
+	m := New(Config{WorktreesDir: dir, Tasks: taskMgr, Logger: discardLogger()})
+	m.CleanupOrphaned(context.Background())
+
+	if _, err := os.Stat(attemptDir); !os.IsNotExist(err) {
+		t.Fatalf("terminal task's stale attempt still exists after cleanup: %v", err)
+	}
+}
+
+func TestCleanupOrphaned_PreservesInflightAttemptAfterSlugChange(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := t.TempDir()
+
+	store, err := task.NewStore(tasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskMgr := task.NewManager(store, nil)
+	tk, err := store.Create("old slug", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptDir := filepath.Join(dir, attemptDirName(tk, "attempt_1"))
+	wf := &workflow.Execution{BestOfNInflight: map[string]*workflow.BestOfNInflight{
+		"attempts": {
+			ParentStepID: "attempts",
+			Attempts: map[string]*workflow.AttemptStatus{
+				"attempt_1": {AttemptID: "attempt_1", Dir: attemptDir, Status: "pending"},
+			},
+		},
+	}}
+	newSlug := "new-slug"
+	if _, err := store.Update(tk.ID, task.Update{Workflow: &wf, Slug: &newSlug}); err != nil {
+		t.Fatal(err)
+	}
+	makePushedGitDir(t, attemptDir)
+
+	m := New(Config{WorktreesDir: dir, Tasks: taskMgr, Logger: discardLogger()})
+	m.CleanupOrphaned(context.Background())
+
+	if _, err := os.Stat(attemptDir); err != nil {
+		t.Fatalf("renamed task's in-flight attempt removed unexpectedly: %v", err)
 	}
 }
 
@@ -1617,6 +1770,119 @@ func TestPrepareForTask_RebaseSkipsWhenBaseAlreadyMerged(t *testing.T) {
 	}
 	if want := "branch edit\nupstream edit\n"; string(got) != want {
 		t.Fatalf("README.md = %q, want %q (the merge-resolved content, untouched by a skipped rebase)", got, want)
+	}
+}
+
+func TestPrepareForTask_ReusesVerifiedPreparedWorktreeAfterConflictRecovery(t *testing.T) {
+	h := prepareHarness(t, []string{"printf x >> ran-count"}, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("reuse prepared recovery worktree", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
+
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "README.md")
+	mustRunInDir(t, wtPath, "git", "commit", "-m", "branch edit")
+
+	if err := os.WriteFile(filepath.Join(h.src, "README.md"), []byte("upstream edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, h.src, "git", "add", "README.md")
+	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
+
+	mustRunInDir(t, wtPath, "git", "fetch", "origin")
+	if err := exec.Command("git", "-C", wtPath, "merge", "--no-edit", "origin/main").Run(); err == nil {
+		t.Fatal("expected conflict merge during simulated recovery")
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\nupstream edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "README.md")
+	mustRunInDir(t, wtPath, "git", "commit", "--no-edit")
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+	mustRunInDir(t, wtPath, "git", "push", "origin", "HEAD:"+branch)
+
+	wrote, err := prepstate.WriteVerified(context.Background(), wtPath, branch)
+	if err != nil {
+		t.Fatalf("WriteVerified: %v", err)
+	}
+	if !wrote {
+		t.Fatal("WriteVerified = false, want published prepared state")
+	}
+
+	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("PrepareForTask after recovery: %v", err)
+	}
+	if gotPath != wtPath {
+		t.Fatalf("reused path = %q, want %q", gotPath, wtPath)
+	}
+
+	data, err := os.ReadFile(filepath.Join(wtPath, "ran-count"))
+	if err != nil {
+		t.Fatalf("read setup counter: %v", err)
+	}
+	if got := string(data); got != "x" {
+		t.Fatalf("setup reran after verified prep reuse; counter=%q, want \"x\"", got)
+	}
+}
+
+func TestRecordPreparedStateRequiresPublishedRemoteHead(t *testing.T) {
+	h := prepareHarness(t, nil, 30*time.Second)
+
+	tk, err := h.tasks.Store().Create("unpublished prep state", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
+		t.Fatal(err)
+	}
+	tk, err = h.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
+	if err != nil {
+		t.Fatalf("initial PrepareForTask: %v", err)
+	}
+	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
+	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(wtPath, "local-only.txt"), []byte("not pushed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunInDir(t, wtPath, "git", "add", "local-only.txt")
+	mustRunInDir(t, wtPath, "git", "commit", "-m", "local only")
+
+	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
+	wrote, err := prepstate.WriteVerified(context.Background(), wtPath, branch)
+	if err != nil {
+		t.Fatalf("WriteVerified: %v", err)
+	}
+	if wrote {
+		t.Fatal("WriteVerified = true for an unpublished head, want false")
+	}
+	if _, ok, err := prepstate.Read(wtPath); err != nil {
+		t.Fatalf("Read prep state: %v", err)
+	} else if ok {
+		t.Fatal("prep state marker exists for an unpublished head")
 	}
 }
 

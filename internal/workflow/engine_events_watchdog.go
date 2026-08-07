@@ -59,7 +59,7 @@ func (e *Engine) handleWatchdogHangRetry(t *TaskInfo, step *Step) bool {
 }
 
 func (e *Engine) handleWatchdogHangReadyPR(t *TaskInfo, step *Step) bool {
-	if e.prStates == nil || t == nil || t.Workflow == nil || step == nil {
+	if e.pr.StateFetcher == nil || t == nil || t.Workflow == nil || step == nil {
 		return false
 	}
 	if t.ProjectID == "" || t.PRNumber <= 0 {
@@ -68,7 +68,7 @@ func (e *Engine) handleWatchdogHangReadyPR(t *TaskInfo, step *Step) bool {
 	if t.Workflow.WorkflowID != "simple-task-implement" || step.ID != "implement" {
 		return false
 	}
-	state, err := e.prStates.FetchPRState(t.ProjectID, t.PRNumber)
+	state, err := e.pr.StateFetcher.FetchPRState(t.ProjectID, t.PRNumber)
 	if err != nil {
 		e.logger.Warn("workflow.watchdog-hang.ready-pr.fetch", "task_id", t.ID, "pr", t.PRNumber, "err", err)
 		return false
@@ -431,21 +431,30 @@ func (e *Engine) watchdogRateLimitRecoverySpec() watchdogRecoverySpec {
 			onExhausted: func(e *Engine, t *TaskInfo, step *Step, attempts int) {
 				retryKey := watchdogRateLimitRetryKey(step.ID)
 				freshKey := watchdogZeroOutputFreshRetryKey(step.ID)
-				if watchdogreason.IsSilentHang(t.StatusReason) && parseWorkflowInt(t.Workflow.Variables[freshKey]) == 0 {
-					t.Workflow.StartedAt = time.Now().UTC()
-					t.Workflow.SetVar(freshKey, "1")
-					t.Workflow.SetVar(retryKey, "0")
-					if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
-						e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)
+				if watchdogreason.IsSilentHang(t.StatusReason) {
+					sinceKey := watchdogSilentHangSinceKey(step.ID)
+					now := e.now()
+					since, err := time.Parse(time.RFC3339, t.Workflow.Variables[sinceKey])
+					if err != nil {
+						since = now
+					}
+					if now.Sub(since) < maxSilentHangWait {
+						t.Workflow.StartedAt = now
+						t.Workflow.SetVar(freshKey, "1")
+						t.Workflow.SetVar(retryKey, "0")
+						t.Workflow.SetVar(sinceKey, since.Format(time.RFC3339))
+						if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+							e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)
+							return
+						}
+						e.logger.Warn("workflow.watchdog-rate-limit.fresh-session-recovery", "task_id", t.ID, "step", step.ID, "resume_attempts", attempts+1, "waiting_since", since)
 						return
 					}
-					e.logger.Warn("workflow.watchdog-rate-limit.fresh-session-recovery", "task_id", t.ID, "step", step.ID, "resume_attempts", attempts+1)
-					return
 				}
 				targetStatus, reason, terminalState := watchdogRateLimitExhaustionResolution(*t, step, attempts)
 				t.Workflow.State = terminalState
 				if watchdogreason.IsSilentHang(t.StatusReason) {
-					t.Workflow.StartedAt = time.Now().UTC()
+					t.Workflow.StartedAt = e.now()
 				}
 				if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
 					e.logger.Error("workflow.watchdog-rate-limit.persist", "task_id", t.ID, "step", step.ID, "err", err)
@@ -636,6 +645,7 @@ func clearWatchdogRetryCounters(wf *Execution, stepID string) {
 		watchdogStopRetryKey(stepID),
 		watchdogRateLimitRetryKey(stepID),
 		watchdogZeroOutputFreshRetryKey(stepID),
+		watchdogSilentHangSinceKey(stepID),
 	} {
 		delete(wf.Variables, key)
 	}
@@ -663,6 +673,10 @@ func watchdogZeroOutputFreshRetryKey(stepID string) string {
 
 func watchdogSilentHangAvoidKey(stepID string) string {
 	return watchdogSilentHangAvoidVarPrefix + stepID
+}
+
+func watchdogSilentHangSinceKey(stepID string) string {
+	return watchdogSilentHangSinceVarPrefix + stepID
 }
 
 // markSilentHangProvider records the provider of a run the watchdog killed for
