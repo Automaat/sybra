@@ -742,7 +742,8 @@ func (e *Engine) Defs() *Store { return e.store }
 
 // PRSurface is the pull-request dependency group: every collaborator the
 // engine needs to open, find, link, close and re-review a PR. NewEngine
-// validates the required members together before publishing an Engine.
+// validates the required members together before publishing an Engine;
+// PushPreflighter is the sole optional member and retains its runtime fallback.
 type PRSurface struct {
 	Linker           PRLinker
 	ReviewRequester  PRReviewRequester
