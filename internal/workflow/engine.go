@@ -11,6 +11,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/fsutil"
@@ -178,6 +179,7 @@ type TaskProvider interface {
 	SetWorkflowIf(id string, fence WorkflowWriteFence, wf *Execution) (bool, error)
 	ClaimWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
 	CompleteWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
+	ReleaseWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
 	// ConsumeSupervisorSteer prepends a pending watchdog headless-nudge steer to
 	// prompt and clears it, so a re-dispatched (resumed) step's agent carries the
 	// correction exactly once. Returns prompt unchanged when none is pending.
@@ -474,7 +476,8 @@ type Engine struct {
 	dispatchDisabled atomic.Bool
 	ownerID          string
 	effectLeaseTTL   time.Duration
-	now              func() time.Time
+	clockMu          sync.RWMutex
+	clock            clock.Clock
 	logger           *slog.Logger
 	ctx              context.Context
 	drainCtx         context.Context
@@ -511,10 +514,11 @@ type Engine struct {
 	// openPROnUnrunnableGate: see SetOpenPROnUnrunnableGate. Defaults to true
 	// (set in NewEngine), matching config.TestingOpenPROnUnrunnableGateEnabled's
 	// nil-is-true default.
-	openPROnUnrunnableGate atomic.Bool
-	maxCheckpoints         int           // checkpoint handoff cap per step (0 → defaultMaxCheckpoints)
-	verifyTimeout          time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
-	verifyChecksSlots      chan struct{} // process-local verify_checks concurrency cap; lazily initialized for zero-value Engines in tests
+	openPROnUnrunnableGate    atomic.Bool
+	maxCheckpoints            int           // checkpoint handoff cap per step (0 → defaultMaxCheckpoints)
+	verifyTimeout             time.Duration // verify_checks budget (0 → verifyChecksDefaultTimeout)
+	verifyChecksSlots         chan struct{} // process-local verify_checks concurrency cap; lazily initialized for zero-value Engines in tests
+	verifyChecksMaxConcurrent int           // verify_checks slot count (<=0 → falls back to 1); see SetVerifyChecksMaxConcurrent
 	// abMu guards abTesting alone: the routing ticker hot-swaps the A/B config
 	// via SetABTestingConfig while dispatch reads it (selectABVariant,
 	// providerEligibilitySnapshot, demotion/shutout reporting). Kept separate
@@ -591,7 +595,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		agents:           agents,
 		ownerID:          newEffectOwnerID(),
 		effectLeaseTTL:   defaultEffectLeaseTTL,
-		now:              func() time.Time { return time.Now().UTC() },
+		clock:            clock.System{},
 		logger:           logger,
 		ctx:              context.Background(),
 		dispatching:      make(map[string]struct{}),
@@ -613,6 +617,22 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 
 func newEffectOwnerID() string {
 	return fmt.Sprintf("workflow-engine-%d-%d", time.Now().UTC().UnixNano(), effectOwnerSeq.Add(1))
+}
+
+// SetClock binds the clock used by workflow control-flow decisions. It is safe
+// to replace while the engine is running. Record timestamps that do not
+// influence control flow continue to use time.Now.
+func (e *Engine) SetClock(c clock.Clock) {
+	e.clockMu.Lock()
+	e.clock = clock.Or(c)
+	e.clockMu.Unlock()
+}
+
+func (e *Engine) now() time.Time {
+	e.clockMu.RLock()
+	c := e.clock
+	e.clockMu.RUnlock()
+	return clock.Or(c).Now().UTC()
 }
 
 // SetContext binds a parent context to the engine. Shell steps use
@@ -873,6 +893,21 @@ func (e *Engine) SetManualTestConfigGetter(g ManualTestConfigGetter) { e.manualT
 // SetVerifyTimeout overrides the verify_checks time budget. Zero keeps the
 // default (verifyChecksDefaultTimeout). Used by tests for a short budget.
 func (e *Engine) SetVerifyTimeout(d time.Duration) { e.verifyTimeout = d }
+
+// SetVerifyChecksMaxConcurrent overrides the process-local verify_checks slot
+// count. <=0 falls back to a single slot (the pre-existing behavior), so a
+// zero-value Engine and callers that never invoke this setter are unchanged.
+// Only takes effect for the slot channel created by the next verify_checks
+// dispatch after this call — verifyChecksSlot lazily allocates the channel
+// once and never resizes it, so this must be set before the engine's first
+// verify_checks dispatch to have any effect. The app layer's config registry
+// marks agent.verify_checks_max_concurrent restart-only for this reason
+// (mirrors agent.evidence — see internal/sybra/config_registry.go).
+func (e *Engine) SetVerifyChecksMaxConcurrent(n int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.verifyChecksMaxConcurrent = n
+}
 
 // SetTaskClassifier wires the deterministic Go triage classifier used by the
 // `classify_task` step. Leaving it unset flips the task to human-required

@@ -18,8 +18,6 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/experience"
-	"github.com/Automaat/sybra/internal/github"
-	"github.com/Automaat/sybra/internal/prcontent"
 	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sandbox"
@@ -43,15 +41,6 @@ var (
 	_ workflow.TaskProvider           = (*taskAdapter)(nil)
 	_ workflow.TaskClassifier         = (*taskClassifierAdapter)(nil)
 	_ workflow.AgentLauncher          = (*agentAdapter)(nil)
-	_ workflow.PRLinker               = (*prLinkerAdapter)(nil)
-	_ workflow.PRStateFetcher         = (*prStateFetcherAdapter)(nil)
-	_ workflow.PRHeadFetcher          = (*prHeadFetcherAdapter)(nil)
-	_ workflow.PRCreator              = (*prCreatorAdapter)(nil)
-	_ workflow.PRCloser               = (*prCloserAdapter)(nil)
-	_ workflow.PRFinder               = (*prFinderAdapter)(nil)
-	_ workflow.PRExistenceChecker     = (*prExistenceCheckerAdapter)(nil)
-	_ workflow.PRContentGenerator     = (*prContentGeneratorAdapter)(nil)
-	_ workflow.PRReviewRequester      = (*prReviewRequesterAdapter)(nil)
 	_ workflow.WorktreeGetter         = (*worktreeGetterAdapter)(nil)
 	_ workflow.AttemptNoteAppender    = (*attemptNoteAppenderAdapter)(nil)
 	_ workflow.BranchSyncer           = (*branchSyncerAdapter)(nil)
@@ -515,6 +504,40 @@ func (a *taskAdapter) CompleteWorkflowEffect(id string, claim workflow.EffectCla
 	return result, nil
 }
 
+func (a *taskAdapter) ReleaseWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
+	var result workflow.EffectClaimResult
+	var fenceErr error
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		if cur.Workflow == nil {
+			return task.TransitionIntent{}, fmt.Errorf("task %s has no workflow", id)
+		}
+		wf := cur.Workflow.Clone()
+		result.Workflow = wf
+		claimResult, claimErr := wf.ReleaseEffect(claim)
+		claimResult.Workflow = wf
+		result = claimResult
+		if claimErr != nil {
+			if errors.Is(claimErr, workflow.ErrEffectClaimLost) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
+				fenceErr = claimErr
+				return task.TransitionIntent{}, errWorkflowEffectNoPersist
+			}
+			return task.TransitionIntent{}, claimErr
+		}
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.release_effect",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errWorkflowEffectNoPersist) {
+			return result, fenceErr
+		}
+		return workflow.EffectClaimResult{}, err
+	}
+	return result, nil
+}
+
 func (a *taskAdapter) ConsumeSupervisorSteer(taskID, prompt string) (string, error) {
 	return agentorch.PrependSupervisorSteer(a.tasks, taskID, prompt)
 }
@@ -677,142 +700,6 @@ func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 		}
 	}
 	return out
-}
-
-// prLinkerAdapter wires the workflow engine's PRLinker interface to
-// the github package. Stateless — all state lives in `gh` / GitHub.
-type prLinkerAdapter struct{}
-
-func (prLinkerAdapter) GetClosingIssues(repo string, prNumber int) (issues []int, body string, err error) {
-	return github.FetchPRClosingIssues(repo, prNumber)
-}
-
-func (prLinkerAdapter) EditBody(repo string, prNumber int, body string) error {
-	return github.EditPRBody(repo, prNumber, body)
-}
-
-// prStateFetcherAdapter wires the workflow engine's PRStateFetcher interface
-// to the github package. Stateless — all state lives in `gh` / GitHub.
-type prStateFetcherAdapter struct{}
-
-func (prStateFetcherAdapter) FetchPRState(repo string, number int) (github.PRState, error) {
-	return github.FetchPRState(repo, number)
-}
-
-// prHeadFetcherAdapter wires the workflow engine's PRHeadFetcher interface to
-// the github package. Stateless — all state lives in `gh` / GitHub.
-type prHeadFetcherAdapter struct{}
-
-func (prHeadFetcherAdapter) FetchPRHeadSHA(ctx context.Context, repo string, number int) (string, error) {
-	return github.FetchPRHeadSHAContext(ctx, repo, number)
-}
-
-// prCreatorAdapter wires the workflow engine's PRCreator interface to the
-// github package. Stateless — all state lives in `gh` / GitHub.
-type prCreatorAdapter struct{}
-
-func (prCreatorAdapter) CreatePR(ctx context.Context, dir string, req workflow.PRCreateRequest) (number int, headSHA string, err error) {
-	return github.CreatePR(ctx, dir, github.CreatePRRequest{
-		Repo:  req.Repo,
-		Head:  req.Head,
-		Draft: req.Draft,
-		Title: req.Title,
-		Body:  req.Body,
-	})
-}
-
-// prCloserAdapter wires the workflow engine's best-effort superseded-PR
-// cleanup to the github package.
-type prCloserAdapter struct{}
-
-func (prCloserAdapter) ClosePR(ctx context.Context, repo string, number int, comment string) error {
-	return github.ClosePR(ctx, repo, number, comment)
-}
-
-// prFinderAdapter wires the workflow engine's PRFinder interface to the github
-// package. Stateless — all state lives in `gh` / GitHub.
-type prFinderAdapter struct{}
-
-func (prFinderAdapter) FindPRForBranch(ctx context.Context, repo, head string) (number int, found bool, err error) {
-	return github.FindPRForBranch(ctx, repo, head)
-}
-
-func (prFinderAdapter) FindPRForBranchAnyState(ctx context.Context, repo, head string) (number int, state string, found bool, err error) {
-	return github.FindPRForBranchAnyState(ctx, repo, head)
-}
-
-// prExistenceCheckerAdapter wires the workflow engine's PRExistenceChecker
-// interface to the github package. Stateless — all state lives in `gh` /
-// GitHub.
-type prExistenceCheckerAdapter struct{}
-
-func (prExistenceCheckerAdapter) PRExists(ctx context.Context, repo string, number int) (bool, error) {
-	return github.PRExists(ctx, repo, number)
-}
-
-// prContentGeneratorAdapter wires the workflow engine's PRContentGenerator
-// interface to internal/prcontent's LLM-backed drafter.
-type prContentGeneratorAdapter struct {
-	gen prcontent.Generator
-}
-
-func (a prContentGeneratorAdapter) GeneratePRContent(ctx context.Context, taskTitle, taskBody string, commitSubjects []string) (title, body string, err error) {
-	c, err := a.gen.Generate(ctx, prcontent.Request{
-		TaskTitle:      taskTitle,
-		TaskBody:       taskBody,
-		CommitSubjects: commitSubjects,
-	})
-	if err != nil {
-		return "", "", err
-	}
-	return c.Title, c.Body, nil
-}
-
-// prReviewRequesterAdapter asks users who left actionable PR feedback to
-// review again after the fix-review workflow pushes updated commits.
-type prReviewRequesterAdapter struct{}
-
-func (prReviewRequesterAdapter) RerequestReview(repo string, prNumber int) ([]string, error) {
-	ctx, err := github.FetchPRContext(repo, prNumber)
-	if err != nil {
-		return nil, err
-	}
-	viewer := github.ViewerLogin()
-	seen := map[string]struct{}{}
-	reviewers := make([]string, 0, len(ctx.Comments))
-	for _, c := range ctx.Comments {
-		login := strings.TrimSpace(c.Author)
-		if !eligibleRerequestReviewer(login, viewer, ctx.Author) {
-			continue
-		}
-		key := strings.ToLower(login)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		reviewers = append(reviewers, login)
-	}
-	if len(reviewers) == 0 {
-		return nil, nil
-	}
-	if err := github.RequestReviewers(repo, prNumber, reviewers); err != nil {
-		return nil, err
-	}
-	return reviewers, nil
-}
-
-func (prReviewRequesterAdapter) RequestCopilotReview(ctx context.Context, repo string, prNumber int) error {
-	return github.RequestCopilotReviewCtx(ctx, repo, prNumber)
-}
-
-func eligibleRerequestReviewer(login, viewer, prAuthor string) bool {
-	if login == "" {
-		return false
-	}
-	if strings.EqualFold(login, viewer) || strings.EqualFold(login, prAuthor) {
-		return false
-	}
-	return !strings.HasSuffix(strings.ToLower(login), "[bot]")
 }
 
 // worktreeGetterAdapter bridges worktree.Manager + task.Manager → workflow.WorktreeGetter.

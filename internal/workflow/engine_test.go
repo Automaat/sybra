@@ -21,6 +21,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/attribution"
 	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/dispatchorder"
 	"github.com/Automaat/sybra/internal/metrics"
@@ -991,6 +992,26 @@ func (m *memTasks) CompleteWorkflowEffect(id string, claim EffectClaim) (EffectC
 	}
 	wf := t.Workflow.Clone()
 	result, err := wf.CompleteEffect(claim)
+	result.Workflow = wf
+	if err != nil {
+		return result, err
+	}
+	t.Workflow = wf
+	return result, nil
+}
+
+func (m *memTasks) ReleaseWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return EffectClaimResult{}, fmt.Errorf("task %s not found", id)
+	}
+	if t.Workflow == nil {
+		return EffectClaimResult{}, fmt.Errorf("task %s has no workflow", id)
+	}
+	wf := t.Workflow.Clone()
+	result, err := wf.ReleaseEffect(claim)
 	result.Workflow = wf
 	if err != nil {
 		return result, err
@@ -5780,13 +5801,15 @@ func TestResumeStalled_SkipsWorkflowRetryUntil(t *testing.T) {
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	engine := NewEngine(store, tasks, agents, discardLogger())
+	fakeClock := clock.NewFake(time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC))
+	engine.SetClock(fakeClock)
 
 	wf := &Execution{
 		WorkflowID:  "test-simple",
 		CurrentStep: "implement",
 		State:       ExecWaiting,
 		Variables: map[string]string{
-			workflowRetryAfterVar: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+			workflowRetryAfterVar: fakeClock.Now().Add(time.Hour).Format(time.RFC3339),
 		},
 	}
 	tasks.Put(TaskInfo{
@@ -5801,7 +5824,7 @@ func TestResumeStalled_SkipsWorkflowRetryUntil(t *testing.T) {
 		t.Fatalf("agent starts before retry window = %d, want 0", agents.CallCount())
 	}
 
-	wf.Variables[workflowRetryAfterVar] = time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	fakeClock.Advance(time.Hour + time.Second)
 	tasks.Put(TaskInfo{
 		ID:        "t1",
 		Status:    "in-progress",
@@ -5813,6 +5836,38 @@ func TestResumeStalled_SkipsWorkflowRetryUntil(t *testing.T) {
 	if agents.CallCount() != 1 {
 		t.Fatalf("agent starts after retry window = %d, want 1", agents.CallCount())
 	}
+}
+
+func TestEngineClockCanBeReplacedWhileRunning(t *testing.T) {
+	t.Parallel()
+
+	e := &Engine{}
+	first := clock.NewFake(time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC))
+	second := clock.NewFake(first.Now().Add(time.Hour))
+	var wg sync.WaitGroup
+	wg.Add(5)
+	go func() {
+		defer wg.Done()
+		for i := range 1_000 {
+			if i%2 == 0 {
+				e.SetClock(first)
+			} else {
+				e.SetClock(second)
+			}
+		}
+	}()
+	for range 4 {
+		go func() {
+			defer wg.Done()
+			for range 1_000 {
+				if got := e.now(); got.IsZero() {
+					t.Error("now returned the zero time during concurrent clock replacement")
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 // TestResumeStalled_SkipLogsPromotedToThrottledInfo proves ResumeStalled's
@@ -9838,6 +9893,62 @@ func TestExecRunAgent_PanicClearsDispatchingClaim(t *testing.T) {
 	}
 	if engine.hasTrackedAgentForTaskStep("t1", "triage") {
 		t.Fatal("pending step start leaked after panic")
+	}
+}
+
+func TestExecRunAgent_PreStartFailureReleasesClaimedEffect(t *testing.T) {
+	tasks := newMemTasks()
+	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	step := &Step{
+		ID:   "implement",
+		Type: StepRunAgent,
+		Config: StepConfig{
+			Role:   "implementation",
+			Prompt: "{{",
+			Mode:   "headless",
+		},
+	}
+	wf := &Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "implement",
+		State:       ExecRunning,
+		Variables:   map[string]string{},
+	}
+	ti := TaskInfo{
+		ID:         "t1",
+		Status:     "in-progress",
+		AgentMode:  "headless",
+		Generation: 1,
+		Workflow:   wf.Clone(),
+	}
+	tasks.Put(ti)
+
+	claim := engine.effectClaimForStep(ti, step, effectPosStepAction)
+	if _, err := tasks.ClaimWorkflowEffect("t1", claim); err != nil {
+		t.Fatalf("ClaimWorkflowEffect: %v", err)
+	}
+
+	if err := engine.execRunAgent("t1", step, wf.Clone(), TemplateContext{
+		Task:     ti,
+		Step:     *step,
+		Vars:     wf.Variables,
+		Workflow: wf,
+	}, claim.EffectID); err == nil {
+		t.Fatal("execRunAgent error = nil, want prompt render failure")
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("workflow = nil, want persisted workflow")
+	}
+	if len(got.Workflow.EffectLog) != 0 {
+		t.Fatalf("EffectLog = %+v, want claimed effect released on pre-start failure", got.Workflow.EffectLog)
+	}
+	if _, err := tasks.ClaimWorkflowEffect("t1", claim); err != nil {
+		t.Fatalf("ClaimWorkflowEffect after release: %v, want success", err)
 	}
 }
 

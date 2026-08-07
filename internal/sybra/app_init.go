@@ -48,6 +48,7 @@ import (
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
+	"github.com/Automaat/sybra/internal/workflowpr"
 )
 
 const (
@@ -1402,6 +1403,7 @@ func (a *App) initWorkflowEngine() {
 func (a *App) configureWorkflowPolicies() {
 	a.configureTestingEscalation()
 	a.workflowEngine.SetMaxCheckpoints(a.cfg.MaxCheckpoints())
+	a.workflowEngine.SetVerifyChecksMaxConcurrent(a.cfg.VerifyChecksMaxConcurrent())
 	a.workflowEngine.SetABTestingConfig(a.abTestingConfig())
 	a.configurePlanAutoApproval()
 	a.configureAdmissionPolicy()
@@ -1694,16 +1696,16 @@ func (a *App) wireSidecarDir() {
 // because the group is the unit that must stay complete.
 func (a *App) wirePRSurface() {
 	if err := a.workflowEngine.SetPRSurface(workflow.PRSurface{
-		Linker:           prLinkerAdapter{},
-		ReviewRequester:  prReviewRequesterAdapter{},
-		StateFetcher:     prStateFetcherAdapter{},
-		HeadFetcher:      prHeadFetcherAdapter{},
-		Creator:          prCreatorAdapter{},
-		Closer:           prCloserAdapter{},
-		Finder:           prFinderAdapter{},
-		AnyStateFinder:   prFinderAdapter{},
-		ExistenceChecker: prExistenceCheckerAdapter{},
-		ContentGenerator: prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}},
+		Linker:           workflowpr.LinkerAdapter{},
+		ReviewRequester:  workflowpr.ReviewRequesterAdapter{},
+		StateFetcher:     workflowpr.StateFetcherAdapter{},
+		HeadFetcher:      workflowpr.HeadFetcherAdapter{},
+		Creator:          workflowpr.CreatorAdapter{},
+		Closer:           workflowpr.CloserAdapter{},
+		Finder:           workflowpr.FinderAdapter{},
+		AnyStateFinder:   workflowpr.FinderAdapter{},
+		ExistenceChecker: workflowpr.ExistenceCheckerAdapter{},
+		ContentGenerator: workflowpr.ContentGeneratorAdapter{Gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}},
 	}); err != nil {
 		// Only reachable by forgetting a field here — a programming error, so
 		// fail at boot rather than let a PR step no-op in production. Same

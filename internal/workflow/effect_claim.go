@@ -116,6 +116,19 @@ func (e *Engine) completeClaimedEffect(taskID string, effectID EffectID) (*Execu
 	return result.Workflow, nil
 }
 
+func (e *Engine) releaseClaimedEffect(taskID string, effectID EffectID) (*Execution, error) {
+	result, err := e.tasks.ReleaseWorkflowEffect(taskID, EffectClaim{
+		EffectID: effectID,
+		Owner:    e.ownerID,
+		LeaseTTL: e.effectLeaseTTL,
+		Now:      e.now(),
+	})
+	if err != nil {
+		return result.Workflow, err
+	}
+	return result.Workflow, nil
+}
+
 func effectClaimFence(err error) bool {
 	return errors.Is(err, ErrEffectClaimConflict) ||
 		errors.Is(err, ErrEffectAlreadyComplete) ||
@@ -230,6 +243,40 @@ func (e *Execution) CompleteEffect(claim EffectClaim) (EffectClaimResult, error)
 	return EffectClaimResult{
 		Record:    cloneEffectRecord(*rec),
 		Completed: true,
+	}, nil
+}
+
+func (e *Execution) ReleaseEffect(claim EffectClaim) (EffectClaimResult, error) {
+	if e == nil {
+		return EffectClaimResult{}, errors.New("workflow execution is nil")
+	}
+	if err := claim.validate(); err != nil {
+		return EffectClaimResult{}, err
+	}
+
+	rec, found := e.effectRecord(claim.EffectID)
+	if !found {
+		return EffectClaimResult{}, ErrEffectClaimLost
+	}
+	if rec.CompletedAt != nil {
+		return EffectClaimResult{
+			Record:    cloneEffectRecord(*rec),
+			Completed: true,
+		}, ErrEffectAlreadyComplete
+	}
+	if rec.Owner != claim.Owner || !rec.leaseActiveAt(claim.Now) {
+		return EffectClaimResult{Record: cloneEffectRecord(*rec)}, ErrEffectClaimLost
+	}
+	record := cloneEffectRecord(*rec)
+	for i := range e.EffectLog {
+		if e.EffectLog[i].ID.Equal(claim.EffectID) {
+			e.EffectLog = append(e.EffectLog[:i], e.EffectLog[i+1:]...)
+			break
+		}
+	}
+	return EffectClaimResult{
+		Record:   record,
+		Acquired: false,
 	}, nil
 }
 

@@ -110,7 +110,7 @@ func (e *Engine) rewindRetry(taskID string, wfExec *Execution, t TaskInfo, p rew
 		wfExec.SetVar(fpKey, p.fingerprint)
 		wfExec.SetVar(fpCountKey, strconv.Itoa(count))
 	}
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(p.backoff(attempts)).Format(time.RFC3339))
+	wfExec.SetVar(workflowRetryAfterVar, e.now().Add(p.backoff(attempts)).Format(time.RFC3339))
 	if p.onArm != nil {
 		p.onArm(wfExec, attempt)
 	}

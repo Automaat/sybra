@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/worktreeerr"
@@ -607,18 +608,21 @@ func TestSurfaceStartFailure_CircuitBreakerResetsAfterWindow(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 	engine := NewEngine(nil, tasks, newMockAgents(), discardLogger())
+	fakeClock := clock.NewFake(time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC))
+	engine.SetClock(fakeClock)
 
 	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed)
-	old := time.Now().Add(-2 * circuitBreakerWindow).Format(time.RFC3339)
+	firstFailureAt := fakeClock.Now().Format(time.RFC3339)
 	wf := &Execution{
 		CurrentStep: "run_test",
 		State:       ExecRunning,
 		Variables: map[string]string{
-			circuitBreakerFirstKey("run_test"):   old,
+			circuitBreakerFirstKey("run_test"):   firstFailureAt,
 			circuitBreakerFailureKey("run_test"): strconv.Itoa(maxCircuitBreakerFailures),
 		},
 	}
 
+	fakeClock.Advance(2 * circuitBreakerWindow)
 	engine.surfaceStartFailure("t1", "todo", wrapped, wf, "run_test")
 
 	if wf.State == ExecFailed {

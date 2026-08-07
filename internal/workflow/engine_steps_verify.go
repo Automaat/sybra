@@ -527,7 +527,7 @@ func (e *Engine) rearmNoCommitAuthorRun(taskID string, wfExec *Execution, t Task
 	}
 	wfExec.SetVar(counterKey, "1")
 	wfExec.SetVar(verifyReaskNoteVar, noCommitReaskNote(run))
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(verifyChecksAutoFixBackoff).Format(time.RFC3339))
+	wfExec.SetVar(workflowRetryAfterVar, e.now().Add(verifyChecksAutoFixBackoff).Format(time.RFC3339))
 	wfExec.ClearStepRecords(stepID)
 	wfExec.CurrentStep = stepID
 	wfExec.State = ExecWaiting

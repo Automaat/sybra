@@ -82,6 +82,44 @@ func (e *Engine) recordEvidence(taskID, stepID, criterion string, proofType evid
 	}
 }
 
+// recordVerifyChecksEvidence mirrors recordEvidence but additionally stamps
+// TreeSHA/ChecksHash on the entry, binding it to the exact worktree tree and
+// verify-command set that produced it. Only ever called for a clean (exit 0)
+// verify_checks pass — see execVerifyChecks — so a later run against the same
+// tree and commands can memo-hit via verifyChecksCacheHit instead of
+// re-executing the suite. A failing run keeps using plain recordEvidence
+// (unstamped), which is correct: failures are never memoized.
+func (e *Engine) recordVerifyChecksEvidence(taskID, stepID, command, result, treeSHA, checksHash string) {
+	if e.evidenceRecorder == nil || e.worktrees == nil {
+		return
+	}
+	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+
+	entry := evidence.CriterionEvidence{
+		Criterion:    evidenceCriterionVerifyChecks,
+		ProofType:    evidence.ProofDeterministicCheck,
+		Command:      command,
+		ExitStatus:   0,
+		ResultDigest: evidence.Digest(result),
+		BaseRev:      resolveOriginBase(ctx, wtPath),
+		FinalRev:     revParseCommit(ctx, wtPath, "HEAD"),
+		Backend:      evidenceBackendIdentity(),
+		StepID:       stepID,
+		Timestamp:    time.Now().UTC(),
+		TreeSHA:      treeSHA,
+		ChecksHash:   checksHash,
+	}
+	if err := e.evidenceRecorder.AppendCriterion(taskID, entry); err != nil {
+		e.logger.Warn("workflow.evidence.append-failed",
+			"task_id", taskID, "criterion", evidenceCriterionVerifyChecks, "err", err)
+	}
+}
+
 // refreshReviewEvidenceFreshness re-stamps the existing review criterion
 // evidence to the task's current HEAD after a fix-review step's commits land.
 // It exists to close the single-pass review gap: with agent.review_until_clean

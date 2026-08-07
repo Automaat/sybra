@@ -276,7 +276,54 @@ func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
 	}
 }
 
-func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, effectIDs ...EffectID) error {
+func resolveRunAgentDir(step *Step, wfExec *Execution, ctx TemplateContext) (string, error) {
+	dir := ""
+	if wfExec != nil {
+		dir = wfExec.Variables[WorkflowVarDir]
+	}
+	if step.Config.Dir == "" {
+		return dir, nil
+	}
+	renderedDir, err := RenderTemplate(step.Config.Dir, ctx)
+	if err != nil {
+		return "", fmt.Errorf("render dir: %w", err)
+	}
+	if strings.TrimSpace(renderedDir) == "" {
+		return "", errors.New("render dir: resolved to empty path")
+	}
+	return renderedDir, nil
+}
+
+func (e *Engine) releaseRunAgentClaimOnAbort(taskID string, claimedEffectID EffectID, agentStarted bool, runErr error, recovered any) error {
+	releaseClaim := func(current error) error {
+		if claimedEffectID.IsZero() || agentStarted {
+			return current
+		}
+		if _, relErr := e.releaseClaimedEffect(taskID, claimedEffectID); relErr != nil {
+			if effectClaimFence(relErr) {
+				return current
+			}
+			if current == nil {
+				return fmt.Errorf("release claimed effect: %w", relErr)
+			}
+			return errors.Join(current, fmt.Errorf("release claimed effect: %w", relErr))
+		}
+		return current
+	}
+	if recovered != nil {
+		_ = releaseClaim(runErr)
+		panic(recovered)
+	}
+	if runErr != nil {
+		return releaseClaim(runErr)
+	}
+	return nil
+}
+
+func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, effectIDs ...EffectID) (runErr error) {
+	if wfExec == nil {
+		wfExec = &Execution{Variables: maps.Clone(ctx.Vars)}
+	}
 	prepareTestVerdictAttemptVars(wfExec, step.ID, ctx.Task.Body)
 	// Seed the sidecar dir before anything renders a template. Setting it only
 	// after dispatch would leave the first run of a verifier role resolving
@@ -292,6 +339,15 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	}
 	unlockRoute := e.routeLocks.LockLocal(taskID)
 	defer unlockRoute()
+
+	claimedEffectID := EffectID{}
+	if len(effectIDs) > 0 {
+		claimedEffectID = effectIDs[0]
+	}
+	agentStarted := false
+	defer func() {
+		runErr = e.releaseRunAgentClaimOnAbort(taskID, claimedEffectID, agentStarted, runErr, recover())
+	}()
 
 	mode := resolveRunAgentMode(step.Config.Mode, ctx)
 	if admit, reason := e.agents.AdmitDispatch(taskID, step.Config.Role, mode); !admit {
@@ -330,16 +386,9 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		}
 	}
 
-	dir := wfExec.Variables[WorkflowVarDir]
-	if step.Config.Dir != "" {
-		renderedDir, dErr := RenderTemplate(step.Config.Dir, ctx)
-		if dErr != nil {
-			return fmt.Errorf("render dir: %w", dErr)
-		}
-		if strings.TrimSpace(renderedDir) == "" {
-			return errors.New("render dir: resolved to empty path")
-		}
-		dir = renderedDir
+	dir, err := resolveRunAgentDir(step, wfExec, ctx)
+	if err != nil {
+		return err
 	}
 	cleanRetryKey := watchdogHangCleanRetryKey(step.ID)
 	cleanRetryRef := wfExec.Variables[cleanRetryKey]
@@ -366,14 +415,6 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// blocking still sees a durable "dispatch in progress" claim via
 	// routeStepPending. Do not hold e.mu across StartAgent: review recovery can
 	// legitimately try to queue another workflow while the launcher is blocked.
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			if len(effectIDs) > 0 {
-				e.clearPendingStepEffect(taskID, effectIDs[0])
-			}
-			panic(recovered)
-		}
-	}()
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
 	if err != nil {
 		if parked, parkErr := e.parkRunAgentStartError(taskID, step.ID, wfExec, err); parked {
@@ -381,6 +422,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		}
 		return fmt.Errorf("start agent: %w", err)
 	}
+	agentStarted = true
 	return e.persistStartedAgent(taskID, step, wfExec, agentID, provider, startedDir, baselineRef, cleanRetryKey, cleanRetryRef, dir)
 }
 

@@ -106,34 +106,35 @@ func (s *monitorRoutingSink) Submit(ctx context.Context, a monitor.Anomaly, body
 // GitHub issue; for everything else it delegates to the wrapped sink (if
 // that sink implements IssueCloser too — the production GH sink does).
 func (s *monitorRoutingSink) CloseIfOpen(ctx context.Context, a monitor.Anomaly, comment string) (bool, error) {
-	wctx := s.lookupWorkContext(a.TaskID)
-	if wctx == nil {
-		closer, ok := s.inner.(monitor.IssueCloser)
-		if !ok {
-			return false, nil
-		}
-		return closer.CloseIfOpen(ctx, a, comment)
+	title := ""
+	if wctx := s.lookupWorkContext(a.TaskID); wctx != nil {
+		title, _ = scrub.Scrub(monitor.IssueTitle(a.Kind, a.Fingerprint), wctx.Blocklist)
 	}
-	title, _ := scrub.Scrub(monitor.IssueTitle(a.Kind, a.Fingerprint), wctx.Blocklist)
-	existing, ok := s.findOpen(title, a.Fingerprint)
+	if existing, ok := s.findOpen(title, a.Fingerprint); ok {
+		scrubbedComment := comment
+		if wctx := s.lookupWorkContext(a.TaskID); wctx != nil {
+			scrubbedComment, _ = scrub.Scrub(comment, wctx.Blocklist)
+		}
+		appended := appendRedetectedNote(existing.Body, scrubbedComment, s.now())
+		if _, err := s.tasks.Apply(task.TransitionIntent{
+			TaskID:   existing.ID,
+			ToStatus: task.StatusDone,
+			Actor:    "monitor.routing.local_autoclose",
+			Extra: task.Update{
+				Body: &appended,
+			},
+		}); err != nil {
+			s.logger.Warn("monitor.routing.local.close", "task_id", existing.ID, "err", err)
+			return false, err
+		}
+		s.logger.Info("monitor.routing.local.autoclose", "kind", a.Kind, "src_task_id", a.TaskID, "task_id", existing.ID)
+		return true, nil
+	}
+	closer, ok := s.inner.(monitor.IssueCloser)
 	if !ok {
 		return false, nil
 	}
-	scrubbedComment, _ := scrub.Scrub(comment, wctx.Blocklist)
-	appended := appendRedetectedNote(existing.Body, scrubbedComment, s.now())
-	if _, err := s.tasks.Apply(task.TransitionIntent{
-		TaskID:   existing.ID,
-		ToStatus: task.StatusDone,
-		Actor:    "monitor.routing.local_autoclose",
-		Extra: task.Update{
-			Body: &appended,
-		},
-	}); err != nil {
-		s.logger.Warn("monitor.routing.local.close", "task_id", existing.ID, "err", err)
-		return false, err
-	}
-	s.logger.Info("monitor.routing.local.autoclose", "kind", a.Kind, "src_task_id", a.TaskID, "task_id", existing.ID)
-	return true, nil
+	return closer.CloseIfOpen(ctx, a, comment)
 }
 
 func (s *monitorRoutingSink) dispatchCreatedWorkflow(taskID string) {

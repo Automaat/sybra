@@ -280,6 +280,119 @@ func TestExecVerifyChecks_FailureFlags(t *testing.T) {
 	}
 }
 
+// TestExecVerifyChecks_CacheHitSkipsUnchangedTree is the memoization happy
+// path: a second execVerifyChecks call against the same tree SHA and verify
+// commands must not re-run the suite at all — the counter file (written
+// outside the worktree, so it cannot itself perturb the tree SHA the second
+// call computes) proves the command executed exactly once.
+func TestExecVerifyChecks_CacheHitSkipsUnchangedTree(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	counter := filepath.Join(t.TempDir(), "count")
+	cmd := "echo run >> " + counter
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
+	engine.SetEvidenceRecorder(newFakeEvidenceRecorder())
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	out1, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("first run: unexpected error: %v", err)
+	}
+	if out1.Output != "clean" {
+		t.Fatalf("first run: Output = %q, want clean", out1.Output)
+	}
+
+	out2, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("second run: unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(out2.Output, "clean (cached:") {
+		t.Fatalf("second run: Output = %q, want a cache-hit output", out2.Output)
+	}
+
+	runs, err := os.ReadFile(counter)
+	if err != nil {
+		t.Fatalf("expected counter file to exist: %v", err)
+	}
+	if got := strings.Count(string(runs), "run"); got != 1 {
+		t.Fatalf("verify command ran %d times, want exactly 1 (second call should have hit the cache)", got)
+	}
+}
+
+// TestExecVerifyChecks_WorktreeEditForcesRerun proves a changed tree SHA
+// invalidates the memo: editing a tracked file between two otherwise-identical
+// execVerifyChecks calls must force the suite to run again.
+func TestExecVerifyChecks_WorktreeEditForcesRerun(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	counter := filepath.Join(t.TempDir(), "count")
+	cmd := "echo run >> " + counter
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
+	engine.SetEvidenceRecorder(newFakeEvidenceRecorder())
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	if _, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"}); err != nil {
+		t.Fatalf("first run: unexpected error: %v", err)
+	}
+
+	writeRepoFile(t, wt, "README.md", "changed\n")
+
+	out2, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("second run: unexpected error: %v", err)
+	}
+	if out2.Output != "clean" {
+		t.Fatalf("second run: Output = %q, want a fresh clean run (not cached)", out2.Output)
+	}
+
+	runs, err := os.ReadFile(counter)
+	if err != nil {
+		t.Fatalf("expected counter file to exist: %v", err)
+	}
+	if got := strings.Count(string(runs), "run"); got != 2 {
+		t.Fatalf("verify command ran %d times, want exactly 2 (tree edit should have forced a re-run)", got)
+	}
+}
+
+// TestExecVerifyChecks_CommandChangeForcesRerun proves a changed verify
+// commands set invalidates the memo even against the identical tree SHA.
+func TestExecVerifyChecks_CommandChangeForcesRerun(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	counter := filepath.Join(t.TempDir(), "count")
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
+	getter := &fakeCheckGetter{cmds: []string{"echo run >> " + counter}}
+	engine.SetCheckConfigGetter(getter)
+	engine.SetEvidenceRecorder(newFakeEvidenceRecorder())
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	if _, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"}); err != nil {
+		t.Fatalf("first run: unexpected error: %v", err)
+	}
+
+	getter.cmds = []string{"echo run >> " + counter, "true"}
+
+	out2, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("second run: unexpected error: %v", err)
+	}
+	if out2.Output != "clean" {
+		t.Fatalf("second run: Output = %q, want a fresh clean run (not cached)", out2.Output)
+	}
+
+	runs, err := os.ReadFile(counter)
+	if err != nil {
+		t.Fatalf("expected counter file to exist: %v", err)
+	}
+	if got := strings.Count(string(runs), "run"); got != 2 {
+		t.Fatalf("verify command ran %d times, want exactly 2 (commands change should have forced a re-run)", got)
+	}
+}
+
 func TestBoundedTail_UnderCapKeepsEverything(t *testing.T) {
 	t.Parallel()
 	tail := &boundedTail{max: 100}
