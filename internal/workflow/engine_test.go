@@ -4726,7 +4726,7 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 			freshUsed:        true,
 			since:            time.Now().Add(-1 * time.Hour),
 			wantStarts:       0,
-			wantStatus:       "in-progress",
+			wantStatus:       taskstatus.InProgress,
 			wantReason:       watchdogreason.RateLimit(watchdogreason.ZeroOutputBeforeStartup),
 			wantRetry:        "0",
 			wantFresh:        "1",
