@@ -395,7 +395,7 @@ func isAlphaNumeric(b byte) bool {
 
 func hasStandaloneCode(lower, code string) bool {
 	for token := range strings.FieldsFuncSeq(lower, func(r rune) bool {
-		return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z')
+		return (r < '0' || r > '9') && (r < 'a' || r > 'z')
 	}) {
 		if token == code {
 			return true
