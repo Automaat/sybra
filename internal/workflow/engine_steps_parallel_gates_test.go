@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 func newParallelGatesStep() *Step { return &Step{ID: "parallel_gates", Type: StepParallelGates} }
@@ -33,11 +35,10 @@ func workflowSurfaceFocusedCheck(cmds ...string) []project.FocusedCheck {
 }
 
 // TestExecParallelGates_RunsGatesConcurrently proves focused_checks and
-// verify_checks overlap instead of running serially: each sleeps 500ms, so a
-// serial chain would take >=1s while running them concurrently finishes well
-// under that. The margin (850ms) is chosen wide enough to absorb scheduler
-// overhead without flaking, while still being far below the 1s a serial run
-// would take.
+// verify_checks overlap instead of running serially: each publishes a marker
+// and refuses to finish until it observes its peer's marker. A serial
+// implementation therefore fails deterministically instead of relying on a
+// wall-clock threshold that flakes under package-wide parallel test load.
 func TestExecParallelGates_RunsGatesConcurrently(t *testing.T) {
 	t.Parallel()
 
@@ -46,21 +47,23 @@ func TestExecParallelGates_RunsGatesConcurrently(t *testing.T) {
 	gitRun(t, wt, "add", ".")
 	gitRun(t, wt, "commit", "-m", "feat: touch workflow")
 
+	barrier := t.TempDir()
+	focusedMarker := filepath.Join(barrier, "focused")
+	verifyMarker := filepath.Join(barrier, "verify")
+	waitForPeer := func(own, peer string) string {
+		return fmt.Sprintf("touch %q; i=0; while [ ! -f %q ] && [ $i -lt 100 ]; do sleep 0.02; i=$((i+1)); done; [ -f %q ]", own, peer, peer)
+	}
 	engine, tasks := newParallelGatesEngine(t, wt,
-		workflowSurfaceFocusedCheck("sleep 0.5"), []string{"sleep 0.5"})
+		workflowSurfaceFocusedCheck(waitForPeer(focusedMarker, verifyMarker)),
+		[]string{waitForPeer(verifyMarker, focusedMarker)})
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 
-	start := time.Now()
 	out, err := engine.execParallelGates("t1", newParallelGatesStep(), nil, TaskInfo{ID: "t1", Status: "in-progress"})
-	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean", out.Output)
-	}
-	if elapsed >= 850*time.Millisecond {
-		t.Fatalf("elapsed = %s, want well under 1s (gates should overlap, not run serially)", elapsed)
 	}
 }
 
@@ -86,6 +89,35 @@ func TestExecParallelGates_AllCleanAdvances(t *testing.T) {
 	}
 	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "in-progress" {
 		t.Fatalf("status = %q, want unchanged in-progress", ti.Status)
+	}
+}
+
+func TestExecParallelGates_VerificationFatalPreventsFocusedRewind(t *testing.T) {
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	writeRepoFile(t, wt, "internal/workflow/model.go", "package workflow\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: touch workflow")
+	engine, tasks := newParallelGatesEngine(t, wt,
+		workflowSurfaceFocusedCheck("false"), []string{"true"})
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	mgr := &copyingVerificationManager{root: t.TempDir(), finalizeErr: errors.New("source moved")}
+	engine.execution.Verification = mgr
+	wf := &Execution{CurrentStep: "parallel_gates", State: ExecRunning}
+	now := time.Now()
+	wf.RecordStep(StepRecord{StepID: verifyChecksImplStepID, Status: "completed", StartedAt: now, EndedAt: now})
+
+	_, err := engine.execParallelGates("t1", newParallelGatesStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if err == nil || !strings.Contains(err.Error(), "source moved") {
+		t.Fatalf("execParallelGates error = %v, want source movement", err)
+	}
+	if got := mustGetTaskInfo(t, tasks, "t1").Status; got != "in-progress" {
+		t.Fatalf("task status = %q, want unchanged", got)
+	}
+	if wf.CountStep(verifyChecksImplStepID) == 0 {
+		t.Fatal("focused rewind mutated workflow before verification fatal error")
+	}
+	if len(wf.Variables) != 0 {
+		t.Fatalf("workflow variables mutated before verification fatal error: %v", wf.Variables)
 	}
 }
 
@@ -340,7 +372,7 @@ func TestResumeStalled_ResumesParkedParallelGates(t *testing.T) {
 	waitForTestFile(t, filepath.Join(wt1, ".verify-entered"))
 
 	parked, _ := tasks.GetTask("t2")
-	_, err := engine.execParallelGates("t2", newParallelGatesStep(), parked.Workflow, TaskInfo{ID: "t2", Status: "in-progress"})
+	_, err := engine.execParallelGates("t2", newParallelGatesStep(), parked.Workflow, TaskInfo{ID: "t2", Status: taskstatus.InProgress})
 	if !errors.Is(err, errStepParked) {
 		t.Fatalf("err = %v, want errStepParked (verify slot is held by t1)", err)
 	}
@@ -397,9 +429,9 @@ func TestExecParallelGates_FocusedUnconfiguredDegradesToTamperAndVerify(t *testi
 	gitRun(t, wt, "commit", "-m", "feat: touch workflow")
 
 	engine, tasks := newParallelGatesEngine(t, wt, nil, []string{"true"})
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress})
 
-	out, err := engine.execParallelGates("t1", newParallelGatesStep(), nil, TaskInfo{ID: "t1", Status: "in-progress"})
+	out, err := engine.execParallelGates("t1", newParallelGatesStep(), nil, TaskInfo{ID: "t1", Status: taskstatus.InProgress})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

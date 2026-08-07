@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +27,7 @@ import (
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	synapsegithub "github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
@@ -348,6 +350,15 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	logger := e2eLogger(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
+	approvalServer, err := agent.NewApprovalServer(ctx, func(string, any) {}, logger, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		_ = approvalServer.Shutdown(shutdownCtx)
+		shutdownCancel()
+	})
 
 	logDir, err := os.MkdirTemp("", "sybra-e2e-logs-*")
 	if err != nil {
@@ -358,15 +369,26 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	var env *e2eEnv
 	var engine *workflow.Engine
 	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, logger, logDir, agent.ManagerConfig{
-		Runtime:     agent.ManagerRuntimeConfig{DefaultProvider: provider},
-		Artifacts:   artifactStore,
-		ControlHome: taskDir,
+		Runtime:       agent.ManagerRuntimeConfig{DefaultProvider: provider},
+		Artifacts:     artifactStore,
+		ControlHome:   taskDir,
+		ApprovalAddr:  approvalServer.Addr(),
+		ControlTarget: approvalServer.Addr(),
+		ControlToken:  approvalServer.VerifierToken,
 		OnComplete: func(ag *agent.Agent) {
 			env.pendingCompletions.Add(1)
 			defer env.pendingCompletions.Add(-1)
 			env.onAgentComplete(ag)
 		},
 	})
+	approvalServer.SetManager(agentMgr)
+	controlMux := http.NewServeMux()
+	httpapi.Mount(controlMux, map[string]httpapi.Service{
+		"TaskService": httpapi.NewService(&TaskService{
+			tasks: taskMgr, agents: agentMgr, logger: logger, cfg: config.DefaultConfig(),
+		}, "GetTask", "UpdateTask").WithReadOnly("GetTask"),
+	}, logger, nil)
+	approvalServer.SetVerifierControl(controlMux)
 
 	wfDir, err := os.MkdirTemp("", "sybra-e2e-wf-*")
 	if err != nil {

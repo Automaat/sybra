@@ -47,8 +47,14 @@ func (e *Engine) execParallelGates(taskID string, step *Step, wfExec *Execution,
 	if parked != nil {
 		return *parked, err
 	}
+	if err != nil {
+		return StepOutput{}, err
+	}
 	if verifyPre.releaseSlot != nil {
 		defer verifyPre.releaseSlot()
+	}
+	if verifyPre.workspace.ID != "" {
+		defer e.execution.Verification.ReleaseVerification(verifyPre.workspace)
 	}
 
 	tamperStep := &Step{ID: gateTamperStepID}
@@ -71,8 +77,7 @@ func (e *Engine) execParallelGates(taskID string, step *Step, wfExec *Execution,
 	})
 	if verifyPre.needsRun {
 		wg.Go(func() {
-			verifyVerdict = e.computeVerifyChecksVerdict(taskID, verifyStep, verifyPre.wtPath, verifyPre.cmds, verifyPre.timeout)
-			verifyVerdict.treeSHA, verifyVerdict.checksHash = verifyPre.treeSHA, verifyPre.checksHash
+			verifyVerdict = e.computeVerifyChecksVerdict(taskID, verifyStep, verifyPre)
 		})
 	}
 	wg.Wait()
@@ -82,6 +87,12 @@ func (e *Engine) execParallelGates(taskID string, step *Step, wfExec *Execution,
 	}
 	if focusedVerdict.err != nil {
 		return StepOutput{}, focusedVerdict.err
+	}
+	if verifyVerdict.fatalErr != nil {
+		return StepOutput{}, verifyVerdict.fatalErr
+	}
+	if err := e.validateVerificationWorkspace(verifyPre.workspace); err != nil {
+		return StepOutput{}, err
 	}
 
 	return e.resolveParallelGates(taskID, step, wfExec, t, tamperOut, focusedStep, focusedVerdict, verifyStep, verifyPre, verifyVerdict)
@@ -98,6 +109,12 @@ type verifyChecksPreflight struct {
 	cmds                []string
 	timeout             time.Duration
 	treeSHA, checksHash string
+	sourceRev           string
+	evidenceCommands    []string
+	workspace           VerificationWorkspace
+	setupFailedCmd      string
+	setupOutput         string
+	setupErr            error
 	releaseSlot         func()
 	// precomputed holds the final StepOutput when verify_checks resolved
 	// without needing to run the suite at all.
@@ -125,13 +142,6 @@ func (e *Engine) preflightVerifyChecks(taskID string, step *Step, wfExec *Execut
 		return verifyChecksPreflight{precomputed: &out}, nil, nil
 	}
 
-	treeSHA, checksHash := e.verifyChecksCacheKey(e.ctx, wtPath, cmds)
-	if treeSHA != "" {
-		if out, hit := e.verifyChecksCacheHit(taskID, verifyStep, wtPath, treeSHA, checksHash); hit {
-			return verifyChecksPreflight{precomputed: &out}, nil, nil
-		}
-	}
-
 	slot := e.verifyChecksSlot()
 	release, ok := e.acquireVerifyChecksSlot(slot)
 	if !ok {
@@ -154,20 +164,43 @@ func (e *Engine) preflightVerifyChecks(taskID string, step *Step, wfExec *Execut
 		}
 	}
 
-	if e.repairCorruptedNodeModules(e.ctx, taskID, wtPath) {
-		e.logger.Warn("workflow.verify-checks.node-modules-repair-unresolved", "task_id", taskID)
-		out, ferr := e.flagVerifyChecks(taskID, verifyStep,
-			"verify suite could not repair corrupted node_modules before running checks — rerun setup or fix the toolchain state",
-			"node_modules-repair")
+	workspace, verifyPath, prepErr := e.prepareVerificationWorkspace(taskID, verifyStep.ID, wtPath)
+	if prepErr != nil {
 		release()
-		return verifyChecksPreflight{precomputed: &out}, nil, ferr
+		return verifyChecksPreflight{}, nil, prepErr
 	}
-	e.repairTornNodeModules(e.ctx, taskID, wtPath)
-
-	return verifyChecksPreflight{
-		needsRun: true, wtPath: wtPath, cmds: cmds, timeout: timeout,
-		treeSHA: treeSHA, checksHash: checksHash, releaseSlot: release,
-	}, nil, nil
+	pre = verifyChecksPreflight{
+		needsRun: true, wtPath: verifyPath, cmds: cmds, timeout: timeout,
+		workspace: workspace, releaseSlot: release,
+	}
+	pre.setupFailedCmd, pre.setupOutput, pre.setupErr = "", "", nil
+	setupCommands, failedCmd, setupOutput, setupErr := e.runDisposableVerificationSetup(
+		e.ctx, taskID, verifyPath, workspace, timeout,
+	)
+	pre.setupFailedCmd, pre.setupOutput, pre.setupErr = failedCmd, setupOutput, setupErr
+	pre.evidenceCommands = append(append([]string(nil), setupCommands...), cmds...)
+	pre.treeSHA, pre.checksHash = e.verifyChecksCacheKey(e.ctx, verifyPath, pre.evidenceCommands)
+	pre.sourceRev = revParseCommit(e.ctx, verifyPath, "HEAD")
+	if workspace.ID != "" {
+		pre.sourceRev = workspace.SourceSHA
+	}
+	if failedCmd == "" && setupErr == nil && pre.treeSHA != "" {
+		out, hit, cacheErr := e.validVerificationCacheHit(
+			taskID, verifyStep, workspace, pre.sourceRev, pre.treeSHA, pre.checksHash, pre.evidenceCommands,
+		)
+		if cacheErr != nil {
+			if workspace.ID != "" {
+				e.execution.Verification.ReleaseVerification(workspace)
+			}
+			release()
+			return verifyChecksPreflight{}, nil, cacheErr
+		}
+		if hit {
+			pre.needsRun = false
+			pre.precomputed = &out
+		}
+	}
+	return pre, nil, nil
 }
 
 // resolveParallelGates applies the joined gate results in a fixed
@@ -365,6 +398,9 @@ func (e *Engine) isShutdownCancel(err error) bool {
 // engine-shutdown cancellation) and a classified non-auto-fixable failure
 // blocks. Only the auto-fixable failure path can rewind.
 func (e *Engine) verifyVerdictTerminal(v verifyChecksVerdict) bool {
+	if v.fatalErr != nil || v.unrepaired {
+		return true
+	}
 	if v.runErr != nil {
 		return !e.isShutdownCancel(v.runErr)
 	}

@@ -1,5 +1,32 @@
 package workflow
 
+import (
+	"context"
+	"io"
+)
+
+// VerificationWorkspace is a writable, disposable clone pinned to SourceSHA.
+// Its concrete lease remains owned by the application adapter.
+type VerificationWorkspace struct {
+	ID        string
+	Dir       string
+	SourceSHA string
+}
+
+// VerificationWorkspaceManager isolates deterministic verifier mutations from
+// the authoritative task checkout. Implementations must make Release
+// idempotent and Finalize must reject evidence after source movement.
+type VerificationWorkspaceManager interface {
+	PrepareVerification(context.Context, string, string, string) (VerificationWorkspace, error)
+	FinalizeVerification(context.Context, VerificationWorkspace, []string, string) error
+	ValidateVerification(context.Context, VerificationWorkspace) error
+	ReleaseVerification(VerificationWorkspace)
+}
+
+type VerificationCommandRunner interface {
+	RunVerificationCommand(context.Context, string, string, string, []string, io.Writer) error
+}
+
 // AgentCompletion carries the result of an agent run to the workflow engine.
 // Using a typed struct instead of positional string args makes the
 // success/failure contract explicit and independent of agent package constants.
