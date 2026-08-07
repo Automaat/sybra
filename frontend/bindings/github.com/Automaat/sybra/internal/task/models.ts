@@ -1037,38 +1037,38 @@ export class Update {
      * Creates a new Update instance from a string or object.
      */
     static createFrom($$source: any = {}): Update {
-        const $$createField4_0 = $$createType14;
-        const $$createField6_0 = $$createType15;
-        const $$createField9_0 = $$createType16;
-        const $$createField10_0 = $$createType17;
-        const $$createField14_0 = $$createType16;
-        const $$createField32_0 = $$createType18;
-        const $$createField51_0 = $$createType19;
-        const $$createField52_0 = $$createType20;
+        const $$createField5_0 = $$createType14;
+        const $$createField7_0 = $$createType15;
+        const $$createField11_0 = $$createType16;
+        const $$createField12_0 = $$createType17;
+        const $$createField16_0 = $$createType16;
+        const $$createField34_0 = $$createType18;
+        const $$createField53_0 = $$createType19;
+        const $$createField54_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("Escalation" in $$parsedSource) {
-            $$parsedSource["Escalation"] = $$createField4_0($$parsedSource["Escalation"]);
+            $$parsedSource["Escalation"] = $$createField5_0($$parsedSource["Escalation"]);
         }
         if ("Blocker" in $$parsedSource) {
-            $$parsedSource["Blocker"] = $$createField6_0($$parsedSource["Blocker"]);
+            $$parsedSource["Blocker"] = $$createField7_0($$parsedSource["Blocker"]);
         }
         if ("DependsOn" in $$parsedSource) {
-            $$parsedSource["DependsOn"] = $$createField9_0($$parsedSource["DependsOn"]);
+            $$parsedSource["DependsOn"] = $$createField11_0($$parsedSource["DependsOn"]);
         }
         if ("DependsOnConditions" in $$parsedSource) {
-            $$parsedSource["DependsOnConditions"] = $$createField10_0($$parsedSource["DependsOnConditions"]);
+            $$parsedSource["DependsOnConditions"] = $$createField12_0($$parsedSource["DependsOnConditions"]);
         }
         if ("Tags" in $$parsedSource) {
-            $$parsedSource["Tags"] = $$createField14_0($$parsedSource["Tags"]);
+            $$parsedSource["Tags"] = $$createField16_0($$parsedSource["Tags"]);
         }
         if ("Workflow" in $$parsedSource) {
-            $$parsedSource["Workflow"] = $$createField32_0($$parsedSource["Workflow"]);
+            $$parsedSource["Workflow"] = $$createField34_0($$parsedSource["Workflow"]);
         }
         if ("Attachments" in $$parsedSource) {
-            $$parsedSource["Attachments"] = $$createField51_0($$parsedSource["Attachments"]);
+            $$parsedSource["Attachments"] = $$createField53_0($$parsedSource["Attachments"]);
         }
         if ("EffectLog" in $$parsedSource) {
-            $$parsedSource["EffectLog"] = $$createField52_0($$parsedSource["EffectLog"]);
+            $$parsedSource["EffectLog"] = $$createField54_0($$parsedSource["EffectLog"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }
