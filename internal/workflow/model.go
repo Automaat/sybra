@@ -229,6 +229,14 @@ const (
 	// human-required with a terminal blocker.KindOperatorDecision — a human
 	// must re-run the missing proof, not retry the same dispatch.
 	StepRequireEvidence StepType = "require_evidence"
+	// StepParallelGates runs the three deterministic post-implement gates —
+	// detect_tampering, focused_checks, verify_checks — concurrently instead
+	// of serially, then routes on their joined outcome. Each gate still
+	// records its own evidence/verdict independently (see
+	// execParallelGates, engine_steps_parallel_gates.go); this only
+	// overlaps their wall-clock, it does not change what any individual gate
+	// decides. Synchronous (no run_agent children, unlike StepParallel).
+	StepParallelGates StepType = "parallel_gates"
 )
 
 type stepReducerKind uint8
@@ -296,6 +304,10 @@ func init() {
 		StepClassifyTask:         {sync: bindSyncExecStep((*Engine).execClassifyTask), reducer: stepReducerDispatch, resumable: true},
 		StepAdmissionPreflight:   {sync: bindSyncExecTaskInfoStep((*Engine).execAdmissionPreflight), reducer: stepReducerDispatch, resumable: true},
 		StepRequireEvidence:      {sync: bindSyncTaskInfoStep((*Engine).execRequireEvidence), reducer: stepReducerDispatch},
+		// resumable: the coordinator parks itself on verify backpressure (see
+		// preflightVerifyChecks), so ResumeStalled must be able to re-enter it
+		// once a verify slot frees.
+		StepParallelGates: {sync: bindSyncExecTaskInfoStep((*Engine).execParallelGates), reducer: stepReducerDispatch, resumable: true},
 	}
 }
 

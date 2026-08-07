@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1315,6 +1316,50 @@ func TestEnsureNodeToolchain_IntactBinSkipsRepair(t *testing.T) {
 	}
 }
 
+// TestEnsureNodeToolchain_ConcurrentCallersInstallOnce covers the fan-out
+// hazard execParallelGates introduced: focused_checks and verify_checks run
+// concurrently against the SAME worktree, and an absent node_modules is left
+// alone by the pre-fan-out repair (never installed is not corruption), so both
+// gates can reach this repair path for one directory. Two `npm ci` runs each
+// delete and rewrite node_modules, tearing the install the other is about to
+// use. The repair must serialize per directory and re-check under the lock, so
+// exactly one install runs.
+func TestEnsureNodeToolchain_ConcurrentCallersInstallOnce(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "package.json"), "{}")
+	// node_modules/.bin absent: the "never installed" shape both gates see.
+
+	runLog := filepath.Join(t.TempDir(), "npm-runs.log")
+	fakeBin := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"echo run >> " + runLog + "\n" +
+		"sleep 0.2\n" +
+		"mkdir -p node_modules/.bin\n" +
+		"printf '#!/bin/sh\\n' > node_modules/.bin/vite\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() {
+			engine.ensureNodeToolchain(context.Background(), "t1", dir, "npm run build:web", &boundedTail{max: 4096})
+		})
+	}
+	wg.Wait()
+
+	data, err := os.ReadFile(runLog)
+	if err != nil {
+		t.Fatalf("npm never ran: %v", err)
+	}
+	if runs := strings.Count(string(data), "run"); runs != 1 {
+		t.Fatalf("npm ci ran %d times, want exactly 1 — concurrent gates must not race two installs", runs)
+	}
+}
+
 func TestEnsureNodeToolchain_ResolvesCdPrefix(t *testing.T) {
 	root := t.TempDir()
 	frontend := filepath.Join(root, "frontend")
@@ -1858,6 +1903,13 @@ func TestExecVerifyChecks_RepairsCorruptedNodeModulesBeforeRunning(t *testing.T)
 	}
 }
 
+// TestBuiltinSimpleTaskImplement_VerifyChecksWiring pins verify_checks'
+// contribution to simple-task-implement now that it runs inside the
+// parallel_gates coordinator (see execParallelGates,
+// engine_steps_parallel_gates.go) alongside detect_tampering and
+// focused_checks rather than as its own serial step: a blocked or flagged
+// outcome still ends the workflow, and a clean one still proceeds to
+// set_ready_review.
 func TestBuiltinSimpleTaskImplement_VerifyChecksWiring(t *testing.T) {
 	t.Parallel()
 	defs, err := BuiltinDefinitions()
@@ -1875,27 +1927,30 @@ func TestBuiltinSimpleTaskImplement_VerifyChecksWiring(t *testing.T) {
 		t.Fatal("simple-task-implement builtin not found")
 		return
 	}
-	vc := impl.StepByID("verify_checks")
-	if vc == nil {
-		t.Fatal("verify_checks step missing from simple-task-implement")
+	gates := impl.StepByID("parallel_gates")
+	if gates == nil {
+		t.Fatal("parallel_gates step missing from simple-task-implement")
 		return
 	}
-	dt := impl.StepByID("detect_tampering")
-	if dt == nil {
-		t.Fatal("detect_tampering step missing")
+	if gates.Type != StepParallelGates {
+		t.Errorf("parallel_gates type = %q, want %q", gates.Type, StepParallelGates)
+	}
+	codegen := impl.StepByID("codegen_gate")
+	if codegen == nil {
+		t.Fatal("codegen_gate step missing")
 		return
 	}
-	if got, _ := ResolveTransition(dt.Next, map[string]string{"task.status": "in-progress"}); got != "verify_checks" {
-		t.Errorf("detect_tampering clean goto = %q, want verify_checks", got)
+	if got, _ := ResolveTransition(codegen.Next, map[string]string{"task.status": "in-progress"}); got != "parallel_gates" {
+		t.Errorf("codegen_gate clean goto = %q, want parallel_gates", got)
 	}
-	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "blocked"}); got != "" {
-		t.Errorf("blocked verify_checks goto = %q, want end", got)
+	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "blocked"}); got != "" {
+		t.Errorf("blocked parallel_gates goto = %q, want end", got)
 	}
-	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "human-required"}); got != "" {
-		t.Errorf("flagged verify_checks goto = %q, want end", got)
+	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "human-required"}); got != "" {
+		t.Errorf("flagged parallel_gates goto = %q, want end", got)
 	}
-	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "in-progress"}); got != "set_ready_review" {
-		t.Errorf("clean verify_checks goto = %q, want set_ready_review", got)
+	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "in-progress"}); got != "set_ready_review" {
+		t.Errorf("clean parallel_gates goto = %q, want set_ready_review", got)
 	}
 }
 

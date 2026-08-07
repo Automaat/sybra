@@ -196,6 +196,27 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 	}
 	e.repairTornNodeModules(e.ctx, taskID, wtPath)
 
+	v := e.computeVerifyChecksVerdict(taskID, step, wtPath, cmds, timeout)
+	v.treeSHA, v.checksHash = treeSHA, checksHash
+	return e.applyVerifyChecksVerdict(taskID, step, wfExec, t, v)
+}
+
+// verifyChecksVerdict is the pure result of running the verify suite: it
+// touches nothing but the (thread-safe) artifact store — no task status
+// write, no wfExec mutation — so it is safe to compute concurrently with the
+// other post-implement gates from execParallelGates. Caller must have
+// already resolved cmds/wtPath/timeout, acquired the verify slot, and run
+// toolchain repair.
+type verifyChecksVerdict struct {
+	report         verifyChecksReport
+	classification *verifyFailureClassification
+	runErr         error
+	timeout        time.Duration
+	treeSHA        string
+	checksHash     string
+}
+
+func (e *Engine) computeVerifyChecksVerdict(taskID string, step *Step, wtPath string, cmds []string, timeout time.Duration) verifyChecksVerdict {
 	failedCmd, output, runErr := e.runVerifySuiteWithRetry(e.ctx, taskID, wtPath, cmds, timeout, step.ID)
 
 	if failedCmd != "" && failureclassify.IsMissingToolchain(output) {
@@ -221,40 +242,47 @@ func (e *Engine) execVerifyChecks(taskID string, step *Step, wfExec *Execution, 
 		}
 	}
 
+	return verifyChecksVerdict{report: report, classification: classification, runErr: runErr, timeout: timeout}
+}
+
+// applyVerifyChecksVerdict persists a computeVerifyChecksVerdict result: task
+// status, evidence, and — on an auto-fixable failure — the rewind to
+// implement. Must run on the same goroutine that owns wfExec.
+func (e *Engine) applyVerifyChecksVerdict(taskID string, step *Step, wfExec *Execution, t TaskInfo, v verifyChecksVerdict) (StepOutput, error) {
 	// Engine-shutdown cancellation is the only fail-open: there is no point
 	// blocking work the engine is tearing down. Our own deadline fails CLOSED —
 	// otherwise an agent could hang a test past the budget to dodge the gate.
-	if runErr != nil {
-		if errors.Is(runErr, context.DeadlineExceeded) {
+	if v.runErr != nil {
+		if errors.Is(v.runErr, context.DeadlineExceeded) {
 			reason := fmt.Sprintf(
 				"verify suite exceeded the time budget (%s) on all %d attempts"+
 					" — fix slow or hanging tests, or add the `verify-blessed` tag to override",
-				timeout, verifyChecksTimeoutRetries+1)
+				v.timeout, verifyChecksTimeoutRetries+1)
 			return e.flagVerifyChecks(taskID, step, reason, "timeout")
 		}
-		if errors.Is(runErr, context.Canceled) && e.ctx.Err() != nil {
-			e.logger.Warn("workflow.verify-checks.canceled", "task_id", taskID, "err", runErr)
+		if errors.Is(v.runErr, context.Canceled) && e.ctx.Err() != nil {
+			e.logger.Warn("workflow.verify-checks.canceled", "task_id", taskID, "err", v.runErr)
 			return stepDone(step, "skipped: context canceled")
 		}
-		reason := "verify suite could not prepare its isolated cache or run cleanly: " + trimDiffLine(runErr.Error())
+		reason := "verify suite could not prepare its isolated cache or run cleanly: " + trimDiffLine(v.runErr.Error())
 		return e.flagVerifyChecks(taskID, step, reason, "setup")
 	}
 
-	if failedCmd != "" {
-		if classification != nil {
-			if classification.AutoFixable {
+	if v.report.FailedCmd != "" {
+		if v.classification != nil {
+			if v.classification.AutoFixable {
 				return e.autoFixOrFlagVerifyChecks(
-					taskID, step, wfExec, t, classification.Reason, failedCmd, output)
+					taskID, step, wfExec, t, v.classification.Reason, v.report.FailedCmd, v.report.OutputTail)
 			}
-			return e.blockVerifyChecks(taskID, step, classification.Reason, classification.Kind.String())
+			return e.blockVerifyChecks(taskID, step, v.classification.Reason, v.classification.Kind.String())
 		}
-		reason := "implementation does not pass the project verify suite: " + trimDiffLine(failedCmd) +
+		reason := "implementation does not pass the project verify suite: " + trimDiffLine(v.report.FailedCmd) +
 			" — fix the code, or add the `verify-blessed` tag to override (e.g. a known-flaky suite)"
-		return e.autoFixOrFlagVerifyChecks(taskID, step, wfExec, t, reason, failedCmd, output)
+		return e.autoFixOrFlagVerifyChecks(taskID, step, wfExec, t, reason, v.report.FailedCmd, v.report.OutputTail)
 	}
 
-	e.logger.Info("workflow.verify-checks.clean", "task_id", taskID, "commands", len(cmds))
-	e.recordVerifyChecksEvidence(taskID, step.ID, strings.Join(cmds, " && "), report.OutputTail, treeSHA, checksHash)
+	e.logger.Info("workflow.verify-checks.clean", "task_id", taskID, "commands", len(v.report.Commands))
+	e.recordVerifyChecksEvidence(taskID, step.ID, strings.Join(v.report.Commands, " && "), v.report.OutputTail, v.treeSHA, v.checksHash)
 	return stepDone(step, "clean")
 }
 
@@ -1135,6 +1163,8 @@ func (e *Engine) repairTornNodeModulesInDir(ctx context.Context, taskID, dir, la
 	}
 
 	e.logger.Warn("workflow.verify-checks.npm-repair", "task_id", taskID, "dir", label)
+	unlock := lockNodeToolchainDir(dir)
+	defer unlock()
 	rctx, cancel := context.WithTimeout(ctx, repairTornNodeModulesTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(rctx, "npm", "ci", "--ignore-scripts")
@@ -1227,9 +1257,17 @@ func (e *Engine) repairCorruptToolchain(ctx context.Context, taskID, wtPath, dir
 		return // not a Node project — nothing to check
 	}
 	binDir := filepath.Join(dir, "node_modules", ".bin")
-	entries, err := os.ReadDir(binDir)
-	if err == nil && nodeModulesBinNonEmpty(binDir, entries) {
+	if nodeToolchainIntact(binDir) {
 		return // toolchain looks intact
+	}
+
+	unlock := lockNodeToolchainDir(dir)
+	defer unlock()
+	// Re-check under the lock: another gate running concurrently in this same
+	// worktree may have just repaired this directory, and a second `npm ci`
+	// would delete and rewrite the install it is about to be used from.
+	if nodeToolchainIntact(binDir) {
+		return
 	}
 
 	reinstall := npmReinstallCommand(dir, wtPath)
@@ -1269,6 +1307,34 @@ func npmReinstallCommand(paths ...string) string {
 		}
 	}
 	return "npm ci"
+}
+
+// nodeToolchainRepairLocks serializes toolchain repairs per directory.
+// execParallelGates runs focused_checks and verify_checks concurrently against
+// the SAME worktree, and a `node_modules` that was never installed is left
+// alone by the pre-fan-out repair (it is not corruption, see
+// isCorruptedNodeModules) — so both gates can reach repairCorruptToolchain for
+// one directory and race two `npm ci` runs that each delete and rewrite it,
+// producing a torn install and intermittent unrelated check failures. The lock
+// is process-wide rather than per-Engine because the contended resource is the
+// directory on disk, not engine state.
+var nodeToolchainRepairLocks sync.Map // cleaned dir -> *sync.Mutex
+
+func lockNodeToolchainDir(dir string) (unlock func()) {
+	v, _ := nodeToolchainRepairLocks.LoadOrStore(filepath.Clean(dir), &sync.Mutex{})
+	mu, ok := v.(*sync.Mutex)
+	if !ok {
+		return func() {}
+	}
+	mu.Lock()
+	return mu.Unlock
+}
+
+// nodeToolchainIntact reports whether binDir (a node_modules/.bin) holds at
+// least one non-empty entry, i.e. the toolchain needs no repair.
+func nodeToolchainIntact(binDir string) bool {
+	entries, err := os.ReadDir(binDir)
+	return err == nil && nodeModulesBinNonEmpty(binDir, entries)
 }
 
 // nodeModulesBinNonEmpty reports whether at least one entry under
@@ -1317,6 +1383,7 @@ func (e *Engine) repairCorruptedNodeModules(ctx context.Context, taskID, wtPath 
 			continue
 		}
 		e.logger.Warn("workflow.verify-checks.node-modules-repair", "task_id", taskID, "dir", dir)
+		unlock := lockNodeToolchainDir(dir)
 		repairCtx, cancel := context.WithTimeout(ctx, verifyChecksNodeModulesRepairTimeout)
 		maybeMiseTrust(repairCtx, wtPath)
 		if dir != wtPath {
@@ -1327,6 +1394,7 @@ func (e *Engine) repairCorruptedNodeModules(ctx context.Context, taskID, wtPath 
 		cmd.Dir = dir
 		repairErr := cmd.Run()
 		cancel()
+		unlock()
 		if repairErr != nil {
 			e.logger.Warn("workflow.verify-checks.node-modules-repair-failed",
 				"task_id", taskID, "dir", dir, "cmd", reinstall, "err", repairErr)
