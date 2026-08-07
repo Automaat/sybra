@@ -294,6 +294,32 @@ func resolveRunAgentDir(step *Step, wfExec *Execution, ctx TemplateContext) (str
 	return renderedDir, nil
 }
 
+func (e *Engine) releaseRunAgentClaimOnAbort(taskID string, claimedEffectID EffectID, agentStarted bool, runErr error, recovered any) error {
+	releaseClaim := func(current error) error {
+		if claimedEffectID.IsZero() || agentStarted {
+			return current
+		}
+		if _, relErr := e.releaseClaimedEffect(taskID, claimedEffectID); relErr != nil {
+			if effectClaimFence(relErr) {
+				return current
+			}
+			if current == nil {
+				return fmt.Errorf("release claimed effect: %w", relErr)
+			}
+			return errors.Join(current, fmt.Errorf("release claimed effect: %w", relErr))
+		}
+		return current
+	}
+	if recovered != nil {
+		_ = releaseClaim(runErr)
+		panic(recovered)
+	}
+	if runErr != nil {
+		return releaseClaim(runErr)
+	}
+	return nil
+}
+
 func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, effectIDs ...EffectID) (runErr error) {
 	if wfExec == nil {
 		wfExec = &Execution{Variables: maps.Clone(ctx.Vars)}
@@ -320,28 +346,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	}
 	agentStarted := false
 	defer func() {
-		releaseClaim := func() {
-			if claimedEffectID.IsZero() || agentStarted {
-				return
-			}
-			if _, relErr := e.releaseClaimedEffect(taskID, claimedEffectID); relErr != nil {
-				if effectClaimFence(relErr) {
-					return
-				}
-				if runErr == nil {
-					runErr = fmt.Errorf("release claimed effect: %w", relErr)
-					return
-				}
-				runErr = errors.Join(runErr, fmt.Errorf("release claimed effect: %w", relErr))
-			}
-		}
-		if recovered := recover(); recovered != nil {
-			releaseClaim()
-			panic(recovered)
-		}
-		if runErr != nil {
-			releaseClaim()
-		}
+		runErr = e.releaseRunAgentClaimOnAbort(taskID, claimedEffectID, agentStarted, runErr, recover())
 	}()
 
 	mode := resolveRunAgentMode(step.Config.Mode, ctx)
