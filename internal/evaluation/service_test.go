@@ -90,6 +90,73 @@ func TestServiceScanHandlesRecordsWithoutExperimentMetadata(t *testing.T) {
 	}
 }
 
+// TestServiceScanPopulatesByCostTierAndBaseline verifies Scan wires the
+// cost-tier segmentation and the prior-window baseline: ByCostTier groups by
+// provider:role:tier, and CostPerMergedBaseline is populated only once the
+// prior equal-length window has landed enough merges to trust
+// (minMergedForSignal), nil otherwise.
+func TestServiceScanPopulatesByCostTierAndBaseline(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	in := now.Add(-1 * time.Hour)
+	prior := now.AddDate(0, 0, -10) // inside the prior 7-day window (since=-7d, prior=-14d..-7d)
+
+	var records []stats.RunRecord
+	var events []audit.Event
+	records = append(records, stats.RunRecord{TaskID: "A", Role: "implementation", Provider: "claude", Model: "sonnet", CostUSD: 4.0, Outcome: "completed", Timestamp: in})
+	events = append(events, audit.Event{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: in, Data: map[string]any{"outcome": "merged"}})
+	for i := 0; i < minMergedForSignal; i++ {
+		tid := "prior-" + string(rune('A'+i))
+		records = append(records, stats.RunRecord{TaskID: tid, Role: "implementation", Provider: "claude", Model: "sonnet", CostUSD: 1.0, Outcome: "completed", Timestamp: prior})
+		events = append(events, audit.Event{Type: audit.EventTaskLanded, TaskID: tid, Timestamp: prior, Data: map[string]any{"outcome": "merged"}})
+	}
+
+	svc := NewService(Deps{
+		Cfg:   config.EvaluationConfig{WindowDays: 7},
+		Stats: testStatsReader{records: records},
+		Audit: auditFunc(func(q audit.Query) ([]audit.Event, error) { return events, nil }),
+		Now:   func() time.Time { return now },
+	})
+
+	got, err := svc.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	if len(got.ByCostTier) != 1 || got.ByCostTier[0].Key != "claude:implementation:cheap" {
+		t.Fatalf("ByCostTier = %+v, want one claude:implementation:cheap row", got.ByCostTier)
+	}
+	if got.CostPerMergedBaseline == nil {
+		t.Fatal("CostPerMergedBaseline = nil, want populated (prior window has minMergedForSignal merges)")
+	}
+	if got.CostPerMergedBaseline.MergedPRs != minMergedForSignal || got.CostPerMergedBaseline.CostPerMergedUSD != 1.0 {
+		t.Fatalf("CostPerMergedBaseline = %+v, want mergedPRs=%d costPerMerged=1.0", got.CostPerMergedBaseline, minMergedForSignal)
+	}
+}
+
+// TestServiceScanBaselineNilWhenPriorWindowThin verifies the baseline is
+// omitted (not zero-valued) when the prior window didn't land enough merges
+// to trust, so Weaknesses can't mistake "no signal" for "cost dropped to
+// zero."
+func TestServiceScanBaselineNilWhenPriorWindowThin(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	in := now.Add(-1 * time.Hour)
+	svc := NewService(Deps{
+		Cfg:   config.EvaluationConfig{WindowDays: 7},
+		Stats: testStatsReader{records: []stats.RunRecord{{TaskID: "A", Role: "implementation", Provider: "claude", Model: "sonnet", CostUSD: 4.0, Outcome: "completed", Timestamp: in}}},
+		Audit: auditFunc(func(q audit.Query) ([]audit.Event, error) {
+			return []audit.Event{{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: in, Data: map[string]any{"outcome": "merged"}}}, nil
+		}),
+		Now: func() time.Time { return now },
+	})
+
+	got, err := svc.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan returned error: %v", err)
+	}
+	if got.CostPerMergedBaseline != nil {
+		t.Fatalf("CostPerMergedBaseline = %+v, want nil (no prior-window data)", got.CostPerMergedBaseline)
+	}
+}
+
 func findExperimentKind(groups []ExperimentKindBreakdown, kind string) *ExperimentKindBreakdown {
 	for i := range groups {
 		if groups[i].Kind == kind {

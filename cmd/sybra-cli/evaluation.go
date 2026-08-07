@@ -389,8 +389,18 @@ func cmdEvaluationScan(cfg *config.Config, jsonOut bool) int {
 	fmt.Printf("  runs=%d  stalled=%d (retried, excluded from failure rate)\n", o.AgentRuns, o.AgentStalls)
 	fmt.Printf("  lead p50/p90=%.1f/%.1fh  cycle p50/p90=%.1f/%.1fh\n",
 		o.LeadTimeP50H, o.LeadTimeP90H, o.CycleTimeP50H, o.CycleTimeP90H)
-	fmt.Printf("  cost=$%.2f ($%.2f/landed)  turns/landed=%.1f  tools/landed=%.1f\n",
-		o.TotalCostUSD, o.CostPerLanded, o.TurnsPerLanded, o.ToolsPerLanded)
+	fmt.Printf("  cost=$%.2f ($%.2f/landed, $%.2f/merged)  tokens/merged=%.0f  turns/landed=%.1f  tools/landed=%.1f\n",
+		o.TotalCostUSD, o.CostPerLanded, o.CostPerMergedUSD, o.TokensPerMergedPR, o.TurnsPerLanded, o.ToolsPerLanded)
+	if b := report.CostPerMergedBaseline; b != nil {
+		fmt.Printf("  cost_per_merge_baseline=$%.2f (%d merged prior window)\n", b.CostPerMergedUSD, b.MergedPRs)
+	}
+	if len(report.ByCostTier) > 0 {
+		fmt.Println("by cost tier (provider:role:tier):")
+		for _, r := range report.ByCostTier {
+			fmt.Printf("  %-40s landed=%-4d $/merged=$%-8.2f tokens/merged=%.0f\n",
+				r.Key, r.Landed, r.CostPerMergedUSD, r.TokensPerMergedPR)
+		}
+	}
 	if len(report.Weaknesses) > 0 {
 		fmt.Println("weaknesses:")
 		for _, w := range report.Weaknesses {
