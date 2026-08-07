@@ -177,7 +177,7 @@ func (a *taskAdapter) UpdateTaskStatus(id string, status taskstatus.Status, reas
 		extra := task.Update{}
 		if reason != "" {
 			extra.StatusReason = &reason
-		} else if cur.Status != st && !(st == task.StatusHumanRequired && cur.Status == task.StatusBlocked) {
+		} else if cur.Status != st && (st != task.StatusHumanRequired || cur.Status != task.StatusBlocked) {
 			extra.ClearStatusReason = task.Ptr(true)
 		}
 		if st == task.StatusHumanRequired {
