@@ -21,6 +21,11 @@ export class AutonomySnapshot {
     "tasksLanded": number;
     "autonomousLandings": number;
     "autonomyRate": number;
+
+    /**
+     * MergedPRs, CostPerMergedUSD, and TokensPerMergedPR mirror Scorecard's
+     * cost-efficiency north star for this window.
+     */
     "mergedPrs": number;
     "costPerMergedUsd": number;
     "tokensPerMergedPr": number;
@@ -135,6 +140,11 @@ export class AutonomyWeekPoint {
     "tasksLanded": number;
     "autonomousLandings": number;
     "autonomyRate": number;
+
+    /**
+     * MergedPRs, CostPerMergedUSD, and TokensPerMergedPR mirror Scorecard's
+     * cost-efficiency north star for this bucket.
+     */
     "mergedPrs": number;
     "costPerMergedUsd": number;
     "tokensPerMergedPr": number;
@@ -454,7 +464,7 @@ export class ComparisonBreakdown {
         const $$createField28_0 = $$createType5;
         const $$createField29_0 = $$createType5;
         const $$createField30_0 = $$createType5;
-        const $$createField47_0 = $$createType7;
+        const $$createField50_0 = $$createType7;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("subject" in $$parsedSource) {
             $$parsedSource["subject"] = $$createField9_0($$parsedSource["subject"]);
@@ -481,7 +491,7 @@ export class ComparisonBreakdown {
             $$parsedSource["revertEstimate"] = $$createField30_0($$parsedSource["revertEstimate"]);
         }
         if ("roleBreakdowns" in $$parsedSource) {
-            $$parsedSource["roleBreakdowns"] = $$createField47_0($$parsedSource["roleBreakdowns"]);
+            $$parsedSource["roleBreakdowns"] = $$createField50_0($$parsedSource["roleBreakdowns"]);
         }
         return new ComparisonBreakdown($$parsedSource as Partial<ComparisonBreakdown>);
     }
@@ -859,7 +869,7 @@ export class Report {
      * cost_per_merge check) — nil when the prior window landed too few merges
      * to trust (< minMergedForSignal).
      */
-    "costPerMergedBaseline"?: CostBaseline;
+    "costPerMergedBaseline"?: CostBaseline | null;
 
     /** Creates a new Report instance. */
     constructor($$source: Partial<Report> = {}) {
@@ -900,7 +910,7 @@ export class Report {
         const $$createField12_0 = $$createType24;
         const $$createField13_0 = $$createType25;
         const $$createField14_0 = $$createType26;
-        const $$createField15_0 = CostBaseline.createFrom;
+        const $$createField15_0 = $$createType28;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("overall" in $$parsedSource) {
             $$parsedSource["overall"] = $$createField4_0($$parsedSource["overall"]);
@@ -986,8 +996,8 @@ export class SLOReport {
      * Creates a new SLOReport instance from a string or object.
      */
     static createFrom($$source: any = {}): SLOReport {
-        const $$createField0_0 = $$createType27;
-        const $$createField1_0 = $$createType29;
+        const $$createField0_0 = $$createType29;
+        const $$createField1_0 = $$createType31;
         const $$createField4_0 = $$createType25;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("targets" in $$parsedSource) {
@@ -1321,7 +1331,7 @@ export class TaskPhases {
      * Creates a new TaskPhases instance from a string or object.
      */
     static createFrom($$source: any = {}): TaskPhases {
-        const $$createField2_0 = $$createType30;
+        const $$createField2_0 = $$createType32;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("byPhase" in $$parsedSource) {
             $$parsedSource["byPhase"] = $$createField2_0($$parsedSource["byPhase"]);
@@ -1452,7 +1462,9 @@ const $$createType23 = Weakness.createFrom;
 const $$createType24 = $Create.Array($$createType23);
 const $$createType25 = $Create.Array($Create.Any);
 const $$createType26 = SLOReport.createFrom;
-const $$createType27 = config$0.SLOTargets.createFrom;
-const $$createType28 = SLOStatus.createFrom;
-const $$createType29 = $Create.Array($$createType28);
-const $$createType30 = $Create.Map($Create.Any, $Create.Any);
+const $$createType27 = CostBaseline.createFrom;
+const $$createType28 = $Create.Nullable($$createType27);
+const $$createType29 = config$0.SLOTargets.createFrom;
+const $$createType30 = SLOStatus.createFrom;
+const $$createType31 = $Create.Array($$createType30);
+const $$createType32 = $Create.Map($Create.Any, $Create.Any);
