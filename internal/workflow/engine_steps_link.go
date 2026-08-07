@@ -187,12 +187,13 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 	reason := "no agent result to evaluate"
 	if last != nil {
 		if isPRCreationStep(last.StepID) {
-			switch {
-			case looksLikeGitHubRateLimit(last.Output):
+			class := errclass.Classify(last.Output, errclass.WorkflowProseRetryBiased)
+			switch class {
+			case errclass.RateLimited:
 				return e.parkStepForRetry(taskID, wfExec, t, last.StepID, prCreateRetryStatusReason, "workflow.evaluate.pr-create-rate-limit")
-			case looksLikeTransientGitHub(last.Output):
+			case errclass.Transient:
 				return e.parkStepForRetry(taskID, wfExec, t, last.StepID, prCreateTransientStatusReason, "workflow.evaluate.pr-create-transient-outage")
-			case looksLikeAuthFailure(last.Output):
+			case errclass.Auth:
 				// Bad/expired credentials are not naturally time-bounded like a
 				// rate limit or a network blip, so they only get a bounded
 				// number of retries before escalating to a human.
@@ -202,6 +203,8 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 					return e.parkStepForRetry(taskID, wfExec, t, last.StepID, prCreateAuthRetryReason, "workflow.evaluate.pr-create-auth-retry", "attempt", attempts+1, "max", maxPRCreateAuthRetries)
 				}
 				reason = fmt.Sprintf("PR creation failing due to invalid or expired GitHub credentials after %d retries", attempts)
+			case errclass.Unknown, errclass.Permanent:
+				// Continue to the ordinary failed/no-PR evaluation below.
 			}
 		}
 		if reason == "no agent result to evaluate" {
@@ -296,77 +299,10 @@ func looksLikeImplementGitHubRetry(output string) bool {
 	if !githubish {
 		return false
 	}
-	return looksLikeGitHubRateLimit(output) ||
-		looksLikeTransientGitHub(output) ||
-		looksLikeAuthFailure(output)
+	class := errclass.Classify(output, errclass.WorkflowProseRetryBiased)
+	return class == errclass.RateLimited || class == errclass.Transient || class == errclass.Auth
 }
 
 func isPRCreationStep(stepID string) bool {
 	return stepID == "create_pr" || stepID == "push_existing_pr"
-}
-
-func looksLikeGitHubRateLimit(output string) bool {
-	lower := strings.ToLower(output)
-	if !strings.Contains(lower, "rate limit") {
-		return false
-	}
-	return strings.Contains(lower, "github") ||
-		strings.Contains(lower, "graphql") ||
-		strings.Contains(lower, "gh ") ||
-		strings.Contains(lower, "api rate limit") ||
-		strings.Contains(lower, "secondary rate limit")
-}
-
-// looksLikeTransientGitHub matches network-level failures that keep a PR
-// creation agent from reaching GitHub at all — DNS/connection errors, TLS
-// failures, timeouts, and 502/503 responses. These are naturally time-bounded
-// (retrying once connectivity is restored is safe) and are distinct from
-// looksLikeGitHubRateLimit (requires "rate limit") and looksLikeAuthFailure
-// (credential problems, which are not naturally time-bounded).
-func looksLikeTransientGitHub(output string) bool {
-	return errclass.Matches(output, errclass.WorkflowTransientPhrases) ||
-		looksLikeGatewayStatus(strings.ToLower(output))
-}
-
-// looksLikeGatewayStatus matches HTTP 502/503 responses regardless of how the
-// status is phrased ("HTTP 502", "502 bad gateway", "503 Service Unavailable",
-// ...) — GitHub/gh can surface either the bare code or a reason phrase.
-func looksLikeGatewayStatus(lower string) bool {
-	for _, code := range []string{"502", "503"} {
-		idx := strings.Index(lower, code)
-		if idx < 0 {
-			continue
-		}
-		// Guard against matching a status embedded in a larger token
-		// (e.g. "15029" or "abc502def") by requiring non-alphanumeric
-		// boundaries around the code.
-		if idx > 0 && !isStatusBoundary(lower[idx-1]) {
-			continue
-		}
-		end := idx + len(code)
-		if end < len(lower) && !isStatusBoundary(lower[end]) {
-			continue
-		}
-		return true
-	}
-	return false
-}
-
-func isDigit(b byte) bool {
-	return b >= '0' && b <= '9'
-}
-
-func isLowerAlpha(b byte) bool {
-	return b >= 'a' && b <= 'z'
-}
-
-func isStatusBoundary(b byte) bool {
-	return !isDigit(b) && !isLowerAlpha(b)
-}
-
-// looksLikeAuthFailure matches bad/expired GitHub credentials. Unlike rate
-// limits or network blips, a broken token does not self-heal, so callers must
-// bound how many times they retry before escalating to a human.
-func looksLikeAuthFailure(output string) bool {
-	return errclass.Matches(output, errclass.WorkflowAuthPhrases)
 }

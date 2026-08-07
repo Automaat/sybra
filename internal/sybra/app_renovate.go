@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
@@ -110,7 +111,8 @@ func (c *renovateCoordinator) prsForMonitor() []github.PullRequest {
 func (c *renovateCoordinator) recordMonitorFetchError(err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if github.IsAuthError(err) {
+	class := github.ClassifyError(err, errclass.GitHubCircuitEscalationBiased)
+	if class == errclass.Auth {
 		// A dead token is not transient: the poller's circuit (skipped on in
 		// prsForMonitor) governs backoff, so keep this path quiet at Info
 		// rather than warn-flooding every monitor cycle (#1516).
@@ -118,7 +120,7 @@ func (c *renovateCoordinator) recordMonitorFetchError(err error) {
 		c.logger.Info("pr-monitor.renovate-fetch", "err", err)
 		return
 	}
-	if github.IsTransientError(err) {
+	if class == errclass.Transient || class == errclass.RateLimited {
 		c.monitorTransientFails++
 		if c.monitorTransientFails < review.TransientFetchWarnThreshold {
 			c.logger.Info("pr-monitor.renovate-fetch", "err", err)

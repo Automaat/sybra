@@ -1709,23 +1709,17 @@ func classifyAgentError(err error) string {
 		return ErrorKindPromptUndelivered
 	}
 	msg := strings.ToLower(err.Error())
+	class := errclass.Classify(msg, errclass.AgentRecoveryBiased)
 	switch {
 	case strings.Contains(msg, "worktree") || strings.Contains(msg, "already checked out"):
 		return "worktree_conflict"
-	case strings.Contains(msg, "clone") ||
-		strings.Contains(msg, "fetch origin") ||
-		strings.Contains(msg, "git fetch") ||
-		strings.Contains(msg, "could not resolve host") ||
-		strings.Contains(msg, "dial tcp") ||
-		strings.Contains(msg, "i/o timeout") ||
-		strings.Contains(msg, "dns") ||
-		(strings.Contains(msg, "git") && strings.Contains(msg, "network")):
+	case class == errclass.Transient:
 		return "git_clone"
 	case strings.Contains(msg, "permission denied") ||
 		strings.Contains(msg, "eacces") ||
 		strings.Contains(msg, "operation not permitted"):
 		return "permission_denied"
-	case errclass.Matches(msg, errclass.AgentRateLimitPhrases):
+	case class == errclass.RateLimited:
 		return "rate_limit"
 	default:
 		return "crash"

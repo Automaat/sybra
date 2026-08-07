@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"gopkg.in/yaml.v3"
@@ -1151,7 +1152,7 @@ func pushLocked(ctx context.Context, worktreePath string, args ...string) error 
 			if err == nil {
 				return nil
 			}
-			if idx == 0 && len(attempts) > 1 && github.IsAuthError(err) {
+			if idx == 0 && len(attempts) > 1 && github.ClassifyError(err, errclass.GitHubCircuitEscalationBiased) == errclass.Auth {
 				injectedErr = err
 				continue
 			}
@@ -1766,7 +1767,7 @@ func checkGitPushAuth(ctx context.Context, worktreePath, remote string) error {
 			return nil
 		}
 		failures = append(failures, attempt.label+": "+msg)
-		if idx == 0 && len(attempts) > 1 && github.IsAuthError(attemptErr) {
+		if idx == 0 && len(attempts) > 1 && github.ClassifyError(attemptErr, errclass.GitHubCircuitEscalationBiased) == errclass.Auth {
 			continue
 		}
 		break

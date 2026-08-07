@@ -12,6 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
@@ -417,7 +418,8 @@ const reconcileEscalationReason = "review reconcile failed"
 // task a fresh free budget, silently doubling how long #2164-style breakage
 // can run undetected across a redeploy.
 func (r *Handler) recordReconcileFailure(t *task.Task, err error) {
-	if github.IsTransientError(err) {
+	class := github.ClassifyError(err, errclass.GitHubPollerRetryBiased)
+	if class == errclass.Transient || class == errclass.RateLimited {
 		r.logger.Warn("review.my-state", "task_id", t.ID, "err", err, "transient", true)
 		return
 	}

@@ -2,11 +2,11 @@ package github
 
 import (
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/backoff"
+	"github.com/Automaat/sybra/internal/errclass"
 )
 
 // MergeErrorClass classifies a failed auto-merge attempt so AutoMergeBackoff
@@ -41,43 +41,24 @@ const (
 
 // ClassifyMergeError buckets a failed MergePR/MergePRViaREST/EnableAutoMerge
 // error so AutoMergeBackoff can size its retry window per failure mode.
-// Reuses the same message-matching helpers the rest of the package already
-// uses for retry decisions (IsAuthError, isRateLimitedMessage,
-// IsTransientError) instead of re-deriving the classification.
+// Uses the auth-first policy because the legacy caller checked auth, then rate
+// limit, then transient evidence before its merge-state bucket.
 func ClassifyMergeError(err error) MergeErrorClass {
 	if err == nil {
 		return ""
 	}
-	switch {
-	case IsAuthError(err):
+	switch errclass.ClassifyErr(err, errclass.GitHubCircuitEscalationBiased) {
+	case errclass.Auth:
 		return MergeErrorAuth
-	case isRateLimitedMessage(strings.ToLower(err.Error())):
+	case errclass.RateLimited:
 		return MergeErrorRateLimit
-	case IsTransientError(err):
+	case errclass.Transient:
 		return MergeErrorTransient
-	case isMergeBlockedMessage(err.Error()):
+	case errclass.Permanent:
 		return MergeErrorBlocked
 	default:
 		return MergeErrorUnknown
 	}
-}
-
-func isMergeBlockedMessage(msg string) bool {
-	lower := strings.ToLower(msg)
-	for _, sig := range []string{
-		"not mergeable",
-		"required status check",
-		"review is required",
-		"changes requested",
-		"waiting for status",
-		"blocked by",
-		"base branch policy prohibits the merge",
-	} {
-		if strings.Contains(lower, sig) {
-			return true
-		}
-	}
-	return false
 }
 
 // autoMergeBackoffWindow maps a MergeErrorClass to its base retry delay and

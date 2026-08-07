@@ -13,10 +13,7 @@ var gitOpRetrySleepContext = sleepWithContext
 // network/transport failure from a git remote operation (fetch, ls-remote)
 // rather than a genuine content conflict, auth failure, or misconfiguration.
 func IsTransientNetworkError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return errclass.Matches(err.Error(), errclass.GitTransportPhrases)
+	return errclass.ClassifyErr(err, errclass.GitTransportEscalationBiased) == errclass.Transient
 }
 
 // withNetworkRetry runs fn, retrying on gitOpRetryBackoffs when the failure
