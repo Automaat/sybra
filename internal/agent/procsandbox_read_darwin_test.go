@@ -163,7 +163,7 @@ func TestWrapInvocation_GrantsAppSupportRoot(t *testing.T) {
 		worktree:    "/data/wt",
 		sandboxHome: "/data/home",
 		tmp:         "/tmp",
-		tmpAlias:    "/tmp",
+		tmpAlias:    `^/private/tmp/claude-[^/]+-cwd(/.*)?$`,
 		sharedCache: "/data/cache",
 		appSupport:  appSupport,
 	}}
@@ -192,8 +192,8 @@ func TestSandboxProfile_ReferencesAppSupport(t *testing.T) {
 }
 
 func TestSandboxProfile_ReferencesTmpAlias(t *testing.T) {
-	if !strings.Contains(string(agentSandboxProfile), `(subpath (param "TMP_ALIAS"))`) {
-		t.Fatal("profile has no TMP_ALIAS write rule, so the resolved alias grants nothing")
+	if !strings.Contains(string(agentSandboxProfile), `(regex (param "TMP_ALIAS_PATTERN"))`) {
+		t.Fatal("profile has no narrow TMP_ALIAS_PATTERN write rule")
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -95,11 +96,10 @@ func canonicalizeRoot(root string) (string, error) {
 	return resolved, nil
 }
 
-// sandboxTmpAlias re-opens darwin's stable /tmp entrypoint only when doing so
-// cannot escape the intended temp namespace. Real provider helpers are measured
-// to create cwd markers and redirected files through /tmp even when Sybra's
-// canonical temp root is $TMPDIR under /private/var/folders, so enforce mode
-// needs both paths; a non-temp alias or a symlink escape stays denied.
+// sandboxTmpAlias returns the Seatbelt pattern for Claude Code's provider-owned
+// cwd markers below macOS's stable /tmp target. Granting the whole target would
+// also let one task modify arbitrary files belonging to another task or host
+// process, so the alias must remain narrowly scoped.
 func sandboxTmpAlias(canonTmp string) string {
 	if strings.TrimSpace(canonTmp) == "" {
 		return ""
@@ -111,9 +111,9 @@ func sandboxTmpAlias(canonTmp string) string {
 	}
 	switch {
 	case canonTmp == resolved:
-		return alias
+		return "^" + regexp.QuoteMeta(resolved) + `/claude-[^/]+-cwd(/.*)?$`
 	case strings.HasPrefix(canonTmp, "/private/var/folders/") && resolved == "/private/tmp":
-		return alias
+		return "^" + regexp.QuoteMeta(resolved) + `/claude-[^/]+-cwd(/.*)?$`
 	default:
 		return ""
 	}
@@ -224,7 +224,7 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		{"WORKTREE", cfg.sandbox.worktree},
 		{"SANDBOX_HOME", home},
 		{"TMP", cfg.sandbox.tmp},
-		{"TMP_ALIAS", cfg.sandbox.tmpAlias},
+		{"TMP_ALIAS_PATTERN", cfg.sandbox.tmpAlias},
 		{"SHARED_CACHE", cfg.sandbox.sharedCache},
 		{"CLAUDE_STATE", sandboxRootOr(cfg.sandbox.claudeState, home)},
 		{"CODEX_STATE", sandboxRootOr(cfg.sandbox.codexState, home)},

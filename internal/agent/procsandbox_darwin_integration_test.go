@@ -475,16 +475,20 @@ func TestSandboxEnforce_TmpAliasAllowsHelpersButKeepsOtherTempRootsReadOnly(t *t
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
 	}
-	if got := cfg.sandbox.tmpAlias; got != "/tmp" {
-		t.Fatalf("sandbox tmpAlias = %q, want /tmp", got)
+	if got := cfg.sandbox.tmpAlias; got != `^/private/tmp/claude-[^/]+-cwd(/.*)?$` {
+		t.Fatalf("sandbox tmpAlias = %q, want narrow Claude cwd pattern", got)
 	}
 
 	canonFile := filepath.Join(cfg.sandbox.tmp, "sybra-enforce-canon-probe")
-	aliasFile := filepath.Join("/tmp", "sybra-enforce-alias-probe")
+	aliasDir := filepath.Join("/tmp", "claude-sybra-cwd")
+	aliasFile := filepath.Join(aliasDir, "sybra-enforce-alias-probe")
 	deniedFile := filepath.Join("/private/var/tmp", "sybra-enforce-denied-probe")
 	for _, path := range []string{canonFile, aliasFile, deniedFile} {
 		_ = os.Remove(path)
 		t.Cleanup(func() { _ = os.Remove(path) })
+	}
+	if err := os.MkdirAll(aliasDir, 0o700); err != nil {
+		t.Fatalf("create provider-owned alias dir: %v", err)
 	}
 
 	script := fmt.Sprintf(

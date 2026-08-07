@@ -115,7 +115,7 @@ func TestWrapInvocation_EnforceModeWraps(t *testing.T) {
 		worktree:    "/private/tmp/wt",
 		sandboxHome: "/private/tmp/home",
 		tmp:         "/private/tmp",
-		tmpAlias:    "/tmp",
+		tmpAlias:    `^/private/tmp/claude-[^/]+-cwd(/.*)?$`,
 		profilePath: profile,
 	}}
 	name, args := wrapInvocation("claude", []string{"-p", "hi"}, cfg)
@@ -128,7 +128,7 @@ func TestWrapInvocation_EnforceModeWraps(t *testing.T) {
 		"WORKTREE=/private/tmp/wt",
 		"SANDBOX_HOME=/private/tmp/home",
 		"TMP=/private/tmp",
-		"TMP_ALIAS=/tmp",
+		"TMP_ALIAS_PATTERN=^/private/tmp/claude-[^/]+-cwd(/.*)?$",
 		"claude -p hi",
 	} {
 		if !strings.Contains(joined, want) {
@@ -139,8 +139,8 @@ func TestWrapInvocation_EnforceModeWraps(t *testing.T) {
 
 func TestSandboxTmpAlias_StableTmpAliasAllowed(t *testing.T) {
 	got := sandboxTmpAlias("/private/var/folders/zz/abcd/T")
-	if got != "/tmp" {
-		t.Fatalf("sandboxTmpAlias() = %q, want /tmp for darwin temp helpers", got)
+	if got != `^/private/tmp/claude-[^/]+-cwd(/.*)?$` {
+		t.Fatalf("sandboxTmpAlias() = %q, want narrow Claude cwd pattern", got)
 	}
 }
 
