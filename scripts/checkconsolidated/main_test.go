@@ -88,6 +88,17 @@ func truncate(s message, boundary int) (message, string) {
 	}
 }
 
+func TestDetectsUnresolvedPackageCallSlice(t *testing.T) {
+	t.Parallel()
+	findings := findingsFor(t, "internal/example/drift.go", `package example
+import "github.com/google/uuid"
+func shortID() string { return uuid.NewString()[:8] }
+`)
+	if got := countKind(findings, kindStringTruncation); got != 1 {
+		t.Fatalf("truncation findings = %d, want 1: %#v", got, findings)
+	}
+}
+
 func TestDetectsAssignmentBraceCounterReturningSpan(t *testing.T) {
 	t.Parallel()
 	findings := findingsFor(t, "internal/example/drift.go", `package example
@@ -99,6 +110,23 @@ func scan(s string) (int, int) {
 		if depth == 0 { return start, i }
 	}
 	return -1, -1
+}
+`)
+	if got := countKind(findings, kindJSONExtraction); got != 1 {
+		t.Fatalf("JSON findings = %d, want 1: %#v", got, findings)
+	}
+}
+
+func TestDetectsBraceScannerRegardlessOfNameOrReturnShape(t *testing.T) {
+	t.Parallel()
+	findings := findingsFor(t, "internal/example/drift.go", `package example
+func payload(raw []byte) []byte {
+	depth, start := 0, 0
+	for end, char := range raw {
+		switch char { case '{': depth++; case '}': depth-- }
+		if depth == 0 { candidate := raw[start:end]; return candidate }
+	}
+	return nil
 }
 `)
 	if got := countKind(findings, kindJSONExtraction); got != 1 {
@@ -126,15 +154,10 @@ func TestCanonicalPackagesOwnThePrimitives(t *testing.T) {
 	}
 }
 
-func TestAvoidsDocumentedNonPrimitiveShapes(t *testing.T) {
+func TestAvoidsStructTagFalsePositive(t *testing.T) {
 	t.Parallel()
 	findings := findingsFor(t, "internal/example/parser.go", `package example
 type wire struct { Status string `+"`json:\"human-required\"`"+` }
-func codeBraceDelta(s string) int {
-	depth := 0
-	for _, c := range s { switch c { case '{': depth++; case '}': depth-- } }
-	return depth
-}
 `)
 	if len(findings) != 0 {
 		t.Fatalf("parser/struct-tag shapes produced findings: %#v", findings)

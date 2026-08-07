@@ -92,6 +92,11 @@ func buildAllowances() map[allowanceKey]allowance {
 	add(kindStringTruncation, "internal/sybra/config_sparse.go", "Sparse-config paths are slices at parser-derived YAML line/path boundaries.", map[string]int{"slice": 2})
 	add(kindStringTruncation, "internal/task/slug.go", "Task slugs are regex-normalized to lowercase ASCII before enforcing the identifier limit.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/worktree/attempt.go", "Git revisions are hexadecimal ASCII and this produces a branch suffix.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/agent/manager_run.go", "UUID strings are canonical ASCII tokens; this slice selects the fixed-width short agent identifier.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/loopagent/store.go", "UUID strings are canonical ASCII tokens; this slice selects the fixed-width short loop-agent identifier.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/sybra/app.go", "UUID strings are canonical ASCII tokens; this slice selects the fixed-width Kubernetes smoke-test identifier.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/task/comment.go", "UUID strings are canonical ASCII tokens; this slice selects the fixed-width short comment identifier.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/task/store.go", "UUID strings are canonical ASCII tokens; this slice selects the fixed-width short task identifier.", map[string]int{"slice": 1})
 
 	add(kindStringTruncation, "internal/agent/procsandbox_darwin_integration_test.go", "Integration fixtures split fixed-format sandbox profile text and byte buffers.", map[string]int{"slice": 3})
 	add(kindStringTruncation, "internal/project/repair_test.go", "Git-repair fixtures deliberately mutate fixed-format object/ref data.", map[string]int{"slice": 5})
@@ -104,6 +109,8 @@ func buildAllowances() map[allowanceKey]allowance {
 	// scanner can be confused by an unmatched quote in surrounding prose, so
 	// this span is tried second and accepted only if json.Unmarshal succeeds.
 	add(kindJSONExtraction, "internal/workflow/engine_steps_bestofn.go", "Fallback for unmatched quotes in judge prose; json.Unmarshal validates the candidate.", map[string]int{"outermostBraceSpan": 1})
+	add(kindJSONExtraction, "cmd/gen-api-shim/shim.go", "TypeScript signature parser balances every delimiter kind to split top-level parameters; it does not extract JSON.", map[string]int{"splitTopLevel": 1})
+	add(kindJSONExtraction, "internal/workflow/engine_steps_tamper.go", "Go-source tamper analysis counts lexical brace balance after excluding strings and comments; it does not extract JSON.", map[string]int{"codeBraceDelta": 1})
 
 	// Provider-name exceptions are external wire/vendor identifiers rather
 	// than Sybra dispatch comparisons.
@@ -603,7 +610,8 @@ func inspectFile(fset *token.FileSet, path string, file *ast.File, info *types.I
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch n := node.(type) {
 		case *ast.SliceExpr:
-			if !strings.HasPrefix(path, "internal/textutil/") && isStringExpr(n.X, info, stringNames, stringFields) && (n.Low != nil || n.High != nil) {
+			if !strings.HasPrefix(path, "internal/textutil/") && (n.Low != nil || n.High != nil) &&
+				(isStringExpr(n.X, info, stringNames, stringFields) || isUnresolvedCall(n.X, info)) {
 				out = append(out, finding{kind: kindStringTruncation, path: path, value: "slice", line: fset.Position(n.Pos()).Line})
 			}
 		case *ast.BasicLit:
@@ -634,6 +642,18 @@ func inspectFile(fset *token.FileSet, path string, file *ast.File, info *types.I
 		}
 	}
 	return out
+}
+
+func isUnresolvedCall(expr ast.Expr, info *types.Info) bool {
+	for {
+		paren, ok := expr.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		expr = paren.X
+	}
+	_, ok := expr.(*ast.CallExpr)
+	return ok && (info == nil || info.TypeOf(expr) == nil)
 }
 
 func isStructTag(file *ast.File, lit *ast.BasicLit) bool {
@@ -810,10 +830,8 @@ func extractsJSONByBraces(fn *ast.FuncDecl) bool {
 	if hasFirst && hasLast {
 		return true
 	}
-	name := strings.ToLower(fn.Name.Name)
-	jsonishName := strings.Contains(name, "json") || strings.Contains(name, "object")
 	for _, directions := range braceDirections {
-		if directions == 3 && bodyHasBothBraces(body) && (jsonishName || returnsStringSlice(fn) || returnsIndexSpan(fn)) {
+		if directions == 3 && bodyHasBothBraces(body) {
 			return true
 		}
 	}
@@ -840,56 +858,6 @@ func assignmentDirection(name string, expr ast.Expr) uint8 {
 		return 2
 	}
 	return 0
-}
-
-func returnsIndexSpan(fn *ast.FuncDecl) bool {
-	if fn.Type.Results == nil {
-		return false
-	}
-	count := 0
-	for _, field := range fn.Type.Results.List {
-		id, ok := field.Type.(*ast.Ident)
-		if !ok || id.Name != "int" {
-			continue
-		}
-		if len(field.Names) == 0 {
-			count++
-		} else {
-			count += len(field.Names)
-		}
-	}
-	return count >= 2
-}
-
-func returnsStringSlice(fn *ast.FuncDecl) bool {
-	if fn.Type.Results == nil {
-		return false
-	}
-	stringResult := false
-	for _, field := range fn.Type.Results.List {
-		if id, ok := field.Type.(*ast.Ident); ok && id.Name == "string" {
-			stringResult = true
-			break
-		}
-	}
-	if !stringResult {
-		return false
-	}
-	found := false
-	ast.Inspect(fn.Body, func(node ast.Node) bool {
-		ret, ok := node.(*ast.ReturnStmt)
-		if !ok {
-			return !found
-		}
-		for _, result := range ret.Results {
-			if _, ok := result.(*ast.SliceExpr); ok {
-				found = true
-				return false
-			}
-		}
-		return !found
-	})
-	return found
 }
 
 func isBraceLiteral(expr ast.Expr) bool {
