@@ -30,6 +30,7 @@ export enum Kind {
     KindOperatorDecision = "operator_decision",
     KindCredentialRequired = "credential_required",
     KindPolicyApproval = "policy_approval",
+    KindTamperDetected = "tamper_detected",
     KindWorktreeRepair = "worktree_repair",
     KindReviewFixExhausted = "review_fix_exhausted",
     KindTriageRetryExhausted = "triage_retry_exhausted",
