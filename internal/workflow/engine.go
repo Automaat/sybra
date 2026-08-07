@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -439,34 +440,16 @@ type Engine struct {
 	store            *Store
 	tasks            TaskProvider
 	agents           AgentLauncher
-	prLinker         PRLinker
-	prReviewers      PRReviewRequester
-	prStates         PRStateFetcher
-	prHeads          PRHeadFetcher
-	pushPreflight    PushCredentialPreflighter
-	prCreator        PRCreator
-	prCloser         PRCloser
-	prFinder         PRFinder
-	prAnyStateFinder PRAnyStateFinder
-	prExistence      PRExistenceChecker
-	prContentGen     PRContentGenerator
-	worktrees        WorktreeGetter
-	sidecarDir       SidecarDirResolver
-	attemptNotes     AttemptNoteAppender
-	branchSyncer     BranchSyncer
-	checks           CheckConfigGetter
-	manualTests      ManualTestConfigGetter
-	classifier       TaskClassifier
+	pr               PRSurface
+	execution        ExecutionSurface
 	recorder         ArtifactRecorder
 	evidenceRecorder EvidenceRecorder
 	// evidence configures the require_evidence step (zero-value Enabled=false
 	// matches config.EvidenceConfig's own default — see SetEvidenceConfig).
-	evidence         config.EvidenceConfig
-	evidenceHook     func(TaskInfo, EvidenceDecision)
-	costBudget       CostBudgetChecker
-	attemptWorktrees AttemptWorktreeManager
-	onComplete       func(CompletionInfo)
-	dispatchGate     func(TaskInfo) bool
+	evidence     config.EvidenceConfig
+	evidenceHook func(TaskInfo, EvidenceDecision)
+	onComplete   func(CompletionInfo)
+	dispatchGate func(TaskInfo) bool
 	// dispatchDisabled is stored negated so the zero value keeps a
 	// struct-literal Engine dispatching, matching its behavior before this
 	// gate existed. atomic.Bool because SetAutoDispatch (config/lifecycle
@@ -587,12 +570,53 @@ const defaultTestAttempts = config.DefaultTestingMaxAttempts
 // SetMaxCheckpoints was never called. Mirrors config.DefaultMaxCheckpoints.
 const defaultMaxCheckpoints = config.DefaultMaxCheckpoints
 
-// NewEngine creates a workflow engine.
-func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger) *Engine {
+// Dependencies contains the collaborators required by a production Engine.
+// Keeping them in cohesive groups makes construction atomic: adding a new
+// required collaborator changes this value and its validation instead of
+// adding another order-dependent Set* call in the application wiring.
+type Dependencies struct {
+	PR        PRSurface
+	Execution ExecutionSurface
+}
+
+// NewEngine creates a production workflow engine. Every collaborator whose
+// absence would skip or disable workflow behavior is validated before the
+// engine is returned.
+func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger, deps Dependencies) (*Engine, error) {
+	missing := missingDependencyNames(
+		namedDependency{"Store", store},
+		namedDependency{"Tasks", tasks},
+		namedDependency{"Agents", agents},
+		namedDependency{"Logger", logger},
+	)
+	missing = append(missing, deps.missing()...)
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("workflow: engine dependencies missing %s", strings.Join(missing, ", "))
+	}
+	return newEngine(store, tasks, agents, logger, deps), nil
+}
+
+// NewTestEngine creates a deliberately partial engine for focused tests. Tests
+// can bind only the collaborators they exercise through the documented test
+// seams; production must use NewEngine so missing dependencies fail at startup.
+func NewTestEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger) *Engine {
+	return newEngine(store, tasks, agents, logger, Dependencies{
+		Execution: ExecutionSurface{
+			BranchSyncer: skippedBranchSyncer{},
+			Checks:       emptyCheckConfigGetter{},
+			ManualTests:  emptyManualTestConfigGetter{},
+			CostBudget:   unlimitedCostBudgetChecker{},
+		},
+	})
+}
+
+func newEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger, deps Dependencies) *Engine {
 	e := &Engine{
 		store:            store,
 		tasks:            tasks,
 		agents:           agents,
+		pr:               deps.PR,
+		execution:        deps.Execution,
 		ownerID:          newEffectOwnerID(),
 		effectLeaseTTL:   defaultEffectLeaseTTL,
 		clock:            clock.System{},
@@ -723,23 +747,15 @@ func (e *Engine) SetAdmissionDecisionHook(hook func(TaskInfo, AdmissionDecision)
 func (e *Engine) Defs() *Store { return e.store }
 
 // PRSurface is the pull-request dependency group: every collaborator the
-// engine needs to open, find, link, close and re-review a PR.
-//
-// It exists because the engine is constructed empty and assembled through 46
-// Set* calls, so a dependency the wiring forgot is not a compile error or a
-// startup failure — it is a nil field that turns a step into a silently
-// skipped branch, weeks later and far from the omission. Grouping the surface
-// lets SetPRSurface reject a partial wiring at startup, where it is
-// attributable.
-//
-// The individual setters below survive as test seams: tests legitimately wire
-// one collaborator and leave the rest nil, so the per-field nil guards must
-// stay until a group has no seam left.
+// engine needs to open, find, link, close and re-review a PR. NewEngine
+// validates the required members together before publishing an Engine;
+// PushPreflighter is the sole optional member and retains its runtime fallback.
 type PRSurface struct {
 	Linker           PRLinker
 	ReviewRequester  PRReviewRequester
 	StateFetcher     PRStateFetcher
 	HeadFetcher      PRHeadFetcher
+	PushPreflighter  PushCredentialPreflighter
 	Creator          PRCreator
 	Closer           PRCloser
 	Finder           PRFinder
@@ -748,124 +764,161 @@ type PRSurface struct {
 	ContentGenerator PRContentGenerator
 }
 
-// SetPRSurface wires the whole PR dependency group and reports every missing
-// member at once, so a wiring omission surfaces at startup rather than as a
-// step that quietly does nothing. Production must use this; the per-field
-// setters are for tests.
-func (e *Engine) SetPRSurface(s PRSurface) error {
+// ExecutionSurface groups the non-PR collaborators used to inspect and
+// mutate a task checkout and to run deterministic workflow steps.
+type ExecutionSurface struct {
+	Worktrees        WorktreeGetter
+	SidecarDir       SidecarDirResolver
+	AttemptNotes     AttemptNoteAppender
+	BranchSyncer     BranchSyncer
+	Checks           CheckConfigGetter
+	ManualTests      ManualTestConfigGetter
+	Classifier       TaskClassifier
+	CostBudget       CostBudgetChecker
+	AttemptWorktrees AttemptWorktreeManager
+}
+
+func (d Dependencies) missing() []string {
+	missing := d.PR.missing()
+	missing = append(missing, missingDependencyNames(
+		namedDependency{"Execution.Worktrees", d.Execution.Worktrees},
+		namedDependency{"Execution.SidecarDir", d.Execution.SidecarDir},
+		namedDependency{"Execution.AttemptNotes", d.Execution.AttemptNotes},
+		namedDependency{"Execution.BranchSyncer", d.Execution.BranchSyncer},
+		namedDependency{"Execution.Checks", d.Execution.Checks},
+		namedDependency{"Execution.ManualTests", d.Execution.ManualTests},
+		namedDependency{"Execution.Classifier", d.Execution.Classifier},
+		namedDependency{"Execution.CostBudget", d.Execution.CostBudget},
+		namedDependency{"Execution.AttemptWorktrees", d.Execution.AttemptWorktrees},
+	)...)
+	return missing
+}
+
+func (s PRSurface) missing() []string {
+	return missingDependencyNames(
+		namedDependency{"PR.Linker", s.Linker},
+		namedDependency{"PR.ReviewRequester", s.ReviewRequester},
+		namedDependency{"PR.StateFetcher", s.StateFetcher},
+		namedDependency{"PR.HeadFetcher", s.HeadFetcher},
+		namedDependency{"PR.Creator", s.Creator},
+		namedDependency{"PR.Closer", s.Closer},
+		namedDependency{"PR.Finder", s.Finder},
+		namedDependency{"PR.AnyStateFinder", s.AnyStateFinder},
+		namedDependency{"PR.ExistenceChecker", s.ExistenceChecker},
+		namedDependency{"PR.ContentGenerator", s.ContentGenerator},
+	)
+}
+
+type namedDependency struct {
+	name  string
+	value any
+}
+
+func missingDependencyNames(deps ...namedDependency) []string {
 	var missing []string
-	for _, dep := range []struct {
-		name  string
-		isNil bool
-	}{
-		{"Linker", s.Linker == nil},
-		{"ReviewRequester", s.ReviewRequester == nil},
-		{"StateFetcher", s.StateFetcher == nil},
-		{"HeadFetcher", s.HeadFetcher == nil},
-		{"Creator", s.Creator == nil},
-		{"Closer", s.Closer == nil},
-		{"Finder", s.Finder == nil},
-		{"AnyStateFinder", s.AnyStateFinder == nil},
-		{"ExistenceChecker", s.ExistenceChecker == nil},
-		{"ContentGenerator", s.ContentGenerator == nil},
-	} {
-		if dep.isNil {
+	for _, dep := range deps {
+		if isNilDependency(dep.value) {
 			missing = append(missing, dep.name)
 		}
 	}
+	return missing
+}
+
+func isNilDependency(value any) bool {
+	if value == nil {
+		return true
+	}
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
+}
+
+// setPRSurfaceForTest validates and replaces the PR group in focused tests.
+func (e *Engine) setPRSurfaceForTest(s PRSurface) error {
+	missing := s.missing()
 	if len(missing) > 0 {
 		return fmt.Errorf("workflow: PR surface missing %s", strings.Join(missing, ", "))
 	}
-	e.prLinker = s.Linker
-	e.prReviewers = s.ReviewRequester
-	e.prStates = s.StateFetcher
-	e.prHeads = s.HeadFetcher
-	e.prCreator = s.Creator
-	e.prCloser = s.Closer
-	e.prFinder = s.Finder
-	e.prAnyStateFinder = s.AnyStateFinder
-	e.prExistence = s.ExistenceChecker
-	e.prContentGen = s.ContentGenerator
+	e.pr = s
 	return nil
 }
 
-// SetPRLinker wires an implementation of PRLinker used by the
-// `ensure_pr_closes_issue` step. Leaving it unset makes the step a no-op.
-// Test seam: production wires this through SetPRSurface.
-func (e *Engine) SetPRLinker(l PRLinker) { e.prLinker = l }
+// SetPRLinker is a test seam for packages that exercise PR linking through the
+// public Engine API. Production supplies the complete PRSurface to NewEngine.
+func (e *Engine) SetPRLinker(l PRLinker) { e.pr.Linker = l }
 
-// SetPRReviewRequester wires an implementation used by rerequest_review.
-// Test seam: production wires this through SetPRSurface.
-func (e *Engine) SetPRReviewRequester(r PRReviewRequester) { e.prReviewers = r }
+// setPRReviewRequesterForTest wires an implementation used by rerequest_review.
+// Test seam: production wires this through setPRSurfaceForTest.
+func (e *Engine) setPRReviewRequesterForTest(r PRReviewRequester) { e.pr.ReviewRequester = r }
 
-// SetPRStateFetcher wires an implementation used by `route_pr_fix_result` to
+// setPRStateFetcherForTest wires an implementation used by `route_pr_fix_result` to
 // re-probe the live PR before parking human-required. Leaving it unset skips
 // the re-probe and trusts the agent's sentinel as-is.
-// Test seam: production wires this through SetPRSurface.
-func (e *Engine) SetPRStateFetcher(f PRStateFetcher) { e.prStates = f }
+// Test seam: production wires this through setPRSurfaceForTest.
+func (e *Engine) setPRStateFetcherForTest(f PRStateFetcher) { e.pr.StateFetcher = f }
 
-// SetPRHeadFetcher wires an implementation used by `push_branch` to verify a
+// setPRHeadFetcherForTest wires an implementation used by `push_branch` to verify a
 // push landed. Leaving it unset skips the verification.
-// Test seam: production wires this through SetPRSurface.
-func (e *Engine) SetPRHeadFetcher(f PRHeadFetcher) { e.prHeads = f }
+// Test seam: production wires this through setPRSurfaceForTest.
+func (e *Engine) setPRHeadFetcherForTest(f PRHeadFetcher) { e.pr.HeadFetcher = f }
 
-// SetPushCredentialPreflighter wires the push-auth preflight used before
+// setPushCredentialPreflighterForTest wires the push-auth preflight used before
 // `push_branch` and `create_pr` attempt a real git push. Leaving it unset uses
 // project.PreflightPushCredentials.
-func (e *Engine) SetPushCredentialPreflighter(p PushCredentialPreflighter) {
-	e.pushPreflight = p
+func (e *Engine) setPushCredentialPreflighterForTest(p PushCredentialPreflighter) {
+	e.pr.PushPreflighter = p
 }
 
-// SetPRCreator wires an implementation of `gh pr create` used by the
-// `create_pr` step. Leaving it unset flips the task to human-required when
-// create_pr is reached, since a PR cannot be opened without it.
-// Test seam: production wires this through SetPRSurface.
-func (e *Engine) SetPRCreator(c PRCreator) { e.prCreator = c }
+// SetPRCreator is a test seam for deterministic PR-creation scenarios.
+// Production supplies the complete PRSurface to NewEngine.
+func (e *Engine) SetPRCreator(c PRCreator) { e.pr.Creator = c }
 
-// SetPRCloser wires best-effort cleanup for superseded PRs after a task is
+// setPRCloserForTest wires best-effort cleanup for superseded PRs after a task is
 // relinked to a replacement PR.
-// Test seam: production wires this through SetPRSurface.
-func (e *Engine) SetPRCloser(c PRCloser) { e.prCloser = c }
+// Test seam: production wires this through setPRSurfaceForTest.
+func (e *Engine) setPRCloserForTest(c PRCloser) { e.pr.Closer = c }
 
-// SetPRFinder wires the open-PR-by-branch lookup used by create_pr's
-// idempotency guard. Leaving it unset skips the guard.
-// Test seam: production wires this through SetPRSurface.
-func (e *Engine) SetPRFinder(f PRFinder) { e.prFinder = f }
+// SetPRFinder is a test seam for create_pr idempotency scenarios. Production
+// supplies the complete PRSurface to NewEngine.
+func (e *Engine) SetPRFinder(f PRFinder) { e.pr.Finder = f }
 
-// SetPRAnyStateFinder wires the all-state branch lookup used by create_pr's
+// setPRAnyStateFinderForTest wires the all-state branch lookup used by create_pr's
 // squash-merge duplicate guard. Leaving it unset skips the guard.
-// Test seam: production wires this through SetPRSurface.
-func (e *Engine) SetPRAnyStateFinder(f PRAnyStateFinder) { e.prAnyStateFinder = f }
+// Test seam: production wires this through setPRSurfaceForTest.
+func (e *Engine) setPRAnyStateFinderForTest(f PRAnyStateFinder) { e.pr.AnyStateFinder = f }
 
-// SetPRExistenceChecker wires the pr_number-belongs-to-repo verification used
+// setPRExistenceCheckerForTest wires the pr_number-belongs-to-repo verification used
 // by link_pr_and_review's Path 1. Leaving it unset skips the check and
 // trusts task.pr_number outright, matching the engine's pre-existing
 // behavior.
-// Test seam: production wires this through SetPRSurface.
-func (e *Engine) SetPRExistenceChecker(c PRExistenceChecker) { e.prExistence = c }
+// Test seam: production wires this through setPRSurfaceForTest.
+func (e *Engine) setPRExistenceCheckerForTest(c PRExistenceChecker) { e.pr.ExistenceChecker = c }
 
-// SetPRContentGenerator wires the LLM-backed title/body drafter used by the
+// setPRContentGeneratorForTest wires the LLM-backed title/body drafter used by the
 // `create_pr` step. Leaving it unset falls back to a templated title/body.
-// Test seam: production wires this through SetPRSurface.
-func (e *Engine) SetPRContentGenerator(g PRContentGenerator) { e.prContentGen = g }
+// Test seam: production wires this through setPRSurfaceForTest.
+func (e *Engine) setPRContentGeneratorForTest(g PRContentGenerator) { e.pr.ContentGenerator = g }
 
-// SetWorktreeGetter wires a WorktreeGetter used by steps that need the task's
-// live git checkout (verify_commits, re-implementation note seeding). Leaving
-// it unset makes those worktree-dependent paths no-op.
-func (e *Engine) SetWorktreeGetter(g WorktreeGetter) { e.worktrees = g }
+// SetWorktreeGetter is a test seam for steps that inspect a task checkout.
+// Production supplies Worktrees through ExecutionSurface at construction.
+func (e *Engine) SetWorktreeGetter(g WorktreeGetter) { e.execution.Worktrees = g }
 
-// SetSidecarDirResolver late-binds the writable scratch directory used by
+// setSidecarDirResolverForTest late-binds the writable scratch directory used by
 // verifier roles whose worktree is read-only.
-func (e *Engine) SetSidecarDirResolver(r SidecarDirResolver) { e.sidecarDir = r }
+func (e *Engine) setSidecarDirResolverForTest(r SidecarDirResolver) { e.execution.SidecarDir = r }
 
 // resolveSidecarDir returns the writable scratch dir for taskID, or "" when no
 // resolver is wired or it fails. Callers fall back to the worktree, which is
 // the pre-#2791 behaviour, so a missing resolver degrades rather than breaks.
 func (e *Engine) resolveSidecarDir(taskID string) string {
-	if e == nil || e.sidecarDir == nil {
+	if e == nil || e.execution.SidecarDir == nil {
 		return ""
 	}
-	dir, err := e.sidecarDir(taskID)
+	dir, err := e.execution.SidecarDir(taskID)
 	if err != nil {
 		e.logger.Warn("workflow.sidecar-dir.resolve", "task_id", taskID, "err", err)
 		return ""
@@ -873,22 +926,24 @@ func (e *Engine) resolveSidecarDir(taskID string) string {
 	return strings.TrimSpace(dir)
 }
 
-// SetAttemptNoteAppender wires the local NOTES.md writer used when testing
+// setAttemptNoteAppenderForTest wires the local NOTES.md writer used when testing
 // routes a task back to implementation. Leaving it unset disables note seeding.
-func (e *Engine) SetAttemptNoteAppender(a AttemptNoteAppender) { e.attemptNotes = a }
+func (e *Engine) setAttemptNoteAppenderForTest(a AttemptNoteAppender) { e.execution.AttemptNotes = a }
 
-// SetBranchSyncer wires a BranchSyncer used by the `sync_branch` step.
+// setBranchSyncerForTest wires a BranchSyncer used by the `sync_branch` step.
 // Leaving it unset makes the step a no-op (skipped outcome).
-func (e *Engine) SetBranchSyncer(s BranchSyncer) { e.branchSyncer = s }
+func (e *Engine) setBranchSyncerForTest(s BranchSyncer) { e.execution.BranchSyncer = s }
 
-// SetCheckConfigGetter wires the project codegen/verify resolver used by the
+// setCheckConfigGetterForTest wires the project codegen/verify resolver used by the
 // `codegen_gate` and `verify_checks` steps. Leaving it unset makes those steps
 // no-ops.
-func (e *Engine) SetCheckConfigGetter(g CheckConfigGetter) { e.checks = g }
+func (e *Engine) setCheckConfigGetterForTest(g CheckConfigGetter) { e.execution.Checks = g }
 
-// SetManualTestConfigGetter wires the manual-test surface resolver used by
+// setManualTestConfigGetterForTest wires the manual-test surface resolver used by
 // testing prompts. Leaving it unset makes the prompt rely on repo discovery.
-func (e *Engine) SetManualTestConfigGetter(g ManualTestConfigGetter) { e.manualTests = g }
+func (e *Engine) setManualTestConfigGetterForTest(g ManualTestConfigGetter) {
+	e.execution.ManualTests = g
+}
 
 // SetVerifyTimeout overrides the verify_checks time budget. Zero keeps the
 // default (verifyChecksDefaultTimeout). Used by tests for a short budget.
@@ -909,10 +964,9 @@ func (e *Engine) SetVerifyChecksMaxConcurrent(n int) {
 	e.verifyChecksMaxConcurrent = n
 }
 
-// SetTaskClassifier wires the deterministic Go triage classifier used by the
-// `classify_task` step. Leaving it unset flips the task to human-required
-// when classify_task is reached, since a task cannot be routed without it.
-func (e *Engine) SetTaskClassifier(c TaskClassifier) { e.classifier = c }
+// SetTaskClassifier is a test seam for deterministic classification paths.
+// Production supplies Classifier through ExecutionSurface at construction.
+func (e *Engine) SetTaskClassifier(c TaskClassifier) { e.execution.Classifier = c }
 
 // SetArtifactRecorder wires an ArtifactRecorder that captures per-task
 // workflow artifacts (plan snapshots, trace events). Leaving it unset
@@ -939,16 +993,16 @@ func (e *Engine) SetEvidenceDecisionHook(hook func(TaskInfo, EvidenceDecision)) 
 	e.evidenceHook = hook
 }
 
-// SetCostBudgetChecker wires the cumulative task cost-budget preflight used
-// by the `best_of_n` step (fan-out) and its judge run_agent step. Leaving it
-// unset skips the preflight — see CostBudgetChecker's doc comment.
-func (e *Engine) SetCostBudgetChecker(c CostBudgetChecker) { e.costBudget = c }
+// SetCostBudgetChecker is a test seam for best-of-N budget paths. Production
+// supplies CostBudget through ExecutionSurface at construction.
+func (e *Engine) SetCostBudgetChecker(c CostBudgetChecker) { e.execution.CostBudget = c }
 
-// SetAttemptWorktreeManager wires the isolated per-attempt worktree
-// lifecycle used by `best_of_n`/`promote_best_of_n`. Leaving it unset fails
-// those steps closed to human-required — see AttemptWorktreeManager's doc
-// comment.
-func (e *Engine) SetAttemptWorktreeManager(m AttemptWorktreeManager) { e.attemptWorktrees = m }
+// SetAttemptWorktreeManager is a test seam for best-of-N worktree paths.
+// Production supplies AttemptWorktrees through ExecutionSurface at
+// construction.
+func (e *Engine) SetAttemptWorktreeManager(m AttemptWorktreeManager) {
+	e.execution.AttemptWorktrees = m
+}
 
 // SetOnComplete registers a callback fired when a workflow reaches the
 // completed state. Used to clear external debounce trackers.
@@ -1066,9 +1120,9 @@ func (e *Engine) SetQueueReconciler(fn func()) {
 }
 
 func (e *Engine) withManualTestConfig(t TaskInfo) TaskInfo {
-	if e.manualTests == nil || t.ID == "" {
+	if t.ID == "" {
 		return t
 	}
-	t.ManualTest = e.manualTests.ManualTestConfig(t.ID)
+	t.ManualTest = e.execution.ManualTests.ManualTestConfig(t.ID)
 	return t
 }

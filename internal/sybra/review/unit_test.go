@@ -1425,7 +1425,7 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -1540,7 +1540,7 @@ func TestCancelResolvedPRFixWorkflows_CoalescedSiblingStillLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -2759,7 +2759,7 @@ func TestAdvanceClosedTaskPRs_CancelsStaleWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -3187,7 +3187,7 @@ func TestCancelResolvedPRFixWorkflows_DefersWhileChecksPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -3258,7 +3258,7 @@ func TestCancelResolvedPRFixWorkflows_CancelsCommentsWorkflowThenDispatchesCIFai
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -3343,7 +3343,7 @@ func TestCancelResolvedPRFixWorkflows_CancelsCommentsWorkflowWhenRemainingCIIsFl
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -3415,7 +3415,7 @@ func TestCancelResolvedPRFixWorkflows_DefersCommentsWorkflowWhileChecksPending(t
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -3483,7 +3483,7 @@ func TestCancelResolvedPRFixWorkflows_CancelsWhenChecksSettleGreen(t *testing.T)
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,

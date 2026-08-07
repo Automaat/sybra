@@ -169,7 +169,7 @@ func newBestOfNTestEngine(t *testing.T, attempts int) (*Engine, *memTasks, *mock
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	attemptWorktrees := newFakeAttemptWorktrees()
 	costBudget := &fakeCostBudget{}
 	engine.SetAttemptWorktreeManager(attemptWorktrees)

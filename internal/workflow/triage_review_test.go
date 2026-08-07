@@ -437,7 +437,7 @@ func TestExecTriageReview_NoWorktreeNoPRReturnsStaff(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	out, err := engine.execTriageReview("t1", newTriageStep(), TaskInfo{ID: "t1"})
 	if err != nil {
@@ -456,7 +456,7 @@ func TestExecTriageReview_BrokenWorktreeReturnsStaff(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	// Path exists but is not a git repo.
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: t.TempDir(), ok: true})
 
@@ -474,7 +474,7 @@ func TestExecTriageReview_TinyDocChangeReturnsSimple(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	wt := makeGitRepo(t, false /* extra commit added below */)
 	// Add one tiny doc change.
@@ -500,7 +500,7 @@ func TestExecTriageReview_RiskyPathReturnsStaff(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	wt := makeGitRepo(t, false)
 	// Touch a workflow-internal file — only one line, but risky path.
@@ -530,7 +530,7 @@ func TestExecTriageReview_LargeChangeReturnsStaff(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	wt := makeGitRepo(t, false)
 	// Write a single non-risky, non-trivial file but with > line limit

@@ -64,7 +64,7 @@ func newOutboundWorkflowTestHandler(t *testing.T) (*Handler, *task.Manager) {
 	if _, err := projects.CreateMeta("https://github.com/Automaat/sybra", project.ProjectTypePet); err != nil {
 		t.Fatal(err)
 	}
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agents, tasks: tasks},
 		logger,

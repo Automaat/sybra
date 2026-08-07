@@ -227,10 +227,10 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 // or the file still doesn't exist at the recovered path — callers fall
 // through to the ordinary escalation path in that case.
 func (e *Engine) recoverSidecarFromTaskWorktree(taskID, stepID string, step *Step, info TaskInfo, cfg ImportSidecar) (path string, content []byte, ok bool) {
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return "", nil, false
 	}
-	wtPath, found := e.worktrees.GetWorktreePath(taskID)
+	wtPath, found := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !found || strings.TrimSpace(wtPath) == "" {
 		return "", nil, false
 	}

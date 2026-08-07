@@ -13,8 +13,8 @@ import (
 // threw it away.
 func TestWriteVerifyDiagnostic(t *testing.T) {
 	dir := t.TempDir()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
-	engine.SetSidecarDirResolver(func(string) (string, error) { return dir, nil })
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.setSidecarDirResolverForTest(func(string) (string, error) { return dir, nil })
 
 	const cmd = `GOLANGCI_LINT_CACHE="${TMPDIR:-/tmp}/golangci-lint" mise exec -- golangci-lint run ./internal/...`
 	output := strings.Join([]string{
@@ -47,7 +47,7 @@ func TestWriteVerifyDiagnostic(t *testing.T) {
 // Without a sidecar dir there is nowhere to write; escalation must still
 // proceed rather than being blocked on bookkeeping.
 func TestWriteVerifyDiagnostic_NoSidecarDirIsNotFatal(t *testing.T) {
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	if got := engine.writeVerifyDiagnostic("t1", "cmd", "output"); got != "" {
 		t.Errorf("path = %q, want empty when no sidecar dir is resolvable", got)
 	}

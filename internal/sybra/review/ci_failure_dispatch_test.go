@@ -47,7 +47,7 @@ func buildPRFixHandler(t *testing.T, tasks *task.Manager, fetchReviewsFn func() 
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(
+	engine := workflow.NewTestEngine(
 		wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},

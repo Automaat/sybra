@@ -29,7 +29,7 @@ func TestRewindRetry_PolicyMatrix(t *testing.T) {
 
 	t.Run("under cap arms and rewinds", func(t *testing.T) {
 		tasks := newMemTasks()
-		engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+		engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 		fakeClock := clock.NewFake(time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC))
 		engine.SetClock(fakeClock)
 		wf := newExec("")
@@ -93,7 +93,7 @@ func TestRewindRetry_PolicyMatrix(t *testing.T) {
 
 	t.Run("at cap does not arm and leaves counter untouched", func(t *testing.T) {
 		tasks := newMemTasks()
-		engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+		engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 		wf := newExec("2")
 		ti := TaskInfo{ID: "t1", Status: "in-progress", Workflow: wf}
 		tasks.Put(ti)
@@ -130,7 +130,7 @@ func TestRewindRetry_PolicyMatrix(t *testing.T) {
 	t.Run("persist failure reports armed with error", func(t *testing.T) {
 		tasks := newMemTasks()
 		tasks.failSetWorkflow = true
-		engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+		engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 		wf := newExec("")
 		ti := TaskInfo{ID: "t1", Status: "in-progress", Workflow: wf}
 		tasks.Put(ti)

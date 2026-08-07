@@ -22,19 +22,15 @@ type codegenGateReport struct {
 }
 
 func (e *Engine) execCodegenGate(taskID string, step *Step) (StepOutput, error) {
-	if e.checks == nil {
-		return stepDone(step, "skipped: no check config getter")
-	}
-
 	timeout := resolveWorkflowCheckTimeout(e.verifyTimeout)
-	cmds := e.checks.CodegenCommands(e.ctx, taskID)
+	cmds := e.execution.Checks.CodegenCommands(e.ctx, taskID)
 	if len(cmds) == 0 {
 		return stepDone(step, "skipped: no codegen commands configured")
 	}
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return stepDone(step, "skipped: no worktree getter configured")
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return stepDone(step, "skipped: no worktree for task")
 	}

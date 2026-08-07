@@ -54,10 +54,10 @@ var freshnessExemptCriteria = map[string]bool{
 // caller) so producers can pass raw report/output text without duplicating
 // evidence.Digest at every call site.
 func (e *Engine) recordEvidence(taskID, stepID, criterion string, proofType evidence.ProofType, exitStatus int, command, result string) {
-	if e.evidenceRecorder == nil || e.worktrees == nil {
+	if e.evidenceRecorder == nil || e.execution.Worktrees == nil {
 		return
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return
 	}
@@ -90,10 +90,10 @@ func (e *Engine) recordEvidence(taskID, stepID, criterion string, proofType evid
 // re-executing the suite. A failing run keeps using plain recordEvidence
 // (unstamped), which is correct: failures are never memoized.
 func (e *Engine) recordVerifyChecksEvidence(taskID, stepID, command, result, treeSHA, checksHash string) {
-	if e.evidenceRecorder == nil || e.worktrees == nil {
+	if e.evidenceRecorder == nil || e.execution.Worktrees == nil {
 		return
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return
 	}
@@ -136,7 +136,7 @@ func (e *Engine) recordVerifyChecksEvidence(taskID, stepID, command, result, tre
 // re-records fresh evidence on its own, so callers gate this to the single-pass
 // route.
 func (e *Engine) refreshReviewEvidenceFreshness(taskID string) {
-	if e.evidenceRecorder == nil || e.worktrees == nil {
+	if e.evidenceRecorder == nil || e.execution.Worktrees == nil {
 		return
 	}
 	ce, err := e.evidenceRecorder.Evidence(taskID)
@@ -147,7 +147,7 @@ func (e *Engine) refreshReviewEvidenceFreshness(taskID string) {
 	if !ok {
 		return
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return
 	}
@@ -180,12 +180,12 @@ func evidenceBackendIdentity() string {
 // place.
 func (e *Engine) requiredEvidenceCriteria(taskID string, t TaskInfo) []string {
 	var required []string
-	if e.worktrees != nil {
-		if _, ok := e.worktrees.GetWorktreePath(taskID); ok {
+	if e.execution.Worktrees != nil {
+		if _, ok := e.execution.Worktrees.GetWorktreePath(taskID); ok {
 			required = append(required, evidenceCriterionVerifyCommits, evidenceCriterionDetectTampering)
 		}
 	}
-	if e.checks != nil && len(e.checks.VerifyCommands(e.ctx, taskID)) > 0 {
+	if len(e.execution.Checks.VerifyCommands(e.ctx, taskID)) > 0 {
 		required = append(required, evidenceCriterionVerifyChecks)
 	}
 	if taskWasTested(t.AgentRuns) {
@@ -304,10 +304,10 @@ func (e *Engine) fireEvidenceDecision(t TaskInfo, d EvidenceDecision) {
 // currentHeadSHA resolves the task worktree's current HEAD commit. Empty when
 // no WorktreeGetter is wired or the task has no worktree.
 func (e *Engine) currentHeadSHA(taskID string) string {
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return ""
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return ""
 	}

@@ -16,7 +16,7 @@ func TestRewindRetry_FingerprintNotChargedWithoutCommits(t *testing.T) {
 	// UpdateTaskStatus, and against an unseeded store both error — the test
 	// would then pass without exercising the path it claims to.
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 
 	policy := func(ti TaskInfo) rewindRetryPolicy {
 		return rewindRetryPolicy{

@@ -124,7 +124,7 @@ func newWorkflowPermutationScenario(t *testing.T) *workflowPermutationScenario {
 	store := newInlineTestStore(t, "permutation-contract", workflowPermutationContractYAML)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "permutation-contract"); err != nil {
 		t.Fatalf("StartWorkflow: %v", err)
@@ -157,7 +157,7 @@ func (s *workflowPermutationScenario) restart() {
 		clonedTasks.Put(cloneWorkflowPermutationTask(tasks[i]))
 	}
 	clonedAgents := cloneWorkflowPermutationAgents(s.agents)
-	clonedEngine := NewEngine(s.store, clonedTasks, clonedAgents, discardLogger())
+	clonedEngine := NewTestEngine(s.store, clonedTasks, clonedAgents, discardLogger())
 	rehydrateWorkflowPermutationRoutes(clonedEngine, clonedTasks)
 	s.tasks = clonedTasks
 	s.agents = clonedAgents

@@ -33,7 +33,7 @@ func setupPromptLabService(t *testing.T) *PromptLabService {
 	if err := workflow.SyncBuiltins(wfStore); err != nil {
 		t.Fatal(err)
 	}
-	engine := workflow.NewEngine(
+	engine := workflow.NewTestEngine(
 		wfStore,
 		&taskAdapter{tasks: a.tasks},
 		parkedAgentLauncher{&agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}},
