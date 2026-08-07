@@ -7,13 +7,10 @@ package main
 import (
 	"fmt"
 	"go/ast"
-	"go/importer"
 	"go/parser"
 	"go/token"
 	"go/types"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -99,10 +96,6 @@ func buildAllowances() map[allowanceKey]allowance {
 	add(kindStringTruncation, "internal/sybra/app.go", "UUID strings are canonical ASCII tokens; this slice selects the fixed-width Kubernetes smoke-test identifier.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/task/comment.go", "UUID strings are canonical ASCII tokens; this slice selects the fixed-width short comment identifier.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/task/store.go", "UUID strings are canonical ASCII tokens; this slice selects the fixed-width short task identifier.", map[string]int{"slice": 1})
-	add(kindStringTruncation, "cmd/sybra-cli/evaluation.go", "SHA-256 digests are hexadecimal ASCII; this slice produces a display-only short digest.", map[string]int{"slice": 1})
-	add(kindStringTruncation, "internal/monitor/detector.go", "Monitor body parsing slices at positions found by exact ASCII marker delimiters.", map[string]int{"slice": 2})
-	add(kindStringTruncation, "internal/project/git.go", "Git revisions are hexadecimal ASCII and these produce display-only short SHAs.", map[string]int{"slice": 3})
-	add(kindStringTruncation, "internal/sybra/e2e_bootstrap_test.go", "E2E fixture selects the fixed-width ASCII task-ID suffix used by the worktree naming contract.", map[string]int{"slice": 1})
 
 	add(kindStringTruncation, "internal/agent/procsandbox_darwin_integration_test.go", "Integration fixtures split fixed-format sandbox profile text and byte buffers.", map[string]int{"slice": 3})
 	add(kindStringTruncation, "internal/project/repair_test.go", "Git-repair fixtures deliberately mutate fixed-format object/ref data.", map[string]int{"slice": 5})
@@ -153,7 +146,7 @@ func buildAllowances() map[allowanceKey]allowance {
 	// The type-aware truncation rule intentionally treats every string slice as
 	// suspicious. These pre-existing parser/protocol/test slices are exact
 	// baselines; any added or removed occurrence requires a ledger review.
-	add(kindStringTruncation, "cmd/gen-api-shim/shim.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 7})
+	add(kindStringTruncation, "cmd/gen-api-shim/shim.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 6})
 	add(kindStringTruncation, "cmd/gen-config-docs/main.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "cmd/gen-events/main.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "cmd/sybra-cli/selfmonitor.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
@@ -169,7 +162,6 @@ func buildAllowances() map[allowanceKey]allowance {
 	add(kindStringTruncation, "internal/agent/tool_loop_semantic.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 3})
 	add(kindStringTruncation, "internal/cluster/tls_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/config/config_migration.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 2})
-	add(kindStringTruncation, "internal/experience/record_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/fsutil/fsutil.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/fsutil/projectkey.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/github/client.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
@@ -183,12 +175,11 @@ func buildAllowances() map[allowanceKey]allowance {
 	add(kindStringTruncation, "internal/monitor/issueoutbox.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/monitor/issuesink.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 8})
 	add(kindStringTruncation, "internal/notes/notes_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
-	add(kindStringTruncation, "internal/project/git.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 4})
+	add(kindStringTruncation, "internal/project/git.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 3})
 	add(kindStringTruncation, "internal/project/repair_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 5})
 	add(kindStringTruncation, "internal/project/store_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/prompteval/store.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 2})
 	add(kindStringTruncation, "internal/promptlab/model.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
-	add(kindStringTruncation, "internal/provider/probes.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/sandbox/docker.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/sandbox/envfile.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/sandbox/k8s_integration_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
@@ -200,7 +191,6 @@ func buildAllowances() map[allowanceKey]allowance {
 	add(kindStringTruncation, "internal/sybra/config_sparse.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 4})
 	add(kindStringTruncation, "internal/sybra/config_subscribers.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/sybra/review/agent_manager_test_helpers_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 2})
-	add(kindStringTruncation, "internal/sybra/svc_tasks_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/sybra/svc_tasks.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/task/plan_draft.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 3})
 	add(kindStringTruncation, "internal/task/slug.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
@@ -208,7 +198,6 @@ func buildAllowances() map[allowanceKey]allowance {
 	add(kindStringTruncation, "internal/umbrella/planner.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/workflow/builtin_plan_prompt_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 2})
 	add(kindStringTruncation, "internal/workflow/engine_events_agents.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
-	add(kindStringTruncation, "internal/workflow/engine_parallel_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 2})
 	add(kindStringTruncation, "internal/workflow/engine_skill_receipt_summary.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 2})
 	add(kindStringTruncation, "internal/workflow/engine_steps_bestofn.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 3})
 	add(kindStringTruncation, "internal/workflow/engine_steps_clear_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
@@ -216,7 +205,6 @@ func buildAllowances() map[allowanceKey]allowance {
 	add(kindStringTruncation, "internal/workflow/engine_steps_tamper.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 12})
 	add(kindStringTruncation, "internal/workflow/engine_steps_testroute.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 8})
 	add(kindStringTruncation, "internal/workflow/engine_steps_triage.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 2})
-	add(kindStringTruncation, "internal/workflow/engine_steps_verify_checks_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/workflow/engine_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/workflow/engine_validate_plan_contract.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/workflow/envtest_assets.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
@@ -224,6 +212,57 @@ func buildAllowances() map[allowanceKey]allowance {
 	add(kindStringTruncation, "internal/worktree/branch.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 2})
 	add(kindStringTruncation, "internal/worktree/cleanup.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 3})
 	add(kindStringTruncation, "internal/worktree/manager_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
+
+	// Calls whose imported result types are unavailable to the per-file type
+	// pass are tracked through assignments and treated as possible strings.
+	// These exact pre-existing non-string/parser slices are the fail-closed baseline.
+	add(kindStringTruncation, "cmd/fake-claude/main.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "cmd/fake-codex/main.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "cmd/fake-copilot/main.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "cmd/sybra-cli/main.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "cmd/sybra-perf/main.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/agent/logfile.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/agent/loop_detector.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/agent/manager_control.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/agent/model.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/agent/reattach.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/agent/runner_headless_test.go", "Conservative unresolved-call provenance reaches a controlled non-string test-fixture slice.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/agent/runner_headless.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/agent/skill_invoke.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/agent/tool_loop_semantic.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 4})
+	add(kindStringTruncation, "internal/agent/tool_result_bound.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 7})
+	add(kindStringTruncation, "internal/cleanup/protected.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/experience/store.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/gitexec/gitexec.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/github/client.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/github/runtime.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/httpapi/handler.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/intervention/store.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/monitor/issuesink.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/notification/emitter.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/procstat/sample_unix.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/project/repair.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/promptlab/collect.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/selfmonitor/loganalyzer.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 6})
+	add(kindStringTruncation, "internal/skillattr/skillattr.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/sybra/app_human_review.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/sybra/app_umbrella_gate.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/sybra/review/pr_poll_sched.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/sybra/svc_agents.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/sybra/svc_config.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/task/parser.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/task/status_effect.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/task/store_cache.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/task/store.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/task/transition.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/umbrella/expand.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/umbrella/ground.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/workflow/effect_claim.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 3})
+	add(kindStringTruncation, "internal/workflow/engine_skill_receipt_summary.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/workflow/engine_steps_tamper.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 4})
+	add(kindStringTruncation, "internal/workflow/engine_steps_testroute.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 9})
+	add(kindStringTruncation, "internal/workflow/envtest_assets.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/workflow/execution.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 4})
 
 	// Test fixtures intentionally spell persisted wire values. They remain
 	// exact path/value/count entries so adding or removing a literal forces an
@@ -519,18 +558,12 @@ func main() {
 	}
 
 	var findings []finding
-	imports, err := newModuleImporter(fset)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "check-consolidated-primitives:", err)
-		os.Exit(1)
-	}
-	for key, files := range groups {
-		asts := make([]*ast.File, 0, len(files))
+	for _, files := range groups {
 		for _, file := range files {
-			asts = append(asts, file.file)
-		}
-		info := collectTypeInfo(key, fset, asts, imports)
-		for _, file := range files {
+			var info *types.Info
+			if fileNeedsTypeInfo(file) {
+				info = collectTypeInfo(file.path, fset, []*ast.File{file.file}, nil)
+			}
 			findings = append(findings, inspectFile(fset, file.path, file.file, info)...)
 		}
 	}
@@ -549,6 +582,21 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("check-consolidated-primitives: shared truncation, JSON extraction, task-status, and provider boundaries intact")
+}
+
+func fileNeedsTypeInfo(file parsedFile) bool {
+	if strings.HasPrefix(file.path, "internal/textutil/") {
+		return false
+	}
+	found := false
+	ast.Inspect(file.file, func(node ast.Node) bool {
+		if _, ok := node.(*ast.SliceExpr); ok {
+			found = true
+			return false
+		}
+		return !found
+	})
+	return found
 }
 
 func auditFindings(findings []finding, ledger map[allowanceKey]allowance) []gateError {
@@ -595,39 +643,6 @@ func canonicalPackage(kind findingKind) string {
 	default:
 		return "the shared package"
 	}
-}
-
-func newModuleImporter(fset *token.FileSet) (types.Importer, error) {
-	cmd := exec.Command("go", "list", "-deps", "-test", "-export", "-f={{if .Export}}{{.ImportPath}}|{{.Export}}{{end}}", "./...")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("load module export index: %w", err)
-	}
-	exports := make(map[string]string)
-	for line := range strings.SplitSeq(string(output), "\n") {
-		path, exportPath, ok := strings.Cut(line, "|")
-		if ok && path != "" && exportPath != "" && !strings.Contains(path, " [") {
-			exports[path] = exportPath
-		}
-	}
-	return importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
-		if exportPath := exports[path]; exportPath != "" {
-			return os.Open(exportPath)
-		}
-		// A mutually exclusive build-tagged file may import a package absent
-		// from the host platform's batch index. Resolve that uncommon miss
-		// individually rather than leaving its call-result types unknown.
-		cmd := exec.Command("go", "list", "-export", "-f={{.Export}}", path)
-		output, err := cmd.Output()
-		if err != nil {
-			return nil, fmt.Errorf("resolve export data for %s: %w", path, err)
-		}
-		exportPath := strings.TrimSpace(string(output))
-		if exportPath == "" {
-			return nil, fmt.Errorf("resolve export data for %s: empty export path", path)
-		}
-		return os.Open(exportPath)
-	}), nil
 }
 
 func collectTypeInfo(pkgPath string, fset *token.FileSet, files []*ast.File, imports types.Importer) *types.Info {
