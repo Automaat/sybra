@@ -14,6 +14,7 @@ func TestMap_SessionStart(t *testing.T) {
 	ev, err := Map(raw, "task-abc123", "SessionStart")
 	if err != nil {
 		t.Fatalf("Map: %v", err)
+		panic("unreachable")
 	}
 	if ev.Type != audit.EventCodexSessionStart {
 		t.Errorf("Type = %q, want %q", ev.Type, audit.EventCodexSessionStart)
@@ -38,6 +39,7 @@ func TestMap_SubagentStart(t *testing.T) {
 	ev, err := Map(raw, "task-xyz", "SubagentStart")
 	if err != nil {
 		t.Fatalf("Map: %v", err)
+		panic("unreachable")
 	}
 	if ev.Type != audit.EventCodexSubagentStart {
 		t.Errorf("Type = %q, want %q", ev.Type, audit.EventCodexSubagentStart)
@@ -56,6 +58,7 @@ func TestMap_SubagentStop(t *testing.T) {
 	ev, err := Map(raw, "t", "SubagentStop")
 	if err != nil {
 		t.Fatalf("Map: %v", err)
+		panic("unreachable")
 	}
 	if ev.Type != audit.EventCodexSubagentStop {
 		t.Errorf("Type = %q", ev.Type)
@@ -68,6 +71,7 @@ func TestMap_Stop(t *testing.T) {
 	ev, err := Map(raw, "t", "Stop")
 	if err != nil {
 		t.Fatalf("Map: %v", err)
+		panic("unreachable")
 	}
 	if ev.Type != audit.EventCodexSessionStop {
 		t.Errorf("Type = %q", ev.Type)
@@ -80,6 +84,7 @@ func TestMap_UnknownEvent(t *testing.T) {
 	_, err := Map(raw, "t", "PreToolUse")
 	if err == nil {
 		t.Fatal("expected error for unknown event")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "PreToolUse") {
 		t.Errorf("error should mention the unknown event name; got %v", err)
@@ -93,6 +98,7 @@ func TestMap_EventMismatch(t *testing.T) {
 	_, err := Map(raw, "t", "Stop")
 	if err == nil {
 		t.Fatal("expected error for event name mismatch")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "mismatch") {
 		t.Errorf("error should mention mismatch; got %v", err)
@@ -104,6 +110,7 @@ func TestMap_MalformedJSON(t *testing.T) {
 	_, err := Map([]byte("{not json"), "t", "SessionStart")
 	if err == nil {
 		t.Fatal("expected error for malformed JSON")
+		panic("unreachable")
 	}
 }
 
@@ -125,6 +132,7 @@ func TestMap_NoForbiddenFields(t *testing.T) {
 	ev, err := Map(raw, "task-1", "SessionStart")
 	if err != nil {
 		t.Fatalf("Map: %v", err)
+		panic("unreachable")
 	}
 
 	forbidden := []string{"cwd", "transcript_path", "tool_input", "prompt", "command"}
@@ -143,10 +151,12 @@ func TestMap_LineSizeUnder4096(t *testing.T) {
 	ev, err := Map(raw, "task-cccccccccccccccccccc", "SubagentStart")
 	if err != nil {
 		t.Fatalf("Map: %v", err)
+		panic("unreachable")
 	}
 	line, err := json.Marshal(ev)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
+		panic("unreachable")
 	}
 	if len(line) >= 4096 {
 		t.Errorf("marshaled event is %d bytes, must be < 4096; line=%s", len(line), line)

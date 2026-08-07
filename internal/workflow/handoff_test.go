@@ -19,6 +19,7 @@ func defByID(t *testing.T, id string) *Definition {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	for i := range defs {
 		if defs[i].ID == id {
@@ -35,6 +36,7 @@ func TestBuiltinHandoff_UsesSingleTemplateFile(t *testing.T) {
 	entries, err := builtinFS.ReadDir("builtin")
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
+		panic("unreachable")
 	}
 	count := 0
 	for _, entry := range entries {

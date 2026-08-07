@@ -61,6 +61,7 @@ func TestAgentRegistryRoundTripPreservesPersistedFields(t *testing.T) {
 	records, err := m.reg.List()
 	if err != nil {
 		t.Fatalf("list records: %v", err)
+		panic("unreachable")
 	}
 	if len(records) != 1 {
 		t.Fatalf("record count = %d, want 1", len(records))
@@ -162,6 +163,7 @@ func TestRegistryStore_ConcurrentSaveDeleteList(t *testing.T) {
 	s, err := newRegistryStore(regDir)
 	if err != nil {
 		t.Fatalf("newRegistryStore: %v", err)
+		panic("unreachable")
 	}
 
 	const workers = 16
@@ -212,6 +214,7 @@ func TestRegistryStore_ConcurrentSaveDeleteList(t *testing.T) {
 	records, err := s.List()
 	if err != nil {
 		t.Fatalf("final list: %v", err)
+		panic("unreachable")
 	}
 	if len(records) != 0 {
 		t.Fatalf("records left after concurrent delete = %d, want 0", len(records))

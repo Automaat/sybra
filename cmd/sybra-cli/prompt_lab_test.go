@@ -16,6 +16,7 @@ func newTaskManager(t *testing.T, dir string) *task.Manager {
 	store, err := task.NewStore(filepath.Join(dir, "tasks"))
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	return task.NewManager(store, task.NoopEmitter())
 }
@@ -25,6 +26,7 @@ func newProjectStore(t *testing.T, dir string) *project.Store {
 	ps, err := project.NewStore(filepath.Join(dir, "projects"), filepath.Join(dir, "clones"))
 	if err != nil {
 		t.Fatalf("project.NewStore: %v", err)
+		panic("unreachable")
 	}
 	return ps
 }
@@ -51,6 +53,7 @@ func TestFilePromptLabProposalsScrubsWorkTyped(t *testing.T) {
 	proj, err := projects.CreateMeta("https://github.com/acme/work-repo.git", project.ProjectTypeWork)
 	if err != nil {
 		t.Fatalf("CreateMeta: %v", err)
+		panic("unreachable")
 	}
 
 	p := testProposal("pl-work-1", "implementation", []string{proj.ID})
@@ -59,6 +62,7 @@ func TestFilePromptLabProposalsScrubsWorkTyped(t *testing.T) {
 	filed, err := filePromptLabProposals(tasks, projects, result, 30*24*time.Hour)
 	if err != nil {
 		t.Fatalf("filePromptLabProposals: %v", err)
+		panic("unreachable")
 	}
 	if len(filed) != 1 {
 		t.Fatalf("len(filed) = %d, want 1", len(filed))
@@ -86,6 +90,7 @@ func TestFilePromptLabProposalsLeavesPetUnredacted(t *testing.T) {
 	proj, err := projects.CreateMeta("https://github.com/acme/pet-repo.git", project.ProjectTypePet)
 	if err != nil {
 		t.Fatalf("CreateMeta: %v", err)
+		panic("unreachable")
 	}
 
 	petProposal := testProposal("pl-pet-1", "implementation", []string{proj.ID})
@@ -95,6 +100,7 @@ func TestFilePromptLabProposalsLeavesPetUnredacted(t *testing.T) {
 	filed, err := filePromptLabProposals(tasks, projects, result, 30*24*time.Hour)
 	if err != nil {
 		t.Fatalf("filePromptLabProposals: %v", err)
+		panic("unreachable")
 	}
 	if len(filed) != 2 {
 		t.Fatalf("len(filed) = %d, want 2", len(filed))
@@ -120,6 +126,7 @@ func TestFilePromptLabProposalsSkipsDuplicates(t *testing.T) {
 	first, err := filePromptLabProposals(tasks, projects, result, 30*24*time.Hour)
 	if err != nil {
 		t.Fatalf("first file: %v", err)
+		panic("unreachable")
 	}
 	if len(first) != 1 {
 		t.Fatalf("len(first) = %d, want 1", len(first))
@@ -127,6 +134,7 @@ func TestFilePromptLabProposalsSkipsDuplicates(t *testing.T) {
 	second, err := filePromptLabProposals(tasks, projects, result, 30*24*time.Hour)
 	if err != nil {
 		t.Fatalf("second file: %v", err)
+		panic("unreachable")
 	}
 	if len(second) != 0 {
 		t.Fatalf("len(second) = %d, want 0 (duplicate proposal ID must not refile)", len(second))
@@ -140,12 +148,14 @@ func TestFilePromptLabProposalsAssignsSybraProjectWhenRegistered(t *testing.T) {
 
 	if _, err := projects.CreateMeta("https://github.com/Automaat/sybra.git", project.ProjectTypePet); err != nil {
 		t.Fatalf("CreateMeta: %v", err)
+		panic("unreachable")
 	}
 
 	p := testProposal("pl-sybra-1", "implementation", nil)
 	filed, err := filePromptLabProposals(tasks, projects, promptlab.RunResult{Proposals: []promptlab.Proposal{p}}, 30*24*time.Hour)
 	if err != nil {
 		t.Fatalf("filePromptLabProposals: %v", err)
+		panic("unreachable")
 	}
 	if len(filed) != 1 {
 		t.Fatalf("len(filed) = %d, want 1", len(filed))

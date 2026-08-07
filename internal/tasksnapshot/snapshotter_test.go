@@ -25,6 +25,7 @@ func newTestSnapshotter(t *testing.T) (snap *Snapshotter, gitDir, workTree strin
 	workTree = filepath.Join(root, "tasks")
 	if err := os.MkdirAll(workTree, 0o755); err != nil {
 		t.Fatalf("mkdir workTree: %v", err)
+		panic("unreachable")
 	}
 	return New(gitDir, workTree, 50*time.Millisecond, testLogger()), gitDir, workTree
 }
@@ -33,9 +34,11 @@ func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+		panic("unreachable")
 	}
 }
 
@@ -64,10 +67,12 @@ func TestEnsureRepo_InitializesFreshRepo(t *testing.T) {
 	}
 	if _, err := os.Stat(gitDir); err != nil {
 		t.Fatalf("expected git dir to exist: %v", err)
+		panic("unreachable")
 	}
 	excludeData, err := os.ReadFile(filepath.Join(gitDir, "info", "exclude"))
 	if err != nil {
 		t.Fatalf("read exclude file: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(excludeData), "*.lock") {
 		t.Fatalf("expected *.lock in exclude file, got %q", excludeData)
@@ -92,6 +97,7 @@ func TestEnsureRepo_ReusesRepoAcrossInstances(t *testing.T) {
 	workTree := filepath.Join(root, "tasks")
 	if err := os.MkdirAll(workTree, 0o755); err != nil {
 		t.Fatalf("mkdir workTree: %v", err)
+		panic("unreachable")
 	}
 	ctx := context.Background()
 
@@ -102,6 +108,7 @@ func TestEnsureRepo_ReusesRepoAcrossInstances(t *testing.T) {
 	writeFile(t, filepath.Join(workTree, "a.md"), "a")
 	if committed, err := s1.Commit(ctx); err != nil || !committed {
 		t.Fatalf("first commit: committed=%v err=%v", committed, err)
+		panic("unreachable")
 	}
 
 	s2 := New(gitDir, workTree, time.Second, testLogger())
@@ -125,6 +132,7 @@ func TestCommit_OnChange(t *testing.T) {
 	committed, err := s.Commit(ctx)
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
+		panic("unreachable")
 	}
 	if !committed {
 		t.Fatal("expected a commit for a new file")
@@ -170,6 +178,7 @@ func TestCommit_SucceedsWithInheritedGitIndexFile(t *testing.T) {
 	badIndex := filepath.Join(t.TempDir(), "bad-index")
 	if err := os.WriteFile(badIndex, []byte("not a real index"), 0o644); err != nil {
 		t.Fatalf("write bad index: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("GIT_INDEX_FILE", badIndex)
 
@@ -184,6 +193,7 @@ func TestCommit_SucceedsWithInheritedGitIndexFile(t *testing.T) {
 	committed, err := s.Commit(ctx)
 	if err != nil {
 		t.Fatalf("Commit failed with inherited GIT_INDEX_FILE set: %v", err)
+		panic("unreachable")
 	}
 	if !committed {
 		t.Fatal("expected a commit for a new file")
@@ -203,11 +213,13 @@ func TestCommit_NoOpWhenClean(t *testing.T) {
 	writeFile(t, filepath.Join(workTree, "task-1.md"), "hello")
 	if committed, err := s.Commit(ctx); err != nil || !committed {
 		t.Fatalf("first commit: committed=%v err=%v", committed, err)
+		panic("unreachable")
 	}
 
 	committed, err := s.Commit(ctx)
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
+		panic("unreachable")
 	}
 	if committed {
 		t.Fatal("expected no-op commit on a clean tree")
@@ -228,16 +240,19 @@ func TestCommit_CapturesExternalDelete(t *testing.T) {
 	writeFile(t, taskPath, "hello")
 	if committed, err := s.Commit(ctx); err != nil || !committed {
 		t.Fatalf("baseline commit: committed=%v err=%v", committed, err)
+		panic("unreachable")
 	}
 
 	// Simulate a raw `rm` that bypasses the store entirely.
 	if err := os.Remove(taskPath); err != nil {
 		t.Fatalf("remove task file: %v", err)
+		panic("unreachable")
 	}
 
 	committed, err := s.Commit(ctx)
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
+		panic("unreachable")
 	}
 	if !committed {
 		t.Fatal("expected the external delete to be captured as a commit")
@@ -258,13 +273,16 @@ func TestCommit_RmThenRestoreRoundTrip(t *testing.T) {
 	writeFile(t, taskPath, "original content")
 	if committed, err := s.Commit(ctx); err != nil || !committed {
 		t.Fatalf("baseline commit: committed=%v err=%v", committed, err)
+		panic("unreachable")
 	}
 
 	if err := os.Remove(taskPath); err != nil {
 		t.Fatalf("remove task file: %v", err)
+		panic("unreachable")
 	}
 	if committed, err := s.Commit(ctx); err != nil || !committed {
 		t.Fatalf("delete commit: committed=%v err=%v", committed, err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(taskPath); !os.IsNotExist(err) {
 		t.Fatalf("expected task file to be gone before restore, err=%v", err)
@@ -276,11 +294,13 @@ func TestCommit_RmThenRestoreRoundTrip(t *testing.T) {
 	cmd.Env = append(gitexec.WithoutRepoOverrides(nil), "GIT_DIR="+gitDir, "GIT_WORK_TREE="+workTree)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git checkout restore: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	restored, err := os.ReadFile(taskPath)
 	if err != nil {
 		t.Fatalf("read restored file: %v", err)
+		panic("unreachable")
 	}
 	if string(restored) != "original content" {
 		t.Fatalf("restored content = %q, want %q", restored, "original content")
@@ -308,6 +328,7 @@ func TestEnsureRepo_DisablesOnWrongWorktree(t *testing.T) {
 	for _, d := range []string{workTreeA, workTreeB} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", d, err)
+			panic("unreachable")
 		}
 	}
 	ctx := context.Background()
@@ -326,6 +347,7 @@ func TestEnsureRepo_DisablesOnWrongWorktree(t *testing.T) {
 	committed, err := sb.Commit(ctx)
 	if err != nil {
 		t.Fatalf("Commit on a disabled snapshotter should not error, got %v", err)
+		panic("unreachable")
 	}
 	if committed {
 		t.Fatal("expected disabled snapshotter to never commit")
@@ -341,13 +363,16 @@ func TestEnsureRepo_DisablesOnMalformedRepo(t *testing.T) {
 	workTree := filepath.Join(root, "tasks")
 	if err := os.MkdirAll(workTree, 0o755); err != nil {
 		t.Fatalf("mkdir workTree: %v", err)
+		panic("unreachable")
 	}
 	// A directory that exists but is not a git repo at all.
 	if err := os.MkdirAll(gitDir, 0o755); err != nil {
 		t.Fatalf("mkdir gitDir: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(gitDir, "not-a-repo"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("write marker file: %v", err)
+		panic("unreachable")
 	}
 
 	s := New(gitDir, workTree, time.Second, testLogger())

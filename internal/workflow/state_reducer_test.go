@@ -35,6 +35,7 @@ func TestReduce(t *testing.T) {
 				wf := effects[0].Workflow
 				if wf == nil {
 					t.Fatal("set-workflow effect missing workflow")
+					panic("unreachable")
 				}
 				if wf.WorkflowID != "wf" || wf.CurrentStep != "start" || wf.State != ExecRunning {
 					t.Fatalf("workflow = %#v", wf)
@@ -47,6 +48,7 @@ func TestReduce(t *testing.T) {
 				}
 				if effects[1].Step == nil || effects[1].Step.ID != "start" {
 					t.Fatalf("dispatch step = %#v, want start", effects[1].Step)
+					panic("unreachable")
 				}
 			},
 		},
@@ -75,16 +77,19 @@ func TestReduce(t *testing.T) {
 				requireKinds(t, effects, EffectRecordStep, EffectSetWorkflowState, EffectDispatchStep)
 				if effects[0].Record == nil || effects[0].Record.StepID != "build" || effects[0].Record.Status != "completed" {
 					t.Fatalf("record = %#v", effects[0].Record)
+					panic("unreachable")
 				}
 				wf := effects[1].Workflow
 				if wf == nil || wf.CurrentStep != "review" || wf.State != ExecRunning {
 					t.Fatalf("workflow = %#v, want running review", wf)
+					panic("unreachable")
 				}
 				if got := wf.Variables["step.build.output"]; got != "ok" {
 					t.Fatalf("step output var = %q, want ok", got)
 				}
 				if effects[2].Step == nil || effects[2].Step.ID != "review" {
 					t.Fatalf("dispatch step = %#v, want review", effects[2].Step)
+					panic("unreachable")
 				}
 			},
 		},
@@ -105,6 +110,7 @@ func TestReduce(t *testing.T) {
 				wf := effects[1].Workflow
 				if wf == nil || wf.State != ExecCompleted || wf.CurrentStep != "" || wf.CompletedAt == nil || !wf.CompletedAt.Equal(now) {
 					t.Fatalf("workflow = %#v", wf)
+					panic("unreachable")
 				}
 			},
 		},
@@ -128,6 +134,7 @@ func TestReduce(t *testing.T) {
 				wf := effects[2].Workflow
 				if wf == nil || wf.State != ExecCompleted || wf.CurrentStep != "" {
 					t.Fatalf("workflow = %#v", wf)
+					panic("unreachable")
 				}
 			},
 		},
@@ -153,6 +160,7 @@ func TestReduce(t *testing.T) {
 				}
 				if effects[4].Step == nil || effects[4].Step.ID != "await" {
 					t.Fatalf("wait effect = %#v", effects[4].Step)
+					panic("unreachable")
 				}
 			},
 		},
@@ -172,6 +180,7 @@ func TestReduce(t *testing.T) {
 				requireKinds(t, effects, EffectSetTaskStatus, EffectSetWorkflowState, EffectWaitHuman)
 				if effects[2].Step == nil || effects[2].Step.ID != "review" {
 					t.Fatalf("wait step = %#v", effects[2].Step)
+					panic("unreachable")
 				}
 				if got := effects[2].HumanActions; !reflect.DeepEqual(got, []string{"approve", "reject"}) {
 					t.Fatalf("human actions = %#v", got)
@@ -240,11 +249,13 @@ func TestReduce(t *testing.T) {
 			if tc.wantErr != "" {
 				if err == nil || err.Error() != tc.wantErr && !contains(err.Error(), tc.wantErr) {
 					t.Fatalf("error = %v, want %q", err, tc.wantErr)
+					panic("unreachable")
 				}
 				return
 			}
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if tc.check != nil {
 				tc.check(t, effects)
@@ -263,6 +274,7 @@ func TestReduce(t *testing.T) {
 		_, err := Reduce(desired, observed)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got := desired.DesiredVars["seed"]; got != "value" {
 			t.Fatalf("DesiredVars mutated to %q", got)
@@ -367,10 +379,12 @@ func TestReduceTransitionFields(t *testing.T) {
 			effects, err := Reduce(makeDesired(tc.condition), tc.observed)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			requireKinds(t, effects, EffectRecordStep, EffectSetTaskStatus, EffectSetWorkflowState, EffectWaitHuman)
 			if effects[3].Step == nil || effects[3].Step.ID != "wait" {
 				t.Fatalf("wait effect = %#v, want wait", effects[3].Step)
+				panic("unreachable")
 			}
 		})
 	}
@@ -382,6 +396,7 @@ func TestReduceSimpleReviewLifetimeExhaustionRequiresHuman(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	var def *Definition
 	for i := range defs {
@@ -392,6 +407,7 @@ func TestReduceSimpleReviewLifetimeExhaustionRequiresHuman(t *testing.T) {
 	}
 	if def == nil {
 		t.Fatal("simple-task-review not found")
+		panic("unreachable")
 	}
 
 	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
@@ -414,6 +430,7 @@ func TestReduceSimpleReviewLifetimeExhaustionRequiresHuman(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	for _, effect := range effects {

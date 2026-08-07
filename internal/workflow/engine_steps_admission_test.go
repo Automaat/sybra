@@ -33,6 +33,7 @@ func TestExecAdmissionPreflight_DisabledIsNoOp(t *testing.T) {
 		TaskInfo{ID: "fa6919fc", PlanContract: `{"schema_version": "2"}`})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" || out.Output != "disabled" {
 		t.Fatalf("out = %+v, want completed/disabled", out)
@@ -53,6 +54,7 @@ func TestExecAdmissionPreflight_AdmitsNoContract(t *testing.T) {
 		TaskInfo{ID: "fa6919fc"})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" || out.Output != "admitted" {
 		t.Fatalf("out = %+v, want completed/admitted", out)
@@ -73,6 +75,7 @@ func TestExecAdmissionPreflight_AdmitsValidContract(t *testing.T) {
 		TaskInfo{ID: "fa6919fc", PlanContract: validPlanContract("fa6919fc")})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" || out.Output != "admitted" {
 		t.Fatalf("out = %+v, want completed/admitted", out)
@@ -100,6 +103,7 @@ func TestExecAdmissionPreflight_InvalidContractBlocksAsOperatorDecision(t *testi
 		TaskInfo{ID: "fa6919fc", PlanContract: contract})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("out.Status = %q, want completed", out.Status)
@@ -135,6 +139,7 @@ func TestExecAdmissionPreflight_UnknownCapabilityBlocksAsOperatorDecision(t *tes
 		TaskInfo{ID: "fa6919fc", PlanContract: contract})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("out.Status = %q, want completed", out.Status)
@@ -164,6 +169,7 @@ func TestExecAdmissionPreflight_OversizeAcceptanceCriteriaBlocksAsOperatorDecisi
 		TaskInfo{ID: "fa6919fc", PlanContract: contract})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("out.Status = %q, want completed", out.Status)
@@ -198,6 +204,7 @@ func TestExecAdmissionPreflight_OversizeFilesBlocksAsOperatorDecision(t *testing
 		TaskInfo{ID: "fa6919fc", PlanContract: contract})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("out.Status = %q, want completed", out.Status)
@@ -224,6 +231,7 @@ func TestExecAdmissionPreflight_NoWorktreeSkipsCredentialCheck(t *testing.T) {
 		TaskInfo{ID: "fa6919fc", PlanContract: validPlanContract("fa6919fc")})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "admitted" {
 		t.Fatalf("out.Output = %q, want admitted (a not-yet-existing worktree is not a failure)", out.Output)
@@ -246,6 +254,7 @@ func TestExecAdmissionPreflight_MissingCredentialsBlockAsCredentialRequired(t *t
 		TaskInfo{ID: "fa6919fc", PlanContract: validPlanContract("fa6919fc")})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("out.Status = %q, want completed", out.Status)

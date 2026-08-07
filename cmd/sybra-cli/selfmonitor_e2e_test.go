@@ -43,9 +43,11 @@ func writeHealthFile(t *testing.T, home string, rep health.Report) {
 	data, err := json.Marshal(rep)
 	if err != nil {
 		t.Fatalf("marshal health: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(home, "health-report.json"), data, 0o644); err != nil {
 		t.Fatalf("write health: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -54,10 +56,12 @@ func writeAgentLog(t *testing.T, home, agentID string, lines []string) string {
 	dir := filepath.Join(home, "logs", "agents")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	path := filepath.Join(dir, agentID+"-2026-04-14T10-00-00.ndjson")
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatalf("write log: %v", err)
+		panic("unreachable")
 	}
 	return path
 }
@@ -74,6 +78,7 @@ func seedConfigForLogs(t *testing.T, home string) {
 `
 	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -109,6 +114,7 @@ func TestE2ECLIInvestigateDistillsLog(t *testing.T) {
 	var rep selfmonitor.Report
 	if err := json.Unmarshal([]byte(out), &rep); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 	if len(rep.Findings) != 1 {
 		t.Fatalf("Findings = %d, want 1", len(rep.Findings))
@@ -116,6 +122,7 @@ func TestE2ECLIInvestigateDistillsLog(t *testing.T) {
 	inv := rep.Findings[0]
 	if inv.LogSummary == nil {
 		t.Fatal("LogSummary = nil, want distilled summary from CLI investigate")
+		panic("unreachable")
 	}
 	if inv.LogSummary.TotalToolCalls != 5 {
 		t.Errorf("TotalToolCalls = %d, want 5", inv.LogSummary.TotalToolCalls)
@@ -133,6 +140,7 @@ func TestE2ECLIScanRoundTripsPersistedReport(t *testing.T) {
 	dir := filepath.Join(home, "selfmonitor")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 
 	want := selfmonitor.Report{
@@ -154,9 +162,11 @@ func TestE2ECLIScanRoundTripsPersistedReport(t *testing.T) {
 	data, err := json.MarshalIndent(want, "", "  ")
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(dir, "last-report.json"), data, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
+		panic("unreachable")
 	}
 
 	code, out := runCLI(t, "--json", "selfmonitor", "scan")
@@ -166,6 +176,7 @@ func TestE2ECLIScanRoundTripsPersistedReport(t *testing.T) {
 	var got selfmonitor.Report
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 	if got.HealthScore != health.ScoreCritical {
 		t.Errorf("HealthScore = %q, want critical", got.HealthScore)
@@ -188,6 +199,7 @@ func TestE2ECLILedgerRoundTrip(t *testing.T) {
 	ledger, err := selfmonitor.Open(ledgerPath)
 	if err != nil {
 		t.Fatalf("open ledger: %v", err)
+		panic("unreachable")
 	}
 
 	fp := "cost_outlier:task-ledger"
@@ -199,6 +211,7 @@ func TestE2ECLILedgerRoundTrip(t *testing.T) {
 	for _, r := range rows {
 		if err := ledger.Append(r); err != nil {
 			t.Fatalf("append: %v", err)
+			panic("unreachable")
 		}
 	}
 
@@ -209,6 +222,7 @@ func TestE2ECLILedgerRoundTrip(t *testing.T) {
 	var entries []selfmonitor.LedgerEntry
 	if err := json.Unmarshal([]byte(out), &entries); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 	if len(entries) != 2 {
 		t.Fatalf("entries = %d, want 2", len(entries))
@@ -229,6 +243,7 @@ func TestE2ECLILedgerSinceFilter(t *testing.T) {
 	ledger, err := selfmonitor.Open(ledgerPath)
 	if err != nil {
 		t.Fatalf("open: %v", err)
+		panic("unreachable")
 	}
 
 	fp := "stuck_task:task-since"
@@ -240,6 +255,7 @@ func TestE2ECLILedgerSinceFilter(t *testing.T) {
 	for _, r := range rows {
 		if err := ledger.Append(r); err != nil {
 			t.Fatalf("append: %v", err)
+			panic("unreachable")
 		}
 	}
 
@@ -250,6 +266,7 @@ func TestE2ECLILedgerSinceFilter(t *testing.T) {
 	var entries []selfmonitor.LedgerEntry
 	if err := json.Unmarshal([]byte(out), &entries); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 	if len(entries) != 1 {
 		t.Fatalf("entries = %d, want 1 (only the recent row)", len(entries))
@@ -265,6 +282,7 @@ func TestE2ECLILedgerUnfilteredSinceIncludesNonIssues(t *testing.T) {
 	ledger, err := selfmonitor.Open(ledgerPath)
 	if err != nil {
 		t.Fatalf("open: %v", err)
+		panic("unreachable")
 	}
 
 	now := time.Now().UTC()
@@ -290,6 +308,7 @@ func TestE2ECLILedgerUnfilteredSinceIncludesNonIssues(t *testing.T) {
 	for _, r := range rows {
 		if err := ledger.Append(r); err != nil {
 			t.Fatalf("append: %v", err)
+			panic("unreachable")
 		}
 	}
 
@@ -300,6 +319,7 @@ func TestE2ECLILedgerUnfilteredSinceIncludesNonIssues(t *testing.T) {
 	var entries []selfmonitor.LedgerEntry
 	if err := json.Unmarshal([]byte(out), &entries); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 	if len(entries) != 2 {
 		t.Fatalf("entries = %d, want 2 recent rows", len(entries))
@@ -324,6 +344,7 @@ func TestE2ECLIInvestigateSuppressionReadsLedger(t *testing.T) {
 	ledger, err := selfmonitor.Open(ledgerPath)
 	if err != nil {
 		t.Fatalf("open: %v", err)
+		panic("unreachable")
 	}
 	fp := "cost_outlier:task-suppressed"
 	for range 3 {
@@ -351,6 +372,7 @@ func TestE2ECLIInvestigateSuppressionReadsLedger(t *testing.T) {
 	var rep selfmonitor.Report
 	if err := json.Unmarshal([]byte(out), &rep); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 	if len(rep.Findings) != 0 {
 		t.Errorf("suppressed finding leaked through CLI: %+v", rep.Findings)
@@ -373,6 +395,7 @@ func TestE2ECLIInvestigateNoHealthReportSoft(t *testing.T) {
 	var rep selfmonitor.Report
 	if err := json.Unmarshal([]byte(out), &rep); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 	if len(rep.Findings) != 0 {
 		t.Errorf("Findings = %d, want 0 on missing health report", len(rep.Findings))

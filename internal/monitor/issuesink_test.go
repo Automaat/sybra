@@ -95,6 +95,7 @@ func TestGHIssueSink_DedupMissCreates(t *testing.T) {
 	created, err := s.Submit(context.Background(), a, "body")
 	if err != nil {
 		t.Fatalf("submit: %v", err)
+		panic("unreachable")
 	}
 	if !created {
 		t.Fatal("expected created=true on dedup miss")
@@ -132,6 +133,7 @@ func TestGHIssueSink_DedupHitComments(t *testing.T) {
 	created, err := s.Submit(context.Background(), a, "new evidence")
 	if err != nil {
 		t.Fatalf("submit: %v", err)
+		panic("unreachable")
 	}
 	if created {
 		t.Fatal("expected created=false on dedup hit")
@@ -163,6 +165,7 @@ func TestGHIssueSink_LabelsEnsuredOnce(t *testing.T) {
 		}
 		if _, err := s.Submit(context.Background(), a, "body"); err != nil {
 			t.Fatalf("submit %d: %v", i, err)
+			panic("unreachable")
 		}
 	}
 
@@ -180,6 +183,7 @@ func TestGHIssueSink_EnsuresExtraLabelsBeforeCreate(t *testing.T) {
 	_, _, err := s.SubmitIssue(context.Background(), "title", "body", []string{"duplicate-candidate", "bug", "  ", "monitor"})
 	if err != nil {
 		t.Fatalf("submit: %v", err)
+		panic("unreachable")
 	}
 
 	labelCreates := fe.callsMatching("label", "create")
@@ -215,6 +219,7 @@ func TestGHIssueSink_ExtraLabelStartingWithDashIsNotParsedAsFlag(t *testing.T) {
 	_, _, err := s.SubmitIssue(context.Background(), "title", "body", []string{"-1-of-3"})
 	if err != nil {
 		t.Fatalf("submit: %v", err)
+		panic("unreachable")
 	}
 
 	labelCreates := fe.callsMatching("label", "create")
@@ -236,6 +241,7 @@ func TestGHIssueSink_CreatePreservesCommaContainingLabelAsSingleArg(t *testing.T
 	_, _, err := s.SubmitIssue(context.Background(), "title", "body", []string{"ops,infra"})
 	if err != nil {
 		t.Fatalf("submit: %v", err)
+		panic("unreachable")
 	}
 
 	creates := fe.callsMatching("issue", "create")
@@ -256,6 +262,7 @@ func TestGHIssueSink_ExtraLabelsNotEnsuredOnCommentPath(t *testing.T) {
 	_, _, err := s.SubmitIssue(context.Background(), "title", "body", []string{"duplicate-candidate"})
 	if err != nil {
 		t.Fatalf("submit: %v", err)
+		panic("unreachable")
 	}
 
 	labelCreates := fe.callsMatching("label", "create")
@@ -333,6 +340,7 @@ func TestGHIssueSink_CreateErrorIncludesSanitizedOutput(t *testing.T) {
 	_, err := s.Submit(context.Background(), a, "body")
 	if err == nil {
 		t.Fatal("expected create error")
+		panic("unreachable")
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, "gh issue create: first line") || !strings.Contains(msg, "...") || strings.Contains(msg, "sixth line") {
@@ -352,6 +360,7 @@ func TestGHIssueSink_CommentErrorIncludesOutput(t *testing.T) {
 	_, err := s.Submit(context.Background(), a, "body")
 	if err == nil {
 		t.Fatal("expected comment error")
+		panic("unreachable")
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, "gh issue comment") || !strings.Contains(msg, "Could not resolve") {
@@ -370,6 +379,7 @@ func TestGHIssueSink_ListErrorPropagates(t *testing.T) {
 	_, err := s.Submit(context.Background(), a, "body")
 	if err == nil {
 		t.Fatal("expected error on list failure")
+		panic("unreachable")
 	}
 	if errors.Is(err, ErrGHRateLimit) {
 		t.Fatal("unexpected rate-limit classification for non-rate-limit error")
@@ -388,6 +398,7 @@ func TestGHIssueSink_FingerprintTitleExactMatch(t *testing.T) {
 	created, err := s.Submit(context.Background(), a, "body")
 	if err != nil {
 		t.Fatalf("submit: %v", err)
+		panic("unreachable")
 	}
 	if created {
 		t.Fatal("expected dedup hit on exact title match")
@@ -411,6 +422,7 @@ func TestGHIssueSink_CloseIfOpen_FoundCloses(t *testing.T) {
 	closed, err := s.CloseIfOpen(context.Background(), a, "monitor: condition cleared")
 	if err != nil {
 		t.Fatalf("CloseIfOpen: %v", err)
+		panic("unreachable")
 	}
 	if !closed {
 		t.Fatal("want closed=true when a matching open issue exists")
@@ -439,6 +451,7 @@ func TestGHIssueSink_CloseIfOpen_NotFoundIsNoop(t *testing.T) {
 	closed, err := s.CloseIfOpen(context.Background(), a, "monitor: condition cleared")
 	if err != nil {
 		t.Fatalf("CloseIfOpen: %v", err)
+		panic("unreachable")
 	}
 	if closed {
 		t.Fatal("want closed=false when no open issue matches")
@@ -455,6 +468,7 @@ func TestGHIssueSink_CloseIfOpen_ListErrorPropagates(t *testing.T) {
 	a := Anomaly{Kind: KindLostAgent, Fingerprint: "lost_agent:task1"}
 	if _, err := s.CloseIfOpen(context.Background(), a, "comment"); err == nil {
 		t.Fatal("want error propagated from the dedup search")
+		panic("unreachable")
 	}
 }
 
@@ -507,6 +521,7 @@ func TestDefaultGHExecer_NoAppAuthInheritsAmbientEnv(t *testing.T) {
 	script := "#!/bin/bash\n[[ -n \"$SYBRA_TEST_MARKER\" ]] && printf '%s' \"$SYBRA_TEST_MARKER\" > " + captured + "\n"
 	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake gh: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", dir)
 	t.Setenv("SYBRA_TEST_MARKER", "present")
@@ -518,6 +533,7 @@ func TestDefaultGHExecer_NoAppAuthInheritsAmbientEnv(t *testing.T) {
 	got, err := os.ReadFile(captured)
 	if err != nil {
 		t.Fatalf("read captured env: %v", err)
+		panic("unreachable")
 	}
 	if string(got) != "present" {
 		t.Fatalf("ambient env not inherited by gh subprocess when no App auth is configured: %q", got)
@@ -535,6 +551,7 @@ func TestDefaultGHExecer_AppAuthInjectsGHToken(t *testing.T) {
 	script := "#!/bin/bash\n[[ -n \"$GH_TOKEN\" ]] && printf '%s' \"$GH_TOKEN\" > " + captured + "\n"
 	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake gh: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", dir)
 
@@ -545,6 +562,7 @@ func TestDefaultGHExecer_AppAuthInjectsGHToken(t *testing.T) {
 	got, err := os.ReadFile(captured)
 	if err != nil {
 		t.Fatalf("read captured token: %v", err)
+		panic("unreachable")
 	}
 	if string(got) != "ghs_monitor_installation" {
 		t.Fatalf("GH_TOKEN = %q, want %q", got, "ghs_monitor_installation")

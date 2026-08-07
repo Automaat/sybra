@@ -23,9 +23,11 @@ func TestParseCodexLine_RateLimitsAndUsage(t *testing.T) {
 	}
 	if snapshot.Primary == nil || snapshot.Primary.UsedPercent != 81.5 || snapshot.Primary.WindowMinutes != 300 {
 		t.Fatalf("primary snapshot mismatch: %+v", snapshot.Primary)
+		panic("unreachable")
 	}
 	if snapshot.Secondary == nil || snapshot.Secondary.UsedPercent != 64.0 || snapshot.Secondary.WindowMinutes != 10080 {
 		t.Fatalf("secondary snapshot mismatch: %+v", snapshot.Secondary)
+		panic("unreachable")
 	}
 	if event.ID != "id1" || event.SessionID != "sess1" || event.InputTokens != 23846 || event.CacheReadInputTokens != 8576 {
 		t.Fatalf("usage event mismatch: %+v", event)
@@ -39,6 +41,7 @@ func TestParseClaudeUsageSnapshot(t *testing.T) {
 	snapshot, ok, err := parseClaudeUsageSnapshot(line, now)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !ok {
 		t.Fatal("parseClaudeUsageSnapshot returned ok=false")
@@ -48,9 +51,11 @@ func TestParseClaudeUsageSnapshot(t *testing.T) {
 	}
 	if snapshot.Primary == nil || snapshot.Primary.UsedPercent != 0 || snapshot.Primary.WindowMinutes != 300 {
 		t.Fatalf("primary snapshot mismatch: %+v", snapshot.Primary)
+		panic("unreachable")
 	}
 	if snapshot.Secondary == nil || snapshot.Secondary.UsedPercent != 100 || snapshot.Secondary.WindowMinutes != 10080 {
 		t.Fatalf("secondary snapshot mismatch: %+v", snapshot.Secondary)
+		panic("unreachable")
 	}
 	if snapshot.Secondary.ResetsAt.IsZero() {
 		t.Fatalf("secondary reset was not parsed: %+v", snapshot.Secondary)
@@ -64,6 +69,7 @@ func TestParseCodexAppServerSnapshot(t *testing.T) {
 	snapshot, ok, err := parseCodexAppServerSnapshot(line, now)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !ok {
 		t.Fatal("parseCodexAppServerSnapshot returned ok=false")
@@ -76,9 +82,11 @@ func TestParseCodexAppServerSnapshot(t *testing.T) {
 	}
 	if snapshot.Primary == nil || snapshot.Primary.UsedPercent != 9 || snapshot.Primary.WindowMinutes != 300 {
 		t.Fatalf("primary snapshot mismatch: %+v", snapshot.Primary)
+		panic("unreachable")
 	}
 	if snapshot.Secondary == nil || snapshot.Secondary.UsedPercent != 100 || snapshot.Secondary.WindowMinutes != 10080 {
 		t.Fatalf("secondary snapshot mismatch: %+v", snapshot.Secondary)
+		panic("unreachable")
 	}
 }
 
@@ -86,6 +94,7 @@ func TestStoreProviderAvailableAndChooseProvider(t *testing.T) {
 	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	now := time.Now().UTC()
 	s.clock = clock.NewFake(now)
@@ -124,6 +133,7 @@ func TestSummary_DowngradesStaleExactSnapshot(t *testing.T) {
 	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
 	s.clock = clock.NewFake(now)
@@ -161,6 +171,7 @@ func TestSummary_RateLimitReachedTypeLimitsProvider(t *testing.T) {
 	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
 	s.clock = clock.NewFake(now)
@@ -186,6 +197,7 @@ func TestStoreProviderAvailable_IgnoresExpiredQuotaCycle(t *testing.T) {
 	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	now := time.Now().UTC()
 	s.clock = clock.NewFake(now)
@@ -222,6 +234,7 @@ func TestChooseProvider_SkipsPolicyDisabledCandidates(t *testing.T) {
 	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	now := time.Now().UTC()
 	s.clock = clock.NewFake(now)
@@ -252,6 +265,7 @@ func TestChooseProvider_NoDataDoesNotStealRequested(t *testing.T) {
 	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	alt, _ := s.ChooseProvider(ProviderClaude, []string{ProviderClaude, ProviderCodex}, func(string) bool { return true }, DefaultPolicy())
 	if alt != "" {
@@ -267,6 +281,7 @@ func TestChooseProvider_DistributesAcrossEligiblePeers(t *testing.T) {
 	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	s.clock = clock.NewFake(now)
@@ -304,6 +319,7 @@ func TestChooseSoftLimitedPeer_PicksPeerOnlySoftLimited(t *testing.T) {
 	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	s.clock = clock.NewFake(now)
@@ -335,6 +351,7 @@ func TestChooseSoftLimitedPeer_SkipsHardBlockedPeer(t *testing.T) {
 	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	s.clock = clock.NewFake(now)
@@ -362,6 +379,7 @@ func TestChooseSoftLimitedPeer_DistributesAcrossEligiblePeers(t *testing.T) {
 	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
 	s.clock = clock.NewFake(now)
@@ -395,6 +413,7 @@ func TestSummary_PrefersSessionFileUsageCountersButKeepsRunSpend(t *testing.T) {
 	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	now := time.Now().UTC()
 	s.clock = clock.NewFake(now)
@@ -453,6 +472,7 @@ func TestStoreImport_DedupesAndPersistsBatch(t *testing.T) {
 	s, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// A hardcoded calendar date here is a time bomb: reopening below builds a
 	// second Store whose clock is the real wall clock (nothing overrides it
@@ -491,10 +511,12 @@ func TestStoreImport_DedupesAndPersistsBatch(t *testing.T) {
 	reopened, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	reopened.clock = clock.NewFake(now)
 	if err := reopened.reloadLocked(); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(reopened.events) != 2 {
 		t.Fatalf("persisted events = %d, want 2", len(reopened.events))
@@ -518,10 +540,12 @@ func TestRecordUsageCrossProcessSimulatesConcurrentWriters(t *testing.T) {
 	s1, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	s2, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := s1.RecordUsage(UsageEvent{ID: "e1", Provider: ProviderClaude, Timestamp: time.Now()}); err != nil {
@@ -534,6 +558,7 @@ func TestRecordUsageCrossProcessSimulatesConcurrentWriters(t *testing.T) {
 	s3, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(s3.events) != 2 {
 		t.Fatalf("events = %d, want 2 — an event was dropped by concurrent cross-process writes", len(s3.events))
@@ -564,6 +589,7 @@ func TestBackfillLocalSessionFiles_StopsOnCanceledContext(t *testing.T) {
 	s, err := NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

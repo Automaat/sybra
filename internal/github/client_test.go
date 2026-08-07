@@ -507,6 +507,7 @@ func TestParseGQLResponse_copilotReviewed(t *testing.T) {
 			var resp gqlResponse
 			if err := json.Unmarshal([]byte(raw), &resp); err != nil {
 				t.Fatalf("unmarshal: %v", err)
+				panic("unreachable")
 			}
 			prs := convertPRs(resp.Data.Search.Nodes, "")
 			if len(prs) != 1 {
@@ -547,6 +548,7 @@ func TestParseGQLResponse(t *testing.T) {
 	var resp gqlResponse
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 
 	prs := convertPRs(resp.Data.Search.Nodes, "")
@@ -582,6 +584,7 @@ func TestParseGQLResponse_errors(t *testing.T) {
 	var resp gqlResponse
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 
 	if len(resp.Errors) != 1 {
@@ -616,6 +619,7 @@ func TestParseGQLResponse_botFiltered(t *testing.T) {
 	var resp gqlResponse
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 
 	prs := convertPRs(resp.Data.Search.Nodes, "")
@@ -649,6 +653,7 @@ func TestSearchPRsWith_success(t *testing.T) {
 	prs, err := searchPRsWith(fe, "is:pr is:open")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if len(prs) != 1 {
 		t.Fatalf("got %d PRs, want 1", len(prs))
@@ -667,6 +672,7 @@ func TestSearchPRsWith_execError(t *testing.T) {
 	_, err := searchPRsWith(fe, "is:pr")
 	if err == nil {
 		t.Fatal("expected error")
+		panic("unreachable")
 	}
 	if got := err.Error(); got == "" {
 		t.Error("error should contain message")
@@ -679,6 +685,7 @@ func TestSearchPRsWith_invalidJSON(t *testing.T) {
 	_, err := searchPRsWith(fe, "is:pr")
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
+		panic("unreachable")
 	}
 }
 
@@ -689,6 +696,7 @@ func TestSearchPRsWith_graphqlError(t *testing.T) {
 	_, err := searchPRsWith(fe, "is:pr")
 	if err == nil {
 		t.Fatal("expected error for graphql error")
+		panic("unreachable")
 	}
 	if got := err.Error(); got != "graphql: rate limited" {
 		t.Errorf("error = %q, want %q", got, "graphql: rate limited")

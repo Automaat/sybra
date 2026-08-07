@@ -110,12 +110,14 @@ func newReassignFixture(t *testing.T, followers []config.Follower, isWork func(s
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	cfg := &config.Config{Cluster: config.ClusterConfig{Role: config.ClusterRoleLeader, Followers: followers}}
 	roster, err := NewRoster(cfg, slog.Default())
 	if err != nil {
 		t.Fatalf("NewRoster: %v", err)
+		panic("unreachable")
 	}
 	if isWork == nil {
 		isWork = func(string) bool { return false }
@@ -128,6 +130,7 @@ func seedTask(t *testing.T, tasks *task.Manager, seed task.Task) task.Task {
 	saved, _, err := tasks.Put(seed)
 	if err != nil {
 		t.Fatalf("seed task: %v", err)
+		panic("unreachable")
 	}
 	return saved
 }
@@ -158,11 +161,13 @@ func TestReassignRepushesToNewNodeAndClearsWorktree(t *testing.T) {
 
 	if err := a.Reassign(t.Context(), "t1", "new-box"); err != nil {
 		t.Fatalf("Reassign: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := tasks.Get("t1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if got.AssignedNode != "new-box" {
 		t.Fatalf("assigned_node = %q, want new-box", got.AssignedNode)
@@ -178,6 +183,7 @@ func TestReassignRepushesToNewNodeAndClearsWorktree(t *testing.T) {
 	}
 	if got.MirrorRev != 0 || got.MirrorUpdatedAt != nil {
 		t.Fatalf("mirror clock must reset for the new node, got rev=%d at=%v", got.MirrorRev, got.MirrorUpdatedAt)
+		panic("unreachable")
 	}
 
 	pushed := newNode.assignedTasks()
@@ -205,6 +211,7 @@ func TestRouteTransfersAttachmentsBeforeAssign(t *testing.T) {
 	attachments, err := attachment.NewStore(t.TempDir(), 10<<20)
 	if err != nil {
 		t.Fatalf("attachment.NewStore: %v", err)
+		panic("unreachable")
 	}
 	a.SetAttachments(attachments)
 
@@ -217,6 +224,7 @@ func TestRouteTransfersAttachmentsBeforeAssign(t *testing.T) {
 	}, []byte("payload"))
 	if err != nil {
 		t.Fatalf("attachments.Import: %v", err)
+		panic("unreachable")
 	}
 	seed := seedTask(t, tasks, task.Task{
 		ID:          "t-attach",
@@ -230,6 +238,7 @@ func TestRouteTransfersAttachmentsBeforeAssign(t *testing.T) {
 	routed, err := a.Route(t.Context(), seed)
 	if err != nil {
 		t.Fatalf("Route: %v", err)
+		panic("unreachable")
 	}
 	if !routed {
 		t.Fatal("Route reported not routed")
@@ -268,6 +277,7 @@ func TestReassignTransfersAttachmentsBeforeAssign(t *testing.T) {
 	attachments, err := attachment.NewStore(t.TempDir(), 10<<20)
 	if err != nil {
 		t.Fatalf("attachment.NewStore: %v", err)
+		panic("unreachable")
 	}
 	a.SetAttachments(attachments)
 
@@ -280,6 +290,7 @@ func TestReassignTransfersAttachmentsBeforeAssign(t *testing.T) {
 	}, []byte("handoff payload"))
 	if err != nil {
 		t.Fatalf("attachments.Import: %v", err)
+		panic("unreachable")
 	}
 	seedTask(t, tasks, task.Task{
 		ID:           "t-reassign-attach",
@@ -292,6 +303,7 @@ func TestReassignTransfersAttachmentsBeforeAssign(t *testing.T) {
 
 	if err := a.Reassign(t.Context(), "t-reassign-attach", "new-box"); err != nil {
 		t.Fatalf("Reassign: %v", err)
+		panic("unreachable")
 	}
 
 	imported := newNode.importedAttachments()
@@ -330,6 +342,7 @@ func TestReassignStopsAgentsOnTheOldNode(t *testing.T) {
 
 	if err := a.Reassign(t.Context(), "t1", "new-box"); err != nil {
 		t.Fatalf("Reassign: %v", err)
+		panic("unreachable")
 	}
 
 	stopped := oldNode.stoppedAgents()
@@ -352,6 +365,7 @@ func TestReassignProceedsWhenOldNodeIsDead(t *testing.T) {
 
 	if err := a.Reassign(t.Context(), "t1", "new-box"); err != nil {
 		t.Fatalf("a dead old node must not block the escape hatch: %v", err)
+		panic("unreachable")
 	}
 	if pushed := newNode.assignedTasks(); len(pushed) != 1 {
 		t.Fatalf("task was not moved off the dead node: %+v", pushed)
@@ -369,10 +383,12 @@ func TestReassignHomeBringsTaskBackToLeader(t *testing.T) {
 
 	if err := a.Reassign(t.Context(), "t1", config.LocalNodeName); err != nil {
 		t.Fatalf("Reassign local: %v", err)
+		panic("unreachable")
 	}
 	got, err := tasks.Get("t1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if got.AssignedNode != "" {
 		t.Fatalf("a task brought home must have an empty assigned_node (that is what the local dispatch gate reads), got %q", got.AssignedNode)
@@ -428,6 +444,7 @@ func TestReassignIsIdempotentForTheSameNode(t *testing.T) {
 
 	if err := a.Reassign(t.Context(), "t1", "box"); err != nil {
 		t.Fatalf("Reassign: %v", err)
+		panic("unreachable")
 	}
 	if pushed := node.assignedTasks(); len(pushed) != 0 {
 		t.Fatalf("reassigning to the node it already runs on must be a no-op, not a re-push: %+v", pushed)
@@ -449,11 +466,13 @@ func TestReassignedTaskIgnoresStaleMirrorFromOldNode(t *testing.T) {
 
 	if err := a.Reassign(t.Context(), "t1", "new-box"); err != nil {
 		t.Fatalf("Reassign: %v", err)
+		panic("unreachable")
 	}
 
 	canonical, err := tasks.Get("t1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 
 	cfg := &config.Config{Cluster: config.ClusterConfig{Role: config.ClusterRoleLeader}}
@@ -470,6 +489,7 @@ func TestReassignedTaskIgnoresStaleMirrorFromOldNode(t *testing.T) {
 	after, err := tasks.Get("t1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if after.Status == task.StatusDone {
 		t.Fatalf("stale mirror from the old node overwrote canonical status: %s", after.Status)
@@ -508,6 +528,7 @@ func TestReassignUnknownNodeMessageNamesTheNode(t *testing.T) {
 	err := a.Reassign(context.Background(), "t1", "ghost")
 	if err == nil || !strings.Contains(err.Error(), "ghost") {
 		t.Fatalf("operator needs to see which node was rejected, got %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -528,12 +549,14 @@ func TestReassignSurvivesTheNextAssignerTick(t *testing.T) {
 
 	if err := a.Reassign(t.Context(), "t1", "new-box"); err != nil {
 		t.Fatalf("Reassign: %v", err)
+		panic("unreachable")
 	}
 	a.Tick(t.Context())
 
 	got, err := tasks.Get("t1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if got.AssignedNode != "new-box" {
 		t.Fatalf("the assigner dragged the task back to its config home: node=%q", got.AssignedNode)
@@ -557,12 +580,14 @@ func TestBringHomeSurvivesTheNextAssignerTick(t *testing.T) {
 
 	if err := a.Reassign(t.Context(), "t1", config.LocalNodeName); err != nil {
 		t.Fatalf("Reassign local: %v", err)
+		panic("unreachable")
 	}
 	a.Tick(t.Context())
 
 	got, err := tasks.Get("t1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if got.AssignedNode != "" {
 		t.Fatalf("a task brought home was re-routed to %q", got.AssignedNode)
@@ -592,10 +617,12 @@ func TestReassignRollsBackWhenTheNewNodeRejectsThePush(t *testing.T) {
 
 	if err := a.Reassign(t.Context(), "t1", "sick-box"); err == nil {
 		t.Fatal("want an error when the target node cannot be reached")
+		panic("unreachable")
 	}
 	got, err := tasks.Get("t1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if got.AssignedNode != "old-box" || got.NodeOverride != "" {
 		t.Fatalf("a failed push must not strand the task on a node that never received it: node=%q override=%q",
@@ -617,6 +644,7 @@ func TestReassignStopsTheLeadersOwnAgentsWhenMovingOffLocal(t *testing.T) {
 
 	if err := a.Reassign(t.Context(), "t1", "new-box"); err != nil {
 		t.Fatalf("Reassign: %v", err)
+		panic("unreachable")
 	}
 	if len(stopped) != 1 || stopped[0] != "t1" {
 		t.Fatalf("the leader's own agent must be stopped before a follower starts one on the same branch, stopped=%v", stopped)
@@ -668,11 +696,13 @@ func TestRollbackKeepsTheOperatorsPreviousPin(t *testing.T) {
 
 	if err := a.Reassign(t.Context(), "t1", "node-c"); err == nil {
 		t.Fatal("want an error when the target refuses the push")
+		panic("unreachable")
 	}
 
 	got, err := tasks.Get("t1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if got.AssignedNode != "node-b" || got.NodeOverride != "node-b" {
 		t.Fatalf("a failed push must restore the operator's pin, got node=%q override=%q", got.AssignedNode, got.NodeOverride)
@@ -682,6 +712,7 @@ func TestRollbackKeepsTheOperatorsPreviousPin(t *testing.T) {
 	after, err := tasks.Get("t1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if after.AssignedNode != "node-b" {
 		t.Fatalf("after a failed push the assigner dragged the task back to its config home: %q", after.AssignedNode)

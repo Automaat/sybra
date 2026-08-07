@@ -307,6 +307,7 @@ func TestConvertPRs_filtersInformationalChecks(t *testing.T) {
 	var resp gqlResponse
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 
 	prs := convertPRs(resp.Data.Search.Nodes, "")
@@ -350,6 +351,7 @@ func TestConvertPRs_realFailureBeatsCodecov(t *testing.T) {
 	var resp gqlResponse
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 	prs := convertPRs(resp.Data.Search.Nodes, "")
 	if len(prs) != 1 || prs[0].CIStatus != "FAILURE" {
@@ -381,6 +383,7 @@ func TestConvertPRs_emptyContextsFallsBackToRollupState(t *testing.T) {
 	var resp gqlResponse
 	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 	prs := convertPRs(resp.Data.Search.Nodes, "")
 	if len(prs) != 1 || prs[0].CIStatus != "FAILURE" {

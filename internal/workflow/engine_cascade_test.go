@@ -37,6 +37,7 @@ func addStatusWorkflow(t *testing.T, store *Store, id, on, condStatus, setStatus
 	}
 	if err := store.Save(def); err != nil {
 		t.Fatalf("save %s: %v", id, err)
+		panic("unreachable")
 	}
 }
 
@@ -77,11 +78,13 @@ func TestCascade_SynchronousWorkflowChainsToSuccessor(t *testing.T) {
 
 		if _, err := engine.DispatchEvent("t1", "task.created", nil, nil); err != nil {
 			t.Fatalf("dispatch task.created: %v", err)
+			panic("unreachable")
 		}
 
 		got, err := tasks.GetTask("t1")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.Status != "done" {
 			t.Fatalf("status = %q, want done — cascade to successor workflow did not run", got.Status)
@@ -107,11 +110,13 @@ func TestCascade_SynchronousWorkflowChainsToSuccessor(t *testing.T) {
 
 		if err := engine.StartWorkflow("t2", "kickoff"); err != nil {
 			t.Fatalf("start workflow: %v", err)
+			panic("unreachable")
 		}
 
 		got, err := tasks.GetTask("t2")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.Status != "done" {
 			t.Fatalf("status = %q, want done — cascade to successor workflow did not run", got.Status)
@@ -151,17 +156,20 @@ func TestCascade_ParallelTerminalStepCascades(t *testing.T) {
 	}
 	if err := store.Save(par); err != nil {
 		t.Fatalf("save kickoff-par: %v", err)
+		panic("unreachable")
 	}
 	addStatusWorkflow(t, store, "follow", "task.status_changed", "new", "done")
 	tasks.Put(TaskInfo{ID: "t1", Status: "new", AgentMode: "headless"})
 
 	if _, err := engine.DispatchEvent("t1", "task.created", nil, nil); err != nil {
 		t.Fatalf("dispatch task.created: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "done" {
 		t.Fatalf("status = %q, want done — parallel-terminal completion did not cascade", got.Status)
@@ -191,6 +199,7 @@ func TestCascade_DepthGuardStopsRunawayChain(t *testing.T) {
 	// Without the guard this never returns; with it, it unwinds at the bound.
 	if _, err := engine.DispatchEvent("t1", "task.created", nil, nil); err != nil {
 		t.Fatalf("dispatch task.created: %v", err)
+		panic("unreachable")
 	}
 
 	if !strings.Contains(logBuf.String(), "workflow.cascade.depth-exceeded") {

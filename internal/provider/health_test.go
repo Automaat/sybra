@@ -131,12 +131,14 @@ func TestProbeCodexOldCLIMarksProviderUnhealthy(t *testing.T) {
 		"esac\n"
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", dir)
 
 	st, err := ProbeCodex(context.Background())
 	if err != nil {
 		t.Fatalf("ProbeCodex: %v", err)
+		panic("unreachable")
 	}
 	if st.Healthy {
 		t.Fatal("Healthy = true, want false for an old Codex CLI")

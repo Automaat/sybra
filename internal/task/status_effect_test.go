@@ -15,10 +15,12 @@ func TestManagerApplyStatusEffect_RecordsEffectAndFiresHookOnce(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	inReview, err := m.Update(created.ID, Update{Status: Ptr(StatusInReview)})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
+		panic("unreachable")
 	}
 
 	var transitions []string
@@ -37,6 +39,7 @@ func TestManagerApplyStatusEffect_RecordsEffectAndFiresHookOnce(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("ApplyStatusEffect: %v", err)
+		panic("unreachable")
 	}
 	if updated.Status != StatusDone {
 		t.Fatalf("status = %q, want %q", updated.Status, StatusDone)
@@ -49,6 +52,7 @@ func TestManagerApplyStatusEffect_RecordsEffectAndFiresHookOnce(t *testing.T) {
 	}
 	if updated.EffectLog[0].CompletedAt == nil {
 		t.Fatal("completed_at not recorded")
+		panic("unreachable")
 	}
 	if updated.EffectLog[0].ID.Generation != inReview.Generation {
 		t.Fatalf("effect generation = %d, want %d", updated.EffectLog[0].ID.Generation, inReview.Generation)
@@ -70,6 +74,7 @@ func TestManagerApplyStatusEffect_DedupesCompletedEffect(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := m.Update(created.ID, Update{Status: Ptr(StatusInReview)}); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -86,10 +91,12 @@ func TestManagerApplyStatusEffect_DedupesCompletedEffect(t *testing.T) {
 	first, err := m.ApplyStatusEffect(created.ID, eff)
 	if err != nil {
 		t.Fatalf("first ApplyStatusEffect: %v", err)
+		panic("unreachable")
 	}
 	second, err := m.ApplyStatusEffect(created.ID, eff)
 	if err != nil {
 		t.Fatalf("second ApplyStatusEffect: %v", err)
+		panic("unreachable")
 	}
 	if len(second.EffectLog) != 1 {
 		t.Fatalf("effect log len after replay = %d, want 1", len(second.EffectLog))
@@ -111,6 +118,7 @@ func TestManagerApplyStatusEffect_ReappliesAfterGenerationChange(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 
 	eff := StatusEffect{
@@ -125,6 +133,7 @@ func TestManagerApplyStatusEffect_ReappliesAfterGenerationChange(t *testing.T) {
 	first, err := m.ApplyStatusEffect(created.ID, eff)
 	if err != nil {
 		t.Fatalf("first ApplyStatusEffect: %v", err)
+		panic("unreachable")
 	}
 	if first.Status != StatusHumanRequired {
 		t.Fatalf("first status = %q, want %q", first.Status, StatusHumanRequired)
@@ -136,6 +145,7 @@ func TestManagerApplyStatusEffect_ReappliesAfterGenerationChange(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("retry Update: %v", err)
+		panic("unreachable")
 	}
 	if retried.Generation == first.EffectLog[0].ID.Generation {
 		t.Fatalf("retry generation = %d, want different from first effect generation", retried.Generation)
@@ -144,6 +154,7 @@ func TestManagerApplyStatusEffect_ReappliesAfterGenerationChange(t *testing.T) {
 	second, err := m.ApplyStatusEffect(created.ID, eff)
 	if err != nil {
 		t.Fatalf("second ApplyStatusEffect: %v", err)
+		panic("unreachable")
 	}
 	if second.Status != StatusHumanRequired {
 		t.Fatalf("second status = %q, want %q", second.Status, StatusHumanRequired)
@@ -169,6 +180,7 @@ func TestManagerApplyStatusEffect_TrimsEffectLog(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 
 	got := created
@@ -182,6 +194,7 @@ func TestManagerApplyStatusEffect_TrimsEffectLog(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("ApplyStatusEffect(%d): %v", i, err)
+			panic("unreachable")
 		}
 	}
 

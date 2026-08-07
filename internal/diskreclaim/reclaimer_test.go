@@ -57,6 +57,7 @@ func mustMkdir(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", path, err)
+		panic("unreachable")
 	}
 }
 
@@ -65,9 +66,11 @@ func writeFileAt(t *testing.T, path string, size int, mtime time.Time) {
 	mustMkdir(t, filepath.Dir(path))
 	if err := os.WriteFile(path, make([]byte, size), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+		panic("unreachable")
 	}
 	if err := os.Chtimes(path, mtime, mtime); err != nil {
 		t.Fatalf("chtimes %s: %v", path, err)
+		panic("unreachable")
 	}
 }
 
@@ -80,6 +83,7 @@ func runGit(t *testing.T, dir string, args ...string) {
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
+		panic("unreachable")
 	}
 }
 
@@ -124,6 +128,7 @@ func makeCleanGitWorktree(t *testing.T, path string) {
 	runGit(t, path, "init", "-q", "-b", "main")
 	if err := os.WriteFile(filepath.Join(path, "f.txt"), []byte("a"), 0o644); err != nil {
 		t.Fatalf("seed file: %v", err)
+		panic("unreachable")
 	}
 	runGit(t, path, "add", "-A")
 	runGit(t, path, "commit", "-q", "-m", "init")
@@ -169,6 +174,7 @@ func TestReclaimerRunReclaimsSafeBucketsOnly(t *testing.T) {
 	}
 	if _, err := os.Stat(worktreePath); err != nil {
 		t.Fatalf("worktree must never be auto-deleted, but stat failed: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -186,6 +192,7 @@ func TestReclaimerRunReportsUnreclaimableDestructiveBucketSize(t *testing.T) {
 	}
 	if _, err := os.Stat(worktreePath); err != nil {
 		t.Fatalf("worktree must still exist after a report-only scan: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -212,6 +219,7 @@ func TestReclaimerRunProtectsActiveTaskResources(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(sandboxDir, "f.bin")); err != nil {
 		t.Fatalf("active task's sandbox file must not be removed: %v", err)
+		panic("unreachable")
 	}
 }
 

@@ -27,6 +27,7 @@ func listEvidenceMetas(t *testing.T, store *artifact.Store, taskID string) []art
 	metas, err := store.List(taskID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	var out []artifact.Meta
 	for i := range metas {
@@ -42,9 +43,11 @@ func TestImportTestRunnerEvidence_NilArtifactStore(t *testing.T) {
 	wt := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(wt, worktree.EvidenceDirName), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wt, worktree.EvidenceDirName, "shot.png"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	ag := &agent.Agent{ID: "a1", TaskID: "t1"}
 	h.importTestRunnerEvidence(ag, wt, "")
@@ -65,6 +68,7 @@ func TestImportTestRunnerEvidence_EmptyDirIsNoop(t *testing.T) {
 	wt := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(wt, worktree.EvidenceDirName), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	ag := &agent.Agent{ID: "a1", TaskID: "t1"}
 	h.importTestRunnerEvidence(ag, wt, "")
@@ -80,12 +84,15 @@ func TestImportTestRunnerEvidence_ImportsRegularFiles(t *testing.T) {
 	evidenceDir := filepath.Join(wt, worktree.EvidenceDirName)
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(evidenceDir, "screenshot.png"), []byte("png-bytes"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(evidenceDir, "console.log"), []byte("console output"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ag := &agent.Agent{ID: "agent-1", TaskID: "task-1"}
@@ -114,9 +121,11 @@ func TestImportTestRunnerEvidence_SkipsDirsAndSymlinks(t *testing.T) {
 	evidenceDir := filepath.Join(wt, worktree.EvidenceDirName)
 	if err := os.MkdirAll(filepath.Join(evidenceDir, "subdir"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(evidenceDir, "real.txt"), []byte("real"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Symlink(filepath.Join(evidenceDir, "real.txt"), filepath.Join(evidenceDir, "link.txt")); err != nil {
 		t.Skipf("symlink unsupported in this environment: %v", err)
@@ -140,13 +149,16 @@ func TestImportTestRunnerEvidence_SkipsOversizedFiles(t *testing.T) {
 	evidenceDir := filepath.Join(wt, worktree.EvidenceDirName)
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	big := make([]byte, maxEvidenceFileSize+1)
 	if err := os.WriteFile(filepath.Join(evidenceDir, "huge.bin"), big, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(evidenceDir, "small.txt"), []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ag := &agent.Agent{ID: "agent-1", TaskID: "task-1"}
@@ -164,11 +176,13 @@ func TestImportTestRunnerEvidence_TruncatesAtMaxFiles(t *testing.T) {
 	evidenceDir := filepath.Join(wt, worktree.EvidenceDirName)
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for i := range maxEvidenceFiles + 5 {
 		name := filepath.Join(evidenceDir, fmt.Sprintf("file-%03d.txt", i))
 		if err := os.WriteFile(name, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
@@ -187,9 +201,11 @@ func TestImportTestRunnerEvidence_RerunDoesNotOverwritePriorImport(t *testing.T)
 	evidenceDir := filepath.Join(wt, worktree.EvidenceDirName)
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(evidenceDir, "shot.png"), []byte("first-run"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	first := &agent.Agent{ID: "agent-1", TaskID: "task-1"}
@@ -197,6 +213,7 @@ func TestImportTestRunnerEvidence_RerunDoesNotOverwritePriorImport(t *testing.T)
 
 	if err := os.WriteFile(filepath.Join(evidenceDir, "shot.png"), []byte("second-run"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	second := &agent.Agent{ID: "agent-2", TaskID: "task-1"}
 	h.importTestRunnerEvidence(second, wt, "")
@@ -213,10 +230,12 @@ func TestImportTestRunnerEvidence_SkipsFilesOlderThanRun(t *testing.T) {
 	evidenceDir := filepath.Join(wt, worktree.EvidenceDirName)
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	oldPath := filepath.Join(evidenceDir, "old.txt")
 	if err := os.WriteFile(oldPath, []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	time.Sleep(20 * time.Millisecond)
 	startedAt := time.Now()
@@ -224,6 +243,7 @@ func TestImportTestRunnerEvidence_SkipsFilesOlderThanRun(t *testing.T) {
 	newPath := filepath.Join(evidenceDir, "new.txt")
 	if err := os.WriteFile(newPath, []byte("new"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ag := &agent.Agent{ID: "agent-1", TaskID: "task-1", StartedAt: startedAt}
@@ -247,10 +267,12 @@ func TestImportTestRunnerEvidence_ScrubsKnownTextFilesForWorkTasks(t *testing.T)
 	evidenceDir := filepath.Join(wt, worktree.EvidenceDirName)
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	src := "failure in konghq/kong-mesh during test"
 	if err := os.WriteFile(filepath.Join(evidenceDir, "console.log"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ag := &agent.Agent{ID: "agent-1", TaskID: "task-1"}
@@ -263,6 +285,7 @@ func TestImportTestRunnerEvidence_ScrubsKnownTextFilesForWorkTasks(t *testing.T)
 	got, _, err := store.Read(ag.TaskID, metas[0].Name)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if strings.Contains(string(got), "konghq/kong-mesh") {
 		t.Fatalf("scrubbed content still leaks work identifier: %q", string(got))
@@ -284,6 +307,7 @@ func TestImportTestRunnerEvidence_SkipsBinaryFilesForWorkTasks(t *testing.T) {
 	evidenceDir := filepath.Join(wt, worktree.EvidenceDirName)
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(evidenceDir, "screenshot.png"), []byte{0x89, 'P', 'N', 'G', 0x00}, 0o644); err != nil {
 		t.Fatal(err)
@@ -305,10 +329,12 @@ func TestImportTestRunnerEvidence_NilScrubContextImportsAsIs(t *testing.T) {
 	evidenceDir := filepath.Join(wt, worktree.EvidenceDirName)
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	src := "raw content with konghq/kong-mesh"
 	if err := os.WriteFile(filepath.Join(evidenceDir, "console.log"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ag := &agent.Agent{ID: "agent-1", TaskID: "task-1"}
@@ -321,6 +347,7 @@ func TestImportTestRunnerEvidence_NilScrubContextImportsAsIs(t *testing.T) {
 	got, _, err := store.Read(ag.TaskID, metas[0].Name)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if string(got) != src {
 		t.Fatalf("content = %q, want %q", string(got), src)
@@ -336,6 +363,7 @@ func TestSurfaceEvidenceImport_AppendsProgressEntry(t *testing.T) {
 	metas, err := store.List(ag.TaskID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(metas) != 1 || metas[0].Kind != artifact.KindProgress {
 		t.Fatalf("expected one progress-log artifact, got %+v", metas)
@@ -343,6 +371,7 @@ func TestSurfaceEvidenceImport_AppendsProgressEntry(t *testing.T) {
 	got, _, err := store.Read(ag.TaskID, metas[0].Name)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(got), "imported 3 test-runner evidence file(s)") {
 		t.Fatalf("progress log = %q, want evidence import message", string(got))

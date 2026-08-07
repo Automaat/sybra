@@ -34,6 +34,7 @@ func writeCycle1Artifacts(t *testing.T, dir string) {
 	for _, f := range files {
 		if err := os.WriteFile(filepath.Join(dir, f), []byte("cycle 1 content"), 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 }
@@ -67,6 +68,7 @@ func TestClearPlanArtifacts_RemovesSidecarsAndWorktreeFiles(t *testing.T) {
 	out, err := engine.execClearPlanArtifacts("t1", newClearStep(), info)
 	if err != nil {
 		t.Fatalf("execClearPlanArtifacts: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Errorf("status = %q, want completed", out.Status)
@@ -98,6 +100,7 @@ func TestClearPlanArtifacts_ClearsTheCritiqueFileToo(t *testing.T) {
 
 	if _, err := engine.execClearPlanArtifacts("t1", newClearStep(), info); err != nil {
 		t.Fatalf("execClearPlanArtifacts: %v", err)
+		panic("unreachable")
 	}
 
 	if _, err := os.Stat(filepath.Join(dir, ".sybra-critique-t1.md")); !os.IsNotExist(err) {
@@ -118,12 +121,14 @@ func TestClearPlanArtifacts_LeavesUnrelatedWorktreeFilesAlone(t *testing.T) {
 	for name, content := range keep {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 	engine, _, info := clearTestEnv(t, dir)
 
 	if _, err := engine.execClearPlanArtifacts("t1", newClearStep(), info); err != nil {
 		t.Fatalf("execClearPlanArtifacts: %v", err)
+		panic("unreachable")
 	}
 
 	for name := range keep {
@@ -148,6 +153,7 @@ func TestClearPlanArtifacts_UnknownWorktreeEscalatesRatherThanReplanning(t *test
 	out, err := engine.execClearPlanArtifacts("t1", newClearStep(), info)
 	if err != nil {
 		t.Fatalf("escalation must not error: the human-required edge halts the workflow, and a bare error strands the execution at a step nothing resumes: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(out.Output, "cleared") {
 		t.Errorf("output = %q, want a blocked reason", out.Output)
@@ -169,6 +175,7 @@ func TestClearPlanArtifacts_MissingWorktreeDirIsNotAFailure(t *testing.T) {
 
 	if _, err := engine.execClearPlanArtifacts("t1", newClearStep(), info); err != nil {
 		t.Fatalf("execClearPlanArtifacts: %v", err)
+		panic("unreachable")
 	}
 	got, _ := tasks.GetTask("t1")
 	if got.Status == "human-required" {
@@ -191,12 +198,14 @@ func TestClearPlanArtifacts_UnreadableWorktreeEscalates(t *testing.T) {
 	dir := filepath.Join(parent, "worktree")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	writeCycle1Artifacts(t, dir)
 	// Block the traverse so Stat fails with EACCES rather than ENOENT: the
 	// files are still there, we simply cannot see them.
 	if err := os.Chmod(parent, 0o000); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
 
@@ -204,6 +213,7 @@ func TestClearPlanArtifacts_UnreadableWorktreeEscalates(t *testing.T) {
 	out, err := engine.execClearPlanArtifacts("t1", newClearStep(), info)
 	if err != nil {
 		t.Fatalf("execClearPlanArtifacts: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(out.Output, "cleared") {
 		t.Errorf("output = %q, want a blocked reason: it reported success over files it never even saw", out.Output)
@@ -235,6 +245,7 @@ func TestClearPlanArtifacts_StatusUpdateFailureIsHardError(t *testing.T) {
 
 	if _, err := engine.execClearPlanArtifacts("missing-task", step, info); err == nil {
 		t.Fatal("a status-update failure must halt the workflow with a hard error, not report completed")
+		panic("unreachable")
 	}
 }
 
@@ -244,6 +255,7 @@ func TestClearPlanArtifacts_NothingConfiguredIsAnError(t *testing.T) {
 
 	if _, err := engine.execClearPlanArtifacts("t1", step, info); err == nil {
 		t.Fatal("a clear step that clears nothing is a silent no-op; it must not be accepted")
+		panic("unreachable")
 	}
 }
 
@@ -252,6 +264,7 @@ func planWorkflowDef(t *testing.T) *Definition {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	for i := range defs {
 		if defs[i].ID == "simple-task-plan" {
@@ -271,6 +284,7 @@ func TestBuiltinSimpleTask_ReplanClearsBeforeReplanning(t *testing.T) {
 	replan := def.StepByID("start_replan")
 	if replan == nil {
 		t.Fatal("start_replan step missing")
+		panic("unreachable")
 	}
 	if len(replan.Next) != 1 || replan.Next[0].GoTo != "clear_plan_artifacts" {
 		t.Fatalf("start_replan goes to %+v, want clear_plan_artifacts: re-entering plan directly replans onto the last cycle's artifacts", replan.Next)
@@ -279,6 +293,7 @@ func TestBuiltinSimpleTask_ReplanClearsBeforeReplanning(t *testing.T) {
 	clearStep := def.StepByID("clear_plan_artifacts")
 	if clearStep == nil {
 		t.Fatal("clear_plan_artifacts step missing")
+		panic("unreachable")
 	}
 	if clearStep.Type != StepClearPlanArtifacts {
 		t.Errorf("type = %q, want %q", clearStep.Type, StepClearPlanArtifacts)
@@ -312,6 +327,7 @@ func TestBuiltinSimpleTask_ReplanClearsEveryImportedPlanArtifact(t *testing.T) {
 	clearStep := def.StepByID("clear_plan_artifacts")
 	if clearStep == nil {
 		t.Fatal("clear_plan_artifacts step missing")
+		panic("unreachable")
 	}
 	cleared := map[string]bool{}
 	for _, k := range clearStep.Config.ClearSidecars {
@@ -380,6 +396,7 @@ func TestClearPlanArtifacts_UnreadableWorktreeDirEscalates(t *testing.T) {
 	// succeeds where ReadDir fails. That gap is the whole point.
 	if err := os.Chmod(dir, 0o000); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 
@@ -387,6 +404,7 @@ func TestClearPlanArtifacts_UnreadableWorktreeDirEscalates(t *testing.T) {
 	out, err := engine.execClearPlanArtifacts("t1", newClearStep(), info)
 	if err != nil {
 		t.Fatalf("must escalate, not error out: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(out.Output, "cleared") {
 		t.Errorf("output = %q, want a blocked reason: Glob saw nothing because it could not read the dir, not because it was empty", out.Output)
@@ -417,11 +435,13 @@ func TestClearPlanArtifacts_EscapingGlobEscalatesAndLeavesOutsideFilesAlone(t *t
 			dir := filepath.Join(parent, "worktree")
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			writeCycle1Artifacts(t, dir)
 			outside := filepath.Join(parent, "outside-marker")
 			if err := os.WriteFile(outside, []byte("must survive"), 0o644); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			engine, tasks, info := clearTestEnv(t, dir)
@@ -437,6 +457,7 @@ func TestClearPlanArtifacts_EscapingGlobEscalatesAndLeavesOutsideFilesAlone(t *t
 			out, err := engine.execClearPlanArtifacts("t1", step, info)
 			if err != nil {
 				t.Fatalf("must escalate, not error out: %v", err)
+				panic("unreachable")
 			}
 			if strings.Contains(out.Output, "cleared") {
 				t.Errorf("output = %q, want a blocked reason", out.Output)
@@ -471,6 +492,7 @@ func TestClearPlanArtifacts_BlankGlobEscalates(t *testing.T) {
 	out, err := engine.execClearPlanArtifacts("t1", step, info)
 	if err != nil {
 		t.Fatalf("must escalate, not error out: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(out.Output, "cleared") {
 		t.Errorf("output = %q, want a blocked reason", out.Output)

@@ -34,6 +34,7 @@ func TestWriteVerifyDiagnostic(t *testing.T) {
 	body, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read diagnostic: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(body), cmd) {
 		t.Errorf("diagnostic missing the failing command:\n%s", body)

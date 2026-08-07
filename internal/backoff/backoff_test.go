@@ -88,6 +88,7 @@ func TestWithoutJitterRequiresReason(t *testing.T) {
 	defer func() {
 		if recover() == nil {
 			t.Fatal("WithoutJitter did not panic for an empty reason")
+			panic("unreachable")
 		}
 	}()
 	WithoutJitter(1, time.Second, time.Minute, "  ")

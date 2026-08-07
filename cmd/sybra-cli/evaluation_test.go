@@ -38,9 +38,11 @@ func writeJSONFile(t *testing.T, path string, v any) {
 	data, err := json.Marshal(v)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+		panic("unreachable")
 	}
 }
 

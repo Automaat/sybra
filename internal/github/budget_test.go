@@ -38,6 +38,7 @@ func TestRefreshRateBudget_FeedsGateAndScalesIntervals(t *testing.T) {
 			e := &fakeExecer{output: []byte(tt.body)}
 			if err := refreshRateBudgetWith(context.Background(), e); err != nil {
 				t.Fatalf("refresh: %v", err)
+				panic("unreachable")
 			}
 			if got := BudgetPressureFactor(); got != tt.wantFactor {
 				t.Fatalf("factor = %v, want %v", got, tt.wantFactor)

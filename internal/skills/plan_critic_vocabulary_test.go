@@ -25,11 +25,13 @@ func planCriticSources(t *testing.T) map[string]string {
 	embedded, err := FS.ReadFile("data/plan-critic.md")
 	if err != nil {
 		t.Fatalf("read embedded plan-critic skill: %v", err)
+		panic("unreachable")
 	}
 	repoPath := filepath.Join("..", "..", ".claude", "skills", "plan-critic", "SKILL.md")
 	repo, err := os.ReadFile(repoPath)
 	if err != nil {
 		t.Fatalf("read repo plan-critic skill (%s): %v", repoPath, err)
+		panic("unreachable")
 	}
 	return map[string]string{
 		"data/plan-critic.md":                 string(embedded),

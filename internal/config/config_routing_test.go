@@ -37,5 +37,6 @@ func TestRoutingEvaluationMaxAge(t *testing.T) {
 	applyRoutingDefaults(cfg)
 	if cfg.Routing.EvaluationMaxAgeHours == nil || *cfg.Routing.EvaluationMaxAgeHours != 0 {
 		t.Fatalf("explicit 0 was rewritten to %v, want preserved 0", cfg.Routing.EvaluationMaxAgeHours)
+		panic("unreachable")
 	}
 }

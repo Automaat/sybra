@@ -128,6 +128,7 @@ func newWorkflowPermutationScenario(t *testing.T) *workflowPermutationScenario {
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "permutation-contract"); err != nil {
 		t.Fatalf("StartWorkflow: %v", err)
+		panic("unreachable")
 	}
 	return &workflowPermutationScenario{t: t, store: store, tasks: tasks, agents: agents, engine: engine}
 }
@@ -430,6 +431,7 @@ func mustListTasks(t *testing.T, tasks *memTasks) []TaskInfo {
 	list, err := tasks.ListTasks()
 	if err != nil {
 		t.Fatalf("ListTasks: %v", err)
+		panic("unreachable")
 	}
 	return list
 }

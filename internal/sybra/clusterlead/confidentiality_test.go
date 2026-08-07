@@ -34,6 +34,7 @@ func routeWork(t *testing.T, cfg *config.Config) (mgr *task.Manager, audited []s
 	roster, err := NewRoster(cfg, nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mgr = newManager(t)
 	assigner := NewAssigner(cfg, mgr, roster, isWork, func(taskID, _, _ string) { audited = append(audited, taskID) }, nil)
@@ -122,6 +123,7 @@ func TestPetTaskRoutesRegardlessOfTrust(t *testing.T) {
 	routed, err := assigner.Route(context.Background(), cur)
 	if err != nil || !routed {
 		t.Fatalf("pet task should route to an untrusted cleartext node: routed=%v err=%v", routed, err)
+		panic("unreachable")
 	}
 	if _, ok := stub.lastAssigned(); !ok {
 		t.Error("pet task was not pushed")
@@ -141,6 +143,7 @@ func TestNilClassifierFailsSafe(t *testing.T) {
 	cur, _ := mgr.Get("w1")
 	if _, err := assigner.Route(context.Background(), cur); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, ok := stub.lastAssigned(); ok {
 		t.Fatal("a nil classifier must fail safe (treat all as work) — nothing may be pushed to an untrusted node")

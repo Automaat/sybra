@@ -19,6 +19,7 @@ func TestLockPath_SecondCallerIsRefused(t *testing.T) {
 	release, err := m.lockPath(path)
 	if err != nil {
 		t.Fatalf("first lockPath: %v", err)
+		panic("unreachable")
 	}
 	if _, err := m.lockPath(path); !errors.Is(err, ErrPreparationInFlight) {
 		t.Fatalf("second lockPath err = %v, want ErrPreparationInFlight", err)
@@ -28,6 +29,7 @@ func TestLockPath_SecondCallerIsRefused(t *testing.T) {
 	release2, err := m.lockPath(path)
 	if err != nil {
 		t.Fatalf("lockPath after release: %v", err)
+		panic("unreachable")
 	}
 	release2()
 	if n := len(m.paths.held); n != 0 {
@@ -44,11 +46,13 @@ func TestLockPath_DistinctPathsAreIndependent(t *testing.T) {
 	releaseA, err := m.lockPath(filepath.Join(m.dir, "a"))
 	if err != nil {
 		t.Fatalf("lock a: %v", err)
+		panic("unreachable")
 	}
 	defer releaseA()
 	releaseB, err := m.lockPath(filepath.Join(m.dir, "b"))
 	if err != nil {
 		t.Fatalf("lock b: %v", err)
+		panic("unreachable")
 	}
 	releaseB()
 }
@@ -61,6 +65,7 @@ func TestLockPath_NormalizesPath(t *testing.T) {
 	release, err := m.lockPath(filepath.Join(m.dir, "wt"))
 	if err != nil {
 		t.Fatalf("lockPath: %v", err)
+		panic("unreachable")
 	}
 	defer release()
 
@@ -87,6 +92,7 @@ func TestPrepareForTask_RefusesSecondConcurrentPreparation(t *testing.T) {
 	tk, err := h.tasks.Store().Create("concurrent prepare", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -94,6 +100,7 @@ func TestPrepareForTask_RefusesSecondConcurrentPreparation(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	var firstErr error
@@ -113,20 +120,24 @@ func TestPrepareForTask_RefusesSecondConcurrentPreparation(t *testing.T) {
 
 	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); !errors.Is(err, ErrPreparationInFlight) {
 		t.Fatalf("second PrepareForTask err = %v, want ErrPreparationInFlight", err)
+		panic("unreachable")
 	}
 
 	if err := os.WriteFile(unblock, nil, 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	<-done
 	if firstErr != nil {
 		t.Fatalf("first PrepareForTask: %v", firstErr)
+		panic("unreachable")
 	}
 
 	// The path is released once the incumbent finishes, so the task is not
 	// wedged: the retry a dispatcher makes after the transient refusal works.
 	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); err != nil {
 		t.Fatalf("PrepareForTask after release: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -142,6 +153,7 @@ func TestLockedEntryPointsRefuseHeldPath(t *testing.T) {
 	tk, err := h.tasks.Store().Create("held path", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -149,11 +161,13 @@ func TestLockedEntryPointsRefuseHeldPath(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	release, err := h.m.lockPath(h.m.PathFor(tk))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer release()
 
@@ -191,6 +205,7 @@ func TestResetForRetry_ResetsWhenPathIsFree(t *testing.T) {
 	tk, err := h.tasks.Store().Create("free path", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -198,6 +213,7 @@ func TestResetForRetry_ResetsWhenPathIsFree(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// No worktree yet: nothing to reset, and that is not an error. The
@@ -206,6 +222,7 @@ func TestResetForRetry_ResetsWhenPathIsFree(t *testing.T) {
 	target, reset, err := h.m.ResetForRetry(context.Background(), tk, "", "HEAD")
 	if err != nil {
 		t.Fatalf("ResetForRetry with no worktree: %v", err)
+		panic("unreachable")
 	}
 	if reset {
 		t.Error("reset = true with no worktree on disk, want false")
@@ -217,15 +234,18 @@ func TestResetForRetry_ResetsWhenPathIsFree(t *testing.T) {
 	dir, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	stray := filepath.Join(dir, "stray.txt")
 	if err := os.WriteFile(stray, []byte("partial work"), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	target, reset, err = h.m.ResetForRetry(context.Background(), tk, "", "HEAD")
 	if err != nil {
 		t.Fatalf("ResetForRetry: %v", err)
+		panic("unreachable")
 	}
 	if !reset {
 		t.Error("reset = false on an existing worktree, want true")
@@ -247,6 +267,7 @@ func TestCleanup_SkipsHeldPathAndSweepsItLater(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	m := New(Config{WorktreesDir: dir, Tasks: tasks, Logger: discardLogger()})
@@ -254,6 +275,7 @@ func TestCleanup_SkipsHeldPathAndSweepsItLater(t *testing.T) {
 	tk, err := store.Create("cancelled task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusCancelled)}); err != nil {
 		t.Fatal(err)
@@ -264,15 +286,18 @@ func TestCleanup_SkipsHeldPathAndSweepsItLater(t *testing.T) {
 	release, err := m.lockPath(wtPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	m.Remove(context.Background(), tk.ID)
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("Remove deleted a worktree a preparation owns: %v", err)
+		panic("unreachable")
 	}
 	m.CleanupOrphaned(context.Background())
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("CleanupOrphaned deleted a worktree a preparation owns: %v", err)
+		panic("unreachable")
 	}
 
 	release()

@@ -19,6 +19,7 @@ func TestLogRecordsRegardlessOfDecision(t *testing.T) {
 	l, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = l.Close() })
 
@@ -32,6 +33,7 @@ func TestLogRecordsRegardlessOfDecision(t *testing.T) {
 	for _, r := range records {
 		if err := l.Log(r); err != nil {
 			t.Fatalf("Log(%s): %v", r.Tool, err)
+			panic("unreachable")
 		}
 	}
 
@@ -68,6 +70,7 @@ func TestLogFilesByUTCDate(t *testing.T) {
 	l, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = l.Close() })
 
@@ -96,6 +99,7 @@ func TestNilLoggerIsSafe(t *testing.T) {
 	}
 	if err := l.Close(); err != nil {
 		t.Fatalf("Close on nil Logger: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -104,6 +108,7 @@ func readAll(t *testing.T, path string) []Record {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
+		panic("unreachable")
 	}
 	var out []Record
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -111,6 +116,7 @@ func readAll(t *testing.T, path string) []Record {
 		var r Record
 		if err := dec.Decode(&r); err != nil {
 			t.Fatalf("decode: %v", err)
+			panic("unreachable")
 		}
 		out = append(out, r)
 	}

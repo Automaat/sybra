@@ -15,6 +15,7 @@ func TestTaskAdapterUpdateTaskStatusPreservesExistingHumanRequiredReason(t *test
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	created, err := tasks.CreateFull("preserve reason", "", "headless", task.Update{
@@ -25,16 +26,19 @@ func TestTaskAdapterUpdateTaskStatusPreservesExistingHumanRequiredReason(t *test
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ta := &taskAdapter{tasks: tasks}
 	if err := ta.UpdateTaskStatus(created.ID, task.StatusHumanRequired, ""); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	updated, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if updated.StatusReason != "existing reason" {
 		t.Fatalf("StatusReason = %q, want %q", updated.StatusReason, "existing reason")
@@ -47,6 +51,7 @@ func TestTaskAdapterUpdateTaskStatusPreservesSameStatusReasonWhenReasonEmpty(t *
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	created, err := tasks.CreateFull("preserve same-status reason", "", "headless", task.Update{
@@ -59,16 +64,19 @@ func TestTaskAdapterUpdateTaskStatusPreservesSameStatusReasonWhenReasonEmpty(t *
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ta := &taskAdapter{tasks: tasks}
 	if err := ta.UpdateTaskStatus(created.ID, task.StatusBlocked, ""); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	updated, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if updated.StatusReason != "watchdog bounded retry armed" {
 		t.Fatalf("StatusReason = %q, want preserved watchdog marker", updated.StatusReason)
@@ -81,6 +89,7 @@ func TestTaskAdapterUpdateTaskStatusClearsReasonOnStatusChangeWhenReasonEmpty(t 
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	created, err := tasks.CreateFull("clear transitioned reason", "", "headless", task.Update{
@@ -92,16 +101,19 @@ func TestTaskAdapterUpdateTaskStatusClearsReasonOnStatusChangeWhenReasonEmpty(t 
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ta := &taskAdapter{tasks: tasks}
 	if err := ta.UpdateTaskStatus(created.ID, task.StatusInReview, ""); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	updated, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if updated.Status != task.StatusInReview {
 		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusInReview)
@@ -117,11 +129,13 @@ func TestTaskAdapterUpdateTaskStatusSynthesizesHumanRequiredReasonFromLatestRun(
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	created, err := tasks.Create("synthesize reason", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusPlanning)}); err != nil {
 		t.Fatal(err)
@@ -147,11 +161,13 @@ func TestTaskAdapterUpdateTaskStatusSynthesizesHumanRequiredReasonFromLatestRun(
 	ta := &taskAdapter{tasks: tasks}
 	if err := ta.UpdateTaskStatus(created.ID, task.StatusHumanRequired, ""); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	updated, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	const want = "plan agent run ag-plan at workflow step plan stopped without a recorded outcome or result"
 	if updated.StatusReason != want {
@@ -170,11 +186,13 @@ func TestTaskAdapterSetBlockerAndWorkflowPersistsAllFieldsAtomically(t *testing.
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	created, err := tasks.Create("blocker+workflow", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wf := &workflow.Execution{WorkflowID: "wf-1", State: workflow.ExecRunning, CurrentStep: "run_test"}
 	if _, err := tasks.Update(created.ID, task.Update{Workflow: &wf}); err != nil {
@@ -183,6 +201,7 @@ func TestTaskAdapterSetBlockerAndWorkflowPersistsAllFieldsAtomically(t *testing.
 	before, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ta := &taskAdapter{tasks: tasks}
@@ -190,11 +209,13 @@ func TestTaskAdapterSetBlockerAndWorkflowPersistsAllFieldsAtomically(t *testing.
 	state := blocker.State{Kind: blocker.KindWatchdogRateLimitExhausted, Actor: blocker.ActorWorkflow, Exhausted: true}
 	if err := ta.SetBlockerAndWorkflow(created.ID, "blocked", "retry budget exhausted", state, terminal); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	after, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if after.Status != task.StatusBlocked {
 		t.Fatalf("Status = %q, want %q", after.Status, task.StatusBlocked)
@@ -207,6 +228,7 @@ func TestTaskAdapterSetBlockerAndWorkflowPersistsAllFieldsAtomically(t *testing.
 	}
 	if after.Workflow == nil || after.Workflow.State != workflow.ExecFailed {
 		t.Fatalf("Workflow.State = %v, want %v", after.Workflow, workflow.ExecFailed)
+		panic("unreachable")
 	}
 	// Exactly one generation bump for the whole call — proof it was a single
 	// store write, not a status+blocker write followed by a second one.
@@ -220,6 +242,7 @@ func TestTaskAdapterClearTaskStatusReasonIfIsAtomicGuard(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	created, err := tasks.CreateFull("guard reason", "", "headless", task.Update{
@@ -228,16 +251,19 @@ func TestTaskAdapterClearTaskStatusReasonIfIsAtomicGuard(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ta := &taskAdapter{tasks: tasks}
 	cleared, err := ta.ClearTaskStatusReasonIf(created.ID, task.StatusInProgress, "stale marker")
 	if err != nil || cleared {
 		t.Fatalf("mismatched clear = (%v, %v), want (false, nil)", cleared, err)
+		panic("unreachable")
 	}
 	current, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if current.StatusReason != "watchdog: rate limit: quota exhausted" {
 		t.Fatalf("mismatched clear overwrote reason %q", current.StatusReason)
@@ -246,10 +272,12 @@ func TestTaskAdapterClearTaskStatusReasonIfIsAtomicGuard(t *testing.T) {
 	cleared, err = ta.ClearTaskStatusReasonIf(created.ID, task.StatusInProgress, current.StatusReason)
 	if err != nil || !cleared {
 		t.Fatalf("matched clear = (%v, %v), want (true, nil)", cleared, err)
+		panic("unreachable")
 	}
 	current, err = tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if current.Status != task.StatusInProgress || current.StatusReason != "" {
 		t.Fatalf("matched clear left status=%q reason=%q, want in-progress with empty reason", current.Status, current.StatusReason)

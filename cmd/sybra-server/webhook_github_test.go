@@ -91,6 +91,7 @@ func githubWebhookBody(t *testing.T, fixture githubWebhookFixture) []byte {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal GitHub webhook fixture: %v", err)
+		panic("unreachable")
 	}
 	return body
 }
@@ -154,12 +155,15 @@ func TestGitHubWebhookCreatesPRReviewTaskWithCustomPrefix(t *testing.T) {
 	}
 	if creator.gotInit.ProjectID == nil || *creator.gotInit.ProjectID != "example-org/example-repo" {
 		t.Fatalf("project_id = %v", creator.gotInit.ProjectID)
+		panic("unreachable")
 	}
 	if creator.gotInit.PRNumber == nil || *creator.gotInit.PRNumber != 42 {
 		t.Fatalf("pr_number = %v", creator.gotInit.PRNumber)
+		panic("unreachable")
 	}
 	if creator.gotInit.Tags == nil {
 		t.Fatal("tags = nil")
+		panic("unreachable")
 	}
 	for _, want := range []string{"review", "pr-review", "github-comment:991"} {
 		if !slices.Contains(*creator.gotInit.Tags, want) {
@@ -187,9 +191,11 @@ func TestGitHubWebhookCreatesIssueImplementationTask(t *testing.T) {
 	}
 	if creator.gotInit.Issue == nil || *creator.gotInit.Issue != "https://github.com/example-org/example-repo/issues/42" {
 		t.Fatalf("issue = %v", creator.gotInit.Issue)
+		panic("unreachable")
 	}
 	if creator.gotInit.PRNumber != nil {
 		t.Fatalf("pr_number = %v, want nil", creator.gotInit.PRNumber)
+		panic("unreachable")
 	}
 	if creator.gotInit.Tags == nil || !slices.Equal(*creator.gotInit.Tags, []string{"ship-issue", "github-comment:991"}) {
 		t.Fatalf("tags = %v", creator.gotInit.Tags)
@@ -352,6 +358,7 @@ func TestGitHubWebhookDeduplicatesComment(t *testing.T) {
 	var response webhookTaskResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
+		panic("unreachable")
 	}
 	if response.TaskID != "existing-task" {
 		t.Fatalf("task_id = %q, want existing-task", response.TaskID)

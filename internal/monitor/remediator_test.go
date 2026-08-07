@@ -30,6 +30,7 @@ func TestRemediator_LostAgent_MarksRunningRunStopped(t *testing.T) {
 	label, err := rem.Apply(context.Background(), a)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if label == "" {
 		t.Fatal("expected non-empty label")
@@ -78,6 +79,7 @@ func TestRemediator_LostAgent_NoRunningRun_SkipsRunUpdate(t *testing.T) {
 	_, err := rem.Apply(context.Background(), a)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if len(ft.runUpdates) != 0 {
 		t.Errorf("want 0 run updates when no running agent run, got %d", len(ft.runUpdates))
@@ -102,6 +104,7 @@ func TestRemediator_PlanReviewStuck_NotRemediated(t *testing.T) {
 	}
 	if _, err := rem.Apply(context.Background(), a); err == nil {
 		t.Fatal("expected error: plan-review must not be remediated to human-required")
+		panic("unreachable")
 	}
 	if len(ft.updates) != 0 {
 		t.Fatalf("want 0 updates (plan-review left untouched), got %d", len(ft.updates))
@@ -125,6 +128,7 @@ func TestRemediator_StuckHumanBlocked_HumanRequired_PreservesStatusReason(t *tes
 	label, err := rem.Apply(context.Background(), a)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if label == "" {
 		t.Fatal("expected non-empty label")
@@ -192,6 +196,7 @@ func TestRemediator_StuckHumanBlocked_MergedPRUsesLandingPipeline(t *testing.T) 
 	label, err := rem.Apply(context.Background(), a)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if label != "stuck_human_blocked:merged:hr-merged" {
 		t.Fatalf("label = %q, want merged label", label)
@@ -237,6 +242,7 @@ func TestRemediator_StuckHumanBlocked_PRStateErrorReturnsError(t *testing.T) {
 	label, err := rem.Apply(context.Background(), a)
 	if err == nil || err.Error() != "gh auth unavailable" {
 		t.Fatalf("Apply error = %v, want gh auth unavailable", err)
+		panic("unreachable")
 	}
 	if label != "" {
 		t.Fatalf("label = %q, want empty", label)
@@ -265,6 +271,7 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_AutoRetries(t *testing
 	label, err := rem.Apply(context.Background(), a)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if label == "" {
 		t.Fatal("expected non-empty label")
@@ -278,12 +285,14 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_AutoRetries(t *testing
 	}
 	if u.u.Status == nil || *u.u.Status != task.StatusInProgress {
 		t.Fatalf("status = %v, want in-progress", u.u.Status)
+		panic("unreachable")
 	}
 	if u.u.StatusReason == nil || *u.u.StatusReason == "" {
 		t.Error("status_reason should explain the auto-retry")
 	}
 	if u.u.Tags == nil {
 		t.Fatal("expected tags to be updated with the auto-retried marker")
+		panic("unreachable")
 	}
 	found := false
 	for _, tag := range *u.u.Tags {
@@ -321,6 +330,7 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_HumanVerdictDoesNotRet
 	label, err := rem.Apply(context.Background(), a)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if label == "" {
 		t.Fatal("expected non-empty label")
@@ -331,9 +341,11 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_HumanVerdictDoesNotRet
 	u := ft.updates[0]
 	if u.u.Status != nil {
 		t.Fatalf("status must not change for human-confirmed block, got %v", u.u.Status)
+		panic("unreachable")
 	}
 	if u.u.Tags != nil {
 		t.Fatalf("tags must not change for human-confirmed block, got %v", *u.u.Tags)
+		panic("unreachable")
 	}
 }
 
@@ -358,6 +370,7 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_UmbrellaDoesNotRetry(t
 	label, err := rem.Apply(context.Background(), a)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if label == "" {
 		t.Fatal("expected non-empty label")
@@ -368,9 +381,11 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_UmbrellaDoesNotRetry(t
 	u := ft.updates[0]
 	if u.u.Status != nil {
 		t.Fatalf("status must not change for umbrella tracker, got %v", u.u.Status)
+		panic("unreachable")
 	}
 	if u.u.Tags != nil {
 		t.Fatalf("tags must not change for umbrella tracker, got %v", *u.u.Tags)
+		panic("unreachable")
 	}
 }
 
@@ -395,6 +410,7 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_TamperFlagDoesNotRetry
 	label, err := rem.Apply(context.Background(), a)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if label == "" {
 		t.Fatal("expected non-empty label")
@@ -405,9 +421,11 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_TamperFlagDoesNotRetry
 	u := ft.updates[0]
 	if u.u.Status != nil {
 		t.Fatalf("status must not change for tamper-flagged block, got %v", u.u.Status)
+		panic("unreachable")
 	}
 	if u.u.Tags != nil {
 		t.Fatalf("tags must not change for tamper-flagged block, got %v", *u.u.Tags)
+		panic("unreachable")
 	}
 }
 func TestRemediator_StuckHumanBlocked_UnknownStatus_Errors(t *testing.T) {
@@ -426,6 +444,7 @@ func TestRemediator_StuckHumanBlocked_UnknownStatus_Errors(t *testing.T) {
 	_, err := rem.Apply(context.Background(), a)
 	if err == nil {
 		t.Fatal("expected error for unknown-status stuck_human_blocked")
+		panic("unreachable")
 	}
 	if len(ft.updates) != 0 {
 		t.Fatalf("want 0 updates, got %d", len(ft.updates))

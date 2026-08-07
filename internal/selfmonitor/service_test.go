@@ -54,6 +54,7 @@ func newServiceForTest(t *testing.T, h HealthReader, tasks TaskAPI, logsDir stri
 	l, err := Open(ledgerPath)
 	if err != nil {
 		t.Fatalf("Open ledger: %v", err)
+		panic("unreachable")
 	}
 	return NewService(Deps{
 		Cfg: config.SelfMonitorConfig{
@@ -75,6 +76,7 @@ func TestScanNoHealthReport(t *testing.T) {
 	r, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 	if len(r.Findings) != 0 {
 		t.Errorf("Findings = %d, want 0", len(r.Findings))
@@ -97,6 +99,7 @@ func TestScanMarksPartialOnOversizedLogRecord(t *testing.T) {
 	agentDir := filepath.Join(logsDir, "agents")
 	if err := os.MkdirAll(agentDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	huge := `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tbig","content":"` +
 		strings.Repeat("x", maxLogLineBytes+1024) + `"}]}}`
@@ -104,6 +107,7 @@ func TestScanMarksPartialOnOversizedLogRecord(t *testing.T) {
 	logPath := filepath.Join(agentDir, "agent-big.ndjson")
 	if err := os.WriteFile(logPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatalf("write log: %v", err)
+		panic("unreachable")
 	}
 
 	rep := &health.Report{
@@ -120,6 +124,7 @@ func TestScanMarksPartialOnOversizedLogRecord(t *testing.T) {
 	r, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 	if r.State != StatePartial {
 		t.Errorf("State = %q, want %q", r.State, StatePartial)
@@ -129,6 +134,7 @@ func TestScanMarksPartialOnOversizedLogRecord(t *testing.T) {
 	}
 	if len(r.Findings) != 1 || r.Findings[0].LogSummary == nil {
 		t.Fatalf("expected the finding to still be analyzed despite the oversized record: %+v", r.Findings)
+		panic("unreachable")
 	}
 	if r.InputsTotal != 1 || r.InputsAnalyzed != 1 {
 		t.Errorf("InputsTotal/InputsAnalyzed = %d/%d, want 1/1", r.InputsTotal, r.InputsAnalyzed)
@@ -143,10 +149,12 @@ func TestScanDistillsLogs(t *testing.T) {
 	agentDir := filepath.Join(logsDir, "agents")
 	if err := os.MkdirAll(agentDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	logPath := filepath.Join(agentDir, "agent-abc-2026-04-14T10-00-00.ndjson")
 	if err := os.WriteFile(logPath, []byte(strings.Join(fixtureLines(), "\n")+"\n"), 0o644); err != nil {
 		t.Fatalf("write log: %v", err)
+		panic("unreachable")
 	}
 
 	rep := &health.Report{
@@ -167,6 +175,7 @@ func TestScanDistillsLogs(t *testing.T) {
 	r, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 	if len(r.Findings) != 1 {
 		t.Fatalf("Findings = %d, want 1", len(r.Findings))
@@ -174,6 +183,7 @@ func TestScanDistillsLogs(t *testing.T) {
 	inv := r.Findings[0]
 	if inv.LogSummary == nil {
 		t.Fatal("LogSummary = nil, want analyzed summary")
+		panic("unreachable")
 	}
 	if inv.LogSummary.TotalToolCalls != 5 {
 		t.Errorf("TotalToolCalls = %d, want 5", inv.LogSummary.TotalToolCalls)
@@ -189,10 +199,12 @@ func TestScanResolvesLogFromTaskAgentRuns(t *testing.T) {
 	agentDir := filepath.Join(logsDir, "agents")
 	if err := os.MkdirAll(agentDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	logPath := filepath.Join(agentDir, "agent-xyz.ndjson")
 	if err := os.WriteFile(logPath, []byte(strings.Join(fixtureLines(), "\n")+"\n"), 0o644); err != nil {
 		t.Fatalf("write log: %v", err)
+		panic("unreachable")
 	}
 
 	tasks := &stubTasks{byID: map[string]task.Task{
@@ -216,9 +228,11 @@ func TestScanResolvesLogFromTaskAgentRuns(t *testing.T) {
 	r, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 	if len(r.Findings) != 1 || r.Findings[0].LogSummary == nil {
 		t.Fatalf("expected 1 finding with log summary, got %+v", r.Findings)
+		panic("unreachable")
 	}
 }
 
@@ -229,6 +243,7 @@ func TestScanAutoSuppressesChronicFalsePositive(t *testing.T) {
 	l, err := Open(ledgerPath)
 	if err != nil {
 		t.Fatalf("Open ledger: %v", err)
+		panic("unreachable")
 	}
 	fp := "cost_outlier:task-noisy"
 	for range 3 {
@@ -263,6 +278,7 @@ func TestScanAutoSuppressesChronicFalsePositive(t *testing.T) {
 	r, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 	if len(r.Findings) != 0 {
 		t.Errorf("suppressed finding leaked: %+v", r.Findings)
@@ -293,6 +309,7 @@ func TestScanFiltersByProjectType(t *testing.T) {
 	r, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 	if len(r.Findings) != 0 {
 		t.Errorf("AllowsProject gate leaked: %+v", r.Findings)
@@ -315,10 +332,12 @@ func TestPersistReportWritesFile(t *testing.T) {
 	data, err := os.ReadFile(reportPath)
 	if err != nil {
 		t.Fatalf("persisted file missing: %v", err)
+		panic("unreachable")
 	}
 	var back Report
 	if err := json.Unmarshal(data, &back); err != nil {
 		t.Fatalf("persisted file unparseable: %v", err)
+		panic("unreachable")
 	}
 	if back.HealthScore != health.ScoreGood {
 		t.Errorf("HealthScore = %q, want %q", back.HealthScore, health.ScoreGood)
@@ -346,6 +365,7 @@ func TestTickAndLogFailedTickPreservesLastGoodReport(t *testing.T) {
 	before, err := os.ReadFile(reportPath)
 	if err != nil {
 		t.Fatalf("seed persisted file missing: %v", err)
+		panic("unreachable")
 	}
 
 	svc.deps.Health = &stubHealth{Err: errors.New("boom: disk read failed")}
@@ -354,6 +374,7 @@ func TestTickAndLogFailedTickPreservesLastGoodReport(t *testing.T) {
 	after, err := os.ReadFile(reportPath)
 	if err != nil {
 		t.Fatalf("persisted file missing after failed tick: %v", err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(before, after) {
 		t.Errorf("last-report.json changed after a failed tick; want it untouched\nbefore=%s\nafter=%s", before, after)
@@ -393,6 +414,7 @@ func TestPersistReportInterruptedWritePreservesLastGood(t *testing.T) {
 	good, err := os.ReadFile(reportPath)
 	if err != nil {
 		t.Fatalf("seed persisted file missing: %v", err)
+		panic("unreachable")
 	}
 
 	// fsutil.AtomicWrite's temp file must land next to the target to rename
@@ -400,6 +422,7 @@ func TestPersistReportInterruptedWritePreservesLastGood(t *testing.T) {
 	// before it can touch the existing file at all.
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 
@@ -410,6 +433,7 @@ func TestPersistReportInterruptedWritePreservesLastGood(t *testing.T) {
 	after, err := os.ReadFile(reportPath)
 	if err != nil {
 		t.Fatalf("persisted file missing after interrupted write: %v", err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(after, good) {
 		t.Errorf("last-report.json changed after an interrupted write; want the previous good report preserved\nbefore=%s\nafter=%s", good, after)
@@ -440,15 +464,18 @@ func TestDiskHealthReaderRoundTrip(t *testing.T) {
 	data, err := json.Marshal(want)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
+		panic("unreachable")
 	}
 
 	r := DiskHealthReader{Path: path}
 	got, err := r.LatestReport()
 	if err != nil {
 		t.Fatalf("LatestReport: %v", err)
+		panic("unreachable")
 	}
 	if got == nil || got.Score != health.ScoreCritical {
 		t.Errorf("got = %+v", got)

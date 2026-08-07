@@ -46,6 +46,7 @@ func TestBindToolResultEvent_PersistsArtifactAndKeepsDiagnostic(t *testing.T) {
 	metas, err := store.List("task-bound")
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(metas) != 1 {
 		t.Fatalf("artifact count = %d, want 1", len(metas))
@@ -59,6 +60,7 @@ func TestBindToolResultEvent_PersistsArtifactAndKeepsDiagnostic(t *testing.T) {
 	data, _, err := store.Read("task-bound", metas[0].Name)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
+		panic("unreachable")
 	}
 	if string(data) != raw {
 		t.Fatalf("artifact content mismatch")
@@ -101,11 +103,13 @@ func TestParseLogFileWithArtifacts_BoundsReplayedToolResults(t *testing.T) {
 		strconv.Quote(raw) + `,"is_error":true}]}}` + "\n"
 	if err := os.WriteFile(logPath, []byte(line), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	events, err := ParseLogFileWithArtifacts(logPath, 0, "claude", "task-replay", "", store)
 	if err != nil {
 		t.Fatalf("ParseLogFileWithArtifacts: %v", err)
+		panic("unreachable")
 	}
 	if len(events) != 1 {
 		t.Fatalf("events = %d, want 1", len(events))
@@ -119,6 +123,7 @@ func TestParseLogFileWithArtifacts_BoundsReplayedToolResults(t *testing.T) {
 	metas, err := store.List("task-replay")
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(metas) != 1 {
 		t.Fatalf("artifact count = %d, want 1", len(metas))
@@ -135,11 +140,13 @@ func TestParseLogFileWithArtifacts_BoundsOversizedLogLine(t *testing.T) {
 		strconv.Quote(raw) + `,"is_error":true}]}}` + "\n"
 	if err := os.WriteFile(logPath, []byte(line), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	events, err := ParseLogFileWithArtifacts(logPath, 0, "claude", "task-huge", "", store)
 	if err != nil {
 		t.Fatalf("ParseLogFileWithArtifacts: %v", err)
+		panic("unreachable")
 	}
 	if len(events) != 1 {
 		t.Fatalf("events = %d, want 1", len(events))
@@ -153,6 +160,7 @@ func TestParseLogFileWithArtifacts_BoundsOversizedLogLine(t *testing.T) {
 	metas, err := store.List("task-huge")
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(metas) != 1 {
 		t.Fatalf("artifact count = %d, want 1", len(metas))

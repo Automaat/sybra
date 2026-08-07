@@ -89,6 +89,7 @@ func TestViewerLogin_AppAuthResolvesSlugAndNeverCallsUser(t *testing.T) {
 	got, err := viewerLoginE(context.Background(), fe)
 	if err != nil {
 		t.Fatalf("viewerLoginE: %v", err)
+		panic("unreachable")
 	}
 	if got != "sybra-app[bot]" {
 		t.Errorf("login = %q, want sybra-app[bot]", got)
@@ -125,6 +126,7 @@ func TestAppLogin_CachesSlug(t *testing.T) {
 		got, err := src.appLogin(context.Background())
 		if err != nil {
 			t.Fatalf("appLogin: %v", err)
+			panic("unreachable")
 		}
 		if got != "sybra-app[bot]" {
 			t.Fatalf("appLogin = %q, want sybra-app[bot]", got)
@@ -186,6 +188,7 @@ func TestViewerLogin_AuthModeSwitchDoesNotPoisonCache(t *testing.T) {
 	login, err := viewerLoginE(context.Background(), &recordingExecer{output: []byte("Automaat")})
 	if err != nil {
 		t.Fatalf("viewerLoginE after switch: %v", err)
+		panic("unreachable")
 	}
 	if login != "sybra-app[bot]" {
 		t.Errorf("login = %q, want sybra-app[bot]", login)
@@ -247,6 +250,7 @@ func TestViewerLogin_UserAuthUsesUserEndpoint(t *testing.T) {
 	got, err := viewerLoginE(context.Background(), fe)
 	if err != nil {
 		t.Fatalf("viewerLoginE: %v", err)
+		panic("unreachable")
 	}
 	if got != "octocat" {
 		t.Errorf("login = %q, want octocat", got)
@@ -266,6 +270,7 @@ func TestViewerLoginE_SurfacesCause(t *testing.T) {
 	_, err := viewerLoginE(context.Background(), fe)
 	if err == nil {
 		t.Fatal("expected an error when identity cannot be resolved")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "403") {
 		t.Errorf("error %q must carry the underlying cause", err)
@@ -305,6 +310,7 @@ func TestFetchMyReviewState_AttributesAppBotReview(t *testing.T) {
 	got, err := fetchMyReviewStateWith(&recordingExecer{output: []byte(body)}, "o/r", 151)
 	if err != nil {
 		t.Fatalf("fetchMyReviewState: %v", err)
+		panic("unreachable")
 	}
 	want := MyReviewState{Submitted: true, Approved: false, ViewerIsBot: true, ReviewedSHA: "e57e4b5"}
 	if got != want {
@@ -321,6 +327,7 @@ func TestFetchMyReviewState_ErrorCarriesViewerCause(t *testing.T) {
 	_, err := fetchMyReviewStateWith(&emptyLoginExecer{}, "o/r", 151)
 	if err == nil {
 		t.Fatal("expected an error when the viewer cannot be resolved")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "resolve viewer login") {
 		t.Errorf("error %q should name the failing operation", err)
@@ -352,6 +359,7 @@ func TestAppAuthToggle_ResetsCachedViewer(t *testing.T) {
 	got, err := viewerLoginE(context.Background(), &recordingExecer{output: []byte("octocat")})
 	if err != nil {
 		t.Fatalf("viewerLoginE: %v", err)
+		panic("unreachable")
 	}
 	if got != "sybra-app[bot]" {
 		t.Errorf("login = %q, want sybra-app[bot] — the user-auth identity must not survive the switch", got)

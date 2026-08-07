@@ -50,6 +50,7 @@ func TestIsTransientNetworkError_PinsLiterals(t *testing.T) {
 	}
 	if IsTransientNetworkError(nil) {
 		t.Fatal("IsTransientNetworkError(nil) = true")
+		panic("unreachable")
 	}
 }
 

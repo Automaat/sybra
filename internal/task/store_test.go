@@ -23,14 +23,17 @@ func TestNewStore(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if store == nil {
 		t.Fatal("store is nil")
+		panic("unreachable")
 	}
 
 	info, err := os.Stat(dir)
 	if err != nil {
 		t.Fatalf("dir not created: %v", err)
+		panic("unreachable")
 	}
 	if !info.IsDir() {
 		t.Fatal("not a directory")
@@ -42,11 +45,13 @@ func TestStoreCreate(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	task, err := store.Create("Test task", "Body content", "headless")
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 
 	if task.ID == "" {
@@ -77,6 +82,7 @@ func TestStoreCreate_RetriesIDCollisionWithoutOverwriting(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	original := Task{
 		ID:         "deadbeef",
@@ -91,10 +97,12 @@ func TestStoreCreate_RetriesIDCollisionWithoutOverwriting(t *testing.T) {
 	originalData, err := Marshal(original)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	originalPath := filepath.Join(store.Dir(), original.ID+".md")
 	if err := os.WriteFile(originalPath, originalData, 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ids := []string{"deadbeef", "cafebabe"}
@@ -106,6 +114,7 @@ func TestStoreCreate_RetriesIDCollisionWithoutOverwriting(t *testing.T) {
 	created, err := store.Create("new task", "new body", AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if created.ID != "cafebabe" {
 		t.Fatalf("created ID = %q, want collision retry ID cafebabe", created.ID)
@@ -113,6 +122,7 @@ func TestStoreCreate_RetriesIDCollisionWithoutOverwriting(t *testing.T) {
 	got, err := os.ReadFile(originalPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(got, originalData) {
 		t.Fatal("collision replaced the original task file")
@@ -123,6 +133,7 @@ func TestStoreCreateFull_RetriesBeforeWritingSidecars(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	original := Task{
 		ID:         "deadbeef",
@@ -137,13 +148,16 @@ func TestStoreCreateFull_RetriesBeforeWritingSidecars(t *testing.T) {
 	originalData, err := Marshal(original)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	originalPath := filepath.Join(store.Dir(), original.ID+".md")
 	if err := os.WriteFile(originalPath, originalData, 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.Plans().Write(original.ID, "original plan"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ids := []string{"deadbeef", "cafebabe"}
@@ -156,6 +170,7 @@ func TestStoreCreateFull_RetriesBeforeWritingSidecars(t *testing.T) {
 	created, err := store.CreateFull("new task", "new body", AgentModeHeadless, Update{Plan: &plan})
 	if err != nil {
 		t.Fatalf("CreateFull: %v", err)
+		panic("unreachable")
 	}
 	if created.ID != "cafebabe" {
 		t.Fatalf("created ID = %q, want collision retry ID cafebabe", created.ID)
@@ -163,6 +178,7 @@ func TestStoreCreateFull_RetriesBeforeWritingSidecars(t *testing.T) {
 	got, err := os.ReadFile(originalPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(got, originalData) {
 		t.Fatal("collision replaced the original task file")
@@ -170,6 +186,7 @@ func TestStoreCreateFull_RetriesBeforeWritingSidecars(t *testing.T) {
 	originalPlan, err := store.Plans().Read(original.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if originalPlan != "original plan" {
 		t.Fatalf("original sidecar = %q, want unchanged original plan", originalPlan)
@@ -177,6 +194,7 @@ func TestStoreCreateFull_RetriesBeforeWritingSidecars(t *testing.T) {
 	newPlan, err := store.Plans().Read(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if newPlan != plan {
 		t.Fatalf("new sidecar = %q, want %q", newPlan, plan)
@@ -187,9 +205,11 @@ func TestStoreCreate_DoesNotReuseIDWithOrphanedSidecars(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.Plans().Write("deadbeef", "interrupted creation plan"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	ids := []string{"deadbeef", "cafebabe"}
 	store.newTaskID = func() string {
@@ -200,6 +220,7 @@ func TestStoreCreate_DoesNotReuseIDWithOrphanedSidecars(t *testing.T) {
 	created, err := store.Create("new task", "new body", AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if created.ID != "cafebabe" {
 		t.Fatalf("created ID = %q, want retry ID cafebabe", created.ID)
@@ -207,6 +228,7 @@ func TestStoreCreate_DoesNotReuseIDWithOrphanedSidecars(t *testing.T) {
 	plan, err := store.Plans().Read("deadbeef")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if plan != "interrupted creation plan" {
 		t.Fatalf("orphaned sidecar = %q, want preserved contents", plan)
@@ -222,19 +244,23 @@ func TestStoreLockNewTask_SymlinkAliasSharesReservation(t *testing.T) {
 	realStore, err := NewStore(realDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	aliasDir := filepath.Join(root, "tasks-alias")
 	if err := os.Symlink(realDir, aliasDir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	alias, err := NewStore(aliasDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	unlock, err := realStore.lockNewTask("deadbeef")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	released := false
 	defer func() {
@@ -276,11 +302,13 @@ func TestStoreListEmpty(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatalf("list: %v", err)
+		panic("unreachable")
 	}
 	if len(tasks) != 0 {
 		t.Errorf("expected empty list, got %d", len(tasks))
@@ -292,17 +320,20 @@ func TestStoreListMultiple(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	for _, title := range []string{"Task A", "Task B", "Task C"} {
 		if _, err := store.Create(title, "", "headless"); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(tasks) != 3 {
 		t.Errorf("got %d tasks, want 3", len(tasks))
@@ -315,19 +346,23 @@ func TestStoreListIgnoresNonMarkdown(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := store.Create("Real task", "", "headless"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Write a non-markdown file
 	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("not a task"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(tasks) != 1 {
 		t.Errorf("got %d tasks, want 1", len(tasks))
@@ -339,16 +374,19 @@ func TestStoreGet(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Find me", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
+		panic("unreachable")
 	}
 	if got.ID != created.ID {
 		t.Errorf("ID = %q, want %q", got.ID, created.ID)
@@ -363,11 +401,13 @@ func TestStoreGetNotFound(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	_, err = store.Get("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent task")
+		panic("unreachable")
 	}
 }
 
@@ -376,11 +416,13 @@ func TestStoreUpdate(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Original", "original body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	updated, err := store.Update(created.ID, Update{
@@ -390,6 +432,7 @@ func TestStoreUpdate(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
+		panic("unreachable")
 	}
 
 	if updated.Title != "Updated" {
@@ -409,6 +452,7 @@ func TestStoreUpdate(t *testing.T) {
 	reloaded, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if reloaded.Title != "Updated" {
 		t.Errorf("persisted Title = %q, want %q", reloaded.Title, "Updated")
@@ -420,15 +464,18 @@ func TestStoreDelete(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Delete me", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := store.Delete(created.ID); err != nil {
 		t.Fatalf("delete: %v", err)
+		panic("unreachable")
 	}
 
 	if _, err := os.Stat(created.FilePath); !os.IsNotExist(err) {
@@ -438,6 +485,7 @@ func TestStoreDelete(t *testing.T) {
 	_, err = store.Get(created.ID)
 	if err == nil {
 		t.Fatal("expected error after deleting task")
+		panic("unreachable")
 	}
 }
 
@@ -446,11 +494,13 @@ func TestStoreWriteLocksAreReclaimed(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Lock lifecycle", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.Update(created.ID, Update{Body: Ptr("updated")}); err != nil {
 		t.Fatalf("update: %v", err)
@@ -462,6 +512,7 @@ func TestStoreWriteLocksAreReclaimed(t *testing.T) {
 
 	if err := store.Delete(created.ID); err != nil {
 		t.Fatalf("delete: %v", err)
+		panic("unreachable")
 	}
 	if lockCount := store.locker.Len(); lockCount != 0 {
 		t.Fatalf("locker entries after delete = %d, want 0", lockCount)
@@ -473,10 +524,12 @@ func TestStoreDeleteNotFound(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := store.Delete("nonexistent"); err == nil {
 		t.Fatal("expected error for nonexistent task")
+		panic("unreachable")
 	}
 }
 
@@ -485,11 +538,13 @@ func TestStoreUpdateTags(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Tagged task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	updated, err := store.Update(created.ID, Update{
@@ -497,6 +552,7 @@ func TestStoreUpdateTags(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update tags: %v", err)
+		panic("unreachable")
 	}
 
 	if len(updated.Tags) != 2 {
@@ -510,6 +566,7 @@ func TestStoreUpdateTags(t *testing.T) {
 	reloaded, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(reloaded.Tags) != 2 {
 		t.Errorf("persisted Tags len = %d, want 2", len(reloaded.Tags))
@@ -521,11 +578,13 @@ func TestStoreUpdateAgentMode(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Mode task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	updated, err := store.Update(created.ID, Update{
@@ -533,6 +592,7 @@ func TestStoreUpdateAgentMode(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update agent_mode: %v", err)
+		panic("unreachable")
 	}
 	if updated.AgentMode != "headless" {
 		t.Errorf("AgentMode = %q, want %q", updated.AgentMode, "headless")
@@ -548,9 +608,11 @@ func TestStoreCreate_InvalidAgentMode(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.Create("Bad mode", "", "supervised"); err == nil {
 		t.Fatal("expected error for invalid agent_mode")
+		panic("unreachable")
 	}
 }
 
@@ -559,10 +621,12 @@ func TestStoreUpdate_InvalidAgentMode(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	created, err := store.Create("Mode task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.Update(created.ID, Update{AgentMode: Ptr("supervised")}); err == nil {
 		t.Fatal("expected error for invalid agent_mode update")
@@ -577,11 +641,13 @@ func TestStoreUpdateProjectID(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Project task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	updated, err := store.Update(created.ID, Update{
@@ -589,6 +655,7 @@ func TestStoreUpdateProjectID(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update project_id: %v", err)
+		panic("unreachable")
 	}
 	if updated.ProjectID != "owner/repo" {
 		t.Errorf("ProjectID = %q, want %q", updated.ProjectID, "owner/repo")
@@ -597,6 +664,7 @@ func TestStoreUpdateProjectID(t *testing.T) {
 	reloaded, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if reloaded.ProjectID != "owner/repo" {
 		t.Errorf("persisted ProjectID = %q, want %q", reloaded.ProjectID, "owner/repo")
@@ -608,11 +676,13 @@ func TestStoreUpdateStatusHumanRequired(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Blocked task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	updated, err := store.Update(created.ID, Update{
@@ -623,6 +693,7 @@ func TestStoreUpdateStatusHumanRequired(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
+		panic("unreachable")
 	}
 	if updated.Status != StatusHumanRequired {
 		t.Errorf("Status = %q, want %q", updated.Status, StatusHumanRequired)
@@ -634,6 +705,7 @@ func TestStoreUpdateStatusHumanRequired(t *testing.T) {
 	reloaded, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if reloaded.Status != StatusHumanRequired {
 		t.Errorf("persisted Status = %q, want %q", reloaded.Status, StatusHumanRequired)
@@ -646,6 +718,7 @@ func TestStoreUpdateStatusHumanRequired(t *testing.T) {
 	updated2, err := store.Update(created.ID, Update{Status: Ptr(StatusInProgress)})
 	if err != nil {
 		t.Fatalf("update2: %v", err)
+		panic("unreachable")
 	}
 	if updated2.StatusReason != "human decision required" {
 		t.Errorf("StatusReason after status change = %q, want preserved", updated2.StatusReason)
@@ -657,11 +730,13 @@ func TestStoreUpdate_ClearFieldsAreExplicit(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Explicit clear task", "", AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	reason := "needs human bless"
 	initialBlocker := blocker.State{Kind: blocker.KindTamperDetected, Actor: blocker.ActorWorkflow}
@@ -672,11 +747,13 @@ func TestStoreUpdate_ClearFieldsAreExplicit(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	preserved, err := store.Update(flagged.ID, Update{Status: Ptr(StatusInProgress)})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if preserved.StatusReason != reason {
 		t.Fatalf("StatusReason = %q, want preserved %q", preserved.StatusReason, reason)
@@ -691,6 +768,7 @@ func TestStoreUpdate_ClearFieldsAreExplicit(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cleared.StatusReason != "" {
 		t.Fatalf("StatusReason = %q, want cleared", cleared.StatusReason)
@@ -705,6 +783,7 @@ func TestStoreCreateFull_ValidatesAndFlagsTamperBlocker(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	reason := workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"
@@ -719,6 +798,7 @@ func TestStoreCreateFull_ValidatesAndFlagsTamperBlocker(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !created.TamperFlagged {
 		t.Fatal("TamperFlagged = false, want true")
@@ -730,6 +810,7 @@ func TestStoreCreateFull_ValidatesAndFlagsTamperBlocker(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("CreateFull invalid blocker err = nil, want validation failure")
+		panic("unreachable")
 	}
 }
 
@@ -738,6 +819,7 @@ func TestStoreCreateFull_SandboxOffRequiresReason(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	off := false
@@ -754,9 +836,11 @@ func TestStoreCreateFull_SandboxOffRequiresReason(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("CreateFull sandbox off with reason: %v", err)
+		panic("unreachable")
 	}
 	if created.Sandbox == nil || *created.Sandbox {
 		t.Fatalf("Sandbox = %v, want false", created.Sandbox)
+		panic("unreachable")
 	}
 	if created.SandboxOffReason != reason {
 		t.Fatalf("SandboxOffReason = %q, want %q", created.SandboxOffReason, reason)
@@ -768,11 +852,13 @@ func TestStoreUpdate_SandboxOffRequiresReason(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("sandbox update", "", AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	off := false
@@ -787,9 +873,11 @@ func TestStoreUpdate_SandboxOffRequiresReason(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Update sandbox off with reason: %v", err)
+		panic("unreachable")
 	}
 	if updated.Sandbox == nil || *updated.Sandbox {
 		t.Fatalf("Sandbox = %v, want false", updated.Sandbox)
+		panic("unreachable")
 	}
 	if updated.SandboxOffReason != reason {
 		t.Fatalf("SandboxOffReason = %q, want %q", updated.SandboxOffReason, reason)
@@ -804,11 +892,13 @@ func TestStoreUpdateTestingCycleStartedAt_AutoStamp(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Redispatch task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Move to human-required (no cycle stamp set yet).
@@ -819,10 +909,12 @@ func TestStoreUpdateTestingCycleStartedAt_AutoStamp(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("set human-required: %v", err)
+		panic("unreachable")
 	}
 	before, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if before.TestingCycleStartedAt != nil {
 		t.Error("expected TestingCycleStartedAt to be nil before re-dispatch")
@@ -832,15 +924,18 @@ func TestStoreUpdateTestingCycleStartedAt_AutoStamp(t *testing.T) {
 	after, err := store.Update(created.ID, Update{Status: Ptr(StatusTesting)})
 	if err != nil {
 		t.Fatalf("set testing: %v", err)
+		panic("unreachable")
 	}
 	if after.TestingCycleStartedAt == nil {
 		t.Fatal("expected TestingCycleStartedAt to be set after human-required → testing transition")
+		panic("unreachable")
 	}
 
 	// Reload from disk to confirm persistence.
 	reloaded, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if reloaded.TestingCycleStartedAt == nil {
 		t.Error("TestingCycleStartedAt not persisted after human-required → testing transition")
@@ -858,21 +953,25 @@ func TestStoreUpdateTestingCycleStartedAt_NoAutoStampOnNonHumanRequired(t *testi
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Normal cycle task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Workflow-internal transition: in-progress → testing (auto-loop, not human re-dispatch).
 	_, err = store.Update(created.ID, Update{Status: Ptr(StatusInProgress)})
 	if err != nil {
 		t.Fatalf("set in-progress: %v", err)
+		panic("unreachable")
 	}
 	after, err := store.Update(created.ID, Update{Status: Ptr(StatusTesting)})
 	if err != nil {
 		t.Fatalf("set testing: %v", err)
+		panic("unreachable")
 	}
 	if after.TestingCycleStartedAt != nil {
 		t.Error("TestingCycleStartedAt must not be set for non-human-required → testing transitions")
@@ -884,11 +983,13 @@ func TestStoreUpdateNotFound(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	_, err = store.Update("nonexistent", Update{Title: Ptr("x")})
 	if err == nil {
 		t.Fatal("expected error for nonexistent task")
+		panic("unreachable")
 	}
 }
 
@@ -897,11 +998,13 @@ func TestStoreAddRun(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Run task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	run := AgentRun{
@@ -914,11 +1017,13 @@ func TestStoreAddRun(t *testing.T) {
 
 	if err := store.AddRun(created.ID, run); err != nil {
 		t.Fatalf("AddRun: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got.AgentRuns) != 1 {
 		t.Fatalf("AgentRuns len = %d, want 1", len(got.AgentRuns))
@@ -939,11 +1044,13 @@ func TestStoreAddRunMultiple(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Multi run", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	for i := range 3 {
@@ -954,12 +1061,14 @@ func TestStoreAddRunMultiple(t *testing.T) {
 		}
 		if err := store.AddRun(created.ID, run); err != nil {
 			t.Fatalf("AddRun %d: %v", i, err)
+			panic("unreachable")
 		}
 	}
 
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got.AgentRuns) != 3 {
 		t.Fatalf("AgentRuns len = %d, want 3", len(got.AgentRuns))
@@ -971,11 +1080,13 @@ func TestStoreAddRunNotFound(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	err = store.AddRun("nonexistent", AgentRun{AgentID: "x"})
 	if err == nil {
 		t.Fatal("expected error for nonexistent task")
+		panic("unreachable")
 	}
 }
 
@@ -984,11 +1095,13 @@ func TestStoreAddRunWithStatus(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Run task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := store.AddRunWithStatus(created.ID, AgentRun{
@@ -1002,6 +1115,7 @@ func TestStoreAddRunWithStatus(t *testing.T) {
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != StatusInProgress {
 		t.Fatalf("Status = %q, want %q", got.Status, StatusInProgress)
@@ -1019,6 +1133,7 @@ func TestStoreAddRunWithStatusClearsHumanRequiredEvidence(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	status := StatusHumanRequired
 	created, err := store.CreateFull("Run task", "", "headless", Update{
@@ -1028,6 +1143,7 @@ func TestStoreAddRunWithStatusClearsHumanRequiredEvidence(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.AddRunWithStatus(created.ID, AgentRun{AgentID: "agent-001"}, Ptr(StatusInProgress)); err != nil {
 		t.Fatal(err)
@@ -1035,6 +1151,7 @@ func TestStoreAddRunWithStatusClearsHumanRequiredEvidence(t *testing.T) {
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !got.Escalation.IsZero() || got.AutonomyOutcome != "" {
 		t.Fatalf("restart retained stale evidence: %#v / %q", got.Escalation, got.AutonomyOutcome)
@@ -1046,11 +1163,13 @@ func TestStoreUpdateBackfillsLegacyStatusChangedAt(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Legacy", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	legacyUpdatedAt := time.Date(2026, 7, 9, 8, 30, 0, 0, time.UTC)
 	writeLegacyTaskWithoutStatusChangedAt(t, created.FilePath, created.ID, StatusInProgress, legacyUpdatedAt)
@@ -1059,6 +1178,7 @@ func TestStoreUpdateBackfillsLegacyStatusChangedAt(t *testing.T) {
 	got, prev, err := store.UpdateWithPrev(created.ID, Update{Tags: &tags})
 	if err != nil {
 		t.Fatalf("UpdateWithPrev: %v", err)
+		panic("unreachable")
 	}
 	if prev != StatusInProgress {
 		t.Fatalf("prev status = %q, want %q", prev, StatusInProgress)
@@ -1076,11 +1196,13 @@ func TestStoreAddRunBackfillsLegacyStatusChangedAt(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Legacy run", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	legacyUpdatedAt := time.Date(2026, 7, 9, 8, 45, 0, 0, time.UTC)
 	writeLegacyTaskWithoutStatusChangedAt(t, created.FilePath, created.ID, StatusInProgress, legacyUpdatedAt)
@@ -1096,6 +1218,7 @@ func TestStoreAddRunBackfillsLegacyStatusChangedAt(t *testing.T) {
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !got.StatusChangedAt.Equal(legacyUpdatedAt) {
 		t.Fatalf("StatusChangedAt = %s, want legacy UpdatedAt %s", got.StatusChangedAt, legacyUpdatedAt)
@@ -1116,11 +1239,13 @@ func TestStoreListBackfillsLegacyStatusChangedAtForNonTerminalStatus(t *testing.
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Legacy in-progress", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	legacyUpdatedAt := time.Date(2026, 7, 9, 8, 45, 0, 0, time.UTC)
 	writeLegacyTaskWithoutStatusChangedAt(t, created.FilePath, created.ID, StatusInProgress, legacyUpdatedAt)
@@ -1128,6 +1253,7 @@ func TestStoreListBackfillsLegacyStatusChangedAtForNonTerminalStatus(t *testing.
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	var got *Task
 	for i := range tasks {
@@ -1137,6 +1263,7 @@ func TestStoreListBackfillsLegacyStatusChangedAtForNonTerminalStatus(t *testing.
 	}
 	if got == nil {
 		t.Fatalf("task %s not found in List() result", created.ID)
+		panic("unreachable")
 	}
 	if got.StatusChangedAt.IsZero() {
 		t.Fatal("StatusChangedAt is still zero after List(), want backfilled from legacy UpdatedAt")
@@ -1146,6 +1273,7 @@ func TestStoreListBackfillsLegacyStatusChangedAtForNonTerminalStatus(t *testing.
 	}
 	if got.ClosedAt != nil {
 		t.Fatalf("ClosedAt = %v, want nil for non-terminal status", got.ClosedAt)
+		panic("unreachable")
 	}
 
 	// Re-read from a fresh store (cache bypassed) to confirm the backfill
@@ -1153,10 +1281,12 @@ func TestStoreListBackfillsLegacyStatusChangedAtForNonTerminalStatus(t *testing.
 	reopened, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	persisted, err := reopened.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !persisted.StatusChangedAt.Equal(legacyUpdatedAt) {
 		t.Fatalf("persisted StatusChangedAt = %s, want %s", persisted.StatusChangedAt, legacyUpdatedAt)
@@ -1171,11 +1301,13 @@ func TestStoreUpdateRun(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Update run", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	run := AgentRun{
@@ -1185,6 +1317,7 @@ func TestStoreUpdateRun(t *testing.T) {
 	}
 	if err := store.AddRun(created.ID, run); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	err = store.UpdateRun(created.ID, "agent-upd", RunPatch{
@@ -1197,11 +1330,13 @@ func TestStoreUpdateRun(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("UpdateRun: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got.AgentRuns) != 1 {
 		t.Fatalf("AgentRuns len = %d, want 1", len(got.AgentRuns))
@@ -1243,6 +1378,7 @@ legacy body
 `, id, status, createdAt.Format(time.RFC3339), updatedAt.Format(time.RFC3339))
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write legacy task: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -1251,11 +1387,13 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Update run payload", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	run := AgentRun{
@@ -1269,6 +1407,7 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 	}
 	if err := store.AddRun(created.ID, run); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	patch := RunPatch{
@@ -1307,15 +1446,18 @@ func TestStoreUpdateRunPayloadRoundTrip(t *testing.T) {
 
 	if err := store.UpdateRun(created.ID, "agent-payload", patch); err != nil {
 		t.Fatalf("UpdateRun: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	reloaded, err := Parse(got.FilePath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(reloaded.AgentRuns) != 1 {
 		t.Fatalf("AgentRuns len = %d, want 1", len(reloaded.AgentRuns))
@@ -1476,11 +1618,13 @@ func TestStoreUpdateRunNotFound(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	err = store.UpdateRun("nonexistent", "agent-x", RunPatch{State: Ptr("done")})
 	if err == nil {
 		t.Fatal("expected error for nonexistent task")
+		panic("unreachable")
 	}
 }
 
@@ -1489,11 +1633,13 @@ func TestStoreUpdateRunNoMatchingAgent(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("No match", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.AddRun(created.ID, AgentRun{AgentID: "agent-a", State: "running"}); err != nil {
 		t.Fatal(err)
@@ -1502,11 +1648,13 @@ func TestStoreUpdateRunNoMatchingAgent(t *testing.T) {
 	err = store.UpdateRun(created.ID, "agent-wrong", RunPatch{State: Ptr("done")})
 	if err == nil {
 		t.Fatal("expected error for wrong agent")
+		panic("unreachable")
 	}
 
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.AgentRuns[0].State != "running" {
 		t.Errorf("State should be unchanged, got %q", got.AgentRuns[0].State)
@@ -1518,11 +1666,13 @@ func TestStoreUpdateRunSessionID(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Session ID task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.AddRun(created.ID, AgentRun{AgentID: "agent-s", Mode: "headless", State: "running"}); err != nil {
 		t.Fatal(err)
@@ -1534,11 +1684,13 @@ func TestStoreUpdateRunSessionID(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("UpdateRun: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.AgentRuns[0].SessionID != "ses-abc123" {
 		t.Errorf("SessionID = %q, want %q", got.AgentRuns[0].SessionID, "ses-abc123")
@@ -1548,6 +1700,7 @@ func TestStoreUpdateRunSessionID(t *testing.T) {
 	reloaded, err := Parse(got.FilePath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if reloaded.AgentRuns[0].SessionID != "ses-abc123" {
 		t.Errorf("reloaded SessionID = %q, want %q", reloaded.AgentRuns[0].SessionID, "ses-abc123")
@@ -1559,11 +1712,13 @@ func TestStoreUpdateRunResumeZeroOutputStall(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Zero output stall task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.AddRun(created.ID, AgentRun{AgentID: "agent-z", Mode: "headless", State: "running"}); err != nil {
 		t.Fatal(err)
@@ -1575,11 +1730,13 @@ func TestStoreUpdateRunResumeZeroOutputStall(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("UpdateRun: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !got.AgentRuns[0].ResumeZeroOutputStall {
 		t.Errorf("ResumeZeroOutputStall = %v, want true", got.AgentRuns[0].ResumeZeroOutputStall)
@@ -1589,6 +1746,7 @@ func TestStoreUpdateRunResumeZeroOutputStall(t *testing.T) {
 	reloaded, err := Parse(got.FilePath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !reloaded.AgentRuns[0].ResumeZeroOutputStall {
 		t.Errorf("reloaded ResumeZeroOutputStall = %v, want true", reloaded.AgentRuns[0].ResumeZeroOutputStall)
@@ -1604,11 +1762,13 @@ func TestStoreUpdateRunResumeZeroOutputStallFalseNeverClears(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Zero output stall latch task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.AddRun(created.ID, AgentRun{
 		AgentID:               "agent-latch",
@@ -1625,11 +1785,13 @@ func TestStoreUpdateRunResumeZeroOutputStallFalseNeverClears(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("UpdateRun: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !got.AgentRuns[0].ResumeZeroOutputStall {
 		t.Errorf("ResumeZeroOutputStall = %v, want true (latch must not clear)", got.AgentRuns[0].ResumeZeroOutputStall)
@@ -1641,11 +1803,13 @@ func TestStoreUpdateRunSessionIDEmpty(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Session ID empty task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.AddRun(created.ID, AgentRun{
 		AgentID:   "agent-e",
@@ -1665,11 +1829,13 @@ func TestStoreUpdateRunSessionIDEmpty(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("UpdateRun: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.AgentRuns[0].SessionID != "existing-id" {
 		t.Errorf("SessionID = %q, want existing-id preserved", got.AgentRuns[0].SessionID)
@@ -1685,11 +1851,13 @@ func TestStoreListSkipsPlanSidecars(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	task, err := store.Create("Real task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Write plan, plan-critique, and code-review sidecars
@@ -1703,12 +1871,14 @@ func TestStoreListSkipsPlanSidecars(t *testing.T) {
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("# plan content"), 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(tasks) != 1 {
 		t.Errorf("got %d tasks, want 1 (sidecars must be skipped)", len(tasks))
@@ -1723,6 +1893,7 @@ func TestStoreCreateFullAppliesInitialWorkflowFields(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	tags := []string{"handoff", "handoff-review"}
@@ -1737,6 +1908,7 @@ func TestStoreCreateFullAppliesInitialWorkflowFields(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("CreateFull: %v", err)
+		panic("unreachable")
 	}
 
 	if created.Status != StatusReadyReview {
@@ -1755,6 +1927,7 @@ func TestStoreCreateFullAppliesInitialWorkflowFields(t *testing.T) {
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if got.Plan != plan {
 		t.Errorf("Get Plan = %q, want %q", got.Plan, plan)
@@ -1769,11 +1942,13 @@ func TestStoreCreateDefaultMode(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Default mode", "", "")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if created.AgentMode != "headless" {
 		t.Errorf("AgentMode = %q, want %q", created.AgentMode, "headless")
@@ -1786,20 +1961,24 @@ func TestStoreListSurfacesMalformedAsDegraded(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Create a valid task
 	if _, err := store.Create("Valid", "", "headless"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Write a malformed markdown file
 	if err := os.WriteFile(filepath.Join(dir, "bad.md"), []byte("not valid frontmatter"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(tasks) != 2 {
 		t.Fatalf("got %d tasks, want 2 (valid task plus degraded entry)", len(tasks))
@@ -1812,6 +1991,7 @@ func TestStoreListSurfacesMalformedAsDegraded(t *testing.T) {
 	}
 	if degraded == nil {
 		t.Fatal("malformed file was not surfaced as degraded")
+		panic("unreachable")
 	}
 	if degraded.Status != StatusHumanRequired {
 		t.Errorf("degraded status = %q, want %q", degraded.Status, StatusHumanRequired)
@@ -1831,14 +2011,17 @@ func TestStoreDegradedIDIsNotAddressable(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(dir, "bad.md"), []byte("not valid frontmatter"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(tasks) != 1 || !tasks[0].Degraded {
 		t.Fatalf("List = %+v, want a single degraded entry", tasks)
@@ -1874,15 +2057,18 @@ func TestStoreListRejectsReservedDegradedIDInFrontmatter(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	body := "---\nid: " + degradedIDPrefix + "0123456789abcdef\ntitle: Impostor\nstatus: todo\nagent_mode: headless\n---\n"
 	if err := os.WriteFile(filepath.Join(dir, "impostor.md"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("got %d tasks, want 1", len(tasks))
@@ -1901,11 +2087,13 @@ func TestStoreListLeavesMalformedFileInPlace(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	bad := filepath.Join(dir, "bad.md")
 	if err := os.WriteFile(bad, []byte("not valid frontmatter"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Listing must never move or delete an unparseable file: the file may be
@@ -1915,25 +2103,30 @@ func TestStoreListLeavesMalformedFileInPlace(t *testing.T) {
 		tasks, err := store.List()
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if len(tasks) != 1 || !tasks[0].Degraded {
 			t.Fatalf("List #%d = %+v, want a single degraded entry", i+1, tasks)
 		}
 		if _, err := os.Stat(bad); err != nil {
 			t.Fatalf("bad.md no longer in the tasks dir after List #%d: %v", i+1, err)
+			panic("unreachable")
 		}
 	}
 
 	repaired, err := Marshal(Task{ID: "bad", Title: "Repaired", Status: StatusTodo, AgentMode: AgentModeHeadless})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(bad, repaired, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(tasks) != 1 || tasks[0].Degraded {
 		t.Fatalf("List after repair = %+v, want the repaired task back on the board", tasks)
@@ -1946,10 +2139,12 @@ func TestStoreGetPropagatesSidecarReadError(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	created, err := store.Create("Task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Replace the plan sidecar with a directory so os.ReadFile fails with a
@@ -1958,10 +2153,12 @@ func TestStoreGetPropagatesSidecarReadError(t *testing.T) {
 	planPath := filepath.Join(dir, created.ID+".plan.md")
 	if err := os.Mkdir(planPath, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := store.Get(created.ID); err == nil {
 		t.Fatal("expected error from Get when a sidecar read fails, got nil")
+		panic("unreachable")
 	}
 }
 
@@ -1970,24 +2167,29 @@ func TestStoreGetInvalidatePathRefreshesExternalEdit(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Original", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := store.Get(created.ID); err != nil {
 		t.Fatalf("prime cache: %v", err)
+		panic("unreachable")
 	}
 
 	created.Title = "Edited on disk"
 	data, err := Marshal(created)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(created.FilePath, data, 0o644); err != nil {
 		t.Fatalf("write edited task: %v", err)
+		panic("unreachable")
 	}
 
 	store.InvalidatePath(created.FilePath)
@@ -1995,6 +2197,7 @@ func TestStoreGetInvalidatePathRefreshesExternalEdit(t *testing.T) {
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatalf("get after invalidate: %v", err)
+		panic("unreachable")
 	}
 	if got.Title != "Edited on disk" {
 		t.Fatalf("Title = %q, want %q", got.Title, "Edited on disk")
@@ -2007,20 +2210,24 @@ func TestStoreListInvalidatePathRefreshesSidecar(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := store.List(); err != nil {
 		t.Fatalf("prime cache: %v", err)
+		panic("unreachable")
 	}
 
 	planPath := filepath.Join(dir, created.ID+".plan.md")
 	if err := os.WriteFile(planPath, []byte("# refreshed plan"), 0o644); err != nil {
 		t.Fatalf("write plan: %v", err)
+		panic("unreachable")
 	}
 
 	store.InvalidatePath(planPath)
@@ -2028,6 +2235,7 @@ func TestStoreListInvalidatePathRefreshesSidecar(t *testing.T) {
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatalf("list after invalidate: %v", err)
+		panic("unreachable")
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("got %d tasks, want 1", len(tasks))
@@ -2043,21 +2251,25 @@ func TestStoreListInvalidatePathRefreshesJSONSidecar(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := store.List(); err != nil {
 		t.Fatalf("prime cache: %v", err)
+		panic("unreachable")
 	}
 
 	contractPath := filepath.Join(dir, created.ID+".plan-contract.json")
 	contract := `{"task_id":"` + created.ID + `"}`
 	if err := os.WriteFile(contractPath, []byte(contract), 0o644); err != nil {
 		t.Fatalf("write contract: %v", err)
+		panic("unreachable")
 	}
 
 	store.InvalidatePath(contractPath)
@@ -2065,6 +2277,7 @@ func TestStoreListInvalidatePathRefreshesJSONSidecar(t *testing.T) {
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatalf("list after invalidate: %v", err)
+		panic("unreachable")
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("got %d tasks, want 1", len(tasks))
@@ -2079,27 +2292,33 @@ func TestStoreListDetectsExternalTaskFileChangeWithoutInvalidate(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	created, err := store.Create("Original", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.List(); err != nil {
 		t.Fatalf("prime cache: %v", err)
+		panic("unreachable")
 	}
 
 	created.Title = "Edited on disk"
 	data, err := Marshal(created)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(created.FilePath, data, 0o644); err != nil {
 		t.Fatalf("write edited task: %v", err)
+		panic("unreachable")
 	}
 
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatalf("list after external edit: %v", err)
+		panic("unreachable")
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("got %d tasks, want 1", len(tasks))
@@ -2114,21 +2333,26 @@ func TestStoreListDetectsExternalTaskDeleteWithoutInvalidate(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	created, err := store.Create("Deleted", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.List(); err != nil {
 		t.Fatalf("prime cache: %v", err)
+		panic("unreachable")
 	}
 	if err := os.Remove(created.FilePath); err != nil {
 		t.Fatalf("remove task: %v", err)
+		panic("unreachable")
 	}
 
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatalf("list after external delete: %v", err)
+		panic("unreachable")
 	}
 	if len(tasks) != 0 {
 		t.Fatalf("got %d tasks, want deleted task gone", len(tasks))
@@ -2141,22 +2365,27 @@ func TestStoreListDetectsExternalSidecarChangeWithoutInvalidate(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	created, err := store.Create("Task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.List(); err != nil {
 		t.Fatalf("prime cache: %v", err)
+		panic("unreachable")
 	}
 	planPath := filepath.Join(dir, created.ID+".plan.md")
 	if err := os.WriteFile(planPath, []byte("# refreshed plan"), 0o644); err != nil {
 		t.Fatalf("write plan: %v", err)
+		panic("unreachable")
 	}
 
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatalf("list after external sidecar write: %v", err)
+		panic("unreachable")
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("got %d tasks, want 1", len(tasks))
@@ -2171,16 +2400,19 @@ func TestStoreListReturnedSliceDoesNotMutateCache(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Original", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	listed, err := store.List()
 	if err != nil {
 		t.Fatalf("list: %v", err)
+		panic("unreachable")
 	}
 	listed[0].Title = "Mutated caller copy"
 	listed[0].Tags = append(listed[0].Tags, "mutated")
@@ -2188,6 +2420,7 @@ func TestStoreListReturnedSliceDoesNotMutateCache(t *testing.T) {
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
+		panic("unreachable")
 	}
 	if got.Title != "Original" {
 		t.Fatalf("Title = %q, want %q", got.Title, "Original")
@@ -2202,28 +2435,34 @@ func TestStoreListRebuildsWarmCacheAfterExternalDeleteWithoutInvalidate(t *testi
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	a, err := store.Create("Alpha", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	b, err := store.Create("Bravo", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := store.List(); err != nil {
 		t.Fatalf("prime cache: %v", err)
+		panic("unreachable")
 	}
 
 	if err := os.Remove(a.FilePath); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("want 1 task remaining after external delete, got %d", len(tasks))
@@ -2239,18 +2478,22 @@ func TestStoreListRebuildsWarmCacheAfterExternalUpdateWithoutInvalidate(t *testi
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	a, err := store.Create("Alpha", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.List(); err != nil {
 		t.Fatalf("prime cache: %v", err)
+		panic("unreachable")
 	}
 	dirInfo, err := os.Stat(dir)
 	if err != nil {
 		t.Fatalf("stat tasks dir: %v", err)
+		panic("unreachable")
 	}
 
 	a.Status = StatusHumanRequired
@@ -2259,17 +2502,21 @@ func TestStoreListRebuildsWarmCacheAfterExternalUpdateWithoutInvalidate(t *testi
 	data, err := Marshal(a)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(a.FilePath, data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chtimes(dir, dirInfo.ModTime(), dirInfo.ModTime()); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("want 1 task, got %d", len(tasks))
@@ -2285,19 +2532,23 @@ func TestStoreListCacheSkipsSnapshotWhenFilesChangedDuringBuild(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	a, err := store.Create("Alpha", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	staleTasks, err := store.List()
 	if err != nil {
 		t.Fatalf("prime cache: %v", err)
+		panic("unreachable")
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	startSnapshot, ok := store.listSnapshotFromEntries(entries)
 	if !ok {
@@ -2319,9 +2570,11 @@ func TestStoreListCacheSkipsSnapshotWhenFilesChangedDuringBuild(t *testing.T) {
 	data, err := Marshal(external)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(external.FilePath, data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if store.storeListCacheIfSnapshotFresh(staleTasks, startSnapshot) {
@@ -2331,6 +2584,7 @@ func TestStoreListCacheSkipsSnapshotWhenFilesChangedDuringBuild(t *testing.T) {
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	seen := map[string]bool{}
 	for _, tk := range tasks {
@@ -2347,14 +2601,17 @@ func TestStoreCreateInvalidatesWarmCacheAfterExternalAddWithoutInvalidate(t *tes
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	a, err := store.Create("Alpha", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.List(); err != nil {
 		t.Fatalf("prime cache: %v", err)
+		panic("unreachable")
 	}
 
 	now := time.Now().UTC()
@@ -2372,18 +2629,22 @@ func TestStoreCreateInvalidatesWarmCacheAfterExternalAddWithoutInvalidate(t *tes
 	data, err := Marshal(external)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(external.FilePath, data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	c, err := store.Create("Charlie", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	seen := map[string]bool{}
 	for _, tk := range tasks {
@@ -2403,6 +2664,7 @@ func TestStoreConcurrentCreate(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	const n = 50
@@ -2445,6 +2707,7 @@ func TestStoreConcurrentCreate(t *testing.T) {
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatalf("list: %v", err)
+		panic("unreachable")
 	}
 	if len(tasks) != n {
 		t.Errorf("List returned %d tasks, want %d", len(tasks), n)
@@ -2471,12 +2734,14 @@ func TestStoreSafePathRejectsTraversal(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Plant a real task file outside the store dir to prove the safePath
 	// check protects it.
 	outside := filepath.Join(t.TempDir(), "outside.md")
 	if err := os.WriteFile(outside, []byte("---\nid: outside\ntitle: outside\n---\nsensitive"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	relative := "../" + filepath.Base(filepath.Dir(outside)) + "/outside"
 
@@ -2508,11 +2773,13 @@ func TestStoreConcurrentUpdateSameTask(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("orig", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	const rounds = 100
@@ -2544,6 +2811,7 @@ func TestStoreConcurrentUpdateSameTask(t *testing.T) {
 	final, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatalf("Get after concurrent updates: %v", err)
+		panic("unreachable")
 	}
 	if final.ID != created.ID {
 		t.Errorf("ID changed across updates: got %q, want %q", final.ID, created.ID)
@@ -2559,6 +2827,7 @@ func TestStoreConcurrentUpdateSameTask(t *testing.T) {
 	reloaded, err := Parse(final.FilePath)
 	if err != nil {
 		t.Fatalf("raw parse: %v — file is torn", err)
+		panic("unreachable")
 	}
 	if reloaded.ID != created.ID {
 		t.Errorf("reloaded ID = %q, want %q", reloaded.ID, created.ID)
@@ -2570,11 +2839,13 @@ func TestStoreConcurrentUpdateAndUpdateRunSameTask(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("orig", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.AddRun(created.ID, AgentRun{AgentID: "agent-1", State: "queued"}); err != nil {
 		t.Fatalf("AddRun: %v", err)
@@ -2607,6 +2878,7 @@ func TestStoreConcurrentUpdateAndUpdateRunSameTask(t *testing.T) {
 	final, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatalf("Get after concurrent updates: %v", err)
+		panic("unreachable")
 	}
 	if final.Body != "body-99" {
 		t.Errorf("Body = %q, want body-99", final.Body)
@@ -2642,16 +2914,19 @@ func TestClosedAtTransitions(t *testing.T) {
 			store, err := NewStore(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			task, err := store.Create("t", "", "headless")
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			// Move to 'from' status first.
 			if tc.from != StatusTodo {
 				task, err = store.Update(task.ID, Update{Status: Ptr(tc.from)})
 				if err != nil {
 					t.Fatalf("setup to %q: %v", tc.from, err)
+					panic("unreachable")
 				}
 			}
 			origClosedAt := task.ClosedAt
@@ -2664,6 +2939,7 @@ func TestClosedAtTransitions(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("update to %q: %v", tc.to, err)
+				panic("unreachable")
 			}
 
 			if tc.wantNil && task.ClosedAt != nil {
@@ -2693,11 +2969,13 @@ func TestLegacyMigrationStampsClosedAt(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Create task and force status=done without ClosedAt (simulate legacy file).
 	tk, err := store.Create("legacy", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Directly write a done-status file with no closed_at field.
 	tk.Status = StatusDone
@@ -2705,15 +2983,18 @@ func TestLegacyMigrationStampsClosedAt(t *testing.T) {
 	data, err := Marshal(tk)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(tk.FilePath, data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	store.invalidateListCache()
 
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, task := range tasks {
 		if task.ID == tk.ID {
@@ -2765,6 +3046,7 @@ func TestCloneTaskMirrorUpdatedAtNonAliased(t *testing.T) {
 	clone := cloneTask(orig)
 	if clone.MirrorUpdatedAt == nil {
 		t.Fatal("clone.MirrorUpdatedAt is nil — cloneTask dropped the pointer")
+		panic("unreachable")
 	}
 	if clone.MirrorUpdatedAt == orig.MirrorUpdatedAt {
 		t.Error("clone.MirrorUpdatedAt shares pointer with original")
@@ -2784,24 +3066,30 @@ func TestClosedAtYAMLRoundTrip(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	task, err := store.Create("roundtrip", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	done, err := store.Update(task.ID, Update{Status: Ptr(StatusDone)})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if done.ClosedAt == nil {
 		t.Fatal("ClosedAt not set")
+		panic("unreachable")
 	}
 	reloaded, err := Parse(done.FilePath)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
+		panic("unreachable")
 	}
 	if reloaded.ClosedAt == nil {
 		t.Fatal("ClosedAt lost on parse")
+		panic("unreachable")
 	}
 	if !reloaded.ClosedAt.Equal(*done.ClosedAt) {
 		t.Errorf("ClosedAt mismatch: got %v, want %v", *reloaded.ClosedAt, *done.ClosedAt)
@@ -2810,10 +3098,12 @@ func TestClosedAtYAMLRoundTrip(t *testing.T) {
 	active, err := store.Create("active", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	reloaded2, err := Parse(active.FilePath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if reloaded2.ClosedAt != nil {
 		t.Errorf("active task should have nil ClosedAt, got %v", reloaded2.ClosedAt)
@@ -2922,10 +3212,12 @@ func TestStoreListMutateClonedParallelInflightDoesNotAffectCache(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tk, err := store.Create("p", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wf := workflow.Execution{
 		WorkflowID:  "wf",
@@ -2948,9 +3240,11 @@ func TestStoreListMutateClonedParallelInflightDoesNotAffectCache(t *testing.T) {
 	first, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(first) != 1 || first[0].Workflow == nil {
 		t.Fatalf("unexpected list result: %+v", first)
+		panic("unreachable")
 	}
 	// Mutate the returned clone's ChildStatus directly.
 	firstParent := first[0].Workflow.ParallelInflight["parent"]
@@ -2969,9 +3263,11 @@ func TestStoreListMutateClonedParallelInflightDoesNotAffectCache(t *testing.T) {
 	second, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(second) != 1 || second[0].Workflow == nil {
 		t.Fatalf("unexpected second list: %+v", second)
+		panic("unreachable")
 	}
 	secondParent := second[0].Workflow.ParallelInflight["parent"]
 	if secondParent == nil {
@@ -3009,20 +3305,24 @@ body
 `
 	if err := os.WriteFile(filepath.Join(dir, "legacy01.md"), []byte(legacyContent), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("expected 1 task, got %d", len(tasks))
 	}
 	if tasks[0].ClosedAt == nil {
 		t.Fatal("legacy task ClosedAt should be migrated")
+		panic("unreachable")
 	}
 	want := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
 	if !tasks[0].ClosedAt.Equal(want) {
@@ -3041,11 +3341,13 @@ func TestStoreGet_PathTraversalSlugRejected(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	tk, err := store.Create("test task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	const badSlug = "../../etc/passwd"
@@ -3053,17 +3355,20 @@ func TestStoreGet_PathTraversalSlugRejected(t *testing.T) {
 	taskPath := filepath.Join(store.dir, tk.ID+".md")
 	if err := os.WriteFile(taskPath, []byte(malicious), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	_, err = store.Get(tk.ID)
 	if err == nil {
 		t.Fatal("Store.Get with path-traversal slug: expected error, got nil")
+		panic("unreachable")
 	}
 
 	// List must surface the malformed file without returning its unsafe slug.
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	for _, listed := range tasks {
 		if listed.ID == tk.ID {
@@ -3084,14 +3389,17 @@ func TestStoreListInvalidatePathTargetedRefresh(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	a, err := store.Create("Alpha", "a", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	b, err := store.Create("Bravo", "b", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.List(); err != nil { // prime cache
 		t.Fatalf("prime: %v", err)
@@ -3103,12 +3411,14 @@ func TestStoreListInvalidatePathTargetedRefresh(t *testing.T) {
 		a.UpdatedAt.Format("2006-01-02T15:04:05Z07:00") + "\n---\na\n"
 	if err := os.WriteFile(a.FilePath, []byte(edited), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	store.InvalidatePath(a.FilePath)
 
 	tasks, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	byID := map[string]Task{}
 	for _, tk := range tasks {
@@ -3124,11 +3434,13 @@ func TestStoreListInvalidatePathTargetedRefresh(t *testing.T) {
 	// Vanished file is dropped from the cache.
 	if err := os.Remove(a.FilePath); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	store.InvalidatePath(a.FilePath)
 	tasks, err = store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, tk := range tasks {
 		if tk.ID == a.ID {
@@ -3145,18 +3457,22 @@ func TestInvalidatePathWaitsForTaskWriterBeforeRefreshingCache(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tk, err := store.Create("Before", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.List(); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	unlock, err := store.lockTask(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	started := make(chan struct{})
 	store.refreshBeforeLock = func() { close(started) }
@@ -3180,6 +3496,7 @@ func TestInvalidatePathWaitsForTaskWriterBeforeRefreshingCache(t *testing.T) {
 	listed, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, got := range listed {
 		if got.ID == tk.ID && got.Title != "After" {
@@ -3193,17 +3510,20 @@ func TestReasoningEffortRoundTrip(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	tk, err := store.Create("effort test", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Set reasoning effort via UpdateMap.
 	updated, err := store.UpdateMap(tk.ID, map[string]any{"reasoning_effort": "high"})
 	if err != nil {
 		t.Fatalf("UpdateMap: %v", err)
+		panic("unreachable")
 	}
 	if updated.ReasoningEffort != "high" {
 		t.Errorf("after update: ReasoningEffort = %q, want %q", updated.ReasoningEffort, "high")
@@ -3213,6 +3533,7 @@ func TestReasoningEffortRoundTrip(t *testing.T) {
 	got, err := store.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.ReasoningEffort != "high" {
 		t.Errorf("after re-read: ReasoningEffort = %q, want %q", got.ReasoningEffort, "high")
@@ -3222,6 +3543,7 @@ func TestReasoningEffortRoundTrip(t *testing.T) {
 	cleared, err := store.UpdateMap(tk.ID, map[string]any{"reasoning_effort": ""})
 	if err != nil {
 		t.Fatalf("UpdateMap clear: %v", err)
+		panic("unreachable")
 	}
 	if cleared.ReasoningEffort != "" {
 		t.Errorf("after clear: ReasoningEffort = %q, want empty", cleared.ReasoningEffort)
@@ -3257,10 +3579,12 @@ func TestStoreCrossProcessUpdate(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tk, err := store.Create("cross-process update", "body", "headless")
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 
 	const rounds = 8
@@ -3270,20 +3594,25 @@ func TestStoreCrossProcessUpdate(t *testing.T) {
 
 		if err := statusCmd.Start(); err != nil {
 			t.Fatalf("round %d: start status worker: %v", i, err)
+			panic("unreachable")
 		}
 		if err := runCmd.Start(); err != nil {
 			t.Fatalf("round %d: start run worker: %v", i, err)
+			panic("unreachable")
 		}
 		if err := statusCmd.Wait(); err != nil {
 			t.Fatalf("round %d: status worker: %v", i, err)
+			panic("unreachable")
 		}
 		if err := runCmd.Wait(); err != nil {
 			t.Fatalf("round %d: run worker: %v", i, err)
+			panic("unreachable")
 		}
 
 		got, err := store.Get(tk.ID)
 		if err != nil {
 			t.Fatalf("round %d: get: %v", i, err)
+			panic("unreachable")
 		}
 		if got.Status != StatusInProgress {
 			t.Fatalf("round %d: Status = %q, want %q — dropped by concurrent cross-process write", i, got.Status, StatusInProgress)
@@ -3327,6 +3656,7 @@ func runCrossProcessUpdateWorker(t *testing.T, dir string) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatalf("worker: new store: %v", err)
+		panic("unreachable")
 	}
 	taskID := os.Getenv("SYBRA_TASK_CROSS_PROCESS_TASK_ID")
 	switch os.Getenv("SYBRA_TASK_CROSS_PROCESS_MODE") {
@@ -3350,24 +3680,30 @@ func TestStoreDeleteMovesFileAndSidecarsToTrash(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Trash me", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.plans.Write(created.ID, "the plan"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.planDrafts.Write(created.ID, "claude", "draft content"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.comments.Add(created.ID, 1, "a comment"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := store.Delete(created.ID); err != nil {
 		t.Fatalf("delete: %v", err)
+		panic("unreachable")
 	}
 
 	// Primary file and every sidecar are gone from the live tasks dir.
@@ -3377,6 +3713,7 @@ func TestStoreDeleteMovesFileAndSidecarsToTrash(t *testing.T) {
 	liveEntries, err := os.ReadDir(store.Dir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, e := range liveEntries {
 		if strings.HasPrefix(e.Name(), created.ID+".") && !strings.HasSuffix(e.Name(), ".lock") {
@@ -3392,6 +3729,7 @@ func TestStoreDeleteMovesFileAndSidecarsToTrash(t *testing.T) {
 	entries, err := store.ListTrash()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(entries) != 1 {
 		t.Fatalf("ListTrash() = %d entries, want 1", len(entries))
@@ -3407,6 +3745,7 @@ func TestStoreDeleteMovesFileAndSidecarsToTrash(t *testing.T) {
 	genEntries, err := os.ReadDir(genDir)
 	if err != nil {
 		t.Fatalf("read generation dir: %v", err)
+		panic("unreachable")
 	}
 	names := map[string]bool{}
 	for _, e := range genEntries {
@@ -3432,26 +3771,32 @@ func TestStoreRestoreFromTrash(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Restore me", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.plans.Write(created.ID, "the plan"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := store.Delete(created.ID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.Get(created.ID); err == nil {
 		t.Fatal("task should not be gettable while trashed")
+		panic("unreachable")
 	}
 
 	restored, err := store.RestoreFromTrash(created.ID)
 	if err != nil {
 		t.Fatalf("restore: %v", err)
+		panic("unreachable")
 	}
 	if restored.ID != created.ID || restored.Title != created.Title {
 		t.Errorf("restored task = %+v, want id/title matching %+v", restored, created)
@@ -3463,6 +3808,7 @@ func TestStoreRestoreFromTrash(t *testing.T) {
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatalf("get after restore: %v", err)
+		panic("unreachable")
 	}
 	if got.Title != created.Title {
 		t.Errorf("got.Title = %q, want %q", got.Title, created.Title)
@@ -3472,6 +3818,7 @@ func TestStoreRestoreFromTrash(t *testing.T) {
 	remaining, err := store.ListTrash()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(remaining) != 0 {
 		t.Errorf("ListTrash() after restore = %d entries, want 0", len(remaining))
@@ -3483,24 +3830,29 @@ func TestStoreRestoreFromTrash_RefusesLiveCollision(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Collide", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.Delete(created.ID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// A new live task happens to reuse the same id (e.g. an external tool
 	// recreated the file directly).
 	if err := os.WriteFile(filepath.Join(store.Dir(), created.ID+".md"), []byte("---\nid: "+created.ID+"\n---\nnew task"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := store.RestoreFromTrash(created.ID); err == nil {
 		t.Fatal("expected restore to refuse overwriting a live task")
+		panic("unreachable")
 	}
 }
 
@@ -3509,10 +3861,12 @@ func TestStoreRestoreFromTrash_NotFound(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := store.RestoreFromTrash("nonexistent"); err == nil {
 		t.Fatal("expected error for id with no trashed generation")
+		panic("unreachable")
 	}
 }
 
@@ -3521,15 +3875,18 @@ func TestStoreTrash_DuplicateGenerationsAndNewestRestore(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Delete twice", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	primaryContent, err := os.ReadFile(created.FilePath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// A restore always cleans up the generation directory it consumes, so
@@ -3543,33 +3900,40 @@ func TestStoreTrash_DuplicateGenerationsAndNewestRestore(t *testing.T) {
 	genA, err := store.newTrashGeneration(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(genA, created.ID+".md"), primaryContent, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	older := time.Now().Add(-time.Hour)
 	if err := os.Chtimes(genA, older, older); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	genB, err := store.newTrashGeneration(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if genA == genB {
 		t.Fatalf("newTrashGeneration returned the same dir twice: %s", genA)
 	}
 	if err := os.WriteFile(filepath.Join(genB, created.ID+".md"), primaryContent, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := os.Remove(created.FilePath); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	entries, err := store.ListTrash()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(entries) != 2 {
 		t.Fatalf("ListTrash() = %d entries, want 2 distinct generations for %s", len(entries), created.ID)
@@ -3578,6 +3942,7 @@ func TestStoreTrash_DuplicateGenerationsAndNewestRestore(t *testing.T) {
 	restored, err := store.RestoreFromTrash(created.ID)
 	if err != nil {
 		t.Fatalf("restore: %v", err)
+		panic("unreachable")
 	}
 	if restored.ID != created.ID {
 		t.Fatalf("restored.ID = %q, want %q", restored.ID, created.ID)
@@ -3588,6 +3953,7 @@ func TestStoreTrash_DuplicateGenerationsAndNewestRestore(t *testing.T) {
 	remaining, err := store.ListTrash()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(remaining) != 1 {
 		t.Fatalf("remaining = %+v, want exactly one leftover generation", remaining)
@@ -3602,21 +3968,26 @@ func TestStorePruneTrash(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	oldTask, err := store.Create("Old", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.Delete(oldTask.ID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	recentTask, err := store.Create("Recent", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.Delete(recentTask.ID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Both tasks were deleted today, so they share one date directory.
@@ -3626,6 +3997,7 @@ func TestStorePruneTrash(t *testing.T) {
 	oldEntries, err := store.ListTrash()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	var oldGenDir string
 	for _, e := range oldEntries {
@@ -3639,14 +4011,17 @@ func TestStorePruneTrash(t *testing.T) {
 	backdated := filepath.Join(store.TrashDir(), time.Now().UTC().AddDate(0, 0, -30).Format(time.DateOnly))
 	if err := os.MkdirAll(backdated, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Rename(oldGenDir, filepath.Join(backdated, filepath.Base(oldGenDir))); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	rep, err := store.PruneTrash(14)
 	if err != nil {
 		t.Fatalf("prune: %v", err)
+		panic("unreachable")
 	}
 	if rep.Removed != 1 {
 		t.Fatalf("rep.Removed = %d, want 1", rep.Removed)
@@ -3658,6 +4033,7 @@ func TestStorePruneTrash(t *testing.T) {
 	remaining, err := store.ListTrash()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(remaining) != 1 || remaining[0].ID != recentTask.ID {
 		t.Fatalf("remaining = %+v, want only the recent task", remaining)
@@ -3674,19 +4050,23 @@ func TestStorePruneTrash_NegativeDisables(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Never pruned", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.Delete(created.ID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	entries, err := store.ListTrash()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(entries) != 1 {
 		t.Fatalf("ListTrash() = %d entries, want 1", len(entries))
@@ -3694,11 +4074,13 @@ func TestStorePruneTrash_NegativeDisables(t *testing.T) {
 	backdated := filepath.Join(store.TrashDir(), time.Now().UTC().AddDate(0, 0, -3650).Format(time.DateOnly))
 	if err := os.Rename(filepath.Join(store.TrashDir(), entries[0].DeletedDate), backdated); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	rep, err := store.PruneTrash(-1)
 	if err != nil {
 		t.Fatalf("prune: %v", err)
+		panic("unreachable")
 	}
 	if rep.Scanned != 0 || rep.Removed != 0 {
 		t.Fatalf("negative retention should no-op, got %+v", rep)
@@ -3707,6 +4089,7 @@ func TestStorePruneTrash_NegativeDisables(t *testing.T) {
 	remaining, err := store.ListTrash()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(remaining) != 1 {
 		t.Fatalf("remaining = %d, want 1 (nothing pruned)", len(remaining))
@@ -3718,20 +4101,24 @@ func TestStoreTrash_PruneVsRestoreRace(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Race", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.Delete(created.ID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Backdate so PruneTrash(1) treats this generation as expired.
 	entries, err := store.ListTrash()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(entries) != 1 {
 		t.Fatalf("ListTrash() = %d entries, want 1", len(entries))
@@ -3739,6 +4126,7 @@ func TestStoreTrash_PruneVsRestoreRace(t *testing.T) {
 	backdated := filepath.Join(store.TrashDir(), time.Now().UTC().AddDate(0, 0, -30).Format(time.DateOnly))
 	if err := os.Rename(filepath.Join(store.TrashDir(), entries[0].DeletedDate), backdated); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	var wg sync.WaitGroup
@@ -3764,6 +4152,7 @@ func TestStoreTrash_PruneVsRestoreRace(t *testing.T) {
 		}
 		if _, err := store.Get(created.ID); err != nil {
 			t.Fatalf("restored task should be live: %v", err)
+			panic("unreachable")
 		}
 	} else {
 		if pruneRep.Removed != 1 {
@@ -3771,6 +4160,7 @@ func TestStoreTrash_PruneVsRestoreRace(t *testing.T) {
 		}
 		if _, err := store.Get(created.ID); err == nil {
 			t.Fatal("task should not be live when restore lost the race")
+			panic("unreachable")
 		}
 	}
 }
@@ -3780,21 +4170,25 @@ func TestStoreDelete_RenameFailureLeavesTaskIntact(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := store.Create("Undeletable", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Pre-create a regular file where the trash dir needs to be a
 	// directory, so MkdirAll(dateDir) fails before any rename is attempted.
 	if err := os.WriteFile(store.TrashDir(), []byte("not a directory"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := store.Delete(created.ID); err == nil {
 		t.Fatal("expected delete to fail when the trash dir cannot be created")
+		panic("unreachable")
 	}
 
 	if _, err := os.Stat(created.FilePath); err != nil {
@@ -3810,5 +4204,6 @@ func TestTrashGenerationID_ReadError(t *testing.T) {
 	genDir := filepath.Join(t.TempDir(), "missing")
 	if _, _, err := trashGenerationID(genDir); err == nil {
 		t.Fatal("expected read error for missing generation dir")
+		panic("unreachable")
 	}
 }

@@ -113,11 +113,13 @@ func TestStatsServiceGetStatsAssignsClosedTasksDaily(t *testing.T) {
 	statsStore, err := stats.NewStore(filepath.Join(t.TempDir(), "stats.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasksDir := t.TempDir()
 	taskStore, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(taskStore, nil)
 
@@ -154,11 +156,13 @@ func TestStatsServiceGetStatsCountsAuditDoneTasksMissingFromLiveList(t *testing.
 	statsStore, err := stats.NewStore(filepath.Join(t.TempDir(), "stats.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasksDir := t.TempDir()
 	taskStore, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(taskStore, nil)
 	auditDir := t.TempDir()
@@ -230,24 +234,29 @@ func TestStatsServiceGetStatsKeepsClosedTasksDailyArrayWhenTaskListFails(t *test
 	statsStore, err := stats.NewStore(filepath.Join(t.TempDir(), "stats.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasksDir := t.TempDir()
 	taskStore, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(taskStore, nil)
 	if err := os.RemoveAll(tasksDir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	resp := (&StatsService{stats: statsStore, tasks: taskMgr}).GetStats()
 	if resp.ClosedTasksDaily == nil {
 		t.Fatal("ClosedTasksDaily is nil, want empty slice")
+		panic("unreachable")
 	}
 	data, err := json.Marshal(resp)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(data), `"closedTasksDaily":[]`) {
 		t.Fatalf("marshaled response = %s, want closedTasksDaily array", data)
@@ -378,9 +387,11 @@ func writeStatsTask(t *testing.T, dir string, tk task.Task) {
 	data, err := task.Marshal(tk)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(dir, tk.ID+".md"), data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -391,12 +402,14 @@ func writeStatsAuditFile(t *testing.T, dir, name string, events []audit.Event) {
 		line, err := json.Marshal(ev)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		data = append(data, line...)
 		data = append(data, '\n')
 	}
 	if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 

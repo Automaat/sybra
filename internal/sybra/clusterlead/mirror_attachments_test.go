@@ -28,6 +28,7 @@ func TestMirrorPullsFollowerAttachmentBlobsToLeader(t *testing.T) {
 		var args []string
 		if err := json.NewDecoder(r.Body).Decode(&args); err != nil {
 			t.Fatalf("decode export args: %v", err)
+			panic("unreachable")
 		}
 		mu.Lock()
 		exported = append(exported, strings.Join(args, "/"))
@@ -48,15 +49,18 @@ func TestMirrorPullsFollowerAttachmentBlobsToLeader(t *testing.T) {
 	roster, err := NewRoster(cfg, slog.Default())
 	if err != nil {
 		t.Fatalf("NewRoster: %v", err)
+		panic("unreachable")
 	}
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	leaderAttachments, err := attachment.NewStore(t.TempDir(), 10<<20)
 	if err != nil {
 		t.Fatalf("attachment.NewStore: %v", err)
+		panic("unreachable")
 	}
 	mirror := NewMirror(cfg, tasks, roster, slog.Default(), time.Second)
 	mirror.SetAttachments(leaderAttachments)
@@ -103,6 +107,7 @@ func TestMirrorPullsFollowerAttachmentBlobsToLeader(t *testing.T) {
 	got, err := tasks.Get("task-1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if len(got.Attachments) != 1 {
 		t.Fatalf("leader attachments = %+v, want one", got.Attachments)
@@ -113,6 +118,7 @@ func TestMirrorPullsFollowerAttachmentBlobsToLeader(t *testing.T) {
 	data, err := os.ReadFile(got.Attachments[0].Path)
 	if err != nil {
 		t.Fatalf("read mirrored attachment: %v", err)
+		panic("unreachable")
 	}
 	if string(data) != "follower payload" {
 		t.Fatalf("mirrored payload = %q, want follower payload", data)
@@ -130,6 +136,7 @@ func TestMirrorRetriesFollowerAttachmentAfterExportFailure(t *testing.T) {
 		var args []string
 		if err := json.NewDecoder(r.Body).Decode(&args); err != nil {
 			t.Fatalf("decode export args: %v", err)
+			panic("unreachable")
 		}
 		mu.Lock()
 		attempts++
@@ -155,15 +162,18 @@ func TestMirrorRetriesFollowerAttachmentAfterExportFailure(t *testing.T) {
 	roster, err := NewRoster(cfg, slog.Default())
 	if err != nil {
 		t.Fatalf("NewRoster: %v", err)
+		panic("unreachable")
 	}
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	leaderAttachments, err := attachment.NewStore(t.TempDir(), 10<<20)
 	if err != nil {
 		t.Fatalf("attachment.NewStore: %v", err)
+		panic("unreachable")
 	}
 	mirror := NewMirror(cfg, tasks, roster, slog.Default(), time.Second)
 	mirror.SetAttachments(leaderAttachments)
@@ -205,9 +215,11 @@ func TestMirrorRetriesFollowerAttachmentAfterExportFailure(t *testing.T) {
 	got, err := tasks.Get("task-1")
 	if err != nil {
 		t.Fatalf("Get after failed mirror: %v", err)
+		panic("unreachable")
 	}
 	if got.MirrorUpdatedAt != nil {
 		t.Fatalf("failed attachment mirror advanced MirrorUpdatedAt to %v", got.MirrorUpdatedAt)
+		panic("unreachable")
 	}
 	if len(got.Attachments) != 0 {
 		t.Fatalf("failed attachment mirror persisted attachments = %+v, want none", got.Attachments)
@@ -219,9 +231,11 @@ func TestMirrorRetriesFollowerAttachmentAfterExportFailure(t *testing.T) {
 	got, err = tasks.Get("task-1")
 	if err != nil {
 		t.Fatalf("Get after retry: %v", err)
+		panic("unreachable")
 	}
 	if got.MirrorUpdatedAt == nil || !got.MirrorUpdatedAt.Equal(followerUpdated) {
 		t.Fatalf("MirrorUpdatedAt after retry = %v, want %v", got.MirrorUpdatedAt, followerUpdated)
+		panic("unreachable")
 	}
 	if len(got.Attachments) != 1 {
 		t.Fatalf("leader attachments after retry = %+v, want one", got.Attachments)
@@ -229,6 +243,7 @@ func TestMirrorRetriesFollowerAttachmentAfterExportFailure(t *testing.T) {
 	data, err := os.ReadFile(got.Attachments[0].Path)
 	if err != nil {
 		t.Fatalf("read mirrored attachment after retry: %v", err)
+		panic("unreachable")
 	}
 	if string(data) != "eventual payload" {
 		t.Fatalf("mirrored payload after retry = %q, want eventual payload", data)

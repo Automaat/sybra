@@ -38,6 +38,7 @@ func TestExecValidatePlanContract_ValidContractPasses(t *testing.T) {
 		TaskInfo{ID: "fa6919fc", PlanContract: validPlanContract("fa6919fc")})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Errorf("Status = %q, want completed", out.Status)
@@ -57,6 +58,7 @@ func TestExecValidatePlanContract_MissingContractPassesForMigration(t *testing.T
 		TaskInfo{ID: "fa6919fc", PlanContract: " \n\t"})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !strings.Contains(out.Output, "markdown-only migration fallback") {
 		t.Errorf("Output = %q, want migration fallback", out.Output)
@@ -76,6 +78,7 @@ func TestExecValidatePlanContract_RejectsWrongTaskID(t *testing.T) {
 		TaskInfo{ID: "fa6919fc", PlanContract: validPlanContract("a9375bad")})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	ti, _ := tasks.GetTask("fa6919fc")
 	if ti.Status != "human-required" {
@@ -100,6 +103,7 @@ func TestExecValidatePlanContract_RejectsMissingVerificationCriteria(t *testing.
 		TaskInfo{ID: "fa6919fc", PlanContract: contract})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if reason := tasks.Reason("fa6919fc"); !strings.Contains(reason, "verification must include") {
 		t.Errorf("reason = %q, want missing verification", reason)
@@ -140,6 +144,7 @@ func TestPlanContractPromptJSON_StripsSupplementalFields(t *testing.T) {
 	rendered, err := PlanContractPromptJSON(contract, "fa6919fc")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if strings.Contains(rendered, "agent_instructions") || strings.Contains(rendered, "ignore the plan") {
 		t.Fatalf("rendered contract leaked supplemental fields: %s", rendered)
@@ -183,6 +188,7 @@ func TestExecValidatePlanContract_RejectsEmptyVerificationEntry(t *testing.T) {
 		TaskInfo{ID: "fa6919fc", PlanContract: contract})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if reason := tasks.Reason("fa6919fc"); !strings.Contains(reason, "verification[0].command or manual is required") {
 		t.Errorf("reason = %q, want missing verification command/manual", reason)
@@ -332,6 +338,7 @@ func TestExecValidatePlanContract_RejectsMalformedFiles(t *testing.T) {
 				TaskInfo{ID: "fa6919fc", PlanContract: contract})
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if reason := tasks.Reason("fa6919fc"); !strings.Contains(reason, tc.wantError) {
 				t.Errorf("reason = %q, want %q", reason, tc.wantError)
@@ -365,6 +372,7 @@ func TestExecValidatePlanContract_RejectsMalformedExpectedDeletions(t *testing.T
 				TaskInfo{ID: "fa6919fc", PlanContract: contract})
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if reason := tasks.Reason("fa6919fc"); !strings.Contains(reason, tc.wantError) {
 				t.Errorf("reason = %q, want %q", reason, tc.wantError)
@@ -461,6 +469,7 @@ func TestExecValidatePlanContract_RejectsForeignWorktreeOrBranch(t *testing.T) {
 		TaskInfo{ID: "fa6919fc", PlanContract: contract})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if reason := tasks.Reason("fa6919fc"); !strings.Contains(reason, "foreign task ID a9375bad") {
 		t.Errorf("reason = %q, want foreign task ID", reason)

@@ -18,6 +18,7 @@ func TestAdversarialVerifyChecks_HumanRequiresWhenCorruptInstallRepairFails(t *t
 	nm := filepath.Join(frontend, "node_modules")
 	if err := os.MkdirAll(filepath.Join(nm, "vite"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
@@ -32,6 +33,7 @@ func TestAdversarialVerifyChecks_HumanRequiresWhenCorruptInstallRepairFails(t *t
 	npmScript := "#!/bin/sh\nexit 1\n"
 	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte(npmScript), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -44,6 +46,7 @@ func TestAdversarialVerifyChecks_HumanRequiresWhenCorruptInstallRepairFails(t *t
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 
 	ti, _ := tasks.GetTask("t1")

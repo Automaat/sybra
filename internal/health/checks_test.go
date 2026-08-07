@@ -364,25 +364,30 @@ func TestRunAccountingAgreesAcrossHealthAuditAndBackfill(t *testing.T) {
 	auditDir := filepath.Join(dir, "audit")
 	if err := os.MkdirAll(auditDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	var lines []byte
 	for i := range events {
 		b, err := json.Marshal(events[i])
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		lines = append(lines, b...)
 		lines = append(lines, '\n')
 	}
 	if err := os.WriteFile(filepath.Join(auditDir, now.Format(time.DateOnly)+".ndjson"), lines, 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	store, err := stats.NewStore(filepath.Join(dir, "stats.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.Backfill(auditDir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	resp := store.QueryAt(now.Add(2 * time.Hour))
 	if resp.AllTime.TotalRuns != 3 {

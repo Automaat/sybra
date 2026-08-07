@@ -148,6 +148,7 @@ func TestMirrorPropagatesOutOfBandFollowerWrite(t *testing.T) {
 	roster, err := NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 
 	t0 := time.Now().Add(-time.Hour)
@@ -222,6 +223,7 @@ func TestMirrorReconcileMissingRecoversTaskListTasksForNodeOmitted(t *testing.T)
 	roster, err := NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 
 	t0 := time.Now().Add(-time.Hour)
@@ -280,6 +282,7 @@ func TestMirrorReconcileSucceedsPastOldThirtyTwoMegabyteCap(t *testing.T) {
 	roster, err := NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 
 	t0 := time.Now().Add(-time.Hour)
@@ -390,16 +393,19 @@ func TestMirrorReconcileLoopEscalatesOnUnreachableFollowerOverRealTicks(t *testi
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	deadEndpoint := "http://" + ln.Addr().String()
 	if err := ln.Close(); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg := leaderConfig(deadEndpoint, []string{"owner/pet"})
 	roster, err := NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 	mgr := newManager(t)
 
@@ -486,6 +492,7 @@ func TestMirrorRunHandlesSlowAndFastFollowersConcurrentlyAndCancelsCleanly(t *te
 	roster, err := NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 	mgr := newManager(t)
 	mirror := NewMirror(cfg, mgr, roster, slog.New(slog.DiscardHandler), 10*time.Millisecond)

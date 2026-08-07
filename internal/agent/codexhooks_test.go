@@ -22,6 +22,7 @@ func makeFakeHookBinary(t *testing.T, name string) string {
 	fake := filepath.Join(dir, name)
 	if err := os.WriteFile(fake, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("create fake %s: %v", name, err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 	return dir
@@ -33,6 +34,7 @@ func makeOnlyFakeHookBinary(t *testing.T, name string) string {
 	fake := filepath.Join(dir, name)
 	if err := os.WriteFile(fake, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("create fake %s: %v", name, err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", dir)
 	return dir
@@ -185,6 +187,7 @@ func TestBuildClaudeHookSettings_KlaudiushPreToolUse(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(settings), &decoded); err != nil {
 		t.Fatalf("settings is not JSON: %v\n%s", err, settings)
+		panic("unreachable")
 	}
 	entries := decoded.Hooks["PreToolUse"]
 	if len(entries) != 1 || len(entries[0].Hooks) != 1 {

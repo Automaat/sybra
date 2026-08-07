@@ -31,12 +31,14 @@ func newUmbrellaRecoveryApp(t *testing.T) (app *App, tasks *task.Manager, projec
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks = task.NewManager(store, task.EmitterFunc(func(string, any) {}))
 	projectsDir = t.TempDir()
 	projects, err = project.NewStore(projectsDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("project.NewStore: %v", err)
+		panic("unreachable")
 	}
 	cfg := &config.Config{Umbrella: config.UmbrellaConfig{Enabled: true}}
 	app = &App{
@@ -57,6 +59,7 @@ func writeProjectYAML(t *testing.T, dir, id string, ptype project.ProjectType) {
 	content := "id: " + id + "\ntype: " + string(ptype) + "\nowner: stub\nrepo: stub\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write project YAML: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -81,6 +84,7 @@ func mkDegradedTracker(t *testing.T, tasks *task.Manager, umb string, status tas
 	tk, err := tasks.CreateFull("umbrella", "", task.AgentModeHeadless, init)
 	if err != nil {
 		t.Fatalf("create degraded tracker: %v", err)
+		panic("unreachable")
 	}
 	return tk
 }
@@ -207,6 +211,7 @@ func TestRunUmbrellaRecovery_AuditErrorReasonIsSafe(t *testing.T) {
 	al, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatalf("audit.NewLogger: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = al.Close() })
 	app.audit = al
@@ -225,6 +230,7 @@ func TestRunUmbrellaRecovery_AuditErrorReasonIsSafe(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("audit.Read: %v", err)
+		panic("unreachable")
 	}
 	if len(events) != 2 {
 		t.Fatalf("audit events = %d, want attempt and error events: %+v", len(events), events)

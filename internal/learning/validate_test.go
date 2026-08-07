@@ -29,6 +29,7 @@ func TestParseDigestJSONExtractsLastObjectFromProse(t *testing.T) {
 	rd, err := parseDigestJSON(text)
 	if err != nil {
 		t.Fatalf("parseDigestJSON returned error: %v", err)
+		panic("unreachable")
 	}
 	if len(rd.Worked) != 1 {
 		t.Fatalf("Worked = %+v, want 1 item", rd.Worked)
@@ -44,6 +45,7 @@ func TestParseDigestJSONMalformedReturnsError(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if _, err := parseDigestJSON(text); err == nil {
 				t.Fatalf("parseDigestJSON(%q) returned no error, want one", text)
+				panic("unreachable")
 			}
 		})
 	}
@@ -54,12 +56,14 @@ func TestValidateDigestAccepts(t *testing.T) {
 	rd, err := parseDigestJSON(validRawJSON(since, until))
 	if err != nil {
 		t.Fatalf("parseDigestJSON returned error: %v", err)
+		panic("unreachable")
 	}
 	pkt := Packet{Since: since, Until: until}
 
 	d, err := validateDigest(rd, pkt)
 	if err != nil {
 		t.Fatalf("validateDigest returned error: %v", err)
+		panic("unreachable")
 	}
 	if !d.Since.Equal(since) || !d.Until.Equal(until) {
 		t.Fatalf("digest window = [%s,%s), want [%s,%s)", d.Since, d.Until, since, until)
@@ -75,11 +79,13 @@ func TestValidateDigestRejectsWindowMismatch(t *testing.T) {
 	rd, err := parseDigestJSON(validRawJSON(since, wrongUntil))
 	if err != nil {
 		t.Fatalf("parseDigestJSON returned error: %v", err)
+		panic("unreachable")
 	}
 	pkt := Packet{Since: since, Until: until}
 
 	if _, err := validateDigest(rd, pkt); err == nil {
 		t.Fatal("validateDigest accepted a window that does not match the packet's actual window")
+		panic("unreachable")
 	}
 }
 
@@ -95,10 +101,12 @@ func TestValidateDigestRejectsMissingBuckets(t *testing.T) {
 }`)
 	if err != nil {
 		t.Fatalf("parseDigestJSON returned error: %v", err)
+		panic("unreachable")
 	}
 	pkt := Packet{Since: since, Until: until}
 	if _, err := validateDigest(rd, pkt); err == nil {
 		t.Fatal("validateDigest accepted a digest with every bucket empty")
+		panic("unreachable")
 	}
 }
 
@@ -107,12 +115,14 @@ func TestValidateDigestRejectsOverLengthItem(t *testing.T) {
 	rd, err := parseDigestJSON(validRawJSON(since, until))
 	if err != nil {
 		t.Fatalf("parseDigestJSON returned error: %v", err)
+		panic("unreachable")
 	}
 	rd.Worked = []string{strings.Repeat("x", maxItemChars+1)}
 	pkt := Packet{Since: since, Until: until}
 
 	if _, err := validateDigest(rd, pkt); err == nil {
 		t.Fatal("validateDigest accepted an over-length bucket item")
+		panic("unreachable")
 	}
 }
 
@@ -121,6 +131,7 @@ func TestValidateDigestRejectsOverCountBucket(t *testing.T) {
 	rd, err := parseDigestJSON(validRawJSON(since, until))
 	if err != nil {
 		t.Fatalf("parseDigestJSON returned error: %v", err)
+		panic("unreachable")
 	}
 	items := make([]string, maxBucketItems+1)
 	for i := range items {
@@ -131,6 +142,7 @@ func TestValidateDigestRejectsOverCountBucket(t *testing.T) {
 
 	if _, err := validateDigest(rd, pkt); err == nil {
 		t.Fatal("validateDigest accepted a bucket over maxBucketItems")
+		panic("unreachable")
 	}
 }
 
@@ -139,6 +151,7 @@ func TestValidateDigestRequiresVariantRefForExperimentTakeaway(t *testing.T) {
 	rd, err := parseDigestJSON(validRawJSON(since, until))
 	if err != nil {
 		t.Fatalf("parseDigestJSON returned error: %v", err)
+		panic("unreachable")
 	}
 	rd.ModelTakeaways = []Takeaway{{Text: "claude wins on this experiment", ExperimentRef: "exp-1"}}
 	pkt := Packet{
@@ -148,6 +161,7 @@ func TestValidateDigestRequiresVariantRefForExperimentTakeaway(t *testing.T) {
 
 	if _, err := validateDigest(rd, pkt); err == nil {
 		t.Fatal("validateDigest accepted a takeaway with experimentRef but no variantRef")
+		panic("unreachable")
 	}
 }
 
@@ -156,6 +170,7 @@ func TestValidateDigestRequiresLowSampleCaveat(t *testing.T) {
 	rd, err := parseDigestJSON(validRawJSON(since, until))
 	if err != nil {
 		t.Fatalf("parseDigestJSON returned error: %v", err)
+		panic("unreachable")
 	}
 	pkt := Packet{
 		Since: since, Until: until,
@@ -167,6 +182,7 @@ func TestValidateDigestRequiresLowSampleCaveat(t *testing.T) {
 		rd.ModelTakeaways = []Takeaway{{Text: "claude wins on this experiment", ExperimentRef: "exp-1", VariantRef: "a"}}
 		if _, err := validateDigest(rd, pkt); err == nil {
 			t.Fatal("validateDigest accepted a low-sample takeaway without a caveat")
+			panic("unreachable")
 		}
 	})
 
@@ -175,6 +191,7 @@ func TestValidateDigestRequiresLowSampleCaveat(t *testing.T) {
 		rd.ModelTakeaways = []Takeaway{{Text: "claude leads, but low sample (N=4)", ExperimentRef: "exp-1", VariantRef: "a"}}
 		if _, err := validateDigest(rd, pkt); err != nil {
 			t.Fatalf("validateDigest rejected a properly-caveated low-sample takeaway: %v", err)
+			panic("unreachable")
 		}
 	})
 }

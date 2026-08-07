@@ -20,6 +20,7 @@ func TestConfigDocs_InSyncWithSource(t *testing.T) {
 	prev, err := os.ReadFile(docPath)
 	if err != nil {
 		t.Fatalf("read docs/CONFIG.md: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.WriteFile(docPath, prev, 0o644) })
 
@@ -30,11 +31,13 @@ func TestConfigDocs_InSyncWithSource(t *testing.T) {
 	// environment as-is so the normalization path is exercised for real.
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go run ./cmd/gen-config-docs: %v\n%s", err, out)
+		panic("unreachable")
 	}
 
 	regen, err := os.ReadFile(docPath)
 	if err != nil {
 		t.Fatalf("read regenerated docs/CONFIG.md: %v", err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(regen, prev) {
 		t.Errorf("docs/CONFIG.md is stale — run `go generate ./internal/config/...`")

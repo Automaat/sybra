@@ -59,6 +59,7 @@ func TestClientTLSPinAcceptAndReject(t *testing.T) {
 	got, err := accept.ListTasks(context.Background())
 	if err != nil {
 		t.Fatalf("correct pin should connect: %v", err)
+		panic("unreachable")
 	}
 	if len(got) != 1 || got[0].ID != "pinned" {
 		t.Fatalf("ListTasks = %+v", got)
@@ -68,6 +69,7 @@ func TestClientTLSPinAcceptAndReject(t *testing.T) {
 	reject := mustClient(t, Node{Name: "tls", Endpoints: []string{srv.URL}, TLSPin: wrongPin})
 	if _, err := reject.ListTasks(context.Background()); err == nil {
 		t.Fatal("wrong pin must reject the connection")
+		panic("unreachable")
 	}
 }
 

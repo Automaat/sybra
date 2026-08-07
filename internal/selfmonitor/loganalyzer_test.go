@@ -59,6 +59,7 @@ func writeFixture(t *testing.T, lines []string) string {
 	path := filepath.Join(dir, "agent-abc.ndjson")
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
+		panic("unreachable")
 	}
 	return path
 }
@@ -69,6 +70,7 @@ func TestAnalyzeToolLoopFixture(t *testing.T) {
 	s, err := Analyze(path, 0)
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
+		panic("unreachable")
 	}
 
 	if s.SchemaVersion != LogSummarySchemaVersion {
@@ -135,6 +137,7 @@ func TestAnalyzeEmptyLog(t *testing.T) {
 	s, err := Analyze(path, 0)
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
+		panic("unreachable")
 	}
 	if s.TotalEvents != 0 || s.TotalToolCalls != 0 {
 		t.Errorf("empty log: %+v", s)
@@ -159,6 +162,7 @@ func TestAnalyzeSkipsOversizedRecordWithoutAborting(t *testing.T) {
 	s, err := Analyze(path, 0)
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
+		panic("unreachable")
 	}
 	if s.SkippedOversizedRecords != 1 {
 		t.Errorf("SkippedOversizedRecords = %d, want 1", s.SkippedOversizedRecords)
@@ -182,11 +186,13 @@ func TestReadBoundedLine_TrailingOversizedLineNoTrailingNewline(t *testing.T) {
 	data := []byte(`{"type":"system","subtype":"init","session_id":"s1"}` + "\n" + strings.Repeat("y", maxLogLineBytes+1))
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
+		panic("unreachable")
 	}
 
 	s, err := Analyze(path, 0)
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
+		panic("unreachable")
 	}
 	if s.SkippedOversizedRecords != 1 {
 		t.Errorf("SkippedOversizedRecords = %d, want 1", s.SkippedOversizedRecords)

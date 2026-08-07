@@ -30,6 +30,7 @@ func initAutoResolveSourceRepo(t *testing.T) string {
 	dir := filepath.Join(t.TempDir(), "src")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	runs := [][]string{
 		{"init", dir},
@@ -40,14 +41,17 @@ func initAutoResolveSourceRepo(t *testing.T) string {
 	for _, args := range runs {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{{"-C", dir, "add", "."}, {"-C", dir, "commit", "-m", "init"}} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	return dir
@@ -76,15 +80,18 @@ func newAutoResolveHarness(t *testing.T, autoResolveEnabled bool) *autoResolveHa
 	taskStore, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 
 	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wfStore.Dir(), "test-pr-fix.yaml"), []byte(mechanicalPRFixYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := wfStore.Save(workflow.Definition{
 		ID:   branchConflictFixWorkflowID,
@@ -128,13 +135,16 @@ func newAutoResolveHarness(t *testing.T, autoResolveEnabled bool) *autoResolveHa
 	bare := filepath.Join(tmp, "clones", "o", "r.git")
 	if err := os.MkdirAll(filepath.Dir(bare), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := project.CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone bare: %v", err)
+		panic("unreachable")
 	}
 	branch, err := project.DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
+		panic("unreachable")
 	}
 
 	projDir := filepath.Join(tmp, "projects")
@@ -142,6 +152,7 @@ func newAutoResolveHarness(t *testing.T, autoResolveEnabled bool) *autoResolveHa
 	projStore, err := project.NewStore(projDir, clonesDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	proj := project.Project{
 		ID: "o/r", Name: "r", Owner: "o", Repo: "r",
@@ -165,6 +176,7 @@ func newAutoResolveHarness(t *testing.T, autoResolveEnabled bool) *autoResolveHa
 	al, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	r := &Handler{
@@ -197,6 +209,7 @@ func (h *autoResolveHarness) newConflictTask(t *testing.T) (task.Task, github.Pu
 	tk, err := h.tasks.Create("conflict pr", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.Update(tk.ID, task.Update{
 		ProjectID: task.Ptr(h.proj.ID),
@@ -205,6 +218,7 @@ func (h *autoResolveHarness) newConflictTask(t *testing.T) (task.Task, github.Pu
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	pr := github.PullRequest{
 		Number: 555, Repository: h.proj.ID, HeadRefName: h.branch,
@@ -232,6 +246,7 @@ func currentHEAD(t *testing.T, dir string) string {
 	out, err := exec.Command("git", "-C", dir, "rev-parse", "--verify", "HEAD").CombinedOutput()
 	if err != nil {
 		t.Fatalf("git rev-parse HEAD: %v: %s", err, out)
+		panic("unreachable")
 	}
 	return strings.TrimSpace(string(out))
 }
@@ -245,6 +260,7 @@ func configureGitIdentity(t *testing.T, dir string) {
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 }
@@ -254,6 +270,7 @@ func emptyCommit(t *testing.T, dir, msg string) string {
 	configureGitIdentity(t, dir)
 	if out, err := exec.Command("git", "-C", dir, "commit", "--allow-empty", "-m", msg).CombinedOutput(); err != nil {
 		t.Fatalf("git commit --allow-empty: %v: %s", err, out)
+		panic("unreachable")
 	}
 	return currentHEAD(t, dir)
 }
@@ -273,9 +290,11 @@ func TestDispatchFixIssues_PushPreflightFailureBlocksAgentDispatch(t *testing.T)
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow != nil {
 		t.Fatalf("workflow = %+v, want none; preflight must block before pr-fix agent dispatch", got.Workflow)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want human-required", got.Status)
@@ -301,6 +320,7 @@ func TestAutoResolveConflict_CreatedSkipsAgent(t *testing.T) {
 		for _, args := range cmds {
 			if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 				t.Fatalf("git %v: %v: %s", args, err, out)
+				panic("unreachable")
 			}
 		}
 		mergedHead = currentHEAD(t, dir)
@@ -318,6 +338,7 @@ func TestAutoResolveConflict_CreatedSkipsAgent(t *testing.T) {
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow != nil {
 		t.Errorf("workflow dispatched = %+v, want nil (agent must not run)", got.Workflow)
@@ -383,9 +404,11 @@ func TestAutoResolveConflict_ApprovedPRSkipsCleanMergeAndDispatchesAgent(t *test
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("no workflow dispatched; approved PR should still get a fix agent")
+		panic("unreachable")
 	}
 	if got.Status == task.StatusHumanRequired {
 		t.Fatalf("status = %q, want agent dispatch instead of parking", got.Status)
@@ -414,6 +437,7 @@ func TestPrepareWorktree_ApprovedCIFailureUsesPRHeadCheckout(t *testing.T) {
 	out, err := exec.Command("git", "-C", dir, "branch", "--show-current").CombinedOutput()
 	if err != nil {
 		t.Fatalf("git branch --show-current: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if got := strings.TrimSpace(string(out)); got != pr.HeadRefName {
 		t.Fatalf("checked-out branch = %q, want PR head %q", got, pr.HeadRefName)
@@ -433,28 +457,35 @@ func TestPrepareWorktree_SameBranchConflictDispatchesBranchRecovery(t *testing.T
 	configureGitIdentity(t, dir)
 	if err := os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("local-edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", dir, "add", "shared.txt").CombinedOutput(); err != nil {
 		t.Fatalf("git add local shared.txt: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", dir, "commit", "-m", "local edit").CombinedOutput(); err != nil {
 		t.Fatalf("git commit local edit: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	configureGitIdentity(t, h.src)
 	if err := os.WriteFile(filepath.Join(h.src, "shared.txt"), []byte("remote-edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", h.src, "add", "shared.txt").CombinedOutput(); err != nil {
 		t.Fatalf("git add remote shared.txt: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", h.src, "commit", "-m", "remote edit").CombinedOutput(); err != nil {
 		t.Fatalf("git commit remote edit: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	tk, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, ok := h.r.prepareWorktree(context.Background(), tk, issue); ok {
 		t.Fatal("prepareWorktree returned a ready worktree; want branch-conflict recovery to take over")
@@ -463,12 +494,14 @@ func TestPrepareWorktree_SameBranchConflictDispatchesBranchRecovery(t *testing.T
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status == task.StatusHumanRequired {
 		t.Fatalf("status = %q, want branch-conflict recovery instead of human-required", got.Status)
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != branchConflictFixWorkflowID {
 		t.Fatalf("workflow = %+v, want %s", got.Workflow, branchConflictFixWorkflowID)
+		panic("unreachable")
 	}
 	if got.Workflow.CurrentStep != "await_fix" {
 		t.Fatalf("current step = %q, want await_fix", got.Workflow.CurrentStep)
@@ -490,9 +523,11 @@ func TestPrepareWorktree_SameBranchConflictUsesForkRemote(t *testing.T) {
 	forkBare := filepath.Join(t.TempDir(), "fork.git")
 	if out, err := exec.Command("git", "clone", "--bare", h.src, forkBare).CombinedOutput(); err != nil {
 		t.Fatalf("clone fork bare: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", h.proj.ClonePath, "remote", "add", "fork", forkBare).CombinedOutput(); err != nil {
 		t.Fatalf("add fork remote: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	tk, pr := h.newConflictTask(t)
@@ -507,35 +542,44 @@ func TestPrepareWorktree_SameBranchConflictUsesForkRemote(t *testing.T) {
 	configureGitIdentity(t, dir)
 	if err := os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("local-edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", dir, "add", "shared.txt").CombinedOutput(); err != nil {
 		t.Fatalf("git add local shared.txt: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", dir, "commit", "-m", "local edit").CombinedOutput(); err != nil {
 		t.Fatalf("git commit local edit: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	forkSrc := filepath.Join(t.TempDir(), "fork-src")
 	if out, err := exec.Command("git", "clone", forkBare, forkSrc).CombinedOutput(); err != nil {
 		t.Fatalf("clone fork source: %v: %s", err, out)
+		panic("unreachable")
 	}
 	configureGitIdentity(t, forkSrc)
 	if err := os.WriteFile(filepath.Join(forkSrc, "shared.txt"), []byte("fork-edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", forkSrc, "add", "shared.txt").CombinedOutput(); err != nil {
 		t.Fatalf("git add fork shared.txt: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", forkSrc, "commit", "-m", "fork edit").CombinedOutput(); err != nil {
 		t.Fatalf("git commit fork edit: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", forkSrc, "push", "origin", h.branch).CombinedOutput(); err != nil {
 		t.Fatalf("git push fork edit: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	tk, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, ok := h.r.prepareWorktree(context.Background(), tk, issue); ok {
 		t.Fatal("prepareWorktree returned a ready worktree; want branch-conflict recovery to take over")
@@ -544,9 +588,11 @@ func TestPrepareWorktree_SameBranchConflictUsesForkRemote(t *testing.T) {
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != branchConflictFixWorkflowID {
 		t.Fatalf("workflow = %+v, want %s", got.Workflow, branchConflictFixWorkflowID)
+		panic("unreachable")
 	}
 	prompt := got.Workflow.Variables["prompt"]
 	if !strings.Contains(prompt, "git fetch fork +refs/heads/"+h.branch+":refs/remotes/fork/"+h.branch) {
@@ -572,27 +618,34 @@ func TestPrepareWorktree_SameBranchConflictKeepsOriginBackedPR(t *testing.T) {
 	forkBare := filepath.Join(t.TempDir(), "fork.git")
 	if out, err := exec.Command("git", "clone", "--bare", h.src, forkBare).CombinedOutput(); err != nil {
 		t.Fatalf("clone fork bare: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", h.proj.ClonePath, "remote", "add", "fork", forkBare).CombinedOutput(); err != nil {
 		t.Fatalf("add fork remote: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	forkSrc := filepath.Join(t.TempDir(), "fork-src")
 	if out, err := exec.Command("git", "clone", forkBare, forkSrc).CombinedOutput(); err != nil {
 		t.Fatalf("clone fork source: %v: %s", err, out)
+		panic("unreachable")
 	}
 	configureGitIdentity(t, forkSrc)
 	if err := os.WriteFile(filepath.Join(forkSrc, "shared.txt"), []byte("stale-fork-edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", forkSrc, "add", "shared.txt").CombinedOutput(); err != nil {
 		t.Fatalf("git add fork shared.txt: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", forkSrc, "commit", "-m", "stale fork edit").CombinedOutput(); err != nil {
 		t.Fatalf("git commit fork edit: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", forkSrc, "push", "origin", h.branch).CombinedOutput(); err != nil {
 		t.Fatalf("git push fork edit: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	tk, pr := h.newConflictTask(t)
@@ -607,28 +660,35 @@ func TestPrepareWorktree_SameBranchConflictKeepsOriginBackedPR(t *testing.T) {
 	configureGitIdentity(t, dir)
 	if err := os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("local-edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", dir, "add", "shared.txt").CombinedOutput(); err != nil {
 		t.Fatalf("git add local shared.txt: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", dir, "commit", "-m", "local edit").CombinedOutput(); err != nil {
 		t.Fatalf("git commit local edit: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	configureGitIdentity(t, h.src)
 	if err := os.WriteFile(filepath.Join(h.src, "shared.txt"), []byte("origin-edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", h.src, "add", "shared.txt").CombinedOutput(); err != nil {
 		t.Fatalf("git add origin shared.txt: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", h.src, "commit", "-m", "origin edit").CombinedOutput(); err != nil {
 		t.Fatalf("git commit origin edit: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	tk, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, ok := h.r.prepareWorktree(context.Background(), tk, issue); ok {
 		t.Fatal("prepareWorktree returned a ready worktree; want branch-conflict recovery to take over")
@@ -637,9 +697,11 @@ func TestPrepareWorktree_SameBranchConflictKeepsOriginBackedPR(t *testing.T) {
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != branchConflictFixWorkflowID {
 		t.Fatalf("workflow = %+v, want %s", got.Workflow, branchConflictFixWorkflowID)
+		panic("unreachable")
 	}
 	prompt := got.Workflow.Variables["prompt"]
 	if !strings.Contains(prompt, "git fetch origin +refs/heads/"+h.branch+":refs/remotes/origin/"+h.branch) {
@@ -681,9 +743,11 @@ func TestAutoResolveConflict_ConflictFallsThroughToAgent(t *testing.T) {
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("no workflow dispatched for a conflicting merge")
+		panic("unreachable")
 	}
 	if k := got.Workflow.Variables["pr_issue_kind"]; k != string(github.PRIssueConflict) {
 		t.Errorf("pr_issue_kind = %q, want %q", k, github.PRIssueConflict)
@@ -715,9 +779,11 @@ func TestAutoResolveConflict_NoopFallsThroughToAgent(t *testing.T) {
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("no workflow dispatched for a no-op merge")
+		panic("unreachable")
 	}
 	for _, ev := range readExperienceAuditEvents(t, h.auditDir) {
 		if ev.Type == audit.EventPRConflictAutoResolved {
@@ -788,9 +854,11 @@ func TestAutoResolveConflict_CoalescedIssuesSkipMerge(t *testing.T) {
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("no workflow dispatched for the coalesced issue set — sync must never skip the round")
+		panic("unreachable")
 	}
 }
 
@@ -819,9 +887,11 @@ func TestAutoResolveConflict_ToggleOffSkipsFastPath(t *testing.T) {
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("no workflow dispatched with the toggle off")
+		panic("unreachable")
 	}
 }
 
@@ -829,6 +899,7 @@ func TestAutoResolveConflict_WorkProjectSkipsFastPath(t *testing.T) {
 	h := newAutoResolveHarness(t, true)
 	if _, err := h.projects.Update(h.proj.ID, project.ProjectTypeWork); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	tk, pr := h.newConflictTask(t)
@@ -851,9 +922,11 @@ func TestAutoResolveConflict_WorkProjectSkipsFastPath(t *testing.T) {
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("no workflow dispatched for a work-typed project")
+		panic("unreachable")
 	}
 }
 
@@ -880,9 +953,11 @@ func TestAutoResolveConflict_InvalidBaseFallsThroughToAgent(t *testing.T) {
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("no workflow dispatched for an invalid base ref")
+		panic("unreachable")
 	}
 }
 
@@ -901,6 +976,7 @@ func TestAutoResolveConflict_PushFailureRollsBackMerge(t *testing.T) {
 		for _, args := range cmds {
 			if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 				t.Fatalf("git %v: %v: %s", args, err, out)
+				panic("unreachable")
 			}
 		}
 		return project.CleanMergeCreated, nil
@@ -922,9 +998,11 @@ func TestAutoResolveConflict_PushFailureRollsBackMerge(t *testing.T) {
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("no workflow dispatched after push failure")
+		panic("unreachable")
 	}
 	for _, ev := range readExperienceAuditEvents(t, h.auditDir) {
 		if ev.Type == audit.EventPRConflictAutoResolved {
@@ -939,11 +1017,13 @@ func TestAutoResolveConflict_EmptyBranchRollsBackMerge(t *testing.T) {
 	worktreeDir, err := h.r.worktrees.PrepareForFix(context.Background(), tk, pr.Number)
 	if err != nil {
 		t.Fatalf("PrepareForFix: %v", err)
+		panic("unreachable")
 	}
 	preMergeHead := currentHEAD(t, worktreeDir)
 
 	if out, err := exec.Command("git", "-C", worktreeDir, "checkout", "--detach").CombinedOutput(); err != nil {
 		t.Fatalf("git checkout --detach: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	pushCalled := false
@@ -956,6 +1036,7 @@ func TestAutoResolveConflict_EmptyBranchRollsBackMerge(t *testing.T) {
 		for _, args := range cmds {
 			if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 				t.Fatalf("git %v: %v: %s", args, err, out)
+				panic("unreachable")
 			}
 		}
 		return project.CleanMergeCreated, nil
@@ -982,6 +1063,7 @@ func TestAutoResolveConflict_DivergedBranchSkipsMergeRepair(t *testing.T) {
 	worktreeDir, err := h.r.worktrees.PrepareForFix(context.Background(), tk, pr.Number)
 	if err != nil {
 		t.Fatalf("PrepareForFix: %v", err)
+		panic("unreachable")
 	}
 
 	localHead := emptyCommit(t, worktreeDir, "local diverged commit")
@@ -1022,6 +1104,7 @@ func TestRollbackAutoResolvedMerge_SurvivesCancelledContext(t *testing.T) {
 	worktreeDir, err := h.r.worktrees.PrepareForFix(context.Background(), tk, pr.Number)
 	if err != nil {
 		t.Fatalf("PrepareForFix: %v", err)
+		panic("unreachable")
 	}
 	preMergeHead := currentHEAD(t, worktreeDir)
 
@@ -1033,6 +1116,7 @@ func TestRollbackAutoResolvedMerge_SurvivesCancelledContext(t *testing.T) {
 	for _, args := range cmds {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	if got := currentHEAD(t, worktreeDir); got == preMergeHead {
@@ -1080,9 +1164,11 @@ func TestNonConflictPRIssueSkipsStaleBranchMerge(t *testing.T) {
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("no workflow dispatched for non-conflict issue")
+		panic("unreachable")
 	}
 }
 
@@ -1117,9 +1203,11 @@ func TestNonConflictPRIssueSkipsMergeEvenWhenNoop(t *testing.T) {
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("no workflow dispatched for a no-op sync")
+		panic("unreachable")
 	}
 }
 
@@ -1154,9 +1242,11 @@ func TestNonConflictPRIssueSkipsConflictingMergeAttempt(t *testing.T) {
 	got, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("no workflow dispatched after a sync conflict")
+		panic("unreachable")
 	}
 }
 
@@ -1215,6 +1305,7 @@ func TestNonConflictPRIssue_WorkProjectSkipsMerge(t *testing.T) {
 	h := newAutoResolveHarness(t, true)
 	if _, err := h.projects.Update(h.proj.ID, project.ProjectTypeWork); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	tk, pr := h.newConflictTask(t)

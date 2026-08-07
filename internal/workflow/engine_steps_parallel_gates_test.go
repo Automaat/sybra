@@ -55,6 +55,7 @@ func TestExecParallelGates_RunsGatesConcurrently(t *testing.T) {
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean", out.Output)
@@ -80,6 +81,7 @@ func TestExecParallelGates_AllCleanAdvances(t *testing.T) {
 	out, err := engine.execParallelGates("t1", newParallelGatesStep(), nil, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean", out.Output)
@@ -112,6 +114,7 @@ func TestExecParallelGates_TamperFlaggedWins(t *testing.T) {
 	out, err := engine.execParallelGates("t1", newParallelGatesStep(), nil, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(out.Output, "human-required") || !strings.Contains(out.Output, "detect_tampering") {
 		t.Fatalf("Output = %q, want human-required naming detect_tampering", out.Output)
@@ -141,6 +144,7 @@ func TestExecParallelGates_VerifyBlockedWins(t *testing.T) {
 	out, err := engine.execParallelGates("t1", newParallelGatesStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(out.Output, "blocked") {
 		t.Fatalf("Output = %q, want blocked", out.Output)
@@ -235,6 +239,7 @@ func TestExecParallelGates_TerminalFocusedSurvivesVerifyRewind(t *testing.T) {
 		&Step{ID: gateVerifyStepID}, verifyChecksPreflight{needsRun: true}, verifyVerdict)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(out.Output, "human-required") {
 		t.Fatalf("Output = %q, want human-required", out.Output)
@@ -274,6 +279,7 @@ func TestExecParallelGates_AutoFixCeilingSurvivesPeerRewind(t *testing.T) {
 	out, err := engine.execParallelGates("t1", newParallelGatesStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(out.Output, "human-required") {
 		t.Fatalf("Output = %q, want human-required", out.Output)
@@ -351,6 +357,7 @@ func TestResumeStalled_ResumesParkedParallelGates(t *testing.T) {
 
 	if err := os.WriteFile(filepath.Join(wt1, ".verify-release"), []byte("ok\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	select {
 	case <-firstDone:
@@ -402,6 +409,7 @@ func TestExecParallelGates_FocusedUnconfiguredDegradesToTamperAndVerify(t *testi
 	out, err := engine.execParallelGates("t1", newParallelGatesStep(), nil, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean", out.Output)

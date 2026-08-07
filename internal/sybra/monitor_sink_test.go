@@ -40,6 +40,7 @@ func newSinkTestEnv(t *testing.T) (*monitorRoutingSink, *task.Manager, *fakeInne
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, task.EmitterFunc(func(string, any) {}))
 	inner := &fakeInnerSink{}
@@ -60,6 +61,7 @@ func TestMonitorRoutingSink_WorkAnomaly_CreatesLocalTaskWithProject(t *testing.T
 	src, err := tasks.Create("source", "src body", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	pid := "kumahq/kuma"
 	if _, err := tasks.Update(src.ID, task.Update{ProjectID: &pid}); err != nil {
@@ -74,6 +76,7 @@ func TestMonitorRoutingSink_WorkAnomaly_CreatesLocalTaskWithProject(t *testing.T
 	created, err := sink.Submit(context.Background(), a, "evidence with kumahq/kuma leak")
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
+		panic("unreachable")
 	}
 	if !created {
 		t.Fatalf("expected created=true on first call")
@@ -85,6 +88,7 @@ func TestMonitorRoutingSink_WorkAnomaly_CreatesLocalTaskWithProject(t *testing.T
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	var routed *task.Task
 	for i := range all {
@@ -119,6 +123,7 @@ func TestMonitorRoutingSink_WorkAnomaly_DispatchesCreatedWorkflow(t *testing.T) 
 	src, err := tasks.Create("source", "src body", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	pid := "kumahq/kuma"
 	if _, err := tasks.Update(src.ID, task.Update{ProjectID: &pid}); err != nil {
@@ -132,6 +137,7 @@ func TestMonitorRoutingSink_WorkAnomaly_DispatchesCreatedWorkflow(t *testing.T) 
 	}
 	if _, err := sink.Submit(context.Background(), a, "evidence"); err != nil {
 		t.Fatalf("Submit: %v", err)
+		panic("unreachable")
 	}
 	if len(dispatched) != 1 {
 		t.Fatalf("dispatch calls = %d, want 1", len(dispatched))
@@ -139,6 +145,7 @@ func TestMonitorRoutingSink_WorkAnomaly_DispatchesCreatedWorkflow(t *testing.T) 
 	routed, err := tasks.Get(dispatched[0])
 	if err != nil {
 		t.Fatalf("Get dispatched task: %v", err)
+		panic("unreachable")
 	}
 	if routed.ProjectID != "Automaat/sybra" {
 		t.Fatalf("dispatch happened before project route update: project_id=%q", routed.ProjectID)
@@ -154,6 +161,7 @@ func TestMonitorRoutingSink_WorkAnomaly_DedupsByTitle(t *testing.T) {
 	src, err := tasks.Create("source", "src body", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	pid := "kumahq/kuma"
 	if _, err := tasks.Update(src.ID, task.Update{ProjectID: &pid}); err != nil {
@@ -166,10 +174,12 @@ func TestMonitorRoutingSink_WorkAnomaly_DedupsByTitle(t *testing.T) {
 	}
 	if _, err := sink.Submit(context.Background(), a, "first evidence"); err != nil {
 		t.Fatalf("first Submit: %v", err)
+		panic("unreachable")
 	}
 	created, err := sink.Submit(context.Background(), a, "second evidence")
 	if err != nil {
 		t.Fatalf("second Submit: %v", err)
+		panic("unreachable")
 	}
 	if created {
 		t.Fatalf("expected created=false on dedup hit")
@@ -178,6 +188,7 @@ func TestMonitorRoutingSink_WorkAnomaly_DedupsByTitle(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	var routed []task.Task
 	for _, tk := range all {
@@ -202,6 +213,7 @@ func TestMonitorRoutingSink_WorkAnomaly_DedupsByFingerprintAfterRename(t *testin
 	src, err := tasks.Create("source", "src body", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	pid := "kumahq/kuma"
 	if _, err := tasks.Update(src.ID, task.Update{ProjectID: &pid}); err != nil {
@@ -216,11 +228,13 @@ func TestMonitorRoutingSink_WorkAnomaly_DedupsByFingerprintAfterRename(t *testin
 	body := "## Detection\n- Fingerprint: `stuck_human_blocked:" + src.ID + "`\n\n## Affected task\n- `" + src.ID + "`\n"
 	if _, err := sink.Submit(context.Background(), a, body); err != nil {
 		t.Fatalf("first Submit: %v", err)
+		panic("unreachable")
 	}
 	// Simulate triage renaming the task (title changes, tags cleared).
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	var chore *task.Task
 	for i := range all {
@@ -241,6 +255,7 @@ func TestMonitorRoutingSink_WorkAnomaly_DedupsByFingerprintAfterRename(t *testin
 	created, err := sink.Submit(context.Background(), a, "new cycle evidence")
 	if err != nil {
 		t.Fatalf("second Submit: %v", err)
+		panic("unreachable")
 	}
 	if created {
 		t.Fatalf("expected created=false on fingerprint-dedup hit after rename")
@@ -248,6 +263,7 @@ func TestMonitorRoutingSink_WorkAnomaly_DedupsByFingerprintAfterRename(t *testin
 	all, err = tasks.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	var open int
 	for _, tk := range all {
@@ -266,6 +282,7 @@ func TestMonitorRoutingSink_TerminalTaskReopensNew(t *testing.T) {
 	src, err := tasks.Create("source", "src body", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	pid := "kumahq/kuma"
 	if _, err := tasks.Update(src.ID, task.Update{ProjectID: &pid}); err != nil {
@@ -278,6 +295,7 @@ func TestMonitorRoutingSink_TerminalTaskReopensNew(t *testing.T) {
 	}
 	if _, err := sink.Submit(context.Background(), a, "first"); err != nil {
 		t.Fatalf("first Submit: %v", err)
+		panic("unreachable")
 	}
 
 	all, _ := tasks.List()
@@ -293,6 +311,7 @@ func TestMonitorRoutingSink_TerminalTaskReopensNew(t *testing.T) {
 	created, err := sink.Submit(context.Background(), a, "second")
 	if err != nil {
 		t.Fatalf("second Submit: %v", err)
+		panic("unreachable")
 	}
 	if !created {
 		t.Fatalf("expected created=true after prior closed")
@@ -315,6 +334,7 @@ func TestMonitorRoutingSink_CloseIfOpen_WorkAnomalyMarksLocalTaskDone(t *testing
 	src, err := tasks.Create("source", "src body", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	pid := "kumahq/kuma"
 	if _, err := tasks.Update(src.ID, task.Update{ProjectID: &pid}); err != nil {
@@ -327,11 +347,13 @@ func TestMonitorRoutingSink_CloseIfOpen_WorkAnomalyMarksLocalTaskDone(t *testing
 	}
 	if _, err := sink.Submit(context.Background(), a, "first evidence"); err != nil {
 		t.Fatalf("Submit: %v", err)
+		panic("unreachable")
 	}
 
 	closed, err := sink.CloseIfOpen(context.Background(), a, "monitor: condition cleared")
 	if err != nil {
 		t.Fatalf("CloseIfOpen: %v", err)
+		panic("unreachable")
 	}
 	if !closed {
 		t.Fatal("want closed=true for a matching open local task")
@@ -343,6 +365,7 @@ func TestMonitorRoutingSink_CloseIfOpen_WorkAnomalyMarksLocalTaskDone(t *testing
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	var routed *task.Task
 	for i := range all {
@@ -369,6 +392,7 @@ func TestMonitorRoutingSink_CloseIfOpen_WorkAnomalyClosesLocalTaskAfterSourceDel
 	src, err := tasks.Create("source", "src body", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	pid := "kumahq/kuma"
 	if _, err := tasks.Update(src.ID, task.Update{ProjectID: &pid}); err != nil {
@@ -381,11 +405,13 @@ func TestMonitorRoutingSink_CloseIfOpen_WorkAnomalyClosesLocalTaskAfterSourceDel
 	}
 	if _, err := sink.Submit(context.Background(), a, monitor.DeterministicIssueBody(a)); err != nil {
 		t.Fatalf("Submit: %v", err)
+		panic("unreachable")
 	}
 
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	var routedID string
 	for i := range all {
@@ -399,11 +425,13 @@ func TestMonitorRoutingSink_CloseIfOpen_WorkAnomalyClosesLocalTaskAfterSourceDel
 	}
 	if err := tasks.Delete(src.ID); err != nil {
 		t.Fatalf("delete source: %v", err)
+		panic("unreachable")
 	}
 
 	closed, err := sink.CloseIfOpen(context.Background(), a, "monitor: condition cleared")
 	if err != nil {
 		t.Fatalf("CloseIfOpen: %v", err)
+		panic("unreachable")
 	}
 	if !closed {
 		t.Fatal("want closed=true for matching local task after source deletion")
@@ -415,6 +443,7 @@ func TestMonitorRoutingSink_CloseIfOpen_WorkAnomalyClosesLocalTaskAfterSourceDel
 	routed, err := tasks.Get(routedID)
 	if err != nil {
 		t.Fatalf("Get routed: %v", err)
+		panic("unreachable")
 	}
 	if routed.Status != task.StatusDone {
 		t.Errorf("status = %q, want done", routed.Status)
@@ -427,6 +456,7 @@ func TestMonitorRoutingSink_CloseIfOpen_NonWorkPassesThroughToInner(t *testing.T
 	src, err := tasks.Create("source", "body", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	a := monitor.Anomaly{
 		Kind:        monitor.KindLostAgent,
@@ -437,6 +467,7 @@ func TestMonitorRoutingSink_CloseIfOpen_NonWorkPassesThroughToInner(t *testing.T
 	closed, err := sink.CloseIfOpen(context.Background(), a, "monitor: condition cleared")
 	if err != nil {
 		t.Fatalf("CloseIfOpen: %v", err)
+		panic("unreachable")
 	}
 	if !closed {
 		t.Fatal("want the inner sink's close result surfaced")
@@ -453,6 +484,7 @@ func TestMonitorRoutingSink_NonWorkPassesThrough(t *testing.T) {
 	src, err := tasks.Create("source", "body", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	a := monitor.Anomaly{
 		Kind:        monitor.KindStuckHumanBlocked,
@@ -462,6 +494,7 @@ func TestMonitorRoutingSink_NonWorkPassesThrough(t *testing.T) {
 	created, err := sink.Submit(context.Background(), a, "body")
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
+		panic("unreachable")
 	}
 	if !created {
 		t.Fatalf("inner returns created=true; got false")

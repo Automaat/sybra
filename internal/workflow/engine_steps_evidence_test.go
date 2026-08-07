@@ -91,6 +91,7 @@ func gitOutputForTest(t *testing.T, dir string, args ...string) string {
 	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
 	if err != nil {
 		t.Fatalf("git %v: %v", args, err)
+		panic("unreachable")
 	}
 	return strings.TrimSpace(string(out))
 }
@@ -116,6 +117,7 @@ func TestExecRequireEvidence_DisabledSkips(t *testing.T) {
 	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "skipped: evidence gate disabled" {
 		t.Errorf("Output = %q, want skip", out.Output)
@@ -137,6 +139,7 @@ func TestExecRequireEvidence_UnreadableStoreBlocks(t *testing.T) {
 	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if !strings.HasPrefix(out.Output, "blocked: ") {
 		t.Fatalf("Output = %q, want a blocked: prefix", out.Output)
@@ -158,6 +161,7 @@ func TestExecRequireEvidence_NoBaselineSkips(t *testing.T) {
 	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "skipped: no evidence baseline recorded" {
 		t.Errorf("Output = %q, want skip", out.Output)
@@ -183,6 +187,7 @@ func TestExecRequireEvidence_CompleteAndFreshLands(t *testing.T) {
 	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "complete" {
 		t.Errorf("Output = %q, want complete", out.Output)
@@ -208,6 +213,7 @@ func TestExecRequireEvidence_MissingCriterionBlocks(t *testing.T) {
 	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if !strings.HasPrefix(out.Output, "blocked: ") {
 		t.Fatalf("Output = %q, want a blocked: prefix", out.Output)
@@ -237,6 +243,7 @@ func TestExecRequireEvidence_FailedCriterionBlocks(t *testing.T) {
 	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if tasks.mustGetTask(t, "t1").Status != "human-required" {
 		t.Fatalf("Status = %q, want human-required", tasks.mustGetTask(t, "t1").Status)
@@ -263,6 +270,7 @@ func TestExecRequireEvidence_StaleAfterHEADMutationBlocks(t *testing.T) {
 	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if tasks.mustGetTask(t, "t1").Status != "human-required" {
 		t.Fatalf("Status = %q, want human-required", tasks.mustGetTask(t, "t1").Status)
@@ -285,10 +293,12 @@ func TestExecRequireEvidence_ReplayedDuplicateEvidenceStillBlocks(t *testing.T) 
 	entry := evidence.CriterionEvidence{Criterion: evidenceCriterionVerifyCommits, ExitStatus: 0, FinalRev: staleRev}
 	if err := rec.AppendCriterion("t1", entry); err != nil {
 		t.Fatalf("AppendCriterion: %v", err)
+		panic("unreachable")
 	}
 	// Replay the identical stale entry a second time.
 	if err := rec.AppendCriterion("t1", entry); err != nil {
 		t.Fatalf("AppendCriterion (replay): %v", err)
+		panic("unreachable")
 	}
 	if err := rec.AppendCriterion("t1", evidence.CriterionEvidence{Criterion: evidenceCriterionDetectTampering, ExitStatus: 0, FinalRev: staleRev}); err != nil {
 		t.Fatalf("AppendCriterion: %v", err)
@@ -354,6 +364,7 @@ func TestRefreshReviewEvidenceFreshness_RestampsToHead(t *testing.T) {
 	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1", Reviewed: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if tasks.mustGetTask(t, "t1").Status == "human-required" {
 		t.Fatalf("task blocked after refresh; output = %q", out.Output)
@@ -394,6 +405,7 @@ func TestExecRequireEvidence_ReviewedTaskRequiresReviewCriterion(t *testing.T) {
 	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), TaskInfo{ID: "t1", Reviewed: true})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(out.Output, evidenceCriterionReview+": missing") {
 		t.Errorf("Output = %q, want it to require the review criterion for a reviewed task", out.Output)
@@ -421,6 +433,7 @@ func TestExecRequireEvidence_TestedTaskRequiresTestRunnerCriterion(t *testing.T)
 	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), tested)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(out.Output, evidenceCriterionTestRunner+": missing") {
 		t.Errorf("Output = %q, want it to require the test_runner criterion for a tested task", out.Output)
@@ -449,6 +462,7 @@ func TestExecRequireEvidence_UntestedTaskSkipsTestRunnerCriterion(t *testing.T) 
 	out, err := engine.execRequireEvidence("t1", newRequireEvidenceStep(), untested)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "complete" {
 		t.Errorf("Output = %q, want complete for an untested task", out.Output)

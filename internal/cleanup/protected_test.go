@@ -40,6 +40,7 @@ func TestProtectedStoreObserveDeduplicatesWithinReminderWindow(t *testing.T) {
 	first, event, err := store.Observe(obs)
 	if err != nil {
 		t.Fatalf("Observe(first): %v", err)
+		panic("unreachable")
 	}
 	if event != ObserveCreated {
 		t.Fatalf("first event = %q, want %q", event, ObserveCreated)
@@ -48,6 +49,7 @@ func TestProtectedStoreObserveDeduplicatesWithinReminderWindow(t *testing.T) {
 	second, event, err := store.Observe(obs)
 	if err != nil {
 		t.Fatalf("Observe(second): %v", err)
+		panic("unreachable")
 	}
 	if event != ObserveUnchanged {
 		t.Fatalf("second event = %q, want %q", event, ObserveUnchanged)
@@ -72,9 +74,11 @@ func TestProtectedStoreObserveStateChangeReopensDiscardedFinding(t *testing.T) {
 	first, _, err := store.Observe(obs)
 	if err != nil {
 		t.Fatalf("Observe(first): %v", err)
+		panic("unreachable")
 	}
 	if _, err := store.Discard(first.ID); err != nil {
 		t.Fatalf("Discard: %v", err)
+		panic("unreachable")
 	}
 
 	store.clock = clock.NewFake(time.Date(2026, 7, 30, 13, 0, 0, 0, time.UTC))
@@ -84,6 +88,7 @@ func TestProtectedStoreObserveStateChangeReopensDiscardedFinding(t *testing.T) {
 	got, event, err := store.Observe(next)
 	if err != nil {
 		t.Fatalf("Observe(reopen): %v", err)
+		panic("unreachable")
 	}
 	if event != ObserveReopened {
 		t.Fatalf("event = %q, want %q", event, ObserveReopened)
@@ -117,13 +122,16 @@ func TestProtectedStoreIndependentStoresPreserveResolvedState(t *testing.T) {
 	first, _, err := firstStore.Observe(obs)
 	if err != nil {
 		t.Fatalf("Observe(first): %v", err)
+		panic("unreachable")
 	}
 	if _, err := secondStore.Discard(first.ID); err != nil {
 		t.Fatalf("Discard(second store): %v", err)
+		panic("unreachable")
 	}
 	got, event, err := firstStore.Observe(obs)
 	if err != nil {
 		t.Fatalf("Observe(after discard): %v", err)
+		panic("unreachable")
 	}
 	if event != ObserveUnchanged {
 		t.Fatalf("event = %q, want %q", event, ObserveUnchanged)
@@ -138,10 +146,12 @@ func TestProtectedStoreSeparateProcessWaitsForStoreLock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "protected-findings.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	unlock, err := fsutil.LockFile(path)
 	if err != nil {
 		t.Fatalf("LockFile: %v", err)
+		panic("unreachable")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -175,12 +185,14 @@ func TestProtectedStoreSeparateProcessWaitsForStoreLock(t *testing.T) {
 
 	if err := unlock(); err != nil {
 		t.Fatalf("unlock: %v", err)
+		panic("unreachable")
 	}
 
 	select {
 	case err := <-waitCh:
 		if err != nil {
 			t.Fatalf("helper after unlock: %v output=%s", err, output.String())
+			panic("unreachable")
 		}
 	case <-ctx.Done():
 		t.Fatalf("helper did not finish after unlock: %v output=%s", ctx.Err(), output.String())
@@ -190,6 +202,7 @@ func TestProtectedStoreSeparateProcessWaitsForStoreLock(t *testing.T) {
 	findings, err := store.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(findings) != 1 {
 		t.Fatalf("len(findings) = %d, want 1", len(findings))
@@ -225,6 +238,7 @@ func TestProtectedStoreRescueFailureLeavesFindingOpen(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "not-a-git-repo")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	got, _, err := store.Observe(Observation{
 		Kind:          ResourceWorktree,
@@ -237,14 +251,17 @@ func TestProtectedStoreRescueFailureLeavesFindingOpen(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Observe: %v", err)
+		panic("unreachable")
 	}
 
 	if _, err := store.Rescue(got.ID); err == nil {
 		t.Fatal("Rescue() error = nil, want git rescue failure")
+		panic("unreachable")
 	}
 	reloaded, ok, err := store.Get(got.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if !ok {
 		t.Fatal("Get() ok = false, want finding to remain present")
@@ -267,6 +284,7 @@ func TestRescueWorktreeCreatesRefAndBundle(t *testing.T) {
 		cmd.Dir = worktree
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 
@@ -274,14 +292,17 @@ func TestRescueWorktreeCreatesRefAndBundle(t *testing.T) {
 	bundle := filepath.Join(t.TempDir(), "rescue.bundle")
 	if err := rescueWorktree(worktree, ref, bundle); err != nil {
 		t.Fatalf("rescueWorktree: %v", err)
+		panic("unreachable")
 	}
 	if info, err := os.Stat(bundle); err != nil || info.Size() == 0 {
 		t.Fatalf("bundle stat: info=%v err=%v", info, err)
+		panic("unreachable")
 	}
 	cmd := exec.CommandContext(t.Context(), "git", "rev-parse", "--verify", ref)
 	cmd.Dir = worktree
 	if out, err := cmd.CombinedOutput(); err != nil || strings.TrimSpace(string(out)) == "" {
 		t.Fatalf("verify rescue ref: %v: %s", err, out)
+		panic("unreachable")
 	}
 }
 
@@ -299,10 +320,12 @@ func TestProtectedEvidenceLogPathsIncludesReattachedFinding(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Observe: %v", err)
+		panic("unreachable")
 	}
 	reattached, err := store.Reattach(got.ID, "task-new")
 	if err != nil {
 		t.Fatalf("Reattach: %v", err)
+		panic("unreachable")
 	}
 
 	logDir := t.TempDir()
@@ -340,10 +363,12 @@ func TestArchiveDirectoryReturnsFlushError(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "payload.txt"), []byte(strings.Repeat("x", 1024)), 0o644); err != nil {
 		t.Fatalf("write payload: %v", err)
+		panic("unreachable")
 	}
 
 	if err := archiveDirectory(root, "/dev/full"); err == nil {
 		t.Fatal("archiveDirectory() error = nil, want flush error")
+		panic("unreachable")
 	}
 }
 
@@ -372,6 +397,7 @@ func TestProtectedStoreObserveConcurrentScansDeduplicates(t *testing.T) {
 	findings, err := store.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(findings) != 1 {
 		t.Fatalf("len(findings) = %d, want 1", len(findings))

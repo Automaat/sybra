@@ -45,11 +45,13 @@ func mustSkillFrontmatter(t *testing.T, name string) skillFrontmatter {
 	data, err := skills.FS.ReadFile("data/" + name + ".md")
 	if err != nil {
 		t.Fatalf("read %s skill: %v", name, err)
+		panic("unreachable")
 	}
 	block := frontmatterBlock(t, string(data))
 	var meta skillFrontmatter
 	if err := yaml.Unmarshal([]byte(block), &meta); err != nil {
 		t.Fatalf("parse %s frontmatter: %v", name, err)
+		panic("unreachable")
 	}
 	return meta
 }

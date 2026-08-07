@@ -25,6 +25,7 @@ func TestRehydrateFromLog_RestoresEffort(t *testing.T) {
 	data := strings.Join(lines, "\n") + "\n"
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatalf("write log: %v", err)
+		panic("unreachable")
 	}
 
 	a := &Agent{Provider: "claude"}

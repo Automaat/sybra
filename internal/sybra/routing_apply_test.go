@@ -33,17 +33,20 @@ func TestApplyRoutingWeights_PropagatesToConfigAndOrchestrator(t *testing.T) {
 
 	if err := a.applyRoutingWeights(merged); err != nil {
 		t.Fatalf("applyRoutingWeights: %v", err)
+		panic("unreachable")
 	}
 
 	got := a.abTestingConfig()
 	if got.WeightsVersion == nil || *got.WeightsVersion != 7 {
 		t.Fatalf("live ABTesting.WeightsVersion = %+v, want 7", got.WeightsVersion)
+		panic("unreachable")
 	}
 	if len(got.Experiments) != 1 || got.Experiments[0].Variants[0].Weight != 9 {
 		t.Fatalf("live ABTesting.Experiments = %+v, want weight 9", got.Experiments)
 	}
 	if orchSvc.abTesting.WeightsVersion == nil || *orchSvc.abTesting.WeightsVersion != 7 {
 		t.Fatalf("orchSvc.abTesting.WeightsVersion = %+v, want 7", orchSvc.abTesting.WeightsVersion)
+		panic("unreachable")
 	}
 }
 
@@ -65,10 +68,12 @@ func TestApplyRoutingWeights_DoesNotMutateBaseConfig(t *testing.T) {
 
 	if cfg.ABTesting.WeightsVersion != nil || len(cfg.ABTesting.Experiments) != 0 {
 		t.Fatalf("base cfg.ABTesting = %+v, want untouched operator base", cfg.ABTesting)
+		panic("unreachable")
 	}
 	got := a.abTestingConfig()
 	if got.WeightsVersion == nil || *got.WeightsVersion != 7 {
 		t.Fatalf("live ABTesting.WeightsVersion = %+v, want 7", got.WeightsVersion)
+		panic("unreachable")
 	}
 }
 

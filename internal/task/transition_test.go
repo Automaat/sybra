@@ -23,6 +23,7 @@ func TestManagerApply_Success(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 
 	result, err := m.Apply(TransitionIntent{
@@ -33,6 +34,7 @@ func TestManagerApply_Success(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if !result.Applied {
 		t.Fatal("Applied = false, want true")
@@ -62,6 +64,7 @@ func TestManagerApply_RejectsMissingFields(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 
 	cases := []struct {
@@ -78,6 +81,7 @@ func TestManagerApply_RejectsMissingFields(t *testing.T) {
 			t.Parallel()
 			if _, err := m.Apply(c.intent); err == nil {
 				t.Fatal("Apply: want error, got nil")
+				panic("unreachable")
 			}
 		})
 	}
@@ -94,6 +98,7 @@ func TestManagerApply_UnknownTaskFailsBeforeAnyMutation(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Apply: want error for unknown task, got nil")
+		panic("unreachable")
 	}
 	if len(emitter.names()) != 0 {
 		t.Fatalf("events = %v, want none — a failed read must not emit", emitter.names())
@@ -107,6 +112,7 @@ func TestManagerApply_ConflictOnStaleExpectedGeneration(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 
 	// A concurrent writer advances the task past the generation this intent
@@ -137,6 +143,7 @@ func TestManagerApply_ConflictOnStaleExpectedGeneration(t *testing.T) {
 	after, err := m.Get(created.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if after.Status != StatusTodo {
 		t.Fatalf("status after rejected conflict = %q, want unchanged %q", after.Status, StatusTodo)
@@ -153,6 +160,7 @@ func TestManagerApply_ConflictOnStaleExpectedStatus(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := m.Update(created.ID, Update{Status: Ptr(StatusInProgress)}); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -176,6 +184,7 @@ func TestManagerApply_ConflictOnStaleExpectedStatus(t *testing.T) {
 	after, err := m.Get(created.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if after.Status != StatusInProgress {
 		t.Fatalf("status after rejected conflict = %q, want unchanged %q", after.Status, StatusInProgress)
@@ -189,6 +198,7 @@ func TestManagerApply_ExpectedStatusMatchSucceeds(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := m.Update(created.ID, Update{Status: Ptr(StatusInProgress)}); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -203,6 +213,7 @@ func TestManagerApply_ExpectedStatusMatchSucceeds(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if result.Task.Status != StatusTodo {
 		t.Fatalf("status = %q, want %q", result.Task.Status, StatusTodo)
@@ -224,6 +235,7 @@ func TestManagerApply_IdempotentReplay(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 
 	intent := TransitionIntent{
@@ -236,6 +248,7 @@ func TestManagerApply_IdempotentReplay(t *testing.T) {
 	first, err := m.Apply(intent)
 	if err != nil {
 		t.Fatalf("first Apply: %v", err)
+		panic("unreachable")
 	}
 	if !first.Applied {
 		t.Fatal("first Applied = false, want true")
@@ -244,6 +257,7 @@ func TestManagerApply_IdempotentReplay(t *testing.T) {
 	second, err := m.Apply(intent)
 	if err != nil {
 		t.Fatalf("second Apply: %v", err)
+		panic("unreachable")
 	}
 	if second.Applied {
 		t.Fatal("second Applied = true, want false (idempotent replay)")
@@ -270,6 +284,7 @@ func TestManagerApply_SameIdempotencyKeyReappliesAfterGenerationAdvances(t *test
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 
 	intent := TransitionIntent{
@@ -285,6 +300,7 @@ func TestManagerApply_SameIdempotencyKeyReappliesAfterGenerationAdvances(t *test
 	first, err := m.Apply(intent)
 	if err != nil {
 		t.Fatalf("first Apply: %v", err)
+		panic("unreachable")
 	}
 
 	if _, err := m.Update(created.ID, Update{Status: Ptr(StatusInProgress)}); err != nil {
@@ -294,6 +310,7 @@ func TestManagerApply_SameIdempotencyKeyReappliesAfterGenerationAdvances(t *test
 	second, err := m.Apply(intent)
 	if err != nil {
 		t.Fatalf("second Apply: %v", err)
+		panic("unreachable")
 	}
 	if !second.Applied {
 		t.Fatal("second Applied = false, want true — generation advanced since the first consume")
@@ -329,6 +346,7 @@ func TestHumanRequiredGuardRejectsMissingAndMachineOwnedReasons(t *testing.T) {
 			created, err := m.Create("Title", "", "headless")
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			_, err = m.Apply(TransitionIntent{
 				TaskID: created.ID, ToStatus: StatusHumanRequired,
@@ -336,10 +354,12 @@ func TestHumanRequiredGuardRejectsMissingAndMachineOwnedReasons(t *testing.T) {
 			})
 			if err == nil {
 				t.Fatal("machine/malformed escalation entered human-required")
+				panic("unreachable")
 			}
 			got, getErr := m.Get(created.ID)
 			if getErr != nil {
 				t.Fatal(getErr)
+				panic("unreachable")
 			}
 			if got.Status == StatusHumanRequired {
 				t.Fatal("rejected transition mutated task")
@@ -354,6 +374,7 @@ func TestHumanRequiredGuardPersistsTypedReason(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	reason := OperatorAuthorityRequired("github.credentials_required", "configure credentials")
 	result, err := m.Apply(TransitionIntent{
@@ -362,6 +383,7 @@ func TestHumanRequiredGuardPersistsTypedReason(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if result.Task.Escalation.Code != "github.credentials_required" ||
 		result.Task.AutonomyOutcome != "human_required" {
@@ -374,6 +396,7 @@ func TestHumanRequiredGuardRejectsMachineOwnedReasonOnSameStatus(t *testing.T) {
 	created, err := mgr.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	first, err := mgr.Apply(TransitionIntent{
 		TaskID: created.ID, ToStatus: StatusHumanRequired, Actor: "test",
@@ -384,6 +407,7 @@ func TestHumanRequiredGuardRejectsMachineOwnedReasonOnSameStatus(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	_, err = mgr.Apply(TransitionIntent{
 		TaskID: first.Task.ID, ToStatus: StatusHumanRequired, Actor: "test",
@@ -394,6 +418,7 @@ func TestHumanRequiredGuardRejectsMachineOwnedReasonOnSameStatus(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "cannot transition to human-required") {
 		t.Fatalf("same-status machine escalation error = %v; want eligibility rejection", err)
+		panic("unreachable")
 	}
 }
 
@@ -402,6 +427,7 @@ func TestHumanRequiredGuardRejectsContradictoryOutcomeOnSameStatus(t *testing.T)
 	created, err := mgr.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	first, err := mgr.Apply(TransitionIntent{
 		TaskID: created.ID, ToStatus: StatusHumanRequired, Actor: "test",
@@ -412,6 +438,7 @@ func TestHumanRequiredGuardRejectsContradictoryOutcomeOnSameStatus(t *testing.T)
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	_, err = mgr.Apply(TransitionIntent{
 		TaskID: first.Task.ID, ToStatus: StatusHumanRequired, Actor: "test",
@@ -419,6 +446,7 @@ func TestHumanRequiredGuardRejectsContradictoryOutcomeOnSameStatus(t *testing.T)
 	})
 	if err == nil || !strings.Contains(err.Error(), "requires autonomy outcome human_required") {
 		t.Fatalf("same-status contradictory outcome error = %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -427,10 +455,12 @@ func TestManagerUpdateMapCannotBypassHumanRequiredGuard(t *testing.T) {
 	created, err := mgr.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	updated, err := mgr.UpdateMap(created.ID, map[string]any{"status": string(StatusHumanRequired)})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if updated.Escalation.Code != "operator.raw_status_change" ||
 		updated.Escalation.Owner != autonomy.FailureOwnerOperatorDecision ||
@@ -449,6 +479,7 @@ func TestManagerCreateFullPersistsTypedHumanRequiredEvidence(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if created.Escalation.Code != "test.operator_decision" || created.AutonomyOutcome != "human_required" {
 		t.Fatalf("typed create evidence = %#v / %q", created.Escalation, created.AutonomyOutcome)
@@ -465,6 +496,7 @@ func TestManagerCreateFullRejectsMalformedTypedEvidence(t *testing.T) {
 	for _, init := range tests {
 		if _, err := mgr.CreateFull("Title", "", "headless", init); err == nil {
 			t.Fatalf("CreateFull(%#v) accepted malformed autonomy evidence", init)
+			panic("unreachable")
 		}
 	}
 }
@@ -479,6 +511,7 @@ func TestHumanRequiredGuardRejectsStatuslessContradictoryOutcome(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := mgr.Update(created.ID, Update{AutonomyOutcome: QuarantinedOutcome()}); err == nil {
 		t.Fatal("status-less update replaced human_required outcome with quarantined")
@@ -498,6 +531,7 @@ func TestManagerApply_ConcurrentCASOnlyOneWinner(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 
 	const n = 16
@@ -537,6 +571,7 @@ func TestManagerApply_ConcurrentCASOnlyOneWinner(t *testing.T) {
 	final, err := m.Get(created.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if final.Generation != baseline+1 {
 		t.Fatalf("final generation = %d, want %d (exactly one applied write)", final.Generation, baseline+1)
@@ -550,6 +585,7 @@ func TestApplyStatusEffect_RoutesThroughApply(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := m.Update(created.ID, Update{Status: Ptr(StatusInReview)}); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -564,6 +600,7 @@ func TestApplyStatusEffect_RoutesThroughApply(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("ApplyStatusEffect: %v", err)
+		panic("unreachable")
 	}
 	if updated.Status != StatusDone {
 		t.Fatalf("status = %q, want %q", updated.Status, StatusDone)

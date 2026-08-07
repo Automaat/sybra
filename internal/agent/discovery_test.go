@@ -103,17 +103,20 @@ func TestInferState(t *testing.T) {
 			projectDir := filepath.Join(dir, "projects", "-test-project")
 			if err := os.MkdirAll(projectDir, 0o755); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			jsonlPath := filepath.Join(projectDir, "sess-123.jsonl")
 			if tt.content != "" {
 				if err := os.WriteFile(jsonlPath, []byte(tt.content+"\n"), 0o644); err != nil {
 					t.Fatal(err)
+					panic("unreachable")
 				}
 				if tt.stale {
 					past := time.Now().Add(-30 * time.Second)
 					if err := os.Chtimes(jsonlPath, past, past); err != nil {
 						t.Fatal(err)
+						panic("unreachable")
 					}
 				}
 			}
@@ -156,6 +159,7 @@ func TestReadLastJSONL(t *testing.T) {
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ss := readLastJSONL(path)
@@ -179,6 +183,7 @@ func TestReadClaudeSessions(t *testing.T) {
 	sessDir := filepath.Join(dir, ".claude", "sessions")
 	if err := os.MkdirAll(sessDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Write valid session
@@ -193,11 +198,13 @@ func TestReadClaudeSessions(t *testing.T) {
 	data, _ := json.Marshal(s)
 	if err := os.WriteFile(filepath.Join(sessDir, "12345.json"), data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Write invalid JSON
 	if err := os.WriteFile(filepath.Join(sessDir, "bad.json"), []byte("not json"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Write session with PID 0 (should be skipped)
@@ -205,11 +212,13 @@ func TestReadClaudeSessions(t *testing.T) {
 	data, _ = json.Marshal(zero)
 	if err := os.WriteFile(filepath.Join(sessDir, "0.json"), data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Write non-JSON file (should be skipped)
 	if err := os.WriteFile(filepath.Join(sessDir, "notes.txt"), []byte("skip"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Override home for test — readClaudeSessions uses os.UserHomeDir
@@ -217,6 +226,7 @@ func TestReadClaudeSessions(t *testing.T) {
 	entries, err := os.ReadDir(sessDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	var sessions []claudeSession
@@ -297,14 +307,17 @@ func writeCodexSessionFile(t *testing.T, dir, sessionID string, modTime time.Tim
 	dateDir := filepath.Join(dir, "2024", "01", "01")
 	if err := os.MkdirAll(dateDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	path := filepath.Join(dateDir, "rollout-"+sessionID+".jsonl")
 	meta := `{"type":"session_meta","timestamp":"2024-01-01T00:00:00Z","payload":{"id":"` + sessionID + `","cwd":"/tmp/project","originator":"codex_exec","git":{"branch":"main"}}}`
 	if err := os.WriteFile(path, []byte(meta+"\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chtimes(path, modTime, modTime); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return path
 }
@@ -398,11 +411,13 @@ func TestReadLastCodexEvent(t *testing.T) {
 			}
 			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if tt.stale {
 				past := time.Now().Add(-30 * time.Second)
 				if err := os.Chtimes(path, past, past); err != nil {
 					t.Fatal(err)
+					panic("unreachable")
 				}
 			}
 
@@ -449,16 +464,19 @@ func TestInferCodexState(t *testing.T) {
 				line := `{"type":"` + tt.eventType + `","payload":{"type":"` + tt.payloadType + `"}}`
 				if err := os.WriteFile(path, []byte(line+"\n"), 0o644); err != nil {
 					t.Fatal(err)
+					panic("unreachable")
 				}
 			} else {
 				if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
 					t.Fatal(err)
+					panic("unreachable")
 				}
 			}
 			if tt.stale {
 				past := time.Now().Add(-30 * time.Second)
 				if err := os.Chtimes(path, past, past); err != nil {
 					t.Fatal(err)
+					panic("unreachable")
 				}
 			}
 
@@ -562,6 +580,7 @@ func TestRefreshTrackedCodex(t *testing.T) {
 	line := `{"type":"event_msg","payload":{"type":"task_complete"}}`
 	if err := os.WriteFile(path, []byte(line+"\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	a := &Agent{
@@ -585,10 +604,12 @@ func TestRefreshTrackedCodex(t *testing.T) {
 	line2 := `{"type":"event_msg","payload":{"type":"token_count"}}`
 	if err := os.WriteFile(path, []byte(line2+"\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	past := time.Now().Add(-30 * time.Second)
 	if err := os.Chtimes(path, past, past); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	m.refreshTracked()
@@ -652,6 +673,7 @@ func TestResolveCodexSessionFileInDir(t *testing.T) {
 	dateDir := filepath.Join(dir, "2024", "03", "15")
 	if err := os.MkdirAll(dateDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	expected := filepath.Join(dateDir, "rollout-"+sessionID+".jsonl")
 	if err := os.WriteFile(expected, []byte("{}"), 0o644); err != nil {

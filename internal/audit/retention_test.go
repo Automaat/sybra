@@ -30,6 +30,7 @@ func TestCleanupRemovesOldFiles(t *testing.T) {
 
 	if err := Cleanup(dir, 3); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	entries, _ := os.ReadDir(dir)

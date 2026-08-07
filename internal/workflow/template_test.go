@@ -12,6 +12,7 @@ func TestRenderTemplate_Basic(t *testing.T) {
 	got, err := RenderTemplate("{{.Task.Title}}", ctx)
 	if err != nil {
 		t.Fatalf("RenderTemplate: %v", err)
+		panic("unreachable")
 	}
 	if got != "My Task" {
 		t.Errorf("got %q, want %q", got, "My Task")
@@ -24,6 +25,7 @@ func TestRenderTemplate_ShellQuote(t *testing.T) {
 	got, err := RenderTemplate("{{shellquote .Task.Title}}", ctx)
 	if err != nil {
 		t.Fatalf("RenderTemplate: %v", err)
+		panic("unreachable")
 	}
 	want := "'it'\"'\"'s done'"
 	if got != want {
@@ -37,6 +39,7 @@ func TestRenderTemplate_GetVar_Present(t *testing.T) {
 	got, err := RenderTemplate(`{{getvar .Vars "key"}}`, ctx)
 	if err != nil {
 		t.Fatalf("RenderTemplate: %v", err)
+		panic("unreachable")
 	}
 	if got != "value" {
 		t.Errorf("got %q, want %q", got, "value")
@@ -49,6 +52,7 @@ func TestRenderTemplate_GetVar_Absent(t *testing.T) {
 	got, err := RenderTemplate(`{{getvar .Vars "missing"}}`, ctx)
 	if err != nil {
 		t.Fatalf("RenderTemplate: %v", err)
+		panic("unreachable")
 	}
 	if got != "" {
 		t.Errorf("got %q, want empty", got)
@@ -62,6 +66,7 @@ func TestRenderTemplate_MissingKey(t *testing.T) {
 	_, err := RenderTemplate("{{.Vars.doesnotexist}}", ctx)
 	if err == nil {
 		t.Fatal("expected error for missing map key")
+		panic("unreachable")
 	}
 }
 
@@ -70,6 +75,7 @@ func TestRenderTemplate_InvalidSyntax(t *testing.T) {
 	_, err := RenderTemplate("{{.Unclosed", TemplateContext{})
 	if err == nil {
 		t.Fatal("expected parse error for invalid syntax")
+		panic("unreachable")
 	}
 }
 
@@ -139,6 +145,7 @@ func TestRenderTemplate_RecoveredOrPrev(t *testing.T) {
 		got, err := RenderTemplate("{{recoveredorprev .Workflow .Prev}}", ctx)
 		if err != nil {
 			t.Fatalf("RenderTemplate: %v", err)
+			panic("unreachable")
 		}
 		if got != "" {
 			t.Errorf("got %q, want empty on recovery", got)
@@ -154,6 +161,7 @@ func TestRenderTemplate_RecoveredOrPrev(t *testing.T) {
 		got, err := RenderTemplate("{{recoveredorprev .Workflow .Prev}}", ctx)
 		if err != nil {
 			t.Fatalf("RenderTemplate: %v", err)
+			panic("unreachable")
 		}
 		if got != "real output" {
 			t.Errorf("got %q, want %q", got, "real output")
@@ -260,10 +268,12 @@ func TestAcceptanceLedgerPromptRendering(t *testing.T) {
 	implementStep := mustBuiltinDefinition(t, "simple-task-implement").StepByID("implement")
 	if implementStep == nil {
 		t.Fatal("simple-task-implement missing implement step")
+		panic("unreachable")
 	}
 	implementPrompt, err := RenderTemplate(implementStep.Config.Prompt, ctx)
 	if err != nil {
 		t.Fatalf("render implement prompt: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(implementPrompt, "## Acceptance Ledger — all must hold simultaneously") {
 		t.Fatalf("implement prompt missing ledger framing:\n%s", implementPrompt)
@@ -275,10 +285,12 @@ func TestAcceptanceLedgerPromptRendering(t *testing.T) {
 	testStep := mustBuiltinDefinition(t, "testing-task").StepByID("run_test")
 	if testStep == nil {
 		t.Fatal("testing-task missing run_test step")
+		panic("unreachable")
 	}
 	testPrompt, err := RenderTemplate(testStep.Config.Prompt, ctx)
 	if err != nil {
 		t.Fatalf("render testing prompt: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(testPrompt, "Reproduce and re-verify EVERY ledger entry against the") {
 		t.Fatalf("testing prompt missing re-verify framing:\n%s", testPrompt)

@@ -147,10 +147,12 @@ func TestWithBareRepoPushLock_DoesNotBlockBareRepoLockForSameClonePath(t *testin
 
 	if err := <-bareDone; err != nil {
 		t.Fatalf("withBareRepoLock: %v", err)
+		panic("unreachable")
 	}
 	close(releasePush)
 	if err := <-pushDone; err != nil {
 		t.Fatalf("withBareRepoPushLock: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -160,25 +162,31 @@ func TestRefreshTrackingRefWaitsForBareRepoLock(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone: %v", err)
+		panic("unreachable")
 	}
 	if err := FetchOrigin(context.Background(), bare); err != nil {
 		t.Fatalf("fetch origin: %v", err)
+		panic("unreachable")
 	}
 	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
+		panic("unreachable")
 	}
 	wt := filepath.Join(t.TempDir(), "worktree")
 	if err := CreateWorktree(context.Background(), bare, wt, "task-branch", "origin/"+branch); err != nil {
 		t.Fatalf("create worktree: %v", err)
+		panic("unreachable")
 	}
 	commonDir, err := gitCommonDir(context.Background(), wt)
 	if err != nil {
 		t.Fatalf("resolve common dir: %v", err)
+		panic("unreachable")
 	}
 	canonicalBare, err := filepath.EvalSymlinks(bare)
 	if err != nil {
 		t.Fatalf("canonicalize bare path: %v", err)
+		panic("unreachable")
 	}
 	if filepath.Clean(commonDir) != filepath.Clean(canonicalBare) {
 		t.Fatalf("common dir = %q, want bare clone %q", commonDir, bare)
@@ -212,9 +220,11 @@ func TestRefreshTrackingRefWaitsForBareRepoLock(t *testing.T) {
 	close(release)
 	if err := <-lockDone; err != nil {
 		t.Fatalf("hold lock: %v", err)
+		panic("unreachable")
 	}
 	if err := <-fetched; err != nil {
 		t.Fatalf("refresh tracking ref: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -234,6 +244,7 @@ func TestWithLockRetry_RetriesOnLockContention(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("withLockRetry: %v", err)
+		panic("unreachable")
 	}
 	if attempts != 3 {
 		t.Errorf("attempts = %d, want 3", attempts)
@@ -294,10 +305,12 @@ func TestCreateWorktree_ConcurrentDistinctPathsSucceed(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone: %v", err)
+		panic("unreachable")
 	}
 	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
+		panic("unreachable")
 	}
 
 	const n = 6

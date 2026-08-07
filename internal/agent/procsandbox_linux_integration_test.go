@@ -32,6 +32,7 @@ func TestSandboxEnforce_UnsharePidHidesHostProcesses(t *testing.T) {
 	wt, err := canonicalizeRoot(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	cfg := &RunConfig{sandbox: sandboxSpec{
 		mode:        "enforce",
@@ -44,6 +45,7 @@ func TestSandboxEnforce_UnsharePidHidesHostProcesses(t *testing.T) {
 	victim := exec.Command("sleep", "9999")
 	if err := victim.Start(); err != nil {
 		t.Fatalf("start victim: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		_ = victim.Process.Kill()
@@ -66,6 +68,7 @@ func TestSandboxEnforce_FencesWritesToAllowlist(t *testing.T) {
 	wt, err := canonicalizeRoot(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	cfg := &RunConfig{sandbox: sandboxSpec{
 		mode:        "enforce",
@@ -113,10 +116,12 @@ func TestSandboxEnforce_ReadOnlyDirDeniesWritesEvenNestedInTmp(t *testing.T) {
 	readOnlyDir, err := os.MkdirTemp(tmp, "human-review-src-*")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
+		panic("unreachable")
 	}
 	sandboxHome, err := os.MkdirTemp(tmp, "sandbox-home-*")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
+		panic("unreachable")
 	}
 
 	m, _ := newTestManager(t, ManagerConfig{
@@ -131,6 +136,7 @@ func TestSandboxEnforce_ReadOnlyDirDeniesWritesEvenNestedInTmp(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 
 	script := "(touch " + filepath.Join(readOnlyDir, "write-probe.txt") + " 2>/dev/null && echo WROTE) || echo DENIED"
@@ -143,6 +149,7 @@ func TestSandboxEnforce_ReadOnlyDirDeniesWritesEvenNestedInTmp(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(readOnlyDir, "write-probe.txt")); statErr == nil {
 		t.Fatalf("write-probe.txt exists — read-only fallback checkout was writable")
+		panic("unreachable")
 	}
 }
 
@@ -162,6 +169,7 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 	h.gitBare(t, h.sybraBare, "pack-refs", "--all")
 	if err := os.Remove(siblingBranchRef); err != nil && !os.IsNotExist(err) {
 		t.Fatalf("remove loose sibling branch ref: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(siblingBranchRef); !os.IsNotExist(err) {
 		t.Fatalf("sibling loose branch ref still exists after setup: %v", err)
@@ -182,6 +190,7 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	if cfg.sandbox.gitAdminDir == "" || cfg.sandbox.gitCommonDir == "" || cfg.sandbox.gitWorktrees == "" {
 		t.Fatalf("expected git sandbox roots, got %+v", cfg.sandbox)
@@ -211,6 +220,7 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("sandboxed git ops: %v\n%s", err, out)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(out), "GIT_OK") || !strings.Contains(string(out), "FETCH_TAG_LOCAL") {
 		t.Fatalf("sandboxed git ops output missing marker:\n%s", out)
@@ -249,6 +259,7 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 	denyOut, denyErr := denyCmd.CombinedOutput()
 	if denyErr != nil {
 		t.Fatalf("sandbox denial probe: %v\n%s", denyErr, denyOut)
+		panic("unreachable")
 	}
 	got := string(denyOut)
 	for _, want := range []string{"SIBLING_WT_DENIED", "SIBLING_GIT_DENIED", "TAG_LOCAL_ONLY", "OBJECT_DENIED", "OUTSIDE_DENIED"} {
@@ -266,6 +277,7 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 	} {
 		if _, err := os.Stat(leaked); err == nil {
 			t.Fatalf("unexpected leaked file %q", leaked)
+			panic("unreachable")
 		}
 	}
 	if _, err := os.Stat(siblingBranchRef); !os.IsNotExist(err) {
@@ -273,6 +285,7 @@ func TestSandboxEnforce_LinkedWorktreeGitOps(t *testing.T) {
 	}
 	if _, err := os.Stat(canaryObjectPath); err != nil {
 		t.Fatalf("shared object missing on host after sandbox denial probe: %v", err)
+		panic("unreachable")
 	}
 	h.gitBare(t, h.sybraBare, "cat-file", "-e", canaryObject+"^{blob}")
 	if gotRef := strings.TrimSpace(h.git(t, h.siblingWt, "rev-parse", "fix/sibling")); gotRef != siblingWant {
@@ -302,6 +315,7 @@ func TestSandboxEnforce_BlocksSharedCloneMaintenance(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	before := linuxMaintenanceState(t, h.sybraBare)
 	cmd := newProviderCmd(context.Background(), &cfg, false, "git", "gc")
@@ -310,6 +324,7 @@ func TestSandboxEnforce_BlocksSharedCloneMaintenance(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("git gc unexpectedly succeeded: %s", out)
+		panic("unreachable")
 	}
 	if after := linuxMaintenanceState(t, h.sybraBare); after != before {
 		t.Fatalf("git gc partially mutated shared maintenance state\nbefore: %s\nafter:  %s\noutput: %s", before, after, out)
@@ -325,9 +340,11 @@ func TestSandboxEnforce_LargeFetchUnpacksLooseObjects(t *testing.T) {
 		name := filepath.Join(h.src, "bulk", fmt.Sprintf("file-%03d.txt", i))
 		if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
 			t.Fatalf("mkdir bulk fixture: %v", err)
+			panic("unreachable")
 		}
 		if err := os.WriteFile(name, fmt.Appendf(nil, "payload-%03d\n", i), 0o644); err != nil {
 			t.Fatalf("write bulk fixture: %v", err)
+			panic("unreachable")
 		}
 	}
 	h.gitRaw(t, h.src, "add", "bulk")
@@ -346,6 +363,7 @@ func TestSandboxEnforce_LargeFetchUnpacksLooseObjects(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	before := linuxRepoWideMaintenanceState(t, h.sybraBare)
 	cmd := newProviderCmd(context.Background(), &cfg, false, "git", "fetch", "origin")
@@ -354,6 +372,7 @@ func TestSandboxEnforce_LargeFetchUnpacksLooseObjects(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("large sandboxed fetch: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if after := linuxRepoWideMaintenanceState(t, h.sybraBare); after != before {
 		t.Fatalf("large fetch wrote shared pack/info state instead of loose objects\nbefore: %s\nafter: %s", before, after)
@@ -378,6 +397,7 @@ func TestSandboxEnforce_LargeFetchUnpacksLooseObjects(t *testing.T) {
 	inSandbox.Env = append(os.Environ(), cfg.ExtraEnv...)
 	if out, err := inSandbox.CombinedOutput(); err != nil {
 		t.Fatalf("fetched ref not visible to the sandboxed run that fetched it: %v: %s", err, out)
+		panic("unreachable")
 	}
 	// The other half of the same contract: the ref must not reach the shared
 	// clone, where every sibling worktree would read it.
@@ -406,6 +426,7 @@ func linuxMaintenanceState(t *testing.T, bare string) string {
 		})
 		if err != nil {
 			t.Fatalf("snapshot %s: %v", root, err)
+			panic("unreachable")
 		}
 	}
 	for _, name := range []string{"packed-refs", "packed-refs.new", "packed-refs.lock", "gc.pid", "gc.pid.lock"} {
@@ -441,6 +462,7 @@ func linuxRepoWideMaintenanceState(t *testing.T, bare string) string {
 		})
 		if err != nil {
 			t.Fatalf("snapshot %s: %v", root, err)
+			panic("unreachable")
 		}
 	}
 	for _, name := range []string{"packed-refs", "packed-refs.new", "packed-refs.lock", "gc.pid", "gc.pid.lock"} {
@@ -465,6 +487,7 @@ func TestPrepareRunConfig_Sandbox_EnforceFailsClosedOnBrokenGitMetadata(t *testi
 	dotGit := filepath.Join(h.taskWt, ".git")
 	if err := os.WriteFile(dotGit, []byte("gitdir: /nonexistent/sybra-git-admin\n"), 0o644); err != nil {
 		t.Fatalf("break .git: %v", err)
+		panic("unreachable")
 	}
 
 	m, _ := newTestManager(t, ManagerConfig{
@@ -478,6 +501,7 @@ func TestPrepareRunConfig_Sandbox_EnforceFailsClosedOnBrokenGitMetadata(t *testi
 	})
 	if err == nil {
 		t.Fatal("expected broken linked-worktree git metadata to fail closed")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "sandbox git metadata roots") {
 		t.Fatalf("error = %v, want sandbox git metadata roots context", err)
@@ -500,10 +524,12 @@ func newSandboxGitHarness(t *testing.T) sandboxGitHarness {
 	wd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd: %v", err)
+		panic("unreachable")
 	}
 	base, err := os.MkdirTemp(wd, ".sybra-bwrap-*")
 	if err != nil {
 		t.Fatalf("MkdirTemp(wd): %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(base) })
 
@@ -515,10 +541,12 @@ func newSandboxGitHarness(t *testing.T) sandboxGitHarness {
 	tmpRoot, err := canonicalizeRoot(os.TempDir())
 	if err != nil {
 		t.Fatalf("canonicalize temp root: %v", err)
+		panic("unreachable")
 	}
 	canonBase, err := canonicalizeRoot(base)
 	if err != nil {
 		t.Fatalf("canonicalize harness base: %v", err)
+		panic("unreachable")
 	}
 	// Canonicalized on both sides, the way enforceSpec resolves the write
 	// root: a symlinked temp dir compares unequal as a raw string and would
@@ -543,6 +571,7 @@ func newSandboxGitHarness(t *testing.T) sandboxGitHarness {
 	h.gitRaw(t, h.src, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(h.src, "README.md"), []byte("# test\n"), 0o644); err != nil {
 		t.Fatalf("write README: %v", err)
+		panic("unreachable")
 	}
 	h.gitRaw(t, h.src, "add", ".")
 	h.gitRaw(t, h.src, "commit", "-m", "init")
@@ -552,12 +581,15 @@ func newSandboxGitHarness(t *testing.T) sandboxGitHarness {
 
 	if err := project.CloneBare(context.Background(), h.remoteBare, h.sybraBare); err != nil {
 		t.Fatalf("CloneBare: %v", err)
+		panic("unreachable")
 	}
 	if err := project.CreateWorktree(context.Background(), h.sybraBare, h.taskWt, "fix/task", "main"); err != nil {
 		t.Fatalf("CreateWorktree(task): %v", err)
+		panic("unreachable")
 	}
 	if err := project.CreateWorktree(context.Background(), h.sybraBare, h.siblingWt, "fix/sibling", "main"); err != nil {
 		t.Fatalf("CreateWorktree(sibling): %v", err)
+		panic("unreachable")
 	}
 	for _, dir := range []string{h.taskWt, h.siblingWt} {
 		h.gitRaw(t, dir, "config", "user.email", "test@test.com")
@@ -570,6 +602,7 @@ func (h sandboxGitHarness) advanceUpstreamMain(t *testing.T) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(h.src, "upstream.txt"), []byte("upstream\n"), 0o644); err != nil {
 		t.Fatalf("write upstream.txt: %v", err)
+		panic("unreachable")
 	}
 	h.gitRaw(t, h.src, "add", ".")
 	h.gitRaw(t, h.src, "commit", "-m", "advance main")
@@ -637,6 +670,7 @@ func (h sandboxGitHarness) writeLooseObject(t *testing.T, gitDir, body string) s
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git hash-object -w --stdin (gitDir=%s): %v\n%s", gitDir, err, out)
+		panic("unreachable")
 	}
 	return strings.TrimSpace(string(out))
 }
@@ -651,6 +685,7 @@ func (h sandboxGitHarness) gitRaw(t *testing.T, dir string, args ...string) stri
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v (dir=%s): %v\n%s", args, dir, err, out)
+		panic("unreachable")
 	}
 	return string(out)
 }

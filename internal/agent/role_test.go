@@ -304,11 +304,13 @@ func TestResolveRunRole(t *testing.T) {
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("ResolveRunRole error = nil, want non-nil")
+					panic("unreachable")
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("ResolveRunRole error = %v", err)
+				panic("unreachable")
 			}
 			if got != tt.want {
 				t.Fatalf("ResolveRunRole(%q, %q) = %q, want %q", tt.role, tt.agent, got, tt.want)

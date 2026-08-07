@@ -148,11 +148,13 @@ slug: /etc/passwd
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
+					panic("unreachable")
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
+				panic("unreachable")
 			}
 			if got.ID != tt.want.ID {
 				t.Errorf("ID = %q, want %q", got.ID, tt.want.ID)
@@ -191,11 +193,13 @@ status: in-progress
 Body here`
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	task, err := Parse(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if task.ID != "file-test" {
 		t.Errorf("ID = %q, want %q", task.ID, "file-test")
@@ -210,6 +214,7 @@ func TestParseNonexistentFile(t *testing.T) {
 	_, err := Parse("/nonexistent/path.md")
 	if err == nil {
 		t.Fatal("expected error for nonexistent file")
+		panic("unreachable")
 	}
 }
 
@@ -226,6 +231,7 @@ func TestMarshal(t *testing.T) {
 	data, err := Marshal(task)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 
 	s := string(data)
@@ -260,11 +266,13 @@ func TestMarshalRoundTrip(t *testing.T) {
 	data, err := Marshal(original)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
+		panic("unreachable")
 	}
 
 	parsed, err := ParseBytes(data)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
+		panic("unreachable")
 	}
 
 	if parsed.ID != original.ID {
@@ -300,10 +308,12 @@ func TestMarshalRoundTripSupervisorSteer(t *testing.T) {
 	data, err := Marshal(original)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
+		panic("unreachable")
 	}
 	parsed, err := ParseBytes(data)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
+		panic("unreachable")
 	}
 	if parsed.SupervisorSteer != original.SupervisorSteer {
 		t.Errorf("SupervisorSteer = %q, want %q", parsed.SupervisorSteer, original.SupervisorSteer)
@@ -316,6 +326,7 @@ func TestMarshalEmptyBody(t *testing.T) {
 	data, err := Marshal(task)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Should end with closing delimiter, no trailing body
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
@@ -337,11 +348,13 @@ func TestMarshalRoundTripAllowedTools(t *testing.T) {
 	data, err := Marshal(original)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
+		panic("unreachable")
 	}
 
 	parsed, err := ParseBytes(data)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
+		panic("unreachable")
 	}
 
 	if len(parsed.AllowedTools) != len(original.AllowedTools) {
@@ -385,11 +398,13 @@ func TestMarshalRoundTripAgentRuns(t *testing.T) {
 	data, err := Marshal(original)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
+		panic("unreachable")
 	}
 
 	parsed, err := ParseBytes(data)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
+		panic("unreachable")
 	}
 
 	if len(parsed.AgentRuns) != 2 {
@@ -448,11 +463,13 @@ func TestMarshalRoundTripAgentRunOperationalFields(t *testing.T) {
 	data, err := Marshal(original)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
+		panic("unreachable")
 	}
 
 	parsed, err := ParseBytes(data)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
+		panic("unreachable")
 	}
 
 	if len(parsed.AgentRuns) != 1 {
@@ -508,11 +525,13 @@ func TestMarshalRoundTripAgentRunsIndentedResult(t *testing.T) {
 	data, err := Marshal(original)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
+		panic("unreachable")
 	}
 
 	parsed, err := ParseBytes(data)
 	if err != nil {
 		t.Fatalf("parse round-trip failed (this was the |4- bug): %v", err)
+		panic("unreachable")
 	}
 
 	if len(parsed.AgentRuns) != 2 {
@@ -545,11 +564,13 @@ func TestMarshalRoundTripAgentRunsLeadingBlankLines(t *testing.T) {
 	data, err := Marshal(original)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
+		panic("unreachable")
 	}
 
 	parsed, err := ParseBytes(data)
 	if err != nil {
 		t.Fatalf("parse round-trip failed (leading blank lines triggered |N- bug): %v", err)
+		panic("unreachable")
 	}
 	if len(parsed.AgentRuns) != 1 {
 		t.Fatalf("AgentRuns len = %d, want 1", len(parsed.AgentRuns))
@@ -571,11 +592,13 @@ func TestMarshalUpdatesTimestamp(t *testing.T) {
 	data, err := Marshal(task)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	parsed, err := ParseBytes(data)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if parsed.UpdatedAt.Before(before) {
@@ -589,6 +612,7 @@ func TestParseBytesSpecialCharsInBody(t *testing.T) {
 	task, err := ParseBytes([]byte(input))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(task.Body, "```go") {
 		t.Error("body should contain code fence")
@@ -610,6 +634,7 @@ func TestParseBytesBOMPrefix(t *testing.T) {
 	got, err := ParseBytes([]byte(input))
 	if err != nil {
 		t.Fatalf("BOM-prefixed task file should parse cleanly after the fix; got %v", err)
+		panic("unreachable")
 	}
 	if got.ID != "bom1" {
 		t.Errorf("ID = %q, want %q", got.ID, "bom1")
@@ -633,6 +658,7 @@ func TestParseBytesCRLFLineEndings(t *testing.T) {
 	got, err := ParseBytes([]byte(input))
 	if err != nil {
 		t.Fatalf("CRLF file should parse: %v", err)
+		panic("unreachable")
 	}
 	if got.ID != "crlf1" {
 		t.Errorf("ID = %q, want %q", got.ID, "crlf1")
@@ -679,6 +705,7 @@ func TestParseBytesLargeBody(t *testing.T) {
 	got, err := ParseBytes([]byte(input))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
+		panic("unreachable")
 	}
 	if len(got.Body) != size {
 		t.Errorf("Body len = %d, want %d (no truncation)", len(got.Body), size)
@@ -687,10 +714,12 @@ func TestParseBytesLargeBody(t *testing.T) {
 	data, err := Marshal(got)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
+		panic("unreachable")
 	}
 	reparsed, err := ParseBytes(data)
 	if err != nil {
 		t.Fatalf("reparse: %v", err)
+		panic("unreachable")
 	}
 	if len(reparsed.Body) != size {
 		t.Errorf("reparse Body len = %d, want %d", len(reparsed.Body), size)
@@ -710,6 +739,7 @@ body`
 	got, err := ParseBytes([]byte(input))
 	if err != nil {
 		t.Fatalf("ParseBytes: %v", err)
+		panic("unreachable")
 	}
 	if got.MaxTurns != 200 {
 		t.Errorf("MaxTurns = %d, want 200", got.MaxTurns)
@@ -728,6 +758,7 @@ func TestMarshal_MaxTurnsZeroOmitted(t *testing.T) {
 	data, err := Marshal(task)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(string(data), "max_turns") {
 		t.Errorf("max_turns must be absent when zero; got:\n%s", string(data))
@@ -746,10 +777,12 @@ func TestMarshal_MaxTurnsRoundTrip(t *testing.T) {
 	data, err := Marshal(task)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
+		panic("unreachable")
 	}
 	reparsed, err := ParseBytes(data)
 	if err != nil {
 		t.Fatalf("ParseBytes: %v", err)
+		panic("unreachable")
 	}
 	if reparsed.MaxTurns != 300 {
 		t.Errorf("MaxTurns after round-trip = %d, want 300", reparsed.MaxTurns)

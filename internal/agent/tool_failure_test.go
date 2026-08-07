@@ -55,6 +55,7 @@ func TestApprovalFailurePersistsAgentAndAggregateRecords(t *testing.T) {
 	events, err := ParseLogFile(logPath, 0, "claude")
 	if err != nil {
 		t.Fatalf("ParseLogFile: %v", err)
+		panic("unreachable")
 	}
 	if len(events) != 0 {
 		t.Fatalf("ParseLogFile returned diagnostic events: %+v", events)
@@ -77,6 +78,7 @@ func TestProcessHeadlessLinePersistsToolResultFailure(t *testing.T) {
 	prov, err := lookupProvider("claude")
 	if err != nil {
 		t.Fatalf("lookupProvider: %v", err)
+		panic("unreachable")
 	}
 	lastEmit := time.Now()
 
@@ -111,6 +113,7 @@ func TestProcessHeadlessLinePersistsTerminalAbort(t *testing.T) {
 	prov, err := lookupProvider("claude")
 	if err != nil {
 		t.Fatalf("lookupProvider: %v", err)
+		panic("unreachable")
 	}
 	lastEmit := time.Now()
 
@@ -164,6 +167,7 @@ func readLastToolFailure(t *testing.T, path string) ToolCallFailureRecord {
 	f, err := os.Open(path)
 	if err != nil {
 		t.Fatalf("open %s: %v", path, err)
+		panic("unreachable")
 	}
 	defer f.Close()
 	var last ToolCallFailureRecord
@@ -172,6 +176,7 @@ func readLastToolFailure(t *testing.T, path string) ToolCallFailureRecord {
 		var rec ToolCallFailureRecord
 		if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
 			t.Fatalf("unmarshal: %v", err)
+			panic("unreachable")
 		}
 		if rec.Type == toolFailureEventType {
 			last = rec
@@ -179,6 +184,7 @@ func readLastToolFailure(t *testing.T, path string) ToolCallFailureRecord {
 	}
 	if err := sc.Err(); err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	if last.Type == "" {
 		t.Fatalf("no %s record in %s", toolFailureEventType, path)

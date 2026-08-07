@@ -15,6 +15,7 @@ func TestStore_RoundTrip(t *testing.T) {
 	s, err := newStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("newStore: %v", err)
+		panic("unreachable")
 	}
 	it := Item{
 		TaskID:                 "t1",
@@ -30,6 +31,7 @@ func TestStore_RoundTrip(t *testing.T) {
 	}
 	if err := s.put(it); err != nil {
 		t.Fatalf("put: %v", err)
+		panic("unreachable")
 	}
 
 	loaded := s.load(discardLogger())
@@ -46,6 +48,7 @@ func TestStore_RoundTrip(t *testing.T) {
 
 	if err := s.del("t1"); err != nil {
 		t.Fatalf("del: %v", err)
+		panic("unreachable")
 	}
 	if loaded := s.load(discardLogger()); len(loaded) != 0 {
 		t.Fatalf("expected empty store after del, got %v", loaded)
@@ -61,10 +64,12 @@ func TestStore_LoadPreservesEmptyStatus(t *testing.T) {
 	s, err := newStore(dir)
 	if err != nil {
 		t.Fatalf("newStore: %v", err)
+		panic("unreachable")
 	}
 	it := Item{TaskID: "t1", Priority: task.PriorityLow, Enqueued: time.Now()}
 	if err := s.put(it); err != nil {
 		t.Fatalf("put: %v", err)
+		panic("unreachable")
 	}
 
 	loaded := s.load(discardLogger())
@@ -81,6 +86,7 @@ func TestQueue_EmptyStatusSurvivesRestart(t *testing.T) {
 	q, err := New(dir, Options{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
+		panic("unreachable")
 	}
 	if !q.Offer(Item{TaskID: "t1", Priority: task.PriorityLow}) {
 		t.Fatal("Offer should enqueue a new item")
@@ -89,6 +95,7 @@ func TestQueue_EmptyStatusSurvivesRestart(t *testing.T) {
 	reloaded, err := New(dir, Options{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New (restart): %v", err)
+		panic("unreachable")
 	}
 	if got := reloaded.Snapshot(); len(got) != 1 || got[0].TaskID != "t1" {
 		t.Fatalf("after restart Snapshot() = %v, want single item t1", got)
@@ -104,6 +111,7 @@ func TestQueue_ClassSurvivesRestart(t *testing.T) {
 	q, err := New(dir, Options{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
+		panic("unreachable")
 	}
 	if !q.Offer(Item{TaskID: "t1", Role: "implementation", Class: "implementation", Priority: task.PriorityLow}) {
 		t.Fatal("Offer should enqueue a new item")
@@ -112,6 +120,7 @@ func TestQueue_ClassSurvivesRestart(t *testing.T) {
 	reloaded, err := New(dir, Options{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New (restart): %v", err)
+		panic("unreachable")
 	}
 	got := reloaded.Snapshot()
 	if len(got) != 1 || got[0].TaskID != "t1" || got[0].Class != "implementation" {
@@ -123,6 +132,7 @@ func TestStore_DelMissingIsNotAnError(t *testing.T) {
 	s, err := newStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("newStore: %v", err)
+		panic("unreachable")
 	}
 	if err := s.del("never-existed"); err != nil {
 		t.Errorf("del of missing file should not error, got %v", err)
@@ -135,9 +145,11 @@ func TestStore_InitFailure(t *testing.T) {
 	blocker := filepath.Join(tmp, "blocker")
 	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
 		t.Fatalf("seed blocker file: %v", err)
+		panic("unreachable")
 	}
 	if _, err := newStore(filepath.Join(blocker, "queue")); err == nil {
 		t.Fatal("newStore under a file path should fail")
+		panic("unreachable")
 	}
 }
 
@@ -146,28 +158,35 @@ func TestStore_LoadSkipsCorruptAndMismatchedFiles(t *testing.T) {
 	s, err := newStore(dir)
 	if err != nil {
 		t.Fatalf("newStore: %v", err)
+		panic("unreachable")
 	}
 
 	good := Item{TaskID: "good", Priority: task.PriorityLow, Status: task.StatusNew, Enqueued: time.Now()}
 	if err := s.put(good); err != nil {
 		t.Fatalf("put good: %v", err)
+		panic("unreachable")
 	}
 
 	if err := os.WriteFile(filepath.Join(dir, "corrupt.yaml"), []byte("not: valid: yaml: ["), 0o644); err != nil {
 		t.Fatalf("seed corrupt file: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(dir, "empty-id.yaml"), []byte("task_id: \"\"\n"), 0o644); err != nil {
 		t.Fatalf("seed empty-id file: %v", err)
+		panic("unreachable")
 	}
 	// Filename doesn't match the TaskID inside.
 	if err := os.WriteFile(filepath.Join(dir, "mismatch.yaml"), []byte("task_id: other\n"), 0o644); err != nil {
 		t.Fatalf("seed mismatch file: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(dir, "bad-priority.yaml"), []byte("task_id: bad-priority\npriority: not-a-priority\n"), 0o644); err != nil {
 		t.Fatalf("seed bad-priority file: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(dir, "bad-status.yaml"), []byte("task_id: bad-status\nstatus: not-a-status\n"), 0o644); err != nil {
 		t.Fatalf("seed bad-status file: %v", err)
+		panic("unreachable")
 	}
 
 	loaded := s.load(discardLogger())
@@ -181,12 +200,14 @@ func TestStore_LoadDuplicateTaskIDKeepsLast(t *testing.T) {
 	s, err := newStore(dir)
 	if err != nil {
 		t.Fatalf("newStore: %v", err)
+		panic("unreachable")
 	}
 	// Two files, both naming the same TaskID (only one can legitimately be
 	// named "<TaskID>.yaml" by put/del, but load must still degrade safely
 	// if a leftover file collides).
 	if err := os.WriteFile(filepath.Join(dir, "dup.yaml"), []byte("task_id: dup\npriority: low\nstatus: new\n"), 0o644); err != nil {
 		t.Fatalf("seed dup.yaml: %v", err)
+		panic("unreachable")
 	}
 
 	loaded := s.load(discardLogger())
@@ -207,10 +228,12 @@ func TestStore_PutAndDelFailuresAreNonFatalForQueue(t *testing.T) {
 	q, err := New(dir, Options{}, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
+		panic("unreachable")
 	}
 
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatalf("chmod dir read-only: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 

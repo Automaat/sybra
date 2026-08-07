@@ -79,6 +79,7 @@ func TestValidateVerdictNoplanFloor(t *testing.T) {
 			}
 			if err := ValidateVerdict(&v); err != nil {
 				t.Fatalf("ValidateVerdict: %v", err)
+				panic("unreachable")
 			}
 			gotNoplan := slices.Contains(v.Tags, "noplan")
 			if gotNoplan != tc.wantNoplan {
@@ -110,6 +111,7 @@ func TestValidateVerdictTrivialFloor(t *testing.T) {
 			}
 			if err := ValidateVerdict(&v); err != nil {
 				t.Fatalf("ValidateVerdict: %v", err)
+				panic("unreachable")
 			}
 			gotTrivial := slices.Contains(v.Tags, "trivial")
 			if gotTrivial != tc.wantTrivial {
@@ -129,6 +131,7 @@ func TestValidateVerdictTrivialBugFloorIndependentOfNoplan(t *testing.T) {
 	}
 	if err := ValidateVerdict(&v); err != nil {
 		t.Fatalf("ValidateVerdict: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(v.Tags, "noplan") {
 		t.Errorf("expected noplan to survive on small bug fix, got %v", v.Tags)
@@ -145,6 +148,7 @@ func TestValidateVerdictStripsClassifierEmittedSkipTesting(t *testing.T) {
 	}
 	if err := ValidateVerdict(&v); err != nil {
 		t.Fatalf("ValidateVerdict: %v", err)
+		panic("unreachable")
 	}
 	if slices.Contains(v.Tags, "skip-testing") {
 		t.Errorf("expected classifier-emitted skip-testing to be stripped, got %v", v.Tags)

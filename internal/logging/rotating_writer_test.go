@@ -15,17 +15,20 @@ func TestRotationTriggersAtMaxSize(t *testing.T) {
 	w, err := NewRotatingWriter(path, 100, 3)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer func() { _ = w.Close() }()
 
 	// Write 60 bytes
 	if _, err := w.Write(make([]byte, 60)); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Write 50 more — triggers rotation (60+50 > 100)
 	if _, err := w.Write(make([]byte, 50)); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Rotated file should exist
@@ -37,6 +40,7 @@ func TestRotationTriggersAtMaxSize(t *testing.T) {
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if info.Size() != 50 {
 		t.Errorf("current file size = %d, want 50", info.Size())
@@ -51,6 +55,7 @@ func TestMaxFilesCleanup(t *testing.T) {
 	w, err := NewRotatingWriter(path, 50, 2)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer func() { _ = w.Close() }()
 
@@ -58,6 +63,7 @@ func TestMaxFilesCleanup(t *testing.T) {
 	for range 3 {
 		if _, err := w.Write(make([]byte, 60)); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
@@ -80,6 +86,7 @@ func TestConcurrentWrites(t *testing.T) {
 	w, err := NewRotatingWriter(path, 1024, 3)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer func() { _ = w.Close() }()
 
@@ -104,17 +111,20 @@ func TestRestartPicksUpExistingSize(t *testing.T) {
 	// Write some data
 	if err := os.WriteFile(path, make([]byte, 40), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	w, err := NewRotatingWriter(path, 100, 3)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer func() { _ = w.Close() }()
 
 	// Write 70 more — should trigger rotation (40+70 > 100)
 	if _, err := w.Write(make([]byte, 70)); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := os.Stat(path + ".1"); err != nil {
@@ -129,6 +139,7 @@ func TestAgentOutputFile(t *testing.T) {
 	f, err := NewAgentOutputFile(dir, "abc123")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer func() { _ = f.Close() }()
 
@@ -136,6 +147,7 @@ func TestAgentOutputFile(t *testing.T) {
 	rel, err := filepath.Rel(dir, f.Name())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if filepath.Dir(rel) != "agents" {
 		t.Errorf("file dir = %q, want agents/", filepath.Dir(rel))

@@ -22,6 +22,7 @@ printf 'abc123\n'
 `
 	if err := os.WriteFile(fakeGit, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake git: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", binDir)
 	t.Setenv("SYBRA_TEST_CAPTURE", capture)
@@ -32,6 +33,7 @@ printf 'abc123\n'
 	head, err := gitHeadCommit(t.Context(), worktree)
 	if err != nil {
 		t.Fatalf("gitHeadCommit: %v", err)
+		panic("unreachable")
 	}
 	if head != "abc123" {
 		t.Fatalf("head = %q, want abc123", head)
@@ -39,6 +41,7 @@ printf 'abc123\n'
 	raw, err := os.ReadFile(capture)
 	if err != nil {
 		t.Fatalf("read capture: %v", err)
+		panic("unreachable")
 	}
 	got := string(raw)
 	lines := strings.Split(strings.TrimSpace(got), "\n")
@@ -48,10 +51,12 @@ printf 'abc123\n'
 	actualInfo, err := os.Stat(strings.TrimPrefix(lines[0], "pwd="))
 	if err != nil {
 		t.Fatalf("stat captured worktree: %v", err)
+		panic("unreachable")
 	}
 	wantInfo, err := os.Stat(worktree)
 	if err != nil {
 		t.Fatalf("stat expected worktree: %v", err)
+		panic("unreachable")
 	}
 	if !os.SameFile(actualInfo, wantInfo) {
 		t.Fatalf("captured worktree = %q, want %q", lines[0], worktree)
@@ -88,6 +93,7 @@ func TestResolveGitSharedWritablePaths_DetachedHeadIsNotAnError(t *testing.T) {
 	attached, err := resolveGitSharedWritablePaths(context.Background(), wt)
 	if err != nil {
 		t.Fatalf("attached HEAD: %v", err)
+		panic("unreachable")
 	}
 	if attached.branchRef == "" {
 		t.Fatal("attached HEAD resolved an empty branch ref")
@@ -98,6 +104,7 @@ func TestResolveGitSharedWritablePaths_DetachedHeadIsNotAnError(t *testing.T) {
 	detached, err := resolveGitSharedWritablePaths(context.Background(), wt)
 	if err != nil {
 		t.Fatalf("detached HEAD must not fail sandbox setup: %v", err)
+		panic("unreachable")
 	}
 	if detached.branchRef != "" {
 		t.Fatalf("branchRef = %q, want empty on a detached HEAD", detached.branchRef)
@@ -113,6 +120,7 @@ func TestResolveGitSharedWritablePaths_DetachedHeadIsNotAnError(t *testing.T) {
 func TestGitSymbolicRef_RealFailureStillErrors(t *testing.T) {
 	if _, err := gitSymbolicRef(context.Background(), t.TempDir()); err == nil {
 		t.Fatal("gitSymbolicRef succeeded outside a git repository")
+		panic("unreachable")
 	}
 }
 
@@ -123,6 +131,7 @@ func runGitOrFail(t *testing.T, dir string, args ...string) {
 	cmd.Env = scrubGitFixtureEnv(os.Environ())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
+		panic("unreachable")
 	}
 }
 

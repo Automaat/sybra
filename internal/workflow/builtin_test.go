@@ -21,6 +21,7 @@ func TestDefinitionSemanticHash_IgnoresTimestamps(t *testing.T) {
 	h1, err := def.SemanticHash()
 	if err != nil {
 		t.Fatalf("SemanticHash: %v", err)
+		panic("unreachable")
 	}
 
 	def.CreatedAt = time.Unix(30, 0).UTC()
@@ -28,6 +29,7 @@ func TestDefinitionSemanticHash_IgnoresTimestamps(t *testing.T) {
 	h2, err := def.SemanticHash()
 	if err != nil {
 		t.Fatalf("SemanticHash second: %v", err)
+		panic("unreachable")
 	}
 
 	if h1 != h2 {
@@ -48,10 +50,12 @@ func TestDefinitionSemanticHash_ChangesOnSemanticEdit(t *testing.T) {
 	ah, err := a.SemanticHash()
 	if err != nil {
 		t.Fatalf("SemanticHash a: %v", err)
+		panic("unreachable")
 	}
 	bh, err := b.SemanticHash()
 	if err != nil {
 		t.Fatalf("SemanticHash b: %v", err)
+		panic("unreachable")
 	}
 	if ah == bh {
 		t.Fatal("semantic edit produced identical hash")
@@ -65,10 +69,12 @@ func TestBuiltinSimpleTaskPlan_ApprovalStartsImplementation(t *testing.T) {
 	review := plan.StepByID("review_plan")
 	if review == nil {
 		t.Fatal("review_plan step not found in simple-task-plan")
+		panic("unreachable")
 	}
 	got, err := ResolveTransition(review.Next, map[string]string{"vars.human_action": "approve"})
 	if err != nil {
 		t.Fatalf("ResolveTransition: %v", err)
+		panic("unreachable")
 	}
 	if got != "set_in_progress_and_end" {
 		t.Fatalf("approval next = %q, want set_in_progress_and_end", got)
@@ -76,6 +82,7 @@ func TestBuiltinSimpleTaskPlan_ApprovalStartsImplementation(t *testing.T) {
 	step := plan.StepByID(got)
 	if step == nil || step.Type != StepSetStatus || step.Config.Status != "in-progress" {
 		t.Fatalf("approval handoff = %+v, want set_status in-progress", step)
+		panic("unreachable")
 	}
 }
 
@@ -86,6 +93,7 @@ func TestBuiltinWorkflowModelRouting(t *testing.T) {
 	critique := plan.StepByID("critique_plan")
 	if critique == nil {
 		t.Fatal("critique_plan step not found in simple-task-plan")
+		panic("unreachable")
 	}
 	if got := critique.Config.Model; got != "supercheap" {
 		t.Fatalf("critique_plan model = %q, want supercheap", got)
@@ -95,6 +103,7 @@ func TestBuiltinWorkflowModelRouting(t *testing.T) {
 	runTest := testingDef.StepByID("run_test")
 	if runTest == nil {
 		t.Fatal("run_test step not found in testing-task")
+		panic("unreachable")
 	}
 	if got := runTest.Config.Model; got != "supercheap" {
 		t.Fatalf("run_test model = %q, want supercheap", got)
@@ -103,6 +112,7 @@ func TestBuiltinWorkflowModelRouting(t *testing.T) {
 	implement := mustBuiltinDefinition(t, "simple-task-implement").StepByID("implement")
 	if implement == nil {
 		t.Fatal("implement step not found in simple-task-implement")
+		panic("unreachable")
 	}
 	wantTemplate := `{{if getvar .Vars "verify_retry_model"}}{{getvar .Vars "verify_retry_model"}}{{else}}cheap{{end}}`
 	if got := strings.TrimSpace(implement.Config.Model); got != wantTemplate {
@@ -115,6 +125,7 @@ func TestBuiltinWorkflowModelRouting(t *testing.T) {
 	bestOfN := mustBuiltinDefinition(t, "simple-task-best-of-n-implement").StepByID("attempts")
 	if bestOfN == nil {
 		t.Fatal("attempts step not found in simple-task-best-of-n-implement")
+		panic("unreachable")
 	}
 	if got := bestOfN.Config.Model; got != "cheap" {
 		t.Fatalf("attempts model = %q, want cheap", got)
@@ -133,6 +144,7 @@ func TestBuiltinSimpleTask_MaybeCritiqueReplanSkip(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var simple *Definition
 	for i := range defs {
@@ -148,6 +160,7 @@ func TestBuiltinSimpleTask_MaybeCritiqueReplanSkip(t *testing.T) {
 	step := simple.StepByID("maybe_critique")
 	if step == nil {
 		t.Fatal("maybe_critique step not found in simple-task-plan")
+		panic("unreachable")
 	}
 
 	cases := []struct {
@@ -185,6 +198,7 @@ func TestBuiltinSimpleTask_MaybeCritiqueReplanSkip(t *testing.T) {
 			got, err := ResolveTransition(step.Next, tc.fields)
 			if err != nil {
 				t.Fatalf("ResolveTransition: %v", err)
+				panic("unreachable")
 			}
 			if got != tc.want {
 				t.Errorf("goto = %q, want %q", got, tc.want)
@@ -199,6 +213,7 @@ func TestBuiltinSimpleTask_MissingCritiqueSkipsToHumanReview(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var simple *Definition
 	for i := range defs {
@@ -224,6 +239,7 @@ func TestBuiltinSimpleTask_MissingCritiqueSkipsToHumanReview(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("ResolveTransition: %v", err)
+		panic("unreachable")
 	}
 	if got != "review_plan" {
 		t.Fatalf("missing critique next = %q, want review_plan", got)
@@ -244,6 +260,7 @@ func TestBuiltinSimpleTask_PresentCritiqueRoutesThroughFlagStep(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var simple *Definition
 	for i := range defs {
@@ -268,6 +285,7 @@ func TestBuiltinSimpleTask_PresentCritiqueRoutesThroughFlagStep(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("ResolveTransition: %v", err)
+		panic("unreachable")
 	}
 	if got != "flag_plan_critique_verdict" {
 		t.Fatalf("present critique next = %q, want flag_plan_critique_verdict", got)
@@ -284,6 +302,7 @@ func TestBuiltinSimpleTask_PresentCritiqueRoutesThroughFlagStep(t *testing.T) {
 	got, err = ResolveTransition(flag.Next, map[string]string{})
 	if err != nil {
 		t.Fatalf("ResolveTransition: %v", err)
+		panic("unreachable")
 	}
 	if got != "review_plan" {
 		t.Fatalf("flag_plan_critique_verdict next = %q, want review_plan", got)
@@ -301,6 +320,7 @@ func TestBuiltinSimpleTask_ReplanCapEscalatesAfterThreeRejects(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var simple *Definition
 	for i := range defs {
@@ -311,10 +331,12 @@ func TestBuiltinSimpleTask_ReplanCapEscalatesAfterThreeRejects(t *testing.T) {
 	}
 	if simple == nil {
 		t.Fatal("simple-task-plan builtin definition not found")
+		panic("unreachable")
 	}
 	step := simple.StepByID("check_replan_cap")
 	if step == nil {
 		t.Fatal("check_replan_cap step not found in simple-task-plan")
+		panic("unreachable")
 	}
 
 	cases := []struct {
@@ -336,6 +358,7 @@ func TestBuiltinSimpleTask_ReplanCapEscalatesAfterThreeRejects(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatalf("ResolveTransition: %v", err)
+				panic("unreachable")
 			}
 			if got != tc.want {
 				t.Errorf("goto = %q, want %q", got, tc.want)
@@ -366,6 +389,7 @@ func TestBuiltinSimpleTaskPlan_CritiqueDoesNotTriggerReplan(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var simple *Definition
 	for i := range defs {
@@ -415,6 +439,7 @@ func TestBuiltinSimpleTaskPlan_AgentStepsAreHeadless(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var simple *Definition
 	for i := range defs {
@@ -425,6 +450,7 @@ func TestBuiltinSimpleTaskPlan_AgentStepsAreHeadless(t *testing.T) {
 	}
 	if simple == nil {
 		t.Fatal("simple-task-plan builtin definition not found")
+		panic("unreachable")
 	}
 
 	var runAgentSteps int
@@ -449,6 +475,7 @@ func TestBuiltinSimpleTaskImplement_UsesCompactTaskView(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var impl *Definition
 	for i := range defs {
@@ -483,6 +510,7 @@ func TestBuiltinSimpleTaskImplement_DisclosesDownstreamVerification(t *testing.T
 	step := impl.StepByID("implement")
 	if step == nil {
 		t.Fatal("implement step not found in simple-task-implement")
+		panic("unreachable")
 	}
 	prompt := step.Config.Prompt
 
@@ -532,6 +560,7 @@ func TestBuiltinSimpleTaskPlan_RewardHackingRetryNotesReachAgents(t *testing.T) 
 		step := plan.StepByID(stepID)
 		if step == nil {
 			t.Fatalf("%s step not found in simple-task-plan", stepID)
+			panic("unreachable")
 		}
 		for _, want := range []string{
 			`{{- if getvar .Vars "watchdog_reask_note"}}`,
@@ -571,6 +600,7 @@ func TestBuiltinPromptLabAuthor_OwnsPromptLabImplementation(t *testing.T) {
 	step := promptLab.StepByID("author_variant")
 	if step == nil {
 		t.Fatal("prompt-lab-author author_variant step not found")
+		panic("unreachable")
 	}
 	if step.Type != StepRunAgent || !step.Config.NeedsWorktree || step.Config.Mode != "headless" {
 		t.Fatalf("author_variant step = %+v, want headless run_agent with worktree", step)
@@ -592,6 +622,7 @@ func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var impl *Definition
 	for i := range defs {
@@ -602,10 +633,12 @@ func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 	}
 	if impl == nil {
 		t.Fatal("simple-task-implement builtin definition not found")
+		panic("unreachable")
 	}
 	verifyCommits := impl.StepByID("verify_commits")
 	if verifyCommits == nil {
 		t.Fatal("verify_commits step not found in simple-task-implement")
+		panic("unreachable")
 	}
 
 	if got, err := ResolveTransition(verifyCommits.Next, map[string]string{"task.status": "human-required"}); err != nil || got != "" {
@@ -621,6 +654,7 @@ func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 	codegen := impl.StepByID("codegen_gate")
 	if codegen == nil {
 		t.Fatal("codegen_gate step not found in simple-task-implement")
+		panic("unreachable")
 	}
 	if codegen.Type != StepCodegenGate {
 		t.Fatalf("codegen_gate type = %q, want %q", codegen.Type, StepCodegenGate)
@@ -635,6 +669,7 @@ func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 	gates := impl.StepByID("parallel_gates")
 	if gates == nil {
 		t.Fatal("parallel_gates step not found in simple-task-implement")
+		panic("unreachable")
 	}
 	if gates.Type != StepParallelGates {
 		t.Fatalf("parallel_gates type = %q, want %q", gates.Type, StepParallelGates)
@@ -662,6 +697,7 @@ func TestBuiltinSimpleTaskImplement_ExistingPRSkipsReadyReview(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var impl *Definition
 	for i := range defs {
@@ -672,10 +708,12 @@ func TestBuiltinSimpleTaskImplement_ExistingPRSkipsReadyReview(t *testing.T) {
 	}
 	if impl == nil {
 		t.Fatal("simple-task-implement builtin definition not found")
+		panic("unreachable")
 	}
 	gates := impl.StepByID("parallel_gates")
 	if gates == nil {
 		t.Fatal("parallel_gates step not found in simple-task-implement")
+		panic("unreachable")
 	}
 
 	if got, err := ResolveTransition(gates.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "set_ready_review" {
@@ -694,6 +732,7 @@ func TestBuiltinSimpleTaskImplement_ExistingPRSkipsReadyReview(t *testing.T) {
 	existingPR := impl.StepByID("set_ready_pr_existing")
 	if existingPR == nil {
 		t.Fatal("set_ready_pr_existing step not found in simple-task-implement")
+		panic("unreachable")
 	}
 	if existingPR.Type != StepSetStatus || existingPR.Config.Status != "in-review" {
 		t.Fatalf("set_ready_pr_existing = type %q status %q; want set_status in-review", existingPR.Type, existingPR.Config.Status)
@@ -710,6 +749,7 @@ func TestBuiltinSimpleTask_TriageNoplanRouting(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var simple *Definition
 	for i := range defs {
@@ -720,10 +760,12 @@ func TestBuiltinSimpleTask_TriageNoplanRouting(t *testing.T) {
 	}
 	if simple == nil {
 		t.Fatal("simple-task-plan builtin definition not found")
+		panic("unreachable")
 	}
 	step := simple.StepByID("triage")
 	if step == nil {
 		t.Fatal("triage step not found in simple-task-plan")
+		panic("unreachable")
 	}
 
 	cases := []struct {
@@ -758,6 +800,7 @@ func TestBuiltinSimpleTask_TriageNoplanRouting(t *testing.T) {
 			got, err := ResolveTransition(step.Next, tc.fields)
 			if err != nil {
 				t.Fatalf("ResolveTransition: %v", err)
+				panic("unreachable")
 			}
 			if got != tc.want {
 				t.Errorf("goto = %q, want %q", got, tc.want)
@@ -779,6 +822,7 @@ func TestBuiltinSimpleTaskReview_MaybeReviewTrivialRouting(t *testing.T) {
 	step := review.StepByID("maybe_review")
 	if step == nil {
 		t.Fatal("maybe_review step not found in simple-task-review")
+		panic("unreachable")
 	}
 
 	cases := []struct {
@@ -822,6 +866,7 @@ func TestBuiltinSimpleTaskReview_MaybeReviewTrivialRouting(t *testing.T) {
 			got, err := ResolveTransition(step.Next, tc.fields)
 			if err != nil {
 				t.Fatalf("ResolveTransition: %v", err)
+				panic("unreachable")
 			}
 			if got != tc.want {
 				t.Errorf("goto = %q, want %q", got, tc.want)
@@ -840,6 +885,7 @@ func TestBuiltinSimpleTaskReview_RouteReviewVerdictSkipsFixReviewOnClean(t *test
 	step := review.StepByID("route_review_verdict")
 	if step == nil {
 		t.Fatal("route_review_verdict step not found in simple-task-review")
+		panic("unreachable")
 	}
 
 	cases := []struct {
@@ -873,6 +919,7 @@ func TestBuiltinSimpleTaskReview_RouteReviewVerdictSkipsFixReviewOnClean(t *test
 			})
 			if err != nil {
 				t.Fatalf("ResolveTransition: %v", err)
+				panic("unreachable")
 			}
 			if got != tc.want {
 				t.Errorf("goto = %q, want %q", got, tc.want)
@@ -886,6 +933,7 @@ func TestBuiltinDefinitions(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	if len(defs) == 0 {
 		t.Fatal("expected non-empty builtin definitions")
@@ -905,6 +953,7 @@ func TestBuiltinDefinitions_Valid(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	for _, d := range defs {
 		t.Run(d.ID, func(t *testing.T) {
@@ -921,6 +970,7 @@ func TestBuiltinPRFix_RoutesAgentHumanRequiredBeforePRRelink(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var prfix *Definition
 	for i := range defs {
@@ -931,6 +981,7 @@ func TestBuiltinPRFix_RoutesAgentHumanRequiredBeforePRRelink(t *testing.T) {
 	}
 	if prfix == nil {
 		t.Fatal("pr-fix builtin definition not found")
+		panic("unreachable")
 	}
 	fix := prfix.StepByID("fix")
 	if fix == nil {
@@ -969,6 +1020,7 @@ func TestBuiltinPRFix_TestFixEligibleRoutesBeforeHumanRequired(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var prfix *Definition
 	for i := range defs {
@@ -979,6 +1031,7 @@ func TestBuiltinPRFix_TestFixEligibleRoutesBeforeHumanRequired(t *testing.T) {
 	}
 	if prfix == nil {
 		t.Fatal("pr-fix builtin definition not found")
+		panic("unreachable")
 	}
 	route := prfix.StepByID("route_pr_fix_result")
 	if route == nil {
@@ -991,6 +1044,7 @@ func TestBuiltinPRFix_TestFixEligibleRoutesBeforeHumanRequired(t *testing.T) {
 	})
 	if err != nil || got != "test_fix" {
 		t.Fatalf("eligible route next = %q, err=%v; want test_fix", got, err)
+		panic("unreachable")
 	}
 
 	testFix := prfix.StepByID("test_fix")
@@ -1046,6 +1100,7 @@ func TestBuiltinPRFix_TestFixEligibleRoutesBeforeHumanRequired(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("render test_fix prompt: %v", err)
+		panic("unreachable")
 	}
 	for _, want := range []string{
 		"pkg/a_test.go:1 TestA",
@@ -1084,6 +1139,7 @@ func TestBuiltinDefinitions_NeverInstructForcePush(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	// Match actual git-push instructions, not advisory prose like
 	// "Never force-push" or unrelated commands that may legitimately use
@@ -1120,6 +1176,7 @@ func TestBuiltinSimpleTaskPR_CreateAndPushAreDeterministic(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var simple *Definition
 	for i := range defs {
@@ -1168,6 +1225,7 @@ func TestBuiltinSimpleTaskReview_FixReviewPushesBeforeVerify(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var simple *Definition
 	for i := range defs {
@@ -1221,6 +1279,7 @@ func TestBuiltinSimpleTaskPR_NoCodegenAfterTesting(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var simple *Definition
 	for i := range defs {
@@ -1240,6 +1299,7 @@ func TestBuiltinSimpleTaskPR_NoCodegenAfterTesting(t *testing.T) {
 	first := simple.FirstStep()
 	if first == nil || first.Type != StepSyncBranch {
 		t.Fatalf("FirstStep = %+v, want sync_branch first", first)
+		panic("unreachable")
 	}
 	if len(first.Next) != 1 || first.Next[0].GoTo != "require_evidence" {
 		t.Fatalf("sync_branch.Next = %+v, want unconditional goto require_evidence", first.Next)
@@ -1255,6 +1315,7 @@ func TestBuiltinSimpleTaskPR_NoCodegenAfterTesting(t *testing.T) {
 	}
 	if step := simple.StepByID("codegen_gate"); step != nil {
 		t.Fatalf("codegen_gate must not exist in simple-task-pr; got %+v", step)
+		panic("unreachable")
 	}
 
 	// maybe_create_pr must still be the branch point covering both downstream
@@ -1278,6 +1339,7 @@ func TestBuiltinDefinitions_NoDuplicateIDs(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	seen := make(map[string]bool)
 	for _, d := range defs {
@@ -1293,20 +1355,24 @@ func TestSyncBuiltins(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	if err := SyncBuiltins(store); err != nil {
 		t.Fatalf("SyncBuiltins: %v", err)
+		panic("unreachable")
 	}
 
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 
 	listed, err := store.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(listed) != len(defs) {
 		t.Errorf("store has %d workflows, want %d", len(listed), len(defs))
@@ -1318,11 +1384,13 @@ func TestSyncBuiltins_NoOverwrite(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	defs, err := BuiltinDefinitions()
 	if err != nil || len(defs) == 0 {
 		t.Fatalf("BuiltinDefinitions: %v (len=%d)", err, len(defs))
+		panic("unreachable")
 	}
 
 	// Save a modified version of the first builtin.
@@ -1331,16 +1399,19 @@ func TestSyncBuiltins_NoOverwrite(t *testing.T) {
 	modified.Builtin = false // simulate user edit
 	if err := store.Save(modified); err != nil {
 		t.Fatalf("Save modified: %v", err)
+		panic("unreachable")
 	}
 
 	// SyncBuiltins must not overwrite.
 	if err := SyncBuiltins(store); err != nil {
 		t.Fatalf("SyncBuiltins: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := store.Get(modified.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if got.Name != "user-modified" {
 		t.Errorf("SyncBuiltins overwrote user modification: got %q, want %q", got.Name, "user-modified")
@@ -1357,11 +1428,13 @@ func TestSyncBuiltins_OverwriteStaleBuiltin(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	defs, err := BuiltinDefinitions()
 	if err != nil || len(defs) == 0 {
 		t.Fatalf("BuiltinDefinitions: %v (len=%d)", err, len(defs))
+		panic("unreachable")
 	}
 
 	// Simulate drift: save with Builtin=true but a stale name.
@@ -1370,15 +1443,18 @@ func TestSyncBuiltins_OverwriteStaleBuiltin(t *testing.T) {
 	stale.Builtin = true
 	if err := store.Save(stale); err != nil {
 		t.Fatalf("Save stale: %v", err)
+		panic("unreachable")
 	}
 
 	if err := SyncBuiltins(store); err != nil {
 		t.Fatalf("SyncBuiltins: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := store.Get(stale.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if got.Name != defs[0].Name {
 		t.Errorf("SyncBuiltins did not repair stale builtin: got %q, want %q",
@@ -1391,19 +1467,23 @@ func TestSyncBuiltins_PrunesObsoleteBuiltin(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	obsolete := newTestDef("obsolete-builtin-sync-test")
 	obsolete.Builtin = true
 	if err := store.Save(obsolete); err != nil {
 		t.Fatalf("Save obsolete: %v", err)
+		panic("unreachable")
 	}
 
 	if err := SyncBuiltins(store); err != nil {
 		t.Fatalf("SyncBuiltins: %v", err)
+		panic("unreachable")
 	}
 	if _, err := store.Get(obsolete.ID); err == nil {
 		t.Fatalf("obsolete builtin %q still exists", obsolete.ID)
+		panic("unreachable")
 	}
 }
 
@@ -1412,19 +1492,23 @@ func TestSyncBuiltins_PreservesObsoleteUserWorkflow(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	custom := newTestDef("obsolete-custom-workflow-sync-test")
 	custom.Builtin = false
 	if err := store.Save(custom); err != nil {
 		t.Fatalf("Save custom: %v", err)
+		panic("unreachable")
 	}
 
 	if err := SyncBuiltins(store); err != nil {
 		t.Fatalf("SyncBuiltins: %v", err)
+		panic("unreachable")
 	}
 	if _, err := store.Get(custom.ID); err != nil {
 		t.Fatalf("custom workflow was pruned: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -1433,6 +1517,7 @@ func TestSyncBuiltins_PruneFailureDoesNotBlockRefresh(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	bad := []byte(`id: ../obsolete-builtin-sync-test
@@ -1448,18 +1533,22 @@ builtin: true
 `)
 	if err := os.WriteFile(filepath.Join(store.Dir(), "bad.yaml"), bad, 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
+		panic("unreachable")
 	}
 
 	err = SyncBuiltins(store)
 	if err == nil {
 		t.Fatal("SyncBuiltins succeeded, want prune error")
+		panic("unreachable")
 	}
 	defs, defsErr := BuiltinDefinitions()
 	if defsErr != nil || len(defs) == 0 {
 		t.Fatalf("BuiltinDefinitions: %v (len=%d)", defsErr, len(defs))
+		panic("unreachable")
 	}
 	if _, getErr := store.Get(defs[0].ID); getErr != nil {
 		t.Fatalf("current builtin was not refreshed after prune failure: %v", getErr)
+		panic("unreachable")
 	}
 }
 
@@ -1471,24 +1560,30 @@ func TestSyncBuiltins_IdempotentOnClean(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	if err := SyncBuiltins(store); err != nil {
 		t.Fatalf("first SyncBuiltins: %v", err)
+		panic("unreachable")
 	}
 	defs, err := BuiltinDefinitions()
 	if err != nil || len(defs) == 0 {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	before, err := store.Get(defs[0].ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if err := SyncBuiltins(store); err != nil {
 		t.Fatalf("second SyncBuiltins: %v", err)
+		panic("unreachable")
 	}
 	after, err := store.Get(defs[0].ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if !after.UpdatedAt.Equal(before.UpdatedAt) {
 		t.Errorf("idempotent sync rewrote file: UpdatedAt before=%v after=%v",
@@ -1521,6 +1616,7 @@ func TestBuiltinTestingTask_RunTestOutputSchema(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(step.Config.OutputSchema), &schema); err != nil {
 		t.Fatalf("unmarshal output schema: %v", err)
+		panic("unreachable")
 	}
 	required := map[string]bool{}
 	for _, field := range schema.Required {
@@ -1540,6 +1636,7 @@ func requireCodexStrictOutputSchema(t *testing.T, raw []byte) {
 	var schema any
 	if err := json.Unmarshal(raw, &schema); err != nil {
 		t.Fatalf("unmarshal output schema: %v", err)
+		panic("unreachable")
 	}
 	requireCodexStrictSchemaNode(t, schema, "$")
 }
@@ -1620,6 +1717,7 @@ func TestBuiltinTestingTask_NotestStillRunsTester(t *testing.T) {
 	for _, n := range maybe.Next {
 		if n.When != nil && n.When.Value == "notest" {
 			t.Fatalf("maybe_test must not branch on notest, got branch to %q", n.GoTo)
+			panic("unreachable")
 		}
 	}
 	if len(maybe.Next) == 0 {
@@ -1750,6 +1848,7 @@ func mustBuiltinDefinition(t *testing.T, id string) *Definition {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	for i := range defs {
 		if defs[i].ID == id {
@@ -1780,9 +1879,11 @@ func TestBuiltinBestOfN_OptInTriggerPriority(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	if err := SyncBuiltins(store); err != nil {
 		t.Fatalf("SyncBuiltins: %v", err)
+		panic("unreachable")
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -1814,9 +1915,11 @@ func TestSimpleTaskReview_DoesNotMatchLinkedPRTask(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	if err := SyncBuiltins(store); err != nil {
 		t.Fatalf("SyncBuiltins: %v", err)
+		panic("unreachable")
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -1834,6 +1937,7 @@ func TestSimpleTaskReview_DoesNotMatchLinkedPRTask(t *testing.T) {
 	linkedPR := TaskInfo{ID: "linked-pr", Status: "ready-review", PRNumber: 1981}
 	if got := engine.MatchWorkflow(linkedPR, "task.status_changed"); got != nil {
 		t.Fatalf("linked-PR ready-review task matched %q, want no pre-PR review workflow", got.ID)
+		panic("unreachable")
 	}
 }
 
@@ -1844,9 +1948,11 @@ func TestSimpleTaskPR_SkipsReviewOnlyRoles(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	if err := SyncBuiltins(store); err != nil {
 		t.Fatalf("SyncBuiltins: %v", err)
+		panic("unreachable")
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -1920,6 +2026,7 @@ func TestBuiltinDefinitions_NeverHardcodeCommitSignFlags(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	for _, def := range defs {
 		for _, step := range def.Steps {

@@ -120,6 +120,7 @@ func TestLoadGoldenSet_Example(t *testing.T) {
 	cases, err := LoadGoldenSet(filepath.Join("testdata", "goldenset.example.json"))
 	if err != nil {
 		t.Fatalf("load example: %v", err)
+		panic("unreachable")
 	}
 	if len(cases) == 0 {
 		t.Fatal("example golden set is empty")
@@ -139,10 +140,12 @@ func TestSaveLoadReportRoundTrip(t *testing.T) {
 	}}
 	if err := SaveGoldenReport(path, rep); err != nil {
 		t.Fatalf("save: %v", err)
+		panic("unreachable")
 	}
 	got, err := LoadGoldenReport(path)
 	if err != nil {
 		t.Fatalf("load: %v", err)
+		panic("unreachable")
 	}
 	if got.Total != rep.Total || got.Passed != rep.Passed || len(got.Cases) != 2 {
 		t.Errorf("round-trip mismatch: %+v", got)

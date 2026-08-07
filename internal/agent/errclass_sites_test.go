@@ -34,5 +34,6 @@ func TestClassifyAgentError_PinsRateLimitLiterals(t *testing.T) {
 	}
 	if got := classifyAgentError(nil); got != "crash" {
 		t.Fatalf("classifyAgentError(nil) = %q, want crash", got)
+		panic("unreachable")
 	}
 }

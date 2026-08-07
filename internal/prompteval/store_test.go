@@ -22,10 +22,12 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 	if err := store.Write(v); err != nil {
 		t.Fatalf("Write: %v", err)
+		panic("unreachable")
 	}
 	got, err := store.Read(v.VariantID, v.Digest)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != v.Status || got.Score != v.Score || got.VariantID != v.VariantID || got.Digest != v.Digest {
 		t.Fatalf("Read = %+v, want %+v", got, v)
@@ -50,10 +52,12 @@ func TestStoreNormalizesSha256PrefixedDigest(t *testing.T) {
 	}
 	if err := store.Write(v); err != nil {
 		t.Fatalf("Write: %v", err)
+		panic("unreachable")
 	}
 	got, err := store.Read(v.VariantID, "sha256:"+bareDigest)
 	if err != nil {
 		t.Fatalf("Read with sha256:-prefixed digest: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != StatusPass {
 		t.Fatalf("Read = %+v, want pass", got)
@@ -84,6 +88,7 @@ func TestStoreRejectsPathTraversal(t *testing.T) {
 			}
 			if _, err := store.Read(k, "validdigest123"); err == nil {
 				t.Fatalf("Read accepted hostile variantID %q", k)
+				panic("unreachable")
 			}
 		})
 	}
@@ -111,6 +116,7 @@ func TestStoreConcurrentWrite(t *testing.T) {
 	for i, err := range errs {
 		if err != nil {
 			t.Fatalf("concurrent Write %d: %v", i, err)
+			panic("unreachable")
 		}
 	}
 	// The file must be intact JSON (atomic rename means no torn writes), even
@@ -118,6 +124,7 @@ func TestStoreConcurrentWrite(t *testing.T) {
 	got, err := store.Read("shared-variant", Digest([]byte("prompt")))
 	if err != nil {
 		t.Fatalf("Read after concurrent writes: %v", err)
+		panic("unreachable")
 	}
 	if got.VariantID != "shared-variant" {
 		t.Fatalf("Read after concurrent writes returned corrupt data: %+v", got)

@@ -34,6 +34,7 @@ func TestReconcileOrchestratorsLocked_StableAfterTerminalTransition(t *testing.T
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 
 	// KillAgentsForTask stops the agent and blocks until its runner goroutine

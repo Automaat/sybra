@@ -22,6 +22,7 @@ func TestAdversarialDuplicateAlsoNamesOmittedRef(t *testing.T) {
 	err := plan.validate(s)
 	if err == nil {
 		t.Fatal("expected validate to fail on duplicate+omission")
+		panic("unreachable")
 	}
 
 	corrected := correctivePrompt("original prompt", err)

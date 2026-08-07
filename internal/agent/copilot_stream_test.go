@@ -27,6 +27,7 @@ func TestParseCopilotLine_SkipsEphemeralAndStructural(t *testing.T) {
 		ev, err := ParseCopilotLine([]byte(line))
 		if err != nil {
 			t.Fatalf("ParseCopilotLine(%s): %v", line, err)
+			panic("unreachable")
 		}
 		if ev.Type != "" {
 			t.Errorf("expected skipped (Type==\"\") for %s, got %q", line, ev.Type)
@@ -39,12 +40,14 @@ func TestParseCopilotLine_AssistantMessage(t *testing.T) {
 	ev, err := ParseCopilotLine(line)
 	if err != nil {
 		t.Fatalf("ParseCopilotLine: %v", err)
+		panic("unreachable")
 	}
 	if ev.Type != "assistant" {
 		t.Fatalf("Type = %q, want assistant", ev.Type)
 	}
 	if ev.Message == nil || ev.Message.Text != "pong" {
 		t.Fatalf("Message.Text = %v, want pong", ev.Message)
+		panic("unreachable")
 	}
 	if ev.OutputTokens != 5 {
 		t.Errorf("OutputTokens = %d, want 5", ev.OutputTokens)
@@ -56,9 +59,11 @@ func TestParseCopilotLine_AssistantToolRequest(t *testing.T) {
 	ev, err := ParseCopilotLine(line)
 	if err != nil {
 		t.Fatalf("ParseCopilotLine: %v", err)
+		panic("unreachable")
 	}
 	if ev.Type != "assistant" || ev.Message == nil || len(ev.Message.ToolUses) != 1 {
 		t.Fatalf("want one tool use, got %+v", ev.Message)
+		panic("unreachable")
 	}
 	tu := ev.Message.ToolUses[0]
 	if tu.ID != "toolu_1" {
@@ -77,9 +82,11 @@ func TestParseCopilotLine_ToolExecution(t *testing.T) {
 	ev, err := ParseCopilotLine(start)
 	if err != nil {
 		t.Fatalf("start: %v", err)
+		panic("unreachable")
 	}
 	if ev.Type != "tool_use" || ev.Message == nil || len(ev.Message.ToolUses) != 1 {
 		t.Fatalf("start: want tool_use with one tool, got %+v", ev)
+		panic("unreachable")
 	}
 	if ev.Message.ToolUses[0].Name != "Bash" {
 		t.Errorf("start tool name = %q, want Bash", ev.Message.ToolUses[0].Name)
@@ -89,9 +96,11 @@ func TestParseCopilotLine_ToolExecution(t *testing.T) {
 	ev, err = ParseCopilotLine(done)
 	if err != nil {
 		t.Fatalf("complete: %v", err)
+		panic("unreachable")
 	}
 	if ev.Type != "tool_result" || ev.Message == nil || len(ev.Message.ToolResults) != 1 {
 		t.Fatalf("complete: want tool_result with one result, got %+v", ev)
+		panic("unreachable")
 	}
 	tr := ev.Message.ToolResults[0]
 	if tr.ToolUseID != "toolu_1" {
@@ -110,6 +119,7 @@ func TestParseCopilotLine_ToolExecutionFailure(t *testing.T) {
 	ev, err := ParseCopilotLine(done)
 	if err != nil {
 		t.Fatalf("complete: %v", err)
+		panic("unreachable")
 	}
 	if !ev.Message.ToolResults[0].IsError {
 		t.Errorf("IsError = false, want true (success:false)")
@@ -121,6 +131,7 @@ func TestParseCopilotLine_Result(t *testing.T) {
 	ev, err := ParseCopilotLine(line)
 	if err != nil {
 		t.Fatalf("ParseCopilotLine: %v", err)
+		panic("unreachable")
 	}
 
 	if ev.Type != "result" {
@@ -139,9 +150,11 @@ func TestParseCopilotLine_ResultFractionalPremiumRequests(t *testing.T) {
 	ev, err := ParseCopilotLine(line)
 	if err != nil {
 		t.Fatalf("ParseCopilotLine: %v", err)
+		panic("unreachable")
 	}
 	if ev.Result == nil || ev.Result.PremiumRequests != 7.5 {
 		t.Fatalf("PremiumRequests = %+v, want 7.5", ev.Result)
+		panic("unreachable")
 	}
 }
 
@@ -150,6 +163,7 @@ func TestParseCopilotLine_ResultNonZeroExitIsError(t *testing.T) {
 	ev, err := ParseCopilotLine(line)
 	if err != nil {
 		t.Fatalf("ParseCopilotLine: %v", err)
+		panic("unreachable")
 	}
 	if ev.Type != "result" || ev.Subtype != "error" {
 		t.Fatalf("Type/Subtype = %q/%q, want result/error", ev.Type, ev.Subtype)
@@ -171,6 +185,7 @@ func TestParseCopilotLine_ToolResultArrayContent(t *testing.T) {
 	ev, err := ParseCopilotLine(line)
 	if err != nil {
 		t.Fatalf("ParseCopilotLine: %v", err)
+		panic("unreachable")
 	}
 	if ev.Type != "tool_result" || len(ev.Message.ToolResults) != 1 {
 		t.Fatalf("want tool_result with one result, got %+v", ev)
@@ -243,6 +258,7 @@ func TestCopilotEventToStreamEvent(t *testing.T) {
 			parsed, err := ParseCopilotLine([]byte(tt.line))
 			if err != nil {
 				t.Fatalf("ParseCopilotLine: %v", err)
+				panic("unreachable")
 			}
 			ev := copilotEventToStreamEvent(parsed)
 			if ev.Type != tt.wantTyp {
@@ -288,10 +304,12 @@ func TestParseLogFile_Copilot(t *testing.T) {
 		`{"type":"result","sessionId":"s9","usage":{"premiumRequests":3}}` + "\n"
 	if err := os.WriteFile(path, []byte(lines), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
+		panic("unreachable")
 	}
 	events, err := ParseLogFile(path, 0, "copilot")
 	if err != nil {
 		t.Fatalf("ParseLogFile: %v", err)
+		panic("unreachable")
 	}
 	// ephemeral session line dropped; assistant + tool_use + tool_result + result kept.
 	if len(events) != 4 {
@@ -310,6 +328,7 @@ func TestBuildHeadlessInvocation_Copilot(t *testing.T) {
 	name, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "do it"})
 	if err != nil {
 		t.Fatalf("buildHeadlessInvocation: %v", err)
+		panic("unreachable")
 	}
 	if name != "copilot" {
 		t.Fatalf("name = %q, want copilot", name)

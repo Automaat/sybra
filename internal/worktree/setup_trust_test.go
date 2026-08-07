@@ -25,12 +25,14 @@ func TestPrepareForFix_UntrustedRepoSetupNotExecuted(t *testing.T) {
 		full := append([]string{"-C", h.src}, args...)
 		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 
 	// Trusted config on main: this must run.
 	if err := os.WriteFile(filepath.Join(h.src, ".sybra.yaml"), []byte("setup:\n  - touch trusted-marker\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "trusted setup")
@@ -40,6 +42,7 @@ func TestPrepareForFix_UntrustedRepoSetupNotExecuted(t *testing.T) {
 	srcGit("checkout", "-b", branch)
 	if err := os.WriteFile(filepath.Join(h.src, ".sybra.yaml"), []byte("setup:\n  - touch evil-marker\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "malicious setup override")
@@ -50,19 +53,23 @@ func TestPrepareForFix_UntrustedRepoSetupNotExecuted(t *testing.T) {
 	tk, err := h.tasks.Create("fix renovate pr", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
 	if err != nil {
 		t.Fatalf("PrepareForFix: %v", err)
+		panic("unreachable")
 	}
 
 	if _, err := os.Stat(filepath.Join(wtPath, "evil-marker")); err == nil {
 		t.Fatal("malicious setup command from the untrusted PR branch's .sybra.yaml was executed")
+		panic("unreachable")
 	}
 	if _, err := os.Stat(filepath.Join(wtPath, "trusted-marker")); err != nil {
 		t.Errorf("trusted default-branch setup command did not run: %v", err)
@@ -81,12 +88,14 @@ func TestPrepareForReview_UntrustedRepoSetupNotExecuted(t *testing.T) {
 		full := append([]string{"-C", h.src}, args...)
 		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 
 	// Trusted config on main: this must run.
 	if err := os.WriteFile(filepath.Join(h.src, ".sybra.yaml"), []byte("setup:\n  - touch trusted-marker\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "trusted setup")
@@ -96,12 +105,14 @@ func TestPrepareForReview_UntrustedRepoSetupNotExecuted(t *testing.T) {
 	srcGit("checkout", "-b", forkBranch)
 	if err := os.WriteFile(filepath.Join(h.src, ".sybra.yaml"), []byte("setup:\n  - touch evil-marker\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "malicious setup override")
 	shaOut, err := exec.Command("git", "-C", h.src, "rev-parse", "HEAD").CombinedOutput()
 	if err != nil {
 		t.Fatalf("rev-parse: %v: %s", err, shaOut)
+		panic("unreachable")
 	}
 	prSHA := strings.TrimSpace(string(shaOut))
 	// Only reachable via refs/pull/<N>/head, mirroring a fork PR — never
@@ -115,6 +126,7 @@ func TestPrepareForReview_UntrustedRepoSetupNotExecuted(t *testing.T) {
 	tk, err := h.tasks.Create("review fork pr", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{
 		"project_id": h.proj.ID,
@@ -122,15 +134,18 @@ func TestPrepareForReview_UntrustedRepoSetupNotExecuted(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForReview(context.Background(), tk)
 	if err != nil {
 		t.Fatalf("PrepareForReview: %v", err)
+		panic("unreachable")
 	}
 
 	if _, err := os.Stat(filepath.Join(wtPath, "evil-marker")); err == nil {
 		t.Fatal("malicious setup command from the untrusted PR head's .sybra.yaml was executed")
+		panic("unreachable")
 	}
 	if _, err := os.Stat(filepath.Join(wtPath, "trusted-marker")); err != nil {
 		t.Errorf("trusted default-branch setup command did not run: %v", err)
@@ -150,17 +165,20 @@ func TestPrepareForReview_SkipsDesktopBuildSetup(t *testing.T) {
 		full := append([]string{"-C", h.src}, args...)
 		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	setupYAML := "setup:\n  - touch always-marker\n  - \"sh -c 'npm run build:desktop >/dev/null 2>&1 || true; touch build-desktop-marker'\"\n"
 	if err := os.WriteFile(filepath.Join(h.src, ".sybra.yaml"), []byte(setupYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "setup with desktop build step")
 	shaOut, err := exec.Command("git", "-C", h.src, "rev-parse", "HEAD").CombinedOutput()
 	if err != nil {
 		t.Fatalf("rev-parse: %v: %s", err, shaOut)
+		panic("unreachable")
 	}
 	// PrepareForReview always checks out the PR head via
 	// refs/pull/<N>/head (see FetchPRHead) regardless of branch resolution.
@@ -172,6 +190,7 @@ func TestPrepareForReview_SkipsDesktopBuildSetup(t *testing.T) {
 	tk, err := h.tasks.Create("review skips desktop build", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{
 		"project_id": h.proj.ID,
@@ -179,11 +198,13 @@ func TestPrepareForReview_SkipsDesktopBuildSetup(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForReview(context.Background(), tk)
 	if err != nil {
 		t.Fatalf("PrepareForReview: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(filepath.Join(wtPath, "always-marker")); err != nil {
 		t.Errorf("non-build setup command did not run on review: %v", err)
@@ -197,14 +218,17 @@ func TestPrepareForReview_SkipsDesktopBuildSetup(t *testing.T) {
 	fixTk, err := h.tasks.Create("fix still builds desktop", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	fixTk, err = h.tasks.UpdateMap(fixTk.ID, map[string]any{"project_id": h.proj.ID})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 	fixPath, err := h.m.PrepareForFix(context.Background(), fixTk, prNumber)
 	if err != nil {
 		t.Fatalf("PrepareForFix: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(filepath.Join(fixPath, "build-desktop-marker")); err != nil {
 		t.Errorf("build:desktop-marked setup command did not run on a fix worktree: %v", err)

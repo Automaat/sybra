@@ -36,6 +36,7 @@ func TestHonorsAllowedTools_MatchesTheSpawnedArgv(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatalf("BuildHeadlessInvocation: %v", err)
+				panic("unreachable")
 			}
 			argv := strings.Join(inv.args, " ")
 			carriesList := strings.Contains(argv, strings.Join(restrictedTools, ","))

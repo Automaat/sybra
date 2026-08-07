@@ -38,6 +38,7 @@ func TestConfigureGracefulShutdown_SetsCancelAndWaitDelay(t *testing.T) {
 	configureGracefulShutdown(cmd)
 	if cmd.Cancel == nil {
 		t.Fatal("Cancel not set")
+		panic("unreachable")
 	}
 	if cmd.WaitDelay != shutdownWaitDelay {
 		t.Errorf("WaitDelay=%s want %s", cmd.WaitDelay, shutdownWaitDelay)
@@ -57,6 +58,7 @@ func TestConfigureGracefulShutdown_CancelSendsSIGTERM(t *testing.T) {
 	configureGracefulShutdown(cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
+		panic("unreachable")
 	}
 
 	// Give the process a tick to actually be alive before we cancel,
@@ -68,6 +70,7 @@ func TestConfigureGracefulShutdown_CancelSendsSIGTERM(t *testing.T) {
 	waitErr := cmd.Wait()
 	if waitErr == nil {
 		t.Fatal("expected exit error after cancel, got nil")
+		panic("unreachable")
 	}
 	exitErr, ok := errors.AsType[*exec.ExitError](waitErr)
 	if !ok {
@@ -99,6 +102,7 @@ func TestStopWithSIGINT_ProcessReceivesInterrupt(t *testing.T) {
 	cmd := exec.Command("sleep", "30")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
+		panic("unreachable")
 	}
 
 	done := make(chan struct{})
@@ -138,6 +142,7 @@ func TestStopWithSIGINT_EscalatesToSIGKILL(t *testing.T) {
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
+		panic("unreachable")
 	}
 
 	cmd := exec.Command("bash", "-c", "trap '' INT; echo ready; sleep 30")

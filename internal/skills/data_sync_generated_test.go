@@ -24,6 +24,7 @@ func TestSkillsData_InSyncWithRepoSkills(t *testing.T) {
 		content, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
+			panic("unreachable")
 		}
 		prev[name] = content
 	}
@@ -40,6 +41,7 @@ func TestSkillsData_InSyncWithRepoSkills(t *testing.T) {
 	cmd.Dir = root
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go run ./cmd/gen-skills-sync: %v\n%s", err, out)
+		panic("unreachable")
 	}
 
 	for _, name := range dualSourcedSkillsForTest {
@@ -47,6 +49,7 @@ func TestSkillsData_InSyncWithRepoSkills(t *testing.T) {
 		regen, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read regenerated %s: %v", path, err)
+			panic("unreachable")
 		}
 		if !bytes.Equal(regen, prev[name]) {
 			t.Errorf("internal/skills/data/%s.md is stale — run `go generate ./internal/skills/...`", name)
@@ -61,6 +64,7 @@ func TestSkillsData_InSyncWithRepoSkills(t *testing.T) {
 		repoContent, err := os.ReadFile(repoPath)
 		if err != nil {
 			t.Fatalf("read %s: %v", repoPath, err)
+			panic("unreachable")
 		}
 		if !bytes.Equal(regen, repoContent) {
 			t.Errorf("internal/skills/data/%s.md does not match %s — is %q still listed in cmd/gen-skills-sync's dualSourcedSkills?", name, repoPath, name)

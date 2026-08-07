@@ -24,16 +24,19 @@ func TestRunWithEnv_ExecutesGhAndAppliesEnv(t *testing.T) {
 	script := "#!/bin/bash\nprintf '%s|%s' \"$1\" \"$MARKER\" > " + captured + "\n"
 	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake gh: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", dir)
 
 	if _, err := RunWithEnv(context.Background(), append(os.Environ(), "MARKER=present"), "issue", "list"); err != nil {
 		t.Fatalf("RunWithEnv: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := os.ReadFile(captured)
 	if err != nil {
 		t.Fatalf("read captured: %v", err)
+		panic("unreachable")
 	}
 	if string(got) != "issue|present" {
 		t.Fatalf("captured = %q, want %q", got, "issue|present")
@@ -53,17 +56,20 @@ func TestRunWithEnv_NilEnvInheritsAmbient(t *testing.T) {
 	script := "#!/bin/bash\n[[ -n \"$SYBRA_TEST_MARKER\" ]] && printf 'present' > " + captured + "\n"
 	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake gh: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", dir)
 	t.Setenv("SYBRA_TEST_MARKER", "present")
 
 	if _, err := RunWithEnv(context.Background(), nil, "issue", "list"); err != nil {
 		t.Fatalf("RunWithEnv: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := os.ReadFile(captured)
 	if err != nil {
 		t.Fatalf("read captured: %v", err)
+		panic("unreachable")
 	}
 	if string(got) != "present" {
 		t.Fatalf("ambient env not inherited when env is nil: %q", got)
@@ -85,17 +91,20 @@ func TestRun_UsesPackageGHEnv(t *testing.T) {
 	script := "#!/bin/bash\n[[ -n \"$SYBRA_TEST_MARKER\" ]] && printf 'present' > " + captured + "\n"
 	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake gh: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", dir)
 	t.Setenv("SYBRA_TEST_MARKER", "present")
 
 	if _, err := Run(context.Background(), "issue", "list"); err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := os.ReadFile(captured)
 	if err != nil {
 		t.Fatalf("read captured: %v", err)
+		panic("unreachable")
 	}
 	if string(got) != "present" {
 		t.Fatalf("ambient env not inherited when no App auth is configured: %q", got)

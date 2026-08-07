@@ -33,6 +33,7 @@ func TestDispatchTaskCreatedWorkflow_RefusesDuringStartupRecovery(t *testing.T) 
 	created, err := app.tasks.Create("dispatch gate test", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 
 	app.startupRecoveryPending.Store(true)
@@ -58,12 +59,14 @@ func TestDispatchStatusWorkflow_RefusesDuringStartupRecovery(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(home, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 
 	created, err := taskMgr.Create("status dispatch gate test", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := taskMgr.Update(created.ID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -72,6 +75,7 @@ func TestDispatchStatusWorkflow_RefusesDuringStartupRecovery(t *testing.T) {
 	wfDir := filepath.Join(home, "workflows")
 	if err := os.MkdirAll(wfDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	const yaml = `id: status-changed-gate-test
 name: Status Changed Gate Test
@@ -85,10 +89,12 @@ steps:
 `
 	if err := os.WriteFile(filepath.Join(wfDir, "status-changed-gate-test.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wfStore, err := workflow.NewStore(wfDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	engine := workflow.NewTestEngine(wfStore, &taskAdapter{tasks: taskMgr}, &recordingAgentLauncher{}, discardLogger())
@@ -99,6 +105,7 @@ steps:
 	got, err := taskMgr.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q after dispatch while startup recovery was pending, want unchanged %q", got.Status, task.StatusInProgress)
@@ -109,6 +116,7 @@ steps:
 	got, err = taskMgr.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusDone {
 		t.Fatalf("status = %q after dispatch once recovery cleared, want %q", got.Status, task.StatusDone)
@@ -132,9 +140,11 @@ func TestStatusHook_WaitForStatus_RefusesDuringStartupRecovery(t *testing.T) {
 	wfStore, err := workflow.NewStore(wfDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wfDir, "test-status-hook.yaml"), []byte(waitForStatusWorkflowYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	engine := workflow.NewTestEngine(
 		wfStore,
@@ -165,6 +175,7 @@ func TestStatusHook_WaitForStatus_RefusesDuringStartupRecovery(t *testing.T) {
 	blocked, err := app.tasks.Create("status hook gate test (blocked)", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	parkOnPlanStep(blocked.ID)
 
@@ -175,9 +186,11 @@ func TestStatusHook_WaitForStatus_RefusesDuringStartupRecovery(t *testing.T) {
 	got, err := app.tasks.Get(blocked.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.CurrentStep != "plan" {
 		t.Fatalf("workflow = %+v after status-hook event while startup recovery was pending, want unchanged at step 'plan'", got.Workflow)
+		panic("unreachable")
 	}
 
 	// Allowed: once startup recovery clears, the identical transition on a
@@ -185,6 +198,7 @@ func TestStatusHook_WaitForStatus_RefusesDuringStartupRecovery(t *testing.T) {
 	allowed, err := app.tasks.Create("status hook gate test (allowed)", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	parkOnPlanStep(allowed.ID)
 
@@ -195,9 +209,11 @@ func TestStatusHook_WaitForStatus_RefusesDuringStartupRecovery(t *testing.T) {
 	got, err = app.tasks.Get(allowed.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.CurrentStep == "plan" {
 		t.Fatalf("workflow = %+v after status-hook event once recovery cleared, want advanced past step 'plan'", got.Workflow)
+		panic("unreachable")
 	}
 
 	// Suppressed is not dropped: the blocked task's awaited status is still the
@@ -208,9 +224,11 @@ func TestStatusHook_WaitForStatus_RefusesDuringStartupRecovery(t *testing.T) {
 	got, err = app.tasks.Get(blocked.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.CurrentStep == "plan" {
 		t.Fatalf("workflow = %+v after replaying deferred status changes, want advanced past step 'plan'", got.Workflow)
+		panic("unreachable")
 	}
 }
 
@@ -225,9 +243,11 @@ func TestReplayDeferredStatusChanges_UsesCurrentStatus(t *testing.T) {
 	wfStore, err := workflow.NewStore(wfDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wfDir, "test-status-hook.yaml"), []byte(waitForStatusWorkflowYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	app.workflowEngine = workflow.NewTestEngine(
 		wfStore,
@@ -240,6 +260,7 @@ func TestReplayDeferredStatusChanges_UsesCurrentStatus(t *testing.T) {
 	created, err := app.tasks.Create("status hook replay test", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{
 		"status": "planning",
@@ -268,9 +289,11 @@ func TestReplayDeferredStatusChanges_UsesCurrentStatus(t *testing.T) {
 	got, err := app.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.CurrentStep != "plan" {
 		t.Fatalf("workflow = %+v after replay, want still parked at step 'plan' (task left the awaited status)", got.Workflow)
+		panic("unreachable")
 	}
 }
 
@@ -288,6 +311,7 @@ func TestReplayDeferredStatusChanges_DispatchesHumanReview(t *testing.T) {
 	wfStore, err := workflow.NewStore(wfDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	app.workflowEngine = workflow.NewTestEngine(
 		wfStore,
@@ -313,6 +337,7 @@ func TestReplayDeferredStatusChanges_DispatchesHumanReview(t *testing.T) {
 	created, err := app.tasks.Create("human review replay test", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{"project_id": "owner/repo"}); err != nil {
 		t.Fatalf("UpdateMap: %v", err)
@@ -363,6 +388,7 @@ func TestAppStartup_ClearsStartupRecoveryPending(t *testing.T) {
 	app.recoveryStartGate = gate
 	if err := app.Startup(context.Background()); err != nil {
 		t.Fatalf("Startup: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		if app.agentSvc != nil && app.agentSvc.approval != nil {
@@ -409,6 +435,7 @@ func TestAppStartup_ReplaysStrandedVerdictOnlyAfterStartupCleanup(t *testing.T) 
 	app.recoveryStartGate = gate
 	if err := app.Startup(context.Background()); err != nil {
 		t.Fatalf("Startup: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		select {
@@ -425,6 +452,7 @@ func TestAppStartup_ReplaysStrandedVerdictOnlyAfterStartupCleanup(t *testing.T) 
 	created, err := app.tasks.Create("startup replay ordering", "body", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	created, err = app.tasks.Update(created.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -434,6 +462,7 @@ func TestAppStartup_ReplaysStrandedVerdictOnlyAfterStartupCleanup(t *testing.T) 
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := app.tasks.AddRun(created.ID, task.AgentRun{
 		AgentID: "hr-startup-order", Role: string(agent.RoleHumanReview),

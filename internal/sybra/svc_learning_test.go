@@ -17,6 +17,7 @@ func newTestLearningService(t *testing.T) (svc *LearningService, events *[]emitt
 	store, err := learning.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("learning.New: %v", err)
+		panic("unreachable")
 	}
 	events = &[]emittedEvent{}
 	svc = &LearningService{
@@ -44,6 +45,7 @@ func TestLearningServiceEmitsOnStore(t *testing.T) {
 	stored, err := svc.StoreDigest(d)
 	if err != nil || !stored {
 		t.Fatalf("first StoreDigest: stored=%v err=%v", stored, err)
+		panic("unreachable")
 	}
 	if len(*events) != 1 {
 		t.Fatalf("expected 1 emitted event, got %d", len(*events))
@@ -55,6 +57,7 @@ func TestLearningServiceEmitsOnStore(t *testing.T) {
 	stored, err = svc.StoreDigest(d)
 	if err != nil {
 		t.Fatalf("duplicate StoreDigest: unexpected err %v", err)
+		panic("unreachable")
 	}
 	if stored {
 		t.Error("duplicate StoreDigest should report stored=false")
@@ -66,6 +69,7 @@ func TestLearningServiceEmitsOnStore(t *testing.T) {
 	digests, err := svc.ListDigests()
 	if err != nil {
 		t.Fatalf("ListDigests: %v", err)
+		panic("unreachable")
 	}
 	if len(digests) != 1 {
 		t.Fatalf("expected 1 digest via ListDigests, got %d", len(digests))
@@ -74,6 +78,7 @@ func TestLearningServiceEmitsOnStore(t *testing.T) {
 	latest, ok, err := svc.GetLatestDigest()
 	if err != nil || !ok {
 		t.Fatalf("GetLatestDigest: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if latest.ReportDigest != "digest-1" {
 		t.Errorf("unexpected latest digest: %q", latest.ReportDigest)

@@ -35,6 +35,7 @@ func TestRerunFailedChecksWith_UsesFailedRunID(t *testing.T) {
 
 	if err := rerunFailedChecksWith(execer, "owner/repo", 42); err != nil {
 		t.Fatalf("rerunFailedChecksWith() err = %v", err)
+		panic("unreachable")
 	}
 	if len(execer.calls) != 4 {
 		t.Fatalf("calls = %d, want 4", len(execer.calls))
@@ -84,6 +85,7 @@ func TestLatestFailedRunIDOnCommitWith_BlockingConclusions(t *testing.T) {
 			got, err := latestFailedRunIDOnCommitWith(execer, "owner/repo", "abc123")
 			if err != nil {
 				t.Fatalf("latestFailedRunIDOnCommitWith() err = %v", err)
+				panic("unreachable")
 			}
 			if got != 987 {
 				t.Fatalf("run id = %d, want 987", got)
@@ -107,6 +109,7 @@ func TestLatestFailedRunIDOnCommitWith_UsesNewestBlockingRunForHeadSHA(t *testin
 	got, err := latestFailedRunIDOnCommitWith(execer, "owner/repo", "abc123")
 	if err != nil {
 		t.Fatalf("latestFailedRunIDOnCommitWith() err = %v", err)
+		panic("unreachable")
 	}
 	if got != 3 {
 		t.Fatalf("run id = %d, want 3", got)
@@ -126,6 +129,7 @@ func TestLatestFailedRunIDOnCommitWith_SkipsNonGatingRun(t *testing.T) {
 	got, err := latestFailedRunIDOnCommitWith(execer, "owner/repo", "abc123")
 	if err != nil {
 		t.Fatalf("latestFailedRunIDOnCommitWith() err = %v", err)
+		panic("unreachable")
 	}
 	if got != 11 {
 		t.Fatalf("run id = %d, want 11", got)
@@ -159,6 +163,7 @@ func TestLatestFailedRunIDOnCommitWith_SkipsRunWithOnlyNonGatingFailedJobs(t *te
 	got, err := latestFailedRunIDOnCommitWith(execer, "owner/repo", "abc123")
 	if err != nil {
 		t.Fatalf("latestFailedRunIDOnCommitWith() err = %v", err)
+		panic("unreachable")
 	}
 	if got != 11 {
 		t.Fatalf("run id = %d, want 11", got)
@@ -172,6 +177,7 @@ func TestLatestFailedRunIDOnCommitWith_ErrsWhenNoFailuresRemain(t *testing.T) {
 	_, err := latestFailedRunIDOnCommitWith(execer, "owner/repo", "abc123")
 	if err == nil {
 		t.Fatal("latestFailedRunIDOnCommitWith() err = nil, want error")
+		panic("unreachable")
 	}
 }
 

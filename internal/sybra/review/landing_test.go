@@ -76,11 +76,13 @@ func TestComputeLanding_LocalOnly(t *testing.T) {
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatalf("task NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 
 	r := &Handler{

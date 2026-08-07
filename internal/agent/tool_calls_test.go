@@ -69,6 +69,7 @@ func TestParseCodexItemLineTyped_NonBashTools(t *testing.T) {
 			ev, err := parseCodexItemLineTyped("item.started", &codexItem{Type: tt.itemType, ID: "x"}, nil)
 			if err != nil {
 				t.Fatalf("err: %v", err)
+				panic("unreachable")
 			}
 			if ev.Type != "tool_use" || len(ev.Message.ToolUses) != 1 || ev.Message.ToolUses[0].Name != tt.wantName {
 				t.Fatalf("started: got type=%q name=%v, want tool_use/%s", ev.Type, ev.Message, tt.wantName)

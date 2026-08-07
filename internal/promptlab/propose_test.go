@@ -109,6 +109,7 @@ func TestHasProposalDistinguishesIDsAndTags(t *testing.T) {
 	}
 	if HasProposal(nil, "pl-a2d853b2c1d9", cooldown, refNow) {
 		t.Fatal("empty task list must not match")
+		panic("unreachable")
 	}
 }
 

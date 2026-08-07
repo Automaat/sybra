@@ -33,6 +33,7 @@ func TestStatusReasonFromTruncatedAgentOutputMarshalsAsPlainYAML(t *testing.T) {
 	data, err := Marshal(task)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(string(data), "!!binary") {
 		t.Fatalf("status reason marshalled as a binary block:\n%s", data)
@@ -41,6 +42,7 @@ func TestStatusReasonFromTruncatedAgentOutputMarshalsAsPlainYAML(t *testing.T) {
 	parsed, err := ParseBytes(data)
 	if err != nil {
 		t.Fatalf("ParseBytes: %v", err)
+		panic("unreachable")
 	}
 	if parsed.StatusReason != reason {
 		t.Errorf("StatusReason did not round-trip:\ngot  %q\nwant %q", parsed.StatusReason, reason)

@@ -32,6 +32,7 @@ func TestParkOrEscalateBranchFixFailure_BusyPathDoesNotCountAsFailure(t *testing
 			tk, err := tasks.Create("busy wt", "", task.AgentModeHeadless)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 				t.Fatal(err)
@@ -49,6 +50,7 @@ func TestParkOrEscalateBranchFixFailure_BusyPathDoesNotCountAsFailure(t *testing
 			got, err := tasks.Get(tk.ID)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if got.Status == task.StatusHumanRequired {
 				t.Errorf("task escalated to human-required on a self-clearing refusal (reason %q)", got.StatusReason)

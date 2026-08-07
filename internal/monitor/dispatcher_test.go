@@ -93,6 +93,7 @@ func TestDispatcher_BoardWideAnomalyRunsInRepoDir(t *testing.T) {
 	agentID, err := d.Dispatch(context.Background(), a)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
+		panic("unreachable")
 	}
 	if agentID != "stub-agent" {
 		t.Errorf("agent id: got %q", agentID)
@@ -150,6 +151,7 @@ func TestDispatcher_PRGapUsesWorktreePath(t *testing.T) {
 	}
 	if _, err := d.Dispatch(context.Background(), a); err != nil {
 		t.Fatalf("dispatch: %v", err)
+		panic("unreachable")
 	}
 
 	cfg := rr.last()
@@ -180,6 +182,7 @@ func TestDispatcher_PRGapFallsBackToRepoDirWhenWorktreeMissing(t *testing.T) {
 	a := Anomaly{Kind: KindPRGap, TaskID: "abc123", Fingerprint: "pr_gap:abc123"}
 	if _, err := d.Dispatch(context.Background(), a); err != nil {
 		t.Fatalf("dispatch: %v", err)
+		panic("unreachable")
 	}
 	if rr.last().Dir != "/repo" {
 		t.Errorf("want fallback to /repo, got %q", rr.last().Dir)
@@ -197,6 +200,7 @@ func TestDispatcher_NoProjectIDNeverFallsBackToRepoDir(t *testing.T) {
 	a := Anomaly{Kind: KindStuckHumanBlocked, TaskID: "abc123", Fingerprint: "stuck:abc123"}
 	if _, err := d.Dispatch(context.Background(), a); err == nil {
 		t.Fatal("want dispatch error when task has no project_id and no worktree")
+		panic("unreachable")
 	}
 	if len(rr.calls) != 0 {
 		t.Errorf("runner must not be called for a project-less task, got %d calls", len(rr.calls))
@@ -219,6 +223,7 @@ func TestDispatcher_TaskGetErrorFallsBackToRepoDir(t *testing.T) {
 	a := Anomaly{Kind: KindStuckHumanBlocked, TaskID: "ghost", Fingerprint: "stuck:ghost"}
 	if _, err := d.Dispatch(context.Background(), a); err != nil {
 		t.Fatalf("dispatch should not error on task lookup failure: %v", err)
+		panic("unreachable")
 	}
 	cfg := rr.last()
 	if cfg.Dir != "/repo" {
@@ -237,6 +242,7 @@ func TestDispatcher_RunnerErrorPropagates(t *testing.T) {
 	_, err := d.Dispatch(context.Background(), a)
 	if err == nil {
 		t.Fatal("expected runner error to propagate")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "failure_spike") {
 		t.Errorf("error should mention anomaly kind: %v", err)
@@ -251,6 +257,7 @@ func TestDispatcher_EmptyRepoDirRejected(t *testing.T) {
 	_, err := d.Dispatch(context.Background(), a)
 	if err == nil {
 		t.Fatal("expected error when repoDir unresolved")
+		panic("unreachable")
 	}
 	if len(rr.calls) != 0 {
 		t.Error("runner must not be called when dir unresolved")

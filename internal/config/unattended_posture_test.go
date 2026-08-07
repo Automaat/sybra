@@ -53,6 +53,7 @@ func TestUnattendedPostureGatesTheLoadPath(t *testing.T) {
 			t.Setenv("SYBRA_HOME", home)
 			if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte(tc.yaml), 0o600); err != nil {
 				t.Fatalf("write config: %v", err)
+				panic("unreachable")
 			}
 			RequireExplicitSandboxMode(tc.require)
 			t.Cleanup(func() { RequireExplicitSandboxMode(false) })
@@ -61,6 +62,7 @@ func TestUnattendedPostureGatesTheLoadPath(t *testing.T) {
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("want load error, got nil")
+					panic("unreachable")
 				}
 				if !strings.Contains(err.Error(), "agent.sandbox_mode is unset") {
 					t.Fatalf("error = %v, want it to name agent.sandbox_mode", err)
@@ -69,6 +71,7 @@ func TestUnattendedPostureGatesTheLoadPath(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("want nil, got %v", err)
+				panic("unreachable")
 			}
 		})
 	}
@@ -83,5 +86,6 @@ func TestDefaultConfigSurvivesUnattendedRequirement(t *testing.T) {
 	t.Cleanup(func() { RequireExplicitSandboxMode(false) })
 	if cfg := DefaultConfig(); cfg == nil {
 		t.Fatal("DefaultConfig returned nil under the unattended requirement")
+		panic("unreachable")
 	}
 }

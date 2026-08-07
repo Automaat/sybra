@@ -14,6 +14,7 @@ func TestCloseIssueWith(t *testing.T) {
 		rec := &recordingExecer{}
 		if err := closeIssueWith(rec, "o/r", 42, "done"); err != nil {
 			t.Fatalf("closeIssueWith: %v", err)
+			panic("unreachable")
 		}
 		want := []string{"issue", "close", "42", "--repo", "o/r", "--reason", "completed", "--comment", "done"}
 		if !slices.Equal(rec.lastArgs, want) {
@@ -26,6 +27,7 @@ func TestCloseIssueWith(t *testing.T) {
 		rec := &recordingExecer{}
 		if err := closeIssueWith(rec, "o/r", 7, ""); err != nil {
 			t.Fatalf("closeIssueWith: %v", err)
+			panic("unreachable")
 		}
 		if slices.Contains(rec.lastArgs, "--comment") {
 			t.Fatalf("did not expect --comment: %v", rec.lastArgs)
@@ -37,6 +39,7 @@ func TestCloseIssueWith(t *testing.T) {
 		rec := &recordingExecer{err: fmt.Errorf("exit 1"), output: []byte("not found")}
 		if err := closeIssueWith(rec, "o/r", 9, ""); err == nil {
 			t.Fatal("expected error")
+			panic("unreachable")
 		}
 	})
 }

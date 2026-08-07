@@ -47,18 +47,22 @@ func createLegacyInteractiveTask(t *testing.T, tasks *task.Manager, title string
 	created, err := tasks.Create(title, "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	created.AgentMode = task.AgentModeInteractive
 	data, err := task.Marshal(created)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(created.FilePath, data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	reloaded, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return reloaded
 }
@@ -91,6 +95,7 @@ func TestRunStartupCleanupEmpty(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
@@ -122,12 +127,14 @@ func TestRunStartupCleanup_ReplaysEffectsBeforeStaleRestart(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	created, err := tasks.Create("startup replay ordering", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.UpdateMap(created.ID, map[string]any{
 		"status":     string(task.StatusInProgress),
@@ -180,21 +187,25 @@ func TestRunStartupCleanup_CleansOrphanedSandboxes(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	active, err := tasks.Create("active sandbox task", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	done, err := tasks.Create("done sandbox task", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	doneStatus := task.StatusDone
 	done, err = tasks.Update(done.ID, task.Update{Status: &doneStatus})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	sbDir := t.TempDir()
@@ -202,14 +213,17 @@ func TestRunStartupCleanup_CleansOrphanedSandboxes(t *testing.T) {
 	activeHome, err := sbMgr.SybraHomeDir(active.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	doneHome, err := sbMgr.SybraHomeDir(done.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	missingRoot := filepath.Join(sbDir, "missing-task")
 	if err := os.MkdirAll(missingRoot, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	logger := discardLogger()
@@ -237,6 +251,7 @@ func TestRunStartupCleanup_CleansOrphanedSandboxes(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Dir(activeHome)); err != nil {
 		t.Fatalf("active sandbox dir removed unexpectedly: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(filepath.Dir(doneHome)); !os.IsNotExist(err) {
 		t.Fatalf("done sandbox dir still exists after startup cleanup: %v", err)
@@ -255,6 +270,7 @@ func TestRunStartupCleanup_ReapsDeletedCWDOrphanProcess(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
@@ -271,21 +287,25 @@ func TestRunStartupCleanup_ReapsDeletedCWDOrphanProcess(t *testing.T) {
 	orphanCWD := filepath.Join(worktreesDir, "orphan-task")
 	if err := os.MkdirAll(orphanCWD, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	sleepBin, err := exec.LookPath("sleep")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	proc := exec.Command(sleepBin, "30")
 	proc.Dir = orphanCWD
 	if err := proc.Start(); err != nil {
 		t.Fatalf("start orphan process: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = proc.Process.Kill() })
 	go func() { _ = proc.Wait() }()
 
 	if err := os.RemoveAll(orphanCWD); err != nil {
 		t.Fatalf("remove orphan cwd: %v", err)
+		panic("unreachable")
 	}
 	waitForDeletedRecoveryCWD(t, proc.Process.Pid)
 
@@ -314,19 +334,23 @@ func TestRunStartupCleanup_PruneTrashRemovesExpiredGenerations(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	created, err := tasks.Create("Expired", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := tasks.Delete(created.ID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	entries, err := tasks.ListTrash()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(entries) != 1 {
 		t.Fatalf("ListTrash() = %d entries, want 1", len(entries))
@@ -334,6 +358,7 @@ func TestRunStartupCleanup_PruneTrashRemovesExpiredGenerations(t *testing.T) {
 	backdated := filepath.Join(store.TrashDir(), time.Now().UTC().AddDate(0, 0, -30).Format(time.DateOnly))
 	if err := os.Rename(filepath.Join(store.TrashDir(), entries[0].DeletedDate), backdated); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	logger := discardLogger()
@@ -362,6 +387,7 @@ func TestRunStartupCleanup_PruneTrashRemovesExpiredGenerations(t *testing.T) {
 	remaining, err := tasks.ListTrash()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(remaining) != 0 {
 		t.Fatalf("remaining = %+v, want the expired generation pruned", remaining)
@@ -373,19 +399,23 @@ func TestRunStartupCleanup_PruneTrashZeroUsesDefaultRetention(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	created, err := tasks.Create("Expired", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := tasks.Delete(created.ID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	entries, err := tasks.ListTrash()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(entries) != 1 {
 		t.Fatalf("ListTrash() = %d entries, want 1", len(entries))
@@ -393,6 +423,7 @@ func TestRunStartupCleanup_PruneTrashZeroUsesDefaultRetention(t *testing.T) {
 	backdated := filepath.Join(store.TrashDir(), time.Now().UTC().AddDate(0, 0, -30).Format(time.DateOnly))
 	if err := os.Rename(filepath.Join(store.TrashDir(), entries[0].DeletedDate), backdated); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	logger := discardLogger()
@@ -421,6 +452,7 @@ func TestRunStartupCleanup_PruneTrashZeroUsesDefaultRetention(t *testing.T) {
 	remaining, err := tasks.ListTrash()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(remaining) != 0 {
 		t.Fatalf("remaining = %+v, want the default 14-day retention to prune the expired generation", remaining)
@@ -439,6 +471,7 @@ func TestRestartStaleSkipsGatedTask(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -453,6 +486,7 @@ func TestRestartStaleSkipsGatedTask(t *testing.T) {
 	created, err := tasks.Create("remote", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	inProg := task.StatusInProgress
 	projID := "owner/pet"
@@ -497,6 +531,7 @@ func TestRestartStaleSkipsRecentRun(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -511,6 +546,7 @@ func TestRestartStaleSkipsRecentRun(t *testing.T) {
 	created, err := tasks.Create("stuck", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	inProg := task.StatusInProgress
 	projID := "owner/repo"
@@ -561,6 +597,7 @@ func TestRestartStaleSkipsRateLimitedProvider(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -576,6 +613,7 @@ func TestRestartStaleSkipsRateLimitedProvider(t *testing.T) {
 	created, err := tasks.Create("rate-limited", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	inProg := task.StatusInProgress
 	projID := "owner/repo"
@@ -621,6 +659,7 @@ func TestRestartStaleSkipsWhileDispatchInFlight(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -635,6 +674,7 @@ func TestRestartStaleSkipsWhileDispatchInFlight(t *testing.T) {
 	created, err := tasks.Create("dispatching", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	inProg := task.StatusInProgress
 	projID := "owner/repo"
@@ -690,6 +730,7 @@ func TestRestartStaleSteerBypassesRecentRunDebounce(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -704,6 +745,7 @@ func TestRestartStaleSteerBypassesRecentRunDebounce(t *testing.T) {
 	created, err := tasks.Create("looping", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	inProg := task.StatusInProgress
 	projID := "owner/repo"
@@ -755,6 +797,7 @@ func TestRestartStaleInteractiveOneShotRestartsAsOneShot(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -818,6 +861,7 @@ func TestRestartStaleInteractiveNoRunRedispatchesWhenProjectAssigned(t *testing.
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -872,6 +916,7 @@ func TestRestartStaleInteractiveNoWorkflowRedispatches(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -940,6 +985,7 @@ func TestRestartStaleInteractiveModeMismatchRedispatches(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -1015,6 +1061,7 @@ func TestRestartStaleInteractiveNoRunWithoutProjectEscalates(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -1053,6 +1100,7 @@ func TestRestartStaleInteractiveNoRunWithoutProjectEscalates(t *testing.T) {
 	updated, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if updated.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %s, want %s", updated.Status, task.StatusHumanRequired)
@@ -1078,6 +1126,7 @@ func TestRestartStalePRFixRebaseFailedFlipsToBlocked(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -1092,6 +1141,7 @@ func TestRestartStalePRFixRebaseFailedFlipsToBlocked(t *testing.T) {
 	created, err := tasks.Create("pr-fix rebase failed", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	inProg := task.StatusInProgress
 	projID := "owner/repo"
@@ -1140,6 +1190,7 @@ func TestRestartStalePRFixRebaseFailedFlipsToBlocked(t *testing.T) {
 	updated, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if updated.Status != task.StatusBlocked {
 		t.Errorf("status = %s, want %s (rebase failure must park, not retry forever)", updated.Status, task.StatusBlocked)
@@ -1167,6 +1218,7 @@ func TestRestartStaleShutdownCancellationSuppressed(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -1183,6 +1235,7 @@ func TestRestartStaleShutdownCancellationSuppressed(t *testing.T) {
 	created, err := tasks.Create("shutdown-cancelled stale restart", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	inProg := task.StatusInProgress
 	projID := "owner/repo"
@@ -1220,6 +1273,7 @@ func TestRestartStaleShutdownCancellationSuppressed(t *testing.T) {
 	updated, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if updated.Status != task.StatusInProgress {
 		t.Errorf("status = %s, want unchanged %s", updated.Status, task.StatusInProgress)
@@ -1299,6 +1353,7 @@ func TestRestartStalePRFixWorkflowRevertsToInReview(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -1316,6 +1371,7 @@ func TestRestartStalePRFixWorkflowRevertsToInReview(t *testing.T) {
 	created, err := tasks.Create("cancelled pr-fix", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	status := task.StatusInProgress
 	wf := &workflow.Execution{
@@ -1364,6 +1420,7 @@ func TestRestartStalePRFixWorkflowRevertsToInReview(t *testing.T) {
 	updated, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if updated.Status != task.StatusInReview {
 		t.Errorf("task status = %s; want %s", updated.Status, task.StatusInReview)
@@ -1388,6 +1445,7 @@ func TestRestartStaleTestFixRevertsToInReview(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -1402,6 +1460,7 @@ func TestRestartStaleTestFixRevertsToInReview(t *testing.T) {
 	created, err := tasks.Create("stale test-fix", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	status := task.StatusInProgress
 	wf := &workflow.Execution{
@@ -1449,6 +1508,7 @@ func TestRestartStaleTestFixRevertsToInReview(t *testing.T) {
 	updated, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if updated.Status != task.StatusInReview {
 		t.Errorf("task status = %s; want %s", updated.Status, task.StatusInReview)
@@ -1466,6 +1526,7 @@ func newReviewTaskOnPlanWorkflow(t *testing.T, tasks *task.Manager, withPRContex
 	created, err := tasks.Create("Review: some PR", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	status := task.StatusInProgress
 	tags := []string{"review"}
@@ -1481,6 +1542,7 @@ func newReviewTaskOnPlanWorkflow(t *testing.T, tasks *task.Manager, withPRContex
 	}
 	if _, err := tasks.Update(created.ID, upd); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return created.ID
 }
@@ -1502,6 +1564,7 @@ func TestRestartStaleReviewOnPlanWorkflowConvergesToPRReview(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -1551,6 +1614,7 @@ func TestRestartStaleReviewOnPlanWorkflowConvergesToPRReview(t *testing.T) {
 	converged, err := tasks.Get(taskID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if strings.Contains(converged.StatusReason, "agent lost") {
 		t.Errorf("status reason = %q, stale lost-agent marker was not cleared", converged.StatusReason)
@@ -1603,6 +1667,7 @@ func TestRestartStaleReviewOnPlanWorkflowNoContextEscalates(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -1643,6 +1708,7 @@ func TestRestartStaleReviewOnPlanWorkflowNoContextEscalates(t *testing.T) {
 	updated, err := tasks.Get(taskID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if updated.Status != task.StatusBlocked {
 		t.Errorf("status = %s; want %s (machine-owned quarantine)", updated.Status, task.StatusBlocked)
@@ -1666,6 +1732,7 @@ func TestRestartStaleReviewOnPlanWorkflowNoContextEscalates(t *testing.T) {
 	parked, err := tasks.Get(taskID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if parked.Status != task.StatusBlocked {
 		t.Errorf("status after tick 2 = %s; want %s", parked.Status, task.StatusBlocked)
@@ -1685,6 +1752,7 @@ func newTerminalWorkflowInProgressTask(t *testing.T, tasks *task.Manager, wfID s
 	created, err := tasks.Create("resume after testing bounce", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	status := task.StatusInProgress
 	wf := &workflow.Execution{
@@ -1712,6 +1780,7 @@ func TestRestartStaleTerminalWorkflowRedispatchesByCurrentStatus(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -1755,6 +1824,7 @@ func TestRestartStaleTerminalWorkflowRedispatchesByCurrentStatus(t *testing.T) {
 	updated, err := tasks.Get(taskID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if updated.Status != task.StatusInProgress {
 		t.Errorf("task status = %s; want %s (unchanged, dispatch owns any further transition)", updated.Status, task.StatusInProgress)
@@ -1770,6 +1840,7 @@ func TestRestartStaleTerminalWorkflowFallsBackWhenNoTriggerMatches(t *testing.T)
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -1817,6 +1888,7 @@ func newReviewTaskWithHeadlessRun(t *testing.T, tasks *task.Manager, run task.Ag
 	created, err := tasks.Create("review me", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	status := task.StatusInProgress
 	tags := []string{"review"}
@@ -1836,6 +1908,7 @@ func newReviewTaskWithHeadlessRun(t *testing.T, tasks *task.Manager, run task.Ag
 	}
 	if err := tasks.AddRun(created.ID, run); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return created.ID
 }
@@ -1891,6 +1964,7 @@ func TestRestartStaleRecoverCompletedHeadlessRunKeysOnOutcome(t *testing.T) {
 			store, err := task.NewStore(dir)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			tasks := task.NewManager(store, nil)
 			logger := discardLogger()
@@ -1962,6 +2036,7 @@ func TestRestartStaleRecoverCompletedHeadlessRunGeneralizedBeyondReviewTag(t *te
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -1978,6 +2053,7 @@ func TestRestartStaleRecoverCompletedHeadlessRunGeneralizedBeyondReviewTag(t *te
 	created, err := tasks.Create("implement feature", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	status := task.StatusInProgress
 	wf := &workflow.Execution{
@@ -2047,6 +2123,7 @@ func TestRestartStaleRecoverCompletedHeadlessRunSkipsVerifyAutoFixRewind(t *test
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -2061,6 +2138,7 @@ func TestRestartStaleRecoverCompletedHeadlessRunSkipsVerifyAutoFixRewind(t *test
 	created, err := tasks.Create("implement feature", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	status := task.StatusInProgress
 	retryAfter := time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)
@@ -2120,9 +2198,11 @@ func TestRestartStaleRecoverCompletedHeadlessRunSkipsVerifyAutoFixRewind(t *test
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.CurrentStep != "implement" || got.Workflow.State != workflow.ExecWaiting {
 		t.Fatalf("workflow = %+v, want implement/ExecWaiting preserved", got.Workflow)
+		panic("unreachable")
 	}
 }
 
@@ -2134,6 +2214,7 @@ func TestRestartStaleRecoverCompletedHeadlessRunSkipsMismatchedPriorStageRun(t *
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -2148,6 +2229,7 @@ func TestRestartStaleRecoverCompletedHeadlessRunSkipsMismatchedPriorStageRun(t *
 	created, err := tasks.Create("implement feature", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	status := task.StatusInProgress
 	now := time.Now().UTC()
@@ -2220,6 +2302,7 @@ func TestTryClaimRecoveryMutualExclusion(t *testing.T) {
 	claim, ok := r.TryClaimRecovery("task-1")
 	if !ok || claim == nil {
 		t.Fatal("expected first claim to succeed")
+		panic("unreachable")
 	}
 	if _, ok := r.TryClaimRecovery("task-1"); ok {
 		t.Fatal("expected second claim for the same task to fail while the first is held")
@@ -2262,6 +2345,7 @@ func TestRestartStaleSkipsWhileRecoveryClaimHeld(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -2356,6 +2440,7 @@ func TestRestartTaskIfStale_ReplaysPersistedEffectsBeforeFallback(t *testing.T) 
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -2371,6 +2456,7 @@ func TestRestartTaskIfStale_ReplaysPersistedEffectsBeforeFallback(t *testing.T) 
 	created, err := tasks.Create("stale replay", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	_, err = tasks.UpdateMap(created.ID, map[string]any{
 		"status":     string(task.StatusInProgress),
@@ -2383,6 +2469,7 @@ func TestRestartTaskIfStale_ReplaysPersistedEffectsBeforeFallback(t *testing.T) 
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wfStub := &stubWorkflowEngine{replayTask: true}
@@ -2402,6 +2489,7 @@ func TestRestartTaskIfStale_ReplaysPersistedEffectsBeforeFallback(t *testing.T) 
 
 	if err := r.RestartTaskIfStale(ctx, created.ID); err != nil {
 		t.Fatalf("RestartTaskIfStale: %v", err)
+		panic("unreachable")
 	}
 	wg.Wait()
 
@@ -2428,6 +2516,7 @@ func TestRestartStaleConcurrentPathsDoNotDoubleFireHandleAgentComplete(t *testin
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -2539,6 +2628,7 @@ func TestPruneTrash_CommitBeforePruneFiresBeforeSweep(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
@@ -2546,13 +2636,16 @@ func TestPruneTrash_CommitBeforePruneFiresBeforeSweep(t *testing.T) {
 		tk, err := store.Create(title, "body", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if err := store.Delete(tk.ID); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		entries, err := store.ListTrash()
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		var genDir string
 		for _, e := range entries {
@@ -2566,10 +2659,12 @@ func TestPruneTrash_CommitBeforePruneFiresBeforeSweep(t *testing.T) {
 		backdated := filepath.Join(store.TrashDir(), time.Now().UTC().AddDate(0, 0, -30).Format(time.DateOnly))
 		if err := os.MkdirAll(backdated, 0o755); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		dst := filepath.Join(backdated, filepath.Base(genDir))
 		if err := os.Rename(genDir, dst); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		return tk.ID
 	}
@@ -2592,6 +2687,7 @@ func TestPruneTrash_CommitBeforePruneFiresBeforeSweep(t *testing.T) {
 		entries, err := tasks.ListTrash()
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		for _, e := range entries {
 			if e.ID == id {
@@ -2669,6 +2765,7 @@ func TestPruneTrash_NilCommitBeforePruneIsSafe(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 

@@ -66,6 +66,7 @@ func TestResolveHeadlessPermissionMode(t *testing.T) {
 			got, err := agentorch.ResolveHeadlessPermissionMode(tc.t, tc.cfg)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, wantErr = %v", err, tc.wantErr)
+				panic("unreachable")
 			}
 			if !tc.wantErr && got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)

@@ -13,6 +13,7 @@ func TestStore_PutDedupsByFingerprintAndTracksRecurrence(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	base := time.Date(2026, 7, 25, 10, 0, 0, 0, time.UTC)
@@ -28,11 +29,13 @@ func TestStore_PutDedupsByFingerprintAndTracksRecurrence(t *testing.T) {
 	rec1.Fingerprint = Fingerprint(rec1)
 	if err := store.Put("owner/repo", rec1); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got, err := store.Query("owner/repo", 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 1 || got[0].Recurrences != 1 {
 		t.Fatalf("after first Put: got %+v, want one record with Recurrences=1", got)
@@ -54,11 +57,13 @@ func TestStore_PutDedupsByFingerprintAndTracksRecurrence(t *testing.T) {
 	rec2.Fingerprint = Fingerprint(rec2)
 	if err := store.Put("owner/repo", rec2); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got, err = store.Query("owner/repo", 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 1 {
 		t.Fatalf("len(Query) = %d, want 1 (equivalent interventions must dedup to one file)", len(got))
@@ -90,11 +95,13 @@ func TestStore_PutDedupsByFingerprintAndTracksRecurrence(t *testing.T) {
 	rec3.Fingerprint = Fingerprint(rec3)
 	if err := store.Put("owner/repo", rec3); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got, err = store.Query("owner/repo", 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 2 {
 		t.Fatalf("len(Query) = %d, want 2 (distinct fingerprint must not dedup)", len(got))
@@ -105,6 +112,7 @@ func TestStore_ProjectScoping(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	rec := Record{
 		TaskID:              "task-a",
@@ -117,6 +125,7 @@ func TestStore_ProjectScoping(t *testing.T) {
 	rec.Fingerprint = Fingerprint(rec)
 	if err := store.Put("owner/repo-a", rec); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	workKey := ProjectKey(mustWorkProject(t))
@@ -124,11 +133,13 @@ func TestStore_ProjectScoping(t *testing.T) {
 	rec2.TaskID = "task-b"
 	if err := store.Put(workKey, rec2); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	a, err := store.Query("owner/repo-a", 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(a) != 1 || a[0].TaskID != "task-a" {
 		t.Fatalf("owner/repo-a Query = %+v, want only task-a", a)
@@ -137,6 +148,7 @@ func TestStore_ProjectScoping(t *testing.T) {
 	w, err := store.Query(workKey, 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(w) != 1 || w[0].TaskID != "task-b" {
 		t.Fatalf("work project Query = %+v, want only task-b", w)
@@ -158,6 +170,7 @@ func TestStore_PutRejectsEmptyFingerprint(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.Put("owner/repo", Record{TaskID: "task-a"}); err == nil {
 		t.Fatal("Put with empty fingerprint: want error, got nil")
@@ -172,6 +185,7 @@ func TestStore_PutConcurrentSameFingerprint(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	base := time.Date(2026, 7, 25, 10, 0, 0, 0, time.UTC)
@@ -201,6 +215,7 @@ func TestStore_PutConcurrentSameFingerprint(t *testing.T) {
 	got, err := store.Query("owner/repo", 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 1 {
 		t.Fatalf("len(Query) = %d, want 1 (same fingerprint must dedup to one file)", len(got))

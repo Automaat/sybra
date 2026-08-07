@@ -22,6 +22,7 @@ func readAuditNDJSON(t *testing.T, dir string) []audit.Event {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("read audit dir: %v", err)
+		panic("unreachable")
 	}
 	var events []audit.Event
 	for _, e := range entries {
@@ -31,12 +32,14 @@ func readAuditNDJSON(t *testing.T, dir string) []audit.Event {
 		f, err := os.Open(filepath.Join(dir, e.Name()))
 		if err != nil {
 			t.Fatalf("open audit file: %v", err)
+			panic("unreachable")
 		}
 		sc := bufio.NewScanner(f)
 		for sc.Scan() {
 			var ev audit.Event
 			if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
 				t.Fatalf("unmarshal audit event: %v", err)
+				panic("unreachable")
 			}
 			events = append(events, ev)
 		}
@@ -55,17 +58,20 @@ func TestRecordImplAgentStart_PromptHashCorrelatesWithCompletion(t *testing.T) {
 	al, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = al.Close() })
 
 	ts, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tm := task.NewManager(ts, nil)
 	tk, err := tm.Create("prompt render task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	o := New(tm, nil, nil, al, discardSlogLogger(), nil, &config.Config{})
@@ -96,9 +102,11 @@ func TestRecordImplAgentStart_PromptHashCorrelatesWithCompletion(t *testing.T) {
 	}
 	if started == nil {
 		t.Fatal("no agent.started event recorded")
+		panic("unreachable")
 	}
 	if rendered == nil {
 		t.Fatal("no agent.prompt_rendered event recorded")
+		panic("unreachable")
 	}
 
 	startedHash, _ := started.Data["prompt_hash"].(string)

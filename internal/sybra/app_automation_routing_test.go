@@ -55,9 +55,11 @@ func TestInitIssuesFetcher_GitHubDisabled_NoFetcherRegistered(t *testing.T) {
 
 			if tt.wantNil && got != nil {
 				t.Fatalf("initIssuesFetcher = %v, want nil", got)
+				panic("unreachable")
 			}
 			if !tt.wantNil && got == nil {
 				t.Fatal("initIssuesFetcher = nil, want non-nil")
+				panic("unreachable")
 			}
 		})
 	}
@@ -351,6 +353,7 @@ func TestWorkScrubContextForTask(t *testing.T) {
 	store, err := project.NewStore(dir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	// Seed projects by writing YAML directly — Create() does a real git clone.
 	mustWriteProjectYAML(t, dir, "work-owner/work-repo", project.ProjectTypeWork)
@@ -386,6 +389,7 @@ func TestWorkScrubContextForTask(t *testing.T) {
 			got := a.workScrubContextForTask(tc.projectID)
 			if (got != nil) != tc.wantNonNil {
 				t.Fatalf("workScrubContextForTask(%q) non-nil=%v, want %v", tc.projectID, got != nil, tc.wantNonNil)
+				panic("unreachable")
 			}
 			if got == nil {
 				return
@@ -415,5 +419,6 @@ func mustWriteProjectYAML(t *testing.T, dir, id string, ptype project.ProjectTyp
 	content := "id: " + id + "\ntype: " + string(ptype) + "\nowner: stub\nrepo: stub\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write project YAML: %v", err)
+		panic("unreachable")
 	}
 }

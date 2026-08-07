@@ -17,6 +17,7 @@ func TestKeyedLockerLockWithin_TimesOutOnInProcessContention(t *testing.T) {
 	unlock, err := locker.Lock("task-a", filepath.Join(dir, "one.json"))
 	if err != nil {
 		t.Fatalf("Lock: %v", err)
+		panic("unreachable")
 	}
 
 	var unlockOnce sync.Once

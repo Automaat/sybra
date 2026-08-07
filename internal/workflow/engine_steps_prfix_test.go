@@ -281,6 +281,7 @@ func TestExecRoutePRFixResult_HumanRequiredStopsBeforeRelink(t *testing.T) {
 	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{ID: "t1", PRNumber: 1178})
 	if err != nil {
 		t.Fatalf("execRoutePRFixResult: %v", err)
+		panic("unreachable")
 	}
 	if out.Output == "continue" {
 		t.Fatal("route output = continue, want human-required reason")
@@ -288,6 +289,7 @@ func TestExecRoutePRFixResult_HumanRequiredStopsBeforeRelink(t *testing.T) {
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "human-required" {
 		t.Fatalf("status = %q, want human-required", got.Status)
@@ -346,6 +348,7 @@ func TestExecRoutePRFixResult_RecoversResolvedUnmergedConflict(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("execRoutePRFixResult: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "continue" {
 		t.Fatalf("output = %q, want continue", out.Output)
@@ -354,6 +357,7 @@ func TestExecRoutePRFixResult_RecoversResolvedUnmergedConflict(t *testing.T) {
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "in-progress" {
 		t.Fatalf("status = %q, want unchanged in-progress", got.Status)
@@ -362,6 +366,7 @@ func TestExecRoutePRFixResult_RecoversResolvedUnmergedConflict(t *testing.T) {
 	statusOut, err := exec.Command("git", "-C", wtPath, "status", "--porcelain").CombinedOutput()
 	if err != nil {
 		t.Fatalf("git status: %v: %s", err, statusOut)
+		panic("unreachable")
 	}
 	if strings.TrimSpace(string(statusOut)) != "" {
 		t.Fatalf("worktree not clean after recovery: %s", statusOut)
@@ -370,6 +375,7 @@ func TestExecRoutePRFixResult_RecoversResolvedUnmergedConflict(t *testing.T) {
 	subject, err := exec.Command("git", "-C", wtPath, "log", "-1", "--format=%s").CombinedOutput()
 	if err != nil {
 		t.Fatalf("git log: %v: %s", err, subject)
+		panic("unreachable")
 	}
 	if got := strings.TrimSpace(string(subject)); got != "fix(recovery): finalize merge resolution" {
 		t.Fatalf("last subject = %q, want recovery commit", got)
@@ -379,6 +385,7 @@ func TestExecRoutePRFixResult_RecoversResolvedUnmergedConflict(t *testing.T) {
 	remoteSHAOut, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "rev-parse", "refs/heads/feat/conflict-recovery").CombinedOutput()
 	if err != nil {
 		t.Fatalf("rev-parse remote branch: %v: %s", err, remoteSHAOut)
+		panic("unreachable")
 	}
 	if remoteSHA := strings.TrimSpace(string(remoteSHAOut)); remoteSHA != localSHA {
 		t.Fatalf("remote SHA = %q, want pushed local SHA %q", remoteSHA, localSHA)
@@ -441,6 +448,7 @@ func TestExecRoutePRFixResult_RecoversResolvedButUnstagedConflict(t *testing.T) 
 	})
 	if err != nil {
 		t.Fatalf("execRoutePRFixResult: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "continue" {
 		t.Fatalf("output = %q, want continue", out.Output)
@@ -449,6 +457,7 @@ func TestExecRoutePRFixResult_RecoversResolvedButUnstagedConflict(t *testing.T) 
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "in-progress" {
 		t.Fatalf("status = %q, want unchanged in-progress", got.Status)
@@ -457,6 +466,7 @@ func TestExecRoutePRFixResult_RecoversResolvedButUnstagedConflict(t *testing.T) 
 	statusOut, err := exec.Command("git", "-C", wtPath, "status", "--porcelain").CombinedOutput()
 	if err != nil {
 		t.Fatalf("git status: %v: %s", err, statusOut)
+		panic("unreachable")
 	}
 	if strings.TrimSpace(string(statusOut)) != "" {
 		t.Fatalf("worktree not clean after recovery: %s", statusOut)
@@ -465,6 +475,7 @@ func TestExecRoutePRFixResult_RecoversResolvedButUnstagedConflict(t *testing.T) 
 	subject, err := exec.Command("git", "-C", wtPath, "log", "-1", "--format=%s").CombinedOutput()
 	if err != nil {
 		t.Fatalf("git log: %v: %s", err, subject)
+		panic("unreachable")
 	}
 	if got := strings.TrimSpace(string(subject)); got != "fix(recovery): finalize merge resolution" {
 		t.Fatalf("last subject = %q, want recovery commit", got)
@@ -474,6 +485,7 @@ func TestExecRoutePRFixResult_RecoversResolvedButUnstagedConflict(t *testing.T) 
 	remoteSHAOut, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "rev-parse", "refs/heads/feat/conflict-recovery-unstaged").CombinedOutput()
 	if err != nil {
 		t.Fatalf("rev-parse remote branch: %v: %s", err, remoteSHAOut)
+		panic("unreachable")
 	}
 	if remoteSHA := strings.TrimSpace(string(remoteSHAOut)); remoteSHA != localSHA {
 		t.Fatalf("remote SHA = %q, want pushed local SHA %q", remoteSHA, localSHA)
@@ -539,6 +551,7 @@ func TestExecRoutePRFixResult_ResolvedMergePushRetryKeepsCheckpointContext(t *te
 	resolved, err := project.ResolvedUnmergedPaths(context.Background(), wtPath)
 	if err != nil {
 		t.Fatalf("ResolvedUnmergedPaths after checkpoint: %v", err)
+		panic("unreachable")
 	}
 	if len(resolved) != 0 {
 		t.Fatalf("resolved paths after checkpoint = %v, want none", resolved)
@@ -549,10 +562,12 @@ func TestExecRoutePRFixResult_ResolvedMergePushRetryKeepsCheckpointContext(t *te
 	resumedTask, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, resumedTask.Workflow, resumedTask)
 	if err != nil {
 		t.Fatalf("resumed execRoutePRFixResult: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "continue" {
 		t.Fatalf("resumed output = %q, want continue", out.Output)
@@ -563,6 +578,7 @@ func TestExecRoutePRFixResult_ResolvedMergePushRetryKeepsCheckpointContext(t *te
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status == "human-required" {
 		t.Fatalf("status = human-required after retry: %s", tasks.Reason("t1"))
@@ -576,6 +592,7 @@ func TestExecRoutePRFixResult_ResolvedMergeRejectsUnexpectedDirtyPath(t *testing
 	runGitAt(t, wtPath, "add", filepath.Join("internal", "workflow", "engine_advance.go"))
 	if err := os.WriteFile(filepath.Join(wtPath, "scratch.txt"), []byte("unverified\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	store := newTestStore(t)
@@ -623,6 +640,7 @@ func TestExecRoutePRFixResult_ResolvedMergeRejectsUnexpectedDirtyPath(t *testing
 	})
 	if err != nil {
 		t.Fatalf("execRoutePRFixResult: %v", err)
+		panic("unreachable")
 	}
 	if out.Output == "continue" {
 		t.Fatal("route output = continue, want human-required dirty-path stop")
@@ -630,6 +648,7 @@ func TestExecRoutePRFixResult_ResolvedMergeRejectsUnexpectedDirtyPath(t *testing
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "human-required" {
 		t.Fatalf("status = %q, want human-required", got.Status)
@@ -693,6 +712,7 @@ func TestExecRoutePRFixResult_HumanRequiredApprovalStopSkipsResolvedMergeRecover
 	})
 	if err != nil {
 		t.Fatalf("execRoutePRFixResult: %v", err)
+		panic("unreachable")
 	}
 	if out.Output == "continue" {
 		t.Fatal("route output = continue, want explicit human-required approval stop")
@@ -700,6 +720,7 @@ func TestExecRoutePRFixResult_HumanRequiredApprovalStopSkipsResolvedMergeRecover
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "human-required" {
 		t.Fatalf("status = %q, want human-required", got.Status)
@@ -764,6 +785,7 @@ func TestExecRoutePRFixResult_ResolvedUnmergedWithFailingTestsRoutesToTestFix(t 
 	})
 	if err != nil {
 		t.Fatalf("execRoutePRFixResult: %v", err)
+		panic("unreachable")
 	}
 	if out.Output == "continue" {
 		t.Fatal("route output = continue, want scoped test-fix before resolved-merge recovery")
@@ -794,6 +816,7 @@ func TestResolvedMergeFocusedCommandsReturnsChangedFilesError(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatalf("resolvedMergeFocusedCommands err = nil, cmds = %v; want changed-file discovery error", cmds)
+		panic("unreachable")
 	}
 	if len(cmds) != 0 {
 		t.Fatalf("cmds = %v, want none on changed-file discovery error", cmds)
@@ -810,27 +833,33 @@ func newResolvedUnmergedPRFixWorktree(t *testing.T, branch string) (bare, wtPath
 	conflictPath := filepath.Join("internal", "workflow", "engine_advance.go")
 	if err := os.MkdirAll(filepath.Join(wtPath, "internal", "workflow"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wtPath, conflictPath), []byte("feature branch\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	runGitAt(t, wtPath, "add", conflictPath)
 	runGitAt(t, wtPath, "commit", "-m", "feat: branch side")
 	if err := project.PushSync(context.Background(), wtPath, branch); err != nil {
 		t.Fatalf("PushSync seed: %v", err)
+		panic("unreachable")
 	}
 
 	baseWT := filepath.Join(t.TempDir(), "base")
 	if err := project.CreateWorktreeExisting(context.Background(), bare, baseWT, "main"); err != nil {
 		t.Fatalf("CreateWorktreeExisting(main): %v", err)
+		panic("unreachable")
 	}
 	runGitAt(t, baseWT, "config", "user.email", "test@test.com")
 	runGitAt(t, baseWT, "config", "user.name", "Test")
 	if err := os.MkdirAll(filepath.Join(baseWT, "internal", "workflow"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(baseWT, conflictPath), []byte("main branch\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	runGitAt(t, baseWT, "add", conflictPath)
 	runGitAt(t, baseWT, "commit", "-m", "feat: base side")
@@ -840,9 +869,11 @@ func newResolvedUnmergedPRFixWorktree(t *testing.T, branch string) (bare, wtPath
 	cmd.Dir = wtPath
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("git merge unexpectedly succeeded: %s", out)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wtPath, conflictPath), []byte("feature branch\nmain branch\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return bare, wtPath
 }
@@ -886,6 +917,7 @@ func TestExecRoutePRFixResult_HumanRequiredWithFailingTestsRoutesToTestFix(t *te
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "in-progress" {
 		t.Fatalf("status = %q, want in-progress (must not park before test_fix's own attempt)", got.Status)
@@ -935,6 +967,7 @@ func TestExecRoutePRFixResult_TestFixOwnHumanRequiredParksImmediately(t *testing
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "human-required" {
 		t.Fatalf("status = %q, want human-required (test_fix's own attempt must be the last one)", got.Status)
@@ -977,6 +1010,7 @@ func TestExecRoutePRFixResult_HumanRequiredWithoutFailingTestsNoNote(t *testing.
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if strings.Contains(got.Body, "PR-Fix: Failing Tests") {
 		t.Errorf("expected no failing-tests section without any reported tests; got body:\n%s", got.Body)
@@ -1014,6 +1048,7 @@ func TestExecRoutePRFixResult_NoPRRemoteOutageResumesRecovery(t *testing.T) {
 	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_result"}, wf, TaskInfo{ID: "t1", ProjectID: "Automaat/sybra"})
 	if err != nil {
 		t.Fatalf("execRoutePRFixResult: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(out.Output, "retryable no-PR remote outage") {
 		t.Fatalf("output = %q, want retryable no-PR remote outage", out.Output)
@@ -1021,6 +1056,7 @@ func TestExecRoutePRFixResult_NoPRRemoteOutageResumesRecovery(t *testing.T) {
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status == "human-required" {
 		t.Fatalf("status = %q, want recovery to continue toward resume_original", got.Status)
@@ -1055,6 +1091,7 @@ func TestExecRoutePRFixResult_FlakeRoutesToInReviewWithoutCommit(t *testing.T) {
 	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{ID: "t1", ProjectID: "acme/widgets", PRNumber: 1178})
 	if err != nil {
 		t.Fatalf("execRoutePRFixResult: %v", err)
+		panic("unreachable")
 	}
 	if out.Output == "continue" {
 		t.Fatal("route output = continue, want the flake message so verify_commits is skipped")
@@ -1062,6 +1099,7 @@ func TestExecRoutePRFixResult_FlakeRoutesToInReviewWithoutCommit(t *testing.T) {
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "in-review" {
 		t.Fatalf("status = %q, want in-review (a flake must never park a human)", got.Status)
@@ -1100,6 +1138,7 @@ func TestExecRoutePRFixResult_ReviewHoldParkBeatsFlake(t *testing.T) {
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "human-required" {
 		t.Fatalf("status = %q, want human-required (review hold must beat a flake sentinel)", got.Status)
@@ -1135,6 +1174,7 @@ func TestExecRoutePRFixResult_ReProbesResolvedRemotePR(t *testing.T) {
 	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{ID: "t1", ProjectID: "acme/widgets", PRNumber: 1178})
 	if err != nil {
 		t.Fatalf("execRoutePRFixResult: %v", err)
+		panic("unreachable")
 	}
 	if out.Output == "continue" {
 		t.Fatal("route output = continue, want resolved-on-remote message")
@@ -1142,6 +1182,7 @@ func TestExecRoutePRFixResult_ReProbesResolvedRemotePR(t *testing.T) {
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "in-review" {
 		t.Fatalf("status = %q, want in-review", got.Status)
@@ -1177,6 +1218,7 @@ func TestExecRoutePRFixResult_ReviewHoldParkIgnoresResolvedRemotePR(t *testing.T
 	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{ID: "t1", ProjectID: "acme/widgets", PRNumber: 1446})
 	if err != nil {
 		t.Fatalf("execRoutePRFixResult: %v", err)
+		panic("unreachable")
 	}
 	if out.Output == "continue" {
 		t.Fatal("route output = continue; review-hold park must force human-required")
@@ -1184,6 +1226,7 @@ func TestExecRoutePRFixResult_ReviewHoldParkIgnoresResolvedRemotePR(t *testing.T
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "human-required" {
 		t.Fatalf("status = %q, want human-required (review-hold must not be waved through)", got.Status)
@@ -1217,6 +1260,7 @@ func TestExecRoutePRFixResult_ReviewHoldParkWinsOverContinue(t *testing.T) {
 	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{ID: "t1", PRNumber: 1446})
 	if err != nil {
 		t.Fatalf("execRoutePRFixResult: %v", err)
+		panic("unreachable")
 	}
 	if out.Output == "continue" {
 		t.Fatal("route output = continue; review-hold park must force human-required")
@@ -1224,6 +1268,7 @@ func TestExecRoutePRFixResult_ReviewHoldParkWinsOverContinue(t *testing.T) {
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "human-required" {
 		t.Fatalf("status = %q, want human-required", got.Status)
@@ -1263,6 +1308,7 @@ func TestExecRoutePRFixResult_ReviewHoldParkIgnoresFailingTestLines(t *testing.T
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "human-required" {
 		t.Fatalf("status = %q, want human-required", got.Status)
@@ -1395,6 +1441,7 @@ func TestAdvanceStep_PRFixHumanRequiredUsesUntruncatedOutput(t *testing.T) {
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	if err := engine.StartWorkflow("t1", "pr-fix-route-test"); err != nil {
 		t.Fatalf("start workflow: %v", err)
+		panic("unreachable")
 	}
 
 	longOutput := strings.Repeat("progress details\n", 400) +
@@ -1412,6 +1459,7 @@ func TestAdvanceStep_PRFixHumanRequiredUsesUntruncatedOutput(t *testing.T) {
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "human-required" {
 		t.Fatalf("status = %q, want human-required", got.Status)
@@ -1421,6 +1469,7 @@ func TestAdvanceStep_PRFixHumanRequiredUsesUntruncatedOutput(t *testing.T) {
 	}
 	if got.Workflow == nil || got.Workflow.State != ExecCompleted {
 		t.Fatalf("workflow state = %+v, want completed", got.Workflow)
+		panic("unreachable")
 	}
 }
 
@@ -1470,6 +1519,7 @@ func TestAdvanceStep_TestFixHumanRequiredUsesUntruncatedOutput(t *testing.T) {
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	if err := engine.StartWorkflow("t1", "test-fix-route-test"); err != nil {
 		t.Fatalf("start workflow: %v", err)
+		panic("unreachable")
 	}
 
 	longOutput := strings.Repeat("progress details\n", 400) +
@@ -1488,6 +1538,7 @@ func TestAdvanceStep_TestFixHumanRequiredUsesUntruncatedOutput(t *testing.T) {
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "human-required" {
 		t.Fatalf("status = %q, want human-required", got.Status)

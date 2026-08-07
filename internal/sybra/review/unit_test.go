@@ -509,6 +509,7 @@ func newExperienceProjectStore(t *testing.T, tmp string) *project.Store {
 	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return projects
 }
@@ -517,6 +518,7 @@ func seedExperienceProject(t *testing.T, dir string, proj project.Project) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if proj.Name == "" {
 		proj.Name = proj.Repo
@@ -540,6 +542,7 @@ func seedExperienceProject(t *testing.T, dir string, proj project.Project) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, strings.ReplaceAll(proj.ID, "/", "--")+".yaml"), []byte(b.String()), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -548,6 +551,7 @@ func mustExperienceStore(t *testing.T, dir string) *experience.Store {
 	store, err := experience.New(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return store
 }
@@ -557,12 +561,14 @@ func readExperienceAuditEvents(t *testing.T, dir string) []audit.Event {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	var events []audit.Event
 	for _, entry := range entries {
 		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 			if line == "" {
@@ -571,6 +577,7 @@ func readExperienceAuditEvents(t *testing.T, dir string) []audit.Event {
 			var ev audit.Event
 			if err := json.Unmarshal([]byte(line), &ev); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			events = append(events, ev)
 		}
@@ -856,6 +863,7 @@ func TestCreateReviewTaskPassesUpdatedTaskToTriage(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	got := make(chan task.Task, 1)
@@ -897,6 +905,7 @@ func TestCreateReviewTaskPassesUpdatedTaskToTriage(t *testing.T) {
 	files, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(files) != 1 {
 		t.Fatalf("created files = %d, want 1", len(files))
@@ -908,6 +917,7 @@ func TestCreateReviewTaskStoresSameRepoHeadBranch(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	got := make(chan task.Task, 1)
@@ -990,6 +1000,7 @@ func TestAdoptOrphanPRs(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
@@ -998,9 +1009,11 @@ func TestAdoptOrphanPRs(t *testing.T) {
 		created, cErr := tasks.Create(title, "", string(task.AgentModeHeadless))
 		if cErr != nil {
 			t.Fatalf("create %s: %v", title, cErr)
+			panic("unreachable")
 		}
 		if _, uErr := tasks.Update(created.ID, u); uErr != nil {
 			t.Fatalf("update %s: %v", title, uErr)
+			panic("unreachable")
 		}
 		return created.ID
 	}
@@ -1075,6 +1088,7 @@ func TestAdoptOrphanPRs(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	prs := []github.PullRequest{
 		{Number: 1051, HeadRefName: "feat/stranded", Repository: "o/r"},
@@ -1198,6 +1212,7 @@ func TestRecordExperienceOnLandingGatesAndWrites(t *testing.T) {
 	store, err := experience.New(filepath.Join(tmp, "experience"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	seedExperienceProject(t, filepath.Join(tmp, "projects"), project.Project{
 		ID:    "owner/repo",
@@ -1218,6 +1233,7 @@ func TestRecordExperienceOnLandingGatesAndWrites(t *testing.T) {
 	got, err := store.Query("owner/repo", 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 1 || got[0].Title != "Keep owner/repo visible" {
 		t.Fatalf("non-work record = %+v, want unsanitized owner/repo title", got)
@@ -1227,6 +1243,7 @@ func TestRecordExperienceOnLandingGatesAndWrites(t *testing.T) {
 	got, err = store.Query("owner/repo", 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 1 {
 		t.Fatalf("records = %+v, want one merged record", got)
@@ -1240,6 +1257,7 @@ func TestRecordExperienceOnLandingGatesAndWrites(t *testing.T) {
 	got, err = store.Query("owner/repo", 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 1 {
 		t.Fatalf("disabled feature wrote records: %+v", got)
@@ -1252,10 +1270,12 @@ func TestRecordExperienceOnLandingProjectUnresolvedSkips(t *testing.T) {
 	store, err := experience.New(filepath.Join(tmp, "experience"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	auditLog, err := audit.NewLogger(filepath.Join(tmp, "audit"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer auditLog.Close()
 	r := &Handler{
@@ -1269,6 +1289,7 @@ func TestRecordExperienceOnLandingProjectUnresolvedSkips(t *testing.T) {
 	got, err := store.Query("missing/repo", 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 0 {
 		t.Fatalf("unresolved project wrote records: %+v", got)
@@ -1285,10 +1306,12 @@ func TestRecordExperienceOnLandingScrubsWorkRecords(t *testing.T) {
 	store, err := experience.New(filepath.Join(tmp, "experience"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	auditLog, err := audit.NewLogger(filepath.Join(tmp, "audit"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer auditLog.Close()
 	workProject := project.Project{
@@ -1328,6 +1351,7 @@ func TestRecordExperienceOnLandingScrubsWorkRecords(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(tmp, "experience", experience.ProjectKey(workProject), "work.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, forbidden := range []string{"workco/private", "workco", "private", "https://github.com/workco/private"} {
 		if strings.Contains(string(data), forbidden) {
@@ -1338,6 +1362,7 @@ func TestRecordExperienceOnLandingScrubsWorkRecords(t *testing.T) {
 	auditJSON, err := json.Marshal(events)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, forbidden := range []string{"workco/private", "workco", "private", "https://github.com/workco/private"} {
 		if strings.Contains(string(auditJSON), forbidden) {
@@ -1352,6 +1377,7 @@ func TestRecordExperienceOnLandingScrubsWorkTaskIDBeforeReuse(t *testing.T) {
 	store, err := experience.New(filepath.Join(tmp, "experience"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	workProject := project.Project{
 		ID:    "workco/private",
@@ -1374,6 +1400,7 @@ func TestRecordExperienceOnLandingScrubsWorkTaskIDBeforeReuse(t *testing.T) {
 	records, err := store.Query(experience.ProjectKey(workProject), 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(records) != 1 {
 		t.Fatalf("records = %+v, want one idempotent record", records)
@@ -1387,6 +1414,7 @@ func TestRecordExperienceOnLandingScrubsWorkTaskIDBeforeReuse(t *testing.T) {
 	recordJSON, err := json.Marshal(records)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	prompt := experience.FormatForPrompt(records)
 	for _, forbidden := range []string{"workco", "private", "https://github.com/workco/private"} {
@@ -1411,9 +1439,11 @@ func TestRecordExperienceOnLandingWriteErrorIsNonBlocking(t *testing.T) {
 	store := mustExperienceStore(t, filepath.Join(tmp, "experience-file"))
 	if err := os.RemoveAll(filepath.Join(tmp, "experience-file")); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(tmp, "experience-file"), []byte("not a dir"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r := &Handler{
 		logger:     slog.New(slog.DiscardHandler),
@@ -1430,15 +1460,18 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
 	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := workflow.SyncBuiltins(wfStore); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
 	engine := workflow.NewTestEngine(wfStore,
@@ -1458,6 +1491,7 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 		created, err := tasks.Create(label, "", string(task.AgentModeHeadless))
 		if err != nil {
 			t.Fatalf("create %s: %v", label, err)
+			panic("unreachable")
 		}
 		ids[label] = created.ID
 		pr := 100
@@ -1474,6 +1508,7 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 		}
 		if _, err := tasks.Update(created.ID, upd); err != nil {
 			t.Fatalf("update %s: %v", label, err)
+			panic("unreachable")
 		}
 	}
 	mkTask("resolved", "ci_failure", true, workflow.ExecWaiting)
@@ -1483,6 +1518,7 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	r := &Handler{
@@ -1504,6 +1540,7 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 	got, err := tasks.Get(ids["resolved"])
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.State != workflow.ExecCompleted {
 		t.Errorf("resolved workflow state = %+v, want completed", got.Workflow)
@@ -1525,6 +1562,7 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 	got, err = tasks.Get(ids["live"])
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.State != workflow.ExecWaiting {
 		t.Errorf("live workflow state = %+v, want still waiting", got.Workflow)
@@ -1545,15 +1583,18 @@ func TestCancelResolvedPRFixWorkflows_CoalescedSiblingStillLive(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
 	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := workflow.SyncBuiltins(wfStore); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
 	engine := workflow.NewTestEngine(wfStore,
@@ -1565,6 +1606,7 @@ func TestCancelResolvedPRFixWorkflows_CoalescedSiblingStillLive(t *testing.T) {
 	created, err := tasks.Create("coalesced", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	pr := 1352
 	status := task.StatusInProgress
@@ -1586,6 +1628,7 @@ func TestCancelResolvedPRFixWorkflows_CoalescedSiblingStillLive(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	r := &Handler{
@@ -1606,6 +1649,7 @@ func TestCancelResolvedPRFixWorkflows_CoalescedSiblingStillLive(t *testing.T) {
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.State != workflow.ExecWaiting {
 		t.Errorf("workflow state = %+v, want still waiting while coalesced ci_failure is still live", got.Workflow)
@@ -1744,6 +1788,7 @@ func TestTriageReviewStartsAgentAfterStatsRegardlessOfSize(t *testing.T) {
 			store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			tasks := task.NewManager(store, nil)
 
@@ -1755,6 +1800,7 @@ func TestTriageReviewStartsAgentAfterStatsRegardlessOfSize(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatalf("CreateFull: %v", err)
+				panic("unreachable")
 			}
 
 			started := false
@@ -1778,6 +1824,7 @@ func TestTriageReviewStartsAgentAfterStatsRegardlessOfSize(t *testing.T) {
 					latest, err := tasks.Get(tk.ID)
 					if err != nil {
 						t.Fatalf("Get after triage: %v", err)
+						panic("unreachable")
 					}
 					if latest.Status != task.StatusInReview {
 						t.Fatalf("status before StartReviewAgent = %q, want %q", latest.Status, task.StatusInReview)
@@ -1794,6 +1841,7 @@ func TestTriageReviewStartsAgentAfterStatsRegardlessOfSize(t *testing.T) {
 			got, err := tasks.Get(tk.ID)
 			if err != nil {
 				t.Fatalf("Get: %v", err)
+				panic("unreachable")
 			}
 			if got.Status != task.StatusInReview {
 				t.Fatalf("status = %q, want %q", got.Status, task.StatusInReview)
@@ -1806,6 +1854,7 @@ func TestTriageReviewStartsAgentWhenStatsFetchFails(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
@@ -1817,6 +1866,7 @@ func TestTriageReviewStartsAgentWhenStatsFetchFails(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("CreateFull: %v", err)
+		panic("unreachable")
 	}
 
 	started := false
@@ -1840,6 +1890,7 @@ func TestTriageReviewStartsAgentWhenStatsFetchFails(t *testing.T) {
 			latest, err := tasks.Get(tk.ID)
 			if err != nil {
 				t.Fatalf("Get after triage: %v", err)
+				panic("unreachable")
 			}
 			if latest.Status != task.StatusInReview {
 				t.Fatalf("status before StartReviewAgent = %q, want %q", latest.Status, task.StatusInReview)
@@ -1856,6 +1907,7 @@ func TestTriageReviewStartsAgentWhenStatsFetchFails(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusInReview)
@@ -1871,6 +1923,7 @@ func TestPrepareWorktree_CircuitBreaker(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
@@ -1879,16 +1932,19 @@ func TestPrepareWorktree_CircuitBreaker(t *testing.T) {
 	tk, err := tasks.Create("test task", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projID := "owner/repo"
 	tk, err = tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(projID)})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	projStore, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wt := worktree.New(worktree.Config{
 		WorktreesDir: filepath.Join(tmp, "worktrees"),
@@ -1920,6 +1976,7 @@ func TestPrepareWorktree_CircuitBreaker(t *testing.T) {
 		got, err := tasks.Get(tk.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.Status == task.StatusBlocked {
 			t.Fatalf("call %d: task escalated too early (want %d failures before trip)", i+1, wtFailureLimit)
@@ -1935,6 +1992,7 @@ func TestPrepareWorktree_CircuitBreaker(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q after circuit break, want blocked", got.Status)
@@ -1950,22 +2008,26 @@ func TestPrepareWorktree_AgentRunningDoesNotTripCircuitBreaker(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	tk, err := tasks.Create("test task", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projID := "owner/repo"
 	tk, err = tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(projID)})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	projStore, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wt := worktree.New(worktree.Config{
 		WorktreesDir: filepath.Join(tmp, "worktrees"),
@@ -1999,6 +2061,7 @@ func TestPrepareWorktree_AgentRunningDoesNotTripCircuitBreaker(t *testing.T) {
 		got, err := tasks.Get(tk.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.Status == task.StatusHumanRequired {
 			t.Fatalf("call %d: agent-running collision must not escalate to human-required", i+1)
@@ -2017,12 +2080,14 @@ func TestAllowPreparedWorktree_SetupFailureTripsCircuitBreaker(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	tk, err := tasks.Create("test task", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	r := &Handler{
@@ -2034,6 +2099,7 @@ func TestAllowPreparedWorktree_SetupFailureTripsCircuitBreaker(t *testing.T) {
 	wtDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(wtDir, ".sybra-setup-failure"), []byte("npm run build failed\n"), 0o600); err != nil {
 		t.Fatalf("write setup failure marker: %v", err)
+		panic("unreachable")
 	}
 
 	for i := range wtFailureLimit - 1 {
@@ -2043,6 +2109,7 @@ func TestAllowPreparedWorktree_SetupFailureTripsCircuitBreaker(t *testing.T) {
 		got, err := tasks.Get(tk.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.Status == task.StatusBlocked {
 			t.Fatalf("call %d: task quarantined too early", i+1)
@@ -2055,6 +2122,7 @@ func TestAllowPreparedWorktree_SetupFailureTripsCircuitBreaker(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q after setup-failure circuit break, want blocked", got.Status)
@@ -2069,6 +2137,7 @@ func TestAdoptOrphanMergedPR(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
@@ -2077,9 +2146,11 @@ func TestAdoptOrphanMergedPR(t *testing.T) {
 		created, cErr := tasks.Create(title, "", string(task.AgentModeHeadless))
 		if cErr != nil {
 			t.Fatalf("create %s: %v", title, cErr)
+			panic("unreachable")
 		}
 		if _, uErr := tasks.Update(created.ID, u); uErr != nil {
 			t.Fatalf("update %s: %v", title, uErr)
+			panic("unreachable")
 		}
 		return created.ID
 	}
@@ -2119,6 +2190,7 @@ func TestAdoptOrphanMergedPR(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Pass empty open-PR list so all eligible tasks fall through to merged check.
 	r.adoptOrphanPRs(context.Background(), all, nil)
@@ -2173,12 +2245,14 @@ func TestAdoptOrphanPRs_OpenTakesPrecedence(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	created, err := tasks.Create("stranded", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -2259,14 +2333,17 @@ func TestMaybeCreateReviewTasksSkipsBranchOwnedPRBeforeNumberLinked(t *testing.T
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := projects.CreateMeta("https://github.com/owner/repo", project.ProjectTypePet); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.CreateFull("implementation owns branch", "", string(task.AgentModeHeadless), task.Update{
 		Status:    task.Ptr(task.StatusInProgress),
@@ -2284,6 +2361,7 @@ func TestMaybeCreateReviewTasksSkipsBranchOwnedPRBeforeNumberLinked(t *testing.T
 	existing, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.maybeCreateReviewTasks(existing, []github.PullRequest{{
 		Number:        123,
@@ -2298,6 +2376,7 @@ func TestMaybeCreateReviewTasksSkipsBranchOwnedPRBeforeNumberLinked(t *testing.T
 	got, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 1 {
 		t.Fatalf("tasks len = %d, want only existing implementation task: %+v", len(got), got)
@@ -2309,14 +2388,17 @@ func TestMaybeCreateReviewTasksDoesNotSkipForkPRWithSameBranchName(t *testing.T)
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := projects.CreateMeta("https://github.com/owner/repo", project.ProjectTypePet); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.CreateFull("implementation owns local branch", "", string(task.AgentModeHeadless), task.Update{
 		Status:    task.Ptr(task.StatusInProgress),
@@ -2342,6 +2424,7 @@ func TestMaybeCreateReviewTasksDoesNotSkipForkPRWithSameBranchName(t *testing.T)
 	existing, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.maybeCreateReviewTasks(existing, []github.PullRequest{{
 		Number:        456,
@@ -2356,6 +2439,7 @@ func TestMaybeCreateReviewTasksDoesNotSkipForkPRWithSameBranchName(t *testing.T)
 	got, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 2 {
 		t.Fatalf("tasks len = %d, want implementation plus inbound review: %+v", len(got), got)
@@ -2371,6 +2455,7 @@ func TestReconcileReviewPhasesCancelsDuplicateOwnedPRReviewTask(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
@@ -2381,6 +2466,7 @@ func TestReconcileReviewPhasesCancelsDuplicateOwnedPRReviewTask(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	reviewTags := []string{"review"}
 	dup, err := tasks.CreateFull("Review: owned PR", "", string(task.AgentModeHeadless), task.Update{
@@ -2391,6 +2477,7 @@ func TestReconcileReviewPhasesCancelsDuplicateOwnedPRReviewTask(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	r := &Handler{
@@ -2400,6 +2487,7 @@ func TestReconcileReviewPhasesCancelsDuplicateOwnedPRReviewTask(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.reconcileReviewPhases(all, github.ReviewSummary{
 		ReviewRequested: []github.PullRequest{{
@@ -2416,6 +2504,7 @@ func TestReconcileReviewPhasesCancelsDuplicateOwnedPRReviewTask(t *testing.T) {
 	got, err := tasks.Get(dup.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusCancelled {
 		t.Fatalf("status = %q, want cancelled", got.Status)
@@ -2500,12 +2589,14 @@ func TestCloseFinishedReviewTasks(t *testing.T) {
 			store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			tasks := task.NewManager(store, nil)
 
 			created, err := tasks.Create("Review: some PR", "", string(task.AgentModeHeadless))
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			tags := []string{"review"}
 			update := task.Update{
@@ -2520,6 +2611,7 @@ func TestCloseFinishedReviewTasks(t *testing.T) {
 			}
 			if _, err := tasks.Update(created.ID, update); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
@@ -2539,12 +2631,14 @@ func TestCloseFinishedReviewTasks(t *testing.T) {
 			all, err := tasks.List()
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			r.closeFinishedReviewTasks(all, tt.openPRs)
 
 			got, err := tasks.Get(created.ID)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if got.Status != tt.wantStatus {
 				t.Errorf("status = %q, want %q", got.Status, tt.wantStatus)
@@ -2583,12 +2677,14 @@ func TestPollAndMonitorPRs_FetchErrorReconcile(t *testing.T) {
 			store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			tasks := task.NewManager(store, nil)
 
 			created, err := tasks.Create("Review: stale PR", "", string(task.AgentModeHeadless))
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			tags := []string{"review"}
 			if _, err := tasks.Update(created.ID, task.Update{
@@ -2628,11 +2724,13 @@ func TestPollAndMonitorPRs_CircuitBreaksOnRepeatedAuthFailure(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	projects, err := project.NewStore(t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	logger := slog.New(slog.DiscardHandler)
@@ -2717,12 +2815,14 @@ func TestPollAndMonitorPRs_BudgetExhaustedUsesSingleRESTFallbackReconcile(t *tes
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	created, err := tasks.Create("Human review PR", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -2760,6 +2860,7 @@ func TestPollAndMonitorPRs_BudgetExhaustedUsesSingleRESTFallbackReconcile(t *tes
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusDone || got.Outcome != "merged" {
 		t.Fatalf("status/outcome = %q/%q, want done/merged", got.Status, got.Outcome)
@@ -2777,15 +2878,18 @@ func TestAdvanceClosedTaskPRs_CancelsStaleWorkflow(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
 	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := workflow.SyncBuiltins(wfStore); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
 	engine := workflow.NewTestEngine(wfStore,
@@ -2797,6 +2901,7 @@ func TestAdvanceClosedTaskPRs_CancelsStaleWorkflow(t *testing.T) {
 	created, err := tasks.Create("Task with merged PR", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wf := &workflow.Execution{
 		WorkflowID:  "test-simple",
@@ -2832,6 +2937,7 @@ func TestAdvanceClosedTaskPRs_CancelsStaleWorkflow(t *testing.T) {
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusDone {
 		t.Errorf("status = %q, want done", got.Status)
@@ -2849,6 +2955,7 @@ func TestAdvanceClosedTaskPRs_ClosesDespiteRunningAgentClaim(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
@@ -2857,6 +2964,7 @@ func TestAdvanceClosedTaskPRs_ClosesDespiteRunningAgentClaim(t *testing.T) {
 	created, err := tasks.Create("Task with merged PR and stale agent", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -2892,6 +3000,7 @@ func TestAdvanceClosedTaskPRs_ClosesDespiteRunningAgentClaim(t *testing.T) {
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusDone || got.Outcome != "merged" {
 		t.Fatalf("status/outcome = %q/%q, want done/merged", got.Status, got.Outcome)
@@ -2902,11 +3011,13 @@ func TestAdvanceClosedTaskPRs_ClosedUnmergedCancelsNotDone(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	created, err := tasks.Create("Task whose PR was closed unmerged", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -2934,6 +3045,7 @@ func TestAdvanceClosedTaskPRs_ClosedUnmergedCancelsNotDone(t *testing.T) {
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusCancelled {
 		t.Errorf("status = %q, want cancelled (a PR closed without merging did not ship its work)", got.Status)
@@ -2948,11 +3060,13 @@ func TestAdvanceClosedTaskPR_EmitsTaskLanded(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	created, err := tasks.Create("Task whose PR was merged", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -2967,6 +3081,7 @@ func TestAdvanceClosedTaskPR_EmitsTaskLanded(t *testing.T) {
 	auditLog, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer auditLog.Close()
 	logger := slog.New(slog.DiscardHandler)
@@ -2980,11 +3095,13 @@ func TestAdvanceClosedTaskPR_EmitsTaskLanded(t *testing.T) {
 
 	if err := r.AdvanceClosedTaskPR(context.Background(), created.ID, 1446, "MERGED"); err != nil {
 		t.Fatalf("AdvanceClosedTaskPR: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusDone || got.Outcome != "merged" || got.StatusReason != "" {
 		t.Fatalf("task = status %q outcome %q reason %q, want done/merged/empty", got.Status, got.Outcome, got.StatusReason)
@@ -3012,19 +3129,23 @@ func TestAdvanceClosedTaskPR_RecordsInterventionWhenHumanRequired(t *testing.T) 
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	created, err := tasks.Create("Task whose PR was merged", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projStore, err := project.NewStore(t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	proj, err := projStore.CreateMeta("https://github.com/Automaat/sybra.git", project.ProjectTypePet)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -3040,6 +3161,7 @@ func TestAdvanceClosedTaskPR_RecordsInterventionWhenHumanRequired(t *testing.T) 
 	auditLog, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer auditLog.Close()
 	logger := slog.New(slog.DiscardHandler)
@@ -3047,6 +3169,7 @@ func TestAdvanceClosedTaskPR_RecordsInterventionWhenHumanRequired(t *testing.T) 
 	interventionStore, err := intervention.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r := &Handler{
 		logger: logger, emit: func(string, any) {},
@@ -3060,11 +3183,13 @@ func TestAdvanceClosedTaskPR_RecordsInterventionWhenHumanRequired(t *testing.T) 
 
 	if err := r.AdvanceClosedTaskPR(context.Background(), created.ID, 1446, "MERGED"); err != nil {
 		t.Fatalf("AdvanceClosedTaskPR: %v", err)
+		panic("unreachable")
 	}
 
 	records, err := interventionStore.Query(intervention.ProjectKey(proj), 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(records) != 1 {
 		t.Fatalf("len(records) = %d, want 1: %+v", len(records), records)
@@ -3081,12 +3206,14 @@ func TestPollSecondaryReconcilesKnownTaskPRsWithoutSearch(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	openTask, err := tasks.Create("Ready PR", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(openTask.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -3099,6 +3226,7 @@ func TestPollSecondaryReconcilesKnownTaskPRsWithoutSearch(t *testing.T) {
 	closedTask, err := tasks.Create("Merged PR", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(closedTask.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -3114,9 +3242,11 @@ func TestPollSecondaryReconcilesKnownTaskPRsWithoutSearch(t *testing.T) {
 	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := projects.CreateMeta("https://github.com/o/r", project.ProjectTypePet); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, slog.New(slog.DiscardHandler), t.TempDir())
 
@@ -3195,6 +3325,7 @@ func TestPollSecondaryReconcilesKnownTaskPRsWithoutSearch(t *testing.T) {
 	got, err := tasks.Get(closedTask.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusDone || got.Outcome != "merged" {
 		t.Fatalf("closed linked PR status/outcome = %q/%q, want done/merged", got.Status, got.Outcome)
@@ -3211,15 +3342,18 @@ func TestCancelResolvedPRFixWorkflows_DefersWhileChecksPending(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
 	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := workflow.SyncBuiltins(wfStore); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
 	engine := workflow.NewTestEngine(wfStore,
@@ -3231,6 +3365,7 @@ func TestCancelResolvedPRFixWorkflows_DefersWhileChecksPending(t *testing.T) {
 	created, err := tasks.Create("pending checks", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	pr42 := 42
 	if _, err := tasks.Update(created.ID, task.Update{PRNumber: &pr42}); err != nil {
@@ -3248,6 +3383,7 @@ func TestCancelResolvedPRFixWorkflows_DefersWhileChecksPending(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	r := &Handler{
@@ -3265,9 +3401,11 @@ func TestCancelResolvedPRFixWorkflows_DefersWhileChecksPending(t *testing.T) {
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.State != workflow.ExecWaiting {
 		t.Fatalf("workflow state = %+v, want still waiting; a pending-check PR must not cancel the running fix agent", got.Workflow)
+		panic("unreachable")
 	}
 }
 
@@ -3281,12 +3419,14 @@ func TestCancelResolvedPRFixWorkflows_CancelsCommentsWorkflowThenDispatchesCIFai
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
 	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wfStore.Dir(), "test-pr-fix.yaml"),
 		[]byte(mechanicalPRFixYAML), 0o644); err != nil {
@@ -3302,6 +3442,7 @@ func TestCancelResolvedPRFixWorkflows_CancelsCommentsWorkflowThenDispatchesCIFai
 	created, err := tasks.Create("comments workflow, red CI", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	pr44 := 44
 	if _, err := tasks.Update(created.ID, task.Update{PRNumber: &pr44}); err != nil {
@@ -3319,6 +3460,7 @@ func TestCancelResolvedPRFixWorkflows_CancelsCommentsWorkflowThenDispatchesCIFai
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	r := &Handler{
@@ -3342,9 +3484,11 @@ func TestCancelResolvedPRFixWorkflows_CancelsCommentsWorkflowThenDispatchesCIFai
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("no replacement workflow dispatched")
+		panic("unreachable")
 	}
 	if got.Workflow.Variables["pr_issue_kind"] != string(github.PRIssueCIFailure) {
 		t.Fatalf("pr_issue_kind = %q, want %q", got.Workflow.Variables["pr_issue_kind"], github.PRIssueCIFailure)
@@ -3367,15 +3511,18 @@ func TestCancelResolvedPRFixWorkflows_CancelsCommentsWorkflowWhenRemainingCIIsFl
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
 	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := workflow.SyncBuiltins(wfStore); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
 	engine := workflow.NewTestEngine(wfStore,
@@ -3387,6 +3534,7 @@ func TestCancelResolvedPRFixWorkflows_CancelsCommentsWorkflowWhenRemainingCIIsFl
 	created, err := tasks.Create("comments workflow, flaky CI", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	pr46 := 46
 	if _, err := tasks.Update(created.ID, task.Update{PRNumber: &pr46}); err != nil {
@@ -3404,6 +3552,7 @@ func TestCancelResolvedPRFixWorkflows_CancelsCommentsWorkflowWhenRemainingCIIsFl
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	r := &Handler{
@@ -3423,9 +3572,11 @@ func TestCancelResolvedPRFixWorkflows_CancelsCommentsWorkflowWhenRemainingCIIsFl
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("workflow state = %+v, want completed; a confirmed flaky CI failure must not block comments-resolved cancellation", got.Workflow)
+		panic("unreachable")
 	}
 }
 
@@ -3439,15 +3590,18 @@ func TestCancelResolvedPRFixWorkflows_DefersCommentsWorkflowWhileChecksPending(t
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
 	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := workflow.SyncBuiltins(wfStore); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
 	engine := workflow.NewTestEngine(wfStore,
@@ -3459,6 +3613,7 @@ func TestCancelResolvedPRFixWorkflows_DefersCommentsWorkflowWhileChecksPending(t
 	created, err := tasks.Create("comments workflow, pending CI", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	pr45 := 45
 	if _, err := tasks.Update(created.ID, task.Update{PRNumber: &pr45}); err != nil {
@@ -3476,6 +3631,7 @@ func TestCancelResolvedPRFixWorkflows_DefersCommentsWorkflowWhileChecksPending(t
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	r := &Handler{
@@ -3492,9 +3648,11 @@ func TestCancelResolvedPRFixWorkflows_DefersCommentsWorkflowWhileChecksPending(t
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.State != workflow.ExecWaiting {
 		t.Fatalf("workflow state = %+v, want still waiting; resolved comments must not cancel an active pr-fix while checks are pending", got.Workflow)
+		panic("unreachable")
 	}
 }
 
@@ -3507,15 +3665,18 @@ func TestCancelResolvedPRFixWorkflows_CancelsWhenChecksSettleGreen(t *testing.T)
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
 	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := workflow.SyncBuiltins(wfStore); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
 	engine := workflow.NewTestEngine(wfStore,
@@ -3527,6 +3688,7 @@ func TestCancelResolvedPRFixWorkflows_CancelsWhenChecksSettleGreen(t *testing.T)
 	created, err := tasks.Create("settled green", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	pr43 := 43
 	if _, err := tasks.Update(created.ID, task.Update{PRNumber: &pr43}); err != nil {
@@ -3544,6 +3706,7 @@ func TestCancelResolvedPRFixWorkflows_CancelsWhenChecksSettleGreen(t *testing.T)
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	r := &Handler{
@@ -3561,9 +3724,11 @@ func TestCancelResolvedPRFixWorkflows_CancelsWhenChecksSettleGreen(t *testing.T)
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("workflow state = %+v, want completed; a settled green PR must still cancel", got.Workflow)
+		panic("unreachable")
 	}
 }
 
@@ -3575,12 +3740,14 @@ func TestPollAndMonitorPRs_DurableBudgetStillAllowsFreeRerun(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	created, err := tasks.Create("budget spent", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -3610,6 +3777,7 @@ func TestPollAndMonitorPRs_DurableBudgetStillAllowsFreeRerun(t *testing.T) {
 	})
 	if _, err := r.projects.CreateMeta("https://github.com/o/r", project.ProjectTypeWork); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.rerunFailedChecks = func(string, int) error { rerunCalled = true; return nil }
 
@@ -3621,6 +3789,7 @@ func TestPollAndMonitorPRs_DurableBudgetStillAllowsFreeRerun(t *testing.T) {
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status == task.StatusHumanRequired {
 		t.Fatal("task parked human-required before the free rerun was even attempted")
@@ -3634,12 +3803,14 @@ func TestPollAndMonitorPRs_DurableBudgetDoesNotBlockReadyToMerge(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	created, err := tasks.Create("ready to merge", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -3686,6 +3857,7 @@ func TestDurableFixBudgetSpent_CountsPersistedRunsAtHead(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	r := &Handler{logger: slog.New(slog.DiscardHandler), tasks: tasks}
@@ -3693,6 +3865,7 @@ func TestDurableFixBudgetSpent_CountsPersistedRunsAtHead(t *testing.T) {
 	created, err := tasks.Create("looping pr", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if r.durableFixBudgetSpent(created.ID, "sha-head") {
@@ -3725,6 +3898,7 @@ func TestDurableFixBudgetSpent_UsesConfiguredRetryCap(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	r := &Handler{
@@ -3736,6 +3910,7 @@ func TestDurableFixBudgetSpent_UsesConfiguredRetryCap(t *testing.T) {
 	created, err := tasks.Create("looping pr", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	for i := range github.MaxRetries {

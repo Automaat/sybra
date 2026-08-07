@@ -17,14 +17,17 @@ func writeGzip(t *testing.T, path, content string) {
 	f, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer func() { _ = f.Close() }()
 	gw := gzip.NewWriter(f)
 	if _, err := gw.Write([]byte(content)); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := gw.Close(); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -50,11 +53,13 @@ func TestParseLogFile_UnwrapsClaudeEnvelope(t *testing.T) {
 	}, "\n") + "\n"
 	if err := os.WriteFile(path, []byte(lines), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	events, err := ParseLogFile(path, 0, "")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(events) != 5 {
 		t.Fatalf("expected 5 events, got %d: %+v", len(events), events)
@@ -97,6 +102,7 @@ func TestParseLogFile_GzipCompressed(t *testing.T) {
 	events, err := ParseLogFile(base+".gz", 0, "")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(events) != 3 {
 		t.Fatalf("expected 3 events from .gz, got %d: %+v", len(events), events)
@@ -109,6 +115,7 @@ func TestParseLogFile_GzipCompressed(t *testing.T) {
 	events, err = ParseLogFile(base, 0, "")
 	if err != nil {
 		t.Fatalf("stale .ndjson path should resolve to .gz: %v", err)
+		panic("unreachable")
 	}
 	if len(events) != 3 {
 		t.Fatalf("expected 3 events via .gz fallback, got %d", len(events))
@@ -130,6 +137,7 @@ func TestParseConvoLogFile_GzipCompressed(t *testing.T) {
 	events, err := ParseConvoLogFile(base, 0, nil)
 	if err != nil {
 		t.Fatalf("stale .ndjson path should resolve to .gz: %v", err)
+		panic("unreachable")
 	}
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events via .gz fallback, got %d: %+v", len(events), events)
@@ -147,6 +155,7 @@ func TestFindLogFile_GzipFallback(t *testing.T) {
 	agentsDir := filepath.Join(dir, "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	name := "abc123-2026-04-12T10-00-00.ndjson.gz"
@@ -155,6 +164,7 @@ func TestFindLogFile_GzipFallback(t *testing.T) {
 	got, err := FindLogFile(dir, "abc123")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if filepath.Base(got) != name {
 		t.Errorf("expected %s, got %s", name, filepath.Base(got))
@@ -174,11 +184,13 @@ func TestParseLogFile_MaxEvents(t *testing.T) {
 	}, "\n") + "\n"
 	if err := os.WriteFile(path, []byte(lines), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	events, err := ParseLogFile(path, 2, "")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events (tail), got %d", len(events))
@@ -206,11 +218,13 @@ func TestParseLogFile_CodexProvider(t *testing.T) {
 	}, "\n") + "\n"
 	if err := os.WriteFile(path, []byte(lines), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	events, err := ParseLogFile(path, 0, "codex")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(events) != 3 {
 		t.Fatalf("expected 3 events, got %d: %+v", len(events), events)
@@ -232,6 +246,7 @@ func TestFindLogFile(t *testing.T) {
 	agentsDir := filepath.Join(dir, "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	name := "abc123-2026-04-12T10-00-00.ndjson"
@@ -242,6 +257,7 @@ func TestFindLogFile(t *testing.T) {
 	got, err := FindLogFile(dir, "abc123")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if filepath.Base(got) != name {
 		t.Errorf("expected %s, got %s", name, filepath.Base(got))
@@ -253,11 +269,13 @@ func TestFindLogFile_NotFound(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "agents"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	_, err := FindLogFile(dir, "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for missing log file")
+		panic("unreachable")
 	}
 }
 
@@ -280,11 +298,13 @@ func TestParseConvoLogFile_UnwrapsAnthropicEnvelope(t *testing.T) {
 	}, "\n")
 	if err := os.WriteFile(path, []byte(lines), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	events, err := ParseConvoLogFile(path, 0, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
 	if err != nil {
 		t.Fatalf("ParseConvoLogFile: %v", err)
+		panic("unreachable")
 	}
 
 	// We expect: init system, text assistant, tool_use assistant, tool_result user, result.
@@ -355,11 +375,13 @@ func TestParseConvoLogFile_MaxEventsKeepsTail(t *testing.T) {
 	}
 	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	events, err := ParseConvoLogFile(path, 3, nil)
 	if err != nil {
 		t.Fatalf("ParseConvoLogFile: %v", err)
+		panic("unreachable")
 	}
 	if len(events) != 3 {
 		t.Fatalf("expected 3 events (tail), got %d", len(events))
@@ -380,11 +402,13 @@ func TestParseConvoLogFile_SkipsMalformedLines(t *testing.T) {
 	}, "\n")
 	if err := os.WriteFile(path, []byte(lines), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	events, err := ParseConvoLogFile(path, 0, nil)
 	if err != nil {
 		t.Fatalf("ParseConvoLogFile: %v", err)
+		panic("unreachable")
 	}
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events (malformed skipped), got %d", len(events))
@@ -402,5 +426,6 @@ func TestParseConvoLogFile_MissingFile(t *testing.T) {
 	_, err := ParseConvoLogFile(filepath.Join(t.TempDir(), "missing.ndjson"), 0, nil)
 	if err == nil {
 		t.Fatal("expected error for missing file")
+		panic("unreachable")
 	}
 }

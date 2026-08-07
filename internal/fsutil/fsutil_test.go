@@ -19,11 +19,13 @@ func TestAtomicWrite(t *testing.T) {
 
 	if err := AtomicWrite(path, data); err != nil {
 		t.Fatalf("AtomicWrite: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(got, data) {
 		t.Errorf("got %q, want %q", got, data)
@@ -37,14 +39,17 @@ func TestAtomicWrite_Overwrite(t *testing.T) {
 
 	if err := AtomicWrite(path, []byte("old")); err != nil {
 		t.Fatalf("first write: %v", err)
+		panic("unreachable")
 	}
 	if err := AtomicWrite(path, []byte("new")); err != nil {
 		t.Fatalf("second write: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
+		panic("unreachable")
 	}
 	if string(got) != "new" {
 		t.Errorf("got %q, want %q", got, "new")
@@ -56,6 +61,7 @@ func TestAtomicWriteNew_RefusesExistingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "file.txt")
 	if err := AtomicWrite(path, []byte("old")); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := AtomicWriteNew(path, []byte("new")); !errors.Is(err, fs.ErrExist) {
 		t.Fatalf("AtomicWriteNew error = %v, want fs.ErrExist", err)
@@ -63,6 +69,7 @@ func TestAtomicWriteNew_RefusesExistingFile(t *testing.T) {
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if string(got) != "old" {
 		t.Fatalf("existing file = %q, want unchanged old contents", got)
@@ -76,15 +83,18 @@ func TestAtomicWrite_PreservesExistingMode(t *testing.T) {
 
 	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
+		panic("unreachable")
 	}
 
 	if err := AtomicWrite(path, []byte("new")); err != nil {
 		t.Fatalf("AtomicWrite: %v", err)
+		panic("unreachable")
 	}
 
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
+		panic("unreachable")
 	}
 	if got := info.Mode().Perm(); got != 0o644 {
 		t.Errorf("mode after overwrite = %o, want %o", got, 0o644)
@@ -98,11 +108,13 @@ func TestAtomicWrite_NewFileKeepsRestrictiveTempMode(t *testing.T) {
 
 	if err := AtomicWrite(path, []byte("data")); err != nil {
 		t.Fatalf("AtomicWrite: %v", err)
+		panic("unreachable")
 	}
 
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
+		panic("unreachable")
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Errorf("mode for new file = %o, want %o", got, 0o600)
@@ -114,6 +126,7 @@ func TestAtomicWrite_BadDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nonexistent", "file.txt")
 	if err := AtomicWrite(path, []byte("data")); err == nil {
 		t.Fatal("expected error for non-existent parent dir")
+		panic("unreachable")
 	}
 }
 
@@ -136,10 +149,12 @@ func TestAtomicWrite_RenameFailCleansUpTemp(t *testing.T) {
 	target := filepath.Join(dir, "locked.txt")
 	if err := os.WriteFile(target, []byte("original"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Make the directory non-writable so Rename fails.
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 
@@ -155,6 +170,7 @@ func TestAtomicWrite_RenameFailCleansUpTemp(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
+		panic("unreachable")
 	}
 	for _, e := range entries {
 		if e.Name() == "locked.txt" {
@@ -189,21 +205,26 @@ func TestRemoveAllForce(t *testing.T) {
 	subdir := filepath.Join(tree, "subdir")
 	if err := os.MkdirAll(subdir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	roFile := filepath.Join(tree, "readonly.txt")
 	if err := os.WriteFile(roFile, []byte("cached"), 0o444); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	nestedFile := filepath.Join(subdir, "nested.txt")
 	if err := os.WriteFile(nestedFile, []byte("cached"), 0o444); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(subdir, 0o555); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := RemoveAllForce(tree); err != nil {
 		t.Fatalf("RemoveAllForce: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(tree); !os.IsNotExist(err) {
 		t.Fatalf("tree still exists after RemoveAllForce: %v", err)
@@ -214,6 +235,7 @@ func TestRemoveAllForce_NoOpOnMissingPath(t *testing.T) {
 	t.Parallel()
 	if err := RemoveAllForce(filepath.Join(t.TempDir(), "nonexistent")); err != nil {
 		t.Fatalf("RemoveAllForce on missing path: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -225,12 +247,14 @@ func TestListFiles(t *testing.T) {
 	for _, n := range names {
 		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o644); err != nil {
 			t.Fatalf("WriteFile %s: %v", n, err)
+			panic("unreachable")
 		}
 	}
 
 	paths, err := ListFiles(dir, ".md")
 	if err != nil {
 		t.Fatalf("ListFiles: %v", err)
+		panic("unreachable")
 	}
 	if len(paths) != 2 {
 		t.Errorf("got %d paths, want 2: %v", len(paths), paths)
@@ -247,6 +271,7 @@ func TestListFiles_Empty(t *testing.T) {
 	paths, err := ListFiles(t.TempDir(), ".md")
 	if err != nil {
 		t.Fatalf("ListFiles: %v", err)
+		panic("unreachable")
 	}
 	if len(paths) != 0 {
 		t.Errorf("expected empty, got %v", paths)
@@ -258,6 +283,7 @@ func TestListFiles_BadDir(t *testing.T) {
 	_, err := ListFiles(filepath.Join(t.TempDir(), "nonexistent"), ".md")
 	if err == nil {
 		t.Fatal("expected error for non-existent dir")
+		panic("unreachable")
 	}
 }
 
@@ -266,13 +292,16 @@ func TestAtomicWriteMode_ExplicitModeWinsOverExistingFile(t *testing.T) {
 	path := filepath.Join(dir, "rec.json")
 	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := AtomicWriteMode(path, []byte("new"), 0o755); err != nil {
 		t.Fatalf("AtomicWriteMode: %v", err)
+		panic("unreachable")
 	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := info.Mode().Perm(); got != 0o755 {
 		t.Errorf("mode = %v, want %v — the explicit mode must override the existing one", got, os.FileMode(0o755))

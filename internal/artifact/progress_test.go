@@ -18,12 +18,14 @@ func TestAppendProgressRoundTrip(t *testing.T) {
 	for _, e := range entries {
 		if err := s.AppendProgress(taskID, e); err != nil {
 			t.Fatalf("AppendProgress: %v", err)
+			panic("unreachable")
 		}
 	}
 
 	got, err := s.ReadProgress(taskID)
 	if err != nil {
 		t.Fatalf("ReadProgress: %v", err)
+		panic("unreachable")
 	}
 	if len(got) != len(entries) {
 		t.Fatalf("want %d entries, got %d", len(entries), len(got))
@@ -44,6 +46,7 @@ func TestAppendProgressRejectsInvalidKind(t *testing.T) {
 	err := s.AppendProgress("task-x", ProgressEntry{Kind: "bogus", Message: "hi"})
 	if err == nil {
 		t.Fatal("want error for invalid kind, got nil")
+		panic("unreachable")
 	}
 }
 
@@ -52,6 +55,7 @@ func TestReadProgressMissingIsEmpty(t *testing.T) {
 	got, err := s.ReadProgress("task-none")
 	if err != nil {
 		t.Fatalf("ReadProgress on missing: %v", err)
+		panic("unreachable")
 	}
 	if len(got) != 0 {
 		t.Fatalf("want empty, got %d", len(got))
@@ -68,10 +72,12 @@ func TestReadProgressSkipsMalformedLine(t *testing.T) {
 	dir, err := s.taskDir(taskID)
 	if err != nil {
 		t.Fatalf("taskDir: %v", err)
+		panic("unreachable")
 	}
 	f, err := os.OpenFile(filepath.Join(dir, KindProgress.defaultName()), os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatalf("open: %v", err)
+		panic("unreachable")
 	}
 	if _, err := f.WriteString("{not json}\n"); err != nil {
 		t.Fatalf("write: %v", err)
@@ -81,6 +87,7 @@ func TestReadProgressSkipsMalformedLine(t *testing.T) {
 	got, err := s.ReadProgress(taskID)
 	if err != nil {
 		t.Fatalf("ReadProgress: %v", err)
+		panic("unreachable")
 	}
 	if len(got) != 1 || got[0].Message != "good" {
 		t.Fatalf("want 1 valid entry, got %+v", got)

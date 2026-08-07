@@ -18,6 +18,7 @@ func TestEffectClaim_FirstOwnerWins(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("ClaimEffect: %v", err)
+		panic("unreachable")
 	}
 	if !result.Acquired || result.Refreshed {
 		t.Fatalf("claim result = %+v, want acquired new lease", result)
@@ -27,6 +28,7 @@ func TestEffectClaim_FirstOwnerWins(t *testing.T) {
 	}
 	if result.Record.LeaseExpiresAt == nil || !result.Record.LeaseExpiresAt.Equal(now.Add(time.Minute)) {
 		t.Fatalf("lease expiry = %v, want %v", result.Record.LeaseExpiresAt, now.Add(time.Minute))
+		panic("unreachable")
 	}
 }
 
@@ -41,6 +43,7 @@ func TestEffectClaim_SameOwnerRefreshes(t *testing.T) {
 	}
 	if _, err := exec.ClaimEffect(claim); err != nil {
 		t.Fatalf("initial claim: %v", err)
+		panic("unreachable")
 	}
 
 	result, err := exec.ClaimEffect(EffectClaim{
@@ -51,12 +54,14 @@ func TestEffectClaim_SameOwnerRefreshes(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("refresh claim: %v", err)
+		panic("unreachable")
 	}
 	if !result.Acquired || !result.Refreshed {
 		t.Fatalf("claim result = %+v, want refreshed lease", result)
 	}
 	if result.Record.LeaseExpiresAt == nil || !result.Record.LeaseExpiresAt.Equal(now.Add(150*time.Second)) {
 		t.Fatalf("lease expiry = %v, want %v", result.Record.LeaseExpiresAt, now.Add(150*time.Second))
+		panic("unreachable")
 	}
 }
 
@@ -108,6 +113,7 @@ func TestEffectClaim_ExpiredOwnerReclaim(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("reclaim: %v", err)
+		panic("unreachable")
 	}
 	if result.Record.Owner != "engine-b" {
 		t.Fatalf("owner = %q, want engine-b", result.Record.Owner)
@@ -158,9 +164,11 @@ func TestEffectClaim_CompletedEffectCannotReplay(t *testing.T) {
 	}
 	if _, err := exec.ClaimEffect(claim); err != nil {
 		t.Fatalf("initial claim: %v", err)
+		panic("unreachable")
 	}
 	if _, err := exec.CompleteEffect(claim); err != nil {
 		t.Fatalf("complete: %v", err)
+		panic("unreachable")
 	}
 
 	_, err := exec.ClaimEffect(EffectClaim{

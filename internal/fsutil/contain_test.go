@@ -113,14 +113,17 @@ func TestSafeJoinRefusesASymlinkOutOfTheRoot(t *testing.T) {
 	for _, d := range []string{root, outside} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 	secret := filepath.Join(outside, "secret")
 	if err := os.WriteFile(secret, []byte("secret"), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := SafeJoin(root, "escape"); err == nil {
@@ -131,9 +134,11 @@ func TestSafeJoinRefusesASymlinkOutOfTheRoot(t *testing.T) {
 	// even one pointing back inside, so only a relative link can be accepted.
 	if err := os.MkdirAll(filepath.Join(root, "real"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Symlink("real", filepath.Join(root, "ok")); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := SafeJoin(root, "ok"); err != nil {
 		t.Errorf("SafeJoin refused a relative symlink that stays inside the root: %v", err)
@@ -193,6 +198,7 @@ func TestProjectKeyDir(t *testing.T) {
 			got, err := ProjectKeyDir(tt.id)
 			if err != nil {
 				t.Fatalf("ProjectKeyDir(%q) = %v", tt.id, err)
+				panic("unreachable")
 			}
 			if got != tt.want {
 				t.Errorf("ProjectKeyDir(%q) = %q, want %q", tt.id, got, tt.want)

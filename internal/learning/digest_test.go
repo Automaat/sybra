@@ -43,6 +43,7 @@ func newTestService(t *testing.T, d Deps) *Service {
 	store, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New(store) returned error: %v", err)
+		panic("unreachable")
 	}
 	if d.Store == nil {
 		d.Store = store
@@ -75,6 +76,7 @@ func TestRunNowRejectsWhenInsufficientFreshData(t *testing.T) {
 	_, err := svc.RunNow(context.Background())
 	if err == nil {
 		t.Fatal("RunNow succeeded despite empty stats/audit, want an insufficient-data error")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "insufficient fresh data") {
 		t.Fatalf("err = %v, want an insufficient-fresh-data message", err)
@@ -91,6 +93,7 @@ func TestRunNowSummarizerFailureLeavesPreviousDigestIntact(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New(store) returned error: %v", err)
+		panic("unreachable")
 	}
 	seed := Digest{
 		SchemaVersion: SchemaVersion,
@@ -103,6 +106,7 @@ func TestRunNowSummarizerFailureLeavesPreviousDigestIntact(t *testing.T) {
 	}
 	if _, err := store.Put(seed); err != nil {
 		t.Fatalf("seed Put returned error: %v", err)
+		panic("unreachable")
 	}
 
 	auditLog := &recordingAuditLog{}
@@ -119,11 +123,13 @@ func TestRunNowSummarizerFailureLeavesPreviousDigestIntact(t *testing.T) {
 	_, err = svc.RunNow(context.Background())
 	if err == nil {
 		t.Fatal("RunNow succeeded despite a fully-blocked provider gate, want a summarizer error")
+		panic("unreachable")
 	}
 
 	latest, ok, lerr := store.Latest()
 	if lerr != nil {
 		t.Fatalf("Latest returned error: %v", lerr)
+		panic("unreachable")
 	}
 	if !ok || latest.ReportDigest != "seed-report" {
 		t.Fatalf("Latest = %+v (ok=%v), want the seeded digest left untouched", latest, ok)
@@ -146,6 +152,7 @@ func TestRunNowSingleFlight(t *testing.T) {
 	_, err := svc.RunNow(context.Background())
 	if err == nil {
 		t.Fatal("RunNow succeeded while a generation was already in progress")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "already in progress") {
 		t.Fatalf("err = %v, want an already-in-progress message", err)
@@ -188,6 +195,7 @@ func TestRunNowSuccessPersists(t *testing.T) {
 	d, err := svc.RunNow(context.Background())
 	if err != nil {
 		t.Fatalf("RunNow returned error: %v", err)
+		panic("unreachable")
 	}
 	if len(d.Worked) != 1 || d.AuthorProvider != "claude" {
 		t.Fatalf("digest = %+v, want worked populated and provider=claude", d)
@@ -238,10 +246,12 @@ func TestStorePutDedupsIdenticalReportOverSameWindow(t *testing.T) {
 	rd, err := parseDigestJSON(validRawJSON(since, until))
 	if err != nil {
 		t.Fatalf("parseDigestJSON returned error: %v", err)
+		panic("unreachable")
 	}
 	d, err := validateDigest(rd, pkt)
 	if err != nil {
 		t.Fatalf("validateDigest returned error: %v", err)
+		panic("unreachable")
 	}
 	d.SchemaVersion = SchemaVersion
 	d.ReportDigest = pkt.ReportDigest
@@ -250,11 +260,13 @@ func TestStorePutDedupsIdenticalReportOverSameWindow(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New(store) returned error: %v", err)
+		panic("unreachable")
 	}
 
 	stored1, err := store.Put(d)
 	if err != nil {
 		t.Fatalf("first Put returned error: %v", err)
+		panic("unreachable")
 	}
 	if !stored1 {
 		t.Fatal("first Put over a fresh window/report must store")
@@ -272,6 +284,7 @@ func TestStorePutDedupsIdenticalReportOverSameWindow(t *testing.T) {
 	stored2, err := store.Put(d2)
 	if err != nil {
 		t.Fatalf("second Put returned error: %v", err)
+		panic("unreachable")
 	}
 	if stored2 {
 		t.Fatal("second Put over the same window/report must dedup, not store again")
@@ -297,6 +310,7 @@ func TestRunNowRejectsNonClaudeProvider(t *testing.T) {
 
 	if _, err := svc.RunNow(context.Background()); err == nil {
 		t.Fatal("RunNow accepted a non-claude summarizer response")
+		panic("unreachable")
 	}
 }
 

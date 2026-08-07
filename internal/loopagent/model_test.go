@@ -13,5 +13,6 @@ func TestValidateEmptyProviderAccepted(t *testing.T) {
 	la := LoopAgent{Name: "x", Prompt: "/p", IntervalSec: 60, Provider: ""}
 	if err := la.Validate(); err != nil {
 		t.Fatalf("empty provider should be accepted: %v", err)
+		panic("unreachable")
 	}
 }

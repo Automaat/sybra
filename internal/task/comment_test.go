@@ -11,6 +11,7 @@ func TestCommentStore_ListEmpty(t *testing.T) {
 	comments, err := s.List("task-abc")
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(comments) != 0 {
 		t.Errorf("expected empty, got %d comments", len(comments))
@@ -24,6 +25,7 @@ func TestCommentStore_AddAndList(t *testing.T) {
 	c, err := s.Add("task-1", 5, "needs fixing")
 	if err != nil {
 		t.Fatalf("Add: %v", err)
+		panic("unreachable")
 	}
 	if c.ID == "" {
 		t.Error("expected non-empty ID")
@@ -41,6 +43,7 @@ func TestCommentStore_AddAndList(t *testing.T) {
 	comments, err := s.List("task-1")
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(comments) != 1 {
 		t.Fatalf("got %d comments, want 1", len(comments))
@@ -75,6 +78,7 @@ func TestCommentStore_ConcurrentAddsDontDropWrites(t *testing.T) {
 	comments, err := s.List("task-race")
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(comments) != n {
 		t.Errorf("got %d comments, want %d (a racing Add dropped an update)", len(comments), n)
@@ -90,6 +94,7 @@ func TestCommentStore_AddMultiple(t *testing.T) {
 		c, err := s.Add("task-1", i+1, "comment")
 		if err != nil {
 			t.Fatalf("Add %d: %v", i, err)
+			panic("unreachable")
 		}
 		ids[c.ID] = true
 	}
@@ -101,6 +106,7 @@ func TestCommentStore_AddMultiple(t *testing.T) {
 	comments, err := s.List("task-1")
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(comments) != 3 {
 		t.Errorf("got %d comments, want 3", len(comments))
@@ -114,15 +120,18 @@ func TestCommentStore_Resolve(t *testing.T) {
 	c, err := s.Add("task-1", 1, "issue")
 	if err != nil {
 		t.Fatalf("Add: %v", err)
+		panic("unreachable")
 	}
 
 	if err := s.Resolve("task-1", c.ID); err != nil {
 		t.Fatalf("Resolve: %v", err)
+		panic("unreachable")
 	}
 
 	comments, err := s.List("task-1")
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(comments) == 0 {
 		t.Fatal("expected at least 1 comment")
@@ -137,6 +146,7 @@ func TestCommentStore_Resolve_NotFound(t *testing.T) {
 	s := NewCommentStore(t.TempDir())
 	if err := s.Resolve("task-1", "nonexistent"); err == nil {
 		t.Fatal("expected error for non-existent comment")
+		panic("unreachable")
 	}
 }
 
@@ -149,11 +159,13 @@ func TestCommentStore_Delete(t *testing.T) {
 
 	if err := s.Delete("task-1", c1.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
+		panic("unreachable")
 	}
 
 	comments, err := s.List("task-1")
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(comments) != 1 {
 		t.Fatalf("got %d comments, want 1", len(comments))
@@ -168,5 +180,6 @@ func TestCommentStore_Delete_NotFound(t *testing.T) {
 	s := NewCommentStore(t.TempDir())
 	if err := s.Delete("task-1", "nonexistent"); err == nil {
 		t.Fatal("expected error for non-existent comment")
+		panic("unreachable")
 	}
 }

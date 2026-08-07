@@ -22,11 +22,13 @@ func TestNormalizeSandboxReadMode(t *testing.T) {
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("NormalizeSandboxReadMode(%q) = %q, want error", tc.in, got)
+					panic("unreachable")
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("NormalizeSandboxReadMode(%q): %v", tc.in, err)
+				panic("unreachable")
 			}
 			if got != tc.want {
 				t.Fatalf("NormalizeSandboxReadMode(%q) = %q, want %q", tc.in, got, tc.want)
@@ -42,10 +44,12 @@ func TestNormalizeSandboxReadMode_EmptyDiffersFromSandboxMode(t *testing.T) {
 	read, err := NormalizeSandboxReadMode("")
 	if err != nil {
 		t.Fatalf("NormalizeSandboxReadMode: %v", err)
+		panic("unreachable")
 	}
 	write, err := NormalizeSandboxMode("")
 	if err != nil {
 		t.Fatalf("NormalizeSandboxMode: %v", err)
+		panic("unreachable")
 	}
 	if read != "off" {
 		t.Fatalf("empty sandbox_read_mode = %q, want off", read)

@@ -94,9 +94,11 @@ func mustWorkflowStore(t *testing.T) *workflow.Store {
 	store, err := workflow.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := workflow.SyncBuiltins(store); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return store
 }
@@ -106,6 +108,7 @@ func newHumanRequiredTask(t *testing.T, a *App, prNumber int) task.Task {
 	tk, err := a.tasks.Create("fix the thing", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	update := task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}
 	if prNumber > 0 {
@@ -114,6 +117,7 @@ func newHumanRequiredTask(t *testing.T, a *App, prNumber int) task.Task {
 	updated, err := a.tasks.Update(tk.ID, update)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return updated
 }
@@ -155,6 +159,7 @@ func newDispatchTestWorktree(t *testing.T, branch string) string {
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	src := t.TempDir()
@@ -163,6 +168,7 @@ func newDispatchTestWorktree(t *testing.T, branch string) string {
 	run(src, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("init\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	run(src, "add", "README.md")
 	run(src, "commit", "-m", "init")
@@ -170,15 +176,18 @@ func newDispatchTestWorktree(t *testing.T, branch string) string {
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := project.CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("CloneBare: %v", err)
+		panic("unreachable")
 	}
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	if err := project.CreateWorktree(context.Background(), bare, wtPath, branch, "main"); err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
+		panic("unreachable")
 	}
 	run(wtPath, "config", "user.email", "test@test.com")
 	run(wtPath, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(wtPath, "change.txt"), []byte("change\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	run(wtPath, "add", "change.txt")
 	run(wtPath, "commit", "-m", "feat: task work")
@@ -197,12 +206,14 @@ func newReadyPRHumanRequiredTask(t *testing.T, a *App, engine *workflow.Engine) 
 	sha, err := project.CurrentCommit(context.Background(), wtPath)
 	if err != nil {
 		t.Fatalf("CurrentCommit: %v", err)
+		panic("unreachable")
 	}
 	engine.SetPRCreator(fixedPRCreator{number: 99, headSHA: sha})
 
 	tk, err := a.tasks.Create("fix the thing", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	updated, err := a.tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -213,6 +224,7 @@ func newReadyPRHumanRequiredTask(t *testing.T, a *App, engine *workflow.Engine) 
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return updated
 }
@@ -227,6 +239,7 @@ func TestDispatchFromHumanRequired_HappyPathDispatchingTargets(t *testing.T) {
 			got, err := svc.DispatchFromHumanRequired(tk.ID, target, "looks fine, retry")
 			if err != nil {
 				t.Fatalf("DispatchFromHumanRequired: %v", err)
+				panic("unreachable")
 			}
 			if string(got.Status) != target {
 				t.Fatalf("status = %q, want %q", got.Status, target)
@@ -236,6 +249,7 @@ func TestDispatchFromHumanRequired_HappyPathDispatchingTargets(t *testing.T) {
 			}
 			if got.Workflow == nil {
 				t.Fatal("expected a workflow to be attached")
+				panic("unreachable")
 			}
 			if launcher.startCalls == 0 {
 				t.Fatal("expected the matched workflow to start an agent")
@@ -255,12 +269,14 @@ func TestDispatchFromHumanRequired_HappyPathDispatchingTargets(t *testing.T) {
 		got, err := svc.DispatchFromHumanRequired(tk.ID, "ready-pr", "looks fine, retry")
 		if err != nil {
 			t.Fatalf("DispatchFromHumanRequired: %v", err)
+			panic("unreachable")
 		}
 		if got.Status != task.StatusInReview {
 			t.Fatalf("status = %q, want %q (mechanized PR tail should complete synchronously)", got.Status, task.StatusInReview)
 		}
 		if got.Workflow == nil {
 			t.Fatal("expected a workflow to be attached")
+			panic("unreachable")
 		}
 		if launcher.startCalls != 0 {
 			t.Fatalf("startCalls = %d, want 0 (create_pr/push_branch are deterministic Go, not agents)", launcher.startCalls)
@@ -282,11 +298,13 @@ func TestDispatchFromHumanRequired_ClearsStaleBlocker(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("seed blocker: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := svc.DispatchFromHumanRequired(tk.ID, string(task.StatusInProgress), "resume after accepting false-positive tamper flag")
 	if err != nil {
 		t.Fatalf("DispatchFromHumanRequired: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
@@ -323,12 +341,14 @@ func TestDispatchFromHumanRequired_WithStatusHook(t *testing.T) {
 			got, err := svc.DispatchFromHumanRequired(tk.ID, target, "looks fine, retry")
 			if err != nil {
 				t.Fatalf("DispatchFromHumanRequired: %v", err)
+				panic("unreachable")
 			}
 			if string(got.Status) != target {
 				t.Fatalf("status = %q, want %q (must not revert to human-required)", got.Status, target)
 			}
 			if got.Workflow == nil {
 				t.Fatal("expected a workflow to be attached")
+				panic("unreachable")
 			}
 			if launcher.startCalls == 0 {
 				t.Fatal("expected the workflow to start an agent")
@@ -356,12 +376,14 @@ func TestDispatchFromHumanRequired_WithStatusHook(t *testing.T) {
 		got, err := svc.DispatchFromHumanRequired(tk.ID, "ready-pr", "looks fine, retry")
 		if err != nil {
 			t.Fatalf("DispatchFromHumanRequired: %v", err)
+			panic("unreachable")
 		}
 		if got.Status != task.StatusInReview {
 			t.Fatalf("status = %q, want %q (must not revert to human-required)", got.Status, task.StatusInReview)
 		}
 		if got.Workflow == nil {
 			t.Fatal("expected a workflow to be attached")
+			panic("unreachable")
 		}
 		if launcher.startCalls != 0 {
 			t.Fatalf("startCalls = %d, want 0 (create_pr/push_branch are deterministic Go, not agents)", launcher.startCalls)
@@ -385,11 +407,13 @@ func TestDispatchFromHumanRequired_ReadyPRAllowsNoMatchForReviewOnlyRoles(t *tes
 			_, err := a.tasks.Update(tk.ID, task.Update{RunRole: task.Ptr(role)})
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			got, err := svc.DispatchFromHumanRequired(tk.ID, "ready-pr", "resume after review")
 			if err != nil {
 				t.Fatalf("DispatchFromHumanRequired: %v", err)
+				panic("unreachable")
 			}
 			if got.Status != task.StatusReadyPR {
 				t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyPR)
@@ -399,6 +423,7 @@ func TestDispatchFromHumanRequired_ReadyPRAllowsNoMatchForReviewOnlyRoles(t *tes
 			}
 			if got.Workflow != nil {
 				t.Fatalf("workflow = %+v, want nil because review-only roles skip simple-task-pr", got.Workflow)
+				panic("unreachable")
 			}
 			if launcher.startCalls != 0 {
 				t.Fatalf("startCalls = %d, want 0", launcher.startCalls)
@@ -426,6 +451,7 @@ func TestDispatchFromHumanRequired_DoneClosesWithoutWorkflow(t *testing.T) {
 	got, err := svc.DispatchFromHumanRequired(tk.ID, "done", "already merged")
 	if err != nil {
 		t.Fatalf("DispatchFromHumanRequired: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusDone {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
@@ -435,6 +461,7 @@ func TestDispatchFromHumanRequired_DoneClosesWithoutWorkflow(t *testing.T) {
 	}
 	if got.Workflow != nil {
 		t.Fatalf("workflow = %+v, want nil for terminal close-out", got.Workflow)
+		panic("unreachable")
 	}
 	if launcher.startCalls != 0 {
 		t.Fatalf("startCalls = %d, want 0 for terminal close-out", launcher.startCalls)
@@ -466,6 +493,7 @@ func TestApp_StatusHook_SkipsAgentDispatchForUmbrellaTracker(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := a.tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
@@ -475,9 +503,11 @@ func TestApp_StatusHook_SkipsAgentDispatchForUmbrellaTracker(t *testing.T) {
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow != nil {
 		t.Fatalf("workflow = %+v, want nil — an umbrella tracker must never have simple-task-implement dispatched against it", got.Workflow)
+		panic("unreachable")
 	}
 	if launcher.startCalls != 0 {
 		t.Fatalf("startCalls = %d, want 0 — an umbrella tracker runs no agent", launcher.startCalls)
@@ -498,12 +528,14 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 		tk, err := a.tasks.Create(id, "", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		got, err := a.tasks.UpdateMap(tk.ID, map[string]any{
 			"status": string(status),
 		})
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		return got
 	}
@@ -520,6 +552,7 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	staleInboundReview := idle("stale-inbound-review", task.StatusInReview)
 	staleReviewCompletedAt := time.Now().Add(-inboundReviewRedispatchCooldown - time.Minute)
@@ -538,6 +571,7 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	approvedInboundReview := idle("approved-inbound-review", task.StatusInReview)
 	approvedInboundReview, err = a.tasks.UpdateMap(approvedInboundReview.ID, map[string]any{
@@ -548,6 +582,7 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	recentInboundReview := idle("recent-inbound-review", task.StatusInReview)
 	recentReviewCompletedAt := time.Now().Add(-inboundReviewRedispatchCooldown / 2)
@@ -566,6 +601,7 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	ownPRReview := idle("own-pr-review", task.StatusInReview)
 	ownPRReview, err = a.tasks.UpdateMap(ownPRReview.ID, map[string]any{
@@ -574,6 +610,7 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	postPlanInProgress := idle("post-plan-in-progress", task.StatusInProgress)
 	postPlanCompletedAt := postPlanInProgress.StatusChangedAt.Add(time.Second)
@@ -588,6 +625,7 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	requeuedPlanning := idle("requeued-planning", task.StatusPlanning)
 	requeuedCompletedAt := requeuedPlanning.StatusChangedAt.Add(-time.Hour)
@@ -603,6 +641,7 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	currentTerminal := idle("current-terminal", task.StatusTodo)
 	currentCompletedAt := currentTerminal.StatusChangedAt.Add(time.Hour)
@@ -617,6 +656,7 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	gatedTodo := idle("gated-todo", task.StatusTodo)
 	if _, err := a.tasks.UpdateMap(gatedTodo.ID, map[string]any{
@@ -664,9 +704,11 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 		got, err := a.tasks.Get(id)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.Workflow == nil || got.Workflow.WorkflowID != want {
 			t.Fatalf("%s workflow = %+v, want %s", id, got.Workflow, want)
+			panic("unreachable")
 		}
 		if got.Workflow.State == workflow.ExecFailed {
 			t.Fatalf("%s kept stale failed workflow: %+v", id, got.Workflow)
@@ -683,41 +725,52 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	gotActive, err := a.tasks.Get(active.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if gotActive.Workflow == nil || gotActive.Workflow.WorkflowID != "simple-task-plan" || gotActive.Workflow.State != workflow.ExecWaiting {
 		t.Fatalf("active workflow should be left alone, got %+v", gotActive.Workflow)
+		panic("unreachable")
 	}
 	gotGated, err := a.tasks.Get(gatedTodo.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if gotGated.Workflow != nil {
 		t.Fatalf("umbrella-gated todo task should be left for releaseUnblockedChildren, got %+v", gotGated.Workflow)
+		panic("unreachable")
 	}
 	gotPRPlanning, err := a.tasks.Get(prPlanning.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if gotPRPlanning.Workflow != nil {
 		t.Fatalf("planning task with PR should not start simple-task-plan, got %+v", gotPRPlanning.Workflow)
+		panic("unreachable")
 	}
 	gotOwnPRReview, err := a.tasks.Get(ownPRReview.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if gotOwnPRReview.Workflow != nil {
 		t.Fatalf("ordinary in-review task should stay on PR monitor, got %+v", gotOwnPRReview.Workflow)
+		panic("unreachable")
 	}
 	gotApprovedInboundReview, err := a.tasks.Get(approvedInboundReview.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if gotApprovedInboundReview.Workflow != nil {
 		t.Fatalf("approved inbound review should stay idle, got %+v", gotApprovedInboundReview.Workflow)
+		panic("unreachable")
 	}
 	gotRecentInboundReview, err := a.tasks.Get(recentInboundReview.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if gotRecentInboundReview.Workflow == nil ||
 		gotRecentInboundReview.Workflow.WorkflowID != "pr-review" ||
@@ -727,16 +780,20 @@ func TestReconcileRunnableBoardTasksDispatchesIdleRunnableStatuses(t *testing.T)
 	gotCurrentTerminal, err := a.tasks.Get(currentTerminal.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if gotCurrentTerminal.Workflow == nil || gotCurrentTerminal.Workflow.WorkflowID != "old-workflow" || gotCurrentTerminal.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("current terminal workflow should be left alone, got %+v", gotCurrentTerminal.Workflow)
+		panic("unreachable")
 	}
 	gotUmbrella, err := a.tasks.Get(umbrellaTask.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if gotUmbrella.Workflow == nil || gotUmbrella.Workflow.WorkflowID != "old-workflow" || gotUmbrella.Workflow.State != workflow.ExecFailed {
 		t.Fatalf("synthetic umbrella task should be left alone, got %+v", gotUmbrella.Workflow)
+		panic("unreachable")
 	}
 	if launcher.startCalls != 6 {
 		t.Fatalf("startCalls = %d, want 6 for resumed planning, implementation, and inbound review tasks", launcher.startCalls)
@@ -755,6 +812,7 @@ func TestDispatchPlanningWorkflow_RejectedPlanDoesNotRedispatchImplementation(t 
 	created, err := a.tasks.Create("rejected plan", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := a.tasks.UpdateMap(created.ID, map[string]any{
 		"status": string(task.StatusPlanning),
@@ -773,12 +831,14 @@ func TestDispatchPlanningWorkflow_RejectedPlanDoesNotRedispatchImplementation(t 
 	got, err := a.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusPlanning {
 		t.Fatalf("status = %q, want planning", got.Status)
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != "simple-task-plan" {
 		t.Fatalf("workflow = %+v, want simple-task-plan", got.Workflow)
+		panic("unreachable")
 	}
 	if got.Workflow.CurrentStep != "plan" {
 		t.Fatalf("current_step = %q, want plan", got.Workflow.CurrentStep)
@@ -802,6 +862,7 @@ func TestDispatchPlanningWorkflow_BlockingPlanCritiqueDoesNotRestartPlanning(t *
 	created, err := a.tasks.Create("critiqued plan", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := a.tasks.UpdateMap(created.ID, map[string]any{
 		"status":        string(task.StatusPlanning),
@@ -817,12 +878,14 @@ func TestDispatchPlanningWorkflow_BlockingPlanCritiqueDoesNotRestartPlanning(t *
 	before, err := a.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !hasBlockingPlanCritique(before) {
 		t.Fatalf("test setup did not persist blocking critique: %q", before.PlanCritique)
 	}
 	if before.Workflow == nil || before.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("test setup workflow = %+v, want completed", before.Workflow)
+		panic("unreachable")
 	}
 
 	a.dispatchPlanningWorkflow(created.ID)
@@ -830,6 +893,7 @@ func TestDispatchPlanningWorkflow_BlockingPlanCritiqueDoesNotRestartPlanning(t *
 	got, err := a.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want human-required", got.Status)
@@ -850,6 +914,7 @@ func TestDispatchFromHumanRequired_InReviewFlipsStatusOnly(t *testing.T) {
 	got, err := svc.DispatchFromHumanRequired(tk.ID, "in-review", "PR exists, resume monitoring")
 	if err != nil {
 		t.Fatalf("DispatchFromHumanRequired: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Fatalf("status = %q, want in-review", got.Status)
@@ -872,10 +937,12 @@ func TestDispatchFromHumanRequired_RecordsInterventionOnUnblock(t *testing.T) {
 	projStore, err := project.NewStore(t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	proj, err := projStore.CreateMeta("https://github.com/acme/api.git", project.ProjectTypePet)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.projects = projStore
 	svc.cfg = &config.Config{Intervention: config.InterventionConfig{Enabled: true}}
@@ -884,6 +951,7 @@ func TestDispatchFromHumanRequired_RecordsInterventionOnUnblock(t *testing.T) {
 	al, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer al.Close()
 	svc.audit = al
@@ -891,6 +959,7 @@ func TestDispatchFromHumanRequired_RecordsInterventionOnUnblock(t *testing.T) {
 	store, err := intervention.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.intervention = store
 
@@ -898,6 +967,7 @@ func TestDispatchFromHumanRequired_RecordsInterventionOnUnblock(t *testing.T) {
 		tk, err := a.tasks.Create("fix the thing", "", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		updated, err := a.tasks.Update(tk.ID, task.Update{
 			Status:          task.Ptr(task.StatusHumanRequired),
@@ -913,6 +983,7 @@ func TestDispatchFromHumanRequired_RecordsInterventionOnUnblock(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		return updated
 	}
@@ -920,11 +991,13 @@ func TestDispatchFromHumanRequired_RecordsInterventionOnUnblock(t *testing.T) {
 	tk1 := newParkedTask()
 	if _, err := svc.DispatchFromHumanRequired(tk1.ID, "in-review", "assigned project manually"); err != nil {
 		t.Fatalf("DispatchFromHumanRequired: %v", err)
+		panic("unreachable")
 	}
 
 	records, err := store.Query(intervention.ProjectKey(proj), 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(records) != 1 {
 		t.Fatalf("len(records) = %d, want 1: %+v", len(records), records)
@@ -944,11 +1017,13 @@ func TestDispatchFromHumanRequired_RecordsInterventionOnUnblock(t *testing.T) {
 	tk2 := newParkedTask()
 	if _, err := svc.DispatchFromHumanRequired(tk2.ID, "in-review", "assigned project manually again"); err != nil {
 		t.Fatalf("DispatchFromHumanRequired: %v", err)
+		panic("unreachable")
 	}
 
 	records, err = store.Query(intervention.ProjectKey(proj), 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(records) != 1 {
 		t.Fatalf("len(records) = %d, want 1 (equivalent interventions must dedup): %+v", len(records), records)
@@ -964,6 +1039,7 @@ func TestDispatchFromHumanRequired_RecordsInterventionOnUnblock(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(events) != 2 {
 		t.Fatalf("len(EventInterventionRecorded) = %d, want 2: %+v", len(events), events)
@@ -992,10 +1068,12 @@ func TestUpdateTask_HumanRequiredUnblockRecordsInterventionAsHuman(t *testing.T)
 	projStore, err := project.NewStore(t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	proj, err := projStore.CreateMeta("https://github.com/acme/api.git", project.ProjectTypePet)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.projects = projStore
 	svc.cfg = &config.Config{Intervention: config.InterventionConfig{Enabled: true}}
@@ -1004,6 +1082,7 @@ func TestUpdateTask_HumanRequiredUnblockRecordsInterventionAsHuman(t *testing.T)
 	al, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer al.Close()
 	svc.audit = al
@@ -1011,6 +1090,7 @@ func TestUpdateTask_HumanRequiredUnblockRecordsInterventionAsHuman(t *testing.T)
 	store, err := intervention.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.intervention = store
 
@@ -1029,6 +1109,7 @@ func TestUpdateTask_HumanRequiredUnblockRecordsInterventionAsHuman(t *testing.T)
 	records, err := store.Query(intervention.ProjectKey(proj), 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(records) != 1 {
 		t.Fatalf("len(records) = %d, want 1: %+v", len(records), records)
@@ -1044,6 +1125,7 @@ func TestUpdateTask_HumanRequiredUnblockRecordsInterventionAsHuman(t *testing.T)
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(events) != 1 {
 		t.Fatalf("len(EventInterventionRecorded) = %d, want 1: %+v", len(events), events)
@@ -1066,10 +1148,12 @@ func TestDispatchFromHumanRequired_InterventionScrubsWorkProjects(t *testing.T) 
 	projStore, err := project.NewStore(t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	proj, err := projStore.CreateMeta("https://github.com/acme/api.git", project.ProjectTypeWork)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.projects = projStore
 	svc.cfg = &config.Config{Intervention: config.InterventionConfig{Enabled: true}}
@@ -1077,12 +1161,14 @@ func TestDispatchFromHumanRequired_InterventionScrubsWorkProjects(t *testing.T) 
 	store, err := intervention.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.intervention = store
 
 	tk, err := a.tasks.Create("fix the thing", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	reason := "resolved by checking https://github.com/acme/api/pull/9 manually"
 	updated, err := a.tasks.Update(tk.ID, task.Update{
@@ -1099,10 +1185,12 @@ func TestDispatchFromHumanRequired_InterventionScrubsWorkProjects(t *testing.T) 
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := svc.DispatchFromHumanRequired(updated.ID, "in-review", reason); err != nil {
 		t.Fatalf("DispatchFromHumanRequired: %v", err)
+		panic("unreachable")
 	}
 
 	projectKey := intervention.ProjectKey(proj)
@@ -1112,6 +1200,7 @@ func TestDispatchFromHumanRequired_InterventionScrubsWorkProjects(t *testing.T) 
 	records, err := store.Query(projectKey, 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(records) != 1 {
 		t.Fatalf("len(records) = %d, want 1: %+v", len(records), records)
@@ -1136,10 +1225,12 @@ func TestDispatchFromHumanRequired_RejectsNonHumanRequiredSource(t *testing.T) {
 	tk, err := a.tasks.Create("normal task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := svc.DispatchFromHumanRequired(tk.ID, "in-progress", "reason"); err == nil {
 		t.Fatal("expected error dispatching a non-human-required task")
+		panic("unreachable")
 	}
 }
 
@@ -1151,6 +1242,7 @@ func TestDispatchFromHumanRequired_RejectsEmptyReason(t *testing.T) {
 	for _, reason := range []string{"", "   ", "\t\n"} {
 		if _, err := svc.DispatchFromHumanRequired(tk.ID, "in-progress", reason); err == nil {
 			t.Fatalf("expected error dispatching with reason %q", reason)
+			panic("unreachable")
 		}
 	}
 	if launcher.startCalls != 0 {
@@ -1165,6 +1257,7 @@ func TestDispatchFromHumanRequired_RejectsUnknownTarget(t *testing.T) {
 
 	if _, err := svc.DispatchFromHumanRequired(tk.ID, "cancelled", "reason"); err == nil {
 		t.Fatal("expected error dispatching to an unsupported target")
+		panic("unreachable")
 	}
 }
 
@@ -1175,6 +1268,7 @@ func TestDispatchFromHumanRequired_RejectsInReviewWithoutPR(t *testing.T) {
 
 	if _, err := svc.DispatchFromHumanRequired(tk.ID, "in-review", "reason"); err == nil {
 		t.Fatal("expected error dispatching in-review without a linked PR")
+		panic("unreachable")
 	}
 	if launcher.startCalls != 0 {
 		t.Fatalf("expected no agent starts, got %d", launcher.startCalls)
@@ -1198,6 +1292,7 @@ func TestDispatchFromHumanRequired_RejectsRunningAgent(t *testing.T) {
 
 	if _, err := svc.DispatchFromHumanRequired(tk.ID, "in-progress", "reason"); err == nil {
 		t.Fatal("expected error dispatching while an agent is running")
+		panic("unreachable")
 	}
 }
 
@@ -1213,6 +1308,7 @@ func TestDispatchFromHumanRequired_RejectsNonTerminalWorkflow(t *testing.T) {
 
 	if _, err := svc.DispatchFromHumanRequired(tk.ID, "in-progress", "reason"); err == nil {
 		t.Fatal("expected error dispatching while a workflow is still active")
+		panic("unreachable")
 	}
 	if launcher.startCalls != 0 {
 		t.Fatalf("expected no agent starts, got %d", launcher.startCalls)
@@ -1228,6 +1324,7 @@ func TestDispatchFromHumanRequired_FailsClosedOnNoMatch(t *testing.T) {
 	emptyStore, err := workflow.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.workflowEngine = workflow.NewTestEngine(emptyStore, ta, launcher, a.logger)
 	tk := newHumanRequiredTask(t, a, 0)
@@ -1235,11 +1332,13 @@ func TestDispatchFromHumanRequired_FailsClosedOnNoMatch(t *testing.T) {
 	_, err = svc.DispatchFromHumanRequired(tk.ID, "in-progress", "retry please")
 	if err == nil {
 		t.Fatal("expected an error when no workflow matches")
+		panic("unreachable")
 	}
 
 	got, getErr := a.tasks.Get(tk.ID)
 	if getErr != nil {
 		t.Fatal(getErr)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want machine-owned dispatch failure quarantined", got.Status)
@@ -1256,22 +1355,26 @@ func TestDispatchFromHumanRequired_ReadyPRAuthorStillFailsClosedOnNoMatch(t *tes
 	emptyStore, err := workflow.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.workflowEngine = workflow.NewTestEngine(emptyStore, ta, launcher, a.logger)
 	tk := newHumanRequiredTask(t, a, 42)
 	_, err = a.tasks.Update(tk.ID, task.Update{RunRole: task.Ptr(string(agent.RoleImplementation))})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	_, err = svc.DispatchFromHumanRequired(tk.ID, "ready-pr", "retry please")
 	if err == nil {
 		t.Fatal("expected an error when no ready-pr workflow matches for a code-author role")
+		panic("unreachable")
 	}
 
 	got, getErr := a.tasks.Get(tk.ID)
 	if getErr != nil {
 		t.Fatal(getErr)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want machine-owned dispatch failure quarantined", got.Status)
@@ -1295,11 +1398,13 @@ func TestDispatchFromHumanRequired_NilWorkflowEngineFailsClosed(t *testing.T) {
 	_, err := svc.DispatchFromHumanRequired(tk.ID, "in-progress", "retry please")
 	if err == nil {
 		t.Fatal("expected an error with no workflow engine wired")
+		panic("unreachable")
 	}
 
 	got, getErr := a.tasks.Get(tk.ID)
 	if getErr != nil {
 		t.Fatal(getErr)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want machine-owned dispatch failure quarantined", got.Status)
@@ -1317,11 +1422,13 @@ func TestDispatchFromHumanRequired_FailsClosedOnDispatchError(t *testing.T) {
 	_, err := svc.DispatchFromHumanRequired(tk.ID, "in-progress", "retry please")
 	if err == nil {
 		t.Fatal("expected an error when the agent fails to start")
+		panic("unreachable")
 	}
 
 	got, getErr := a.tasks.Get(tk.ID)
 	if getErr != nil {
 		t.Fatal(getErr)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want machine-owned dispatch failure quarantined", got.Status)
@@ -1343,6 +1450,7 @@ func TestUpdateTask_HumanRequiredUnblockAppendsDecisionProgress(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("UpdateTask: %v", err)
+		panic("unreachable")
 	}
 	if updated.Status != task.StatusTodo {
 		t.Fatalf("status = %q, want %q", updated.Status, task.StatusTodo)
@@ -1351,6 +1459,7 @@ func TestUpdateTask_HumanRequiredUnblockAppendsDecisionProgress(t *testing.T) {
 	entries, err := svc.artifacts.ReadProgress(tk.ID)
 	if err != nil {
 		t.Fatalf("ReadProgress: %v", err)
+		panic("unreachable")
 	}
 	if len(entries) != 1 {
 		t.Fatalf("len(entries) = %d, want 1: %+v", len(entries), entries)
@@ -1381,6 +1490,7 @@ func TestUpdateTask_HumanRequiredUnblockWithoutReasonDoesNotReuseStaleStatusReas
 	})
 	if err != nil {
 		t.Fatalf("UpdateTask: %v", err)
+		panic("unreachable")
 	}
 	if updated.Status != task.StatusTodo {
 		t.Fatalf("status = %q, want %q", updated.Status, task.StatusTodo)
@@ -1389,6 +1499,7 @@ func TestUpdateTask_HumanRequiredUnblockWithoutReasonDoesNotReuseStaleStatusReas
 	entries, err := svc.artifacts.ReadProgress(tk.ID)
 	if err != nil {
 		t.Fatalf("ReadProgress: %v", err)
+		panic("unreachable")
 	}
 	if len(entries) != 1 {
 		t.Fatalf("len(entries) = %d, want 1: %+v", len(entries), entries)
@@ -1410,6 +1521,7 @@ func TestDispatchFromHumanRequired_AppendsDecisionProgress(t *testing.T) {
 	updated, err := svc.DispatchFromHumanRequired(tk.ID, string(task.StatusInProgress), "retry after clearing stale watchdog counters")
 	if err != nil {
 		t.Fatalf("DispatchFromHumanRequired: %v", err)
+		panic("unreachable")
 	}
 	if updated.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want %q", updated.Status, task.StatusInProgress)
@@ -1418,6 +1530,7 @@ func TestDispatchFromHumanRequired_AppendsDecisionProgress(t *testing.T) {
 	entries, err := svc.artifacts.ReadProgress(tk.ID)
 	if err != nil {
 		t.Fatalf("ReadProgress: %v", err)
+		panic("unreachable")
 	}
 	if len(entries) != 1 {
 		t.Fatalf("len(entries) = %d, want 1: %+v", len(entries), entries)
@@ -1465,9 +1578,11 @@ func TestDispatchInboundReview_SkipsAlreadyReviewedHead(t *testing.T) {
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow != nil && got.Workflow.WorkflowID == "pr-review" && got.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("dispatched a pr-review for an already-reviewed head %s", head)
+		panic("unreachable")
 	}
 	if launcher.startCalls != 0 {
 		t.Fatalf("startCalls = %d, want 0 — the head was already reviewed", launcher.startCalls)
@@ -1490,6 +1605,7 @@ func TestDispatchInboundReview_SkipsPRAlreadyOwnedByImplementationTask(t *testin
 	tk, err := a.tasks.Update(tk.ID, task.Update{Branch: task.Ptr("feat/owned-pr-12345678")})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := a.tasks.CreateFull("implementation owns PR", "", string(task.AgentModeHeadless), task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -1505,9 +1621,11 @@ func TestDispatchInboundReview_SkipsPRAlreadyOwnedByImplementationTask(t *testin
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow != nil && got.Workflow.WorkflowID == "pr-review" && got.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("workflow = %+v, want no active pr-review for PR owned by implementation task", got.Workflow)
+		panic("unreachable")
 	}
 	if launcher.startCalls != 0 {
 		t.Fatalf("startCalls = %d, want 0", launcher.startCalls)
@@ -1527,6 +1645,7 @@ func TestDispatchInboundReview_SkipsSameRepoBranchAlreadyOwnedByImplementationTa
 	tk, err := a.tasks.Update(tk.ID, task.Update{Branch: task.Ptr("feat/owned-branch-12345678")})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := a.tasks.CreateFull("implementation owns branch before PR number", "", string(task.AgentModeHeadless), task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -1541,9 +1660,11 @@ func TestDispatchInboundReview_SkipsSameRepoBranchAlreadyOwnedByImplementationTa
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow != nil && got.Workflow.WorkflowID == "pr-review" && got.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("workflow = %+v, want no active pr-review for branch owned by implementation task", got.Workflow)
+		panic("unreachable")
 	}
 	if launcher.startCalls != 0 {
 		t.Fatalf("startCalls = %d, want 0", launcher.startCalls)
@@ -1584,12 +1705,14 @@ func TestDispatchInboundReview_SkipsLegacyBranchEmptyReviewWhenFetchedPROwnedByI
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Branch != "feat/legacy-owned-branch-12345678" {
 		t.Fatalf("branch = %q, want fetched same-repo branch stamped", got.Branch)
 	}
 	if got.Workflow != nil && got.Workflow.WorkflowID == "pr-review" && got.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("workflow = %+v, want no active pr-review for fetched branch owned by implementation task", got.Workflow)
+		panic("unreachable")
 	}
 	if launcher.startCalls != 0 {
 		t.Fatalf("startCalls = %d, want 0", launcher.startCalls)
@@ -1610,6 +1733,7 @@ func TestDispatchInboundReview_DoesNotSkipSameBranchOwnedByDifferentPR(t *testin
 	tk, err := a.tasks.Update(tk.ID, task.Update{Branch: task.Ptr("feat/shared-branch-12345678")})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	otherPR := 100
 	if _, err := a.tasks.CreateFull("implementation owns a different PR", "", string(task.AgentModeHeadless), task.Update{
@@ -1653,9 +1777,11 @@ func TestDispatchInboundReview_NewHeadIsReviewed(t *testing.T) {
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != "pr-review" {
 		t.Fatalf("workflow = %+v, want pr-review — a new push must be reviewed", got.Workflow)
+		panic("unreachable")
 	}
 	if got.ReviewedHeadSHA != "new-head-sha" {
 		t.Errorf("reviewed_head_sha = %q, want new-head-sha stamped at dispatch", got.ReviewedHeadSHA)
@@ -1681,9 +1807,11 @@ func TestDispatchInboundReview_HeadLookupFailureDefers(t *testing.T) {
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow != nil && got.Workflow.WorkflowID == "pr-review" {
 		t.Fatalf("dispatched despite an unknown head: %+v", got.Workflow)
+		panic("unreachable")
 	}
 	if launcher.startCalls != 0 {
 		t.Fatalf("startCalls = %d, want 0 — an unknown head must not dispatch", launcher.startCalls)
@@ -1721,6 +1849,7 @@ func TestDispatchInboundReview_CooldownOpenButHeadUnchanged(t *testing.T) {
 	stale, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !inboundReviewNeedsAgent(stale) {
 		t.Fatal("precondition: the phase/cooldown gates must be open for this test to exercise the SHA guard")
@@ -1803,6 +1932,7 @@ func TestDispatchInboundReview_FailedStartDoesNotSpendBudget(t *testing.T) {
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.ReviewedHeadSHA != "" || got.ReviewedHeadAttempts != 0 {
 		t.Fatalf("charged the head (sha=%q attempts=%d) for a review that never started — "+
@@ -1815,6 +1945,7 @@ func TestDispatchInboundReview_FailedStartDoesNotSpendBudget(t *testing.T) {
 	got, err = a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.ReviewedHeadAttempts != 1 {
 		t.Errorf("attempts = %d, want 1 once a run actually started", got.ReviewedHeadAttempts)
@@ -1826,6 +1957,7 @@ func newInboundReviewTask(t *testing.T, a *App, prNumber int, phase string) task
 	tk, err := a.tasks.Create("Review: external PR", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	updated, err := a.tasks.UpdateMap(tk.ID, map[string]any{
 		"status":       string(task.StatusInReview),
@@ -1836,6 +1968,7 @@ func newInboundReviewTask(t *testing.T, a *App, prNumber int, phase string) task
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return updated
 }
@@ -1953,6 +2086,7 @@ func TestDispatchInboundReview_RateLimitParksForHuman(t *testing.T) {
 	for i := range config.DefaultReviewRoundsPerHour {
 		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i*5)*time.Minute))); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
@@ -1961,6 +2095,7 @@ func TestDispatchInboundReview_RateLimitParksForHuman(t *testing.T) {
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if launcher.startCalls != 0 {
 		t.Errorf("startCalls = %d, want 0 — dispatched past the rate cap", launcher.startCalls)
@@ -1986,6 +2121,7 @@ func TestDispatchInboundReview_TaskLimitParksForHuman(t *testing.T) {
 		// are exhausted, the permanent lifetime reason must take precedence.
 		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i)*time.Minute))); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
@@ -1994,6 +2130,7 @@ func TestDispatchInboundReview_TaskLimitParksForHuman(t *testing.T) {
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if launcher.startCalls != 0 {
 		t.Errorf("startCalls = %d, want 0 — dispatched past the lifetime cap", launcher.startCalls)
@@ -2017,6 +2154,7 @@ func TestDispatchInboundReview_UnderRateLimitStillReviews(t *testing.T) {
 	tk := newInboundReviewTask(t, a, 151, "needs-approval")
 	if err := a.tasks.AddRun(tk.ID, reviewRun(time.Now().Add(-30*time.Minute))); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
@@ -2024,12 +2162,14 @@ func TestDispatchInboundReview_UnderRateLimitStillReviews(t *testing.T) {
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status == task.StatusHumanRequired {
 		t.Fatalf("parked a task well under the rate cap: %q", got.StatusReason)
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != "pr-review" {
 		t.Fatalf("workflow = %+v, want pr-review", got.Workflow)
+		panic("unreachable")
 	}
 }
 
@@ -2049,12 +2189,14 @@ func TestDispatchInboundReview_ParkedTaskIsNotReParked(t *testing.T) {
 	for i := range config.DefaultReviewRoundsPerHour {
 		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i*5)*time.Minute))); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
 	parked, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if parked.Status != task.StatusHumanRequired {
 		t.Fatalf("precondition: want parked, got %q", parked.Status)
@@ -2067,6 +2209,7 @@ func TestDispatchInboundReview_ParkedTaskIsNotReParked(t *testing.T) {
 	before, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	for range 3 {
@@ -2076,6 +2219,7 @@ func TestDispatchInboundReview_ParkedTaskIsNotReParked(t *testing.T) {
 	after, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if after.StatusReason != note {
 		t.Errorf("StatusReason = %q, want the operator's note %q — re-parked and clobbered it", after.StatusReason, note)
@@ -2103,6 +2247,7 @@ func TestDispatchInboundReview_RateLimitReadsRealConfig(t *testing.T) {
 	// One round: under the default of 3, over the configured 1.
 	if err := a.tasks.AddRun(tk.ID, reviewRun(time.Now().Add(-2*time.Minute))); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	a.dispatchInboundReviewWorkflow(t.Context(), tk.ID)
@@ -2110,6 +2255,7 @@ func TestDispatchInboundReview_RateLimitReadsRealConfig(t *testing.T) {
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want %q — the configured limit of 1 was ignored in favour of the default",
@@ -2136,6 +2282,7 @@ func TestDispatchInboundReview_RateLimitDisabledByConfig(t *testing.T) {
 	for i := range config.DefaultReviewRoundsPerTask - 1 {
 		if err := a.tasks.AddRun(tk.ID, reviewRun(now.Add(-time.Duration(i)*time.Minute))); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
@@ -2144,6 +2291,7 @@ func TestDispatchInboundReview_RateLimitDisabledByConfig(t *testing.T) {
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status == task.StatusHumanRequired {
 		t.Fatalf("parked despite the cap being disabled: %q", got.StatusReason)
@@ -2186,6 +2334,7 @@ func TestDispatchInboundReview_RateLimitReachedByHeadChurn(t *testing.T) {
 		cur, err := a.tasks.Get(tk.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if cur.Status == task.StatusHumanRequired {
 			break
@@ -2195,6 +2344,7 @@ func TestDispatchInboundReview_RateLimitReachedByHeadChurn(t *testing.T) {
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("6 distinct heads in an hour never tripped the cap: status=%q dispatched=%d", got.Status, dispatched)

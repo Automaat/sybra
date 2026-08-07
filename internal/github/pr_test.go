@@ -52,6 +52,7 @@ func TestFetchPRStateWith(t *testing.T) {
 			got, err := fetchPRStateWith(fe, "o/r", 42)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+				panic("unreachable")
 			}
 			if err != nil {
 				return
@@ -253,6 +254,7 @@ func TestFetchPRFilesWith(t *testing.T) {
 			got, err := fetchPRFilesWith(fe, "o/r", 42)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+				panic("unreachable")
 			}
 			if err != nil {
 				return
@@ -284,6 +286,7 @@ func TestFetchPRWith_success(t *testing.T) {
 	pr, err := fetchPRWith(fe, "owner/repo", 42)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if pr.Number != 42 {
 		t.Errorf("Number = %d, want 42", pr.Number)
@@ -317,6 +320,7 @@ func TestFetchPRWith_execError(t *testing.T) {
 	_, err := fetchPRWith(fe, "owner/repo", 42)
 	if err == nil {
 		t.Fatal("expected error")
+		panic("unreachable")
 	}
 }
 
@@ -326,6 +330,7 @@ func TestFetchPRWith_invalidJSON(t *testing.T) {
 	_, err := fetchPRWith(fe, "owner/repo", 42)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
+		panic("unreachable")
 	}
 }
 
@@ -341,6 +346,7 @@ func TestFetchPRClosingIssuesWith_sameRepo(t *testing.T) {
 	issues, body, err := fetchPRClosingIssuesWith(fe, "owner/repo", 42)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if len(issues) != 1 || issues[0] != 7 {
 		t.Errorf("issues = %v, want [7]", issues)
@@ -363,6 +369,7 @@ func TestFetchPRClosingIssuesWith_filtersCrossRepo(t *testing.T) {
 	issues, _, err := fetchPRClosingIssuesWith(fe, "owner/repo", 42)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if len(issues) != 1 || issues[0] != 1 {
 		t.Errorf("issues = %v, want [1] (99 belongs to elsewhere/other and must be filtered)", issues)
@@ -375,6 +382,7 @@ func TestFetchPRClosingIssuesWith_empty(t *testing.T) {
 	issues, _, err := fetchPRClosingIssuesWith(fe, "owner/repo", 42)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if len(issues) != 0 {
 		t.Errorf("issues = %v, want empty", issues)
@@ -387,6 +395,7 @@ func TestFetchPRClosingIssuesWith_execError(t *testing.T) {
 	_, _, err := fetchPRClosingIssuesWith(fe, "owner/repo", 42)
 	if err == nil {
 		t.Fatal("expected error")
+		panic("unreachable")
 	}
 }
 
@@ -396,6 +405,7 @@ func TestFetchPRClosingIssuesWith_invalidJSON(t *testing.T) {
 	_, _, err := fetchPRClosingIssuesWith(fe, "owner/repo", 42)
 	if err == nil {
 		t.Fatal("expected error")
+		panic("unreachable")
 	}
 }
 
@@ -404,6 +414,7 @@ func TestEditPRBodyWith_passesArgs(t *testing.T) {
 	fe := &recordingExecer{}
 	if err := editPRBodyWith(fe, "owner/repo", 42, "new body with\nnewline"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	// Args should be: pr edit 42 --repo owner/repo --body <body>
 	want := []string{"pr", "edit", "42", "--repo", "owner/repo", "--body", "new body with\nnewline"}
@@ -422,6 +433,7 @@ func TestEditPRBodyWith_execError(t *testing.T) {
 	fe := &fakeExecer{output: []byte("forbidden"), err: fmt.Errorf("exit 1")}
 	if err := editPRBodyWith(fe, "owner/repo", 42, "body"); err == nil {
 		t.Fatal("expected error")
+		panic("unreachable")
 	}
 }
 
@@ -460,6 +472,7 @@ func TestRequestCopilotReview_RequestsCopilotBot(t *testing.T) {
 
 	if err := RequestCopilotReview("owner/repo", 42); err != nil {
 		t.Fatalf("RequestCopilotReview: %v", err)
+		panic("unreachable")
 	}
 	if len(fe.calls) != 2 {
 		t.Fatalf("calls = %d, want 2: %v", len(fe.calls), fe.calls)
@@ -492,6 +505,7 @@ func TestRequestCopilotReview_InvalidRepo(t *testing.T) {
 	fe := &recordingSequenceExecer{}
 	if err := requestCopilotReviewCtxWith(context.Background(), fe, "not-a-repo", 42); err == nil {
 		t.Fatal("expected error for repo without owner/name")
+		panic("unreachable")
 	}
 	if fe.callIdx != 0 {
 		t.Errorf("calls = %d, want 0 (should fail before any API call)", fe.callIdx)
@@ -508,6 +522,7 @@ func TestRequestCopilotReview_IDQueryGraphQLError(t *testing.T) {
 	err := requestCopilotReviewCtxWith(context.Background(), fe, "owner/repo", 42)
 	if err == nil {
 		t.Fatal("expected error")
+		panic("unreachable")
 	}
 	if fe.callIdx != 1 {
 		t.Errorf("calls = %d, want 1 (should not attempt the mutation after id lookup fails)", fe.callIdx)
@@ -524,6 +539,7 @@ func TestRequestCopilotReview_EmptyNodeID(t *testing.T) {
 	err := requestCopilotReviewCtxWith(context.Background(), fe, "owner/repo", 42)
 	if err == nil {
 		t.Fatal("expected error for empty node id")
+		panic("unreachable")
 	}
 	if fe.callIdx != 1 {
 		t.Errorf("calls = %d, want 1 (should not attempt the mutation with an empty prId)", fe.callIdx)
@@ -540,6 +556,7 @@ func TestRequestCopilotReview_MutationGraphQLError(t *testing.T) {
 	}
 	if err := requestCopilotReviewCtxWith(context.Background(), fe, "owner/repo", 42); err == nil {
 		t.Fatal("expected error")
+		panic("unreachable")
 	}
 }
 
@@ -548,6 +565,7 @@ func TestRequestReviewersWith_emptySkips(t *testing.T) {
 	fe := &recordingExecer{}
 	if err := requestReviewersWith(fe, "owner/repo", 42, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if fe.calls != 0 {
 		t.Fatalf("calls = %d, want 0", fe.calls)
@@ -581,6 +599,7 @@ func TestFetchPRContextWith_includesAuthorAndCommentAuthors(t *testing.T) {
 	got, err := fetchPRContextWith(fe, "owner/repo", 42)
 	if err != nil {
 		t.Fatalf("fetchPRContextWith: %v", err)
+		panic("unreachable")
 	}
 	if got.Author != "author" {
 		t.Errorf("Author = %q, want author", got.Author)
@@ -620,6 +639,7 @@ func TestMergePRWith(t *testing.T) {
 			err := mergePRWith(fe, "owner/repo", 42)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+				panic("unreachable")
 			}
 		})
 	}
@@ -661,6 +681,7 @@ func TestMergePRWith_RetriesBaseBranchModified(t *testing.T) {
 		}}
 		if err := mergePRWith(se, "owner/repo", 42); err != nil {
 			t.Fatalf("unexpected err: %v", err)
+			panic("unreachable")
 		}
 		if se.calls != 3 {
 			t.Fatalf("calls = %d, want 3", se.calls)
@@ -674,6 +695,7 @@ func TestMergePRWith_RetriesBaseBranchModified(t *testing.T) {
 		}}
 		if err := mergePRWith(se, "owner/repo", 42); err == nil {
 			t.Fatal("expected error")
+			panic("unreachable")
 		}
 		if se.calls != len(mergeRetryDelays)+1 {
 			t.Fatalf("calls = %d, want %d", se.calls, len(mergeRetryDelays)+1)
@@ -686,6 +708,7 @@ func TestMergePRWith_RetriesBaseBranchModified(t *testing.T) {
 		}}
 		if err := mergePRWith(se, "owner/repo", 42); err == nil {
 			t.Fatal("expected error")
+			panic("unreachable")
 		}
 		if se.calls != 1 {
 			t.Fatalf("calls = %d, want 1 (no retry)", se.calls)
@@ -700,6 +723,7 @@ func TestEnableAutoMerge(t *testing.T) {
 		fe := &recordingExecer{}
 		if err := enableAutoMergeWith(fe, "owner/repo", 42); err != nil {
 			t.Fatalf("unexpected error: %v", err)
+			panic("unreachable")
 		}
 		want := []string{"pr", "merge", "42", "--repo", "owner/repo", "--auto", "--squash"}
 		if len(fe.lastArgs) != len(want) {
@@ -718,6 +742,7 @@ func TestEnableAutoMerge(t *testing.T) {
 		err := enableAutoMergeWith(fe, "owner/repo", 42)
 		if err == nil {
 			t.Fatal("expected error")
+			panic("unreachable")
 		}
 		if !strings.Contains(err.Error(), "gh pr merge --auto 42") {
 			t.Errorf("error = %v, want it to mention 'gh pr merge --auto 42'", err)
@@ -736,6 +761,7 @@ func TestEnableAutoMerge(t *testing.T) {
 		fe := &recordingExecer{}
 		if err := enableAutoMergeWith(fe, "owner/repo", 99); err != nil {
 			t.Fatalf("unexpected error: %v", err)
+			panic("unreachable")
 		}
 		if _, ok := prStateCache.Get(key); !ok {
 			t.Error("cache entry was invalidated by a non-default execer, want untouched")
@@ -750,6 +776,7 @@ func TestClosePRWith(t *testing.T) {
 		fe := &recordingExecer{}
 		if err := closePRWith(t.Context(), fe, "owner/repo", 42, "Superseded by #43."); err != nil {
 			t.Fatalf("unexpected error: %v", err)
+			panic("unreachable")
 		}
 		want := []string{"pr", "close", "42", "--repo", "owner/repo", "--comment", "Superseded by #43."}
 		if len(fe.lastArgs) != len(want) {
@@ -768,6 +795,7 @@ func TestClosePRWith(t *testing.T) {
 		err := closePRWith(t.Context(), fe, "owner/repo", 42, "Superseded")
 		if err == nil {
 			t.Fatal("expected error")
+			panic("unreachable")
 		}
 		if !strings.Contains(err.Error(), "gh pr close 42") {
 			t.Errorf("error = %v, want it to mention 'gh pr close 42'", err)
@@ -844,6 +872,7 @@ func TestSupportsNativeAutoMerge(t *testing.T) {
 			got, err := supportsNativeAutoMergeWith(se, "owner/repo", "main")
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+				panic("unreachable")
 			}
 			if got != tt.want {
 				t.Errorf("supportsNativeAutoMergeWith() = %v, want %v", got, tt.want)
@@ -858,6 +887,7 @@ func TestSupportsNativeAutoMerge(t *testing.T) {
 		}}
 		if _, err := supportsNativeAutoMergeWith(se, "owner/repo", "main"); err == nil {
 			t.Fatal("expected error")
+			panic("unreachable")
 		}
 	})
 
@@ -869,6 +899,7 @@ func TestSupportsNativeAutoMerge(t *testing.T) {
 		}}
 		if _, err := supportsNativeAutoMergeWith(se, "owner/repo", "release/base"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
+			panic("unreachable")
 		}
 		if !strings.Contains(se.lastArgs[len(se.lastArgs)-1], "release%2Fbase") {
 			t.Errorf("last call args = %v, want it to reference path-escaped base branch release%%2Fbase", se.lastArgs)
@@ -894,6 +925,7 @@ func TestMergePRViaRESTWith(t *testing.T) {
 		}}
 		if err := mergePRViaRESTWith(se, "owner/repo", 42, "abc123"); err != nil {
 			t.Fatalf("unexpected err: %v", err)
+			panic("unreachable")
 		}
 		joined := strings.Join(se.lastArgs, " ")
 		if !strings.Contains(joined, "repos/owner/repo/pulls/42/merge") {
@@ -914,6 +946,7 @@ func TestMergePRViaRESTWith(t *testing.T) {
 		}}
 		if err := mergePRViaRESTWith(se, "owner/repo", 42, ""); err == nil {
 			t.Fatal("expected error for empty head sha")
+			panic("unreachable")
 		}
 		if se.calls != 0 {
 			t.Fatalf("calls = %d, want 0 (no request without a head sha)", se.calls)
@@ -927,6 +960,7 @@ func TestMergePRViaRESTWith(t *testing.T) {
 		}}
 		if err := mergePRViaRESTWith(se, "owner/repo", 42, "abc123"); err == nil {
 			t.Fatal("expected error")
+			panic("unreachable")
 		}
 		if se.calls != 1 {
 			t.Fatalf("calls = %d, want 1 (no retry on sha mismatch)", se.calls)
@@ -940,6 +974,7 @@ func TestMergePRViaRESTWith(t *testing.T) {
 		}}
 		if err := mergePRViaRESTWith(se, "owner/repo", 42, "abc123"); err == nil {
 			t.Fatal("expected error")
+			panic("unreachable")
 		}
 		if isHeadSHAMismatchErr(ghHTTPResponse{statusCode: 409, body: []byte("some other conflict")}) {
 			t.Fatal("generic 409 must not be classified as a head-SHA mismatch")
@@ -959,6 +994,7 @@ func TestMergePRViaRESTWith(t *testing.T) {
 		}}
 		if err := mergePRViaRESTWith(se, "owner/repo", 42, "abc123"); err != nil {
 			t.Fatalf("unexpected err: %v", err)
+			panic("unreachable")
 		}
 		if se.calls != 3 {
 			t.Fatalf("calls = %d, want 3", se.calls)

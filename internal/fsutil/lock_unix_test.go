@@ -20,6 +20,7 @@ func TestTryLockPath_SecondCallerFails(t *testing.T) {
 	unlock, err := TryLockPath(path)
 	if err != nil {
 		t.Fatalf("first TryLockPath: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		if err := unlock(); err != nil {
@@ -39,6 +40,7 @@ func TestTryLockPath_NamesHolderPID(t *testing.T) {
 	unlock, err := TryLockPath(path)
 	if err != nil {
 		t.Fatalf("first TryLockPath: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		if err := unlock(); err != nil {
@@ -49,6 +51,7 @@ func TestTryLockPath_NamesHolderPID(t *testing.T) {
 	_, err = TryLockPath(path)
 	if err == nil {
 		t.Fatal("expected an error from the second caller")
+		panic("unreachable")
 	}
 	want := "held by pid " + strconv.Itoa(os.Getpid())
 	if got := err.Error(); !strings.Contains(got, want) {
@@ -63,17 +66,21 @@ func TestTryLockPath_ReleaseAllowsReacquire(t *testing.T) {
 	unlock, err := TryLockPath(path)
 	if err != nil {
 		t.Fatalf("first TryLockPath: %v", err)
+		panic("unreachable")
 	}
 	if err := unlock(); err != nil {
 		t.Fatalf("unlock: %v", err)
+		panic("unreachable")
 	}
 
 	unlock2, err := TryLockPath(path)
 	if err != nil {
 		t.Fatalf("re-acquire after unlock: %v", err)
+		panic("unreachable")
 	}
 	if err := unlock2(); err != nil {
 		t.Fatalf("unlock2: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -84,6 +91,7 @@ func TestTryLockPath_CreatesParentDir(t *testing.T) {
 	unlock, err := TryLockPath(path)
 	if err != nil {
 		t.Fatalf("TryLockPath: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		if err := unlock(); err != nil {
@@ -93,6 +101,7 @@ func TestTryLockPath_CreatesParentDir(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Dir(path)); err != nil {
 		t.Fatalf("stat parent dir: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -103,6 +112,7 @@ func TestLockFileWithin_TimesOutWhenHeld(t *testing.T) {
 	unlock, err := LockFile(path)
 	if err != nil {
 		t.Fatalf("LockFile: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = unlock() })
 
@@ -129,6 +139,7 @@ func TestLockFileContext_CancelledWaitReturnsTypedTimeout(t *testing.T) {
 	unlock, err := LockFile(path)
 	if err != nil {
 		t.Fatalf("LockFile: %v", err)
+		panic("unreachable")
 	}
 	defer func() { _ = unlock() }()
 
@@ -147,6 +158,7 @@ func TestLockFileWithin_RetriesUntilReleased(t *testing.T) {
 	unlock, err := LockFile(path)
 	if err != nil {
 		t.Fatalf("LockFile: %v", err)
+		panic("unreachable")
 	}
 	go func() {
 		time.Sleep(20 * time.Millisecond)
@@ -156,8 +168,10 @@ func TestLockFileWithin_RetriesUntilReleased(t *testing.T) {
 	unlock2, err := LockFileWithin(path, time.Second)
 	if err != nil {
 		t.Fatalf("LockFileWithin: %v", err)
+		panic("unreachable")
 	}
 	if err := unlock2(); err != nil {
 		t.Fatalf("unlock: %v", err)
+		panic("unreachable")
 	}
 }

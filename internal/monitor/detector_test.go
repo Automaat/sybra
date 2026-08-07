@@ -1166,6 +1166,7 @@ func TestFingerprintStability(t *testing.T) {
 	b := Anomaly{Kind: KindLostAgent, TaskID: "abc"}
 	if Fingerprint(a.Kind, a.TaskID, nil) != Fingerprint(b.Kind, b.TaskID, nil) {
 		t.Fatal("fingerprint not stable for identical anomalies")
+		panic("unreachable")
 	}
 	if Fingerprint(KindBottleneck, "", map[string]any{"status": "plan-review"}) ==
 		Fingerprint(KindBottleneck, "", map[string]any{"status": "in-progress"}) {

@@ -19,10 +19,12 @@ func writeSelfMonitorReport(t *testing.T, dir string, r selfmonitor.Report) stri
 	data, err := json.Marshal(r)
 	if err != nil {
 		t.Fatalf("marshal report: %v", err)
+		panic("unreachable")
 	}
 	path := filepath.Join(dir, "last-report.json")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write report: %v", err)
+		panic("unreachable")
 	}
 	return path
 }
@@ -65,6 +67,7 @@ func TestRun_SelfMonitorDisabledWithFreshReportStillConsumesIt(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 	if result.State != selfmonitor.StateHealthy {
 		t.Errorf("State = %q, want %q (a fresh report is usable regardless of the disabled flag)", result.State, selfmonitor.StateHealthy)
@@ -84,6 +87,7 @@ func TestRun_SelfMonitorDisabledWithNoReportReturnsDisabledOutcome(t *testing.T)
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 	if result.State != selfmonitor.StateDisabled {
 		t.Errorf("State = %q, want %q", result.State, selfmonitor.StateDisabled)
@@ -105,6 +109,7 @@ func TestRun_MissingReportReturnsStaleDegradedOutcome(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 	if result.State != selfmonitor.StateStale {
 		t.Errorf("State = %q, want %q", result.State, selfmonitor.StateStale)
@@ -131,6 +136,7 @@ func TestRun_StaleReportReturnsDegradedOutcome(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 	if result.State != selfmonitor.StateStale {
 		t.Errorf("State = %q, want %q", result.State, selfmonitor.StateStale)
@@ -164,6 +170,7 @@ func TestRun_LongIntervalKeepsOnScheduleReportHealthy(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 	if result.State != selfmonitor.StateHealthy {
 		t.Errorf("State = %q, want %q", result.State, selfmonitor.StateHealthy)
@@ -194,6 +201,7 @@ func TestRun_HealthyReportProducesProposals(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 	if result.State != selfmonitor.StateHealthy {
 		t.Errorf("State = %q, want %q", result.State, selfmonitor.StateHealthy)
@@ -230,6 +238,7 @@ func TestRun_PartialReportSurfacesPartialState(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 	if result.State != selfmonitor.StatePartial {
 		t.Errorf("State = %q, want %q", result.State, selfmonitor.StatePartial)
@@ -254,15 +263,18 @@ func TestRun_PersistsDegradedResultAtomically(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 
 	data, err := os.ReadFile(filepath.Join(outDir, "last-run.json"))
 	if err != nil {
 		t.Fatalf("last-run.json missing: %v", err)
+		panic("unreachable")
 	}
 	var back RunResult
 	if err := json.Unmarshal(data, &back); err != nil {
 		t.Fatalf("last-run.json unparseable: %v", err)
+		panic("unreachable")
 	}
 	if back.State != result.State {
 		t.Errorf("persisted State = %q, want %q", back.State, result.State)
@@ -284,10 +296,12 @@ func TestSaveRunResult_InterruptedWritePreservesLastGood(t *testing.T) {
 	good, err := os.ReadFile(filepath.Join(outDir, "last-run.json"))
 	if err != nil {
 		t.Fatalf("seed file missing: %v", err)
+		panic("unreachable")
 	}
 
 	if err := os.Chmod(outDir, 0o500); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.Chmod(outDir, 0o755) })
 
@@ -300,6 +314,7 @@ func TestSaveRunResult_InterruptedWritePreservesLastGood(t *testing.T) {
 	after, readErr := os.ReadFile(filepath.Join(outDir, "last-run.json"))
 	if readErr != nil {
 		t.Fatalf("last-run.json missing after interrupted write: %v", readErr)
+		panic("unreachable")
 	}
 	if !bytes.Equal(after, good) {
 		t.Errorf("last-run.json changed after an interrupted write; want the previous good result preserved\nbefore=%s\nafter=%s", good, after)

@@ -35,10 +35,12 @@ func TestCertifyLinkedWorktreeAndCachesStableEnvironment(t *testing.T) {
 	first, err := service.Certify(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Certify: %v", err)
+		panic("unreachable")
 	}
 	second, err := service.Certify(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Certify cached: %v", err)
+		panic("unreachable")
 	}
 	if first.ID != second.ID {
 		t.Fatalf("certificate IDs differ: %q != %q", first.ID, second.ID)
@@ -60,11 +62,13 @@ func TestCertifyEvictsExpiredFingerprintEntries(t *testing.T) {
 	}
 	if _, err := service.Certify(context.Background(), req); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	now = now.Add(2 * time.Second)
 	req.ConfigVersion = "two"
 	if _, err := service.Certify(context.Background(), req); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	service.mu.Lock()
 	defer service.mu.Unlock()
@@ -81,9 +85,11 @@ func TestCachedCertificateInvalidatesWhenScratchRootBecomesReadOnly(t *testing.T
 	req.ScratchRoots = []string{scratch}
 	if _, err := service.Certify(context.Background(), req); err != nil {
 		t.Fatalf("Certify: %v", err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(scratch, 0o555); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.Chmod(scratch, 0o755) })
 	_, err := service.Certify(context.Background(), req)
@@ -100,6 +106,7 @@ func TestVerifierNeverReceivesSourceWriteProbe(t *testing.T) {
 	cert, err := service.Certify(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Certify: %v", err)
+		panic("unreachable")
 	}
 	hasScratchWrite := false
 	for _, observation := range cert.Observations {
@@ -198,6 +205,7 @@ func TestRepairIsSerializedAndProducesFreshCertificate(t *testing.T) {
 	for certifyErr := range errs {
 		if certifyErr != nil {
 			t.Fatalf("Certify: %v", certifyErr)
+			panic("unreachable")
 		}
 	}
 	if repairs.Load() != 1 {
@@ -214,6 +222,7 @@ func TestDetectsReadOnlySourceAndGitAdminSeparately(t *testing.T) {
 	req := authorRequest(bare, worktree)
 	if err := os.Chmod(worktree, 0o555); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.Chmod(worktree, 0o755) })
 	_, err := service.Certify(context.Background(), req)
@@ -224,10 +233,12 @@ func TestDetectsReadOnlySourceAndGitAdminSeparately(t *testing.T) {
 
 	if err := os.Chmod(worktree, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	gitDir := gitOutput(t, worktree, "rev-parse", "--path-format=absolute", "--git-dir")
 	if err := os.Chmod(gitDir, 0o555); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.Chmod(gitDir, 0o755) })
 	service = New(Deps{ProbeSandbox: healthyProbe(false), ProbeProvider: healthyProbe(false), ProbeTaskMutation: healthyProbe(false)})
@@ -241,6 +252,7 @@ func TestSandboxReportIsAvailableButNeverContained(t *testing.T) {
 	observation, err := agent.ProbeSandboxPosture("report")
 	if err != nil {
 		t.Fatalf("ProbeSandboxPosture(report): %v", err)
+		panic("unreachable")
 	}
 	if !observation.Available || observation.Contained {
 		t.Fatalf("report observation = %+v", observation)
@@ -253,12 +265,14 @@ func TestMissingReferencedObjectFailsBeforeDispatch(t *testing.T) {
 	req := authorRequest(bare, worktree)
 	if _, err := service.Certify(context.Background(), req); err != nil {
 		t.Fatalf("initial Certify: %v", err)
+		panic("unreachable")
 	}
 	tree := gitOutput(t, worktree, "rev-parse", "HEAD^{tree}")
 	fanout := fmt.Sprintf("%.2s", tree)
 	objectPath := filepath.Join(bare, "objects", fanout, strings.TrimPrefix(tree, fanout))
 	if err := os.Remove(objectPath); err != nil {
 		t.Fatalf("remove referenced tree: %v", err)
+		panic("unreachable")
 	}
 	_, err := service.Certify(context.Background(), req)
 	var failure CertificationError
@@ -272,6 +286,7 @@ func TestIndexReferencedObjectFailsBeforeDispatch(t *testing.T) {
 	path := filepath.Join(worktree, "staged.txt")
 	if err := os.WriteFile(path, []byte("staged only\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	runGit(t, worktree, "add", "staged.txt")
 	blob := gitOutput(t, worktree, "rev-parse", ":staged.txt")
@@ -279,6 +294,7 @@ func TestIndexReferencedObjectFailsBeforeDispatch(t *testing.T) {
 	objectPath := filepath.Join(bare, "objects", fanout, strings.TrimPrefix(blob, fanout))
 	if err := os.Remove(objectPath); err != nil {
 		t.Fatalf("remove staged blob: %v", err)
+		panic("unreachable")
 	}
 	service := New(Deps{ProbeSandbox: healthyProbe(false), ProbeProvider: healthyProbe(false), ProbeTaskMutation: healthyProbe(false)})
 	_, err := service.Certify(context.Background(), authorRequest(bare, worktree))
@@ -293,12 +309,14 @@ func TestIndexReferencedObjectRepairsThenFreshlyCertifies(t *testing.T) {
 	path := filepath.Join(worktree, "staged.txt")
 	if err := os.WriteFile(path, []byte("preserve me\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	runGit(t, worktree, "add", "staged.txt")
 	blob := gitOutput(t, worktree, "rev-parse", ":staged.txt")
 	fanout := fmt.Sprintf("%.2s", blob)
 	if err := os.Remove(filepath.Join(bare, "objects", fanout, strings.TrimPrefix(blob, fanout))); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	service := New(Deps{
 		ProbeSandbox: healthyProbe(false), ProbeProvider: healthyProbe(false), ProbeTaskMutation: healthyProbe(false),
@@ -310,6 +328,7 @@ func TestIndexReferencedObjectRepairsThenFreshlyCertifies(t *testing.T) {
 	cert, err := service.Certify(context.Background(), authorRequest(bare, worktree))
 	if err != nil {
 		t.Fatalf("Certify after repair: %v", err)
+		panic("unreachable")
 	}
 	if !cert.Repaired {
 		t.Fatal("certificate did not record repair")
@@ -317,6 +336,7 @@ func TestIndexReferencedObjectRepairsThenFreshlyCertifies(t *testing.T) {
 	contents, err := os.ReadFile(path)
 	if err != nil || string(contents) != "preserve me\n" {
 		t.Fatalf("worktree file was not preserved: %q / %v", contents, err)
+		panic("unreachable")
 	}
 	if staged := gitOutput(t, worktree, "ls-files", "--stage", "staged.txt"); staged != "" {
 		t.Fatalf("rebuilt index retained invalid staged entry: %s", staged)
@@ -330,6 +350,7 @@ func TestCachedCertificateInvalidatesWhenIndexChanges(t *testing.T) {
 	first, err := service.Certify(context.Background(), req)
 	if err != nil {
 		t.Fatalf("initial Certify: %v", err)
+		panic("unreachable")
 	}
 	missing := strings.Repeat("1", 40)
 	runGit(t, worktree, "update-index", "--add", "--info-only", "--cacheinfo", "100644,"+missing+",missing.txt")
@@ -351,10 +372,12 @@ func TestCachedCertificateInvalidatesWhenCloneRefChanges(t *testing.T) {
 	first, err := service.Certify(context.Background(), req)
 	if err != nil {
 		t.Fatalf("initial Certify: %v", err)
+		panic("unreachable")
 	}
 	poison := filepath.Join(bare, "refs", "heads", "poison")
 	if err := os.WriteFile(poison, []byte(strings.Repeat("2", 40)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	second, err := service.Certify(context.Background(), req)
@@ -383,6 +406,7 @@ func TestWorktreeLessJudgeCertifiesCandidateGitRoots(t *testing.T) {
 	}
 	if _, err := service.Certify(context.Background(), req); err != nil {
 		t.Fatalf("Certify worktree-less judge: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -404,10 +428,12 @@ func TestTaskMutationIdentityInvalidatesCachedCertificate(t *testing.T) {
 	}
 	if _, err := service.Certify(context.Background(), req); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	req.TaskMutationIdentity = "read-only"
 	if _, err := service.Certify(context.Background(), req); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if probes.Load() != 2 {
 		t.Fatalf("mutation probes = %d, want 2 after identity change", probes.Load())
@@ -427,6 +453,7 @@ func TestFailedProviderCertificateSuppressesDuplicateProbeWithoutQuarantine(t *t
 	for range 2 {
 		if _, err := service.Certify(context.Background(), req); err == nil {
 			t.Fatal("Certify succeeded")
+			panic("unreachable")
 		}
 	}
 	if probes.Load() != 1 {
@@ -444,6 +471,7 @@ func TestFailedMachineCertificateCoalescesQuarantine(t *testing.T) {
 	for range 2 {
 		if _, err := service.Certify(context.Background(), req); err == nil {
 			t.Fatal("Certify succeeded")
+			panic("unreachable")
 		}
 	}
 	if quarantines.Load() != 1 {
@@ -466,6 +494,7 @@ func TestProjectFailureCoalescesQuarantineAcrossTasks(t *testing.T) {
 		req := Request{TaskID: taskID, ProjectID: "owner/repo", Action: "dispatch", WorkDir: root, Requirements: []autonomy.CapabilityRequirement{{Capability: autonomy.CapabilitySandboxMechanism, Action: "dispatch", Scope: "project"}}}
 		if _, err := service.Certify(context.Background(), req); err == nil {
 			t.Fatalf("Certify(%s) succeeded", taskID)
+			panic("unreachable")
 		}
 	}
 	if quarantines.Load() != 1 {
@@ -487,6 +516,7 @@ func TestRequestGitRootsSkipsGitForNonGitCapabilities(t *testing.T) {
 	}
 	if got := requestGitRoots(req); got != nil {
 		t.Fatalf("requestGitRoots() = %v, want nil for non-Git requirements", got)
+		panic("unreachable")
 	}
 	req.Requirements = append(req.Requirements, autonomy.CapabilityRequirement{
 		Capability: autonomy.CapabilityCheckoutHealth,
@@ -509,6 +539,7 @@ func TestObjectStoreEvidenceDoesNotClaimUndeclaredClone(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := cert.Observations[0].Evidence; got != "no shared object store declared" {
 		t.Fatalf("evidence = %q", got)
@@ -530,6 +561,7 @@ func TestProjectlessCertificationsUseBoundedRepairLock(t *testing.T) {
 		}
 		if _, err := service.Certify(context.Background(), req); err != nil {
 			t.Fatalf("Certify(%d): %v", i, err)
+			panic("unreachable")
 		}
 	}
 	if got := len(service.locks); got != 1 {
@@ -558,6 +590,7 @@ func linkedWorktree(t *testing.T) (bare, worktree string) {
 	runGit(t, source, "config", "commit.gpgsign", "false")
 	if err := os.WriteFile(filepath.Join(source, "seed.txt"), []byte("seed\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	runGit(t, source, "add", "seed.txt")
 	runGit(t, source, "commit", "-m", "seed")
@@ -573,6 +606,7 @@ func runGit(t *testing.T, dir string, args ...string) {
 	cmd.Env = gitexec.WithoutRepoOverrides(nil)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
+		panic("unreachable")
 	}
 }
 func gitOutput(t *testing.T, dir string, args ...string) string {
@@ -583,6 +617,7 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("git %v: %v", args, err)
+		panic("unreachable")
 	}
 	return string(bytesTrimSpace(out))
 }

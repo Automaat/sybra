@@ -36,12 +36,14 @@ func TestCheckDwell_SkipsBlockedTasks(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 
 	blockedTask, err := mgr.Create("blocked task", "## Blocked by\n\nhttps://github.com/org/repo/issues/1", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	// Blocker exemption only matters for in-progress tasks now that todo is
 	// out of scope for dwell entirely.
@@ -50,6 +52,7 @@ func TestCheckDwell_SkipsBlockedTasks(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	w := &Watchdog{
@@ -63,6 +66,7 @@ func TestCheckDwell_SkipsBlockedTasks(t *testing.T) {
 	got, err := mgr.Get(blockedTask.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("blocked task status = %q, want in-progress (should be skipped by dwell)", got.Status)
@@ -73,12 +77,14 @@ func TestCheckDwell_SkipsUmbrellaTask(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 
 	tk, err := mgr.Create("umbrella task", "## Description\nchild work still active", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	umbrellaType := task.TaskTypeUmbrella
 	tk, err = mgr.Update(tk.ID, task.Update{
@@ -87,6 +93,7 @@ func TestCheckDwell_SkipsUmbrellaTask(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	w := &Watchdog{
@@ -99,6 +106,7 @@ func TestCheckDwell_SkipsUmbrellaTask(t *testing.T) {
 	got, err := mgr.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want in-progress (umbrella tracker should be skipped by dwell)", got.Status)
@@ -109,16 +117,19 @@ func TestCheckDwell_SkipsTodoTask(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 
 	tk, err := mgr.Create("normal task", "## Description\nsome work", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = mgr.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusTodo)})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	w := &Watchdog{
@@ -133,6 +144,7 @@ func TestCheckDwell_SkipsTodoTask(t *testing.T) {
 	got, err := mgr.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusTodo {
 		t.Fatalf("status = %q, want todo (dwell must not escalate todo tasks)", got.Status)
@@ -143,16 +155,19 @@ func TestCheckDwell_SkipsTaskWithRunningAgent(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 
 	tk, err := mgr.Create("normal task", "## Description\nsome work", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = mgr.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInProgress)})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	w := &Watchdog{
@@ -169,6 +184,7 @@ func TestCheckDwell_SkipsTaskWithRunningAgent(t *testing.T) {
 	got, err := mgr.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want in-progress (running agent should suppress dwell escalation)", got.Status)
@@ -179,16 +195,19 @@ func TestCheckDwell_EscalatesWhenNoLiveHeadlessAgent(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 
 	tk, err := mgr.Create("normal task", "## Description\nsome work", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = mgr.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInProgress)})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	w := &Watchdog{
@@ -202,6 +221,7 @@ func TestCheckDwell_EscalatesWhenNoLiveHeadlessAgent(t *testing.T) {
 	got, err := mgr.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want blocked when no live headless agent backs the task", got.Status)
@@ -213,16 +233,19 @@ func TestCheckDwell_EscalatesUnblockedInProgressTask(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 
 	tk, err := mgr.Create("normal task", "## Description\nsome work", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = mgr.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInProgress)})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	w := &Watchdog{
@@ -236,6 +259,7 @@ func TestCheckDwell_EscalatesUnblockedInProgressTask(t *testing.T) {
 	got, err := mgr.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want blocked", got.Status)

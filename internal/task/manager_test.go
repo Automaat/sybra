@@ -43,6 +43,7 @@ func newTestManager(t *testing.T) (*Manager, *recordingEmitter) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	emitter := &recordingEmitter{}
 	return NewManager(store, emitter), emitter
@@ -53,17 +54,21 @@ func TestMutationTransportIdentityStableAcrossProbeAndTracksPermissions(t *testi
 	created, err := m.Create("mutation identity", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	before, err := m.MutationTransportIdentity(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := m.ProbeMutationTransport(created.ID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	after, err := m.MutationTransportIdentity(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if after != before {
 		t.Fatalf("probe changed mutation identity\nbefore: %q\nafter:  %q", before, after)
@@ -71,11 +76,13 @@ func TestMutationTransportIdentityStableAcrossProbeAndTracksPermissions(t *testi
 	dir := m.store.Dir()
 	if err := os.Chmod(dir, 0o555); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 	readOnly, err := m.MutationTransportIdentity(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if readOnly == before {
 		t.Fatal("permission change did not invalidate mutation identity")
@@ -89,6 +96,7 @@ func TestManagerCreateEmitsEvent(t *testing.T) {
 	task, err := m.Create("Title", "body", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 
 	names := emitter.names()
@@ -107,6 +115,7 @@ func TestManagerUpdateEmitsEvent(t *testing.T) {
 	task, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := m.Update(task.ID, Update{Title: Ptr("New")}); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -133,6 +142,7 @@ func TestManagerUpdateInvokesStatusHook(t *testing.T) {
 	task, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 
 	// No status in updates → hook must not fire.
@@ -164,6 +174,7 @@ func TestManagerStatusHookReceivesWrittenSnapshot(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	entered := make(chan struct{})
@@ -189,6 +200,7 @@ func TestManagerStatusHookReceivesWrittenSnapshot(t *testing.T) {
 	close(release)
 	if err := <-firstDone; err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if snapshot := <-captured; snapshot.Status != StatusInProgress {
 		t.Fatalf("first hook snapshot status = %q, want %q", snapshot.Status, StatusInProgress)
@@ -202,9 +214,11 @@ func TestManagerDeleteEmitsEvent(t *testing.T) {
 	task, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if err := m.Delete(task.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
+		panic("unreachable")
 	}
 
 	names := emitter.names()
@@ -220,6 +234,7 @@ func TestManagerAddRunEmitsUpdated(t *testing.T) {
 	task, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if err := m.AddRun(task.ID, AgentRun{AgentID: "a1", State: "running"}); err != nil {
 		t.Fatalf("AddRun: %v", err)
@@ -233,6 +248,7 @@ func TestManagerAddRunEmitsUpdated(t *testing.T) {
 	got, err := m.Get(task.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if len(got.AgentRuns) != 1 || got.AgentRuns[0].AgentID != "a1" {
 		t.Fatalf("AgentRuns = %+v", got.AgentRuns)
@@ -258,6 +274,7 @@ func TestManagerOnExternalUpdateDoesNotDoubleFireRacingInProcessWrite(t *testing
 	created, err := m.Create("Task", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	path := filepath.Join(m.store.dir, created.ID+".md")
 
@@ -311,15 +328,18 @@ func TestManagerOnExternalUpdateInvalidatesJSONSidecar(t *testing.T) {
 	created, err := m.Create("Task", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := m.List(); err != nil {
 		t.Fatalf("prime cache: %v", err)
+		panic("unreachable")
 	}
 
 	contractPath := filepath.Join(m.store.dir, created.ID+".plan-contract.json")
 	contract := `{"task_id":"` + created.ID + `"}`
 	if err := os.WriteFile(contractPath, []byte(contract), 0o644); err != nil {
 		t.Fatalf("write contract: %v", err)
+		panic("unreachable")
 	}
 
 	m.OnExternalUpdate(contractPath)
@@ -327,6 +347,7 @@ func TestManagerOnExternalUpdateInvalidatesJSONSidecar(t *testing.T) {
 	tasks, err := m.List()
 	if err != nil {
 		t.Fatalf("list after external update: %v", err)
+		panic("unreachable")
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("got %d tasks, want 1", len(tasks))
@@ -352,6 +373,7 @@ func TestManagerAppendBodyDoesNotDeadlockOnSelfRoutedEmit(t *testing.T) {
 	created, err := m.Create("Task", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	// OnExternalUpdate only takes lockFor(id) when a status-change hook is
 	// registered — without one it returns before locking and the reentrant
@@ -376,6 +398,7 @@ func TestManagerAppendBodyDoesNotDeadlockOnSelfRoutedEmit(t *testing.T) {
 	case err := <-done:
 		if err != nil {
 			t.Fatalf("AppendBody: %v", err)
+			panic("unreachable")
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("AppendBody deadlocked on self-routed emit")
@@ -389,6 +412,7 @@ func TestManagerAddRunWithStatusEmitsUpdatedAndHook(t *testing.T) {
 	task, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 
 	var hookCalls int
@@ -414,6 +438,7 @@ func TestManagerAddRunWithStatusEmitsUpdatedAndHook(t *testing.T) {
 	got, err := m.Get(task.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != StatusInProgress {
 		t.Fatalf("Status = %q, want %q", got.Status, StatusInProgress)
@@ -430,6 +455,7 @@ func TestManagerUpdateRunEmitsUpdated(t *testing.T) {
 	task, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if err := m.AddRun(task.ID, AgentRun{AgentID: "a1", State: "running"}); err != nil {
 		t.Fatalf("AddRun: %v", err)
@@ -447,6 +473,7 @@ func TestManagerUpdateRunEmitsUpdated(t *testing.T) {
 	got, err := m.Get(task.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if got.AgentRuns[0].State != "stopped" {
 		t.Fatalf("run state = %q, want stopped", got.AgentRuns[0].State)
@@ -460,6 +487,7 @@ func TestManagerConcurrentUpdateSerializes(t *testing.T) {
 	task, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 
 	// Two concurrent updates on the same id touching different fields
@@ -483,6 +511,7 @@ func TestManagerConcurrentUpdateSerializes(t *testing.T) {
 	got, err := m.Get(task.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	// Whichever ran second wins for title; but body must be set since that
 	// update is isolated. With no locking, a read-modify-write race could
@@ -499,10 +528,12 @@ func TestManagerConcurrentDifferentIDsParallel(t *testing.T) {
 	t1, err := m.Create("One", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	t2, err := m.Create("Two", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 
 	var wg sync.WaitGroup
@@ -546,6 +577,7 @@ func TestNoopEmitter(t *testing.T) {
 	m := NewManager(nil, nil)
 	if m.emitter == nil {
 		t.Fatal("emitter should never be nil")
+		panic("unreachable")
 	}
 	// should not panic
 	m.emitter.Emit("x", "y")
@@ -598,6 +630,7 @@ func TestManagerAppendBodyDoesNotDeadlockOnReentrantEmit(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	m := NewManager(store, nil)
 	m.emitter = &reentrantEmitter{m: m}
@@ -606,6 +639,7 @@ func TestManagerAppendBodyDoesNotDeadlockOnReentrantEmit(t *testing.T) {
 	task, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 
 	runWithDeadlockGuard(t, "AppendBody", func() {
@@ -617,6 +651,7 @@ func TestManagerAppendBodyDoesNotDeadlockOnReentrantEmit(t *testing.T) {
 	got, err := m.Get(task.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(got.Body, "Test Failures") {
 		t.Fatalf("Body = %q, want it to contain appended content", got.Body)
@@ -631,6 +666,7 @@ func TestManagerDeleteDoesNotDeadlockOnReentrantEmit(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	m := NewManager(store, nil)
 	m.emitter = &reentrantEmitter{m: m}
@@ -639,6 +675,7 @@ func TestManagerDeleteDoesNotDeadlockOnReentrantEmit(t *testing.T) {
 	task, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 
 	runWithDeadlockGuard(t, "Delete", func() {
@@ -659,6 +696,7 @@ func TestManagerOnExternalUpdateWaitsForBusyWriterAndStillFires(t *testing.T) {
 	task, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	path := filepath.Join(m.store.dir, task.ID+".md")
 

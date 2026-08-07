@@ -26,6 +26,7 @@ func TestSeedPrompt_InlinesContentAndInstruction(t *testing.T) {
 	body := "## Plan\n- did the migration\n## Decisions\n- chose option B"
 	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got := SeedPrompt("# Task: ship it", dir)
@@ -50,6 +51,7 @@ func TestSeedPrompt_TruncatesKeepingHeadAndTail(t *testing.T) {
 	body := headMarker + strings.Repeat("\nfiller line\n", seedMaxBytes) + tailMarker
 	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got := SeedPrompt("p", dir)
@@ -79,6 +81,7 @@ func TestSeedPrompt_TruncationIsRuneSafe(t *testing.T) {
 	body := strings.Repeat("€", seedMaxBytes) // 3 bytes each, far over the cap
 	if err := os.WriteFile(filepath.Join(dir, FileName), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got := SeedPrompt("p", dir)
@@ -95,6 +98,7 @@ func TestSeedPrompt_EmptyFile_PromptsToFill(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, FileName), []byte("   \n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	got := SeedPrompt("p", dir)
 	if !strings.Contains(got, "start filling it in") {
@@ -109,6 +113,7 @@ func TestRead(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, FileName), []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	content, ok := Read(dir)
 	if !ok || content != "hi" {

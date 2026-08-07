@@ -44,6 +44,7 @@ func testAutonomyNoDuplicateDispatchOnRestart(t *testing.T) {
 	created, err := env.tasks.Create("autonomy restart", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wfExec := &workflow.Execution{
 		WorkflowID:  "test-simple",
@@ -75,6 +76,7 @@ func testAutonomyNoDuplicateDispatchOnRestart(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := countStepRecords(tk, "implement"); got != 1 {
 		t.Fatalf("implement dispatch count = %d, want exactly 1 across two restarts (no duplicate dispatch)", got)
@@ -105,6 +107,7 @@ func testAutonomyNoForeignModelOnFailover(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "failover run stops", func() bool { return failoverRun.GetState() == agent.StateStopped })
 	assertKnownProviderAndModel(t, "failover", failoverRun)
@@ -128,6 +131,7 @@ func testAutonomyNoForeignModelOnFailover(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "recovery run stops", func() bool { return recoveryRun.GetState() == agent.StateStopped })
 	assertKnownProviderAndModel(t, "recovery", recoveryRun)
@@ -161,9 +165,11 @@ func testAutonomyNoMachineBlockerInHumanRequired(t *testing.T) {
 	created, err := env.tasks.Create("autonomy no machine blocker", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-eval-chain"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 20*time.Second, "eval chain workflow reaches terminal quarantine", func() bool {
@@ -175,6 +181,7 @@ func testAutonomyNoMachineBlockerInHumanRequired(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if tk.Status != task.StatusBlocked {
 		t.Fatalf("task status = %q, want blocked machine quarantine", tk.Status)
@@ -206,6 +213,7 @@ func testAutonomyIdenticalRetryCap(t *testing.T) {
 	created, err := env.tasks.Create("autonomy retry cap", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wfExec := &workflow.Execution{
 		WorkflowID:  "test-simple",
@@ -230,6 +238,7 @@ func testAutonomyIdenticalRetryCap(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	const maxAttempts = 3 // max_retries: 2 in test-simple.yaml's implement step
 	if got := countStepRecords(tk, "implement"); got > maxAttempts {
@@ -253,6 +262,7 @@ func TestE2E_Autonomy_NoLostAcceptedWrite(t *testing.T) {
 		created, err := env.tasks.Create(fmt.Sprintf("write-durability-%d", i), "body", "headless")
 		if err != nil {
 			t.Fatalf("create %d: %v", i, err)
+			panic("unreachable")
 		}
 		ids[i] = created.ID
 	}
@@ -280,6 +290,7 @@ func TestE2E_Autonomy_NoLostAcceptedWrite(t *testing.T) {
 	listed, err := env.tasks.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	byID := make(map[string]task.Task, len(listed))
 	for _, tk := range listed {

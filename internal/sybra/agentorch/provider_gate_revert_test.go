@@ -16,6 +16,7 @@ func TestRevertToTodoAfterGateBlock_RevertsWhenStillInProgress(t *testing.T) {
 	tk, err := tasks.Create("gated task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
 		t.Fatal(err)
@@ -27,6 +28,7 @@ func TestRevertToTodoAfterGateBlock_RevertsWhenStillInProgress(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusTodo {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusTodo)
@@ -44,6 +46,7 @@ func TestRevertToTodoAfterGateBlock_NoOpWhenTaskAlreadyMoved(t *testing.T) {
 	tk, err := tasks.Create("gated task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -60,6 +63,7 @@ func TestRevertToTodoAfterGateBlock_NoOpWhenTaskAlreadyMoved(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want unchanged %q", got.Status, task.StatusHumanRequired)

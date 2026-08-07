@@ -74,6 +74,7 @@ func TestApplyFollowerTaskStillAdoptsValidIDs(t *testing.T) {
 	}
 	if _, err := mgr.Get("task-abc123"); err != nil {
 		t.Fatalf("adopted task not readable: %v", err)
+		panic("unreachable")
 	}
 }
 

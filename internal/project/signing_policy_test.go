@@ -23,17 +23,20 @@ func TestProbeGPGSigningExecutesConfiguredSigner(t *testing.T) {
 			signer := filepath.Join(root, "fake-gpg")
 			if err := os.WriteFile(signer, fmt.Appendf(nil, "#!/bin/sh\ncat >/dev/null\nexit %d\n", tc.exitCode), 0o755); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			configPath := filepath.Join(root, "gitconfig")
 			configBody := fmt.Sprintf("[user]\n\tsigningkey = test-key\n[gpg]\n\tprogram = %s\n", signer)
 			if err := os.WriteFile(configPath, []byte(configBody), 0o600); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			t.Setenv("GIT_CONFIG_GLOBAL", configPath)
 			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 			err := ProbeGPGSigning(context.Background())
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("ProbeGPGSigning() error = %v, wantErr %v", err, tc.wantErr)
+				panic("unreachable")
 			}
 		})
 	}
@@ -43,12 +46,14 @@ func TestProbeGPGSigningReportsMissingKey(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "gitconfig")
 	if err := os.WriteFile(configPath, nil, 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", configPath)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	err := ProbeGPGSigning(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "key is not configured") {
 		t.Fatalf("ProbeGPGSigning() error = %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -97,11 +102,13 @@ func TestConfigureCommitSigning_PinsGpgsignOffUnderNever(t *testing.T) {
 
 	if err := ConfigureCommitSigning(ctx, bare, SigningNever); err != nil {
 		t.Fatalf("ConfigureCommitSigning: %v", err)
+		panic("unreachable")
 	}
 	for _, key := range []string{"commit.gpgsign", "tag.gpgsign"} {
 		got, err := outputBare(ctx, bare, "config", "--get", key)
 		if err != nil {
 			t.Fatalf("read %s: %v", key, err)
+			panic("unreachable")
 		}
 		if got != "false" {
 			t.Errorf("%s = %q, want false", key, got)
@@ -119,10 +126,12 @@ func TestConfigureCommitSigning_UnsetsUnderSigningPolicy(t *testing.T) {
 	}
 	if err := ConfigureCommitSigning(ctx, bare, SigningNever); err != nil {
 		t.Fatalf("seed never: %v", err)
+		panic("unreachable")
 	}
 
 	if err := ConfigureCommitSigning(ctx, bare, SigningRequire); err != nil {
 		t.Fatalf("ConfigureCommitSigning(require): %v", err)
+		panic("unreachable")
 	}
 	for _, key := range []string{"commit.gpgsign", "tag.gpgsign"} {
 		if got, err := outputBare(ctx, bare, "config", "--get", key); err == nil && got != "" {
@@ -142,6 +151,7 @@ func TestConfigureCommitSigning_IdempotentUnset(t *testing.T) {
 	for range 2 {
 		if err := ConfigureCommitSigning(ctx, bare, SigningRequire); err != nil {
 			t.Fatalf("ConfigureCommitSigning(require): %v", err)
+			panic("unreachable")
 		}
 	}
 }
@@ -164,10 +174,12 @@ func TestConfigureCommitSigning_HandlesMultiValuedKeys(t *testing.T) {
 
 	if err := ConfigureCommitSigning(ctx, bare, SigningNever); err != nil {
 		t.Fatalf("ConfigureCommitSigning(never): %v", err)
+		panic("unreachable")
 	}
 	got, err := outputBare(ctx, bare, "config", "--get-all", "commit.gpgsign")
 	if err != nil {
 		t.Fatalf("read commit.gpgsign: %v", err)
+		panic("unreachable")
 	}
 	if got != "false" {
 		t.Errorf("commit.gpgsign = %q, want a single false", got)
@@ -175,6 +187,7 @@ func TestConfigureCommitSigning_HandlesMultiValuedKeys(t *testing.T) {
 
 	if err := ConfigureCommitSigning(ctx, bare, SigningRequire); err != nil {
 		t.Fatalf("ConfigureCommitSigning(require): %v", err)
+		panic("unreachable")
 	}
 	if got, err := outputBare(ctx, bare, "config", "--get-all", "commit.gpgsign"); err == nil && got != "" {
 		t.Errorf("commit.gpgsign = %q, want unset", got)
@@ -188,6 +201,7 @@ func TestStoreSigningPolicy_ConcurrentReadWrite(t *testing.T) {
 	store, err := NewStore(t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 
 	var wg sync.WaitGroup

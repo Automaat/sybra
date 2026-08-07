@@ -53,6 +53,7 @@ func TestWithNetworkRetry_RetriesOnTransientNetworkError(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("withNetworkRetry: %v", err)
+		panic("unreachable")
 	}
 	if attempts != 3 {
 		t.Errorf("attempts = %d, want 3", attempts)

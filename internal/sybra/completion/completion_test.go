@@ -28,10 +28,12 @@ func sigkillErr(t *testing.T) error {
 	cmd := exec.Command("sleep", "60")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start sleep: %v", err)
+		panic("unreachable")
 	}
 	time.Sleep(20 * time.Millisecond)
 	if err := cmd.Process.Signal(syscall.SIGKILL); err != nil {
 		t.Fatalf("signal: %v", err)
+		panic("unreachable")
 	}
 	return cmd.Wait()
 }
@@ -256,18 +258,23 @@ func TestBuildRunPatchIncludesSkillAttributionMetadata(t *testing.T) {
 
 	if patch.RequestedSkill == nil || *patch.RequestedSkill != "sybra-test" {
 		t.Fatalf("RequestedSkill = %v, want sybra-test", patch.RequestedSkill)
+		panic("unreachable")
 	}
 	if patch.SkillExecutionMode == nil || *patch.SkillExecutionMode != skillattr.ExecutionModeInjected {
 		t.Fatalf("SkillExecutionMode = %v, want %q", patch.SkillExecutionMode, skillattr.ExecutionModeInjected)
+		panic("unreachable")
 	}
 	if patch.ResolvedSkillSourceHash == nil || *patch.ResolvedSkillSourceHash != "deadbeefcafebabe" {
 		t.Fatalf("ResolvedSkillSourceHash = %v, want deadbeefcafebabe", patch.ResolvedSkillSourceHash)
+		panic("unreachable")
 	}
 	if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceExact {
 		t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceExact)
+		panic("unreachable")
 	}
 	if patch.SubagentCallCount == nil || *patch.SubagentCallCount != 2 {
 		t.Fatalf("SubagentCallCount = %v, want 2 distinct parents", patch.SubagentCallCount)
+		panic("unreachable")
 	}
 }
 
@@ -288,6 +295,7 @@ func TestBuildRunPatchMarksResumeZeroOutputStall(t *testing.T) {
 
 		if patch.ResumeZeroOutputStall == nil || !*patch.ResumeZeroOutputStall {
 			t.Fatalf("ResumeZeroOutputStall = %v, want true", patch.ResumeZeroOutputStall)
+			panic("unreachable")
 		}
 	})
 
@@ -300,6 +308,7 @@ func TestBuildRunPatchMarksResumeZeroOutputStall(t *testing.T) {
 
 		if patch.ResumeZeroOutputStall == nil || !*patch.ResumeZeroOutputStall {
 			t.Fatalf("ResumeZeroOutputStall = %v, want true", patch.ResumeZeroOutputStall)
+			panic("unreachable")
 		}
 	})
 
@@ -312,6 +321,7 @@ func TestBuildRunPatchMarksResumeZeroOutputStall(t *testing.T) {
 
 		if patch.ResumeZeroOutputStall != nil {
 			t.Fatalf("ResumeZeroOutputStall = %v, want nil", patch.ResumeZeroOutputStall)
+			panic("unreachable")
 		}
 	})
 
@@ -324,6 +334,7 @@ func TestBuildRunPatchMarksResumeZeroOutputStall(t *testing.T) {
 
 		if patch.ResumeZeroOutputStall != nil {
 			t.Fatalf("ResumeZeroOutputStall = %v, want nil", patch.ResumeZeroOutputStall)
+			panic("unreachable")
 		}
 	})
 
@@ -336,6 +347,7 @@ func TestBuildRunPatchMarksResumeZeroOutputStall(t *testing.T) {
 
 		if patch.ResumeZeroOutputStall != nil {
 			t.Fatalf("ResumeZeroOutputStall = %v, want nil", patch.ResumeZeroOutputStall)
+			panic("unreachable")
 		}
 	})
 }
@@ -348,6 +360,7 @@ func TestOnComplete_SilentHangReschedulesInsteadOfClearing(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -357,6 +370,7 @@ func TestOnComplete_SilentHangReschedulesInsteadOfClearing(t *testing.T) {
 	created, err := tasks.CreateWithStatus("hung task", "body", "headless", task.StatusInProgress, task.Update{})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := tasks.AddRun(created.ID, task.AgentRun{AgentID: "ag-1", Role: "implementation", Mode: "headless"}); err != nil {
 		t.Fatal(err)
@@ -412,6 +426,7 @@ func TestBuildRunPatchDowngradesConformanceWhenReceiptMissing(t *testing.T) {
 			patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "looks done, no receipt here", nil)
 			if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceUnverified {
 				t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceUnverified)
+				panic("unreachable")
 			}
 		})
 	}
@@ -455,6 +470,7 @@ func TestBuildRunPatchSkipsReceiptDowngradeUnderOutputSchema(t *testing.T) {
 			patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, `{"verdict":"PASS"}`, nil)
 			if patch.SkillConformance == nil || *patch.SkillConformance != tc.conformance {
 				t.Fatalf("SkillConformance = %v, want unchanged %q", patch.SkillConformance, tc.conformance)
+				panic("unreachable")
 			}
 		})
 	}
@@ -483,6 +499,7 @@ func TestBuildRunPatchStillDowngradesWhenProviderIgnoresOutputSchema(t *testing.
 	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, "TEST_VERDICT: PASS", nil)
 	if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceUnverified {
 		t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceUnverified)
+		panic("unreachable")
 	}
 }
 
@@ -503,6 +520,7 @@ func TestBuildRunPatchMarksVerifiedRecoveryAsRecovered(t *testing.T) {
 	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, result, nil)
 	if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceRecovered {
 		t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceRecovered)
+		panic("unreachable")
 	}
 }
 
@@ -530,6 +548,7 @@ func TestBuildRunPatchFindsReceiptInEarlierAssistantMessage(t *testing.T) {
 	patch := (&Handler{}).buildRunPatch(ag, agent.StateStopped, 0, 0, `{"verdict":"PASS","outcome":"pass"}`, nil)
 	if patch.SkillConformance == nil || *patch.SkillConformance != skillattr.ConformanceExact {
 		t.Fatalf("SkillConformance = %v, want %q", patch.SkillConformance, skillattr.ConformanceExact)
+		panic("unreachable")
 	}
 }
 
@@ -542,6 +561,7 @@ func TestIsSignalKill(t *testing.T) {
 		err := exec.Command("sh", "-c", "exit "+itoa(code)).Run()
 		if err == nil {
 			t.Fatalf("expected non-nil error for exit %d", code)
+			panic("unreachable")
 		}
 		var ee *exec.ExitError
 		if !errors.As(err, &ee) {
@@ -731,6 +751,7 @@ func TestOnComplete_ImportsTestRunnerEvidenceBeforeTerminalStatus(t *testing.T) 
 	tk, err := taskMgr.Create("visual test", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	status := task.StatusTesting
 	tk, err = taskMgr.Update(tk.ID, task.Update{
@@ -739,14 +760,17 @@ func TestOnComplete_ImportsTestRunnerEvidenceBeforeTerminalStatus(t *testing.T) 
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	evidenceDir := filepath.Join(wt, worktree.EvidenceDirName)
 	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	shotPath := filepath.Join(evidenceDir, "shot.png")
 	if err := os.WriteFile(shotPath, []byte("png"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	artifactStore := artifact.New(t.TempDir())
@@ -769,6 +793,7 @@ func TestOnComplete_ImportsTestRunnerEvidenceBeforeTerminalStatus(t *testing.T) 
 	updated, err := taskMgr.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if updated.Status != task.StatusTesting {
 		t.Fatalf("task status = %q, want non-terminal %q", updated.Status, task.StatusTesting)
@@ -776,6 +801,7 @@ func TestOnComplete_ImportsTestRunnerEvidenceBeforeTerminalStatus(t *testing.T) 
 	allMetas, err := artifactStore.List(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	var metas []artifact.Meta
 	for _, m := range allMetas {
@@ -796,6 +822,7 @@ func TestOnComplete_DefersWorkflowUntilLockTimeoutRunUpdatePersists(t *testing.T
 	tk, err := taskMgr.Create("locked completion", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
 		AgentID:   "agent-lock",
@@ -810,6 +837,7 @@ func TestOnComplete_DefersWorkflowUntilLockTimeoutRunUpdatePersists(t *testing.T
 	unlock, err := fsutil.LockFile(tk.FilePath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer func() { _ = unlock() }()
 
@@ -839,6 +867,7 @@ func TestOnComplete_DefersWorkflowUntilLockTimeoutRunUpdatePersists(t *testing.T
 
 	if err := unlock(); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	unlock = func() error { return nil }
 
@@ -854,6 +883,7 @@ func TestOnComplete_DefersWorkflowUntilLockTimeoutRunUpdatePersists(t *testing.T
 	got, err := taskMgr.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.AgentRuns[0].State != string(agent.StateStopped) {
 		t.Fatalf("run state = %q, want %q", got.AgentRuns[0].State, agent.StateStopped)
@@ -868,6 +898,7 @@ func TestOnComplete_SalvagesCostStoppedReviewAssistantTranscript(t *testing.T) {
 	tk, err := taskMgr.Create("review task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
 		AgentID:   "review-agent",
@@ -898,6 +929,7 @@ func TestOnComplete_SalvagesCostStoppedReviewAssistantTranscript(t *testing.T) {
 	got, err := taskMgr.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, want := range []string{
 		"# Interrupted Code Review",
@@ -919,6 +951,7 @@ func TestSalvageInterruptedReviewKeepsExistingReview(t *testing.T) {
 	tk, err := taskMgr.Create("review task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	existing := "# Existing review\n\nDo not overwrite."
 	if _, err := taskMgr.Update(tk.ID, task.Update{CodeReview: &existing}); err != nil {
@@ -939,6 +972,7 @@ func TestSalvageInterruptedReviewKeepsExistingReview(t *testing.T) {
 	got, err := taskMgr.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.CodeReview != existing {
 		t.Fatalf("CodeReview overwritten:\n got %q\nwant %q", got.CodeReview, existing)

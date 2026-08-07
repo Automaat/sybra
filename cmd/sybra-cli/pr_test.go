@@ -18,6 +18,7 @@ func captureStderr(t *testing.T, fn func()) string {
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
+		panic("unreachable")
 	}
 	os.Stderr = w
 	done := make(chan string, 1)
@@ -96,11 +97,13 @@ func TestCmdPR_GuardsBeforeReachingGH(t *testing.T) {
 			store, err := task.NewStore(t.TempDir())
 			if err != nil {
 				t.Fatalf("NewStore: %v", err)
+				panic("unreachable")
 			}
 			mgr := task.NewManager(store, nil)
 			created, err := mgr.Create("pr probe", "", task.AgentModeHeadless)
 			if err != nil {
 				t.Fatalf("Create: %v", err)
+				panic("unreachable")
 			}
 			if tt.withPR > 0 {
 				if _, err := mgr.Update(created.ID, task.Update{PRNumber: &tt.withPR}); err != nil {

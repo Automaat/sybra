@@ -198,5 +198,6 @@ func writeRuntimeExe(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+		panic("unreachable")
 	}
 }

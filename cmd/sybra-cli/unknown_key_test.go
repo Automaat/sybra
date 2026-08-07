@@ -39,6 +39,7 @@ func writeStaleKeyConfigYAML(t *testing.T, contents string) string {
 	home := setupStore(t)
 	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return home
 }
@@ -60,6 +61,7 @@ func TestConfigDoctorReportsUnknownKey(t *testing.T) {
 			var report configDoctorReport
 			if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 				t.Fatalf("config doctor produced no report: %v\nstdout=%q\nstderr=%q", err, stdout, stderr)
+				panic("unreachable")
 			}
 
 			var named bool
@@ -94,6 +96,7 @@ func TestConfigDoctorReportsEveryUnknownKey(t *testing.T) {
 	var report configDoctorReport
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("config doctor produced no report: %v", err)
+		panic("unreachable")
 	}
 	for _, key := range []string{"integrations.slack", "storage.bogus", "future_namespace"} {
 		var named bool
@@ -170,6 +173,7 @@ func TestUnreachableConfigStillFallsBack(t *testing.T) {
 	home := setupStore(t)
 	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("::not yaml at all\n"), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	code, _, stderr := runCLIWithStderr(t, "list")
@@ -193,6 +197,7 @@ func TestJSONErrorIsParseable(t *testing.T) {
 	var got map[string]string
 	if err := json.Unmarshal([]byte(strings.TrimSpace(stderr)), &got); err != nil {
 		t.Fatalf("--json error is not parseable JSON: %v\nstderr=%q", err, stderr)
+		panic("unreachable")
 	}
 	if !strings.Contains(got["error"], staleKeyShapes[0].key) {
 		t.Errorf("error field = %q, want it to name the offending key", got["error"])

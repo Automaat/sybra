@@ -37,10 +37,12 @@ func buildPRFixHandler(t *testing.T, tasks *task.Manager, fetchReviewsFn func() 
 	projects, err := project.NewStore(t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wfStore, wfErr := workflow.NewStore(filepath.Join(t.TempDir(), "workflows"))
 	if wfErr != nil {
 		t.Fatal(wfErr)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wfStore.Dir(), "test-pr-fix.yaml"),
 		[]byte(mechanicalPRFixYAML), 0o644); err != nil {
@@ -71,12 +73,14 @@ func TestPollAndMonitorPRs_CIFailureDispatchesFix(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:   task.Ptr(task.StatusInReview),
@@ -109,9 +113,11 @@ func TestPollAndMonitorPRs_CIFailureDispatchesFix(t *testing.T) {
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("no pr-fix workflow dispatched for a failing-CI in-review PR")
+		panic("unreachable")
 	}
 	if k := got.Workflow.Variables["pr_issue_kind"]; k != string(github.PRIssueCIFailure) {
 		t.Errorf("pr_issue_kind = %q, want %q", k, github.PRIssueCIFailure)
@@ -122,12 +128,14 @@ func TestPollAndMonitorPRs_ApprovedCIFailureDispatchesFixAgent(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:   task.Ptr(task.StatusInReview),
@@ -158,9 +166,11 @@ func TestPollAndMonitorPRs_ApprovedCIFailureDispatchesFixAgent(t *testing.T) {
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("no pr-fix workflow dispatched for an approved failing-CI PR")
+		panic("unreachable")
 	}
 	if got.Status == task.StatusHumanRequired {
 		t.Fatalf("status = %q, want agent dispatch instead of parking", got.Status)
@@ -178,12 +188,14 @@ func TestPollAndMonitorPRs_CIFailureRerunsPetPRBeforeFixAgent(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -212,6 +224,7 @@ func TestPollAndMonitorPRs_CIFailureRerunsPetPRBeforeFixAgent(t *testing.T) {
 	})
 	if _, err := r.projects.CreateMeta("https://github.com/o/r", project.ProjectTypePet); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.rerunFailedChecks = func(repo string, number int) error {
 		rerunRepo = repo
@@ -233,9 +246,11 @@ func TestPollAndMonitorPRs_CIFailureRerunsPetPRBeforeFixAgent(t *testing.T) {
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow != nil {
 		t.Fatal("unexpected pr-fix workflow; transient rerun should wait for GitHub checks")
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Fatalf("status = %q, want in-review", got.Status)
@@ -246,12 +261,14 @@ func TestPollAndMonitorPRs_CIFailureRerunPermissionDenialParks(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -278,6 +295,7 @@ func TestPollAndMonitorPRs_CIFailureRerunPermissionDenialParks(t *testing.T) {
 	})
 	if _, err := r.projects.CreateMeta("https://github.com/o/r", project.ProjectTypePet); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.rerunFailedChecks = func(string, int) error {
 		return fmt.Errorf("gh run rerun --failed: Resource not accessible by integration: exit status 1")
@@ -288,9 +306,11 @@ func TestPollAndMonitorPRs_CIFailureRerunPermissionDenialParks(t *testing.T) {
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow != nil {
 		t.Fatal("unexpected pr-fix workflow after rerun permission denial")
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want human-required", got.Status)
@@ -308,12 +328,14 @@ func TestPollAndMonitorPRs_CIFailureRerunsWorkPRBeforeFixAgent(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -342,6 +364,7 @@ func TestPollAndMonitorPRs_CIFailureRerunsWorkPRBeforeFixAgent(t *testing.T) {
 	})
 	if _, err := r.projects.CreateMeta("https://github.com/o/r", project.ProjectTypeWork); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.rerunFailedChecks = func(repo string, number int) error {
 		rerunRepo = repo
@@ -357,9 +380,11 @@ func TestPollAndMonitorPRs_CIFailureRerunsWorkPRBeforeFixAgent(t *testing.T) {
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow != nil {
 		t.Fatal("unexpected pr-fix workflow; a work project's transient rerun should wait for GitHub checks")
+		panic("unreachable")
 	}
 }
 
@@ -373,12 +398,14 @@ func TestPollAndMonitorPRs_FlakyCIFailureRerunsAndLogsFlakeEvent(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -404,6 +431,7 @@ func TestPollAndMonitorPRs_FlakyCIFailureRerunsAndLogsFlakeEvent(t *testing.T) {
 	auditLog, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer auditLog.Close()
 
@@ -427,6 +455,7 @@ func TestPollAndMonitorPRs_FlakyCIFailureRerunsAndLogsFlakeEvent(t *testing.T) {
 	}
 	if _, err := r.projects.CreateMeta("https://github.com/o/r", project.ProjectTypePet); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	r.pollAndMonitorPRs(context.Background())
@@ -449,9 +478,11 @@ func TestPollAndMonitorPRs_FlakyCIFailureRerunsAndLogsFlakeEvent(t *testing.T) {
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow != nil {
 		t.Fatal("unexpected pr-fix workflow; a flaky classification should skip the fix agent")
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Fatalf("status = %q, want in-review", got.Status)
@@ -467,6 +498,7 @@ func TestPollAndMonitorPRs_FlakyCIFailureRerunsAndLogsFlakeEvent(t *testing.T) {
 	}
 	if flakeEvent == nil {
 		t.Fatal("missing pr_monitor.ci_flake_detected audit event")
+		panic("unreachable")
 	}
 	data := flakeEvent.Data
 	if got := data["repo"]; got != "o/r" {
@@ -487,12 +519,14 @@ func TestPollAndMonitorPRs_DeterministicCIFailureSkipsFlakeEventEvenWhenEnabled(
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -518,6 +552,7 @@ func TestPollAndMonitorPRs_DeterministicCIFailureSkipsFlakeEventEvenWhenEnabled(
 	auditLog, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer auditLog.Close()
 
@@ -540,6 +575,7 @@ func TestPollAndMonitorPRs_DeterministicCIFailureSkipsFlakeEventEvenWhenEnabled(
 	}
 	if _, err := r.projects.CreateMeta("https://github.com/o/r", project.ProjectTypePet); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	r.pollAndMonitorPRs(context.Background())
@@ -571,11 +607,13 @@ func TestEscalateExhaustedFix_FlakyCIFailureStaysInReview(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -590,6 +628,7 @@ func TestEscalateExhaustedFix_FlakyCIFailureStaysInReview(t *testing.T) {
 	auditLog, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer auditLog.Close()
 
@@ -614,6 +653,7 @@ func TestEscalateExhaustedFix_FlakyCIFailureStaysInReview(t *testing.T) {
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Fatalf("status = %q, want in-review (flaky exhaustion must not escalate)", got.Status)
@@ -639,11 +679,13 @@ func TestEscalateExhaustedFix_DeterministicCIFailureStillEscalates(t *testing.T)
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -674,6 +716,7 @@ func TestEscalateExhaustedFix_DeterministicCIFailureStillEscalates(t *testing.T)
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want blocked (deterministic failures still park without false human escalation)", got.Status)
@@ -689,12 +732,14 @@ func TestPollAndMonitorPRs_FlakyCIFailureRerunsInsteadOfEscalating(t *testing.T)
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -723,6 +768,7 @@ func TestPollAndMonitorPRs_FlakyCIFailureRerunsInsteadOfEscalating(t *testing.T)
 	})
 	if _, err := r.projects.CreateMeta("https://github.com/o/r", project.ProjectTypePet); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.rerunFailedChecks = func(repo string, number int) error {
 		rerunCalled = true
@@ -740,9 +786,11 @@ func TestPollAndMonitorPRs_FlakyCIFailureRerunsInsteadOfEscalating(t *testing.T)
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow != nil {
 		t.Fatal("unexpected pr-fix workflow; a flaky ci_failure must never dispatch a fix agent")
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Fatalf("status = %q, want in-review (no premature escalation)", got.Status)
@@ -753,12 +801,14 @@ func TestPollAndMonitorPRs_FlakyCIFailureConsumesRerunBudgetOnSameSHA(t *testing
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -788,6 +838,7 @@ func TestPollAndMonitorPRs_FlakyCIFailureConsumesRerunBudgetOnSameSHA(t *testing
 	r.prTracker = github.NewIssueTracker(0)
 	if _, err := r.projects.CreateMeta("https://github.com/o/r", project.ProjectTypePet); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.rerunFailedChecks = func(string, int) error {
 		reruns++
@@ -807,6 +858,7 @@ func TestPollAndMonitorPRs_FlakyCIFailureConsumesRerunBudgetOnSameSHA(t *testing
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Fatalf("status = %q after final rerun, want in-review until next poll observes cap", got.Status)
@@ -820,6 +872,7 @@ func TestPollAndMonitorPRs_FlakyCIFailureConsumesRerunBudgetOnSameSHA(t *testing
 	got, err = tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q after capped flaky CI, want blocked", got.Status)
@@ -836,12 +889,14 @@ func TestPollAndMonitorPRs_FlakyCIFailureEscalatesAfterRerunBudgetExhausted(t *t
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -870,6 +925,7 @@ func TestPollAndMonitorPRs_FlakyCIFailureEscalatesAfterRerunBudgetExhausted(t *t
 	})
 	if _, err := r.projects.CreateMeta("https://github.com/o/r", project.ProjectTypePet); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for i := range github.MaxRetries {
 		r.prTracker.MarkHandled(created.ID, ciInfraRerunKind, fmt.Sprintf("sha-prior-%d", i))
@@ -885,9 +941,11 @@ func TestPollAndMonitorPRs_FlakyCIFailureEscalatesAfterRerunBudgetExhausted(t *t
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow != nil {
 		t.Fatal("unexpected pr-fix workflow; a flaky ci_failure must never dispatch a fix agent")
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want blocked once the rerun budget is spent", got.Status)
@@ -904,6 +962,7 @@ func TestPollAndMonitorPRs_FlakyCIFailureEscalatesAfterRerunBudgetExhausted(t *t
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.reconcileHumanRequiredBlockers(all, []github.PullRequest{{
 		Number:      4242,
@@ -915,6 +974,7 @@ func TestPollAndMonitorPRs_FlakyCIFailureEscalatesAfterRerunBudgetExhausted(t *t
 	got, err = tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Fatalf("status = %q after green PR reconciliation, want in-review", got.Status)

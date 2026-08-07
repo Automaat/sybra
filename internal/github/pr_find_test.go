@@ -20,6 +20,7 @@ func TestFindPRForBranch_Found(t *testing.T) {
 	number, found, err := FindPRForBranch(context.Background(), "acme/widgets", "myfork:my-branch")
 	if err != nil {
 		t.Fatalf("FindPRForBranch: %v", err)
+		panic("unreachable")
 	}
 	if !found || number != 77 {
 		t.Fatalf("got (%d, %v), want (77, true)", number, found)
@@ -45,6 +46,7 @@ func TestFindPRForBranch_ForkOwnerMismatchSkipped(t *testing.T) {
 	number, found, err := FindPRForBranch(context.Background(), "acme/widgets", "myfork:shared-branch")
 	if err != nil {
 		t.Fatalf("FindPRForBranch: %v", err)
+		panic("unreachable")
 	}
 	if found || number != 0 {
 		t.Fatalf("got (%d, %v), want (0, false) — a PR from a different fork owner must not match", number, found)
@@ -61,6 +63,7 @@ func TestFindPRForBranch_BareBranchMatchesAnyOwner(t *testing.T) {
 	number, found, err := FindPRForBranch(context.Background(), "acme/widgets", "same-repo-branch")
 	if err != nil {
 		t.Fatalf("FindPRForBranch: %v", err)
+		panic("unreachable")
 	}
 	if !found || number != 91 {
 		t.Fatalf("got (%d, %v), want (91, true)", number, found)
@@ -75,6 +78,7 @@ func TestFindPRForBranch_NoneFound(t *testing.T) {
 	number, found, err := FindPRForBranch(context.Background(), "acme/widgets", "b")
 	if err != nil {
 		t.Fatalf("FindPRForBranch: %v", err)
+		panic("unreachable")
 	}
 	if found || number != 0 {
 		t.Fatalf("got (%d, %v), want (0, false)", number, found)
@@ -90,6 +94,7 @@ func TestFindPRForBranch_RunError(t *testing.T) {
 
 	if _, _, err := FindPRForBranch(context.Background(), "acme/widgets", "b"); err == nil {
 		t.Fatal("expected error propagated to caller")
+		panic("unreachable")
 	}
 }
 
@@ -119,6 +124,7 @@ func TestFindPRForBranchAnyState(t *testing.T) {
 			number, state, found, err := FindPRForBranchAnyState(context.Background(), "acme/widgets", "b")
 			if err != nil {
 				t.Fatalf("FindPRForBranchAnyState: %v", err)
+				panic("unreachable")
 			}
 			if number != tc.wantNumber || state != tc.wantState || found != tc.wantFound {
 				t.Fatalf("got (%d, %q, %v), want (%d, %q, %v)", number, state, found, tc.wantNumber, tc.wantState, tc.wantFound)
@@ -142,6 +148,7 @@ func TestFindPRForBranchAnyState_ForkOwnerFilter(t *testing.T) {
 	number, state, found, err := FindPRForBranchAnyState(context.Background(), "acme/widgets", "myfork:b")
 	if err != nil {
 		t.Fatalf("FindPRForBranchAnyState: %v", err)
+		panic("unreachable")
 	}
 	if !found || number != 6 || state != "OPEN" {
 		t.Fatalf("got (%d, %q, %v), want (6, OPEN, true) — owner filter must ignore the other fork", number, state, found)
@@ -159,5 +166,6 @@ func TestFindPRForBranchAnyState_RunError(t *testing.T) {
 	}
 	if _, _, _, err := FindPRForBranchAnyState(context.Background(), "acme/widgets", "b"); err == nil {
 		t.Fatal("expected error propagated to caller")
+		panic("unreachable")
 	}
 }

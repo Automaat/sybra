@@ -76,6 +76,7 @@ func newTaskManagerForMonitorCluster(t *testing.T) *task.Manager {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return task.NewManager(store, task.EmitterFunc(func(string, any) {}))
 }
@@ -104,6 +105,7 @@ func TestLeaderMonitorRoutesRemoteLostAgentAndMirrorConverges(t *testing.T) {
 	}
 	if _, _, err := followerTasks.Put(remote); err != nil {
 		t.Fatalf("seed follower task: %v", err)
+		panic("unreachable")
 	}
 
 	followerAgents := newTestAgentManager(t, t.Context(), func(string, any) {}, discardLogger(), t.TempDir())
@@ -149,6 +151,7 @@ func TestLeaderMonitorRoutesRemoteLostAgentAndMirrorConverges(t *testing.T) {
 	roster, err := clusterlead.NewRoster(cfg, discardLogger())
 	if err != nil {
 		t.Fatalf("NewRoster: %v", err)
+		panic("unreachable")
 	}
 
 	leaderTasks := newTaskManagerForMonitorCluster(t)
@@ -242,6 +245,7 @@ func TestLeaderMonitorRoutesRemoteLostAgentAndMirrorConverges(t *testing.T) {
 	got, err := leaderTasks.Get(remote.ID)
 	if err != nil {
 		t.Fatalf("Get leader task: %v", err)
+		panic("unreachable")
 	}
 	if got.AssignedNode != "pet-box" {
 		t.Fatalf("AssignedNode = %q, want pet-box", got.AssignedNode)

@@ -32,20 +32,24 @@ func TestSybraHomeSentinel_DefaultLandsInSandbox_ControlHomeReachesRealStore(t *
 	realHome, err := os.MkdirTemp("", "sybra-e2e-realhome-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(realHome) })
 	realTasksDir := filepath.Join(realHome, "tasks")
 	if err := os.MkdirAll(realTasksDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	realStore, err := task.NewStore(realTasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	realTasks := task.NewManager(realStore, nil)
 	tk, err := realTasks.Create("sentinel task", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// The per-task sandbox home — must be what the agent subprocess sees as
@@ -53,6 +57,7 @@ func TestSybraHomeSentinel_DefaultLandsInSandbox_ControlHomeReachesRealStore(t *
 	sandboxHome, err := os.MkdirTemp("", "sybra-e2e-sandboxhome-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(sandboxHome) })
 
@@ -68,6 +73,7 @@ func TestSybraHomeSentinel_DefaultLandsInSandbox_ControlHomeReachesRealStore(t *
 	logDir, err := os.MkdirTemp("", "sybra-e2e-logs-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { keepAgentLogsOnFailure(t, logDir) })
 
@@ -87,6 +93,7 @@ func TestSybraHomeSentinel_DefaultLandsInSandbox_ControlHomeReachesRealStore(t *
 	})
 	if err != nil {
 		t.Fatalf("agentMgr.Run: %v", err)
+		panic("unreachable")
 	}
 
 	waitFor(t, defaultE2ETimeout, "sentinel agent to finish", func() bool {

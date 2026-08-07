@@ -69,9 +69,11 @@ func mustClient(t *testing.T, node cluster.Node) *cluster.Client {
 	c, err := cluster.NewClient(node, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
+		panic("unreachable")
 	}
 	if c == nil {
 		t.Fatal("NewClient returned nil client")
+		panic("unreachable")
 	}
 	return c
 }
@@ -85,6 +87,7 @@ func TestClientAgainstRealHTTPAPI(t *testing.T) {
 	got, err := client.ListTasks(context.Background())
 	if err != nil {
 		t.Fatalf("ListTasks against real httpapi: %v", err)
+		panic("unreachable")
 	}
 	if len(got) != 2 || got[0].ID != "t1" {
 		t.Fatalf("ListTasks = %+v", got)
@@ -93,6 +96,7 @@ func TestClientAgainstRealHTTPAPI(t *testing.T) {
 	one, err := client.GetTask(context.Background(), "t1")
 	if err != nil || one.Title != "one" {
 		t.Fatalf("GetTask = %+v, err %v", one, err)
+		panic("unreachable")
 	}
 
 	if err := client.AssignTask(context.Background(), task.Task{ID: "t3"}); err != nil {
@@ -105,6 +109,7 @@ func TestClientAgainstRealHTTPAPI(t *testing.T) {
 	endpoint, degraded, err := client.ProbeHealth(context.Background())
 	if err != nil || degraded || endpoint != srv.URL {
 		t.Fatalf("ProbeHealth endpoint=%q degraded=%v err=%v", endpoint, degraded, err)
+		panic("unreachable")
 	}
 }
 
@@ -114,5 +119,6 @@ func TestClientTokenRejectedByRealServer(t *testing.T) {
 	client := mustClient(t, cluster.Node{Name: "n1", Endpoints: []string{srv.URL}, Token: "wrong"})
 	if _, err := client.ListTasks(context.Background()); err == nil {
 		t.Fatal("real server must reject a wrong token")
+		panic("unreachable")
 	}
 }

@@ -24,6 +24,7 @@ func mustRunInDirDC(t *testing.T, dir, name string, args ...string) {
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%s %v: %v: %s", name, args, err, out)
+		panic("unreachable")
 	}
 }
 
@@ -41,6 +42,7 @@ func initConflictingRepo(t *testing.T) (bare, src string) {
 	mustRunInDirDC(t, src, "git", "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("# init\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDirDC(t, src, "git", "add", ".")
 	mustRunInDirDC(t, src, "git", "commit", "-m", "init")
@@ -57,10 +59,12 @@ func writeTestProject(t *testing.T, projDir string, p project.Project) {
 	data, err := yaml.Marshal(p)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	path := filepath.Join(projDir, projectFileName(p.ID))
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -90,11 +94,13 @@ func TestStartAgentWithAssignment_ReleasesClaimBeforeConflictRecovery(t *testing
 	projDir := filepath.Join(t.TempDir(), "projects")
 	if err := os.MkdirAll(projDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	clonesDir := filepath.Join(t.TempDir(), "clones")
 	projStore, err := project.NewStore(projDir, clonesDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	proj := project.Project{
 		ID:        "test/proj",
@@ -113,6 +119,7 @@ func TestStartAgentWithAssignment_ReleasesClaimBeforeConflictRecovery(t *testing
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 
@@ -128,6 +135,7 @@ func TestStartAgentWithAssignment_ReleasesClaimBeforeConflictRecovery(t *testing
 	tk, err := tasks.Create("conflicting task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -135,16 +143,19 @@ func TestStartAgentWithAssignment_ReleasesClaimBeforeConflictRecovery(t *testing
 	tk, err = tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// First prepare creates the worktree and its own branch commit.
 	wtPath, err := wtMgr.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	tk, err = tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDirDC(t, bare, "git", "-c", "safe.bareRepository=all", "update-ref", "-d", "refs/heads/"+tk.Branch)
 	mustRunInDirDC(t, wtPath, "git", "update-ref", "-d", "refs/remotes/origin/"+tk.Branch)
@@ -152,6 +163,7 @@ func TestStartAgentWithAssignment_ReleasesClaimBeforeConflictRecovery(t *testing
 	mustRunInDirDC(t, wtPath, "git", "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDirDC(t, wtPath, "git", "add", "README.md")
 	mustRunInDirDC(t, wtPath, "git", "commit", "-m", "branch edit")
@@ -160,6 +172,7 @@ func TestStartAgentWithAssignment_ReleasesClaimBeforeConflictRecovery(t *testing
 	// bare fails closed with a real content conflict.
 	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("upstream edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDirDC(t, src, "git", "add", "README.md")
 	mustRunInDirDC(t, src, "git", "commit", "-m", "upstream edit")
@@ -170,6 +183,7 @@ func TestStartAgentWithAssignment_ReleasesClaimBeforeConflictRecovery(t *testing
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	o := New(tasks, projStore, agentMgr, nil, discardSlogLogger(), wtMgr, &config.Config{})
@@ -206,6 +220,7 @@ func TestStartAgentWithAssignment_ReleasesClaimBeforeConflictRecovery(t *testing
 	_, _, err = o.StartAgentWithAssignment(tk.ID, "headless", "prompt", false, false, "", "", workflow.AgentAssignment{})
 	if err == nil {
 		t.Fatal("StartAgentWithAssignment err = nil, want an error (worktree required for project task)")
+		panic("unreachable")
 	}
 	if !recoveryCalled {
 		t.Fatal("conflict recovery callback was never invoked — rebase failure did not reach recovery path")

@@ -280,6 +280,7 @@ func TestClassifyTestOutcome_RecoversFailuresMarkdownFromMalformedJSON(t *testin
 	var sanity structuredTestOutput
 	if err := json.Unmarshal([]byte(malformed), &sanity); err == nil {
 		t.Fatal("sanity: malformed payload must fail json.Unmarshal directly")
+		panic("unreachable")
 	}
 
 	report2 := currentTestFailureReport(malformed, "", nil, testVerdictSourceStep)
@@ -690,6 +691,7 @@ func TestStripTestFailuresSectionsNoOpWhenAbsent(t *testing.T) {
 	}
 	if removed != nil {
 		t.Fatalf("removed = %v, want nil", removed)
+		panic("unreachable")
 	}
 }
 
@@ -1776,6 +1778,7 @@ func mustGetTaskInfo(t *testing.T, tasks *memTasks, taskID string) TaskInfo {
 	ti, err := tasks.GetTask(taskID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return ti
 }
@@ -1785,9 +1788,11 @@ func makeTestingTaskEngine(t *testing.T) (*Engine, *memTasks, *mockAgents) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := SyncBuiltins(store); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -1827,6 +1832,7 @@ func TestAdvanceStep_TestProtocolViolationRetriesRunTestFromBodyDelta(t *testing
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if got := agents.CallCount(); got != 1 {
@@ -1835,12 +1841,14 @@ func TestAdvanceStep_TestProtocolViolationRetriesRunTestFromBodyDelta(t *testing
 	got, err := tasks.GetTask("t-proto")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "testing" {
 		t.Errorf("status = %q, want testing", got.Status)
 	}
 	if got.Workflow == nil || got.Workflow.CurrentStep != testVerdictSourceStep || got.Workflow.State != ExecWaiting {
 		t.Fatalf("workflow = %+v, want waiting at run_test", got.Workflow)
+		panic("unreachable")
 	}
 	if len(got.Workflow.StepHistory) != 1 {
 		t.Fatalf("step history len = %d, want 1", len(got.Workflow.StepHistory))
@@ -1900,11 +1908,13 @@ func TestAdvanceStep_StructuredFailureMarkdownIsAppendedAtomically(t *testing.T)
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got, err := tasks.GetTask("t-structured")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Body != initialBody {
 		t.Fatalf("task body should stay unchanged; got:\n%s", got.Body)
@@ -1961,11 +1971,13 @@ func TestAdvanceStep_StructuredFailureAppendsAfterUnrelatedBodyDelta(t *testing.
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got, err := tasks.GetTask("t-structured-delta")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Body != currentBody {
 		t.Fatalf("body should preserve unrelated delta without appending a new report:\n%s", got.Body)
@@ -2015,11 +2027,13 @@ func TestAdvanceStep_PlainTextFailureMarkdownIsAppendedAtomically(t *testing.T) 
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got, err := tasks.GetTask("t-plain")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Body != initialBody {
 		t.Fatalf("task body should stay unchanged; got:\n%s", got.Body)
@@ -2079,11 +2093,13 @@ func TestAdvanceStep_NewFailureReportArchivesPriorTestFailuresSection(t *testing
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got, err := tasks.GetTask("t-archive")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Body != initialBody {
 		t.Fatalf("body should stay unchanged when failures move to sidecars:\n%s", got.Body)
@@ -2135,11 +2151,13 @@ func TestAdvanceStep_BodyDeltaFailureReportArchivesPriorTestFailuresSection(t *t
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got, err := tasks.GetTask("t-archive-delta")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Body != currentBody {
 		t.Fatalf("body should preserve the runner-written delta without rewrite:\n%s", got.Body)
@@ -2198,6 +2216,7 @@ func TestAdvanceStep_ArchivedFailureRewriteResetsBodyDeltaStart(t *testing.T) {
 	got, err := tasks.GetTask("t-body-start-reset")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Body != initialBody {
 		t.Fatalf("body should stay unchanged when the live report moves to a sidecar:\n%s", got.Body)
@@ -2242,6 +2261,7 @@ func TestAdvanceStep_TestProtocolViolationRetriesRunTestForMalformedVerdict(t *t
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := agents.CallCount(); got != 1 {
 		t.Fatalf("retry StartAgent calls = %d, want 1", got)
@@ -2249,6 +2269,7 @@ func TestAdvanceStep_TestProtocolViolationRetriesRunTestForMalformedVerdict(t *t
 	got, err := tasks.GetTask("t-proto-malformed")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.AgentRuns[0].ProtocolViolation != testProtocolFixSuggestions {
 		t.Errorf("agent run protocol violation = %q, want %q", got.AgentRuns[0].ProtocolViolation, testProtocolFixSuggestions)
@@ -2293,6 +2314,7 @@ func TestAdvanceStep_TestProtocolViolationAfterRetryStopsWithProtocolReason(t *t
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if got := agents.CallCount(); got != 0 {
@@ -2301,6 +2323,7 @@ func TestAdvanceStep_TestProtocolViolationAfterRetryStopsWithProtocolReason(t *t
 	got, err := tasks.GetTask("t-proto-exhausted")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "human-required" {
 		t.Fatalf("status = %q, want human-required", got.Status)
@@ -2310,6 +2333,7 @@ func TestAdvanceStep_TestProtocolViolationAfterRetryStopsWithProtocolReason(t *t
 	}
 	if got.Workflow == nil || got.Workflow.State != ExecCompleted {
 		t.Fatalf("workflow = %+v, want completed", got.Workflow)
+		panic("unreachable")
 	}
 	last := got.Workflow.StepHistory[len(got.Workflow.StepHistory)-1]
 	if last.StepID != "route_test" || !strings.Contains(last.Output, "protocol violation") {
@@ -2357,6 +2381,7 @@ func TestAdvanceStep_FailedRunnerWithPassMarkerRoutesAsInfraFailure(t *testing.T
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if got := agents.CallCount(); got != 0 {
@@ -2365,6 +2390,7 @@ func TestAdvanceStep_FailedRunnerWithPassMarkerRoutesAsInfraFailure(t *testing.T
 	got, err := tasks.GetTask("t-failed-pass")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "ready-pr" {
 		t.Fatalf("status = %q, want ready-pr", got.Status)
@@ -2423,6 +2449,7 @@ func TestAdvanceStep_CompletedRunnerWithEmptyStdoutRoutesAsInfraFailure(t *testi
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if got := agents.CallCount(); got != 0 {
@@ -2431,6 +2458,7 @@ func TestAdvanceStep_CompletedRunnerWithEmptyStdoutRoutesAsInfraFailure(t *testi
 	got, err := tasks.GetTask("t-empty-stdout")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != "ready-pr" {
 		t.Fatalf("status = %q, want ready-pr", got.Status)
@@ -2455,6 +2483,7 @@ func TestRouteTestResult_Pass(t *testing.T) {
 	out, err := runRouteTestResult(e, tasks, "t1", "PASS", time.Now().UTC(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "pass" {
 		t.Errorf("output = %q, want pass", out.Output)
@@ -2473,6 +2502,7 @@ func TestRouteTestResult_FailUnderCap(t *testing.T) {
 	out, err := runRouteTestResult(e, tasks, "t2", "FAIL", now, runs, nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "reimplement" {
 		t.Errorf("output = %q, want reimplement", out.Output)
@@ -2495,6 +2525,7 @@ func TestRouteTestResult_FailAtCap(t *testing.T) {
 	out, err := runRouteTestResult(e, tasks, "t3", "FAIL", now, runs, nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "escalated" {
 		t.Errorf("output = %q, want escalated", out.Output)
@@ -2517,6 +2548,7 @@ func TestRouteTestResult_ProtocolViolationRunsDoNotCountTowardCap(t *testing.T) 
 	out, err := runRouteTestResult(e, tasks, "t3-protocol", "FAIL", now, runs, nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "reimplement" {
 		t.Errorf("output = %q, want reimplement", out.Output)
@@ -2540,6 +2572,7 @@ func TestRouteTestResult_LegacyEmptyOutcomeRunsDoNotCountTowardCap(t *testing.T)
 	out, err := runRouteTestResult(e, tasks, "t3-legacy", "FAIL", now, runs, nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "reimplement" {
 		t.Errorf("output = %q, want reimplement", out.Output)
@@ -2576,6 +2609,7 @@ func TestRouteTestResult_InfraFailureDoesNotCountTowardCap(t *testing.T) {
 	out, err := e.execRouteTestResult("t-infra", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-infra"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "infra failure — opened pr" {
 		t.Errorf("output = %q, want infra failure — opened pr", out.Output)
@@ -2601,6 +2635,7 @@ func TestRouteTestResult_InfraFailureEscalatesToHumanRequiredWhenDisabled(t *tes
 	out, ti, err := routeWithOutcome(t, e, tasks, "t-infra-disabled", testOutcomeInfraFailure, vars)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "infra failure" {
 		t.Errorf("output = %q, want infra failure", out.Output)
@@ -2700,6 +2735,7 @@ func TestRouteTestResult_InfraFailureOpensPRAtCap(t *testing.T) {
 	out, ti, err := routeWithOutcome(t, e, tasks, "t-infra-cap", testOutcomeInfraFailure, vars)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "infra failure — opened pr" {
 		t.Errorf("output = %q, want infra failure — opened pr", out.Output)
@@ -2746,6 +2782,7 @@ func TestRouteTestResult_MissingEvidenceParksWithReaskThenEscalates(t *testing.T
 	_, ti, err = routeWithOutcome(t, e, tasks, "t-evidence-cap", testOutcomeMissingEvidence, vars)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if ti.Status != "human-required" {
 		t.Errorf("status = %q, want human-required", ti.Status)
@@ -2782,6 +2819,7 @@ func TestRouteTestResult_DuplicateFailureEscalatesWithoutAnotherRetry(t *testing
 	out, err := e.execRouteTestResult("t-dup", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-dup"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "duplicate failure" {
 		t.Errorf("output = %q, want duplicate failure", out.Output)
@@ -2835,6 +2873,7 @@ func TestRouteTestResult_DuplicateFailureEscalatesWhenSpecDecisionAppendFails(t 
 	out, err := e.execRouteTestResult("t-dup-append-fails", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-dup-append-fails"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "duplicate failure" {
 		t.Errorf("output = %q, want duplicate failure", out.Output)
@@ -2938,6 +2977,7 @@ func TestExecRouteTestResult_ReimplementSeedsNote(t *testing.T) {
 	out, err := e.execRouteTestResult(taskID, &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, taskID))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "reimplement" {
 		t.Fatalf("output = %q, want reimplement", out.Output)
@@ -2980,6 +3020,7 @@ func TestExecRouteTestResult_ReimplementSeedsNote(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join(wtPath, notes.FileName))
 	if err != nil {
 		t.Fatalf("read notes: %v", err)
+		panic("unreachable")
 	}
 	got := string(content)
 	if !strings.Contains(got, appender.marker) {
@@ -3030,11 +3071,13 @@ func TestExecRouteTestResult_ReimplementNoteIdempotent(t *testing.T) {
 	first, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read first notes: %v", err)
+		panic("unreachable")
 	}
 	route()
 	second, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read second notes: %v", err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(second, first) {
 		t.Fatalf("NOTES.md changed on rerun:\nfirst:\n%s\n\nsecond:\n%s", first, second)
@@ -3080,6 +3123,7 @@ func TestExecRouteTestResult_AppenderErrorFailsOpen(t *testing.T) {
 	out, err := e.execRouteTestResult(taskID, &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, taskID))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "reimplement" {
 		t.Fatalf("output = %q, want reimplement", out.Output)
@@ -3144,6 +3188,7 @@ func TestExecRouteTestResult_NonReimplementRoutesDoNotSeedNote(t *testing.T) {
 			out, err := e.execRouteTestResult(tt.taskID, &Step{ID: "route_test"}, tt.wf, mustGetTaskInfo(t, tasks, tt.taskID))
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if out.Status != "completed" {
 				t.Fatalf("step status = %q, want completed", out.Status)
@@ -3167,6 +3212,7 @@ func TestAttemptDiffStat_DiffUnavailable(t *testing.T) {
 	cmd.Dir = wtPath
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
+		panic("unreachable")
 	}
 
 	got := e.attemptDiffStat(context.Background(), wtPath)
@@ -3212,6 +3258,7 @@ func TestRouteTestResult_FailAtCapWithRecurringClassReframesAsSpecDecision(t *te
 	out, err := e.execRouteTestResult("t-cap-recur", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-cap-recur"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "escalated" {
 		t.Errorf("output = %q, want escalated", out.Output)
@@ -3351,6 +3398,7 @@ func TestRouteTestResult_FailAtCapWithDistinctFailuresAfterImplementationReframe
 	out, err := runRouteTestResult(e, tasks, "t-cap-distinct", "FAIL", now, runs, nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "escalated" {
 		t.Errorf("output = %q, want escalated", out.Output)
@@ -3436,6 +3484,7 @@ func TestRouteTestResult_DistinctFailureLoopUsesBoundedDefaultBackstop(t *testin
 			out, err := runRouteTestResult(e, tasks, tc.taskID, "FAIL", now, runs, nil)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if out.Output != tc.wantOutput {
 				t.Fatalf("output = %q, want %q", out.Output, tc.wantOutput)
@@ -3466,6 +3515,7 @@ func TestRouteTestResult_FailAtCapWithoutInterveningCodeAuthorUsesGenericReason(
 	out, err := runRouteTestResult(e, tasks, "t-cap-no-author-gap", "FAIL", now, runs, nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "escalated" {
 		t.Errorf("output = %q, want escalated", out.Output)
@@ -3502,6 +3552,7 @@ func TestRouteTestResult_FailAtCapSpecDecisionEscalatesWhenAppendFails(t *testin
 	out, err := runRouteTestResult(e, tasks, "t-cap-append-fails", "FAIL", now, runs, nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "escalated" {
 		t.Errorf("output = %q, want escalated", out.Output)
@@ -3605,6 +3656,7 @@ func TestRouteTestResult_ReDispatchDoesNotUsePriorCycleForSpecDecision(t *testin
 	out, err := runRouteTestResult(e, tasks, "t-redispatch-spec", "FAIL", newCycleStart, runs, &newCycleStart)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "reimplement" {
 		t.Errorf("output = %q, want reimplement (prior-cycle runs must not drive a spec-decision reframe)", out.Output)
@@ -3647,6 +3699,7 @@ func TestRouteTestResult_DuplicateFailureWithoutInterveningFixDoesNotEscalate(t 
 	out, err := e.execRouteTestResult("t-dup-no-fix", &Step{ID: "route_test"}, wf, mustGetTaskInfo(t, tasks, "t-dup-no-fix"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "reimplement" {
 		t.Errorf("output = %q, want reimplement", out.Output)
@@ -3726,10 +3779,12 @@ func TestPrepareTestStepCompletionLedgerCoexistsWithTestFailures(t *testing.T) {
 	taskInfo := TaskInfo{ID: taskID}
 	if err := e.prepareTestStepCompletion(taskID, taskInfo, &output, wfExec, &body); err != nil {
 		t.Fatalf("first prepareTestStepCompletion: %v", err)
+		panic("unreachable")
 	}
 	ti, err := tasks.GetTask(taskID)
 	if err != nil {
 		t.Fatalf("GetTask(%s): %v", taskID, err)
+		panic("unreachable")
 	}
 	taskInfo.CurrentTestFailures = ti.CurrentTestFailures
 	taskInfo.AcceptanceLedger = ti.AcceptanceLedger
@@ -3754,10 +3809,12 @@ func TestPrepareTestStepCompletionLedgerCoexistsWithTestFailures(t *testing.T) {
 	output = buildOutput(report2)
 	if err := e.prepareTestStepCompletion(taskID, taskInfo, &output, wfExec, &body); err != nil {
 		t.Fatalf("second prepareTestStepCompletion: %v", err)
+		panic("unreachable")
 	}
 	ti, err = tasks.GetTask(taskID)
 	if err != nil {
 		t.Fatalf("GetTask(%s): %v", taskID, err)
+		panic("unreachable")
 	}
 	taskInfo.CurrentTestFailures = ti.CurrentTestFailures
 	taskInfo.AcceptanceLedger = ti.AcceptanceLedger
@@ -3799,6 +3856,7 @@ func TestRouteTestResult_ReDispatch(t *testing.T) {
 	out, err := runRouteTestResult(e, tasks, "t4", "FAIL", newCycleStart, runs, &newCycleStart)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "reimplement" {
 		t.Errorf("output = %q, want reimplement (prior-cycle runs must not count)", out.Output)
@@ -3836,6 +3894,7 @@ func TestRouteTestResult_ReDispatch_Escalates(t *testing.T) {
 	out, err := runRouteTestResult(e, tasks, "t5", "FAIL", newCycleStart, runs, &newCycleStart)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Output != "escalated" {
 		t.Errorf("output = %q, want escalated", out.Output)

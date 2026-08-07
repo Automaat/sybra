@@ -28,6 +28,7 @@ func TestAdoptRefusesSlashedDefaultBranch(t *testing.T) {
 			_, err := h.m.PrepareForTask(context.Background(), tk, nil)
 			if err == nil {
 				t.Fatal("adopted a worktree sitting on the default branch")
+				panic("unreachable")
 			}
 			// The full phrase, not just the branch name: the name alone also
 			// appears in the temp-dir path every adoption error carries, so a
@@ -44,6 +45,7 @@ func TestAdoptRefusesSlashedDefaultBranch(t *testing.T) {
 			feat := task.Task{ID: "slash002", Title: "adopt feature", ProjectID: h.proj.ID, WorktreeDir: onFeature}
 			if _, err := h.m.PrepareForTask(context.Background(), feat, nil); err != nil {
 				t.Fatalf("adopting a feature-branch worktree: %v", err)
+				panic("unreachable")
 			}
 		})
 	}
@@ -59,6 +61,7 @@ func TestPrepareForTask_SlashedDefaultBranchBaseRef(t *testing.T) {
 	tk, err := h.tasks.Store().Create("slashed base", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -66,11 +69,13 @@ func TestPrepareForTask_SlashedDefaultBranchBaseRef(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	dir, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("PrepareForTask on a slashed default branch: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "README.md")); err != nil {
 		t.Errorf("worktree was not branched off the default branch's content: %v", err)
@@ -97,6 +102,7 @@ func slashDefaultHarness(t *testing.T, defaultBranch string) preparedHarness {
 	out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", h.proj.ClonePath, "symbolic-ref", "HEAD").CombinedOutput()
 	if err != nil {
 		t.Fatalf("git symbolic-ref: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if got := strings.TrimSpace(string(out)); got != "refs/heads/"+defaultBranch {
 		t.Fatalf("harness HEAD = %q, want refs/heads/%s", got, defaultBranch)
@@ -109,5 +115,6 @@ func mustGit(t *testing.T, dir string, args ...string) {
 	full := append([]string{"-c", "safe.bareRepository=all", "-C", dir}, args...)
 	if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
+		panic("unreachable")
 	}
 }

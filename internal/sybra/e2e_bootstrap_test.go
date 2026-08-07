@@ -54,6 +54,7 @@ func setupBootstrapE2EWithMaxConcurrent(t *testing.T, repoSetup, appSetup []stri
 	home, err := os.MkdirTemp("", "sybra-bootstrap-e2e-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
 	t.Setenv("SYBRA_HOME", home)
@@ -66,6 +67,7 @@ func setupBootstrapE2EWithMaxConcurrent(t *testing.T, repoSetup, appSetup []stri
 	for _, d := range []string{tasksDir, projDir, clonesDir, wtDir, logsDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
@@ -75,6 +77,7 @@ func setupBootstrapE2EWithMaxConcurrent(t *testing.T, repoSetup, appSetup []stri
 	src := filepath.Join(home, "upstream-src")
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"git", "-C", src, "init", "-b", "main"},
@@ -83,10 +86,12 @@ func setupBootstrapE2EWithMaxConcurrent(t *testing.T, repoSetup, appSetup []stri
 	} {
 		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
 			t.Fatalf("%v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("# e2e\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(repoSetup) > 0 {
 		var sb strings.Builder
@@ -96,6 +101,7 @@ func setupBootstrapE2EWithMaxConcurrent(t *testing.T, repoSetup, appSetup []stri
 		}
 		if err := os.WriteFile(filepath.Join(src, ".sybra.yaml"), []byte(sb.String()), 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 	for _, args := range [][]string{
@@ -104,21 +110,26 @@ func setupBootstrapE2EWithMaxConcurrent(t *testing.T, repoSetup, appSetup []stri
 	} {
 		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
 			t.Fatalf("%v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 
 	bare := filepath.Join(clonesDir, "e2e", "proj.git")
 	if err := os.MkdirAll(filepath.Dir(bare), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "clone", "--bare", src, bare).CombinedOutput(); err != nil {
 		t.Fatalf("git clone --bare: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
 		t.Fatalf("git config: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", bare, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
 		t.Fatalf("git fetch: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	// Project store + registered project pointing at the bare we just built.
@@ -127,6 +138,7 @@ func setupBootstrapE2EWithMaxConcurrent(t *testing.T, repoSetup, appSetup []stri
 	projStore, err := project.NewStore(projDir, clonesDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	var projYAML strings.Builder
 	projYAML.WriteString("id: e2e/proj\nname: proj\nowner: e2e\nrepo: proj\nurl: ")
@@ -143,12 +155,14 @@ func setupBootstrapE2EWithMaxConcurrent(t *testing.T, repoSetup, appSetup []stri
 	projYAML.WriteString("created_at: 2026-04-16T00:00:00Z\nupdated_at: 2026-04-16T00:00:00Z\n")
 	if err := os.WriteFile(filepath.Join(projDir, "e2e--proj.yaml"), []byte(projYAML.String()), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Task store + manager.
 	taskStore, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(taskStore, nil)
 
@@ -158,6 +172,7 @@ func setupBootstrapE2EWithMaxConcurrent(t *testing.T, repoSetup, appSetup []stri
 	agentLogDir := filepath.Join(logsDir, "agent-manager")
 	if err := os.MkdirAll(agentLogDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	logger := e2eLogger(t)
 	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, logger, agentLogDir, agent.ManagerConfig{
@@ -202,6 +217,7 @@ func TestE2E_BootstrapRunsBeforeAgent_MergedRepoAndApp(t *testing.T) {
 	tk, err := env.tasks.Create("bootstrap e2e task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(env.projectID)}); err != nil {
 		t.Fatal(err)
@@ -210,6 +226,7 @@ func TestE2E_BootstrapRunsBeforeAgent_MergedRepoAndApp(t *testing.T) {
 	ag, err := env.agentOrch.StartAgent(tk.ID, "headless", "any prompt", false, false)
 	if err != nil {
 		t.Fatalf("StartAgent: %v", err)
+		panic("unreachable")
 	}
 
 	// Wait for the fake-claude process to complete so we know the full
@@ -235,6 +252,7 @@ func TestE2E_BootstrapRunsBeforeAgent_MergedRepoAndApp(t *testing.T) {
 	entries, err := os.ReadDir(env.worktreesDir)
 	if err != nil {
 		t.Fatalf("read worktrees dir: %v", err)
+		panic("unreachable")
 	}
 	var wtPath string
 	for _, e := range entries {
@@ -259,6 +277,7 @@ func TestE2E_BootstrapRunsBeforeAgent_MergedRepoAndApp(t *testing.T) {
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("read setup log at %s: %v", logPath, err)
+		panic("unreachable")
 	}
 	// Repo commands must have been logged before the app command.
 	if bytes.Index(data, []byte("repo.marker")) > bytes.Index(data, []byte("app.marker")) {
@@ -276,6 +295,7 @@ func TestE2E_BootstrapFailure_AbortsAgentStart(t *testing.T) {
 	tk, err := env.tasks.Create("failing bootstrap", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(env.projectID)}); err != nil {
 		t.Fatal(err)
@@ -284,6 +304,7 @@ func TestE2E_BootstrapFailure_AbortsAgentStart(t *testing.T) {
 	ag, err := env.agentOrch.StartAgent(tk.ID, "headless", "any prompt", false, false)
 	if err == nil {
 		t.Fatalf("expected StartAgent to fail, got agent %s", ag.ID)
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "exit 13") {
 		t.Errorf("error does not reference failing command: %v", err)
@@ -306,6 +327,7 @@ func TestE2E_StartAgentWithAssignment_ReservesCapacityBeforeSetup(t *testing.T) 
 	q, err := agentqueue.New(t.TempDir(), agentqueue.Options{}, e2eLogger(t))
 	if err != nil {
 		t.Fatalf("agentqueue.New: %v", err)
+		panic("unreachable")
 	}
 	env.agentOrch.SetQueue(q)
 
@@ -319,12 +341,14 @@ func TestE2E_StartAgentWithAssignment_ReservesCapacityBeforeSetup(t *testing.T) 
 	})
 	if err != nil {
 		t.Fatalf("start blocker: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = env.agents.StopAgent(blocker.ID) })
 
 	tk, err := env.tasks.Create("capacity-before-setup", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(env.projectID)}); err != nil {
 		t.Fatal(err)
@@ -345,6 +369,7 @@ func TestE2E_StartAgentWithAssignment_ReservesCapacityBeforeSetup(t *testing.T) 
 
 	if err := env.agents.StopAgent(blocker.ID); err != nil {
 		t.Fatalf("stop blocker: %v", err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "free slot after blocker stop", func() bool {
 		return env.agents.TryReserveSlot()
@@ -353,6 +378,7 @@ func TestE2E_StartAgentWithAssignment_ReservesCapacityBeforeSetup(t *testing.T) 
 	ag, _, err := env.agentOrch.StartAgentWithAssignment(tk.ID, "headless", "any prompt", false, false, "", "", workflow.AgentAssignment{})
 	if err != nil {
 		t.Fatalf("StartAgentWithAssignment after release: %v", err)
+		panic("unreachable")
 	}
 	if got := readSetupCount(t, counter); got != 1 {
 		t.Fatalf("setup count after slot release = %d, want 1", got)
@@ -374,6 +400,7 @@ func readSetupCount(t *testing.T, path string) int {
 	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil {
 		t.Fatalf("parse setup count %q: %v", strings.TrimSpace(string(data)), err)
+		panic("unreachable")
 	}
 	return n
 }

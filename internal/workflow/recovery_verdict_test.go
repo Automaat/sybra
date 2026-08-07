@@ -111,6 +111,7 @@ func TestDeclaresAlreadyFixedOnMain(t *testing.T) {
 			alreadyFixed, declared, err := declaresAlreadyFixedOnMain(tc.signal)
 			if err != nil {
 				t.Fatalf("declaresAlreadyFixedOnMain(%q) returned error: %v", tc.signal, err)
+				panic("unreachable")
 			}
 			if declared != tc.wantDeclared {
 				t.Fatalf("declaresAlreadyFixedOnMain(%q) declared = %v, want %v", tc.signal, declared, tc.wantDeclared)
@@ -152,6 +153,7 @@ func TestDeclaresAlreadyFixedOnMainUnreadableDeclaration(t *testing.T) {
 			alreadyFixed, declared, err := declaresAlreadyFixedOnMain(tc.signal)
 			if err == nil {
 				t.Fatalf("declaresAlreadyFixedOnMain(%q) = (%v, %v), want an error", tc.signal, alreadyFixed, declared)
+				panic("unreachable")
 			}
 			if alreadyFixed || declared {
 				t.Fatalf("declaresAlreadyFixedOnMain(%q) = (%v, %v) on error, want (false, false)", tc.signal, alreadyFixed, declared)

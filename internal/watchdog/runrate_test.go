@@ -16,6 +16,7 @@ func assertWatchdogEffectRecorded(t *testing.T, got task.Task, wantPrefix string
 	}
 	if got.EffectLog[0].CompletedAt == nil {
 		t.Fatal("completed_at not recorded")
+		panic("unreachable")
 	}
 	if got.EffectLog[0].ID.Generation != wantGeneration {
 		t.Fatalf("effect generation = %d, want %d", got.EffectLog[0].ID.Generation, wantGeneration)
@@ -30,10 +31,12 @@ func newInProgressTask(t *testing.T, mgr *task.Manager) task.Task {
 	tk, err := mgr.Create("burst task", "## Description\nsome work", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = mgr.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInProgress)})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 	return tk
 }
@@ -55,6 +58,7 @@ func TestCheckRunRate_EscalatesBurstOfSameRole(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 	tk := newInProgressTask(t, mgr)
@@ -69,6 +73,7 @@ func TestCheckRunRate_EscalatesBurstOfSameRole(t *testing.T) {
 	got, err := mgr.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want blocked", got.Status)
@@ -83,6 +88,7 @@ func TestCheckRunRate_SkipsBelowThreshold(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 	tk := newInProgressTask(t, mgr)
@@ -96,6 +102,7 @@ func TestCheckRunRate_SkipsBelowThreshold(t *testing.T) {
 	got, err := mgr.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want in-progress (29 runs is below the 30-run threshold)", got.Status)
@@ -106,6 +113,7 @@ func TestCheckRunRate_IgnoresRunsOutsideWindow(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 	tk := newInProgressTask(t, mgr)
@@ -121,6 +129,7 @@ func TestCheckRunRate_IgnoresRunsOutsideWindow(t *testing.T) {
 	got, err := mgr.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want in-progress (old runs outside the window must not count)", got.Status)
@@ -131,16 +140,19 @@ func TestCheckRunRate_SkipsNonInProgressTask(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 
 	tk, err := mgr.Create("todo burst task", "## Description\nsome work", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = mgr.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusTodo)})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	now := time.Now()
@@ -152,6 +164,7 @@ func TestCheckRunRate_SkipsNonInProgressTask(t *testing.T) {
 	got, err := mgr.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusTodo {
 		t.Fatalf("status = %q, want todo (run-rate must only watch in-progress/in-review tasks)", got.Status)
@@ -167,11 +180,13 @@ func TestCheckRunRate_EscalatesBurstOnInReviewTask(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 	tk, err := mgr.Create("in-review burst task", "## Description\nsome work", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = mgr.Update(tk.ID, task.Update{
 		Status:   task.Ptr(task.StatusInReview),
@@ -179,6 +194,7 @@ func TestCheckRunRate_EscalatesBurstOnInReviewTask(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	now := time.Now()
@@ -190,6 +206,7 @@ func TestCheckRunRate_EscalatesBurstOnInReviewTask(t *testing.T) {
 	got, err := mgr.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want blocked", got.Status)
@@ -204,6 +221,7 @@ func TestCheckRunRate_DoesNotSumAcrossRoles(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 	tk := newInProgressTask(t, mgr)
@@ -221,6 +239,7 @@ func TestCheckRunRate_DoesNotSumAcrossRoles(t *testing.T) {
 	got, err := mgr.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want in-progress (no single role reached the threshold)", got.Status)
@@ -231,6 +250,7 @@ func TestCheckRunRate_DisabledWhenThresholdIsZero(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 	tk := newInProgressTask(t, mgr)
@@ -244,6 +264,7 @@ func TestCheckRunRate_DisabledWhenThresholdIsZero(t *testing.T) {
 	got, err := mgr.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want in-progress (maxRunsPerWindow<=0 disables the check)", got.Status)
@@ -254,6 +275,7 @@ func TestCheckRunRate_SkipsTaskWithRunningAgent(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 	tk := newInProgressTask(t, mgr)
@@ -273,6 +295,7 @@ func TestCheckRunRate_SkipsTaskWithRunningAgent(t *testing.T) {
 	got, err := mgr.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want in-progress (running agent should suppress run-rate escalation)", got.Status)
@@ -318,6 +341,7 @@ func TestCheckRunRate_EscalatesMixedLegacyAndCurrentRole(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 	tk := newInProgressTask(t, mgr)
@@ -332,6 +356,7 @@ func TestCheckRunRate_EscalatesMixedLegacyAndCurrentRole(t *testing.T) {
 	got, err := mgr.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want blocked", got.Status)

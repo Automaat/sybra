@@ -15,6 +15,7 @@ func TestFromRecordHeadlessRestoresEscalationChannel(t *testing.T) {
 	a := fromRecord(Record{ID: "a", Mode: "headless"})
 	if a.escalationCh == nil {
 		t.Fatal("headless reattach omitted escalation channel")
+		panic("unreachable")
 	}
 	if err := (&Manager{}).RespondEscalation("missing", true); err == nil {
 		t.Fatal("sanity: manager should reject missing agent")
@@ -71,6 +72,7 @@ func TestReattachErrorResultPreservesQueuedSteer(t *testing.T) {
 	r, w := io.Pipe()
 	if err := a.convo.installStdinPipe(w); err != nil {
 		t.Fatalf("installStdinPipe: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = r.Close() })
 	a.EnqueuePrompt("preserve across retry")

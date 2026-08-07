@@ -106,12 +106,14 @@ func TestInjectionCaseFailsClosed(t *testing.T) {
 	}
 	if err := store.Write(verdict); err != nil {
 		t.Fatalf("Write: %v", err)
+		panic("unreachable")
 	}
 
 	gate := NewGate(store, defaultTestOfflineConfig())
 	allow, reason, err := gate.AllowEnrollment(verdict.VariantID, verdict.Digest)
 	if err != nil {
 		t.Fatalf("AllowEnrollment: %v", err)
+		panic("unreachable")
 	}
 	if allow {
 		t.Fatalf("AllowEnrollment allowed a FAILED verdict (reason=%q) — must fail closed", reason)

@@ -17,6 +17,7 @@ func TestGitOutputUsesWorkspaceDirectoryAndDisablesPrompts(t *testing.T) {
 	fakeGit := filepath.Join(binDir, "git")
 	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf '%s\\n%s\\n' \"$PWD\" \"$GIT_TERMINAL_PROMPT\"\n"), 0o755); err != nil {
 		t.Fatalf("write fake git: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", binDir)
 
@@ -24,6 +25,7 @@ func TestGitOutputUsesWorkspaceDirectoryAndDisablesPrompts(t *testing.T) {
 	out, err := gitOutput(t.Context(), workspace, "status", "--short")
 	if err != nil {
 		t.Fatalf("gitOutput: %v", err)
+		panic("unreachable")
 	}
 	lines := strings.Split(out, "\n")
 	if len(lines) != 2 || lines[1] != "0" {
@@ -32,10 +34,12 @@ func TestGitOutputUsesWorkspaceDirectoryAndDisablesPrompts(t *testing.T) {
 	actualInfo, err := os.Stat(lines[0])
 	if err != nil {
 		t.Fatalf("stat actual working directory: %v", err)
+		panic("unreachable")
 	}
 	wantInfo, err := os.Stat(workspace)
 	if err != nil {
 		t.Fatalf("stat expected working directory: %v", err)
+		panic("unreachable")
 	}
 	if !os.SameFile(actualInfo, wantInfo) {
 		t.Fatalf("working directory = %q, want %q", lines[0], workspace)
@@ -128,6 +132,7 @@ func TestK8sProviderInvocationRunsInPodWorkdir(t *testing.T) {
 	inv, err := buildK8sProviderInvocation(a, cfg, defaultK8sWorkdir)
 	if err != nil {
 		t.Fatalf("buildK8sProviderInvocation: %v", err)
+		panic("unreachable")
 	}
 	args := strings.Join(inv.args, "\x00")
 	if !strings.Contains(args, "-C\x00"+defaultK8sWorkdir) {
@@ -148,6 +153,7 @@ func TestK8sProviderInvocationSupportsOpenCode(t *testing.T) {
 	inv, err := buildK8sProviderInvocation(a, cfg, defaultK8sWorkdir)
 	if err != nil {
 		t.Fatalf("buildK8sProviderInvocation: %v", err)
+		panic("unreachable")
 	}
 	if inv.name != "opencode" {
 		t.Fatalf("invocation name = %q, want opencode", inv.name)
@@ -177,6 +183,7 @@ func TestK8sProviderInvocationDoesNotResumeStatelessPodSession(t *testing.T) {
 	inv, err := buildK8sProviderInvocation(a, cfg, defaultK8sWorkdir)
 	if err != nil {
 		t.Fatalf("buildK8sProviderInvocation: %v", err)
+		panic("unreachable")
 	}
 	args := strings.Join(inv.args, "\x00")
 	if strings.Contains(args, "--session") || strings.Contains(args, "ses_previous") {
@@ -303,6 +310,7 @@ func TestPatchJobTTLSendsMergePatch(t *testing.T) {
 
 	if err := r.patchJobTTL(context.Background(), "sybra-agent-abc", 86400); err != nil {
 		t.Fatalf("patchJobTTL: %v", err)
+		panic("unreachable")
 	}
 	if gotMethod != http.MethodPatch {
 		t.Fatalf("method = %s, want PATCH", gotMethod)
@@ -372,6 +380,7 @@ func TestK8sRunPatchesFailedJobTTL(t *testing.T) {
 	}
 	if a.GetExitErr() == nil {
 		t.Fatal("expected the agent to record an error for a failed Job")
+		panic("unreachable")
 	}
 }
 
@@ -427,5 +436,6 @@ func TestPatchJobTTLReturnsErrorOnNonSuccessStatus(t *testing.T) {
 
 	if err := r.patchJobTTL(context.Background(), "sybra-agent-abc", 86400); err == nil {
 		t.Fatal("expected error for non-2xx response")
+		panic("unreachable")
 	}
 }

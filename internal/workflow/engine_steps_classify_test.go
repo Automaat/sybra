@@ -34,6 +34,7 @@ func TestExecClassifyTask_Success(t *testing.T) {
 	out, err := engine.execClassifyTask("t1", newClassifyTaskStep(), &Execution{})
 	if err != nil {
 		t.Fatalf("execClassifyTask: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Errorf("status = %q, want completed", out.Status)
@@ -58,6 +59,7 @@ func TestExecClassifyTask_NilClassifier(t *testing.T) {
 	out, err := engine.execClassifyTask("t1", newClassifyTaskStep(), &Execution{})
 	if err != nil {
 		t.Fatalf("execClassifyTask: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Errorf("status = %q, want completed", out.Status)
@@ -95,6 +97,7 @@ func TestExecClassifyTask_RetriesTransientFailure(t *testing.T) {
 	out, err := engine.execClassifyTask("t1", newClassifyTaskStep(), &Execution{})
 	if err != nil {
 		t.Fatalf("execClassifyTask: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Errorf("status = %q, want completed", out.Status)
@@ -162,6 +165,7 @@ func TestExecClassifyTask_ClassifierError(t *testing.T) {
 	out, err := engine.execClassifyTask("t1", newClassifyTaskStep(), &Execution{})
 	if err != nil {
 		t.Fatalf("execClassifyTask: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Errorf("status = %q, want completed", out.Status)

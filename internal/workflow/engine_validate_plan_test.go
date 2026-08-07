@@ -19,6 +19,7 @@ func TestExecValidatePlan_CleanPlanPasses(t *testing.T) {
 		TaskInfo{ID: "fa6919fc", Plan: plan})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Errorf("Status = %q, want completed", out.Status)
@@ -42,6 +43,7 @@ func TestExecValidatePlan_ForeignBranchRefFlipsHumanRequired(t *testing.T) {
 		TaskInfo{ID: "fa6919fc", Plan: plan})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Errorf("Status = %q, want completed (mechanical step)", out.Status)
@@ -70,6 +72,7 @@ func TestExecValidatePlan_ForeignBranchRefAlone(t *testing.T) {
 		TaskInfo{ID: "fa6919fc", Plan: plan})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	ti, _ := tasks.GetTask("fa6919fc")
 	if ti.Status != "human-required" {
@@ -88,6 +91,7 @@ func TestExecValidatePlan_EmptyPlanPasses(t *testing.T) {
 		TaskInfo{ID: "fa6919fc", Plan: "   \n\t\n"})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Errorf("Status = %q, want completed", out.Status)
@@ -111,6 +115,7 @@ func TestExecValidatePlan_GitShortShaIgnored(t *testing.T) {
 		TaskInfo{ID: "fa6919fc", Plan: plan})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	ti, _ := tasks.GetTask("fa6919fc")
 	if ti.Status == "human-required" {

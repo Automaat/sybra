@@ -138,6 +138,7 @@ func TestValidateCluster(t *testing.T) {
 			err := tc.cfg.ValidateCluster()
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("ValidateCluster() error = %v, wantErr %v", err, tc.wantErr)
+				panic("unreachable")
 			}
 		})
 	}

@@ -21,6 +21,7 @@ func TestFinishTerminalStepOutput_PersistFailureLeavesTaskUnchanged(t *testing.T
 	clone := wf.Clone()
 	if clone == nil {
 		t.Fatal("Clone returned nil")
+		panic("unreachable")
 	}
 	err := engine.finishTerminalStepOutput("t1", clone, StepOutput{
 		StepID:         "step1",
@@ -30,6 +31,7 @@ func TestFinishTerminalStepOutput_PersistFailureLeavesTaskUnchanged(t *testing.T
 	}, func() {})
 	if err == nil {
 		t.Fatal("finishTerminalStepOutput: want simulated persist error, got nil")
+		panic("unreachable")
 	}
 
 	got := tasks.mustGetTask(t, "t1")
@@ -38,12 +40,14 @@ func TestFinishTerminalStepOutput_PersistFailureLeavesTaskUnchanged(t *testing.T
 	}
 	if got.Workflow == nil || got.Workflow.State != ExecRunning {
 		t.Fatalf("Workflow.State = %v after failed persist, want unchanged running (no partial write)", got.Workflow)
+		panic("unreachable")
 	}
 
 	tasks.failSetWorkflow = false
 	clone = wf.Clone()
 	if clone == nil {
 		t.Fatal("Clone returned nil")
+		panic("unreachable")
 	}
 	if err := engine.finishTerminalStepOutput("t1", clone, StepOutput{
 		StepID:         "step1",
@@ -60,5 +64,6 @@ func TestFinishTerminalStepOutput_PersistFailureLeavesTaskUnchanged(t *testing.T
 	}
 	if got.Workflow == nil || got.Workflow.State != ExecCompleted {
 		t.Fatalf("Workflow.State = %v after successful persist, want completed", got.Workflow)
+		panic("unreachable")
 	}
 }

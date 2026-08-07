@@ -54,6 +54,7 @@ func TestRewindRetry_PolicyMatrix(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+			panic("unreachable")
 		}
 		if !armed {
 			t.Fatal("under cap must arm")
@@ -82,6 +83,7 @@ func TestRewindRetry_PolicyMatrix(t *testing.T) {
 		fresh, err := tasks.GetTask("t1")
 		if err != nil {
 			t.Fatalf("get task: %v", err)
+			panic("unreachable")
 		}
 		if fresh.Workflow.Variables["retry.count"] != "1" {
 			t.Fatal("rewind was not persisted")
@@ -109,6 +111,7 @@ func TestRewindRetry_PolicyMatrix(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+			panic("unreachable")
 		}
 		if armed {
 			t.Fatal("at cap must not arm")
@@ -144,6 +147,7 @@ func TestRewindRetry_PolicyMatrix(t *testing.T) {
 		})
 		if err == nil {
 			t.Fatal("expected persist error")
+			panic("unreachable")
 		}
 		if !armed {
 			t.Fatal("armed must be true even when persist fails — the counter bump already happened")

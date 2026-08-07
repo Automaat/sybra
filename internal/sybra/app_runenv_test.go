@@ -81,6 +81,7 @@ func TestMisconfiguredGitHubAuthCertificationRequiresCredentialAuthority(t *test
 	})
 	if err == nil {
 		t.Fatal("Certify succeeded with misconfigured GitHub auth")
+		panic("unreachable")
 	}
 	failure := workflow.ClassifyAgentStartFailure(err)
 	if !failure.Permanent || failure.Blocker.Kind != blocker.KindCredentialRequired || !blocker.AllowsHumanRequired(failure.Blocker.Kind) {
@@ -93,6 +94,7 @@ func TestQuarantineRunEnvironmentParksMachineOwnedTask(t *testing.T) {
 	created, err := a.tasks.Create("quarantine me", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := a.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
 		t.Fatal(err)
@@ -103,6 +105,7 @@ func TestQuarantineRunEnvironmentParksMachineOwnedTask(t *testing.T) {
 	got, err := a.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked || got.AutonomyOutcome != autonomy.OutcomeQuarantined {
 		t.Fatalf("quarantined task status/outcome = %q/%q", got.Status, got.AutonomyOutcome)

@@ -38,6 +38,7 @@ func TestExecPushBranch_DivergedRecovery_NestedStartWorkflowFails(t *testing.T) 
 
 	if err := engine.StartWorkflowWithVars("t1", "test-push-first", nil); err != nil {
 		t.Fatalf("StartWorkflowWithVars(outer): %v", err)
+		panic("unreachable")
 	}
 	if !errors.Is(nestedErr, ErrWorkflowAlreadyActive) {
 		t.Fatalf("nested StartWorkflowWithVars err = %v, want ErrWorkflowAlreadyActive", nestedErr)
@@ -73,9 +74,11 @@ func TestExecPushBranch_DivergedRecovery_ReplaceWorkflowSucceeds(t *testing.T) {
 
 	if err := engine.StartWorkflowWithVars("t1", "test-push-first", nil); err != nil {
 		t.Fatalf("StartWorkflowWithVars(outer): %v", err)
+		panic("unreachable")
 	}
 	if replaceErr != nil {
 		t.Fatalf("ReplaceWorkflow err = %v, want nil", replaceErr)
+		panic("unreachable")
 	}
 	ti, _ := tasks.GetTask("t1")
 	if ti.Status == "human-required" {
@@ -83,5 +86,6 @@ func TestExecPushBranch_DivergedRecovery_ReplaceWorkflowSucceeds(t *testing.T) {
 	}
 	if ti.Workflow == nil || ti.Workflow.WorkflowID != "test-recovery-target" {
 		t.Fatalf("workflow = %+v, want test-recovery-target", ti.Workflow)
+		panic("unreachable")
 	}
 }

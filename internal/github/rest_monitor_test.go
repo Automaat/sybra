@@ -148,6 +148,7 @@ func TestFetchPRForMonitorViaREST_ConflictAndFailingCI(t *testing.T) {
 	pr, open, err := fetchPRForMonitorViaREST(e, "Automaat/sybra", 42)
 	if err != nil {
 		t.Fatalf("fetchPRForMonitorViaREST: %v", err)
+		panic("unreachable")
 	}
 	if !open {
 		t.Fatal("expected open=true")
@@ -184,6 +185,7 @@ func TestFetchPRForMonitorViaREST_PendingCI(t *testing.T) {
 	pr, open, err := fetchPRForMonitorViaREST(e, "o/r", 7)
 	if err != nil || !open {
 		t.Fatalf("open=%v err=%v", open, err)
+		panic("unreachable")
 	}
 	if pr.Mergeable != "MERGEABLE" {
 		t.Errorf("Mergeable = %q, want MERGEABLE", pr.Mergeable)
@@ -206,6 +208,7 @@ func TestFetchPRForMonitorViaREST_LegacyStatusFailure(t *testing.T) {
 	pr, open, err := fetchPRForMonitorViaREST(e, "o/r", 8)
 	if err != nil || !open {
 		t.Fatalf("open=%v err=%v", open, err)
+		panic("unreachable")
 	}
 	if pr.CIStatus != "FAILURE" || pr.HasPendingChecks {
 		t.Errorf("CIStatus=%q pending=%v, want FAILURE/false", pr.CIStatus, pr.HasPendingChecks)
@@ -227,6 +230,7 @@ func TestFetchPRForMonitorViaREST_FiltersInformationalAndCancelledChecks(t *test
 	pr, open, err := fetchPRForMonitorViaREST(e, "o/r", 10)
 	if err != nil || !open {
 		t.Fatalf("open=%v err=%v", open, err)
+		panic("unreachable")
 	}
 	if pr.CIStatus != "SUCCESS" || pr.HasPendingChecks {
 		t.Errorf("CIStatus=%q pending=%v, want SUCCESS/false", pr.CIStatus, pr.HasPendingChecks)
@@ -241,6 +245,7 @@ func TestFetchPRForMonitorViaREST_ClosedPR(t *testing.T) {
 	_, open, err := fetchPRForMonitorViaREST(e, "o/r", 9)
 	if err != nil {
 		t.Fatalf("err: %v", err)
+		panic("unreachable")
 	}
 	if open {
 		t.Error("closed PR should report open=false")
@@ -276,6 +281,7 @@ func TestFetchPRStateViaREST_MergedAndClosed(t *testing.T) {
 			got, err := fetchPRStateViaREST(e, "o/r", 11)
 			if err != nil {
 				t.Fatalf("fetchPRStateViaREST: %v", err)
+				panic("unreachable")
 			}
 			if got.State != tt.want {
 				t.Errorf("State = %q, want %q", got.State, tt.want)
@@ -302,6 +308,7 @@ func TestFetchPRForMonitorViaREST_CleanApproved(t *testing.T) {
 	pr, open, err := fetchPRForMonitorViaREST(e, "o/r", 20)
 	if err != nil || !open {
 		t.Fatalf("open=%v err=%v", open, err)
+		panic("unreachable")
 	}
 	if !pr.SourcedViaREST {
 		t.Error("SourcedViaREST must be true")
@@ -332,6 +339,7 @@ func TestFetchPRForMonitorViaREST_CIFetchFails(t *testing.T) {
 	pr, open, err := fetchPRForMonitorViaREST(e, "o/r", 21)
 	if err != nil || !open {
 		t.Fatalf("open=%v err=%v", open, err)
+		panic("unreachable")
 	}
 	if pr.RESTCIFetched {
 		t.Error("RESTCIFetched must be false when the check-runs leg errors")
@@ -353,6 +361,7 @@ func TestFetchPRForMonitorViaREST_StaleApproval(t *testing.T) {
 	pr, open, err := fetchPRForMonitorViaREST(e, "o/r", 22)
 	if err != nil || !open {
 		t.Fatalf("open=%v err=%v", open, err)
+		panic("unreachable")
 	}
 	if pr.RESTApproved {
 		t.Error("a stale approval (commit_id != HeadSHA) must not set RESTApproved")
@@ -374,6 +383,7 @@ func TestFetchPRForMonitorViaREST_CopilotCommentedOnly(t *testing.T) {
 	pr, open, err := fetchPRForMonitorViaREST(e, "o/r", 23)
 	if err != nil || !open {
 		t.Fatalf("open=%v err=%v", open, err)
+		panic("unreachable")
 	}
 	if pr.RESTApproved {
 		t.Error("a Copilot COMMENTED-only review must not set RESTApproved")
@@ -395,6 +405,7 @@ func TestFetchPRForMonitorViaREST_BlockedNotApproved(t *testing.T) {
 		pr, open, err := fetchPRForMonitorViaREST(e, "o/r", 24)
 		if err != nil || !open {
 			t.Fatalf("state=%s: open=%v err=%v", state, open, err)
+			panic("unreachable")
 		}
 		if pr.RESTApproved {
 			t.Errorf("state=%s: RESTApproved must stay false for a non-clean mergeable_state", state)

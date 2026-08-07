@@ -55,6 +55,7 @@ func TestFetchIssueSnapshot_ChunksLabeledRepos(t *testing.T) {
 	snap, err := fetchIssueSnapshotWith(ce, repos, "sybra")
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
+		panic("unreachable")
 	}
 	// 32 repos: combined(15) + labeled chunks for repos[15:32] => 15 + 2 = 2 calls.
 	// Total gh calls = 1 combined + 2 labeled = 3.

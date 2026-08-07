@@ -29,6 +29,7 @@ func TestE2E_NewChecksFireThroughChecker(t *testing.T) {
 	logger, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatalf("audit.NewLogger: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = logger.Close() })
 
@@ -53,12 +54,14 @@ func TestE2E_NewChecksFireThroughChecker(t *testing.T) {
 	for _, e := range seed {
 		if err := logger.Log(e); err != nil {
 			t.Fatalf("audit log: %v", err)
+			panic("unreachable")
 		}
 	}
 
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
@@ -110,6 +113,7 @@ func TestE2E_NewChecksFireThroughChecker(t *testing.T) {
 	}
 	if report.Processes == nil {
 		t.Fatal("Processes = nil, want non-nil summary")
+		panic("unreachable")
 	}
 
 	// The persisted JSON is what sybra-cli health reads. Verify the score
@@ -117,6 +121,7 @@ func TestE2E_NewChecksFireThroughChecker(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(home, "health-report.json"))
 	if err != nil {
 		t.Fatalf("read persisted report: %v", err)
+		panic("unreachable")
 	}
 	var persisted struct {
 		Score  string `json:"score"`
@@ -134,15 +139,18 @@ func TestE2E_NewChecksFireThroughChecker(t *testing.T) {
 	}
 	if err := json.Unmarshal(data, &persisted); err != nil {
 		t.Fatalf("parse persisted report: %v", err)
+		panic("unreachable")
 	}
 	if persisted.Score != string(ScoreCritical) {
 		t.Errorf("persisted score = %q, want critical", persisted.Score)
 	}
 	if persisted.Processes == nil {
 		t.Fatal("persisted processes = nil, want object")
+		panic("unreachable")
 	}
 	if persisted.Docker == nil {
 		t.Fatal("persisted docker = nil, want object")
+		panic("unreachable")
 	}
 	if !persisted.Docker.Available {
 		t.Fatal("persisted docker available = false, want true")
@@ -176,6 +184,7 @@ func TestE2E_GoodScoreWhenNothingFires(t *testing.T) {
 	logger, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatalf("audit.NewLogger: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = logger.Close() })
 
@@ -187,12 +196,14 @@ func TestE2E_GoodScoreWhenNothingFires(t *testing.T) {
 	for _, e := range clean {
 		if err := logger.Log(e); err != nil {
 			t.Fatalf("audit log: %v", err)
+			panic("unreachable")
 		}
 	}
 
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	silent := slog.New(slog.DiscardHandler)
@@ -212,6 +223,7 @@ func TestE2E_GoodScoreWhenNothingFires(t *testing.T) {
 	}
 	if report.Processes == nil {
 		t.Fatal("Processes = nil, want non-nil summary")
+		panic("unreachable")
 	}
 }
 
@@ -236,6 +248,7 @@ func TestE2E_SandboxCleanupFailureSurfacesHealthFinding(t *testing.T) {
 	quarantineDir := filepath.Join(sandboxDir, ".quarantine")
 	if err := os.MkdirAll(quarantineDir, 0o755); err != nil {
 		t.Fatalf("mkdir quarantine dir: %v", err)
+		panic("unreachable")
 	}
 	entry := sandbox.QuarantineEntry{
 		TaskID:        "task-locked",
@@ -249,9 +262,11 @@ func TestE2E_SandboxCleanupFailureSurfacesHealthFinding(t *testing.T) {
 	data, err := json.Marshal(entry)
 	if err != nil {
 		t.Fatalf("marshal quarantine entry: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(quarantineDir, "task-locked.json"), data, 0o644); err != nil {
 		t.Fatalf("write quarantine entry: %v", err)
+		panic("unreachable")
 	}
 
 	entries := mgr.QuarantinedEntries()
@@ -267,6 +282,7 @@ func TestE2E_SandboxCleanupFailureSurfacesHealthFinding(t *testing.T) {
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
@@ -280,6 +296,7 @@ func TestE2E_SandboxCleanupFailureSurfacesHealthFinding(t *testing.T) {
 	report := c.LatestReport()
 	if report == nil {
 		t.Fatal("LatestReport returned nil")
+		panic("unreachable")
 	}
 
 	var found *Finding
@@ -291,6 +308,7 @@ func TestE2E_SandboxCleanupFailureSurfacesHealthFinding(t *testing.T) {
 	}
 	if found == nil {
 		t.Fatalf("expected %q finding, got %v", CatSandboxCleanup, findingCategories(report.Findings))
+		panic("unreachable")
 	}
 	if found.TaskID != "task-locked" {
 		t.Errorf("TaskID = %q, want task-locked", found.TaskID)
@@ -311,6 +329,7 @@ func TestE2E_SandboxCleanupFailureSurfacesHealthFinding(t *testing.T) {
 	persistedData, err := os.ReadFile(filepath.Join(home, "health-report.json"))
 	if err != nil {
 		t.Fatalf("read persisted report: %v", err)
+		panic("unreachable")
 	}
 	var persisted struct {
 		Findings []struct {
@@ -321,6 +340,7 @@ func TestE2E_SandboxCleanupFailureSurfacesHealthFinding(t *testing.T) {
 	}
 	if err := json.Unmarshal(persistedData, &persisted); err != nil {
 		t.Fatalf("parse persisted report: %v", err)
+		panic("unreachable")
 	}
 	var persistedFound bool
 	for _, f := range persisted.Findings {
@@ -360,6 +380,7 @@ func TestE2E_PressureTelemetryPersistsLastReclaim(t *testing.T) {
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 
@@ -388,6 +409,7 @@ func TestE2E_PressureTelemetryPersistsLastReclaim(t *testing.T) {
 	report := c.LatestReport()
 	if report == nil || report.Pressure == nil || report.Pressure.LastReclaim == nil {
 		t.Fatalf("LatestReport pressure telemetry missing: %+v", report)
+		panic("unreachable")
 	}
 	if report.Pressure.DiskFreePct != 12.5 || report.Pressure.LastReclaim.ReclaimedBytes != 4<<30 {
 		t.Fatalf("Pressure = %+v", *report.Pressure)
@@ -396,6 +418,7 @@ func TestE2E_PressureTelemetryPersistsLastReclaim(t *testing.T) {
 	persistedData, err := os.ReadFile(filepath.Join(home, "health-report.json"))
 	if err != nil {
 		t.Fatalf("read persisted report: %v", err)
+		panic("unreachable")
 	}
 	var persisted struct {
 		Pressure *struct {
@@ -412,9 +435,11 @@ func TestE2E_PressureTelemetryPersistsLastReclaim(t *testing.T) {
 	}
 	if err := json.Unmarshal(persistedData, &persisted); err != nil {
 		t.Fatalf("parse persisted report: %v", err)
+		panic("unreachable")
 	}
 	if persisted.Pressure == nil || persisted.Pressure.LastReclaim == nil {
 		t.Fatalf("persisted pressure telemetry missing: %+v", persisted.Pressure)
+		panic("unreachable")
 	}
 	if persisted.Pressure.DiskFreePct != 12.5 || persisted.Pressure.WarningDiskFreePct != 15 || persisted.Pressure.CriticalDiskFreePct != 5 {
 		t.Fatalf("persisted pressure = %+v", *persisted.Pressure)

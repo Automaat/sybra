@@ -114,6 +114,7 @@ func TestAppStartup_AppAuthMintFailureDoesNotBlockStartup(t *testing.T) {
 	start := time.Now()
 	if err := app.Startup(context.Background()); err != nil {
 		t.Fatalf("Startup: %v", err)
+		panic("unreachable")
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("Startup took %v with App auth misconfigured, want a fast non-blocking degrade", elapsed)

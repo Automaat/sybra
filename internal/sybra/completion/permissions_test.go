@@ -19,6 +19,7 @@ func readAuditEvents(t *testing.T, dir string) []audit.Event {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("read audit dir: %v", err)
+		panic("unreachable")
 	}
 	var events []audit.Event
 	for _, e := range entries {
@@ -28,12 +29,14 @@ func readAuditEvents(t *testing.T, dir string) []audit.Event {
 		f, err := os.Open(filepath.Join(dir, e.Name()))
 		if err != nil {
 			t.Fatalf("open audit file: %v", err)
+			panic("unreachable")
 		}
 		sc := bufio.NewScanner(f)
 		for sc.Scan() {
 			var ev audit.Event
 			if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
 				t.Fatalf("unmarshal audit event: %v", err)
+				panic("unreachable")
 			}
 			events = append(events, ev)
 		}
@@ -48,10 +51,12 @@ func newMinimalTaskManager(t *testing.T) *task.Manager {
 	dir := filepath.Join(t.TempDir(), "tasks")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return task.NewManager(store, nil)
 }
@@ -63,6 +68,7 @@ func TestOnComplete_EmitsPermissionDeniedAuditEvents(t *testing.T) {
 	al, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = al.Close() })
 
@@ -70,6 +76,7 @@ func TestOnComplete_EmitsPermissionDeniedAuditEvents(t *testing.T) {
 	tk, err := taskMgr.Create("test task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	h := New(Config{Audit: al, Logger: discardLogger(), Tasks: taskMgr})
@@ -132,6 +139,7 @@ func TestOnComplete_EmitsPromptRenderedAuditEvent(t *testing.T) {
 	al, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = al.Close() })
 
@@ -139,6 +147,7 @@ func TestOnComplete_EmitsPromptRenderedAuditEvent(t *testing.T) {
 	tk, err := taskMgr.Create("rendered task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
 		AgentID: "agent-rendered",
@@ -201,6 +210,7 @@ func TestOnComplete_SkipsPromptRenderedForInteractiveMode(t *testing.T) {
 	al, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = al.Close() })
 
@@ -208,6 +218,7 @@ func TestOnComplete_SkipsPromptRenderedForInteractiveMode(t *testing.T) {
 	tk, err := taskMgr.Create("interactive task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
 		AgentID: "agent-interactive",
@@ -245,6 +256,7 @@ func TestOnComplete_NoPromptHashNoPromptRenderedEvent(t *testing.T) {
 	al, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = al.Close() })
 
@@ -252,6 +264,7 @@ func TestOnComplete_NoPromptHashNoPromptRenderedEvent(t *testing.T) {
 	tk, err := taskMgr.Create("unrendered task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
 		AgentID: "agent-no-hash",
@@ -283,6 +296,7 @@ func TestOnComplete_NoDenialsNoPermissionDeniedEvents(t *testing.T) {
 	al, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = al.Close() })
 
@@ -290,6 +304,7 @@ func TestOnComplete_NoDenialsNoPermissionDeniedEvents(t *testing.T) {
 	tk, err := taskMgr.Create("clean task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
 		AgentID: "agent-clean",

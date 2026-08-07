@@ -63,6 +63,7 @@ func TestReattachAccountingInvariant(t *testing.T) {
 	agentsLogDir := filepath.Join(logDir, "agents")
 	if err := os.MkdirAll(agentsLogDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
@@ -76,6 +77,7 @@ func TestReattachAccountingInvariant(t *testing.T) {
 		cmd := exec.Command("sleep", "2")
 		if err := cmd.Start(); err != nil {
 			t.Fatalf("start helper process: %v", err)
+			panic("unreachable")
 		}
 		t.Cleanup(func() { _ = cmd.Process.Kill() })
 		go func() { _ = cmd.Wait() }()
@@ -87,6 +89,7 @@ func TestReattachAccountingInvariant(t *testing.T) {
 	headlessLog := filepath.Join(agentsLogDir, "h1.ndjson")
 	if err := os.WriteFile(headlessLog, nil, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	headlessCmd := spawnSleeper(t)
 	if err := m.reg.Save(Record{
@@ -146,6 +149,7 @@ func TestReattachReapsStaleHeadlessTaskAgentButKeepsOrchestrator(t *testing.T) {
 		cmd := exec.Command("sleep", "30")
 		if err := cmd.Start(); err != nil {
 			t.Fatalf("start sleeper: %v", err)
+			panic("unreachable")
 		}
 		t.Cleanup(func() { _ = cmd.Process.Kill() })
 		go func() { _ = cmd.Wait() }()
@@ -156,6 +160,7 @@ func TestReattachReapsStaleHeadlessTaskAgentButKeepsOrchestrator(t *testing.T) {
 	agentsLogDir := filepath.Join(logDir, "agents")
 	if err := os.MkdirAll(agentsLogDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	regDir := t.TempDir()
 	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
@@ -167,6 +172,7 @@ func TestReattachReapsStaleHeadlessTaskAgentButKeepsOrchestrator(t *testing.T) {
 		p := filepath.Join(agentsLogDir, id+".ndjson")
 		if err := os.WriteFile(p, nil, 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		return p
 	}
@@ -192,6 +198,7 @@ func TestReattachReapsStaleHeadlessTaskAgentButKeepsOrchestrator(t *testing.T) {
 	for _, r := range records {
 		if err := m.reg.Save(r); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
@@ -200,6 +207,7 @@ func TestReattachReapsStaleHeadlessTaskAgentButKeepsOrchestrator(t *testing.T) {
 	recs, err := m.reg.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	present := map[string]bool{}
 	for _, r := range recs {
@@ -213,6 +221,7 @@ func TestReattachReapsStaleHeadlessTaskAgentButKeepsOrchestrator(t *testing.T) {
 	}
 	if err := orchCmd.Process.Kill(); err != nil {
 		t.Fatalf("kill reattached orchestrator process: %v", err)
+		panic("unreachable")
 	}
 	deadline := time.After(5 * time.Second)
 	for m.RunningCount() > 0 {
@@ -237,6 +246,7 @@ func TestReattachReapsStaleSurvivors(t *testing.T) {
 		cmd := exec.Command("sleep", "30")
 		if err := cmd.Start(); err != nil {
 			t.Fatalf("start helper process: %v", err)
+			panic("unreachable")
 		}
 		t.Cleanup(func() { _ = cmd.Process.Kill() })
 		go func() { _ = cmd.Wait() }()
@@ -331,6 +341,7 @@ func TestReattachReapsStaleSurvivors(t *testing.T) {
 			}
 			if err := m.reg.Save(rec); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			reattached := m.ReattachAll()
@@ -343,6 +354,7 @@ func TestReattachReapsStaleSurvivors(t *testing.T) {
 			recs, err := m.reg.List()
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if len(recs) != 0 {
 				t.Fatalf("stale survivor record not reaped: %d remain", len(recs))
@@ -359,6 +371,7 @@ func TestReattachAdoptsHealthySurvivor(t *testing.T) {
 	agentsLogDir := filepath.Join(logDir, "agents")
 	if err := os.MkdirAll(agentsLogDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	m := mustNewManager(t, context.Background(), func(string, any) {}, slog.New(slog.DiscardHandler), logDir, ManagerConfig{
 		SurviveRestartDir: regDir,
@@ -369,10 +382,12 @@ func TestReattachAdoptsHealthySurvivor(t *testing.T) {
 	logPath := filepath.Join(agentsLogDir, "h1.ndjson")
 	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	cmd := exec.Command("sleep", "30")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start helper process: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
 	go func() { _ = cmd.Wait() }()
@@ -404,14 +419,17 @@ func writeStaleLog(t *testing.T, dir, id string) string {
 	agentsLogDir := filepath.Join(dir, "agents")
 	if err := os.MkdirAll(agentsLogDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	p := filepath.Join(agentsLogDir, id+".ndjson")
 	if err := os.WriteFile(p, nil, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	stale := time.Now().Add(-2 * reattachStuckAfter)
 	if err := os.Chtimes(p, stale, stale); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return p
 }
@@ -423,10 +441,12 @@ func writeFreshLog(t *testing.T, dir, id string) string {
 	agentsLogDir := filepath.Join(dir, "agents")
 	if err := os.MkdirAll(agentsLogDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	p := filepath.Join(agentsLogDir, id+".ndjson")
 	if err := os.WriteFile(p, nil, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return p
 }
@@ -439,6 +459,7 @@ func writeLogWithLines(t *testing.T, dir, id string, silentFor time.Duration, li
 	agentsLogDir := filepath.Join(dir, "agents")
 	if err := os.MkdirAll(agentsLogDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	p := filepath.Join(agentsLogDir, id+".ndjson")
 	var body strings.Builder
@@ -447,10 +468,12 @@ func writeLogWithLines(t *testing.T, dir, id string, silentFor time.Duration, li
 	}
 	if err := os.WriteFile(p, []byte(body.String()), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mt := time.Now().Add(-silentFor)
 	if err := os.Chtimes(p, mt, mt); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return p
 }
@@ -518,6 +541,7 @@ func TestReattachKeepsSurvivorSilentInsideToolCall(t *testing.T) {
 			cmd := exec.Command("sleep", "30")
 			if err := cmd.Start(); err != nil {
 				t.Fatalf("start helper process: %v", err)
+				panic("unreachable")
 			}
 			t.Cleanup(func() { _ = cmd.Process.Kill() })
 			go func() { _ = cmd.Wait() }()
@@ -566,6 +590,7 @@ func TestReattachAdoptsParkedOrOldProgressingSurvivor(t *testing.T) {
 		cmd := exec.Command("sleep", "30")
 		if err := cmd.Start(); err != nil {
 			t.Fatalf("start helper process: %v", err)
+			panic("unreachable")
 		}
 		t.Cleanup(func() { _ = cmd.Process.Kill() })
 		go func() { _ = cmd.Wait() }()
@@ -626,6 +651,7 @@ func TestReattachAdoptsParkedOrOldProgressingSurvivor(t *testing.T) {
 			}
 			if err := m.reg.Save(rec); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			reattached := m.ReattachAll()
@@ -641,6 +667,7 @@ func TestReattachAdoptsParkedOrOldProgressingSurvivor(t *testing.T) {
 			recs, err := m.reg.List()
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if len(recs) != 1 {
 				t.Fatalf("expected adopted survivor's record to remain, got %d", len(recs))

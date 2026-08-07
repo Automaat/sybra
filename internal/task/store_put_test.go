@@ -12,6 +12,7 @@ func TestStorePutVerbatimAndUpsert(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
@@ -30,6 +31,7 @@ func TestStorePutVerbatimAndUpsert(t *testing.T) {
 	saved, err := store.Put(in)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
+		panic("unreachable")
 	}
 	if saved.FilePath == "" {
 		t.Error("Put should set FilePath")
@@ -38,6 +40,7 @@ func TestStorePutVerbatimAndUpsert(t *testing.T) {
 	got, err := store.Get("mirror-1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if got.ID != "mirror-1" || got.Status != StatusInProgress || got.AssignedNode != "box" || got.MirrorRev != 3 {
 		t.Fatalf("Put did not persist verbatim: %+v", got)
@@ -53,6 +56,7 @@ func TestStorePutVerbatimAndUpsert(t *testing.T) {
 	in.UpdatedAt = updated.Add(time.Minute)
 	if _, err := store.Put(in); err != nil {
 		t.Fatalf("second Put (upsert): %v", err)
+		panic("unreachable")
 	}
 	got, _ = store.Get("mirror-1")
 	if got.Status != StatusReadyPR {
@@ -75,6 +79,7 @@ func TestStorePutRejectsInvalidSlug(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := store.Put(Task{ID: "mirror-1", Title: "pushed", Status: StatusTodo, Slug: "../../etc/passwd"}); err == nil {
@@ -90,6 +95,7 @@ func TestStorePutRejectsInvalidAgentMode(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := store.Put(Task{ID: "mirror-1", Title: "pushed", Status: StatusTodo, AgentMode: "telepathy"}); err == nil {
@@ -105,10 +111,12 @@ func TestStorePutFnRejectsInvalidAgentMode(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	created, err := store.Create("valid", "", AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, _, err := store.PutFn(created.ID, func(t Task) (Task, error) {
@@ -120,6 +128,7 @@ func TestStorePutFnRejectsInvalidAgentMode(t *testing.T) {
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.AgentMode != AgentModeHeadless {
 		t.Fatalf("PutFn persisted invalid mode: %q", got.AgentMode)
@@ -138,6 +147,7 @@ func TestStorePutRejectsStatusChangeWithoutAdvancingUpdatedAt(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	stale := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
@@ -159,6 +169,7 @@ func TestStorePutRejectsStatusChangeWithoutAdvancingUpdatedAt(t *testing.T) {
 	got, err := store.Get("task-x")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != StatusBlocked {
 		t.Fatalf("status = %q, want it to stay blocked — the stale status change must be discarded", got.Status)
@@ -173,6 +184,7 @@ func TestStorePutStaleStatusRestorePreservesTypedEvidence(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	stamp := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
 	reason := *OperatorDecisionRequired("operator.choose", "choose")
@@ -192,6 +204,7 @@ func TestStorePutStaleStatusRestorePreservesTypedEvidence(t *testing.T) {
 	got, err := store.Get("task-evidence")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != StatusHumanRequired || got.Escalation.Code != reason.Code || got.AutonomyOutcome != *HumanRequiredOutcome() {
 		t.Fatalf("stale Put restored status without evidence: %#v", got)
@@ -203,6 +216,7 @@ func TestStorePutAllowsLegacyHumanRequiredRecordEdit(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	stamp := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
 	legacy := Task{
@@ -212,14 +226,17 @@ func TestStorePutAllowsLegacyHumanRequiredRecordEdit(t *testing.T) {
 	data, err := Marshal(legacy)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(store.dir, legacy.ID+".md"), data, 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	loaded, err := store.Get(legacy.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if loaded.Escalation.Provenance != "legacy" || loaded.Escalation.Message != legacy.StatusReason {
 		t.Fatalf("legacy adapter = %#v", loaded.Escalation)
@@ -228,10 +245,12 @@ func TestStorePutAllowsLegacyHumanRequiredRecordEdit(t *testing.T) {
 	loaded.UpdatedAt = stamp.Add(time.Minute)
 	if _, err := store.Put(loaded); err != nil {
 		t.Fatalf("Put legacy edit: %v", err)
+		panic("unreachable")
 	}
 	got, err := store.Get(legacy.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got.Tags) != 1 || got.Tags[0] != "edited" || got.Escalation.Provenance != "legacy" {
 		t.Fatalf("legacy edit = %#v", got)
@@ -247,6 +266,7 @@ func TestStorePutRejectsStatusChangeWithBackdatedUpdatedAt(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	current := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
@@ -268,6 +288,7 @@ func TestStorePutRejectsStatusChangeWithBackdatedUpdatedAt(t *testing.T) {
 	got, err := store.Get("task-w")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != StatusBlocked {
 		t.Fatalf("status = %q, want it to stay blocked — a backdated status change must be discarded", got.Status)
@@ -285,6 +306,7 @@ func TestStorePutKeepsVerbatimUpdatedAtWhenStatusUnchanged(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	stale := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
@@ -304,6 +326,7 @@ func TestStorePutKeepsVerbatimUpdatedAtWhenStatusUnchanged(t *testing.T) {
 	got, err := store.Get("task-y")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !got.UpdatedAt.Equal(stale) {
 		t.Fatalf("UpdatedAt = %v, want unchanged verbatim %v — status did not change, no bump should apply", got.UpdatedAt, stale)
@@ -319,6 +342,7 @@ func TestStorePutTrustsGenuinelyAdvancingUpdatedAt(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	older := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
@@ -339,6 +363,7 @@ func TestStorePutTrustsGenuinelyAdvancingUpdatedAt(t *testing.T) {
 	got, err := store.Get("task-z")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !got.UpdatedAt.Equal(newer) {
 		t.Fatalf("UpdatedAt = %v, want the caller-supplied, already-advancing %v preserved verbatim", got.UpdatedAt, newer)
@@ -357,6 +382,7 @@ func TestStorePutRejectedWriteDoesNotRegressMirrorRev(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	current := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
@@ -382,6 +408,7 @@ func TestStorePutRejectedWriteDoesNotRegressMirrorRev(t *testing.T) {
 	got, err := store.Get("task-mrev")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != StatusInProgress {
 		t.Fatalf("status = %q, want it to stay in-progress", got.Status)
@@ -391,6 +418,7 @@ func TestStorePutRejectedWriteDoesNotRegressMirrorRev(t *testing.T) {
 	}
 	if got.MirrorUpdatedAt == nil || !got.MirrorUpdatedAt.Equal(currentMirror) {
 		t.Fatalf("MirrorUpdatedAt = %v, want it to stay %v", got.MirrorUpdatedAt, currentMirror)
+		panic("unreachable")
 	}
 }
 
@@ -407,6 +435,7 @@ func TestStorePutMirrorAuthoritativeAlwaysAdvancesPastFutureExisting(t *testing.
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	future := time.Now().UTC().Add(24 * time.Hour)
@@ -429,6 +458,7 @@ func TestStorePutMirrorAuthoritativeAlwaysAdvancesPastFutureExisting(t *testing.
 	got, err := store.Get("task-future")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != StatusInProgress {
 		t.Fatalf("status = %q, want in-progress", got.Status)
@@ -444,6 +474,7 @@ func TestStorePutRejectsUnsafeID(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	canary := filepath.Join(dir, "..", "escaped.md")
 	for _, id := range []string{"", "..", "../escaped", "a/b", "a\\b", ".hidden", "../../etc/passwd"} {

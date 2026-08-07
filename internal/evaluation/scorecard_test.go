@@ -909,6 +909,7 @@ func TestWilson95(t *testing.T) {
 	data, err := json.Marshal([]RateEstimate{got, empty, wilson95(1, -1)})
 	if err != nil {
 		t.Fatalf("marshal estimates: %v", err)
+		panic("unreachable")
 	}
 	if len(data) == 0 || containsNonFinite(got) || containsNonFinite(empty) {
 		t.Fatalf("non-finite estimate JSON/data: %s %+v %+v", data, got, empty)
@@ -1086,6 +1087,7 @@ func TestCompareByVariantZeroWeightFirstVariantDoesNotBecomeBaseline(t *testing.
 	rows := rowsByVariant(res.Rows)
 	if rows["control"] == nil || !rows["control"].Baseline || rows["control"].BaselineVariantID != "control" {
 		t.Fatalf("control baseline fields = %+v", rows["control"])
+		panic("unreachable")
 	}
 	if len(res.Experiments) != 1 {
 		t.Fatalf("experiment statuses = %+v", res.Experiments)
@@ -1287,6 +1289,7 @@ func TestServiceScanPopulatesAttributionReports(t *testing.T) {
 	rep, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
+		panic("unreachable")
 	}
 	modelKind := mustExperimentKind(t, rep.ByExperimentKind, "model")
 	modelGroup := mustExperimentGroup(t, modelKind.Groups, "exp")
@@ -1446,9 +1449,11 @@ func TestGroupByKindSeparatesDifferentSubjectsInSameKind(t *testing.T) {
 	}
 	if author.Subject == nil || author.Subject.StepID != "author" {
 		t.Fatalf("author group subject = %+v", author.Subject)
+		panic("unreachable")
 	}
 	if review.Subject == nil || review.Subject.StepID != "review" {
 		t.Fatalf("review group subject = %+v", review.Subject)
+		panic("unreachable")
 	}
 }
 
@@ -1503,6 +1508,7 @@ func TestGroupByKindPromptSkillRowsExposeFixedProviderModel(t *testing.T) {
 	}
 	if row.Subject == nil || row.Subject.SkillName != "sybra-tasks" {
 		t.Fatalf("skill row subject = %+v", row.Subject)
+		panic("unreachable")
 	}
 }
 
@@ -1618,6 +1624,7 @@ func TestCompareByAgentModelSplitsDirectFromConformantReview(t *testing.T) {
 	}
 	if skillRow == nil || directRow == nil {
 		t.Fatalf("rows = %+v, want one skill row and one direct row", got)
+		panic("unreachable")
 	}
 	if skillRow.Runs != 1 {
 		t.Fatalf("skill row = %+v, want 1 run", *skillRow)
@@ -1736,9 +1743,11 @@ func TestExperimentSampleStatusBlocksReadinessOnSkillParityUnknown(t *testing.T)
 	rows := rowsByVariant(res.Rows)
 	if rows["control"] == nil || !rows["control"].SkillParityUnknown {
 		t.Fatalf("control row = %+v, want SkillParityUnknown (mixes skill + direct)", rows["control"])
+		panic("unreachable")
 	}
 	if rows["treatment"] == nil || rows["treatment"].SkillParityUnknown {
 		t.Fatalf("treatment row = %+v, want a clean direct cohort (uniform none)", rows["treatment"])
+		panic("unreachable")
 	}
 	if len(res.Experiments) != 1 {
 		t.Fatalf("experiment statuses = %+v", res.Experiments)

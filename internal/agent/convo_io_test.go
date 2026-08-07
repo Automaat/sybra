@@ -28,12 +28,15 @@ func TestConvoIOInstallStdinPipeRejectsOverwrite(t *testing.T) {
 
 	if err := c.installStdinPipe(first); err != nil {
 		t.Fatalf("installStdinPipe first: %v", err)
+		panic("unreachable")
 	}
 	if err := c.installStdinPipe(second); err == nil {
 		t.Fatal("installStdinPipe second succeeded, want overwrite rejection")
+		panic("unreachable")
 	}
 	if err := c.writeStdin([]byte("hello")); err != nil {
 		t.Fatalf("writeStdin: %v", err)
+		panic("unreachable")
 	}
 	if got := first.String(); got != "hello" {
 		t.Fatalf("first pipe got %q, want hello", got)
@@ -56,6 +59,7 @@ func TestConvoIOReplaceStdinPipeClosesPrevious(t *testing.T) {
 	}
 	if err := c.writeStdin([]byte("next")); err != nil {
 		t.Fatalf("writeStdin: %v", err)
+		panic("unreachable")
 	}
 	if got := second.String(); got != "next" {
 		t.Fatalf("second pipe got %q, want next", got)
@@ -163,6 +167,7 @@ func TestConvoIOCloseStdinPipeDoesNotBlockBehindWrite(t *testing.T) {
 	case err := <-writeDone:
 		if err == nil {
 			t.Fatal("writeStdin succeeded, want error once its pipe was force-closed")
+			panic("unreachable")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("writeStdin did not unblock after closeStdinPipe")
@@ -196,6 +201,7 @@ func TestConvoIOWriteStdinSelfTimeout(t *testing.T) {
 	case err := <-writeDone:
 		if err == nil {
 			t.Fatal("writeStdin succeeded, want timeout error")
+			panic("unreachable")
 		}
 		if !strings.Contains(err.Error(), "timed out") {
 			t.Fatalf("writeStdin err = %v, want timed out", err)
@@ -231,6 +237,7 @@ func TestConvoIOForceClosePipeIgnoresStalePipe(t *testing.T) {
 	}
 	if err := c.writeStdin([]byte("still works")); err != nil {
 		t.Fatalf("writeStdin after stale forceClosePipe: %v", err)
+		panic("unreachable")
 	}
 	if got := newer.String(); got != "still works" {
 		t.Fatalf("newer pipe got %q, want %q", got, "still works")

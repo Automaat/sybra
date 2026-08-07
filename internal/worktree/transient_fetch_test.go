@@ -22,6 +22,7 @@ func writeFakeGitFailingPRHeadFetch(t *testing.T) {
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatalf("LookPath(git): %v", err)
+		panic("unreachable")
 	}
 	dir := t.TempDir()
 	script := fmt.Sprintf(`#!/bin/sh
@@ -41,6 +42,7 @@ exec %q "$@"
 `, realGit)
 	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
@@ -60,6 +62,7 @@ func TestPrepareForReview_TransientPRHeadFetchClassified(t *testing.T) {
 	tk, err := h.tasks.Create("review pr", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{
 		"project_id": h.proj.ID,
@@ -67,11 +70,13 @@ func TestPrepareForReview_TransientPRHeadFetchClassified(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	_, err = h.m.PrepareForReview(context.Background(), tk)
 	if err == nil {
 		t.Fatal("PrepareForReview: want error from failing PR-head fetch, got nil")
+		panic("unreachable")
 	}
 	if !errors.Is(err, ErrTransientFetch) {
 		t.Fatalf("PrepareForReview error = %v, want wrapped ErrTransientFetch", err)
@@ -91,15 +96,18 @@ func TestPrepareForFix_TransientPRHeadFetchClassified(t *testing.T) {
 	tk, err := h.tasks.Create("fix fork pr", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	_, err = h.m.PrepareForFix(context.Background(), tk, prNumber)
 	if err == nil {
 		t.Fatal("PrepareForFix: want error from failing PR-head fetch, got nil")
+		panic("unreachable")
 	}
 	if !errors.Is(err, ErrTransientFetch) {
 		t.Fatalf("PrepareForFix error = %v, want wrapped ErrTransientFetch", err)

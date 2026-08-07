@@ -37,6 +37,7 @@ func TestValidateContent(t *testing.T) {
 			err := validateContent(&tt.content)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("validateContent() err = %v, wantErr %v", err, tt.wantErr)
+				panic("unreachable")
 			}
 		})
 	}
@@ -50,6 +51,7 @@ func TestBuildPromptIncludesCommits(t *testing.T) {
 	})
 	if want := "fix(api): guard nil ptr"; !strings.Contains(prompt, want) {
 		t.Fatalf("prompt missing commit subject %q:\n%s", want, prompt)
+		panic("unreachable")
 	}
 	if want := "## Motivation"; !strings.Contains(prompt, want) {
 		t.Fatalf("prompt missing schema instructions %q:\n%s", want, prompt)

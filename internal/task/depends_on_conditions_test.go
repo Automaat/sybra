@@ -64,6 +64,7 @@ func TestApplyDependsOnConditionsField(t *testing.T) {
 			var m map[string]any
 			if err := json.Unmarshal([]byte(tt.body), &m); err != nil {
 				t.Fatalf("unmarshal fixture: %v", err)
+				panic("unreachable")
 			}
 
 			u, err := UpdateFromMap(m)
@@ -71,14 +72,17 @@ func TestApplyDependsOnConditionsField(t *testing.T) {
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("UpdateFromMap(%s) = %+v, want error", tt.body, u)
+					panic("unreachable")
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("UpdateFromMap(%s): %v", tt.body, err)
+				panic("unreachable")
 			}
 			if u.DependsOnConditions == nil {
 				t.Fatalf("DependsOnConditions not set")
+				panic("unreachable")
 			}
 			got := *u.DependsOnConditions
 			if len(got) != len(tt.want) {

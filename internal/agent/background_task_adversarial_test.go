@@ -33,6 +33,7 @@ func TestAdversarial_LiveBackgroundTaskAtResultDoesNotCompleteCleanly(t *testing
 		"\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}'\n"
 	if err := os.WriteFile(fakeClaude, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake claude: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -53,6 +54,7 @@ func TestAdversarial_LiveBackgroundTaskAtResultDoesNotCompleteCleanly(t *testing
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 
 	waitForAgentDone(t, ag, 5*time.Second)
@@ -87,6 +89,7 @@ func TestCheckLiveBackgroundTasksAtExit_IntentionalStopIsClean(t *testing.T) {
 	live.MarkStopped()
 	if err := checkLiveBackgroundTasksAtExit(m, live); err != nil {
 		t.Fatalf("live task, intentionally stopped: got %v, want nil", err)
+		panic("unreachable")
 	}
 }
 

@@ -63,6 +63,7 @@ func TestReduceAssignsDistinctEffectIDs(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(effects) != 2 {
 		t.Fatalf("len(effects) = %d, want 2", len(effects))
@@ -109,6 +110,7 @@ func TestReduceOrdersEffectIDsAcrossSteps(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	requireKinds(t, effects, EffectSetTaskStatus, EffectRecordStep, EffectSetTaskStatus, EffectSetWorkflowState, EffectWaitHuman)
 	if got := effects[1].ID.StepID; got != "mark-review" {

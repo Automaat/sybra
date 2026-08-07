@@ -22,6 +22,7 @@ func TestStepRegistryExhaustive(t *testing.T) {
 	src, err := os.ReadFile(modelPath)
 	if err != nil {
 		t.Fatalf("read %s: %v", modelPath, err)
+		panic("unreachable")
 	}
 
 	matches := stepTypeConstPattern.FindAllStringSubmatch(string(src), -1)
@@ -39,9 +40,11 @@ func TestStepRegistryExhaustive(t *testing.T) {
 	for stepType, spec := range stepRegistry {
 		if spec.async == nil && spec.sync == nil {
 			t.Fatalf("stepRegistry[%q] has no handler", stepType)
+			panic("unreachable")
 		}
 		if spec.async != nil && spec.sync != nil {
 			t.Fatalf("stepRegistry[%q] has both async and sync handlers", stepType)
+			panic("unreachable")
 		}
 		registryTypes = append(registryTypes, stepType)
 	}
@@ -80,6 +83,7 @@ func TestStepRegistrySyncHandlerDispatchesFromRegistryOnly(t *testing.T) {
 	out, err := e.execSyncStep(probeTaskID, step, &Execution{}, TemplateContext{}, TaskInfo{})
 	if err != nil {
 		t.Fatalf("execSyncStep: %v", err)
+		panic("unreachable")
 	}
 	if out.StepID != step.ID || out.Status != "completed" || out.Output != probeTaskID {
 		t.Fatalf("unexpected output: %+v", out)
@@ -95,6 +99,7 @@ func TestEngineAdvanceHasNoHandlerTagDispatchSwitches(t *testing.T) {
 	src, err := os.ReadFile(enginePath)
 	if err != nil {
 		t.Fatalf("read %s: %v", enginePath, err)
+		panic("unreachable")
 	}
 
 	text := string(src)

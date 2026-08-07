@@ -96,6 +96,7 @@ func TestBuiltinTestingTask_SkillOwnsTestProcedure(t *testing.T) {
 	data, err := skills.FS.ReadFile("data/sybra-test.md")
 	if err != nil {
 		t.Fatalf("read sybra-test skill: %v", err)
+		panic("unreachable")
 	}
 	flat := flatten(string(data))
 	for _, want := range []string{

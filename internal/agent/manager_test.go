@@ -93,6 +93,7 @@ func startTestAgent(t *testing.T, m *Manager, taskID, title, mode, prompt string
 	dir, err := os.MkdirTemp("", "sybra-agent-test-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	a, err := m.StartAgent(taskID, title, mode, prompt, dir, allowedTools)
@@ -122,6 +123,7 @@ func TestNewManager(t *testing.T) {
 	m, _ := newTestManager(t)
 	if m == nil {
 		t.Fatal("manager is nil")
+		panic("unreachable")
 	}
 	if len(m.ListAgents()) != 0 {
 		t.Error("expected empty agent list")
@@ -134,6 +136,7 @@ func TestNewManagerRejectsInvalidDefaultProvider(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected invalid provider error")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "unknown agent provider") {
 		t.Fatalf("unexpected error: %v", err)
@@ -154,6 +157,7 @@ func TestReplaceRuntimeConfigRejectsInvalidProvider(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected invalid provider error")
+		panic("unreachable")
 	}
 	if got := m.DefaultProvider(); got != "codex" {
 		t.Fatalf("DefaultProvider = %q, want codex", got)
@@ -168,6 +172,7 @@ func TestStartAgentUnknownMode(t *testing.T) {
 	_, err := startTestAgent(t, m, "task-1", "Test Task", "invalid", "prompt", nil)
 	if err == nil {
 		t.Fatal("expected error for unknown mode")
+		panic("unreachable")
 	}
 }
 
@@ -178,6 +183,7 @@ func TestStartAgentHeadless(t *testing.T) {
 	a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test prompt", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 
 	if a.ID == "" {
@@ -216,6 +222,7 @@ func TestRunConfigResumeSessionID(t *testing.T) {
 	dir, err := os.MkdirTemp("", "sybra-agent-resume-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
@@ -229,6 +236,7 @@ func TestRunConfigResumeSessionID(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 	if ag.GetSessionID() != "ses-resume-abc" {
 		t.Errorf("SessionID = %q, want %q", ag.GetSessionID(), "ses-resume-abc")
@@ -241,11 +249,13 @@ func TestGetAgent(t *testing.T) {
 	a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got, err := m.GetAgent(a.ID)
 	if err != nil {
 		t.Fatalf("GetAgent: %v", err)
+		panic("unreachable")
 	}
 	if got.ID != a.ID {
 		t.Errorf("ID = %q, want %q", got.ID, a.ID)
@@ -257,6 +267,7 @@ func TestGetAgentNotFound(t *testing.T) {
 	_, err := m.GetAgent("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent agent")
+		panic("unreachable")
 	}
 }
 
@@ -266,15 +277,18 @@ func TestStopAgent(t *testing.T) {
 	a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := m.StopAgent(a.ID); err != nil {
 		t.Fatalf("StopAgent: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := m.GetAgent(a.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.GetState() != StateStopped {
 		t.Errorf("State = %q, want %q", got.GetState(), StateStopped)
@@ -311,6 +325,7 @@ func TestStopAgent_IdempotentAcrossTerminalPaths(t *testing.T) {
 				t.Helper()
 				if err := m.StopAgent(a.ID); err != nil {
 					t.Fatalf("StopAgent: %v", err)
+					panic("unreachable")
 				}
 			},
 		},
@@ -321,6 +336,7 @@ func TestStopAgent_IdempotentAcrossTerminalPaths(t *testing.T) {
 				a.AppendOutput(StreamEvent{Type: "result", Subtype: "success"})
 				if err := m.StopCompletedAgent(a.ID); err != nil {
 					t.Fatalf("StopCompletedAgent: %v", err)
+					panic("unreachable")
 				}
 			},
 		},
@@ -331,6 +347,7 @@ func TestStopAgent_IdempotentAcrossTerminalPaths(t *testing.T) {
 				a.AppendOutput(StreamEvent{Type: "result", Subtype: "error"})
 				if err := m.StopAgent(a.ID); err != nil {
 					t.Fatalf("StopAgent: %v", err)
+					panic("unreachable")
 				}
 			},
 		},
@@ -341,6 +358,7 @@ func TestStopAgent_IdempotentAcrossTerminalPaths(t *testing.T) {
 				// StopAgent is the cancellation mechanism (cancels a.cancel()).
 				if err := m.StopAgent(a.ID); err != nil {
 					t.Fatalf("StopAgent: %v", err)
+					panic("unreachable")
 				}
 			},
 		},
@@ -360,6 +378,7 @@ func TestStopAgent_IdempotentAcrossTerminalPaths(t *testing.T) {
 			a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			tt.setup(t, m, a)
@@ -368,6 +387,7 @@ func TestStopAgent_IdempotentAcrossTerminalPaths(t *testing.T) {
 			for i := range 3 {
 				if err := m.StopAgent(a.ID); err != nil {
 					t.Fatalf("repeat StopAgent[%d]: %v", i, err)
+					panic("unreachable")
 				}
 			}
 
@@ -391,11 +411,13 @@ func TestStopCompletedAgent_MarksCompletedByResult(t *testing.T) {
 	a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	a.AppendOutput(StreamEvent{Type: "result", Subtype: "success"})
 
 	if err := m.StopCompletedAgent(a.ID); err != nil {
 		t.Fatalf("StopCompletedAgent: %v", err)
+		panic("unreachable")
 	}
 
 	if !a.wasCompletedByResult() {
@@ -410,6 +432,7 @@ func TestStopCompletedAgent_NotFound(t *testing.T) {
 	m, _ := newTestManager(t)
 	if err := m.StopCompletedAgent("nonexistent"); err == nil {
 		t.Fatal("expected error for nonexistent agent")
+		panic("unreachable")
 	}
 }
 
@@ -490,10 +513,12 @@ func TestStopHeadlessDoesNotCallOnComplete(t *testing.T) {
 	a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := m.StopAgent(a.ID); err != nil {
 		t.Fatalf("StopAgent: %v", err)
+		panic("unreachable")
 	}
 
 	// StopAgent must not call onComplete for headless — the goroutine does.
@@ -581,6 +606,7 @@ func TestStopAgentNotFound(t *testing.T) {
 	err := m.StopAgent("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent agent")
+		panic("unreachable")
 	}
 }
 
@@ -591,6 +617,7 @@ func TestListAgentsMultiple(t *testing.T) {
 		_, err := startTestAgent(t, m, "task-"+string(rune('1'+i)), "Test Task", "headless", "test", nil)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
@@ -625,6 +652,7 @@ func TestListLiveAgents_ExcludesStopped(t *testing.T) {
 
 	if err := m.StopAgent(stopped.ID); err != nil {
 		t.Fatalf("StopAgent: %v", err)
+		panic("unreachable")
 	}
 
 	if got := len(m.ListAgents()); got != 2 {
@@ -643,6 +671,7 @@ func TestAgentOutput(t *testing.T) {
 	a, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Initially empty
@@ -669,6 +698,7 @@ func TestStopInteractiveAgent(t *testing.T) {
 
 	if err := m.StopAgent(a.ID); err != nil {
 		t.Fatalf("StopAgent: %v", err)
+		panic("unreachable")
 	}
 
 	if st := a.GetState(); st != StateStopped {
@@ -903,6 +933,7 @@ func TestTryClaimDispatch(t *testing.T) {
 	claim, ok := m.TryClaimDispatch("t1")
 	if !ok || claim == nil {
 		t.Fatal("first claim should succeed")
+		panic("unreachable")
 	}
 	if _, ok := m.TryClaimDispatch("t1"); ok {
 		t.Error("second claim while held must fail (serializes dispatch)")
@@ -1219,6 +1250,7 @@ func TestBuildCommand(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
+				panic("unreachable")
 			}
 			if got != tt.wantCmd {
 				t.Errorf("cmd = %q, want %q", got, tt.wantCmd)
@@ -1294,6 +1326,7 @@ func TestCodexSandboxDisabledViaEnv(t *testing.T) {
 			got, err := m.buildCommand(tt.cfg)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
+				panic("unreachable")
 			}
 			if got != tt.wantCmd {
 				t.Errorf("cmd = %q, want %q", got, tt.wantCmd)
@@ -1309,6 +1342,7 @@ func TestShutdown(t *testing.T) {
 		_, err := startTestAgent(t, m, "task-1", "Test Task", "headless", "test", nil)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
@@ -1447,9 +1481,11 @@ func TestFindRunningAgentForTask_ByState(t *testing.T) {
 
 			if tt.wantLive && got == nil {
 				t.Fatalf("FindRunningAgentForTask returned nil for %s agent, want the agent", tt.state)
+				panic("unreachable")
 			}
 			if !tt.wantLive && got != nil {
 				t.Fatalf("FindRunningAgentForTask returned agent for %s state, want nil", tt.state)
+				panic("unreachable")
 			}
 		})
 	}
@@ -1514,6 +1550,7 @@ func TestSendPromptToAgent_RejectsStoppedAgent(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error sending to stopped agent")
+		panic("unreachable")
 	}
 }
 
@@ -1531,6 +1568,7 @@ func TestSendPromptToAgent_RejectsAgentWithoutTransport(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error when agent has no transport")
+		panic("unreachable")
 	}
 }
 
@@ -1545,12 +1583,14 @@ func TestSendMessage_HeadlessQueuesWhenRunning(t *testing.T) {
 	a := &Agent{ID: "h1", TaskID: "task-1", Mode: "headless", State: StateRunning}
 	if err := a.convo.installStdinPipe(w); err != nil {
 		t.Fatalf("installStdinPipe: %v", err)
+		panic("unreachable")
 	}
 	putAgent(t, m, a)
 	t.Cleanup(func() { _ = r.Close() })
 
 	if err := m.SendMessage(a.ID, "steer text"); err != nil {
 		t.Fatalf("SendMessage: %v", err)
+		panic("unreachable")
 	}
 
 	if got := a.PendingPromptCount(); got != 1 {
@@ -1579,17 +1619,20 @@ func TestSendMessage_HeadlessPersistsPendingPrompt(t *testing.T) {
 	a.setStdinPath(filepath.Join(regDir, "h-persist.stdin"))
 	if err := a.convo.installStdinPipe(w); err != nil {
 		t.Fatalf("installStdinPipe: %v", err)
+		panic("unreachable")
 	}
 	putAgent(t, m, a)
 	t.Cleanup(func() { _ = r.Close() })
 
 	if err := m.SendMessage(a.ID, "survive restart"); err != nil {
 		t.Fatalf("SendMessage: %v", err)
+		panic("unreachable")
 	}
 
 	recs, err := m.registry().List()
 	if err != nil {
 		t.Fatalf("registry List: %v", err)
+		panic("unreachable")
 	}
 	if len(recs) != 1 {
 		t.Fatalf("registry records = %d, want 1", len(recs))
@@ -1608,6 +1651,7 @@ func TestSendMessage_HeadlessRejectsQueueOverflow(t *testing.T) {
 	a := &Agent{ID: "h-overflow", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
 	if err := a.convo.installStdinPipe(w); err != nil {
 		t.Fatalf("installStdinPipe: %v", err)
+		panic("unreachable")
 	}
 	for range MaxPendingHeadlessSteerPrompts {
 		a.EnqueuePrompt("queued")
@@ -1618,6 +1662,7 @@ func TestSendMessage_HeadlessRejectsQueueOverflow(t *testing.T) {
 	err := m.SendMessage(a.ID, "one too many")
 	if err == nil {
 		t.Fatal("expected queue overflow error")
+		panic("unreachable")
 	}
 	assertConflictClientError(t, err)
 	if got := a.PendingPromptCount(); got != MaxPendingHeadlessSteerPrompts {
@@ -1635,6 +1680,7 @@ func TestSendMessage_HeadlessRejectsWhenFinalizing(t *testing.T) {
 	a := &Agent{ID: "h2", TaskID: "task-1", Mode: "headless", State: StateRunning}
 	if err := a.convo.installStdinPipe(w); err != nil {
 		t.Fatalf("installStdinPipe: %v", err)
+		panic("unreachable")
 	}
 	putAgent(t, m, a)
 	t.Cleanup(func() { _ = r.Close() })
@@ -1644,6 +1690,7 @@ func TestSendMessage_HeadlessRejectsWhenFinalizing(t *testing.T) {
 	err := m.SendMessage(a.ID, "too late")
 	if err == nil {
 		t.Fatal("expected error sending to a finalizing headless agent")
+		panic("unreachable")
 	}
 	assertConflictClientError(t, err)
 	if got := a.PendingPromptCount(); got != 0 {
@@ -1660,6 +1707,7 @@ func TestSendMessage_HeadlessRejectsAfterEmptyBoundary(t *testing.T) {
 	a := &Agent{ID: "h-empty-boundary", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
 	if err := a.convo.installStdinPipe(w); err != nil {
 		t.Fatalf("installStdinPipe: %v", err)
+		panic("unreachable")
 	}
 	putAgent(t, m, a)
 	t.Cleanup(func() { _ = r.Close() })
@@ -1670,6 +1718,7 @@ func TestSendMessage_HeadlessRejectsAfterEmptyBoundary(t *testing.T) {
 	err := m.SendMessage(a.ID, "too late")
 	if err == nil {
 		t.Fatal("expected finalizing conflict after empty terminal boundary")
+		panic("unreachable")
 	}
 	assertConflictClientError(t, err)
 	if got := a.PendingPromptCount(); got != 0 {
@@ -1707,6 +1756,7 @@ func TestSendMessage_RejectsNoTransport(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error when headless agent has no stdin pipe")
+		panic("unreachable")
 	}
 	assertConflictClientError(t, err)
 }

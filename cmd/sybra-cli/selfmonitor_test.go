@@ -23,9 +23,11 @@ func setupStoreWithHealth(t *testing.T, findings []health.Finding) string {
 	data, err := json.Marshal(rep)
 	if err != nil {
 		t.Fatalf("marshal health report: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(home, "health-report.json"), data, 0o644); err != nil {
 		t.Fatalf("write health report: %v", err)
+		panic("unreachable")
 	}
 	return home
 }
@@ -42,6 +44,7 @@ func TestSelfmonitorScanPersistedReport(t *testing.T) {
 	home := setupStore(t)
 	if err := os.MkdirAll(filepath.Join(home, "selfmonitor"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	rep := selfmonitor.Report{
 		SchemaVersion: selfmonitor.ReportSchemaVersion,
@@ -50,9 +53,11 @@ func TestSelfmonitorScanPersistedReport(t *testing.T) {
 	data, err := json.Marshal(rep)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(home, "selfmonitor", "last-report.json"), data, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
+		panic("unreachable")
 	}
 
 	code, out := runCLI(t, "--json", "selfmonitor", "scan")
@@ -62,6 +67,7 @@ func TestSelfmonitorScanPersistedReport(t *testing.T) {
 	var got selfmonitor.Report
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 	if got.HealthScore != health.ScoreCritical {
 		t.Errorf("HealthScore = %q, want %q", got.HealthScore, health.ScoreCritical)
@@ -84,6 +90,7 @@ func TestSelfmonitorInvestigateWithHealthReport(t *testing.T) {
 	var rep selfmonitor.Report
 	if err := json.Unmarshal([]byte(out), &rep); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 	if len(rep.Findings) != 1 {
 		t.Fatalf("Findings = %d, want 1", len(rep.Findings))

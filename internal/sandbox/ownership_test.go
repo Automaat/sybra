@@ -27,6 +27,7 @@ func TestOwnerRecordRoundTrip(t *testing.T) {
 
 	if err := writeOwnerRecord(dir); err != nil {
 		t.Fatalf("writeOwnerRecord: %v", err)
+		panic("unreachable")
 	}
 
 	rec, ok := readOwnerRecord(dir)
@@ -43,6 +44,7 @@ func TestReadOwnerRecordMalformed(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ownerFileName), []byte("not json"), 0o600); err != nil {
 		t.Fatalf("write malformed record: %v", err)
+		panic("unreachable")
 	}
 	if _, ok := readOwnerRecord(dir); ok {
 		t.Fatal("readOwnerRecord on malformed JSON: ok = true, want false")
@@ -54,13 +56,16 @@ func TestMismatchedOwnership(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "f"), []byte("data"), 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
+		panic("unreachable")
 	}
 	sub := filepath.Join(dir, "sub")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatalf("mkdir sub: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(sub, "g"), []byte("data"), 0o600); err != nil {
 		t.Fatalf("write nested file: %v", err)
+		panic("unreachable")
 	}
 
 	actualOwner := ownerRecord{UID: os.Getuid(), GID: os.Getgid()}
@@ -112,18 +117,22 @@ func TestDirSize(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "a"), make([]byte, 10), 0o600); err != nil {
 		t.Fatalf("write a: %v", err)
+		panic("unreachable")
 	}
 	sub := filepath.Join(dir, "sub")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatalf("mkdir sub: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(sub, "b"), make([]byte, 25), 0o600); err != nil {
 		t.Fatalf("write b: %v", err)
+		panic("unreachable")
 	}
 
 	size, err := dirSize(dir)
 	if err != nil {
 		t.Fatalf("dirSize: %v", err)
+		panic("unreachable")
 	}
 	if size != 35 {
 		t.Errorf("dirSize = %d, want 35", size)
@@ -149,6 +158,7 @@ func TestQuarantinePersistence(t *testing.T) {
 	}
 	if err := m.saveQuarantine(entry); err != nil {
 		t.Fatalf("saveQuarantine: %v", err)
+		panic("unreachable")
 	}
 
 	got, ok := m.loadQuarantine("task-x")

@@ -154,6 +154,7 @@ func TestClassifyCIFlakiness(t *testing.T) {
 			allFlaky, checks, err := classifyCIFlakinessWith(e, "o/r", "sha123", tt.threshold)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
+				panic("unreachable")
 			}
 			if allFlaky != tt.wantFlaky {
 				t.Errorf("allFlaky = %v, want %v", allFlaky, tt.wantFlaky)
@@ -182,6 +183,7 @@ func TestClassifyCIFlakiness_FetchError(t *testing.T) {
 	allFlaky, checks, err := classifyCIFlakinessWith(e, "o/r", "sha123", 0.75)
 	if err == nil {
 		t.Fatal("want error on fetch failure")
+		panic("unreachable")
 	}
 	if allFlaky {
 		t.Error("allFlaky should be false on fetch error (fail closed)")

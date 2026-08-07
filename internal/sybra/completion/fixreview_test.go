@@ -29,11 +29,13 @@ func TestOnAgentComplete_EmptyTaskID_NoCrash(t *testing.T) {
 	dir, err := os.MkdirTemp("", "sybra-test-tasks-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := discardLogger()
@@ -45,10 +47,12 @@ func TestOnAgentComplete_EmptyTaskID_NoCrash(t *testing.T) {
 	other, err := tasks.Create("Other task", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	otherStat, err := os.Stat(other.FilePath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ag := &agent.Agent{
@@ -70,6 +74,7 @@ func TestOnAgentComplete_EmptyTaskID_NoCrash(t *testing.T) {
 	otherStat2, err := os.Stat(other.FilePath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !otherStat.ModTime().Equal(otherStat2.ModTime()) {
 		t.Errorf("unrelated task file was rewritten: mtime %v -> %v", otherStat.ModTime(), otherStat2.ModTime())
@@ -81,6 +86,7 @@ func setupFixReviewPushTest(t *testing.T) (h *Handler, taskMgr *task.Manager, ba
 	home, err := os.MkdirTemp("", "sybra-fix-review-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
 
@@ -88,21 +94,25 @@ func setupFixReviewPushTest(t *testing.T) (h *Handler, taskMgr *task.Manager, ba
 	taskStore, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr = task.NewManager(taskStore, nil)
 
 	projStore, err := project.NewStore(filepath.Join(home, "projects"), filepath.Join(home, "clones"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	src = initFixReviewSourceRepo(t)
 	barePath = filepath.Join(home, "clones", "testowner", "testrepo.git")
 	if err := os.MkdirAll(filepath.Dir(barePath), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := project.CloneBare(context.Background(), src, barePath); err != nil {
 		t.Fatalf("clone bare: %v", err)
+		panic("unreachable")
 	}
 
 	projYAML := `id: testowner/testrepo
@@ -118,6 +128,7 @@ updated_at: 2025-01-01T00:00:00Z
 	projFile := filepath.Join(home, "projects", "testowner--testrepo.yaml")
 	if err := os.WriteFile(projFile, []byte(projYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	logger := discardLogger()
@@ -140,6 +151,7 @@ func initFixReviewSourceRepo(t *testing.T) string {
 	dir := filepath.Join(t.TempDir(), "src")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"init", dir},
@@ -149,10 +161,12 @@ func initFixReviewSourceRepo(t *testing.T) string {
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"-C", dir, "add", "."},
@@ -160,6 +174,7 @@ func initFixReviewSourceRepo(t *testing.T) string {
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	return dir
@@ -170,11 +185,13 @@ func TestOnAgentComplete_FixReviewPushesBranch(t *testing.T) {
 	branch, err := project.DefaultBranch(context.Background(), barePath)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
+		panic("unreachable")
 	}
 
 	tk, err := taskMgr.Create("fix pr", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	updated, err := taskMgr.Update(tk.ID, task.Update{
 		ProjectID: task.Ptr("testowner/testrepo"),
@@ -183,12 +200,14 @@ func TestOnAgentComplete_FixReviewPushesBranch(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tk = updated
 
 	wtPath, err := h.worktrees.PrepareForFix(context.Background(), tk, 42)
 	if err != nil {
 		t.Fatalf("PrepareForFix: %v", err)
+		panic("unreachable")
 	}
 
 	for _, args := range [][]string{
@@ -197,10 +216,12 @@ func TestOnAgentComplete_FixReviewPushesBranch(t *testing.T) {
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("# updated\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"-C", wtPath, "add", "."},
@@ -208,11 +229,13 @@ func TestOnAgentComplete_FixReviewPushesBranch(t *testing.T) {
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	localHead, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatalf("local head: %v", err)
+		panic("unreachable")
 	}
 
 	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
@@ -236,6 +259,7 @@ func TestOnAgentComplete_FixReviewPushesBranch(t *testing.T) {
 	remoteHead, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", barePath, "rev-parse", "refs/heads/"+branch).Output()
 	if err != nil {
 		t.Fatalf("remote head: %v", err)
+		panic("unreachable")
 	}
 	if got, want := strings.TrimSpace(string(remoteHead)), strings.TrimSpace(string(localHead)); got != want {
 		t.Fatalf("remote head = %s, want %s", got, want)
@@ -256,6 +280,7 @@ func TestOnAgentComplete_FixReviewHoldParksForHuman(t *testing.T) {
 	tk, err := taskMgr.Create("fix pr", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tk, err = taskMgr.Update(tk.ID, task.Update{
 		ProjectID: task.Ptr("testowner/testrepo"),
@@ -264,11 +289,13 @@ func TestOnAgentComplete_FixReviewHoldParksForHuman(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.worktrees.PrepareForFix(context.Background(), tk, 42)
 	if err != nil {
 		t.Fatalf("PrepareForFix: %v", err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"-C", wtPath, "config", "user.email", "test@test.com"},
@@ -276,10 +303,12 @@ func TestOnAgentComplete_FixReviewHoldParksForHuman(t *testing.T) {
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("# updated\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"-C", wtPath, "add", "."},
@@ -287,6 +316,7 @@ func TestOnAgentComplete_FixReviewHoldParksForHuman(t *testing.T) {
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 
@@ -308,6 +338,7 @@ func TestOnAgentComplete_FixReviewHoldParksForHuman(t *testing.T) {
 	got, err := taskMgr.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
@@ -326,17 +357,20 @@ func setupDivergedFixReviewPush(t *testing.T) (h *Handler, taskMgr *task.Manager
 	branch, err := project.DefaultBranch(context.Background(), barePath)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
+		panic("unreachable")
 	}
 	// src has its default branch checked out; without this, any push to it
 	// (the seed push below and the fix-review push under test) is rejected
 	// with "refusing to update checked out branch" regardless of divergence.
 	if out, err := exec.Command("git", "-C", src, "config", "receive.denyCurrentBranch", "updateInstead").CombinedOutput(); err != nil {
 		t.Fatalf("config denyCurrentBranch: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	tk, err = taskMgr.Create("fix pr", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tk, err = taskMgr.Update(tk.ID, task.Update{
 		ProjectID: task.Ptr("testowner/testrepo"),
@@ -345,11 +379,13 @@ func setupDivergedFixReviewPush(t *testing.T) (h *Handler, taskMgr *task.Manager
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.worktrees.PrepareForFix(context.Background(), tk, 42)
 	if err != nil {
 		t.Fatalf("PrepareForFix: %v", err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"-C", wtPath, "config", "user.email", "test@test.com"},
@@ -358,6 +394,7 @@ func setupDivergedFixReviewPush(t *testing.T) (h *Handler, taskMgr *task.Manager
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 
@@ -365,6 +402,7 @@ func setupDivergedFixReviewPush(t *testing.T) (h *Handler, taskMgr *task.Manager
 		t.Helper()
 		if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		for _, args := range [][]string{
 			{"-C", wtPath, "add", "."},
@@ -372,12 +410,14 @@ func setupDivergedFixReviewPush(t *testing.T) (h *Handler, taskMgr *task.Manager
 		} {
 			if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 				t.Fatalf("git %v: %v: %s", args, err, out)
+				panic("unreachable")
 			}
 		}
 	}
 	gitCommit("one")
 	if err := project.PushSync(context.Background(), wtPath, branch); err != nil {
 		t.Fatalf("PushSync seed: %v", err)
+		panic("unreachable")
 	}
 
 	// Rewrite history locally so HEAD diverges from the remote tracking ref
@@ -385,6 +425,7 @@ func setupDivergedFixReviewPush(t *testing.T) (h *Handler, taskMgr *task.Manager
 	// TestPushSync_DivergenceReturnsErrorNoForce in internal/project.
 	if out, err := exec.Command("git", "-C", wtPath, "reset", "--hard", "HEAD~1").CombinedOutput(); err != nil {
 		t.Fatalf("reset: %v: %s", err, out)
+		panic("unreachable")
 	}
 	gitCommit("two-prime")
 
@@ -427,6 +468,7 @@ func TestOnAgentComplete_FixReviewPushDivergedRecoversViaAgent(t *testing.T) {
 	got, err := taskMgr.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status == task.StatusHumanRequired {
 		t.Fatalf("status = %q, want unchanged (recovery handled it, not human-required)", got.Status)
@@ -452,6 +494,7 @@ func TestOnAgentComplete_FixReviewPushDivergedEscalatesToHuman(t *testing.T) {
 	got, err := taskMgr.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)

@@ -36,23 +36,28 @@ func TestHandleAgentComplete_WaitsForRunAgentRoutePublication(t *testing.T) {
 	ti, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if ti.Workflow == nil || ti.Workflow.CurrentStep != "triage" {
 		t.Fatalf("current step = %v, want triage while StartAgent is still blocked", ti.Workflow)
+		panic("unreachable")
 	}
 
 	close(agents.startGate)
 	if err := <-startDone; err != nil {
 		t.Fatalf("StartWorkflow: %v", err)
+		panic("unreachable")
 	}
 	<-completeDone
 
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.CurrentStep == "triage" {
 		t.Fatalf("workflow did not advance after completion: %+v", got.Workflow)
+		panic("unreachable")
 	}
 }
 
@@ -82,15 +87,18 @@ func TestHandleAgentComplete_AfterRoutePersistFailureStillAdvances(t *testing.T)
 	close(agents.startGate)
 	if err := <-startDone; err != nil {
 		t.Fatalf("StartWorkflow: %v", err)
+		panic("unreachable")
 	}
 	<-completeDone
 
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.CurrentStep == "triage" {
 		t.Fatalf("workflow did not advance after deferred route publication: %+v", got.Workflow)
+		panic("unreachable")
 	}
 	if _, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "agent-1"); tracked {
 		t.Fatal("agent route still tracked after completion")
@@ -105,10 +113,12 @@ func TestPersistStartedAgent_ClearsStalePendingRouteOnSuccessfulPersist(t *testi
 	def, err := store.Get("test-simple")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	step := def.StepByID("implement")
 	if step == nil {
 		t.Fatal("implement step missing")
+		panic("unreachable")
 	}
 
 	tasks := newMemTasks()
@@ -124,6 +134,7 @@ func TestPersistStartedAgent_ClearsStalePendingRouteOnSuccessfulPersist(t *testi
 
 	if err := engine.persistStartedAgent("t1", step, wfExec, "agent-1", "claude", "", "", "", "", ""); err != nil {
 		t.Fatalf("persistStartedAgent: %v", err)
+		panic("unreachable")
 	}
 	if stepID, tracked := lookupWorkflowAgentRoute(t, engine, "t1", "agent-1"); !tracked || stepID != "implement" {
 		t.Fatalf("workflow route = (%q,%v), want implement,true", stepID, tracked)

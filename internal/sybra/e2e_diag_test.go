@@ -22,9 +22,11 @@ func TestE2ELogBuffer_KeepsTheTailNotTheHead(t *testing.T) {
 	// The head is startup noise; the tail is what the app did before it hung.
 	if _, err := b.Write([]byte(strings.Repeat("A", e2eLogTailBytes))); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := b.Write([]byte("THE-INTERESTING-PART")); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got := b.String()
@@ -42,9 +44,11 @@ func TestE2ELogBuffer_ShortWritesSurviveIntact(t *testing.T) {
 	b := &e2eLogBuffer{}
 	if _, err := b.Write([]byte("agent.start\n")); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := b.Write([]byte("workflow.advance\n")); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got, want := b.String(), "agent.start\nworkflow.advance\n"; got != want {
 		t.Errorf("String() = %q, want %q", got, want)
@@ -161,6 +165,7 @@ func TestE2ELogBuffer_NeverAllocatesAboveTheCap(t *testing.T) {
 	n, err := b.Write(huge)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if n != len(huge) {
 		t.Errorf("Write returned %d, want %d: io.Writer must report the caller's length", n, len(huge))
@@ -172,6 +177,7 @@ func TestE2ELogBuffer_NeverAllocatesAboveTheCap(t *testing.T) {
 	// And the tail it keeps is still the newest bytes.
 	if _, err := b.Write([]byte("NEWEST")); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !strings.HasSuffix(b.String(), "NEWEST") {
 		t.Error("the newest bytes were dropped")

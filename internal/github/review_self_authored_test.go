@@ -62,6 +62,7 @@ func TestFetchReviewsWith_KeepsSelfAuthoredBotPRDropsThirdParty(t *testing.T) {
 	summary, err := fetchReviewsWith(fe)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if len(summary.CreatedByMe) != 1 {
 		t.Fatalf("CreatedByMe len = %d, want 1 (self-authored app-bot PR kept, third-party renovate bot dropped)", len(summary.CreatedByMe))

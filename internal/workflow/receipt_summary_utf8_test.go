@@ -48,6 +48,7 @@ func TestReceiptSummaryMarshalsAsPlainYAML(t *testing.T) {
 			data, err := yaml.Marshal(map[string]string{"status_reason": summary})
 			if err != nil {
 				t.Fatalf("yaml.Marshal: %v", err)
+				panic("unreachable")
 			}
 			if strings.Contains(string(data), "!!binary") {
 				t.Fatalf("receipt summary marshalled as a binary block:\n%s", data)

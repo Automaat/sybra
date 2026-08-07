@@ -65,11 +65,13 @@ func TestValidateResolvedConfig_ClassReservations(t *testing.T) {
 			if c.wantOK {
 				if err != nil {
 					t.Fatalf("ValidateResolvedConfig() err = %v, want nil", err)
+					panic("unreachable")
 				}
 				return
 			}
 			if err == nil {
 				t.Fatalf("ValidateResolvedConfig() err = nil, want error containing %q", c.wantMsg)
+				panic("unreachable")
 			}
 			if msgs := ValidationMessages(err); !containsMsg(msgs, c.wantMsg) {
 				t.Fatalf("messages = %v, want one containing %q", msgs, c.wantMsg)

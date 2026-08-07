@@ -22,11 +22,13 @@ func TestNew(t *testing.T) {
 	logger, _, cleanup, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer cleanup()
 
 	if logger == nil {
 		t.Fatal("logger is nil")
+		panic("unreachable")
 	}
 
 	// Verify log dir was created
@@ -41,6 +43,7 @@ func TestNew(t *testing.T) {
 	info, err := os.Stat(logFile)
 	if err != nil {
 		t.Fatalf("log file not created: %v", err)
+		panic("unreachable")
 	}
 	if info.Size() == 0 {
 		t.Error("log file is empty after writing")
@@ -61,6 +64,7 @@ func TestNewDefaultLimits(t *testing.T) {
 	logger, _, cleanup, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer cleanup()
 
@@ -69,6 +73,7 @@ func TestNewDefaultLimits(t *testing.T) {
 	info, err := os.Stat(filepath.Join(dir, "sybra.log"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if info.Size() == 0 {
 		t.Error("debug message not written")
@@ -87,6 +92,7 @@ func TestNewInvalidDir(t *testing.T) {
 	_, _, _, err := New(cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid dir")
+		panic("unreachable")
 	}
 }
 
@@ -95,6 +101,7 @@ func TestNewRotatingWriterInvalidPath(t *testing.T) {
 	_, err := NewRotatingWriter("/nonexistent/dir/test.log", 100, 3)
 	if err == nil {
 		t.Fatal("expected error for invalid path")
+		panic("unreachable")
 	}
 }
 
@@ -103,5 +110,6 @@ func TestAgentOutputFileInvalidDir(t *testing.T) {
 	_, err := NewAgentOutputFile("/dev/null/impossible", "test-id")
 	if err == nil {
 		t.Fatal("expected error for invalid dir")
+		panic("unreachable")
 	}
 }

@@ -213,6 +213,7 @@ func TestApplyABVariant_CanaryFailoverIndependentOfAssignment(t *testing.T) {
 	resolved, err := m.gateProvider(cfg)
 	if err != nil {
 		t.Fatalf("gateProvider: unexpected err: %v", err)
+		panic("unreachable")
 	}
 	if resolved != "codex" {
 		t.Fatalf("gateProvider resolved = %q, want codex (failover from unhealthy claude)", resolved)

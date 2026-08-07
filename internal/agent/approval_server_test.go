@@ -21,6 +21,7 @@ func TestNewApprovalServer_PinnedPort(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("probe listen: %v", err)
+		panic("unreachable")
 	}
 	port := l.Addr().(*net.TCPAddr).Port
 	_ = l.Close()
@@ -28,6 +29,7 @@ func TestNewApprovalServer_PinnedPort(t *testing.T) {
 	srv, err := NewApprovalServer(context.Background(), func(_ string, _ any) {}, discardLogger(), port)
 	if err != nil {
 		t.Fatalf("NewApprovalServer pinned: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
 	if !strings.HasSuffix(srv.Addr(), ":"+strconv.Itoa(port)) {
@@ -37,6 +39,7 @@ func TestNewApprovalServer_PinnedPort(t *testing.T) {
 	rnd, err := NewApprovalServer(context.Background(), func(_ string, _ any) {}, discardLogger(), 0)
 	if err != nil {
 		t.Fatalf("NewApprovalServer random: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = rnd.Shutdown(context.Background()) })
 	if rnd.Addr() == "" {
@@ -49,6 +52,7 @@ func newTestApprovalServer(t *testing.T) *ApprovalServer {
 	srv, err := NewApprovalServer(context.Background(), func(_ string, _ any) {}, discardLogger(), 0)
 	if err != nil {
 		t.Fatalf("NewApprovalServer: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		_ = srv.Shutdown(context.Background())
@@ -61,16 +65,19 @@ func postHook(t *testing.T, addr string, body map[string]any) *hookResponse {
 	data, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
+		panic("unreachable")
 	}
 	resp, err := http.Post("http://"+addr+"/hooks/pre-tool-use", "application/json", bytes.NewReader(data))
 	if err != nil {
 		t.Fatalf("POST: %v", err)
+		panic("unreachable")
 	}
 	defer resp.Body.Close()
 
 	var out hookResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatalf("decode: %v", err)
+		panic("unreachable")
 	}
 	return &out
 }
@@ -305,6 +312,7 @@ func TestApprovalServer_CanceledContext(t *testing.T) {
 	srv, err := NewApprovalServer(context.Background(), func(_ string, _ any) {}, discardLogger(), 0)
 	if err != nil {
 		t.Fatalf("NewApprovalServer: %v", err)
+		panic("unreachable")
 	}
 	srv.SetManager(mgr)
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -319,6 +327,7 @@ func TestApprovalServer_CanceledContext(t *testing.T) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/hooks/pre-tool-use", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("NewRequestWithContext: %v", err)
+		panic("unreachable")
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -356,6 +365,7 @@ func TestApprovalServer_CanceledContext(t *testing.T) {
 	var out hookResponse
 	if err := json.NewDecoder(rr.Body).Decode(&out); err != nil {
 		t.Fatalf("decode: %v", err)
+		panic("unreachable")
 	}
 	if out.HookSpecificOutput.PermissionDecision != "deny" {
 		t.Errorf("expected deny on canceled context, got %q", out.HookSpecificOutput.PermissionDecision)
@@ -391,6 +401,7 @@ func TestApprovalServer_ApprovalFlow_Approve(t *testing.T) {
 	srv, err := NewApprovalServer(context.Background(), func(_ string, _ any) {}, discardLogger(), 0)
 	if err != nil {
 		t.Fatalf("NewApprovalServer: %v", err)
+		panic("unreachable")
 	}
 	srv.SetManager(mgr)
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -443,6 +454,7 @@ func TestApprovalServer_ApprovalFlow_Deny(t *testing.T) {
 	srv, err := NewApprovalServer(context.Background(), func(_ string, _ any) {}, discardLogger(), 0)
 	if err != nil {
 		t.Fatalf("NewApprovalServer: %v", err)
+		panic("unreachable")
 	}
 	srv.SetManager(mgr)
 	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
@@ -482,6 +494,7 @@ func TestApprovalServer_RespondApproval_NoPending(t *testing.T) {
 	err := srv.RespondApproval("nonexistent-tuid", true)
 	if err == nil {
 		t.Fatal("expected error for non-existent pending approval")
+		panic("unreachable")
 	}
 }
 
@@ -505,6 +518,7 @@ func TestApprovalServer_RespondApproval_DoubleSendDoesNotBlock(t *testing.T) {
 	// First send fills the buffer.
 	if err := srv.RespondApproval("double-click", true); err != nil {
 		t.Fatalf("first call: %v", err)
+		panic("unreachable")
 	}
 	// Second send must not block (buffer is full, no reader yet).
 	done := make(chan error, 1)

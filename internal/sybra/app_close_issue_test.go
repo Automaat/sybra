@@ -25,6 +25,7 @@ func TestCloseLinkedIssueOnDone_ClosesSameRepoIssue(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 
 	app.closeLinkedIssueOnDone(tk.ID)
@@ -48,6 +49,7 @@ func TestCloseLinkedIssueOnDone_SkipsNoIssueAndCrossRepo(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create no-issue: %v", err)
+		panic("unreachable")
 	}
 	crossRepo, err := tasks.CreateFull("cross repo", "", task.AgentModeHeadless, task.Update{
 		Issue:     task.Ptr("https://github.com/other/repo/issues/9"),
@@ -56,6 +58,7 @@ func TestCloseLinkedIssueOnDone_SkipsNoIssueAndCrossRepo(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create cross-repo: %v", err)
+		panic("unreachable")
 	}
 
 	app.closeLinkedIssueOnDone(noIssue.ID)

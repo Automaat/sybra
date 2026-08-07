@@ -17,6 +17,7 @@ func TestFetchCommitGateWith_AllRequiredChecksGreen(t *testing.T) {
 	got, err := fetchCommitGateWith(t.Context(), e, "o/r", "abc", []string{"test", "lint"})
 	if err != nil {
 		t.Fatalf("fetchCommitGateWith() err = %v", err)
+		panic("unreachable")
 	}
 	if !got.Approved() {
 		t.Fatalf("Approved() = false, want true: %+v", got)
@@ -41,6 +42,7 @@ func TestFetchCommitGateWith_MissingPendingAndFailedChecks(t *testing.T) {
 	got, err := fetchCommitGateWith(t.Context(), e, "o/r", "abc", []string{"test", "build", "lint"})
 	if err != nil {
 		t.Fatalf("fetchCommitGateWith() err = %v", err)
+		panic("unreachable")
 	}
 	if got.Approved() {
 		t.Fatalf("Approved() = true, want false: %+v", got)
@@ -70,6 +72,7 @@ func TestFetchCommitGateWith_PrefersWorseLegacyStatus(t *testing.T) {
 	got, err := fetchCommitGateWith(t.Context(), e, "o/r", "abc", []string{"test"})
 	if err != nil {
 		t.Fatalf("fetchCommitGateWith() err = %v", err)
+		panic("unreachable")
 	}
 	if got.Checks["test"] != "FAILURE" {
 		t.Fatalf("Checks[test] = %q, want FAILURE", got.Checks["test"])
@@ -88,6 +91,7 @@ func TestFetchCommitGateWith_CancelledCheckFailsClosed(t *testing.T) {
 	got, err := fetchCommitGateWith(t.Context(), e, "o/r", "abc", []string{"test"})
 	if err != nil {
 		t.Fatalf("fetchCommitGateWith() err = %v", err)
+		panic("unreachable")
 	}
 	if len(got.Failed) != 1 || got.Failed[0] != "test" {
 		t.Fatalf("Failed = %v, want [test]", got.Failed)
@@ -110,6 +114,7 @@ func TestFetchCommitGateWith_NeutralAndSkippedChecksPass(t *testing.T) {
 	got, err := fetchCommitGateWith(t.Context(), e, "o/r", "abc", []string{"test", "lint"})
 	if err != nil {
 		t.Fatalf("fetchCommitGateWith() err = %v", err)
+		panic("unreachable")
 	}
 	if !got.Approved() {
 		t.Fatalf("Approved() = false, want true: %+v", got)
@@ -134,6 +139,7 @@ func TestFetchCommitGateWith_StatusFetchFailureAllowedWhenCheckRunsResolveAll(t 
 	got, err := fetchCommitGateWith(t.Context(), e, "o/r", "abc", []string{"test", "lint"})
 	if err != nil {
 		t.Fatalf("fetchCommitGateWith() err = %v", err)
+		panic("unreachable")
 	}
 	if !got.Approved() {
 		t.Fatalf("Approved() = false, want true: %+v", got)
@@ -168,6 +174,7 @@ func TestFetchCommitGateWith_CheckRunFetchFailureAllowedWhenStatusesResolveAll(t
 	got, err := fetchCommitGateWith(t.Context(), e, "o/r", "abc", []string{"test", "lint"})
 	if err != nil {
 		t.Fatalf("fetchCommitGateWith() err = %v", err)
+		panic("unreachable")
 	}
 	if !got.Approved() {
 		t.Fatalf("Approved() = false, want true: %+v", got)
@@ -195,5 +202,6 @@ func TestFetchCommitGateWith_FailsClosedOnEmptyRequiredChecks(t *testing.T) {
 	e := &pathExecer{}
 	if _, err := fetchCommitGateWith(t.Context(), e, "o/r", "abc", nil); err == nil {
 		t.Fatal("fetchCommitGateWith() err = nil, want error")
+		panic("unreachable")
 	}
 }

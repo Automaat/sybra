@@ -22,6 +22,7 @@ func TestUpdateTask_InProgressDispatchesByTrigger(t *testing.T) {
 	tk, err := a.tasks.Create("retry me", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Attach a fake completed workflow with the OLD pre-split ID. The
@@ -58,9 +59,11 @@ func TestUpdateTask_InProgressDispatchesByTrigger(t *testing.T) {
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("workflow not set after restart")
+		panic("unreachable")
 	}
 	if got.Workflow.WorkflowID == "simple-task" {
 		t.Errorf("workflow restarted as stale ID %q — restart should dispatch via trigger conditions, not replay the saved id",
@@ -80,6 +83,7 @@ func TestUpdateTask_InProgressNoWorkflowNoOp(t *testing.T) {
 	tk, err := a.tasks.Create("no prior wf", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := svc.UpdateTask(tk.ID, map[string]any{"status": "in-progress"}); err != nil {
@@ -90,6 +94,7 @@ func TestUpdateTask_InProgressNoWorkflowNoOp(t *testing.T) {
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Errorf("status = %q, want in-progress", got.Status)

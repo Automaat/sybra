@@ -99,6 +99,7 @@ func TestControlHomeEnv_ForcesFilesystemModeEvenWithServerRunning(t *testing.T) 
 	tasksDir := filepath.Join(realHome, "tasks")
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("SYBRA_HOME", sandboxHome)
 	t.Setenv("SYBRA_CONTROL_HOME", realHome)
@@ -111,10 +112,12 @@ func TestControlHomeEnv_ForcesFilesystemModeEvenWithServerRunning(t *testing.T) 
 	tasks, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	list, err := tasks.List()
 	if err != nil || len(list) != 1 {
 		t.Fatalf("expected exactly one seeded task, got %v (err=%v)", list, err)
+		panic("unreachable")
 	}
 	id := list[0].ID
 

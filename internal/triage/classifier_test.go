@@ -37,6 +37,7 @@ printf '%s\n' '{"result":"{\"title\":\"fix(api): handle bug\",\"original_title\"
 	}).Classify(context.Background(), task.Task{Title: "bug"}, nil)
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -54,11 +55,13 @@ printf '%s\n' '{"result":"{\"title\":\"fix(api): handle bug\",\"original_title\"
 	}).Classify(context.Background(), task.Task{Title: "bug"}, nil)
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := os.ReadFile(captured)
 	if err != nil {
 		t.Fatalf("read captured args: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(got), `"additionalProperties":false`) {
 		t.Errorf("claude invocation did not carry the triage.Schema structured-output schema: %s", got)
@@ -69,5 +72,6 @@ func writeTestExe(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+		panic("unreachable")
 	}
 }

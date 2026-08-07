@@ -26,10 +26,12 @@ func makeDoctorWorktree(t *testing.T, path string, dirty bool) {
 	t.Setenv("GIT_COMMITTER_EMAIL", "test@test.local")
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", path, err)
+		panic("unreachable")
 	}
 	runGit(t, path, "init")
 	if err := os.WriteFile(filepath.Join(path, "f.txt"), []byte("a"), 0o644); err != nil {
 		t.Fatalf("seed file: %v", err)
+		panic("unreachable")
 	}
 	runGit(t, path, "add", "-A")
 	runGit(t, path, "commit", "-m", "init")
@@ -42,6 +44,7 @@ func makeDoctorWorktree(t *testing.T, path string, dirty bool) {
 	if dirty {
 		if err := os.WriteFile(filepath.Join(path, "f.txt"), []byte("b"), 0o644); err != nil {
 			t.Fatalf("dirty file: %v", err)
+			panic("unreachable")
 		}
 	}
 }
@@ -50,12 +53,15 @@ func writeDoctorFile(t *testing.T, path string, size int, mtime time.Time) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(path, make([]byte, size), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+		panic("unreachable")
 	}
 	if err := os.Chtimes(path, mtime, mtime); err != nil {
 		t.Fatalf("chtimes %s: %v", path, err)
+		panic("unreachable")
 	}
 }
 
@@ -67,9 +73,11 @@ func putDoctorTask(t *testing.T, cfg *config.Config, tk task.Task) {
 	store, err := task.NewStore(cfg.TasksDir)
 	if err != nil {
 		t.Fatalf("open task store: %v", err)
+		panic("unreachable")
 	}
 	if _, err := store.Put(tk); err != nil {
 		t.Fatalf("put task %s: %v", tk.ID, err)
+		panic("unreachable")
 	}
 }
 
@@ -82,14 +90,17 @@ func setupDoctorHome(t *testing.T) *config.Config {
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
+		panic("unreachable")
 	}
 	cfg.Sandbox.RetentionHours = 1
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("save config: %v", err)
+		panic("unreachable")
 	}
 	cfg, err = config.Load()
 	if err != nil {
 		t.Fatalf("config.Load (reload): %v", err)
+		panic("unreachable")
 	}
 	return cfg
 }
@@ -113,6 +124,7 @@ func TestDoctorCleanupDryRunReportsWithoutDeleting(t *testing.T) {
 	}
 	if _, err := os.Stat(orphanSandbox); err != nil {
 		t.Fatalf("dry-run must not delete anything: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -126,12 +138,14 @@ func TestDoctorCleanupJSONShape(t *testing.T) {
 	var report doctorCleanupReport
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("unmarshal report: %v\n%s", err, out)
+		panic("unreachable")
 	}
 	if report.Applied {
 		t.Fatal("Applied must be false for a dry run")
 	}
 	if report.Buckets == nil {
 		t.Fatal("Buckets must be present (possibly empty) in the JSON shape")
+		panic("unreachable")
 	}
 	if len(report.Results) != 0 {
 		t.Fatalf("Results must be empty for a dry run, got %+v", report.Results)
@@ -159,6 +173,7 @@ func TestDoctorCleanupApplyCleansOnlySafeBucketsByDefault(t *testing.T) {
 	}
 	if _, err := os.Stat(doneWorktree); err != nil {
 		t.Fatalf("expected the done task's worktree (destructive, ungated) to survive: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -181,6 +196,7 @@ func TestDoctorCleanupApplyForceWorktreesSurvivesActiveTask(t *testing.T) {
 
 	if _, err := os.Stat(activeWorktree); err != nil {
 		t.Fatalf("expected the active task's worktree to survive: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(doneWorktree); !os.IsNotExist(err) {
 		t.Fatalf("expected the done task's worktree to be removed, stat err = %v", err)
@@ -220,6 +236,7 @@ func TestDoctorCleanupWorktreesBucketRequiresGateFlag(t *testing.T) {
 	var report doctorCleanupReport
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("unmarshal report: %v\n%s", err, out)
+		panic("unreachable")
 	}
 	if len(report.Buckets) != 0 {
 		t.Fatalf("worktrees bucket must not appear without --worktrees, got %+v", report.Buckets)
@@ -242,6 +259,7 @@ func TestDoctorCleanupSharedCacheRequiresExternal(t *testing.T) {
 	var report doctorCleanupReport
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("unmarshal report: %v\n%s", err, out)
+		panic("unreachable")
 	}
 	if len(report.Buckets) != 0 {
 		t.Fatalf("shared-cache bucket must not appear without --external, got %+v", report.Buckets)
@@ -270,6 +288,7 @@ func TestDoctorCleanupApplyPartialFailureExitsOne(t *testing.T) {
 	// entry itself, forcing a genuine delete error (not merely a skip).
 	if err := os.Chmod(sandboxRoot, 0o555); err != nil {
 		t.Fatalf("chmod sandboxes dir: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.Chmod(sandboxRoot, 0o755) })
 
@@ -280,6 +299,7 @@ func TestDoctorCleanupApplyPartialFailureExitsOne(t *testing.T) {
 	var report doctorCleanupReport
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("unmarshal report: %v\n%s", err, out)
+		panic("unreachable")
 	}
 	if len(report.Results) != 1 || len(report.Results[0].Errors) == 0 {
 		t.Fatalf("expected a recorded delete error, got %+v", report.Results)

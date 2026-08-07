@@ -50,6 +50,7 @@ func TestStartAgentWithAssignment_SLOThrottleNarrowsAdmissionOnly(t *testing.T) 
 	ts, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tm := task.NewManager(ts, nil)
 	am := newFakeClaudeManager(t, 4) // raw pool has plenty of room
@@ -57,6 +58,7 @@ func TestStartAgentWithAssignment_SLOThrottleNarrowsAdmissionOnly(t *testing.T) 
 	q, err := agentqueue.New(t.TempDir(), agentqueue.Options{}, discardSlogLogger())
 	if err != nil {
 		t.Fatalf("agentqueue.New: %v", err)
+		panic("unreachable")
 	}
 
 	noPermissions := false
@@ -103,9 +105,11 @@ func TestStartAgentWithAssignment_SLOThrottleNarrowsAdmissionOnly(t *testing.T) 
 	ag, err := o.StartAgent(fourth.ID, "headless", "go", true, false)
 	if err != nil {
 		t.Fatalf("StartAgent(fourth) unexpected err: %v", err)
+		panic("unreachable")
 	}
 	if ag == nil || ag.State == agent.StateQueued {
 		t.Fatalf("StartAgent(fourth) = %+v, want a live agent (recovery/manual exempt from SLO throttle)", ag)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { am.KillAgentsForTask(fourth.ID, 5*time.Second) })
 }
@@ -120,6 +124,7 @@ func TestStartAgentWithAssignment_SLOThrottleRejectsWhenQueueNil(t *testing.T) {
 	ts, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tm := task.NewManager(ts, nil)
 	am := newFakeClaudeManager(t, 4) // raw pool has plenty of room
@@ -166,6 +171,7 @@ func TestStartAgentWithAssignment_SLOThrottleDisabledByDefault(t *testing.T) {
 	ts, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tm := task.NewManager(ts, nil)
 	am := newFakeClaudeManager(t, 4)

@@ -14,14 +14,17 @@ func TestWalkRendersRepeatedLocalStructsAtEachYAMLPath(t *testing.T) {
 	wd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("get working dir: %v", err)
+		panic("unreachable")
 	}
 	root, err := findModuleRoot(wd)
 	if err != nil {
 		t.Fatalf("find module root: %v", err)
+		panic("unreachable")
 	}
 	pt, err := loadPkgTypes(filepath.Join(root, "internal", "config"))
 	if err != nil {
 		t.Fatalf("load package types: %v", err)
+		panic("unreachable")
 	}
 
 	var sections []section

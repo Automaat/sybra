@@ -19,10 +19,12 @@ func TestAtomicWriteMode_SurvivesRestrictiveUmask(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "shim")
 	if err := AtomicWriteMode(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("AtomicWriteMode: %v", err)
+		panic("unreachable")
 	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := info.Mode().Perm(); got != 0o755 {
 		t.Errorf("mode = %v, want %v under umask 0077", got, os.FileMode(0o755))
@@ -43,6 +45,7 @@ func TestAtomicWrite_DoesNotWidenModeUnderRestrictiveUmask(t *testing.T) {
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := info.Mode().Perm(); got&0o077 != 0 {
 		t.Errorf("mode = %v, want no group/other bits under umask 0077", got)

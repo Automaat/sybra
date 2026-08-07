@@ -96,6 +96,7 @@ func writeFrontendVerifyMise(t *testing.T) string {
 	path := filepath.Join(binDir, "mise")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return binDir
 }
@@ -114,6 +115,7 @@ func TestExecVerifyChecks_AutoFixRewindsToImplement(t *testing.T) {
 	rec := wf.RecordForStep(verifyChecksImplStepID)
 	if rec == nil {
 		t.Fatal("implement step record missing")
+		panic("unreachable")
 	}
 	rec.AgentID = "impl-1"
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{
@@ -202,6 +204,7 @@ func TestExecVerifyChecks_AutoFixIdenticalFingerprintEscalatesEarly(t *testing.T
 	out, err = engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged", out.Output)
@@ -239,6 +242,7 @@ func TestExecVerifyChecks_AutoFixCeilingEscalates(t *testing.T) {
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Errorf("Output = %q, want flagged", out.Output)
@@ -313,6 +317,7 @@ func incidentLinterVerifyCommand(t *testing.T, file string) string {
 	path := filepath.Join(t.TempDir(), "incident-lint.sh")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return "sh " + path + " # golangci-lint"
 }
@@ -360,6 +365,7 @@ func TestExecVerifyChecks_AutoFixIncidentLinters(t *testing.T) {
 		found = true
 		if err := json.Unmarshal([]byte(put.content), &report); err != nil {
 			t.Fatalf("unmarshal verify-checks.json: %v", err)
+			panic("unreachable")
 		}
 	}
 	if !found {
@@ -536,6 +542,7 @@ steps:
 
 	if err := engine.StartWorkflow("t1", "verify-lint-repair"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := agents.LastCall().Role; got != "implementation" {
 		t.Fatalf("first agent role = %q, want implementation", got)
@@ -551,6 +558,7 @@ steps:
 	}
 	if first.Workflow == nil || first.Workflow.CurrentStep != verifyChecksImplStepID || first.Workflow.State != ExecWaiting {
 		t.Fatalf("workflow after lint reask = %+v, want implement/ExecWaiting", first.Workflow)
+		panic("unreachable")
 	}
 	if first.Workflow.Variables["step.verify_checks.auto_fix"] != "1" {
 		t.Fatalf("auto_fix counter after first failure = %q, want 1", first.Workflow.Variables["step.verify_checks.auto_fix"])
@@ -564,6 +572,7 @@ steps:
 	first.Workflow.SetVar(workflowRetryAfterVar, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
 	if err := tasks.SetWorkflow("t1", first.Workflow); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	engine.ResumeStalled()
@@ -580,6 +589,7 @@ steps:
 	}
 	if final.Workflow == nil || final.Workflow.State != ExecCompleted || final.Workflow.CurrentStep != "" {
 		t.Fatalf("final workflow = %+v, want completed terminal workflow", final.Workflow)
+		panic("unreachable")
 	}
 	if strings.Contains(final.StatusReason, "human-required") {
 		t.Fatalf("final status reason unexpectedly escalated: %q", final.StatusReason)
@@ -596,6 +606,7 @@ func TestExecVerifyChecks_NoImplementStepEscalates(t *testing.T) {
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Errorf("Output = %q, want flagged (no implement step to rewind to)", out.Output)

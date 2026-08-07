@@ -25,6 +25,7 @@ func initGitRepo(t *testing.T, dir string) {
 		c.Dir = dir
 		if out, err := c.CombinedOutput(); err != nil {
 			t.Fatalf("git setup %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 }
@@ -40,6 +41,7 @@ func gitCommit(t *testing.T, dir, msg string) {
 		c.Dir = dir
 		if out, err := c.CombinedOutput(); err != nil {
 			t.Fatalf("git commit %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 }
@@ -51,6 +53,7 @@ func newDiffSvc(t *testing.T, tasksDir, worktreesDir string) (*AgentService, *ta
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: worktreesDir,
@@ -72,10 +75,12 @@ func taskWithWorktreeDir(t *testing.T, store *task.Store, worktreesDir, title st
 	tk, err := store.Create(title, "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	dir := filepath.Join(worktreesDir, tk.DirName())
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return tk
 }
@@ -89,11 +94,13 @@ func TestGetAgentDiff_NoWorktree(t *testing.T) {
 	tk, err := store.Create("no-worktree", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	diff, err := svc.GetAgentDiff(tk.ID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if diff != "" {
 		t.Errorf("want empty diff, got %q", diff)
@@ -112,12 +119,14 @@ func TestGetAgentDiff_CleanTree(t *testing.T) {
 	initGitRepo(t, dir)
 	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	gitCommit(t, dir, "initial")
 
 	diff, err := svc.GetAgentDiff(tk.ID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if diff != "" {
 		t.Errorf("want empty diff for clean tree, got %q", diff)
@@ -137,17 +146,20 @@ func TestGetAgentDiff_DirtyTree(t *testing.T) {
 	filePath := filepath.Join(dir, "file.txt")
 	if err := os.WriteFile(filePath, []byte("original\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	gitCommit(t, dir, "initial")
 
 	// Modify tracked file.
 	if err := os.WriteFile(filePath, []byte("modified\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	diff, err := svc.GetAgentDiff(tk.ID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(diff, "-original") {
 		t.Errorf("want deletion line in diff, got:\n%s", diff)
@@ -169,17 +181,20 @@ func TestGetAgentDiff_UntrackedFile(t *testing.T) {
 	initGitRepo(t, dir)
 	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("x\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	gitCommit(t, dir, "initial")
 
 	// New untracked file.
 	if err := os.WriteFile(filepath.Join(dir, "new.txt"), []byte("newcontent\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	diff, err := svc.GetAgentDiff(tk.ID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(diff, "new.txt") {
 		t.Errorf("want synthetic new-file section for new.txt, got:\n%s", diff)
@@ -201,11 +216,13 @@ func TestGetAgentDiff_NonGitDir(t *testing.T) {
 	// Directory exists but is not a git repository.
 	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("data\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	diff, err := svc.GetAgentDiff(tk.ID)
 	if err != nil {
 		t.Fatalf("unexpected error for non-git dir: %v", err)
+		panic("unreachable")
 	}
 	if diff != "" {
 		t.Errorf("want empty diff for non-git dir, got %q", diff)

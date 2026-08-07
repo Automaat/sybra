@@ -442,6 +442,7 @@ func TestExecTriageReview_NoWorktreeNoPRReturnsStaff(t *testing.T) {
 	out, err := engine.execTriageReview("t1", newTriageStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "staff" {
 		t.Errorf("Output = %q, want staff (fail-safe)", out.Output)
@@ -463,6 +464,7 @@ func TestExecTriageReview_BrokenWorktreeReturnsStaff(t *testing.T) {
 	out, err := engine.execTriageReview("t1", newTriageStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "staff" {
 		t.Errorf("Output = %q, want staff (git error fail-safe)", out.Output)
@@ -480,6 +482,7 @@ func TestExecTriageReview_TinyDocChangeReturnsSimple(t *testing.T) {
 	// Add one tiny doc change.
 	if err := os.WriteFile(filepath.Join(wt, "NOTES.md"), []byte("note\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	gitRun(t, wt, "add", "NOTES.md")
 	gitRun(t, wt, "commit", "-m", "docs: note")
@@ -489,6 +492,7 @@ func TestExecTriageReview_TinyDocChangeReturnsSimple(t *testing.T) {
 	out, err := engine.execTriageReview("t1", newTriageStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "simple" {
 		t.Errorf("Output = %q, want simple", out.Output)
@@ -507,9 +511,11 @@ func TestExecTriageReview_RiskyPathReturnsStaff(t *testing.T) {
 	risky := filepath.Join(wt, "internal", "workflow")
 	if err := os.MkdirAll(risky, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(risky, "engine.go"), []byte("package x\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	gitRun(t, wt, "add", "internal/workflow/engine.go")
 	gitRun(t, wt, "commit", "-m", "feat: tweak engine")
@@ -519,6 +525,7 @@ func TestExecTriageReview_RiskyPathReturnsStaff(t *testing.T) {
 	out, err := engine.execTriageReview("t1", newTriageStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "staff" {
 		t.Errorf("Output = %q, want staff (risky path)", out.Output)
@@ -542,6 +549,7 @@ func TestExecTriageReview_LargeChangeReturnsStaff(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(wt, "big.sql"), []byte(big.String()), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	gitRun(t, wt, "add", "big.sql")
 	gitRun(t, wt, "commit", "-m", "chore: big")
@@ -551,6 +559,7 @@ func TestExecTriageReview_LargeChangeReturnsStaff(t *testing.T) {
 	out, err := engine.execTriageReview("t1", newTriageStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "staff" {
 		t.Errorf("Output = %q, want staff (over line limit)", out.Output)
@@ -566,6 +575,7 @@ func gitRun(t *testing.T, dir string, args ...string) {
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
+		panic("unreachable")
 	}
 }
 
@@ -577,6 +587,7 @@ func TestBuiltinSimpleTask_PickReviewMethod(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var simple *Definition
 	for i := range defs {
@@ -587,10 +598,12 @@ func TestBuiltinSimpleTask_PickReviewMethod(t *testing.T) {
 	}
 	if simple == nil {
 		t.Fatal("simple-task-review builtin definition not found")
+		panic("unreachable")
 	}
 	step := simple.StepByID("pick_review_method")
 	if step == nil {
 		t.Fatal("pick_review_method step not found in simple-task-review")
+		panic("unreachable")
 	}
 
 	cases := []struct {
@@ -652,6 +665,7 @@ func TestBuiltinSimpleTask_PickReviewMethod(t *testing.T) {
 			got, err := ResolveTransition(step.Next, tc.fields)
 			if err != nil {
 				t.Fatalf("ResolveTransition: %v", err)
+				panic("unreachable")
 			}
 			if got != tc.want {
 				t.Errorf("goto = %q, want %q", got, tc.want)
@@ -666,6 +680,7 @@ func TestBuiltinPRReview_StaffPassUsesSonnet(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var pr *Definition
 	for i := range defs {
@@ -676,10 +691,12 @@ func TestBuiltinPRReview_StaffPassUsesSonnet(t *testing.T) {
 	}
 	if pr == nil {
 		t.Fatal("pr-review builtin definition not found")
+		panic("unreachable")
 	}
 	step := pr.StepByID("review_staff")
 	if step == nil {
 		t.Fatal("review_staff step not found in pr-review")
+		panic("unreachable")
 	}
 	if step.Config.Model != "sonnet" {
 		t.Fatalf("review_staff model = %q, want %q (aligned to simple-task-review's staff pass)", step.Config.Model, "sonnet")
@@ -692,6 +709,7 @@ func TestBuiltinPRReview_AuthorizesVisibleReviewAction(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var pr *Definition
 	for i := range defs {
@@ -702,11 +720,13 @@ func TestBuiltinPRReview_AuthorizesVisibleReviewAction(t *testing.T) {
 	}
 	if pr == nil {
 		t.Fatal("pr-review builtin definition not found")
+		panic("unreachable")
 	}
 	for _, stepID := range []string{"review_simple", "review_staff"} {
 		step := pr.StepByID(stepID)
 		if step == nil {
 			t.Fatalf("%s step not found in pr-review", stepID)
+			panic("unreachable")
 		}
 		for _, want := range []string{
 			"Do not ask the operator for confirmation",
@@ -753,6 +773,7 @@ func TestBuiltinPRReview_EscalatesOnLookupFailure(t *testing.T) {
 		step := pr.StepByID(stepID)
 		if step == nil {
 			t.Fatalf("%s step not found in pr-review", stepID)
+			panic("unreachable")
 		}
 		if !strings.Contains(step.Config.Prompt, "human-required") {
 			t.Fatalf("%s prompt missing PR-not-found escalation instruction:\n%s", stepID, step.Config.Prompt)
@@ -768,6 +789,7 @@ func TestBuiltinPRReview_EscalatesOnLookupFailure(t *testing.T) {
 		fallback := step.Next[len(step.Next)-1]
 		if fallback.When != nil || fallback.GoTo != "set_in_review" {
 			t.Fatalf("%s fallback transition = %+v, want unconditional goto set_in_review", stepID, fallback)
+			panic("unreachable")
 		}
 	}
 }
@@ -778,6 +800,7 @@ func TestBuiltinPRReview_PickReviewMethod(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var pr *Definition
 	for i := range defs {
@@ -788,10 +811,12 @@ func TestBuiltinPRReview_PickReviewMethod(t *testing.T) {
 	}
 	if pr == nil {
 		t.Fatal("pr-review builtin definition not found")
+		panic("unreachable")
 	}
 	step := pr.StepByID("pick_review_method")
 	if step == nil {
 		t.Fatal("pick_review_method step not found in pr-review")
+		panic("unreachable")
 	}
 
 	cases := []struct {
@@ -830,6 +855,7 @@ func TestBuiltinPRReview_PickReviewMethod(t *testing.T) {
 			got, err := ResolveTransition(step.Next, tc.fields)
 			if err != nil {
 				t.Fatalf("ResolveTransition: %v", err)
+				panic("unreachable")
 			}
 			if got != tc.want {
 				t.Errorf("goto = %q, want %q", got, tc.want)
@@ -848,6 +874,7 @@ func TestBuiltinSimpleTask_ReviewLoopsUntilClean(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var simple *Definition
 	for i := range defs {
@@ -858,6 +885,7 @@ func TestBuiltinSimpleTask_ReviewLoopsUntilClean(t *testing.T) {
 	}
 	if simple == nil {
 		t.Fatal("simple-task-review not found")
+		panic("unreachable")
 	}
 
 	step := func(id string) *Step {
@@ -877,6 +905,7 @@ func TestBuiltinSimpleTask_ReviewLoopsUntilClean(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("ResolveTransition: %v", err)
+		panic("unreachable")
 	}
 	if got != "clear_review_sidecar" {
 		t.Errorf("detect_tampering clean goto = %q, want %q — the fix agent's diff must be re-reviewed", got, "clear_review_sidecar")
@@ -890,6 +919,7 @@ func TestBuiltinSimpleTask_ReviewLoopsUntilClean(t *testing.T) {
 	got, err = ResolveTransition(step("triage_review").Next, map[string]string{})
 	if err != nil {
 		t.Fatalf("ResolveTransition: %v", err)
+		panic("unreachable")
 	}
 	if got == "clear_review_sidecar" {
 		t.Errorf("triage_review goto = %q — clear_review_sidecar needs _dir, which is unset before the first agent runs", got)
@@ -903,6 +933,7 @@ func TestBuiltinSimpleTask_ReviewLoopsUntilClean(t *testing.T) {
 	got, err = ResolveTransition(step("clear_review_sidecar").Next, map[string]string{})
 	if err != nil {
 		t.Fatalf("ResolveTransition: %v", err)
+		panic("unreachable")
 	}
 	if got != "pick_review_method" {
 		t.Errorf("clear_review_sidecar goto = %q, want pick_review_method", got)
@@ -913,6 +944,7 @@ func TestBuiltinSimpleTask_ReviewLoopsUntilClean(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("ResolveTransition: %v", err)
+		panic("unreachable")
 	}
 	if got != "" {
 		t.Errorf("detect_tampering tampered goto = %q, want \"\" (park, do not loop)", got)
@@ -924,6 +956,7 @@ func TestBuiltinSimpleTask_ReviewLoopsUntilClean(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("ResolveTransition: %v", err)
+		panic("unreachable")
 	}
 	if got != "done_review" {
 		t.Errorf("CLEAN verdict goto = %q, want done_review", got)
@@ -934,6 +967,7 @@ func TestBuiltinSimpleTask_ReviewLoopsUntilClean(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("ResolveTransition: %v", err)
+		panic("unreachable")
 	}
 	if got != "fix_review" {
 		t.Errorf("NEEDS_FIXES verdict goto = %q, want fix_review", got)
@@ -956,6 +990,7 @@ func TestBuiltinSimpleTask_ReviewLoopRespectsConfigToggle(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var simple *Definition
 	for i := range defs {
@@ -966,6 +1001,7 @@ func TestBuiltinSimpleTask_ReviewLoopRespectsConfigToggle(t *testing.T) {
 	}
 	if simple == nil {
 		t.Fatal("simple-task-review not found")
+		panic("unreachable")
 	}
 	var tamper *Step
 	for i := range simple.Steps {
@@ -976,6 +1012,7 @@ func TestBuiltinSimpleTask_ReviewLoopRespectsConfigToggle(t *testing.T) {
 	}
 	if tamper == nil {
 		t.Fatal("detect_tampering step not found")
+		panic("unreachable")
 	}
 
 	cases := []struct {
@@ -994,6 +1031,7 @@ func TestBuiltinSimpleTask_ReviewLoopRespectsConfigToggle(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatalf("ResolveTransition: %v", err)
+				panic("unreachable")
 			}
 			if got != tc.want {
 				t.Errorf("review_until_clean=%s goto = %q, want %q", tc.field, got, tc.want)
@@ -1008,6 +1046,7 @@ func TestBuiltinSimpleTask_ReviewLoopRespectsConfigToggle(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("ResolveTransition: %v", err)
+		panic("unreachable")
 	}
 	if got != "" {
 		t.Errorf("tampered goto = %q, want \"\" (park wins over the toggle)", got)
@@ -1027,27 +1066,10 @@ func TestBuiltinSimpleTask_ReviewLoopBlocksBudgetExceededBeforeTesting(t *testin
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
-	var simple *Definition
-	for i := range defs {
-		if defs[i].ID == "simple-task-review" {
-			simple = &defs[i]
-			break
-		}
-	}
-	if simple == nil {
-		t.Fatal("simple-task-review not found")
-	}
-	var tamper *Step
-	for i := range simple.Steps {
-		if simple.Steps[i].ID == "detect_tampering" {
-			tamper = &simple.Steps[i]
-			break
-		}
-	}
-	if tamper == nil {
-		t.Fatal("detect_tampering step not found")
-	}
+	simple := mustDefinitionByID(t, defs, "simple-task-review")
+	tamper := mustStepByID(t, simple, "detect_tampering")
 
 	got, err := ResolveTransition(tamper.Next, map[string]string{
 		"task.status":                 "testing",
@@ -1056,15 +1078,13 @@ func TestBuiltinSimpleTask_ReviewLoopBlocksBudgetExceededBeforeTesting(t *testin
 	})
 	if err != nil {
 		t.Fatalf("ResolveTransition: %v", err)
+		panic("unreachable")
 	}
 	if got != "review_budget_exhausted" {
 		t.Fatalf("budget-exceeded goto = %q, want review_budget_exhausted", got)
 	}
 
-	limit := simple.StepByID("review_budget_exhausted")
-	if limit == nil {
-		t.Fatal("review_budget_exhausted step not found")
-	}
+	limit := mustStepByID(t, simple, "review_budget_exhausted")
 	if limit.Type != StepSetStatus || limit.Config.Status != "blocked" {
 		t.Fatalf("review_budget_exhausted = type %q status %q, want set_status blocked", limit.Type, limit.Config.Status)
 	}
@@ -1080,15 +1100,13 @@ func TestBuiltinSimpleTask_ReviewLoopBlocksBudgetExceededBeforeTesting(t *testin
 	})
 	if err != nil {
 		t.Fatalf("ResolveTransition lifetime: %v", err)
+		panic("unreachable")
 	}
 	if got != "review_lifetime_exhausted" {
 		t.Fatalf("lifetime-exceeded goto = %q, want review_lifetime_exhausted", got)
 	}
 
-	lifetime := simple.StepByID("review_lifetime_exhausted")
-	if lifetime == nil {
-		t.Fatal("review_lifetime_exhausted step not found")
-	}
+	lifetime := mustStepByID(t, simple, "review_lifetime_exhausted")
 	if lifetime.Type != StepSetStatus || lifetime.Config.Status != "human-required" {
 		t.Fatalf("review_lifetime_exhausted = type %q status %q, want set_status human-required", lifetime.Type, lifetime.Config.Status)
 	}
@@ -1096,21 +1114,8 @@ func TestBuiltinSimpleTask_ReviewLoopBlocksBudgetExceededBeforeTesting(t *testin
 		t.Fatalf("review_lifetime_exhausted status_reason = %q, must not prescribe the hourly setting", lifetime.Config.StatusReason)
 	}
 
-	var testingTask, prTask *Definition
-	for i := range defs {
-		switch defs[i].ID {
-		case "testing-task":
-			testingTask = &defs[i]
-		case "simple-task-pr":
-			prTask = &defs[i]
-		}
-	}
-	if testingTask == nil {
-		t.Fatal("testing-task not found")
-	}
-	if prTask == nil {
-		t.Fatal("simple-task-pr not found")
-	}
+	testingTask := mustDefinitionByID(t, defs, "testing-task")
+	prTask := mustDefinitionByID(t, defs, "simple-task-pr")
 	blockedFields := map[string]string{
 		"task.status": "blocked",
 		"task.role":   "",
@@ -1173,9 +1178,11 @@ func TestEngineReviewUntilCleanReachesTransition(t *testing.T) {
 			next, _, err := e.resolveNext("t1", def, &def.Steps[0], wfExec, TaskInfo{ID: "t1", Status: "testing"})
 			if err != nil {
 				t.Fatalf("resolveNext: %v", err)
+				panic("unreachable")
 			}
 			if next == nil {
 				t.Fatalf("resolveNext returned no step, want %q", tc.want)
+				panic("unreachable")
 			}
 			if next.ID != tc.want {
 				t.Errorf("SetReviewUntilClean(%v) routed to %q, want %q — the toggle is inverted or unwired",
@@ -1206,9 +1213,11 @@ func TestEngineReviewUntilCleanDefaultsToLooping(t *testing.T) {
 	next, _, err := e.resolveNext("t1", def, &def.Steps[0], &Execution{Variables: map[string]string{}}, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("resolveNext: %v", err)
+		panic("unreachable")
 	}
 	if next == nil || next.ID != "loop" {
 		t.Fatalf("zero-value engine routed to %v, want loop", next)
+		panic("unreachable")
 	}
 }
 
@@ -1256,18 +1265,22 @@ func TestEngineReviewBudgetExceededTransition(t *testing.T) {
 	next, _, err := e.resolveNext("t1", def, &def.Steps[0], &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
 		t.Fatalf("resolveNext: %v", err)
+		panic("unreachable")
 	}
 	if next == nil || next.ID != "park" {
 		t.Fatalf("resolveNext routed to %v, want park", next)
+		panic("unreachable")
 	}
 
 	fakeClock.Advance(time.Hour)
 	next, _, err = e.resolveNext("t1", def, &def.Steps[0], &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
 		t.Fatalf("resolveNext after advancing clock: %v", err)
+		panic("unreachable")
 	}
 	if next == nil || next.ID != "loop" {
 		t.Fatalf("resolveNext after advancing clock routed to %v, want loop", next)
+		panic("unreachable")
 	}
 }
 
@@ -1312,9 +1325,11 @@ func TestEngineReviewBudgetExceededTransition_LifetimeCap(t *testing.T) {
 	next, _, err := e.resolveNext("t1", def, &def.Steps[0], &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
 		t.Fatalf("resolveNext: %v", err)
+		panic("unreachable")
 	}
 	if next == nil || next.ID != "park" {
 		t.Fatalf("resolveNext routed to %v, want park", next)
+		panic("unreachable")
 	}
 }
 
@@ -1338,6 +1353,7 @@ func TestPrimaryLoopCapsBoundAgentRuns(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	stepAttempts := func(workflowID, stepID string) int {
 		t.Helper()
@@ -1345,10 +1361,7 @@ func TestPrimaryLoopCapsBoundAgentRuns(t *testing.T) {
 			if defs[i].ID != workflowID {
 				continue
 			}
-			step := defs[i].StepByID(stepID)
-			if step == nil {
-				t.Fatalf("workflow %s step %s not found", workflowID, stepID)
-			}
+			step := mustStepByID(t, defs[i], stepID)
 			return 1 + step.Config.MaxRetries
 		}
 		t.Fatalf("workflow %s not found", workflowID)
@@ -1397,4 +1410,26 @@ func TestPrimaryLoopCapsBoundAgentRuns(t *testing.T) {
 	if _, lifetime := e.reviewBudgetExhaustion(TaskInfo{AgentRuns: runs}); !lifetime {
 		t.Fatalf("lifetime review ceiling did not fire after %d runs", len(runs))
 	}
+}
+
+func mustDefinitionByID(t *testing.T, defs []Definition, id string) Definition {
+	t.Helper()
+	for i := range defs {
+		if defs[i].ID == id {
+			return defs[i]
+		}
+	}
+	t.Fatalf("definition %s not found", id)
+	return Definition{}
+}
+
+func mustStepByID(t *testing.T, def Definition, id string) Step {
+	t.Helper()
+	for i := range def.Steps {
+		if def.Steps[i].ID == id {
+			return def.Steps[i]
+		}
+	}
+	t.Fatalf("workflow %s step %s not found", def.ID, id)
+	return Step{}
 }

@@ -11,6 +11,7 @@ func TestLedgerAppendAndLatest(t *testing.T) {
 	l, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
+		panic("unreachable")
 	}
 
 	e1 := LedgerEntry{
@@ -21,6 +22,7 @@ func TestLedgerAppendAndLatest(t *testing.T) {
 	}
 	if err := l.Append(e1); err != nil {
 		t.Fatalf("Append: %v", err)
+		panic("unreachable")
 	}
 	if l.Len() != 1 {
 		t.Errorf("Len = %d, want 1", l.Len())
@@ -43,6 +45,7 @@ func TestLedgerReplayAcrossOpens(t *testing.T) {
 	l1, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open 1: %v", err)
+		panic("unreachable")
 	}
 	for i := range 3 {
 		if err := l1.Append(LedgerEntry{
@@ -58,6 +61,7 @@ func TestLedgerReplayAcrossOpens(t *testing.T) {
 	l2, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open 2: %v", err)
+		panic("unreachable")
 	}
 	if l2.Len() != 3 {
 		t.Errorf("replayed Len = %d, want 3", l2.Len())
@@ -76,6 +80,7 @@ func TestLedgerShouldAutoSuppress(t *testing.T) {
 	l, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
+		panic("unreachable")
 	}
 
 	fp := "cost_outlier:task-xyz"
@@ -115,6 +120,7 @@ func TestLedgerOpenIssues(t *testing.T) {
 	l, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
+		panic("unreachable")
 	}
 
 	if err := l.Append(LedgerEntry{
@@ -151,6 +157,7 @@ func TestLedgerActionsInWindow(t *testing.T) {
 	l, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
+		panic("unreachable")
 	}
 
 	now := time.Now().UTC()
@@ -163,6 +170,7 @@ func TestLedgerActionsInWindow(t *testing.T) {
 	for _, r := range rows {
 		if err := l.Append(r); err != nil {
 			t.Fatalf("Append: %v", err)
+			panic("unreachable")
 		}
 	}
 	if got := l.ActionsInWindow(24 * time.Hour); got != 2 {
@@ -175,6 +183,7 @@ func TestLedgerAppendEmptyFingerprint(t *testing.T) {
 	l, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
+		panic("unreachable")
 	}
 	if err := l.Append(LedgerEntry{}); err == nil {
 		t.Error("Append empty fingerprint = nil, want error")
@@ -186,6 +195,7 @@ func TestLedgerEntriesWindow(t *testing.T) {
 	l, err := Open(path)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
+		panic("unreachable")
 	}
 
 	now := time.Now().UTC()
@@ -197,6 +207,7 @@ func TestLedgerEntriesWindow(t *testing.T) {
 	for _, r := range rows {
 		if err := l.Append(r); err != nil {
 			t.Fatalf("Append: %v", err)
+			panic("unreachable")
 		}
 	}
 

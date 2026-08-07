@@ -17,6 +17,7 @@ func TestEnforceSpec_ResolvesAgentStateRoots(t *testing.T) {
 	for _, d := range []string{claude, cache} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
@@ -26,6 +27,7 @@ func TestEnforceSpec_ResolvesAgentStateRoots(t *testing.T) {
 	wantClaude, err := canonicalizeRoot(claude)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if spec.claudeState != wantClaude {
 		t.Errorf("claudeState = %q, want %q (the CLI must be able to persist session state)", spec.claudeState, wantClaude)
@@ -33,6 +35,7 @@ func TestEnforceSpec_ResolvesAgentStateRoots(t *testing.T) {
 	wantCache, err := canonicalizeRoot(cache)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if spec.toolCache != wantCache {
 		t.Errorf("toolCache = %q, want %q (mise must be able to write its cache)", spec.toolCache, wantCache)
@@ -67,6 +70,7 @@ func TestEnforceSpec_DeniesDurableClaudeConfig(t *testing.T) {
 	claude := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(filepath.Join(claude, "hooks"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(claude, "settings.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
@@ -101,6 +105,7 @@ func TestEnforceSpec_MaterializesAbsentDurableConfig(t *testing.T) {
 	claude := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claude, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	spec := enforceSpec("/wt", nil, t.TempDir(), "/tmp", "", "/cache", "/profile", "", gitSandboxRoots{}, gitSandboxOverlay{})
@@ -129,10 +134,12 @@ func TestEnforceSpec_KeepsExistingDurableConfig(t *testing.T) {
 	claude := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claude, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	existing := []byte(`{"hooks":{"PreToolUse":[]}}`)
 	if err := os.WriteFile(filepath.Join(claude, "settings.json"), existing, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	enforceSpec("/wt", nil, t.TempDir(), "/tmp", "", "/cache", "/profile", "", gitSandboxRoots{}, gitSandboxOverlay{})
@@ -140,6 +147,7 @@ func TestEnforceSpec_KeepsExistingDurableConfig(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(claude, "settings.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(got, existing) {
 		t.Fatalf("settings.json = %q, want it left untouched", got)

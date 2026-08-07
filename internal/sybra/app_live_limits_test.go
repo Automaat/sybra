@@ -14,6 +14,7 @@ func TestLiveLimitPollState_ClaudeAuthBackoffAndRecovery(t *testing.T) {
 	limitStore, err := limits.NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	now := time.Date(2026, 7, 14, 22, 0, 0, 0, time.UTC)
 	if err := limitStore.UpdateSnapshot(limits.Snapshot{

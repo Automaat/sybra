@@ -28,6 +28,7 @@ func TestPrepareRunConfig_SandboxHome_Injected(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	base := sharedBuildCacheDir()
 	want := []string{
@@ -80,6 +81,7 @@ func TestPrepareRunConfig_SandboxHome_SystemRunSkipsInjection(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	if len(cfg.ExtraEnv) != 0 {
 		t.Fatalf("ExtraEnv = %v, want empty for a system run", cfg.ExtraEnv)
@@ -109,6 +111,7 @@ func TestPrepareRunConfig_SandboxHome_IsolatedSystemRun(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	if gotKey != "system-sybra-orchestrator" {
 		t.Fatalf("sandbox key = %q, want system-sybra-orchestrator", gotKey)
@@ -160,6 +163,7 @@ func TestPrepareRunConfig_SandboxHome_NilResolverFailsClosed(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for a task-scoped run with no sandbox resolver")
+		panic("unreachable")
 	}
 }
 
@@ -177,6 +181,7 @@ func TestPrepareRunConfig_SandboxHome_ResolverErrorFailsClosed(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error when the sandbox resolver fails")
+		panic("unreachable")
 	}
 }
 
@@ -195,6 +200,7 @@ func TestPrepareRunConfig_SandboxHome_EmptyPathFailsClosed(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error when the sandbox resolver returns an empty path")
+		panic("unreachable")
 	}
 }
 
@@ -206,6 +212,7 @@ func TestPrepareRunConfig_SandboxHome_NonDirectoryFailsClosed(t *testing.T) {
 	file := filepath.Join(dir, "not-a-dir")
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
+		panic("unreachable")
 	}
 	m, _ := newTestManager(t, ManagerConfig{
 		SandboxHome: func(string) (string, error) { return file, nil },
@@ -218,6 +225,7 @@ func TestPrepareRunConfig_SandboxHome_NonDirectoryFailsClosed(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error when the sandbox resolver returns a non-directory path")
+		panic("unreachable")
 	}
 }
 
@@ -245,6 +253,7 @@ func TestPrepareRunConfig_SandboxHome_StripsDuplicateCallerEnv(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	base := sharedBuildCacheDir()
 	want := []string{
@@ -283,6 +292,7 @@ func TestPrepareRunConfig_SandboxHome_EmptyControlHomeOmitsVar(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	base := sharedBuildCacheDir()
 	want := []string{
@@ -311,6 +321,7 @@ func TestPrepareRunConfig_GitHubAppTokenNotSnapshottedIntoAgentEnv(t *testing.T)
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 
 	var ghToken, githubToken string
@@ -358,6 +369,7 @@ func TestPrepareRunConfig_GitHubAppTokenForcesGitCredentialHelper(t *testing.T) 
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 
 	want := []string{
@@ -410,6 +422,7 @@ func TestPrepareRunConfig_GolangciCache_PerWorktreeAndStripsCaller(t *testing.T)
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 
 	wantCache := filepath.Join(sandboxDir, "golangci-lint-cache")
@@ -429,6 +442,7 @@ func TestPrepareRunConfig_GolangciCache_PerWorktreeAndStripsCaller(t *testing.T)
 	}
 	if info, statErr := os.Stat(wantCache); statErr != nil || !info.IsDir() {
 		t.Fatalf("cache dir %q not created: %v", wantCache, statErr)
+		panic("unreachable")
 	}
 }
 
@@ -447,6 +461,7 @@ func TestPrepareRunConfig_SharedBuildCache_StripsCallerAndShares(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 
 	base := sharedBuildCacheDir()
@@ -471,6 +486,7 @@ func TestPrepareRunConfig_SharedBuildCache_StripsCallerAndShares(t *testing.T) {
 		}
 		if info, statErr := os.Stat(want); statErr != nil || !info.IsDir() {
 			t.Fatalf("shared cache dir %q not created: %v", want, statErr)
+			panic("unreachable")
 		}
 	}
 }
@@ -485,10 +501,12 @@ func TestPrepareRunConfig_SharedBuildCache_GOCACHEIsPerTask(t *testing.T) {
 	task1, _, err := m.prepareRunConfig(RunConfig{TaskID: "task-1", Mode: "headless", Dir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("prepareRunConfig(task-1): %v", err)
+		panic("unreachable")
 	}
 	task2, _, err := m.prepareRunConfig(RunConfig{TaskID: "task-2", Mode: "headless", Dir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("prepareRunConfig(task-2): %v", err)
+		panic("unreachable")
 	}
 
 	var gocache1, gocache2, gomod1, gomod2 string
@@ -533,6 +551,7 @@ func TestPrepareRunConfig_GolangciCache_SystemRunSkips(t *testing.T) {
 	cfg, _, err := m.prepareRunConfig(RunConfig{Mode: "headless", Dir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	for _, kv := range cfg.ExtraEnv {
 		if strings.HasPrefix(kv, "GOLANGCI_LINT_CACHE=") {

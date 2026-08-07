@@ -51,11 +51,13 @@ func TestValidate(t *testing.T) {
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
+					panic("unreachable")
 				}
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
+				panic("unreachable")
 			}
 		})
 	}
@@ -65,12 +67,14 @@ func TestStoreCRUD(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 
 	// Empty list
 	got, err := store.List()
 	if err != nil {
 		t.Fatalf("list empty: %v", err)
+		panic("unreachable")
 	}
 	if len(got) != 0 {
 		t.Fatalf("expected empty list, got %d", len(got))
@@ -80,6 +84,7 @@ func TestStoreCRUD(t *testing.T) {
 	created, err := store.Create(LoopAgent{Name: "self-monitor", Prompt: "/sybra-self-monitor", IntervalSec: 3600})
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	if created.ID == "" {
 		t.Fatal("created ID is empty")
@@ -95,6 +100,7 @@ func TestStoreCRUD(t *testing.T) {
 	fetched, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
+		panic("unreachable")
 	}
 	if fetched.Name != "self-monitor" || fetched.IntervalSec != 3600 {
 		t.Fatalf("round-trip mismatch: %+v", fetched)
@@ -119,6 +125,7 @@ func TestStoreCRUD(t *testing.T) {
 	updated, err := store.Update(created)
 	if err != nil {
 		t.Fatalf("update: %v", err)
+		panic("unreachable")
 	}
 	if updated.ID != created.ID {
 		t.Fatalf("update changed ID: %s vs %s", updated.ID, created.ID)
@@ -141,6 +148,7 @@ func TestStoreCRUD(t *testing.T) {
 	listed, err := store.List()
 	if err != nil {
 		t.Fatalf("list: %v", err)
+		panic("unreachable")
 	}
 	if len(listed) != 2 || listed[0].Name != "alpha" || listed[1].Name != "self-monitor" {
 		t.Fatalf("list not sorted by name: %+v", listed)
@@ -149,14 +157,17 @@ func TestStoreCRUD(t *testing.T) {
 	// Delete
 	if err := store.Delete(created.ID); err != nil {
 		t.Fatalf("delete: %v", err)
+		panic("unreachable")
 	}
 	if _, err := store.Get(created.ID); err == nil {
 		t.Fatal("expected error after delete")
+		panic("unreachable")
 	}
 
 	// Delete missing is not an error
 	if err := store.Delete("nonexistent"); err != nil {
 		t.Fatalf("delete missing: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -174,10 +185,12 @@ func TestStoreConcurrentUpdatePreservesCreatedAt(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 	created, err := store.Create(LoopAgent{Name: "race", Prompt: "/race", IntervalSec: 60})
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 
 	const n = 20
@@ -201,6 +214,7 @@ func TestStoreConcurrentUpdatePreservesCreatedAt(t *testing.T) {
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatalf("get after concurrent updates: %v", err)
+		panic("unreachable")
 	}
 	if !got.CreatedAt.Equal(created.CreatedAt) {
 		t.Errorf("CreatedAt = %v, want %v — dropped by a concurrent write racing the read-modify-write", got.CreatedAt, created.CreatedAt)

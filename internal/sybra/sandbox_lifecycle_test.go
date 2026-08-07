@@ -24,10 +24,12 @@ func TestDeleteTask_StopsSandbox(t *testing.T) {
 	tsk, err := svc.tasks.Create("test delete sandbox", "", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	sybraHome, err := sbMgr.SybraHomeDir(tsk.ID)
 	if err != nil {
 		t.Fatalf("SybraHomeDir: %v", err)
+		panic("unreachable")
 	}
 	taskDir := filepath.Dir(sybraHome)
 
@@ -35,6 +37,7 @@ func TestDeleteTask_StopsSandbox(t *testing.T) {
 	// runtime sandbox instance is registered.
 	if err := svc.DeleteTask(tsk.ID); err != nil {
 		t.Fatalf("DeleteTask: %v", err)
+		panic("unreachable")
 	}
 	// Task should no longer exist.
 	if _, err := svc.tasks.Get(tsk.ID); err == nil {
@@ -60,16 +63,19 @@ func TestUpdateTask_Done_RemovesSandbox(t *testing.T) {
 	tsk, err := svc.tasks.Create("test done sandbox", "", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	sybraHome, err := sbMgr.SybraHomeDir(tsk.ID)
 	if err != nil {
 		t.Fatalf("SybraHomeDir: %v", err)
+		panic("unreachable")
 	}
 	taskDir := filepath.Dir(sybraHome)
 
 	_, err = svc.UpdateTask(tsk.ID, map[string]any{"status": string(task.StatusDone)})
 	if err != nil {
 		t.Fatalf("UpdateTask: %v", err)
+		panic("unreachable")
 	}
 	wg.Wait()
 	if _, err := os.Stat(taskDir); !os.IsNotExist(err) {
@@ -89,6 +95,7 @@ func TestUpdateTask_InProgress_NoStop(t *testing.T) {
 	tsk, err := svc.tasks.Create("test inprogress sandbox", "", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 
 	_, err = svc.UpdateTask(tsk.ID, map[string]any{"status": string(task.StatusInProgress)})
@@ -109,8 +116,10 @@ func TestTaskService_NilSandbox(t *testing.T) {
 	tsk, err := svc.tasks.Create("test nil sandbox", "", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if err := svc.DeleteTask(tsk.ID); err != nil {
 		t.Fatalf("DeleteTask with nil sandbox: %v", err)
+		panic("unreachable")
 	}
 }

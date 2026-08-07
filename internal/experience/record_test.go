@@ -64,6 +64,7 @@ func TestFromTaskDeterministic(t *testing.T) {
 func TestFormatForPrompt(t *testing.T) {
 	if got := FormatForPrompt(nil); got != "" {
 		t.Fatalf("FormatForPrompt(nil) = %q, want empty", got)
+		panic("unreachable")
 	}
 	got := FormatForPrompt([]Record{{
 		TaskID:         "task-1",

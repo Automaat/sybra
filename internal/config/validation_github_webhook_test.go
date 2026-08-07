@@ -26,11 +26,13 @@ func TestValidateResolvedConfigGitHubWebhookCommandPrefix(t *testing.T) {
 			if tc.wantErr {
 				if err == nil || !strings.Contains(err.Error(), "github.webhook.command_prefix") {
 					t.Fatalf("ValidateResolvedConfig() err = %v, want command-prefix error", err)
+					panic("unreachable")
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("ValidateResolvedConfig() err = %v", err)
+				panic("unreachable")
 			}
 		})
 	}

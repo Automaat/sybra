@@ -159,6 +159,7 @@ func TestReapOrphanProviderProcesses_ReapsDeletedCWDOrphan(t *testing.T) {
 	proc, cwd := spawnGenericProcess(t, root, "sleep")
 	if err := os.RemoveAll(cwd); err != nil {
 		t.Fatalf("remove cwd: %v", err)
+		panic("unreachable")
 	}
 	waitForDeletedCWD(t, proc.Process.Pid)
 
@@ -199,6 +200,7 @@ func TestReapOrphanProviderProcesses_GlobRootMatchesDynamicSandbox(t *testing.T)
 	root := filepath.Join(tmp, "sybra-test-2a220813-3sx9kb")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatalf("mkdir root: %v", err)
+		panic("unreachable")
 	}
 	proc := spawnProviderProcess(t, root)
 
@@ -216,6 +218,7 @@ func TestExpandRootGlobs(t *testing.T) {
 	for _, dir := range []string{match1, match2} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", dir, err)
+			panic("unreachable")
 		}
 	}
 	literalOnly := filepath.Join(tmp, "does-not-exist")
@@ -261,21 +264,25 @@ func spawnProviderProcess(t *testing.T, root string) *exec.Cmd {
 	sleepPath, err := exec.LookPath("sleep")
 	if err != nil {
 		t.Fatalf("sleep not found: %v", err)
+		panic("unreachable")
 	}
 	binDir := t.TempDir()
 	link := filepath.Join(binDir, "claude")
 	if err := os.Symlink(sleepPath, link); err != nil {
 		t.Fatalf("symlink sleep -> claude: %v", err)
+		panic("unreachable")
 	}
 	cwd := filepath.Join(root, "sandboxes", "task-1", "sybra-home")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatalf("mkdir cwd: %v", err)
+		panic("unreachable")
 	}
 	cmd := exec.Command(link, "30")
 	cmd.Dir = cwd
 	cmd.Env = scrubAmbientOwnerEnv(os.Environ())
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start provider-shaped process: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
 	go func() { _ = cmd.Wait() }()
@@ -289,19 +296,23 @@ func spawnOwnedProviderDescendantProcess(t *testing.T, root string, owner proces
 	script := filepath.Join(binDir, "claude")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 30 >/dev/null 2>&1 &\nexit 0\n"), 0o755); err != nil {
 		t.Fatalf("write provider script: %v", err)
+		panic("unreachable")
 	}
 	cwd := filepath.Join(root, "worktrees", "task-1")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatalf("mkdir cwd: %v", err)
+		panic("unreachable")
 	}
 	cmd := exec.Command(script)
 	cmd.Dir = cwd
 	cmd.Env = append(scrubAmbientOwnerEnv(os.Environ()), processOwnerAssignments(owner)...)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start provider script: %v", err)
+		panic("unreachable")
 	}
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("wait provider script: %v", err)
+		panic("unreachable")
 	}
 	childPID := waitForOwnedProcessUnderRoot(t, []string{cwd}, owner, "sleep")
 	t.Cleanup(func() {
@@ -318,21 +329,25 @@ func spawnOwnedMCPHelperProcess(t *testing.T, root, name string, owner mcpOwner)
 	sleepPath, err := exec.LookPath("sleep")
 	if err != nil {
 		t.Fatalf("sleep not found: %v", err)
+		panic("unreachable")
 	}
 	binDir := t.TempDir()
 	link := filepath.Join(binDir, name)
 	if err := os.Symlink(sleepPath, link); err != nil {
 		t.Fatalf("symlink sleep -> %s: %v", name, err)
+		panic("unreachable")
 	}
 	cwd := filepath.Join(root, "sandboxes", "task-1", "sybra-home")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatalf("mkdir cwd: %v", err)
+		panic("unreachable")
 	}
 	cmd := exec.Command(link, "30")
 	cmd.Dir = cwd
 	cmd.Env = append(scrubAmbientOwnerEnv(os.Environ()), mcpOwnerAssignments(owner)...)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start owned helper: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
 	go func() { _ = cmd.Wait() }()
@@ -345,16 +360,19 @@ func spawnGenericProcess(t *testing.T, root, name string) (cmd *exec.Cmd, cwd st
 	bin, err := exec.LookPath(name)
 	if err != nil {
 		t.Fatalf("%s not found: %v", name, err)
+		panic("unreachable")
 	}
 	cwd = filepath.Join(root, "worktrees", "task-1")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatalf("mkdir cwd: %v", err)
+		panic("unreachable")
 	}
 	cmd = exec.Command(bin, "30")
 	cmd.Dir = cwd
 	cmd.Env = scrubAmbientOwnerEnv(os.Environ())
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start generic process: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
 	go func() { _ = cmd.Wait() }()

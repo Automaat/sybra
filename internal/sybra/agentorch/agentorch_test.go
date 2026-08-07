@@ -100,11 +100,13 @@ func TestStartAgentWithAssignment_TaskCostExceededBlocksDispatch(t *testing.T) {
 	ts, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tm := task.NewManager(ts, nil)
 	created, err := tm.Create("cost-capped task", "", "headless")
 	if err != nil {
 		t.Fatalf("task Create: %v", err)
+		panic("unreachable")
 	}
 	if err := tm.AddRun(created.ID, task.AgentRun{AgentID: "a1", Provider: "claude", CostUSD: 4.0, State: "stopped"}); err != nil {
 		t.Fatalf("AddRun 1: %v", err)
@@ -118,6 +120,7 @@ func TestStartAgentWithAssignment_TaskCostExceededBlocksDispatch(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("agent.NewManager: %v", err)
+		panic("unreachable")
 	}
 
 	o := New(tm, nil, am, nil, discardSlogLogger(), nil, &config.Config{
@@ -127,6 +130,7 @@ func TestStartAgentWithAssignment_TaskCostExceededBlocksDispatch(t *testing.T) {
 	_, _, err = o.StartAgentWithAssignment(created.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{})
 	if err == nil {
 		t.Fatal("expected dispatch to be refused once cumulative task cost meets the cap, got nil error")
+		panic("unreachable")
 	}
 	if !errors.Is(err, workflow.ErrTaskCostExceeded) {
 		t.Fatalf("err = %v, want wrapping workflow.ErrTaskCostExceeded", err)
@@ -151,6 +155,7 @@ func TestStartAgentWithAssignment_PropagatesOutputSchema(t *testing.T) {
 	ts, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tm := task.NewManager(ts, nil)
 	am := newFakeClaudeManager(t, 1)
@@ -168,6 +173,7 @@ func TestStartAgentWithAssignment_PropagatesOutputSchema(t *testing.T) {
 	ag, _, err := o.StartAgentWithAssignment(tk.ID, "headless", "go", false, false, "", schema, workflow.AgentAssignment{})
 	if err != nil {
 		t.Fatalf("StartAgentWithAssignment: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { am.KillAgentsForTask(tk.ID, 5*time.Second) })
 	if ag.OutputSchema != schema {
@@ -181,11 +187,13 @@ func TestStartPRFixAgent_TaskCostExceededBlocksDispatch(t *testing.T) {
 	ts, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tm := task.NewManager(ts, nil)
 	created, err := tm.Create("cost-capped pr-fix task", "", "headless")
 	if err != nil {
 		t.Fatalf("task Create: %v", err)
+		panic("unreachable")
 	}
 	if err := tm.AddRun(created.ID, task.AgentRun{AgentID: "a1", Provider: "claude", CostUSD: 8.0, State: "stopped"}); err != nil {
 		t.Fatalf("AddRun: %v", err)
@@ -196,6 +204,7 @@ func TestStartPRFixAgent_TaskCostExceededBlocksDispatch(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("agent.NewManager: %v", err)
+		panic("unreachable")
 	}
 
 	o := New(tm, nil, am, nil, discardSlogLogger(), nil, &config.Config{
@@ -205,6 +214,7 @@ func TestStartPRFixAgent_TaskCostExceededBlocksDispatch(t *testing.T) {
 	err = o.StartPRFixAgent(created.ID)
 	if err == nil {
 		t.Fatal("expected pr-fix dispatch to be refused once cumulative task cost meets the cap, got nil error")
+		panic("unreachable")
 	}
 	if !errors.Is(err, workflow.ErrTaskCostExceeded) {
 		t.Fatalf("err = %v, want wrapping workflow.ErrTaskCostExceeded", err)
@@ -230,11 +240,13 @@ func TestStartErrorInvalidatesRunEnvironmentCertificate(t *testing.T) {
 	}
 	if _, err := service.Certify(context.Background(), req); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	o := &Orchestrator{runenv: service}
 	o.invalidateRunEnvironmentOnStartError(req.TaskID, errors.New("provider start: read-only file system"))
 	if _, err := service.Certify(context.Background(), req); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if probes != 2 {
 		t.Fatalf("provider probes = %d, want recertification after environment-shaped start error", probes)
@@ -255,6 +267,7 @@ func TestStartPRFixAgent_PoolBusyTranslatesToWorkflowSentinel(t *testing.T) {
 	ts, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tm := task.NewManager(ts, nil)
 
@@ -280,16 +293,19 @@ func TestStartPRFixAgent_PoolBusyTranslatesToWorkflowSentinel(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("agent.NewManager: %v", err)
+		panic("unreachable")
 	}
 
 	bare, _ := initConflictingRepo(t)
 	projDir := filepath.Join(t.TempDir(), "projects")
 	if err := os.MkdirAll(projDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projStore, err := project.NewStore(projDir, filepath.Join(t.TempDir(), "clones"))
 	if err != nil {
 		t.Fatalf("project.NewStore: %v", err)
+		panic("unreachable")
 	}
 	proj := project.Project{
 		ID:        "test/proj",
@@ -326,18 +342,21 @@ func TestStartPRFixAgent_PoolBusyTranslatesToWorkflowSentinel(t *testing.T) {
 	first, err := tm.Create("occupies the only pool slot", "", "headless")
 	if err != nil {
 		t.Fatalf("task Create (first): %v", err)
+		panic("unreachable")
 	}
 	if _, err := tm.Update(first.ID, task.Update{ProjectID: task.Ptr(proj.ID)}); err != nil {
 		t.Fatalf("task Update (first project): %v", err)
 	}
 	if err := o.StartPRFixAgent(first.ID); err != nil {
 		t.Fatalf("StartPRFixAgent(first) unexpected err: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { am.KillAgentsForTask(first.ID, 5*time.Second) })
 
 	second, err := tm.Create("hits the concurrency cap", "", "headless")
 	if err != nil {
 		t.Fatalf("task Create (second): %v", err)
+		panic("unreachable")
 	}
 	if _, err := tm.Update(second.ID, task.Update{ProjectID: task.Ptr(proj.ID)}); err != nil {
 		t.Fatalf("task Update (second project): %v", err)
@@ -345,6 +364,7 @@ func TestStartPRFixAgent_PoolBusyTranslatesToWorkflowSentinel(t *testing.T) {
 	err = o.StartPRFixAgent(second.ID)
 	if err == nil {
 		t.Fatal("expected pool-busy error once the single slot is saturated, got nil")
+		panic("unreachable")
 	}
 	if !errors.Is(err, workflow.ErrAgentPoolBusy) {
 		t.Fatalf("err = %v, want wrapping workflow.ErrAgentPoolBusy", err)
@@ -384,6 +404,7 @@ func newFakeClaudeManager(t *testing.T, maxConcurrent int) *agent.Manager {
 	})
 	if err != nil {
 		t.Fatalf("agent.NewManager: %v", err)
+		panic("unreachable")
 	}
 	return am
 }
@@ -393,6 +414,7 @@ func newAgentTask(t *testing.T, tm *task.Manager, title string) task.Task {
 	tk, err := tm.Create(title, "", "headless")
 	if err != nil {
 		t.Fatalf("task Create(%q): %v", title, err)
+		panic("unreachable")
 	}
 	return tk
 }
@@ -407,6 +429,7 @@ func TestStartAgentWithAssignment_AdmissionQueueOnPoolBusy(t *testing.T) {
 	ts, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tm := task.NewManager(ts, nil)
 	am := newFakeClaudeManager(t, 1)
@@ -414,6 +437,7 @@ func TestStartAgentWithAssignment_AdmissionQueueOnPoolBusy(t *testing.T) {
 	q, err := agentqueue.New(t.TempDir(), agentqueue.Options{}, discardSlogLogger())
 	if err != nil {
 		t.Fatalf("agentqueue.New: %v", err)
+		panic("unreachable")
 	}
 
 	noPermissions := false
@@ -461,12 +485,15 @@ func TestStartAgentWithAssignment_AdmissionQueueOnPoolBusy(t *testing.T) {
 	ag, err := o.StartAgent(third.ID, "headless", "go", true, false)
 	if err != nil {
 		t.Fatalf("StartAgent(third) unexpected err: %v", err)
+		panic("unreachable")
 	}
 	if ag == nil || ag.State != agent.StateQueued {
 		t.Fatalf("StartAgent(third) = %+v, want synthetic queued agent", ag)
+		panic("unreachable")
 	}
 	if _, err := am.GetAgent(ag.ID); err == nil {
 		t.Fatalf("synthetic queued agent %q must not be registered as a live agent", ag.ID)
+		panic("unreachable")
 	}
 	if got := am.RunningCount(); got != 1 {
 		t.Fatalf("RunningCount after queued manual start = %d, want 1 (queued item must not consume a slot)", got)
@@ -484,6 +511,7 @@ func TestStartAgentWithAssignment_AdmissionQueueOnPoolBusy(t *testing.T) {
 	}
 	if manualItem == nil {
 		t.Fatalf("manual queued item for %s missing from snapshot %+v", third.ID, snap)
+		panic("unreachable")
 	}
 	if !manualItem.Manual || manualItem.Mode != "headless" || manualItem.Prompt != "go" || !manualItem.IncludeTaskDescription {
 		t.Fatalf("manual queued item = %+v, want Manual=true mode=headless prompt=go includeTaskDescription=true", *manualItem)
@@ -498,6 +526,7 @@ func TestStartAgentWithAssignment_MaxDepthRejectsWithoutPoolBusySentinel(t *test
 	ts, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tm := task.NewManager(ts, nil)
 	am := newFakeClaudeManager(t, 1)
@@ -505,6 +534,7 @@ func TestStartAgentWithAssignment_MaxDepthRejectsWithoutPoolBusySentinel(t *test
 	q, err := agentqueue.New(t.TempDir(), agentqueue.Options{MaxDepth: 1}, discardSlogLogger())
 	if err != nil {
 		t.Fatalf("agentqueue.New: %v", err)
+		panic("unreachable")
 	}
 
 	noPermissions := false
@@ -531,6 +561,7 @@ func TestStartAgentWithAssignment_MaxDepthRejectsWithoutPoolBusySentinel(t *test
 	_, _, err = o.StartAgentWithAssignment(third.ID, "headless", "go", false, false, "", "", workflow.AgentAssignment{})
 	if err == nil {
 		t.Fatal("expected a non-nil error once the queue is at max depth")
+		panic("unreachable")
 	}
 	if errors.Is(err, workflow.ErrAgentPoolBusy) {
 		t.Fatalf("err = %v, must NOT wrap workflow.ErrAgentPoolBusy — the task was rejected, not queued", err)
@@ -545,6 +576,7 @@ func TestStartAgent_MaxDepthRejectsManualQueue(t *testing.T) {
 	ts, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tm := task.NewManager(ts, nil)
 	am := newFakeClaudeManager(t, 1)
@@ -552,6 +584,7 @@ func TestStartAgent_MaxDepthRejectsManualQueue(t *testing.T) {
 	q, err := agentqueue.New(t.TempDir(), agentqueue.Options{MaxDepth: 1}, discardSlogLogger())
 	if err != nil {
 		t.Fatalf("agentqueue.New: %v", err)
+		panic("unreachable")
 	}
 
 	noPermissions := false
@@ -578,6 +611,7 @@ func TestStartAgent_MaxDepthRejectsManualQueue(t *testing.T) {
 	ag, err := o.StartAgent(manual.ID, "headless", "go", false, false)
 	if err == nil {
 		t.Fatalf("StartAgent(manual) = %+v, want non-nil error once queue is at max depth", ag)
+		panic("unreachable")
 	}
 	if errors.Is(err, workflow.ErrAgentPoolBusy) {
 		t.Fatalf("StartAgent(manual) err = %v, want hard rejection rather than workflow.ErrAgentPoolBusy", err)
@@ -967,10 +1001,12 @@ func TestAutoAssignProject(t *testing.T) {
 		ts, err := task.NewStore(t.TempDir())
 		if err != nil {
 			t.Fatalf("task.NewStore: %v", err)
+			panic("unreachable")
 		}
 		ps, err := project.NewStore(t.TempDir(), t.TempDir())
 		if err != nil {
 			t.Fatalf("project.NewStore: %v", err)
+			panic("unreachable")
 		}
 		return task.NewManager(ts, nil), ps
 	}
@@ -982,6 +1018,7 @@ func TestAutoAssignProject(t *testing.T) {
 		got, err := o.AutoAssignProject(task.Task{ID: "t1", ProjectID: "owner/repo"})
 		if err != nil {
 			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+			panic("unreachable")
 		}
 		if got.ProjectID != "owner/repo" {
 			t.Fatalf("ProjectID = %q, want unchanged", got.ProjectID)
@@ -993,15 +1030,18 @@ func TestAutoAssignProject(t *testing.T) {
 		tm, ps := newStores(t)
 		if _, err := ps.CreateMeta("https://github.com/owner/solo", project.ProjectTypePet); err != nil {
 			t.Fatalf("CreateMeta: %v", err)
+			panic("unreachable")
 		}
 		created, err := tm.Create("t", "b", "headless")
 		if err != nil {
 			t.Fatalf("task Create: %v", err)
+			panic("unreachable")
 		}
 		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{})
 		got, err := o.AutoAssignProject(created)
 		if err != nil {
 			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+			panic("unreachable")
 		}
 		if got.ProjectID != "owner/solo" {
 			t.Fatalf("ProjectID = %q, want %q", got.ProjectID, "owner/solo")
@@ -1013,18 +1053,22 @@ func TestAutoAssignProject(t *testing.T) {
 		tm, ps := newStores(t)
 		if _, err := ps.CreateMeta("https://github.com/owner/one", project.ProjectTypePet); err != nil {
 			t.Fatalf("CreateMeta: %v", err)
+			panic("unreachable")
 		}
 		if _, err := ps.CreateMeta("https://github.com/owner/two", project.ProjectTypePet); err != nil {
 			t.Fatalf("CreateMeta: %v", err)
+			panic("unreachable")
 		}
 		created, err := tm.Create("t", "b", "headless")
 		if err != nil {
 			t.Fatalf("task Create: %v", err)
+			panic("unreachable")
 		}
 		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{})
 		got, err := o.AutoAssignProject(created)
 		if err != nil {
 			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+			panic("unreachable")
 		}
 		if got.ProjectID != "" {
 			t.Fatalf("ProjectID = %q, want empty (ambiguous, no default configured)", got.ProjectID)
@@ -1036,18 +1080,22 @@ func TestAutoAssignProject(t *testing.T) {
 		tm, ps := newStores(t)
 		if _, err := ps.CreateMeta("https://github.com/owner/one", project.ProjectTypePet); err != nil {
 			t.Fatalf("CreateMeta: %v", err)
+			panic("unreachable")
 		}
 		if _, err := ps.CreateMeta("https://github.com/owner/two", project.ProjectTypePet); err != nil {
 			t.Fatalf("CreateMeta: %v", err)
+			panic("unreachable")
 		}
 		created, err := tm.Create("t", "b", "headless")
 		if err != nil {
 			t.Fatalf("task Create: %v", err)
+			panic("unreachable")
 		}
 		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{Agent: config.AgentDefaults{DefaultProjectID: "owner/two"}})
 		got, err := o.AutoAssignProject(created)
 		if err != nil {
 			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+			panic("unreachable")
 		}
 		if got.ProjectID != "owner/two" {
 			t.Fatalf("ProjectID = %q, want %q", got.ProjectID, "owner/two")
@@ -1059,18 +1107,22 @@ func TestAutoAssignProject(t *testing.T) {
 		tm, ps := newStores(t)
 		if _, err := ps.CreateMeta("https://github.com/owner/one", project.ProjectTypePet); err != nil {
 			t.Fatalf("CreateMeta: %v", err)
+			panic("unreachable")
 		}
 		if _, err := ps.CreateMeta("https://github.com/owner/two", project.ProjectTypePet); err != nil {
 			t.Fatalf("CreateMeta: %v", err)
+			panic("unreachable")
 		}
 		created, err := tm.Create("t", "b", "headless")
 		if err != nil {
 			t.Fatalf("task Create: %v", err)
+			panic("unreachable")
 		}
 		o := New(tm, ps, nil, nil, discardSlogLogger(), nil, &config.Config{Agent: config.AgentDefaults{DefaultProjectID: "owner/typo"}})
 		got, err := o.AutoAssignProject(created)
 		if err != nil {
 			t.Fatalf("AutoAssignProject() err = %v, want nil", err)
+			panic("unreachable")
 		}
 		if got.ProjectID != "" {
 			t.Fatalf("ProjectID = %q, want empty (default_project_id not registered)", got.ProjectID)
@@ -1083,21 +1135,26 @@ func TestAutoAssignProject(t *testing.T) {
 		tm, err := task.NewStore(t.TempDir())
 		if err != nil {
 			t.Fatalf("task.NewStore: %v", err)
+			panic("unreachable")
 		}
 		ps, err := project.NewStore(projectDir, t.TempDir())
 		if err != nil {
 			t.Fatalf("project.NewStore: %v", err)
+			panic("unreachable")
 		}
 		if err := os.RemoveAll(projectDir); err != nil {
 			t.Fatalf("RemoveAll(projectDir): %v", err)
+			panic("unreachable")
 		}
 		if err := os.WriteFile(projectDir, []byte("not a directory"), 0o644); err != nil {
 			t.Fatalf("WriteFile(projectDir): %v", err)
+			panic("unreachable")
 		}
 		o := New(task.NewManager(tm, nil), ps, nil, nil, discardSlogLogger(), nil, &config.Config{})
 		got, err := o.AutoAssignProject(task.Task{ID: "t1"})
 		if err == nil {
 			t.Fatal("AutoAssignProject() err = nil, want project list error")
+			panic("unreachable")
 		}
 		if got.ProjectID != "" {
 			t.Fatalf("ProjectID = %q, want empty after list error", got.ProjectID)
@@ -1108,14 +1165,17 @@ func TestAutoAssignProject(t *testing.T) {
 		tm, ps := newStores(t)
 		if _, err := ps.CreateMeta("https://github.com/owner/solo", project.ProjectTypePet); err != nil {
 			t.Fatalf("CreateMeta: %v", err)
+			panic("unreachable")
 		}
 		created, err := tm.Create("t", "b", "headless")
 		if err != nil {
 			t.Fatalf("task Create: %v", err)
+			panic("unreachable")
 		}
 		taskDir := filepath.Dir(created.FilePath)
 		if err := os.Chmod(taskDir, 0o500); err != nil {
 			t.Fatalf("Chmod(taskDir): %v", err)
+			panic("unreachable")
 		}
 		defer func() {
 			_ = os.Chmod(taskDir, 0o700)
@@ -1125,6 +1185,7 @@ func TestAutoAssignProject(t *testing.T) {
 		got, err := o.AutoAssignProject(created)
 		if err == nil {
 			t.Fatal("AutoAssignProject() err = nil, want persist error")
+			panic("unreachable")
 		}
 		if got.ProjectID != "" {
 			t.Fatalf("ProjectID = %q, want unchanged input task after persist failure", got.ProjectID)
@@ -1132,6 +1193,7 @@ func TestAutoAssignProject(t *testing.T) {
 		stored, getErr := tm.Get(created.ID)
 		if getErr != nil {
 			t.Fatalf("Get(created.ID): %v", getErr)
+			panic("unreachable")
 		}
 		if stored.ProjectID != "" {
 			t.Fatalf("stored ProjectID = %q, want empty after persist failure", stored.ProjectID)
@@ -1189,6 +1251,7 @@ func TestLogSandboxEscapeHatchRecordsReason(t *testing.T) {
 			al, err := audit.NewLogger(dir)
 			if err != nil {
 				t.Fatalf("audit.NewLogger: %v", err)
+				panic("unreachable")
 			}
 			o := New(nil, nil, nil, al, slog.New(slog.DiscardHandler), nil,
 				&config.Config{Agent: config.AgentDefaults{SandboxMode: "enforce"}})
@@ -1221,6 +1284,7 @@ func readAuditEvents(t *testing.T, dir string) []audit.Event {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
+		panic("unreachable")
 	}
 	var events []audit.Event
 	for _, entry := range entries {
@@ -1230,6 +1294,7 @@ func readAuditEvents(t *testing.T, dir string) []audit.Event {
 		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
 		if err != nil {
 			t.Fatalf("ReadFile: %v", err)
+			panic("unreachable")
 		}
 		for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 			if line == "" {
@@ -1238,6 +1303,7 @@ func readAuditEvents(t *testing.T, dir string) []audit.Event {
 			var e audit.Event
 			if err := json.Unmarshal([]byte(line), &e); err != nil {
 				t.Fatalf("unmarshal %q: %v", line, err)
+				panic("unreachable")
 			}
 			events = append(events, e)
 		}

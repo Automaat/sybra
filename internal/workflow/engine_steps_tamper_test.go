@@ -913,6 +913,7 @@ func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var impl *Definition
 	for i := range defs {
@@ -923,6 +924,7 @@ func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 	}
 	if impl == nil {
 		t.Fatal("simple-task-implement builtin not found")
+		panic("unreachable")
 	}
 
 	gates := impl.StepByID("parallel_gates")
@@ -959,6 +961,7 @@ func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 			got, err := ResolveTransition(gates.Next, map[string]string{"task.status": string(tc.status)})
 			if err != nil {
 				t.Fatalf("ResolveTransition: %v", err)
+				panic("unreachable")
 			}
 			if got != tc.want {
 				t.Errorf("goto = %q, want %q", got, tc.want)
@@ -972,9 +975,11 @@ func writeRepoFile(t *testing.T, dir, rel, content string) {
 	full := filepath.Join(dir, rel)
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -985,6 +990,7 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("git %v: %v", args, err)
+		panic("unreachable")
 	}
 	return string(out)
 }
@@ -1024,6 +1030,7 @@ func TestExecDetectTampering_NoWorktreeSkips(t *testing.T) {
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output == "flagged" {
 		t.Errorf("no worktree must not flag; got %q", out.Output)
@@ -1045,6 +1052,7 @@ func TestExecDetectTampering_DiffErrorDoesNotClaimClean(t *testing.T) {
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output == "clean" {
 		t.Errorf("Output = %q, a diff/tooling error must not be reported as clean", out.Output)
@@ -1070,6 +1078,7 @@ func TestExecDetectTampering_CleanImplChange(t *testing.T) {
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Errorf("Output = %q, want clean", out.Output)
@@ -1098,6 +1107,7 @@ func TestExecDetectTampering_AddedSkipFlags(t *testing.T) {
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged", out.Output)
@@ -1131,6 +1141,7 @@ func TestExecDetectTampering_PlatformGuardedSkipDoesNotFlag(t *testing.T) {
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output == "flagged" {
 		t.Fatalf("Output = %q, want not flagged (platform-guarded skip)", out.Output)
@@ -1158,6 +1169,7 @@ func TestExecDetectTampering_SkipAfterPlatformGuardFlags(t *testing.T) {
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged", out.Output)
@@ -1187,6 +1199,7 @@ func TestExecDetectTampering_UnguardedSkipStillFlags(t *testing.T) {
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged", out.Output)
@@ -1220,6 +1233,7 @@ func TestExecDetectTampering_EstablishedSkipIdiomDoesNotFlag(t *testing.T) {
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output == "flagged" {
 		t.Fatalf("Output = %q, want not flagged (established skip idiom)", out.Output)
@@ -1248,6 +1262,7 @@ func TestExecDetectTampering_EstablishedSkipIdiomSurvivesRename(t *testing.T) {
 		"\n\tif Foo() != 1 {\n\t\tt.Errorf(\"bad\")\n\t}\n}\n"
 	if err := os.Remove(filepath.Join(wt, "internal/foo/foo_test.go")); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	writeRepoFile(t, wt, "internal/foo/foo_other_test.go", tampered)
 	gitRun(t, wt, "add", "-A")
@@ -1259,6 +1274,7 @@ func TestExecDetectTampering_EstablishedSkipIdiomSurvivesRename(t *testing.T) {
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output == "flagged" {
 		t.Fatalf("Output = %q, want not flagged (established skip idiom survives rename)", out.Output)
@@ -1290,6 +1306,7 @@ func TestExecDetectTampering_TwoNewIdenticalSkipsSameCommitStillFlags(t *testing
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged (two novel identical skips must not bless each other)", out.Output)
@@ -1314,6 +1331,7 @@ func TestExecDetectTampering_DeletedTestFlags(t *testing.T) {
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged", out.Output)
@@ -1352,6 +1370,7 @@ func TestExecDetectTampering_DocumentedDeletedTestDoesNotFlag(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean", out.Output)
@@ -1381,6 +1400,7 @@ func TestExecDetectTampering_BlessedTagShortCircuits(t *testing.T) {
 		TaskInfo{ID: "t1", Tags: []string{"tamper-blessed"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "blessed" {
 		t.Errorf("Output = %q, want blessed (tag short-circuits the scan)", out.Output)
@@ -1408,6 +1428,7 @@ func TestExecDetectTampering_CommentedOutTestFlags(t *testing.T) {
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged (commenting out an assertion is tampering)", out.Output)
@@ -1443,6 +1464,7 @@ func TestExecDetectTampering_DocumentedDeletionUsesPreAgentSnapshot(t *testing.T
 	out, err := engine.execDetectTampering("t1", newTamperStep(), mutated)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged; post-agent body edits must not bless deleted tests", out.Output)
@@ -1479,6 +1501,7 @@ func TestExecDetectTampering_DocumentedDeletionIgnoresLaterAuthorSnapshot(t *tes
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged; later fix-review snapshots must not bless deleted tests", out.Output)
@@ -1509,6 +1532,7 @@ func TestExecDetectTampering_DocumentedDeletionSnapshotDowngrades(t *testing.T) 
 		TaskInfo{ID: "t1", Status: "in-progress", Workflow: wf})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean; pre-agent snapshot should downgrade documented deletion", out.Output)
@@ -1535,6 +1559,7 @@ func TestExecDetectTampering_NeuteredCIFlags(t *testing.T) {
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged (continue-on-error neuters the gate)", out.Output)
@@ -1568,6 +1593,7 @@ func TestExecDetectTampering_UsesAgentBaseline(t *testing.T) {
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1", Workflow: wf})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean; baseline should ignore stale test deletion", out.Output)
@@ -1608,6 +1634,7 @@ func TestExecDetectTampering_MergedUpstreamSkipNotFlagged(t *testing.T) {
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1", Workflow: wf})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean; a t.Skip merged in from origin/main must not be attributed to the agent", out.Output)
@@ -1652,6 +1679,7 @@ func TestExecDetectTampering_MergedUpstreamSkipInLocallyEditedFileNotFlagged(t *
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1", Workflow: wf})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean; merged-in upstream skip must stay ignored even when the file also has local edits", out.Output)
@@ -1701,6 +1729,7 @@ func TestExecDetectTampering_MergedUpstreamSkipInRenamedFileNotFlagged(t *testin
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1", Workflow: wf})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean; upstream skip lookup must follow renamed file old path", out.Output)
@@ -1767,6 +1796,7 @@ func TestBuiltinPRFix_DetectTamperingWiring(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var prfix *Definition
 	for i := range defs {
@@ -1777,9 +1807,11 @@ func TestBuiltinPRFix_DetectTamperingWiring(t *testing.T) {
 	}
 	if prfix == nil {
 		t.Fatal("pr-fix builtin not found")
+		panic("unreachable")
 	}
 	if prfix.StepByID("detect_tampering") == nil {
 		t.Fatal("detect_tampering step missing from pr-fix")
+		panic("unreachable")
 	}
 	vc := prfix.StepByID("verify_commits")
 	if vc == nil {
@@ -1796,6 +1828,7 @@ func TestBuiltinSimpleTaskReview_DetectTamperingWiring(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var rev *Definition
 	for i := range defs {
@@ -1806,6 +1839,7 @@ func TestBuiltinSimpleTaskReview_DetectTamperingWiring(t *testing.T) {
 	}
 	if rev == nil {
 		t.Fatal("simple-task-review builtin not found")
+		panic("unreachable")
 	}
 	tamper := rev.StepByID("detect_tampering")
 	if tamper == nil {
@@ -1868,6 +1902,7 @@ func TestExecDetectTampering_BenignTestAddDoesNotBlock(t *testing.T) {
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Errorf("Output = %q, want clean (adding tests is not tampering)", out.Output)
@@ -1922,6 +1957,7 @@ func TestScanTamperPatchPlatformGuardFixture(t *testing.T) {
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output == "flagged" {
 		t.Fatalf("Output = %q, want not flagged (self-hosted fixture, not a real skip)", out.Output)

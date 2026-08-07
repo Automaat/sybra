@@ -53,12 +53,14 @@ func TestManagerPutFiresHookOnTransition(t *testing.T) {
 	base := Task{ID: "leader-2", Title: "t", Status: StatusInProgress, AgentMode: AgentModeHeadless}
 	if _, created, err := m.Put(base); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	} else if !created {
 		t.Error("first Put should report created=true")
 	}
 	base.Status = StatusTesting
 	if _, created, err := m.Put(base); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	} else if created {
 		t.Error("second Put (upsert) should report created=false")
 	}
@@ -87,10 +89,12 @@ func TestManagerPutNoHookWhenStatusUnchanged(t *testing.T) {
 	base := Task{ID: "leader-3", Title: "t", Status: StatusTodo, AgentMode: AgentModeHeadless}
 	if _, _, err := m.Put(base); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	base.Title = "renamed"
 	if _, _, err := m.Put(base); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	mu.Lock()

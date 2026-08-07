@@ -53,6 +53,7 @@ func TestSidecarDirRendersInTemplates(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("RenderTemplate: %v", err)
+		panic("unreachable")
 	}
 	if want := "/sandbox/.sybra-review-abc.md"; got != want {
 		t.Fatalf("rendered %q, want %q", got, want)

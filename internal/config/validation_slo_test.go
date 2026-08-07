@@ -37,6 +37,7 @@ func TestValidateResolvedConfig_SLOTargetBounds(t *testing.T) {
 			err := ValidateResolvedConfig(cfg)
 			if err == nil {
 				t.Fatalf("ValidateResolvedConfig() err = nil, want error containing %q", c.wantMsg)
+				panic("unreachable")
 			}
 			if msgs := ValidationMessages(err); !containsMsg(msgs, c.wantMsg) {
 				t.Fatalf("messages = %v, want one containing %q", msgs, c.wantMsg)

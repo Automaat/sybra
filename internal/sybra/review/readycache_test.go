@@ -100,6 +100,7 @@ func TestFetchKnownTaskPRs_ForcePushInvalidatesReadyCache(t *testing.T) {
 
 	if got := r.fetchKnownTaskPRs(matchers, nil); len(got) != 1 || got[0].HeadSHA != "sha50" {
 		t.Fatalf("first cycle: got %+v", got)
+		panic("unreachable")
 	}
 	if fullFetches != 1 {
 		t.Fatalf("full fetches after first cycle = %d, want 1", fullFetches)
@@ -233,6 +234,7 @@ func TestFetchKnownTaskPRs_StatusEventInvalidatesReadyCacheAtSameHead(t *testing
 
 	if got := r.fetchKnownTaskPRs(matchers, nil); len(got) != 1 || got[0].CIStatus != "SUCCESS" {
 		t.Fatalf("first cycle: got %+v, want cached ready PR", got)
+		panic("unreachable")
 	}
 	if fullFetches != 1 {
 		t.Fatalf("full fetches after first cycle = %d, want 1", fullFetches)
@@ -262,17 +264,20 @@ func TestHandleAutoMerge_EvictsReadyCache(t *testing.T) {
 	projStore, err := project.NewStore(projDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
 
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatalf("task NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),

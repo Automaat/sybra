@@ -16,6 +16,7 @@ func newReconcileFailureHandler(t *testing.T) (*Handler, *task.Manager) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
@@ -34,6 +35,7 @@ func mustGet(t *testing.T, tasks *task.Manager, id string) task.Task {
 	got, err := tasks.Get(id)
 	if err != nil {
 		t.Fatalf("get %s: %v", id, err)
+		panic("unreachable")
 	}
 	return got
 }
@@ -43,6 +45,7 @@ func newReviewTaskInPhase(t *testing.T, tasks *task.Manager, phase string) task.
 	tk, err := tasks.Create("Review: external PR", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	updated, err := tasks.UpdateMap(tk.ID, map[string]any{
 		"status":       string(task.StatusInReview),
@@ -53,6 +56,7 @@ func newReviewTaskInPhase(t *testing.T, tasks *task.Manager, phase string) task.
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return updated
 }
@@ -72,6 +76,7 @@ func TestRecordReconcileFailure_EscalatesPersistentFailure(t *testing.T) {
 		got, gerr := tasks.Get(tk.ID)
 		if gerr != nil {
 			t.Fatal(gerr)
+			panic("unreachable")
 		}
 		r.recordReconcileFailure(&got, err)
 	}
@@ -79,6 +84,7 @@ func TestRecordReconcileFailure_EscalatesPersistentFailure(t *testing.T) {
 	got, gerr := tasks.Get(tk.ID)
 	if gerr != nil {
 		t.Fatal(gerr)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want %q after %d consecutive failures — a warn-log is not an alarm",
@@ -101,6 +107,7 @@ func TestRecordReconcileFailure_ToleratesFailuresBelowLimit(t *testing.T) {
 		got, gerr := tasks.Get(tk.ID)
 		if gerr != nil {
 			t.Fatal(gerr)
+			panic("unreachable")
 		}
 		r.recordReconcileFailure(&got, err)
 	}
@@ -108,6 +115,7 @@ func TestRecordReconcileFailure_ToleratesFailuresBelowLimit(t *testing.T) {
 	got, gerr := tasks.Get(tk.ID)
 	if gerr != nil {
 		t.Fatal(gerr)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Fatalf("status = %q, want %q — escalated before the limit", got.Status, task.StatusInReview)
@@ -125,6 +133,7 @@ func TestRecordReconcileFailure_TransientNeverEscalates(t *testing.T) {
 		got, gerr := tasks.Get(tk.ID)
 		if gerr != nil {
 			t.Fatal(gerr)
+			panic("unreachable")
 		}
 		r.recordReconcileFailure(&got, transient)
 	}
@@ -132,6 +141,7 @@ func TestRecordReconcileFailure_TransientNeverEscalates(t *testing.T) {
 	got, gerr := tasks.Get(tk.ID)
 	if gerr != nil {
 		t.Fatal(gerr)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Fatalf("status = %q, want %q — a transient blip must not escalate", got.Status, task.StatusInReview)
@@ -151,6 +161,7 @@ func TestClearReconcileFailure_ResetsTheCount(t *testing.T) {
 		got, gerr := tasks.Get(tk.ID)
 		if gerr != nil {
 			t.Fatal(gerr)
+			panic("unreachable")
 		}
 		r.recordReconcileFailure(&got, err)
 	}
@@ -161,12 +172,14 @@ func TestClearReconcileFailure_ResetsTheCount(t *testing.T) {
 	got, gerr := tasks.Get(tk.ID)
 	if gerr != nil {
 		t.Fatal(gerr)
+		panic("unreachable")
 	}
 	r.recordReconcileFailure(&got, err)
 
 	got, gerr = tasks.Get(tk.ID)
 	if gerr != nil {
 		t.Fatal(gerr)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Fatalf("status = %q, want %q — the counter did not reset on a successful read",
@@ -196,6 +209,7 @@ func TestReconcileReviewTask_RoutesFailureThroughCircuit(t *testing.T) {
 		got, gerr := tasks.Get(tk.ID)
 		if gerr != nil {
 			t.Fatal(gerr)
+			panic("unreachable")
 		}
 		r.reconcileReviewTask(&got, requested, map[string]github.PullRequest{})
 	}
@@ -203,6 +217,7 @@ func TestReconcileReviewTask_RoutesFailureThroughCircuit(t *testing.T) {
 	got, gerr := tasks.Get(tk.ID)
 	if gerr != nil {
 		t.Fatal(gerr)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want %q — reconcileReviewTask swallowed a permanently failing read, "+
@@ -387,6 +402,7 @@ func TestReconcileReviewPhases_DoesNotUnparkTheRateBreaker(t *testing.T) {
 		all, err := tasks.List()
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		r.reconcileReviewPhases(all, summary)
 	}

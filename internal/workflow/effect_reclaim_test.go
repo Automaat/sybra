@@ -41,6 +41,7 @@ func leaseFor(t *testing.T, tasks *memTasks, id string) *time.Time {
 	got, err := tasks.GetTask(id)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got.Workflow.EffectLog) != 1 {
 		t.Fatalf("EffectLog = %+v, want exactly one record", got.Workflow.EffectLog)
@@ -63,6 +64,7 @@ func TestReclaimOrphanedEffectLeases_ReleasesDeadOwnersClaim(t *testing.T) {
 	}
 	if lease := leaseFor(t, tasks, "t1"); lease != nil {
 		t.Fatalf("LeaseExpiresAt = %v, want nil so the live engine can claim", lease)
+		panic("unreachable")
 	}
 }
 
@@ -82,6 +84,7 @@ func TestReclaimOrphanedEffectLeases_SkipsTaskWithLiveAgent(t *testing.T) {
 	}
 	if lease := leaseFor(t, tasks, "t1"); lease == nil {
 		t.Fatal("LeaseExpiresAt = nil, want the reattached agent's claim left intact")
+		panic("unreachable")
 	}
 }
 
@@ -166,6 +169,7 @@ func TestReclaimOrphanedEffectLeases_LeavesClaimsItMustNotTouch(t *testing.T) {
 			}
 			if lease := leaseFor(t, tasks, "t1"); lease == nil {
 				t.Fatal("LeaseExpiresAt = nil, want the claim left intact")
+				panic("unreachable")
 			}
 		})
 	}
@@ -184,6 +188,7 @@ func TestReclaimOrphanedEffectLeases_NoopWhenDispatchDisabled(t *testing.T) {
 	}
 	if lease := leaseFor(t, tasks, "t1"); lease == nil {
 		t.Fatal("LeaseExpiresAt = nil, want the claim left intact")
+		panic("unreachable")
 	}
 }
 
@@ -204,11 +209,13 @@ func TestReclaimOrphanedEffectLeases_UnfencesSubsequentClaim(t *testing.T) {
 	}
 	if _, err := tasks.ClaimWorkflowEffect("t1", claim); err == nil {
 		t.Fatal("ClaimWorkflowEffect succeeded before reclaim, want a fence conflict")
+		panic("unreachable")
 	}
 
 	engine.ReclaimOrphanedEffectLeases()
 
 	if _, err := tasks.ClaimWorkflowEffect("t1", claim); err != nil {
 		t.Fatalf("ClaimWorkflowEffect after reclaim: %v, want success", err)
+		panic("unreachable")
 	}
 }

@@ -36,6 +36,7 @@ func TestReadFindsEventsAcrossZoneDateBoundary(t *testing.T) {
 			l, err := NewLogger(dir)
 			if err != nil {
 				t.Fatalf("NewLogger: %v", err)
+				panic("unreachable")
 			}
 			if err := l.Log(Event{Type: EventRoutingReweighted, Timestamp: eventUTC}); err != nil {
 				t.Fatalf("Log: %v", err)
@@ -50,6 +51,7 @@ func TestReadFindsEventsAcrossZoneDateBoundary(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatalf("Read: %v", err)
+				panic("unreachable")
 			}
 			if len(got) != 1 {
 				t.Fatalf("Read returned %d events, want 1 — the window was built in %s, where the local date is %s but the file is named %s",
@@ -69,6 +71,7 @@ func TestLogNormalizesNonUTCTimestamps(t *testing.T) {
 	l, err := NewLogger(dir)
 	if err != nil {
 		t.Fatalf("NewLogger: %v", err)
+		panic("unreachable")
 	}
 
 	// 00:30 on Aug 2 in CEST is still 22:30 on Aug 1 in UTC.
@@ -90,6 +93,7 @@ func TestLogNormalizesNonUTCTimestamps(t *testing.T) {
 	got, err := Read(dir, Query{Since: caller.Add(-time.Hour), Until: caller.Add(time.Hour)})
 	if err != nil {
 		t.Fatalf("Read: %v", err)
+		panic("unreachable")
 	}
 	if len(got) != 1 {
 		t.Fatalf("Read returned %d events, want 1", len(got))
@@ -104,6 +108,7 @@ func TestAuditFilesSelectsByUTCDate(t *testing.T) {
 	l, err := NewLogger(dir)
 	if err != nil {
 		t.Fatalf("NewLogger: %v", err)
+		panic("unreachable")
 	}
 	eventUTC := time.Date(2026, 8, 1, 23, 30, 0, 0, time.UTC)
 	if err := l.Log(Event{Type: "x", Timestamp: eventUTC}); err != nil {
@@ -114,6 +119,7 @@ func TestAuditFilesSelectsByUTCDate(t *testing.T) {
 	paths, err := auditFiles(dir, local.Add(-time.Minute), local.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("auditFiles: %v", err)
+		panic("unreachable")
 	}
 	want := filepath.Join(dir, "2026-08-01.ndjson")
 	if len(paths) != 1 || paths[0] != want {

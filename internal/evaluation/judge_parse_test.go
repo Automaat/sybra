@@ -32,6 +32,7 @@ func TestParseQualityVerdictResolvesTheRealObject(t *testing.T) {
 			got, err := parseQualityVerdict([]byte(tt.raw))
 			if err != nil {
 				t.Fatalf("parseQualityVerdict: %v", err)
+				panic("unreachable")
 			}
 			if got.Overall != 8 || got.Summary != "solid" {
 				t.Errorf("resolved the wrong object: %+v", got)

@@ -88,12 +88,14 @@ func post(t *testing.T, srv *httptest.Server, service, method string, args ...an
 		b, err := json.Marshal(args)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		body = bytes.NewReader(b)
 	}
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/"+service+"/"+method, body)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -101,6 +103,7 @@ func post(t *testing.T, srv *httptest.Server, service, method string, args ...an
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return resp
 }
@@ -118,6 +121,7 @@ func decodeErr(t *testing.T, resp *http.Response) (message, code string) {
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
 		t.Fatalf("decode error envelope: %v", err)
+		panic("unreachable")
 	}
 	return env.Error, env.Code
 }
@@ -134,6 +138,7 @@ func TestHandler_Echo(t *testing.T) {
 	var result string
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if result != "echo:hello" {
 		t.Fatalf("got %q", result)
@@ -152,6 +157,7 @@ func TestHandler_Add(t *testing.T) {
 	var result int
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if result != 7 {
 		t.Fatalf("got %d", result)
@@ -170,6 +176,7 @@ func TestHandler_MultipleNonErrorReturns(t *testing.T) {
 	var result []json.RawMessage
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(result) != 2 {
 		t.Fatalf("expected 2 return values, got %d", len(result))
@@ -177,10 +184,12 @@ func TestHandler_MultipleNonErrorReturns(t *testing.T) {
 	var first string
 	if err := json.Unmarshal(result[0], &first); err != nil {
 		t.Fatalf("decode first return: %v", err)
+		panic("unreachable")
 	}
 	var second bool
 	if err := json.Unmarshal(result[1], &second); err != nil {
 		t.Fatalf("decode second return: %v", err)
+		panic("unreachable")
 	}
 	if first != "ok" || !second {
 		t.Fatalf("got (%q, %v), want (%q, %v)", first, second, "ok", true)
@@ -371,11 +380,13 @@ func TestHandler_ErrorEnvelope(t *testing.T) {
 					strings.NewReader("not-json-array"))
 				if err != nil {
 					t.Fatal(err)
+					panic("unreachable")
 				}
 				req.Header.Set("Content-Type", "application/json")
 				resp, err = http.DefaultClient.Do(req)
 				if err != nil {
 					t.Fatal(err)
+					panic("unreachable")
 				}
 			} else {
 				resp = post(t, srv, tc.service, tc.method, tc.args...)
@@ -435,6 +446,7 @@ func TestHandler_ObjIn(t *testing.T) {
 	var result string
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if result != "val" {
 		t.Fatalf("got %q", result)
@@ -456,6 +468,7 @@ func TestHandler_OversizedBodyRejected(t *testing.T) {
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/TestSvc/Echo", bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)

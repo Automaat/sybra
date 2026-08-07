@@ -375,6 +375,7 @@ func TestResolveTransition(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
+				panic("unreachable")
 			}
 			if gotID != tt.wantID {
 				t.Errorf("got %q, want %q", gotID, tt.wantID)

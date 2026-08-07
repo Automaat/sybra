@@ -29,6 +29,7 @@ func TestInitAgentManagerBindsToolLedger(t *testing.T) {
 	a.initToolLedger()
 	if a.toolLedger == nil {
 		t.Fatal("initToolLedger did not open a ledger")
+		panic("unreachable")
 	}
 	if err := a.initAgentManager(t.Context(), func(string, any) {}); err != nil {
 		t.Fatalf("initAgentManager: %v", err)
@@ -39,6 +40,7 @@ func TestInitAgentManagerBindsToolLedger(t *testing.T) {
 
 	if a.agents.ToolLedger() == nil {
 		t.Fatal("agent manager has no tool ledger bound; every tool call is dropped silently")
+		panic("unreachable")
 	}
 	if a.agents.ToolLedger() != a.toolLedger {
 		t.Fatal("agent manager bound a different ledger than the app opened")
@@ -59,10 +61,12 @@ func TestToolLedgerDirAloneProvesNothing(t *testing.T) {
 	dir := cfg.ToolLedgerDir()
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatalf("ledger dir not created: %v", err)
+		panic("unreachable")
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("read ledger dir: %v", err)
+		panic("unreachable")
 	}
 	for _, e := range entries {
 		if filepath.Ext(e.Name()) == ".ndjson" {

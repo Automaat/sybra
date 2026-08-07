@@ -9,10 +9,12 @@ func TestStore_LoadMissingReturnsNotOK(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	_, ok, err := store.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+		panic("unreachable")
 	}
 	if ok {
 		t.Fatalf("Load() ok = true, want false for a fresh store")
@@ -23,6 +25,7 @@ func TestStore_SaveLoadRoundTrip(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	want := Overlay{
 		Version:     3,
@@ -38,10 +41,12 @@ func TestStore_SaveLoadRoundTrip(t *testing.T) {
 	}
 	if err := store.Save(want); err != nil {
 		t.Fatalf("Save: %v", err)
+		panic("unreachable")
 	}
 	got, ok, err := store.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+		panic("unreachable")
 	}
 	if !ok {
 		t.Fatalf("Load() ok = false, want true after Save")
@@ -61,6 +66,7 @@ func TestStore_SaveOverwritesPriorGeneration(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	if err := store.Save(Overlay{Version: 1}); err != nil {
 		t.Fatalf("Save v1: %v", err)
@@ -71,6 +77,7 @@ func TestStore_SaveOverwritesPriorGeneration(t *testing.T) {
 	got, ok, err := store.Load()
 	if err != nil || !ok {
 		t.Fatalf("Load: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if got.Version != 2 {
 		t.Fatalf("Load().Version = %d, want 2", got.Version)

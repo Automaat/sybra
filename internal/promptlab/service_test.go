@@ -16,12 +16,14 @@ func TestRunNoRecords(t *testing.T) {
 	result, err := Run(context.Background(), Options{OutputDir: filepath.Join(dir, "out")})
 	if err != nil {
 		t.Fatalf("Run with no records: %v", err)
+		panic("unreachable")
 	}
 	if len(result.Proposals) != 0 || len(result.WeakSubjects) != 0 {
 		t.Fatalf("expected empty result for no records, got %+v", result)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "out", "last-run.json")); err != nil {
 		t.Fatalf("expected last-run.json to still be written: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -41,6 +43,7 @@ func TestRunFilesHumanRequired(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 	if len(result.Proposals) == 0 {
 		t.Fatal("expected at least one proposal")
@@ -55,6 +58,7 @@ func TestRunFilesHumanRequired(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "last-run.json")); err != nil {
 		t.Fatalf("expected last-run.json to be written: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -76,6 +80,7 @@ func TestRunCapsProposalsAndLogs(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 	if len(result.Proposals) != 1 {
 		t.Fatalf("len(result.Proposals) = %d, want 1", len(result.Proposals))

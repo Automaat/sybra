@@ -101,6 +101,7 @@ func TestPrepareRunConfig_ResolvesReasoningEffort(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatalf("prepareRunConfig: %v", err)
+				panic("unreachable")
 			}
 			if cfg.ReasoningEffort != tt.want {
 				t.Errorf("ReasoningEffort = %q, want %q", cfg.ReasoningEffort, tt.want)
@@ -125,11 +126,13 @@ func TestPrepareRunConfig_RoleEffortReachesProviderArgv(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	a := newRunningAgent("a", cfg, prov, func() {})
 	_, args, _, _, err := buildHeadlessInvocation(a, cfg)
 	if err != nil {
 		t.Fatalf("buildHeadlessInvocation: %v", err)
+		panic("unreachable")
 	}
 	if !hasArgPair(args, "--effort", "high") {
 		t.Fatalf("expected --effort high in args; got %v", args)

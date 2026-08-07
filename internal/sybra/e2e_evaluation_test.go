@@ -60,11 +60,13 @@ func TestE2E_EvaluationReportSplitsDirectAndSkillReviewCohorts(t *testing.T) {
 	statsStore, err := stats.NewStore(statsPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	auditDir := filepath.Join(env.taskDir, "audit")
 	auditLogger, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = auditLogger.Close() })
 
@@ -89,9 +91,11 @@ func TestE2E_EvaluationReportSplitsDirectAndSkillReviewCohorts(t *testing.T) {
 	directTask, err := env.tasks.Create("direct review cohort", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(directTask.ID, "test-direct-review"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 30*time.Second, "direct review workflow completes", func() bool {
 		tk, gErr := env.tasks.Get(directTask.ID)
@@ -104,9 +108,11 @@ func TestE2E_EvaluationReportSplitsDirectAndSkillReviewCohorts(t *testing.T) {
 	skillTask, err := env.tasks.Create("skill review cohort", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(skillTask.ID, skillWorkflowID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 30*time.Second, "skill review workflow completes", func() bool {
 		tk, gErr := env.tasks.Get(skillTask.ID)
@@ -125,6 +131,7 @@ func TestE2E_EvaluationReportSplitsDirectAndSkillReviewCohorts(t *testing.T) {
 	}).Scan(context.Background())
 	if err != nil {
 		t.Fatalf("evaluation scan: %v", err)
+		panic("unreachable")
 	}
 
 	reviewRows := make([]evaluation.ComparisonBreakdown, 0, len(rep.ByAgentModel))

@@ -34,16 +34,19 @@ func TestTriageHandlerClassifiesNewTasks(t *testing.T) {
 	ts, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(ts, nil)
 
 	_, err = mgr.Create("a task", "body", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	_, err = mgr.Create("another", "body2", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 
 	// Skip debounce: backdate updated_at by mutating status to todo+back.
@@ -54,6 +57,7 @@ func TestTriageHandlerClassifiesNewTasks(t *testing.T) {
 	ps, err := project.NewStore(projDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("project.NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	fc := &fakeClassifier{}
@@ -70,6 +74,7 @@ func TestTriageHandlerClassifiesNewTasks(t *testing.T) {
 		_, err := mgr.UpdateMap(list[i].ID, map[string]any{"status_reason": "seed"})
 		if err != nil {
 			t.Fatalf("seed: %v", err)
+			panic("unreachable")
 		}
 	}
 	// Wait past 5s debounce. Use a tighter override: set perTaskTTL does not affect debounce.
@@ -96,6 +101,7 @@ func TestTriageHandlerPollSkipsEnrichPendingTasks(t *testing.T) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 
@@ -107,16 +113,19 @@ func TestTriageHandlerPollSkipsEnrichPendingTasks(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("CreateFull: %v", err)
+		panic("unreachable")
 	}
 	created.UpdatedAt = time.Now().Add(-time.Minute)
 	if _, err := store.Put(created); err != nil {
 		t.Fatalf("Put: %v", err)
+		panic("unreachable")
 	}
 
 	projDir := t.TempDir()
 	ps, err := project.NewStore(projDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("project.NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	fc := &fakeClassifier{}
@@ -133,6 +142,7 @@ func TestTriageHandlerPollSkipsEnrichPendingTasks(t *testing.T) {
 	got, err := mgr.Get(created.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusNew {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusNew)

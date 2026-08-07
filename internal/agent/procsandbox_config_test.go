@@ -22,6 +22,7 @@ func TestPrepareRunConfig_Sandbox_DefaultModeResolvesReport(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	if cfg.sandbox.mode != "off" {
 		t.Fatalf("cfg.sandbox.mode = %q, want %q (report never wraps)", cfg.sandbox.mode, "off")
@@ -43,6 +44,7 @@ func TestPrepareRunConfig_Sandbox_OffModeSkipsResolution(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	if cfg.sandbox.mode != "off" {
 		t.Fatalf("cfg.sandbox.mode = %q, want off", cfg.sandbox.mode)
@@ -67,6 +69,7 @@ func TestPrepareRunConfig_Sandbox_EnforceResolvesRoots(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	if cfg.sandbox.mode != "enforce" {
 		t.Fatalf("cfg.sandbox.mode = %q, want enforce", cfg.sandbox.mode)
@@ -91,6 +94,7 @@ func TestInjectProcessSandbox_EnforceFailsClosedOnBadRoot(t *testing.T) {
 	}
 	if err := m.injectProcessSandbox(&cfg); err == nil {
 		t.Fatal("expected error for an unresolvable sandbox-home root in enforce mode")
+		panic("unreachable")
 	}
 }
 
@@ -109,6 +113,7 @@ func TestInjectProcessSandbox_ReportNeverFailsClosed(t *testing.T) {
 	}
 	if err := m.injectProcessSandbox(&cfg); err != nil {
 		t.Fatalf("injectProcessSandbox: %v, want no error (report never fails closed)", err)
+		panic("unreachable")
 	}
 	if cfg.sandbox.mode != "off" {
 		t.Fatalf("cfg.sandbox.mode = %q, want off", cfg.sandbox.mode)
@@ -139,6 +144,7 @@ func TestPrepareRunConfig_Sandbox_ReportFallsBackOnUnavailableWrapper(t *testing
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	if cfg.sandbox.mode != "off" {
 		t.Fatalf("cfg.sandbox.mode = %q, want off (report never wraps)", cfg.sandbox.mode)

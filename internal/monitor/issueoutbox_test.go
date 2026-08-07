@@ -50,6 +50,7 @@ func newTestDurableSink(t *testing.T, inner issueSubmitter) (sink *DurableGHIssu
 	store, err := newIssueOutboxStore(filepath.Join(tmpDir, "outbox"))
 	if err != nil {
 		t.Fatalf("newIssueOutboxStore: %v", err)
+		panic("unreachable")
 	}
 	return &DurableGHIssueSink{inner: inner, store: store, logger: slog.Default(), name: "test"}, store.dir
 }
@@ -63,6 +64,7 @@ func TestDurableGHIssueSink_AuthFailurePersistsAndLaterRetrySucceeds(t *testing.
 	_, _, err := d.SubmitIssue(context.Background(), "some anomaly", "body", nil)
 	if err == nil {
 		t.Fatal("expected auth error to propagate to the caller")
+		panic("unreachable")
 	}
 	if d.store.depth() != 1 {
 		t.Fatalf("want 1 pending outbox item after auth failure, got %d (dir=%s)", d.store.depth(), dir)
@@ -74,6 +76,7 @@ func TestDurableGHIssueSink_AuthFailurePersistsAndLaterRetrySucceeds(t *testing.
 	_, _, err = d.SubmitIssue(context.Background(), "a different anomaly", "body2", nil)
 	if err != nil {
 		t.Fatalf("submit after recovery: %v", err)
+		panic("unreachable")
 	}
 	if d.store.depth() != 0 {
 		t.Fatalf("want 0 pending outbox items after recovery flush, got %d", d.store.depth())
@@ -86,12 +89,14 @@ func TestDurableGHIssueSink_AuthFailureEmitsAuditEventOnce(t *testing.T) {
 	auditLog, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatalf("audit.NewLogger: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = auditLog.Close() })
 
 	store, err := newIssueOutboxStore(filepath.Join(dir, "outbox"))
 	if err != nil {
 		t.Fatalf("newIssueOutboxStore: %v", err)
+		panic("unreachable")
 	}
 	inner := &fakeSubmitter{err: errAuthFailed}
 	d := &DurableGHIssueSink{inner: inner, store: store, logger: slog.Default(), name: "monitor", auditLog: auditLog}
@@ -101,12 +106,14 @@ func TestDurableGHIssueSink_AuthFailureEmitsAuditEventOnce(t *testing.T) {
 	// emitted once, on the first time the fingerprint is newly persisted.
 	if _, _, err := d.SubmitIssue(context.Background(), "recurring anomaly", "body", nil); err == nil {
 		t.Fatal("expected auth failure")
+		panic("unreachable")
 	}
 	d.flushPending(context.Background())
 
 	events, err := audit.Read(auditDir, audit.Query{Since: time.Now().Add(-time.Hour), Until: time.Now().Add(time.Hour)})
 	if err != nil {
 		t.Fatalf("audit.Read: %v", err)
+		panic("unreachable")
 	}
 	var matches int
 	for _, e := range events {
@@ -130,6 +137,7 @@ func TestDurableGHIssueSink_NonAuthErrorNotQueued(t *testing.T) {
 	_, _, err := d.SubmitIssue(context.Background(), "title", "body", nil)
 	if err == nil {
 		t.Fatal("expected error to propagate")
+		panic("unreachable")
 	}
 	if d.store.depth() != 0 {
 		t.Fatalf("non-auth error must not be queued for retry, got depth %d", d.store.depth())
@@ -144,10 +152,12 @@ func TestDurableGHIssueSink_SurvivesRestartAcrossSinkInstances(t *testing.T) {
 	store1, err := newIssueOutboxStore(outboxDir)
 	if err != nil {
 		t.Fatalf("newIssueOutboxStore: %v", err)
+		panic("unreachable")
 	}
 	d1 := &DurableGHIssueSink{inner: failing, store: store1, logger: slog.Default(), name: "test"}
 	if _, _, err := d1.SubmitIssue(context.Background(), "persist me", "body", nil); err == nil {
 		t.Fatal("expected auth failure")
+		panic("unreachable")
 	}
 	if store1.depth() != 1 {
 		t.Fatalf("want 1 pending item before restart, got %d", store1.depth())
@@ -159,6 +169,7 @@ func TestDurableGHIssueSink_SurvivesRestartAcrossSinkInstances(t *testing.T) {
 	store2, err := newIssueOutboxStore(outboxDir)
 	if err != nil {
 		t.Fatalf("newIssueOutboxStore (restart): %v", err)
+		panic("unreachable")
 	}
 	d2 := &DurableGHIssueSink{inner: healthy, store: store2, logger: slog.Default(), name: "test"}
 	d2.flushPending(context.Background())
@@ -181,6 +192,7 @@ func TestDurableGHIssueSink_DropsAfterMaxAttempts(t *testing.T) {
 
 	if _, _, err := d.SubmitIssue(context.Background(), "stuck forever", "body", nil); err == nil {
 		t.Fatal("expected auth failure")
+		panic("unreachable")
 	}
 	if d.store.depth() != 1 {
 		t.Fatalf("want 1 pending item, got %d", d.store.depth())
@@ -211,6 +223,7 @@ func TestDurableGHIssueSink_BoundedDepth(t *testing.T) {
 	for _, title := range titles {
 		if _, _, err := d.SubmitIssue(context.Background(), title, "body", nil); err == nil {
 			t.Fatalf("expected auth failure for %q", title)
+			panic("unreachable")
 		}
 	}
 
@@ -225,6 +238,7 @@ func TestDurableGHIssueSink_ReplayPendingDrainsOutboxAndCountsReplays(t *testing
 
 	if _, _, err := d.SubmitIssue(context.Background(), "queued anomaly", "body", nil); err == nil {
 		t.Fatal("expected auth failure")
+		panic("unreachable")
 	}
 	if got := d.Depth(); got != 1 {
 		t.Fatalf("Depth() = %d, want 1", got)
@@ -259,6 +273,7 @@ func TestDurableGHIssueSink_ReplayPendingConcurrentWithSubmitIssueNeverDoubleFil
 
 	if _, _, err := d.SubmitIssue(context.Background(), "racy anomaly", "body", nil); err == nil {
 		t.Fatal("expected auth failure")
+		panic("unreachable")
 	}
 	inner.markHealthy()
 
@@ -290,6 +305,7 @@ func TestDurableGHIssueSink_SubmitDelegatesToAnomalyShapedSubmitIssue(t *testing
 	created, err := d.Submit(context.Background(), a, "body")
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
+		panic("unreachable")
 	}
 	if !created {
 		t.Fatal("expected created=true from the healthy fake")

@@ -27,6 +27,7 @@ func TestAgentAdapterExperiencePromptPlanAndTriageOnly(t *testing.T) {
 	store, err := experience.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projects := newExperienceProjectStore(t, tmp)
 	seedExperienceProject(t, filepath.Join(tmp, "projects"), project.Project{
@@ -84,6 +85,7 @@ func TestAgentAdapterExperiencePromptUsesOpaqueWorkKey(t *testing.T) {
 	store, err := experience.New(filepath.Join(tmp, "experience"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projects := newExperienceProjectStore(t, tmp)
 	workProject := project.Project{
@@ -127,11 +129,13 @@ func TestManualTestConfigGetterFallsBackToProjectConfigWithoutWorktree(t *testin
 	taskStore, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(taskStore, nil)
 	created, err := taskMgr.Create("exercise manual test config", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projectID := "owner/repo"
 	if _, err := taskMgr.Update(created.ID, task.Update{ProjectID: &projectID}); err != nil {
@@ -142,6 +146,7 @@ func TestManualTestConfigGetterFallsBackToProjectConfigWithoutWorktree(t *testin
 	projects, err := project.NewStore(projectsDir, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projectYAML := `id: owner/repo
 name: repo
@@ -156,6 +161,7 @@ manual_test:
 `
 	if err := os.WriteFile(filepath.Join(projectsDir, "owner--repo.yaml"), []byte(projectYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	getter := &manualTestConfigGetterAdapter{
@@ -175,6 +181,7 @@ func TestBranchSyncerAdapter_TaskLookupFailureReturnsFailedResult(t *testing.T) 
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	adapter := &branchSyncerAdapter{
 		tasks: task.NewManager(store, nil),
@@ -187,6 +194,7 @@ func TestBranchSyncerAdapter_TaskLookupFailureReturnsFailedResult(t *testing.T) 
 	}
 	if err == nil {
 		t.Fatal("expected task lookup error")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "ensure worktree") || !strings.Contains(err.Error(), "task missing-task not found") {
 		t.Fatalf("err = %v, want ensure-worktree task lookup context", err)
@@ -207,6 +215,7 @@ func newPRTailRecoveryHarness(t *testing.T, status task.Status) prTailRecoveryHa
 		t.Helper()
 		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 
@@ -221,6 +230,7 @@ func newPRTailRecoveryHarness(t *testing.T, status task.Status) prTailRecoveryHa
 	}
 	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("init\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"git", "-C", src, "add", "README.md"},
@@ -231,6 +241,7 @@ func newPRTailRecoveryHarness(t *testing.T, status task.Status) prTailRecoveryHa
 	}
 	if err := os.WriteFile(filepath.Join(src, "fix.txt"), []byte("pushed fix\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"git", "-C", src, "add", "fix.txt"},
@@ -243,6 +254,7 @@ func newPRTailRecoveryHarness(t *testing.T, status task.Status) prTailRecoveryHa
 	bare := filepath.Join(t.TempDir(), "origin.git")
 	if err := project.CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("CloneBare: %v", err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"git", "-c", "safe.bareRepository=all", "-C", bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"},
@@ -256,6 +268,7 @@ func newPRTailRecoveryHarness(t *testing.T, status task.Status) prTailRecoveryHa
 	projects, err := project.NewStore(projectsDir, clonesDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projectYAML := strings.Join([]string{
 		"id: owner/repo",
@@ -271,16 +284,19 @@ func newPRTailRecoveryHarness(t *testing.T, status task.Status) prTailRecoveryHa
 	}, "\n")
 	if err := os.WriteFile(filepath.Join(projectsDir, "owner--repo.yaml"), []byte(projectYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	taskStore, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(taskStore, nil)
 	created, err := taskMgr.Create("fix(workflow): recover ready-pr worktree", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	created, err = taskMgr.Update(created.ID, task.Update{
 		Status:    task.Ptr(status),
@@ -289,6 +305,7 @@ func newPRTailRecoveryHarness(t *testing.T, status task.Status) prTailRecoveryHa
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	mgr := worktree.New(worktree.Config{
@@ -324,10 +341,12 @@ func TestWorktreeGetterAdapter_GetWorktreePath_RecoversReadyPRWorktree(t *testin
 	}
 	if _, err := os.Stat(filepath.Join(path, "fix.txt")); err != nil {
 		t.Fatalf("recovered worktree missing pushed branch content: %v", err)
+		panic("unreachable")
 	}
 	out, err := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD").CombinedOutput()
 	if err != nil {
 		t.Fatalf("git rev-parse: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if got := strings.TrimSpace(string(out)); got != h.branch {
 		t.Fatalf("branch = %q, want %q", got, h.branch)
@@ -343,6 +362,7 @@ func TestWorktreeGetterAdapter_ResolvePRWorktree_RecoversRemoteBranch(t *testing
 	path, ok, err := adapter.ResolvePRWorktree(context.Background(), h.task.ID)
 	if err != nil {
 		t.Fatalf("ResolvePRWorktree: %v", err)
+		panic("unreachable")
 	}
 	if !ok {
 		t.Fatal("ResolvePRWorktree() = false, want recovered worktree")
@@ -352,6 +372,7 @@ func TestWorktreeGetterAdapter_ResolvePRWorktree_RecoversRemoteBranch(t *testing
 	}
 	if _, err := os.Stat(filepath.Join(path, "fix.txt")); err != nil {
 		t.Fatalf("recovered worktree missing remote branch content: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -366,12 +387,14 @@ func TestBranchSyncerAdapter_SyncTaskBranch_RecoversMissingInProgressWorktree(t 
 	result, err := adapter.SyncTaskBranch(context.Background(), h.task.ID)
 	if err != nil {
 		t.Fatalf("SyncTaskBranch: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains([]string{worktree.SyncNoop.String(), worktree.SyncSynced.String()}, result) {
 		t.Fatalf("result = %q, want recovered noop/synced", result)
 	}
 	if _, err := os.Stat(h.mgr.PathFor(h.task)); err != nil {
 		t.Fatalf("expected recovered worktree on disk: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -388,6 +411,7 @@ func TestAttemptNoteAppenderAdapter_WritesNote(t *testing.T) {
 		cmd.Dir = wt
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("%s %v: %v\n%s", args[0], args[1:], err, out)
+			panic("unreachable")
 		}
 	}
 
@@ -396,11 +420,13 @@ func TestAttemptNoteAppenderAdapter_WritesNote(t *testing.T) {
 	note := marker + "\n\n## Prior attempt 1\n\nGrounded repro."
 	if err := adapter.AppendReimplementNote(context.Background(), "t1", wt, marker, note); err != nil {
 		t.Fatalf("AppendReimplementNote: %v", err)
+		panic("unreachable")
 	}
 
 	content, err := os.ReadFile(filepath.Join(wt, notes.FileName))
 	if err != nil {
 		t.Fatalf("read NOTES.md: %v", err)
+		panic("unreachable")
 	}
 	got := string(content)
 	if !strings.Contains(got, marker) || !strings.Contains(got, "## Prior attempt 1") {
@@ -410,6 +436,7 @@ func TestAttemptNoteAppenderAdapter_WritesNote(t *testing.T) {
 	info, err := os.Stat(filepath.Join(wt, notes.FileName))
 	if err != nil {
 		t.Fatalf("stat NOTES.md: %v", err)
+		panic("unreachable")
 	}
 	if perms := info.Mode().Perm(); perms != 0o600 {
 		t.Fatalf("NOTES.md perms = %o, want 0600", perms)
@@ -418,6 +445,7 @@ func TestAttemptNoteAppenderAdapter_WritesNote(t *testing.T) {
 	out, err := exec.Command("git", "-C", wt, "status", "--porcelain").Output()
 	if err != nil {
 		t.Fatalf("git status: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(string(out), notes.FileName) {
 		t.Fatalf("expected %s to be git-excluded, got status:\n%s", notes.FileName, out)
@@ -436,6 +464,7 @@ func TestAgentAdapterStartAgentSystemRoleHonorsDispatchClaim(t *testing.T) {
 	created, err := a.tasks.Create("plan race guard", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
@@ -462,12 +491,14 @@ func TestFallbackAgentWorkingDir(t *testing.T) {
 	dir, err := fallbackAgentWorkingDir()
 	if err != nil {
 		t.Fatalf("fallbackAgentWorkingDir: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 	info, err := os.Stat(dir)
 	if err != nil {
 		t.Fatalf("stat fallback cwd: %v", err)
+		panic("unreachable")
 	}
 	if !info.IsDir() {
 		t.Fatalf("fallback cwd %q is not a directory", dir)
@@ -515,6 +546,7 @@ func gitOutput(t *testing.T, args ...string) string {
 	out, err := exec.Command("git", args...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
+		panic("unreachable")
 	}
 	return strings.TrimSpace(string(out))
 }
@@ -538,10 +570,12 @@ func setupProvidedDirRecoveryHarness(t *testing.T, role agent.Role) providedDirR
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("initial\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"-C", src, "add", "."},
@@ -549,6 +583,7 @@ func setupProvidedDirRecoveryHarness(t *testing.T, role agent.Role) providedDirR
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 
@@ -560,10 +595,12 @@ func setupProvidedDirRecoveryHarness(t *testing.T, role agent.Role) providedDirR
 		} {
 			if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 				t.Fatalf("git %v: %v: %s", args, err, out)
+				panic("unreachable")
 			}
 		}
 		if err := os.WriteFile(filepath.Join(src, "pr.txt"), []byte("pull request branch\n"), 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		for _, args := range [][]string{
 			{"-C", src, "add", "."},
@@ -572,6 +609,7 @@ func setupProvidedDirRecoveryHarness(t *testing.T, role agent.Role) providedDirR
 		} {
 			if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 				t.Fatalf("git %v: %v: %s", args, err, out)
+				panic("unreachable")
 			}
 		}
 	}
@@ -579,32 +617,39 @@ func setupProvidedDirRecoveryHarness(t *testing.T, role agent.Role) providedDirR
 	bare := filepath.Join(tmp, "origin.git")
 	if out, err := exec.Command("git", "clone", "--bare", src, bare).CombinedOutput(); err != nil {
 		t.Fatalf("git clone --bare: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
 		t.Fatalf("git config: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
 		t.Fatalf("git fetch: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projYAML := "id: owner/repo\nname: repo\nowner: owner\nrepo: repo\nurl: " + bare +
 		"\nclone_path: " + bare + "\ntype: pet\n"
 	if err := os.WriteFile(filepath.Join(tmp, "projects", "owner--repo.yaml"), []byte(projYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	taskStore, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(taskStore, nil)
 	tk, err := taskMgr.Create("missing provided dir recovery", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projectID := "owner/repo"
 	update := task.Update{ProjectID: &projectID}
@@ -614,6 +659,7 @@ func setupProvidedDirRecoveryHarness(t *testing.T, role agent.Role) providedDirR
 	tk, err = taskMgr.Update(tk.ID, update)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	logger := discardLogger()
@@ -645,10 +691,12 @@ func setupProvidedDirRecoveryHarness(t *testing.T, role agent.Role) providedDirR
 	}
 	if err != nil {
 		t.Fatalf("prepare initial worktree: %v", err)
+		panic("unreachable")
 	}
 	tk, err = taskMgr.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return providedDirRecoveryHarness{aa: aa, agents: agents, task: tk, dir: dir}
 }
@@ -669,10 +717,12 @@ func setupConflictRecoveryHarness(t *testing.T) conflictRecoveryHarness {
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("initial\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"-C", src, "add", "."},
@@ -680,43 +730,52 @@ func setupConflictRecoveryHarness(t *testing.T) conflictRecoveryHarness {
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 
 	bare := filepath.Join(tmp, "origin.git")
 	if out, err := exec.Command("git", "clone", "--bare", src, bare).CombinedOutput(); err != nil {
 		t.Fatalf("git clone --bare: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
 		t.Fatalf("git config: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
 		t.Fatalf("git fetch: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projYAML := "id: owner/repo\nname: repo\nowner: owner\nrepo: repo\nurl: " + bare +
 		"\nclone_path: " + bare + "\ntype: pet\n"
 	if err := os.WriteFile(filepath.Join(tmp, "projects", "owner--repo.yaml"), []byte(projYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	taskStore, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(taskStore, nil)
 	tk, err := taskMgr.Create("conflict recovery claim release", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projectID := "owner/repo"
 	tk, err = taskMgr.Update(tk.ID, task.Update{ProjectID: &projectID})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	logger := discardLogger()
@@ -736,10 +795,12 @@ func setupConflictRecoveryHarness(t *testing.T) conflictRecoveryHarness {
 	wtPath, err := wm.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	tk, err = taskMgr.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"-c", "safe.bareRepository=all", "-C", bare, "update-ref", "-d", "refs/heads/" + tk.Branch},
@@ -747,6 +808,7 @@ func setupConflictRecoveryHarness(t *testing.T) conflictRecoveryHarness {
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	for _, args := range [][]string{
@@ -756,10 +818,12 @@ func setupConflictRecoveryHarness(t *testing.T) conflictRecoveryHarness {
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"-C", wtPath, "add", "."},
@@ -767,10 +831,12 @@ func setupConflictRecoveryHarness(t *testing.T) conflictRecoveryHarness {
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("upstream edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"-C", src, "add", "."},
@@ -778,6 +844,7 @@ func setupConflictRecoveryHarness(t *testing.T) conflictRecoveryHarness {
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 
@@ -867,6 +934,7 @@ func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForReview(t *testing.
 	h := setupProvidedDirRecoveryHarness(t, agent.RoleReview)
 	if err := os.RemoveAll(h.dir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	agentID, startedDir, baselineRef, err := h.aa.StartAgent(
@@ -886,6 +954,7 @@ func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForReview(t *testing.
 	)
 	if err != nil {
 		t.Fatalf("StartAgent review with missing provided dir: %v", err)
+		panic("unreachable")
 	}
 	if agentID == "" {
 		t.Fatal("StartAgent returned empty agentID")
@@ -898,6 +967,7 @@ func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForReview(t *testing.
 	}
 	if info, err := os.Stat(startedDir); err != nil || !info.IsDir() {
 		t.Fatalf("recreated review worktree missing: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -905,6 +975,7 @@ func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForFixReview(t *testi
 	h := setupProvidedDirRecoveryHarness(t, agent.RoleFixReview)
 	if err := os.RemoveAll(h.dir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	agentID, startedDir, baselineRef, err := h.aa.StartAgent(
@@ -924,6 +995,7 @@ func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForFixReview(t *testi
 	)
 	if err != nil {
 		t.Fatalf("StartAgent fix-review with missing provided dir: %v", err)
+		panic("unreachable")
 	}
 	if agentID == "" {
 		t.Fatal("StartAgent returned empty agentID")
@@ -936,6 +1008,7 @@ func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForFixReview(t *testi
 	}
 	if info, err := os.Stat(startedDir); err != nil || !info.IsDir() {
 		t.Fatalf("recreated fix-review worktree missing: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -943,6 +1016,7 @@ func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForPRFix(t *testing.T
 	h := setupProvidedDirRecoveryHarness(t, agent.RolePRFix)
 	if err := os.RemoveAll(h.dir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	agentID, startedDir, baselineRef, err := h.aa.StartAgent(
@@ -962,6 +1036,7 @@ func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForPRFix(t *testing.T
 	)
 	if err != nil {
 		t.Fatalf("StartAgent pr-fix with missing provided dir: %v", err)
+		panic("unreachable")
 	}
 	if agentID == "" {
 		t.Fatal("StartAgent returned empty agentID")
@@ -974,6 +1049,7 @@ func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForPRFix(t *testing.T
 	}
 	if info, err := os.Stat(startedDir); err != nil || !info.IsDir() {
 		t.Fatalf("recreated pr-fix worktree missing: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -982,11 +1058,13 @@ func TestAgentAdapterStartAgentCleanRetryResetsRecreatedProvidedDir(t *testing.T
 	baseline := gitOutput(t, "-C", h.dir, "rev-parse", "HEAD")
 	if err := os.WriteFile(filepath.Join(h.dir, "stale.txt"), []byte("stale attempt\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	gitRun(t, "-C", h.dir, "add", "stale.txt")
 	gitRun(t, "-C", h.dir, "-c", "user.name=Test", "-c", "user.email=test@test.com", "-c", "commit.gpgsign=false", "commit", "-m", "stale attempt")
 	if err := os.RemoveAll(h.dir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	_, startedDir, baselineRef, err := h.aa.StartAgent(
@@ -1006,6 +1084,7 @@ func TestAgentAdapterStartAgentCleanRetryResetsRecreatedProvidedDir(t *testing.T
 	)
 	if err != nil {
 		t.Fatalf("StartAgent clean retry with missing provided dir: %v", err)
+		panic("unreachable")
 	}
 	if startedDir != h.dir {
 		t.Fatalf("startedDir = %q, want recreated original path %q", startedDir, h.dir)
@@ -1032,6 +1111,7 @@ func TestAgentAdapterStartAgentCleanRetryRecreatesDetachedDirtyCheckoutFromTaskB
 
 	if err := os.WriteFile(filepath.Join(h.dir, "repair.txt"), []byte("later repair output\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	gitRun(t, "-C", h.dir, "add", "repair.txt")
 	gitRun(t, "-C", h.dir, "-c", "user.name=Test", "-c", "user.email=test@test.com", "-c", "commit.gpgsign=false", "commit", "-m", "repair output")
@@ -1041,6 +1121,7 @@ func TestAgentAdapterStartAgentCleanRetryRecreatesDetachedDirtyCheckoutFromTaskB
 	gitRun(t, "-C", h.dir, "checkout", "--detach", baseline)
 	if err := os.WriteFile(filepath.Join(h.dir, "generated.txt"), []byte("stale churn\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	agentID, startedDir, baselineRef, err := h.aa.StartAgent(
@@ -1060,6 +1141,7 @@ func TestAgentAdapterStartAgentCleanRetryRecreatesDetachedDirtyCheckoutFromTaskB
 	)
 	if err != nil {
 		t.Fatalf("StartAgent clean retry with detached dirty checkout: %v", err)
+		panic("unreachable")
 	}
 	if agentID == "" {
 		t.Fatal("StartAgent returned empty agentID")
@@ -1081,6 +1163,7 @@ func TestAgentAdapterStartAgentCleanRetryRecreatesDetachedDirtyCheckoutFromTaskB
 	}
 	if got, err := os.ReadFile(filepath.Join(startedDir, "repair.txt")); err != nil || string(got) != "later repair output\n" {
 		t.Fatalf("repair.txt = %q, err=%v; want pushed repair output", got, err)
+		panic("unreachable")
 	}
 	if status := gitOutput(t, "-C", startedDir, "status", "--short"); status != "" {
 		t.Fatalf("status = %q, want clean worktree", status)
@@ -1108,6 +1191,7 @@ func TestAgentAdapterStartAgentRepreparesProvidedDirOnFixReviewBranchMismatch(t 
 	)
 	if err != nil {
 		t.Fatalf("StartAgent fix-review with detached provided dir: %v", err)
+		panic("unreachable")
 	}
 	if agentID == "" {
 		t.Fatal("StartAgent returned empty agentID")
@@ -1145,6 +1229,7 @@ func TestAgentAdapterStartAgentPlanKeepsExistingScratchDir(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("StartAgent plan with scratch dir: %v", err)
+		panic("unreachable")
 	}
 	if agentID == "" {
 		t.Fatal("StartAgent returned empty agentID")
@@ -1163,14 +1248,17 @@ func TestRecordSystemAgentStartIgnoresMissingTask(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 	created, err := mgr.Create("missing task race", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := mgr.Delete(created.ID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	adapter := &agentAdapter{tasks: mgr}
@@ -1214,11 +1302,13 @@ func TestAgentAdapterStartAgentFailsClosedOnDroppedRunRecord(t *testing.T) {
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 	created, err := mgr.Create("drop run record", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	logger := discardLogger()
@@ -1235,12 +1325,14 @@ func TestAgentAdapterStartAgentFailsClosedOnDroppedRunRecord(t *testing.T) {
 	// other than os.ErrNotExist once the agent below has already started.
 	if err := os.Chmod(tasksDir, 0o500); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.Chmod(tasksDir, 0o755) })
 
 	agentID, _, _, startErr := adapter.StartAgent(created.ID, string(agent.RoleReview), "headless", "sonnet", "claude", "prompt", t.TempDir(), nil, false, false, "", "", workflow.AgentAssignment{})
 	if startErr == nil {
 		t.Fatal("StartAgent() err = nil, want an error when the run-record write fails")
+		panic("unreachable")
 	}
 	if agentID != "" {
 		t.Fatalf("StartAgent() agentID = %q, want empty on a failed dispatch", agentID)
@@ -1254,6 +1346,7 @@ func TestAgentAdapterStartAgentFailsClosedOnDroppedRunRecord(t *testing.T) {
 	}
 	if started == nil {
 		t.Fatal("no agent registered for the task despite agents.Run succeeding before the failed write")
+		panic("unreachable")
 	}
 	if got := started.GetState(); got != agent.StateStopped {
 		t.Fatalf("started agent state = %v, want Stopped: a dropped run-record write must not leave an unrecorded agent running", got)
@@ -1261,10 +1354,12 @@ func TestAgentAdapterStartAgentFailsClosedOnDroppedRunRecord(t *testing.T) {
 
 	if err := os.Chmod(tasksDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	reloaded, err := mgr.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(reloaded.AgentRuns) != 0 {
 		t.Fatalf("AgentRuns = %+v, want none — a dropped run-record write must not silently grant free review-round budget", reloaded.AgentRuns)

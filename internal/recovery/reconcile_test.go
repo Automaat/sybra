@@ -30,6 +30,7 @@ func newLostPROrphan(t *testing.T, tasks *task.Manager, mutate func(*task.Update
 	created, err := tasks.Create("lost pr number", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	status := task.StatusInReview
 	branch := "feat/thing-abcd1234"
@@ -45,6 +46,7 @@ func newLostPROrphan(t *testing.T, tasks *task.Manager, mutate func(*task.Update
 	}
 	if _, err := tasks.Update(created.ID, u); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return created.ID
 }
@@ -133,6 +135,7 @@ func TestReconcileLostPRNumber(t *testing.T) {
 			store, err := task.NewStore(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			tasks := task.NewManager(store, nil)
 			id := newLostPROrphan(t, tasks, tc.mutate)
@@ -148,6 +151,7 @@ func TestReconcileLostPRNumber(t *testing.T) {
 			got, err := tasks.Get(id)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if got.Status != tc.wantStatus {
 				t.Errorf("status = %s, want %s", got.Status, tc.wantStatus)
@@ -192,6 +196,7 @@ func TestReconcileLostPRNumberSkipsIneligible(t *testing.T) {
 			store, err := task.NewStore(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			tasks := task.NewManager(store, nil)
 			newLostPROrphan(t, tasks, tc.mutate)
@@ -212,6 +217,7 @@ func TestReconcileLostPRNumberNilResolver(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	id := newLostPROrphan(t, tasks, nil)
@@ -223,6 +229,7 @@ func TestReconcileLostPRNumberNilResolver(t *testing.T) {
 	got, err := tasks.Get(id)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Errorf("status = %s, want in-review (nil resolver must no-op)", got.Status)

@@ -73,6 +73,7 @@ func TestFillAPITS(t *testing.T) {
 	out, added, err := fillAPITS(src, services, nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(added) != 1 || added[0] != "DeleteTask" {
 		t.Fatalf("added = %v, want [DeleteTask]", added)
@@ -87,6 +88,7 @@ func TestFillAPITS(t *testing.T) {
 	out2, added2, err := fillAPITS(out, services, nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(added2) != 0 || out2 != out {
 		t.Fatalf("second pass not a no-op: added=%v", added2)
@@ -107,6 +109,7 @@ func TestFillAPIHTTP(t *testing.T) {
 	}, "\n")
 	if err := os.WriteFile(filepath.Join(bindingDir, "taskservice.ts"), []byte(binding), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	src := strings.Join([]string{
@@ -122,6 +125,7 @@ func TestFillAPIHTTP(t *testing.T) {
 	out, added, err := fillAPIHTTP(src, services, bindingDir, nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(added) != 2 {
 		t.Fatalf("added = %v, want 2", added)
@@ -143,6 +147,7 @@ func TestFillAPIHTTP(t *testing.T) {
 	out2, added2, err := fillAPIHTTP(out, services, bindingDir, nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(added2) != 0 || out2 != out {
 		t.Fatalf("second pass not a no-op: added=%v", added2)
@@ -166,10 +171,12 @@ func TestParseServices(t *testing.T) {
 	path := filepath.Join(dir, "services.go")
 	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	got, err := parseServices(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 2 || got[0].name != "TaskService" || len(got[0].methods) != 2 || got[1].name != "App" {
 		t.Fatalf("parseServices = %+v", got)
@@ -187,6 +194,7 @@ func TestUnresolvableMethods(t *testing.T) {
 	}, "\n")
 	if err := os.WriteFile(filepath.Join(bindingDir, "taskservice.ts"), []byte(binding), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	services := []service{
 		{name: "TaskService", methods: []string{"GetTask", "NewlyAdded"}},
@@ -196,6 +204,7 @@ func TestUnresolvableMethods(t *testing.T) {
 	skip, reasons, err := unresolvableMethods(services, bindingDir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if skip["GetTask"] {
 		t.Error("GetTask has a binding signature and must not be skipped")
@@ -226,6 +235,7 @@ func TestFillAPIHTTP_SkipsMissingBinding(t *testing.T) {
 	out, added, err := fillAPIHTTP(src, services, bindingDir, skip)
 	if err != nil {
 		t.Fatalf("must not error on a skipped missing-binding method: %v", err)
+		panic("unreachable")
 	}
 	if len(added) != 0 {
 		t.Fatalf("added = %v, want none (SnapshotDepth skipped, Existing already present)", added)
