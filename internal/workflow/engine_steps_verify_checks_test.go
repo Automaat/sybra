@@ -1858,6 +1858,13 @@ func TestExecVerifyChecks_RepairsCorruptedNodeModulesBeforeRunning(t *testing.T)
 	}
 }
 
+// TestBuiltinSimpleTaskImplement_VerifyChecksWiring pins verify_checks'
+// contribution to simple-task-implement now that it runs inside the
+// parallel_gates coordinator (see execParallelGates,
+// engine_steps_parallel_gates.go) alongside detect_tampering and
+// focused_checks rather than as its own serial step: a blocked or flagged
+// outcome still ends the workflow, and a clean one still proceeds to
+// set_ready_review.
 func TestBuiltinSimpleTaskImplement_VerifyChecksWiring(t *testing.T) {
 	t.Parallel()
 	defs, err := BuiltinDefinitions()
@@ -1875,27 +1882,30 @@ func TestBuiltinSimpleTaskImplement_VerifyChecksWiring(t *testing.T) {
 		t.Fatal("simple-task-implement builtin not found")
 		return
 	}
-	vc := impl.StepByID("verify_checks")
-	if vc == nil {
-		t.Fatal("verify_checks step missing from simple-task-implement")
+	gates := impl.StepByID("parallel_gates")
+	if gates == nil {
+		t.Fatal("parallel_gates step missing from simple-task-implement")
 		return
 	}
-	dt := impl.StepByID("detect_tampering")
-	if dt == nil {
-		t.Fatal("detect_tampering step missing")
+	if gates.Type != StepParallelGates {
+		t.Errorf("parallel_gates type = %q, want %q", gates.Type, StepParallelGates)
+	}
+	codegen := impl.StepByID("codegen_gate")
+	if codegen == nil {
+		t.Fatal("codegen_gate step missing")
 		return
 	}
-	if got, _ := ResolveTransition(dt.Next, map[string]string{"task.status": "in-progress"}); got != "verify_checks" {
-		t.Errorf("detect_tampering clean goto = %q, want verify_checks", got)
+	if got, _ := ResolveTransition(codegen.Next, map[string]string{"task.status": "in-progress"}); got != "parallel_gates" {
+		t.Errorf("codegen_gate clean goto = %q, want parallel_gates", got)
 	}
-	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "blocked"}); got != "" {
-		t.Errorf("blocked verify_checks goto = %q, want end", got)
+	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "blocked"}); got != "" {
+		t.Errorf("blocked parallel_gates goto = %q, want end", got)
 	}
-	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "human-required"}); got != "" {
-		t.Errorf("flagged verify_checks goto = %q, want end", got)
+	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "human-required"}); got != "" {
+		t.Errorf("flagged parallel_gates goto = %q, want end", got)
 	}
-	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "in-progress"}); got != "set_ready_review" {
-		t.Errorf("clean verify_checks goto = %q, want set_ready_review", got)
+	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "in-progress"}); got != "set_ready_review" {
+		t.Errorf("clean parallel_gates goto = %q, want set_ready_review", got)
 	}
 }
 
