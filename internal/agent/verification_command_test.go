@@ -61,7 +61,7 @@ func TestIsolateVerifierGitCredentialsDropsAmbientPublishPaths(t *testing.T) {
 		"XDG_CONFIG_HOME": filepath.Join(scratch, ".config"),
 	}
 	for key, value := range want {
-		if got := envValue(cfg.ExtraEnv, key); got != value {
+		if got := verificationEnvValue(cfg.ExtraEnv, key); got != value {
 			t.Errorf("%s = %q, want %q", key, got, value)
 		}
 	}
@@ -80,7 +80,7 @@ func TestReviewRoleReceivesOnlyVerifierGitHubToken(t *testing.T) {
 	if err := m.injectGitAccess(&cfg); err != nil {
 		t.Fatal(err)
 	}
-	if got := envValue(cfg.ExtraEnv, "GH_TOKEN"); got != "contents-read-pr-write-token" {
+	if got := verificationEnvValue(cfg.ExtraEnv, "GH_TOKEN"); got != "contents-read-pr-write-token" {
 		t.Fatalf("review GH_TOKEN = %q", got)
 	}
 	for _, assignment := range cfg.ExtraEnv {
@@ -93,7 +93,7 @@ func TestReviewRoleReceivesOnlyVerifierGitHubToken(t *testing.T) {
 	if err := m.injectGitAccess(&testCfg); err != nil {
 		t.Fatal(err)
 	}
-	if got := envValue(testCfg.ExtraEnv, "GH_TOKEN"); got != "" {
+	if got := verificationEnvValue(testCfg.ExtraEnv, "GH_TOKEN"); got != "" {
 		t.Fatalf("test-runner GH_TOKEN = %q, want no GitHub mutation capability", got)
 	}
 }
@@ -107,7 +107,7 @@ func TestTaskScopedReviewFailsWithoutRestrictedGitHubToken(t *testing.T) {
 	}
 }
 
-func envValue(env []string, key string) string {
+func verificationEnvValue(env []string, key string) string {
 	prefix := key + "="
 	value := ""
 	for _, assignment := range env {
