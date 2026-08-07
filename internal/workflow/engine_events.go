@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 const (
@@ -94,7 +95,7 @@ func (e *Engine) resolveExecutionDefinition(taskID string, t TaskInfo) (Definiti
 	}
 	reason := "Workflow definition snapshot for " + t.Workflow.WorkflowID + " (" + t.Workflow.DefinitionHash +
 		") is missing or unreadable. Restore the snapshot or restart the task on the latest workflow definition."
-	if blockerErr := e.tasks.UpdateTaskBlocker(taskID, "human-required", reason, blocker.State{
+	if blockerErr := e.tasks.UpdateTaskBlocker(taskID, taskstatus.HumanRequired, reason, blocker.State{
 		Kind:       blocker.KindOperatorDecision,
 		Actor:      blocker.ActorWorkflow,
 		Code:       workflowDefinitionSnapshotMissingCode,

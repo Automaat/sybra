@@ -6836,10 +6836,10 @@ func TestE2E_RestartSimulation_PinnedDefinitionUsesOriginalWhileNewTaskUsesLates
 	}
 	waitFor(t, 10*time.Second, "original task follows pinned v1", func() bool {
 		tk, gErr := env.tasks.Get(original.ID)
-		return gErr == nil && tk.Status == "done"
+		return gErr == nil && tk.Status == task.StatusDone
 	})
 	originalTask, _ := env.tasks.Get(original.ID)
-	if originalTask.Status != "done" {
+	if originalTask.Status != task.StatusDone {
 		t.Fatalf("original status = %q, want done from v1", originalTask.Status)
 	}
 
@@ -6861,10 +6861,10 @@ func TestE2E_RestartSimulation_PinnedDefinitionUsesOriginalWhileNewTaskUsesLates
 	}
 	waitFor(t, 10*time.Second, "latest task follows updated v2", func() bool {
 		tk, gErr := env.tasks.Get(latest.ID)
-		return gErr == nil && tk.Status == "blocked"
+		return gErr == nil && tk.Status == task.StatusBlocked
 	})
 	latestTask, _ := env.tasks.Get(latest.ID)
-	if latestTask.Status != "blocked" {
+	if latestTask.Status != task.StatusBlocked {
 		t.Fatalf("latest status = %q, want blocked from v2", latestTask.Status)
 	}
 }

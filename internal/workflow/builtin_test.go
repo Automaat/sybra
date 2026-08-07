@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 func TestDefinitionSemanticHash_IgnoresTimestamps(t *testing.T) {
@@ -748,7 +750,7 @@ func TestBuiltinSimpleTask_TriageNoplanRouting(t *testing.T) {
 		},
 		{
 			name:   "terminal_status_wins_over_noplan",
-			fields: map[string]string{"task.status": "done", "task.tags": "backend,noplan"},
+			fields: map[string]string{"task.status": string(taskstatus.Done), "task.tags": "backend,noplan"},
 			want:   "",
 		},
 	}

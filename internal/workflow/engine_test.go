@@ -10264,7 +10264,7 @@ func TestExecRunAgent_RealSpawnErrorPropagates(t *testing.T) {
 func TestStartWorkflow_InitialDispatchFailure_EscalatesPermanentError(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.Todo, AgentMode: "headless"})
 	agents := newMockAgents()
 	agents.SetFailSpawn(fmt.Errorf("task t1 has no project_id: refusing to start triage agent without isolated worktree: %w", ErrNoProjectAssigned))
 	engine := NewTestEngine(store, tasks, agents, discardLogger())
@@ -12490,7 +12490,7 @@ func TestAdvanceStep_MarkReviewedAfterReviewRole(t *testing.T) {
 	agents := newMockAgents()
 	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
-	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.Todo, AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-review-fix"); err != nil {
 		t.Fatal(err)
 	}
@@ -12530,7 +12530,7 @@ func TestAdvanceStep_WorkflowDefinitionDeletedMidRun(t *testing.T) {
 	agents := newMockAgents()
 	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
-	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.Todo, AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
 		t.Fatal(err)
 	}
@@ -12571,7 +12571,7 @@ func TestStartWorkflow_ConcurrentSameTaskSingleWinner(t *testing.T) {
 	agents := newMockAgents()
 	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
-	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.Todo, AgentMode: "headless"})
 
 	const callers = 5
 	var wg sync.WaitGroup

@@ -198,7 +198,7 @@ func TestResumeStalled_MissingSnapshotEscalatesOnce(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{
 		ID:     "t1",
-		Status: "planning",
+		Status: taskstatus.Planning,
 		Workflow: &Execution{
 			WorkflowID:     "test-simple",
 			DefinitionHash: hash,
@@ -214,7 +214,7 @@ func TestResumeStalled_MissingSnapshotEscalatesOnce(t *testing.T) {
 	engine.ResumeStalled()
 
 	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "human-required" {
+	if ti.Status != taskstatus.HumanRequired {
 		t.Fatalf("Status = %q, want human-required", ti.Status)
 	}
 	if ti.Workflow.State != ExecFailed {
