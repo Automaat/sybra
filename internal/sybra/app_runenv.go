@@ -173,9 +173,9 @@ func (a *App) certifyStartupRunEnvironment(ctx context.Context) {
 }
 
 // quarantineRunEnvironment applies one generic machine-owned reason to every
-// non-terminal task in the failed project scope. The runenv service coalesces
-// this callback per environment fingerprint, so a broken shared clone cannot
-// generate a task-update storm.
+// non-terminal task selected by the failure's task/project/host/provider
+// scope. The runenv service coalesces callbacks per scope and fingerprint so
+// one shared defect cannot generate a task-update storm.
 func (a *App) quarantineRunEnvironment(_ context.Context, failure runenv.CertificationError) {
 	if a.tasks == nil {
 		return

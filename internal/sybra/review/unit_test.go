@@ -456,7 +456,7 @@ func TestStaffCodeReviewRunConfigCarriesTaskReasoningEffort(t *testing.T) {
 			t.Parallel()
 			cfg := StaffCodeReviewRunConfig(
 				task.Task{ID: "review-task", Title: "Needs review", ReasoningEffort: tt.pinned},
-				"Run /staff-code-review", t.TempDir(), "default",
+				"Run /staff-code-review", t.TempDir(), "default", "enforce",
 			)
 			if cfg.ReasoningEffort != tt.want {
 				t.Fatalf("ReasoningEffort = %q, want %q", cfg.ReasoningEffort, tt.want)

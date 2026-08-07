@@ -481,6 +481,23 @@ func TestRequestGitRootsSkipsGitForNonGitCapabilities(t *testing.T) {
 	}
 }
 
+func TestObjectStoreEvidenceDoesNotClaimUndeclaredClone(t *testing.T) {
+	cert, err := New(Deps{}).Certify(context.Background(), Request{
+		TaskID: "projectless", Action: "dispatch", WorkDir: t.TempDir(),
+		Requirements: []autonomy.CapabilityRequirement{{
+			Capability: autonomy.CapabilityObjectStore,
+			Action:     "dispatch",
+			Scope:      "project",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cert.Observations[0].Evidence; got != "no shared object store declared" {
+		t.Fatalf("evidence = %q", got)
+	}
+}
+
 func TestProjectlessCertificationsUseBoundedRepairLock(t *testing.T) {
 	service := New(Deps{ProbeSandbox: healthyProbe(false)})
 	for i := range 25 {

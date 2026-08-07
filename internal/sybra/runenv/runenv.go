@@ -346,6 +346,9 @@ func (s *Service) probe(ctx context.Context, req Request, capability autonomy.Ca
 		if err := probeObjectStore(ctx, req); err != nil {
 			return ProbeResult{Code: "object_store_unhealthy"}, err
 		}
+		if req.CloneDir == "" {
+			return ProbeResult{Available: true, Evidence: "no shared object store declared"}, nil
+		}
 		return ProbeResult{Available: true, Evidence: "shared object store and refs readable"}, nil
 	case autonomy.CapabilitySigning:
 		if req.SigningPolicy.SignsCommits(ctx) {

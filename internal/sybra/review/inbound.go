@@ -260,11 +260,7 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 // A/B-disabled fallback keep their high-scrutiny model; an A/B pick overrides it.
 // MaxTurns is intentionally not inherited: review agents need enough turns to
 // fetch the PR, run the skill, and write findings.
-func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string, sandboxMode ...string) agent.RunConfig {
-	resolvedSandboxMode := ""
-	if len(sandboxMode) > 0 {
-		resolvedSandboxMode = sandboxMode[0]
-	}
+func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture, sandboxMode string) agent.RunConfig {
 	return agent.RunConfig{
 		TaskID: t.ID,
 		Name:   agent.RoleReview.AgentName(t.Title),
@@ -278,7 +274,7 @@ func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string, sandboxM
 		// the Manager applies agent.role_effort and then the baseline.
 		ReasoningEffort:        t.ReasoningEffort,
 		HeadlessPermissionMode: posture,
-		SandboxMode:            resolvedSandboxMode,
+		SandboxMode:            sandboxMode,
 		ReadOnlyDir:            true,
 	}
 }
