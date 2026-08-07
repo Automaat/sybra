@@ -5796,7 +5796,7 @@ func TestResumeStalled_SkipsWorkflowRetryUntil(t *testing.T) {
 		t.Fatalf("agent starts before retry window = %d, want 0", agents.CallCount())
 	}
 
-	fakeClock.Advance(time.Hour)
+	fakeClock.Advance(time.Hour + time.Second)
 	tasks.Put(TaskInfo{
 		ID:        "t1",
 		Status:    "in-progress",
@@ -5808,6 +5808,38 @@ func TestResumeStalled_SkipsWorkflowRetryUntil(t *testing.T) {
 	if agents.CallCount() != 1 {
 		t.Fatalf("agent starts after retry window = %d, want 1", agents.CallCount())
 	}
+}
+
+func TestEngineClockCanBeReplacedWhileRunning(t *testing.T) {
+	t.Parallel()
+
+	e := &Engine{}
+	first := clock.NewFake(time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC))
+	second := clock.NewFake(first.Now().Add(time.Hour))
+	var wg sync.WaitGroup
+	wg.Add(5)
+	go func() {
+		defer wg.Done()
+		for i := range 1_000 {
+			if i%2 == 0 {
+				e.SetClock(first)
+			} else {
+				e.SetClock(second)
+			}
+		}
+	}()
+	for range 4 {
+		go func() {
+			defer wg.Done()
+			for range 1_000 {
+				if got := e.now(); got.IsZero() {
+					t.Error("now returned the zero time during concurrent clock replacement")
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 // TestResumeStalled_SkipLogsPromotedToThrottledInfo proves ResumeStalled's

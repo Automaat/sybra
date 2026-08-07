@@ -612,12 +612,12 @@ func TestSurfaceStartFailure_CircuitBreakerResetsAfterWindow(t *testing.T) {
 	engine.SetClock(fakeClock)
 
 	wrapped := fmt.Errorf("prepare worktree: %w", worktreeerr.ErrRebaseFailed)
-	old := fakeClock.Now().Format(time.RFC3339)
+	firstFailureAt := fakeClock.Now().Format(time.RFC3339)
 	wf := &Execution{
 		CurrentStep: "run_test",
 		State:       ExecRunning,
 		Variables: map[string]string{
-			circuitBreakerFirstKey("run_test"):   old,
+			circuitBreakerFirstKey("run_test"):   firstFailureAt,
 			circuitBreakerFailureKey("run_test"): strconv.Itoa(maxCircuitBreakerFailures),
 		},
 	}

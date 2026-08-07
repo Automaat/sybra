@@ -469,6 +469,7 @@ type Engine struct {
 	dispatchDisabled atomic.Bool
 	ownerID          string
 	effectLeaseTTL   time.Duration
+	clockMu          sync.RWMutex
 	clock            clock.Clock
 	logger           *slog.Logger
 	ctx              context.Context
@@ -610,11 +611,21 @@ func newEffectOwnerID() string {
 	return fmt.Sprintf("workflow-engine-%d-%d", time.Now().UTC().UnixNano(), effectOwnerSeq.Add(1))
 }
 
-// SetClock binds the clock used by workflow control-flow decisions. Record
-// timestamps that do not influence control flow continue to use time.Now.
-func (e *Engine) SetClock(c clock.Clock) { e.clock = clock.Or(c) }
+// SetClock binds the clock used by workflow control-flow decisions. It is safe
+// to replace while the engine is running. Record timestamps that do not
+// influence control flow continue to use time.Now.
+func (e *Engine) SetClock(c clock.Clock) {
+	e.clockMu.Lock()
+	e.clock = clock.Or(c)
+	e.clockMu.Unlock()
+}
 
-func (e *Engine) now() time.Time { return clock.Or(e.clock).Now().UTC() }
+func (e *Engine) now() time.Time {
+	e.clockMu.RLock()
+	c := e.clock
+	e.clockMu.RUnlock()
+	return clock.Or(c).Now().UTC()
+}
 
 // SetContext binds a parent context to the engine. Shell steps use
 // context.WithTimeout(parent, shellTimeout) so they are cancelled when
