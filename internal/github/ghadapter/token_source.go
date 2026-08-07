@@ -25,6 +25,17 @@ import (
 // internal/github/appauth.go's appAPIBaseURL.
 var ghAPIBaseURL = "https://api.github.com"
 
+// mintTimeout bounds a single token-mint round trip. ghinstallation gives the
+// mint no deadline of its own — its refresh client is built with a zero
+// timeout, and setting Transport.Client does not help because the mint runs
+// through AppsTransport.RoundTrip, which calls the bare http.RoundTripper and
+// never reads that field. The only lever is the context, so an endpoint that
+// accepts the connection and never answers would otherwise block
+// Refresh/ForceRefresh forever — including the lifecycle refresh loop, which
+// passes a long-lived context. Matches appTokenSource's 15s client timeout.
+// Overridable in tests.
+var mintTimeout = 15 * time.Second
+
 // TokenSource wraps a ghinstallation.Transport to stand in for
 // internal/github's hand-rolled appTokenSource. It exists because
 // ghinstallation.Transport.Token(ctx) alone does not preserve either of the
@@ -66,9 +77,14 @@ type TokenSource struct {
 	// Transport.Expiry() instead cannot give that — the token can cross
 	// refreshAt between the check and the following Token(), which then mints
 	// synchronously on the supposedly nonblocking path.
+	//
+	// expiresAt is the token's real expiry, not ghinstallation's earlier
+	// refreshAt boundary: a renewal that fails inside the refresh window must
+	// leave the still-valid token usable rather than push GHEnv() onto ambient
+	// auth for the remainder of its life.
 	cacheMu   sync.RWMutex
 	token     string
-	refreshAt time.Time
+	expiresAt time.Time
 
 	forceMu  sync.Mutex
 	forcing  chan struct{}
@@ -110,40 +126,49 @@ func newTransport(appID, installationID int64, privateKeyPEM []byte) (*ghinstall
 
 // Cached returns the last minted installation token without performing any
 // I/O and without touching the ghinstallation.Transport. It returns "" when
-// no token has been minted yet, or when the recorded one has reached the
-// library's own refresh window (Expiry()'s refreshAt) — in both cases a
-// caller must go through Refresh/ForceRefresh instead, the same contract
-// cachedAppToken() gives GHEnv().
+// no token has been minted yet or when the recorded one has actually expired
+// — in both cases a caller must go through Refresh/ForceRefresh instead, the
+// same contract cachedAppToken() gives GHEnv().
+//
+// The gate is Expiry()'s expiresAt, deliberately not its earlier refreshAt:
+// ghinstallation starts renewing a minute before a token dies, and a renewal
+// that fails in that window leaves a token GitHub still accepts. Treating
+// refreshAt as expiry would blank it and drop GHEnv() to ambient auth for that
+// last minute.
 func (s *TokenSource) Cached() string {
 	s.cacheMu.RLock()
-	tok, refreshAt := s.token, s.refreshAt
+	tok, expiresAt := s.token, s.expiresAt
 	s.cacheMu.RUnlock()
 
-	if tok == "" || !time.Now().Before(refreshAt) {
+	if tok == "" || !time.Now().Before(expiresAt) {
 		return ""
 	}
 	return tok
 }
 
-func (s *TokenSource) storeCached(token string, refreshAt time.Time) {
+func (s *TokenSource) storeCached(token string, expiresAt time.Time) {
 	s.cacheMu.Lock()
-	s.token, s.refreshAt = token, refreshAt
+	s.token, s.expiresAt = token, expiresAt
 	s.cacheMu.Unlock()
 }
 
-// mintFrom returns t's token plus the instant Transport itself starts
-// treating it as stale. Both library calls must be serialized against every
-// other use of t by the caller — see TokenSource.mintMu.
+// mintFrom returns t's token plus the instant it actually stops being
+// accepted (Expiry()'s expiresAt, not the earlier refreshAt). Both library
+// calls must be serialized against every other use of t by the caller — see
+// TokenSource.mintMu.
 func mintFrom(ctx context.Context, t *ghinstallation.Transport) (string, time.Time, error) {
+	ctx, cancel := context.WithTimeout(ctx, mintTimeout)
+	defer cancel()
+
 	tok, err := t.Token(ctx)
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	_, refreshAt, err := t.Expiry()
+	expiresAt, _, err := t.Expiry()
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	return tok, refreshAt, nil
+	return tok, expiresAt, nil
 }
 
 // Refresh mints a token if the cached one is missing or within the
@@ -153,13 +178,13 @@ func (s *TokenSource) Refresh(ctx context.Context) error {
 	s.mintMu.Lock()
 	defer s.mintMu.Unlock()
 
-	tok, refreshAt, err := mintFrom(ctx, s.cur)
+	tok, expiresAt, err := mintFrom(ctx, s.cur)
 	if err != nil {
 		// Leave the snapshot alone: a previously minted token stays valid
 		// until its own expiry, so a failed renewal must not blank it.
 		return err
 	}
-	s.storeCached(tok, refreshAt)
+	s.storeCached(tok, expiresAt)
 	return nil
 }
 
@@ -199,7 +224,7 @@ func (s *TokenSource) ForceRefresh(ctx context.Context) error {
 	}
 	// fresh is not published yet, so this goroutine owns it exclusively and
 	// mintFrom needs no lock here; mintMu is only taken to swap and record.
-	tok, refreshAt, tokErr := mintFrom(ctx, fresh)
+	tok, expiresAt, tokErr := mintFrom(ctx, fresh)
 	if tokErr != nil {
 		err = tokErr
 		return err
@@ -207,7 +232,7 @@ func (s *TokenSource) ForceRefresh(ctx context.Context) error {
 
 	s.mintMu.Lock()
 	s.cur = fresh
-	s.storeCached(tok, refreshAt)
+	s.storeCached(tok, expiresAt)
 	s.mintMu.Unlock()
 	return nil
 }
@@ -232,7 +257,7 @@ func (s *TokenSource) AppLogin(ctx context.Context) (string, error) {
 
 	baseURL := ghAPIBaseURL + "/"
 	client, err := github.NewClient(
-		github.WithHTTPClient(&http.Client{Transport: atr}),
+		github.WithHTTPClient(&http.Client{Transport: atr, Timeout: mintTimeout}),
 		github.WithURLs(&baseURL, &baseURL),
 	)
 	if err != nil {

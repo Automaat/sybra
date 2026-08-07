@@ -34,6 +34,10 @@ type fakeAppServer struct {
 	ttl     time.Duration
 	slug    string
 	fail401 bool
+	// stall, when non-nil, makes the mint endpoint accept the request and
+	// never answer until it is closed (or the client gives up) — the hung
+	// endpoint an unbounded mint deadline would block on forever.
+	stall chan struct{}
 }
 
 func newFakeAppServer(t *testing.T) (*fakeAppServer, *httptest.Server) {
@@ -46,8 +50,15 @@ func newFakeAppServer(t *testing.T) (*fakeAppServer, *httptest.Server) {
 			return
 		}
 		f.mu.Lock()
-		fail := f.fail401
+		fail, stall := f.fail401, f.stall
 		f.mu.Unlock()
+		if stall != nil {
+			select {
+			case <-stall:
+			case <-r.Context().Done():
+			}
+			return
+		}
 		if fail {
 			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
 			return
@@ -238,11 +249,11 @@ func TestForceRefresh_MintsEvenWhenCachedIsFresh(t *testing.T) {
 }
 
 // Token-expiry-driven renewal: Cached() must stop returning a token once it
-// falls inside the renew window, and Refresh() must mint a new one.
+// has actually expired, and Refresh() must mint a new one.
 func TestExpiry_CachedGoesEmptyAndRefreshRenews(t *testing.T) {
 	f, srv := newFakeAppServer(t)
 	f.mu.Lock()
-	f.ttl = 30 * time.Second // inside ghinstallation's 1-minute refresh window
+	f.ttl = -time.Second // already expired when it lands
 	f.mu.Unlock()
 	src := newTestSource(t, srv)
 
@@ -250,11 +261,11 @@ func TestExpiry_CachedGoesEmptyAndRefreshRenews(t *testing.T) {
 		t.Fatalf("Refresh: %v", err)
 	}
 	if got := src.Cached(); got != "" {
-		t.Fatalf("Cached() with a near-expiry token = %q, want empty", got)
+		t.Fatalf("Cached() with an expired token = %q, want empty", got)
 	}
 
 	if err := src.Refresh(context.Background()); err != nil {
-		t.Fatalf("Refresh after near-expiry: %v", err)
+		t.Fatalf("Refresh after expiry: %v", err)
 	}
 	if got := atomic.LoadInt32(&f.mints); got != 2 {
 		t.Fatalf("mints after renewal = %d, want 2", got)
@@ -266,13 +277,14 @@ func TestExpiry_CachedGoesEmptyAndRefreshRenews(t *testing.T) {
 // token without the library mutex Token() writes it under (a data race this
 // test surfaces under -race), and a token crossing refreshAt between that
 // check and the following Token() call made the "nonblocking" read mint
-// synchronously. With ttl inside ghinstallation's renew window every Refresh
-// re-mints, so the reader races a continuous stream of Transport writes and
-// must still observe only "" — never a stale token, never a mint of its own.
+// synchronously. With every minted token already expired on arrival, each
+// Refresh re-mints, so the reader races a continuous stream of Transport
+// writes and must still observe only "" — never a stale token, never a mint
+// of its own.
 func TestCached_NeverTouchesTransportDuringConcurrentRefresh(t *testing.T) {
 	f, srv := newFakeAppServer(t)
 	f.mu.Lock()
-	f.ttl = 30 * time.Second // always inside the 1-minute refresh window
+	f.ttl = -time.Second // expired on arrival, so every Refresh re-mints
 	f.mu.Unlock()
 	src := newTestSource(t, srv)
 
@@ -282,7 +294,7 @@ func TestCached_NeverTouchesTransportDuringConcurrentRefresh(t *testing.T) {
 	wg.Go(func() {
 		for !stop.Load() {
 			if got := src.Cached(); got != "" {
-				t.Errorf("Cached() during refresh = %q, want empty (token is inside the renew window)", got)
+				t.Errorf("Cached() during refresh = %q, want empty (every minted token is already expired)", got)
 				return
 			}
 		}
@@ -327,6 +339,81 @@ func TestRefresh_FailureKeepsPreviouslyCachedToken(t *testing.T) {
 	}
 	if got := src.Cached(); got != seeded {
 		t.Fatalf("Cached() after a failed refresh = %q, want the seeded %q", got, seeded)
+	}
+}
+
+// A renewal that fails after the token crossed ghinstallation's refreshAt
+// boundary (one minute before real expiry) must keep serving the old token:
+// GitHub still accepts it until expiresAt, so blanking it here would drop
+// GHEnv() to ambient auth for that last minute.
+func TestRefresh_FailureAfterRefreshAtKeepsTokenUntilExpiry(t *testing.T) {
+	f, srv := newFakeAppServer(t)
+	f.mu.Lock()
+	f.ttl = 30 * time.Second // past refreshAt (expiry-1m), still 30s from expiry
+	f.mu.Unlock()
+	src := newTestSource(t, srv)
+
+	if err := src.Refresh(context.Background()); err != nil {
+		t.Fatalf("seed Refresh: %v", err)
+	}
+	seeded := src.Cached()
+	if seeded == "" {
+		t.Fatalf("Cached() with a token past refreshAt but not expired = empty, want the token")
+	}
+
+	f.mu.Lock()
+	f.fail401 = true
+	f.mu.Unlock()
+
+	// Past refreshAt, so this attempts a real mint — which fails.
+	if err := src.Refresh(context.Background()); err == nil {
+		t.Fatalf("Refresh during simulated 401 = nil error, want failure")
+	}
+	if got := src.Cached(); got != seeded {
+		t.Fatalf("Cached() after a failed renewal = %q, want the still-valid %q", got, seeded)
+	}
+}
+
+// An accepted-but-never-answered mint endpoint must fail the mint on a
+// deadline rather than block the caller forever — ghinstallation's own
+// refresh client carries no timeout, and the lifecycle refresh loop passes a
+// long-lived context that would never cancel it.
+func TestRefresh_StalledEndpointFailsOnMintDeadline(t *testing.T) {
+	f, srv := newFakeAppServer(t)
+
+	stall := make(chan struct{})
+	t.Cleanup(func() { close(stall) })
+	f.mu.Lock()
+	f.stall = stall
+	f.mu.Unlock()
+
+	origTimeout := mintTimeout
+	mintTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { mintTimeout = origTimeout })
+
+	src := newTestSource(t, srv)
+
+	done := make(chan error, 1)
+	go func() { done <- src.Refresh(context.Background()) }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatalf("Refresh against a stalled endpoint = nil error, want a deadline failure")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("Refresh against a stalled endpoint never returned — mint has no deadline")
+	}
+
+	// ForceRefresh builds a fresh Transport; it must be bounded too.
+	go func() { done <- src.ForceRefresh(context.Background()) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatalf("ForceRefresh against a stalled endpoint = nil error, want a deadline failure")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("ForceRefresh against a stalled endpoint never returned — mint has no deadline")
 	}
 }
 

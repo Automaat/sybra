@@ -14,7 +14,7 @@ results"), not a merge candidate.
 
 | Safety invariant `appTokenSource` provides | `ghinstallation.Transport` alone | With `ghadapter.TokenSource` |
 |---|---|---|
-| Nonblocking cached-token read for `GHEnv()` | No — `Token(ctx)` mints synchronously under lock whenever the cached token is past its refresh window. Calling it directly from `GHEnv()` would let a token mint stall the `gh` subprocess request gate. | Yes, but only by keeping a token snapshot **outside** the library: `Cached()` reads a `(token, refreshAt)` pair recorded after each mint and never calls into `Transport` at all. Covered by `TestCached_EmptyBeforeFirstRefresh` and `TestCached_NeverTouchesTransportDuringConcurrentRefresh`. |
+| Nonblocking cached-token read for `GHEnv()` | No — `Token(ctx)` mints synchronously under lock whenever the cached token is past its refresh window. Calling it directly from `GHEnv()` would let a token mint stall the `gh` subprocess request gate. | Yes, but only by keeping a token snapshot **outside** the library: `Cached()` reads a `(token, expiresAt)` pair recorded after each mint and never calls into `Transport` at all. Covered by `TestCached_EmptyBeforeFirstRefresh` and `TestCached_NeverTouchesTransportDuringConcurrentRefresh`. |
 | Concurrent refresh collapse (N callers → 1 HTTP mint) | Yes, incidentally — `Token()`'s internal mutex serializes callers, and the second-in-line observes a cache hit once the first finishes. | Inherited from the library. Covered by `TestRefresh_ConcurrentCollapsesToOneMint`. |
 | `ForceRefreshAppToken` — always mint, even if cache looks fresh (#2453, 401 recovery at the hourly rotation boundary) | **No such primitive.** The only refresh trigger is `isExpired()`; there is no "invalidate" or "force" method on `Transport`. | Re-implemented on top: `ForceRefresh` discards the `Transport` and builds a new one (cheap — RSA key parse, no I/O), with its own channel-based singleflight duplicating `appTokenSource.refresh`'s pattern almost line for line. Covered by `TestForceRefresh_MintsEvenWhenCachedIsFresh` and `TestForceRefresh_ConcurrentCollapsesToOneMint`. |
 | App-bot identity (`<slug>[bot]`) via `GET /app`, cached for process lifetime | Not exposed — `Transport` only handles installation tokens. Needs a separate `ghinstallation.AppsTransport` + a `go-github` client. | `AppLogin()` builds that JWT-authed client and caches the slug. Covered by `TestAppLogin_FetchesAndCachesSlug`. |
@@ -39,6 +39,25 @@ snapshot guarded by an `RWMutex` held only for the copy. `Cached()` reads that
 snapshot alone. That is the same amount of concurrency bookkeeping
 `appTokenSource` already carries — the library replaces the mint, not the
 caching contract around it.
+
+Two further gaps the wrapper has to close, both of them cases where the
+library's defaults are subtly wrong for this caller:
+
+- **`refreshAt` is not expiry.** `Expiry()` returns both `expiresAt` and the
+  one-minute-earlier `refreshAt`. The snapshot records `expiresAt`: a renewal
+  that fails inside the refresh window leaves a token GitHub still accepts,
+  and gating `Cached()` on `refreshAt` would blank it and drop `GHEnv()` to
+  ambient auth for that final minute — the opposite of `cachedAppToken()`,
+  which gates on real expiry. Covered by
+  `TestRefresh_FailureAfterRefreshAtKeepsTokenUntilExpiry`.
+- **The mint has no deadline.** `ghinstallation` builds its refresh client with
+  a zero timeout, and overriding `Transport.Client` does not help — the mint
+  runs through `AppsTransport.RoundTrip`, which calls the bare
+  `http.RoundTripper` and never reads that field. The context is the only
+  lever, so `mintFrom` bounds it at `mintTimeout` (15s, matching
+  `appTokenSource`'s client timeout); otherwise a hung endpoint blocks the
+  lifecycle refresh loop's long-lived context indefinitely. Covered by
+  `TestRefresh_StalledEndpointFailsOnMintDeadline`.
 
 **Finding:** the mint mechanics (JWT signing, installation-token HTTP call,
 expiry parsing) are exactly what the library removes — about 120 lines of
