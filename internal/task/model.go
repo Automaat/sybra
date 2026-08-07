@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/attachment"
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/taskstatus"
@@ -362,9 +363,15 @@ type Task struct {
 	// append "Closes <url>" to the task's PR body, by findActiveDuplicate for
 	// dedup, and by the umbrella gate/DAG for state tracking. Never overwrite
 	// this after creation to attach an unrelated reference — use RefIssue.
-	Issue        string        `json:"issue"`
-	StatusReason string        `json:"statusReason"`
-	Blocker      blocker.State `json:"blocker,omitzero"`
+	Issue        string `json:"issue"`
+	StatusReason string `json:"statusReason"`
+	// Escalation is the policy authority for the current human-required state.
+	// StatusReason remains display text and must never be parsed back into a
+	// failure owner or recovery decision. Legacy files load with an explicit
+	// unknown/legacy adapter (see taskFromFrontmatter).
+	Escalation      autonomy.EscalationReason `json:"escalation,omitzero"`
+	AutonomyOutcome autonomy.Outcome          `json:"autonomyOutcome,omitempty"`
+	Blocker         blocker.State             `json:"blocker,omitzero"`
 	// HandoffSourceProvider records which local agent provider produced the
 	// work before a handoff skipped directly into review/testing/PR. Workflow
 	// steps with provider=cross use it when there is no Sybra-authored run

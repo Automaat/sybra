@@ -1517,3 +1517,28 @@ func TestIsCodeAuthorRun_IncludesTestFix(t *testing.T) {
 		t.Error("isCodeAuthorRun({Role: \"test-fix\"}) = false, want true")
 	}
 }
+
+func TestPRFixShouldResumeNoPRRecovery_UsesSharedClassification(t *testing.T) {
+	t.Parallel()
+	withoutPR := TaskInfo{}
+	for _, tc := range []struct {
+		reason string
+		want   bool
+	}{
+		{"connection refused", true},
+		{"remote unreachable", true},
+		{"GitHub transport unavailable", true},
+		{"missing credential", false},
+		{"authentication failed", false},
+		{"permission denied", false},
+		{"unknown preparation failure", false},
+	} {
+		if got := prFixShouldResumeNoPRRecovery(withoutPR, tc.reason); got != tc.want {
+			t.Errorf("prFixShouldResumeNoPRRecovery(%q) = %v, want %v", tc.reason, got, tc.want)
+		}
+	}
+	withPR := TaskInfo{PRNumber: 42}
+	if prFixShouldResumeNoPRRecovery(withPR, "connection refused") {
+		t.Fatal("task with PR must not resume no-PR recovery")
+	}
+}

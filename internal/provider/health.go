@@ -677,13 +677,13 @@ func (c *Checker) ProviderEnabled(provider string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	switch provider {
-	case "claude":
+	case providerid.Claude:
 		return c.cfg.ClaudeEnabled
-	case "codex":
+	case providerid.Codex:
 		return c.cfg.CodexEnabled
-	case "copilot":
+	case providerid.Copilot:
 		return c.cfg.CopilotEnabled
-	case "opencode":
+	case providerid.OpenCode:
 		return c.cfg.OpenCodeEnabled
 	default:
 		return false

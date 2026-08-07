@@ -637,8 +637,8 @@ func TestRecordExpandFailure_EscalatesAtThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required at ExpandFailThreshold=%d", got.Status, ExpandFailThreshold)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want blocked at ExpandFailThreshold=%d", got.Status, ExpandFailThreshold)
 	}
 	if ParseExpandFailCount(got.Tags) != ExpandFailThreshold {
 		t.Fatalf("fail count = %d, want %d", ParseExpandFailCount(got.Tags), ExpandFailThreshold)

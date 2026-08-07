@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/metrics"
@@ -143,8 +144,9 @@ func (h *RenovateHandler) pollRenovatePRs(ctx context.Context) time.Duration {
 	prs, err := fetchFn(ctx, cfg.Author, repos)
 	metrics.RenovatePoll(ctx, err == nil)
 	if err != nil {
-		switch {
-		case github.IsAuthError(err):
+		class := github.ClassifyError(err, errclass.GitHubCircuitEscalationBiased)
+		switch class {
+		case errclass.Auth:
 			h.transientFetchFails = 0
 			h.authCircuit.RecordFailure(err)
 			if h.authCircuit.Open() {
@@ -153,7 +155,7 @@ func (h *RenovateHandler) pollRenovatePRs(ctx context.Context) time.Duration {
 			// Pre-trip: Info, not Warn, so up-to-threshold auth failures don't
 			// flood before the circuit's single trip line.
 			h.logger.Info("renovate.fetch", "err", err)
-		case github.IsTransientError(err):
+		case errclass.Transient, errclass.RateLimited:
 			h.transientFetchFails++
 			if h.transientFetchFails < renovateTransientWarnThreshold {
 				h.logger.Info("renovate.fetch", "err", err)

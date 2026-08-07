@@ -262,18 +262,21 @@ func TestE2E_RoutingDecisionVersion_RecordedOnTaskAndStats(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	waitFor(t, 30*time.Second, "workflow and stats complete", func() bool {
+	waitFor(t, 30*time.Second, "workflow and stats reach terminal quarantine", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
 		if gErr != nil || tk.Workflow == nil {
 			return false
 		}
-		return tk.Workflow.State == workflow.ExecCompleted && statsStore.Query().AllTime.TotalRuns >= 2
+		return tk.Workflow.State == workflow.ExecFailed &&
+			tk.Status == task.StatusBlocked &&
+			statsStore.Query().AllTime.TotalRuns >= 2
 	})
 
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertMachineQuarantine(t, tk, "workflow.evaluate_no_pr")
 	var gotImpl *task.AgentRun
 	for i := range tk.AgentRuns {
 		if tk.AgentRuns[i].Role == "implementation" {

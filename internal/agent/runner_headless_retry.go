@@ -4,8 +4,8 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
-	"strings"
 
+	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/provider"
 )
 
@@ -138,8 +138,7 @@ func resultSubtypeIsError(subtype string) bool {
 }
 
 func substringMatch529(s string) bool {
-	lower := strings.ToLower(s)
-	return strings.Contains(lower, "529") || strings.Contains(lower, "overloaded")
+	return errclass.Classify(s, errclass.AgentStreamRecoveryBiased) == errclass.RateLimited
 }
 
 func warnSubstringFallback(logger *slog.Logger) {

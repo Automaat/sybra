@@ -155,6 +155,16 @@
         <p class="mt-0.5 text-xs text-surface-400">${num(o.totalCostUsd, 2)} total</p>
       </div>
       <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
+        <span class="text-xs font-medium text-surface-500">Cost / merged PR</span>
+        <p class="mt-1 text-2xl font-bold">${num(o.costPerMergedUsd, 2)}</p>
+        <p class="mt-0.5 text-xs text-surface-400">
+          {num(o.tokensPerMergedPr, 0)} tokens/merged
+          {#if report?.costPerMergedBaseline}
+            · was ${num(report.costPerMergedBaseline.costPerMergedUsd, 2)}
+          {/if}
+        </p>
+      </div>
+      <div class="rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
         <span class="text-xs font-medium text-surface-500">Rework tasks</span>
         <p class="mt-1 text-2xl font-bold">{o.reworkTasks}</p>
       </div>
@@ -437,6 +447,44 @@
                   <td class="py-1.5 text-right">p50 {seconds(row.durationP50S)} · p90 {seconds(row.durationP90S)}</td>
                   <td class="py-1.5 text-right">${num(row.totalCostUsd, 2)} · ${num(row.costPerLanded, 2)}/landed</td>
                   <td class="py-1.5 text-right">{num(row.premiumRequests, 1)} · {num(row.premiumRequestsPerLanded, 1)}/landed</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {:else}
+          <p class="text-xs text-surface-400">No data</p>
+        {/if}
+      </div>
+
+      <div class="overflow-x-auto rounded-lg border border-surface-300 bg-surface-50 p-4 dark:border-surface-600 dark:bg-surface-800">
+        <h3 class="mb-1 text-sm font-semibold text-surface-500">By cost tier</h3>
+        <p class="mb-3 text-xs text-surface-400">
+          Cost-per-merged-PR segmented by provider / role / model tier — the granularity a tier-cascade rollout is judged against.
+        </p>
+        {#if report?.byCostTier && report.byCostTier.length > 0}
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-surface-200 text-left text-xs text-surface-400 dark:border-surface-700">
+                <th class="pb-2">Provider : role : tier</th>
+                <th class="pb-2 text-right">Landed</th>
+                <th class="pb-2 text-right">Merged</th>
+                <th class="pb-2 text-right">$/merged</th>
+                <th class="pb-2 text-right">Tokens/merged</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each report.byCostTier as row (row.key)}
+                <tr class="border-b border-surface-100 last:border-0 dark:border-surface-700">
+                  <td class="py-1.5 font-mono text-xs">{row.key}</td>
+                  <td class="py-1.5 text-right">
+                    {row.landed}
+                    {#if row.insufficientData}
+                      <span class="ml-1 rounded bg-surface-200 px-1 text-[10px] text-surface-500 dark:bg-surface-700">low N</span>
+                    {/if}
+                  </td>
+                  <td class="py-1.5 text-right">{row.merged + row.mergedWithEdits}</td>
+                  <td class="py-1.5 text-right">${num(row.costPerMergedUsd, 2)}</td>
+                  <td class="py-1.5 text-right">{num(row.tokensPerMergedPr, 0)}</td>
                 </tr>
               {/each}
             </tbody>

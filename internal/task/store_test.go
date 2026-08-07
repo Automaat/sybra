@@ -616,8 +616,10 @@ func TestStoreUpdateStatusHumanRequired(t *testing.T) {
 	}
 
 	updated, err := store.Update(created.ID, Update{
-		Status:       Ptr(StatusHumanRequired),
-		StatusReason: Ptr("agent failed with errors"),
+		Status:          Ptr(StatusHumanRequired),
+		StatusReason:    Ptr("human decision required"),
+		Escalation:      OperatorDecisionRequired("test.operator_decision", "human decision required"),
+		AutonomyOutcome: HumanRequiredOutcome(),
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -625,8 +627,8 @@ func TestStoreUpdateStatusHumanRequired(t *testing.T) {
 	if updated.Status != StatusHumanRequired {
 		t.Errorf("Status = %q, want %q", updated.Status, StatusHumanRequired)
 	}
-	if updated.StatusReason != "agent failed with errors" {
-		t.Errorf("StatusReason = %q, want %q", updated.StatusReason, "agent failed with errors")
+	if updated.StatusReason != "human decision required" {
+		t.Errorf("StatusReason = %q, want %q", updated.StatusReason, "human decision required")
 	}
 
 	reloaded, err := store.Get(created.ID)
@@ -636,8 +638,8 @@ func TestStoreUpdateStatusHumanRequired(t *testing.T) {
 	if reloaded.Status != StatusHumanRequired {
 		t.Errorf("persisted Status = %q, want %q", reloaded.Status, StatusHumanRequired)
 	}
-	if reloaded.StatusReason != "agent failed with errors" {
-		t.Errorf("persisted StatusReason = %q, want %q", reloaded.StatusReason, "agent failed with errors")
+	if reloaded.StatusReason != "human decision required" {
+		t.Errorf("persisted StatusReason = %q, want %q", reloaded.StatusReason, "human decision required")
 	}
 
 	// Status changes no longer clear parked metadata implicitly.
@@ -810,7 +812,11 @@ func TestStoreUpdateTestingCycleStartedAt_AutoStamp(t *testing.T) {
 	}
 
 	// Move to human-required (no cycle stamp set yet).
-	_, err = store.Update(created.ID, Update{Status: Ptr(StatusHumanRequired)})
+	_, err = store.Update(created.ID, Update{
+		Status:          Ptr(StatusHumanRequired),
+		Escalation:      OperatorDecisionRequired("test.operator_decision", "choose how to continue"),
+		AutonomyOutcome: HumanRequiredOutcome(),
+	})
 	if err != nil {
 		t.Fatalf("set human-required: %v", err)
 	}
@@ -1005,6 +1011,33 @@ func TestStoreAddRunWithStatus(t *testing.T) {
 	}
 	if len(got.AgentRuns) != 1 {
 		t.Fatalf("AgentRuns len = %d, want 1", len(got.AgentRuns))
+	}
+}
+
+func TestStoreAddRunWithStatusClearsHumanRequiredEvidence(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := StatusHumanRequired
+	created, err := store.CreateFull("Run task", "", "headless", Update{
+		Status:          &status,
+		Escalation:      OperatorDecisionRequired("operator.choose", "choose"),
+		AutonomyOutcome: HumanRequiredOutcome(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddRunWithStatus(created.ID, AgentRun{AgentID: "agent-001"}, Ptr(StatusInProgress)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Escalation.IsZero() || got.AutonomyOutcome != "" {
+		t.Fatalf("restart retained stale evidence: %#v / %q", got.Escalation, got.AutonomyOutcome)
 	}
 }
 

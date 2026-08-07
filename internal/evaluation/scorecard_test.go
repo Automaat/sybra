@@ -11,8 +11,10 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 func TestCompute(t *testing.T) {
@@ -844,6 +846,51 @@ func TestCompareByAttributionModes(t *testing.T) {
 	}
 }
 
+func TestCostTierCohortKey(t *testing.T) {
+	cases := []struct {
+		name string
+		r    stats.RunRecord
+		want string
+	}{
+		{"empty provider", stats.RunRecord{Model: "sonnet"}, ""},
+		{"empty model", stats.RunRecord{Provider: providerid.Claude}, ""},
+		{"unknown model", stats.RunRecord{Provider: providerid.Claude, Model: "not-a-real-model"}, ""},
+		{"known cheap", stats.RunRecord{Provider: providerid.Claude, Model: "sonnet", Role: "implementation"}, "claude:implementation:cheap"},
+	}
+	for _, c := range cases {
+		if got := costTierCohortKey(c.r); got != c.want {
+			t.Errorf("%s: costTierCohortKey() = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestCompareByLatestAuthorCostTierPerMergedFields(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -30)
+	in := base.Add(-1 * time.Hour)
+	events := []audit.Event{
+		{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: in, Data: map[string]any{"outcome": "merged"}},
+	}
+	records := []stats.RunRecord{
+		{TaskID: "A", Role: "implementation", Provider: providerid.Claude, Model: "sonnet",
+			CostUSD: 4.0, InputTokens: 200, Timestamp: in},
+	}
+	rows := CompareByLatestAuthor(records, events, since, base, 0, costTierCohortKey)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	row := rows[0]
+	if row.Tier != "cheap" {
+		t.Errorf("Tier = %q, want cheap", row.Tier)
+	}
+	if row.CostPerMergedUSD != 4.0 {
+		t.Errorf("CostPerMergedUSD = %v, want 4.0", row.CostPerMergedUSD)
+	}
+	if row.TokensPerMergedPR != 200 {
+		t.Errorf("TokensPerMergedPR = %v, want 200", row.TokensPerMergedPR)
+	}
+}
+
 func TestWilson95(t *testing.T) {
 	got := wilson95(5, 10)
 	if !got.HasData {
@@ -1155,6 +1202,39 @@ func TestCompute_ChangeFailureRate(t *testing.T) {
 	// 1 revert / 3 merged landings (merged + merged_with_edits).
 	if got.ChangeFailureRate < 0.33 || got.ChangeFailureRate > 0.34 {
 		t.Errorf("ChangeFailureRate = %v, want ~0.333", got.ChangeFailureRate)
+	}
+}
+
+// TestCompute_CostPerMergedPR verifies the north-star metric divides by
+// Merged+MergedWithEdits (not TasksLanded, which also counts closed
+// landings). The numerator is the fleet's total window cost/tokens across
+// every agent run — same "cost" pool CostPerLanded already divides,
+// deliberately including waste from runs on tasks that never merged — so a
+// closed task's spend still inflates the ratio; only the denominator
+// excludes it.
+func TestCompute_CostPerMergedPR(t *testing.T) {
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	since := base.AddDate(0, 0, -30)
+	in := base.Add(-1 * time.Hour)
+	events := []audit.Event{
+		{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: in, Data: map[string]any{"outcome": "merged"}},
+		{Type: audit.EventTaskLanded, TaskID: "B", Timestamp: in, Data: map[string]any{"outcome": "merged_with_edits"}},
+		{Type: audit.EventTaskLanded, TaskID: "C", Timestamp: in, Data: map[string]any{"outcome": "closed"}},
+	}
+	records := []stats.RunRecord{
+		{TaskID: "A", CostUSD: 6.0, InputTokens: 100, OutputTokens: 50, Timestamp: in},
+		{TaskID: "B", CostUSD: 2.0, CacheCreationInputTokens: 20, CacheReadInputTokens: 10, ReasoningTokens: 20, Timestamp: in},
+		{TaskID: "C", CostUSD: 100.0, InputTokens: 9999, Timestamp: in}, // closed, its waste still inflates the numerator
+	}
+	got := Compute(records, events, since, base)
+	if got.CostPerMergedUSD != 54.0 { // (6+2+100)/2 merged landings
+		t.Errorf("CostPerMergedUSD = %v, want 54.0", got.CostPerMergedUSD)
+	}
+	if got.TokensPerMergedPR != 5099.5 { // (150+50+9999)/2
+		t.Errorf("TokensPerMergedPR = %v, want 5099.5", got.TokensPerMergedPR)
+	}
+	if got.TotalTokens != 10199 { // includes C's tokens even though it's not merged
+		t.Errorf("TotalTokens = %v, want 10199", got.TotalTokens)
 	}
 }
 
@@ -1748,5 +1828,28 @@ func TestReportNotesOmitsSkillParityNoteWhenAllConformanceKnown(t *testing.T) {
 func TestIsAuthorRole_IncludesTestFix(t *testing.T) {
 	if !isAuthorRole("test-fix") {
 		t.Error("isAuthorRole(\"test-fix\") = false, want true")
+	}
+}
+
+func TestComputePersistsTypedAutonomyCodes(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 7, 9, 0, 0, 0, time.UTC)
+	events := []audit.Event{{
+		Timestamp: now,
+		Type:      audit.EventTaskStatusChanged,
+		TaskID:    "task-1",
+		Data: map[string]any{
+			"from":                string(taskstatus.InProgress),
+			"to":                  string(taskstatus.Blocked),
+			"autonomy_outcome":    "quarantined",
+			"failure_owner":       "machine",
+			"escalation_code":     "runenv.worktree_unwritable",
+			"evidence_provenance": "filesystem",
+		},
+	}}
+	sc := Compute(nil, events, now.Add(-time.Hour), now.Add(time.Hour))
+	if sc.AutonomyOutcomes["quarantined"] != 1 || sc.FailureOwners["machine"] != 1 ||
+		sc.EscalationCodes["runenv.worktree_unwritable"] != 1 {
+		t.Fatalf("typed autonomy counts = outcomes:%v owners:%v codes:%v", sc.AutonomyOutcomes, sc.FailureOwners, sc.EscalationCodes)
 	}
 }

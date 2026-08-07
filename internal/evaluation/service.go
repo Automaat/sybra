@@ -191,9 +191,11 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 		}),
 		ByAgentModel:             CompareByLatestAuthor(recs, evts, since, now, 20, agentModelCohortKey),
 		ByAgentModelContribution: CompareByContribution(recs, evts, since, now, 20, agentModelCohortKey),
+		ByCostTier:               CompareByLatestAuthor(recs, evts, since, now, 20, costTierCohortKey),
 		ByExperimentKind:         GroupByKind(byVariant, byVariantContribution, abTesting.Experiments),
 		Notes:                    reportNotes(recs, since, now, overall),
 	}
+	rep.CostPerMergedBaseline = costPerMergedBaseline(recs, evts, since, wd)
 	sloTargets := s.cfg.SLO
 	if sloTargets == (config.SLOTargets{}) {
 		sloTargets = DefaultSLOTargets()
@@ -201,6 +203,26 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 	rep.SLO = EvaluateSLOs(rep.Overall, ComputeSLOSignals(evts, since, now), sloTargets)
 	rep.Weaknesses = Weaknesses(rep, sloTargets)
 	return rep, nil
+}
+
+// costPerMergedBaseline computes the cost-efficiency north star over the
+// equal-length window immediately preceding [since, since+wd) — i.e. the
+// window Scan just scored — so Weaknesses can detect a cost regression
+// current-vs-prior. Returns nil when that prior window landed too few merges
+// to trust (< minMergedForSignal), rather than a baseline of zero that would
+// read as "cost dropped to nothing."
+func costPerMergedBaseline(recs []stats.RunRecord, evts []audit.Event, since time.Time, wd int) *CostBaseline {
+	priorUntil := since.Add(-time.Nanosecond)
+	priorSince := since.AddDate(0, 0, -wd)
+	prior := Compute(recs, evts, priorSince, priorUntil)
+	if merged := prior.Merged + prior.MergedWithEdits; merged >= minMergedForSignal {
+		return &CostBaseline{
+			CostPerMergedUSD:  prior.CostPerMergedUSD,
+			TokensPerMergedPR: prior.TokensPerMergedPR,
+			MergedPRs:         merged,
+		}
+	}
+	return nil
 }
 
 // GetEvaluationReport computes a fresh report for the dashboard. Refresh must

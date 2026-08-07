@@ -103,6 +103,10 @@ func filePromptLabProposals(store *task.Manager, projStore *project.Store, resul
 		update := task.Update{
 			Tags: &tags,
 		}
+		if status == task.StatusHumanRequired {
+			update.Escalation = task.PolicyRequired("promptlab.approval_required", "prompt proposal requires approval")
+			update.AutonomyOutcome = task.HumanRequiredOutcome()
+		}
 		if projectID := promptLabTargetProjectID(projStore); projectID != "" {
 			update.ProjectID = &projectID
 		}

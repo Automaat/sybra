@@ -86,8 +86,10 @@ func TestTaskService_BlessTampering_LockTimeoutReturnsUnavailable(t *testing.T) 
 		t.Fatal(err)
 	}
 	flagged, err := svc.tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(workflow.TamperFlaggedReasonPrefix + " changed test"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(workflow.TamperFlaggedReasonPrefix + " changed test"),
 		Blocker: task.Ptr(blocker.State{
 			Kind:       blocker.KindTamperDetected,
 			Actor:      blocker.ActorWorkflow,
@@ -116,8 +118,10 @@ func TestTaskService_DispatchFromHumanRequired_LockTimeoutReturnsUnavailable(t *
 		t.Fatal(err)
 	}
 	human, err := svc.tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("retry"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("retry"),
 	})
 	if err != nil {
 		t.Fatal(err)

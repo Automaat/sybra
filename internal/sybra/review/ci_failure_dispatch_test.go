@@ -821,8 +821,8 @@ func TestPollAndMonitorPRs_FlakyCIFailureConsumesRerunBudgetOnSameSHA(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q after capped flaky CI, want human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q after capped flaky CI, want blocked", got.Status)
 	}
 	if got.StatusReason != persistentFlakyCIReason {
 		t.Fatalf("statusReason = %q, want %q", got.StatusReason, persistentFlakyCIReason)
@@ -889,8 +889,8 @@ func TestPollAndMonitorPRs_FlakyCIFailureEscalatesAfterRerunBudgetExhausted(t *t
 	if got.Workflow != nil {
 		t.Fatal("unexpected pr-fix workflow; a flaky ci_failure must never dispatch a fix agent")
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required once the rerun budget is spent", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want blocked once the rerun budget is spent", got.Status)
 	}
 	if got.StatusReason != persistentFlakyCIReason {
 		t.Fatalf("statusReason = %q, want %q", got.StatusReason, persistentFlakyCIReason)

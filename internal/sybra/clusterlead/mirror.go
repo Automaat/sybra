@@ -626,6 +626,8 @@ func Merge(canonical, follower task.Task) (task.Task, bool) {
 
 	out.Status = follower.Status
 	out.StatusReason = follower.StatusReason
+	out.Escalation = follower.Escalation
+	out.AutonomyOutcome = follower.AutonomyOutcome
 	out.StatusChangedAt = follower.StatusChangedAt
 	out.AgentRuns = follower.AgentRuns
 	out.Workflow = follower.Workflow

@@ -366,7 +366,8 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	// waitErr is expected and not a failure. Completion comes from the result
 	// event, mirroring the detached path's own handling in
 	// runHeadlessAttemptSurvive.
-	if a.wasCompletedByResult() {
+	if completedByResultOnAttemptExit(a) {
+		a.setCompletedByResult(true)
 		m.finalizeFromResult(a, prevLen)
 		return false, nil
 	}
@@ -595,7 +596,8 @@ func (m *Manager) runHeadlessAttemptSurvive(ctx context.Context, a *Agent, cfg R
 	// Post-result-hang finalize: the tailer stopped a process that had already
 	// emitted a terminal result, so the kill signal in waitErr is expected and
 	// not a failure. Completion status comes from the result event.
-	if a.wasCompletedByResult() {
+	if completedByResultOnAttemptExit(a) {
+		a.setCompletedByResult(true)
 		m.finalizeFromResult(a, prevLen)
 		return false, nil
 	}
@@ -649,6 +651,14 @@ func (m *Manager) resolveHeadlessAttemptExit(a *Agent, waitErr error, stderrOut 
 	}
 	logAttemptStderr(m.logger, "agent.headless.stderr", a.ID, stderrOut, a.GetExitErr())
 	return false
+}
+
+func completedByResultOnAttemptExit(a *Agent) bool {
+	if a.wasCompletedByResult() {
+		return true
+	}
+	_, _, ok := a.PostResultWait()
+	return ok
 }
 
 // finalizeFromResult sets the exit status of a run that the post-result-hang
@@ -1699,23 +1709,17 @@ func classifyAgentError(err error) string {
 		return ErrorKindPromptUndelivered
 	}
 	msg := strings.ToLower(err.Error())
+	class := errclass.Classify(msg, errclass.AgentRecoveryBiased)
 	switch {
 	case strings.Contains(msg, "worktree") || strings.Contains(msg, "already checked out"):
 		return "worktree_conflict"
-	case strings.Contains(msg, "clone") ||
-		strings.Contains(msg, "fetch origin") ||
-		strings.Contains(msg, "git fetch") ||
-		strings.Contains(msg, "could not resolve host") ||
-		strings.Contains(msg, "dial tcp") ||
-		strings.Contains(msg, "i/o timeout") ||
-		strings.Contains(msg, "dns") ||
-		(strings.Contains(msg, "git") && strings.Contains(msg, "network")):
+	case class == errclass.Transient:
 		return "git_clone"
 	case strings.Contains(msg, "permission denied") ||
 		strings.Contains(msg, "eacces") ||
 		strings.Contains(msg, "operation not permitted"):
 		return "permission_denied"
-	case errclass.Matches(msg, errclass.AgentRateLimitPhrases):
+	case class == errclass.RateLimited:
 		return "rate_limit"
 	default:
 		return "crash"

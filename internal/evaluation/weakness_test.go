@@ -52,6 +52,34 @@ func TestWeaknesses_FlagsShortfalls(t *testing.T) {
 	}
 }
 
+func TestWeaknesses_CostPerMergeRegression(t *testing.T) {
+	r := Report{
+		Overall: Scorecard{
+			Merged:           5,
+			CostPerMergedUSD: 13.0, // vs 10.0 baseline = +30% > 20% margin
+		},
+		CostPerMergedBaseline: &CostBaseline{CostPerMergedUSD: 10.0, MergedPRs: 5},
+	}
+	ws := Weaknesses(r, DefaultSLOTargets())
+	if !hasMetric(ws, "cost_per_merge") {
+		t.Errorf("expected cost_per_merge weakness, got %+v", ws)
+	}
+}
+
+func TestWeaknesses_CostPerMergeRegressionGatedOnSampleSize(t *testing.T) {
+	r := Report{
+		Overall: Scorecard{
+			Merged:           1, // below minMergedForSignal
+			CostPerMergedUSD: 100.0,
+		},
+		CostPerMergedBaseline: &CostBaseline{CostPerMergedUSD: 1.0, MergedPRs: 5},
+	}
+	ws := Weaknesses(r, DefaultSLOTargets())
+	if hasMetric(ws, "cost_per_merge") {
+		t.Errorf("expected no cost_per_merge weakness with too few current merges, got %+v", ws)
+	}
+}
+
 func TestWeaknesses_HealthyAndLowData(t *testing.T) {
 	// Healthy fleet with enough data → no weaknesses.
 	healthy := Report{Overall: Scorecard{

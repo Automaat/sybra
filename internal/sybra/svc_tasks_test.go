@@ -476,8 +476,10 @@ func TestTaskService_BlessTampering(t *testing.T) {
 	}
 	reason := workflow.TamperFlaggedReasonPrefix + " removed-test in internal/foo_test.go"
 	flagged, err := svc.tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(reason),
 		Blocker: task.Ptr(blocker.State{
 			Kind:       blocker.KindTamperDetected,
 			Actor:      blocker.ActorWorkflow,
@@ -506,7 +508,7 @@ func TestTaskService_BlessTampering(t *testing.T) {
 	}
 
 	statusHook := make(chan [3]string, 1)
-	svc.tasks.SetStatusChangeHook(func(taskID, from, to string) {
+	svc.tasks.SetStatusChangeHook(func(taskID, from, to string, _ task.Task) {
 		statusHook <- [3]string{taskID, from, to}
 	})
 	got, err := svc.BlessTampering(flagged.ID)
@@ -577,8 +579,10 @@ func TestTaskService_BlessTamperingAlreadyBlessed(t *testing.T) {
 	}
 	reason := workflow.TamperFlaggedReasonPrefix + " removed-test in internal/foo_test.go"
 	flagged, err := svc.tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(reason),
 		Blocker: task.Ptr(blocker.State{
 			Kind:       blocker.KindTamperDetected,
 			Actor:      blocker.ActorWorkflow,
@@ -607,8 +611,10 @@ func TestTaskService_BlessTamperingRejectsNonTamperTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	human, err := svc.tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("needs human input"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("needs human input"),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -133,6 +133,31 @@ func TestTruncateMiddleKeepsTheTail(t *testing.T) {
 	}
 }
 
+func TestTailBytes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		s     string
+		limit int
+		want  string
+	}{
+		{name: "under limit is untouched", s: "abc", limit: 10, want: "abc"},
+		{name: "ascii tail", s: "abcdef", limit: 3, want: "def"},
+		{name: "cut inside a rune advances", s: "a…tail", limit: 6, want: "tail"},
+		{name: "cut on a rune boundary keeps the rune", s: "a…tail", limit: 7, want: "…tail"},
+		{name: "zero limit yields nothing", s: "abc", limit: 0, want: ""},
+		{name: "negative limit yields nothing", s: "abc", limit: -1, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := TailBytes(tt.s, tt.limit); got != tt.want {
+				t.Errorf("TailBytes(%q, %d) = %q, want %q", tt.s, tt.limit, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestTruncateBytesTrimmed(t *testing.T) {
 	t.Parallel()
 	if got := TruncateBytesTrimmed("abc   def", 6, "..."); got != "abc..." {
@@ -162,6 +187,9 @@ func TestEveryCutPointStaysValidUTF8(t *testing.T) {
 					t.Errorf("%s(%q, %d, %q) = %q: invalid UTF-8", name, s, limit, suffix, got)
 				}
 			}
+		}
+		if got := TailBytes(s, limit); !utf8.ValidString(got) {
+			t.Errorf("TailBytes(%q, %d) = %q: invalid UTF-8", s, limit, got)
 		}
 	}
 }

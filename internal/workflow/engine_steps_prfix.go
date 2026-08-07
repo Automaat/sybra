@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/prepstate"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/taskstatus"
@@ -175,15 +176,7 @@ func prFixShouldResumeNoPRRecovery(t TaskInfo, reason string) bool {
 	if reason == "" {
 		return false
 	}
-	lower := strings.ToLower(reason)
-	if strings.Contains(lower, "missing credential") || strings.Contains(lower, "authentication") || strings.Contains(lower, "permission denied") {
-		return false
-	}
-	if project.IsTransientNetworkError(errors.New(reason)) {
-		return true
-	}
-	return strings.Contains(lower, "remote unreachable") ||
-		(strings.Contains(lower, "transport") && strings.Contains(lower, "github"))
+	return errclass.Classify(reason, errclass.PRFixProseRetryBiased) == errclass.Transient
 }
 
 func (e *Engine) recordPreparedWorktreeState(taskID string, wfExec *Execution, t TaskInfo) {

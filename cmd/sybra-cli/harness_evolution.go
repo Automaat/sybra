@@ -94,9 +94,12 @@ func fileHarnessProposals(store *task.Manager, result harnessevolution.RunResult
 			tags = append(tags, "requires-human")
 			status = task.StatusHumanRequired
 		}
-		created, err := store.CreateWithStatus(p.Title, body, task.AgentModeHeadless, status, task.Update{
-			Tags: &tags,
-		})
+		update := task.Update{Tags: &tags}
+		if status == task.StatusHumanRequired {
+			update.Escalation = task.PolicyRequired("harness.proposal_approval_required", "harness proposal requires approval")
+			update.AutonomyOutcome = task.HumanRequiredOutcome()
+		}
+		created, err := store.CreateWithStatus(p.Title, body, task.AgentModeHeadless, status, update)
 		if err != nil {
 			return filed, err
 		}

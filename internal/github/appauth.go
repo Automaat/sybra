@@ -15,9 +15,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/errclass"
 )
 
 // AppCredentials identifies a GitHub App installation. The private key stays on
@@ -403,7 +404,7 @@ func classifyMintError(err error) AuthState {
 	case http.StatusUnauthorized, http.StatusNotFound, http.StatusUnprocessableEntity:
 		return AuthMisconfigured
 	case http.StatusForbidden:
-		if strings.Contains(strings.ToLower(me.message), "rate limit") {
+		if errclass.Classify(me.message, errclass.GitHubTokenMintCooldownBiased) == errclass.RateLimited {
 			return AuthRateLimited
 		}
 		return AuthMisconfigured

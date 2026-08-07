@@ -305,6 +305,22 @@ func TestGHIssueSink_ClassifiesRateLimitFromOutput(t *testing.T) {
 	}
 }
 
+func TestClassifyGHError_UsesCompleteGitHubRateLimitVocabulary(t *testing.T) {
+	t.Parallel()
+	for _, msg := range []string{
+		"rate limit exceeded",
+		"github rate-limit wall: suppressing calls",
+	} {
+		t.Run(msg, func(t *testing.T) {
+			t.Parallel()
+			err := classifyGHError("gh issue create", []byte(msg), errors.New("exit status 1"))
+			if !errors.Is(err, ErrGHRateLimit) {
+				t.Fatalf("classifyGHError(%q) = %v, want ErrGHRateLimit", msg, err)
+			}
+		})
+	}
+}
+
 func TestGHIssueSink_CreateErrorIncludesSanitizedOutput(t *testing.T) {
 	fe := &fakeExecer{
 		listResp:   []byte(`[]`),

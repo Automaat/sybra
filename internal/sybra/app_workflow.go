@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/experience"
@@ -174,8 +175,11 @@ func (a *taskAdapter) UpdateTaskStatus(id string, status taskstatus.Status, reas
 	var extra task.Update
 	if reason != "" {
 		extra.StatusReason = &reason
-	} else {
-		extra.ClearStatusReason = task.Ptr(true)
+	}
+	if st == task.StatusHumanRequired {
+		st = task.StatusBlocked
+		extra.Escalation = task.MachineFailure("workflow.untyped_escalation", reason)
+		extra.AutonomyOutcome = task.QuarantinedOutcome()
 	}
 	_, err = a.tasks.Apply(task.TransitionIntent{
 		TaskID:   id,
@@ -236,13 +240,19 @@ func (a *taskAdapter) UpdateTaskBlocker(id string, status taskstatus.Status, rea
 	if reason != "" {
 		reasonPtr = &reason
 	}
+	escalation, outcome := typedBlockerEscalation(st, state, reason)
+	if st == task.StatusHumanRequired && !blocker.AllowsHumanRequired(state.Kind) {
+		st = task.StatusBlocked
+	}
 	_, err = a.tasks.Apply(task.TransitionIntent{
 		TaskID:   id,
 		ToStatus: st,
 		Actor:    "workflow.engine.update_blocker",
 		Extra: task.Update{
-			Blocker:      &state,
-			StatusReason: reasonPtr,
+			Blocker:         &state,
+			StatusReason:    reasonPtr,
+			Escalation:      escalation,
+			AutonomyOutcome: outcome,
 		},
 	})
 	return err
@@ -380,10 +390,38 @@ func (a *taskAdapter) SetStatusAndWorkflow(id, status, reason string, wf *workfl
 	if reason != "" {
 		extra.StatusReason = &reason
 	}
+	if st == task.StatusHumanRequired {
+		st = task.StatusBlocked
+		extra.Escalation = task.MachineFailure("workflow.untyped_escalation", reason)
+		extra.AutonomyOutcome = task.QuarantinedOutcome()
+	}
 	_, err = a.tasks.Apply(task.TransitionIntent{
 		TaskID:   id,
 		ToStatus: st,
 		Actor:    "workflow.engine.set_status_and_workflow",
+		Extra:    extra,
+	})
+	return err
+}
+
+func (a *taskAdapter) SetEscalationAndWorkflow(id, status, reason string, escalation autonomy.EscalationReason, outcome autonomy.Outcome, wf *workflow.Execution) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	reason = a.normalizeHumanRequiredReason(id, st, reason)
+	extra := task.Update{
+		Workflow:        &wf,
+		Escalation:      &escalation,
+		AutonomyOutcome: &outcome,
+	}
+	if reason != "" {
+		extra.StatusReason = &reason
+	}
+	_, err = a.tasks.Apply(task.TransitionIntent{
+		TaskID:   id,
+		ToStatus: st,
+		Actor:    "workflow.engine.set_escalation_and_workflow",
 		Extra:    extra,
 	})
 	return err
@@ -404,17 +442,45 @@ func (a *taskAdapter) SetBlockerAndWorkflow(id, status, reason string, state blo
 	if reason != "" {
 		reasonPtr = &reason
 	}
+	escalation, outcome := typedBlockerEscalation(st, state, reason)
+	if st == task.StatusHumanRequired && !blocker.AllowsHumanRequired(state.Kind) {
+		st = task.StatusBlocked
+	}
 	_, err = a.tasks.Apply(task.TransitionIntent{
 		TaskID:   id,
 		ToStatus: st,
 		Actor:    "workflow.engine.set_blocker_and_workflow",
 		Extra: task.Update{
-			Blocker:      &state,
-			StatusReason: reasonPtr,
-			Workflow:     &wf,
+			Blocker:         &state,
+			StatusReason:    reasonPtr,
+			Workflow:        &wf,
+			Escalation:      escalation,
+			AutonomyOutcome: outcome,
 		},
 	})
 	return err
+}
+
+func typedBlockerEscalation(status task.Status, state blocker.State, reason string) (*autonomy.EscalationReason, *autonomy.Outcome) {
+	if status != task.StatusHumanRequired {
+		return nil, nil
+	}
+	owner := blocker.FailureOwner(state.Kind)
+	if owner == autonomy.FailureOwnerUnknown {
+		// An unclassified workflow blocker is not evidence that a human owns
+		// the failure. Treat it as control-plane debt and quarantine it.
+		owner = autonomy.FailureOwnerMachine
+	}
+	code := "workflow.blocker."
+	if state.Kind == "" {
+		code += "unknown"
+	} else {
+		code += string(state.Kind)
+	}
+	if owner.AllowsHumanRequired() {
+		return task.ControlPlaneFailure(code, owner, reason), task.HumanRequiredOutcome()
+	}
+	return task.ControlPlaneFailure(code, owner, reason), task.QuarantinedOutcome()
 }
 
 var errWorkflowWriteFenceMismatch = errors.New("workflow write fence mismatch")
@@ -846,7 +912,11 @@ func (a *checkConfigGetterAdapter) SetupCommands(ctx context.Context, taskID str
 	return project.MergeSetup(repoSetup, p.SetupCommands)
 }
 
-func ensureReadyPRWorktree(ctx context.Context, tasks *task.Manager, mgr *worktree.Manager, taskID string) (path string, ok bool, err error) {
+// ensurePRTailWorktree restores a missing worktree for deterministic PR-tail
+// operations. Branch-conflict recovery runs while a task is in-progress, not
+// ready-pr, so limiting this to ready-pr strands an otherwise recoverable
+// branch just before push_branch can publish it.
+func ensurePRTailWorktree(ctx context.Context, tasks *task.Manager, mgr *worktree.Manager, taskID string) (path string, ok bool, err error) {
 	if tasks == nil || mgr == nil {
 		return "", false, nil
 	}
@@ -858,7 +928,7 @@ func ensureReadyPRWorktree(ctx context.Context, tasks *task.Manager, mgr *worktr
 	if _, err := os.Stat(path); err == nil {
 		return path, true, nil
 	}
-	if t.Status != task.StatusReadyPR || strings.TrimSpace(t.ProjectID) == "" {
+	if !statusCanRunPRTail(t.Status) || strings.TrimSpace(t.ProjectID) == "" {
 		return "", false, nil
 	}
 
@@ -875,8 +945,17 @@ func ensureReadyPRWorktree(ctx context.Context, tasks *task.Manager, mgr *worktr
 	return prepared, true, nil
 }
 
+func statusCanRunPRTail(status task.Status) bool {
+	switch status {
+	case task.StatusInProgress, task.StatusReadyReview, task.StatusInReview, task.StatusTesting, task.StatusReadyPR:
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {
-	path, ok, err := ensureReadyPRWorktree(context.Background(), a.tasks, a.mgr, taskID)
+	path, ok, err := ensurePRTailWorktree(context.Background(), a.tasks, a.mgr, taskID)
 	if err != nil {
 		return "", false
 	}
@@ -884,7 +963,7 @@ func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {
 }
 
 func (a *worktreeGetterAdapter) ResolvePRWorktree(ctx context.Context, taskID string) (path string, found bool, err error) {
-	return ensureReadyPRWorktree(ctx, a.tasks, a.mgr, taskID)
+	return ensurePRTailWorktree(ctx, a.tasks, a.mgr, taskID)
 }
 
 func (*attemptNoteAppenderAdapter) AppendReimplementNote(ctx context.Context, _, wtPath, marker, note string) error {
@@ -898,7 +977,7 @@ type branchSyncerAdapter struct {
 }
 
 func (a *branchSyncerAdapter) SyncTaskBranch(ctx context.Context, taskID string) (string, error) {
-	if _, ok, err := ensureReadyPRWorktree(ctx, a.tasks, a.mgr, taskID); err != nil {
+	if _, ok, err := ensurePRTailWorktree(ctx, a.tasks, a.mgr, taskID); err != nil {
 		return worktree.SyncFailed.String(), fmt.Errorf("sync branch: ensure worktree: %w", err)
 	} else if !ok {
 		return worktree.SyncSkipped.String(), nil
