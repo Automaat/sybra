@@ -23,6 +23,7 @@ import (
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/skillinvoke"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
+	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/triage"
@@ -172,20 +173,24 @@ func (a *taskAdapter) UpdateTaskStatus(id string, status taskstatus.Status, reas
 		return err
 	}
 	reason = a.normalizeHumanRequiredReason(id, st, reason)
-	var extra task.Update
-	if reason != "" {
-		extra.StatusReason = &reason
-	}
-	if st == task.StatusHumanRequired {
-		st = task.StatusBlocked
-		extra.Escalation = task.MachineFailure("workflow.untyped_escalation", reason)
-		extra.AutonomyOutcome = task.QuarantinedOutcome()
-	}
-	_, err = a.tasks.Apply(task.TransitionIntent{
-		TaskID:   id,
-		ToStatus: st,
-		Actor:    "workflow.engine.update_status",
-		Extra:    extra,
+	_, err = a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		target := st
+		extra := task.Update{}
+		if reason != "" {
+			extra.StatusReason = &reason
+		} else if cur.Status != st && (st != task.StatusHumanRequired || cur.Status != task.StatusBlocked) {
+			extra.ClearStatusReason = task.Ptr(true)
+		}
+		if st == task.StatusHumanRequired {
+			target = task.StatusBlocked
+			extra.Escalation = task.MachineFailure("workflow.untyped_escalation", reason)
+			extra.AutonomyOutcome = task.QuarantinedOutcome()
+		}
+		return task.TransitionIntent{
+			ToStatus: target,
+			Actor:    "workflow.engine.update_status",
+			Extra:    extra,
+		}, nil
 	})
 	return err
 }
@@ -196,9 +201,8 @@ func (a *taskAdapter) ClearTaskStatusReasonIf(id string, expectedStatus taskstat
 		if cur.Status != expectedStatus || cur.StatusReason != expectedReason {
 			return task.Update{}, errWorkflowStatusReasonNoLongerMatches
 		}
-		empty := ""
 		cleared = true
-		return task.Update{StatusReason: &empty}, nil
+		return task.Update{ClearStatusReason: task.Ptr(true)}, nil
 	})
 	if errors.Is(err, errWorkflowStatusReasonNoLongerMatches) {
 		return false, nil
@@ -219,12 +223,11 @@ func (a *taskAdapter) ClearTaskStatusReasonAndSetWorkflowIf(id, expectedStatus, 
 		if string(cur.Status) != expectedStatus || cur.StatusReason != expectedReason {
 			return task.TransitionIntent{}, errWorkflowStatusReasonNoLongerMatches
 		}
-		empty := ""
 		cleared = true
 		return task.TransitionIntent{
 			ToStatus: cur.Status,
 			Actor:    "workflow.engine.clear_reason_and_set_workflow",
-			Extra:    task.Update{StatusReason: &empty, Workflow: &wf},
+			Extra:    task.Update{ClearStatusReason: task.Ptr(true), Workflow: &wf},
 		}, nil
 	})
 	if errors.Is(err, errWorkflowStatusReasonNoLongerMatches) {
@@ -1001,6 +1004,7 @@ type agentAdapter struct {
 	sandboxes  *sandbox.Manager
 	experience *experience.Store
 	pressure   *pressure.Gate
+	runenv     *runenv.Service
 }
 
 func translatePoolBusy(err error) error {
@@ -1100,6 +1104,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		MaxTurns:               t.MaxTurns,
 		RequirePermissions:     agentorch.ResolvePermission(t, a.agentOrch.Cfg()),
 		HeadlessPermissionMode: posture,
+		SandboxMode:            agentorch.ResolveSandboxMode(t, a.agentOrch.Cfg()),
 		ReasoningEffort:        agentorch.FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort, agentorch.ResolveRoleEffort(r, a.agentOrch.Cfg())),
 		// Code-author roles (implementation/fix-review/pr-fix) are primed with
 		// NOTES.md; verifier roles (review/test-runner/eval) share the same
@@ -1144,12 +1149,9 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		}
 	}
 
-	baselineRef = agentorch.CurrentWorktreeHead(context.Background(), cfg.Dir)
-	a.configureTestRunnerRun(&cfg, taskID, r, t)
-
-	ag, err := a.agents.Run(cfg)
+	ag, baselineRef, err := a.launchCertifiedDirect(t, r, &cfg)
 	if err != nil {
-		return "", "", "", translatePoolBusy(err)
+		return "", "", "", err
 	}
 
 	if recErr := a.recordSystemAgentStart(taskID, role, mode, cfg, ag); recErr != nil {
@@ -1157,6 +1159,19 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	}
 
 	return ag.ID, cfg.Dir, baselineRef, nil
+}
+
+func (a *agentAdapter) launchCertifiedDirect(t task.Task, role agent.Role, cfg *agent.RunConfig) (*agent.Agent, string, error) {
+	baselineRef := agentorch.CurrentWorktreeHead(context.Background(), cfg.Dir)
+	a.configureTestRunnerRun(cfg, t.ID, role, t)
+	ag, err := a.agents.Run(*cfg)
+	if err != nil {
+		if a.runenv != nil && runenv.IsEnvironmentFailure(err) {
+			a.runenv.InvalidateTask(t.ID)
+		}
+		return nil, "", translatePoolBusy(err)
+	}
+	return ag, baselineRef, nil
 }
 
 // fallbackAgentWorkingDir creates an otherwise empty, per-run cwd for a

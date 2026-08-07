@@ -27,7 +27,11 @@ const (
 	// on a block, the blocker.Kind and reason. Recorded on every dispatch,
 	// not just blocks, so evaluation can correlate predicted risk/clarity
 	// against actual task outcome.
-	EventAdmissionDecided = "admission.decided"
+	EventAdmissionDecided               = "admission.decided"
+	EventRunEnvironmentCertified        = "runenv.certified"
+	EventRunEnvironmentRepair           = "runenv.repair"
+	EventRunEnvironmentQuarantined      = "runenv.quarantined"
+	EventRunEnvironmentScopeQuarantined = "runenv.scope_quarantined"
 	// EventCompletionEvidenceVerified records the workflow engine's
 	// require_evidence step (internal/workflow/engine_steps_evidence.go)
 	// finding every applicable criterion present, passing, and fresh for the

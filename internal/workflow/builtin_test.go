@@ -7,7 +7,56 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
+
+func TestDefinitionSemanticHash_IgnoresTimestamps(t *testing.T) {
+	t.Parallel()
+
+	def := newTestDef("hash-wf")
+	def.CreatedAt = time.Unix(10, 0).UTC()
+	def.UpdatedAt = time.Unix(20, 0).UTC()
+	h1, err := def.SemanticHash()
+	if err != nil {
+		t.Fatalf("SemanticHash: %v", err)
+	}
+
+	def.CreatedAt = time.Unix(30, 0).UTC()
+	def.UpdatedAt = time.Unix(40, 0).UTC()
+	h2, err := def.SemanticHash()
+	if err != nil {
+		t.Fatalf("SemanticHash second: %v", err)
+	}
+
+	if h1 != h2 {
+		t.Fatalf("hash changed across timestamp-only edits: %q != %q", h1, h2)
+	}
+	if len(h1) != 64 || strings.Trim(h1, "0123456789abcdef") != "" {
+		t.Fatalf("hash = %q, want lowercase sha256 hex", h1)
+	}
+}
+
+func TestDefinitionSemanticHash_ChangesOnSemanticEdit(t *testing.T) {
+	t.Parallel()
+
+	a := newTestDef("hash-a")
+	b := newTestDef("hash-a")
+	b.Steps[0].Config.Status = "done"
+
+	ah, err := a.SemanticHash()
+	if err != nil {
+		t.Fatalf("SemanticHash a: %v", err)
+	}
+	bh, err := b.SemanticHash()
+	if err != nil {
+		t.Fatalf("SemanticHash b: %v", err)
+	}
+	if ah == bh {
+		t.Fatal("semantic edit produced identical hash")
+	}
+}
 
 func TestBuiltinSimpleTaskPlan_ApprovalStartsImplementation(t *testing.T) {
 	t.Parallel()
@@ -701,7 +750,7 @@ func TestBuiltinSimpleTask_TriageNoplanRouting(t *testing.T) {
 		},
 		{
 			name:   "terminal_status_wins_over_noplan",
-			fields: map[string]string{"task.status": "done", "task.tags": "backend,noplan"},
+			fields: map[string]string{"task.status": string(taskstatus.Done), "task.tags": "backend,noplan"},
 			want:   "",
 		},
 	}

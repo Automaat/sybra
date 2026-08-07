@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -89,6 +90,11 @@ func TestTaskService_BlessTampering_LockTimeoutReturnsUnavailable(t *testing.T) 
 		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
 		AutonomyOutcome: task.HumanRequiredOutcome(),
 		StatusReason:    task.Ptr(workflow.TamperFlaggedReasonPrefix + " changed test"),
+		Blocker: task.Ptr(blocker.State{
+			Kind:       blocker.KindTamperDetected,
+			Actor:      blocker.ActorWorkflow,
+			NextAction: "bless_tampering",
+		}),
 	})
 	if err != nil {
 		t.Fatal(err)

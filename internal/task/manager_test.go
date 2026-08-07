@@ -48,6 +48,40 @@ func newTestManager(t *testing.T) (*Manager, *recordingEmitter) {
 	return NewManager(store, emitter), emitter
 }
 
+func TestMutationTransportIdentityStableAcrossProbeAndTracksPermissions(t *testing.T) {
+	m, _ := newTestManager(t)
+	created, err := m.Create("mutation identity", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := m.MutationTransportIdentity(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ProbeMutationTransport(created.ID); err != nil {
+		t.Fatal(err)
+	}
+	after, err := m.MutationTransportIdentity(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("probe changed mutation identity\nbefore: %q\nafter:  %q", before, after)
+	}
+	dir := m.store.Dir()
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	readOnly, err := m.MutationTransportIdentity(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readOnly == before {
+		t.Fatal("permission change did not invalidate mutation identity")
+	}
+}
+
 func TestManagerCreateEmitsEvent(t *testing.T) {
 	t.Parallel()
 	m, emitter := newTestManager(t)

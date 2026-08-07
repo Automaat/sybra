@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
@@ -128,12 +129,18 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 	maps.Copy(variables, vars)
 
 	wfExec := &Execution{
-		WorkflowID:  workflowID,
-		CurrentStep: start.ID,
-		State:       ExecRunning,
-		Variables:   variables,
-		StartedAt:   e.now(),
+		WorkflowID:     workflowID,
+		DefinitionHash: "",
+		CurrentStep:    start.ID,
+		State:          ExecRunning,
+		Variables:      variables,
+		StartedAt:      e.now(),
 	}
+	defHash, err := e.store.SaveSnapshot(def)
+	if err != nil {
+		return nil, fmt.Errorf("save workflow snapshot %s: %w", workflowID, err)
+	}
+	wfExec.DefinitionHash = defHash
 
 	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
 		return nil, fmt.Errorf("set workflow on task: %w", err)
@@ -152,7 +159,7 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 }
 
 func taskRequiresTamperBless(t TaskInfo) bool {
-	return t.Status == taskstatus.HumanRequired && IsTamperFlaggedReason(t.StatusReason)
+	return t.Status == taskstatus.HumanRequired && t.Blocker.Kind == blocker.KindTamperDetected
 }
 
 // surfaceInitialDispatchFailure classifies and escalates a run_agent dispatch

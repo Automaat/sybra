@@ -20,9 +20,11 @@ type Update struct {
 	Slug                  *string
 	Status                *Status
 	StatusReason          *string
+	ClearStatusReason     *bool
 	Escalation            *autonomy.EscalationReason
 	AutonomyOutcome       *autonomy.Outcome
 	Blocker               *blocker.State
+	ClearBlocker          *bool
 	BlockedByIssue        *string
 	UmbrellaIssue         *string
 	DependsOn             *[]string
@@ -122,6 +124,8 @@ func applyMapField(u *Update, k string, v any) error {
 		return applyPriorityField(u, v)
 	case "status":
 		return applyStatusField(u, k, v)
+	case "clear_status_reason", "clear_blocker":
+		return applyClearField(u, k, v)
 	case "agent_mode":
 		return applyAgentModeField(u, k, v)
 	case "task_type":
@@ -180,6 +184,22 @@ func applyMapField(u *Update, k string, v any) error {
 		return applyBlockerField(u, v)
 	default:
 		return fmt.Errorf("unknown task field %q", k)
+	}
+	return nil
+}
+
+func applyClearField(u *Update, k string, v any) error {
+	b, ok := v.(bool)
+	if !ok {
+		return fmt.Errorf("field %q: want bool, got %T", k, v)
+	}
+	switch k {
+	case "clear_status_reason":
+		u.ClearStatusReason = &b
+	case "clear_blocker":
+		u.ClearBlocker = &b
+	default:
+		return fmt.Errorf("unknown clear field %q", k)
 	}
 	return nil
 }
