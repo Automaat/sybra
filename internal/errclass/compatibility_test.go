@@ -405,6 +405,9 @@ func legacyMergeBlockedPhrases() []string {
 
 func recordedCompatibilityCorpus() []string {
 	phrases := compatibilityVocabulary()
+	if len(phrases) == 0 {
+		panic("compatibility vocabulary is empty")
+	}
 	out := make([]string, 0, compatibilityCorpusSize)
 	seen := make(map[string]struct{}, compatibilityCorpusSize)
 	add := func(s string) {
