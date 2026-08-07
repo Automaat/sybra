@@ -8,6 +8,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
 )
@@ -102,11 +103,11 @@ func TestServiceScanPopulatesByCostTierAndBaseline(t *testing.T) {
 
 	var records []stats.RunRecord
 	var events []audit.Event
-	records = append(records, stats.RunRecord{TaskID: "A", Role: "implementation", Provider: "claude", Model: "sonnet", CostUSD: 4.0, Outcome: "completed", Timestamp: in})
+	records = append(records, stats.RunRecord{TaskID: "A", Role: "implementation", Provider: providerid.Claude, Model: "sonnet", CostUSD: 4.0, Outcome: "completed", Timestamp: in})
 	events = append(events, audit.Event{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: in, Data: map[string]any{"outcome": "merged"}})
-	for i := 0; i < minMergedForSignal; i++ {
+	for i := range minMergedForSignal {
 		tid := "prior-" + string(rune('A'+i))
-		records = append(records, stats.RunRecord{TaskID: tid, Role: "implementation", Provider: "claude", Model: "sonnet", CostUSD: 1.0, Outcome: "completed", Timestamp: prior})
+		records = append(records, stats.RunRecord{TaskID: tid, Role: "implementation", Provider: providerid.Claude, Model: "sonnet", CostUSD: 1.0, Outcome: "completed", Timestamp: prior})
 		events = append(events, audit.Event{Type: audit.EventTaskLanded, TaskID: tid, Timestamp: prior, Data: map[string]any{"outcome": "merged"}})
 	}
 
@@ -141,7 +142,7 @@ func TestServiceScanBaselineNilWhenPriorWindowThin(t *testing.T) {
 	in := now.Add(-1 * time.Hour)
 	svc := NewService(Deps{
 		Cfg:   config.EvaluationConfig{WindowDays: 7},
-		Stats: testStatsReader{records: []stats.RunRecord{{TaskID: "A", Role: "implementation", Provider: "claude", Model: "sonnet", CostUSD: 4.0, Outcome: "completed", Timestamp: in}}},
+		Stats: testStatsReader{records: []stats.RunRecord{{TaskID: "A", Role: "implementation", Provider: providerid.Claude, Model: "sonnet", CostUSD: 4.0, Outcome: "completed", Timestamp: in}}},
 		Audit: auditFunc(func(q audit.Query) ([]audit.Event, error) {
 			return []audit.Event{{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: in, Data: map[string]any{"outcome": "merged"}}}, nil
 		}),

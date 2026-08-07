@@ -11,6 +11,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/stats"
 )
@@ -851,9 +852,9 @@ func TestCostTierCohortKey(t *testing.T) {
 		want string
 	}{
 		{"empty provider", stats.RunRecord{Model: "sonnet"}, ""},
-		{"empty model", stats.RunRecord{Provider: "claude"}, ""},
-		{"unknown model", stats.RunRecord{Provider: "claude", Model: "not-a-real-model"}, ""},
-		{"known cheap", stats.RunRecord{Provider: "claude", Model: "sonnet", Role: "implementation"}, "claude:implementation:cheap"},
+		{"empty model", stats.RunRecord{Provider: providerid.Claude}, ""},
+		{"unknown model", stats.RunRecord{Provider: providerid.Claude, Model: "not-a-real-model"}, ""},
+		{"known cheap", stats.RunRecord{Provider: providerid.Claude, Model: "sonnet", Role: "implementation"}, "claude:implementation:cheap"},
 	}
 	for _, c := range cases {
 		if got := costTierCohortKey(c.r); got != c.want {
@@ -870,7 +871,7 @@ func TestCompareByLatestAuthorCostTierPerMergedFields(t *testing.T) {
 		{Type: audit.EventTaskLanded, TaskID: "A", Timestamp: in, Data: map[string]any{"outcome": "merged"}},
 	}
 	records := []stats.RunRecord{
-		{TaskID: "A", Role: "implementation", Provider: "claude", Model: "sonnet",
+		{TaskID: "A", Role: "implementation", Provider: providerid.Claude, Model: "sonnet",
 			CostUSD: 4.0, InputTokens: 200, Timestamp: in},
 	}
 	rows := CompareByLatestAuthor(records, events, since, base, 0, costTierCohortKey)

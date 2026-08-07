@@ -396,7 +396,8 @@ func cmdEvaluationScan(cfg *config.Config, jsonOut bool) int {
 	}
 	if len(report.ByCostTier) > 0 {
 		fmt.Println("by cost tier (provider:role:tier):")
-		for _, r := range report.ByCostTier {
+		for i := range report.ByCostTier {
+			r := &report.ByCostTier[i]
 			fmt.Printf("  %-40s landed=%-4d $/merged=$%-8.2f tokens/merged=%.0f\n",
 				r.Key, r.Landed, r.CostPerMergedUSD, r.TokensPerMergedPR)
 		}
