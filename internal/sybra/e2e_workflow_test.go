@@ -6450,7 +6450,7 @@ func TestE2E_StepHistoryCap_KeepsLatest50(t *testing.T) {
 	}
 }
 
-func TestE2E_WorkflowReload_AppliesOnAdvance(t *testing.T) {
+func TestE2E_WorkflowReload_PinnedExecutionKeepsOriginalDefinition(t *testing.T) {
 	env := setupE2E(t, "success")
 	writeWorkflowFixture(t, env, "test-reload-live", testReloadWorkflowYAML)
 
@@ -6475,8 +6475,8 @@ func TestE2E_WorkflowReload_AppliesOnAdvance(t *testing.T) {
 		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
 	})
 	tk, _ := env.tasks.Get(created.ID)
-	if tk.Status != task.StatusInProgress {
-		t.Fatalf("status = %q, want in-progress from updated workflow", tk.Status)
+	if tk.Status != task.StatusDone {
+		t.Fatalf("status = %q, want done from pinned original workflow", tk.Status)
 	}
 }
 
@@ -6756,6 +6756,116 @@ func TestE2E_RestartSimulation_PersistedWaitingResumesOnce(t *testing.T) {
 	tk, _ := env.tasks.Get(created.ID)
 	if got := countStepRecords(tk, "implement"); got != 1 {
 		t.Fatalf("implement records = %d, want 1 after restart resume", got)
+	}
+}
+
+const testRestartDriftWorkflowYAMLV1 = `id: test-restart-drift
+name: Restart Drift
+trigger:
+  on: task.created
+steps:
+  - id: gate
+    name: Gate
+    type: wait_human
+    config:
+      status: human-required
+      human_actions:
+        - approve
+    next:
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: approve
+        goto: set_done
+  - id: set_done
+    name: Set Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
+const testRestartDriftWorkflowYAMLV2 = `id: test-restart-drift
+name: Restart Drift
+trigger:
+  on: task.created
+steps:
+  - id: gate
+    name: Gate Changed
+    type: wait_human
+    config:
+      status: human-required
+      human_actions:
+        - approve
+    next:
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: approve
+        goto: set_blocked
+  - id: set_blocked
+    name: Set Blocked
+    type: set_status
+    config:
+      status: blocked
+    next:
+      - goto: ""
+`
+
+func TestE2E_RestartSimulation_PinnedDefinitionUsesOriginalWhileNewTaskUsesLatest(t *testing.T) {
+	env := setupE2E(t, "success")
+	writeWorkflowFixture(t, env, "test-restart-drift", testRestartDriftWorkflowYAMLV1)
+
+	original, err := env.tasks.Create("restart drift original", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(original.ID, "test-restart-drift"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "original task waits at gate", func() bool {
+		tk, gErr := env.tasks.Get(original.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "gate" && tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	writeWorkflowFixture(t, env, "test-restart-drift", testRestartDriftWorkflowYAMLV2)
+	restored := rebuildEngineFromEnv(t, env)
+	if err := restored.HandleHumanAction(original.ID, "approve", nil); err != nil {
+		t.Fatalf("HandleHumanAction original: %v", err)
+	}
+	waitFor(t, 10*time.Second, "original task follows pinned v1", func() bool {
+		tk, gErr := env.tasks.Get(original.ID)
+		return gErr == nil && tk.Status == task.StatusDone
+	})
+	originalTask, _ := env.tasks.Get(original.ID)
+	if originalTask.Status != task.StatusDone {
+		t.Fatalf("original status = %q, want done from v1", originalTask.Status)
+	}
+
+	latest, err := env.tasks.Create("restart drift latest", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.StartWorkflowWithVars(latest.ID, "test-restart-drift", map[string]string{
+		workflow.WorkflowVarDir: env.agentDir,
+	}); err != nil {
+		t.Fatalf("StartWorkflowWithVars latest: %v", err)
+	}
+	waitFor(t, 10*time.Second, "latest task waits at gate", func() bool {
+		tk, gErr := env.tasks.Get(latest.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "gate" && tk.Workflow.State == workflow.ExecWaiting
+	})
+	if err := restored.HandleHumanAction(latest.ID, "approve", nil); err != nil {
+		t.Fatalf("HandleHumanAction latest: %v", err)
+	}
+	waitFor(t, 10*time.Second, "latest task follows updated v2", func() bool {
+		tk, gErr := env.tasks.Get(latest.ID)
+		return gErr == nil && tk.Status == task.StatusBlocked
+	})
+	latestTask, _ := env.tasks.Get(latest.ID)
+	if latestTask.Status != task.StatusBlocked {
+		t.Fatalf("latest status = %q, want blocked from v2", latestTask.Status)
 	}
 }
 

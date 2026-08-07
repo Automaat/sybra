@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -396,5 +397,21 @@ func TestEffectLog_CloneDeepCopiesLeaseExpiry(t *testing.T) {
 	*cloned.EffectLog[0].LeaseExpiresAt = original.Add(time.Hour)
 	if !e.EffectLog[0].LeaseExpiresAt.Equal(original) {
 		t.Fatal("mutating clone's LeaseExpiresAt pointee should not affect original")
+	}
+}
+
+func TestExecutionClone_PreservesDefinitionHash(t *testing.T) {
+	e := &Execution{
+		WorkflowID:     "wf-1",
+		DefinitionHash: strings.Repeat("a", 64),
+		Variables:      map[string]string{"k": "v"},
+	}
+
+	cloned := e.Clone()
+	if cloned == nil {
+		t.Fatal("Clone returned nil")
+	}
+	if cloned.DefinitionHash != e.DefinitionHash {
+		t.Fatalf("DefinitionHash = %q, want %q", cloned.DefinitionHash, e.DefinitionHash)
 	}
 }

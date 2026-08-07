@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -161,5 +162,72 @@ func TestResumeStalled_MissingStepSkipsQuietCases(t *testing.T) {
 				t.Error("execution failed — escalation must not fire here")
 			}
 		})
+	}
+}
+
+func TestResumeStalled_MissingSnapshotEscalatesOnce(t *testing.T) {
+	store := newTestStore(t)
+	def, err := store.Get("test-simple")
+	if err != nil {
+		t.Fatalf("Get workflow: %v", err)
+	}
+	hash, err := store.SaveSnapshot(def)
+	if err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := store.Save(Definition{
+		ID:   "test-simple",
+		Name: def.Name,
+		Trigger: Trigger{
+			On: def.Trigger.On,
+		},
+		Steps: []Step{
+			{ID: "triage", Name: "Changed", Type: StepRunAgent, Config: StepConfig{Role: "triage"}},
+		},
+	}); err != nil {
+		t.Fatalf("Save updated workflow: %v", err)
+	}
+	snapshotPath, err := store.snapshotPath("test-simple", hash)
+	if err != nil {
+		t.Fatalf("snapshotPath: %v", err)
+	}
+	if err := os.Remove(snapshotPath); err != nil {
+		t.Fatalf("Remove snapshot: %v", err)
+	}
+
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:     "t1",
+		Status: taskstatus.Planning,
+		Workflow: &Execution{
+			WorkflowID:     "test-simple",
+			DefinitionHash: hash,
+			CurrentStep:    "triage",
+			State:          ExecWaiting,
+		},
+	})
+
+	engine, err := NewEngine(store, tasks, newMockAgents(), discardLogger(), completeDependencies())
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	engine.ResumeStalled()
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Status != taskstatus.HumanRequired {
+		t.Fatalf("Status = %q, want human-required", ti.Status)
+	}
+	if ti.Workflow.State != ExecFailed {
+		t.Fatalf("State = %q, want %q", ti.Workflow.State, ExecFailed)
+	}
+	if ti.Blocker.Code != workflowDefinitionSnapshotMissingCode {
+		t.Fatalf("blocker code = %q, want %q", ti.Blocker.Code, workflowDefinitionSnapshotMissingCode)
+	}
+
+	before := tasks.Reason("t1")
+	engine.ResumeStalled()
+	ti2, _ := tasks.GetTask("t1")
+	if ti2.Workflow.State != ExecFailed || tasks.Reason("t1") != before {
+		t.Fatalf("second ResumeStalled mutated task: state=%q reason=%q", ti2.Workflow.State, tasks.Reason("t1"))
 	}
 }

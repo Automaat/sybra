@@ -201,7 +201,7 @@ func (e *Engine) resumeStalledTask(t *TaskInfo) {
 		// fall through to resume logic
 	}
 
-	def, err := e.store.Get(t.Workflow.WorkflowID)
+	def, err := e.resolveExecutionDefinition(t.ID, *t)
 	if err != nil {
 		return
 	}

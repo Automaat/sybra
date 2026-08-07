@@ -3903,6 +3903,165 @@ func TestStartWorkflowAllowsNonTamperHumanRequiredRestart(t *testing.T) {
 	}
 }
 
+func TestStartWorkflow_PinsDefinitionHashAndSnapshot(t *testing.T) {
+	t.Parallel()
+
+	store := newInlineTestStore(t, "pin-test", `
+id: pin-test
+name: Pin Test
+trigger:
+  on: task.created
+steps:
+  - id: wait
+    name: Wait
+    type: wait_human
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine, err := NewEngine(store, tasks, agents, discardLogger(), completeDependencies())
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
+	if err := engine.StartWorkflow("t1", "pin-test"); err != nil {
+		t.Fatalf("StartWorkflow: %v", err)
+	}
+
+	ti, _ := tasks.GetTask("t1")
+	if ti.Workflow == nil {
+		t.Fatal("workflow not persisted")
+	}
+	if ti.Workflow.DefinitionHash == "" {
+		t.Fatal("DefinitionHash not stamped")
+	}
+	def, err := store.Get("pin-test")
+	if err != nil {
+		t.Fatalf("Get workflow: %v", err)
+	}
+	wantHash, err := def.SemanticHash()
+	if err != nil {
+		t.Fatalf("SemanticHash: %v", err)
+	}
+	if ti.Workflow.DefinitionHash != wantHash {
+		t.Fatalf("DefinitionHash = %q, want %q", ti.Workflow.DefinitionHash, wantHash)
+	}
+	if _, err := store.GetSnapshot("pin-test", ti.Workflow.DefinitionHash); err != nil {
+		t.Fatalf("GetSnapshot: %v", err)
+	}
+}
+
+func TestResolveExecutionDefinition_UsesPinnedSnapshotOnLiveMismatch(t *testing.T) {
+	t.Parallel()
+
+	store := newInlineTestStore(t, "pin-test", `
+id: pin-test
+name: Pin Test
+trigger:
+  on: task.created
+steps:
+  - id: wait
+    name: Wait Original
+    type: wait_human
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine, err := NewEngine(store, tasks, agents, discardLogger(), completeDependencies())
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
+	if err := engine.StartWorkflow("t1", "pin-test"); err != nil {
+		t.Fatalf("StartWorkflow: %v", err)
+	}
+	if err := store.Save(Definition{
+		ID:   "pin-test",
+		Name: "Pin Test",
+		Trigger: Trigger{
+			On: "task.created",
+		},
+		Steps: []Step{{
+			ID:   "wait",
+			Name: "Wait Updated",
+			Type: StepWaitHuman,
+		}},
+	}); err != nil {
+		t.Fatalf("Save updated workflow: %v", err)
+	}
+
+	ti, _ := tasks.GetTask("t1")
+	def, err := engine.resolveExecutionDefinition("t1", ti)
+	if err != nil {
+		t.Fatalf("resolveExecutionDefinition: %v", err)
+	}
+	if step := def.StepByID("wait"); step == nil || step.Name != "Wait Original" {
+		t.Fatalf("resolved step = %+v, want original snapshot content", step)
+	}
+}
+
+func TestStartWorkflow_NewTaskUsesLatestDefinitionAfterRewrite(t *testing.T) {
+	t.Parallel()
+
+	store := newInlineTestStore(t, "pin-test", `
+id: pin-test
+name: Pin Test
+trigger:
+  on: task.created
+steps:
+  - id: wait
+    name: Wait Original
+    type: wait_human
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine, err := NewEngine(store, tasks, agents, discardLogger(), completeDependencies())
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
+	if err := engine.StartWorkflow("t1", "pin-test"); err != nil {
+		t.Fatalf("StartWorkflow first: %v", err)
+	}
+	first, _ := tasks.GetTask("t1")
+
+	if err := store.Save(Definition{
+		ID:   "pin-test",
+		Name: "Pin Test",
+		Trigger: Trigger{
+			On: "task.created",
+		},
+		Steps: []Step{{
+			ID:   "wait",
+			Name: "Wait Updated",
+			Type: StepWaitHuman,
+		}},
+	}); err != nil {
+		t.Fatalf("Save updated workflow: %v", err)
+	}
+
+	tasks.Put(TaskInfo{ID: "t2", Status: "todo"})
+	if err := engine.StartWorkflow("t2", "pin-test"); err != nil {
+		t.Fatalf("StartWorkflow second: %v", err)
+	}
+	second, _ := tasks.GetTask("t2")
+	if first.Workflow.DefinitionHash == second.Workflow.DefinitionHash {
+		t.Fatalf("new task reused old definition hash %q after rewrite", second.Workflow.DefinitionHash)
+	}
+	def, err := store.Get("pin-test")
+	if err != nil {
+		t.Fatalf("Get latest workflow: %v", err)
+	}
+	latestHash, err := def.SemanticHash()
+	if err != nil {
+		t.Fatalf("SemanticHash latest: %v", err)
+	}
+	if second.Workflow.DefinitionHash != latestHash {
+		t.Fatalf("second DefinitionHash = %q, want latest %q", second.Workflow.DefinitionHash, latestHash)
+	}
+}
+
 func TestMatchWorkflow_PriorityTieBreak(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -10105,7 +10264,7 @@ func TestExecRunAgent_RealSpawnErrorPropagates(t *testing.T) {
 func TestStartWorkflow_InitialDispatchFailure_EscalatesPermanentError(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.Todo, AgentMode: "headless"})
 	agents := newMockAgents()
 	agents.SetFailSpawn(fmt.Errorf("task t1 has no project_id: refusing to start triage agent without isolated worktree: %w", ErrNoProjectAssigned))
 	engine := NewTestEngine(store, tasks, agents, discardLogger())
@@ -12331,7 +12490,7 @@ func TestAdvanceStep_MarkReviewedAfterReviewRole(t *testing.T) {
 	agents := newMockAgents()
 	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
-	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.Todo, AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-review-fix"); err != nil {
 		t.Fatal(err)
 	}
@@ -12371,7 +12530,7 @@ func TestAdvanceStep_WorkflowDefinitionDeletedMidRun(t *testing.T) {
 	agents := newMockAgents()
 	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
-	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.Todo, AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
 		t.Fatal(err)
 	}
@@ -12412,7 +12571,7 @@ func TestStartWorkflow_ConcurrentSameTaskSingleWinner(t *testing.T) {
 	agents := newMockAgents()
 	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
-	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.Todo, AgentMode: "headless"})
 
 	const callers = 5
 	var wg sync.WaitGroup

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"reflect"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -218,7 +217,13 @@ func SyncBuiltins(store *Store) error {
 // builtinsEqual compares two definitions ignoring timestamps. Timestamps are
 // set by Save() each write, so byte-level comparison would always diverge.
 func builtinsEqual(a, b Definition) bool {
-	a.CreatedAt = b.CreatedAt
-	a.UpdatedAt = b.UpdatedAt
-	return reflect.DeepEqual(a, b)
+	ah, err := a.SemanticHash()
+	if err != nil {
+		return false
+	}
+	bh, err := b.SemanticHash()
+	if err != nil {
+		return false
+	}
+	return ah == bh
 }
