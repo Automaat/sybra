@@ -133,7 +133,7 @@ func (e *Engine) startWorkflowCore(taskID, workflowID, startStepID string, vars 
 		CurrentStep: start.ID,
 		State:       ExecRunning,
 		Variables:   variables,
-		StartedAt:   time.Now().UTC(),
+		StartedAt:   e.now(),
 	}
 
 	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {

@@ -135,10 +135,10 @@ func (e *Engine) checkAdmissionOversize(raw string) string {
 // transient vs permanent. A not-yet-existing worktree is not a failure here —
 // see the doc comment on execAdmissionPreflight.
 func (e *Engine) checkAdmissionCredentials(taskID string) error {
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return nil
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return nil
 	}

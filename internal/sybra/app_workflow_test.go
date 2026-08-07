@@ -22,34 +22,6 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
-func TestEligibleRerequestReviewer(t *testing.T) {
-	tests := []struct {
-		name     string
-		login    string
-		viewer   string
-		author   string
-		expected bool
-	}{
-		{name: "comment author", login: "alice", viewer: "me", author: "author", expected: true},
-		{name: "empty", login: "", viewer: "me", author: "author", expected: false},
-		{name: "viewer", login: "me", viewer: "me", author: "author", expected: false},
-		{name: "pr author", login: "author", viewer: "me", author: "author", expected: false},
-		{name: "bot", login: "renovate[bot]", viewer: "me", author: "author", expected: false},
-		{name: "case-insensitive viewer", login: "Me", viewer: "me", author: "author", expected: false},
-		{name: "case-insensitive author", login: "Author", viewer: "me", author: "author", expected: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := eligibleRerequestReviewer(tt.login, tt.viewer, tt.author)
-			if got != tt.expected {
-				t.Fatalf("eligibleRerequestReviewer(%q, %q, %q) = %v, want %v",
-					tt.login, tt.viewer, tt.author, got, tt.expected)
-			}
-		})
-	}
-}
-
 func TestAgentAdapterExperiencePromptPlanAndTriageOnly(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := experience.New(t.TempDir())
@@ -477,6 +449,32 @@ func TestAgentAdapterStartAgentSystemRoleHonorsDispatchClaim(t *testing.T) {
 	}
 	if agentID != "" {
 		t.Fatalf("StartAgent() agentID = %q, want empty on dispatch-in-flight", agentID)
+	}
+}
+
+// TestFallbackAgentWorkingDir pins the no-worktree dispatch path used by the
+// best-of-N judge. A judge intentionally reads candidate worktrees by their
+// absolute paths, so it must not be given a task worktree merely to obtain a
+// cwd; in particular it must never fall back to the operator's Sybra home.
+func TestFallbackAgentWorkingDir(t *testing.T) {
+	dir, err := fallbackAgentWorkingDir()
+	if err != nil {
+		t.Fatalf("fallbackAgentWorkingDir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat fallback cwd: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("fallback cwd %q is not a directory", dir)
+	}
+	if dir == config.HomeDir() {
+		t.Fatalf("fallback cwd = Sybra home %q", dir)
+	}
+	if filepath.Clean(filepath.Dir(dir)) != filepath.Clean(os.TempDir()) {
+		t.Fatalf("fallback cwd parent = %q, want OS temp directory %q", filepath.Dir(dir), os.TempDir())
 	}
 }
 

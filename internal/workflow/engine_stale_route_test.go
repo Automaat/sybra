@@ -40,7 +40,7 @@ func staleRouteEngine(t *testing.T, logger *slog.Logger, routes map[string]strin
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, logger)
+	engine := NewTestEngine(store, tasks, agents, logger)
 
 	wf := &Execution{
 		WorkflowID:  "test-simple",
@@ -222,7 +222,7 @@ func TestResumeStalled_StaleRoutePrunerSparesMidAdvanceCompletion(t *testing.T) 
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	recorder := newGatedRecorder()
 	engine.SetArtifactRecorder(recorder)

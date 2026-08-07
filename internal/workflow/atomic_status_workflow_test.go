@@ -15,7 +15,7 @@ func TestFinishTerminalStepOutput_PersistFailureLeavesTaskUnchanged(t *testing.T
 	wf := &Execution{WorkflowID: "test-simple", State: ExecRunning, CurrentStep: "step1", Variables: map[string]string{}}
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", Workflow: wf})
 
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 
 	tasks.failSetWorkflow = true
 	clone := wf.Clone()

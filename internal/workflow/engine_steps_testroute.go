@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/gitexec"
@@ -508,10 +509,8 @@ func prepareTestVerdictAttemptVars(wfExec *Execution, stepID, body string) {
 }
 
 func (e *Engine) prepareTestStepCompletion(taskID string, t TaskInfo, output *StepOutput, wfExec *Execution, body *string) error {
-	if appended, nextBody, appendErr := e.appendTestFailureReport(taskID, *output, wfExec, *body); appendErr != nil {
+	if appendErr := e.appendTestFailureReport(taskID, *output, wfExec, *body); appendErr != nil {
 		return appendErr
-	} else if appended {
-		*body = nextBody
 	}
 
 	violation, outcome, fingerprint := applyTestVerdictCompletion(wfExec, output, *body, t)
@@ -520,12 +519,13 @@ func (e *Engine) prepareTestStepCompletion(taskID string, t TaskInfo, output *St
 			0, "", output.Output)
 	}
 	if outcome == testOutcomeProductBug && fingerprint != "" {
-		report := currentTestFailureReport(output.Output, *body, wfExec, output.StepID)
-		if nextBody, changed := upsertAcceptanceLedger(*body, fingerprint, report); changed {
-			if err := e.tasks.ReplaceTaskBody(taskID, nextBody); err != nil {
-				return fmt.Errorf("update acceptance ledger: %w", err)
+		report := currentTestFailureReport(output.Output, t.CurrentTestFailures, wfExec, output.StepID)
+		if nextLedger, changed := upsertAcceptanceLedger(t.AcceptanceLedger, fingerprint, report); changed {
+			nextLedger = clampWorkflowSidecar(nextLedger)
+			if err := e.tasks.WriteSidecar(taskID, "acceptance_ledger", nextLedger); err != nil {
+				return fmt.Errorf("write acceptance ledger: %w", err)
 			}
-			*body = nextBody
+			t.AcceptanceLedger = nextLedger
 		}
 	}
 	if output.AgentID != "" && outcome != "" {
@@ -541,19 +541,19 @@ func (e *Engine) prepareTestStepCompletion(taskID string, t TaskInfo, output *St
 	return nil
 }
 
-func (e *Engine) appendTestFailureReport(taskID string, output StepOutput, wfExec *Execution, body string) (appended bool, nextBody string, err error) {
+func (e *Engine) appendTestFailureReport(taskID string, output StepOutput, wfExec *Execution, body string) error {
 	if wfExec == nil || output.StepID != testVerdictSourceStep {
-		return false, body, nil
+		return nil
 	}
 	if output.Status != "completed" {
-		return false, body, nil
+		return nil
 	}
 
 	report := ""
 	isFail := false
 	if parsed, ok := parseStructuredTestOutput(output.Output); ok {
 		if strings.ToUpper(strings.TrimSpace(parsed.Verdict)) != "FAIL" {
-			return false, body, nil
+			return nil
 		}
 		isFail = true
 		report = normalizeStructuredFailuresMarkdown(parsed.FailuresMarkdown, parsed.Outcome)
@@ -562,63 +562,19 @@ func (e *Engine) appendTestFailureReport(taskID string, output StepOutput, wfExe
 		report = plainTestFailureReport(output.Output)
 	}
 	if !isFail {
-		return false, body, nil
+		return nil
 	}
 	if delta, hasDelta := testFailureBodyDelta(body, wfExec, output.StepID); hasDelta && testFailSectionOf(delta) != "" {
-		var currentStart int
-		nextBody, currentStart = normalizeTestFailureDeltaBody(body, delta)
-		wfExec.SetVar("step."+output.StepID+"."+testFailureBodyStartLenKey, strconv.Itoa(currentStart))
-		if err := e.tasks.ReplaceTaskBody(taskID, nextBody); err != nil {
-			return false, body, fmt.Errorf("normalize test failure report: %w", err)
-		}
-		return true, nextBody, nil
+		report = strings.TrimSpace(stripTestVerdictMarkers(testFailSectionOf(delta)))
 	}
 	if report == "" {
-		return false, body, nil
+		return nil
 	}
-
-	// Strip any prior "## Test Failures" section(s) before appending the new
-	// one, so at most one is ever live in the body — it is then unambiguously
-	// the current, blocking failure. Priors are archived under a distinctly
-	// different heading rather than dropped, preserving audit history without
-	// reintroducing the ambiguity.
-	strippedBody, priorSections := stripTestFailuresSections(body)
-	nextBody = strippedBody
-	for _, prior := range priorSections {
-		nextBody = appendRawBody(nextBody, archiveTestFailuresSection(prior))
+	report = clampWorkflowSidecar(strings.TrimSpace(report))
+	if err := e.tasks.WriteSidecar(taskID, "current_test_failures", report); err != nil {
+		return fmt.Errorf("write current test failures: %w", err)
 	}
-	currentStart := len(nextBody)
-	nextBody = appendRawBody(nextBody, report)
-	wfExec.SetVar("step."+output.StepID+"."+testFailureBodyStartLenKey, strconv.Itoa(currentStart))
-	if err := e.tasks.ReplaceTaskBody(taskID, nextBody); err != nil {
-		return false, body, fmt.Errorf("append test failure report: %w", err)
-	}
-	return true, nextBody, nil
-}
-
-func normalizeTestFailureDeltaBody(body, delta string) (nextBody string, currentStart int) {
-	preAttemptBody := body[:len(body)-len(delta)]
-	strippedPreAttemptBody, priorSections := stripTestFailuresSections(preAttemptBody)
-	strippedDelta, deltaSections := stripTestFailuresSections(delta)
-	if len(deltaSections) == 0 {
-		return body, len(body)
-	}
-
-	nextBody = strippedPreAttemptBody
-	nextBody = appendRawBody(nextBody, strippedDelta)
-	for _, prior := range priorSections {
-		nextBody = appendRawBody(nextBody, archiveTestFailuresSection(prior))
-	}
-	for _, prior := range deltaSections[:len(deltaSections)-1] {
-		nextBody = appendRawBody(nextBody, archiveTestFailuresSection(prior))
-	}
-	currentSection := deltaSections[len(deltaSections)-1]
-	nextBody = appendRawBody(nextBody, currentSection)
-	currentStart = strings.LastIndex(nextBody, currentSection)
-	if currentStart < 0 {
-		currentStart = len(nextBody)
-	}
-	return nextBody, currentStart
+	return nil
 }
 
 // stripTestFailuresSections removes every "## Test Failures" section from
@@ -696,6 +652,10 @@ func capPriorAttemptDiffStat(text string) string {
 	return capTextBlock(text, 40, 4*1024, "\n\n[truncated for prior-attempt note]", true)
 }
 
+func clampWorkflowSidecar(text string) string {
+	return capHeadTailText(text, 16*1024, "\n\n[truncated to cap workflow sidecar growth]\n\n")
+}
+
 // capTextBlock head-truncates text to maxLines then byte-caps it to maxBytes,
 // appending suffix when anything was dropped. When preserveLastLine is set, the
 // final line is held aside before the line cut and re-appended afterwards — used
@@ -745,6 +705,21 @@ func capTextBlock(text string, maxLines, maxBytes int, suffix string, preserveLa
 	return text + suffix
 }
 
+func capHeadTailText(text string, maxBytes int, elision string) string {
+	text = strings.TrimSpace(text)
+	if text == "" || len(text) <= maxBytes {
+		return text
+	}
+	headBytes := maxBytes / 3
+	if headBytes <= 0 {
+		headBytes = maxBytes / 2
+	}
+	head := trimUTF8ToBytes(text, headBytes)
+	tailBudget := max(0, maxBytes-len(elision)-len(head))
+	tail := trimUTF8ToBytesFromEnd(text, tailBudget)
+	return strings.TrimRight(head, "\n") + elision + strings.TrimLeft(tail, "\n")
+}
+
 func normalizeAcceptanceLedgerReport(report string) string {
 	report = strings.TrimSpace(stripTestVerdictMarkers(report))
 	if report == "" {
@@ -767,6 +742,41 @@ func normalizeAcceptanceLedgerReport(report string) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
+func trimUTF8ToBytes(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return s
+	}
+	s = s[:limit]
+	for len(s) > 0 && !utf8.ValidString(s) {
+		_, size := utf8.DecodeLastRuneInString(s)
+		if size <= 1 {
+			s = s[:len(s)-1]
+			continue
+		}
+		s = s[:len(s)-size]
+	}
+	return s
+}
+
+func trimUTF8ToBytesFromEnd(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return s
+	}
+	s = s[len(s)-limit:]
+	for len(s) > 0 && !utf8.ValidString(s) {
+		if utf8.RuneStart(s[0]) {
+			break
+		}
+		s = s[1:]
+	}
+	return s
+}
 func upsertAcceptanceLedger(body, fingerprint, report string) (nextBody string, changed bool) {
 	if fingerprint == "" || report == "" {
 		return body, false
@@ -785,7 +795,9 @@ func upsertAcceptanceLedger(body, fingerprint, report string) (nextBody string, 
 		return body, false
 	}
 
-	if _, end, ok := topLevelSectionRange(body, acceptanceLedgerHeading); ok {
+	if _, end, ok := topLevelSectionRange(body, func(line string) bool {
+		return strings.EqualFold(line, acceptanceLedgerHeading)
+	}); ok {
 		before := strings.TrimRight(body[:end], "\n")
 		after := strings.TrimLeft(body[end:], "\n")
 		nextBody = appendRawBody(before, entry)
@@ -2405,7 +2417,7 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 			return StepOutput{}, err
 		}
-		if err := e.appendSpecDecisionSection(taskID, t.Body, recurring, attempts, limit); err != nil {
+		if err := e.writeSpecDecision(taskID, recurring, attempts, limit); err != nil {
 			e.logger.Warn("workflow.test.spec-decision.append-failed", "task_id", taskID, "err", err)
 		}
 		e.logSpecDecisionEscalation(taskID, attempts, limit, recurring, false)
@@ -2426,7 +2438,7 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 			if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 				return StepOutput{}, err
 			}
-			if err := e.appendSpecDecisionSection(taskID, t.Body, recurring, attempts, limit); err != nil {
+			if err := e.writeSpecDecision(taskID, recurring, attempts, limit); err != nil {
 				e.logger.Warn("workflow.test.spec-decision.append-failed", "task_id", taskID, "err", err)
 			}
 			e.logSpecDecisionEscalation(taskID, attempts, limit, recurring, true)
@@ -2457,10 +2469,10 @@ func (e *Engine) execRouteTestResult(taskID string, step *Step, wfExec *Executio
 }
 
 func (e *Engine) seedReimplementNote(ctx context.Context, wfExec *Execution, taskID string, attempts int, t TaskInfo) {
-	if e.attemptNotes == nil || e.worktrees == nil {
+	if e.execution.AttemptNotes == nil || e.execution.Worktrees == nil {
 		return
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return
 	}
@@ -2488,7 +2500,7 @@ func (e *Engine) seedReimplementNote(ctx context.Context, wfExec *Execution, tas
 			"Latest rejection reason:\n\n%s\n",
 		attempts, marker, diffStat, quoteMarkdownBlock(reason),
 	)
-	if err := e.attemptNotes.AppendReimplementNote(ctx, taskID, wtPath, marker, section); err != nil {
+	if err := e.execution.AttemptNotes.AppendReimplementNote(ctx, taskID, wtPath, marker, section); err != nil {
 		e.logger.Warn("workflow.test.reimplement-note", "task_id", taskID, "worktree", wtPath, "attempts", attempts, "err", err)
 		return
 	}
@@ -2520,11 +2532,8 @@ func (e *Engine) attemptDiffStat(ctx context.Context, wtPath string) string {
 }
 
 func reimplementRejectReason(t TaskInfo, wfExec *Execution) string {
-	_, sections := stripTestFailuresSections(t.Body)
-	if len(sections) > 0 {
-		if reason := capPriorAttemptText(sections[len(sections)-1]); reason != "" {
-			return reason
-		}
+	if reason := capPriorAttemptText(t.CurrentTestFailures); reason != "" {
+		return reason
 	}
 
 	var lines []string
@@ -2640,9 +2649,7 @@ func nonConvergingProductBugLoop(t TaskInfo) bool {
 const specDecisionHeading = "## Spec Decision Needed"
 
 // specDecisionMarker returns a stable HTML-comment marker keyed by the sorted
-// set of recurring fingerprints driving an escalation. appendSpecDecisionSection
-// uses it to skip re-appending an identical section on a rerun (idempotency),
-// while a genuinely new recurring set still gets its own section appended.
+// set of recurring fingerprints driving an escalation.
 func specDecisionMarker(fingerprints []string) string {
 	sorted := append([]string(nil), fingerprints...)
 	sort.Strings(sorted)
@@ -2650,12 +2657,12 @@ func specDecisionMarker(fingerprints []string) string {
 	return "<!-- sybra:spec-decision:" + hex.EncodeToString(sum[:6]) + " -->"
 }
 
-// buildSpecDecisionSection renders the task-body evidence for a spec-decision
+// buildSpecDecisionSection renders the sidecar evidence for a spec-decision
 // escalation. It deliberately avoids asserting a proven contradiction —
 // the same recurrence shape can also be produced by two independent
-// sequential bugs — and points at the latest "## Test Failures" section
-// for repros rather than claiming an exact section-to-fingerprint mapping,
-// since AgentRunInfo does not persist historical report text or offsets.
+// sequential bugs — and points at the latest current-test-failures sidecar
+// rather than claiming an exact section-to-fingerprint mapping, since
+// AgentRunInfo does not persist historical report text or offsets.
 func buildSpecDecisionSection(fingerprints []string, attempts, limit int) string {
 	sorted := append([]string(nil), fingerprints...)
 	sort.Strings(sorted)
@@ -2669,9 +2676,9 @@ func buildSpecDecisionSection(fingerprints []string, attempts, limit int) string
 				"different repro (fixture values, ids, quoted literals) to demonstrate the same conceptual "+
 				"defect each time, so no exact fingerprint recurred. This is evidence of a suspected "+
 				"acceptance-criteria conflict — not a confirmed one, since a hard defect the fixes keep "+
-				"missing can look the same. A human spec decision is needed; inspect the latest %q section "+
-				"of this task body for the most recent repro.\n",
-			attempts, limit, testFailuresHeading)
+				"missing can look the same. A human spec decision is needed; inspect the latest current test "+
+				"failures sidecar for the most recent repro.\n",
+			attempts, limit)
 		return b.String()
 	}
 	fmt.Fprintf(&b,
@@ -2682,23 +2689,14 @@ func buildSpecDecisionSection(fingerprints []string, attempts, limit int) string
 		len(sorted), attempts, limit)
 	fmt.Fprintf(&b,
 		"Recurring fingerprint(s): %s. Repros for these failure classes are identifiable in the latest "+
-			"%q section of this task body.\n",
-		strings.Join(sorted, ", "), testFailuresHeading)
+			"current test failures sidecar.\n",
+		strings.Join(sorted, ", "))
 	return b.String()
 }
 
-// appendSpecDecisionSection appends the spec-decision evidence section to the
-// task body, unless a section with an identical marker (same recurring
-// fingerprint set) is already present — reruns then skip instead of
-// duplicating. A new/different recurring set still gets appended, since
-// AppendTaskBody has no in-place replace and the older section remains valid
-// historical evidence.
-func (e *Engine) appendSpecDecisionSection(taskID, body string, fingerprints []string, attempts, limit int) error {
-	if strings.Contains(body, specDecisionMarker(fingerprints)) {
-		return nil
-	}
-	if err := e.tasks.AppendTaskBody(taskID, buildSpecDecisionSection(fingerprints, attempts, limit)); err != nil {
-		return fmt.Errorf("append spec-decision section: %w", err)
+func (e *Engine) writeSpecDecision(taskID string, fingerprints []string, attempts, limit int) error {
+	if err := e.tasks.WriteSidecar(taskID, "spec_decision", clampWorkflowSidecar(buildSpecDecisionSection(fingerprints, attempts, limit))); err != nil {
+		return fmt.Errorf("write spec decision: %w", err)
 	}
 	return nil
 }

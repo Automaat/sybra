@@ -18,9 +18,9 @@ func newFocusedChecksStep() *Step { return &Step{ID: "focused_checks", Type: Ste
 
 func newFocusedChecksEngine(t *testing.T, wt string, focused []project.FocusedCheck, verify []string) (*Engine, *memTasks, *recordingArtifactRecorder) {
 	t.Helper()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: focused, cmds: verify})
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{focused: focused, cmds: verify})
 	rec := &recordingArtifactRecorder{}
 	engine.SetArtifactRecorder(rec)
 	return engine, engine.tasks.(*memTasks), rec
@@ -222,7 +222,7 @@ func TestExecFocusedChecks_HeadBaseExcludesLocalDefaultBranchChanges(t *testing.
 			Commands: []string{"true"},
 		},
 	}, nil)
-	engine.checks.(*fakeCheckGetter).worktreeBaseRef = project.WorktreeBaseRefHead
+	engine.execution.Checks.(*fakeCheckGetter).worktreeBaseRef = project.WorktreeBaseRefHead
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", ProjectID: "owner/repo"})
 
 	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), nil, TaskInfo{ID: "t1", Status: "in-progress", ProjectID: "owner/repo"})

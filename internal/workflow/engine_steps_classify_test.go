@@ -27,7 +27,7 @@ func TestExecClassifyTask_Success(t *testing.T) {
 
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "new"})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	classifier := &fakeTaskClassifier{}
 	engine.SetTaskClassifier(classifier)
 
@@ -52,7 +52,7 @@ func TestExecClassifyTask_NilClassifier(t *testing.T) {
 
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "new"})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	// No SetTaskClassifier call — engine must flip to human-required.
 
 	out, err := engine.execClassifyTask("t1", newClassifyTaskStep(), &Execution{})
@@ -88,7 +88,7 @@ func TestExecClassifyTask_RetriesTransientFailure(t *testing.T) {
 
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "new"})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	classifier := &failNTimesClassifier{failFirst: 2}
 	engine.SetTaskClassifier(classifier)
 
@@ -122,7 +122,7 @@ func TestExecClassifyTask_ContextCanceledParksInsteadOfCompleting(t *testing.T) 
 
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "new"})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	classifier := &ctxCancelClassifier{}
 	engine.SetTaskClassifier(classifier)
 
@@ -156,7 +156,7 @@ func TestExecClassifyTask_ClassifierError(t *testing.T) {
 
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "new"})
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	engine.SetTaskClassifier(&fakeTaskClassifier{err: errors.New("provider unavailable")})
 
 	out, err := engine.execClassifyTask("t1", newClassifyTaskStep(), &Execution{})

@@ -42,7 +42,7 @@ steps:
 `)
 			tasks := newMemTasks()
 			agents := newMockAgents()
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 			tasks.Put(TaskInfo{ID: "t1", Status: "planning", AgentMode: "headless"})
 			if err := engine.StartWorkflowFromStepWithVars("t1", "simple-task-plan", "plan", nil); err != nil {
@@ -96,7 +96,7 @@ steps:
 `)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflowFromStepWithVars("t1", "test-simple", "triage", nil); err != nil {

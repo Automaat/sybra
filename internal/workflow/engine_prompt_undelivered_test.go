@@ -54,7 +54,7 @@ func TestReschedulePromptUndeliveredAgent_ChargesItsOwnBudget(t *testing.T) {
 	store := promptUndeliveredStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(promptUndeliveredTask(t, ""))
 
@@ -76,7 +76,7 @@ func TestReschedulePromptUndeliveredAgent_EscalatesWhenBudgetSpent(t *testing.T)
 	store := promptUndeliveredStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(promptUndeliveredTask(t, "3"))
 

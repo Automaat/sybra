@@ -676,6 +676,15 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 	if t.CodeReview != "" {
 		fmt.Printf("\n## Code Review\n\n%s\n", t.CodeReview)
 	}
+	if t.CurrentTestFailures != "" {
+		fmt.Printf("\n%s\n", t.CurrentTestFailures)
+	}
+	if t.AcceptanceLedger != "" {
+		fmt.Printf("\n%s\n", t.AcceptanceLedger)
+	}
+	if t.SpecDecision != "" {
+		fmt.Printf("\n%s\n", t.SpecDecision)
+	}
 	return 0
 }
 

@@ -15,9 +15,9 @@ func TestSetPRSurfaceNamesEveryMissingMember(t *testing.T) {
 	t.Parallel()
 	e := &Engine{}
 
-	err := e.SetPRSurface(PRSurface{})
+	err := e.setPRSurfaceForTest(PRSurface{})
 	if err == nil {
-		t.Fatal("SetPRSurface accepted an entirely empty surface")
+		t.Fatal("setPRSurfaceForTest accepted an entirely empty surface")
 	}
 	for _, want := range []string{
 		"Linker", "ReviewRequester", "StateFetcher", "HeadFetcher", "Creator",
@@ -37,9 +37,9 @@ func TestSetPRSurfaceRejectsAPartialWiring(t *testing.T) {
 	partial := full
 	partial.Finder = nil
 
-	err := (&Engine{}).SetPRSurface(partial)
+	err := (&Engine{}).setPRSurfaceForTest(partial)
 	if err == nil {
-		t.Fatal("SetPRSurface accepted a surface missing Finder")
+		t.Fatal("setPRSurfaceForTest accepted a surface missing Finder")
 	}
 	if !strings.Contains(err.Error(), "Finder") {
 		t.Errorf("error %q does not name Finder", err)
@@ -52,23 +52,23 @@ func TestSetPRSurfaceRejectsAPartialWiring(t *testing.T) {
 func TestSetPRSurfaceWiresEveryField(t *testing.T) {
 	t.Parallel()
 	e := &Engine{}
-	if err := e.SetPRSurface(completePRSurface()); err != nil {
-		t.Fatalf("SetPRSurface(complete) = %v", err)
+	if err := e.setPRSurfaceForTest(completePRSurface()); err != nil {
+		t.Fatalf("setPRSurfaceForTest(complete) = %v", err)
 	}
 	for name, got := range map[string]any{
-		"prLinker":         e.prLinker,
-		"prReviewers":      e.prReviewers,
-		"prStates":         e.prStates,
-		"prHeads":          e.prHeads,
-		"prCreator":        e.prCreator,
-		"prCloser":         e.prCloser,
-		"prFinder":         e.prFinder,
-		"prAnyStateFinder": e.prAnyStateFinder,
-		"prExistence":      e.prExistence,
-		"prContentGen":     e.prContentGen,
+		"prLinker":         e.pr.Linker,
+		"prReviewers":      e.pr.ReviewRequester,
+		"prStates":         e.pr.StateFetcher,
+		"prHeads":          e.pr.HeadFetcher,
+		"prCreator":        e.pr.Creator,
+		"prCloser":         e.pr.Closer,
+		"prFinder":         e.pr.Finder,
+		"prAnyStateFinder": e.pr.AnyStateFinder,
+		"prExistence":      e.pr.ExistenceChecker,
+		"prContentGen":     e.pr.ContentGenerator,
 	} {
 		if got == nil {
-			t.Errorf("%s is still nil after a complete SetPRSurface", name)
+			t.Errorf("%s is still nil after a complete setPRSurfaceForTest", name)
 		}
 	}
 }

@@ -130,6 +130,7 @@ func (e *Engine) escalateMissingStep(taskID string, wf *Execution) {
 	failed.State = ExecFailed
 	if err := e.tasks.SetStatusAndWorkflow(taskID, "human-required", reason, &failed); err != nil {
 		e.logger.Warn("workflow.resume-stalled.step-missing.escalate", "task_id", taskID, "err", err)
+		return
 	}
 }
 
@@ -256,7 +257,7 @@ func (e *Engine) resumeStalledTask(t *TaskInfo) {
 }
 
 func (e *Engine) resumePreflightConsumesTick(t *TaskInfo, step *Step, logEvent string) bool {
-	if retryAt, ok := workflowRetryAfter(t.Workflow); ok && time.Now().Before(retryAt) {
+	if retryAt, ok := workflowRetryAfter(t.Workflow); ok && e.now().Before(retryAt) {
 		retryAtStr := retryAt.Format(time.RFC3339)
 		e.resumeSkip.Log(e.logger, logEvent, t.ID,
 			"retry_after|"+step.ID+"|"+retryAtStr,

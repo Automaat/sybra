@@ -108,6 +108,15 @@ func TestResolveSandboxReadRoots_GrantsReadOnlyDir(t *testing.T) {
 	}
 }
 
+func TestResolveSandboxReadRoots_GrantsExplicitReadOnlyPaths(t *testing.T) {
+	m := newReadModeManager("enforce")
+	attempt := t.TempDir()
+	cfg := &RunConfig{Role: RoleReview, ReadOnlyPaths: []string{attempt}, sandbox: specWithWriteRoots(t)}
+	if !slices.Contains(m.resolveSandboxReadRoots(cfg), attempt) {
+		t.Fatalf("explicit attempt root %q was not granted", attempt)
+	}
+}
+
 func TestApplySandboxReadMode_PostureGatesRestriction(t *testing.T) {
 	tests := []struct {
 		name      string

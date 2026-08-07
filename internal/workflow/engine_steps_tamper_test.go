@@ -1003,7 +1003,7 @@ func newTamperEngine(t *testing.T, wt string) (*Engine, *memTasks) {
 	t.Helper()
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
 	return engine, tasks
 }
@@ -1012,7 +1012,7 @@ func TestExecDetectTampering_NoWorktreeSkips(t *testing.T) {
 	t.Parallel()
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	out, err := engine.execDetectTampering("t1", newTamperStep(), TaskInfo{ID: "t1"})
 	if err != nil {

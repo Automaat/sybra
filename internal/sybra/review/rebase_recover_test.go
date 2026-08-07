@@ -339,7 +339,7 @@ func setupRebaseRecoveryHandler(t *testing.T, withConflictWorkflow bool) (*Handl
 		}
 	}
 
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agents, tasks: tasks},
 		logger,
@@ -577,7 +577,7 @@ func setupBranchConflictNoPRHandler(t *testing.T, initialStatus task.Status, pri
 		t.Fatal(err)
 	}
 
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agents, tasks: tasks},
 		logger,
@@ -808,7 +808,7 @@ func TestRecoverBranchConflictNoPR_DispatchFailureRestoresPriorWorkflow(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.WorkflowEngine = workflow.NewEngine(emptyStore, &taskAdapter{tasks: r.tasks}, &agentAdapter{agents: r.agents, tasks: r.tasks}, slog.New(slog.DiscardHandler))
+	r.WorkflowEngine = workflow.NewTestEngine(emptyStore, &taskAdapter{tasks: r.tasks}, &agentAdapter{agents: r.agents, tasks: r.tasks}, slog.New(slog.DiscardHandler))
 
 	if r.RecoverStaleBranchConflict(tk.ID) {
 		t.Fatal("recoverBranchConflictNoPR returned true despite dispatch failure")
@@ -942,7 +942,7 @@ func TestDispatchBranchConflictRecovery_QueuesRetryInsteadOfGivingUpWhenMarkerHe
 	}
 
 	launcher := &blockingAgentLauncher{entryCh: make(chan struct{}), releaseCh: make(chan struct{})}
-	engine := workflow.NewEngine(wfStore, &taskAdapter{tasks: tasks}, launcher, logger)
+	engine := workflow.NewTestEngine(wfStore, &taskAdapter{tasks: tasks}, launcher, logger)
 	r := &Handler{
 		logger: logger, emit: func(string, any) {},
 		tasks: tasks, prTracker: github.NewIssueTracker(0),
@@ -1151,7 +1151,7 @@ func newDispatchFailureHandler(t *testing.T, launchErr error) (*Handler, task.Ta
 		t.Fatal(err)
 	}
 
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&failingAgentLauncher{err: launchErr},
 		logger,

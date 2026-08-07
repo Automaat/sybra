@@ -195,7 +195,7 @@ func TestReloadFromDisk_Guardrails(t *testing.T) {
 
 func TestReloadFromDisk_WorkflowReviewGuardrails(t *testing.T) {
 	svc, cfgPath := setupConfigSvc(t)
-	svc.workflowEngine = workflow.NewEngine(nil, nil, nil, slog.New(slog.DiscardHandler))
+	svc.workflowEngine = workflow.NewTestEngine(nil, nil, nil, slog.New(slog.DiscardHandler))
 	svc.applyWorkflowGuardrails(*svc.cfg)
 
 	next := *svc.cfg
@@ -229,7 +229,7 @@ func TestReloadFromDisk_WorkflowReviewGuardrails(t *testing.T) {
 // around it.
 func TestApplyWorkflowGuardrails_WiresReviewRoundsPerHour(t *testing.T) {
 	svc, _ := setupConfigSvc(t)
-	svc.workflowEngine = workflow.NewEngine(nil, nil, nil, slog.New(slog.DiscardHandler))
+	svc.workflowEngine = workflow.NewTestEngine(nil, nil, nil, slog.New(slog.DiscardHandler))
 
 	cfg := *svc.cfg
 	cfg.Agent.ReviewRoundsPerHour = 7
