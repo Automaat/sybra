@@ -67,7 +67,7 @@ steps:
         focused checks pass and you are satisfied with the diff: commit and
         push. If the deterministic suite later fails, you will be re-asked
         with the exact failing command and its output.
-        {{- if currenttestfailures .Task.Body}}
+        {{- if currenttestfailures .Task.CurrentTestFailures}}
 
         A prior implementation FAILED adversarial manual testing. Fix the root
         cause of every defect reported below (not just the symptom) — the
@@ -75,13 +75,13 @@ steps:
 
         ## Current Test Failures
 
-        {{currenttestfailures .Task.Body}}
+        {{currenttestfailures .Task.CurrentTestFailures}}
         {{- end}}
-        {{- if acceptanceledger .Task.Body}}
+        {{- if acceptanceledger .Task.AcceptanceLedger}}
 
         ## Acceptance Ledger — all must hold simultaneously
 
-        {{acceptanceledger .Task.Body}}
+        {{acceptanceledger .Task.AcceptanceLedger}}
         {{- end}}
         {{- if getvar .Vars "verify_reask_note"}}
 
@@ -114,6 +114,20 @@ steps:
 
         Before finishing, re-check your change against a short checklist:
         tests updated, edge cases covered, no leftover debug code.
+
+        If you made no commits because the requested change is already present
+        on the base branch, so this task is a duplicate that needs no PR,
+        declare it by setting the task's status reason to exactly one JSON
+        object and nothing else:
+
+            sybra-cli update {{.Task.ID}} --status human-required \
+              --status-reason '{"decision":"already-fixed-on-main","reason":"<one sentence>"}'
+
+        Only that exact call counts as a declaration. Writing the same JSON in
+        your response, quoting it, or describing the situation in prose does
+        not, and leaves the task for a human. Declare it only when you made no
+        commits and the change is genuinely already on the base branch; in
+        every other case park with an ordinary prose reason instead.
         {{- if .Task.PlanContract}}
 
         ## Executable Plan Contract
@@ -121,11 +135,6 @@ steps:
         ```json
         {{plancontractjson .Task.PlanContract .Task.ID}}
         ```
-        {{- else if .Task.Plan}}
-
-        ## Plan
-
-        {{.Task.Plan}}
         {{- end}}
     next:
       # Watchdog stop (or any other pre-completion escalation) sets

@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/backoff"
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/diskreclaim"
@@ -35,6 +36,7 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/recovery"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/skillsync"
@@ -46,6 +48,7 @@ import (
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/watcher"
 	"github.com/Automaat/sybra/internal/workflow"
+	"github.com/Automaat/sybra/internal/workflowpr"
 )
 
 const (
@@ -131,10 +134,10 @@ func (s *liveLimitPollState) recordResult(now time.Time, result limits.LiveRefre
 			logger.Warn("limits.live_poll.invalidate", "provider", limits.ProviderClaude, "err", err)
 		}
 		s.claudeAuthFailures++
-		backoff := liveLimitAuthBackoff(s.claudeAuthFailures)
-		s.next[limits.ProviderClaude] = now.Add(backoff)
+		retryDelay := liveLimitAuthBackoff(s.claudeAuthFailures)
+		s.next[limits.ProviderClaude] = now.Add(retryDelay)
 		if !s.claudeAuthOpen {
-			logger.Warn("limits.live_poll.claude_auth", "backoff", backoff, "err", claude.Err)
+			logger.Warn("limits.live_poll.claude_auth", "backoff", retryDelay, "err", claude.Err)
 			s.claudeAuthOpen = true
 		}
 		return
@@ -148,20 +151,7 @@ func (s *liveLimitPollState) recordResult(now time.Time, result limits.LiveRefre
 }
 
 func liveLimitAuthBackoff(failures int) time.Duration {
-	if failures <= 1 {
-		return liveLimitPollInterval
-	}
-	backoff := liveLimitPollInterval
-	for range failures - 1 {
-		if backoff >= liveLimitPollAuthBackoffMax {
-			return liveLimitPollAuthBackoffMax
-		}
-		backoff *= 2
-	}
-	if backoff > liveLimitPollAuthBackoffMax {
-		return liveLimitPollAuthBackoffMax
-	}
-	return backoff
+	return backoff.ForAttempt(max(failures, 1), liveLimitPollInterval, liveLimitPollAuthBackoffMax).Delay
 }
 
 func liveLimitProviderEnabled(policy limits.Policy, providerName string) bool {
@@ -315,7 +305,53 @@ func (a *App) logAutomationsSummary() {
 		"loop_agents_enabled", loopAgentsEnabled,
 		"prompteval_runner", promptevalRunner.Name(),
 		"promptfoo_present", (&prompteval.PromptfooRunner{}).Available(),
+		"providers", a.cfg.Providers.EnabledNames(),
 	)
+	a.warnThinFailoverChain()
+}
+
+// warnThinFailoverChain says at startup when this instance has fewer than two
+// providers it can actually dispatch to. A one-leg chain has no failover at
+// all, and that is how one weekly limit plus one usage limit turned into a dead
+// board on 2026-08-05 — a state that was only visible by grepping the app log
+// for provider.health.flip after the fact.
+//
+// Health is meaningful here because initProviderHealth's ProbeOnce has already
+// run by the time the summary is logged; a nil checker means health checking is
+// off, and only the configured count is knowable.
+func (a *App) warnThinFailoverChain() {
+	enabled := a.cfg.Providers.EnabledNames()
+	switch len(enabled) {
+	case 0:
+		a.logger.Error("app.providers.none-enabled",
+			"detail", "no provider is enabled; this instance cannot dispatch at all")
+	case 1:
+		a.logger.Warn("app.providers.no-failover",
+			"enabled", enabled,
+			"detail", "one provider enabled; a single rate limit stalls the board")
+	}
+	if a.providerHealth == nil {
+		return
+	}
+	snap := a.providerHealth.Snapshot()
+	healthy := make([]string, 0, len(enabled))
+	for _, name := range enabled {
+		if st, ok := snap[name]; ok && st.Healthy {
+			healthy = append(healthy, name)
+		}
+	}
+	switch {
+	case len(healthy) == 0:
+		a.logger.Error("app.providers.no-capacity",
+			"enabled", enabled,
+			"detail", "no enabled provider is healthy; nothing can dispatch")
+	case len(healthy) < 2:
+		a.logger.Warn("app.providers.thin-capacity",
+			"enabled", enabled, "healthy", healthy,
+			"detail", "only one healthy provider; a single rate limit stalls the board")
+	default:
+		a.logger.Info("app.providers.capacity", "enabled", enabled, "healthy", healthy)
+	}
 }
 
 func (a *App) initStats() {
@@ -637,16 +673,16 @@ func (a *App) limitPolicy() limits.Policy {
 	p.WeeklyThresholdPercent = a.cfg.Providers.Limits.WeeklyThresholdPercent
 	p.PreferUnderused = a.cfg.Providers.Limits.PreferUnderused
 	p.SubscriptionMonthlyUSD = map[string]float64{
-		"claude":   a.cfg.Providers.Claude.MonthlySubscriptionUSD,
-		"codex":    a.cfg.Providers.Codex.MonthlySubscriptionUSD,
-		"copilot":  a.cfg.Providers.Copilot.MonthlySubscriptionUSD,
-		"opencode": a.cfg.Providers.OpenCode.MonthlySubscriptionUSD,
+		providerid.Claude:   a.cfg.Providers.Claude.MonthlySubscriptionUSD,
+		providerid.Codex:    a.cfg.Providers.Codex.MonthlySubscriptionUSD,
+		providerid.Copilot:  a.cfg.Providers.Copilot.MonthlySubscriptionUSD,
+		providerid.OpenCode: a.cfg.Providers.OpenCode.MonthlySubscriptionUSD,
 	}
 	p.ProviderEnabled = map[string]bool{
-		"claude":   a.cfg.Providers.Claude.Enabled,
-		"codex":    a.cfg.Providers.Codex.Enabled,
-		"copilot":  a.cfg.Providers.Copilot.Enabled,
-		"opencode": a.cfg.Providers.OpenCode.Enabled,
+		providerid.Claude:   a.cfg.Providers.Claude.Enabled,
+		providerid.Codex:    a.cfg.Providers.Codex.Enabled,
+		providerid.Copilot:  a.cfg.Providers.Copilot.Enabled,
+		providerid.OpenCode: a.cfg.Providers.OpenCode.Enabled,
 	}
 	return p
 }
@@ -740,7 +776,7 @@ func (a *App) initStatusHook() {
 				a.notifier.Send(notification.LevelWarning, "Needs human", msg, taskID, "")
 			}
 			if local && a.runsScheduler() && a.startupRecoveryDone() && a.humanReview != nil {
-				go a.humanReview.maybeSpawn(taskID, from)
+				go a.humanReview.maybeSpawn(a.schedulerContext(), taskID, from)
 			}
 		case string(task.StatusReadyReview):
 			if !runsNoAgent {
@@ -1237,11 +1273,11 @@ func (a *App) emitDegradedWarnings(emit func(string, any)) {
 // initAutomations starts every per-machine task source in dependency order
 // and returns the GitHub issues fetcher (still consumed by
 // startBackgroundServices). Extracted so Startup stays under funlen.
-func (a *App) initAutomations(emit func(string, any)) *poll.IssuesFetcher {
+func (a *App) initAutomations(ctx context.Context, emit func(string, any)) *poll.IssuesFetcher {
 	a.initRenovate(emit)
 	a.initPromptLab()
 	a.initTriage()
-	a.initHumanReview()
+	a.initHumanReview(ctx)
 	return a.initIssuesFetcher(emit)
 }
 
@@ -1265,30 +1301,19 @@ func (a *App) initWorkflowEngine() {
 		a.logger.Error("workflow.sync-builtins", "err", syncErr)
 	}
 	agentLauncher := a.newWorkflowAgentLauncher()
-	a.workflowEngine = workflow.NewEngine(
+	if a.sandboxes == nil {
+		panic("wire workflow engine: sandbox manager is nil")
+	}
+	a.workflowEngine, err = workflow.NewEngine(
 		wfStore,
 		&taskAdapter{tasks: a.tasks, projects: a.projects},
 		agentLauncher,
 		a.logger,
+		a.workflowDependencies(agentLauncher),
 	)
-	a.workflowEngine.SetPRLinker(prLinkerAdapter{})
-	a.workflowEngine.SetPRStateFetcher(prStateFetcherAdapter{})
-	a.workflowEngine.SetPRHeadFetcher(prHeadFetcherAdapter{})
-	a.workflowEngine.SetPRCreator(prCreatorAdapter{})
-	a.workflowEngine.SetPRCloser(prCloserAdapter{})
-	a.workflowEngine.SetPRFinder(prFinderAdapter{})
-	a.workflowEngine.SetPRAnyStateFinder(prFinderAdapter{})
-	a.workflowEngine.SetPRExistenceChecker(prExistenceCheckerAdapter{})
-	a.workflowEngine.SetPRContentGenerator(prContentGeneratorAdapter{gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}})
-	a.workflowEngine.SetTaskClassifier(a.newTaskClassifierAdapter())
-	a.workflowEngine.SetPRReviewRequester(prReviewRequesterAdapter{})
-	a.wireWorktreeAccess()
-	a.workflowEngine.SetAttemptNoteAppender(&attemptNoteAppenderAdapter{})
-	a.workflowEngine.SetBranchSyncer(&branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees})
-	a.workflowEngine.SetCheckConfigGetter(&checkConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
-	a.workflowEngine.SetCostBudgetChecker(agentLauncher)
-	a.workflowEngine.SetAttemptWorktreeManager(&attemptWorktreeAdapter{tasks: a.tasks, mgr: a.worktrees})
-	a.workflowEngine.SetManualTestConfigGetter(&manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees})
+	if err != nil {
+		panic("wire workflow engine: " + err.Error())
+	}
 	a.configureWorkflowPolicies()
 	if a.cfg.Evaluation.Offline.Enabled {
 		gate := prompteval.NewGate(prompteval.New(config.PromptEvalDir()), a.cfg.Evaluation.Offline)
@@ -1343,7 +1368,7 @@ func (a *App) initWorkflowEngine() {
 				queued[snap[i].TaskID] = snap[i]
 			}
 			toItem := func(t workflow.TaskInfo) agentqueue.Item {
-				it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: task.Status(t.Status)}
+				it := agentqueue.Item{TaskID: t.ID, Priority: task.Priority(t.Priority), Status: t.Status}
 				if qit, ok := queued[t.ID]; ok {
 					it.Manual = qit.Manual
 					it.Enqueued = qit.Enqueued
@@ -1373,9 +1398,38 @@ func (a *App) initWorkflowEngine() {
 	// to the completion.Handler constructed there.
 }
 
+func (a *App) workflowDependencies(agentLauncher *agentAdapter) workflow.Dependencies {
+	return workflow.Dependencies{
+		PR: workflow.PRSurface{
+			Linker:           workflowpr.LinkerAdapter{},
+			ReviewRequester:  workflowpr.ReviewRequesterAdapter{},
+			StateFetcher:     workflowpr.StateFetcherAdapter{},
+			HeadFetcher:      workflowpr.HeadFetcherAdapter{},
+			Creator:          workflowpr.CreatorAdapter{},
+			Closer:           workflowpr.CloserAdapter{},
+			Finder:           workflowpr.FinderAdapter{},
+			AnyStateFinder:   workflowpr.FinderAdapter{},
+			ExistenceChecker: workflowpr.ExistenceCheckerAdapter{},
+			ContentGenerator: workflowpr.ContentGeneratorAdapter{Gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}},
+		},
+		Execution: workflow.ExecutionSurface{
+			Worktrees:        &worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees},
+			SidecarDir:       a.sandboxes.SybraHomeDir,
+			AttemptNotes:     &attemptNoteAppenderAdapter{},
+			BranchSyncer:     &branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees},
+			Checks:           &checkConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees},
+			ManualTests:      &manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees},
+			Classifier:       a.newTaskClassifierAdapter(),
+			CostBudget:       agentLauncher,
+			AttemptWorktrees: &attemptWorktreeAdapter{tasks: a.tasks, mgr: a.worktrees},
+		},
+	}
+}
+
 func (a *App) configureWorkflowPolicies() {
 	a.configureTestingEscalation()
 	a.workflowEngine.SetMaxCheckpoints(a.cfg.MaxCheckpoints())
+	a.workflowEngine.SetVerifyChecksMaxConcurrent(a.cfg.VerifyChecksMaxConcurrent())
 	a.workflowEngine.SetABTestingConfig(a.abTestingConfig())
 	a.configurePlanAutoApproval()
 	a.configureAdmissionPolicy()
@@ -1476,23 +1530,10 @@ func (a *App) configureTestingEscalation() {
 	a.warnUnboundedReviewLoop()
 }
 
-// warnUnboundedReviewLoop surfaces the one posture where the review→fix cycle
-// has no stopping condition at all: review_until_clean plus a disabled
-// per-hour review budget (agent.review_rounds_per_hour < 0) plus no
-// cumulative task-cost ceiling. Fresh installs default to a bounded budget;
-// this warning remains for explicit opt-outs.
+// warnUnboundedReviewLoop is kept for historical call sites. The shared review
+// budget now carries a fixed lifetime cap in addition to the hourly limit, so
+// review→fix cycles are always bounded even when the hourly cap is disabled.
 func (a *App) warnUnboundedReviewLoop() {
-	if !a.cfg.ReviewUntilClean() || a.cfg.Agent.ReviewRoundsPerHourLimit() > 0 || a.cfg.Agent.MaxTaskCostUSD > 0 {
-		return
-	}
-	a.logger.Warn("review.loop.unbounded",
-		"review_until_clean", true,
-		"review_rounds_per_hour", a.cfg.Agent.ReviewRoundsPerHourLimit(),
-		"max_task_cost_usd", 0,
-		"detail", "review→fix cycles until CLEAN with no per-hour review budget and no task-cost ceiling; "+
-			"set agent.max_task_cost_usd to bound it, set agent.review_rounds_per_hour to a positive value, "+
-			"or set agent.review_until_clean: false for a single review pass",
-	)
 }
 
 func (a *App) initAgentConfig() {
@@ -1563,7 +1604,7 @@ func (a *App) seedDefaultLoopAgents() {
 		Prompt:       "/sybra-self-monitor",
 		IntervalSec:  21600, // 6 hours
 		AllowedTools: []string{"Bash", "Read", "Grep", "Glob"},
-		Provider:     "claude",
+		Provider:     providerid.Claude,
 		Model:        "sonnet",
 		Enabled:      false,
 	})
@@ -1638,7 +1679,7 @@ func (a *App) newRecovery() *recovery.Recovery {
 // configuration. UserHomeDir is best-effort — when unavailable the user-home
 // destinations (~/.claude/skills, ~/.codex/skills) are silently skipped so
 // startup still succeeds in environments without a usable home dir.
-func (a *App) syncSkillsBundle() {
+func (a *App) syncSkillsBundle(signing project.SigningPolicy) {
 	userHome, err := os.UserHomeDir()
 	if err != nil {
 		a.logger.Debug("skills.sync.no_user_home", "err", err)
@@ -1650,28 +1691,6 @@ func (a *App) syncSkillsBundle() {
 		PrimaryDst:           a.skillsDir,
 		SybraHomeDir:         config.HomeDir(),
 		UserHomeDir:          userHome,
-		DowngradeCommitFlags: !project.GPGSigningAvailable(context.Background()),
+		DowngradeCommitFlags: !signing.SignsCommits(context.Background()),
 	})
-}
-
-// wireWorktreeAccess gives the engine both halves of a task's filesystem: the
-// worktree it operates in, and the writable scratch dir used when that
-// worktree is read-only.
-func (a *App) wireWorktreeAccess() {
-	if a == nil || a.workflowEngine == nil {
-		return
-	}
-	a.workflowEngine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees})
-	a.wireSidecarDir()
-}
-
-// wireSidecarDir points workflow scratch output at the per-task sandbox home.
-// Verifier roles run against a read-only worktree, so their own output has to
-// land somewhere still writable; that home is already an allowed write root
-// under the OS sandbox, so this needs no new hole.
-func (a *App) wireSidecarDir() {
-	if a == nil || a.workflowEngine == nil || a.sandboxes == nil {
-		return
-	}
-	a.workflowEngine.SetSidecarDirResolver(a.sandboxes.SybraHomeDir)
 }

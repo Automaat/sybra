@@ -54,11 +54,6 @@ steps:
         ```json
         {{plancontractjson .Task.PlanContract .Task.ID}}
         ```
-        {{- else if .Task.Plan}}
-
-        ## Plan
-
-        {{.Task.Plan}}
         {{- end}}
     next:
       - when:

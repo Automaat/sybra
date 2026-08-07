@@ -8,10 +8,11 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
-func (e *Engine) shouldSkipResumeForRateLimitedProvider(t *TaskInfo, step *Step) bool {
+func (e *Engine) shouldSkipResumeForRateLimitedProvider(t *TaskInfo, step *Step, logEvent string) bool {
 	// Don't re-dispatch a single-agent step to the same provider while it is
 	// rate-limited; do continue when failover can route this run to a healthy
 	// peer. Parallel children are checked at child spawn time because each child
@@ -20,11 +21,22 @@ func (e *Engine) shouldSkipResumeForRateLimitedProvider(t *TaskInfo, step *Step)
 		return false
 	}
 	prov := resolveProvider(step.Config.Provider, t.Workflow, e.agents.DefaultProvider(), *t)
+	if prov == "" {
+		// resolveProvider yields "" for a step with no provider key and for
+		// `ab`/`cross` without provenance — 9 of the 14 builtin run_agent steps.
+		// ProviderRateLimited substitutes the default internally, so the line is
+		// already about that provider and would otherwise refuse to name it.
+		prov = e.agents.DefaultProvider()
+	}
 	if !e.agents.ProviderRateLimited(prov) || e.agents.ProviderCanFailover(prov) {
 		return false
 	}
-	e.logger.Debug("workflow.resume-stalled.skip",
-		"task_id", t.ID, "reason", "provider_rate_limited", "provider", prov)
+	// Deduped, not Debug: a park can now last days (provider-stated reset
+	// instants land three days out), so the direct Debug call was both
+	// invisible at the default level and 3,600 lines per task at debug level.
+	// Keying the value on the provider re-arms INFO when the park moves.
+	e.resumeSkip.Log(e.logger, logEvent, t.ID, "provider_rate_limited|"+prov+"|"+step.ID,
+		"task_id", t.ID, "reason", "provider_rate_limited", "provider", prov, "step", step.ID)
 	return true
 }
 
@@ -78,7 +90,7 @@ func (e *Engine) isShutdownCancellationGate(taskID, stepID string, err error) bo
 // and the failing step's ID so repeated failures for that (task, step) are
 // tracked. Either may be zero-valued (nil wf, empty stepID) for callers that
 // don't have them handy — the breaker simply stays inactive for that call.
-func (e *Engine) surfaceStartFailure(taskID, currentStatus string, err error, wf *Execution, stepID string) {
+func (e *Engine) surfaceStartFailure(taskID string, currentStatus taskstatus.Status, err error, wf *Execution, stepID string) {
 	if e.isShutdownCancellationGate(taskID, stepID, err) {
 		return
 	}
@@ -93,7 +105,7 @@ func (e *Engine) surfaceStartFailure(taskID, currentStatus string, err error, wf
 	// agent can resolve, so routing it through recovery would just waste an
 	// agent run before falling back to the same human-required park anyway.
 	// See #1856.
-	if currentStatus != "human-required" && e.conflictRecovery != nil &&
+	if currentStatus != taskstatus.HumanRequired && e.conflictRecovery != nil &&
 		errors.Is(err, worktreeerr.ErrRebaseFailed) && !worktreeerr.IsDiskSpaceError(err) {
 		e.logger.Info("workflow.start-failure.branch-conflict.recover", "task_id", taskID, "step", stepID)
 		if e.tryConflictRecoveryWithFallback(taskID, func() {
@@ -107,7 +119,7 @@ func (e *Engine) surfaceStartFailure(taskID, currentStatus string, err error, wf
 	e.surfaceStartFailureClassified(taskID, currentStatus, err, wf, stepID)
 }
 
-func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err error, wf *Execution, stepID string) {
+func (e *Engine) surfaceStartFailureClassified(taskID string, currentStatus taskstatus.Status, err error, wf *Execution, stepID string) {
 	failure := ClassifyAgentStartFailure(err)
 	if failure.Reason == "" {
 		return
@@ -116,14 +128,14 @@ func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err
 	// again from here. Without this, a call driven by a stale pre-dispatch
 	// status snapshot could rewrite a status a concurrent handler resolved
 	// to something more specific (e.g. in_review) back to human-required.
-	if currentStatus == "human-required" {
+	if currentStatus == taskstatus.HumanRequired {
 		return
 	}
 	target := currentStatus
 	if failure.Permanent {
-		target = "human-required"
+		target = taskstatus.HumanRequired
 		if !failure.Blocker.IsZero() && !blocker.AllowsHumanRequired(failure.Blocker.Kind) {
-			target = "blocked"
+			target = taskstatus.Blocked
 		}
 	}
 	// A provider being rate-limited right now is a transient capacity condition,
@@ -135,7 +147,7 @@ func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err
 	// surface a status_reason (unlike the fully-silent transient sentinels)
 	// but must never accumulate toward the breaker.
 	if wf != nil && stepID != "" && !isTransientCapacityError(err) && !isDeferredNotFailed(err) {
-		attempts, trip := recordCircuitBreakerFailure(wf, stepID, time.Now())
+		attempts, trip := recordCircuitBreakerFailure(wf, stepID, e.now())
 		if trip {
 			// The status skip in resumeSkipReasonForStatus alone is not a
 			// sufficient backstop against a flapping loop: it only stops
@@ -148,9 +160,9 @@ func (e *Engine) surfaceStartFailureClassified(taskID, currentStatus string, err
 			// RescheduleRateLimitedAgent, HandleStatusChange) already
 			// refuses to touch a workflow whose State is ExecFailed.
 			wf.State = ExecFailed
-			target = "human-required"
+			target = taskstatus.HumanRequired
 			if !failure.Blocker.IsZero() && !blocker.AllowsHumanRequired(failure.Blocker.Kind) {
-				target = "blocked"
+				target = taskstatus.Blocked
 			}
 			failure.Reason = fmt.Sprintf("circuit breaker: %s (tripped after %d dispatch failures for step %q within %s)",
 				failure.Reason, attempts, stepID, circuitBreakerWindow)

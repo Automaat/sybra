@@ -11,6 +11,7 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -58,8 +59,8 @@ func (a *taskAdapter) ListTasks() ([]workflow.TaskInfo, error) {
 	return infos, nil
 }
 
-func (a *taskAdapter) UpdateTaskStatus(id, status, reason string) error {
-	st, err := task.ValidateStatus(status)
+func (a *taskAdapter) UpdateTaskStatus(id string, status taskstatus.Status, reason string) error {
+	st, err := task.ValidateStatus(string(status))
 	if err != nil {
 		return err
 	}
@@ -71,10 +72,10 @@ func (a *taskAdapter) UpdateTaskStatus(id, status, reason string) error {
 	return err
 }
 
-func (a *taskAdapter) ClearTaskStatusReasonIf(id, expectedStatus, expectedReason string) (bool, error) {
+func (a *taskAdapter) ClearTaskStatusReasonIf(id string, expectedStatus taskstatus.Status, expectedReason string) (bool, error) {
 	cleared := false
 	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
-		if string(cur.Status) != expectedStatus || cur.StatusReason != expectedReason {
+		if cur.Status != expectedStatus || cur.StatusReason != expectedReason {
 			return task.Update{}, errWorkflowStatusReasonNoLongerMatches
 		}
 		empty := ""
@@ -87,8 +88,23 @@ func (a *taskAdapter) ClearTaskStatusReasonIf(id, expectedStatus, expectedReason
 	return cleared, err
 }
 
-func (a *taskAdapter) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {
-	st, err := task.ValidateStatus(status)
+func (a *taskAdapter) ClearTaskStatusReasonAndSetWorkflowIf(id, expectedStatus, expectedReason string, wf *workflow.Execution) (bool, error) {
+	cleared := false
+	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+		if string(cur.Status) != expectedStatus || cur.StatusReason != expectedReason {
+			return task.Update{}, errWorkflowStatusReasonNoLongerMatches
+		}
+		empty := ""
+		cleared = true
+		return task.Update{StatusReason: &empty, Workflow: &wf}, nil
+	})
+	if errors.Is(err, errWorkflowStatusReasonNoLongerMatches) {
+		return false, nil
+	}
+	return cleared, err
+}
+func (a *taskAdapter) UpdateTaskBlocker(id string, status taskstatus.Status, reason string, state blocker.State) error {
+	st, err := task.ValidateStatus(string(status))
 	if err != nil {
 		return err
 	}
@@ -123,6 +139,10 @@ func (a *taskAdapter) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerpr
 	return a.tasks.UpdateRun(taskID, agentID, patch)
 }
 
+func (a *taskAdapter) MarkAgentRunIncomplete(taskID, agentID string) error {
+	return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{Outcome: task.Ptr(task.RunOutcomeIncomplete)})
+}
+
 func (a *taskAdapter) RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error {
 	patch := task.RunPatch{}
 	if headSHA != "" {
@@ -145,13 +165,49 @@ func (a *taskAdapter) ReplaceTaskBody(id, body string) error {
 }
 
 func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
-	_, err := a.tasks.Update(id, task.Update{Workflow: &wf})
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.set_workflow",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
+	})
 	return err
 }
 
+func (a *taskAdapter) SetStatusAndWorkflow(id, status, reason string, wf *workflow.Execution) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	extra := task.Update{Workflow: &wf}
+	if reason != "" {
+		extra.StatusReason = &reason
+	}
+	_, err = a.tasks.Apply(task.TransitionIntent{
+		TaskID:   id,
+		ToStatus: st,
+		Actor:    "workflow.engine.set_status_and_workflow",
+		Extra:    extra,
+	})
+	return err
+}
+
+func (a *taskAdapter) SetBlockerAndWorkflow(id, status, reason string, state blocker.State, wf *workflow.Execution) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	u := task.Update{Status: &st, Blocker: &state, Workflow: &wf}
+	if reason != "" {
+		u.StatusReason = &reason
+	}
+	_, err = a.tasks.Update(id, u)
+	return err
+}
 func (a *taskAdapter) SetWorkflowIf(id string, fence workflow.WorkflowWriteFence, wf *workflow.Execution) (bool, error) {
 	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
-		if cur.Generation != fence.Generation || string(cur.Status) != fence.Status ||
+		if cur.Generation != fence.Generation || cur.Status != fence.Status ||
 			cur.StatusReason != fence.StatusReason || cur.Workflow == nil ||
 			cur.Workflow.WorkflowID != fence.WorkflowID || cur.Workflow.CurrentStep != fence.CurrentStep ||
 			cur.Workflow.State != fence.State {
@@ -168,9 +224,9 @@ func (a *taskAdapter) SetWorkflowIf(id string, fence workflow.WorkflowWriteFence
 func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
 	var result workflow.EffectClaimResult
 	var fenceErr error
-	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
 		if cur.Workflow == nil {
-			return task.Update{}, fmt.Errorf("task %s has no workflow", id)
+			return task.TransitionIntent{}, fmt.Errorf("task %s has no workflow", id)
 		}
 		wf := cur.Workflow.Clone()
 		result.Workflow = wf
@@ -180,11 +236,15 @@ func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim)
 		if claimErr != nil {
 			if errors.Is(claimErr, workflow.ErrEffectClaimConflict) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
 				fenceErr = claimErr
-				return task.Update{}, errWorkflowEffectNoPersist
+				return task.TransitionIntent{}, errWorkflowEffectNoPersist
 			}
-			return task.Update{}, claimErr
+			return task.TransitionIntent{}, claimErr
 		}
-		return task.Update{Workflow: &wf}, nil
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.claim_effect",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
 	})
 	if err != nil {
 		if errors.Is(err, errWorkflowEffectNoPersist) {
@@ -198,9 +258,9 @@ func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim)
 func (a *taskAdapter) CompleteWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
 	var result workflow.EffectClaimResult
 	var fenceErr error
-	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
 		if cur.Workflow == nil {
-			return task.Update{}, fmt.Errorf("task %s has no workflow", id)
+			return task.TransitionIntent{}, fmt.Errorf("task %s has no workflow", id)
 		}
 		wf := cur.Workflow.Clone()
 		result.Workflow = wf
@@ -210,11 +270,49 @@ func (a *taskAdapter) CompleteWorkflowEffect(id string, claim workflow.EffectCla
 		if claimErr != nil {
 			if errors.Is(claimErr, workflow.ErrEffectClaimLost) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
 				fenceErr = claimErr
-				return task.Update{}, errWorkflowEffectNoPersist
+				return task.TransitionIntent{}, errWorkflowEffectNoPersist
 			}
-			return task.Update{}, claimErr
+			return task.TransitionIntent{}, claimErr
 		}
-		return task.Update{Workflow: &wf}, nil
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.complete_effect",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errWorkflowEffectNoPersist) {
+			return result, fenceErr
+		}
+		return workflow.EffectClaimResult{}, err
+	}
+	return result, nil
+}
+
+func (a *taskAdapter) ReleaseWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
+	var result workflow.EffectClaimResult
+	var fenceErr error
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		if cur.Workflow == nil {
+			return task.TransitionIntent{}, fmt.Errorf("task %s has no workflow", id)
+		}
+		wf := cur.Workflow.Clone()
+		result.Workflow = wf
+		claimResult, claimErr := wf.ReleaseEffect(claim)
+		claimResult.Workflow = wf
+		result = claimResult
+		if claimErr != nil {
+			if errors.Is(claimErr, workflow.ErrEffectClaimLost) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
+				fenceErr = claimErr
+				return task.TransitionIntent{}, errWorkflowEffectNoPersist
+			}
+			return task.TransitionIntent{}, claimErr
+		}
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.release_effect",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
 	})
 	if err != nil {
 		if errors.Is(err, errWorkflowEffectNoPersist) {
@@ -249,8 +347,14 @@ func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
 		u.PlanDecisions = &content
 	case "plan_brief":
 		u.PlanBrief = &content
+	case "current_test_failures":
+		u.CurrentTestFailures = &content
+	case "acceptance_ledger":
+		u.AcceptanceLedger = &content
+	case "spec_decision":
+		u.SpecDecision = &content
 	default:
-		return fmt.Errorf("unknown sidecar kind %q (want plan|plan_contract|code_review|plan_critique|plan_research|plan_decisions|plan_brief|plan_draft.<name>)", kind)
+		return fmt.Errorf("unknown sidecar kind %q (want plan|plan_contract|code_review|plan_critique|plan_research|plan_decisions|plan_brief|current_test_failures|acceptance_ledger|spec_decision|plan_draft.<name>)", kind)
 	}
 	_, err := a.tasks.Update(id, u)
 	return err
@@ -261,7 +365,7 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		ID:                    t.ID,
 		Title:                 t.Title,
 		Generation:            t.Generation,
-		Status:                string(t.Status),
+		Status:                t.Status,
 		StatusReason:          t.StatusReason,
 		Role:                  t.RunRole,
 		Tags:                  t.Tags,
@@ -278,6 +382,9 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		PlanDecisions:         t.PlanDecisions,
 		PlanBrief:             t.PlanBrief,
 		CodeReview:            t.CodeReview,
+		CurrentTestFailures:   t.CurrentTestFailures,
+		AcceptanceLedger:      t.AcceptanceLedger,
+		SpecDecision:          t.SpecDecision,
 		PlanDrafts:            t.PlanDrafts,
 		Issue:                 t.Issue,
 		Reviewed:              t.Reviewed,

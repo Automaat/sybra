@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 const workflowPermutationContractYAML = `id: permutation-contract
@@ -122,7 +124,7 @@ func newWorkflowPermutationScenario(t *testing.T) *workflowPermutationScenario {
 	store := newInlineTestStore(t, "permutation-contract", workflowPermutationContractYAML)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "permutation-contract"); err != nil {
 		t.Fatalf("StartWorkflow: %v", err)
@@ -139,12 +141,12 @@ func (s *workflowPermutationScenario) complete(agentID, provider, result string)
 	})
 }
 
-func (s *workflowPermutationScenario) statusChange(status string) {
+func (s *workflowPermutationScenario) statusChange(status taskstatus.Status) {
 	ti := mustTaskInfo(s.t, s.tasks, "t1")
 	if err := s.tasks.UpdateTaskStatus("t1", status, ti.StatusReason); err != nil {
 		s.t.Fatalf("UpdateTaskStatus: %v", err)
 	}
-	s.engine.HandleStatusChange("t1", status)
+	s.engine.HandleStatusChange("t1", string(status))
 }
 
 func (s *workflowPermutationScenario) restart() {
@@ -155,7 +157,7 @@ func (s *workflowPermutationScenario) restart() {
 		clonedTasks.Put(cloneWorkflowPermutationTask(tasks[i]))
 	}
 	clonedAgents := cloneWorkflowPermutationAgents(s.agents)
-	clonedEngine := NewEngine(s.store, clonedTasks, clonedAgents, discardLogger())
+	clonedEngine := NewTestEngine(s.store, clonedTasks, clonedAgents, discardLogger())
 	rehydrateWorkflowPermutationRoutes(clonedEngine, clonedTasks)
 	s.tasks = clonedTasks
 	s.agents = clonedAgents
@@ -164,7 +166,7 @@ func (s *workflowPermutationScenario) restart() {
 
 func (s *workflowPermutationScenario) result() workflowPermutationResult {
 	ti := mustTaskInfo(s.t, s.tasks, "t1")
-	result := workflowPermutationResult{TaskStatus: ti.Status, TaskReason: ti.StatusReason}
+	result := workflowPermutationResult{TaskStatus: string(ti.Status), TaskReason: ti.StatusReason}
 	if ti.Workflow == nil {
 		return result
 	}

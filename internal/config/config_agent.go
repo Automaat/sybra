@@ -47,6 +47,13 @@ type AgentDefaults struct {
 	// nil means not configured (falls back to true — safe default).
 	// Set to false in config to opt all tasks into skip-permissions mode.
 	RequirePermissions *bool `yaml:"require_permissions" json:"requirePermissions"`
+	// CommitSigning declares this deployment's posture on GPG-signing agent
+	// commits: "auto" (default — sign when the host resolves a signing key),
+	// "never", or "require". Empty means auto. An explicit "never" is what
+	// keeps a keyless unattended host from ever being told to pass -S, and
+	// keeps that guarantee from silently flipping if a key later appears on
+	// the host.
+	CommitSigning string `yaml:"commit_signing" json:"commitSigning"`
 	// ReviewUntilClean keeps simple-task-review cycling review→fix→review
 	// until the reviewer returns a CLEAN verdict, so the fix agent's diff is
 	// never the last word. nil means not configured (falls back to true). false
@@ -61,10 +68,9 @@ type AgentDefaults struct {
 	// review→fix loop (reviewbudget.Budget is their single owner) — it bounds
 	// "how much automated review is too much" regardless of whether a PR
 	// exists yet, which is why it lives here rather than under GitHubConfig.
-	// 0 uses the default; negative disables the cap. Rate-based rather than a
-	// lifetime total so a long-lived PR that is legitimately re-reviewed after
-	// each push is never blocked, while a runaway loop is stopped within the
-	// hour (#2164 sustained ~5/hour for 23 hours).
+	// 0 uses the default; negative disables the hourly cap. A fixed lifetime
+	// ceiling still applies through the shared review budget so long-lived churn
+	// cannot run forever.
 	ReviewRoundsPerHour int `yaml:"review_rounds_per_hour" json:"reviewRoundsPerHour"`
 	// BashTimeoutSeconds sets the per-bash-tool-call timeout passed to
 	// claude -p via the BASH_DEFAULT_TIMEOUT_MS / BASH_MAX_TIMEOUT_MS env
@@ -191,6 +197,12 @@ type AgentDefaults struct {
 	// Evidence gates the workflow engine's require_evidence completion gate
 	// (agent.evidence.enabled — see config_evidence.go).
 	Evidence EvidenceConfig `yaml:"evidence" json:"evidence"`
+	// VerifyChecksMaxConcurrent bounds how many verify_checks suites (the
+	// project's `checks.verify` commands) run at once across the whole
+	// process. 0 (default) falls back to a CPU-derived value — see
+	// (*Config).VerifyChecksMaxConcurrent. Full verify suites are CPU-heavy,
+	// so this stays well below agent.max_concurrent rather than matching it.
+	VerifyChecksMaxConcurrent int `yaml:"verify_checks_max_concurrent" json:"verifyChecksMaxConcurrent"`
 }
 
 // QueueConfig configures the agent-dispatch admission queue.

@@ -138,8 +138,9 @@ func TestInspectHeadless_DefersAndBacksOffUnderPressure(t *testing.T) {
 	if inspectCalled {
 		t.Fatal("inspectAgent called under machine pressure")
 	}
-	if s.ready(ag.ID, now.Add(90*time.Second)) {
-		t.Fatal("first pressure backoff expired too early")
+	firstDeadline := s.nextEligibleAt[ag.ID]
+	if delay := firstDeadline.Sub(now); delay < time.Minute || delay > 2*time.Minute {
+		t.Fatalf("first pressure backoff = %v, want jittered window [1m, 2m]", delay)
 	}
 
 	secondAttempt := now.Add(2 * time.Minute)
@@ -147,11 +148,9 @@ func TestInspectHeadless_DefersAndBacksOffUnderPressure(t *testing.T) {
 	if inspectCalled {
 		t.Fatal("inspectAgent called during second pressure defer")
 	}
-	if s.ready(ag.ID, secondAttempt.Add(3*time.Minute+30*time.Second)) {
-		t.Fatal("second pressure backoff expired too early")
-	}
-	if !s.ready(ag.ID, secondAttempt.Add(4*time.Minute)) {
-		t.Fatal("second pressure backoff did not expand to four minutes")
+	secondDeadline := s.nextEligibleAt[ag.ID]
+	if delay := secondDeadline.Sub(secondAttempt); delay < 2*time.Minute || delay > 4*time.Minute {
+		t.Fatalf("second pressure backoff = %v, want jittered window [2m, 4m]", delay)
 	}
 }
 
@@ -1100,9 +1099,9 @@ func TestApplyVerdict_RateLimitStopReschedulesInsteadOfEscalating(t *testing.T) 
 				tasks:     tasks,
 				logger:    slog.New(slog.DiscardHandler),
 				stopAgent: func(string) error { stopped = true; return nil },
-				recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration) {
-					ag.SetError("rate_limit", reason)
-					signaledName, signaledKind, signaledReason = ag.Provider, sig, reason
+				recordProviderSignal: func(ag *agent.Agent, c provider.Classification) {
+					ag.SetError("rate_limit", c.Reason)
+					signaledName, signaledKind, signaledReason = ag.Provider, c.Signal, c.Reason
 				},
 			}
 
@@ -1147,10 +1146,10 @@ func TestApplyVerdict_RateLimitStopWithoutTaskStillSignalsAndStops(t *testing.T)
 	w := &Watchdog{
 		logger:    slog.New(slog.DiscardHandler),
 		stopAgent: func(string) error { stopped = true; return nil },
-		recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration) {
-			ag.SetError("rate_limit", reason)
-			signaledName, signaledKind = ag.Provider, sig
-			if reason == "" {
+		recordProviderSignal: func(ag *agent.Agent, c provider.Classification) {
+			ag.SetError("rate_limit", c.Reason)
+			signaledName, signaledKind = ag.Provider, c.Signal
+			if c.Reason == "" {
 				t.Fatal("reason should not be empty")
 			}
 		},
@@ -1175,25 +1174,25 @@ func TestApplyVerdict_RateLimitStopWithoutTaskStillSignalsAndStops(t *testing.T)
 	}
 }
 
-// TestHandleZeroOutputStall_SignalsProviderAndReschedulesInsteadOfEscalating
-// covers #1913: a headless agent that never produced a single byte of
-// output (NDJSON or stderr) since launch must be treated as a provider
-// startup failure — provider-health signal + retryable in-progress status —
-// not a generic watchdog hang that would exhaust its same-provider retry
-// budget and strand the task (and its umbrella parent) in human-required.
-func TestHandleZeroOutputStall_SignalsProviderAndReschedulesInsteadOfEscalating(t *testing.T) {
+// TestHandleZeroOutputStall_ReschedulesWithoutParkingProvider covers #1913 and
+// #3154 together: a headless agent that never produced a single byte of output
+// (NDJSON or stderr) since launch keeps its retryable in-progress status and
+// its silent-hang error kind, so the completion handler re-dispatches it
+// instead of exhausting the same-provider retry budget and stranding the task
+// (and its umbrella parent) in human-required. What it must NOT do is report
+// provider health: the silent child is no evidence about the account's quota,
+// and reporting it parked a healthy provider for every other task.
+func TestHandleZeroOutputStall_ReschedulesWithoutParkingProvider(t *testing.T) {
 	tasks, tk := newTestTasks(t)
 
 	stopped := false
-	var signaledName, signaledReason string
-	var signaledKind provider.Signal
+	signaled := false
 	w := &Watchdog{
 		tasks:     tasks,
 		logger:    slog.New(slog.DiscardHandler),
 		stopAgent: func(string) error { stopped = true; return nil },
-		recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration) {
-			ag.SetError("rate_limit", reason)
-			signaledName, signaledKind, signaledReason = ag.Provider, sig, reason
+		recordProviderSignal: func(*agent.Agent, provider.Classification) {
+			signaled = true
 		},
 	}
 
@@ -1210,32 +1209,48 @@ func TestHandleZeroOutputStall_SignalsProviderAndReschedulesInsteadOfEscalating(
 	if !strings.Contains(got.StatusReason, zeroOutputReason) {
 		t.Fatalf("status_reason = %q, want it to include %q", got.StatusReason, zeroOutputReason)
 	}
+	if !watchdogreason.IsSilentHang(got.StatusReason) {
+		t.Fatalf("status_reason = %q, want a silent-hang reason the workflow recovery recognizes", got.StatusReason)
+	}
+	if watchdogreason.IsRateLimit(got.StatusReason) {
+		t.Fatalf("status_reason = %q, want it to stop claiming a rate limit", got.StatusReason)
+	}
 	if !stopped {
 		t.Fatal("stopAgent not called on zero-output stall")
 	}
-	if ag.GetErrorKind() != "rate_limit" {
-		t.Fatalf("agent error kind = %q, want %q (so the completion handler reschedules it)", ag.GetErrorKind(), "rate_limit")
+	if ag.GetErrorKind() != agent.ErrorKindSilentHang {
+		t.Fatalf("agent error kind = %q, want %q (so the completion handler reschedules it)", ag.GetErrorKind(), agent.ErrorKindSilentHang)
 	}
-	if signaledName != "claude" || signaledKind != provider.SignalRateLimit {
-		t.Fatalf("recordProviderSignal(provider=%q, sig=%v), want (claude, SignalRateLimit)", signaledName, signaledKind)
+	if ag.GetErrorMsg() != zeroOutputReason {
+		t.Fatalf("agent error msg = %q, want %q", ag.GetErrorMsg(), zeroOutputReason)
 	}
-	if signaledReason != zeroOutputReason {
-		t.Fatalf("signaled reason = %q, want %q", signaledReason, zeroOutputReason)
+	if signaled {
+		t.Fatal("provider health signalled for a silent child; a hung agent must not park the provider for every other task")
 	}
 }
 
-func TestHandleZeroOutputStall_NoTaskStillSignalsAndStops(t *testing.T) {
+func TestHandleZeroOutputStall_NoTaskStillStops(t *testing.T) {
 	stopped := false
+	signaled := false
 	w := &Watchdog{
-		logger:               slog.New(slog.DiscardHandler),
-		stopAgent:            func(string) error { stopped = true; return nil },
-		recordProviderSignal: func(*agent.Agent, provider.Signal, string, time.Duration) {},
+		logger:    slog.New(slog.DiscardHandler),
+		stopAgent: func(string) error { stopped = true; return nil },
+		recordProviderSignal: func(*agent.Agent, provider.Classification) {
+			signaled = true
+		},
 	}
 
-	w.handleZeroOutputStall(&agent.Agent{ID: "a1", Provider: "claude"}, time.Hour, time.Hour, task.StatusInProgress)
+	ag := &agent.Agent{ID: "a1", Provider: "claude"}
+	w.handleZeroOutputStall(ag, time.Hour, time.Hour, task.StatusInProgress)
 
 	if !stopped {
 		t.Fatal("stopAgent not called on taskless zero-output stall")
+	}
+	if signaled {
+		t.Fatal("provider health signalled for a taskless silent child")
+	}
+	if ag.GetErrorKind() != agent.ErrorKindSilentHang {
+		t.Fatalf("agent error kind = %q, want %q", ag.GetErrorKind(), agent.ErrorKindSilentHang)
 	}
 }
 
@@ -1248,7 +1263,6 @@ func TestInspectHeadless_ZeroOutputStallSkipsJudge(t *testing.T) {
 
 	judgeCalled := false
 	stopped := false
-	var signaledReason string
 	w := &Watchdog{
 		tasks:  tasks,
 		logger: slog.New(slog.DiscardHandler),
@@ -1257,11 +1271,8 @@ func TestInspectHeadless_ZeroOutputStallSkipsJudge(t *testing.T) {
 			judgeCalled = true
 			return agent.InspectorVerdict{Recommendation: "continue"}, nil
 		},
-		stopAgent: func(string) error { stopped = true; return nil },
-		recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration) {
-			ag.SetError("rate_limit", reason)
-			signaledReason = reason
-		},
+		stopAgent:            func(string) error { stopped = true; return nil },
+		recordProviderSignal: func(*agent.Agent, provider.Classification) {},
 	}
 
 	started := time.Now().Add(-20 * time.Minute)
@@ -1290,8 +1301,8 @@ func TestInspectHeadless_ZeroOutputStallSkipsJudge(t *testing.T) {
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
 	}
-	if signaledReason != zeroOutputReason {
-		t.Fatalf("signaled reason = %q, want %q", signaledReason, zeroOutputReason)
+	if ag.GetErrorKind() != agent.ErrorKindSilentHang {
+		t.Fatalf("agent error kind = %q, want %q", ag.GetErrorKind(), agent.ErrorKindSilentHang)
 	}
 }
 
@@ -1396,7 +1407,6 @@ func TestInspectHeadless_ReattachedSurvivorZeroOutputSkipsJudge(t *testing.T) {
 
 	judgeCalled := false
 	stopped := false
-	var signaledReason string
 	w := &Watchdog{
 		tasks:  tasks,
 		logger: slog.New(slog.DiscardHandler),
@@ -1405,11 +1415,8 @@ func TestInspectHeadless_ReattachedSurvivorZeroOutputSkipsJudge(t *testing.T) {
 			judgeCalled = true
 			return agent.InspectorVerdict{Recommendation: "continue"}, nil
 		},
-		stopAgent: func(string) error { stopped = true; return nil },
-		recordProviderSignal: func(ag *agent.Agent, sig provider.Signal, reason string, _ time.Duration) {
-			ag.SetError("rate_limit", reason)
-			signaledReason = reason
-		},
+		stopAgent:            func(string) error { stopped = true; return nil },
+		recordProviderSignal: func(*agent.Agent, provider.Classification) {},
 	}
 
 	// Empty log, StartedAt well in the past, LastEventAt set to reattach time —
@@ -1433,8 +1440,8 @@ func TestInspectHeadless_ReattachedSurvivorZeroOutputSkipsJudge(t *testing.T) {
 	if !stopped {
 		t.Fatal("stopAgent not called on reattached zero-output stall")
 	}
-	if signaledReason != zeroOutputReason {
-		t.Fatalf("signaled reason = %q, want %q", signaledReason, zeroOutputReason)
+	if ag.GetErrorKind() != agent.ErrorKindSilentHang {
+		t.Fatalf("agent error kind = %q, want %q", ag.GetErrorKind(), agent.ErrorKindSilentHang)
 	}
 }
 

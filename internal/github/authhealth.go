@@ -5,6 +5,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Automaat/sybra/internal/backoff"
+	"github.com/Automaat/sybra/internal/errclass"
+
+	"github.com/Automaat/sybra/internal/clock"
 )
 
 // AuthState is an explicit GitHub auth health state. Centralizing these
@@ -73,20 +78,33 @@ type authHealthTracker struct {
 	suppressed          int64
 
 	recovered []func()
+
+	// clock is read without the mutex, including from methods that hold it.
+	// setAuthHealthClockForTest swaps it during setup, before concurrent use.
+	clock clock.Clock
 }
 
+func (t *authHealthTracker) now() time.Time { return clock.Or(t.clock).Now() }
+
 func newAuthHealthTracker() *authHealthTracker {
-	return &authHealthTracker{state: AuthHealthy, since: time.Now()}
+	return &authHealthTracker{state: AuthHealthy, since: time.Now(), clock: clock.System{}}
 }
 
 var authHealth = newAuthHealthTracker()
+
+// setAuthHealthClockForTest swaps the clock driving the circuit breaker's
+// backoff window, so a test can step past nextAttempt instead of sleeping for
+// the 30s base backoff. Test-only; call during setup, before concurrent use.
+func setAuthHealthClockForTest(c clock.Clock) {
+	authHealth.clock = clock.Or(c)
+}
 
 // resetAuthHealthForTest restores the package-global auth health tracker to
 // its zero (healthy, no history) state. Test-only.
 func resetAuthHealthForTest() {
 	authHealth.mu.Lock()
 	authHealth.state = AuthHealthy
-	authHealth.since = time.Now()
+	authHealth.since = authHealth.now()
 	authHealth.reason = ""
 	authHealth.consecutiveFailures = 0
 	authHealth.nextAttempt = time.Time{}
@@ -142,7 +160,7 @@ func AuthCircuitOpen() (open bool, retryAfter time.Time) {
 	if !isFailureState(authHealth.state) {
 		return false, time.Time{}
 	}
-	if time.Now().Before(authHealth.nextAttempt) {
+	if authHealth.now().Before(authHealth.nextAttempt) {
 		return true, authHealth.nextAttempt
 	}
 	return false, authHealth.nextAttempt
@@ -166,7 +184,7 @@ func (t *authHealthTracker) setState(state AuthState, reason string) {
 	t.mu.Lock()
 	if state != t.state {
 		t.state = state
-		t.since = time.Now()
+		t.since = t.now()
 		t.transitions++
 	}
 	t.reason = reason
@@ -222,7 +240,7 @@ func isFailureState(s AuthState) bool {
 func (t *authHealthTracker) observeFailure(state AuthState, reason string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if isFailureState(t.state) && time.Now().Before(t.nextAttempt) {
+	if isFailureState(t.state) && t.now().Before(t.nextAttempt) {
 		// Concurrent/duplicate observation of an already-open incident: refresh
 		// the reason but leave the backoff step the first observer set.
 		t.reason = reason
@@ -230,7 +248,7 @@ func (t *authHealthTracker) observeFailure(state AuthState, reason string) {
 	}
 	if state != t.state {
 		t.state = state
-		t.since = time.Now()
+		t.since = t.now()
 		t.transitions++
 	}
 	t.reason = reason
@@ -243,26 +261,16 @@ func (t *authHealthTracker) observeFailure(state AuthState, reason string) {
 func (t *authHealthTracker) applyFailureBackoffLocked() {
 	t.hadFailure = true
 	t.consecutiveFailures++
-	backoff := authCircuitBaseBackoff
-	for i := 1; i < t.consecutiveFailures && backoff < authCircuitMaxBackoff; i++ {
-		backoff *= 2
-	}
-	if backoff > authCircuitMaxBackoff {
-		backoff = authCircuitMaxBackoff
-	}
-	t.nextAttempt = time.Now().Add(backoff)
+	delay := backoff.ForAttempt(t.consecutiveFailures, authCircuitBaseBackoff, authCircuitMaxBackoff).Delay
+	t.nextAttempt = t.now().Add(delay)
 }
 
 // isAuthErrorMsg is IsAuthError's message-matching core, factored out so
 // ObserveCallResult can classify a combined stdout+stderr blob the same way
 // IsAuthError classifies a wrapped error.
 func isAuthErrorMsg(msg string) bool {
-	msg = strings.ToLower(msg)
-	return strings.Contains(msg, "http 401") ||
-		strings.Contains(msg, "bad credentials") ||
-		strings.Contains(msg, "gh auth login") ||
-		strings.Contains(msg, "gh_token environment variable") ||
-		strings.Contains(msg, authCircuitOpenMarker)
+	return strings.Contains(strings.ToLower(msg), authCircuitOpenMarker) ||
+		errclass.Matches(msg, errclass.GitHubAuthPhrases)
 }
 
 // authCircuitOpenMarker tags the synthetic error returned while the circuit

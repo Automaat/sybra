@@ -21,11 +21,14 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/attribution"
 	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/dispatchorder"
 	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/watchdogreason"
 	"github.com/Automaat/sybra/internal/worktreeerr"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -154,7 +157,7 @@ func TestReplayPersistedEffects(t *testing.T) {
 			},
 		}, gets: map[string]int{}}
 		agents := newMockAgents()
-		engine := NewEngine(store, tasks, agents, discardLogger())
+		engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 		engine.ReplayPersistedEffects()
 
@@ -199,7 +202,7 @@ func TestReplayPersistedEffects(t *testing.T) {
 			},
 		}, gets: map[string]int{}}
 		agents := newMockAgents()
-		engine := NewEngine(store, tasks, agents, discardLogger())
+		engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 		engine.ReplayPersistedEffects()
 
@@ -263,7 +266,7 @@ steps:
 			},
 		}, gets: map[string]int{}}
 		agents := newMockAgents()
-		engine := NewEngine(store, tasks, agents, discardLogger())
+		engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 		engine.ReplayPersistedEffects()
 
@@ -320,7 +323,7 @@ steps:
 			},
 		}, gets: map[string]int{}}
 		agents := newMockAgents()
-		engine := NewEngine(store, tasks, agents, discardLogger())
+		engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 		engine.ReplayPersistedEffects()
 
@@ -372,7 +375,7 @@ steps:
 			},
 		}, gets: map[string]int{}}
 		agents := newMockAgents()
-		engine := NewEngine(store, tasks, agents, discardLogger())
+		engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 		if handled := engine.ReplayPersistedEffectsForTask("t2"); !handled {
 			t.Fatal("ReplayPersistedEffectsForTask returned false, want true")
@@ -419,7 +422,7 @@ steps:
 		}, gets: map[string]int{}}
 		agents := newMockAgents()
 		agents.SetProviderRateLimited(true)
-		engine := NewEngine(store, tasks, agents, discardLogger())
+		engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 		engine.ReplayPersistedEffects()
 
@@ -457,7 +460,7 @@ steps:
 			},
 		}, gets: map[string]int{}}
 		agents := newMockAgents()
-		engine := NewEngine(store, tasks, agents, discardLogger())
+		engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 		engine.ReplayPersistedEffects()
 
@@ -506,7 +509,7 @@ func TestResumeStalled_RecordsFallbackMetric(t *testing.T) {
 		},
 	}, gets: map[string]int{}}
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	engine.ResumeStalled()
 
@@ -566,6 +569,7 @@ type memTasks struct {
 	failGet          bool
 	failSetWorkflow  bool
 	failSetWorkflowN int
+	incompleteRuns   []string
 }
 
 func newMemTasks() *memTasks {
@@ -662,7 +666,7 @@ func (m *memTasks) ListTasks() ([]TaskInfo, error) {
 	return out, nil
 }
 
-func (m *memTasks) UpdateTaskStatus(id, status, reason string) error {
+func (m *memTasks) UpdateTaskStatus(id string, status taskstatus.Status, reason string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tasks[id]
@@ -675,7 +679,7 @@ func (m *memTasks) UpdateTaskStatus(id, status, reason string) error {
 	return nil
 }
 
-func (m *memTasks) ClearTaskStatusReasonIf(id, expectedStatus, expectedReason string) (bool, error) {
+func (m *memTasks) ClearTaskStatusReasonIf(id string, expectedStatus taskstatus.Status, expectedReason string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tasks[id]
@@ -690,7 +694,41 @@ func (m *memTasks) ClearTaskStatusReasonIf(id, expectedStatus, expectedReason st
 	return true, nil
 }
 
-func (m *memTasks) UpdateTaskBlocker(id, status, reason string, state blocker.State) error {
+func (m *memTasks) ClearTaskStatusReasonAndSetWorkflowIf(id, expectedStatus, expectedReason string, wf *Execution) (bool, error) {
+	m.mu.Lock()
+	if m.failSetWorkflow || m.failSetWorkflowN > 0 {
+		if m.failSetWorkflowN > 0 {
+			m.failSetWorkflowN--
+		}
+		m.mu.Unlock()
+		return false, fmt.Errorf("simulated write failure for task %s", id)
+	}
+	hook := m.onSetWorkflow
+	m.mu.Unlock()
+	// Fire the concurrency hook ahead of the compare rather than after the
+	// write: this call is a single atomic store write, so a racing update can
+	// only land in front of it — and must then lose the compare instead of
+	// being overwritten.
+	if hook != nil {
+		hook(id)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return false, fmt.Errorf("task %s not found", id)
+	}
+	if string(t.Status) != expectedStatus || t.StatusReason != expectedReason {
+		// Mismatch writes nothing at all — the workflow included.
+		return false, nil
+	}
+	t.StatusReason = ""
+	m.reasons[id] = ""
+	t.Workflow = wf.Clone()
+	return true, nil
+}
+func (m *memTasks) UpdateTaskBlocker(id string, status taskstatus.Status, reason string, state blocker.State) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tasks[id]
@@ -767,6 +805,19 @@ func (m *memTasks) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint
 	return fmt.Errorf("agent run %s not found for task %s", agentID, taskID)
 }
 
+func (m *memTasks) IncompleteRuns() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.incompleteRuns...)
+}
+
+func (m *memTasks) MarkAgentRunIncomplete(taskID, agentID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.incompleteRuns = append(m.incompleteRuns, taskID+"/"+agentID)
+	return nil
+}
+
 func (m *memTasks) RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -840,6 +891,58 @@ func (m *memTasks) SetWorkflow(id string, wf *Execution) error {
 	return nil
 }
 
+func (m *memTasks) SetStatusAndWorkflow(id, status, reason string, wf *Execution) error {
+	m.mu.Lock()
+	if m.failSetWorkflow || m.failSetWorkflowN > 0 {
+		if m.failSetWorkflowN > 0 {
+			m.failSetWorkflowN--
+		}
+		m.mu.Unlock()
+		return fmt.Errorf("simulated write failure for task %s", id)
+	}
+	t, ok := m.tasks[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("task %s not found", id)
+	}
+	t.Status = taskstatus.Status(status)
+	t.StatusReason = reason
+	m.reasons[id] = reason
+	t.Workflow = wf.Clone()
+	hook := m.onSetWorkflow
+	m.mu.Unlock()
+	if hook != nil {
+		hook(id)
+	}
+	return nil
+}
+
+func (m *memTasks) SetBlockerAndWorkflow(id, status, reason string, state blocker.State, wf *Execution) error {
+	m.mu.Lock()
+	if m.failSetWorkflow || m.failSetWorkflowN > 0 {
+		if m.failSetWorkflowN > 0 {
+			m.failSetWorkflowN--
+		}
+		m.mu.Unlock()
+		return fmt.Errorf("simulated write failure for task %s", id)
+	}
+	t, ok := m.tasks[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("task %s not found", id)
+	}
+	t.Status = taskstatus.Status(status)
+	t.StatusReason = reason
+	t.Blocker = state
+	m.reasons[id] = reason
+	t.Workflow = wf.Clone()
+	hook := m.onSetWorkflow
+	m.mu.Unlock()
+	if hook != nil {
+		hook(id)
+	}
+	return nil
+}
 func (m *memTasks) SetWorkflowIf(id string, fence WorkflowWriteFence, wf *Execution) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -897,9 +1000,32 @@ func (m *memTasks) CompleteWorkflowEffect(id string, claim EffectClaim) (EffectC
 	return result, nil
 }
 
+func (m *memTasks) ReleaseWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return EffectClaimResult{}, fmt.Errorf("task %s not found", id)
+	}
+	if t.Workflow == nil {
+		return EffectClaimResult{}, fmt.Errorf("task %s has no workflow", id)
+	}
+	wf := t.Workflow.Clone()
+	result, err := wf.ReleaseEffect(claim)
+	result.Workflow = wf
+	if err != nil {
+		return result, err
+	}
+	t.Workflow = wf
+	return result, nil
+}
+
 func (m *memTasks) WriteSidecar(id, kind, content string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.appendErr != nil {
+		return m.appendErr
+	}
 	t, ok := m.tasks[id]
 	if !ok {
 		return fmt.Errorf("task %s not found", id)
@@ -926,6 +1052,12 @@ func (m *memTasks) WriteSidecar(id, kind, content string) error {
 		t.PlanDecisions = content
 	case "plan_brief":
 		t.PlanBrief = content
+	case "current_test_failures":
+		t.CurrentTestFailures = content
+	case "acceptance_ledger":
+		t.AcceptanceLedger = content
+	case "spec_decision":
+		t.SpecDecision = content
 	default:
 		return fmt.Errorf("unknown sidecar kind %q", kind)
 	}
@@ -953,7 +1085,7 @@ func lookupWorkflowAgentRoute(t *testing.T, engine *Engine, taskID, agentID stri
 }
 
 // SetStatus is a test helper to simulate an agent changing task status.
-func (m *memTasks) SetStatus(id, status string) {
+func (m *memTasks) SetStatus(id string, status taskstatus.Status) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if t, ok := m.tasks[id]; ok {
@@ -990,6 +1122,7 @@ type mockAgents struct {
 	rateLimited       map[string]bool // provider -> rate-limited
 	unhealthy         map[string]bool // provider -> unhealthy (config-disabled/probe-down); absent = healthy
 	dispatchClaimed   map[string]bool // taskID -> a claim is held by an out-of-band dispatcher (e.g. simulated recovery)
+	defaultProvider   string
 	claimInsideStart  bool
 	failSpawnOnce     error
 	startGate         chan struct{}
@@ -1154,7 +1287,20 @@ func (m *mockAgents) SendPrompt(agentID, message string) error {
 	return nil
 }
 
-func (m *mockAgents) DefaultProvider() string { return "claude" }
+func (m *mockAgents) DefaultProvider() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.defaultProvider != "" {
+		return m.defaultProvider
+	}
+	return "claude"
+}
+
+func (m *mockAgents) SetDefaultProvider(p string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.defaultProvider = p
+}
 
 func (m *mockAgents) TryClaimDispatch(taskID string) (DispatchClaim, bool) {
 	m.mu.Lock()
@@ -1270,7 +1416,7 @@ func TestFullLifecycle_DirectImplement(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 
@@ -1330,7 +1476,7 @@ func TestOneShot_ComputedFromStepConfig(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	// Legacy interactive-mode task forces the templated implement step into
 	// interactive mode via {{.Task.AgentMode}}, exercising the coercion path.
@@ -1397,7 +1543,7 @@ func TestFullLifecycle_PlanPath(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 
@@ -1469,7 +1615,7 @@ func TestPlanReject_ThenApprove(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
@@ -1518,7 +1664,7 @@ func TestTriageRetry_Success(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
@@ -1561,7 +1707,7 @@ func TestTriageRetry_Exhausted(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
@@ -1604,7 +1750,7 @@ steps:
 `)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "planning", AgentMode: "headless"})
 	if err := engine.StartWorkflowFromStepWithVars("t1", "simple-task-plan", "plan", nil); err != nil {
@@ -1636,7 +1782,7 @@ func TestResumeStalled_WatchdogHangRetriesThenEscalates(t *testing.T) {
 		name       string
 		retries    string
 		wantStarts int
-		wantStatus string
+		wantStatus taskstatus.Status
 		wantReason string
 		wantRetry  string
 		baseline   string
@@ -1664,7 +1810,7 @@ func TestResumeStalled_WatchdogHangRetriesThenEscalates(t *testing.T) {
 			store := newTestStore(t)
 			tasks := newMemTasks()
 			agents := newMockAgents()
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 			vars := map[string]string{}
 			if tc.retries != "" {
 				vars[watchdogHangRetryKey("implement")] = tc.retries
@@ -1725,7 +1871,7 @@ func TestResumeStalled_WatchdogStopImplementationRetriesThenEscalates(t *testing
 		reason     string
 		retries    string
 		wantStarts int
-		wantStatus string
+		wantStatus taskstatus.Status
 		wantReason string
 		wantRetry  string
 		baseline   string
@@ -1763,7 +1909,7 @@ func TestResumeStalled_WatchdogStopImplementationRetriesThenEscalates(t *testing
 			store := newTestStore(t)
 			tasks := newMemTasks()
 			agents := newMockAgents()
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 			vars := map[string]string{}
 			if tc.retries != "" {
 				vars[watchdogStopRetryKey("implement")] = tc.retries
@@ -1822,13 +1968,13 @@ func TestResumeStalled_WatchdogRewardHackingRetriesThenEscalates(t *testing.T) {
 	tests := []struct {
 		name       string
 		role       string
-		status     string
+		status     taskstatus.Status
 		stepID     string
 		workflowID string
 		retries    string
 		plan       string
 		wantStarts int
-		wantStatus string
+		wantStatus taskstatus.Status
 		wantReason string
 		wantRetry  string
 		wantClean  string
@@ -1874,7 +2020,7 @@ func TestResumeStalled_WatchdogRewardHackingRetriesThenEscalates(t *testing.T) {
 			store := newTestStore(t)
 			tasks := newMemTasks()
 			agents := newMockAgents()
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 			vars := map[string]string{}
 			if tc.retries != "" {
 				vars[watchdogRewardHackingRetryKey(tc.stepID)] = tc.retries
@@ -1933,7 +2079,7 @@ func TestResumeStalled_WorktreeRepairRetriesThenExhausts(t *testing.T) {
 		name       string
 		attempts   string
 		wantStarts int
-		wantStatus string
+		wantStatus taskstatus.Status
 		wantRetry  string
 		wantExh    bool
 	}{
@@ -1957,7 +2103,7 @@ func TestResumeStalled_WorktreeRepairRetriesThenExhausts(t *testing.T) {
 			store := newTestStore(t)
 			tasks := newMemTasks()
 			agents := newMockAgents()
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 			vars := map[string]string{}
 			if tc.attempts != "" {
 				vars[worktreeRepairRetryKey("implement")] = tc.attempts
@@ -2011,7 +2157,7 @@ func TestResumeStalled_WatchdogStopVerifiedFailureDoesNotRetry(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{
 		ID:           "t1",
 		Status:       "human-required",
@@ -2047,7 +2193,7 @@ func TestResumeStalled_WatchdogStopRateLimitedProviderKeepsHumanRequired(t *test
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	agents.SetProviderRateLimited(true)
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{
 		ID:           "t1",
 		Status:       "human-required",
@@ -2092,7 +2238,7 @@ steps:
 `)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	var completed []CompletionInfo
 	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
 	tasks.Put(TaskInfo{
@@ -2151,7 +2297,7 @@ steps:
 `)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetOpenPROnUnrunnableGate(false)
 	var completed []CompletionInfo
 	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
@@ -2193,7 +2339,7 @@ func TestResumeStalled_TransientFetchRetriesThenEscalates(t *testing.T) {
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	agents.SetFailSpawn(worktreeerr.ErrTransientFetch)
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:           "t1",
@@ -2248,7 +2394,7 @@ func TestResumeStalled_WatchdogHangDoesNotBurnBudgetWhileAgentRunning(t *testing
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{
 		ID:           "t1",
 		Status:       "in-progress",
@@ -2392,7 +2538,7 @@ func startTestSimpleImplement(t *testing.T) (*Store, *memTasks, *mockAgents, *En
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
@@ -2409,7 +2555,13 @@ func startTestSimpleImplement(t *testing.T) (*Store, *memTasks, *mockAgents, *En
 }
 
 const missingLivePRProofReason = "manual verification blocker: no current open PR could be verified as allFlaky for the required live pr-monitor proof"
-const alreadyFixedOnMainVerdict = "Already fixed on main; no PR needed. Duplicate task, safe to close/mark done."
+const alreadyFixedOnMainVerdict = `{"decision":"already-fixed-on-main","reason":"landed in an earlier PR"}`
+
+// alreadyFixedOnMainProse is the shape recovery used to act on. It must never
+// close a task on its own now that a declaration is required.
+const alreadyFixedOnMainProse = "Already fixed on main; no PR needed. Duplicate task, safe to close/mark done."
+
+const alreadyFixedOnMainDeclaredReason = alreadyFixedOnMainRecoveryReason + " — agent declared: landed in an earlier PR"
 
 func TestAdvanceStep_ManualVerificationBlockerRoutesToReadyPR(t *testing.T) {
 	store := newInlineTestStore(t, "pr-recovery", `
@@ -2442,7 +2594,7 @@ steps:
 `)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	var completed []CompletionInfo
 	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
 
@@ -2531,7 +2683,7 @@ steps:
 `)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false), ok: true})
 	var completed []CompletionInfo
 	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
@@ -2568,8 +2720,8 @@ steps:
 	if ti.Status != "done" {
 		t.Fatalf("status = %q, want done", ti.Status)
 	}
-	if ti.StatusReason != alreadyFixedOnMainRecoveryReason {
-		t.Fatalf("status reason = %q, want %q", ti.StatusReason, alreadyFixedOnMainRecoveryReason)
+	if ti.StatusReason != alreadyFixedOnMainDeclaredReason {
+		t.Fatalf("status reason = %q, want %q", ti.StatusReason, alreadyFixedOnMainDeclaredReason)
 	}
 	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
 		t.Fatalf("workflow = %+v, want completed terminal workflow", ti.Workflow)
@@ -2577,6 +2729,146 @@ steps:
 	if len(completed) != 1 || completed[0].WorkflowID != "pr-recovery" {
 		t.Fatalf("completions = %+v, want one pr-recovery completion", completed)
 	}
+}
+
+// TestAdvanceStep_AlreadyFixedOnMainUndeclaredStaysHumanRequired pins the
+// defect this recovery was rebuilt for: prose alone, affirmative or negated,
+// must never close a task. The old scan closed on all three of these.
+func TestAdvanceStep_AlreadyFixedOnMainUndeclaredStaysHumanRequired(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		output string
+	}{
+		{name: "affirmative prose", output: alreadyFixedOnMainProse},
+		{name: "negated prose", output: "I checked whether this was already fixed on main; it is NOT. Ran out of context before committing, parking for a human."},
+		{name: "incidental main.go mention", output: "Already fixed the nil deref in main.go but could not push."},
+		{name: "verdict json quoted inside prose", output: `Per the contract I would emit {"decision": "already-fixed-on-main", "reason": "change already on base"} only if the work were landed. It is not, so I am NOT declaring that. No commits were made.`},
+		{name: "verdict fence quoted and disclaimed", output: quotedFenceDisclaimed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tasks, ti := runAlreadyFixedOnMainRecovery(t, tc.output)
+			if ti.Status != "human-required" {
+				t.Fatalf("status = %q, want human-required", ti.Status)
+			}
+			if ti.StatusReason != alreadyFixedOnMainProse {
+				t.Fatalf("status reason = %q, want the park reason preserved", ti.StatusReason)
+			}
+			_ = tasks
+		})
+	}
+}
+
+// TestAdvanceStep_AlreadyFixedOnMainResponseTextIsNotAChannel pins the channel
+// split: only the status reason declares. A response that is nothing but the
+// JSON object used to close a task whose reason refused to declare one.
+func TestAdvanceStep_AlreadyFixedOnMainResponseTextIsNotAChannel(t *testing.T) {
+	_, ti := runAlreadyFixedOnMainRecoveryWithReason(t,
+		alreadyFixedOnMainVerdict,
+		"I am NOT declaring a recovery verdict. I made no commits and a human must review this.")
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
+	}
+}
+
+// TestAdvanceStep_AlreadyFixedOnMainLongDeclaredReasonIsBounded keeps an
+// agent-authored reason out of the task frontmatter at full length.
+func TestAdvanceStep_AlreadyFixedOnMainLongDeclaredReasonIsBounded(t *testing.T) {
+	long := strings.Repeat("x", 5000)
+	_, ti := runAlreadyFixedOnMainRecoveryWithReason(t, "",
+		`{"decision":"already-fixed-on-main","reason":"`+long+`"}`)
+	if ti.Status != "done" {
+		t.Fatalf("status = %q, want done", ti.Status)
+	}
+	if len(ti.StatusReason) > len(alreadyFixedOnMainRecoveryReason)+maxDeclaredReasonBytes+64 {
+		t.Fatalf("status reason is %d bytes, want the declared reason bounded", len(ti.StatusReason))
+	}
+}
+
+// TestAdvanceStep_AlreadyFixedOnMainUnreadableDeclarationRecordsReason covers
+// the run that tried to declare and produced something unparseable: it stays
+// parked, and the board says why rather than only the app log.
+func TestAdvanceStep_AlreadyFixedOnMainUnreadableDeclarationRecordsReason(t *testing.T) {
+	_, ti := runAlreadyFixedOnMainRecoveryWithReason(t, "", `{"decision":"close-it"}`)
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
+	}
+	if ti.StatusReason != unreadableRecoveryVerdictReason {
+		t.Fatalf("status reason = %q, want %q", ti.StatusReason, unreadableRecoveryVerdictReason)
+	}
+}
+
+// runAlreadyFixedOnMainRecovery drives one implementation run to completion
+// with output and returns the task as recovery left it.
+func runAlreadyFixedOnMainRecovery(t *testing.T, output string) (*memTasks, TaskInfo) {
+	t.Helper()
+	return runAlreadyFixedOnMainRecoveryWithReason(t, output, alreadyFixedOnMainProse)
+}
+
+// runAlreadyFixedOnMainRecoveryWithReason drives one implementation run whose
+// response text is output and whose park reason is parkReason.
+func runAlreadyFixedOnMainRecoveryWithReason(t *testing.T, output, parkReason string) (*memTasks, TaskInfo) {
+	t.Helper()
+	store := newInlineTestStore(t, "pr-recovery", `
+id: pr-recovery
+name: PR Recovery
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      prompt: "implement"
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
+        goto: ""
+      - goto: verify
+  - id: verify
+    name: Verify
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false), ok: true})
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		ProjectID: "acme/widgets",
+	})
+	if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.UpdateTaskStatus("t1", "human-required", parkReason); err != nil {
+		t.Fatal(err)
+	}
+
+	agentID := agents.LastID()
+	agents.SimulateComplete("t1")
+	if err := engine.AdvanceStep("t1", StepOutput{
+		StepID:  "implement",
+		AgentID: agentID,
+		Status:  "completed",
+		Output:  output,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tasks, ti
 }
 
 func TestAdvanceStep_AlreadyFixedOnMainEmptyOutputStaysHumanRequired(t *testing.T) {
@@ -2618,7 +2910,7 @@ steps:
 `)
 			tasks := newMemTasks()
 			agents := newMockAgents()
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 			engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false), ok: true})
 
 			tasks.Put(TaskInfo{
@@ -2630,7 +2922,7 @@ steps:
 			if err := engine.StartWorkflow("t1", "pr-recovery"); err != nil {
 				t.Fatal(err)
 			}
-			if err := tasks.UpdateTaskStatus("t1", "human-required", alreadyFixedOnMainVerdict); err != nil {
+			if err := tasks.UpdateTaskStatus("t1", "human-required", alreadyFixedOnMainProse); err != nil {
 				t.Fatal(err)
 			}
 
@@ -2652,8 +2944,8 @@ steps:
 			if ti.Status != "human-required" {
 				t.Fatalf("status = %q, want human-required", ti.Status)
 			}
-			if ti.StatusReason != alreadyFixedOnMainVerdict {
-				t.Fatalf("status reason = %q, want stale human-required reason preserved", ti.StatusReason)
+			if ti.StatusReason != alreadyFixedOnMainProse {
+				t.Fatalf("status reason = %q, want the park reason preserved", ti.StatusReason)
 			}
 			if ti.Workflow == nil || ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
 				t.Fatalf("workflow = %+v, want completed terminal workflow", ti.Workflow)
@@ -2693,7 +2985,7 @@ steps:
 `)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false), ok: true})
 	var completed []CompletionInfo
 	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
@@ -2720,8 +3012,8 @@ steps:
 	if ti.Status != "done" {
 		t.Fatalf("status = %q, want done", ti.Status)
 	}
-	if ti.StatusReason != alreadyFixedOnMainRecoveryReason {
-		t.Fatalf("status reason = %q, want %q", ti.StatusReason, alreadyFixedOnMainRecoveryReason)
+	if ti.StatusReason != alreadyFixedOnMainDeclaredReason {
+		t.Fatalf("status reason = %q, want %q", ti.StatusReason, alreadyFixedOnMainDeclaredReason)
 	}
 	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
 		t.Fatalf("workflow = %+v, want completed terminal workflow", ti.Workflow)
@@ -2762,7 +3054,7 @@ steps:
 `)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false), ok: true})
 
 	tasks.Put(TaskInfo{
@@ -2836,7 +3128,7 @@ steps:
 `)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	var completed []CompletionInfo
 	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
 
@@ -2923,7 +3215,7 @@ steps:
 `)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	var completed []CompletionInfo
 	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
 
@@ -3000,7 +3292,7 @@ steps:
 `)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	var completed []CompletionInfo
 	engine.SetOnComplete(func(info CompletionInfo) { completed = append(completed, info) })
 
@@ -3062,7 +3354,7 @@ func TestRetry_SupersededAgentLateCompletionDropped(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
@@ -3127,7 +3419,7 @@ func TestTriageRetryableReasonTreatsCompletedRunAsFailed(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
@@ -3168,7 +3460,7 @@ func TestTriageRetryableExhaustionBlocksNonHuman(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
@@ -3208,7 +3500,7 @@ func TestMatchWorkflow_ReviewTag(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	// Task WITH review tag should NOT match test-simple.
 	review := TaskInfo{ID: "t1", Tags: []string{"review"}}
@@ -3227,7 +3519,7 @@ func TestMatchWorkflow_NoMatch(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	// Wrong event type.
 	normal := TaskInfo{ID: "t1"}
@@ -3276,7 +3568,7 @@ func TestDispatchEvent_MatchesAndStarts(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	addPREventWorkflow(t, store, "pr-fix-test", 0, "ci_failure")
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-review", AgentMode: "headless"})
@@ -3302,7 +3594,7 @@ func TestDispatchEvent_NoMatchReturnsEmpty(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	addPREventWorkflow(t, store, "pr-fix-test", 0, "ci_failure")
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-review"})
@@ -3325,7 +3617,7 @@ func TestDispatchEvent_AlreadyActiveRejected(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	addPREventWorkflow(t, store, "pr-fix-test", 0, "ci_failure")
 	tasks.Put(TaskInfo{
@@ -3353,7 +3645,7 @@ func TestDispatchEvent_TerminalWorkflowReplaced(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	addPREventWorkflow(t, store, "pr-fix-test", 0, "ci_failure")
 	tasks.Put(TaskInfo{
@@ -3386,7 +3678,7 @@ func TestHasActiveWorkflow(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "no-wf", Status: "todo"})
 	tasks.Put(TaskInfo{
@@ -3432,7 +3724,7 @@ func TestCancelWorkflow(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID: "active", Status: "in-progress",
@@ -3497,7 +3789,7 @@ func TestStartWorkflowRejectsTamperFlaggedRestart(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	originalWorkflow := &Execution{
 		WorkflowID: "simple-task-implement",
@@ -3535,7 +3827,7 @@ func TestStartWorkflowAllowsNonTamperHumanRequiredRestart(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:           "human",
@@ -3556,7 +3848,7 @@ func TestMatchWorkflow_PriorityTieBreak(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	// Two workflows match the same event + field — higher priority wins.
 	addPREventWorkflow(t, store, "pr-fix-generic", 0, "ci_failure")
@@ -3579,7 +3871,7 @@ func TestMatchWorkflow_EqualPriorityDeterministic(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	// Two workflows with equal priority — alphabetical (store order) wins.
 	addPREventWorkflow(t, store, "pr-fix-zebra", 5, "ci_failure")
@@ -3602,7 +3894,7 @@ func TestNoWorkflowField(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"}) // no Workflow
 
@@ -3612,7 +3904,7 @@ func TestNoWorkflowField(t *testing.T) {
 
 func TestDispatchPriorityRank(t *testing.T) {
 	cases := []struct {
-		status string
+		status taskstatus.Status
 		want   int
 	}{
 		{"in-review", 0},
@@ -3628,7 +3920,7 @@ func TestDispatchPriorityRank(t *testing.T) {
 		{"", 4},
 	}
 	for _, tc := range cases {
-		if got := dispatchorder.Rank(tc.status); got != tc.want {
+		if got := dispatchorder.Rank(string(tc.status)); got != tc.want {
 			t.Errorf("dispatchorder.Rank(%q) = %d, want %d", tc.status, got, tc.want)
 		}
 	}
@@ -3638,9 +3930,9 @@ func TestResumeStalled_PrioritizesReviewOverNewWork(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
-	parked := func(id, status string) TaskInfo {
+	parked := func(id string, status taskstatus.Status) TaskInfo {
 		return TaskInfo{
 			ID:        id,
 			Status:    status,
@@ -3677,9 +3969,9 @@ func TestResumeStalled_DispatchComparatorOverridesDefaultOrder(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
-	parked := func(id, status string) TaskInfo {
+	parked := func(id string, status taskstatus.Status) TaskInfo {
 		return TaskInfo{
 			ID:        id,
 			Status:    status,
@@ -3723,7 +4015,7 @@ func TestResumeStalled_QueueReconcilerInvokedBeforeDispatch(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:     "t1",
@@ -3777,7 +4069,7 @@ func TestResumeStalled_ReconcilesWaitHumanStatus(t *testing.T) {
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:     "t1",
@@ -3818,10 +4110,10 @@ func TestResumeStalled_WaitHumanStatusRespectsSkipStatuses(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, keep := range []string{"cancelled", "done", "human-required"} {
-		t.Run(keep, func(t *testing.T) {
+	for _, keep := range []taskstatus.Status{"cancelled", "done", "human-required"} {
+		t.Run(string(keep), func(t *testing.T) {
 			tasks := newMemTasks()
-			engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+			engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 			tasks.Put(TaskInfo{
 				ID:     "t1",
 				Status: keep,
@@ -3874,7 +4166,7 @@ steps:
 `)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	now := time.Now().UTC()
 	tasks.Put(TaskInfo{
 		ID:     "t1",
@@ -3978,7 +4270,7 @@ steps:
 `)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	now := time.Now().UTC()
 	tasks.Put(TaskInfo{
 		ID: "t1", Status: "planning", Tags: []string{"nocritic"},
@@ -4041,7 +4333,7 @@ steps:
       status: plan-review
 `)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	now := time.Now().UTC()
 	stale := TaskInfo{
 		ID: "t1", Status: "planning", Tags: []string{"nocritic"},
@@ -4089,7 +4381,7 @@ func TestResumeStalled_RunAgent(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	// Simulate a task stuck at "implement" step with no running agent.
 	tasks.Put(TaskInfo{
@@ -4119,7 +4411,7 @@ func TestResumeStalled_RunAgentAfterCompletedDispatchEffect(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	completedAt := time.Now().UTC()
 	tasks.Put(TaskInfo{
@@ -4168,7 +4460,7 @@ func TestResumeStalled_DispatchesRateLimitedProviderForFailover(t *testing.T) {
 	agents := newMockAgents()
 	agents.SetProviderRateLimited(true)
 	agents.SetProviderFailover(true)
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:        "t1",
@@ -4193,7 +4485,7 @@ func TestRescheduleRateLimitedAgent_RerunsCurrentStep(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:        "t1",
@@ -4222,7 +4514,7 @@ func TestRescheduleInterruptedAgent_UnparksHumanRequiredCurrentStep(t *testing.T
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:        "t1",
@@ -4258,12 +4550,12 @@ func TestRescheduleInterruptedAgent_UnparksHumanRequiredCurrentStep(t *testing.T
 }
 
 func TestRescheduleInterruptedAgent_SkipsBlockedAndTerminalStatuses(t *testing.T) {
-	for _, status := range []string{"blocked", "done", "cancelled"} {
-		t.Run(status, func(t *testing.T) {
+	for _, status := range []taskstatus.Status{"blocked", "done", "cancelled"} {
+		t.Run(string(status), func(t *testing.T) {
 			store := newTestStore(t)
 			tasks := newMemTasks()
 			agents := newMockAgents()
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 			tasks.Put(TaskInfo{
 				ID:        "t1",
@@ -4316,7 +4608,7 @@ func TestRescheduleRateLimitedAgent_WatchdogRetriesThenEscalates(t *testing.T) {
 		name       string
 		retries    string
 		wantStarts int
-		wantStatus string
+		wantStatus taskstatus.Status
 		wantReason string
 		wantRetry  string
 	}{
@@ -4341,7 +4633,7 @@ func TestRescheduleRateLimitedAgent_WatchdogRetriesThenEscalates(t *testing.T) {
 			store := newTestStore(t)
 			tasks := newMemTasks()
 			agents := newMockAgents()
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 			vars := map[string]string{}
 			if tc.retries != "" {
@@ -4392,8 +4684,9 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 		name             string
 		retries          string
 		freshUsed        bool
+		since            time.Time
 		wantStarts       int
-		wantStatus       string
+		wantStatus       taskstatus.Status
 		wantReason       string
 		wantRetry        string
 		wantFresh        string
@@ -4422,9 +4715,28 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 			wantSessionFence: true,
 		},
 		{
-			name:             "fresh round also exhausts, blocks and fences off the poisoned session",
+			// A second exhaustion still inside maxSilentHangWait of the first
+			// one is another provider-capacity blip, not a latch: it keeps
+			// granting fresh rounds instead of blocking (778422ef, 2026-08-06 —
+			// a task blocked permanently after exactly two rounds while claude
+			// flapped healthy/unhealthy for six hours with no peer to fail
+			// over to).
+			name:             "fresh round exhausts again within the wait ceiling, grants another",
 			retries:          strconv.Itoa(maxWatchdogRateLimitRetries),
 			freshUsed:        true,
+			since:            time.Now().Add(-1 * time.Hour),
+			wantStarts:       0,
+			wantStatus:       "in-progress",
+			wantReason:       watchdogreason.RateLimit(watchdogreason.ZeroOutputBeforeStartup),
+			wantRetry:        "0",
+			wantFresh:        "1",
+			wantSessionFence: true,
+		},
+		{
+			name:             "wait ceiling exceeded, blocks and fences off the poisoned session",
+			retries:          strconv.Itoa(maxWatchdogRateLimitRetries),
+			freshUsed:        true,
+			since:            time.Now().Add(-(maxSilentHangWait + time.Hour)),
 			wantStarts:       0,
 			wantStatus:       "blocked",
 			wantReason:       "watchdog: zero-output startup retry budget exhausted after 3 identical attempts",
@@ -4438,7 +4750,7 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 			store := newTestStore(t)
 			tasks := newMemTasks()
 			agents := newMockAgents()
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 			vars := map[string]string{}
 			if tc.retries != "" {
@@ -4446,6 +4758,9 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 			}
 			if tc.freshUsed {
 				vars[watchdogZeroOutputFreshRetryKey("implement")] = "1"
+			}
+			if !tc.since.IsZero() {
+				vars[watchdogSilentHangSinceKey("implement")] = tc.since.UTC().Format(time.RFC3339)
 			}
 			tasks.Put(TaskInfo{
 				ID:           "t1",
@@ -4497,6 +4812,165 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 	}
 }
 
+// TestResumeStalled_SilentHangReasonRecovers pins the reason rename (#3154):
+// the watchdog now parks a zero-output run under the silent-hang reason instead
+// of a borrowed rate-limit one, and the shared retry policy has to keep picking
+// it up. Without this the fix would trade a parked provider for a parked task
+// that nothing re-dispatches. The sibling tests above still drive the legacy
+// wrapped reason, which is what tasks parked before the upgrade carry on disk.
+func TestResumeStalled_SilentHangReasonRecovers(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: watchdogreason.SilentHang(watchdogreason.ZeroOutputBeforeStartup),
+		AgentMode:    "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   map[string]string{watchdogRateLimitRetryKey("implement"): "1"},
+		},
+	})
+
+	engine.ResumeStalled()
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("replacement agent starts = %d, want 1", got)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.Status != "in-progress" || got.StatusReason != "" {
+		t.Fatalf("status/reason = %q/%q, want in-progress with the reason cleared", got.Status, got.StatusReason)
+	}
+	if got.Workflow.Variables[watchdogRateLimitRetryKey("implement")] != "2" {
+		t.Fatalf("retry var = %q, want 2", got.Workflow.Variables[watchdogRateLimitRetryKey("implement")])
+	}
+}
+
+// TestRescheduleRateLimitedAgent_SilentHangRoutesAroundTheProvider pins the
+// failover the health-gate park used to buy for the hung run itself. Parking
+// the provider is what pushed the retry onto a peer; now that a silent child
+// leaves provider health alone (so other tasks keep dispatching), this run has
+// to route around the provider that produced nothing, or it just hands the
+// same wedged CLI another 15 minutes.
+func TestRescheduleRateLimitedAgent_SilentHangRoutesAroundTheProvider(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.defaultProvider = "claude"
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: watchdogreason.SilentHang(watchdogreason.ZeroOutputBeforeStartup),
+		AgentMode:    "headless",
+		AgentRuns: []AgentRunInfo{
+			{AgentID: "hung-agent", Role: "implementation", Provider: "claude"},
+		},
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+	setWorkflowAgentRoute(t, tasks, "t1", "hung-agent", "implement")
+
+	engine.RescheduleRateLimitedAgent("t1", "hung-agent")
+
+	if got := agents.CallCount(); got != 1 {
+		t.Fatalf("replacement agent starts = %d, want 1", got)
+	}
+	if p := agents.LastCall().Provider; p == "claude" || p == "" {
+		t.Fatalf("re-dispatched provider = %q, want a peer of the provider that went silent", p)
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if v := got.Workflow.Variables[watchdogSilentHangAvoidKey("implement")]; v != "" {
+		t.Fatalf("avoid var = %q, want it consumed by the dispatch it steered", v)
+	}
+}
+
+// TestRescheduleRateLimitedAgent_RealRateLimitKeepsItsProvider guards the other
+// side: a genuine rate limit is already handled by the health gate's failover,
+// so it must not pick up the silent-hang reroute and start crossing providers
+// on its own.
+func TestRescheduleRateLimitedAgent_RealRateLimitKeepsItsProvider(t *testing.T) {
+	prev := providerAvailable
+	providerAvailable = func(string) bool { return true }
+	t.Cleanup(func() { providerAvailable = prev })
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.defaultProvider = "claude"
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: watchdogreason.RateLimit("org-level quota exhausted"),
+		AgentMode:    "headless",
+		AgentRuns: []AgentRunInfo{
+			{AgentID: "limited-agent", Role: "implementation", Provider: "claude"},
+		},
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			Variables:   map[string]string{},
+		},
+	})
+	setWorkflowAgentRoute(t, tasks, "t1", "limited-agent", "implement")
+
+	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if v := got.Workflow.Variables[watchdogSilentHangAvoidKey("implement")]; v != "" {
+		t.Fatalf("avoid var = %q, want empty for a real rate limit", v)
+	}
+}
+
+func TestIsWatchdogRateLimitReason_CoversBothParkedForms(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		reason string
+		want   bool
+	}{
+		{"silent hang", watchdogreason.SilentHang(watchdogreason.ZeroOutputBeforeStartup), true},
+		{"legacy wrapped zero output", watchdogreason.RateLimit(watchdogreason.ZeroOutputBeforeStartup), true},
+		{"real rate limit", watchdogreason.RateLimit("org-level quota exhausted"), true},
+		{"hang", watchdogreason.Hang("no stream activity"), false},
+		{"empty", "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isWatchdogRateLimitReason(tc.reason); got != tc.want {
+				t.Fatalf("isWatchdogRateLimitReason(%q) = %v, want %v", tc.reason, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestResumeStalled_WatchdogZeroOutputFreshRoundDispatches proves the deadlock
 // break end-to-end: a poisoned resume that has exhausted its resume budget is
 // granted a fresh round (tick 1 consumed, fenced) and then actually
@@ -4507,7 +4981,7 @@ func TestResumeStalled_WatchdogZeroOutputFreshRoundDispatches(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:           "t1",
@@ -4558,7 +5032,7 @@ func TestResumeStalled_WatchdogRateLimitPoolBusyDoesNotBurnRetryBudget(t *testin
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	agents.SetFailSpawn(ErrAgentPoolBusy)
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:           "t1",
@@ -4602,7 +5076,7 @@ func TestResumeStalled_WatchdogHangPoolBusyRetainsReaskNote(t *testing.T) {
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	agents.SetFailSpawn(ErrAgentPoolBusy)
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{
 		ID: "t1", Status: "in-progress", StatusReason: "watchdog hang: no stream activity", AgentMode: "headless",
 		Workflow: &Execution{WorkflowID: "test-simple", CurrentStep: "implement", State: ExecWaiting, Variables: map[string]string{}, StartedAt: time.Now().UTC()},
@@ -4621,12 +5095,11 @@ func TestResumeStalled_WatchdogHangPoolBusyRetainsReaskNote(t *testing.T) {
 		t.Fatalf("hang retry = %q, want 1", retry)
 	}
 }
-
 func TestResumeStalled_WatchdogRateLimitDoesNotClearConcurrentFailure(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:           "t1",
@@ -4679,7 +5152,7 @@ func TestRescheduleRateLimitedAgent_ParksWhileProviderRateLimitedNoFailover(t *t
 			agents := newMockAgents()
 			// Provider throttled, no peer to fail over to → must park and wait.
 			agents.SetProviderRateLimited(true)
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 			vars := map[string]string{}
 			if tc.retries != "" {
@@ -4730,7 +5203,7 @@ func TestRescheduleRateLimitedAgent_EmptyTaskIDClearsTrackedAgent(t *testing.T) 
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{
 		ID:        "t1",
 		Status:    "in-progress",
@@ -4758,7 +5231,7 @@ func TestRescheduleRateLimitedAgent_SkippedInflightDoesNotConsumeWatchdogRetry(t
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:           "t1",
@@ -4776,10 +5249,9 @@ func TestRescheduleRateLimitedAgent_SkippedInflightDoesNotConsumeWatchdogRetry(t
 	})
 	setWorkflowAgentRoute(t, tasks, "t1", "limited-agent", "implement")
 
-	mu := engine.taskInflightMutex("t1")
-	mu.Lock()
+	unlockInflight := engine.acquireInflight("t1")
 	engine.RescheduleRateLimitedAgent("t1", "limited-agent")
-	mu.Unlock()
+	unlockInflight()
 
 	if got := agents.CallCount(); got != 0 {
 		t.Fatalf("unexpected replacement agent starts = %d, want 0", got)
@@ -4803,7 +5275,7 @@ func TestRescheduleRateLimitedAgent_SkippedSharedClaimDoesNotConsumeWatchdogRetr
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:           "t1",
@@ -4846,7 +5318,7 @@ func TestRescheduleRateLimitedAgent_SkipsBlockedStatus(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:           "t1",
@@ -4893,7 +5365,7 @@ func TestRescheduleRateLimitedAgent_HoldsDispatchClaimAcrossRescheduleAttempt(t 
 	agents := newMockAgents()
 	agents.startEntered = make(chan struct{}, 1)
 	agents.startGate = make(chan struct{})
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:           "t1",
@@ -4945,7 +5417,7 @@ func TestRescheduleCheckpointedAgent_RerunsCurrentStepSameWorktree(t *testing.T)
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	agents.claimInsideStart = true
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetMaxCheckpoints(3)
 
 	const worktreeDir = "/tmp/checkpoint-worktree"
@@ -4993,7 +5465,7 @@ func TestRescheduleCheckpointedAgent_RetriesGhostDispatchPark(t *testing.T) {
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	agents.failSpawnOnce = ErrDispatchInFlight
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetMaxCheckpoints(3)
 
 	tasks.Put(TaskInfo{
@@ -5023,7 +5495,7 @@ func TestRescheduleCheckpointedAgent_ParksAtCap(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetMaxCheckpoints(2)
 
 	tasks.Put(TaskInfo{
@@ -5062,7 +5534,7 @@ func TestHandleAgentComplete_CheckpointFailedParksWithoutRetry(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:        "t1",
@@ -5119,7 +5591,7 @@ func TestRescheduleRateLimitedAgent_RerunsParallelChild(t *testing.T) {
 	store := newTestStoreWith(t, "test-parallel.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:        "t1",
@@ -5183,7 +5655,7 @@ func TestRescheduleRateLimitedAgent_ParallelChildWatchdogRetriesThenEscalates(t 
 		name       string
 		retries    string
 		wantStarts int
-		wantStatus string
+		wantStatus taskstatus.Status
 		wantReason string
 		wantRetry  string
 	}{
@@ -5208,7 +5680,7 @@ func TestRescheduleRateLimitedAgent_ParallelChildWatchdogRetriesThenEscalates(t 
 			store := newTestStoreWith(t, "test-parallel.yaml")
 			tasks := newMemTasks()
 			agents := newMockAgents()
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 			vars := map[string]string{}
 			if tc.retries != "" {
@@ -5267,7 +5739,7 @@ func TestResumeStalled_ParallelProviderUnhealthyLeavesChildPending(t *testing.T)
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	agents.SetFailSpawn(&providerpkg.UnhealthyError{Provider: "claude", Reason: "rate_limited"})
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:        "t1",
@@ -5326,7 +5798,7 @@ func TestResumeStalled_FailoversRateLimitedProvider(t *testing.T) {
 	agents := newMockAgents()
 	agents.SetProviderRateLimited(true)
 	agents.SetProviderFailover(true)
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:        "t1",
@@ -5351,14 +5823,16 @@ func TestResumeStalled_SkipsWorkflowRetryUntil(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+	fakeClock := clock.NewFake(time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC))
+	engine.SetClock(fakeClock)
 
 	wf := &Execution{
 		WorkflowID:  "test-simple",
 		CurrentStep: "implement",
 		State:       ExecWaiting,
 		Variables: map[string]string{
-			workflowRetryAfterVar: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+			workflowRetryAfterVar: fakeClock.Now().Add(time.Hour).Format(time.RFC3339),
 		},
 	}
 	tasks.Put(TaskInfo{
@@ -5373,7 +5847,7 @@ func TestResumeStalled_SkipsWorkflowRetryUntil(t *testing.T) {
 		t.Fatalf("agent starts before retry window = %d, want 0", agents.CallCount())
 	}
 
-	wf.Variables[workflowRetryAfterVar] = time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	fakeClock.Advance(time.Hour + time.Second)
 	tasks.Put(TaskInfo{
 		ID:        "t1",
 		Status:    "in-progress",
@@ -5387,13 +5861,45 @@ func TestResumeStalled_SkipsWorkflowRetryUntil(t *testing.T) {
 	}
 }
 
+func TestEngineClockCanBeReplacedWhileRunning(t *testing.T) {
+	t.Parallel()
+
+	e := &Engine{}
+	first := clock.NewFake(time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC))
+	second := clock.NewFake(first.Now().Add(time.Hour))
+	var wg sync.WaitGroup
+	wg.Add(5)
+	go func() {
+		defer wg.Done()
+		for i := range 1_000 {
+			if i%2 == 0 {
+				e.SetClock(first)
+			} else {
+				e.SetClock(second)
+			}
+		}
+	}()
+	for range 4 {
+		go func() {
+			defer wg.Done()
+			for range 1_000 {
+				if got := e.now(); got.IsZero() {
+					t.Error("now returned the zero time during concurrent clock replacement")
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 // TestResumeStalled_SkipLogsPromotedToThrottledInfo proves ResumeStalled's
 // skip-reason logs are visible at the default (INFO) log level instead of
 // being silently swallowed at Debug: a dropped/skipped resume was previously
 // invisible in production logs. The first occurrence of a given skip under a
-// task logs at INFO; identical repeats on later ticks are throttled to Debug
-// so a long-lived cooldown (e.g. a multi-hour retry_after window) doesn't
-// flood the log with a duplicate INFO line every tick.
+// task logs at INFO; identical repeats on later ticks are dropped, so a
+// long-lived cooldown (a multi-hour retry_after window, or a multi-day
+// provider park) does not write a line per maintenance tick at any level.
 func TestResumeStalled_SkipLogsPromotedToThrottledInfo(t *testing.T) {
 	var records []slog.Record
 	logger := slog.New(&demotionRecordHandler{records: &records})
@@ -5401,7 +5907,7 @@ func TestResumeStalled_SkipLogsPromotedToThrottledInfo(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, logger)
+	engine := NewTestEngine(store, tasks, agents, logger)
 
 	retryAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 	wf := &Execution{
@@ -5441,14 +5947,148 @@ func TestResumeStalled_SkipLogsPromotedToThrottledInfo(t *testing.T) {
 		t.Fatalf("reason = %q, want retry_after", got)
 	}
 
+	// A repeat inside logging.InfoRepeatInterval is dropped outright, not
+	// downgraded: a park that lasts days would otherwise write one line per
+	// maintenance tick at debug level. Re-emission after the interval is
+	// covered by the logging package's own clock-seamed test.
 	records = nil
-	engine.ResumeStalled()
-	repeat := skipRecords()
-	if len(repeat) != 1 {
-		t.Fatalf("got %d skip records after repeat tick, want 1: %+v", len(repeat), repeat)
+	for range 5 {
+		engine.ResumeStalled()
 	}
-	if repeat[0].Level != slog.LevelDebug {
-		t.Fatalf("repeat skip level = %v, want Debug (throttled)", repeat[0].Level)
+	if repeat := skipRecords(); len(repeat) != 0 {
+		t.Fatalf("got %d skip records from repeat ticks, want 0: %+v", len(repeat), repeat)
+	}
+}
+
+// A rate-limited provider is the one skip reason that can hold for days, and
+// it was the one reason logged straight to Debug instead of through the
+// throttle — invisible at the default level, and one line per tick at debug.
+func TestResumeStalled_RateLimitedProviderSkipIsThrottled(t *testing.T) {
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimited(true)
+	engine := NewTestEngine(store, tasks, agents, logger)
+
+	for _, id := range []string{"t1", "t2"} {
+		tasks.Put(TaskInfo{
+			ID:        id,
+			Status:    "in-progress",
+			AgentMode: "headless",
+			Workflow: &Execution{
+				WorkflowID:  "test-simple",
+				CurrentStep: "implement",
+				State:       ExecWaiting,
+				StartedAt:   time.Now().UTC(),
+			},
+		})
+	}
+
+	skips := func() []slog.Record {
+		var out []slog.Record
+		for _, r := range records {
+			if r.Message == "workflow.resume-stalled.skip" &&
+				recordAttr(r, "reason") == "provider_rate_limited" {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+
+	engine.ResumeStalled()
+	first := skips()
+	// One per task: keying the throttle on anything coarser would hide every
+	// parked task in the fleet behind whichever one parked first.
+	if len(first) != 2 {
+		t.Fatalf("got %d park records on the first tick, want one per task: %+v", len(first), first)
+	}
+	for _, r := range first {
+		if r.Level != slog.LevelInfo {
+			t.Errorf("park logged at %v, want Info so it is visible at the default level", r.Level)
+		}
+		// test-simple's implement step declares no provider, and 9 of the 14
+		// builtin run_agent steps are the same. Reporting an empty provider
+		// defeats the whole point of promoting this line out of Debug.
+		if got := recordAttr(r, "provider"); got != "claude" {
+			t.Errorf("provider = %q, want the default the park is actually about", got)
+		}
+	}
+
+	records = nil
+	for range 20 {
+		engine.ResumeStalled()
+	}
+	if repeat := skips(); len(repeat) != 0 {
+		t.Errorf("got %d park records from repeat ticks, want 0: %+v", len(repeat), repeat)
+	}
+}
+
+// A park that ends and recurs must be logged again. The throttle only re-arms
+// on Clear, and nothing called it — so a second park was invisible at INFO and
+// suppressed at DEBUG, which is strictly worse than the per-tick Debug line
+// this replaced.
+func TestResumeStalled_LaterParkIsLoggedAgain(t *testing.T) {
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimitedFor("claude", true)
+	engine := NewTestEngine(store, tasks, agents, logger)
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+
+	parkRecords := func() int {
+		n := 0
+		for _, r := range records {
+			if recordAttr(r, "reason") == "provider_rate_limited" {
+				n++
+			}
+		}
+		return n
+	}
+
+	engine.ResumeStalled()
+	if got := parkRecords(); got != 1 {
+		t.Fatalf("first park logged %d times, want 1", got)
+	}
+
+	// The park ends, the resume proceeds, and that run finishes — the state a
+	// task is in when a later park hits it.
+	agents.SetProviderRateLimitedFor("claude", false)
+	engine.ResumeStalled()
+	agents.SimulateComplete("t1")
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+
+	records = nil
+	agents.SetProviderRateLimitedFor("claude", true)
+	engine.ResumeStalled()
+	if got := parkRecords(); got != 1 {
+		t.Errorf("second park logged %d times, want 1: the throttle never re-armed", got)
 	}
 }
 
@@ -5456,7 +6096,7 @@ func TestResumeStalled_SkipWaitHuman(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	// Task at wait_human step.
 	tasks.Put(TaskInfo{
@@ -5486,7 +6126,7 @@ func TestResumeStalled_SkipsHumanRequired(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	// Simulate a review task whose pr-review workflow is at the implement
 	// (run_agent) step but whose status was flipped to human-required before
@@ -5516,7 +6156,7 @@ func TestResumeStalled_SkipsBlockedStatus(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:           "t1",
@@ -5544,7 +6184,7 @@ func TestResumeStalled_SkipsDoneStatus(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	// Simulate a task whose PR merged (flipping Status to done) while its
 	// workflow was still paused Running/Waiting at an earlier step — e.g.
@@ -5574,7 +6214,7 @@ func TestResumeStalled_SkipsDoneStatus(t *testing.T) {
 func TestResumeStalled_SkipsTerminalStatusAfterFreshRead(t *testing.T) {
 	tests := []struct {
 		name   string
-		status string
+		status taskstatus.Status
 	}{
 		{name: "done", status: "done"},
 		{name: "cancelled", status: "cancelled"},
@@ -5584,7 +6224,7 @@ func TestResumeStalled_SkipsTerminalStatusAfterFreshRead(t *testing.T) {
 			store := newTestStore(t)
 			tasks := newMemTasks()
 			agents := newMockAgents()
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 			tasks.Put(TaskInfo{
 				ID:        "t1",
@@ -5622,7 +6262,7 @@ func TestResumeStalled_SkipsTerminalStatusAfterFreshRead(t *testing.T) {
 func TestRescheduleRateLimitedAgent_ParallelChildSkipsTerminalStatusAfterFreshRead(t *testing.T) {
 	tests := []struct {
 		name   string
-		status string
+		status taskstatus.Status
 	}{
 		{name: "done", status: "done"},
 		{name: "cancelled", status: "cancelled"},
@@ -5632,7 +6272,7 @@ func TestRescheduleRateLimitedAgent_ParallelChildSkipsTerminalStatusAfterFreshRe
 			store := newTestStoreWith(t, "test-parallel.yaml")
 			tasks := newMemTasks()
 			agents := newMockAgents()
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 			tasks.Put(TaskInfo{
 				ID:        "t1",
@@ -5684,7 +6324,7 @@ func TestHandleHumanAction_NotWaiting(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:     "t1",
@@ -5714,7 +6354,7 @@ func TestHandleHumanAction_InvalidActionAlreadyWaitingDoesNotMutate(t *testing.T
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:     "t1",
@@ -5765,7 +6405,7 @@ func TestConcurrentAdvance(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
@@ -5801,7 +6441,7 @@ func TestStartWorkflow_InvalidWorkflowID(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 
@@ -5815,7 +6455,7 @@ func TestAdvanceStep_UnknownStepID(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
@@ -5849,7 +6489,7 @@ func TestAdvanceStep_TaskWithoutWorkflow(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 
@@ -5863,7 +6503,7 @@ func TestResumeStalled_SkipsTaskWithRunningAgent(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:        "t1",
@@ -5891,7 +6531,7 @@ func TestResumeStalled_SkipsCompletedWorkflow(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	now := time.Now().UTC()
 	tasks.Put(TaskInfo{
@@ -5918,7 +6558,7 @@ func TestShellStep_ExecutesCommand(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	step := &Step{
 		ID:   "shell1",
@@ -5959,7 +6599,7 @@ func TestShellStep_StdinReaderExitsOnEOF(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	step := &Step{
 		ID:   "stdin-reader",
@@ -6005,7 +6645,7 @@ func TestShellStep_ContextCancelKillsCommand(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	parentCtx, cancel := context.WithCancel(context.Background())
 	engine.SetContext(parentCtx)
@@ -6050,7 +6690,7 @@ func TestShellStep_FailingCommandSetsStatusFailed(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	step := &Step{
 		ID:   "shell1",
@@ -6079,7 +6719,7 @@ func TestShellStep_EmptyRenderedDirFailsClosed(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	step := &Step{
 		ID:   "shell-empty-dir",
@@ -6109,7 +6749,7 @@ func TestExecRunAgent_DefaultModeAndModel(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 
@@ -6176,7 +6816,7 @@ func TestExecRunAgent_PersistsPreparedWorktreeDir(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", AgentMode: "headless"})
 	step := &Step{
@@ -6213,7 +6853,7 @@ func TestExecRunAgent_UsesConfiguredScratchDirForPlan(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	scratchDir := t.TempDir()
 	tasks.Put(TaskInfo{ID: "t1", Status: "plan-needed", AgentMode: "headless"})
@@ -6264,7 +6904,7 @@ func TestExecRunAgent_ABTestingOverridesProviderModel(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	enabled := true
 	engine.SetABTestingConfig(abtest.Config{
 		Enabled: &enabled,
@@ -6313,7 +6953,7 @@ func TestExecRunAgent_DefaultProviderPathWinsWhenABTestingOmitted(t *testing.T) 
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetABTestingConfig(abtest.DefaultConfig())
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	step := &Step{
@@ -6351,7 +6991,7 @@ func TestExecRunAgentVariantPrompt(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	enabled := true
 	engine.SetABTestingConfig(abtest.Config{Enabled: &enabled, Experiments: []abtest.Experiment{{
 		ID:             "prompt-exp",
@@ -6406,7 +7046,7 @@ func TestExecRunAgent_EvalGateBlocksFailingDigestedVariant(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetEvalGate(prompteval.NewGate(evalStore, config.OfflineEvalConfig{}))
 	enabled := true
 	engine.SetABTestingConfig(abtest.Config{Enabled: &enabled, Experiments: []abtest.Experiment{{
@@ -6440,7 +7080,7 @@ func TestExecRunAgentSkillAlias(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	enabled := true
 	engine.SetABTestingConfig(abtest.Config{Enabled: &enabled, Experiments: []abtest.Experiment{{
 		ID:             "skill-exp",
@@ -6505,7 +7145,7 @@ func TestExecRunAgentVariantSubjectMismatchDoesNotApplyPayload(t *testing.T) {
 			store := newTestStore(t)
 			tasks := newMemTasks()
 			agents := newMockAgents()
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 			enabled := true
 			engine.SetABTestingConfig(abtest.Config{Enabled: &enabled, Experiments: []abtest.Experiment{{
 				ID:             "subject-exp",
@@ -6545,7 +7185,7 @@ func TestExecRunAgentReuseAgentSkillAlias(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	enabled := true
 	engine.SetABTestingConfig(abtest.Config{Enabled: &enabled, Experiments: []abtest.Experiment{{
 		ID:             "skill-exp",
@@ -6583,7 +7223,7 @@ func TestSelectABVariantPropagatesExperimentKind(t *testing.T) {
 	providerAvailable = func(string) bool { return true }
 	t.Cleanup(func() { providerAvailable = prev })
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	enabled := true
 	engine.SetABTestingConfig(abtest.Config{
 		Enabled: &enabled,
@@ -6623,7 +7263,7 @@ func TestExecRunAgent_ABTestingSkipsRateLimitedProvider(t *testing.T) {
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	agents.SetProviderRateLimitedFor("codex", true)
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	enabled := true
 	engine.SetABTestingConfig(abtest.Config{
 		Enabled: &enabled,
@@ -6674,7 +7314,7 @@ func TestExecRunAgent_ABTestingSkipsConfigDisabledProvider(t *testing.T) {
 	// unhealthy. selectABVariant must not deterministically wedge every
 	// task on this step onto a provider that will always fail to start.
 	agents.SetProviderUnhealthy("copilot", true)
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	enabled := true
 	engine.SetABTestingConfig(abtest.Config{
 		Enabled: &enabled,
@@ -6755,7 +7395,7 @@ func TestExecRunAgent_ProviderDemotionEmitsThrottledSignal(t *testing.T) {
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	agents.SetProviderRateLimitedFor("codex", true)
-	engine := NewEngine(store, tasks, agents, logger)
+	engine := NewTestEngine(store, tasks, agents, logger)
 	enabled := true
 	// codex carries almost all the weight so the unfiltered ("wanted")
 	// selection is codex with overwhelming probability for any task ID,
@@ -6857,7 +7497,7 @@ func TestExecRunAgent_ProviderShutoutEmitsSignal(t *testing.T) {
 	// Every variant is on codex, and codex is rate-limited — provider
 	// filtering zeroes out the whole experiment, forcing the fallback.
 	agents.SetProviderRateLimitedFor("codex", true)
-	engine := NewEngine(store, tasks, agents, logger)
+	engine := NewTestEngine(store, tasks, agents, logger)
 	enabled := true
 	engine.SetABTestingConfig(abtest.Config{
 		Enabled: &enabled,
@@ -6909,7 +7549,7 @@ func TestHandleAgentComplete_CompletedWorkflowIsNoop(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
@@ -6961,7 +7601,7 @@ func TestHandleAgentComplete_UntrackedRoleMismatchDoesNotAdvanceCurrentStep(t *t
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:        "t1",
@@ -7023,7 +7663,7 @@ steps:
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	recorder := &recordingArtifactRecorder{}
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetArtifactRecorder(recorder)
 
 	tasks.Put(TaskInfo{
@@ -7046,6 +7686,7 @@ steps:
 			RequestedSkill:     "sybra-test",
 			SkillExecutionMode: "native",
 			SkillConformance:   "unverified",
+			TurnCount:          7,
 		}},
 	})
 
@@ -7110,7 +7751,7 @@ steps:
 `)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	var completed []CompletionInfo
 	engine.SetOnComplete(func(info CompletionInfo) {
 		completed = append(completed, info)
@@ -7135,6 +7776,7 @@ steps:
 			RequestedSkill:     "sybra-test",
 			SkillExecutionMode: "injected",
 			SkillConformance:   "unverified",
+			TurnCount:          7,
 		}},
 	})
 
@@ -7217,7 +7859,7 @@ steps:
 `)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".sybra-review-t1.md"), []byte("Review Verdict: CLEAN\n\nNo findings.\n"), 0o644); err != nil {
@@ -7243,6 +7885,7 @@ steps:
 			RequestedSkill:     "adversarial-review",
 			SkillExecutionMode: "injected",
 			SkillConformance:   "unverified",
+			TurnCount:          7,
 		}},
 	})
 
@@ -7301,7 +7944,7 @@ steps:
 `)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:        "t1",
@@ -7322,6 +7965,7 @@ steps:
 			RequestedSkill:     "sybra-test",
 			SkillExecutionMode: "injected",
 			SkillConformance:   "unverified",
+			TurnCount:          7,
 		}},
 	})
 
@@ -7352,7 +7996,7 @@ func TestAdvanceStep_EmptyStepIDIsNoop(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
@@ -7390,7 +8034,7 @@ func TestAdvanceStep_FailedWorkflowIsNoop(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:     "t1",
@@ -7412,33 +8056,11 @@ func TestAdvanceStep_FailedWorkflowIsNoop(t *testing.T) {
 	}
 }
 
-func TestTruncate(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		limit int
-		want  string
-	}{
-		{"under limit", "short", 100, "short"},
-		{"at limit", "exact", 5, "exact"},
-		{"over limit", "this is too long", 7, "this is\n... (truncated)"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := truncate(tt.input, tt.limit)
-			if got != tt.want {
-				t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.limit, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestAgentModeTemplate(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
@@ -7474,7 +8096,7 @@ func startPlanReuseAtReviewPlan(t *testing.T) (*Engine, *memTasks, *mockAgents) 
 	store := newTestStoreWith(t, "test-plan-reuse.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "planning", AgentMode: "interactive"})
 	if err := engine.StartWorkflow("t1", "test-plan-reuse"); err != nil {
@@ -7504,7 +8126,7 @@ func TestHandleStatusChange_AdvancesRunAgentWhenWaitForStatusMatches(t *testing.
 	store := newTestStoreWith(t, "test-plan-reuse.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "planning", AgentMode: "interactive"})
 	if err := engine.StartWorkflow("t1", "test-plan-reuse"); err != nil {
@@ -7577,7 +8199,7 @@ func TestHandleStatusChange_NoOp(t *testing.T) {
 			store := newTestStoreWith(t, "test-plan-reuse.yaml")
 			tasks := newMemTasks()
 			agents := newMockAgents()
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 			tasks.Put(TaskInfo{ID: "t1", Status: "planning", AgentMode: "interactive"})
 			if err := engine.StartWorkflow("t1", "test-plan-reuse"); err != nil {
@@ -7613,7 +8235,7 @@ func TestHandleStatusChange_UnknownTaskDoesNotPanic(t *testing.T) {
 	store := newTestStoreWith(t, "test-plan-reuse.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	// Act — must not panic even though the task was never registered.
 	engine.HandleStatusChange("ghost", "plan-review")
@@ -7855,7 +8477,7 @@ func startAutoApprovePlanReview(t *testing.T, task TaskInfo) (*Engine, *memTasks
 	}
 	tasks := newMemTasks()
 	tasks.Put(task)
-	return NewEngine(store, tasks, newMockAgents(), discardLogger()), tasks
+	return NewTestEngine(store, tasks, newMockAgents(), discardLogger()), tasks
 }
 
 func autoApproveReviewStep() *Step {
@@ -7874,7 +8496,7 @@ func waitForTaskStatus(t *testing.T, tasks *memTasks, id, want string) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		ti, err := tasks.GetTask(id)
-		if err == nil && ti.Status == want {
+		if err == nil && ti.Status == taskstatus.Status(want) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -7902,7 +8524,7 @@ func TestPlanReuse_ApproveRepairsMissedWaitForStatus(t *testing.T) {
 	store := newTestStoreWith(t, "test-plan-reuse.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "planning", AgentMode: "interactive"})
 	if err := engine.StartWorkflow("t1", "test-plan-reuse"); err != nil {
@@ -8007,7 +8629,7 @@ func TestExecRerequestReview_NoRequesterSkips(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
 	out, err := engine.execRerequestReview("t1", newRerequestReviewStep(), ti)
@@ -8023,9 +8645,9 @@ func TestExecRerequestReview_MissingFieldsSkip(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	requester := &fakePRReviewRequester{}
-	engine.SetPRReviewRequester(requester)
+	engine.setPRReviewRequesterForTest(requester)
 
 	out, err := engine.execRerequestReview("t1", newRerequestReviewStep(), TaskInfo{ID: "t1", ProjectID: "owner/repo"})
 	if err != nil {
@@ -8043,9 +8665,9 @@ func TestExecRerequestReview_RequestsReviewers(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	requester := &fakePRReviewRequester{reviewers: []string{"alice", "bob"}}
-	engine.SetPRReviewRequester(requester)
+	engine.setPRReviewRequesterForTest(requester)
 
 	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
 	out, err := engine.execRerequestReview("t1", newRerequestReviewStep(), ti)
@@ -8064,8 +8686,8 @@ func TestExecRerequestReview_ErrorIsNonFatal(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
-	engine.SetPRReviewRequester(&fakePRReviewRequester{err: fmt.Errorf("boom")})
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+	engine.setPRReviewRequesterForTest(&fakePRReviewRequester{err: fmt.Errorf("boom")})
 
 	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
 	out, err := engine.execRerequestReview("t1", newRerequestReviewStep(), ti)
@@ -8081,7 +8703,7 @@ func TestExecEnsurePRClosesIssue_NoLinkerSkips(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5, Issue: "https://github.com/owner/repo/issues/7"}
 	out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
@@ -8110,7 +8732,7 @@ func TestExecEnsurePRClosesIssue_MissingFieldsSkip(t *testing.T) {
 			store := newTestStore(t)
 			tasks := newMemTasks()
 			agents := newMockAgents()
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 			engine.SetPRLinker(&fakePRLinker{})
 
 			out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), tt.ti)
@@ -8131,7 +8753,7 @@ func TestExecEnsurePRClosesIssue_CrossRepoSkips(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	linker := &fakePRLinker{}
 	engine.SetPRLinker(linker)
 
@@ -8157,7 +8779,7 @@ func TestExecEnsurePRClosesIssue_AlreadyLinkedNoEdit(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	linker := &fakePRLinker{
 		getQueue: []getResult{{issues: []int{7}, body: "original"}},
 	}
@@ -8183,7 +8805,7 @@ func TestExecEnsurePRClosesIssue_EditAppendsAndVerifies(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	linker := &fakePRLinker{
 		getQueue: []getResult{
 			{issues: nil, body: "Implements the feature."},
@@ -8223,7 +8845,7 @@ func TestExecEnsurePRClosesIssue_EmptyBodyNoLeadingNewlines(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	linker := &fakePRLinker{
 		getQueue: []getResult{
 			{issues: nil, body: ""},
@@ -8248,7 +8870,7 @@ func TestExecEnsurePRClosesIssue_EditFailureFlipsHumanRequired(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	linker := &fakePRLinker{
 		getQueue: []getResult{{issues: nil, body: "body"}},
 		editErr:  fmt.Errorf("403 forbidden"),
@@ -8282,7 +8904,7 @@ func TestExecEnsurePRClosesIssue_VerifyLagTrustsBody(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	linker := &fakePRLinker{
 		getQueue: []getResult{
 			// 1 pre-check + 4 verify attempts, all miss.
@@ -8327,7 +8949,7 @@ func TestExecEnsurePRClosesIssue_VerifyRetrySucceeds(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	linker := &fakePRLinker{
 		getQueue: []getResult{
 			{issues: nil, body: "body"},                    // pre-check miss → triggers edit
@@ -8361,7 +8983,7 @@ func TestExecEnsurePRClosesIssue_VerifyErrorTrustsBody(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	linker := &fakePRLinker{
 		getQueue: []getResult{
 			{issues: nil, body: "body"},
@@ -8399,7 +9021,7 @@ func TestExecEnsurePRClosesIssue_FetchErrorIsSoftFail(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	linker := &fakePRLinker{
 		getQueue: []getResult{{err: errors.New("network timeout")}},
 	}
@@ -8435,7 +9057,7 @@ func TestExecStampPRAttribution_NoLinkerSkips(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
 	out, err := engine.execStampPRAttribution("t1", newStampPRStep(), ti)
@@ -8460,7 +9082,7 @@ func TestExecStampPRAttribution_MissingFieldsSkip(t *testing.T) {
 			store := newTestStore(t)
 			tasks := newMemTasks()
 			agents := newMockAgents()
-			engine := NewEngine(store, tasks, agents, discardLogger())
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
 			linker := &fakePRLinker{}
 			engine.SetPRLinker(linker)
 
@@ -8482,7 +9104,7 @@ func TestExecStampPRAttribution_AppendsFooter(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	linker := &fakePRLinker{
 		getQueue: []getResult{{body: "## Motivation\nfix it\n\nCloses https://github.com/owner/repo/issues/7"}},
 	}
@@ -8508,7 +9130,7 @@ func TestExecStampPRAttribution_EmptyBodySkips(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	linker := &fakePRLinker{
 		getQueue: []getResult{{body: "   \n\t"}},
 	}
@@ -8531,7 +9153,7 @@ func TestExecStampPRAttribution_IdempotentNoEdit(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	linker := &fakePRLinker{
 		getQueue: []getResult{{body: "## Motivation\nfix it\n\n" + attribution.Footer}},
 	}
@@ -8554,7 +9176,7 @@ func TestExecStampPRAttribution_FetchErrorIsSoftFail(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	linker := &fakePRLinker{getQueue: []getResult{{err: errors.New("network timeout")}}}
 	engine.SetPRLinker(linker)
 
@@ -8572,7 +9194,7 @@ func TestExecStampPRAttribution_EditErrorIsSoftFail(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	linker := &fakePRLinker{
 		getQueue: []getResult{{body: "body without footer"}},
 		editErr:  errors.New("gh edit failed"),
@@ -8605,7 +9227,7 @@ func TestDuplicatePlanAgent_StaleCompletionDoesNotFailWaitHuman(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "interactive"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
@@ -8683,7 +9305,7 @@ func TestHandleAgentComplete_WaitHumanWithoutActionIsNoop(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	// Put a task directly at the wait_human step with no agent tracked.
 	tasks.Put(TaskInfo{
@@ -8731,7 +9353,7 @@ func TestResumeStalled_SkipsInflightDispatch(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	// Task sitting at an interactive run_agent step with no running agent —
 	// the shape ResumeStalled normally resumes.
@@ -8750,8 +9372,7 @@ func TestResumeStalled_SkipsInflightDispatch(t *testing.T) {
 	// Simulate the original dispatch being mid-flight inside AdvanceStep —
 	// the per-task advance mutex is held, no agent registered yet (worktree
 	// still being created in the real system, fake-claude hasn't started).
-	heldMu := engine.taskInflightMutex("t1")
-	heldMu.Lock()
+	unlockInflight := engine.acquireInflight("t1")
 
 	before := agents.CallCount()
 	engine.ResumeStalled()
@@ -8762,11 +9383,33 @@ func TestResumeStalled_SkipsInflightDispatch(t *testing.T) {
 
 	// Once the original dispatch finishes and releases the advance mutex,
 	// a subsequent tick is allowed to resume — that's the real recovery path.
-	heldMu.Unlock()
+	unlockInflight()
 
 	engine.ResumeStalled()
 	if got := agents.CallCount(); got != before+1 {
 		t.Errorf("ResumeStalled after inflight cleared: calls %d → %d (want +1)", before, got)
+	}
+}
+
+func TestEngineKeyedLocksReclaimBurst(t *testing.T) {
+	t.Parallel()
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	var wg sync.WaitGroup
+	for i := range 200 {
+		wg.Go(func() {
+			key := fmt.Sprintf("task-%d", i)
+			unlockInflight := engine.inflightLocks.LockLocal(key)
+			unlockInflight()
+			unlockRoute := engine.routeLocks.LockLocal(key)
+			unlockRoute()
+		})
+	}
+	wg.Wait()
+	if got := engine.inflightLocks.Len(); got != 0 {
+		t.Fatalf("inflight lock entries = %d, want burst tasks reclaimed", got)
+	}
+	if got := engine.routeLocks.Len(); got != 0 {
+		t.Fatalf("route lock entries = %d, want burst tasks reclaimed", got)
 	}
 }
 
@@ -8782,7 +9425,7 @@ func TestResumeStalled_SkipsClaimHeldByOutOfBandDispatcher(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:        "t1",
@@ -8829,7 +9472,7 @@ func TestResumeStalled_ConcurrentCallsReserveDispatchWindow(t *testing.T) {
 	agents := newMockAgents()
 	agents.startGate = make(chan struct{})
 	agents.startEntered = make(chan struct{}, 2)
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{
 		ID:        "t1",
@@ -8879,7 +9522,7 @@ func TestDispatchEvent_SkipsClaimHeldByOutOfBandDispatcher(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "new"})
 	agents.SetDispatchClaimed("t1", true)
@@ -8899,7 +9542,7 @@ func TestExecRunAgent_ConsumesSupervisorSteer(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", AgentMode: "headless"})
 	tasks.SetSteer("t1", "stop retrying the failing command")
@@ -8935,7 +9578,7 @@ func TestExecRunAgent_ResourcePressureParksWithoutConsumingSteer(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", AgentMode: "headless"})
 	tasks.SetSteer("t1", "keep this steer")
@@ -8982,7 +9625,7 @@ func TestExecRunAgent_TracksSpawnedStep(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "planning", AgentMode: "interactive"})
 
@@ -9028,7 +9671,7 @@ func TestExecuteSteps_CycleDetection(t *testing.T) {
 	store := newTestStoreWith(t, "test-cycle.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "cycle1", Status: "todo", AgentMode: "headless"})
 
@@ -9078,11 +9721,17 @@ func newVerifyCommitsStep() *Step {
 func makeGitRepo(t *testing.T, withExtraCommit bool) string {
 	t.Helper()
 	dir := t.TempDir()
+	remoteDir := filepath.Join(t.TempDir(), "origin.git")
+	gitEnv := slices.DeleteFunc(slices.Clone(os.Environ()), func(s string) bool {
+		return strings.HasPrefix(s, "GIT_OBJECT_DIRECTORY=") ||
+			strings.HasPrefix(s, "GIT_ALTERNATE_OBJECT_DIRECTORIES=")
+	})
 
 	run := func(args ...string) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
+		cmd.Env = gitEnv
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
@@ -9100,10 +9749,23 @@ func makeGitRepo(t *testing.T, withExtraCommit bool) string {
 	run("add", "README.md")
 	run("commit", "-m", "init")
 
-	// Teach git about a local "remote" so origin/main resolves.
-	// We use the repo itself as its own origin (bare clone not needed for tests).
-	run("remote", "add", "origin", dir)
-	run("fetch", "origin")
+	// Use the same bare-clone helper the app/worktree tests use; local Git on
+	// this host rejects "repo points origin at itself" setups.
+	if err := project.CloneBare(context.Background(), dir, remoteDir); err != nil {
+		t.Fatalf("CloneBare: %v", err)
+	}
+	runBare := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "safe.bareRepository=all", "-C", remoteDir}, args...)...)
+		cmd.Env = gitEnv
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runBare("config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+	runBare("fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
+	run("remote", "add", "origin", remoteDir)
+	run("fetch", "origin", "+refs/heads/*:refs/remotes/origin/*")
 
 	if withExtraCommit {
 		f2 := filepath.Join(dir, "change.txt")
@@ -9167,6 +9829,51 @@ func TestResolveOriginBase_UsesLinkedRepositoryDefaultBranch(t *testing.T) {
 	}
 }
 
+// TestRecoverVerifyCommitsRefs_FailedFetchPreservesDefaultBase verifies that
+// recovery treats remote-tracking refs as a cache: a failed refresh must leave
+// the real default branch available for the next commit-range comparison.
+func TestRecoverVerifyCommitsRefs_FailedFetchPreservesDefaultBase(t *testing.T) {
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGitAt(t, "", "init", "--bare", remote)
+	seed := filepath.Join(t.TempDir(), "seed")
+	if err := os.MkdirAll(seed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, seed, "init", "-b", "trunk")
+	runGitAt(t, seed, "config", "user.email", "test@test.com")
+	runGitAt(t, seed, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("init\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, seed, "add", "README.md")
+	runGitAt(t, seed, "commit", "-m", "init")
+	runGitAt(t, seed, "remote", "add", "origin", remote)
+	runGitAt(t, seed, "push", "origin", "trunk")
+	runGitAt(t, "", "-C", remote, "symbolic-ref", "HEAD", "refs/heads/trunk")
+	runGitAt(t, "", "-C", remote, "update-ref", "refs/remotes/origin/trunk", "refs/heads/trunk")
+
+	wtPath := filepath.Join(t.TempDir(), "worktree")
+	runGitAt(t, "", "-C", remote, "worktree", "add", wtPath, "trunk")
+	withFakeGit(t, `#!/bin/sh
+if [ "$1" = "fetch" ]; then
+  echo "fatal: simulated unreachable origin" >&2
+  exit 128
+fi
+exec "{{REAL_GIT}}" "$@"
+`)
+
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	if recovered := engine.recoverVerifyCommitsRefs("t1", wtPath, TaskInfo{Branch: "fix/not-pushed"}); recovered {
+		t.Fatal("recoverVerifyCommitsRefs() = true, want false after failed fetch")
+	}
+	if got := resolveOriginBase(context.Background(), wtPath); got != "origin/trunk" {
+		t.Fatalf("resolveOriginBase() = %q, want origin/trunk after failed recovery", got)
+	}
+	if !gitOK(context.Background(), wtPath, "rev-parse", "--verify", "origin/trunk^{commit}") {
+		t.Fatal("origin/trunk was removed by failed ref recovery")
+	}
+}
+
 func runGitAt(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	out, err := gitCombinedAt(dir, args...)
@@ -9217,7 +9924,7 @@ func TestExecRunAgent_DispatchInFlightWaits(t *testing.T) {
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	agents := newMockAgents()
 	agents.SetFailSpawn(ErrDispatchInFlight)
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
 		t.Fatalf("StartWorkflow returned error, want nil (dispatch-in-flight is benign): %v", err)
@@ -9240,7 +9947,7 @@ func TestExecRunAgent_PanicClearsDispatchingClaim(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	agents := &panicStartAgents{mockAgents: newMockAgents()}
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	var recovered any
 	func() {
@@ -9257,6 +9964,62 @@ func TestExecRunAgent_PanicClearsDispatchingClaim(t *testing.T) {
 	}
 }
 
+func TestExecRunAgent_PreStartFailureReleasesClaimedEffect(t *testing.T) {
+	tasks := newMemTasks()
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	step := &Step{
+		ID:   "implement",
+		Type: StepRunAgent,
+		Config: StepConfig{
+			Role:   "implementation",
+			Prompt: "{{",
+			Mode:   "headless",
+		},
+	}
+	wf := &Execution{
+		WorkflowID:  "simple-task-implement",
+		CurrentStep: "implement",
+		State:       ExecRunning,
+		Variables:   map[string]string{},
+	}
+	ti := TaskInfo{
+		ID:         "t1",
+		Status:     "in-progress",
+		AgentMode:  "headless",
+		Generation: 1,
+		Workflow:   wf.Clone(),
+	}
+	tasks.Put(ti)
+
+	claim := engine.effectClaimForStep(ti, step, effectPosStepAction)
+	if _, err := tasks.ClaimWorkflowEffect("t1", claim); err != nil {
+		t.Fatalf("ClaimWorkflowEffect: %v", err)
+	}
+
+	if err := engine.execRunAgent("t1", step, wf.Clone(), TemplateContext{
+		Task:     ti,
+		Step:     *step,
+		Vars:     wf.Variables,
+		Workflow: wf,
+	}, claim.EffectID); err == nil {
+		t.Fatal("execRunAgent error = nil, want prompt render failure")
+	}
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got.Workflow == nil {
+		t.Fatal("workflow = nil, want persisted workflow")
+	}
+	if len(got.Workflow.EffectLog) != 0 {
+		t.Fatalf("EffectLog = %+v, want claimed effect released on pre-start failure", got.Workflow.EffectLog)
+	}
+	if _, err := tasks.ClaimWorkflowEffect("t1", claim); err != nil {
+		t.Fatalf("ClaimWorkflowEffect after release: %v, want success", err)
+	}
+}
+
 // TestExecRunAgent_RealSpawnErrorPropagates is the contrast to the test above:
 // a genuine (non-dispatch-in-flight) spawn error must still surface.
 func TestExecRunAgent_RealSpawnErrorPropagates(t *testing.T) {
@@ -9265,7 +10028,7 @@ func TestExecRunAgent_RealSpawnErrorPropagates(t *testing.T) {
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	agents := newMockAgents()
 	agents.SetFailSpawn(errors.New("worktree boom"))
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	if err := engine.StartWorkflow("t1", "test-simple"); err == nil {
 		t.Fatal("StartWorkflow should propagate a real spawn error")
@@ -9286,7 +10049,7 @@ func TestStartWorkflow_InitialDispatchFailure_EscalatesPermanentError(t *testing
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	agents := newMockAgents()
 	agents.SetFailSpawn(fmt.Errorf("task t1 has no project_id: refusing to start triage agent without isolated worktree: %w", ErrNoProjectAssigned))
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	if err := engine.StartWorkflow("t1", "test-simple"); err == nil {
 		t.Fatal("StartWorkflow should propagate the spawn error")
@@ -9315,7 +10078,7 @@ func TestSurfaceInitialDispatchFailure_ReadFailureDoesNotWriteEmptyStatus(t *tes
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", AgentMode: "headless"})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	tasks.SetFailGet(true)
 	wf := &Execution{WorkflowID: "x", CurrentStep: "run_agent", State: ExecRunning}
@@ -9348,7 +10111,7 @@ func TestExecVerifyCommits_ParksWhileSiblingRunning(t *testing.T) {
 	agents.mu.Lock()
 	agents.running["t1"] = "sibling" // a different agent than the completer
 	agents.mu.Unlock()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false /* no commits */), ok: true})
 
 	wfExec := &Execution{WorkflowID: "x", CurrentStep: "verify_commits", State: ExecRunning}
@@ -9381,7 +10144,7 @@ func TestExecVerifyCommits_ExcludesCompletingAgent(t *testing.T) {
 	agents.mu.Lock()
 	agents.running["t1"] = "completer" // the same agent whose completion drives this step
 	agents.mu.Unlock()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false /* no commits */), ok: true})
 
 	wfExec := &Execution{}
@@ -9435,7 +10198,7 @@ func TestExecuteSteps_VerifyCommitsParkDoesNotComplete(t *testing.T) {
 	agents.mu.Lock()
 	agents.running["t1"] = "sibling"
 	agents.mu.Unlock()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: makeGitRepo(t, false /* no commits */), ok: true})
 
 	wf := &Execution{WorkflowID: "simple-task-implement", CurrentStep: "verify_commits", State: ExecRunning}
@@ -9465,7 +10228,7 @@ func TestExecVerifyCommits_NoGetterSkips(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	// worktrees nil by default
 
 	ti := TaskInfo{ID: "t1"}
@@ -9486,7 +10249,7 @@ func TestExecVerifyCommits_NoWorktreeSkips(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{ok: false})
 
 	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
@@ -9506,7 +10269,7 @@ func TestExecVerifyCommits_WithCommitsVerified(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	wtDir := makeGitRepo(t, true /* withExtraCommit */)
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
@@ -9533,7 +10296,7 @@ func TestExecVerifyCommits_GitErrorFlipsHumanRequired(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	// Path exists but is not a git repo — git log returns non-zero,
 	// simulating the broken-worktree scenario from the synapse→sybra rename.
@@ -9563,7 +10326,7 @@ func TestExecVerifyCommits_GitErrorReasonContainsDiagnosis(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	// Path exists but is not a git repo — `git log` and `git status`
 	// both fail with the same fatal so diagnosis surfaces it.
@@ -9608,7 +10371,7 @@ func TestExecVerifyCommits_RetriesAfterTransientFailure(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
 
 	// First call may or may not actually be blocked by the lock depending
@@ -9659,7 +10422,7 @@ exec "{{REAL_GIT}}" "$@"
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
 
 	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
@@ -9708,7 +10471,7 @@ exec "{{REAL_GIT}}" "$@"
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
 
 	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
@@ -9788,7 +10551,7 @@ func TestExecVerifyCommits_FetchesMissingLocalHeadObject(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", Branch: "fix/missing-object"})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
 
 	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1", Branch: "fix/missing-object"})
@@ -9824,7 +10587,7 @@ func TestExecVerifyCommits_BranchAtBaseFlipsHumanRequired(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
@@ -9853,7 +10616,7 @@ func TestExecVerifyCommits_NoCommitAuthorRunRetriesOnce(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
@@ -9880,6 +10643,55 @@ func TestExecVerifyCommits_NoCommitAuthorRunRetriesOnce(t *testing.T) {
 	}
 	if ti, _ := tasks.GetTask("t1"); ti.Status != "in-progress" {
 		t.Fatalf("status = %q, want in-progress retry", ti.Status)
+	} else if ti.StatusReason != "retrying implementation once after no commits were produced" {
+		t.Fatalf("status reason = %q, want no-commit retry reason", ti.StatusReason)
+	}
+}
+
+func TestExecVerifyCommits_NoCommitAuthorRunRetryPersistFailureDoesNotPartiallyRearm(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{
+		ID:           "t1",
+		Status:       "in-progress",
+		StatusReason: "original reason",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "verify",
+			State:       ExecRunning,
+			Variables:   map[string]string{},
+		},
+	})
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+
+	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	wfExec := &Execution{Variables: map[string]string{}}
+	wfExec.RecordStep(StepRecord{StepID: "implement", Status: "completed", AgentID: "a1", Provider: "claude"})
+	ti := TaskInfo{
+		ID: "t1", Status: "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "a1", Role: "implementation"}},
+	}
+
+	tasks.failSetWorkflow = true
+	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, ti)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Status != "completed" || !strings.Contains(out.Output, "no commits") {
+		t.Fatalf("output = %+v, want completed no-commit escalation after failed retry persist", out)
+	}
+
+	got := tasks.mustGetTask(t, "t1")
+	if got.Status != "human-required" {
+		t.Fatalf("status = %q after failed retry persist, want fallback human-required escalation", got.Status)
+	}
+	if !strings.Contains(got.StatusReason, "no commits") {
+		t.Fatalf("status reason = %q after failed retry persist, want no-commits escalation", got.StatusReason)
+	}
+	if got.Workflow == nil || got.Workflow.CurrentStep != "verify" || got.Workflow.State != ExecRunning {
+		t.Fatalf("workflow = %+v after failed retry persist, want retry workflow not partially persisted", got.Workflow)
 	}
 }
 
@@ -9888,7 +10700,7 @@ func TestExecVerifyCommits_NoCommitAuthorRunRetriesOnceWithSubagentDiagnosis(t *
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
@@ -9917,7 +10729,7 @@ func TestExecVerifyCommits_NoCommitAuthorRunEscalatesAfterRetry(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
@@ -9958,7 +10770,7 @@ func TestExecVerifyCommits_BranchAncestorOfBaseFlipsHumanRequired(t *testing.T) 
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	wtDir := makeGitRepoBehindOrigin(t)
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
@@ -9990,7 +10802,7 @@ func TestExecVerifyCommits_AgentFailedFlipsHumanRequired(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	// Same git state as TestExecVerifyCommits_BranchAtBaseFlipsHumanRequired:
 	// HEAD == origin/main.
@@ -10031,7 +10843,7 @@ func TestExecVerifyCommits_AutoCommitsUncommittedWork(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	// HEAD == origin/main (no commits ahead), but leave uncommitted work
 	// sitting dirty in the worktree.
@@ -10098,7 +10910,7 @@ exec "{{REAL_GIT}}" "$@"
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	wtDir := makeGitRepo(t, false /* no extra commit */)
 	if err := os.WriteFile(filepath.Join(wtDir, "uncommitted.txt"), []byte("finished work\n"), 0o644); err != nil {
@@ -10179,7 +10991,7 @@ func TestExecVerifyCommits_AutoCommitAdoptsEquivalentRemoteCommitAfterRetry(t *t
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
 
 	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1", Branch: branch})
@@ -10239,7 +11051,7 @@ func TestExecVerifyCommits_EmptyRemoteBranchFlipsHumanRequired(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
 
 	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1", Branch: branch})
@@ -10263,7 +11075,7 @@ func TestRecordFinalCommitState_ContextCancelDoesNotHang(t *testing.T) {
 		Status:    "in-progress",
 		AgentRuns: []AgentRunInfo{{AgentID: "a1"}},
 	})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	wtDir := makeGitRepo(t, true /* withExtraCommit */)
 	withFakeGit(t, `#!/bin/sh
@@ -10741,7 +11553,7 @@ func TestAdvanceStep_ImplementHumanRequiredGitHubAuthParksForRetry(t *testing.T)
 		AgentMode:    "headless",
 		Workflow:     wf,
 	})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	err := engine.AdvanceStep("t1", StepOutput{
 		StepID:  "implement",
@@ -10798,7 +11610,7 @@ func TestAdvanceStep_ImplementGitHubAuthRetryCapFallsThroughToHumanRequired(t *t
 		AgentMode:    "headless",
 		Workflow:     wf,
 	})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	err := engine.AdvanceStep("t1", StepOutput{
 		StepID:  "implement",
@@ -10841,7 +11653,7 @@ func TestAdvanceStep_ImplementNonGitHubAuthHumanRequiredFallsThrough(t *testing.
 		AgentMode:    "headless",
 		Workflow:     wf,
 	})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	err := engine.AdvanceStep("t1", StepOutput{
 		StepID:  "implement",
@@ -10890,7 +11702,7 @@ func newEngineForEval(t *testing.T, tasks *memTasks) *Engine {
 	t.Helper()
 	store := newTestStore(t)
 	agents := newMockAgents()
-	return NewEngine(store, tasks, agents, discardLogger())
+	return NewTestEngine(store, tasks, agents, discardLogger())
 }
 
 func TestExecEvaluate_LastAgentFailedFlipsHumanRequired(t *testing.T) {
@@ -11280,7 +12092,7 @@ func TestExecLinkPRAndReview_PRNumberNotInRepoFallsThrough(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 8, ProjectID: "kumahq/kuma"})
 	engine := newEngineForEval(t, tasks)
-	engine.SetPRExistenceChecker(fakePRExistenceChecker{exists: false})
+	engine.setPRExistenceCheckerForTest(fakePRExistenceChecker{exists: false})
 	wfExec := &Execution{
 		StepHistory: []StepRecord{
 			{StepID: "implement", Status: "completed", AgentID: "a1", Output: "changes pushed"},
@@ -11307,7 +12119,7 @@ func TestExecLinkPRAndReview_PRNumberUnverifiedFallsThrough(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 8, ProjectID: "kumahq/kuma"})
 	engine := newEngineForEval(t, tasks)
-	engine.SetPRExistenceChecker(fakePRExistenceChecker{err: errors.New("gh: authentication failed")})
+	engine.setPRExistenceCheckerForTest(fakePRExistenceChecker{err: errors.New("gh: authentication failed")})
 
 	out, err := engine.execLinkPRAndReview("t1", newLinkPRStep(), &Execution{}, TaskInfo{ID: "t1", PRNumber: 8, ProjectID: "kumahq/kuma"})
 	if err != nil {
@@ -11326,7 +12138,7 @@ func TestExecLinkPRAndReview_PRNumberVerifiedInRepoTrusted(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", PRNumber: 8, ProjectID: "kumahq/kuma"})
 	engine := newEngineForEval(t, tasks)
-	engine.SetPRExistenceChecker(fakePRExistenceChecker{exists: true})
+	engine.setPRExistenceCheckerForTest(fakePRExistenceChecker{exists: true})
 
 	out, err := engine.execLinkPRAndReview("t1", newLinkPRStep(), &Execution{}, TaskInfo{ID: "t1", PRNumber: 8, ProjectID: "kumahq/kuma"})
 	if err != nil {
@@ -11452,7 +12264,7 @@ func TestAdvanceStep_MarkReviewedAfterReviewRole(t *testing.T) {
 	store := newTestStoreWith(t, "test-review-fix.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-review-fix"); err != nil {
@@ -11492,7 +12304,7 @@ func TestAdvanceStep_WorkflowDefinitionDeletedMidRun(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
@@ -11533,7 +12345,7 @@ func TestStartWorkflow_ConcurrentSameTaskSingleWinner(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 
@@ -11581,5 +12393,449 @@ func TestStartWorkflow_ConcurrentSameTaskSingleWinner(t *testing.T) {
 	}
 	if ti.Workflow == nil || ti.Workflow.WorkflowID != "test-simple" {
 		t.Errorf("task workflow not set correctly: %+v", ti.Workflow)
+	}
+}
+
+// The Set* methods run on the config-reload goroutine while dispatch reads the
+// same fields. A -race run under concurrent reloads caught reviewLoopDisabled
+// and reviewRoundsPerHour; maxTestAttempts and openPROnUnrunnableGate have the
+// identical shape and were simply not hit by that workload, so all four are
+// exercised here. Run under -race; plain fields fail.
+func TestEngineGuardrails_ConcurrentSetAndRead(t *testing.T) {
+	store := newTestStore(t)
+	engine := NewTestEngine(store, newMemTasks(), newMockAgents(), discardLogger())
+
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Go(func() {
+			for j := range 300 {
+				engine.SetReviewUntilClean(j%2 == 0)
+				engine.SetReviewRoundsPerHour(i + j)
+				engine.SetTestingMaxAttempts(i + j)
+				engine.SetOpenPROnUnrunnableGate(j%2 == 0)
+			}
+		})
+	}
+	for range 8 {
+		wg.Go(func() {
+			for range 300 {
+				_ = engine.reviewLoopDisabled.Load()
+				_ = engine.reviewRoundsPerHour.Load()
+				_ = engine.maxTestAttempts.Load()
+				_ = engine.openPROnUnrunnableGate.Load()
+			}
+		})
+	}
+	wg.Wait()
+}
+
+// atomic.Bool's zero value is false, so the documented default has to be
+// stored explicitly — dropping that flips behaviour silently.
+func TestNewEngine_OpenPROnUnrunnableGateDefaultsTrue(t *testing.T) {
+	store := newTestStore(t)
+	engine := NewTestEngine(store, newMemTasks(), newMockAgents(), discardLogger())
+	if !engine.openPROnUnrunnableGate.Load() {
+		t.Error("openPROnUnrunnableGate = false, want the documented default of true")
+	}
+}
+
+// A code-author run that exits cleanly but produces no commits is not a
+// success, and the completion handler cannot know that — it derives the
+// outcome from the exit alone. Leaving the record at "success" is what let one
+// task accumulate 18 runs over 4 days: an agent delegated to a subagent, ended
+// its turn with "I'll just wait for the notification instead", exited 0, and
+// every downstream consumer of Outcome believed the implementation had landed.
+func TestExecVerifyCommits_NoCommitAuthorRunMarkedIncomplete(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+
+	wtDir := makeGitRepo(t, false /* HEAD == origin/main, so no commits */)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	wfExec := &Execution{Variables: map[string]string{}}
+	wfExec.RecordStep(StepRecord{StepID: "implement", Status: "completed", AgentID: "a1", Provider: "claude"})
+	ti := TaskInfo{
+		ID: "t1", Status: "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "a1", Role: "implementation"}},
+	}
+
+	if _, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, ti); !errors.Is(err, errStepParked) {
+		t.Fatalf("err = %v, want errStepParked", err)
+	}
+
+	if got := tasks.IncompleteRuns(); len(got) != 1 || got[0] != "t1/a1" {
+		t.Errorf("incomplete runs = %v, want [t1/a1] — the success record was left uncorrected", got)
+	}
+}
+
+// A verifier role that produces no commits is doing its job; only code-author
+// roles are downgraded.
+func TestExecVerifyCommits_VerifierRunNotMarkedIncomplete(t *testing.T) {
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+
+	wtDir := makeGitRepo(t, false)
+	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
+
+	wfExec := &Execution{Variables: map[string]string{}}
+	wfExec.RecordStep(StepRecord{StepID: "review", Status: "completed", AgentID: "a1", Provider: "claude"})
+	ti := TaskInfo{
+		ID: "t1", Status: "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "a1", Role: "review"}},
+	}
+
+	_, _ = engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, ti)
+
+	if got := tasks.IncompleteRuns(); len(got) != 0 {
+		t.Errorf("incomplete runs = %v, want none for a verifier role", got)
+	}
+}
+
+// The throttle is keyed on the task id, and several skip reasons share that
+// key. Clearing on a merely-passing preflight re-armed all of them, so a task
+// stuck behind an out-of-band dispatch claim logged a fresh INFO every tick —
+// the flood this change exists to remove, moved up a level.
+func TestResumeStalled_ClaimedElsewhereDoesNotReArmEveryTick(t *testing.T) {
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetDispatchClaimed("t1", true)
+	engine := NewTestEngine(store, tasks, agents, logger)
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			StartedAt:   time.Now().UTC(),
+		},
+	})
+
+	for range 10 {
+		engine.ResumeStalled()
+	}
+
+	info := 0
+	for _, r := range records {
+		if r.Message == "workflow.resume-stalled.skip" && r.Level == slog.LevelInfo {
+			info++
+		}
+	}
+	if info != 1 {
+		t.Errorf("got %d INFO skip records across 10 identical ticks, want 1", info)
+	}
+}
+
+// A parked run_agent step always carries a completed step-action effect, so the
+// replay no-op fires every maintenance tick for the whole park — the issue's
+// own ~3,600-lines-per-task number, at INFO under a different message.
+func TestReplayPersistedEffects_NoopIsThrottled(t *testing.T) {
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, logger)
+
+	completed := time.Now().UTC()
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "test-simple",
+			CurrentStep: "implement",
+			State:       ExecWaiting,
+			StartedAt:   completed,
+			EffectLog: []EffectRecord{{
+				ID:          EffectID{Generation: 1, StepSeq: 0, StepID: "implement", Pos: effectPosStepAction},
+				IntentAt:    completed,
+				CompletedAt: &completed,
+			}},
+		},
+	})
+
+	noops := func() int {
+		n := 0
+		for _, r := range records {
+			if r.Message == "workflow.effect-replay.noop" {
+				n++
+			}
+		}
+		return n
+	}
+
+	engine.ReplayPersistedEffects()
+	if got := noops(); got != 1 {
+		t.Fatalf("first replay logged %d no-ops, want 1", got)
+	}
+
+	records = nil
+	for range 20 {
+		engine.ReplayPersistedEffects()
+	}
+	if got := noops(); got != 0 {
+		t.Errorf("got %d no-op records from repeat ticks, want 0", got)
+	}
+
+	// A different step is a different no-op. Keying the value on the task
+	// alone would suppress it as a repeat of the one above.
+	records = nil
+	tasks.Put(TaskInfo{
+		ID: "t1", Status: "in-progress", AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID: "test-simple", CurrentStep: "evaluate",
+			State: ExecWaiting, StartedAt: completed,
+			EffectLog: []EffectRecord{{
+				ID:          EffectID{Generation: 1, StepSeq: 1, StepID: "evaluate", Pos: effectPosStepAction},
+				IntentAt:    completed,
+				CompletedAt: &completed,
+			}},
+		},
+	})
+	engine.ReplayPersistedEffects()
+	if got := noops(); got != 1 {
+		t.Errorf("no-op on a different step logged %d times, want 1", got)
+	}
+}
+
+// A park that moves to a different provider is a state change, and the whole
+// reason the provider is in the throttle value is that it must re-arm INFO
+// rather than wait out the interval.
+func TestResumeStalled_ParkMovingProviderReArms(t *testing.T) {
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimitedFor("claude", true)
+	engine := NewTestEngine(store, tasks, agents, logger)
+
+	put := func() {
+		tasks.Put(TaskInfo{
+			ID: "t1", Status: "in-progress", AgentMode: "headless",
+			Workflow: &Execution{
+				WorkflowID:  "test-simple",
+				CurrentStep: "implement",
+				State:       ExecWaiting,
+				StartedAt:   time.Now().UTC(),
+			},
+		})
+	}
+
+	parks := func() int {
+		n := 0
+		for _, r := range records {
+			if recordAttr(r, "reason") == "provider_rate_limited" && r.Level == slog.LevelInfo {
+				n++
+			}
+		}
+		return n
+	}
+
+	put()
+	engine.ResumeStalled()
+	if got := parks(); got != 1 {
+		t.Fatalf("claude park logged %d times at INFO, want 1", got)
+	}
+
+	records = nil
+	agents.SetProviderRateLimitedFor("claude", false)
+	agents.SetProviderRateLimitedFor("codex", true)
+	agents.SetDefaultProvider("codex")
+	put()
+	engine.ResumeStalled()
+	if got := parks(); got != 1 {
+		t.Errorf("park moving to codex logged %d times at INFO, want 1", got)
+	}
+}
+
+// The reschedule route logs its own park and fires before ResumeStalled ever
+// sees the task, so it needs its own re-arm. Without one, a park that ends and
+// recurs here is dropped entirely rather than logged.
+func TestRescheduleRateLimitedAgent_LaterParkIsLoggedAgain(t *testing.T) {
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimitedFor("claude", true)
+	engine := NewTestEngine(store, tasks, agents, logger)
+
+	park := func(agentID string) {
+		tasks.Put(TaskInfo{
+			ID: "t1", Status: "in-progress", AgentMode: "headless",
+			Workflow: &Execution{
+				WorkflowID:  "test-simple",
+				CurrentStep: "implement",
+				State:       ExecWaiting,
+				Variables:   make(map[string]string),
+			},
+		})
+		setWorkflowAgentRoute(t, tasks, "t1", agentID, "implement")
+		engine.RescheduleRateLimitedAgent("t1", agentID)
+	}
+
+	parks := func() int {
+		n := 0
+		for _, r := range records {
+			if r.Message == "workflow.rate-limit-reschedule.park" &&
+				recordAttr(r, "reason") == "provider_rate_limited" {
+				n++
+			}
+		}
+		return n
+	}
+
+	park("limited-agent-1")
+	if got := parks(); got != 1 {
+		t.Fatalf("first park logged %d times, want 1", got)
+	}
+
+	// The limit lifts and the reschedule dispatches, ending the park.
+	agents.SetProviderRateLimitedFor("claude", false)
+	park("limited-agent-2")
+	if agents.CallCount() == 0 {
+		t.Fatal("reschedule never dispatched, so the park never ended")
+	}
+
+	records = nil
+	agents.SetProviderRateLimitedFor("claude", true)
+	park("limited-agent-3")
+	if got := parks(); got != 1 {
+		t.Errorf("second park logged %d times, want 1: the throttle never re-armed", got)
+	}
+}
+
+// Effect replay runs before ResumeStalled on every tick and can dispatch for
+// real, ending a park. Once it does, ResumeStalled's own re-arm is unreachable
+// — its preflight short-circuits on HasRunningAgent — so a later park on this
+// task would be dropped rather than logged.
+func TestReplayPersistedEffects_DispatchReArmsThePark(t *testing.T) {
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimited(true)
+	engine := NewTestEngine(store, tasks, agents, logger)
+
+	put := func() {
+		tasks.Put(TaskInfo{
+			ID: "t1", Status: "in-progress", AgentMode: "headless",
+			Workflow: &Execution{
+				WorkflowID: "test-simple", CurrentStep: "implement",
+				State: ExecWaiting, StartedAt: time.Now().UTC(),
+				EffectLog: []EffectRecord{{
+					ID:       EffectID{Generation: 1, StepSeq: 0, StepID: "implement", Pos: effectPosStepAction},
+					IntentAt: time.Now().UTC(),
+				}},
+			},
+		})
+	}
+
+	parks := func() int {
+		n := 0
+		for _, r := range records {
+			if recordAttr(r, "reason") == "provider_rate_limited" && r.Level == slog.LevelInfo {
+				n++
+			}
+		}
+		return n
+	}
+
+	put()
+	engine.ReplayPersistedEffects()
+	if got := parks(); got != 1 {
+		t.Fatalf("first park logged %d times, want 1", got)
+	}
+
+	// The limit lifts and replay dispatches for real, ending the park.
+	agents.SetProviderRateLimited(false)
+	before := agents.CallCount()
+	put()
+	engine.ReplayPersistedEffects()
+	if agents.CallCount() == before {
+		t.Fatal("replay never dispatched, so the park never ended")
+	}
+	agents.SimulateComplete("t1")
+
+	records = nil
+	agents.SetProviderRateLimited(true)
+	put()
+	engine.ReplayPersistedEffects()
+	if got := parks(); got != 1 {
+		t.Errorf("second park logged %d times, want 1: the replay route never re-armed", got)
+	}
+}
+
+// The park value has to discriminate by step, or a park on a later step is
+// suppressed as a repeat of an earlier one under the same provider.
+func TestResumeStalled_ParkOnAnotherStepIsLogged(t *testing.T) {
+	var records []slog.Record
+	logger := slog.New(&demotionRecordHandler{records: &records})
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	agents.SetProviderRateLimited(true)
+	engine := NewTestEngine(store, tasks, agents, logger)
+
+	put := func(step string) {
+		tasks.Put(TaskInfo{
+			ID: "t1", Status: "in-progress", AgentMode: "headless",
+			Workflow: &Execution{
+				WorkflowID: "test-simple", CurrentStep: step,
+				State: ExecWaiting, StartedAt: time.Now().UTC(),
+			},
+		})
+	}
+
+	parks := func() int {
+		n := 0
+		for _, r := range records {
+			if recordAttr(r, "reason") == "provider_rate_limited" && r.Level == slog.LevelInfo {
+				n++
+			}
+		}
+		return n
+	}
+
+	put("implement")
+	engine.ResumeStalled()
+	if got := parks(); got != 1 {
+		t.Fatalf("park on implement logged %d times, want 1", got)
+	}
+	var step string
+	for _, r := range records {
+		if recordAttr(r, "reason") == "provider_rate_limited" {
+			step = recordAttr(r, "step")
+		}
+	}
+	if step != "implement" {
+		t.Errorf("step attr = %q, want implement — an operator cannot tell which step is parked", step)
+	}
+
+	records = nil
+	put("plan")
+	engine.ResumeStalled()
+	if got := parks(); got != 1 {
+		t.Errorf("park on a second step logged %d times, want 1", got)
 	}
 }

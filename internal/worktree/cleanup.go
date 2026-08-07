@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/cleanup"
@@ -15,8 +16,9 @@ import (
 )
 
 var (
-	bareTaskIDRe   = regexp.MustCompile(`^[0-9a-f]{8}$`)
-	suffixTaskIDRe = regexp.MustCompile(`-([0-9a-f]{8})$`)
+	bareTaskIDRe    = regexp.MustCompile(`^[0-9a-f]{8}$`)
+	suffixTaskIDRe  = regexp.MustCompile(`-([0-9a-f]{8})$`)
+	attemptSuffixRe = regexp.MustCompile(`^attempt_[1-9]\d*$`)
 )
 
 const worktreeQuarantineDirName = ".quarantine"
@@ -25,6 +27,9 @@ const worktreeQuarantineDirName = ".quarantine"
 // name: task.Task.DirName() is either the bare 8-hex-char ID (no slug yet) or
 // "<slug>-<8hex-id>". Anything else returns "" (no match).
 func taskIDFromWorktreeDir(name string) string {
+	if idx := strings.LastIndex(name, "-"); idx >= 0 && isAttemptSuffix(name[idx+1:]) {
+		name = name[:idx]
+	}
 	if bareTaskIDRe.MatchString(name) {
 		return name
 	}
@@ -34,10 +39,27 @@ func taskIDFromWorktreeDir(name string) string {
 	return ""
 }
 
+func isAttemptSuffix(name string) bool {
+	return attemptSuffixRe.MatchString(name)
+}
+
+func isAttemptWorktreeDir(name string) bool {
+	idx := strings.LastIndex(name, "-")
+	return idx >= 0 && isAttemptSuffix(name[idx+1:])
+}
+
 // Remove cleans up the worktree for a task via git worktree remove.
 func (m *Manager) Remove(ctx context.Context, taskID string) {
 	t, err := m.tasks.Get(taskID)
 	if err != nil || t.ProjectID == "" {
+		return
+	}
+	m.RemoveTask(ctx, t)
+}
+
+// RemoveTask cleans up the worktree for an already-loaded task snapshot.
+func (m *Manager) RemoveTask(ctx context.Context, t task.Task) {
+	if t.ProjectID == "" {
 		return
 	}
 	// Never touch an externally-adopted worktree: the tool that created it
@@ -50,6 +72,16 @@ func (m *Manager) Remove(ctx context.Context, taskID string) {
 	if _, err := os.Stat(wtPath); err != nil {
 		return
 	}
+	// A preparation is mid-flight on this exact directory. Deleting it out from
+	// under a `git worktree add`/rebase is the same hazard two concurrent
+	// preparations are (#3114). Cleanup is never urgent — CleanupOrphaned's
+	// periodic sweep reaps it later — so skip rather than wait.
+	release, lockErr := m.lockPath(wtPath)
+	if lockErr != nil {
+		m.logger.Info("worktree.cleanup.busy", "task_id", t.ID, "err", lockErr)
+		return
+	}
+	defer release()
 	// Never reap a worktree whose completed work never reached origin — a task
 	// bounced to a terminal status (done/cancelled) after a failed push would
 	// otherwise lose its finished-but-unpushed diff right here, before the
@@ -85,8 +117,33 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 	}
 
 	active := make(map[string]*task.Task, len(tasks))
+	activeByID := make(map[string]*task.Task, len(tasks))
+	inflightAttempts := make(map[string]bool)
 	for i := range tasks {
 		active[tasks[i].DirName()] = &tasks[i]
+		activeByID[tasks[i].ID] = &tasks[i]
+		if tasks[i].Workflow == nil {
+			continue
+		}
+		for _, parent := range tasks[i].Workflow.BestOfNInflight {
+			if parent == nil {
+				continue
+			}
+			for attemptID, attempt := range parent.Attempts {
+				// The computed name protects the prepare-before-persist window. The
+				// persisted path remains authoritative after a task slug changes.
+				inflightAttempts[attemptDirName(tasks[i], attemptID)] = true
+				if attempt == nil || attempt.Dir == "" {
+					continue
+				}
+				cleanDir := filepath.Clean(attempt.Dir)
+				name := filepath.Base(cleanDir)
+				if filepath.Clean(filepath.Dir(cleanDir)) == filepath.Clean(m.dir) &&
+					taskIDFromWorktreeDir(name) == tasks[i].ID && isAttemptWorktreeDir(name) {
+					inflightAttempts[name] = true
+				}
+			}
+		}
 	}
 	observedProtected := make(map[string]bool)
 
@@ -100,39 +157,46 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 		name := e.Name()
 		wtPath := filepath.Join(m.dir, name)
 
-		t, exists := active[name]
+		t := active[name]
+		ownerID := taskIDFromWorktreeDir(name)
+		isAttempt := false
+		if t == nil {
+			if owner := activeByID[ownerID]; owner != nil && isAttemptWorktreeDir(name) {
+				t = owner
+				isAttempt = true
+			}
+		}
 		switch {
-		case !exists:
+		case ownerID != "" && m.hasAgent != nil && m.hasAgent(ownerID):
+			// A live task agent protects canonical and attempt worktrees even if
+			// the task snapshot disappeared between List and this sweep.
+			continue
+		case isAttempt && t != nil && inflightAttempts[name] && !task.IsTerminalStatus(t.Status):
+			// The parent task's status is not enough to identify a live fan-out:
+			// attempt agents can finish independently, leaving gaps where no
+			// agent is registered. The persisted attempt record is the durable
+			// ownership signal across those gaps and process restarts.
+			continue
+		case isAttempt:
+			// The task still exists but no fan-out owns this attempt anymore.
+			// CleanupAttempts normally removes it after promotion/failure; this
+			// sweep remains the backstop when that best-effort cleanup lost a race.
+		case t == nil:
 			// Task deleted — remove worktree directory.
-		case t.Status != task.StatusDone:
-			continue
-		case m.hasAgent != nil && m.hasAgent(t.ID):
+		case !task.IsTerminalStatus(t.Status):
 			continue
 		}
 
-		if project.HasUnpushedCommits(ctx, wtPath) {
-			m.observeProtectedWorktree(ctx, wtPath, taskIDFromWorktreeDir(name), observedProtected)
+		// This sweep is the backstop for every worktree Remove skipped, so it
+		// must take the same per-path exclusion Remove does — otherwise the
+		// hazard is relocated here rather than avoided.
+		release, lockErr := m.lockPath(wtPath)
+		if lockErr != nil {
+			m.logger.Info("worktree.orphan-cleanup.busy", "path", wtPath, "err", lockErr)
 			continue
 		}
-
-		removed := false
-		if exists && t.ProjectID != "" {
-			if proj, perr := m.projects.Get(t.ProjectID); perr == nil {
-				if err := project.RemoveWorktree(ctx, proj.ClonePath, wtPath); err != nil {
-					m.logger.Error("worktree.orphan-cleanup", "path", wtPath, "err", err)
-				} else {
-					removed = true
-				}
-			}
-		}
-		if !removed {
-			// Task deleted or project lookup failed — force-remove and prune after.
-			if err := os.RemoveAll(wtPath); err != nil {
-				m.logger.Error("worktree.orphan-cleanup", "path", wtPath, "err", err)
-				continue
-			}
-		}
-		m.logger.Info("worktree.orphan-cleaned", "path", wtPath)
+		m.reapOrphanedWorktree(ctx, wtPath, name, t, observedProtected)
+		release()
 	}
 	m.resolveProtectedWorktrees(observedProtected)
 
@@ -149,6 +213,34 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 			m.logger.Warn("worktree.prune", "project", projects[i].ID, "err", err)
 		}
 	}
+}
+
+// reapOrphanedWorktree removes one swept worktree directory. Caller holds the
+// path lock. A nil t is a directory whose task no longer exists.
+func (m *Manager) reapOrphanedWorktree(ctx context.Context, wtPath, name string, t *task.Task, observedProtected map[string]bool) {
+	if project.HasUnpushedCommits(ctx, wtPath) {
+		m.observeProtectedWorktree(ctx, wtPath, taskIDFromWorktreeDir(name), observedProtected)
+		return
+	}
+
+	removed := false
+	if t != nil && t.ProjectID != "" {
+		if proj, perr := m.projects.Get(t.ProjectID); perr == nil {
+			if err := project.RemoveWorktree(ctx, proj.ClonePath, wtPath); err != nil {
+				m.logger.Error("worktree.orphan-cleanup", "path", wtPath, "err", err)
+			} else {
+				removed = true
+			}
+		}
+	}
+	if !removed {
+		// Task deleted or project lookup failed — force-remove and prune after.
+		if err := os.RemoveAll(wtPath); err != nil {
+			m.logger.Error("worktree.orphan-cleanup", "path", wtPath, "err", err)
+			return
+		}
+	}
+	m.logger.Info("worktree.orphan-cleaned", "path", wtPath)
 }
 
 func (m *Manager) observeProtectedWorktree(ctx context.Context, path, taskID string, observed map[string]bool) {

@@ -256,8 +256,8 @@ func (e *Engine) execTriageReview(taskID string, step *Step, t TaskInfo) (StepOu
 // triage heuristic. Tries the worktree first, falls back to gh pr diff when
 // the task has a PR but no worktree (e.g. the standalone pr-review workflow).
 func (e *Engine) collectTriageDiff(taskID string, t TaskInfo) (files []string, insertions, deletions int, source string, err error) {
-	if e.worktrees != nil {
-		if wtPath, ok := e.worktrees.GetWorktreePath(taskID); ok {
+	if e.execution.Worktrees != nil {
+		if wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID); ok {
 			files, insertions, deletions, err = e.gitTriageDiff(wtPath)
 			if err == nil {
 				return files, insertions, deletions, "worktree", nil

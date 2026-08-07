@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"slices"
 	"strconv"
 	"time"
 )
@@ -32,12 +33,40 @@ type rewindRetryPolicy struct {
 	// identical failures can exhaust earlier than the generic attempt ceiling.
 	fingerprint            string
 	maxSameFingerprintRuns int
+	// attemptProducedWork reports whether the run this policy is retrying
+	// actually changed anything. The same-fingerprint cap exists to stop a
+	// repair loop that makes no progress, but it could not tell "the agent
+	// tried and failed" from "the agent never touched the file" — a run that
+	// aborted, or ended without committing, spent the budget just the same.
+	// Nil keeps the occurrence charged unconditionally.
+	attemptProducedWork func(TaskInfo) bool
 	// onArm sets any additional workflow variables the rewound step's prompt
 	// needs (reask note, cleared verdict vars) once the counter has been
 	// bumped to `attempt`, before the workflow is persisted. Optional.
 	onArm func(wfExec *Execution, attempt int)
 	// reason builds the task status-reason recorded alongside the rewind.
 	reason func(attempt int) string
+}
+
+// lastAuthorRunProducedWork reports whether the most recent code-author run on
+// the task committed anything.
+//
+// HeadSHA and FinalCommitSource are recorded only once a run's commit is
+// observed, so their absence on a code-author run is the same evidence
+// verify_commits acts on: nothing was produced. Verifier roles are ignored —
+// producing no commit is what they are for.
+func lastAuthorRunProducedWork(t TaskInfo) bool {
+	// Index rather than value-range: AgentRunInfo is large enough that a
+	// per-iteration copy is flagged.
+	for i := range slices.Backward(t.AgentRuns) {
+		if !isCodeAuthorRun(t.AgentRuns[i]) {
+			continue
+		}
+		return t.AgentRuns[i].HeadSHA != "" || t.AgentRuns[i].FinalCommitSource != ""
+	}
+	// No code-author run recorded at all: charge the occurrence rather than
+	// looping, since there is no evidence either way.
+	return true
 }
 
 // rewindRetry applies a rewindRetryPolicy. armed=true means the counter was
@@ -57,7 +86,15 @@ func (e *Engine) rewindRetry(taskID string, wfExec *Execution, t TaskInfo, p rew
 		fpKey := p.counterKey + ".fingerprint"
 		fpCountKey := p.counterKey + ".fingerprint_count"
 		if wfExec.Variables[fpKey] == p.fingerprint && parseWorkflowInt(wfExec.Variables[fpCountKey]) >= p.maxSameFingerprintRuns {
-			return false, attempts, nil
+			if p.attemptProducedWork == nil || p.attemptProducedWork(t) {
+				return false, attempts, nil
+			}
+			// The previous run left no commit, so it was not an attempt at
+			// this failure. Give the occurrence back rather than escalating on
+			// work that never happened. The generic attempt ceiling above
+			// still bounds the loop, so a run that never commits cannot spin
+			// here forever.
+			wfExec.SetVar(fpCountKey, strconv.Itoa(parseWorkflowInt(wfExec.Variables[fpCountKey])-1))
 		}
 	}
 
@@ -73,7 +110,7 @@ func (e *Engine) rewindRetry(taskID string, wfExec *Execution, t TaskInfo, p rew
 		wfExec.SetVar(fpKey, p.fingerprint)
 		wfExec.SetVar(fpCountKey, strconv.Itoa(count))
 	}
-	wfExec.SetVar(workflowRetryAfterVar, time.Now().UTC().Add(p.backoff(attempts)).Format(time.RFC3339))
+	wfExec.SetVar(workflowRetryAfterVar, e.now().Add(p.backoff(attempts)).Format(time.RFC3339))
 	if p.onArm != nil {
 		p.onArm(wfExec, attempt)
 	}
@@ -81,10 +118,7 @@ func (e *Engine) rewindRetry(taskID string, wfExec *Execution, t TaskInfo, p rew
 	wfExec.CurrentStep = p.rewindStep
 	wfExec.State = ExecWaiting
 
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
-		return true, attempt, err
-	}
-	if err := e.tasks.UpdateTaskStatus(taskID, t.Status, p.reason(attempt)); err != nil {
+	if err := e.tasks.SetStatusAndWorkflow(taskID, string(t.Status), p.reason(attempt), wfExec); err != nil {
 		return true, attempt, err
 	}
 	return true, attempt, nil

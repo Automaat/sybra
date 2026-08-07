@@ -32,7 +32,7 @@ func TestConflictPrompt_ResolvesAllConflictsAutonomously(t *testing.T) {
 	prompt := buildConflictPrompt(context.Background(), github.PullRequest{
 		Number:      1178,
 		HeadRefName: "fix/example",
-	}, "\n\nFiles changed in this PR:\n- internal/workflow/engine.go\n")
+	}, "\n\nFiles changed in this PR:\n- internal/workflow/engine.go\n", project.SigningAuto)
 
 	for _, forbidden := range []string{
 		"more than 3",
@@ -61,7 +61,7 @@ func TestConflictPrompt_UsesMergeNotRebase(t *testing.T) {
 	prompt := buildConflictPrompt(context.Background(), github.PullRequest{
 		Number:      1178,
 		HeadRefName: "fix/example",
-	}, "")
+	}, "", project.SigningAuto)
 
 	for _, forbidden := range []string{
 		"git rebase",
@@ -126,7 +126,7 @@ func TestConflictPrompt_UsesPRBaseRef(t *testing.T) {
 		Number:      1178,
 		HeadRefName: "fix/example",
 		BaseRefName: "master",
-	}, "")
+	}, "", project.SigningAuto)
 
 	if !strings.Contains(prompt, "git merge refs/remotes/origin/master") {
 		t.Fatalf("conflict prompt did not merge the PR base ref (master):\n%s", prompt)
@@ -139,7 +139,7 @@ func TestConflictPrompt_UsesPRBaseRef(t *testing.T) {
 func TestBranchConflictPrompt_DetectsForkRemote(t *testing.T) {
 	t.Parallel()
 
-	prompt := branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main")
+	prompt := branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main", project.SigningAuto)
 
 	assertPRFixPromptUsesResolvedPushRemote(t, prompt, "fix/example")
 }
@@ -147,7 +147,7 @@ func TestBranchConflictPrompt_DetectsForkRemote(t *testing.T) {
 func TestBranchConflictPrompt_AllowsRebaseBeforePRExists(t *testing.T) {
 	t.Parallel()
 
-	prompt := branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main")
+	prompt := branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main", project.SigningAuto)
 
 	for _, want := range []string{
 		"git merge refs/remotes/origin/main",
@@ -168,7 +168,7 @@ func TestBranchConflictPrompt_AllowsRebaseBeforePRExists(t *testing.T) {
 func TestSameBranchConflictPrompt_DefersPublishToTrustedWorkflow(t *testing.T) {
 	t.Parallel()
 
-	prompt := sameBranchConflictPrompt(context.Background(), task.Task{Branch: "fix/example", PRNumber: 1178}, "origin")
+	prompt := sameBranchConflictPrompt(context.Background(), task.Task{Branch: "fix/example", PRNumber: 1178}, "origin", project.SigningAuto)
 	for _, want := range []string{
 		"git fetch origin +refs/heads/fix/example:refs/remotes/origin/fix/example",
 		"Do NOT rebase, amend, or force-push",
@@ -201,8 +201,8 @@ func TestConflictPrompt_TestsRunSynchronously(t *testing.T) {
 	t.Parallel()
 
 	for _, prompt := range []string{
-		buildConflictPrompt(context.Background(), github.PullRequest{Number: 1178, HeadRefName: "fix/example"}, ""),
-		branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main"),
+		buildConflictPrompt(context.Background(), github.PullRequest{Number: 1178, HeadRefName: "fix/example"}, "", project.SigningAuto),
+		branchConflictPrompt(context.Background(), task.Task{Branch: "fix/example"}, "main", project.SigningAuto),
 	} {
 		if !strings.Contains(prompt, "never background a test run or narrate/poll its progress") {
 			t.Fatalf("conflict prompt does not forbid backgrounding/narrating test runs:\n%s", prompt)
@@ -219,12 +219,12 @@ func TestConflictPrompt_UsesHostCommitSignFlags(t *testing.T) {
 	ctx := context.Background()
 	wantFlags := project.CommitSignFlags(ctx)
 
-	prPrompt := buildConflictPrompt(ctx, github.PullRequest{Number: 1178, HeadRefName: "fix/example"}, "")
+	prPrompt := buildConflictPrompt(ctx, github.PullRequest{Number: 1178, HeadRefName: "fix/example"}, "", project.SigningAuto)
 	if !strings.Contains(prPrompt, "git add and git commit "+wantFlags+" to") {
 		t.Fatalf("PR conflict prompt missing host commit sign flags %q:\n%s", wantFlags, prPrompt)
 	}
 
-	branchPrompt := branchConflictPrompt(ctx, task.Task{Branch: "fix/example"}, "main")
+	branchPrompt := branchConflictPrompt(ctx, task.Task{Branch: "fix/example"}, "main", project.SigningAuto)
 	if !strings.Contains(branchPrompt, "git add and git\n# commit "+wantFlags+" to") {
 		t.Fatalf("branch conflict prompt missing host commit sign flags %q:\n%s", wantFlags, branchPrompt)
 	}
@@ -316,7 +316,7 @@ func TestCommentsPrompt_DetectsForkRemote(t *testing.T) {
 		Number:      1178,
 		HeadRefName: "fix/example",
 		URL:         "https://github.com/acme/widgets/pull/1178",
-	})
+	}, project.SigningAuto)
 
 	assertPRFixPromptUsesResolvedPushRemote(t, prompt, "fix/example")
 	for _, want := range []string{
@@ -337,7 +337,7 @@ func TestConflictPrompt_DetectsForkRemote(t *testing.T) {
 	prompt := buildConflictPrompt(context.Background(), github.PullRequest{
 		Number:      1178,
 		HeadRefName: "fix/example",
-	}, "")
+	}, "", project.SigningAuto)
 
 	assertPRFixPromptUsesResolvedPushRemote(t, prompt, "fix/example")
 }
@@ -388,13 +388,22 @@ func assertPRFixPromptUsesResolvedPushRemote(t *testing.T, prompt, branch string
 	}
 }
 
-func TestTruncatePushPreflightReasonKeepsValidUTF8(t *testing.T) {
-	got := truncatePushPreflightReason("prefix \xff café suffix", 12)
+func TestPushPreflightFailureReasonKeepsValidUTF8(t *testing.T) {
+	// The multibyte and invalid bytes must sit BEFORE the 240-byte cut, or
+	// the test passes without exercising either the boundary walk or the
+	// sanitisation — git surfaces remote bytes verbatim, so both can land
+	// anywhere in the string.
+	detail := "\xff café… " + strings.Repeat("remote rejected …", 30)
+	got := pushPreflightFailureReason(errors.New(detail))
+
 	if !utf8.ValidString(got) {
-		t.Fatalf("truncated reason is invalid UTF-8: %q", got)
+		t.Fatalf("preflight reason is invalid UTF-8: %q", got)
 	}
 	if !strings.HasSuffix(got, "...") {
-		t.Fatalf("truncated reason = %q, want ellipsis", got)
+		t.Fatalf("preflight reason = %q, want ellipsis", got)
+	}
+	if !strings.HasPrefix(got, "GitHub push credential preflight failed") {
+		t.Fatalf("preflight reason = %q, want the classified prefix", got)
 	}
 }
 
@@ -1416,7 +1425,7 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -1531,7 +1540,7 @@ func TestCancelResolvedPRFixWorkflows_CoalescedSiblingStillLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -2652,13 +2661,13 @@ func TestFetchKnownTaskPRs_CircuitBreaksOnRepeatedAuthFailure(t *testing.T) {
 	matchers := []github.TaskMatcher{{ID: "t1", PRNumber: 50, ProjectID: "pet-owner/pet-repo"}}
 
 	for i := range poll.AuthFailureThreshold - 1 {
-		r.fetchKnownTaskPRs(matchers)
+		r.fetchKnownTaskPRs(matchers, nil)
 		if r.AuthCircuitOpen() {
 			t.Fatalf("circuit opened after %d fetches, want threshold %d", i+1, poll.AuthFailureThreshold)
 		}
 	}
 
-	r.fetchKnownTaskPRs(matchers)
+	r.fetchKnownTaskPRs(matchers, nil)
 	if !r.AuthCircuitOpen() {
 		t.Fatalf("circuit did not open after %d consecutive auth failures", poll.AuthFailureThreshold)
 	}
@@ -2671,7 +2680,7 @@ func TestFetchKnownTaskPRs_CircuitBreaksOnRepeatedAuthFailure(t *testing.T) {
 		}
 		return results
 	}
-	r.fetchKnownTaskPRs(matchers)
+	r.fetchKnownTaskPRs(matchers, nil)
 	if r.AuthCircuitOpen() {
 		t.Error("circuit stayed open after a successful fetch")
 	}
@@ -2750,7 +2759,7 @@ func TestAdvanceClosedTaskPRs_CancelsStaleWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -3178,7 +3187,7 @@ func TestCancelResolvedPRFixWorkflows_DefersWhileChecksPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -3249,7 +3258,7 @@ func TestCancelResolvedPRFixWorkflows_CancelsCommentsWorkflowThenDispatchesCIFai
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -3334,7 +3343,7 @@ func TestCancelResolvedPRFixWorkflows_CancelsCommentsWorkflowWhenRemainingCIIsFl
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -3406,7 +3415,7 @@ func TestCancelResolvedPRFixWorkflows_DefersCommentsWorkflowWhileChecksPending(t
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -3474,7 +3483,7 @@ func TestCancelResolvedPRFixWorkflows_CancelsWhenChecksSettleGreen(t *testing.T)
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,

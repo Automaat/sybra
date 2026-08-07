@@ -177,7 +177,7 @@ func TestParallel_DispatchesAllChildren(t *testing.T) {
 	store := newTestStoreWith(t, "test-parallel.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 
 	if err := engine.StartWorkflow("t1", "test-parallel"); err != nil {
@@ -242,7 +242,7 @@ func TestParallel_AppliesABAssignmentToAuthorChildren(t *testing.T) {
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	enabled := true
 	engine.SetABTestingConfig(abtest.Config{Enabled: &enabled, Experiments: []abtest.Experiment{{
 		ID:             "exp",
@@ -288,7 +288,7 @@ func TestParallel_AppliesPromptAndSkillVariantPayloads(t *testing.T) {
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	enabled := true
 	engine.SetABTestingConfig(abtest.Config{Enabled: &enabled, Experiments: []abtest.Experiment{{
 		ID:             "payload-exp",
@@ -327,7 +327,7 @@ func TestParallel_AllCompleteAdvancesParent(t *testing.T) {
 	store := newTestStoreWith(t, "test-parallel.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 
 	if err := engine.StartWorkflow("t1", "test-parallel"); err != nil {
@@ -377,7 +377,7 @@ func TestParallel_ChildFailRetryThenSucceed(t *testing.T) {
 	store := newTestStoreWith(t, "test-parallel.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 
 	if err := engine.StartWorkflow("t1", "test-parallel"); err != nil {
@@ -430,7 +430,7 @@ func TestParallel_ChildFailExhaustedFailsParent(t *testing.T) {
 	store := newTestStoreWith(t, "test-parallel.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 
 	if err := engine.StartWorkflow("t1", "test-parallel"); err != nil {
@@ -467,7 +467,7 @@ func TestParallel_AllSpawnsFail_AdvancesParent(t *testing.T) {
 	store := newTestStoreWith(t, "test-parallel-terminal.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 
 	agents.SetFailSpawn(errors.New("project not registered locally"))
@@ -510,7 +510,7 @@ func TestParallel_ShutdownCancellationDuringSpawnDoesNotFailParent(t *testing.T)
 	store := newTestStoreWith(t, "test-parallel-terminal.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 
 	shutdownCtx, cancel := context.WithCancel(context.Background())
@@ -544,7 +544,7 @@ func TestParallel_PlanDraftSidecarKeyedByStepID(t *testing.T) {
 	store := newTestStoreWith(t, "test-parallel.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
 
 	if err := engine.StartWorkflow("t1", "test-parallel"); err != nil {
@@ -589,7 +589,7 @@ func TestParallel_CompletionRoutesViaPendingAgentStepAfterPersistFailure(t *test
 	store := newTestStoreWith(t, "test-parallel.yaml")
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	wfExec := &Execution{
 		WorkflowID:  "test-parallel",

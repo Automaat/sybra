@@ -11,7 +11,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/prepstate"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 var prFixSentinelRe = regexp.MustCompile(`(?im)^SYBRA_PR_FIX_RESULT:\s*([a-z_-]+)\s*$`)
@@ -85,6 +87,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 		reviewHoldForced = true
 	}
 	if verdict == PRFixContinue {
+		e.recordPreparedWorktreeState(taskID, wfExec, t)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "continue"}, nil
 	}
 	// A flake has no commit to verify, so parking or verify_commits would punish the honest answer. EXC:FILE011:load-bearing-invariant
@@ -93,7 +96,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 		if reason != "" {
 			msg += ": " + reason
 		}
-		if err := e.tasks.UpdateTaskStatus(taskID, "in-review", msg); err != nil {
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InReview, msg); err != nil {
 			return StepOutput{}, fmt.Errorf("route pr-fix result: set in-review after flake: %w", err)
 		}
 		e.logger.Info("workflow.pr-fix.flake", "task_id", taskID, "pr", t.PRNumber, "reason", reason)
@@ -104,7 +107,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 	// state, so it must never be waved through by the re-probe below.
 	if !reviewHoldForced {
 		if msg, resolved := e.checkPRAlreadyResolved(taskID, t, reason); resolved {
-			if err := e.tasks.UpdateTaskStatus(taskID, "in-review", msg); err != nil {
+			if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InReview, msg); err != nil {
 				return StepOutput{}, fmt.Errorf("route pr-fix result: resolved-on-remote: set in-review: %w", err)
 			}
 			e.logger.Info("workflow.pr-fix.resolved-on-remote", "task_id", taskID, "pr", t.PRNumber, "agent_reason", reason)
@@ -142,7 +145,7 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 			"task_id", taskID, "workflow", workflowID, "reason", reason)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return StepOutput{}, fmt.Errorf("route pr-fix result: set human-required: %w", err)
 	}
 	e.logger.Warn("workflow.pr-fix.human-required", "task_id", taskID, "reason", reason)
@@ -183,6 +186,28 @@ func prFixShouldResumeNoPRRecovery(t TaskInfo, reason string) bool {
 		(strings.Contains(lower, "transport") && strings.Contains(lower, "github"))
 }
 
+func (e *Engine) recordPreparedWorktreeState(taskID string, wfExec *Execution, t TaskInfo) {
+	if wfExec == nil || wfExec.WorkflowID != "branch-conflict-fix" {
+		return
+	}
+	dir := wfExec.Variables[WorkflowVarDir]
+	if dir == "" {
+		return
+	}
+	branch := t.Branch
+	if branch == "" {
+		branch = strings.TrimSpace(t.Branch)
+	}
+	wrote, err := prepstate.WriteVerified(e.ctx, dir, branch)
+	if err != nil {
+		e.logger.Warn("workflow.pr-fix.prep-state-write", "task_id", taskID, "workflow", wfExec.WorkflowID, "dir", dir, "branch", branch, "err", err)
+		return
+	}
+	if wrote {
+		e.logger.Info("workflow.pr-fix.prep-state-written", "task_id", taskID, "workflow", wfExec.WorkflowID, "dir", dir, "branch", branch)
+	}
+}
+
 func prFixAllowsResolvedMergeRecovery(reason string) bool {
 	reason = strings.ToLower(strings.TrimSpace(reason))
 	if reason == "" {
@@ -202,20 +227,16 @@ func prFixAllowsResolvedMergeRecovery(reason string) bool {
 }
 
 func (e *Engine) tryRecoverResolvedMerge(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error, bool) {
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return StepOutput{}, nil, false
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return StepOutput{}, nil, false
 	}
 	if wfExec != nil && wfExec.Variables[resolvedMergeCheckpointVar(step.ID)] == "true" {
 		return e.pushRecoveredResolvedMergeCommit(taskID, step, wfExec, t, wtPath)
 	}
-	if e.checks == nil {
-		return StepOutput{}, nil, false
-	}
-
 	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
 	defer cancel()
 	resolved, err := project.ResolvedUnmergedPaths(ctx, wtPath)
@@ -311,7 +332,7 @@ func (e *Engine) pushRecoveredResolvedMergeCommit(taskID string, step *Step, wfE
 	if out, err, ok := e.pushTaskBranch(taskID, step, wfExec, t, wtPath, branch); !ok {
 		return out, err, true
 	}
-	if e.prHeads != nil && t.PRNumber > 0 && t.ProjectID != "" {
+	if e.pr.HeadFetcher != nil && t.PRNumber > 0 && t.ProjectID != "" {
 		e.verifyPushedHead(taskID, wtPath, t)
 	}
 	e.logger.Info("workflow.pr-fix.recovered-resolved-merge", "task_id", taskID, "branch", branch)
@@ -347,7 +368,7 @@ func (e *Engine) resolvedMergeFocusedCommands(ctx context.Context, taskID, wtPat
 			files = append(files, file)
 		}
 	}
-	_, commands = selectFocusedChecks(e.checks.FocusedChecks(ctx, taskID), files)
+	_, commands = selectFocusedChecks(e.execution.Checks.FocusedChecks(ctx, taskID), files)
 	return commands, files, nil
 }
 
@@ -420,10 +441,10 @@ func cleanGitRelPath(file string) (string, bool) {
 // must never count as resolved, so any fetch error falls through to the
 // normal human-required park.
 func (e *Engine) checkPRAlreadyResolved(taskID string, t TaskInfo, agentReason string) (msg string, resolved bool) {
-	if e.prStates == nil || t.ProjectID == "" || t.PRNumber <= 0 {
+	if e.pr.StateFetcher == nil || t.ProjectID == "" || t.PRNumber <= 0 {
 		return "", false
 	}
-	state, err := e.prStates.FetchPRState(t.ProjectID, t.PRNumber)
+	state, err := e.pr.StateFetcher.FetchPRState(t.ProjectID, t.PRNumber)
 	if err != nil {
 		e.logger.Warn("workflow.pr-fix.resolved-probe-failed", "task_id", taskID, "pr", t.PRNumber, "err", err)
 		return "", false

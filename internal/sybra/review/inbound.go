@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -12,9 +13,9 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
-	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/worktree"
 )
 
 func (r *Handler) createReviewTask(pr github.PullRequest, projectID string) {
@@ -130,7 +131,7 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 			"IMPORTANT: when committing, use conventional commit format "+
 			"`fix(review): address PR review comments` (type(scope) required by repo hooks). "+
 			"Sign the commit with `git commit %s`. Push the branch when done.",
-		t.ProjectID, t.PRNumber, project.CommitSignFlags(context.Background()),
+		t.ProjectID, t.PRNumber, r.signingPolicy().CommitFlags(context.Background()),
 	) + reviewHoldFixSuffix(r.cfg)
 
 	ag, err := r.agents.Run(agent.RunConfig{
@@ -201,9 +202,17 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 		// context.Background(): same dead end as StartFixReviewAgent above —
 		// reached from a Wails-bound service method with no ctx.
 		d, err := r.worktrees.PrepareForReview(context.Background(), current)
-		if err != nil {
+		switch {
+		case errors.Is(err, worktree.ErrPreparationInFlight):
+			// Never fall back to the operator's real Sybra home for a
+			// condition that clears on its own — the next tick prepares the
+			// task's own worktree instead of pointing a review agent at the
+			// live board (#1576).
+			r.logger.Info("review.worktree.busy", "task_id", current.ID, "err", err)
+			return nil
+		case err != nil:
 			r.logger.Error("review.worktree", "task_id", current.ID, "err", err)
-		} else {
+		default:
 			dir = d
 		}
 	}

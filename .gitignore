@@ -1,9 +1,11 @@
 # Build
+/bin/
 build/bin/
 frontend/dist/
 frontend/dist-web/
 frontend/node_modules/
 frontend/package.json.md5
+/frontend/.vite/
 
 # v3 binary populates its embed dir from frontend/dist at build time
 cmd/sybra-v3/dist/*
@@ -49,6 +51,7 @@ core.*
 .sybra-manual-test-port*
 .sybra-bad-*
 .sybra-manual-*
+/.tmp-test-fakebin/
 .tmp-sybra-home*/
 server_auth_token
 deploy/k8s-poc/.env

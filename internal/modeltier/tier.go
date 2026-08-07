@@ -3,6 +3,8 @@ package modeltier
 import (
 	"maps"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // Tier names Sybra's provider-neutral model cost/capability classes.
@@ -19,22 +21,22 @@ const (
 
 var models = map[Tier]map[string]string{
 	SuperCheap: {
-		"claude":   "haiku",
-		"codex":    "gpt-5.6-luna",
-		"copilot":  "gpt-5-mini",
-		"opencode": "openrouter/qwen/qwen3-32b",
+		providerid.Claude:   "haiku",
+		providerid.Codex:    "gpt-5.6-luna",
+		providerid.Copilot:  "gpt-5-mini",
+		providerid.OpenCode: "openrouter/qwen/qwen3-32b",
 	},
 	Cheap: {
-		"claude":   "sonnet",
-		"codex":    "gpt-5.6-terra",
-		"copilot":  "claude-sonnet-4.6",
-		"opencode": "openrouter/deepseek/deepseek-v4-flash",
+		providerid.Claude:   "sonnet",
+		providerid.Codex:    "gpt-5.6-terra",
+		providerid.Copilot:  "claude-sonnet-4.6",
+		providerid.OpenCode: "openrouter/deepseek/deepseek-v4-flash",
 	},
 	Expensive: {
-		"claude":   "opus",
-		"codex":    "gpt-5.6-sol",
-		"copilot":  "gemini-3.1-pro-preview",
-		"opencode": "openrouter/z-ai/glm-5.2",
+		providerid.Claude:   "opus",
+		providerid.Codex:    "gpt-5.6-sol",
+		providerid.Copilot:  "gemini-3.1-pro-preview",
+		providerid.OpenCode: "openrouter/z-ai/glm-5.2",
 	},
 }
 

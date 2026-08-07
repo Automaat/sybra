@@ -65,6 +65,11 @@ func (s *ProjectService) CreateProject(url, ptype string) (project.Project, erro
 			}
 			return
 		}
+		// Non-gating: the startup migration retries this, and an otherwise
+		// healthy clone should not be marked failed over it.
+		if err := project.ConfigureCommitSigning(context.Background(), p.ClonePath, s.projects.SigningPolicy()); err != nil {
+			s.logger.Warn("project.clone.commit-signing", "id", p.ID, "err", err)
+		}
 		if markErr := s.projects.MarkReadyFor(p); markErr != nil {
 			s.logger.Error("project.mark-ready", "id", p.ID, "err", markErr)
 		}

@@ -4,7 +4,15 @@ import (
 	"bytes"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"text/template"
+	"unicode/utf8"
+)
+
+const (
+	promptInlineMaxBytes  = 8 * 1024
+	promptInlineHeadBytes = promptInlineMaxBytes / 3
+	promptInlineElision   = "\n\n…(middle elided to fit prompt)…\n\n"
 )
 
 // TemplateContext provides data available in prompt templates and shell commands.
@@ -33,6 +41,7 @@ func RenderTemplate(tmpl string, ctx TemplateContext) (string, error) {
 var templateFuncs = template.FuncMap{
 	"shellquote":          shellQuote,
 	"getvar":              getVar,
+	"commitsignflags":     commitSignFlagsVar,
 	"sidecardir":          sidecarDirVar,
 	"recoveredorprev":     recoveredOrPrev,
 	"plancontractjson":    PlanContractPromptJSON,
@@ -61,19 +70,39 @@ func sidecarDirVar(vars map[string]string) string {
 // or misreading its own `sybra-cli get` output. At most one such section is
 // ever live in a body (see stripTestFailuresSections), so the first match is
 // unambiguously current.
-func currentTestFailures(body string) string {
-	return strings.TrimSpace(testFailSectionOf(body))
-}
-
-func acceptanceLedger(body string) string {
-	start, end, ok := topLevelSectionRange(body, acceptanceLedgerHeading)
-	if !ok {
+func currentTestFailures(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
 		return ""
 	}
-	return strings.TrimSpace(body[start:end])
+	if section, ok := topLevelSection(content, isTestFailuresHeading); ok {
+		return clampPromptInline(section)
+	}
+	return ""
 }
 
-func topLevelSectionRange(body, heading string) (start, end int, ok bool) {
+func acceptanceLedger(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	if section, ok := topLevelSection(content, func(line string) bool {
+		return strings.EqualFold(line, acceptanceLedgerHeading)
+	}); ok {
+		return clampPromptInline(section)
+	}
+	return ""
+}
+
+func topLevelSection(body string, match func(string) bool) (string, bool) {
+	start, end, ok := topLevelSectionRange(body, match)
+	if !ok {
+		return "", false
+	}
+	return strings.TrimSpace(body[start:end]), true
+}
+
+func topLevelSectionRange(body string, match func(string) bool) (start, end int, ok bool) {
 	lines := strings.SplitAfter(body, "\n")
 	offsets := make([]int, len(lines)+1)
 	for i := range lines {
@@ -87,7 +116,7 @@ func topLevelSectionRange(body, heading string) (start, end int, ok bool) {
 			inFence = !inFence
 			continue
 		}
-		if inFence || !strings.EqualFold(trimmed, heading) {
+		if inFence || !match(trimmed) {
 			continue
 		}
 
@@ -114,6 +143,45 @@ func getVar(vars map[string]string, key string) string {
 	return vars[key]
 }
 
+// WorkflowVarCommitSignFlags names the variable a dispatcher seeds with the
+// host's resolved commit flags.
+const WorkflowVarCommitSignFlags = "commit_sign_flags"
+
+// defaultCommitSignFlags backs commitSignFlagsVar for the workflows no
+// dispatcher seeds. Package-level rather than an Engine field because
+// templates render through the free RenderTemplate from seven call sites, none
+// of which carry an Engine; the value is a single process-wide deployment
+// posture, so there is nothing per-execution to thread.
+var defaultCommitSignFlags atomic.Value
+
+// SetDefaultCommitSignFlags installs the fallback commit flags for prompts
+// whose workflow never seeds WorkflowVarCommitSignFlags. Wired from config at
+// startup. Unset keeps "-s".
+func SetDefaultCommitSignFlags(flags string) {
+	if flags = strings.TrimSpace(flags); flags != "" {
+		defaultCommitSignFlags.Store(flags)
+	}
+}
+
+// commitSignFlagsVar returns the git commit flags a prompt should instruct an
+// agent to use.
+//
+// Prefer this over a bare getvar: only the pr-fix dispatcher seeds the
+// variable, so getvar renders an empty string — and therefore a broken
+// `git commit ` — in every other workflow. The final "-s" fallback also fails
+// in the safe direction, since an unsignable `-S` hard-fails the commit and
+// parks the task, while a missing one costs only a signature no gate requires.
+// DCO sign-off is enforced independently by the prepare-commit-msg hook.
+func commitSignFlagsVar(vars map[string]string) string {
+	if v := strings.TrimSpace(vars[WorkflowVarCommitSignFlags]); v != "" {
+		return v
+	}
+	if v, ok := defaultCommitSignFlags.Load().(string); ok && v != "" {
+		return v
+	}
+	return "-s"
+}
+
 // shellQuote wraps a string in single quotes with proper escaping for bash.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
@@ -131,4 +199,37 @@ func recoveredOrPrev(wf *Execution, prev *StepRecord) string {
 		return ""
 	}
 	return prev.Output
+}
+
+func clampPromptInline(body string) string {
+	if len(body) <= promptInlineMaxBytes {
+		return body
+	}
+	head := trimPromptRuneBoundaryEnd(body[:promptInlineHeadBytes])
+	tail := trimPromptRuneBoundaryStart(body[len(body)-(promptInlineMaxBytes-promptInlineHeadBytes):])
+	return head + promptInlineElision + tail
+}
+
+func trimPromptRuneBoundaryStart(s string) string {
+	for len(s) > 0 && !utf8.RuneStart(s[0]) {
+		s = s[1:]
+	}
+	return s
+}
+
+func trimPromptRuneBoundaryEnd(s string) string {
+	for len(s) > 0 {
+		if r, size := utf8.DecodeLastRuneInString(s); r != utf8.RuneError || size > 1 {
+			break
+		}
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
+// DefaultCommitSignFlags reports the configured fallback. Exported for the
+// app-layer hot-reload test, which has no other way to observe that a reload
+// reached this sink.
+func DefaultCommitSignFlags() string {
+	return commitSignFlagsVar(nil)
 }

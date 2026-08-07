@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -3107,13 +3108,18 @@ func TestTestingMaxAttemptsDefault(t *testing.T) {
 	if got := cfg.TestingMaxAttempts(); got != DefaultTestingMaxAttempts {
 		t.Errorf("zero-value TestingMaxAttempts() = %d, want %d", got, DefaultTestingMaxAttempts)
 	}
-	if DefaultTestingMaxAttempts != 25 {
-		t.Errorf("DefaultTestingMaxAttempts = %d, want 25", DefaultTestingMaxAttempts)
+	if DefaultTestingMaxAttempts != 5 {
+		t.Errorf("DefaultTestingMaxAttempts = %d, want 5", DefaultTestingMaxAttempts)
+	}
+
+	cfg.Testing.MaxAttempts = 3
+	if got := cfg.TestingMaxAttempts(); got != 3 {
+		t.Errorf("configured TestingMaxAttempts() = %d, want 3", got)
 	}
 
 	cfg.Testing.MaxAttempts = 10
-	if got := cfg.TestingMaxAttempts(); got != 10 {
-		t.Errorf("configured TestingMaxAttempts() = %d, want 10", got)
+	if got := cfg.TestingMaxAttempts(); got != DefaultTestingMaxAttempts {
+		t.Errorf("configured TestingMaxAttempts() above safety ceiling = %d, want %d", got, DefaultTestingMaxAttempts)
 	}
 }
 
@@ -3169,6 +3175,32 @@ func TestCheckpointDefaults(t *testing.T) {
 	}
 	if cfg.CheckpointOnTurnCeilingEnabled() {
 		t.Error("configured CheckpointOnTurnCeilingEnabled() = true, want false")
+	}
+}
+
+func TestConfig_VerifyChecksMaxConcurrent(t *testing.T) {
+	t.Parallel()
+
+	var nilCfg *Config
+	if got := nilCfg.VerifyChecksMaxConcurrent(); got < 1 {
+		t.Errorf("nil config VerifyChecksMaxConcurrent() = %d, want >= 1", got)
+	}
+
+	cfg := &Config{}
+	derived := cfg.VerifyChecksMaxConcurrent()
+	if derived < 1 {
+		t.Errorf("zero-value VerifyChecksMaxConcurrent() = %d, want >= 1", derived)
+	}
+	wantDerived := runtime.NumCPU() / 4
+	wantDerived = max(wantDerived, 1)
+	wantDerived = min(wantDerived, 8)
+	if derived != wantDerived {
+		t.Errorf("zero-value VerifyChecksMaxConcurrent() = %d, want CPU-derived %d", derived, wantDerived)
+	}
+
+	cfg.Agent.VerifyChecksMaxConcurrent = 5
+	if got := cfg.VerifyChecksMaxConcurrent(); got != 5 {
+		t.Errorf("configured VerifyChecksMaxConcurrent() = %d, want 5", got)
 	}
 }
 

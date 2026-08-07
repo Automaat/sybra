@@ -32,7 +32,7 @@ func BenchmarkStartWorkflow(b *testing.B) {
 	store := newBenchStore(b)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	b.ResetTimer()
 	for i := range b.N {
@@ -51,7 +51,7 @@ func BenchmarkAdvanceStep_ToImplement(b *testing.B) {
 	store := newBenchStore(b)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	b.ResetTimer()
 	for i := range b.N {
@@ -76,7 +76,7 @@ func BenchmarkAdvanceStep_Retry(b *testing.B) {
 	store := newBenchStore(b)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	b.ResetTimer()
 	for i := range b.N {
@@ -103,7 +103,7 @@ func BenchmarkResumeStalled(b *testing.B) {
 	store := newBenchStore(b)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	for i := range taskCount {
 		id := fmt.Sprintf("stalled-%d", i)
@@ -127,7 +127,7 @@ func BenchmarkConcurrentAdvance_DistinctTasks(b *testing.B) {
 	store := newBenchStore(b)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	var counter atomic.Int64
 	b.ResetTimer()

@@ -6,10 +6,18 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/textutil"
 )
 
 const readyPRRecoveryReason = "manual verification requires a live PR and the branch is already pushed — routing to PR flow instead of parking human-required"
 const alreadyFixedOnMainRecoveryReason = "requested change already satisfies origin base and the task branch has no remaining diff — closing duplicate task as done"
+
+// maxDeclaredReasonBytes bounds the agent's own text before it reaches the
+// task's YAML frontmatter.
+const maxDeclaredReasonBytes = 400
+
+const unreadableRecoveryVerdictReason = "run emitted an unreadable recovery declaration — staying parked rather than inferring the outcome from its prose"
 
 // maybeRecoverHumanRequiredAlreadyFixedOnMain rewrites a narrow duplicate-task
 // class: an implementation step parked the task at human-required after
@@ -17,28 +25,40 @@ const alreadyFixedOnMainRecoveryReason = "requested change already satisfies ori
 // still clean with no commits ahead of the origin base. In that case Sybra has
 // enough deterministic proof to close the task itself instead of parking it.
 //
-// Agent text is only a trigger hint here. On agent-completion recovery the hint
-// must come from the current run's output, not a stale task status_reason from
-// an older human-required park. The close decision itself still requires
-// repo-state proof: no commits ahead, no uncommitted diff, and HEAD reachable
-// from the origin base.
+// The trigger is the run's structured declaration, set as the task's whole
+// status reason through the CLI. The run's response text is not a channel:
+// accepting it there let a response that was only the JSON object close a
+// task whose reason explicitly refused to declare one.
+//
+// The repo-state proof that follows (no commits ahead, no uncommitted diff,
+// HEAD reachable from the origin base) is necessary but not sufficient: it is
+// trivially true for a branch the agent never committed to, which is why the
+// declaration carries the decision.
 func (e *Engine) maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID string, currentStep *Step, wfExec *Execution, t TaskInfo, output StepOutput, duplicateSignal string) (*CompletionInfo, bool, error) {
 	if currentStep == nil || currentStep.Type != StepRunAgent || currentStep.Config.Role != "implementation" || output.Status != "completed" {
 		return nil, false, nil
 	}
-	if t.Status != "human-required" || t.PRNumber != 0 || t.ProjectID == "" {
+	if t.Status != taskstatus.HumanRequired || t.PRNumber != 0 || t.ProjectID == "" {
 		return nil, false, nil
 	}
 	if wfExec != nil && wfExec.LastAgentStepFailed() {
 		return nil, false, nil
 	}
-	if !looksLikeAlreadyFixedOnMainVerdict(duplicateSignal) {
+	alreadyFixed, declared, err := declaresAlreadyFixedOnMain(duplicateSignal)
+	if err != nil {
+		e.logger.Warn("workflow.human-required.duplicate-recovery.unreadable-verdict", "task_id", taskID, "err", err)
+		if uerr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, unreadableRecoveryVerdictReason); uerr != nil {
+			return nil, false, uerr
+		}
 		return nil, false, nil
 	}
-	if e.worktrees == nil {
+	if !declared || !alreadyFixed {
 		return nil, false, nil
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	if e.execution.Worktrees == nil {
+		return nil, false, nil
+	}
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok || wtPath == "" {
 		return nil, false, nil
 	}
@@ -50,7 +70,11 @@ func (e *Engine) maybeRecoverHumanRequiredAlreadyFixedOnMain(taskID string, curr
 	if !clean {
 		return nil, false, nil
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, "done", alreadyFixedOnMainRecoveryReason); err != nil {
+	reason := alreadyFixedOnMainRecoveryReason
+	if declaredReason := recoveryVerdictReason(duplicateSignal); declaredReason != "" {
+		reason += " — agent declared: " + textutil.TruncateBytes(declaredReason, maxDeclaredReasonBytes, "…")
+	}
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.Done, reason); err != nil {
 		return nil, false, err
 	}
 	e.logger.Info("workflow.human-required.duplicate-recovery", "task_id", taskID)
@@ -72,16 +96,16 @@ func (e *Engine) maybeRecoverHumanRequiredByOpeningPR(taskID string, currentStep
 	if currentStep == nil || currentStep.Type != StepRunAgent || output.Status != "completed" {
 		return nil, false, nil
 	}
-	if t.Status != "human-required" || t.PRNumber != 0 || t.ProjectID == "" {
+	if t.Status != taskstatus.HumanRequired || t.PRNumber != 0 || t.ProjectID == "" {
 		return nil, false, nil
 	}
 	if !isMissingLivePRVerificationBlocker(t.StatusReason + "\n" + output.Output) {
 		return nil, false, nil
 	}
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return nil, false, nil
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok || wtPath == "" {
 		return nil, false, nil
 	}
@@ -110,7 +134,7 @@ func (e *Engine) maybeRecoverHumanRequiredByOpeningPR(taskID string, currentStep
 		return nil, false, nil
 	}
 
-	status := "ready-pr"
+	status := taskstatus.ReadyPR
 	reason := readyPRRecoveryReason
 	// Only take the link-existing-PR -> in-review shortcut when the local HEAD
 	// being recovered is the exact commit already on the remote branch. If new
@@ -124,7 +148,7 @@ func (e *Engine) maybeRecoverHumanRequiredByOpeningPR(taskID string, currentStep
 			if err := e.linkTaskPR(taskID, t, existing); err != nil {
 				return nil, false, err
 			}
-			status = "in-review"
+			status = taskstatus.InReview
 			reason = ""
 		}
 	}
@@ -163,29 +187,6 @@ func isMissingLivePRVerificationBlocker(reason string) bool {
 		strings.Contains(r, "required live") ||
 		strings.Contains(r, "live pr-monitor") ||
 		strings.Contains(r, "live proof")
-}
-
-func looksLikeAlreadyFixedOnMainVerdict(reason string) bool {
-	lower := strings.ToLower(strings.TrimSpace(reason))
-	if lower == "" {
-		return false
-	}
-	fixedSignal := strings.Contains(lower, "already fixed") ||
-		strings.Contains(lower, "already on main") ||
-		strings.Contains(lower, "already merged") ||
-		strings.Contains(lower, "already landed") ||
-		strings.Contains(lower, "already satisfied") ||
-		strings.Contains(lower, "duplicate task")
-	mainSignal := strings.Contains(lower, "main") ||
-		strings.Contains(lower, "origin/main") ||
-		strings.Contains(lower, "upstream") ||
-		strings.Contains(lower, "origin")
-	closeSignal := strings.Contains(lower, "no pr needed") ||
-		strings.Contains(lower, "no pr required") ||
-		strings.Contains(lower, "safe to close") ||
-		strings.Contains(lower, "mark done") ||
-		strings.Contains(lower, "mark as done")
-	return fixedSignal && (mainSignal || closeSignal)
 }
 
 func (e *Engine) branchAlreadySatisfiedOnMain(taskID, wtPath string, t TaskInfo) (bool, error) {

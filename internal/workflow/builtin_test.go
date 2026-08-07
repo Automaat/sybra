@@ -460,8 +460,8 @@ func TestBuiltinSimpleTaskImplement_DisclosesDownstreamVerification(t *testing.T
 		t.Fatalf("downstream verification contract not found in implement prompt, got:\n%s", prompt)
 	}
 	for _, block := range []string{
-		"{{- if currenttestfailures .Task.Body}}",
-		"{{- if acceptanceledger .Task.Body}}",
+		"{{- if currenttestfailures .Task.CurrentTestFailures}}",
+		"{{- if acceptanceledger .Task.AcceptanceLedger}}",
 		`{{getvar .Vars "verify_reask_note"}}`,
 		`{{getvar .Vars "watchdog_reask_note"}}`,
 	} {
@@ -1739,7 +1739,7 @@ func TestBuiltinBestOfN_OptInTriggerPriority(t *testing.T) {
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	untagged := TaskInfo{ID: "t1", Status: "in-progress", Tags: []string{"backend"}}
 	if got := engine.MatchWorkflow(untagged, "task.status_changed"); got == nil || got.ID != "simple-task-implement" {
@@ -1773,7 +1773,7 @@ func TestSimpleTaskReview_DoesNotMatchLinkedPRTask(t *testing.T) {
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	prePR := TaskInfo{ID: "pre-pr", Status: "ready-review"}
 	if got := engine.MatchWorkflow(prePR, "task.status_changed"); got == nil || got.ID != "simple-task-review" {
@@ -1803,7 +1803,7 @@ func TestSimpleTaskPR_SkipsReviewOnlyRoles(t *testing.T) {
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	codeAuthor := TaskInfo{ID: "code-author", Status: "ready-pr"}
 	if got := engine.MatchWorkflow(codeAuthor, "task.status_changed"); got == nil || got.ID != "simple-task-pr" {
@@ -1857,5 +1857,57 @@ func TestBuiltinBestOfN_DeclaresMechanicalSteps(t *testing.T) {
 	}
 	if !sawPromote {
 		t.Error("simple-task-best-of-n-implement has no promote_best_of_n step")
+	}
+}
+
+// TestBuiltinDefinitions_NeverHardcodeCommitSignFlags is the repo-wide
+// acceptance probe for the commit-signing invariant: no builtin workflow
+// prompt may hardcode -S. A keyless host cannot satisfy it, and `git commit
+// -S` overrides the clone's commit.gpgsign=false, so a hardcoded flag parks
+// the task with "gpg failed to sign the data". The per-step guard in
+// TestBuiltinPRFix_TestFixPromptCarriesFailingTests only covered pr-fix's
+// test_fix step, which is how simple-task-review's hardcoded -S survived.
+func TestBuiltinDefinitions_NeverHardcodeCommitSignFlags(t *testing.T) {
+	t.Parallel()
+
+	defs, err := BuiltinDefinitions()
+	if err != nil {
+		t.Fatalf("BuiltinDefinitions: %v", err)
+	}
+	for _, def := range defs {
+		for _, step := range def.Steps {
+			prompt := step.Config.Prompt
+			if prompt == "" {
+				continue
+			}
+			for line := range strings.Lines(prompt) {
+				// "commit", not "git commit": prompts also spell this as a
+				// bare "# commit -s to complete the merge".
+				if !strings.Contains(line, "commit") {
+					continue
+				}
+				if strings.Contains(line, "-S") {
+					t.Fatalf("builtin %q step %q hardcodes commit sign flags; template {{commitsignflags .Vars}} instead:\n%s",
+						def.ID, step.ID, line)
+				}
+			}
+		}
+	}
+}
+
+// An unseeded commit_sign_flags must render as -s, not as an empty string
+// that produces a broken `git commit `. Only the pr-fix dispatcher seeds the
+// variable, so every other workflow relies on this fallback.
+func TestCommitSignFlagsVar_DefaultsToSignoffOnly(t *testing.T) {
+	t.Parallel()
+
+	if got := commitSignFlagsVar(nil); got != "-s" {
+		t.Errorf("commitSignFlagsVar(nil) = %q, want -s", got)
+	}
+	if got := commitSignFlagsVar(map[string]string{WorkflowVarCommitSignFlags: "  "}); got != "-s" {
+		t.Errorf("commitSignFlagsVar(blank) = %q, want -s", got)
+	}
+	if got := commitSignFlagsVar(map[string]string{WorkflowVarCommitSignFlags: "-s -S"}); got != "-s -S" {
+		t.Errorf("commitSignFlagsVar(seeded) = %q, want -s -S", got)
 	}
 }

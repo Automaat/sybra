@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -18,9 +19,7 @@ import (
 func newProtectedStore(t *testing.T) *ProtectedStore {
 	t.Helper()
 	store := NewProtectedStore(filepath.Join(t.TempDir(), "protected-findings.json"))
-	store.now = func() time.Time {
-		return time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
-	}
+	store.clock = clock.NewFake(time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC))
 	store.reminderWindow = time.Hour
 	return store
 }
@@ -78,9 +77,7 @@ func TestProtectedStoreObserveStateChangeReopensDiscardedFinding(t *testing.T) {
 		t.Fatalf("Discard: %v", err)
 	}
 
-	store.now = func() time.Time {
-		return time.Date(2026, 7, 30, 13, 0, 0, 0, time.UTC)
-	}
+	store.clock = clock.NewFake(time.Date(2026, 7, 30, 13, 0, 0, 0, time.UTC))
 	next := obs
 	next.ObservedHead = "def456"
 	next.ObservedState = "dirty=true"
@@ -104,11 +101,9 @@ func TestProtectedStoreIndependentStoresPreserveResolvedState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "protected-findings.json")
 	firstStore := NewProtectedStore(path)
 	secondStore := NewProtectedStore(path)
-	now := func() time.Time {
-		return time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
-	}
-	firstStore.now = now
-	secondStore.now = now
+	fake := clock.NewFake(time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC))
+	firstStore.clock = fake
+	secondStore.clock = fake
 	obs := Observation{
 		Kind:          ResourceWorktree,
 		TaskID:        "task-1",
@@ -210,9 +205,7 @@ func TestProtectedStoreHelperProcess(t *testing.T) {
 	}
 	path := os.Args[len(os.Args)-1]
 	store := NewProtectedStore(path)
-	store.now = func() time.Time {
-		return time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
-	}
+	store.clock = clock.NewFake(time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC))
 	if _, _, err := store.Observe(Observation{
 		Kind:          ResourceWorktree,
 		TaskID:        "task-helper",

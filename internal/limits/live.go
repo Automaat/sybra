@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 const (
@@ -158,7 +160,7 @@ type codexAppServerLimitWindow struct {
 // snapshots they expose. Missing credentials/CLIs are non-fatal for the other
 // provider; callers can log the returned joined error for diagnostics.
 func (s *Store) RefreshLiveSnapshots(ctx context.Context, policy Policy, providers ...string) LiveRefreshResult {
-	now := s.now().UTC()
+	now := s.nowTime().UTC()
 	result := LiveRefreshResult{Providers: map[string]LiveProviderResult{}}
 	var snapshots []Snapshot
 
@@ -391,7 +393,7 @@ func claudeUsageCycle(raw *claudeUsageWindow, windowMinutes int) (*CycleSnapshot
 }
 
 func fetchCodexLiveSnapshot(ctx context.Context, capturedAt time.Time) (Snapshot, bool, error) {
-	cmd := exec.CommandContext(ctx, "codex", "-s", "read-only", "-a", "untrusted", "app-server")
+	cmd := exec.CommandContext(ctx, providerid.Codex, "-s", "read-only", "-a", "untrusted", "app-server")
 	cmd.WaitDelay = codexWaitDelay
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

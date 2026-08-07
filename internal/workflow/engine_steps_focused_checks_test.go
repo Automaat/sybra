@@ -18,9 +18,9 @@ func newFocusedChecksStep() *Step { return &Step{ID: "focused_checks", Type: Ste
 
 func newFocusedChecksEngine(t *testing.T, wt string, focused []project.FocusedCheck, verify []string) (*Engine, *memTasks, *recordingArtifactRecorder) {
 	t.Helper()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{focused: focused, cmds: verify})
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{focused: focused, cmds: verify})
 	rec := &recordingArtifactRecorder{}
 	engine.SetArtifactRecorder(rec)
 	return engine, engine.tasks.(*memTasks), rec
@@ -222,7 +222,7 @@ func TestExecFocusedChecks_HeadBaseExcludesLocalDefaultBranchChanges(t *testing.
 			Commands: []string{"true"},
 		},
 	}, nil)
-	engine.checks.(*fakeCheckGetter).worktreeBaseRef = project.WorktreeBaseRefHead
+	engine.execution.Checks.(*fakeCheckGetter).worktreeBaseRef = project.WorktreeBaseRefHead
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", ProjectID: "owner/repo"})
 
 	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), nil, TaskInfo{ID: "t1", Status: "in-progress", ProjectID: "owner/repo"})
@@ -394,7 +394,6 @@ func TestExecFocusedChecks_LongOutputNotTruncated(t *testing.T) {
 		t.Errorf("artifact lost the start of the output — the old tail-only truncation would have dropped it")
 	}
 }
-
 func TestExecFocusedChecks_FailureReasksBelowCeiling(t *testing.T) {
 	t.Parallel()
 
@@ -429,6 +428,48 @@ func TestExecFocusedChecks_FailureReasksBelowCeiling(t *testing.T) {
 	}
 	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "in-progress" {
 		t.Fatalf("status = %q, want in-progress (never escalated to human)", ti.Status)
+	}
+}
+
+func TestExecFocusedChecks_IdenticalFingerprintEscalatesEarly(t *testing.T) {
+	t.Parallel()
+
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	writeRepoFile(t, wt, "internal/workflow/model.go", "package workflow\n")
+	gitRun(t, wt, "add", ".")
+	gitRun(t, wt, "commit", "-m", "feat: touch workflow")
+
+	engine, tasks, _ := newFocusedChecksEngine(t, wt, []project.FocusedCheck{{
+		Name:     "workflow",
+		Paths:    []string{"internal/workflow/**"},
+		Commands: []string{"echo deterministic >&2; exit 1"},
+	}}, nil)
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+
+	wf := implementedExec()
+	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if !errors.Is(err, errStepParked) {
+		t.Fatalf("first attempt err = %v, want errStepParked", err)
+	}
+	if out != (StepOutput{}) {
+		t.Fatalf("first parked output should be zero, got %+v", out)
+	}
+	now := time.Now().UTC()
+	wf.RecordStep(StepRecord{StepID: verifyChecksImplStepID, Status: "completed", StartedAt: now, EndedAt: now})
+
+	out, err = engine.execFocusedChecks("t1", newFocusedChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	if err != nil {
+		t.Fatalf("second attempt: %v", err)
+	}
+	if out.Output != "flagged" {
+		t.Fatalf("Output = %q, want flagged", out.Output)
+	}
+	ti := mustGetTaskInfo(t, tasks, "t1")
+	if ti.Status != "human-required" {
+		t.Fatalf("status = %q, want human-required", ti.Status)
+	}
+	if !strings.Contains(ti.StatusReason, "repeated identical auto-fix failures") {
+		t.Fatalf("reason = %q, want identical-failure exhaustion", ti.StatusReason)
 	}
 }
 

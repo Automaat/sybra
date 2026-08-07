@@ -43,7 +43,7 @@ func TestExecResumeWorkflow_ResumesCapturedTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	wf := &Execution{
 		WorkflowID:  "branch-conflict-fix",
@@ -98,7 +98,7 @@ func TestExecResumeWorkflow_NoTargetCompletesNormally(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	wf := &Execution{
 		WorkflowID:  "branch-conflict-fix",
@@ -155,7 +155,7 @@ func TestExecResumeWorkflow_SkipsStaleRebaseHumanRequired(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	wf := &Execution{
 		WorkflowID:  "branch-conflict-fix",
@@ -206,7 +206,7 @@ func TestExecResumeWorkflow_RestoresUnrelatedHumanRequired(t *testing.T) {
 
 	store := newTestStore(t)
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	wf := &Execution{
 		WorkflowID:  "branch-conflict-fix",
@@ -272,7 +272,7 @@ func TestExecResumeWorkflow_SkipsStaleRebaseHumanRequiredWithResumeTarget(t *tes
 		t.Fatal(err)
 	}
 	tasks := newMemTasks()
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	wf := &Execution{
 		WorkflowID:  "branch-conflict-fix",

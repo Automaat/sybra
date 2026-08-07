@@ -9,6 +9,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/evidence"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // Criterion names used across the deterministic gates and the
@@ -53,10 +54,10 @@ var freshnessExemptCriteria = map[string]bool{
 // caller) so producers can pass raw report/output text without duplicating
 // evidence.Digest at every call site.
 func (e *Engine) recordEvidence(taskID, stepID, criterion string, proofType evidence.ProofType, exitStatus int, command, result string) {
-	if e.evidenceRecorder == nil || e.worktrees == nil {
+	if e.evidenceRecorder == nil || e.execution.Worktrees == nil {
 		return
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return
 	}
@@ -81,6 +82,44 @@ func (e *Engine) recordEvidence(taskID, stepID, criterion string, proofType evid
 	}
 }
 
+// recordVerifyChecksEvidence mirrors recordEvidence but additionally stamps
+// TreeSHA/ChecksHash on the entry, binding it to the exact worktree tree and
+// verify-command set that produced it. Only ever called for a clean (exit 0)
+// verify_checks pass — see execVerifyChecks — so a later run against the same
+// tree and commands can memo-hit via verifyChecksCacheHit instead of
+// re-executing the suite. A failing run keeps using plain recordEvidence
+// (unstamped), which is correct: failures are never memoized.
+func (e *Engine) recordVerifyChecksEvidence(taskID, stepID, command, result, treeSHA, checksHash string) {
+	if e.evidenceRecorder == nil || e.execution.Worktrees == nil {
+		return
+	}
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+	defer cancel()
+
+	entry := evidence.CriterionEvidence{
+		Criterion:    evidenceCriterionVerifyChecks,
+		ProofType:    evidence.ProofDeterministicCheck,
+		Command:      command,
+		ExitStatus:   0,
+		ResultDigest: evidence.Digest(result),
+		BaseRev:      resolveOriginBase(ctx, wtPath),
+		FinalRev:     revParseCommit(ctx, wtPath, "HEAD"),
+		Backend:      evidenceBackendIdentity(),
+		StepID:       stepID,
+		Timestamp:    time.Now().UTC(),
+		TreeSHA:      treeSHA,
+		ChecksHash:   checksHash,
+	}
+	if err := e.evidenceRecorder.AppendCriterion(taskID, entry); err != nil {
+		e.logger.Warn("workflow.evidence.append-failed",
+			"task_id", taskID, "criterion", evidenceCriterionVerifyChecks, "err", err)
+	}
+}
+
 // refreshReviewEvidenceFreshness re-stamps the existing review criterion
 // evidence to the task's current HEAD after a fix-review step's commits land.
 // It exists to close the single-pass review gap: with agent.review_until_clean
@@ -97,7 +136,7 @@ func (e *Engine) recordEvidence(taskID, stepID, criterion string, proofType evid
 // re-records fresh evidence on its own, so callers gate this to the single-pass
 // route.
 func (e *Engine) refreshReviewEvidenceFreshness(taskID string) {
-	if e.evidenceRecorder == nil || e.worktrees == nil {
+	if e.evidenceRecorder == nil || e.execution.Worktrees == nil {
 		return
 	}
 	ce, err := e.evidenceRecorder.Evidence(taskID)
@@ -108,7 +147,7 @@ func (e *Engine) refreshReviewEvidenceFreshness(taskID string) {
 	if !ok {
 		return
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return
 	}
@@ -141,12 +180,12 @@ func evidenceBackendIdentity() string {
 // place.
 func (e *Engine) requiredEvidenceCriteria(taskID string, t TaskInfo) []string {
 	var required []string
-	if e.worktrees != nil {
-		if _, ok := e.worktrees.GetWorktreePath(taskID); ok {
+	if e.execution.Worktrees != nil {
+		if _, ok := e.execution.Worktrees.GetWorktreePath(taskID); ok {
 			required = append(required, evidenceCriterionVerifyCommits, evidenceCriterionDetectTampering)
 		}
 	}
-	if e.checks != nil && len(e.checks.VerifyCommands(e.ctx, taskID)) > 0 {
+	if len(e.execution.Checks.VerifyCommands(e.ctx, taskID)) > 0 {
 		required = append(required, evidenceCriterionVerifyChecks)
 	}
 	if taskWasTested(t.AgentRuns) {
@@ -243,7 +282,7 @@ func (e *Engine) execRequireEvidence(taskID string, step *Step, t TaskInfo) (Ste
 // (missing/failed/stale criteria, or an unreadable evidence store).
 func (e *Engine) blockRequireEvidence(taskID string, step *Step, t TaskInfo, problem string) (StepOutput, error) {
 	reason := evidenceGateReasonPrefix + " " + problem
-	if err := e.tasks.UpdateTaskBlocker(taskID, "human-required", reason, blocker.State{
+	if err := e.tasks.UpdateTaskBlocker(taskID, taskstatus.HumanRequired, reason, blocker.State{
 		Kind:      blocker.KindOperatorDecision,
 		Actor:     blocker.ActorWorkflow,
 		Exhausted: true,
@@ -265,10 +304,10 @@ func (e *Engine) fireEvidenceDecision(t TaskInfo, d EvidenceDecision) {
 // currentHeadSHA resolves the task worktree's current HEAD commit. Empty when
 // no WorktreeGetter is wired or the task has no worktree.
 func (e *Engine) currentHeadSHA(taskID string) string {
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return ""
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return ""
 	}

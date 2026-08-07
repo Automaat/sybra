@@ -78,6 +78,8 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/gitexec"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // scenarioFileLockSuffix is appended to FAKE_CLAUDE_SCENARIO_FILE to derive a
@@ -141,34 +143,7 @@ func main() {
 }
 
 func writeCaptureLog(logFile string, data []byte) error {
-	dir := filepath.Dir(logFile)
-	tmp, err := os.CreateTemp(dir, ".claude-args-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpName)
-		}
-	}()
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, logFile); err != nil {
-		return err
-	}
-	cleanup = false
-	return nil
+	return fsutil.AtomicWriteMode(logFile, data, 0o644)
 }
 
 var scenarioHandlers = map[string]func(string){
@@ -191,6 +166,11 @@ var scenarioHandlers = map[string]func(string){
 	"test_pass":                        func(string) { runTestPass() },
 	"test_pass_verbose":                func(string) { runTestPassVerbose() },
 	"test_fail":                        func(string) { runTestFail() },
+	"test_fail_large_1":                func(string) { runTestFailLarge(1) },
+	"test_fail_large_2":                func(string) { runTestFailLarge(2) },
+	"test_fail_large_3":                func(string) { runTestFailLarge(3) },
+	"test_fail_large_4":                func(string) { runTestFailLarge(4) },
+	"test_fail_large_5":                func(string) { runTestFailLarge(5) },
 	"test_infra_failure":               func(string) { runTestInfraFailure() },
 	"tool_result_large":                func(string) { runToolResultLarge() },
 	"malformed_tool_call_once":         func(string) { runMalformedToolCallOnce() },
@@ -509,6 +489,12 @@ func runTestFail() {
 	emitResult(testFailureReport() + "\nTEST_VERDICT: FAIL")
 }
 
+func runTestFailLarge(n int) {
+	emitSystem()
+	emitAssistant(fmt.Sprintf("Found large defect report %d against the task.", n))
+	emitResult(testFailureReportLarge(n) + "\nTEST_VERDICT: FAIL")
+}
+
 func runTestInfraFailure() {
 	emitSystem()
 	emitAssistant("The app could not be exercised in this harness.")
@@ -523,6 +509,19 @@ func testFailureReport() string {
 		"Actual output:\n```text\nwrong output\n```\n\n" +
 		"Expected output: expected output.\n\n" +
 		"Code evidence:\n```text\ninternal/fake.go:42: return \"wrong output\"\n```"
+}
+
+func testFailureReportLarge(n int) string {
+	repro := fmt.Sprintf("variant-%d", n)
+	body := strings.Repeat("This failing path must stay fixed everywhere across the whole surface. ", 220)
+	return "## Test Failures\n\n" +
+		"Classification: product_bug\n\n" +
+		fmt.Sprintf("Requirement tested: large regression %d must not recur.\n\n", n) +
+		"Command run:\n```sh\nrg -n " + repro + " .\n```\n\n" +
+		"Actual output:\n```text\n" + repro + " wrong output\n" + body + "\n```\n\n" +
+		"Expected output: " + repro + " expected output.\n\n" +
+		"Code evidence:\n```text\ninternal/fake.go:42: return \"" + repro + " wrong output\"\n```\n\n" +
+		"Notes:\n" + body
 }
 
 func testInfraFailureReport() string {

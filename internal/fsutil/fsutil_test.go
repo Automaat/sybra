@@ -6,7 +6,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestAtomicWrite(t *testing.T) {
@@ -163,6 +165,20 @@ func TestAtomicWrite_RenameFailCleansUpTemp(t *testing.T) {
 	}
 }
 
+// BenchmarkAtomicWrite measures the fsync round-trip AtomicWrite pays per
+// call, so the task store's write volume can be judged against it.
+func BenchmarkAtomicWrite(b *testing.B) {
+	dir := b.TempDir()
+	path := filepath.Join(dir, "file.txt")
+	data := []byte("benchmark payload for a typical task markdown file, roughly a couple hundred bytes of frontmatter and body text")
+	b.ResetTimer()
+	for range b.N {
+		if err := AtomicWrite(path, data); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestRemoveAllForce(t *testing.T) {
 	t.Parallel()
 	if os.Geteuid() == 0 {
@@ -242,5 +258,49 @@ func TestListFiles_BadDir(t *testing.T) {
 	_, err := ListFiles(filepath.Join(t.TempDir(), "nonexistent"), ".md")
 	if err == nil {
 		t.Fatal("expected error for non-existent dir")
+	}
+}
+
+func TestAtomicWriteMode_ExplicitModeWinsOverExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rec.json")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWriteMode(path, []byte("new"), 0o755); err != nil {
+		t.Fatalf("AtomicWriteMode: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Errorf("mode = %v, want %v — the explicit mode must override the existing one", got, os.FileMode(0o755))
+	}
+	if data, _ := os.ReadFile(path); string(data) != "new" {
+		t.Errorf("content = %q, want %q", data, "new")
+	}
+}
+
+// Attachment filenames are caller-supplied and can already sit near NAME_MAX,
+// where a name-derived temp pattern used to fail with ENAMETOOLONG.
+func TestAtomicWrite_LongTargetName(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []int{200, 245, 250, 251, 255} {
+		name := strings.Repeat("a", n-len(".png")) + ".png"
+		if err := AtomicWrite(filepath.Join(dir, name), []byte("x")); err != nil {
+			t.Errorf("AtomicWrite with a %d-char name: %v", n, err)
+		}
+	}
+}
+
+func TestTempPatternKeepsValidUTF8(t *testing.T) {
+	base := strings.Repeat("é", 100) + ".png"
+	got := tempPattern(base)
+	if !utf8.ValidString(got) {
+		t.Errorf("tempPattern(%q) = %q, which is not valid UTF-8", base, got)
+	}
+	if !strings.HasSuffix(got, ".*.tmp") {
+		t.Errorf("tempPattern = %q, want the CreateTemp wildcard suffix", got)
 	}
 }

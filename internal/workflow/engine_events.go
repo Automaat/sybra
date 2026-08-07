@@ -19,10 +19,33 @@ const (
 	// (2026-07-23 board freeze). We fence, reset the budget, retry fresh once,
 	// and only park blocked if the fresh round also exhausts.
 	watchdogZeroOutputFreshRetryVarPrefix = "watchdog.rate_limit_fresh_retry."
-	watchdogRewardHackingRetryVarPrefix   = "watchdog.reward_hacking_retry."
-	maxWatchdogRewardHackingRetries       = 1
-	transientFetchRetryVarPrefix          = "transient_fetch.retry."
-	maxTransientFetchRetries              = 2
+	// watchdogSilentHangAvoidVarPrefix names the provider whose child went
+	// silent on this step, so the very next dispatch of that step routes around
+	// it. A silent hang used to park the provider on the health gate, and the
+	// park is what pushed the retry onto a peer; dropping the park to keep the
+	// provider available to other tasks would otherwise pin this run to the
+	// provider that just produced nothing. Consumed once, by the next dispatch.
+	watchdogSilentHangAvoidVarPrefix = "watchdog.silent_hang_avoid."
+	// watchdogSilentHangSinceVarPrefix records the wall-clock instant a step's
+	// silent-hang exhaustion streak began (set by the first exhaustion, left
+	// untouched by every later fresh round it grants). A repeated
+	// zero-output-before-startup stall is provider capacity unavailability,
+	// not a task defect: a lightweight health probe can flip healthy between
+	// attempts while every real dispatch still hangs and no peer provider is
+	// available for failover. Bounding the wait by elapsed time instead of
+	// attempt count lets the retry ride out a transient outage instead of
+	// latching a permanent deadlock a human has to notice and clear by hand.
+	watchdogSilentHangSinceVarPrefix = "watchdog.silent_hang_since."
+	// maxSilentHangWait caps how long a step may keep granting fresh
+	// silent-hang rounds before finally escalating to blocked. Chosen to
+	// comfortably outlast an ordinary provider capacity blip (the incident
+	// above ran about six hours) without leaving a genuinely broken
+	// environment (e.g. every provider misconfigured) retrying forever.
+	maxSilentHangWait                   = 12 * time.Hour
+	watchdogRewardHackingRetryVarPrefix = "watchdog.reward_hacking_retry."
+	maxWatchdogRewardHackingRetries     = 1
+	transientFetchRetryVarPrefix        = "transient_fetch.retry."
+	maxTransientFetchRetries            = 2
 	// worktreeRepairRetryVarPrefix/maxWorktreeRepairRetries bound the automated
 	// retry budget for tasks parked blocked with blocker.KindWorktreeRepair
 	// (disk-space exhaustion or a failed rebase — see start_error.go). These

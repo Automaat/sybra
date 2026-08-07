@@ -11,7 +11,7 @@ func TestHandleAgentComplete_WaitsForRunAgentRoutePublication(t *testing.T) {
 	agents := newMockAgents()
 	agents.startEntered = make(chan struct{}, 1)
 	agents.startGate = make(chan struct{})
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 
@@ -62,7 +62,7 @@ func TestHandleAgentComplete_AfterRoutePersistFailureStillAdvances(t *testing.T)
 	agents := newMockAgents()
 	agents.startEntered = make(chan struct{}, 1)
 	agents.startGate = make(chan struct{})
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 
@@ -119,7 +119,7 @@ func TestPersistStartedAgent_ClearsStalePendingRouteOnSuccessfulPersist(t *testi
 	}
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", AgentMode: "headless", Workflow: wfExec})
 
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.setPendingAgentStep("t1", "agent-1", "implement")
 
 	if err := engine.persistStartedAgent("t1", step, wfExec, "agent-1", "claude", "", "", "", "", ""); err != nil {

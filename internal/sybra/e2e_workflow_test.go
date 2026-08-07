@@ -25,6 +25,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	synapsegithub "github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/sybra/completion"
 	"github.com/Automaat/sybra/internal/task"
@@ -388,7 +389,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 
 	ta := &taskAdapter{tasks: taskMgr}
 	aa := &agentAdapter{agents: agentMgr, agentOrch: agentOrch, tasks: taskMgr}
-	engine = workflow.NewEngine(wfStore, ta, aa, logger)
+	engine = workflow.NewTestEngine(wfStore, ta, aa, logger)
 	engine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: taskMgr, mgr: wm})
 	classifier := newE2EFakeClassifier()
 	engine.SetTaskClassifier(&taskClassifierAdapter{tasks: taskMgr, classifier: classifier})
@@ -1335,7 +1336,7 @@ steps:
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if spawned := h.maybeSpawn(created.ID, string(task.StatusTodo)); !spawned {
+	if spawned := h.maybeSpawn(context.Background(), created.ID, string(task.StatusTodo)); !spawned {
 		t.Fatal("expected initial human-review spawn")
 	}
 
@@ -2457,6 +2458,49 @@ steps:
       - goto: ""
 `
 
+const testPromptBoundedImplementWorkflowYAML = `id: test-implement-prompt-bounded
+name: Test Implement Prompt Bounded
+trigger:
+  on: task.status_changed
+  conditions:
+    - field: task.status
+      operator: equals
+      value: in-progress
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      model: sonnet
+      prompt: >-
+        Implement {{.Task.ID}}
+        {{- if currenttestfailures .Task.CurrentTestFailures}}
+
+        ## Current Test Failures
+
+        {{currenttestfailures .Task.CurrentTestFailures}}
+        {{- end}}
+        {{- if acceptanceledger .Task.AcceptanceLedger}}
+
+        ## Acceptance Ledger
+
+        {{acceptanceledger .Task.AcceptanceLedger}}
+        {{- end}}
+    next:
+      - goto: handoff
+  - id: handoff
+    name: Hand Off To Testing
+    type: set_status
+    config:
+      status: testing
+    next:
+      - goto: ""
+`
+
+const testWorkflowPromptInlineElision = "\n\n…(middle elided to fit prompt)…\n\n"
+
 // installTestingTaskWorkflow writes the test fixture into the engine's
 // workflow store so DispatchEvent can match it.
 func installTestingTaskWorkflow(t *testing.T, env *e2eEnv) {
@@ -2466,6 +2510,16 @@ func installTestingTaskWorkflow(t *testing.T, env *e2eEnv) {
 		[]byte(testTestingTaskWorkflowYAML), 0o644,
 	); err != nil {
 		t.Fatalf("write testing-task.yaml: %v", err)
+	}
+}
+
+func installPromptBoundedImplementWorkflow(t *testing.T, env *e2eEnv) {
+	t.Helper()
+	if err := os.WriteFile(
+		filepath.Join(env.wfStore.Dir(), "test-implement-prompt-bounded.yaml"),
+		[]byte(testPromptBoundedImplementWorkflowYAML), 0o644,
+	); err != nil {
+		t.Fatalf("write test-implement-prompt-bounded.yaml: %v", err)
 	}
 }
 
@@ -2718,6 +2772,73 @@ func TestE2E_TestingTaskWorkflow_FailLoopsBackToImplement(t *testing.T) {
 	}
 	if !tk.Reviewed {
 		t.Error("expected task marked reviewed so the re-implementation loop skips code review")
+	}
+}
+
+func TestE2E_ImplementPromptBoundedAcrossFiveFailedAttempts(t *testing.T) {
+	env := setupE2EMultiProvider(t, "claude", []string{
+		"success", "test_fail_large_1",
+		"success", "test_fail_large_2",
+		"success", "test_fail_large_3",
+		"success", "test_fail_large_4",
+		"success", "test_fail_large_5",
+	})
+	installPromptBoundedImplementWorkflow(t, env)
+	installTestingTaskWorkflow(t, env)
+	env.engine.SetTestingMaxAttempts(5)
+
+	initialBody := "## Problem\nKeep prompt growth bounded across repeated failed testing loops."
+	created, err := env.tasks.Create("bounded prompt loop", initialBody, "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
+		"status": string(task.StatusInProgress),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := env.startWorkflow(created.ID, "test-implement-prompt-bounded"); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 30*time.Second, "five failed loops complete at cap", func() bool {
+		tk, gErr := env.tasks.Get(created.ID)
+		return gErr == nil &&
+			tk.Workflow != nil &&
+			tk.Workflow.State == workflow.ExecCompleted &&
+			tk.Status == task.StatusHumanRequired
+	})
+
+	tk, err := env.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.Body != initialBody {
+		t.Fatalf("task body grew across failed loops:\n%s", tk.Body)
+	}
+
+	var prompts []string
+	for i := range tk.AgentRuns {
+		if tk.AgentRuns[i].Role == "implementation" {
+			prompts = append(prompts, tk.AgentRuns[i].Prompt)
+		}
+	}
+	if len(prompts) != 5 {
+		t.Fatalf("implementation prompt count = %d, want 5", len(prompts))
+	}
+	for i, prompt := range prompts {
+		if len(prompt) > 20000 {
+			t.Fatalf("implementation prompt %d len = %d, want bounded prompt", i+1, len(prompt))
+		}
+	}
+	if growth := len(prompts[4]) - len(prompts[3]); growth > 2048 {
+		t.Fatalf("final late-loop prompt growth = %d bytes, want capped growth (lens=%d,%d)",
+			growth, len(prompts[3]), len(prompts[4]))
+	}
+	lastPrompt := prompts[len(prompts)-1]
+	if count := strings.Count(lastPrompt, testWorkflowPromptInlineElision); count < 2 {
+		t.Fatalf("final implementation prompt missing truncation markers for capped inline sections:\n%s", lastPrompt)
 	}
 }
 
@@ -4549,7 +4670,7 @@ func (g *scriptedGate) ReportAuthFailure(provider, reason string) {
 	g.reason[provider] = reason
 }
 
-func (g *scriptedGate) ReportRateLimit(provider string, retryAfter time.Duration, reason string) {
+func (g *scriptedGate) ReportRateLimit(provider string, retryAfter time.Duration, reason string, _ provider.CooldownSource) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.healthy[provider] = false
@@ -4608,7 +4729,7 @@ func (g *cooldownGate) ReportAuthFailure(provider, reason string) {
 	g.limitedTo[provider] = time.Now().Add(5 * time.Minute)
 }
 
-func (g *cooldownGate) ReportRateLimit(provider string, retryAfter time.Duration, reason string) {
+func (g *cooldownGate) ReportRateLimit(provider string, retryAfter time.Duration, reason string, _ provider.CooldownSource) {
 	if retryAfter <= 0 {
 		retryAfter = 200 * time.Millisecond
 	}
@@ -4687,7 +4808,7 @@ func rebuildEngineFromEnv(t *testing.T, env *e2eEnv) *workflow.Engine {
 
 	ta := &taskAdapter{tasks: taskMgr}
 	aa := &agentAdapter{agents: agentMgr, agentOrch: agentOrch, tasks: taskMgr}
-	engine = workflow.NewEngine(env.wfStore, ta, aa, e2eLogger(t))
+	engine = workflow.NewTestEngine(env.wfStore, ta, aa, e2eLogger(t))
 	engine.SetWorktreeGetter(&worktreeGetterAdapter{tasks: taskMgr, mgr: wm})
 	engine.SetPRLinker(nil)
 	if env.classifier != nil {
@@ -6161,7 +6282,7 @@ func TestE2E_RateLimitCooldownWindowCorrectness(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"success", "success"})
 	g := newCooldownGate()
 	env.agents.SetHealthGate(g)
-	g.ReportRateLimit("claude", 200*time.Millisecond, "rate_limited")
+	g.ReportRateLimit("claude", 200*time.Millisecond, "rate_limited", provider.CooldownFromConfig)
 
 	ag1, err := env.agents.Run(agent.RunConfig{
 		TaskID:   "cooldown-1",

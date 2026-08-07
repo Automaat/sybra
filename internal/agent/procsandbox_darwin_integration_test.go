@@ -403,6 +403,22 @@ func TestSandboxEnforce_FullGitWorkflowSucceeds(t *testing.T) {
 	}
 }
 
+func TestSandboxEnforce_SignedCommitSucceeds(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
+	}
+	if out, err := exec.Command("git", "config", "--global", "--get", "user.signingkey").Output(); err != nil || strings.TrimSpace(string(out)) == "" {
+		t.Skip("no GPG signing key configured on this host")
+	}
+	_, wt := setupLinkedWorktree(t)
+	cfg := buildEnforceCfg(t, wt)
+
+	cmd := newDarwinSandboxCmd(cfg, "sh", "-c", "cd "+wt+" && echo signed > signed.txt && git add signed.txt && git commit -q -S -m signed")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("sandboxed signed commit: %v: %s", err, out)
+	}
+}
+
 func TestSandboxEnforce_LargeFetchUnpacksLooseObjects(t *testing.T) {
 	if !sandboxExecAvailable() {
 		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")

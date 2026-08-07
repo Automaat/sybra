@@ -124,7 +124,7 @@ func TestE2E_CrossProvider_ReviewThenFix(t *testing.T) {
 // agent calls `sybra-cli update --code-review`. Asserts the CodeReview
 // sidecar is populated on the task once the workflow completes — proving
 // the end-to-end save path works: scenario → sybra-cli flag → Update →
-// CodeReviewStore → Store.Get → Task.CodeReview → frontend JSON.
+// the code-review sidecar → Store.Get → Task.CodeReview → frontend JSON.
 func TestE2E_CrossProvider_ReviewSidecarPersisted(t *testing.T) {
 	env := setupCrossProviderEnv(t, "claude",
 		[]string{"success", "success"},  // claude: implement, fix_review

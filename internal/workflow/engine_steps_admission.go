@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // admissionPreflightReasonPrefix marks a human-required status_reason as
@@ -134,10 +135,10 @@ func (e *Engine) checkAdmissionOversize(raw string) string {
 // transient vs permanent. A not-yet-existing worktree is not a failure here —
 // see the doc comment on execAdmissionPreflight.
 func (e *Engine) checkAdmissionCredentials(taskID string) error {
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return nil
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return nil
 	}
@@ -150,7 +151,7 @@ func (e *Engine) checkAdmissionCredentials(taskID string) error {
 // (Exhausted: true — no automatic re-attempts) and records the decision.
 func (e *Engine) blockAdmission(taskID string, step *Step, t TaskInfo, kind blocker.Kind, reason string) (StepOutput, error) {
 	full := admissionPreflightReasonPrefix + " " + reason
-	if err := e.tasks.UpdateTaskBlocker(taskID, "human-required", full, blocker.State{
+	if err := e.tasks.UpdateTaskBlocker(taskID, taskstatus.HumanRequired, full, blocker.State{
 		Kind:      kind,
 		Actor:     blocker.ActorWorkflow,
 		Exhausted: true,

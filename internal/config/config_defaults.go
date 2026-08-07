@@ -3,16 +3,21 @@ package config
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/providerid"
 	"gopkg.in/yaml.v3"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // AllowsProjectType reports whether automations on this machine should act on
@@ -261,6 +266,39 @@ func NormalizeHeadlessPermissionMode(s string) (string, error) {
 	}
 }
 
+// NormalizeCommitSigning canonicalizes an agent.commit_signing value. Empty
+// maps to "auto". "auto", "never", and "require" pass through unchanged. Any
+// other value is rejected, so a typo cannot quietly resolve to auto and change
+// a host's signing posture.
+func NormalizeCommitSigning(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "auto":
+		return "auto", nil
+	case "never":
+		return "never", nil
+	case "require":
+		return "require", nil
+	default:
+		return "", fmt.Errorf("invalid commit_signing %q (valid: auto, never, require)", s)
+	}
+}
+
+// CommitSigning returns the configured commit-signing posture, or "auto" if
+// unset. An invalid value is logged and treated as "auto" — the historical
+// behavior — so a misconfigured host degrades to host-probing rather than
+// silently refusing or forcing signatures.
+func (c *Config) CommitSigning() string {
+	if c == nil || c.Agent.CommitSigning == "" {
+		return "auto"
+	}
+	mode, err := NormalizeCommitSigning(c.Agent.CommitSigning)
+	if err != nil {
+		slog.Warn("config: invalid agent.commit_signing; falling back to auto", "value", c.Agent.CommitSigning)
+		return "auto"
+	}
+	return mode
+}
+
 // DefaultHeadlessPermissionMode returns the configured default headless permission
 // mode, or "bypass" if unset. An invalid config value is logged and treated as
 // "bypass" so a misconfigured server never silently switches posture.
@@ -385,9 +423,9 @@ const DefaultTestingMaxConcurrent = 3
 // loop when TestingConfig.MaxAttempts is unset. Recurring grounded failure
 // fingerprints remain the primary non-convergence detector — route_test_result
 // escalates immediately when the same fingerprint returns after an intervening
-// code-author run. This numeric cap is a generous safety-net backstop only for
-// loops that keep surfacing distinct grounded defects without converging.
-const DefaultTestingMaxAttempts = 25
+// code-author run. This numeric cap is a safety-net backstop only for loops
+// that keep surfacing distinct grounded defects without converging.
+const DefaultTestingMaxAttempts = 5
 
 // TestingMaxConcurrent returns the configured cap or DefaultTestingMaxConcurrent.
 func (c *Config) TestingMaxConcurrent() int {
@@ -397,9 +435,45 @@ func (c *Config) TestingMaxConcurrent() int {
 	return DefaultTestingMaxConcurrent
 }
 
-// TestingMaxAttempts returns the configured cap or DefaultTestingMaxAttempts.
+// derivedVerifyChecksMaxConcurrentMin/Max bound derivedVerifyChecksMaxConcurrent's
+// CPU-derived output — never a single global slot (a multi-core fleet host
+// should get some parallelism even with agent.verify_checks_max_concurrent
+// unset) and never unbounded (a full verify suite is CPU-heavy per run, so a
+// huge core count should not translate into dozens running at once).
+const (
+	derivedVerifyChecksMaxConcurrentMin = 1
+	derivedVerifyChecksMaxConcurrentMax = 8
+)
+
+// derivedVerifyChecksMaxConcurrent computes the CPU-derived default slot
+// count used when agent.verify_checks_max_concurrent is unset: roughly a
+// quarter of the host's logical CPUs, clamped to
+// [derivedVerifyChecksMaxConcurrentMin, derivedVerifyChecksMaxConcurrentMax].
+// A quarter (not e.g. half) leaves headroom for the rest of the fleet's
+// concurrent agent work (agent.max_concurrent) to actually run on the same
+// host without a verify-suite pile-up starving it of CPU.
+func derivedVerifyChecksMaxConcurrent() int {
+	n := runtime.NumCPU() / 4
+	n = max(n, derivedVerifyChecksMaxConcurrentMin)
+	n = min(n, derivedVerifyChecksMaxConcurrentMax)
+	return n
+}
+
+// VerifyChecksMaxConcurrent returns the configured
+// agent.verify_checks_max_concurrent when set (>0), otherwise a CPU-derived
+// default — see derivedVerifyChecksMaxConcurrent.
+func (c *Config) VerifyChecksMaxConcurrent() int {
+	if c != nil && c.Agent.VerifyChecksMaxConcurrent > 0 {
+		return c.Agent.VerifyChecksMaxConcurrent
+	}
+	return derivedVerifyChecksMaxConcurrent()
+}
+
+// TestingMaxAttempts returns the configured cap, bounded by the immutable
+// safety ceiling. Values above the ceiling historically survived default
+// reductions and silently retained the old runaway-cost posture.
 func (c *Config) TestingMaxAttempts() int {
-	if c != nil && c.Testing.MaxAttempts > 0 {
+	if c != nil && c.Testing.MaxAttempts > 0 && c.Testing.MaxAttempts < DefaultTestingMaxAttempts {
 		return c.Testing.MaxAttempts
 	}
 	return DefaultTestingMaxAttempts
@@ -423,6 +497,7 @@ const (
 	DefaultReviewsSlowSeconds           = 600 // was 300
 	DefaultReviewsMaxPRsPerTick         = 25
 	DefaultReviewRoundsPerHour          = 3
+	DefaultReviewRoundsPerTask          = 6
 	DefaultReviewsStableBackoffMaxTicks = 8
 	DefaultIssuesSeconds                = 600 // was 300
 	DefaultRenovateFastSeconds          = 120 // was 60
@@ -715,7 +790,7 @@ func defaultSeedConfig() *Config {
 			MaxSizeMB: DefaultAttachmentMaxSizeMB,
 		},
 		Agent: AgentDefaults{
-			Provider:         "claude",
+			Provider:         providerid.Claude,
 			MaxConcurrent:    25,
 			MaxCostUSD:       5.0,
 			MaxTurns:         150,
@@ -870,7 +945,7 @@ func WriteRawConfig(data []byte) error {
 	if err := preserveLastKnownGoodConfig(path); err != nil {
 		return err
 	}
-	return writeFileAtomic(path, data, ".config-*.yaml.tmp")
+	return writeConfigFile(path, data)
 }
 
 // Directories returns the resolved paths for all sybra data directories.
@@ -926,30 +1001,63 @@ func (c *Config) InterventionsDir() string {
 }
 
 func Load() (*ResolvedConfig, error) {
-	return load(loadOptions{persistLoadReconciles: true})
+	cfg, _, err := load(loadOptions{persistLoadReconciles: true})
+	return requireResolved(cfg, err)
 }
 
 // LoadNoPersist reads config.yaml and applies in-memory defaults/reconciles
 // without writing any migration back to disk. Reload paths use this to keep
 // their read-only contract and to preserve raw-editor formatting/comments.
 func LoadNoPersist() (*ResolvedConfig, error) {
-	return load(loadOptions{})
+	cfg, _, err := load(loadOptions{})
+	return requireResolved(cfg, err)
+}
+
+// requireResolved turns "no error but no config" into an error, so callers
+// that dereference the result do not have to prove the combination is
+// impossible.
+func requireResolved(cfg *ResolvedConfig, err error) (*ResolvedConfig, error) {
+	switch {
+	case err != nil:
+		return nil, err
+	case cfg == nil:
+		return nil, errors.New("load config: no configuration resolved")
+	}
+	return cfg, nil
+}
+
+// LoadLenient resolves config.yaml without failing on an unknown key, and
+// returns that key's error alongside the config rather than instead of it.
+//
+// Only a diagnostic may use this. `config doctor` exists to explain a config
+// an operator cannot get past, and refusing to run on one bad key made it
+// useless in exactly that case — reporting the key as a finding, next to every
+// other check, is the whole point. Everything that acts on the config still
+// fails closed via Load/LoadNoPersist.
+func LoadLenient() (cfg *ResolvedConfig, schemaErr, err error) {
+	cfg, schemaErr, err = load(loadOptions{lenient: true})
+	cfg, err = requireResolved(cfg, err)
+	return cfg, schemaErr, err
 }
 
 type loadOptions struct {
 	persistLoadReconciles bool
+	lenient               bool
 }
 
-func load(opts loadOptions) (*ResolvedConfig, error) {
+func load(opts loadOptions) (resolvedCfg *ResolvedConfig, schemaErr, err error) {
 	path := configPath()
 	data, err := os.ReadFile(path)
 	existingFile := err == nil
 	var fileCfg *FileConfig
 	switch {
 	case existingFile:
-		fileCfg, err = ParseFileConfig(data)
+		fileCfg, schemaErr, err = parseFileConfigLenient(data)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
+		}
+		if schemaErr != nil && !opts.lenient {
+			return nil, nil, schemaErr
 		}
 		for _, warning := range fileCfg.Warnings() {
 			slog.Warn("config: deprecated schema v2 alias", "warning", warning)
@@ -957,11 +1065,11 @@ func load(opts loadOptions) (*ResolvedConfig, error) {
 	case os.IsNotExist(err):
 		if opts.persistLoadReconciles {
 			if writeErr := writeDefaultConfig(path); writeErr != nil {
-				return nil, writeErr
+				return nil, nil, writeErr
 			}
 		}
 	default:
-		return nil, err
+		return nil, nil, err
 	}
 	if opts.persistLoadReconciles {
 		tightenConfigPerms(path, existingFile)
@@ -971,13 +1079,13 @@ func load(opts loadOptions) (*ResolvedConfig, error) {
 		ExistingFile:    existingFile,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := ValidateUnattendedPosture(resolved.Config); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	ensureServerAuthToken(resolved.Config, opts.persistLoadReconciles)
-	return resolved.Config, nil
+	return resolved.Config, schemaErr, nil
 }
 
 // AuthTokenPath is where sybra-server's generated bearer token is persisted
@@ -1013,14 +1121,14 @@ func readAuthTokenFile() string {
 // mirroring WriteRawConfig's crash-safety, but targeting the dedicated token
 // file instead of config.yaml.
 func writeAuthTokenFile(token string) error {
-	return writeFileAtomic(AuthTokenPath(), []byte(token+"\n"), ".server_auth_token-*.tmp")
+	return writeConfigFile(AuthTokenPath(), []byte(token+"\n"))
 }
 
 func preserveLastKnownGoodConfig(path string) error {
 	data, err := os.ReadFile(path)
 	switch {
 	case err == nil:
-		return writeFileAtomic(LastKnownGoodConfigPath(), data, ".config-last-good-*.tmp")
+		return writeConfigFile(LastKnownGoodConfigPath(), data)
 	case os.IsNotExist(err):
 		return nil
 	default:
@@ -1035,31 +1143,17 @@ func RestoreLastKnownGoodConfig() error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(configPath(), data, ".config-restore-*.tmp")
+	return writeConfigFile(configPath(), data)
 }
 
-func writeFileAtomic(path string, data []byte, tempPattern string) error {
+// writeConfigFile creates the parent directory then publishes the file at the
+// config mode. These files can carry the server auth token, so the mode is
+// explicit rather than inherited from the operator's umask.
+func writeConfigFile(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), tempPattern)
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(configFilePerm); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return fsutil.AtomicWriteMode(path, data, configFilePerm)
 }
 
 // ensureServerAuthToken completes the server auth-token precedence after
@@ -1806,10 +1900,7 @@ const (
 var defaultConfigStub = []byte("# Sybra configuration\nschema_version: 2\n# GitHub automations are opt-in on first run.\nintegrations:\n  github:\n    enabled: false\n")
 
 func writeDefaultConfig(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), configDirPerm); err != nil {
-		return err
-	}
-	return os.WriteFile(path, defaultConfigStub, configFilePerm)
+	return writeConfigFile(path, defaultConfigStub)
 }
 
 // tightenConfigPerms retrofits the config directory and file to 0o700/0o600
