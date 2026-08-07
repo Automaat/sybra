@@ -171,7 +171,7 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 			// A live task agent protects canonical and attempt worktrees even if
 			// the task snapshot disappeared between List and this sweep.
 			continue
-		case isAttempt && inflightAttempts[name] && !task.IsTerminalStatus(t.Status):
+		case isAttempt && t != nil && inflightAttempts[name] && !task.IsTerminalStatus(t.Status):
 			// The parent task's status is not enough to identify a live fan-out:
 			// attempt agents can finish independently, leaving gaps where no
 			// agent is registered. The persisted attempt record is the durable
