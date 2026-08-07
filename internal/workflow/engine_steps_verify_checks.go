@@ -1163,6 +1163,8 @@ func (e *Engine) repairTornNodeModulesInDir(ctx context.Context, taskID, dir, la
 	}
 
 	e.logger.Warn("workflow.verify-checks.npm-repair", "task_id", taskID, "dir", label)
+	unlock := lockNodeToolchainDir(dir)
+	defer unlock()
 	rctx, cancel := context.WithTimeout(ctx, repairTornNodeModulesTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(rctx, "npm", "ci", "--ignore-scripts")
@@ -1255,9 +1257,17 @@ func (e *Engine) repairCorruptToolchain(ctx context.Context, taskID, wtPath, dir
 		return // not a Node project — nothing to check
 	}
 	binDir := filepath.Join(dir, "node_modules", ".bin")
-	entries, err := os.ReadDir(binDir)
-	if err == nil && nodeModulesBinNonEmpty(binDir, entries) {
+	if nodeToolchainIntact(binDir) {
 		return // toolchain looks intact
+	}
+
+	unlock := lockNodeToolchainDir(dir)
+	defer unlock()
+	// Re-check under the lock: another gate running concurrently in this same
+	// worktree may have just repaired this directory, and a second `npm ci`
+	// would delete and rewrite the install it is about to be used from.
+	if nodeToolchainIntact(binDir) {
+		return
 	}
 
 	reinstall := npmReinstallCommand(dir, wtPath)
@@ -1297,6 +1307,34 @@ func npmReinstallCommand(paths ...string) string {
 		}
 	}
 	return "npm ci"
+}
+
+// nodeToolchainRepairLocks serializes toolchain repairs per directory.
+// execParallelGates runs focused_checks and verify_checks concurrently against
+// the SAME worktree, and a `node_modules` that was never installed is left
+// alone by the pre-fan-out repair (it is not corruption, see
+// isCorruptedNodeModules) — so both gates can reach repairCorruptToolchain for
+// one directory and race two `npm ci` runs that each delete and rewrite it,
+// producing a torn install and intermittent unrelated check failures. The lock
+// is process-wide rather than per-Engine because the contended resource is the
+// directory on disk, not engine state.
+var nodeToolchainRepairLocks sync.Map // cleaned dir -> *sync.Mutex
+
+func lockNodeToolchainDir(dir string) (unlock func()) {
+	v, _ := nodeToolchainRepairLocks.LoadOrStore(filepath.Clean(dir), &sync.Mutex{})
+	mu, ok := v.(*sync.Mutex)
+	if !ok {
+		return func() {}
+	}
+	mu.Lock()
+	return mu.Unlock
+}
+
+// nodeToolchainIntact reports whether binDir (a node_modules/.bin) holds at
+// least one non-empty entry, i.e. the toolchain needs no repair.
+func nodeToolchainIntact(binDir string) bool {
+	entries, err := os.ReadDir(binDir)
+	return err == nil && nodeModulesBinNonEmpty(binDir, entries)
 }
 
 // nodeModulesBinNonEmpty reports whether at least one entry under
@@ -1345,6 +1383,7 @@ func (e *Engine) repairCorruptedNodeModules(ctx context.Context, taskID, wtPath 
 			continue
 		}
 		e.logger.Warn("workflow.verify-checks.node-modules-repair", "task_id", taskID, "dir", dir)
+		unlock := lockNodeToolchainDir(dir)
 		repairCtx, cancel := context.WithTimeout(ctx, verifyChecksNodeModulesRepairTimeout)
 		maybeMiseTrust(repairCtx, wtPath)
 		if dir != wtPath {
@@ -1355,6 +1394,7 @@ func (e *Engine) repairCorruptedNodeModules(ctx context.Context, taskID, wtPath 
 		cmd.Dir = dir
 		repairErr := cmd.Run()
 		cancel()
+		unlock()
 		if repairErr != nil {
 			e.logger.Warn("workflow.verify-checks.node-modules-repair-failed",
 				"task_id", taskID, "dir", dir, "cmd", reinstall, "err", repairErr)

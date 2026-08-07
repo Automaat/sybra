@@ -287,7 +287,10 @@ func init() {
 		StepClassifyTask:         {sync: bindSyncExecStep((*Engine).execClassifyTask), reducer: stepReducerDispatch, resumable: true},
 		StepAdmissionPreflight:   {sync: bindSyncExecTaskInfoStep((*Engine).execAdmissionPreflight), reducer: stepReducerDispatch, resumable: true},
 		StepRequireEvidence:      {sync: bindSyncTaskInfoStep((*Engine).execRequireEvidence), reducer: stepReducerDispatch},
-		StepParallelGates:        {sync: bindSyncExecTaskInfoStep((*Engine).execParallelGates), reducer: stepReducerDispatch},
+		// resumable: the coordinator parks itself on verify backpressure (see
+		// preflightVerifyChecks), so ResumeStalled must be able to re-enter it
+		// once a verify slot frees.
+		StepParallelGates: {sync: bindSyncExecTaskInfoStep((*Engine).execParallelGates), reducer: stepReducerDispatch, resumable: true},
 	}
 }
 

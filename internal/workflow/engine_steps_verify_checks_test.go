@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1312,6 +1313,50 @@ func TestEnsureNodeToolchain_IntactBinSkipsRepair(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(dir, "marker-npm-ci-ran")); err == nil {
 		t.Error("npm ci should not have run — toolchain looked intact")
+	}
+}
+
+// TestEnsureNodeToolchain_ConcurrentCallersInstallOnce covers the fan-out
+// hazard execParallelGates introduced: focused_checks and verify_checks run
+// concurrently against the SAME worktree, and an absent node_modules is left
+// alone by the pre-fan-out repair (never installed is not corruption), so both
+// gates can reach this repair path for one directory. Two `npm ci` runs each
+// delete and rewrite node_modules, tearing the install the other is about to
+// use. The repair must serialize per directory and re-check under the lock, so
+// exactly one install runs.
+func TestEnsureNodeToolchain_ConcurrentCallersInstallOnce(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "package.json"), "{}")
+	// node_modules/.bin absent: the "never installed" shape both gates see.
+
+	runLog := filepath.Join(t.TempDir(), "npm-runs.log")
+	fakeBin := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"echo run >> " + runLog + "\n" +
+		"sleep 0.2\n" +
+		"mkdir -p node_modules/.bin\n" +
+		"printf '#!/bin/sh\\n' > node_modules/.bin/vite\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() {
+			engine.ensureNodeToolchain(context.Background(), "t1", dir, "npm run build:web", &boundedTail{max: 4096})
+		})
+	}
+	wg.Wait()
+
+	data, err := os.ReadFile(runLog)
+	if err != nil {
+		t.Fatalf("npm never ran: %v", err)
+	}
+	if runs := strings.Count(string(data), "run"); runs != 1 {
+		t.Fatalf("npm ci ran %d times, want exactly 1 — concurrent gates must not race two installs", runs)
 	}
 }
 

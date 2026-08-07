@@ -25,13 +25,13 @@ func resumeSkipReasonForStatus(status taskstatus.Status) (reason string, skip bo
 	}
 }
 
+// isResumableStepType reads stepRegistry's own resumable flag rather than
+// carrying a second hand-maintained list: a step type that parks itself
+// (ExecWaiting + a retry-after) but is missing from the allowlist is skipped
+// by ResumeStalled forever, and a duplicated list is exactly how a new parking
+// step type gets added in one place and forgotten in the other.
 func isResumableStepType(t StepType) bool {
-	switch t {
-	case StepRunAgent, StepParallel, StepBestOfN, StepClassifyTask, StepVerifyChecks, StepCreatePR, StepPushBranch, StepPromoteBestOfN, StepAdmissionPreflight:
-		return true
-	default:
-		return false
-	}
+	return stepRegistry[t].resumable
 }
 
 func (e *Engine) tryMarkResumeDispatching(taskID string, step *Step) (reason string, ok bool) {

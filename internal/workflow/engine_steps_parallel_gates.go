@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"sync"
@@ -185,13 +186,19 @@ func (e *Engine) preflightVerifyChecks(taskID string, step *Step, wfExec *Execut
 //     human-required; focused_checks' outcome is folded in below only when
 //     verify_checks actually ran the suite this round.
 //  4. Either gate hit an auto-fixable failure -> rewind to implement. Both
-//     gates' applies run (ordered so the gate with more prior auto-fix
-//     attempts — and so the larger backoff — applies last, so its
-//     shared retry-after var wins), so a simultaneous double failure carries
-//     both reask notes and bumps both counters — the "single merged rewind"
-//     the plan calls for.
+//     gates' applies run, so a simultaneous double failure carries both reask
+//     notes and bumps both counters — the "single merged rewind" the plan
+//     calls for.
 //  5. Both clean -> advance (task.status unchanged; the YAML's pr_number
 //     check decides ready-review vs in-review, same as before).
+//
+// A terminal gate result and a rewind can never both be applied in one round.
+// rewindRetry re-writes the STALE pre-gate task status, so a rewind applied
+// after a gate escalated would silently erase that escalation and resume
+// implementation — the serial chain could not do this, because it never ran a
+// later gate once an earlier one escalated. Terminal verdicts are therefore
+// classified before any apply (see applyTerminalGates), and the ordering below
+// early-exits as soon as an apply turns out terminal.
 func (e *Engine) resolveParallelGates(
 	taskID string, step *Step, wfExec *Execution, t TaskInfo,
 	tamperOut StepOutput,
@@ -220,10 +227,24 @@ func (e *Engine) resolveParallelGates(
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "clean"}, nil
 	}
 
-	// verify_checks actually ran this round: order the two applies so the
-	// gate with more prior auto-fix attempts applies last (its computed
-	// backoff is generally the larger one, and it's what survives the
-	// shared retry-after workflow var).
+	// Resolve terminal verdicts (a human-required/blocked status write that
+	// never rewinds) before applying anything: only the terminal gate(s) then
+	// apply, so no rewind can overwrite the escalation with the stale pre-gate
+	// status.
+	focusedTerminal := e.focusedVerdictTerminal(focusedVerdict)
+	verifyTerminal := e.verifyVerdictTerminal(verifyVerdict)
+	if focusedTerminal || verifyTerminal {
+		return e.applyTerminalGates(taskID, step, wfExec, t,
+			focusedStep, focusedVerdict, focusedTerminal,
+			verifyStep, verifyVerdict, verifyTerminal)
+	}
+
+	// Neither gate is terminal by verdict, so each apply is a no-op
+	// (clean/skip) or an auto-fix rewind — except that a rewind whose ceiling
+	// is already reached escalates instead. Apply the gate with MORE prior
+	// auto-fix attempts first: it is the one closest to that ceiling, so it is
+	// the one that can turn terminal, and the early exit below then keeps the
+	// other gate's rewind from erasing the escalation.
 	focusedAttempts := parseWorkflowInt(nonNilVars(wfExec)[autoFixCounterKey(focusedStep)])
 	verifyAttempts := parseWorkflowInt(nonNilVars(wfExec)[autoFixCounterKey(verifyStep)])
 
@@ -252,38 +273,132 @@ func (e *Engine) resolveParallelGates(
 		return e.applyVerifyChecksVerdict(taskID, verifyStep, wfExec, t, verifyVerdict)
 	}
 
-	var focusedOut, verifyOut StepOutput
-	var focusedErr, verifyErr error
-	if focusedAttempts <= verifyAttempts {
-		focusedOut, focusedErr = applyFocused()
-		restoreImplementMarker()
-		verifyOut, verifyErr = applyVerify()
-	} else {
-		verifyOut, verifyErr = applyVerify()
-		restoreImplementMarker()
-		focusedOut, focusedErr = applyFocused()
+	first, second := applyFocused, applyVerify
+	if verifyAttempts > focusedAttempts {
+		first, second = applyVerify, applyFocused
 	}
 
-	if focusedErr != nil && !errors.Is(focusedErr, errStepParked) {
-		return StepOutput{}, focusedErr
+	firstOut, firstErr := first()
+	if firstErr != nil && !errors.Is(firstErr, errStepParked) {
+		return StepOutput{}, firstErr
 	}
-	if verifyErr != nil && !errors.Is(verifyErr, errStepParked) {
-		return StepOutput{}, verifyErr
+	if out, terminal := coordinatorTerminalOutput(step, firstOut); terminal {
+		// This gate escalated instead of rewinding (auto-fix ceiling reached,
+		// or nothing to rewind into). Stop here: the other gate's rewind would
+		// overwrite the terminal status with the stale pre-gate one.
+		return out, nil
 	}
 
-	if verifyOut.Output == "blocked" {
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "blocked: verify_checks"}, nil
+	priorRetryAfter := ""
+	if errors.Is(firstErr, errStepParked) {
+		priorRetryAfter = nonNilVars(wfExec)[workflowRetryAfterVar]
 	}
+	restoreImplementMarker()
+	secondOut, secondErr := second()
+	if secondErr != nil && !errors.Is(secondErr, errStepParked) {
+		return StepOutput{}, secondErr
+	}
+	keepLaterRetryAfter(wfExec, priorRetryAfter)
 
-	if errors.Is(focusedErr, errStepParked) || errors.Is(verifyErr, errStepParked) {
+	if out, terminal := coordinatorTerminalOutput(step, secondOut); terminal {
+		return out, nil
+	}
+	if errors.Is(firstErr, errStepParked) || errors.Is(secondErr, errStepParked) {
 		return StepOutput{}, errStepParked
 	}
 
-	if focusedOut.Output == "flagged" || verifyOut.Output == "flagged" {
-		return StepOutput{StepID: step.ID, Status: "completed", Output: "human-required: gate flagged"}, nil
-	}
-
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "clean"}, nil
+}
+
+// applyTerminalGates applies only the gates whose verdict is terminal, in the
+// order that lands the documented precedence on the task's final status:
+// focused_checks' human-required first, then verify_checks, so a verify
+// "blocked" write wins. A non-terminal gate's verdict is deliberately never
+// applied here — its rewind would overwrite the terminal status with the stale
+// pre-gate one, and the serial chain likewise never ran a later gate once an
+// earlier one escalated.
+func (e *Engine) applyTerminalGates(
+	taskID string, step *Step, wfExec *Execution, t TaskInfo,
+	focusedStep *Step, focusedVerdict focusedChecksVerdict, focusedTerminal bool,
+	verifyStep *Step, verifyVerdict verifyChecksVerdict, verifyTerminal bool,
+) (StepOutput, error) {
+	out := StepOutput{StepID: step.ID, Status: "completed", Output: "human-required: gate flagged"}
+	if focusedTerminal {
+		if _, err := e.applyFocusedChecksVerdict(taskID, focusedStep, wfExec, t, focusedVerdict); err != nil {
+			return StepOutput{}, err
+		}
+	}
+	if verifyTerminal {
+		verifyOut, err := e.applyVerifyChecksVerdict(taskID, verifyStep, wfExec, t, verifyVerdict)
+		if err != nil {
+			return StepOutput{}, err
+		}
+		if terminalOut, terminal := coordinatorTerminalOutput(step, verifyOut); terminal {
+			out = terminalOut
+		}
+	}
+	return out, nil
+}
+
+// focusedVerdictTerminal reports whether applying v is guaranteed to write a
+// terminal status rather than possibly arming a rewind. It mirrors
+// applyFocusedChecksVerdict's branches: only the run-error paths (exceeded the
+// time budget, or the checks could not run at all) flag unconditionally. A
+// failed command goes through the rewind path, which turns terminal only when
+// the rewind itself is refused — handled by the apply ordering, not here.
+func (e *Engine) focusedVerdictTerminal(v focusedChecksVerdict) bool {
+	if v.err != nil || v.skip != "" || v.runErr == nil {
+		return false
+	}
+	// Engine-shutdown cancellation fails open to a skip, same as the apply.
+	return !e.isShutdownCancel(v.runErr)
+}
+
+// isShutdownCancel reports whether err is the engine tearing itself down, the
+// one run error both gates' applies fail OPEN on (a skip, not a flag).
+func (e *Engine) isShutdownCancel(err error) bool {
+	return errors.Is(err, context.Canceled) && e.ctx.Err() != nil
+}
+
+// verifyVerdictTerminal is focusedVerdictTerminal's counterpart for
+// verify_checks, mirroring applyVerifyChecksVerdict: a run error flags (except
+// engine-shutdown cancellation) and a classified non-auto-fixable failure
+// blocks. Only the auto-fixable failure path can rewind.
+func (e *Engine) verifyVerdictTerminal(v verifyChecksVerdict) bool {
+	if v.runErr != nil {
+		return !e.isShutdownCancel(v.runErr)
+	}
+	return v.report.FailedCmd != "" && v.classification != nil && !v.classification.AutoFixable
+}
+
+// coordinatorTerminalOutput maps a gate's own StepOutput onto the
+// coordinator's output whenever that gate wrote a terminal task status.
+func coordinatorTerminalOutput(step *Step, gateOut StepOutput) (StepOutput, bool) {
+	switch gateOut.Output {
+	case "blocked":
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "blocked: verify_checks"}, true
+	case "flagged":
+		return StepOutput{StepID: step.ID, Status: "completed", Output: "human-required: gate flagged"}, true
+	}
+	return StepOutput{}, false
+}
+
+// keepLaterRetryAfter restores prior when the second gate's rewind replaced it
+// with an earlier time. Both rewinds write the same shared retry-after var,
+// and the gate with more prior auto-fix attempts — which applies first — is
+// the one whose (larger) backoff must survive the merged rewind.
+func keepLaterRetryAfter(wfExec *Execution, prior string) {
+	if wfExec == nil || prior == "" {
+		return
+	}
+	priorAt, err := time.Parse(time.RFC3339, prior)
+	if err != nil {
+		return
+	}
+	current, ok := workflowRetryAfter(wfExec)
+	if !ok || priorAt.After(current) {
+		wfExec.SetVar(workflowRetryAfterVar, prior)
+	}
 }
 
 func autoFixCounterKey(step *Step) string { return "step." + step.ID + ".auto_fix" }
