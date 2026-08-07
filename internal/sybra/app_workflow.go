@@ -172,20 +172,24 @@ func (a *taskAdapter) UpdateTaskStatus(id string, status taskstatus.Status, reas
 		return err
 	}
 	reason = a.normalizeHumanRequiredReason(id, st, reason)
-	var extra task.Update
-	if reason != "" {
-		extra.StatusReason = &reason
-	}
-	if st == task.StatusHumanRequired {
-		st = task.StatusBlocked
-		extra.Escalation = task.MachineFailure("workflow.untyped_escalation", reason)
-		extra.AutonomyOutcome = task.QuarantinedOutcome()
-	}
-	_, err = a.tasks.Apply(task.TransitionIntent{
-		TaskID:   id,
-		ToStatus: st,
-		Actor:    "workflow.engine.update_status",
-		Extra:    extra,
+	_, err = a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		target := st
+		extra := task.Update{}
+		if reason != "" {
+			extra.StatusReason = &reason
+		} else if cur.Status != st && (st != task.StatusHumanRequired || cur.Status != task.StatusBlocked) {
+			extra.ClearStatusReason = task.Ptr(true)
+		}
+		if st == task.StatusHumanRequired {
+			target = task.StatusBlocked
+			extra.Escalation = task.MachineFailure("workflow.untyped_escalation", reason)
+			extra.AutonomyOutcome = task.QuarantinedOutcome()
+		}
+		return task.TransitionIntent{
+			ToStatus: target,
+			Actor:    "workflow.engine.update_status",
+			Extra:    extra,
+		}, nil
 	})
 	return err
 }
@@ -196,9 +200,8 @@ func (a *taskAdapter) ClearTaskStatusReasonIf(id string, expectedStatus taskstat
 		if cur.Status != expectedStatus || cur.StatusReason != expectedReason {
 			return task.Update{}, errWorkflowStatusReasonNoLongerMatches
 		}
-		empty := ""
 		cleared = true
-		return task.Update{StatusReason: &empty}, nil
+		return task.Update{ClearStatusReason: task.Ptr(true)}, nil
 	})
 	if errors.Is(err, errWorkflowStatusReasonNoLongerMatches) {
 		return false, nil
@@ -219,12 +222,11 @@ func (a *taskAdapter) ClearTaskStatusReasonAndSetWorkflowIf(id, expectedStatus, 
 		if string(cur.Status) != expectedStatus || cur.StatusReason != expectedReason {
 			return task.TransitionIntent{}, errWorkflowStatusReasonNoLongerMatches
 		}
-		empty := ""
 		cleared = true
 		return task.TransitionIntent{
 			ToStatus: cur.Status,
 			Actor:    "workflow.engine.clear_reason_and_set_workflow",
-			Extra:    task.Update{StatusReason: &empty, Workflow: &wf},
+			Extra:    task.Update{ClearStatusReason: task.Ptr(true), Workflow: &wf},
 		}, nil
 	})
 	if errors.Is(err, errWorkflowStatusReasonNoLongerMatches) {

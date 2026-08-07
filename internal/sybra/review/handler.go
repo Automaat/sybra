@@ -1154,7 +1154,9 @@ func (r *Handler) advanceClosedTaskPR(ctx context.Context, c github.ClosedPR, co
 			ToStatus:       landedStatus,
 			ExpectedStatus: preTask.Status,
 			Extra: task.Update{
-				Outcome: task.Ptr(base),
+				Outcome:           task.Ptr(base),
+				ClearStatusReason: task.Ptr(true),
+				ClearBlocker:      task.Ptr(true),
 			},
 		}); err != nil {
 			return err

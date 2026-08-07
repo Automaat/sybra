@@ -23,6 +23,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/autonomy"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	synapsegithub "github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
@@ -1345,7 +1346,12 @@ steps:
 		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
 		AutonomyOutcome: task.HumanRequiredOutcome(),
 		StatusReason:    task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
-		ProjectID:       task.Ptr("owner/repo"),
+		Blocker: task.Ptr(blocker.State{
+			Kind:       blocker.KindTamperDetected,
+			Actor:      blocker.ActorWorkflow,
+			NextAction: "bless_tampering",
+		}),
+		ProjectID: task.Ptr("owner/repo"),
 	}); err != nil {
 		t.Fatal(err)
 	}

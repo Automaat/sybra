@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -641,13 +642,157 @@ func TestStoreUpdateStatusHumanRequired(t *testing.T) {
 		t.Errorf("persisted StatusReason = %q, want %q", reloaded.StatusReason, "human decision required")
 	}
 
-	// Verify reason clears when status changes without explicit reason
+	// Status changes no longer clear parked metadata implicitly.
 	updated2, err := store.Update(created.ID, Update{Status: Ptr(StatusInProgress)})
 	if err != nil {
 		t.Fatalf("update2: %v", err)
 	}
-	if updated2.StatusReason != "" {
-		t.Errorf("StatusReason after status change = %q, want empty", updated2.StatusReason)
+	if updated2.StatusReason != "human decision required" {
+		t.Errorf("StatusReason after status change = %q, want preserved", updated2.StatusReason)
+	}
+}
+
+func TestStoreUpdate_ClearFieldsAreExplicit(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("Explicit clear task", "", AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reason := "needs human bless"
+	initialBlocker := blocker.State{Kind: blocker.KindTamperDetected, Actor: blocker.ActorWorkflow}
+	flagged, err := store.Update(created.ID, Update{
+		Status:       Ptr(StatusHumanRequired),
+		StatusReason: Ptr(reason),
+		Blocker:      Ptr(initialBlocker),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	preserved, err := store.Update(flagged.ID, Update{Status: Ptr(StatusInProgress)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preserved.StatusReason != reason {
+		t.Fatalf("StatusReason = %q, want preserved %q", preserved.StatusReason, reason)
+	}
+	if preserved.Blocker != initialBlocker {
+		t.Fatalf("Blocker = %+v, want preserved %+v", preserved.Blocker, initialBlocker)
+	}
+
+	cleared, err := store.Update(flagged.ID, Update{
+		ClearStatusReason: Ptr(true),
+		ClearBlocker:      Ptr(true),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.StatusReason != "" {
+		t.Fatalf("StatusReason = %q, want cleared", cleared.StatusReason)
+	}
+	if !cleared.Blocker.IsZero() {
+		t.Fatalf("Blocker = %+v, want zero", cleared.Blocker)
+	}
+}
+
+func TestStoreCreateFull_ValidatesAndFlagsTamperBlocker(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reason := workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"
+	created, err := store.CreateFull("Tamper task", "", AgentModeHeadless, Update{
+		Status:       Ptr(StatusHumanRequired),
+		StatusReason: Ptr(reason),
+		Blocker: Ptr(blocker.State{
+			Kind:       blocker.KindTamperDetected,
+			Actor:      blocker.ActorWorkflow,
+			NextAction: "bless_tampering",
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created.TamperFlagged {
+		t.Fatal("TamperFlagged = false, want true")
+	}
+
+	_, err = store.CreateFull("Invalid human blocker", "", AgentModeHeadless, Update{
+		Status:  Ptr(StatusHumanRequired),
+		Blocker: Ptr(blocker.State{Kind: blocker.KindWorktreeRepair, Actor: blocker.ActorWorkflow}),
+	})
+	if err == nil {
+		t.Fatal("CreateFull invalid blocker err = nil, want validation failure")
+	}
+}
+
+func TestStoreCreateFull_SandboxOffRequiresReason(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	off := false
+	if _, err := store.CreateFull("sandbox off", "", AgentModeHeadless, Update{
+		Sandbox: &off,
+	}); err == nil {
+		t.Fatal("CreateFull sandbox off without reason err = nil, want validation failure")
+	}
+
+	reason := "docker-in-docker e2e needs host mounts"
+	created, err := store.CreateFull("sandbox off", "", AgentModeHeadless, Update{
+		Sandbox:          &off,
+		SandboxOffReason: Ptr("  " + reason + "  "),
+	})
+	if err != nil {
+		t.Fatalf("CreateFull sandbox off with reason: %v", err)
+	}
+	if created.Sandbox == nil || *created.Sandbox {
+		t.Fatalf("Sandbox = %v, want false", created.Sandbox)
+	}
+	if created.SandboxOffReason != reason {
+		t.Fatalf("SandboxOffReason = %q, want %q", created.SandboxOffReason, reason)
+	}
+}
+
+func TestStoreUpdate_SandboxOffRequiresReason(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.Create("sandbox update", "", AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	off := false
+	if _, err := store.Update(created.ID, Update{Sandbox: &off}); err == nil {
+		t.Fatal("Update sandbox off without reason err = nil, want validation failure")
+	}
+
+	reason := "docker-in-docker e2e needs host mounts"
+	updated, err := store.Update(created.ID, Update{
+		Sandbox:          &off,
+		SandboxOffReason: Ptr("  " + reason + "  "),
+	})
+	if err != nil {
+		t.Fatalf("Update sandbox off with reason: %v", err)
+	}
+	if updated.Sandbox == nil || *updated.Sandbox {
+		t.Fatalf("Sandbox = %v, want false", updated.Sandbox)
+	}
+	if updated.SandboxOffReason != reason {
+		t.Fatalf("SandboxOffReason = %q, want %q", updated.SandboxOffReason, reason)
 	}
 }
 

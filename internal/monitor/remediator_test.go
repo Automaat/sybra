@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -377,6 +378,7 @@ func TestRemediator_StuckHumanBlocked_KnownLostAgentCause_TamperFlagDoesNotRetry
 	t.Parallel()
 	existing := mkTask("hr4", task.StatusHumanRequired, func(t *task.Task) {
 		t.StatusReason = workflow.TamperFlaggedReasonPrefix + " removed coverage in internal/foo_test.go"
+		t.Blocker = blocker.State{Kind: blocker.KindTamperDetected, Actor: blocker.ActorWorkflow}
 		t.Tags = []string{"medium"}
 	})
 	ft := &fakeTasks{tasks: []task.Task{existing}}

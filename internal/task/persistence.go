@@ -182,6 +182,13 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 	if t.Status == StatusHumanRequired && t.Escalation.IsZero() {
 		t.Escalation = autonomy.LegacyReason(t.StatusReason)
 	}
+	if t.Status == StatusHumanRequired && t.Blocker.IsZero() && workflow.IsTamperFlaggedReason(t.StatusReason) {
+		t.Blocker = blocker.State{
+			Kind:       blocker.KindTamperDetected,
+			Actor:      blocker.ActorWorkflow,
+			NextAction: "bless_tampering",
+		}
+	}
 	t.AgentRuns = agentRunsFromRecords(fm.AgentRuns)
 	if t.AgentRuns == nil {
 		t.AgentRuns = []AgentRun{}
@@ -189,7 +196,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 	if t.Attachments == nil {
 		t.Attachments = []Attachment{}
 	}
-	t.TamperFlagged = isTamperFlagged(t.Status, t.StatusReason)
+	t.TamperFlagged = isTamperFlagged(t.Status, t.Blocker)
 	return t
 }
 
