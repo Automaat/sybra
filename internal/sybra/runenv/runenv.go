@@ -189,13 +189,13 @@ func (s *Service) Certify(ctx context.Context, req Request) (Certificate, error)
 	if err := validate(req); err != nil {
 		return Certificate{}, err
 	}
+	lock := s.keyLock(firstNonEmpty(req.CloneDir, req.ProjectID, "global"))
+	lock.Lock()
+	defer lock.Unlock()
 	key, err := fingerprint(ctx, req)
 	if err != nil {
 		return Certificate{}, err
 	}
-	lock := s.keyLock(firstNonEmpty(req.CloneDir, req.ProjectID, "global"))
-	lock.Lock()
-	defer lock.Unlock()
 	now := s.deps.Now()
 	s.mu.Lock()
 	s.pruneExpiredLocked(now)
