@@ -111,6 +111,7 @@ func TestExecEnsurePRClosesIssue(t *testing.T) {
 			noLinker: true,
 			ti:       baseTI(),
 			check: func(t *testing.T, out StepOutput, _ *fakePRLinker) {
+				t.Helper()
 				if !strings.Contains(out.Output, "no pr linker") {
 					t.Errorf("Output = %q, want 'no pr linker' skip reason", out.Output)
 				}
@@ -124,6 +125,7 @@ func TestExecEnsurePRClosesIssue(t *testing.T) {
 				Issue: "https://github.com/other/elsewhere/issues/7",
 			},
 			check: func(t *testing.T, out StepOutput, linker *fakePRLinker) {
+				t.Helper()
 				if !strings.Contains(out.Output, "cross-repo") {
 					t.Errorf("Output = %q, want cross-repo skip", out.Output)
 				}
@@ -139,6 +141,7 @@ func TestExecEnsurePRClosesIssue(t *testing.T) {
 			},
 			ti: baseTI(),
 			check: func(t *testing.T, out StepOutput, linker *fakePRLinker) {
+				t.Helper()
 				if !strings.Contains(out.Output, "already linked") {
 					t.Errorf("Output = %q, want already linked", out.Output)
 				}
@@ -159,6 +162,7 @@ func TestExecEnsurePRClosesIssue(t *testing.T) {
 			taskStatus:  "in-review",
 			checkStatus: "in-review", // unchanged on success
 			check: func(t *testing.T, out StepOutput, linker *fakePRLinker) {
+				t.Helper()
 				if linker.editCalls != 1 {
 					t.Errorf("EditBody called %d times, want 1", linker.editCalls)
 				}
@@ -178,6 +182,7 @@ func TestExecEnsurePRClosesIssue(t *testing.T) {
 			},
 			ti: baseTI(),
 			check: func(t *testing.T, out StepOutput, linker *fakePRLinker) {
+				t.Helper()
 				if linker.lastBody != "Closes https://github.com/owner/repo/issues/7" {
 					t.Errorf("edit body = %q, want no leading newlines", linker.lastBody)
 				}
@@ -215,6 +220,7 @@ func TestExecEnsurePRClosesIssue(t *testing.T) {
 			taskStatus:  "in-review",
 			checkStatus: "in-review",
 			check: func(t *testing.T, out StepOutput, linker *fakePRLinker) {
+				t.Helper()
 				if !strings.Contains(out.Output, "trusting body") {
 					t.Errorf("Output = %q, want 'trusting body' message", out.Output)
 				}
@@ -239,6 +245,7 @@ func TestExecEnsurePRClosesIssue(t *testing.T) {
 			ti:         baseTI(),
 			taskStatus: "in-review",
 			check: func(t *testing.T, out StepOutput, linker *fakePRLinker) {
+				t.Helper()
 				if !strings.Contains(out.Output, "linked issue #7") {
 					t.Errorf("Output = %q, want linked issue #7", out.Output)
 				}
@@ -264,6 +271,7 @@ func TestExecEnsurePRClosesIssue(t *testing.T) {
 			taskStatus:  "in-review",
 			checkStatus: "in-review",
 			check: func(t *testing.T, out StepOutput, linker *fakePRLinker) {
+				t.Helper()
 				if !strings.Contains(out.Output, "trusting body") {
 					t.Errorf("Output = %q, want 'trusting body' message", out.Output)
 				}
@@ -301,7 +309,7 @@ func TestExecEnsurePRClosesIssue(t *testing.T) {
 			if wantOutStatus == "" {
 				wantOutStatus = "completed"
 			}
-			if string(out.Status) != wantOutStatus {
+			if out.Status != wantOutStatus {
 				t.Errorf("Status = %q, want %q", out.Status, wantOutStatus)
 			}
 			if tc.check != nil {
@@ -376,6 +384,7 @@ func TestExecStampPRAttribution(t *testing.T) {
 			wantOutputSubstr: "stamped",
 			wantEditCalls:    1,
 			check: func(t *testing.T, linker *fakePRLinker) {
+				t.Helper()
 				if !strings.HasSuffix(linker.lastBody, attribution.Footer) {
 					t.Errorf("body = %q, want footer suffix", linker.lastBody)
 				}

@@ -222,9 +222,12 @@ func TestExecVerifyCommits_SkipsAndEscalations(t *testing.T) {
 			wantTaskStatus:   "in-progress",
 		},
 		{
-			name:             "WithCommitsVerified",
-			getterOK:         true,
-			pathFn:           func(t *testing.T) string { return makeGitRepo(t, true /* withExtraCommit */) },
+			name:     "WithCommitsVerified",
+			getterOK: true,
+			pathFn: func(t *testing.T) string {
+				t.Helper()
+				return makeGitRepo(t, true /* withExtraCommit */)
+			},
 			wantOutputSubstr: "commits verified",
 			wantTaskStatus:   "in-progress",
 		},
@@ -233,17 +236,23 @@ func TestExecVerifyCommits_SkipsAndEscalations(t *testing.T) {
 			// both fail with the same fatal, simulating the broken-worktree
 			// scenario from the synapse→sybra rename; the reason surfaces
 			// the `git status` diagnosis.
-			name:              "GitErrorFlipsHumanRequired",
-			getterOK:          true,
-			pathFn:            func(t *testing.T) string { return t.TempDir() },
+			name:     "GitErrorFlipsHumanRequired",
+			getterOK: true,
+			pathFn: func(t *testing.T) string {
+				t.Helper()
+				return t.TempDir()
+			},
 			wantOutputSubstr:  "git error",
 			wantTaskStatus:    "human-required",
 			wantReasonSubstrs: []string{"worktree git error", "git status"},
 		},
 		{
-			name:              "BranchAtBaseFlipsHumanRequired",
-			getterOK:          true,
-			pathFn:            func(t *testing.T) string { return makeGitRepo(t, false /* HEAD == origin/main */) },
+			name:     "BranchAtBaseFlipsHumanRequired",
+			getterOK: true,
+			pathFn: func(t *testing.T) string {
+				t.Helper()
+				return makeGitRepo(t, false /* HEAD == origin/main */)
+			},
 			wantOutputSubstr:  "no commits",
 			wantTaskStatus:    "human-required",
 			wantReasonSubstrs: []string{"no commits"},
@@ -251,7 +260,7 @@ func TestExecVerifyCommits_SkipsAndEscalations(t *testing.T) {
 		{
 			name:             "BranchAncestorOfBaseFlipsHumanRequired",
 			getterOK:         true,
-			pathFn:           func(t *testing.T) string { return makeGitRepoBehindOrigin(t) },
+			pathFn:           makeGitRepoBehindOrigin,
 			wantOutputSubstr: "no commits",
 			wantTaskStatus:   "human-required",
 		},
@@ -263,7 +272,10 @@ func TestExecVerifyCommits_SkipsAndEscalations(t *testing.T) {
 			// silently mark done.
 			name:     "AgentFailedFlipsHumanRequired",
 			getterOK: true,
-			pathFn:   func(t *testing.T) string { return makeGitRepo(t, false /* HEAD == origin/main */) },
+			pathFn: func(t *testing.T) string {
+				t.Helper()
+				return makeGitRepo(t, false /* HEAD == origin/main */)
+			},
 			wfExec: &Execution{StepHistory: []StepRecord{
 				{StepID: "implement", Status: "failed", AgentID: "a1", Provider: "claude"},
 			}},
