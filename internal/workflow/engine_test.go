@@ -8499,22 +8499,235 @@ func TestExecRerequestReview_ErrorIsNonFatal(t *testing.T) {
 	}
 }
 
-func TestExecEnsurePRClosesIssue_NoLinkerSkips(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
+// TestExecEnsurePRClosesIssue tables the execEnsurePRClosesIssue outcomes
+// that share the same store/tasks/agents/engine/linker setup and differ only
+// in the linker's canned responses and what's asserted afterward.
+func TestExecEnsurePRClosesIssue(t *testing.T) {
+	baseTI := func() TaskInfo {
+		return TaskInfo{
+			ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
+			Issue: "https://github.com/owner/repo/issues/7",
+		}
+	}
 
-	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5, Issue: "https://github.com/owner/repo/issues/7"}
-	out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
-	if err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name          string
+		noLinker      bool
+		linker        *fakePRLinker
+		ti            TaskInfo
+		taskStatus    taskstatus.Status // "" = don't seed tasks.Put
+		wantOutStatus string            // defaults to "completed"
+		check         func(t *testing.T, out StepOutput, linker *fakePRLinker)
+		checkStatus   taskstatus.Status // "" = don't re-check task status after
+	}{
+		{
+			name:     "NoLinkerSkips",
+			noLinker: true,
+			ti:       baseTI(),
+			check: func(t *testing.T, out StepOutput, _ *fakePRLinker) {
+				if !strings.Contains(out.Output, "no pr linker") {
+					t.Errorf("Output = %q, want 'no pr linker' skip reason", out.Output)
+				}
+			},
+		},
+		{
+			name:   "CrossRepoSkips",
+			linker: &fakePRLinker{},
+			ti: TaskInfo{
+				ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
+				Issue: "https://github.com/other/elsewhere/issues/7",
+			},
+			check: func(t *testing.T, out StepOutput, linker *fakePRLinker) {
+				if !strings.Contains(out.Output, "cross-repo") {
+					t.Errorf("Output = %q, want cross-repo skip", out.Output)
+				}
+				if linker.getCalls != 0 {
+					t.Errorf("GetClosingIssues called %d times, want 0 (skip before fetch)", linker.getCalls)
+				}
+			},
+		},
+		{
+			name: "AlreadyLinkedNoEdit",
+			linker: &fakePRLinker{
+				getQueue: []getResult{{issues: []int{7}, body: "original"}},
+			},
+			ti: baseTI(),
+			check: func(t *testing.T, out StepOutput, linker *fakePRLinker) {
+				if !strings.Contains(out.Output, "already linked") {
+					t.Errorf("Output = %q, want already linked", out.Output)
+				}
+				if linker.editCalls != 0 {
+					t.Errorf("EditBody called %d times, want 0", linker.editCalls)
+				}
+			},
+		},
+		{
+			name: "EditAppendsAndVerifies",
+			linker: &fakePRLinker{
+				getQueue: []getResult{
+					{issues: nil, body: "Implements the feature."},
+					{issues: []int{7}, body: "Implements the feature.\n\nCloses https://github.com/owner/repo/issues/7"},
+				},
+			},
+			ti:          baseTI(),
+			taskStatus:  "in-review",
+			checkStatus: "in-review", // unchanged on success
+			check: func(t *testing.T, out StepOutput, linker *fakePRLinker) {
+				if linker.editCalls != 1 {
+					t.Errorf("EditBody called %d times, want 1", linker.editCalls)
+				}
+				wantBody := "Implements the feature.\n\nCloses https://github.com/owner/repo/issues/7"
+				if linker.lastBody != wantBody {
+					t.Errorf("edit body = %q, want %q", linker.lastBody, wantBody)
+				}
+			},
+		},
+		{
+			name: "EmptyBodyNoLeadingNewlines",
+			linker: &fakePRLinker{
+				getQueue: []getResult{
+					{issues: nil, body: ""},
+					{issues: []int{7}, body: "Closes https://github.com/owner/repo/issues/7"},
+				},
+			},
+			ti: baseTI(),
+			check: func(t *testing.T, out StepOutput, linker *fakePRLinker) {
+				if linker.lastBody != "Closes https://github.com/owner/repo/issues/7" {
+					t.Errorf("edit body = %q, want no leading newlines", linker.lastBody)
+				}
+			},
+		},
+		{
+			name: "EditFailureFlipsHumanRequired",
+			linker: &fakePRLinker{
+				getQueue: []getResult{{issues: nil, body: "body"}},
+				editErr:  fmt.Errorf("403 forbidden"),
+			},
+			ti:            baseTI(),
+			taskStatus:    "in-review",
+			wantOutStatus: "failed",
+			checkStatus:   "human-required",
+		},
+		{
+			// Verification lag is a false negative: gh pr edit succeeded, the
+			// body contains "Closes <url>", but GitHub hasn't re-parsed
+			// closingIssuesReferences yet. The step must trust the body and
+			// leave the task status alone instead of flipping to
+			// human-required.
+			name: "VerifyLagTrustsBody",
+			linker: &fakePRLinker{
+				getQueue: []getResult{
+					// 1 pre-check + 4 verify attempts, all miss.
+					{issues: nil, body: "body"},
+					{issues: nil, body: "body\n\nCloses https://github.com/owner/repo/issues/7"},
+					{issues: nil, body: "body\n\nCloses https://github.com/owner/repo/issues/7"},
+					{issues: nil, body: "body\n\nCloses https://github.com/owner/repo/issues/7"},
+					{issues: nil, body: "body\n\nCloses https://github.com/owner/repo/issues/7"},
+				},
+			},
+			ti:          baseTI(),
+			taskStatus:  "in-review",
+			checkStatus: "in-review",
+			check: func(t *testing.T, out StepOutput, linker *fakePRLinker) {
+				if !strings.Contains(out.Output, "trusting body") {
+					t.Errorf("Output = %q, want 'trusting body' message", out.Output)
+				}
+				// 1 pre-check + 1 initial verify + 3 retries = 5 fetches.
+				if linker.getCalls != 5 {
+					t.Errorf("GetClosingIssues calls = %d, want 5 (pre-check + 4 verify attempts)", linker.getCalls)
+				}
+			},
+		},
+		{
+			// Verification should retry: first post-edit fetch misses
+			// (GitHub lagging), second fetch sees the parsed closing
+			// reference.
+			name: "VerifyRetrySucceeds",
+			linker: &fakePRLinker{
+				getQueue: []getResult{
+					{issues: nil, body: "body"},                    // pre-check miss → triggers edit
+					{issues: nil, body: "body\n\nCloses ..."},      // verify attempt 0: still stale
+					{issues: []int{7}, body: "body\n\nCloses ..."}, // verify attempt 1: parsed
+				},
+			},
+			ti:         baseTI(),
+			taskStatus: "in-review",
+			check: func(t *testing.T, out StepOutput, linker *fakePRLinker) {
+				if !strings.Contains(out.Output, "linked issue #7") {
+					t.Errorf("Output = %q, want linked issue #7", out.Output)
+				}
+				if linker.getCalls != 3 {
+					t.Errorf("GetClosingIssues calls = %d, want 3 (pre-check + 2 verify attempts)", linker.getCalls)
+				}
+			},
+		},
+		{
+			// Verification fetch that errors on every retry is still a
+			// soft-fail: the edit went through, so trust the body we wrote.
+			name: "VerifyErrorTrustsBody",
+			linker: &fakePRLinker{
+				getQueue: []getResult{
+					{issues: nil, body: "body"},
+					{err: errors.New("network timeout")},
+					{err: errors.New("network timeout")},
+					{err: errors.New("network timeout")},
+					{err: errors.New("network timeout")},
+				},
+			},
+			ti:          baseTI(),
+			taskStatus:  "in-review",
+			checkStatus: "in-review",
+			check: func(t *testing.T, out StepOutput, linker *fakePRLinker) {
+				if !strings.Contains(out.Output, "trusting body") {
+					t.Errorf("Output = %q, want 'trusting body' message", out.Output)
+				}
+			},
+		},
+		{
+			name: "FetchErrorIsSoftFail",
+			linker: &fakePRLinker{
+				getQueue: []getResult{{err: errors.New("network timeout")}},
+			},
+			ti:          baseTI(),
+			taskStatus:  "in-review",
+			checkStatus: "in-review",
+		},
 	}
-	if out.Status != "completed" {
-		t.Errorf("Status = %q, want completed", out.Status)
-	}
-	if !strings.Contains(out.Output, "no pr linker") {
-		t.Errorf("Output = %q, want 'no pr linker' skip reason", out.Output)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
+			if !tc.noLinker {
+				engine.SetPRLinker(tc.linker)
+			}
+			if tc.taskStatus != "" {
+				tasks.Put(TaskInfo{ID: "t1", Status: tc.taskStatus})
+			}
+
+			out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), tc.ti)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantOutStatus := tc.wantOutStatus
+			if wantOutStatus == "" {
+				wantOutStatus = "completed"
+			}
+			if string(out.Status) != wantOutStatus {
+				t.Errorf("Status = %q, want %q", out.Status, wantOutStatus)
+			}
+			if tc.check != nil {
+				tc.check(t, out, tc.linker)
+			}
+			if tc.checkStatus != "" {
+				after, _ := tasks.GetTask("t1")
+				if after.Status != tc.checkStatus {
+					t.Errorf("task status = %q, want %q", after.Status, tc.checkStatus)
+				}
+			}
+		})
 	}
 }
 
@@ -8549,323 +8762,103 @@ func TestExecEnsurePRClosesIssue_MissingFieldsSkip(t *testing.T) {
 	}
 }
 
-func TestExecEnsurePRClosesIssue_CrossRepoSkips(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	linker := &fakePRLinker{}
-	engine.SetPRLinker(linker)
-
-	ti := TaskInfo{
-		ID:        "t1",
-		ProjectID: "owner/repo",
-		PRNumber:  5,
-		Issue:     "https://github.com/other/elsewhere/issues/7",
-	}
-	out, _ := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
-	if out.Status != "completed" {
-		t.Errorf("Status = %q, want completed", out.Status)
-	}
-	if !strings.Contains(out.Output, "cross-repo") {
-		t.Errorf("Output = %q, want cross-repo skip", out.Output)
-	}
-	if linker.getCalls != 0 {
-		t.Errorf("GetClosingIssues called %d times, want 0 (skip before fetch)", linker.getCalls)
-	}
-}
-
-func TestExecEnsurePRClosesIssue_AlreadyLinkedNoEdit(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	linker := &fakePRLinker{
-		getQueue: []getResult{{issues: []int{7}, body: "original"}},
-	}
-	engine.SetPRLinker(linker)
-
-	ti := TaskInfo{
-		ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
-		Issue: "https://github.com/owner/repo/issues/7",
-	}
-	out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Status != "completed" || !strings.Contains(out.Output, "already linked") {
-		t.Errorf("output = %+v, want completed/already linked", out)
-	}
-	if linker.editCalls != 0 {
-		t.Errorf("EditBody called %d times, want 0", linker.editCalls)
-	}
-}
-
-func TestExecEnsurePRClosesIssue_EditAppendsAndVerifies(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	linker := &fakePRLinker{
-		getQueue: []getResult{
-			{issues: nil, body: "Implements the feature."},
-			{issues: []int{7}, body: "Implements the feature.\n\nCloses https://github.com/owner/repo/issues/7"},
-		},
-	}
-	engine.SetPRLinker(linker)
-
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-review"})
-
-	ti := TaskInfo{
-		ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
-		Issue: "https://github.com/owner/repo/issues/7",
-	}
-	out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Status != "completed" {
-		t.Errorf("Status = %q, want completed", out.Status)
-	}
-	if linker.editCalls != 1 {
-		t.Errorf("EditBody called %d times, want 1", linker.editCalls)
-	}
-	wantBody := "Implements the feature.\n\nCloses https://github.com/owner/repo/issues/7"
-	if linker.lastBody != wantBody {
-		t.Errorf("edit body = %q, want %q", linker.lastBody, wantBody)
-	}
-	// Status must not have been changed on success.
-	after, _ := tasks.GetTask("t1")
-	if after.Status != "in-review" {
-		t.Errorf("Status = %q, want in-review (unchanged)", after.Status)
-	}
-}
-
-func TestExecEnsurePRClosesIssue_EmptyBodyNoLeadingNewlines(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	linker := &fakePRLinker{
-		getQueue: []getResult{
-			{issues: nil, body: ""},
-			{issues: []int{7}, body: "Closes https://github.com/owner/repo/issues/7"},
-		},
-	}
-	engine.SetPRLinker(linker)
-
-	ti := TaskInfo{
-		ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
-		Issue: "https://github.com/owner/repo/issues/7",
-	}
-	if _, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti); err != nil {
-		t.Fatal(err)
-	}
-	if linker.lastBody != "Closes https://github.com/owner/repo/issues/7" {
-		t.Errorf("edit body = %q, want no leading newlines", linker.lastBody)
-	}
-}
-
-func TestExecEnsurePRClosesIssue_EditFailureFlipsHumanRequired(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	linker := &fakePRLinker{
-		getQueue: []getResult{{issues: nil, body: "body"}},
-		editErr:  fmt.Errorf("403 forbidden"),
-	}
-	engine.SetPRLinker(linker)
-
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-review"})
-
-	ti := TaskInfo{
-		ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
-		Issue: "https://github.com/owner/repo/issues/7",
-	}
-	out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Status != "failed" {
-		t.Errorf("Status = %q, want failed", out.Status)
-	}
-	after, _ := tasks.GetTask("t1")
-	if after.Status != "human-required" {
-		t.Errorf("task status = %q, want human-required", after.Status)
-	}
-}
-
-// Verification lag is a false negative: gh pr edit succeeded, the
-// body contains "Closes <url>", but GitHub hasn't re-parsed
-// closingIssuesReferences yet. The step must trust the body and
-// leave the task status alone instead of flipping to human-required.
-func TestExecEnsurePRClosesIssue_VerifyLagTrustsBody(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	linker := &fakePRLinker{
-		getQueue: []getResult{
-			// 1 pre-check + 4 verify attempts, all miss.
-			{issues: nil, body: "body"},
-			{issues: nil, body: "body\n\nCloses https://github.com/owner/repo/issues/7"},
-			{issues: nil, body: "body\n\nCloses https://github.com/owner/repo/issues/7"},
-			{issues: nil, body: "body\n\nCloses https://github.com/owner/repo/issues/7"},
-			{issues: nil, body: "body\n\nCloses https://github.com/owner/repo/issues/7"},
-		},
-	}
-	engine.SetPRLinker(linker)
-
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-review"})
-
-	ti := TaskInfo{
-		ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
-		Issue: "https://github.com/owner/repo/issues/7",
-	}
-	out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Status != "completed" {
-		t.Errorf("Status = %q, want completed (verification lag is soft-fail)", out.Status)
-	}
-	if !strings.Contains(out.Output, "trusting body") {
-		t.Errorf("Output = %q, want 'trusting body' message", out.Output)
-	}
-	after, _ := tasks.GetTask("t1")
-	if after.Status != "in-review" {
-		t.Errorf("task status = %q, want in-review (unchanged)", after.Status)
-	}
-	// 1 pre-check + 1 initial verify + 3 retries = 5 fetches.
-	if linker.getCalls != 5 {
-		t.Errorf("GetClosingIssues calls = %d, want 5 (pre-check + 4 verify attempts)", linker.getCalls)
-	}
-}
-
-// Verification should retry: first post-edit fetch misses (GitHub
-// lagging), second fetch sees the parsed closing reference.
-func TestExecEnsurePRClosesIssue_VerifyRetrySucceeds(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	linker := &fakePRLinker{
-		getQueue: []getResult{
-			{issues: nil, body: "body"},                    // pre-check miss → triggers edit
-			{issues: nil, body: "body\n\nCloses ..."},      // verify attempt 0: still stale
-			{issues: []int{7}, body: "body\n\nCloses ..."}, // verify attempt 1: parsed
-		},
-	}
-	engine.SetPRLinker(linker)
-
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-review"})
-
-	ti := TaskInfo{
-		ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
-		Issue: "https://github.com/owner/repo/issues/7",
-	}
-	out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Status != "completed" || !strings.Contains(out.Output, "linked issue #7") {
-		t.Errorf("out = %+v, want completed/linked issue #7", out)
-	}
-	if linker.getCalls != 3 {
-		t.Errorf("GetClosingIssues calls = %d, want 3 (pre-check + 2 verify attempts)", linker.getCalls)
-	}
-}
-
-// Verification fetch that errors on every retry is still a soft-fail:
-// the edit went through, so trust the body we wrote.
-func TestExecEnsurePRClosesIssue_VerifyErrorTrustsBody(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	linker := &fakePRLinker{
-		getQueue: []getResult{
-			{issues: nil, body: "body"},
-			{err: errors.New("network timeout")},
-			{err: errors.New("network timeout")},
-			{err: errors.New("network timeout")},
-			{err: errors.New("network timeout")},
-		},
-	}
-	engine.SetPRLinker(linker)
-
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-review"})
-
-	ti := TaskInfo{
-		ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
-		Issue: "https://github.com/owner/repo/issues/7",
-	}
-	out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Status != "completed" {
-		t.Errorf("Status = %q, want completed", out.Status)
-	}
-	if !strings.Contains(out.Output, "trusting body") {
-		t.Errorf("Output = %q, want 'trusting body' message", out.Output)
-	}
-	after, _ := tasks.GetTask("t1")
-	if after.Status != "in-review" {
-		t.Errorf("task status = %q, want in-review (unchanged)", after.Status)
-	}
-}
-
-func TestExecEnsurePRClosesIssue_FetchErrorIsSoftFail(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	linker := &fakePRLinker{
-		getQueue: []getResult{{err: errors.New("network timeout")}},
-	}
-	engine.SetPRLinker(linker)
-
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-review"})
-
-	ti := TaskInfo{
-		ID: "t1", ProjectID: "owner/repo", PRNumber: 5,
-		Issue: "https://github.com/owner/repo/issues/7",
-	}
-	out, err := engine.execEnsurePRClosesIssue("t1", newEnsurePRStep(), ti)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Fetch failure must not block the workflow or flip status.
-	if out.Status != "completed" {
-		t.Errorf("Status = %q, want completed (fetch errors are soft-fail)", out.Status)
-	}
-	after, _ := tasks.GetTask("t1")
-	if after.Status != "in-review" {
-		t.Errorf("task status = %q, want in-review (unchanged)", after.Status)
-	}
-}
-
 // --- stamp_pr_attribution step ---
 
 func newStampPRStep() *Step {
 	return &Step{ID: "stamp", Type: StepStampPRAttribution}
 }
 
-func TestExecStampPRAttribution_NoLinkerSkips(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
+// TestExecStampPRAttribution tables the execStampPRAttribution outcomes
+// that share the same store/tasks/agents/engine/linker setup and differ
+// only in the linker's canned responses and what's asserted afterward.
+func TestExecStampPRAttribution(t *testing.T) {
+	baseTI := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
 
-	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
-	out, err := engine.execStampPRAttribution("t1", newStampPRStep(), ti)
-	if err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name             string
+		noLinker         bool
+		linker           *fakePRLinker
+		wantOutputSubstr string
+		wantEditCalls    int // -1 = don't check
+		check            func(t *testing.T, linker *fakePRLinker)
+	}{
+		{
+			name:             "NoLinkerSkips",
+			noLinker:         true,
+			wantOutputSubstr: "no pr linker",
+			wantEditCalls:    -1,
+		},
+		{
+			name: "AppendsFooter",
+			linker: &fakePRLinker{
+				getQueue: []getResult{{body: "## Motivation\nfix it\n\nCloses https://github.com/owner/repo/issues/7"}},
+			},
+			wantOutputSubstr: "stamped",
+			wantEditCalls:    1,
+			check: func(t *testing.T, linker *fakePRLinker) {
+				if !strings.HasSuffix(linker.lastBody, attribution.Footer) {
+					t.Errorf("body = %q, want footer suffix", linker.lastBody)
+				}
+			},
+		},
+		{
+			name:             "EmptyBodySkips",
+			linker:           &fakePRLinker{getQueue: []getResult{{body: "   \n\t"}}},
+			wantOutputSubstr: "empty pr body",
+			wantEditCalls:    0,
+		},
+		{
+			name: "IdempotentNoEdit",
+			linker: &fakePRLinker{
+				getQueue: []getResult{{body: "## Motivation\nfix it\n\n" + attribution.Footer}},
+			},
+			wantOutputSubstr: "already stamped",
+			wantEditCalls:    0,
+		},
+		{
+			name:             "FetchErrorIsSoftFail",
+			linker:           &fakePRLinker{getQueue: []getResult{{err: errors.New("network timeout")}}},
+			wantOutputSubstr: "",
+			wantEditCalls:    0,
+		},
+		{
+			name: "EditErrorIsSoftFail",
+			linker: &fakePRLinker{
+				getQueue: []getResult{{body: "body without footer"}},
+				editErr:  errors.New("gh edit failed"),
+			},
+			wantOutputSubstr: "edit failed",
+			wantEditCalls:    -1,
+		},
 	}
-	if out.Status != "completed" || !strings.Contains(out.Output, "no pr linker") {
-		t.Errorf("out = %+v, want completed no-linker skip", out)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			agents := newMockAgents()
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
+			if !tc.noLinker {
+				engine.SetPRLinker(tc.linker)
+			}
+
+			out, err := engine.execStampPRAttribution("t1", newStampPRStep(), baseTI)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.Status != "completed" {
+				t.Errorf("Status = %q, want completed", out.Status)
+			}
+			if tc.wantOutputSubstr != "" && !strings.Contains(out.Output, tc.wantOutputSubstr) {
+				t.Errorf("Output = %q, want %q", out.Output, tc.wantOutputSubstr)
+			}
+			if tc.wantEditCalls >= 0 && tc.linker.editCalls != tc.wantEditCalls {
+				t.Errorf("editCalls = %d, want %d", tc.linker.editCalls, tc.wantEditCalls)
+			}
+			if tc.check != nil {
+				tc.check(t, tc.linker)
+			}
+		})
 	}
 }
 
@@ -8900,129 +8893,6 @@ func TestExecStampPRAttribution_MissingFieldsSkip(t *testing.T) {
 	}
 }
 
-func TestExecStampPRAttribution_AppendsFooter(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	linker := &fakePRLinker{
-		getQueue: []getResult{{body: "## Motivation\nfix it\n\nCloses https://github.com/owner/repo/issues/7"}},
-	}
-	engine.SetPRLinker(linker)
-
-	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
-	out, err := engine.execStampPRAttribution("t1", newStampPRStep(), ti)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Status != "completed" || !strings.Contains(out.Output, "stamped") {
-		t.Errorf("out = %+v, want stamped", out)
-	}
-	if linker.editCalls != 1 {
-		t.Fatalf("editCalls = %d, want 1", linker.editCalls)
-	}
-	if !strings.HasSuffix(linker.lastBody, attribution.Footer) {
-		t.Errorf("body = %q, want footer suffix", linker.lastBody)
-	}
-}
-
-func TestExecStampPRAttribution_EmptyBodySkips(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	linker := &fakePRLinker{
-		getQueue: []getResult{{body: "   \n\t"}},
-	}
-	engine.SetPRLinker(linker)
-
-	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
-	out, err := engine.execStampPRAttribution("t1", newStampPRStep(), ti)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Status != "completed" || !strings.Contains(out.Output, "empty pr body") {
-		t.Errorf("out = %+v, want empty-body skip message", out)
-	}
-	if linker.editCalls != 0 {
-		t.Errorf("editCalls = %d, want 0 (nothing to stamp)", linker.editCalls)
-	}
-}
-
-func TestExecStampPRAttribution_IdempotentNoEdit(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	linker := &fakePRLinker{
-		getQueue: []getResult{{body: "## Motivation\nfix it\n\n" + attribution.Footer}},
-	}
-	engine.SetPRLinker(linker)
-
-	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
-	out, err := engine.execStampPRAttribution("t1", newStampPRStep(), ti)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Status != "completed" || !strings.Contains(out.Output, "already stamped") {
-		t.Errorf("out = %+v, want already-stamped", out)
-	}
-	if linker.editCalls != 0 {
-		t.Errorf("editCalls = %d, want 0 (idempotent)", linker.editCalls)
-	}
-}
-
-func TestExecStampPRAttribution_FetchErrorIsSoftFail(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	linker := &fakePRLinker{getQueue: []getResult{{err: errors.New("network timeout")}}}
-	engine.SetPRLinker(linker)
-
-	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
-	out, err := engine.execStampPRAttribution("t1", newStampPRStep(), ti)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Status != "completed" || linker.editCalls != 0 {
-		t.Errorf("out = %+v edits=%d, want soft-fail no edit", out, linker.editCalls)
-	}
-}
-
-func TestExecStampPRAttribution_EditErrorIsSoftFail(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	linker := &fakePRLinker{
-		getQueue: []getResult{{body: "body without footer"}},
-		editErr:  errors.New("gh edit failed"),
-	}
-	engine.SetPRLinker(linker)
-
-	ti := TaskInfo{ID: "t1", ProjectID: "owner/repo", PRNumber: 5}
-	out, err := engine.execStampPRAttribution("t1", newStampPRStep(), ti)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Status != "completed" || !strings.Contains(out.Output, "edit failed") {
-		t.Errorf("out = %+v, want completed edit-failed note", out)
-	}
-}
-
-// TestDuplicatePlanAgent_StaleCompletionDoesNotFailWaitHuman reproduces the
-// production bug that left task 5a5ad276 stuck: a ResumeStalled race spawned
-// two plan agents; the first completed and advanced plan → review_plan
-// (wait_human); the second completed seconds later and the engine credited
-// its completion to the current step (review_plan), ran resolveNext with no
-// human_action var set, failed to match any transition, and set state to
-// ExecFailed. HandleHumanAction then refused the user's reject click with
-// "task X is not waiting for human action".
-//
-// The fix: HandleAgentComplete uses the step the agent was actually spawned
-// for (tracked on the workflow), and AdvanceStep drops completions whose
-// StepID doesn't match the workflow's current step.
 func TestDuplicatePlanAgent_StaleCompletionDoesNotFailWaitHuman(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -10044,107 +9914,118 @@ func TestExecVerifyCommits_NoGetterSkips(t *testing.T) {
 	}
 }
 
-func TestExecVerifyCommits_NoWorktreeSkips(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	engine.SetWorktreeGetter(&fakeWorktreeGetter{ok: false})
+// TestExecVerifyCommits_SkipsAndEscalations tables the execVerifyCommits
+// outcomes that only depend on worktree/git state and step history — no
+// worktree, a clean ahead-of-base branch, a broken (non-git) worktree, a
+// branch sitting at or behind base, and a failed upstream agent run. Cases
+// needing their own bespoke fixtures (retry-timer state, a real remote
+// clone) stay as standalone tests below.
+func TestExecVerifyCommits_SkipsAndEscalations(t *testing.T) {
+	cases := []struct {
+		name              string
+		getterOK          bool
+		pathFn            func(t *testing.T) string
+		wfExec            *Execution
+		wantOutputSubstr  string
+		wantTaskStatus    taskstatus.Status
+		wantReasonSubstrs []string
+	}{
+		{
+			name:             "NoWorktreeSkips",
+			getterOK:         false,
+			wantOutputSubstr: "skipped",
+			wantTaskStatus:   "in-progress",
+		},
+		{
+			name:             "WithCommitsVerified",
+			getterOK:         true,
+			pathFn:           func(t *testing.T) string { return makeGitRepo(t, true /* withExtraCommit */) },
+			wantOutputSubstr: "commits verified",
+			wantTaskStatus:   "in-progress",
+		},
+		{
+			// Path exists but is not a git repo — `git log` and `git status`
+			// both fail with the same fatal, simulating the broken-worktree
+			// scenario from the synapse→sybra rename; the reason surfaces
+			// the `git status` diagnosis.
+			name:              "GitErrorFlipsHumanRequired",
+			getterOK:          true,
+			pathFn:            func(t *testing.T) string { return t.TempDir() },
+			wantOutputSubstr:  "git error",
+			wantTaskStatus:    "human-required",
+			wantReasonSubstrs: []string{"worktree git error", "git status"},
+		},
+		{
+			name:              "BranchAtBaseFlipsHumanRequired",
+			getterOK:          true,
+			pathFn:            func(t *testing.T) string { return makeGitRepo(t, false /* HEAD == origin/main */) },
+			wantOutputSubstr:  "no commits",
+			wantTaskStatus:    "human-required",
+			wantReasonSubstrs: []string{"no commits"},
+		},
+		{
+			name:             "BranchAncestorOfBaseFlipsHumanRequired",
+			getterOK:         true,
+			pathFn:           func(t *testing.T) string { return makeGitRepoBehindOrigin(t) },
+			wantOutputSubstr: "no commits",
+			wantTaskStatus:   "human-required",
+		},
+		{
+			// Same git state as BranchAtBaseFlipsHumanRequired (HEAD ==
+			// origin/main), but with a failed implement step in history:
+			// the false-positive auto-close guard must still flip to
+			// human-required (agent crashed before committing), not
+			// silently mark done.
+			name:     "AgentFailedFlipsHumanRequired",
+			getterOK: true,
+			pathFn:   func(t *testing.T) string { return makeGitRepo(t, false /* HEAD == origin/main */) },
+			wfExec: &Execution{StepHistory: []StepRecord{
+				{StepID: "implement", Status: "failed", AgentID: "a1", Provider: "claude"},
+			}},
+			wantOutputSubstr:  "agent failed before commit",
+			wantTaskStatus:    "human-required",
+			wantReasonSubstrs: []string{"agent failed before committing"},
+		},
+	}
 
-	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Status != "completed" {
-		t.Errorf("Status = %q, want completed", out.Status)
-	}
-	if !strings.Contains(out.Output, "skipped") {
-		t.Errorf("Output = %q, want skipped", out.Output)
-	}
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			tasks := newMemTasks()
+			tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+			agents := newMockAgents()
+			engine := NewTestEngine(store, tasks, agents, discardLogger())
+			var path string
+			if tc.pathFn != nil {
+				path = tc.pathFn(t)
+			}
+			engine.SetWorktreeGetter(&fakeWorktreeGetter{path: path, ok: tc.getterOK})
 
-func TestExecVerifyCommits_WithCommitsVerified(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-
-	wtDir := makeGitRepo(t, true /* withExtraCommit */)
-	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
-
-	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Status != "completed" {
-		t.Errorf("Status = %q, want completed", out.Status)
-	}
-	if !strings.Contains(out.Output, "commits verified") {
-		t.Errorf("Output = %q, want 'commits verified'", out.Output)
-	}
-	// Task status must not change.
-	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "in-progress" {
-		t.Errorf("task status = %q, want in-progress", ti.Status)
-	}
-}
-
-func TestExecVerifyCommits_GitErrorFlipsHumanRequired(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-
-	// Path exists but is not a git repo — git log returns non-zero,
-	// simulating the broken-worktree scenario from the synapse→sybra rename.
-	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: t.TempDir(), ok: true})
-
-	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Status != "completed" {
-		t.Errorf("Status = %q, want completed", out.Status)
-	}
-	if !strings.Contains(out.Output, "git error") {
-		t.Errorf("Output = %q, want 'git error'", out.Output)
-	}
-	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "human-required" {
-		t.Errorf("task status = %q, want human-required", ti.Status)
-	}
-	if reason := tasks.Reason("t1"); !strings.Contains(reason, "worktree git error") {
-		t.Errorf("status reason = %q, want 'worktree git error'", reason)
-	}
-}
-
-func TestExecVerifyCommits_GitErrorReasonContainsDiagnosis(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-
-	// Path exists but is not a git repo — `git log` and `git status`
-	// both fail with the same fatal so diagnosis surfaces it.
-	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: t.TempDir(), ok: true})
-
-	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Status != "completed" {
-		t.Errorf("Status = %q, want completed", out.Status)
-	}
-	reason := tasks.Reason("t1")
-	if !strings.Contains(reason, "worktree git error") {
-		t.Errorf("status reason = %q, want 'worktree git error'", reason)
-	}
-	if !strings.Contains(reason, "git status") {
-		t.Errorf("status reason = %q, want diagnosis from `git status`", reason)
+			wfExec := tc.wfExec
+			if wfExec == nil {
+				wfExec = &Execution{}
+			}
+			out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, TaskInfo{ID: "t1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.Status != "completed" {
+				t.Errorf("Status = %q, want completed", out.Status)
+			}
+			if !strings.Contains(out.Output, tc.wantOutputSubstr) {
+				t.Errorf("Output = %q, want %q", out.Output, tc.wantOutputSubstr)
+			}
+			ti, _ := tasks.GetTask("t1")
+			if ti.Status != tc.wantTaskStatus {
+				t.Errorf("task status = %q, want %q", ti.Status, tc.wantTaskStatus)
+			}
+			reason := tasks.Reason("t1")
+			for _, sub := range tc.wantReasonSubstrs {
+				if !strings.Contains(reason, sub) {
+					t.Errorf("status reason = %q, want %q", reason, sub)
+				}
+			}
+		})
 	}
 }
 
@@ -10382,35 +10263,6 @@ func TestExecVerifyCommits_FetchesMissingLocalHeadObject(t *testing.T) {
 // call. Confirmed live: two foundational tasks landed `done` with prNumber 0
 // and a branch byte-identical to origin/main — zero code shipped. A human
 // must see this instead.
-func TestExecVerifyCommits_BranchAtBaseFlipsHumanRequired(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-
-	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
-	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
-
-	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Status != "completed" {
-		t.Errorf("Status = %q, want completed", out.Status)
-	}
-	if !strings.Contains(out.Output, "no commits") {
-		t.Errorf("Output = %q, want 'no commits'", out.Output)
-	}
-	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "human-required" {
-		t.Errorf("task status = %q, want human-required", ti.Status)
-	}
-	if reason := tasks.Reason("t1"); !strings.Contains(reason, "no commits") {
-		t.Errorf("status reason = %q, want 'no commits'", reason)
-	}
-}
-
 func TestExecVerifyCommits_NoCommitAuthorRunRetriesOnce(t *testing.T) {
 	store := newTestStore(t)
 	tasks := newMemTasks()
@@ -10565,74 +10417,6 @@ func TestExecVerifyCommits_NoCommitAuthorRunEscalatesAfterRetry(t *testing.T) {
 // fact, indistinguishable by `merge-base --is-ancestor`. Silently marking
 // done was proven live to misfire on the second case (issues #2658, #2659
 // landed `done` with zero code). A human must confirm either way now.
-func TestExecVerifyCommits_BranchAncestorOfBaseFlipsHumanRequired(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-
-	wtDir := makeGitRepoBehindOrigin(t)
-	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
-
-	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), &Execution{}, TaskInfo{ID: "t1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Status != "completed" {
-		t.Errorf("Status = %q, want completed", out.Status)
-	}
-	if !strings.Contains(out.Output, "no commits") {
-		t.Errorf("Output = %q, want 'no commits'", out.Output)
-	}
-	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "human-required" {
-		t.Errorf("task status = %q, want human-required", ti.Status)
-	}
-}
-
-// TestExecVerifyCommits_AgentFailedFlipsHumanRequired covers the false-positive
-// auto-close: a fresh worktree branch sits exactly on origin/main (no commits
-// ahead, HEAD == base.tip — git-identical to "already merged") *because the
-// implementation agent crashed before committing*, not because the fix shipped.
-// With a failed agent step in history, the task must flip to human-required so
-// the run is surfaced, never silently marked done.
-func TestExecVerifyCommits_AgentFailedFlipsHumanRequired(t *testing.T) {
-	store := newTestStore(t)
-	tasks := newMemTasks()
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
-	agents := newMockAgents()
-	engine := NewTestEngine(store, tasks, agents, discardLogger())
-
-	// Same git state as TestExecVerifyCommits_BranchAtBaseFlipsHumanRequired:
-	// HEAD == origin/main.
-	wtDir := makeGitRepo(t, false /* no extra commit; HEAD == origin/main */)
-	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wtDir, ok: true})
-
-	// The upstream implement step failed (agent died mid-run).
-	wfExec := &Execution{StepHistory: []StepRecord{
-		{StepID: "implement", Status: "failed", AgentID: "a1", Provider: "claude"},
-	}}
-
-	out, err := engine.execVerifyCommits("t1", newVerifyCommitsStep(), wfExec, TaskInfo{ID: "t1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Status != "completed" {
-		t.Errorf("Status = %q, want completed", out.Status)
-	}
-	if !strings.Contains(out.Output, "agent failed before commit") {
-		t.Errorf("Output = %q, want 'agent failed before commit'", out.Output)
-	}
-	ti, _ := tasks.GetTask("t1")
-	if ti.Status != "human-required" {
-		t.Errorf("task status = %q, want human-required", ti.Status)
-	}
-	if reason := tasks.Reason("t1"); !strings.Contains(reason, "agent failed before committing") {
-		t.Errorf("status reason = %q, want 'agent failed before committing'", reason)
-	}
-}
-
 // TestExecVerifyCommits_AutoCommitsUncommittedWork verifies that a worktree
 // with no commits ahead of base but dirty (uncommitted) files is recovered by
 // auto-committing rather than escalated to human-required — the scenario

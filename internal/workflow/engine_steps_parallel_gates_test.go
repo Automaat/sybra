@@ -374,14 +374,13 @@ func TestResumeStalled_ResumesParkedParallelGates(t *testing.T) {
 
 func waitForTestFile(t *testing.T, path string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	ok := pollUntil(5*time.Second, 10*time.Millisecond, func() bool {
+		_, err := os.Stat(path)
+		return err == nil
+	})
+	if !ok {
+		t.Fatalf("timed out waiting for %s", path)
 	}
-	t.Fatalf("timed out waiting for %s", path)
 }
 
 // TestExecParallelGates_FocusedUnconfiguredDegradesToTamperAndVerify proves
