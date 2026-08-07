@@ -88,7 +88,10 @@ func TestDisposableWorkspaceIsWritableAndNeverMutatesCanonical(t *testing.T) {
 		t.Fatalf("workspace should be writable: %v", err)
 	}
 	git(t, lease.WorkspaceDir, "add", "generated.txt")
-	git(t, lease.WorkspaceDir, "commit", "-m", "private verifier commit")
+	git(t, lease.WorkspaceDir,
+		"-c", "user.name=Sybra Test",
+		"-c", "user.email=test@example.invalid",
+		"commit", "-m", "private verifier commit")
 	if err := os.WriteFile(filepath.Join(lease.WorkspaceDir, "fixture.untracked"), []byte("ephemeral fixture\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
