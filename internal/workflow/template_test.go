@@ -222,6 +222,15 @@ func TestAcceptanceLedger(t *testing.T) {
 	}
 }
 
+func TestAcceptanceLedger_EmptyWhenSectionMissing(t *testing.T) {
+	t.Parallel()
+
+	body := "## Description\n\nno ledger here\n"
+	if got := acceptanceLedger(body); got != "" {
+		t.Fatalf("acceptanceLedger = %q, want empty", got)
+	}
+}
+
 func TestAcceptanceLedgerPromptRendering(t *testing.T) {
 	t.Parallel()
 
@@ -294,6 +303,29 @@ func TestCurrentTestFailures_TruncatesHeadAndTail(t *testing.T) {
 	}
 	if !strings.Contains(got, promptInlineElision) {
 		t.Fatalf("truncated current test failures missing elision marker:\n%s", got)
+	}
+}
+
+func TestCurrentTestFailures_OnlyReturnsFailureSection(t *testing.T) {
+	t.Parallel()
+
+	body := strings.Join([]string{
+		"## Description",
+		"",
+		"task body",
+		"",
+		testFailuresHeading,
+		"",
+		"current failure snapshot",
+		"",
+		"## Acceptance Ledger",
+		"",
+		"ledger content",
+	}, "\n")
+
+	got := currentTestFailures(body)
+	if got != testFailuresHeading+"\n\ncurrent failure snapshot" {
+		t.Fatalf("currentTestFailures = %q", got)
 	}
 }
 

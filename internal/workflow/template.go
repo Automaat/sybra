@@ -72,10 +72,13 @@ func sidecarDirVar(vars map[string]string) string {
 // unambiguously current.
 func currentTestFailures(content string) string {
 	content = strings.TrimSpace(content)
-	if content == "" || testFailSectionOf(content) == "" {
+	if content == "" {
 		return ""
 	}
-	return clampPromptInline(content)
+	if section, ok := topLevelSection(content, isTestFailuresHeading); ok {
+		return clampPromptInline(section)
+	}
+	return ""
 }
 
 func acceptanceLedger(content string) string {
@@ -83,13 +86,23 @@ func acceptanceLedger(content string) string {
 	if content == "" {
 		return ""
 	}
-	if start, end, ok := topLevelSectionRange(content, acceptanceLedgerHeading); ok {
-		content = strings.TrimSpace(content[start:end])
+	if section, ok := topLevelSection(content, func(line string) bool {
+		return strings.EqualFold(line, acceptanceLedgerHeading)
+	}); ok {
+		return clampPromptInline(section)
 	}
-	return clampPromptInline(content)
+	return ""
 }
 
-func topLevelSectionRange(body, heading string) (start, end int, ok bool) {
+func topLevelSection(body string, match func(string) bool) (string, bool) {
+	start, end, ok := topLevelSectionRange(body, match)
+	if !ok {
+		return "", false
+	}
+	return strings.TrimSpace(body[start:end]), true
+}
+
+func topLevelSectionRange(body string, match func(string) bool) (start, end int, ok bool) {
 	lines := strings.SplitAfter(body, "\n")
 	offsets := make([]int, len(lines)+1)
 	for i := range lines {
@@ -103,7 +116,7 @@ func topLevelSectionRange(body, heading string) (start, end int, ok bool) {
 			inFence = !inFence
 			continue
 		}
-		if inFence || !strings.EqualFold(trimmed, heading) {
+		if inFence || !match(trimmed) {
 			continue
 		}
 

@@ -1306,7 +1306,9 @@ func documentedDeletionAllowlist(body string) tamperDeletionAllowlist {
 		"## File Deletions",
 		"## Removed Files",
 	} {
-		start, end, ok := topLevelSectionRange(body, heading)
+		start, end, ok := topLevelSectionRange(body, func(line string) bool {
+			return strings.EqualFold(line, heading)
+		})
 		if !ok {
 			continue
 		}

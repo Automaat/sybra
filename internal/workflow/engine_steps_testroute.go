@@ -795,7 +795,9 @@ func upsertAcceptanceLedger(body, fingerprint, report string) (nextBody string, 
 		return body, false
 	}
 
-	if _, end, ok := topLevelSectionRange(body, acceptanceLedgerHeading); ok {
+	if _, end, ok := topLevelSectionRange(body, func(line string) bool {
+		return strings.EqualFold(line, acceptanceLedgerHeading)
+	}); ok {
 		before := strings.TrimRight(body[:end], "\n")
 		after := strings.TrimLeft(body[end:], "\n")
 		nextBody = appendRawBody(before, entry)
