@@ -44,7 +44,10 @@ func TestE2EConcurrentGitWritingVerificationDoesNotMutateAuthoritativeCheckout(t
 				return
 			}
 			git(t, lease.WorkspaceDir, "add", "generated.txt", "task-fixtures")
-			git(t, lease.WorkspaceDir, "commit", "-m", "private verifier fixture")
+			git(t, lease.WorkspaceDir,
+				"-c", "user.name=Sybra Test",
+				"-c", "user.email=test@example.invalid",
+				"commit", "-m", "private verifier fixture")
 			if err := mgr.Finalize(context.Background(), lease, []string{"generate", "git-writing-test", "task-store-fixture"}, "pass", "cert-e2e"); err != nil {
 				errCh <- err
 			}
