@@ -15,7 +15,6 @@ import (
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/blocker"
-	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/pressure"
@@ -1028,7 +1027,8 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// Verifier roles judge a worktree they must not alter. Enforced at the
 		// OS level rather than through the tool allowlist, which cannot express
 		// it — Bash reaches the same files (#2791).
-		ReadOnlyDir: r.JudgesWithoutWriting(),
+		ReadOnlyDir:   r.JudgesWithoutWriting(),
+		ReadOnlyPaths: assignment.ReadOnlyPaths,
 		// fork_subagent is a task-level opt-in, but must never reach a
 		// verifier role (review/test-runner/eval) — a forked subagent's own
 		// token spend would multiply on every independent check, and a
@@ -1051,12 +1051,16 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		}
 	}
 	if cfg.Dir == "" {
-		// System-role fallback (triage, plan, eval, …): no worktree required,
-		// but the agent process still needs an existing cwd. Use the sybra
-		// home dir rather than letting the process inherit Sybra's own cwd
-		// (which in dev mode would be the sybra source repo — the bug that
-		// caused branch changes on main).
-		cfg.Dir = config.HomeDir()
+		// A direct-dispatch role (notably a best-of-N judge) may deliberately
+		// have no worktree: it reads the candidate worktrees by absolute path.
+		// Give it an isolated temporary cwd rather than the operator's Sybra
+		// home. Besides keeping relative writes away from the board, this is a
+		// distinct ReadOnlyDir under enforce mode, so the sandbox can re-bind it
+		// read-only without also re-binding all of os.TempDir read-only.
+		cfg.Dir, err = fallbackAgentWorkingDir()
+		if err != nil {
+			return "", "", "", err
+		}
 	}
 
 	baselineRef = agentorch.CurrentWorktreeHead(context.Background(), cfg.Dir)
@@ -1072,6 +1076,21 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	}
 
 	return ag.ID, cfg.Dir, baselineRef, nil
+}
+
+// fallbackAgentWorkingDir creates an otherwise empty, per-run cwd for a
+// direct-dispatch agent that intentionally has no task worktree. It must be a
+// child of the OS temp directory rather than os.TempDir itself: read-only
+// judge runs re-bind their cwd after the sandbox's broad tmp write root, and
+// locking the whole tmp root would break provider scratch files. The OS temp
+// cleaner reclaims these directories if a stopped/crashed process leaves one
+// behind.
+func fallbackAgentWorkingDir() (string, error) {
+	dir, err := os.MkdirTemp("", "sybra-agent-cwd-")
+	if err != nil {
+		return "", fmt.Errorf("create fallback agent working directory: %w", err)
+	}
+	return dir, nil
 }
 
 // ensureWorktreeDir resolves the cwd a direct-dispatch agent should run in.
