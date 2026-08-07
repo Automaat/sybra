@@ -43,6 +43,7 @@ import (
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/sybra/review"
+	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/umbrella"
@@ -593,11 +594,29 @@ func k8sJobRunnerConfigFromConfig(cfg config.K8sJobsConfig) agent.K8sJobRunnerCo
 }
 
 func (a *App) onAgentComplete(ag *agent.Agent) {
+	if a.runenv != nil && agentRunEnvironmentFailed(ag) {
+		a.runenv.InvalidateTask(ag.TaskID)
+	}
 	if a.agentCompletion == nil {
 		a.logger.Warn("agent.complete.unwired", "id", ag.ID, "task_id", ag.TaskID)
 		return
 	}
 	a.agentCompletion.OnComplete(ag)
+}
+
+func agentRunEnvironmentFailed(ag *agent.Agent) bool {
+	if runenv.IsEnvironmentFailure(ag.GetExitErr()) {
+		return true
+	}
+	outputs := ag.Output()
+	for i := range outputs {
+		event := &outputs[i]
+		diagnostic := strings.Join([]string{event.Content, event.ErrorType, event.TerminalReason}, " ")
+		if runenv.IsEnvironmentFailure(errors.New(diagnostic)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) recordLimitSnapshot(snapshot limits.Snapshot) {
@@ -1497,6 +1516,7 @@ func (a *App) newWorkflowAgentLauncher() *agentAdapter {
 		sandboxes:  a.sandboxes,
 		experience: a.experience,
 		pressure:   pressureGate,
+		runenv:     a.runenv,
 	}
 }
 

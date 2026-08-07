@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"math/rand/v2"
@@ -62,6 +63,9 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 	if err != nil {
 		return nil, err
 	}
+	if err := m.certifyPreparedRun(ctx, cfg, prov.Name()); err != nil {
+		return nil, err
+	}
 
 	id := uuid.NewString()[:8]
 	ctx, cancel := context.WithCancel(ctx)
@@ -85,6 +89,20 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 
 	m.emit(events.AgentState(id), a)
 	return a, nil
+}
+
+func (m *Manager) certifyPreparedRun(ctx context.Context, cfg RunConfig, providerName string) error {
+	m.mu.RLock()
+	preflight := m.runEnvironmentPreflight
+	m.mu.RUnlock()
+	if preflight == nil {
+		return nil
+	}
+	return preflight(ctx, RunEnvironment{
+		TaskID: cfg.TaskID, Role: cfg.Role, Dir: cfg.Dir, ReadOnlyPaths: slices.Clone(cfg.ReadOnlyPaths), Provider: providerName,
+		SandboxMode:  cfg.SandboxMode,
+		ScratchRoots: []string{cfg.resolvedSandboxHome, os.TempDir(), sharedBuildCacheDir()},
+	})
 }
 
 // jitterDispatch sleeps a uniform random [0, dispatchJitterMs] duration so a
@@ -383,6 +401,35 @@ func (m *Manager) injectGolangciCache(cfg *RunConfig) error {
 
 func sharedBuildCacheDir() string {
 	return buildcache.SharedRoot()
+}
+
+// CertificationScratchRoots resolves and materializes the mutable roots that
+// prepareRunConfig will expose to a task-scoped provider process. Keeping this
+// projection on Manager prevents the run-environment gate from guessing at
+// private sandbox-home and build-cache policy.
+func (m *Manager) CertificationScratchRoots(taskID string) ([]string, error) {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return nil, errors.New("certification scratch roots require a task id")
+	}
+	m.mu.RLock()
+	resolve := m.sandboxHome
+	m.mu.RUnlock()
+	if resolve == nil {
+		return nil, errors.New("certification scratch roots require a sandbox home resolver")
+	}
+	sandboxHome, err := resolve(taskID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve sandbox home: %w", err)
+	}
+	if strings.TrimSpace(sandboxHome) == "" {
+		return nil, errors.New("sandbox home resolver returned an empty path")
+	}
+	sharedCache := sharedBuildCacheDir()
+	if err := os.MkdirAll(sharedCache, 0o755); err != nil {
+		return nil, fmt.Errorf("create shared build cache root: %w", err)
+	}
+	return []string{sandboxHome, os.TempDir(), sharedCache}, nil
 }
 
 func (m *Manager) injectSharedBuildCache(cfg *RunConfig) error {

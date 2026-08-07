@@ -2,6 +2,7 @@ package task
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -182,6 +183,55 @@ func (m *Manager) List() ([]Task, error) { return m.store.List() }
 
 // Get returns a single task by ID (lock-free).
 func (m *Manager) Get(id string) (Task, error) { return m.store.Get(id) }
+
+// ProbeMutationTransport verifies that the task exists and that the same
+// process-local plus cross-process lock used by every Manager mutation can be
+// acquired. It intentionally performs no write, so certification does not
+// change task timestamps or emit lifecycle events.
+func (m *Manager) ProbeMutationTransport(id string) error {
+	if _, err := m.store.Get(id); err != nil {
+		return err
+	}
+	unlock, err := m.store.lockTask(id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	probe, err := os.CreateTemp(m.store.Dir(), ".sybra-task-mutation-probe-")
+	if err != nil {
+		return err
+	}
+	name := probe.Name()
+	if closeErr := probe.Close(); closeErr != nil {
+		_ = os.Remove(name)
+		return closeErr
+	}
+	return os.Remove(name)
+}
+
+// MutationTransportIdentity returns read-only cache evidence for the task
+// store path used by ProbeMutationTransport. Permission or replacement
+// changes therefore invalidate a run-environment certificate without exposing
+// Store mutation authority to the certifier.
+func (m *Manager) MutationTransportIdentity(id string) (string, error) {
+	t, err := m.store.Get(id)
+	if err != nil {
+		return "", err
+	}
+	parts := make([]string, 0, 2)
+	for _, path := range []string{m.store.Dir(), t.FilePath} {
+		resolved, resolveErr := filepath.EvalSymlinks(path)
+		if resolveErr != nil {
+			return "", resolveErr
+		}
+		info, statErr := os.Stat(resolved)
+		if statErr != nil {
+			return "", statErr
+		}
+		parts = append(parts, fmt.Sprintf("%s|%s|%d|%d", resolved, info.Mode(), info.Size(), info.ModTime().UnixNano()))
+	}
+	return strings.Join(parts, "\x00"), nil
+}
 
 // Create persists a new task and emits task:created.
 func (m *Manager) Create(title, body, mode string) (Task, error) {

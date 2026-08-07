@@ -60,6 +60,7 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/sybra/completion"
 	"github.com/Automaat/sybra/internal/sybra/review"
+	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/tasksnapshot"
 	"github.com/Automaat/sybra/internal/toolledger"
@@ -119,6 +120,7 @@ type App struct {
 	learningDigestSvc *learning.Service
 	routingSvc        *routing.Service
 	agentOrch         *agentorch.Orchestrator
+	runenv            *runenv.Service
 	reviewer          *review.Handler
 	assigner          *clusterlead.Assigner
 	mirror            *clusterlead.Mirror
@@ -442,6 +444,7 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 		if a.humanReview != nil {
 			a.humanReview.recoverStrandedUnblockedTasks() //nolint:contextcheck // handler bounds its git/PR checks with dedicated timeouts, matching live completion.
 		}
+		a.certifyStartupRunEnvironment(schedulerCtx)
 		// Arm dispatch now that reattach/replay/restart-stale have run, then
 		// nudge so any task that changed status during the window (buffered,
 		// not dispatched — see startupRecoveryPending) is picked up by the
@@ -595,6 +598,7 @@ func (a *App) Startup(ctx context.Context) error {
 	})
 	a.agentOrch = agentorch.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
 	a.agentOrch.SetContext(appCtx)
+	a.initRunEnvironment()
 	a.reviewer = review.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg, a.experience)
 	a.reviewer.SetABTestingSource(a.abTestingConfig)
 	a.reviewer.SetInterventionStore(a.intervention)

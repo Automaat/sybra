@@ -16,6 +16,7 @@ const (
 	CapabilitySourceRead       Capability = "source_read"
 	CapabilitySourceWrite      Capability = "source_write"
 	CapabilityGitAdminWrite    Capability = "git_admin_write"
+	CapabilityCheckoutHealth   Capability = "checkout_health"
 	CapabilityObjectStore      Capability = "object_store_health"
 	CapabilitySigning          Capability = "signing"
 	CapabilityTaskMutation     Capability = "task_mutation"
@@ -26,7 +27,7 @@ const (
 
 var allCapabilities = []Capability{
 	CapabilitySourceRead, CapabilitySourceWrite, CapabilityGitAdminWrite,
-	CapabilityObjectStore, CapabilitySigning, CapabilityTaskMutation,
+	CapabilityCheckoutHealth, CapabilityObjectStore, CapabilitySigning, CapabilityTaskMutation,
 	CapabilitySandboxMechanism, CapabilityProviderCapacity, CapabilityNetworkGitHub,
 }
 

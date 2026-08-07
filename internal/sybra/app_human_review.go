@@ -23,6 +23,7 @@ import (
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/scrub"
+	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/verdict"
@@ -610,6 +611,7 @@ func (h *humanReviewHandler) spawnReviewConfig(t task.Task, taskID, prompt, dir 
 		OneShot:                true,
 		OutputSchema:           verdict.Schema,
 		IgnoreConcurrencyLimit: true,
+		SandboxMode:            agentorch.ResolveSandboxMode(t, h.cfg),
 	}
 	if opts.SkipABVariant {
 		return cfg

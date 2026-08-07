@@ -16,6 +16,21 @@ import (
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
+type machineStartError struct{ code string }
+
+func (f machineStartError) Error() string              { return "certification failed: " + f.code }
+func (f machineStartError) MachineFailureCode() string { return f.code }
+
+func TestClassifyAgentStartFailureKeepsRunEnvironmentMachineOwned(t *testing.T) {
+	failure := ClassifyAgentStartFailure(machineStartError{code: "checkout_unhealthy"})
+	if !failure.Permanent || failure.Blocker.Kind != blocker.KindRunEnvironment || blocker.AllowsHumanRequired(failure.Blocker.Kind) {
+		t.Fatalf("classification = %#v", failure)
+	}
+	if failure.Blocker.Code != "checkout_unhealthy" {
+		t.Fatalf("blocker code = %q", failure.Blocker.Code)
+	}
+}
+
 func TestClassifyAgentStartError(t *testing.T) {
 	cases := []struct {
 		name          string

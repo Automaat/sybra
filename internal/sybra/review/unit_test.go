@@ -408,7 +408,7 @@ func TestPushPreflightFailureReasonKeepsValidUTF8(t *testing.T) {
 }
 
 func TestStaffCodeReviewRunConfigLeavesProviderUnpinned(t *testing.T) {
-	cfg := StaffCodeReviewRunConfig(task.Task{ID: "review-task", Title: "Needs review"}, "Run /staff-code-review", t.TempDir(), "default")
+	cfg := StaffCodeReviewRunConfig(task.Task{ID: "review-task", Title: "Needs review"}, "Run /staff-code-review", t.TempDir(), "default", "enforce")
 
 	if cfg.Name != agent.RoleReview.AgentName("Needs review") {
 		t.Fatalf("Name = %q, want %q", cfg.Name, agent.RoleReview.AgentName("Needs review"))
@@ -424,6 +424,12 @@ func TestStaffCodeReviewRunConfigLeavesProviderUnpinned(t *testing.T) {
 	}
 	if cfg.HeadlessPermissionMode != "default" {
 		t.Fatalf("HeadlessPermissionMode = %q, want default", cfg.HeadlessPermissionMode)
+	}
+	if !cfg.ReadOnlyDir {
+		t.Fatal("ReadOnlyDir = false, want verifier worktree protected")
+	}
+	if cfg.SandboxMode != "enforce" {
+		t.Fatalf("SandboxMode = %q, want enforce", cfg.SandboxMode)
 	}
 	if cfg.DisableProviderFailover {
 		t.Fatal("DisableProviderFailover = true, want false (availability preferred)")

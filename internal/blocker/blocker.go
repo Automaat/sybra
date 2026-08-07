@@ -19,6 +19,7 @@ const (
 	KindReviewFixExhausted         Kind = "review_fix_exhausted"
 	KindTriageRetryExhausted       Kind = "triage_retry_exhausted"
 	KindWatchdogRateLimitExhausted Kind = "watchdog_rate_limit_exhausted"
+	KindRunEnvironment             Kind = "run_environment"
 	// KindDependencyScopeUnmet marks a task blocked on a depends_on issue
 	// whose closure a prior agent/human run explicitly verified did NOT
 	// satisfy the scope this task actually needs (e.g. the closing PR only

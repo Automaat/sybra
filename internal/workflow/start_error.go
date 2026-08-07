@@ -97,7 +97,18 @@ func ClassifyAgentStartFailure(err error) AgentStartFailure {
 	if err == nil {
 		return out
 	}
+	var machineFailure interface{ MachineFailureCode() string }
 	switch {
+	case errors.As(err, &machineFailure):
+		out.Permanent = true
+		out.Reason = textutil.TruncateBytesTotal("agent start blocked: machine run environment unavailable ("+machineFailure.MachineFailureCode()+")", startReasonMaxLen, "...")
+		out.Blocker = blocker.State{
+			Kind:       blocker.KindRunEnvironment,
+			Actor:      blocker.ActorWorkflow,
+			Code:       machineFailure.MachineFailureCode(),
+			NextAction: "repair_run_environment",
+		}
+		return out
 	case errors.Is(err, ErrDispatchInFlight):
 		// Transient and self-healing: another dispatcher holds the claim and
 		// will start the agent. Suppress the reason entirely.

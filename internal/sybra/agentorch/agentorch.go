@@ -27,6 +27,7 @@ import (
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/skillinvoke"
+	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -210,6 +211,10 @@ type Orchestrator struct {
 	// exactly as it did before this feature landed) — every read site
 	// nil-guards for this reason.
 	queue *agentqueue.Queue
+	// runenv certifies the concrete worktree, Git admin area, provider, and
+	// host posture immediately before Run. Nil is retained for construction
+	// tests and degraded startup; App always late-binds it before dispatch.
+	runenv *runenv.Service
 	// conflictRecovery turns a worktree-prep rebase conflict into an autonomous
 	// conflict pr-fix instead of a human escalation. Wired via SetConflictRecovery
 	// in wireServices after the review.Handler exists; nil keeps the
@@ -277,6 +282,11 @@ func (o *Orchestrator) SetPressureGate(gate *pressure.Gate) {
 // once the review.Handler that implements it exists.
 func (o *Orchestrator) SetConflictRecovery(fn func(taskID string) bool) {
 	o.conflictRecovery = fn
+}
+
+// SetRunEnvironment late-binds pre-dispatch certification.
+func (o *Orchestrator) SetRunEnvironment(service *runenv.Service) {
+	o.runenv = service
 }
 
 // SetQueue late-binds the admission queue once agentqueue.New succeeds at
@@ -677,14 +687,14 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 	if postureErr != nil {
 		return nil, "", postureErr
 	}
-	return o.runImplementationAgent(taskID, prompt, includeTaskDescription, oneShot, skipWT, dir, effMode, requirePerm, posture, baselineRef, resumeSessionID, model, t, assignment, opts, reservation)
+	return o.runImplementationAgent(ctx, taskID, prompt, includeTaskDescription, oneShot, skipWT, dir, effMode, requirePerm, posture, baselineRef, resumeSessionID, model, t, assignment, opts, reservation)
 }
 
 // runImplementationAgent builds the RunConfig for an implementation dispatch,
 // launches it, and translates a launch failure through the same
 // capacity-race / provider-gate handling startAgent used inline before this
 // was split out to satisfy funlen.
-func (o *Orchestrator) runImplementationAgent(taskID, prompt string, includeTaskDescription, oneShot, skipWT bool, dir, effMode string, requirePerm bool, posture, baselineRef, resumeSessionID, model string, t task.Task, assignment workflow.AgentAssignment, opts startOptions, reservation *agent.CapacityReservation) (*agent.Agent, string, error) {
+func (o *Orchestrator) runImplementationAgent(ctx context.Context, taskID, prompt string, includeTaskDescription, oneShot, skipWT bool, dir, effMode string, requirePerm bool, posture, baselineRef, resumeSessionID, model string, t task.Task, assignment workflow.AgentAssignment, opts startOptions, reservation *agent.CapacityReservation) (*agent.Agent, string, error) {
 	extraEnv := o.SandboxEnvIfRunning(taskID)
 	fullPrompt := BuildTaskStartPrompt(t, prompt, includeTaskDescription)
 	o.logSandboxEscapeHatch(taskID, t)
@@ -694,6 +704,9 @@ func (o *Orchestrator) runImplementationAgent(taskID, prompt string, includeTask
 		oneShot:         oneShot,
 		resumeSessionID: resumeSessionID, extraEnv: extraEnv, opts: opts,
 	})
+	if err := o.certifyRunEnvironment(ctx, taskID, t, agent.RoleImplementation, &runCfg); err != nil {
+		return nil, "", err
+	}
 	var (
 		ag  *agent.Agent
 		err error
@@ -704,6 +717,9 @@ func (o *Orchestrator) runImplementationAgent(taskID, prompt string, includeTask
 		ag, err = o.agents.Run(runCfg)
 	}
 	if err != nil {
+		if o.runenv != nil && runenv.IsEnvironmentFailure(err) {
+			o.runenv.InvalidateTask(taskID)
+		}
 		o.handleProviderGateStartError(taskID, err)
 		if ag, baselineRef, capErr, handled := o.handleCapacityRace(err, t, taskID, effMode, prompt, includeTaskDescription, skipWT, opts); handled {
 			if ag != nil {
@@ -718,6 +734,43 @@ func (o *Orchestrator) runImplementationAgent(taskID, prompt string, includeTask
 	}
 	o.recordImplAgentStart(ag, t, taskID, effMode, posture, requirePerm, oneShot, fullPrompt)
 	return ag, baselineRef, nil
+}
+
+func (o *Orchestrator) certifyRunEnvironment(ctx context.Context, taskID string, t task.Task, role agent.Role, cfg *agent.RunConfig) error {
+	if o.runenv == nil {
+		return nil
+	}
+	resolvedProvider, err := o.agents.ResolveProvider(*cfg)
+	if err != nil {
+		return err
+	}
+	cloneDir := ""
+	cloneGeneration := ""
+	if t.ProjectID != "" && o.projects != nil {
+		p, projectErr := o.projects.Get(t.ProjectID)
+		if projectErr != nil {
+			return projectErr
+		}
+		cloneDir = p.ClonePath
+		cloneGeneration = p.CloneGeneration
+	}
+	scratchRoots, err := o.agents.CertificationScratchRoots(taskID)
+	if err != nil {
+		return err
+	}
+	action := string(role) + ".dispatch"
+	if role == "" {
+		action = "implementation.dispatch"
+	}
+	_, err = o.runenv.Certify(ctx, runenv.Request{
+		TaskID: taskID, ProjectID: t.ProjectID, Action: action,
+		WorkDir: cfg.Dir, ScratchRoots: scratchRoots, CloneDir: cloneDir, CloneGeneration: cloneGeneration, TaskBranch: t.Branch,
+		Provider: resolvedProvider, SandboxMode: cfg.SandboxMode,
+		SigningPolicy: project.NormalizeSigningPolicy(o.cfg.CommitSigning()),
+		Requirements:  role.CapabilityRequirements(action),
+		ConfigVersion: fmt.Sprintf("%s|%s", cfg.SandboxMode, o.cfg.CommitSigning()),
+	})
+	return err
 }
 
 // implementationRunParams collects startAgent's locals for
@@ -1397,7 +1450,7 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 		prompt = steered
 	}
 	o.logSandboxEscapeHatch(taskID, t)
-	ag, err := o.agents.Run(agent.RunConfig{
+	runCfg := agent.RunConfig{
 		TaskID:                 taskID,
 		Name:                   agent.RolePRFix.AgentName(t.Title),
 		Role:                   agent.RolePRFix,
@@ -1412,7 +1465,11 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 		// pr-fix is a code-author role — keep the NOTES.md contract airtight so
 		// an adopted (handoff) worktree's scratchpad carries through.
 		SeedWorkingMemory: agent.RolePRFix.AuthorsCode(),
-	})
+	}
+	if err := o.certifyRunEnvironment(o.baseCtx(), taskID, t, agent.RolePRFix, &runCfg); err != nil {
+		return err
+	}
+	ag, err := o.agents.Run(runCfg)
 	if err != nil {
 		return translatePoolBusy(err)
 	}

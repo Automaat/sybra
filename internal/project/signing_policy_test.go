@@ -2,11 +2,41 @@ package project
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/gitexec"
 )
+
+func TestProbeGPGSigningExecutesConfiguredSigner(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		exitCode int
+		wantErr  bool
+	}{{name: "usable", exitCode: 0}, {name: "unusable", exitCode: 7, wantErr: true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			signer := filepath.Join(root, "fake-gpg")
+			if err := os.WriteFile(signer, fmt.Appendf(nil, "#!/bin/sh\ncat >/dev/null\nexit %d\n", tc.exitCode), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			configPath := filepath.Join(root, "gitconfig")
+			configBody := fmt.Sprintf("[user]\n\tsigningkey = test-key\n[gpg]\n\tprogram = %s\n", signer)
+			if err := os.WriteFile(configPath, []byte(configBody), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("GIT_CONFIG_GLOBAL", configPath)
+			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+			err := ProbeGPGSigning(context.Background())
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ProbeGPGSigning() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
 
 func TestNormalizeSigningPolicy(t *testing.T) {
 	tests := []struct {
