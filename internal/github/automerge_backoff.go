@@ -2,11 +2,11 @@ package github
 
 import (
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/backoff"
+	"github.com/Automaat/sybra/internal/errclass"
 )
 
 // MergeErrorClass classifies a failed auto-merge attempt so AutoMergeBackoff
@@ -48,36 +48,18 @@ func ClassifyMergeError(err error) MergeErrorClass {
 	if err == nil {
 		return ""
 	}
-	switch {
-	case IsAuthError(err):
+	switch errclass.ClassifyErr(err, errclass.GitHubPollerRetryBiased) {
+	case errclass.Auth:
 		return MergeErrorAuth
-	case isRateLimitedMessage(strings.ToLower(err.Error())):
+	case errclass.RateLimited:
 		return MergeErrorRateLimit
-	case IsTransientError(err):
+	case errclass.Transient:
 		return MergeErrorTransient
-	case isMergeBlockedMessage(err.Error()):
+	case errclass.Permanent:
 		return MergeErrorBlocked
 	default:
 		return MergeErrorUnknown
 	}
-}
-
-func isMergeBlockedMessage(msg string) bool {
-	lower := strings.ToLower(msg)
-	for _, sig := range []string{
-		"not mergeable",
-		"required status check",
-		"review is required",
-		"changes requested",
-		"waiting for status",
-		"blocked by",
-		"base branch policy prohibits the merge",
-	} {
-		if strings.Contains(lower, sig) {
-			return true
-		}
-	}
-	return false
 }
 
 // autoMergeBackoffWindow maps a MergeErrorClass to its base retry delay and

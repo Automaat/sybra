@@ -2,7 +2,6 @@ package github
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"time"
 
@@ -269,8 +268,7 @@ func (t *authHealthTracker) applyFailureBackoffLocked() {
 // ObserveCallResult can classify a combined stdout+stderr blob the same way
 // IsAuthError classifies a wrapped error.
 func isAuthErrorMsg(msg string) bool {
-	return strings.Contains(strings.ToLower(msg), authCircuitOpenMarker) ||
-		errclass.Matches(msg, errclass.GitHubAuthPhrases)
+	return errclass.Classify(msg, errclass.GitHubPollerRetryBiased) == errclass.Auth
 }
 
 // authCircuitOpenMarker tags the synthetic error returned while the circuit
@@ -278,7 +276,7 @@ func isAuthErrorMsg(msg string) bool {
 // outbox, push-preflight retry, poller circuits) treats a suppressed call the
 // same way it treats a real one instead of mistaking it for an unrelated
 // failure.
-const authCircuitOpenMarker = "github auth circuit open"
+const authCircuitOpenMarker = errclass.GitHubAuthCircuitMarker
 
 // NewAuthCircuitOpenError builds the synthetic error a gh invocation
 // chokepoint returns when it suppresses a call instead of shelling out.

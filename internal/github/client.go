@@ -705,18 +705,8 @@ func IsTransientError(err error) bool {
 	if errors.Is(err, ErrBudgetExhausted) {
 		return true
 	}
-	msg := strings.ToLower(err.Error())
-	// HTTP 5xx: sanitized gh output produces "gh: http 5xx". Broader than the
-	// gateway-only list gh output uses, because this predicate gates poller
-	// escalation: a 500 read as permanent costs a board-wide escalation storm.
-	if strings.Contains(msg, "http 5") {
-		return true
-	}
-	// Rate limiting is backpressure, not a defect — GitHub is telling us to wait.
-	if isRateLimitedMessage(msg) {
-		return true
-	}
-	return errclass.Matches(msg, errclass.GitHubTransientPhrases)
+	class := errclass.ClassifyErr(err, errclass.GitHubPollerRetryBiased)
+	return class == errclass.Transient || class == errclass.RateLimited
 }
 
 // IsAuthError reports whether err is a GitHub authentication failure — an

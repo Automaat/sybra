@@ -8,15 +8,17 @@ import (
 func allFamilies() map[string][]string {
 	return map[string][]string{
 		"badRefPhrases":            badRefPhrases,
-		"GitHubTransientPhrases":   GitHubTransientPhrases,
-		"GHOutputTransientPhrases": GHOutputTransientPhrases,
-		"GitHubRateLimitPhrases":   GitHubRateLimitPhrases,
-		"GitHubAuthPhrases":        GitHubAuthPhrases,
-		"MonitorRateLimitPhrases":  MonitorRateLimitPhrases,
-		"GitTransportPhrases":      GitTransportPhrases,
-		"WorkflowTransientPhrases": WorkflowTransientPhrases,
-		"WorkflowAuthPhrases":      WorkflowAuthPhrases,
-		"AgentRateLimitPhrases":    AgentRateLimitPhrases,
+		"githubTransientPhrases":   githubTransientPhrases,
+		"ghOutputTransientPhrases": ghOutputTransientPhrases,
+		"githubRateLimitPhrases":   githubRateLimitPhrases,
+		"githubAuthPhrases":        githubAuthPhrases,
+		"gitTransportPhrases":      gitTransportPhrases,
+		"workflowTransientPhrases": workflowTransientPhrases,
+		"workflowAuthPhrases":      workflowAuthPhrases,
+		"agentRateLimitPhrases":    agentRateLimitPhrases,
+		"agentGitPhrases":          agentGitPhrases,
+		"mergeBlockedPhrases":      mergeBlockedPhrases,
+		"prFixPermanentPhrases":    prFixPermanentPhrases,
 	}
 }
 

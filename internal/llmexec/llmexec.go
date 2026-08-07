@@ -13,11 +13,11 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/providerid"
 )
@@ -451,15 +451,12 @@ func classifyError(p, stderrOut, content string) provider.Classification {
 
 func overloaded(parts ...string) bool {
 	for _, p := range parts {
-		lower := strings.ToLower(p)
-		if overloadedStatusCode.MatchString(lower) || strings.Contains(lower, "overloaded") {
+		if errclass.Classify(p, errclass.LLMExecRecoveryBiased) == errclass.RateLimited {
 			return true
 		}
 	}
 	return false
 }
-
-var overloadedStatusCode = regexp.MustCompile(`\b529\b`)
 
 func schemaFlagRejected(providerName, schema string, parts ...string) bool {
 	if providerName != providerid.Codex || strings.TrimSpace(schema) == "" {

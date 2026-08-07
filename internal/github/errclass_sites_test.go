@@ -67,9 +67,9 @@ func TestIsRateLimitedMessage_PinsLiterals(t *testing.T) {
 	}
 }
 
-// TestIsAuthErrorMsg_PinsLiterals pins the credential phrases, including the
-// two that stay local to this package: the narrow "gh auth login" and the
-// GH_TOKEN hint.
+// TestIsAuthErrorMsg_PinsLiterals pins the credential phrases. The shared
+// classifier deliberately adds the workflow site's "401 Unauthorized" so a
+// REST-shaped auth failure trips the same circuit instead of being invisible.
 func TestIsAuthErrorMsg_PinsLiterals(t *testing.T) {
 	for _, tc := range []struct {
 		msg  string
@@ -85,7 +85,7 @@ func TestIsAuthErrorMsg_PinsLiterals(t *testing.T) {
 		// would hold the shared circuit open across every gh call.
 		{msg: "gh: Your token has not been granted the required scopes. To request it, run: gh auth refresh -s read:org", want: false},
 		{msg: "fatal: Authentication failed for 'https://github.com/o/r.git/'", want: false},
-		{msg: "remote: 401 Unauthorized", want: false},
+		{msg: "remote: 401 Unauthorized", want: true},
 		{msg: "connection refused", want: false},
 		{msg: "", want: false},
 	} {

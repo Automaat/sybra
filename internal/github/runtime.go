@@ -55,8 +55,7 @@ func isTransientGHError(out []byte, err error) bool {
 	if err == nil || isRateLimitedResponse(resp) {
 		return false
 	}
-	msg := string(out)
-	return errclass.Matches(msg, errclass.GHOutputTransientPhrases)
+	return errclass.Classify(string(out), errclass.GHCommandEscalationBiased) == errclass.Transient
 }
 
 type ttlCache[T any] struct {
@@ -298,7 +297,7 @@ func (g *ghRequestGate) lockContext(ctx context.Context) error {
 	return nil
 }
 
-const rateLimitWallMarker = "github rate-limit wall"
+const rateLimitWallMarker = errclass.GitHubRateLimitWallMarker
 
 type rateLimitWallError struct{ retryAfter time.Time }
 
@@ -423,8 +422,7 @@ func (g *ghRequestGate) pressure() (fraction float64, known bool) {
 }
 
 func isRateLimitedMessage(msg string) bool {
-	return strings.Contains(strings.ToLower(msg), rateLimitWallMarker) ||
-		errclass.Matches(msg, errclass.GitHubRateLimitPhrases)
+	return errclass.Classify(msg, errclass.GitHubPollerRetryBiased) == errclass.RateLimited
 }
 
 func isGraphQLRateLimitBody(body []byte) bool {
@@ -464,8 +462,7 @@ func isRateLimitedResponse(resp ghHTTPResponse) bool {
 	if json.Unmarshal(resp.body, &envelope) != nil {
 		return false
 	}
-	return strings.Contains(strings.ToLower(envelope.Message), "secondary rate limit") ||
-		strings.Contains(strings.ToLower(envelope.Message), "api rate limit exceeded")
+	return errclass.Classify(envelope.Message, errclass.GitHubPollerRetryBiased) == errclass.RateLimited
 }
 
 func runGHAPIWith(e execer, cacheTTL string, args ...string) (ghHTTPResponse, error) {

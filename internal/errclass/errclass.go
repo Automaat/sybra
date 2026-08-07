@@ -1,165 +1,401 @@
-// Package errclass holds every phrase table used to decide whether an error
-// is transient, rate limited, or an auth failure.
+// Package errclass is the single operational error classifier.
 //
-// The tables used to live in a dozen packages, where they drifted apart
-// unseen. The twelve bad-ref needles existed byte-identically in
-// internal/project and internal/workflow. internal/monitor knew two of the
-// four rate-limit phrases internal/github knew. Nothing made a reader of one
-// table aware of the others.
+// Callers choose a policy whose name states which classification mistake is
+// safer at that site. The policies intentionally do not share one indiscriminate
+// phrase union: pollers may retry broadly to avoid a board-wide escalation,
+// while git transport must classify narrowly because a false transient answer
+// can retry forever without reaching a human.
 //
-// This package co-locates them and does not merge them. Each caller keeps the
-// exact set it had, because the sets differ for good reasons: IsTransientError
-// gates poller escalation, where under-reporting transience escalates the
-// whole board; IsTransientNetworkError becomes worktree.ErrTransientFetch,
-// which callers must never escalate, so over-reporting there retries forever
-// with no human told; and the workflow tables read agent prose rather than a
-// transport error. Merging the answers changes retry and escalation behaviour
-// at every one of those sites and needs per-site judgement. See the follow-up
-// issue #3162.
+// Provider CLI signal parsing in internal/provider and telemetry aggregation in
+// internal/selfmonitor are deliberately outside this classifier. The former
+// consumes structured, provider-specific status fields and quota reset hints;
+// the latter labels observations and does not make retry/cooldown/park decisions.
 //
-// It is a leaf on purpose. internal/github depends on internal/clock alone, so
-// anything heavier here would cycle.
+// This package remains a leaf because internal/github can otherwise create an
+// import cycle.
 package errclass
 
 import "strings"
 
-// The one genuinely shared table, reached through IsBadRef.
-var (
-	// The twelve needles internal/project and internal/workflow each carried byte-identically.
-	badRefPhrases = []string{
-		"bad object head",
-		"fatal: bad object",
-		"not a valid object name",
-		"invalid object",
-		"invalid revision range",
-		"missing object",
-		"unable to read sha1 file",
-		"object file",
-		"loose object",
-		"unknown revision",
-		"ambiguous argument",
-		"reference broken",
-	}
+// Class is the four-way operational answer. Unknown is retained separately so
+// an unrecognized phrase is never silently promoted to a permanent failure.
+type Class string
+
+const (
+	Unknown     Class = "unknown"
+	Transient   Class = "transient"
+	RateLimited Class = "rate_limited"
+	Auth        Class = "auth"
+	Permanent   Class = "permanent"
 )
 
-// Tables owned by a single caller. They live here so a reader sees all of
-// them at once and can tell which phrase one table knows and another misses.
+// Synthetic GitHub errors use these canonical markers so their producers and
+// the classifier cannot drift independently.
+const (
+	GitHubAuthCircuitMarker   = "github auth circuit open"
+	GitHubRateLimitWallMarker = "github rate-limit wall"
+)
+
+// Bias documents which side of an ambiguous phrase is safer for a policy.
+type Bias string
+
+const (
+	// RetryBiased accepts an occasional extra bounded retry to avoid escalating
+	// a self-healing failure.
+	RetryBiased Bias = "retry"
+	// EscalationBiased accepts an occasional escalation to avoid an unbounded
+	// retry or a retry against unchanged state.
+	EscalationBiased Bias = "escalate"
+	// CooldownBiased accepts an occasional cooldown to avoid spending more of a
+	// shared rate-limit budget.
+	CooldownBiased Bias = "cooldown"
+	// RecoveryBiased accepts an occasional recovery dispatch to avoid burning a
+	// task's terminal workflow retry budget.
+	RecoveryBiased Bias = "recover"
+)
+
+// Policy identifies the input surface and its accepted error direction.
+type Policy string
+
+const (
+	// GitHubPollerRetryBiased reads wrapped GitHub errors. A missed transient
+	// answer escalates every affected poller, so this policy includes every 5xx.
+	GitHubPollerRetryBiased Policy = "github-poller-retry-biased"
+	// GHCommandEscalationBiased reads raw gh output inside the immediate retry
+	// loop. It excludes plain 500 and rate limits so retries do not amplify them.
+	GHCommandEscalationBiased Policy = "gh-command-escalation-biased"
+	// MonitorCooldownBiased reads direct gh issue-sink failures. A missed rate
+	// limit spends the shared token, so it follows the complete GitHub set.
+	MonitorCooldownBiased Policy = "monitor-cooldown-biased"
+	// GitHubTokenMintCooldownBiased reads a 403 installation-token response.
+	// The HTTP status supplies the GitHub context, so a bare rate-limit phrase
+	// is sufficient and must cooldown rather than report bad credentials.
+	GitHubTokenMintCooldownBiased Policy = "github-token-mint-cooldown-biased" //nolint:gosec // This names a policy; it is not a credential.
+	// GitTransportEscalationBiased reads git fetch/ls-remote failures. Its
+	// transient answer becomes a condition callers must never escalate.
+	GitTransportEscalationBiased Policy = "git-transport-escalation-biased"
+	// WorkflowProseRetryBiased reads agent prose, where bare timeout/TLS wording
+	// is useful reachability evidence and every retry is bounded by workflow state.
+	WorkflowProseRetryBiased Policy = "workflow-prose-retry-biased"
+	// AgentRecoveryBiased reads fatal provider-run errors. Recovery labels avoid
+	// consuming terminal workflow retry budget for capacity and clone failures.
+	AgentRecoveryBiased Policy = "agent-recovery-biased"
+	// AgentStreamRecoveryBiased preserves the provider stream's permissive
+	// substring fallback when structured overload fields are absent.
+	AgentStreamRecoveryBiased Policy = "agent-stream-recovery-biased"
+	// LLMExecRecoveryBiased requires 529 to be a standalone status code so an
+	// unrelated token count such as 1529 cannot fail over a provider.
+	LLMExecRecoveryBiased Policy = "llmexec-recovery-biased"
+	// PRFixProseRetryBiased reads a persisted worktree-preparation reason. A
+	// false transient answer repeats recovery, but that retry is bounded; a
+	// missed transient strands an otherwise recoverable PR-fix task.
+	PRFixProseRetryBiased Policy = "pr-fix-prose-retry-biased"
+)
+
+// Bias reports the documented error direction for policy.
+func (p Policy) Bias() Bias {
+	switch p {
+	case GitHubPollerRetryBiased, WorkflowProseRetryBiased, PRFixProseRetryBiased:
+		return RetryBiased
+	case GHCommandEscalationBiased, GitTransportEscalationBiased:
+		return EscalationBiased
+	case MonitorCooldownBiased, GitHubTokenMintCooldownBiased:
+		return CooldownBiased
+	case AgentRecoveryBiased, AgentStreamRecoveryBiased, LLMExecRecoveryBiased:
+		return RecoveryBiased
+	default:
+		return ""
+	}
+}
+
 var (
-	// github.IsTransientError, whose false answer escalates a poller.
-	GitHubTransientPhrases = []string{
-		"dial tcp",
-		"i/o timeout",
-		"context deadline exceeded",
-		"connection reset",
-		"connection refused",
-		"tls handshake timeout",
+	badRefPhrases = []string{
+		"bad object head", "fatal: bad object", "not a valid object name",
+		"invalid object", "invalid revision range", "missing object",
+		"unable to read sha1 file", "object file", "loose object",
+		"unknown revision", "ambiguous argument", "reference broken",
+	}
+
+	githubTransientPhrases = []string{
+		"dial tcp", "i/o timeout", "context deadline exceeded",
+		"connection reset", "connection refused", "tls handshake timeout",
 		"no route to host",
 	}
-
-	// github.isTransientGHError, which reads raw gh output rather than a wrapped error.
-	GHOutputTransientPhrases = []string{
-		"http 502",
-		"http 503",
-		"http 504",
-		"operation timed out",
-		"i/o timeout",
-		"deadline exceeded",
-		"connection reset",
-		"connection refused",
-		"stream error",
-		"unexpected eof",
-		"tls handshake",
+	ghOutputTransientPhrases = []string{
+		"http 502", "http 503", "http 504", "operation timed out",
+		"i/o timeout", "deadline exceeded", "connection reset",
+		"connection refused", "stream error", "unexpected eof", "tls handshake",
 	}
-
-	// github.isRateLimitedMessage.
-	GitHubRateLimitPhrases = []string{
-		"secondary rate limit",
-		"api rate limit exceeded",
-		"rate limit exceeded",
+	githubRateLimitPhrases = []string{
+		GitHubRateLimitWallMarker, "secondary rate limit",
+		"api rate limit exceeded", "rate limit exceeded",
 	}
-
-	// github.isAuthErrorMsg. "gh auth login" stays narrow: the bare prefix also
-	// matches gh's missing-scope hint, which would hold the shared circuit open.
-	GitHubAuthPhrases = []string{
-		"http 401",
-		"bad credentials",
-		"gh auth login",
-		"gh_token environment variable",
+	githubAuthPhrases = []string{
+		GitHubAuthCircuitMarker, "http 401", "401 unauthorized",
+		"bad credentials", "gh auth login", "gh_token environment variable",
 	}
-
-	// monitor.classifyGHError, which knows fewer phrases than github does.
-	MonitorRateLimitPhrases = []string{
-		"api rate limit exceeded",
-		"secondary rate limit",
-	}
-
-	// project.IsTransientNetworkError, whose true answer must never escalate.
-	GitTransportPhrases = []string{
-		"connection refused",
-		"connection reset",
-		"connection timed out",
-		"failed to connect",
-		"couldn't connect to server",
-		"could not resolve host",
-		"couldn't resolve host",
-		"network is unreachable",
-		"operation timed out",
-		"temporary failure in name resolution",
-		"no route to host",
-		"ssh: connect to host",
-		"recv failure",
-		"tls handshake timeout",
-		"empty reply from server",
-		"early eof",
+	gitTransportPhrases = []string{
+		"connection refused", "connection reset", "connection timed out",
+		"failed to connect", "couldn't connect to server", "could not resolve host",
+		"couldn't resolve host", "network is unreachable", "operation timed out",
+		"temporary failure in name resolution", "no route to host",
+		"ssh: connect to host", "recv failure", "tls handshake timeout",
+		"empty reply from server", "early eof",
 		"unexpected disconnect while reading sideband packet",
 	}
-
-	// workflow.looksLikeTransientGitHub, which reads agent prose, so a bare
-	// "timed out" and "tls:" are reachability signals rather than merge state.
-	WorkflowTransientPhrases = []string{
-		"connection refused",
-		"connection reset",
-		"could not resolve host",
-		"no such host",
-		"no route to host",
-		"network is unreachable",
-		"temporary failure in name resolution",
-		"i/o timeout",
-		"timed out",
-		"context deadline exceeded",
-		"tls handshake",
-		"tls:",
+	workflowTransientPhrases = []string{
+		"connection refused", "connection reset", "could not resolve host",
+		"no such host", "no route to host", "network is unreachable",
+		"temporary failure in name resolution", "i/o timeout", "timed out",
+		"context deadline exceeded", "tls handshake", "tls:",
 	}
-
-	// workflow.looksLikeAuthFailure, whose "gh auth" is broader than github's
-	// because an echoed command is this site's usual credential signal.
-	WorkflowAuthPhrases = []string{
-		"bad credentials",
-		"authentication failed",
-		"failed to log in",
-		"gh auth",
-		"gh_token is invalid",
-		"github_token is invalid",
-		"token has expired",
-		"could not read username for 'https://github.com'",
-		"401 unauthorized",
+	workflowAuthPhrases = []string{
+		"bad credentials", "authentication failed", "failed to log in", "gh auth",
+		"gh_token is invalid", "github_token is invalid", "token has expired",
+		"could not read username for 'https://github.com'", "401 unauthorized",
 	}
-
-	// agent.classifyAgentError's rate_limit bucket.
-	AgentRateLimitPhrases = []string{
-		"rate limit",
-		"429",
-		"overloaded",
+	agentRateLimitPhrases = []string{"rate limit", "429", "overloaded"}
+	agentGitPhrases       = []string{
+		"clone", "fetch origin", "git fetch", "could not resolve host",
+		"dial tcp", "i/o timeout", "dns",
+	}
+	mergeBlockedPhrases = []string{
+		"not mergeable", "required status check", "review is required",
+		"changes requested", "waiting for status", "blocked by",
+		"base branch policy prohibits the merge",
+	}
+	explicitPermanentTransportPhrases = []string{
+		"x509:", "tls: first record does not look like a tls handshake",
+	}
+	prFixPermanentPhrases = []string{
+		"missing credential", "authentication", "permission denied",
 	}
 )
 
-// Matches reports whether text contains any phrase in families, comparing
-// case-insensitively. Every table entry is lowercase for that reason.
-func Matches(text string, families ...[]string) bool {
+// Classify answers the operational error question once under policy. Auth
+// outranks rate limiting, and rate limiting outranks an ordinary transient
+// failure unless a policy documents legacy precedence (the agent clone bucket).
+func Classify(text string, policy Policy) Class {
+	if text == "" {
+		return Unknown
+	}
+	lower := strings.ToLower(text)
+	switch policy {
+	case GitHubPollerRetryBiased:
+		return classifyGitHubPoller(lower)
+	case GHCommandEscalationBiased:
+		return classifyGHCommand(lower)
+	case MonitorCooldownBiased:
+		return classifyMonitor(lower)
+	case GitHubTokenMintCooldownBiased:
+		return classifyTokenMint(lower)
+	case GitTransportEscalationBiased:
+		return classifyGitTransport(lower)
+	case WorkflowProseRetryBiased:
+		return classifyWorkflowProse(lower)
+	case AgentRecoveryBiased:
+		return classifyAgent(lower)
+	case AgentStreamRecoveryBiased:
+		return classifyAgentStream(lower)
+	case LLMExecRecoveryBiased:
+		return classifyLLMExec(lower)
+	case PRFixProseRetryBiased:
+		return classifyPRFixProse(lower)
+	default:
+		return Unknown
+	}
+}
+
+func classifyGitHubPoller(lower string) Class {
+	switch {
+	case matchesLower(lower, githubAuthPhrases):
+		return Auth
+	case matchesLower(lower, githubRateLimitPhrases):
+		return RateLimited
+	case strings.Contains(lower, "http 5"), matchesLower(lower, githubTransientPhrases):
+		return Transient
+	case matchesLower(lower, mergeBlockedPhrases):
+		return Permanent
+	default:
+		return Unknown
+	}
+}
+
+func classifyGHCommand(lower string) Class {
+	switch {
+	case matchesLower(lower, ghOutputTransientPhrases):
+		return Transient
+	case matchesLower(lower, githubRateLimitPhrases):
+		return RateLimited
+	case matchesLower(lower, githubAuthPhrases):
+		return Auth
+	case strings.Contains(lower, "http 500"):
+		return Permanent
+	default:
+		return Unknown
+	}
+}
+
+func classifyMonitor(lower string) Class {
+	switch {
+	case matchesLower(lower, githubRateLimitPhrases):
+		return RateLimited
+	case matchesLower(lower, githubAuthPhrases):
+		return Auth
+	default:
+		return Unknown
+	}
+}
+
+func classifyTokenMint(lower string) Class {
+	if strings.Contains(lower, "rate limit") {
+		return RateLimited
+	}
+	return Unknown
+}
+
+func classifyGitTransport(lower string) Class {
+	switch {
+	case matchesLower(lower, gitTransportPhrases):
+		return Transient
+	case matchesLower(lower, githubAuthPhrases, workflowAuthPhrases):
+		return Auth
+	case matchesLower(lower, githubRateLimitPhrases):
+		return RateLimited
+	case matchesLower(lower, explicitPermanentTransportPhrases):
+		return Permanent
+	default:
+		return Unknown
+	}
+}
+
+func classifyWorkflowProse(lower string) Class {
+	// Preserve workflow's decision order: cooldown, then bounded transient
+	// retry, then bounded auth retry. Agent prose can mention more than one.
+	switch {
+	case isWorkflowRateLimit(lower):
+		return RateLimited
+	case matchesLower(lower, workflowTransientPhrases), hasWorkflowGatewayStatus(lower):
+		return Transient
+	case matchesLower(lower, workflowAuthPhrases):
+		return Auth
+	default:
+		return Unknown
+	}
+}
+
+func classifyAgent(lower string) Class {
+	// Preserve the agent's legacy precedence: a git-fetch error that also
+	// contains rate-limit prose belongs to the clone recovery bucket.
+	switch {
+	case matchesLower(lower, agentGitPhrases),
+		strings.Contains(lower, "git") && strings.Contains(lower, "network"):
+		return Transient
+	case matchesLower(lower, agentRateLimitPhrases):
+		return RateLimited
+	default:
+		return Unknown
+	}
+}
+
+func classifyAgentStream(lower string) Class {
+	if strings.Contains(lower, "529") || strings.Contains(lower, "overloaded") {
+		return RateLimited
+	}
+	return Unknown
+}
+
+func classifyLLMExec(lower string) Class {
+	if hasStandaloneCode(lower, "529") || strings.Contains(lower, "overloaded") {
+		return RateLimited
+	}
+	return Unknown
+}
+
+func classifyPRFixProse(lower string) Class {
+	switch {
+	case matchesLower(lower, prFixPermanentPhrases):
+		return Permanent
+	case matchesLower(lower, gitTransportPhrases),
+		strings.Contains(lower, "remote unreachable"),
+		strings.Contains(lower, "transport") && strings.Contains(lower, "github"):
+		return Transient
+	default:
+		return Unknown
+	}
+}
+
+// ClassifyErr is Classify over err. Nil has no evidence and is Unknown.
+func ClassifyErr(err error, policy Policy) Class {
+	if err == nil {
+		return Unknown
+	}
+	return Classify(err.Error(), policy)
+}
+
+// IsBadRef reports a corrupt or unresolvable git object or ref.
+func IsBadRef(text string) bool {
+	return matches(text, badRefPhrases)
+}
+
+func isWorkflowRateLimit(lower string) bool {
+	if !strings.Contains(lower, "rate limit") {
+		return false
+	}
+	return strings.Contains(lower, "github") ||
+		strings.Contains(lower, "graphql") ||
+		strings.Contains(lower, "gh ") ||
+		strings.Contains(lower, "api rate limit") ||
+		strings.Contains(lower, "secondary rate limit")
+}
+
+func hasWorkflowGatewayStatus(lower string) bool {
+	for _, code := range []string{"502", "503"} {
+		idx := strings.Index(lower, code)
+		if idx < 0 {
+			continue
+		}
+		if idx > 0 && isAlphaNumeric(lower[idx-1]) {
+			continue
+		}
+		end := idx + len(code)
+		if end < len(lower) && isAlphaNumeric(lower[end]) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isAlphaNumeric(b byte) bool {
+	return b >= '0' && b <= '9' || b >= 'a' && b <= 'z'
+}
+
+func hasStandaloneCode(lower, code string) bool {
+	for start := 0; start < len(lower); {
+		idx := strings.Index(lower[start:], code)
+		if idx < 0 {
+			return false
+		}
+		idx += start
+		end := idx + len(code)
+		if (idx == 0 || !isAlphaNumeric(lower[idx-1])) &&
+			(end == len(lower) || !isAlphaNumeric(lower[end])) {
+			return true
+		}
+		start = idx + 1
+	}
+	return false
+}
+
+func matches(text string, families ...[]string) bool {
 	if text == "" {
 		return false
 	}
-	lower := strings.ToLower(text)
+	return matchesLower(strings.ToLower(text), families...)
+}
+
+func matchesLower(lower string, families ...[]string) bool {
 	for _, family := range families {
 		for _, phrase := range family {
 			if strings.Contains(lower, phrase) {
@@ -168,9 +404,4 @@ func Matches(text string, families ...[]string) bool {
 		}
 	}
 	return false
-}
-
-// IsBadRef reports a corrupt or unresolvable git object or ref.
-func IsBadRef(text string) bool {
-	return Matches(text, badRefPhrases)
 }
