@@ -452,6 +452,32 @@ func TestAgentAdapterStartAgentSystemRoleHonorsDispatchClaim(t *testing.T) {
 	}
 }
 
+// TestFallbackAgentWorkingDir pins the no-worktree dispatch path used by the
+// best-of-N judge. A judge intentionally reads candidate worktrees by their
+// absolute paths, so it must not be given a task worktree merely to obtain a
+// cwd; in particular it must never fall back to the operator's Sybra home.
+func TestFallbackAgentWorkingDir(t *testing.T) {
+	dir, err := fallbackAgentWorkingDir()
+	if err != nil {
+		t.Fatalf("fallbackAgentWorkingDir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat fallback cwd: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("fallback cwd %q is not a directory", dir)
+	}
+	if dir == config.HomeDir() {
+		t.Fatalf("fallback cwd = Sybra home %q", dir)
+	}
+	if filepath.Clean(filepath.Dir(dir)) != filepath.Clean(os.TempDir()) {
+		t.Fatalf("fallback cwd parent = %q, want OS temp directory %q", filepath.Dir(dir), os.TempDir())
+	}
+}
+
 // conflictRecoveryHarness bundles the real-git fixture used to drive a
 // direct-dispatch StartAgent into a rebase-blocked worktree-prep error and its
 // synchronous conflict-recovery callback.

@@ -365,6 +365,9 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		return err
 	}
 	applySkillReceiptRecoveryAssignment(step.ID, wfExec, &assignment)
+	if step.Config.Role == "review" && wfExec.Variables["bestofn.attempts.manifest"] != "" {
+		assignment.ReadOnlyPaths = bestOfNAttemptReadRoots(wfExec)
+	}
 
 	prompt, err := e.renderAssignedPrompt(taskID, step, ctx, assignment, "workflow.consume-steer")
 	if err != nil {
@@ -424,6 +427,24 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	}
 	agentStarted = true
 	return e.persistStartedAgent(taskID, step, wfExec, agentID, provider, startedDir, baselineRef, cleanRetryKey, cleanRetryRef, dir)
+}
+
+func bestOfNAttemptReadRoots(wfExec *Execution) []string {
+	if wfExec == nil {
+		return nil
+	}
+	var roots []string
+	for _, parent := range wfExec.BestOfNInflight {
+		if parent == nil {
+			continue
+		}
+		for _, attempt := range parent.Attempts {
+			if attempt != nil && attempt.Status == "completed" && strings.TrimSpace(attempt.Dir) != "" {
+				roots = append(roots, attempt.Dir)
+			}
+		}
+	}
+	return roots
 }
 
 func resolveRunAgentMode(mode string, ctx TemplateContext) string {
