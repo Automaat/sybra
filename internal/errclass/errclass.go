@@ -177,9 +177,10 @@ var (
 	}
 )
 
-// Classify answers the operational error question once under policy. Auth
-// outranks rate limiting, and rate limiting outranks an ordinary transient
-// failure unless a policy documents legacy precedence (the agent clone bucket).
+// Classify answers the operational error question once under policy. Each
+// policy owns its precedence: retry-biased GitHub callers prefer transient and
+// rate-limit evidence, auth-circuit callers prefer auth, workflow prose prefers
+// rate limits, and agent recovery preserves the legacy git-clone bucket first.
 func Classify(text string, policy Policy) Class {
 	if text == "" {
 		return Unknown
