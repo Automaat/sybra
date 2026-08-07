@@ -1162,9 +1162,6 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 func (a *agentAdapter) launchCertifiedDirect(t task.Task, role agent.Role, cfg *agent.RunConfig) (*agent.Agent, string, error) {
 	baselineRef := agentorch.CurrentWorktreeHead(context.Background(), cfg.Dir)
 	a.configureTestRunnerRun(cfg, t.ID, role, t)
-	if err := a.certifyRunEnvironment(t, role, cfg); err != nil {
-		return nil, "", err
-	}
 	ag, err := a.agents.Run(*cfg)
 	if err != nil {
 		if a.runenv != nil && runenv.IsEnvironmentFailure(err) {
@@ -1173,55 +1170,6 @@ func (a *agentAdapter) launchCertifiedDirect(t task.Task, role agent.Role, cfg *
 		return nil, "", translatePoolBusy(err)
 	}
 	return ag, baselineRef, nil
-}
-
-func (a *agentAdapter) certifyRunEnvironment(t task.Task, role agent.Role, cfg *agent.RunConfig) error {
-	if a.runenv == nil {
-		return nil
-	}
-	resolvedProvider, err := a.agents.ResolveProvider(*cfg)
-	if err != nil {
-		return err
-	}
-	cloneDir := ""
-	cloneGeneration := ""
-	if t.ProjectID != "" && a.projects != nil {
-		p, projectErr := a.projects.Get(t.ProjectID)
-		if projectErr != nil {
-			return projectErr
-		}
-		cloneDir = p.ClonePath
-		cloneGeneration = p.CloneGeneration
-	}
-	scratchRoots, err := a.agents.CertificationScratchRoots(t.ID)
-	if err != nil {
-		return err
-	}
-	action := string(role) + ".dispatch"
-	if role == "" {
-		action = "implementation.dispatch"
-	}
-	requirements := role.CapabilityRequirements(action)
-	mutationIdentity := ""
-	if slices.ContainsFunc(requirements, func(requirement autonomy.CapabilityRequirement) bool {
-		return requirement.Capability == autonomy.CapabilityTaskMutation
-	}) {
-		mutationIdentity, err = a.tasks.MutationTransportIdentity(t.ID)
-		if err != nil {
-			return err
-		}
-	}
-	_, err = a.runenv.Certify(context.Background(), runenv.Request{
-		TaskID: t.ID, ProjectID: t.ProjectID, Action: action,
-		WorkDir: cfg.Dir, ReadRoots: cfg.ReadOnlyPaths, GitRoots: cfg.ReadOnlyPaths,
-		ScratchRoots: scratchRoots, CloneDir: cloneDir, CloneGeneration: cloneGeneration, TaskBranch: t.Branch,
-		Provider: resolvedProvider, SandboxMode: cfg.SandboxMode,
-		SigningPolicy:        project.NormalizeSigningPolicy(a.agentOrch.Cfg().CommitSigning()),
-		TaskMutationIdentity: mutationIdentity,
-		Requirements:         requirements,
-		ConfigVersion:        fmt.Sprintf("%s|%s", cfg.SandboxMode, a.agentOrch.Cfg().CommitSigning()),
-	})
-	return err
 }
 
 // fallbackAgentWorkingDir creates an otherwise empty, per-run cwd for a

@@ -198,6 +198,7 @@ func (s *Service) Certify(ctx context.Context, req Request) (Certificate, error)
 	defer lock.Unlock()
 	now := s.deps.Now()
 	s.mu.Lock()
+	s.pruneExpiredLocked(now)
 	entry, ok := s.cache[key]
 	s.mu.Unlock()
 	if ok && entry.cert.Current(now) {
@@ -253,6 +254,19 @@ func (s *Service) Certify(ctx context.Context, req Request) (Certificate, error)
 		s.deps.Audit("runenv.certified", cert, nil)
 	}
 	return cert, nil
+}
+
+func (s *Service) pruneExpiredLocked(now time.Time) {
+	for key := range s.cache {
+		if !now.Before(s.cache[key].cert.ExpiresAt) {
+			delete(s.cache, key)
+		}
+	}
+	for key := range s.quarantined {
+		if !now.Before(s.quarantined[key].expiresAt) {
+			delete(s.quarantined, key)
+		}
+	}
 }
 
 func (s *Service) observe(ctx context.Context, req Request, key string, repaired bool) Certificate {
@@ -497,7 +511,7 @@ func fingerprint(ctx context.Context, req Request) (string, error) {
 			fileIdentity(filepath.Join(gitDir, "HEAD")),
 			directoryIdentity(filepath.Join(common, "refs")),
 			fileIdentity(filepath.Join(common, "packed-refs")),
-			directoryIdentity(filepath.Join(common, "objects")),
+			objectStoreIdentity(filepath.Join(common, "objects")),
 		)
 		if head, err := gitexec.Output(ctx, gitexec.Options{Dir: root}, "rev-parse", "HEAD"); err == nil {
 			parts = append(parts, head)
@@ -506,7 +520,7 @@ func fingerprint(ctx context.Context, req Request) (string, error) {
 	if req.CloneDir != "" {
 		parts = append(parts,
 			pathIdentity(req.CloneDir),
-			directoryIdentity(filepath.Join(req.CloneDir, "objects")),
+			objectStoreIdentity(filepath.Join(req.CloneDir, "objects")),
 			directoryIdentity(filepath.Join(req.CloneDir, "refs")),
 			fileIdentity(filepath.Join(req.CloneDir, "packed-refs")),
 			fileIdentity(filepath.Join(req.CloneDir, "HEAD")),
@@ -569,6 +583,46 @@ func directoryIdentity(path string) string {
 		return path + "|unavailable|" + err.Error()
 	}
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+// objectStoreIdentity is deliberately bounded by Git's object-store layout:
+// loose objects live one level below a two-hex fanout directory, so the
+// fanout directory's metadata changes when a loose object is added/removed.
+// Pack/info contain a small number of generation files whose metadata is also
+// included. This detects structural mutations without walking every object.
+func objectStoreIdentity(path string) string {
+	hash := sha256.New()
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return path + "|unavailable|" + err.Error()
+	}
+	for _, entry := range entries {
+		if err := writeEntryIdentity(hash, entry.Name(), entry); err != nil {
+			return path + "|unavailable|" + err.Error()
+		}
+		if !entry.IsDir() || (entry.Name() != "pack" && entry.Name() != "info") {
+			continue
+		}
+		children, readErr := os.ReadDir(filepath.Join(path, entry.Name()))
+		if readErr != nil {
+			return path + "|unavailable|" + readErr.Error()
+		}
+		for _, child := range children {
+			if err := writeEntryIdentity(hash, entry.Name()+"/"+child.Name(), child); err != nil {
+				return path + "|unavailable|" + err.Error()
+			}
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func writeEntryIdentity(w io.Writer, name string, entry os.DirEntry) error {
+	info, err := entry.Info()
+	if err != nil {
+		return err
+	}
+	_, err = io.WriteString(w, name+"|"+entry.Type().String()+"|"+strconv.FormatInt(info.Size(), 10)+"|"+strconv.FormatInt(info.ModTime().UnixNano(), 10)+"\n")
+	return err
 }
 
 func certificateID(key string, now time.Time) string {

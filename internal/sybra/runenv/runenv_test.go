@@ -50,6 +50,28 @@ func TestCertifyLinkedWorktreeAndCachesStableEnvironment(t *testing.T) {
 	}
 }
 
+func TestCertifyEvictsExpiredFingerprintEntries(t *testing.T) {
+	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+	service := New(Deps{Now: func() time.Time { return now }, TTL: time.Second})
+	req := Request{
+		TaskID: "task", Action: "read.dispatch", WorkDir: t.TempDir(), ConfigVersion: "one",
+		Requirements: []autonomy.CapabilityRequirement{{Capability: autonomy.CapabilitySourceRead, Action: "read.dispatch", Scope: "task"}},
+	}
+	if _, err := service.Certify(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Second)
+	req.ConfigVersion = "two"
+	if _, err := service.Certify(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if len(service.cache) != 1 {
+		t.Fatalf("cache entries = %d, want only current fingerprint", len(service.cache))
+	}
+}
+
 func TestCachedCertificateInvalidatesWhenScratchRootBecomesReadOnly(t *testing.T) {
 	bare, worktree := linkedWorktree(t)
 	scratch := t.TempDir()

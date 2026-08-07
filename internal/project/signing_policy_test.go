@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -35,6 +36,19 @@ func TestProbeGPGSigningExecutesConfiguredSigner(t *testing.T) {
 				t.Fatalf("ProbeGPGSigning() error = %v, wantErr %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestProbeGPGSigningReportsMissingKey(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(configPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", configPath)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	err := ProbeGPGSigning(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "key is not configured") {
+		t.Fatalf("ProbeGPGSigning() error = %v", err)
 	}
 }
 

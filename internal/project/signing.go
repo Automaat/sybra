@@ -91,6 +91,9 @@ func GPGSigningAvailable(ctx context.Context) bool {
 func ProbeGPGSigning(ctx context.Context) error {
 	key, err := gitexec.Output(ctx, gitexec.Options{}, "config", "--global", "--get", "user.signingkey")
 	if err != nil {
+		if code, ok := gitexec.ExitCode(err); ok && code == 1 {
+			return errors.New("resolve signing key: key is not configured")
+		}
 		return fmt.Errorf("resolve signing key: %w", err)
 	}
 	if strings.TrimSpace(key) == "" {

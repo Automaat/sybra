@@ -704,9 +704,6 @@ func (o *Orchestrator) runImplementationAgent(ctx context.Context, taskID, promp
 		oneShot:         oneShot,
 		resumeSessionID: resumeSessionID, extraEnv: extraEnv, opts: opts,
 	})
-	if err := o.certifyRunEnvironment(ctx, taskID, t, agent.RoleImplementation, &runCfg); err != nil {
-		return nil, "", err
-	}
 	var (
 		ag  *agent.Agent
 		err error
@@ -734,43 +731,6 @@ func (o *Orchestrator) runImplementationAgent(ctx context.Context, taskID, promp
 	}
 	o.recordImplAgentStart(ag, t, taskID, effMode, posture, requirePerm, oneShot, fullPrompt)
 	return ag, baselineRef, nil
-}
-
-func (o *Orchestrator) certifyRunEnvironment(ctx context.Context, taskID string, t task.Task, role agent.Role, cfg *agent.RunConfig) error {
-	if o.runenv == nil {
-		return nil
-	}
-	resolvedProvider, err := o.agents.ResolveProvider(*cfg)
-	if err != nil {
-		return err
-	}
-	cloneDir := ""
-	cloneGeneration := ""
-	if t.ProjectID != "" && o.projects != nil {
-		p, projectErr := o.projects.Get(t.ProjectID)
-		if projectErr != nil {
-			return projectErr
-		}
-		cloneDir = p.ClonePath
-		cloneGeneration = p.CloneGeneration
-	}
-	scratchRoots, err := o.agents.CertificationScratchRoots(taskID)
-	if err != nil {
-		return err
-	}
-	action := string(role) + ".dispatch"
-	if role == "" {
-		action = "implementation.dispatch"
-	}
-	_, err = o.runenv.Certify(ctx, runenv.Request{
-		TaskID: taskID, ProjectID: t.ProjectID, Action: action,
-		WorkDir: cfg.Dir, ScratchRoots: scratchRoots, CloneDir: cloneDir, CloneGeneration: cloneGeneration, TaskBranch: t.Branch,
-		Provider: resolvedProvider, SandboxMode: cfg.SandboxMode,
-		SigningPolicy: project.NormalizeSigningPolicy(o.cfg.CommitSigning()),
-		Requirements:  role.CapabilityRequirements(action),
-		ConfigVersion: fmt.Sprintf("%s|%s", cfg.SandboxMode, o.cfg.CommitSigning()),
-	})
-	return err
 }
 
 // implementationRunParams collects startAgent's locals for
@@ -1465,9 +1425,6 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 		// pr-fix is a code-author role — keep the NOTES.md contract airtight so
 		// an adopted (handoff) worktree's scratchpad carries through.
 		SeedWorkingMemory: agent.RolePRFix.AuthorsCode(),
-	}
-	if err := o.certifyRunEnvironment(o.baseCtx(), taskID, t, agent.RolePRFix, &runCfg); err != nil {
-		return err
 	}
 	ag, err := o.agents.Run(runCfg)
 	if err != nil {
