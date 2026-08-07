@@ -266,6 +266,37 @@ func TestDispatchFromHumanRequired_HappyPathDispatchingTargets(t *testing.T) {
 	})
 }
 
+func TestDispatchFromHumanRequired_ClearsStaleBlocker(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	tk := newHumanRequiredTask(t, a, 0)
+	tk, err := a.tasks.Update(tk.ID, task.Update{
+		StatusReason: task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
+		Blocker: task.Ptr(blocker.State{
+			Kind:  blocker.KindTamperDetected,
+			Actor: blocker.ActorWorkflow,
+		}),
+		Tags: task.Ptr([]string{workflow.TamperBlessedTag}),
+	})
+	if err != nil {
+		t.Fatalf("seed blocker: %v", err)
+	}
+
+	got, err := svc.DispatchFromHumanRequired(tk.ID, string(task.StatusInProgress), "resume after accepting false-positive tamper flag")
+	if err != nil {
+		t.Fatalf("DispatchFromHumanRequired: %v", err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+	if !got.Blocker.IsZero() {
+		t.Fatalf("Blocker = %+v, want cleared", got.Blocker)
+	}
+	if got.TamperFlagged {
+		t.Fatal("TamperFlagged = true, want false after dispatch")
+	}
+}
+
 // TestDispatchFromHumanRequired_WithStatusHook reproduces the production wiring
 // the other tests miss: App.initStatusHook fires synchronously inside UpdateMap
 // and, for ready-review/testing/ready-pr, already dispatches the workflow via
