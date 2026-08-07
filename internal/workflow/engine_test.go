@@ -9839,7 +9839,10 @@ fi
 exec "{{REAL_GIT}}" "$@"
 `)
 
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine, err := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger(), completeDependencies())
+	if err != nil {
+		t.Fatalf("NewEngine() = %v", err)
+	}
 	if recovered := engine.recoverVerifyCommitsRefs("t1", wtPath, TaskInfo{Branch: "fix/not-pushed"}); recovered {
 		t.Fatal("recoverVerifyCommitsRefs() = true, want false after failed fetch")
 	}
