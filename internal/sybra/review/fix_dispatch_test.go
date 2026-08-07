@@ -93,11 +93,13 @@ func TestDispatchPRIssueWithOptions_RecoversRetryableHumanRequiredPRFix(t *testi
 		t.Fatal(err)
 	}
 	created, err = tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("previous blocker"),
-		ProjectID:    task.Ptr("owner/repo"),
-		PRNumber:     task.Ptr(42),
-		Branch:       task.Ptr("feat/retry"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("previous blocker"),
+		ProjectID:       task.Ptr("owner/repo"),
+		PRNumber:        task.Ptr(42),
+		Branch:          task.Ptr("feat/retry"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -198,10 +200,12 @@ func TestDispatchPRIssueWithOptions_DoesNotRewritePermanentFailure(t *testing.T)
 		t.Fatal(err)
 	}
 	created, err = tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("existing blocker"),
-		PRNumber:     task.Ptr(42),
-		Branch:       task.Ptr("feat/permanent"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("existing blocker"),
+		PRNumber:        task.Ptr(42),
+		Branch:          task.Ptr("feat/permanent"),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -36,13 +36,18 @@ func mkTracker(t *testing.T, tasks *task.Manager, umb github.Issue, maxParallel 
 // GatedTag) — the shape RecoverDegraded is allowed to rewrite.
 func mkGatedChild(t *testing.T, tasks *task.Manager, umb github.Issue, issue string, deps []string, status task.Status) task.Task {
 	t.Helper()
-	tk, err := tasks.CreateFull("child "+issue, "", task.AgentModeHeadless, task.Update{
+	init := task.Update{
 		Issue:         task.Ptr(issue),
 		UmbrellaIssue: task.Ptr(umb.URL),
 		DependsOn:     task.Ptr(deps),
 		Status:        task.Ptr(status),
 		Tags:          task.Ptr([]string{GatedTag}),
-	})
+	}
+	if status == task.StatusHumanRequired {
+		init.Escalation = task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture")
+		init.AutonomyOutcome = task.HumanRequiredOutcome()
+	}
+	tk, err := tasks.CreateFull("child "+issue, "", task.AgentModeHeadless, init)
 	if err != nil {
 		t.Fatalf("create gated child: %v", err)
 	}

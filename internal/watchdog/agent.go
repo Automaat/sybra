@@ -243,13 +243,20 @@ func (w *Watchdog) applyStatusEffect(taskID, source string, status, expectedStat
 	if expectedStatus == "" {
 		return fmt.Errorf("watchdog apply status effect: expected status is required")
 	}
+	extra := task.Update{StatusReason: task.Ptr(reason)}
+	// Watchdog findings are machine-owned observations. Exhausting a retry or
+	// verifier path quarantines the task for deterministic recovery; it can
+	// never manufacture human ownership from judge/reason prose.
+	if status == task.StatusHumanRequired {
+		status = task.StatusBlocked
+		extra.Escalation = task.MachineFailure(source, reason)
+		extra.AutonomyOutcome = task.QuarantinedOutcome()
+	}
 	_, err := w.tasks.ApplyStatusEffect(taskID, task.StatusEffect{
 		Source:         source,
 		ToStatus:       status,
 		ExpectedStatus: expectedStatus,
-		Extra: task.Update{
-			StatusReason: task.Ptr(reason),
-		},
+		Extra:          extra,
 	})
 	return err
 }

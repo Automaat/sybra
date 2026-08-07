@@ -227,8 +227,10 @@ steps:
 	}
 
 	if _, err := a.tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("manual verification blocker: no current open PR could be verified as allFlaky for the required live pr-monitor proof"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("manual verification blocker: no current open PR could be verified as allFlaky for the required live pr-monitor proof"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +345,12 @@ func TestApp_StatusHook_ReleasesTaskAgentsOnHandoffAndTerminal(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if _, err := a.tasks.Update(created.ID, task.Update{Status: task.Ptr(target)}); err != nil {
+			update := task.Update{Status: task.Ptr(target)}
+			if target == task.StatusHumanRequired {
+				update.Escalation = task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture")
+				update.AutonomyOutcome = task.HumanRequiredOutcome()
+			}
+			if _, err := a.tasks.Update(created.ID, update); err != nil {
 				t.Fatal(err)
 			}
 

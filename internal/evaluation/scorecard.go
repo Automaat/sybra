@@ -127,6 +127,12 @@ type Scorecard struct {
 	HumanTouchedLandings    int     `json:"humanTouchedLandings"`
 	AutonomyUnknownLandings int     `json:"autonomyUnknownLandings"`
 	AutonomyRate            float64 `json:"autonomyRate"` // autonomous / (autonomous + humanTouched); unknown landings excluded from both numerator and denominator
+	// Typed autonomy control-plane signals. These maps preserve stable codes
+	// from task.status_changed audit events; display text is intentionally not
+	// copied into evaluation output or parsed for policy.
+	AutonomyOutcomes map[string]int `json:"autonomyOutcomes,omitempty"`
+	FailureOwners    map[string]int `json:"failureOwners,omitempty"`
+	EscalationCodes  map[string]int `json:"escalationCodes,omitempty"`
 
 	// Reliability (from stats run outcomes). AgentRuns counts every run;
 	// AgentStalls the retried subset (stats.OutcomeStalled); AgentResolvedRuns
@@ -541,6 +547,7 @@ func computeWithSignals(records []stats.RunRecord, events []audit.Event, sigs ma
 	sc.Reverted = countReverts(events, win, lg.tasks)
 	sc.TotalCostUSD = cost
 	sc.TotalTokens = tokens
+	sc.AutonomyOutcomes, sc.FailureOwners, sc.EscalationCodes = scanTypedAutonomy(events, win)
 	autonomous, humanTouched, unknown, ciClean := classifyLanded(lg.tasks, lg.edited, sigs)
 	sc.AutonomousLandings, sc.HumanTouchedLandings, sc.AutonomyUnknownLandings = autonomous, humanTouched, unknown
 	sc.ReworkTasks = countRework(sigs, lg.tasks)
@@ -578,6 +585,34 @@ func computeWithSignals(records []stats.RunRecord, events []audit.Event, sigs ma
 	sc.CycleTimeP50H = percentile(lg.cycleTimes, 50)
 	sc.CycleTimeP90H = percentile(lg.cycleTimes, 90)
 	return sc
+}
+
+func scanTypedAutonomy(events []audit.Event, win func(time.Time) bool) (outcomes, owners, codes map[string]int) {
+	for i := range events {
+		e := events[i]
+		if e.Type != audit.EventTaskStatusChanged || !win(e.Timestamp) {
+			continue
+		}
+		if value := strVal(e.Data, "autonomy_outcome"); value != "" {
+			if outcomes == nil {
+				outcomes = map[string]int{}
+			}
+			outcomes[value]++
+		}
+		if value := strVal(e.Data, "failure_owner"); value != "" {
+			if owners == nil {
+				owners = map[string]int{}
+			}
+			owners[value]++
+		}
+		if value := strVal(e.Data, "escalation_code"); value != "" {
+			if codes == nil {
+				codes = map[string]int{}
+			}
+			codes[value]++
+		}
+	}
+	return outcomes, owners, codes
 }
 
 // landingAgg holds the outcome counts and timing samples from task.landed events.

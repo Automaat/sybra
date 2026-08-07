@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/errclass"
 
 	"github.com/Automaat/sybra/internal/taskstatus"
@@ -231,10 +232,11 @@ func (e *Engine) execEvaluate(taskID string, step *Step, wfExec *Execution, t Ta
 		}
 	}
 
-	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
-		return StepOutput{}, fmt.Errorf("evaluate: set human-required: %w", err)
+	escalation := autonomy.NewEscalation("workflow.evaluate_no_pr", autonomy.FailureOwnerMachine, autonomy.ProvenanceControlPlane, reason)
+	if err := e.tasks.SetEscalationAndWorkflow(taskID, string(taskstatus.Blocked), reason, escalation, autonomy.OutcomeQuarantined, wfExec); err != nil {
+		return StepOutput{}, fmt.Errorf("evaluate: quarantine missing PR: %w", err)
 	}
-	e.logger.Info("workflow.evaluate.human-required", "task_id", taskID, "reason", reason)
+	e.logger.Info("workflow.evaluate.quarantined", "task_id", taskID, "reason", reason)
 	return StepOutput{StepID: step.ID, Status: "completed", Output: reason}, nil
 }
 

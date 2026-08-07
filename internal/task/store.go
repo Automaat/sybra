@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/google/uuid"
@@ -342,6 +343,7 @@ func degradedTask(path string, parseErr error) Task {
 		Status:          StatusHumanRequired,
 		AgentMode:       AgentModeHeadless,
 		StatusReason:    reason,
+		Escalation:      autonomy.LegacyReason(reason),
 		Body:            reason,
 		CreatedAt:       modified,
 		UpdatedAt:       modified,
@@ -741,6 +743,12 @@ func applyCreateInit(t *Task, init Update, now time.Time) {
 	if init.StatusReason != nil {
 		t.StatusReason = *init.StatusReason
 	}
+	if init.Escalation != nil {
+		t.Escalation = *init.Escalation
+	}
+	if init.AutonomyOutcome != nil {
+		t.AutonomyOutcome = *init.AutonomyOutcome
+	}
 	if init.Body != nil {
 		t.Body = *init.Body
 	}
@@ -844,11 +852,13 @@ func (s *Store) putLocked(t Task) (Task, error) {
 	// so an incoming MirrorRev past the on-disk value is race-free proof
 	// even if an unrelated edit bumped UpdatedAt in the gap between Merge's
 	// snapshot and this write reaching the lock above.
-	if existing, err := s.read(t.ID); err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			slog.Default().Warn("task.store.put.read_existing_failed", "id", t.ID, "err", err)
+	existing, existingErr := s.read(t.ID)
+	switch {
+	case existingErr != nil:
+		if !errors.Is(existingErr, os.ErrNotExist) {
+			slog.Default().Warn("task.store.put.read_existing_failed", "id", t.ID, "err", existingErr)
 		}
-	} else if existing.Status != t.Status {
+	case existing.Status != t.Status:
 		if t.MirrorUpdatedAt != nil && t.MirrorRev > existing.MirrorRev {
 			if !t.UpdatedAt.After(existing.UpdatedAt) {
 				// now alone isn't guaranteed to advance past existing.UpdatedAt
@@ -862,6 +872,8 @@ func (s *Store) putLocked(t Task) (Task, error) {
 			}
 		} else if !t.UpdatedAt.After(existing.UpdatedAt) {
 			t.Status = existing.Status
+			t.Escalation = existing.Escalation
+			t.AutonomyOutcome = existing.AutonomyOutcome
 			t.UpdatedAt = existing.UpdatedAt
 			t.StatusChangedAt = existing.StatusChangedAt
 			// A rejected write's MirrorRev/MirrorUpdatedAt must not reach
@@ -870,6 +882,22 @@ func (s *Store) putLocked(t Task) (Task, error) {
 			// on the next mirror-authoritative Put for this task.
 			t.MirrorRev = existing.MirrorRev
 			t.MirrorUpdatedAt = existing.MirrorUpdatedAt
+		}
+	case t.Status == StatusHumanRequired && t.Escalation.IsZero() && !existing.Escalation.IsZero():
+		t.Escalation = existing.Escalation
+		t.AutonomyOutcome = existing.AutonomyOutcome
+	}
+	if t.Status == StatusHumanRequired {
+		legacyContinuation := existingErr == nil &&
+			existing.Status == StatusHumanRequired &&
+			existing.Escalation.Provenance == autonomy.ProvenanceLegacy &&
+			t.Escalation == existing.Escalation &&
+			t.AutonomyOutcome == ""
+		if !legacyContinuation {
+			extra := Update{Escalation: &t.Escalation, AutonomyOutcome: &t.AutonomyOutcome}
+			if err := validateHumanRequiredTransition(StatusTodo, t.Status, extra); err != nil {
+				return Task{}, fmt.Errorf("task: put: %w", err)
+			}
 		}
 	}
 	if t.StatusChangedAt.IsZero() {
@@ -1099,6 +1127,7 @@ func normalizeSandboxEscapeHatch(t *Task) error {
 	return nil
 }
 
+//nolint:funlen // Centralized field application keeps persistence validation exhaustive.
 func applyUpdateFields(t *Task, u Update) error {
 	if u.Title != nil {
 		t.Title = *u.Title
@@ -1124,6 +1153,12 @@ func applyUpdateFields(t *Task, u Update) error {
 		if statusChanged && u.Blocker == nil {
 			t.Blocker = blocker.State{}
 		}
+		if statusChanged && u.Escalation == nil && t.Status != StatusHumanRequired {
+			t.Escalation = autonomy.EscalationReason{}
+		}
+		if statusChanged && u.AutonomyOutcome == nil {
+			t.AutonomyOutcome = ""
+		}
 		// Stamp ClosedAt on transition into a terminal status; clear on exit.
 		wasTerminal := IsTerminalStatus(oldStatus)
 		isTerminal := IsTerminalStatus(t.Status)
@@ -1140,6 +1175,18 @@ func applyUpdateFields(t *Task, u Update) error {
 		if *u.StatusReason == "" && u.Blocker == nil {
 			t.Blocker = blocker.State{}
 		}
+	}
+	if u.Escalation != nil {
+		if err := u.Escalation.Validate(); err != nil {
+			return fmt.Errorf("typed escalation: %w", err)
+		}
+		if u.AutonomyOutcome == nil || !u.AutonomyOutcome.IsKnown() {
+			return errors.New("typed escalation requires a known autonomy outcome")
+		}
+		t.Escalation = *u.Escalation
+	}
+	if u.AutonomyOutcome != nil {
+		t.AutonomyOutcome = *u.AutonomyOutcome
 	}
 	if u.Blocker != nil {
 		if err := blocker.ValidateStatus(string(t.Status), *u.Blocker); err != nil {

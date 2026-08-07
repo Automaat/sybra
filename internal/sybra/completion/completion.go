@@ -790,7 +790,9 @@ func (h *Handler) holdFixReviewForHuman(ag *agent.Agent) {
 		ToStatus: task.StatusHumanRequired,
 		Actor:    "completion.hold_fix_review_for_human",
 		Extra: task.Update{
-			StatusReason: task.Ptr(reason),
+			StatusReason:    task.Ptr(reason),
+			Escalation:      task.OperatorDecisionRequired("review.pending_submission", reason),
+			AutonomyOutcome: task.HumanRequiredOutcome(),
 		},
 	})
 	if err != nil {
@@ -865,10 +867,12 @@ func (h *Handler) recoverDivergedFixReviewPush(ag *agent.Agent, branch string, p
 	reason := "fix-review: branch diverged from remote and needs manual rebase/merge before the fix can be pushed"
 	if _, err := h.tasks.Apply(task.TransitionIntent{
 		TaskID:   ag.TaskID,
-		ToStatus: task.StatusHumanRequired,
+		ToStatus: task.StatusBlocked,
 		Actor:    "completion.recover_diverged_fix_review_push",
 		Extra: task.Update{
-			StatusReason: task.Ptr(reason),
+			StatusReason:    task.Ptr(reason),
+			Escalation:      task.MachineFailure("git.remote_diverged", reason),
+			AutonomyOutcome: task.QuarantinedOutcome(),
 		},
 	}); err != nil {
 		h.logger.Error("fix-review.push-diverged.human-required", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)

@@ -168,6 +168,76 @@ func TestStorePutRejectsStatusChangeWithoutAdvancingUpdatedAt(t *testing.T) {
 	}
 }
 
+func TestStorePutStaleStatusRestorePreservesTypedEvidence(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
+	reason := *OperatorDecisionRequired("operator.choose", "choose")
+	if _, err := store.Put(Task{
+		ID: "task-evidence", Title: "t", Status: StatusHumanRequired,
+		Escalation: reason, AutonomyOutcome: *HumanRequiredOutcome(),
+		CreatedAt: stamp, UpdatedAt: stamp,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put(Task{
+		ID: "task-evidence", Title: "stale", Status: StatusTodo,
+		CreatedAt: stamp, UpdatedAt: stamp,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get("task-evidence")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusHumanRequired || got.Escalation.Code != reason.Code || got.AutonomyOutcome != *HumanRequiredOutcome() {
+		t.Fatalf("stale Put restored status without evidence: %#v", got)
+	}
+}
+
+func TestStorePutAllowsLegacyHumanRequiredRecordEdit(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
+	legacy := Task{
+		ID: "legacy-human", Title: "legacy", Status: StatusHumanRequired,
+		StatusReason: "old readable reason", CreatedAt: stamp, UpdatedAt: stamp,
+	}
+	data, err := Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.dir, legacy.ID+".md"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := store.Get(legacy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Escalation.Provenance != "legacy" || loaded.Escalation.Message != legacy.StatusReason {
+		t.Fatalf("legacy adapter = %#v", loaded.Escalation)
+	}
+	loaded.Tags = []string{"edited"}
+	loaded.UpdatedAt = stamp.Add(time.Minute)
+	if _, err := store.Put(loaded); err != nil {
+		t.Fatalf("Put legacy edit: %v", err)
+	}
+	got, err := store.Get(legacy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tags) != 1 || got.Tags[0] != "edited" || got.Escalation.Provenance != "legacy" {
+		t.Fatalf("legacy edit = %#v", got)
+	}
+}
+
 // TestStorePutRejectsStatusChangeWithBackdatedUpdatedAt pins the boundary
 // below equal: a caller-supplied UpdatedAt strictly before what's on disk is
 // just as stale as an equal one and must be rejected the same way — guards

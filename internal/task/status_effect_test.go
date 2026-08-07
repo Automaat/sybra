@@ -22,7 +22,7 @@ func TestManagerApplyStatusEffect_RecordsEffectAndFiresHookOnce(t *testing.T) {
 	}
 
 	var transitions []string
-	m.SetStatusChangeHook(func(_ string, from, to string) {
+	m.SetStatusChangeHook(func(_ string, from, to string, _ Task) {
 		transitions = append(transitions, from+"->"+to)
 	})
 	baseline := emitter.names()
@@ -117,7 +117,9 @@ func TestManagerApplyStatusEffect_ReappliesAfterGenerationChange(t *testing.T) {
 		Source:   "recovery.start-failure",
 		ToStatus: StatusHumanRequired,
 		Extra: Update{
-			StatusReason: Ptr("agent start failed"),
+			StatusReason:    Ptr("operator decision required"),
+			Escalation:      OperatorDecisionRequired("test.operator_decision", "operator decision required"),
+			AutonomyOutcome: HumanRequiredOutcome(),
 		},
 	}
 	first, err := m.ApplyStatusEffect(created.ID, eff)

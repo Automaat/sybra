@@ -319,7 +319,7 @@ func TestReplayDeferredStatusChanges_DispatchesHumanReview(t *testing.T) {
 	}
 
 	app.startupRecoveryPending.Store(true)
-	if _, err := app.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := app.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	select {
@@ -427,8 +427,10 @@ func TestAppStartup_ReplaysStrandedVerdictOnlyAfterStartupCleanup(t *testing.T) 
 		t.Fatal(err)
 	}
 	created, err = app.tasks.Update(created.ID, task.Update{
-		Status:   task.Ptr(task.StatusHumanRequired),
-		Workflow: completedHumanReviewWorkflow(),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		Workflow:        completedHumanReviewWorkflow(),
 	})
 	if err != nil {
 		t.Fatal(err)

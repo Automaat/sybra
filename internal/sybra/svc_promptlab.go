@@ -120,11 +120,13 @@ func (s *PromptLabService) approveProposal(id, progressNote string) (task.Task, 
 		tags := mergeTag(t.Tags, "requires-human")
 		revertResult, revertErr := s.tasks.Apply(task.TransitionIntent{
 			TaskID:   id,
-			ToStatus: task.StatusHumanRequired,
+			ToStatus: task.StatusBlocked,
 			Actor:    "svc.promptlab.approve.revert",
 			Extra: task.Update{
-				StatusReason: &revertReason,
-				Tags:         tags,
+				StatusReason:    &revertReason,
+				Tags:            tags,
+				Escalation:      task.MachineFailure("promptlab.workflow_start_failed", revertReason),
+				AutonomyOutcome: task.QuarantinedOutcome(),
 			},
 			OperatorOverride: true,
 		})

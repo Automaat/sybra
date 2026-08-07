@@ -16,7 +16,7 @@ func TestManagerPutFiresStatusHookForStageStatus(t *testing.T) {
 	m, emitter := newTestManager(t)
 	var mu sync.Mutex
 	var calls []hookCall
-	m.SetStatusChangeHook(func(id, from, to string) {
+	m.SetStatusChangeHook(func(id, from, to string, _ Task) {
 		mu.Lock()
 		calls = append(calls, hookCall{id, from, to})
 		mu.Unlock()
@@ -44,7 +44,7 @@ func TestManagerPutFiresHookOnTransition(t *testing.T) {
 	m, _ := newTestManager(t)
 	var mu sync.Mutex
 	var calls []hookCall
-	m.SetStatusChangeHook(func(id, from, to string) {
+	m.SetStatusChangeHook(func(id, from, to string, _ Task) {
 		mu.Lock()
 		calls = append(calls, hookCall{id, from, to})
 		mu.Unlock()
@@ -78,7 +78,7 @@ func TestManagerPutNoHookWhenStatusUnchanged(t *testing.T) {
 	m, _ := newTestManager(t)
 	var mu sync.Mutex
 	fired := 0
-	m.SetStatusChangeHook(func(string, string, string) {
+	m.SetStatusChangeHook(func(string, string, string, Task) {
 		mu.Lock()
 		fired++
 		mu.Unlock()

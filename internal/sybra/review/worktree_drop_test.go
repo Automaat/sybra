@@ -73,8 +73,8 @@ func TestDropTerminalWorktreeFailure(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if got.Status != task.StatusHumanRequired {
-					t.Fatalf("status = %q, want human-required", got.Status)
+				if got.Status != task.StatusBlocked {
+					t.Fatalf("status = %q, want blocked", got.Status)
 				}
 				if n := r.wtFailures[tk.ID]; n != 0 {
 					t.Fatalf("wtFailures = %d, want 0 for a terminal failure", n)
@@ -128,8 +128,8 @@ func TestTransientWorktreeFailureBoundedByCircuitBreaker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required after the circuit trips", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want blocked after the circuit trips", got.Status)
 	}
 	if n := r.wtFailures[tk.ID]; n != 0 {
 		t.Fatalf("wtFailures = %d, want 0 after the circuit trips", n)

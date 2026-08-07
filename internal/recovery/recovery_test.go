@@ -1644,8 +1644,8 @@ func TestRestartStaleReviewOnPlanWorkflowNoContextEscalates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Status != task.StatusHumanRequired {
-		t.Errorf("status = %s; want %s (durable recoverable state)", updated.Status, task.StatusHumanRequired)
+	if updated.Status != task.StatusBlocked {
+		t.Errorf("status = %s; want %s (machine-owned quarantine)", updated.Status, task.StatusBlocked)
 	}
 	if !strings.Contains(updated.StatusReason, "no project/PR context") {
 		t.Errorf("status reason = %q, want precise no-context reason", updated.StatusReason)
@@ -1667,8 +1667,8 @@ func TestRestartStaleReviewOnPlanWorkflowNoContextEscalates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parked.Status != task.StatusHumanRequired {
-		t.Errorf("status after tick 2 = %s; want %s", parked.Status, task.StatusHumanRequired)
+	if parked.Status != task.StatusBlocked {
+		t.Errorf("status after tick 2 = %s; want %s", parked.Status, task.StatusBlocked)
 	}
 	if parked.StatusReason != updated.StatusReason {
 		t.Errorf("status reason after tick 2 = %q; want unchanged %q", parked.StatusReason, updated.StatusReason)

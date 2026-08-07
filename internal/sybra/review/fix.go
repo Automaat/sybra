@@ -627,7 +627,7 @@ func (r *Handler) handleFlakyCI(issue github.PRIssue) {
 	r.logger.Info("pr-monitor.ci-flaky-detected", "task_id", issue.TaskID, "pr", issue.PR.Number)
 
 	t, err := r.tasks.Get(issue.TaskID)
-	if err != nil || t.Status == task.StatusHumanRequired {
+	if err != nil || t.Status == task.StatusHumanRequired || t.Status == task.StatusBlocked {
 		return
 	}
 
@@ -638,11 +638,13 @@ func (r *Handler) handleFlakyCI(issue github.PRIssue) {
 		})
 		if _, err := r.tasks.Apply(task.TransitionIntent{
 			TaskID:   t.ID,
-			ToStatus: task.StatusHumanRequired,
+			ToStatus: task.StatusBlocked,
 			Actor:    "review.pr-monitor.ci-flaky.escalate",
 			Extra: task.Update{
-				StatusReason: task.Ptr(persistentFlakyCIReason),
-				Tags:         task.Ptr(tags),
+				StatusReason:    task.Ptr(persistentFlakyCIReason),
+				Tags:            task.Ptr(tags),
+				Escalation:      task.ExternalFailure("github.ci_flake_persistent", persistentFlakyCIReason),
+				AutonomyOutcome: task.WaitingExternalOutcome(),
 			},
 		}); err != nil {
 			r.logger.Error("pr-monitor.ci-flaky.escalate", "task_id", t.ID, "err", err)
@@ -989,7 +991,9 @@ func (r *Handler) preflightPushCredentials(ctx context.Context, taskID, dir stri
 			ToStatus: task.StatusHumanRequired,
 			Actor:    "review.pr-monitor.push-preflight",
 			Extra: task.Update{
-				StatusReason: task.Ptr(reason),
+				StatusReason:    task.Ptr(reason),
+				Escalation:      task.OperatorAuthorityRequired("github.push_credentials_required", reason),
+				AutonomyOutcome: task.HumanRequiredOutcome(),
 			},
 		}); updateErr != nil {
 			r.logger.Error("pr-monitor.push-preflight.status", "task_id", taskID, "err", updateErr)
@@ -1029,7 +1033,9 @@ func (r *Handler) rerunCIFailure(t task.Task, issue github.PRIssue) bool {
 				ToStatus: task.StatusHumanRequired,
 				Actor:    "review.pr-monitor.ci-rerun.permission",
 				Extra: task.Update{
-					StatusReason: task.Ptr(ciInfraRerunPermissionReason),
+					StatusReason:    task.Ptr(ciInfraRerunPermissionReason),
+					Escalation:      task.OperatorAuthorityRequired("github.check_rerun_permission_required", ciInfraRerunPermissionReason),
+					AutonomyOutcome: task.HumanRequiredOutcome(),
 				},
 			}); updateErr != nil {
 				r.logger.Error("pr-monitor.ci-rerun.permission-status",
@@ -1298,10 +1304,12 @@ func (r *Handler) markConflictRecoveryExhausted(taskID string, kind github.PRIss
 		attempts)
 	if _, err := r.tasks.Apply(task.TransitionIntent{
 		TaskID:   taskID,
-		ToStatus: task.StatusHumanRequired,
+		ToStatus: task.StatusBlocked,
 		Actor:    "review.pr-monitor.branch-conflict.exhausted",
 		Extra: task.Update{
-			StatusReason: task.Ptr(reason),
+			StatusReason:    task.Ptr(reason),
+			Escalation:      task.MachineFailure("git.conflict_recovery_exhausted", reason),
+			AutonomyOutcome: task.QuarantinedOutcome(),
 		},
 	}); err != nil {
 		r.logger.Error("pr-monitor.branch-conflict.exhausted-status", "task_id", taskID, "err", err)
@@ -1627,7 +1635,7 @@ func (r *Handler) recoverRetryablePRFixDispatch(taskID string, startErr error) b
 		r.logger.Warn("pr-monitor.workflow-dispatch-retry.get", "task_id", taskID, "err", err)
 		return false
 	}
-	if fresh.Status != task.StatusHumanRequired || fresh.Workflow == nil {
+	if (fresh.Status != task.StatusHumanRequired && fresh.Status != task.StatusBlocked) || fresh.Workflow == nil {
 		return false
 	}
 	if fresh.Workflow.WorkflowID != prFixWorkflowID || fresh.Workflow.CurrentStep != "fix" {
@@ -1724,7 +1732,8 @@ func (r *Handler) dispatchBranchConflictRecoveryToRemote(ctx context.Context, ta
 			// resurrect the already-cancelled workflow. Mirror the sticky guard
 			// surfaceStartFailureClassified applies: leave a task a downstream
 			// handler already parked on a human alone.
-			if cur, getErr := r.tasks.Get(taskID); getErr == nil && cur.Status == task.StatusHumanRequired {
+			if cur, getErr := r.tasks.Get(taskID); getErr == nil &&
+				(cur.Status == task.StatusHumanRequired || cur.Status == task.StatusBlocked) {
 				r.logger.Info("pr-monitor.branch-conflict.restore-skipped-escalated", "task_id", taskID)
 			} else if _, restoreErr := r.tasks.Apply(task.TransitionIntent{
 				TaskID:   taskID,
@@ -1807,10 +1816,12 @@ func (r *Handler) parkOrEscalateBranchConflictDispatchFailure(taskID string, dis
 		attempts, dispatchErr.Error())
 	if _, err := r.tasks.Apply(task.TransitionIntent{
 		TaskID:   taskID,
-		ToStatus: task.StatusHumanRequired,
+		ToStatus: task.StatusBlocked,
 		Actor:    "review.pr-monitor.branch-conflict.dispatch-exhausted",
 		Extra: task.Update{
-			StatusReason: task.Ptr(reason),
+			StatusReason:    task.Ptr(reason),
+			Escalation:      task.MachineFailure("dispatch.conflict_recovery_exhausted", reason),
+			AutonomyOutcome: task.QuarantinedOutcome(),
 		},
 	}); err != nil {
 		r.logger.Error("pr-monitor.branch-conflict.dispatch-exhausted-status", "task_id", taskID, "err", err)
@@ -1837,7 +1848,8 @@ func (r *Handler) parkOrEscalateBranchFixFailure(taskID string, wtErr error) boo
 		return false
 	}
 	attempts := r.recordWorktreeFailure(taskID, wtErr)
-	if t, gerr := r.tasks.Get(taskID); gerr == nil && t.Status == task.StatusHumanRequired {
+	if t, gerr := r.tasks.Get(taskID); gerr == nil &&
+		(t.Status == task.StatusHumanRequired || t.Status == task.StatusBlocked) {
 		return false
 	}
 	r.logger.Info("pr-monitor.branch-conflict.parked-retry",
@@ -1877,14 +1889,16 @@ func (r *Handler) dropTerminalWorktreeFailure(taskID string, wtErr error) bool {
 		return false
 	}
 	r.clearWorktreeFailure(taskID)
-	if got.Status != task.StatusHumanRequired {
+	if got.Status != task.StatusHumanRequired && got.Status != task.StatusBlocked {
 		reason := fmt.Sprintf("branch deleted: fix worktree cannot be created (%s)", wtErr)
 		if _, uerr := r.tasks.Apply(task.TransitionIntent{
 			TaskID:   taskID,
-			ToStatus: task.StatusHumanRequired,
+			ToStatus: task.StatusBlocked,
 			Actor:    "review.pr-monitor.worktree.terminal-escalate",
 			Extra: task.Update{
-				StatusReason: task.Ptr(reason),
+				StatusReason:    task.Ptr(reason),
+				Escalation:      task.MachineFailure("git.task_branch_missing", reason),
+				AutonomyOutcome: task.QuarantinedOutcome(),
 			},
 		}); uerr != nil {
 			r.logger.Error("pr-monitor.worktree.terminal-escalate", "task_id", taskID, "err", uerr)
@@ -1941,10 +1955,12 @@ func (r *Handler) recordWorktreeFailure(taskID string, wtErr error) int {
 			"task_id", taskID, "failures", wtFailureLimit, "err", wtErr)
 		if _, uerr := r.tasks.Apply(task.TransitionIntent{
 			TaskID:   taskID,
-			ToStatus: task.StatusHumanRequired,
+			ToStatus: task.StatusBlocked,
 			Actor:    "review.pr-monitor.worktree.escalate",
 			Extra: task.Update{
-				StatusReason: task.Ptr(fmt.Sprintf("pr-monitor: worktree creation failed %d times", wtFailureLimit)),
+				StatusReason:    task.Ptr(fmt.Sprintf("pr-monitor: worktree creation failed %d times", wtFailureLimit)),
+				Escalation:      task.MachineFailure("runenv.worktree_prepare_exhausted", "worktree preparation exhausted"),
+				AutonomyOutcome: task.QuarantinedOutcome(),
 			},
 		}); uerr != nil {
 			r.logger.Error("pr-monitor.worktree.escalate", "task_id", taskID, "err", uerr)
@@ -1984,7 +2000,7 @@ func (r *Handler) allowPreparedWorktree(taskID, dir string) bool {
 		r.logger.Error("pr-monitor.worktree.setup-fail-refetch", "task_id", taskID, "err", err)
 		return false
 	}
-	return got.Status != task.StatusHumanRequired
+	return got.Status != task.StatusHumanRequired && got.Status != task.StatusBlocked
 }
 
 // branchConflictPrompt is the no-PR analog of buildConflictPrompt: there is no

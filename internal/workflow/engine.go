@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/config"
@@ -170,6 +171,10 @@ type TaskProvider interface {
 	// versa). reason == "" leaves the task's current StatusReason
 	// untouched.
 	SetStatusAndWorkflow(id, status, reason string, wf *Execution) error
+	// SetEscalationAndWorkflow is the typed human-required/quarantine form of
+	// SetStatusAndWorkflow. The reason text is display-only; escalation and
+	// outcome are the policy/audit authority.
+	SetEscalationAndWorkflow(id, status, reason string, escalation autonomy.EscalationReason, outcome autonomy.Outcome, wf *Execution) error
 	// SetBlockerAndWorkflow is SetStatusAndWorkflow's counterpart for callers
 	// escalating to a blocked status with a workflow-owned blocker.State —
 	// same single-write atomicity guarantee, blocker included.

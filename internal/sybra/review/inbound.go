@@ -424,13 +424,13 @@ func (r *Handler) recordReconcileFailure(t *task.Task, err error) {
 		return
 	}
 
-	// Already parked on a human: escalating again achieves nothing and actively
-	// harms — human-required is not terminal, so the poller keeps feeding this
+	// Already parked or quarantined: escalating again achieves nothing and actively
+	// harms — these states are not terminal, so the poller keeps feeding this
 	// task back, and each pass would overwrite the operator's own triage note
 	// and rewrite updated_at on work nobody is doing. Deliberately keyed on
 	// status alone, not on our own reason string: an operator who replaces the
 	// note must not thereby re-arm the clobber.
-	if t.Status == task.StatusHumanRequired {
+	if t.Status == task.StatusHumanRequired || t.Status == task.StatusBlocked {
 		// Drop the count too: it measures progress toward an escalation that has
 		// already happened, and keeping it would pin an entry for every parked
 		// task for the life of the process.
@@ -456,11 +456,13 @@ func (r *Handler) recordReconcileFailure(t *task.Task, err error) {
 	// second write — and a second updated_at bump — on the very next poll.
 	if _, uerr := r.tasks.Apply(task.TransitionIntent{
 		TaskID:   t.ID,
-		ToStatus: task.StatusHumanRequired,
+		ToStatus: task.StatusBlocked,
 		Actor:    "review.reconcile.escalate",
 		Extra: task.Update{
 			StatusReason:      task.Ptr(fmt.Sprintf("%s %d times: %v", reconcileEscalationReason, reconcileFailureLimit, err)),
 			ReconcileFailures: task.Ptr(0),
+			Escalation:        task.MachineFailure("review.reconcile_exhausted", reconcileEscalationReason),
+			AutonomyOutcome:   task.QuarantinedOutcome(),
 		},
 	}); uerr != nil {
 		r.logger.Error("review.reconcile.escalate", "task_id", t.ID, "err", uerr)
@@ -782,6 +784,10 @@ func (r *Handler) applyReviewPhase(t *task.Task, res reviewPhaseResult) {
 	}
 	if reason != "" && (statusChanged || phaseChanged) {
 		u.StatusReason = task.Ptr(reason)
+	}
+	if statusChanged && res.Status == task.StatusHumanRequired {
+		u.Escalation = task.OperatorDecisionRequired("review.manual_action_required", reason)
+		u.AutonomyOutcome = task.HumanRequiredOutcome()
 	}
 
 	prev := t.ReviewPhase

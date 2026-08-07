@@ -49,8 +49,8 @@ func TestMarkRebaseBlocked_RecoversInsteadOfEscalating(t *testing.T) {
 }
 
 // TestMarkRebaseBlocked_EscalatesWhenRecoveryDeclines verifies the fallback:
-// when there is no recoverable PR (callback returns false), the task is parked
-// in human-required as before.
+// when there is no recoverable PR (callback returns false), the machine-owned
+// failure is quarantined.
 func TestMarkRebaseBlocked_EscalatesWhenRecoveryDeclines(t *testing.T) {
 	a := setupApp(t)
 	tk, err := a.tasks.Create("rebase escalate", "", "headless")
@@ -66,8 +66,8 @@ func TestMarkRebaseBlocked_EscalatesWhenRecoveryDeclines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required when recovery declines", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want blocked when recovery declines", got.Status)
 	}
 }
 
@@ -88,8 +88,8 @@ func TestMarkRebaseBlocked_NilRecoverEscalates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want human-required with nil recovery", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want blocked with nil recovery", got.Status)
 	}
 }
 

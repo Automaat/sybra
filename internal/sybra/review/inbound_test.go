@@ -81,7 +81,11 @@ func TestApplyReviewPhase_ManualParkKeepsExistingReason(t *testing.T) {
 	// phase-only update — the case where preservation is meant to hold.
 	if _, err := tasks.Apply(task.TransitionIntent{
 		TaskID: tk.ID, ToStatus: task.StatusHumanRequired, Actor: "test",
-		Extra: task.Update{StatusReason: task.Ptr(existing)}, OperatorOverride: true,
+		Extra: task.Update{
+			StatusReason:    task.Ptr(existing),
+			Escalation:      task.OperatorDecisionEvidence("test.manual_review", existing),
+			AutonomyOutcome: task.HumanRequiredOutcome(),
+		}, OperatorOverride: true,
 	}); err != nil {
 		t.Fatalf("seed park: %v", err)
 	}

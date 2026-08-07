@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
@@ -68,6 +69,12 @@ func (a *taskAdapter) UpdateTaskStatus(id string, status taskstatus.Status, reas
 	if reason != "" {
 		u.StatusReason = &reason
 	}
+	if st == task.StatusHumanRequired {
+		st = task.StatusBlocked
+		u.Status = &st
+		u.Escalation = task.MachineFailure("workflow.untyped_escalation", reason)
+		u.AutonomyOutcome = task.QuarantinedOutcome()
+	}
 	_, err = a.tasks.Update(id, u)
 	return err
 }
@@ -111,6 +118,11 @@ func (a *taskAdapter) UpdateTaskBlocker(id string, status taskstatus.Status, rea
 	u := task.Update{Status: &st, Blocker: &state}
 	if reason != "" {
 		u.StatusReason = &reason
+	}
+	u.Escalation, u.AutonomyOutcome = testTypedBlockerEscalation(st, state, reason)
+	if st == task.StatusHumanRequired && !blocker.AllowsHumanRequired(state.Kind) {
+		st = task.StatusBlocked
+		u.Status = &st
 	}
 	_, err = a.tasks.Update(id, u)
 	return err
@@ -184,10 +196,33 @@ func (a *taskAdapter) SetStatusAndWorkflow(id, status, reason string, wf *workfl
 	if reason != "" {
 		extra.StatusReason = &reason
 	}
+	if st == task.StatusHumanRequired {
+		st = task.StatusBlocked
+		extra.Escalation = task.MachineFailure("workflow.untyped_escalation", reason)
+		extra.AutonomyOutcome = task.QuarantinedOutcome()
+	}
 	_, err = a.tasks.Apply(task.TransitionIntent{
 		TaskID:   id,
 		ToStatus: st,
 		Actor:    "workflow.engine.set_status_and_workflow",
+		Extra:    extra,
+	})
+	return err
+}
+
+func (a *taskAdapter) SetEscalationAndWorkflow(id, status, reason string, escalation autonomy.EscalationReason, outcome autonomy.Outcome, wf *workflow.Execution) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	extra := task.Update{Workflow: &wf, Escalation: &escalation, AutonomyOutcome: &outcome}
+	if reason != "" {
+		extra.StatusReason = &reason
+	}
+	_, err = a.tasks.Apply(task.TransitionIntent{
+		TaskID:   id,
+		ToStatus: st,
+		Actor:    "workflow.engine.set_escalation_and_workflow",
 		Extra:    extra,
 	})
 	return err
@@ -202,8 +237,31 @@ func (a *taskAdapter) SetBlockerAndWorkflow(id, status, reason string, state blo
 	if reason != "" {
 		u.StatusReason = &reason
 	}
+	u.Escalation, u.AutonomyOutcome = testTypedBlockerEscalation(st, state, reason)
+	if st == task.StatusHumanRequired && !blocker.AllowsHumanRequired(state.Kind) {
+		st = task.StatusBlocked
+		u.Status = &st
+	}
 	_, err = a.tasks.Update(id, u)
 	return err
+}
+
+func testTypedBlockerEscalation(status task.Status, state blocker.State, reason string) (*autonomy.EscalationReason, *autonomy.Outcome) {
+	if status != task.StatusHumanRequired {
+		return nil, nil
+	}
+	owner := blocker.FailureOwner(state.Kind)
+	if owner == autonomy.FailureOwnerUnknown {
+		owner = autonomy.FailureOwnerMachine
+	}
+	code := "workflow.blocker." + string(state.Kind)
+	if state.Kind == "" {
+		code = "workflow.blocker.unknown"
+	}
+	if owner.AllowsHumanRequired() {
+		return task.ControlPlaneFailure(code, owner, reason), task.HumanRequiredOutcome()
+	}
+	return task.ControlPlaneFailure(code, owner, reason), task.QuarantinedOutcome()
 }
 func (a *taskAdapter) SetWorkflowIf(id string, fence workflow.WorkflowWriteFence, wf *workflow.Execution) (bool, error) {
 	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {

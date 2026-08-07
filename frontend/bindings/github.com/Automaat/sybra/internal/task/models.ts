@@ -10,6 +10,9 @@ import { Create as $Create } from "@wailsio/runtime";
 import * as attachment$0 from "../attachment/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as autonomy$0 from "../autonomy/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as blocker$0 from "../blocker/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -381,6 +384,15 @@ export class Task {
      */
     "issue": string;
     "statusReason": string;
+
+    /**
+     * Escalation is the policy authority for the current human-required state.
+     * StatusReason remains display text and must never be parsed back into a
+     * failure owner or recovery decision. Legacy files load with an explicit
+     * unknown/legacy adapter (see taskFromFrontmatter).
+     */
+    "escalation"?: autonomy$0.EscalationReason;
+    "autonomyOutcome"?: autonomy$0.Outcome;
     "blocker"?: blocker$0.State;
 
     /**
@@ -726,13 +738,14 @@ export class Task {
         const $$createField6_0 = $$createType0;
         const $$createField7_0 = $$createType0;
         const $$createField14_0 = $$createType1;
-        const $$createField19_0 = $$createType0;
-        const $$createField20_0 = $$createType3;
-        const $$createField42_0 = $$createType5;
-        const $$createField43_0 = $$createType7;
-        const $$createField44_0 = $$createType9;
-        const $$createField45_0 = $$createType11;
-        const $$createField66_0 = $$createType12;
+        const $$createField16_0 = $$createType2;
+        const $$createField21_0 = $$createType0;
+        const $$createField22_0 = $$createType4;
+        const $$createField44_0 = $$createType6;
+        const $$createField45_0 = $$createType8;
+        const $$createField46_0 = $$createType10;
+        const $$createField47_0 = $$createType12;
+        const $$createField68_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -740,29 +753,32 @@ export class Task {
         if ("tags" in $$parsedSource) {
             $$parsedSource["tags"] = $$createField7_0($$parsedSource["tags"]);
         }
+        if ("escalation" in $$parsedSource) {
+            $$parsedSource["escalation"] = $$createField14_0($$parsedSource["escalation"]);
+        }
         if ("blocker" in $$parsedSource) {
-            $$parsedSource["blocker"] = $$createField14_0($$parsedSource["blocker"]);
+            $$parsedSource["blocker"] = $$createField16_0($$parsedSource["blocker"]);
         }
         if ("dependsOn" in $$parsedSource) {
-            $$parsedSource["dependsOn"] = $$createField19_0($$parsedSource["dependsOn"]);
+            $$parsedSource["dependsOn"] = $$createField21_0($$parsedSource["dependsOn"]);
         }
         if ("dependsOnConditions" in $$parsedSource) {
-            $$parsedSource["dependsOnConditions"] = $$createField20_0($$parsedSource["dependsOnConditions"]);
+            $$parsedSource["dependsOnConditions"] = $$createField22_0($$parsedSource["dependsOnConditions"]);
         }
         if ("attachments" in $$parsedSource) {
-            $$parsedSource["attachments"] = $$createField42_0($$parsedSource["attachments"]);
+            $$parsedSource["attachments"] = $$createField44_0($$parsedSource["attachments"]);
         }
         if ("agentRuns" in $$parsedSource) {
-            $$parsedSource["agentRuns"] = $$createField43_0($$parsedSource["agentRuns"]);
+            $$parsedSource["agentRuns"] = $$createField45_0($$parsedSource["agentRuns"]);
         }
         if ("effectLog" in $$parsedSource) {
-            $$parsedSource["effectLog"] = $$createField44_0($$parsedSource["effectLog"]);
+            $$parsedSource["effectLog"] = $$createField46_0($$parsedSource["effectLog"]);
         }
         if ("workflow" in $$parsedSource) {
-            $$parsedSource["workflow"] = $$createField45_0($$parsedSource["workflow"]);
+            $$parsedSource["workflow"] = $$createField47_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField66_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField68_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -795,6 +811,8 @@ export class Update {
     "Slug": string | null;
     "Status": Status | null;
     "StatusReason": string | null;
+    "Escalation": autonomy$0.EscalationReason | null;
+    "AutonomyOutcome": autonomy$0.Outcome | null;
     "Blocker": blocker$0.State | null;
     "BlockedByIssue": string | null;
     "UmbrellaIssue": string | null;
@@ -856,6 +874,12 @@ export class Update {
         }
         if (!("StatusReason" in $$source)) {
             this["StatusReason"] = null;
+        }
+        if (!("Escalation" in $$source)) {
+            this["Escalation"] = null;
+        }
+        if (!("AutonomyOutcome" in $$source)) {
+            this["AutonomyOutcome"] = null;
         }
         if (!("Blocker" in $$source)) {
             this["Blocker"] = null;
@@ -1006,34 +1030,38 @@ export class Update {
      * Creates a new Update instance from a string or object.
      */
     static createFrom($$source: any = {}): Update {
-        const $$createField4_0 = $$createType13;
-        const $$createField7_0 = $$createType14;
-        const $$createField8_0 = $$createType15;
-        const $$createField12_0 = $$createType14;
-        const $$createField30_0 = $$createType16;
-        const $$createField49_0 = $$createType17;
-        const $$createField50_0 = $$createType18;
+        const $$createField4_0 = $$createType14;
+        const $$createField6_0 = $$createType15;
+        const $$createField9_0 = $$createType16;
+        const $$createField10_0 = $$createType17;
+        const $$createField14_0 = $$createType16;
+        const $$createField32_0 = $$createType18;
+        const $$createField51_0 = $$createType19;
+        const $$createField52_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("Escalation" in $$parsedSource) {
+            $$parsedSource["Escalation"] = $$createField4_0($$parsedSource["Escalation"]);
+        }
         if ("Blocker" in $$parsedSource) {
-            $$parsedSource["Blocker"] = $$createField4_0($$parsedSource["Blocker"]);
+            $$parsedSource["Blocker"] = $$createField6_0($$parsedSource["Blocker"]);
         }
         if ("DependsOn" in $$parsedSource) {
-            $$parsedSource["DependsOn"] = $$createField7_0($$parsedSource["DependsOn"]);
+            $$parsedSource["DependsOn"] = $$createField9_0($$parsedSource["DependsOn"]);
         }
         if ("DependsOnConditions" in $$parsedSource) {
-            $$parsedSource["DependsOnConditions"] = $$createField8_0($$parsedSource["DependsOnConditions"]);
+            $$parsedSource["DependsOnConditions"] = $$createField10_0($$parsedSource["DependsOnConditions"]);
         }
         if ("Tags" in $$parsedSource) {
-            $$parsedSource["Tags"] = $$createField12_0($$parsedSource["Tags"]);
+            $$parsedSource["Tags"] = $$createField14_0($$parsedSource["Tags"]);
         }
         if ("Workflow" in $$parsedSource) {
-            $$parsedSource["Workflow"] = $$createField30_0($$parsedSource["Workflow"]);
+            $$parsedSource["Workflow"] = $$createField32_0($$parsedSource["Workflow"]);
         }
         if ("Attachments" in $$parsedSource) {
-            $$parsedSource["Attachments"] = $$createField49_0($$parsedSource["Attachments"]);
+            $$parsedSource["Attachments"] = $$createField51_0($$parsedSource["Attachments"]);
         }
         if ("EffectLog" in $$parsedSource) {
-            $$parsedSource["EffectLog"] = $$createField50_0($$parsedSource["EffectLog"]);
+            $$parsedSource["EffectLog"] = $$createField52_0($$parsedSource["EffectLog"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }
@@ -1041,21 +1069,23 @@ export class Update {
 
 // Private type creation functions
 const $$createType0 = $Create.Array($Create.Any);
-const $$createType1 = blocker$0.State.createFrom;
-const $$createType2 = DepCondition.createFrom;
-const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = attachment$0.Attachment.createFrom;
-const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = AgentRun.createFrom;
-const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = workflow$0.EffectRecord.createFrom;
-const $$createType9 = $Create.Array($$createType8);
-const $$createType10 = workflow$0.Execution.createFrom;
-const $$createType11 = $Create.Nullable($$createType10);
-const $$createType12 = $Create.Map($Create.Any, $Create.Any);
-const $$createType13 = $Create.Nullable($$createType1);
-const $$createType14 = $Create.Nullable($$createType0);
-const $$createType15 = $Create.Nullable($$createType3);
-const $$createType16 = $Create.Nullable($$createType11);
-const $$createType17 = $Create.Nullable($$createType5);
-const $$createType18 = $Create.Nullable($$createType9);
+const $$createType1 = autonomy$0.EscalationReason.createFrom;
+const $$createType2 = blocker$0.State.createFrom;
+const $$createType3 = DepCondition.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = attachment$0.Attachment.createFrom;
+const $$createType6 = $Create.Array($$createType5);
+const $$createType7 = AgentRun.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = workflow$0.EffectRecord.createFrom;
+const $$createType10 = $Create.Array($$createType9);
+const $$createType11 = workflow$0.Execution.createFrom;
+const $$createType12 = $Create.Nullable($$createType11);
+const $$createType13 = $Create.Map($Create.Any, $Create.Any);
+const $$createType14 = $Create.Nullable($$createType1);
+const $$createType15 = $Create.Nullable($$createType2);
+const $$createType16 = $Create.Nullable($$createType0);
+const $$createType17 = $Create.Nullable($$createType4);
+const $$createType18 = $Create.Nullable($$createType12);
+const $$createType19 = $Create.Nullable($$createType6);
+const $$createType20 = $Create.Nullable($$createType10);
