@@ -688,14 +688,18 @@ func (a *App) limitPolicy() limits.Policy {
 }
 
 func (a *App) initStatusHook() {
-	a.tasks.SetStatusChangeHook(func(taskID, from, to string) {
+	a.tasks.SetStatusChangeHook(func(taskID, from, to string, changed task.Task) {
 		releaseTaskAgents := shouldReleaseTaskAgentsForStatus(task.Status(to))
 		data := map[string]any{"from": from, "to": to}
+		if !changed.Escalation.IsZero() {
+			data["escalation_code"] = changed.Escalation.Code
+			data["failure_owner"] = string(changed.Escalation.Owner)
+			data["evidence_provenance"] = string(changed.Escalation.Provenance)
+			data["autonomy_outcome"] = string(changed.AutonomyOutcome)
+		}
 		if to == string(task.StatusHumanRequired) {
-			if t, err := a.tasks.Get(taskID); err == nil {
-				if kind := expectedHumanKind(t); kind != "" {
-					data["human_kind"] = kind
-				}
+			if kind := expectedHumanKind(changed); kind != "" {
+				data["human_kind"] = kind
 			}
 		}
 		a.logAudit(audit.EventTaskStatusChanged, taskID, "", data)

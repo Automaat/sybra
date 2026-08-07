@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/runacct"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 type Summary struct {
@@ -57,7 +58,7 @@ func Summarize(events []Event, since, until time.Time) Summary {
 			}
 			statusEntered[e.TaskID] = e.Timestamp
 
-			if to == "done" {
+			if to == string(taskstatus.Done) {
 				s.TasksCompleted++
 				if created, ok := taskCreated[e.TaskID]; ok {
 					cycleTimes = append(cycleTimes, e.Timestamp.Sub(created).Hours())

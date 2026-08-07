@@ -35,6 +35,14 @@
       .map((w) => ({ date: String(w.weekStart).slice(0, 10), value: w.autonomyRate * 100 })),
   )
 
+  // A week with zero merged PRs has no cost-per-merged signal — same "drop,
+  // don't zero-fill" rule as weeklyPoints above.
+  const costPerMergedPoints = $derived<TimeSeriesPoint[]>(
+    (trend?.weekly ?? [])
+      .filter((w) => w.mergedPrs > 0)
+      .map((w) => ({ date: String(w.weekStart).slice(0, 10), value: w.costPerMergedUsd })),
+  )
+
   // Higher is better; same thresholds as the headline scorecard's goodScale.
   function goodScale(x: number): string {
     if (x >= 0.8) return 'text-success-600 dark:text-success-400'
@@ -70,5 +78,8 @@
       {/each}
     </div>
     <StatsLineChart points={weeklyPoints} ariaLabel="Autonomy rate by week" emptyLabel="Not enough weekly data yet" />
+
+    <h3 class="mb-3 mt-6 text-sm font-semibold text-surface-500">Cost / merged PR over time</h3>
+    <StatsLineChart points={costPerMergedPoints} ariaLabel="Cost per merged PR by week" emptyLabel="Not enough weekly merge data yet" />
   </div>
 {/if}

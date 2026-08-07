@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -113,6 +114,8 @@ func statusEffectStepID(source string, toStatus Status, u Update) string {
 	var b strings.Builder
 	writeStatusEffectField(&b, "status", statusValue(&toStatus))
 	writeStatusEffectField(&b, "status_reason", stringValue(u.StatusReason))
+	writeStatusEffectField(&b, "escalation", escalationValue(u.Escalation))
+	writeStatusEffectField(&b, "autonomy_outcome", autonomyOutcomeValue(u.AutonomyOutcome))
 	writeStatusEffectField(&b, "pr_number", intValue(u.PRNumber))
 	writeStatusEffectField(&b, "outcome", stringValue(u.Outcome))
 	writeStatusEffectField(&b, "merge_commit", stringValue(u.MergeCommit))
@@ -120,6 +123,20 @@ func statusEffectStepID(source string, toStatus Status, u Update) string {
 	writeStatusEffectField(&b, "blocker", blockerValue(u.Blocker))
 	sum := sha256.Sum256([]byte(b.String()))
 	return "external:" + sanitizeEffectSource(source) + ":" + hex.EncodeToString(sum[:6])
+}
+
+func escalationValue(v *autonomy.EscalationReason) string {
+	if v == nil {
+		return "<unset>"
+	}
+	return strings.Join([]string{v.Code, string(v.Owner), string(v.Provenance)}, "|")
+}
+
+func autonomyOutcomeValue(v *autonomy.Outcome) string {
+	if v == nil {
+		return "<unset>"
+	}
+	return string(*v)
 }
 
 func writeStatusEffectField(b *strings.Builder, key, value string) {

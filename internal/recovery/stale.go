@@ -397,10 +397,12 @@ func (r *Recovery) convergeReviewOnPlanWorkflow(t *task.Task) bool {
 		r.Logger.Warn("restart-stale.review-on-plan.no-context", "task_id", t.ID)
 		if _, updErr := r.Tasks.ApplyStatusEffect(t.ID, task.StatusEffect{
 			Source:         "recovery.restart-stale.review-on-plan-no-context",
-			ToStatus:       task.StatusHumanRequired,
+			ToStatus:       task.StatusBlocked,
 			ExpectedStatus: t.Status,
 			Extra: task.Update{
-				StatusReason: task.Ptr(reason),
+				StatusReason:    task.Ptr(reason),
+				Escalation:      task.MachineFailure("recovery.review_context_missing", reason),
+				AutonomyOutcome: task.QuarantinedOutcome(),
 			},
 		}); updErr != nil {
 			r.Logger.Error("restart-stale.review-on-plan.park-failed", "task_id", t.ID, "err", updErr)
@@ -503,6 +505,14 @@ func (r *Recovery) surfaceStartFailure(ctx context.Context, taskID string, curre
 	}
 	update := task.Update{
 		StatusReason: task.Ptr(failure.Reason),
+	}
+	switch target {
+	case task.StatusHumanRequired:
+		update.Escalation = task.ControlPlaneFailure("run.start_operator_action_required", blocker.FailureOwner(failure.Blocker.Kind), failure.Reason)
+		update.AutonomyOutcome = task.HumanRequiredOutcome()
+	case task.StatusBlocked:
+		update.Escalation = task.MachineFailure("run.start_failure_quarantined", failure.Reason)
+		update.AutonomyOutcome = task.QuarantinedOutcome()
 	}
 	if !failure.Blocker.IsZero() {
 		update.Blocker = &failure.Blocker

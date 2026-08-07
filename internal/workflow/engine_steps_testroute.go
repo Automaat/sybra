@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/gitexec"
@@ -714,9 +713,9 @@ func capHeadTailText(text string, maxBytes int, elision string) string {
 	if headBytes <= 0 {
 		headBytes = maxBytes / 2
 	}
-	head := trimUTF8ToBytes(text, headBytes)
+	head := textutil.TruncateBytes(text, headBytes, "")
 	tailBudget := max(0, maxBytes-len(elision)-len(head))
-	tail := trimUTF8ToBytesFromEnd(text, tailBudget)
+	tail := textutil.TailBytes(text, tailBudget)
 	return strings.TrimRight(head, "\n") + elision + strings.TrimLeft(tail, "\n")
 }
 
@@ -742,41 +741,6 @@ func normalizeAcceptanceLedgerReport(report string) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
-func trimUTF8ToBytes(s string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	if len(s) <= limit {
-		return s
-	}
-	s = s[:limit]
-	for len(s) > 0 && !utf8.ValidString(s) {
-		_, size := utf8.DecodeLastRuneInString(s)
-		if size <= 1 {
-			s = s[:len(s)-1]
-			continue
-		}
-		s = s[:len(s)-size]
-	}
-	return s
-}
-
-func trimUTF8ToBytesFromEnd(s string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	if len(s) <= limit {
-		return s
-	}
-	s = s[len(s)-limit:]
-	for len(s) > 0 && !utf8.ValidString(s) {
-		if utf8.RuneStart(s[0]) {
-			break
-		}
-		s = s[1:]
-	}
-	return s
-}
 func upsertAcceptanceLedger(body, fingerprint, report string) (nextBody string, changed bool) {
 	if fingerprint == "" || report == "" {
 		return body, false

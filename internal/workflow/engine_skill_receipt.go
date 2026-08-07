@@ -6,9 +6,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
+
 	"github.com/Automaat/sybra/internal/skillattr"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 const maxSkillReceiptRecoveryAttempts = 1
@@ -128,7 +132,8 @@ func (e *Engine) maybeRecoverUnverifiedSkillRun(taskID, agentID, spawnedStep, ou
 		if summary != "" {
 			reason += ": " + summary
 		}
-		if err := e.tasks.SetStatusAndWorkflow(taskID, "human-required", reason, fresh.Workflow); err != nil {
+		escalation := autonomy.NewEscalation("workflow.skill_receipt_exhausted", autonomy.FailureOwnerMachine, autonomy.ProvenanceControlPlane, reason)
+		if err := e.tasks.SetEscalationAndWorkflow(taskID, string(taskstatus.Blocked), reason, escalation, autonomy.OutcomeQuarantined, fresh.Workflow); err != nil {
 			e.logger.Error("workflow.skill-receipt.human-required", "task_id", taskID, "step", spawnedStep, "err", err)
 		}
 		e.logger.Warn("workflow.skill-receipt.exhausted", "task_id", taskID, "step", spawnedStep, "skill", run.RequestedSkill, "zero_output", zeroOutput, "summary", summary)

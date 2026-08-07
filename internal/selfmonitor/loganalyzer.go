@@ -98,7 +98,10 @@ type ToolCallTrace struct {
 }
 
 // ErrorClass aggregates tool_result / result-event errors by a coarse
-// category (rate_limit, permission_denied, ...).
+// category (rate_limit, permission_denied, ...). These classifiers deliberately
+// stay local instead of using internal/errclass: they label structured telemetry
+// for reports and correlation, including classes such as not_found and
+// permission_denied, but never choose a runtime retry, cooldown, or park action.
 type ErrorClass struct {
 	Class  string `json:"class"`
 	Count  int    `json:"count"`

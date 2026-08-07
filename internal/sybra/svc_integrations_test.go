@@ -60,8 +60,8 @@ func TestFixRenovateCI_WorktreePrepareFailureEscalates(t *testing.T) {
 		t.Fatalf("expected exactly 1 task created, got %d", len(tasksList))
 	}
 	got := tasksList[0]
-	if got.Status != task.StatusHumanRequired {
-		t.Errorf("task status = %q, want %q — task must not be silently stranded", got.Status, task.StatusHumanRequired)
+	if got.Status != task.StatusBlocked {
+		t.Errorf("task status = %q, want %q — task must not be silently stranded", got.Status, task.StatusBlocked)
 	}
 	if got.StatusReason == "" {
 		t.Error("expected a non-empty status reason explaining the escalation")

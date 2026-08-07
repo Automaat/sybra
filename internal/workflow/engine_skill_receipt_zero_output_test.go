@@ -104,8 +104,8 @@ func TestHandleAgentComplete_ZeroOutputRunsEscalateAfterOwnCeiling(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ti.Status != "human-required" {
-		t.Fatalf("Status = %q, want human-required once the zero-output ceiling is spent", ti.Status)
+	if ti.Status != "blocked" {
+		t.Fatalf("Status = %q, want blocked quarantine once the zero-output ceiling is spent", ti.Status)
 	}
 	if len(agents.calls) != 0 {
 		t.Fatalf("StartAgent calls = %d, want no further retry", len(agents.calls))

@@ -6,6 +6,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/runoutcome"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // SLOTargets is the rolling autonomy/reliability target set (#2441). Defined
@@ -240,11 +241,11 @@ func scanRestartCadence(events []audit.Event, since, until time.Time) float64 {
 		if e.Type != audit.EventTaskStatusChanged || e.Timestamp.Before(since) || e.Timestamp.After(until) {
 			continue
 		}
-		if strVal(e.Data, "from") != "human-required" {
+		if strVal(e.Data, "from") != string(taskstatus.HumanRequired) {
 			continue
 		}
 		to := strVal(e.Data, "to")
-		if to != "in-progress" && to != "in-review" {
+		if to != string(taskstatus.InProgress) && to != string(taskstatus.InReview) {
 			continue
 		}
 		if manuallyDispatchedNear(e.TaskID, e.Timestamp) {

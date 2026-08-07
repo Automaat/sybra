@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/roleeffort"
 )
 
@@ -110,6 +111,40 @@ func (r Role) AuthorsCode() bool {
 	default:
 		return false
 	}
+}
+
+// CapabilityRequirements is the single declaration API used by admission to
+// describe what a role/action needs before provider tokens are spent. Action
+// is persisted in certificates so two actions performed by the same role do
+// not become indistinguishable evidence.
+func (r Role) CapabilityRequirements(action string) []autonomy.CapabilityRequirement {
+	if strings.TrimSpace(action) == "" {
+		action = string(r)
+	}
+	requirements := []autonomy.CapabilityRequirement{
+		{Capability: autonomy.CapabilitySourceRead, Action: action, Scope: "task", Repairable: true},
+		{Capability: autonomy.CapabilityObjectStore, Action: action, Scope: "project", Repairable: true},
+		{Capability: autonomy.CapabilitySandboxMechanism, Action: action, Scope: "host"},
+		{Capability: autonomy.CapabilityProviderCapacity, Action: action, Scope: "provider"},
+	}
+	if r.AuthorsCode() {
+		requirements = append(requirements,
+			autonomy.CapabilityRequirement{Capability: autonomy.CapabilitySourceWrite, Action: action, Scope: "task", Repairable: true},
+			autonomy.CapabilityRequirement{Capability: autonomy.CapabilityGitAdminWrite, Action: action, Scope: "task", Repairable: true},
+			autonomy.CapabilityRequirement{Capability: autonomy.CapabilitySigning, Action: action, Scope: "host"},
+		)
+	}
+	if r == RoleTriage || r == RoleMonitor || r == RoleOrchestrator || r == RoleHumanReview || r.AuthorsCode() {
+		requirements = append(requirements,
+			autonomy.CapabilityRequirement{Capability: autonomy.CapabilityTaskMutation, Action: action, Scope: "task"},
+		)
+	}
+	if r == RoleReview || r == RoleFixReview || r == RolePRFix || r == RoleHumanReview || r == RoleTestFix {
+		requirements = append(requirements,
+			autonomy.CapabilityRequirement{Capability: autonomy.CapabilityNetworkGitHub, Action: action, Scope: "project"},
+		)
+	}
+	return requirements
 }
 
 // IsVerifier reports whether the role independently checks another agent's

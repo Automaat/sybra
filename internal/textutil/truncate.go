@@ -114,6 +114,19 @@ func TrimPartialRuneSuffix(s string) string {
 	return s
 }
 
+// TailBytes keeps at most the last limit bytes of s and starts at a UTF-8 rune
+// boundary. Use it when the end carries the useful signal, such as the final
+// lines of a command log.
+func TailBytes(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return s
+	}
+	return s[runeBoundaryAtOrAfter(s, len(s)-limit):]
+}
+
 // runeBoundaryAtOrBefore returns the largest index <= i that starts a rune.
 func runeBoundaryAtOrBefore(s string, i int) int {
 	if i >= len(s) {

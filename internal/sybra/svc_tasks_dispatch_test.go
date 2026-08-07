@@ -107,7 +107,7 @@ func newHumanRequiredTask(t *testing.T, a *App, prNumber int) task.Task {
 	if err != nil {
 		t.Fatal(err)
 	}
-	update := task.Update{Status: task.Ptr(task.StatusHumanRequired)}
+	update := task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}
 	if prNumber > 0 {
 		update.PRNumber = task.Ptr(prNumber)
 	}
@@ -205,9 +205,11 @@ func newReadyPRHumanRequiredTask(t *testing.T, a *App, engine *workflow.Engine) 
 		t.Fatal(err)
 	}
 	updated, err := a.tasks.Update(tk.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("acme/widgets"),
-		Branch:    task.Ptr(branch),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("acme/widgets"),
+		Branch:          task.Ptr(branch),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -457,8 +459,10 @@ func TestApp_StatusHook_SkipsAgentDispatchForUmbrellaTracker(t *testing.T) {
 	a.initStatusHook()
 
 	tk, err := a.tasks.CreateFull("umbrella tracker", "", task.AgentModeHeadless, task.Update{
-		TaskType: task.Ptr(task.TaskTypeUmbrella),
-		Status:   task.Ptr(task.StatusHumanRequired),
+		TaskType:        task.Ptr(task.TaskTypeUmbrella),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -896,10 +900,12 @@ func TestDispatchFromHumanRequired_RecordsInterventionOnUnblock(t *testing.T) {
 			t.Fatal(err)
 		}
 		updated, err := a.tasks.Update(tk.ID, task.Update{
-			Status:       task.Ptr(task.StatusHumanRequired),
-			ProjectID:    task.Ptr(proj.ID),
-			PRNumber:     task.Ptr(7),
-			StatusReason: task.Ptr("needs manual project assignment"),
+			Status:          task.Ptr(task.StatusHumanRequired),
+			Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+			AutonomyOutcome: task.HumanRequiredOutcome(),
+			ProjectID:       task.Ptr(proj.ID),
+			PRNumber:        task.Ptr(7),
+			StatusReason:    task.Ptr("needs manual project assignment"),
 			Blocker: &blocker.State{
 				Kind: blocker.KindOperatorDecision,
 				Code: "no_project_assigned",
@@ -1080,10 +1086,12 @@ func TestDispatchFromHumanRequired_InterventionScrubsWorkProjects(t *testing.T) 
 	}
 	reason := "resolved by checking https://github.com/acme/api/pull/9 manually"
 	updated, err := a.tasks.Update(tk.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		ProjectID:    task.Ptr(proj.ID),
-		PRNumber:     task.Ptr(7),
-		StatusReason: task.Ptr("needs manual project assignment"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr(proj.ID),
+		PRNumber:        task.Ptr(7),
+		StatusReason:    task.Ptr("needs manual project assignment"),
 		Blocker: &blocker.State{
 			Kind: blocker.KindOperatorDecision,
 			Code: "no_project_assigned",
@@ -1233,8 +1241,8 @@ func TestDispatchFromHumanRequired_FailsClosedOnNoMatch(t *testing.T) {
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want revert to human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want machine-owned dispatch failure quarantined", got.Status)
 	}
 	if !strings.Contains(got.StatusReason, "retry please") {
 		t.Fatalf("status_reason = %q, want it to preserve the operator's reason", got.StatusReason)
@@ -1265,8 +1273,8 @@ func TestDispatchFromHumanRequired_ReadyPRAuthorStillFailsClosedOnNoMatch(t *tes
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want revert to human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want machine-owned dispatch failure quarantined", got.Status)
 	}
 	if !strings.Contains(got.StatusReason, "retry please") {
 		t.Fatalf("status_reason = %q, want it to preserve the operator's reason", got.StatusReason)
@@ -1293,8 +1301,8 @@ func TestDispatchFromHumanRequired_NilWorkflowEngineFailsClosed(t *testing.T) {
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want revert to human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want machine-owned dispatch failure quarantined", got.Status)
 	}
 }
 
@@ -1315,8 +1323,8 @@ func TestDispatchFromHumanRequired_FailsClosedOnDispatchError(t *testing.T) {
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want revert to human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want machine-owned dispatch failure quarantined", got.Status)
 	}
 	if !strings.Contains(got.StatusReason, "retry please") {
 		t.Fatalf("status_reason = %q, want it to preserve the operator's reason", got.StatusReason)

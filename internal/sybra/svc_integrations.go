@@ -106,10 +106,12 @@ func (s *IntegrationService) FixRenovateCI(repo string, number int, branch, titl
 			reason := fmt.Sprintf("renovate-fix: worktree prepare failed: %v", wtErr)
 			if _, uerr := s.tasks.Apply(task.TransitionIntent{
 				TaskID:   t.ID,
-				ToStatus: task.StatusHumanRequired,
+				ToStatus: task.StatusBlocked,
 				Actor:    "svc.integrations.renovate_fix.worktree_escalate",
 				Extra: task.Update{
-					StatusReason: &reason,
+					StatusReason:    &reason,
+					Escalation:      task.MachineFailure("renovate.worktree_prepare_failed", reason),
+					AutonomyOutcome: task.QuarantinedOutcome(),
 				},
 			}); uerr != nil {
 				s.logger.Error("renovate-fix.worktree.escalate", "task_id", t.ID, "err", uerr)

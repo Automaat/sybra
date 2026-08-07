@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/taskstatus"
@@ -454,12 +455,13 @@ func (e *Engine) escalatePendingConflictRecovery(taskID string) {
 // escalates exactly as before.
 func (e *Engine) classifyPRGitError(taskID string, step *Step, wfExec *Execution, t TaskInfo, err error, phase string) (StepOutput, error) {
 	msg := err.Error()
-	switch {
-	case looksLikeGitHubRateLimit(msg):
+	class := errclass.Classify(msg, errclass.WorkflowProseRetryBiased)
+	switch class {
+	case errclass.RateLimited:
 		return e.parkStepForRetry(taskID, wfExec, t, step.ID, prCreateRetryStatusReason, "workflow.pr-tail.rate-limit", "phase", phase)
-	case looksLikeTransientGitHub(msg):
+	case errclass.Transient:
 		return e.parkStepForRetry(taskID, wfExec, t, step.ID, prCreateTransientStatusReason, "workflow.pr-tail.transient", "phase", phase)
-	case looksLikeAuthFailure(msg):
+	case errclass.Auth:
 		attempts := parseWorkflowInt(wfExec.Variables[prCreateAuthAttemptsVar])
 		if attempts < maxPRCreateAuthRetries {
 			wfExec.SetVar(prCreateAuthAttemptsVar, strconv.Itoa(attempts+1))

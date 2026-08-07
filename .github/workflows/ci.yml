@@ -111,7 +111,7 @@ jobs:
 
       - name: Install nilaway
         # renovate: datasource=go depName=go.uber.org/nilaway
-        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260803001828-dc48a6814e08
+        run: go install go.uber.org/nilaway/cmd/nilaway@v0.0.0-20260807080650-10f479b6bb41
 
       - name: Run nilaway
         run: |
@@ -280,6 +280,17 @@ jobs:
 
       - name: Check the gate itself still catches drift
         run: bash scripts/check-atomic-writes.test.sh
+
+  check-consolidated-primitives:
+    name: Consolidated Primitive Drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4.0.1
+
+      - name: Check truncation, JSON extraction, task status, and provider boundaries
+        run: bash scripts/check-consolidated-primitives.sh
 
   check-no-viewer-user-endpoint:
     name: No /user Identity Lookups

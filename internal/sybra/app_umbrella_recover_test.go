@@ -66,14 +66,19 @@ func writeProjectYAML(t *testing.T, dir, id string, ptype project.ProjectType) {
 func mkDegradedTracker(t *testing.T, tasks *task.Manager, umb string, status task.Status, reason, projectID string, extraTags ...string) task.Task {
 	t.Helper()
 	tags := append([]string{"umbrella", umbrella.MaxParallelTag(3), umbrella.FallbackTag}, extraTags...)
-	tk, err := tasks.CreateFull("umbrella", "", task.AgentModeHeadless, task.Update{
+	init := task.Update{
 		Issue:        task.Ptr(umb),
 		TaskType:     task.Ptr(task.TaskTypeUmbrella),
 		ProjectID:    task.Ptr(projectID),
 		Status:       task.Ptr(status),
 		StatusReason: task.Ptr(reason),
 		Tags:         task.Ptr(tags),
-	})
+	}
+	if status == task.StatusHumanRequired {
+		init.Escalation = task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture")
+		init.AutonomyOutcome = task.HumanRequiredOutcome()
+	}
+	tk, err := tasks.CreateFull("umbrella", "", task.AgentModeHeadless, init)
 	if err != nil {
 		t.Fatalf("create degraded tracker: %v", err)
 	}

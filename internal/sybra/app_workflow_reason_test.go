@@ -18,8 +18,10 @@ func TestTaskAdapterUpdateTaskStatusPreservesExistingHumanRequiredReason(t *test
 	}
 	tasks := task.NewManager(store, nil)
 	created, err := tasks.CreateFull("preserve reason", "", "headless", task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("existing reason"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("existing reason"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -36,6 +38,40 @@ func TestTaskAdapterUpdateTaskStatusPreservesExistingHumanRequiredReason(t *test
 	}
 	if updated.StatusReason != "existing reason" {
 		t.Fatalf("StatusReason = %q, want %q", updated.StatusReason, "existing reason")
+	}
+}
+
+func TestTaskAdapterUpdateTaskStatusPreservesSameStatusReasonWhenReasonEmpty(t *testing.T) {
+	t.Parallel()
+
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	created, err := tasks.CreateFull("preserve same-status reason", "", "headless", task.Update{
+		Status:       task.Ptr(task.StatusBlocked),
+		StatusReason: task.Ptr("watchdog bounded retry armed"),
+		Blocker: task.Ptr(blocker.State{
+			Kind:  blocker.KindWatchdogRateLimitExhausted,
+			Actor: blocker.ActorWorkflow,
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ta := &taskAdapter{tasks: tasks}
+	if err := ta.UpdateTaskStatus(created.ID, task.StatusBlocked, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.StatusReason != "watchdog bounded retry armed" {
+		t.Fatalf("StatusReason = %q, want preserved watchdog marker", updated.StatusReason)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillinvoke"
 	"github.com/Automaat/sybra/internal/taskstatus"
@@ -898,7 +899,18 @@ func (e *Engine) execWaitHuman(taskID string, step *Step, wfExec *Execution) err
 	wfExec.State = ExecWaiting
 	e.logger.Info("workflow.wait-human", "task_id", taskID, "step", step.ID, "actions", step.Config.HumanActions)
 	if step.Config.Status != "" {
-		if err := e.tasks.SetStatusAndWorkflow(taskID, step.Config.Status, step.Config.StatusReason, wfExec); err != nil {
+		var err error
+		if taskstatus.Status(step.Config.Status) == taskstatus.HumanRequired {
+			reason := strings.TrimSpace(step.Config.StatusReason)
+			if reason == "" {
+				reason = "workflow is waiting for an operator action"
+			}
+			escalation := autonomy.NewEscalation("workflow.wait_human", autonomy.FailureOwnerOperatorDecision, autonomy.ProvenanceControlPlane, reason)
+			err = e.tasks.SetEscalationAndWorkflow(taskID, step.Config.Status, reason, escalation, autonomy.OutcomeHumanRequired, wfExec)
+		} else {
+			err = e.tasks.SetStatusAndWorkflow(taskID, step.Config.Status, step.Config.StatusReason, wfExec)
+		}
+		if err != nil {
 			return err
 		}
 	} else if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {

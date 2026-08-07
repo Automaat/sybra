@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/watchdogreason"
 )
 
@@ -242,13 +243,20 @@ func (w *Watchdog) applyStatusEffect(taskID, source string, status, expectedStat
 	if expectedStatus == "" {
 		return fmt.Errorf("watchdog apply status effect: expected status is required")
 	}
+	extra := task.Update{StatusReason: task.Ptr(reason)}
+	// Watchdog findings are machine-owned observations. Exhausting a retry or
+	// verifier path quarantines the task for deterministic recovery; it can
+	// never manufacture human ownership from judge/reason prose.
+	if status == task.StatusHumanRequired {
+		status = task.StatusBlocked
+		extra.Escalation = task.MachineFailure(source, reason)
+		extra.AutonomyOutcome = task.QuarantinedOutcome()
+	}
 	_, err := w.tasks.ApplyStatusEffect(taskID, task.StatusEffect{
 		Source:         source,
 		ToStatus:       status,
 		ExpectedStatus: expectedStatus,
-		Extra: task.Update{
-			StatusReason: task.Ptr(reason),
-		},
+		Extra:          extra,
 	})
 	return err
 }
@@ -837,7 +845,7 @@ func (w *Watchdog) verdictStatusFromVerify(ctx context.Context, taskID, judgeRea
 func trimTail(failedCmd, output string, n int) string {
 	tail := output
 	if len(tail) > n {
-		tail = "…" + strings.ToValidUTF8(tail[len(tail)-n:], "")
+		tail = "…" + strings.ToValidUTF8(textutil.TailBytes(tail, n), "")
 	}
 	if tail == "" {
 		return failedCmd

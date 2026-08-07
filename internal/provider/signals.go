@@ -1,5 +1,12 @@
 package provider
 
+// Provider signal classification intentionally stays outside internal/errclass.
+// It consumes structured provider-specific status/type fields, distinguishes a
+// clean agent answer from provider stderr, and extracts quota reset hints that
+// determine cooldown duration. It already gives every provider runner one
+// centralized answer; reducing that evidence to an operational text policy
+// would reintroduce the false quota parks guarded below.
+
 import (
 	"strings"
 	"time"

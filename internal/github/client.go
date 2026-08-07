@@ -697,26 +697,21 @@ func ViewerLoginCtx(ctx context.Context) string {
 // in-flight request at once, so a gap here turns a ten-second network wobble
 // into a board-wide escalation storm.
 func IsTransientError(err error) bool {
+	class := ClassifyError(err, errclass.GitHubPollerRetryBiased)
+	return class == errclass.Transient || class == errclass.RateLimited
+}
+
+// ClassifyError answers once under the caller's explicit GitHub policy. The
+// budget sentinel is transient independently of message text: it means an
+// optional poll was intentionally skipped until the shared budget recovers.
+func ClassifyError(err error, policy errclass.Policy) errclass.Class {
 	if err == nil {
-		return false
+		return errclass.Unknown
 	}
-	// A skipped optional poll (low GraphQL budget) is transient by design: back
-	// off and retry next cycle rather than treating it as a hard fetch failure.
 	if errors.Is(err, ErrBudgetExhausted) {
-		return true
+		return errclass.Transient
 	}
-	msg := strings.ToLower(err.Error())
-	// HTTP 5xx: sanitized gh output produces "gh: http 5xx". Broader than the
-	// gateway-only list gh output uses, because this predicate gates poller
-	// escalation: a 500 read as permanent costs a board-wide escalation storm.
-	if strings.Contains(msg, "http 5") {
-		return true
-	}
-	// Rate limiting is backpressure, not a defect — GitHub is telling us to wait.
-	if isRateLimitedMessage(msg) {
-		return true
-	}
-	return errclass.Matches(msg, errclass.GitHubTransientPhrases)
+	return errclass.ClassifyErr(err, policy)
 }
 
 // IsAuthError reports whether err is a GitHub authentication failure — an
