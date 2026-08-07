@@ -421,6 +421,50 @@ func TestProjectFailureCoalescesQuarantineAcrossTasks(t *testing.T) {
 	}
 }
 
+func TestRequestGitRootsSkipsGitForNonGitCapabilities(t *testing.T) {
+	req := Request{
+		WorkDir: t.TempDir(),
+		Requirements: []autonomy.CapabilityRequirement{{
+			Capability: autonomy.CapabilitySandboxMechanism,
+			Action:     "startup.host",
+			Scope:      "host",
+		}},
+	}
+	if got := requestGitRoots(req); got != nil {
+		t.Fatalf("requestGitRoots() = %v, want nil for non-Git requirements", got)
+	}
+	req.Requirements = append(req.Requirements, autonomy.CapabilityRequirement{
+		Capability: autonomy.CapabilityCheckoutHealth,
+		Action:     "startup.host",
+		Scope:      "task",
+	})
+	if got := requestGitRoots(req); len(got) != 1 || got[0] != req.WorkDir {
+		t.Fatalf("requestGitRoots() = %v, want [%q]", got, req.WorkDir)
+	}
+}
+
+func TestProjectlessCertificationsUseBoundedRepairLock(t *testing.T) {
+	service := New(Deps{ProbeSandbox: healthyProbe(false)})
+	for i := range 25 {
+		req := Request{
+			TaskID:  fmt.Sprintf("task-%d", i),
+			Action:  "startup.host",
+			WorkDir: filepath.Join(t.TempDir(), "work"),
+			Requirements: []autonomy.CapabilityRequirement{{
+				Capability: autonomy.CapabilitySandboxMechanism,
+				Action:     "startup.host",
+				Scope:      "host",
+			}},
+		}
+		if _, err := service.Certify(context.Background(), req); err != nil {
+			t.Fatalf("Certify(%d): %v", i, err)
+		}
+	}
+	if got := len(service.locks); got != 1 {
+		t.Fatalf("repair locks = %d, want one shared projectless lock", got)
+	}
+}
+
 func healthyProbe(contained bool) func(context.Context, string) (ProbeResult, error) {
 	return func(context.Context, string) (ProbeResult, error) {
 		return ProbeResult{Available: true, Contained: contained}, nil

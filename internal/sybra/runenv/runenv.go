@@ -193,7 +193,7 @@ func (s *Service) Certify(ctx context.Context, req Request) (Certificate, error)
 	if err != nil {
 		return Certificate{}, err
 	}
-	lock := s.keyLock(firstNonEmpty(req.CloneDir, req.ProjectID, req.WorkDir, req.TaskID))
+	lock := s.keyLock(firstNonEmpty(req.CloneDir, req.ProjectID, "global"))
 	lock.Lock()
 	defer lock.Unlock()
 	now := s.deps.Now()
@@ -435,7 +435,12 @@ func requestGitRoots(req Request) []string {
 	if len(req.GitRoots) > 0 {
 		return req.GitRoots
 	}
-	return []string{req.WorkDir}
+	if slices.ContainsFunc(req.Requirements, func(requirement autonomy.CapabilityRequirement) bool {
+		return requirement.Capability == autonomy.CapabilityGitAdminWrite || requirement.Capability == autonomy.CapabilityCheckoutHealth
+	}) {
+		return []string{req.WorkDir}
+	}
+	return nil
 }
 
 func probeIndexObjects(ctx context.Context, workDir string) error {
@@ -550,16 +555,20 @@ func fileIdentity(path string) string {
 	if err != nil {
 		return path + "|missing"
 	}
-	contents, err := os.ReadFile(resolved)
+	file, err := os.Open(resolved)
 	if err != nil {
 		return resolved + "|unavailable|" + err.Error()
 	}
+	defer file.Close()
 	info, err := os.Stat(resolved)
 	if err != nil {
 		return resolved + "|unavailable|" + err.Error()
 	}
-	sum := sha256.Sum256(contents)
-	return resolved + "|" + info.Mode().String() + "|" + strconv.FormatInt(info.Size(), 10) + "|" + hex.EncodeToString(sum[:])
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return resolved + "|unavailable|" + err.Error()
+	}
+	return resolved + "|" + info.Mode().String() + "|" + strconv.FormatInt(info.Size(), 10) + "|" + hex.EncodeToString(hash.Sum(nil))
 }
 
 func directoryIdentity(path string) string {
