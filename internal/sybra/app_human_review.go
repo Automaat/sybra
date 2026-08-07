@@ -758,6 +758,7 @@ func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID s
 			Extra: task.Update{
 				Body:         &newBody,
 				StatusReason: task.Ptr(statusReason),
+				ClearBlocker: task.Ptr(true),
 			},
 		})
 		if err != nil {
@@ -858,6 +859,7 @@ func (h *humanReviewHandler) applyDoneRecovery(current task.Task, agentID, note 
 	update := task.Update{
 		Body:         &newBody,
 		StatusReason: task.Ptr(""),
+		ClearBlocker: task.Ptr(true),
 	}
 	if mergedPR && current.PRNumber != prNumber {
 		update.PRNumber = task.Ptr(prNumber)

@@ -2229,6 +2229,57 @@ func TestOnComplete_UnblockedVerdict_TamperReadyReviewAddsBlessTag(t *testing.T)
 	}
 }
 
+func TestOnComplete_UnblockedVerdict_FallbackClearsBlocker(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-fallback-clears-blocker"
+	tk, err := tasks.Create("Recover fallback tamper task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:       task.Ptr(task.StatusHumanRequired),
+		StatusReason: task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
+		Blocker:      task.Ptr(blocker.State{Kind: blocker.KindTamperDetected, Actor: blocker.ActorWorkflow}),
+		ProjectID:    task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+	h.dispatchFromHumanRequired = nil
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"resume after accepting the false-positive tamper flag","recoverable_action":"ready-review","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusReadyReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyReview)
+	}
+	if !got.Blocker.IsZero() {
+		t.Fatalf("Blocker = %+v, want cleared", got.Blocker)
+	}
+	if got.TamperFlagged {
+		t.Fatal("TamperFlagged = true, want false after fallback recovery")
+	}
+}
+
 // TestOnComplete_UnblockedVerdict_CleanPushedBranchTransitions is the happy
 // path for verifyUnblocked against a real worktree: a clean, fully pushed
 // branch is exactly the state a genuinely self-unblocked task should be in,

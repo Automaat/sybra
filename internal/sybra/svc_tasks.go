@@ -1248,6 +1248,7 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 	updates := map[string]any{
 		"status":        target,
 		"status_reason": reason,
+		"clear_blocker": true,
 	}
 	if spec.clearWorkflow {
 		updates["workflow"] = (*workflow.Execution)(nil)
