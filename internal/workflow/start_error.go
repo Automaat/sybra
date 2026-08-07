@@ -97,6 +97,9 @@ func ClassifyAgentStartFailure(err error) AgentStartFailure {
 	if err == nil {
 		return out
 	}
+	if typed, ok := classifyOwnedMachineFailure(err); ok {
+		return typed
+	}
 	var machineFailure interface{ MachineFailureCode() string }
 	switch {
 	case errors.As(err, &machineFailure):
@@ -225,6 +228,42 @@ func ClassifyAgentStartFailure(err error) AgentStartFailure {
 	return out
 }
 
+func classifyOwnedMachineFailure(err error) (AgentStartFailure, bool) {
+	if isCredentialMachineFailure(err) {
+		return classifyCredentialMachineFailure(err), true
+	}
+	if isTransientMachineFailure(err) {
+		return classifyTransientMachineFailure(err), true
+	}
+	return AgentStartFailure{}, false
+}
+
+func classifyTransientMachineFailure(err error) AgentStartFailure {
+	var failure interface{ MachineFailureCode() string }
+	if !errors.As(err, &failure) {
+		return AgentStartFailure{}
+	}
+	return AgentStartFailure{Reason: textutil.TruncateBytesTotal("agent start delayed: transient run environment unavailable ("+failure.MachineFailureCode()+")", startReasonMaxLen, "...")}
+}
+
+func classifyCredentialMachineFailure(err error) AgentStartFailure {
+	var failure interface{ MachineFailureCode() string }
+	if !errors.As(err, &failure) {
+		return AgentStartFailure{}
+	}
+	return AgentStartFailure{
+		Reason:    textutil.TruncateBytesTotal("agent start blocked: credentials unavailable ("+failure.MachineFailureCode()+")", startReasonMaxLen, "..."),
+		Permanent: true,
+		Blocker: blocker.State{
+			Kind:       blocker.KindCredentialRequired,
+			Actor:      blocker.ActorWorkflow,
+			Code:       failure.MachineFailureCode(),
+			NextAction: "refresh_credentials",
+			Exhausted:  true,
+		},
+	}
+}
+
 // isTransientCapacityError reports whether err is a provider-capacity throttle
 // (rate limit) that self-heals once the provider's cooldown window expires.
 // Such errors must not be counted toward the circuit breaker or escalated to
@@ -251,7 +290,18 @@ func transientAgentStartError(err error) bool {
 		errors.Is(err, worktreeerr.ErrTransientFetch) ||
 		errors.Is(err, worktreeerr.ErrAgentRunning) ||
 		errors.Is(err, worktreeerr.ErrPreparationInFlight) ||
-		errors.Is(err, provider.ErrProviderUnhealthy)
+		errors.Is(err, provider.ErrProviderUnhealthy) ||
+		isTransientMachineFailure(err)
+}
+
+func isTransientMachineFailure(err error) bool {
+	var transient interface{ MachineFailureTransient() bool }
+	return errors.As(err, &transient) && transient.MachineFailureTransient()
+}
+
+func isCredentialMachineFailure(err error) bool {
+	var credential interface{ MachineFailureRequiresCredentials() bool }
+	return errors.As(err, &credential) && credential.MachineFailureRequiresCredentials()
 }
 
 // isDeferredNotFailed reports whether err represents a benign defer that must
@@ -262,7 +312,7 @@ func transientAgentStartError(err error) bool {
 // dispatch attempt and wrongly escalate to human-required for a condition
 // that self-heals once load drops.
 func isDeferredNotFailed(err error) bool {
-	return errors.Is(err, ErrResourcePressure)
+	return errors.Is(err, ErrResourcePressure) || isTransientMachineFailure(err)
 }
 
 func isTransientFetchReason(reason string) bool {

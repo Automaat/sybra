@@ -26,12 +26,12 @@ func (a *App) initRunEnvironment() {
 			if a.providerHealth == nil || a.providerHealth.IsHealthy(providerName) {
 				return runenv.ProbeResult{Available: true, Evidence: "provider health gate admits dispatch"}, nil
 			}
-			return runenv.ProbeResult{Code: "provider_unavailable", Evidence: a.providerHealth.Reason(providerName)}, errors.New("provider health gate denied dispatch")
+			return runenv.ProbeResult{Code: "provider_unavailable", Evidence: a.providerHealth.Reason(providerName), Owner: autonomy.FailureOwnerExternalTransient}, errors.New("provider health gate denied dispatch")
 		},
 		ProbeNetwork: func(_ context.Context, _ string) (runenv.ProbeResult, error) {
 			if open, _ := github.AuthCircuitOpen(); open {
 				snapshot := github.AuthHealthSnapshot()
-				return runenv.ProbeResult{Code: "github_auth_unavailable", Evidence: string(snapshot.State)}, errors.New("GitHub auth circuit is open")
+				return githubAuthProbeFailure(snapshot), errors.New("GitHub auth circuit is open")
 			}
 			return runenv.ProbeResult{Available: true, Evidence: "GitHub auth circuit admits requests"}, nil
 		},
@@ -79,6 +79,16 @@ func (a *App) initRunEnvironment() {
 	})
 	a.agentOrch.SetRunEnvironment(a.runenv)
 	a.agents.SetRunEnvironmentPreflight(a.certifyPreparedRunEnvironment)
+}
+
+func githubAuthProbeFailure(snapshot github.AuthSnapshot) runenv.ProbeResult {
+	owner := autonomy.FailureOwnerExternalTransient
+	code := "github_auth_unavailable"
+	if snapshot.State == github.AuthMisconfigured {
+		owner = autonomy.FailureOwnerOperatorAuthority
+		code = "github_auth_misconfigured"
+	}
+	return runenv.ProbeResult{Code: code, Evidence: string(snapshot.State), Owner: owner}
 }
 
 func (a *App) certifyPreparedRunEnvironment(ctx context.Context, environment agent.RunEnvironment) error {

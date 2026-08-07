@@ -139,12 +139,20 @@ func TestRepairIsSerializedAndProducesFreshCertificate(t *testing.T) {
 	var unhealthy atomic.Bool
 	unhealthy.Store(true)
 	var repairs atomic.Int32
+	var repairAudits atomic.Int32
+	var repairedAudit Certificate
 	service := New(Deps{
 		ProbeSandbox: healthyProbe(false), ProbeProvider: healthyProbe(false), ProbeTaskMutation: healthyProbe(false),
 		Repair: func(context.Context, Request, []Observation) error {
 			repairs.Add(1)
 			unhealthy.Store(false)
 			return nil
+		},
+		Audit: func(event string, cert Certificate, _ *CertificationError) {
+			if event == "runenv.repair" {
+				repairAudits.Add(1)
+				repairedAudit = cert
+			}
 		},
 	})
 	// Replace the object-store requirement with a repairable callback-driven
@@ -177,6 +185,9 @@ func TestRepairIsSerializedAndProducesFreshCertificate(t *testing.T) {
 	}
 	if repairs.Load() != 1 {
 		t.Fatalf("repairs = %d, want 1", repairs.Load())
+	}
+	if repairAudits.Load() != 1 || !repairedAudit.Repaired {
+		t.Fatalf("repair audit = %+v (count %d), want repaired certificate", repairedAudit, repairAudits.Load())
 	}
 }
 

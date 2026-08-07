@@ -33,15 +33,16 @@ const (
 
 // Observation is immutable evidence for one required capability.
 type Observation struct {
-	Capability autonomy.Capability `json:"capability"`
-	Scope      string              `json:"scope"`
-	Satisfied  bool                `json:"satisfied"`
-	Available  bool                `json:"available"`
-	Contained  bool                `json:"contained"`
-	Code       string              `json:"code,omitempty"`
-	Evidence   string              `json:"evidence,omitempty"`
-	Repairable bool                `json:"repairable"`
-	ObservedAt time.Time           `json:"observedAt"`
+	Capability autonomy.Capability   `json:"capability"`
+	Scope      string                `json:"scope"`
+	Satisfied  bool                  `json:"satisfied"`
+	Available  bool                  `json:"available"`
+	Contained  bool                  `json:"contained"`
+	Code       string                `json:"code,omitempty"`
+	Evidence   string                `json:"evidence,omitempty"`
+	Repairable bool                  `json:"repairable"`
+	Owner      autonomy.FailureOwner `json:"owner,omitempty"`
+	ObservedAt time.Time             `json:"observedAt"`
 }
 
 // Certificate is the time-bounded admission proof for one action and exact
@@ -88,6 +89,7 @@ type ProbeResult struct {
 	Contained bool
 	Code      string
 	Evidence  string
+	Owner     autonomy.FailureOwner
 }
 
 // CertificationError is the stable machine-owned reason passed to quarantine policy.
@@ -98,6 +100,7 @@ type CertificationError struct {
 	Scope      string
 	Code       string
 	Capability autonomy.Capability
+	Owner      autonomy.FailureOwner
 	Cause      error
 }
 
@@ -114,6 +117,17 @@ func (f CertificationError) Unwrap() error { return f.Cause }
 // as machine-owned without importing this App-scoped package and creating an
 // import cycle.
 func (f CertificationError) MachineFailureCode() string { return f.Code }
+
+// MachineFailureTransient distinguishes external admission signals that are
+// expected to self-heal from machine-owned environment defects that require a
+// deterministic repair before dispatch can resume.
+func (f CertificationError) MachineFailureTransient() bool {
+	return f.Owner == autonomy.FailureOwnerExternalTransient
+}
+
+func (f CertificationError) MachineFailureRequiresCredentials() bool {
+	return f.Owner == autonomy.FailureOwnerOperatorAuthority
+}
 
 // Deps keeps state-changing authority outside this package.
 type Deps struct {
@@ -218,15 +232,15 @@ func (s *Service) Certify(ctx context.Context, req Request) (Certificate, error)
 	failed := failedObservations(cert)
 	if len(failed) > 0 && slices.ContainsFunc(failed, func(o Observation) bool { return o.Repairable }) && s.deps.Repair != nil {
 		if repairErr := s.deps.Repair(ctx, req, failed); repairErr == nil {
-			if s.deps.Audit != nil {
-				s.deps.Audit("runenv.repair", cert, nil)
-			}
 			freshKey, fpErr := fingerprint(ctx, req)
 			if fpErr == nil {
 				key = freshKey
 			}
 			cert = s.observe(ctx, req, key, true)
 			failed = failedObservations(cert)
+			if s.deps.Audit != nil {
+				s.deps.Audit("runenv.repair", cert, nil)
+			}
 		}
 	}
 	if len(failed) > 0 {
@@ -275,7 +289,7 @@ func (s *Service) observe(ctx context.Context, req Request, key string, repaired
 	for _, requirement := range req.Requirements {
 		obs := Observation{Capability: requirement.Capability, Scope: requirement.Scope, Repairable: requirement.Repairable, ObservedAt: now}
 		result, err := s.probe(ctx, req, requirement.Capability)
-		obs.Available, obs.Contained, obs.Code, obs.Evidence = result.Available, result.Contained, result.Code, result.Evidence
+		obs.Available, obs.Contained, obs.Code, obs.Evidence, obs.Owner = result.Available, result.Contained, result.Code, result.Evidence, result.Owner
 		obs.Satisfied = err == nil && result.Available
 		if err != nil && obs.Code == "" {
 			obs.Code = capabilityCode(requirement.Capability)
@@ -663,7 +677,11 @@ func failureFrom(req Request, o Observation) CertificationError {
 	if strings.TrimSpace(o.Evidence) != "" {
 		cause = errors.New(o.Evidence)
 	}
-	return CertificationError{TaskID: req.TaskID, ProjectID: req.ProjectID, Action: req.Action, Scope: o.Scope, Code: firstNonEmpty(o.Code, capabilityCode(o.Capability)), Capability: o.Capability, Cause: cause}
+	owner := o.Owner
+	if owner == autonomy.FailureOwnerUnknown {
+		owner = autonomy.FailureOwnerMachine
+	}
+	return CertificationError{TaskID: req.TaskID, ProjectID: req.ProjectID, Action: req.Action, Scope: o.Scope, Code: firstNonEmpty(o.Code, capabilityCode(o.Capability)), Capability: o.Capability, Owner: owner, Cause: cause}
 }
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {

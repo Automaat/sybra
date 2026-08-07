@@ -7,8 +7,11 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/autonomy"
+	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 func TestAgentRunEnvironmentFailedReadsExitAndStreamDiagnostics(t *testing.T) {
@@ -35,6 +38,43 @@ func TestAgentRunEnvironmentFailedReadsExitAndStreamDiagnostics(t *testing.T) {
 				t.Fatalf("agentRunEnvironmentFailed() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGitHubAuthProbeFailurePreservesTransientAndAuthorityOwnership(t *testing.T) {
+	tests := []struct {
+		state github.AuthState
+		owner autonomy.FailureOwner
+		code  string
+	}{
+		{state: github.AuthUnavailable, owner: autonomy.FailureOwnerExternalTransient, code: "github_auth_unavailable"},
+		{state: github.AuthRateLimited, owner: autonomy.FailureOwnerExternalTransient, code: "github_auth_unavailable"},
+		{state: github.AuthMisconfigured, owner: autonomy.FailureOwnerOperatorAuthority, code: "github_auth_misconfigured"},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.state), func(t *testing.T) {
+			got := githubAuthProbeFailure(github.AuthSnapshot{State: tt.state})
+			if got.Owner != tt.owner || got.Code != tt.code {
+				t.Fatalf("probe failure = %+v, want owner=%q code=%q", got, tt.owner, tt.code)
+			}
+		})
+	}
+}
+
+func TestMisconfiguredGitHubAuthCertificationRequiresCredentialAuthority(t *testing.T) {
+	service := runenv.New(runenv.Deps{ProbeNetwork: func(context.Context, string) (runenv.ProbeResult, error) {
+		return githubAuthProbeFailure(github.AuthSnapshot{State: github.AuthMisconfigured}), errors.New("GitHub auth circuit is open")
+	}})
+	_, err := service.Certify(context.Background(), runenv.Request{
+		TaskID: "review-task", ProjectID: "owner/repo", Action: "review.dispatch", WorkDir: t.TempDir(),
+		Requirements: []autonomy.CapabilityRequirement{{Capability: autonomy.CapabilityNetworkGitHub, Action: "review.dispatch", Scope: "project"}},
+	})
+	if err == nil {
+		t.Fatal("Certify succeeded with misconfigured GitHub auth")
+	}
+	failure := workflow.ClassifyAgentStartFailure(err)
+	if !failure.Permanent || failure.Blocker.Kind != blocker.KindCredentialRequired || !blocker.AllowsHumanRequired(failure.Blocker.Kind) {
+		t.Fatalf("classification = %#v", failure)
 	}
 }
 
