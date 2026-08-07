@@ -507,8 +507,8 @@ func TestBuiltinSimpleTaskImplement_DisclosesDownstreamVerification(t *testing.T
 		t.Fatalf("downstream verification contract not found in implement prompt, got:\n%s", prompt)
 	}
 	for _, block := range []string{
-		"{{- if currenttestfailures .Task.Body}}",
-		"{{- if acceptanceledger .Task.Body}}",
+		"{{- if currenttestfailures .Task.CurrentTestFailures}}",
+		"{{- if acceptanceledger .Task.AcceptanceLedger}}",
 		`{{getvar .Vars "verify_reask_note"}}`,
 		`{{getvar .Vars "watchdog_reask_note"}}`,
 	} {
@@ -1786,7 +1786,7 @@ func TestBuiltinBestOfN_OptInTriggerPriority(t *testing.T) {
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	untagged := TaskInfo{ID: "t1", Status: "in-progress", Tags: []string{"backend"}}
 	if got := engine.MatchWorkflow(untagged, "task.status_changed"); got == nil || got.ID != "simple-task-implement" {
@@ -1820,7 +1820,7 @@ func TestSimpleTaskReview_DoesNotMatchLinkedPRTask(t *testing.T) {
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	prePR := TaskInfo{ID: "pre-pr", Status: "ready-review"}
 	if got := engine.MatchWorkflow(prePR, "task.status_changed"); got == nil || got.ID != "simple-task-review" {
@@ -1850,7 +1850,7 @@ func TestSimpleTaskPR_SkipsReviewOnlyRoles(t *testing.T) {
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	codeAuthor := TaskInfo{ID: "code-author", Status: "ready-pr"}
 	if got := engine.MatchWorkflow(codeAuthor, "task.status_changed"); got == nil || got.ID != "simple-task-pr" {

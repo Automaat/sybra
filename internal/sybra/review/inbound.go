@@ -12,6 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
@@ -147,6 +148,7 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 		// the Manager applies agent.role_effort and then the baseline.
 		ReasoningEffort:        t.ReasoningEffort,
 		HeadlessPermissionMode: posture,
+		SandboxMode:            agentorch.ResolveSandboxMode(t, r.cfg),
 		// MaxTurns intentionally not inherited: fix-review agents need
 		// enough turns to fetch the PR, apply fixes, and commit.
 	})
@@ -219,7 +221,7 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 
 	prompt := StaffCodeReviewPrompt(current.ProjectID, current.PRNumber)
 
-	cfg := r.agents.ApplyABVariant(StaffCodeReviewRunConfig(current, prompt, dir, posture), r.abTestingConfig(), current.ID, string(agent.RoleReview))
+	cfg := r.agents.ApplyABVariant(StaffCodeReviewRunConfig(current, prompt, dir, posture, agentorch.ResolveSandboxMode(current, r.cfg)), r.abTestingConfig(), current.ID, string(agent.RoleReview))
 	ag, err := r.agents.Run(cfg)
 	if err != nil {
 		return err
@@ -258,7 +260,7 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 // A/B-disabled fallback keep their high-scrutiny model; an A/B pick overrides it.
 // MaxTurns is intentionally not inherited: review agents need enough turns to
 // fetch the PR, run the skill, and write findings.
-func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.RunConfig {
+func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture, sandboxMode string) agent.RunConfig {
 	return agent.RunConfig{
 		TaskID: t.ID,
 		Name:   agent.RoleReview.AgentName(t.Title),
@@ -272,6 +274,8 @@ func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.Ru
 		// the Manager applies agent.role_effort and then the baseline.
 		ReasoningEffort:        t.ReasoningEffort,
 		HeadlessPermissionMode: posture,
+		SandboxMode:            sandboxMode,
+		ReadOnlyDir:            true,
 	}
 }
 
@@ -417,18 +421,19 @@ const reconcileEscalationReason = "review reconcile failed"
 // task a fresh free budget, silently doubling how long #2164-style breakage
 // can run undetected across a redeploy.
 func (r *Handler) recordReconcileFailure(t *task.Task, err error) {
-	if github.IsTransientError(err) {
+	class := github.ClassifyError(err, errclass.GitHubPollerRetryBiased)
+	if class == errclass.Transient || class == errclass.RateLimited {
 		r.logger.Warn("review.my-state", "task_id", t.ID, "err", err, "transient", true)
 		return
 	}
 
-	// Already parked on a human: escalating again achieves nothing and actively
-	// harms — human-required is not terminal, so the poller keeps feeding this
+	// Already parked or quarantined: escalating again achieves nothing and actively
+	// harms — these states are not terminal, so the poller keeps feeding this
 	// task back, and each pass would overwrite the operator's own triage note
 	// and rewrite updated_at on work nobody is doing. Deliberately keyed on
 	// status alone, not on our own reason string: an operator who replaces the
 	// note must not thereby re-arm the clobber.
-	if t.Status == task.StatusHumanRequired {
+	if t.Status == task.StatusHumanRequired || t.Status == task.StatusBlocked {
 		// Drop the count too: it measures progress toward an escalation that has
 		// already happened, and keeping it would pin an entry for every parked
 		// task for the life of the process.
@@ -454,11 +459,13 @@ func (r *Handler) recordReconcileFailure(t *task.Task, err error) {
 	// second write — and a second updated_at bump — on the very next poll.
 	if _, uerr := r.tasks.Apply(task.TransitionIntent{
 		TaskID:   t.ID,
-		ToStatus: task.StatusHumanRequired,
+		ToStatus: task.StatusBlocked,
 		Actor:    "review.reconcile.escalate",
 		Extra: task.Update{
 			StatusReason:      task.Ptr(fmt.Sprintf("%s %d times: %v", reconcileEscalationReason, reconcileFailureLimit, err)),
 			ReconcileFailures: task.Ptr(0),
+			Escalation:        task.MachineFailure("review.reconcile_exhausted", reconcileEscalationReason),
+			AutonomyOutcome:   task.QuarantinedOutcome(),
 		},
 	}); uerr != nil {
 		r.logger.Error("review.reconcile.escalate", "task_id", t.ID, "err", uerr)
@@ -780,6 +787,10 @@ func (r *Handler) applyReviewPhase(t *task.Task, res reviewPhaseResult) {
 	}
 	if reason != "" && (statusChanged || phaseChanged) {
 		u.StatusReason = task.Ptr(reason)
+	}
+	if statusChanged && res.Status == task.StatusHumanRequired {
+		u.Escalation = task.OperatorDecisionRequired("review.manual_action_required", reason)
+		u.AutonomyOutcome = task.HumanRequiredOutcome()
 	}
 
 	prev := t.ReviewPhase

@@ -14,17 +14,16 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
-	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/experience"
-	"github.com/Automaat/sybra/internal/github"
-	"github.com/Automaat/sybra/internal/prcontent"
 	"github.com/Automaat/sybra/internal/pressure"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/skillinvoke"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
+	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/triage"
@@ -43,15 +42,6 @@ var (
 	_ workflow.TaskProvider           = (*taskAdapter)(nil)
 	_ workflow.TaskClassifier         = (*taskClassifierAdapter)(nil)
 	_ workflow.AgentLauncher          = (*agentAdapter)(nil)
-	_ workflow.PRLinker               = (*prLinkerAdapter)(nil)
-	_ workflow.PRStateFetcher         = (*prStateFetcherAdapter)(nil)
-	_ workflow.PRHeadFetcher          = (*prHeadFetcherAdapter)(nil)
-	_ workflow.PRCreator              = (*prCreatorAdapter)(nil)
-	_ workflow.PRCloser               = (*prCloserAdapter)(nil)
-	_ workflow.PRFinder               = (*prFinderAdapter)(nil)
-	_ workflow.PRExistenceChecker     = (*prExistenceCheckerAdapter)(nil)
-	_ workflow.PRContentGenerator     = (*prContentGeneratorAdapter)(nil)
-	_ workflow.PRReviewRequester      = (*prReviewRequesterAdapter)(nil)
 	_ workflow.WorktreeGetter         = (*worktreeGetterAdapter)(nil)
 	_ workflow.AttemptNoteAppender    = (*attemptNoteAppenderAdapter)(nil)
 	_ workflow.BranchSyncer           = (*branchSyncerAdapter)(nil)
@@ -183,15 +173,24 @@ func (a *taskAdapter) UpdateTaskStatus(id string, status taskstatus.Status, reas
 		return err
 	}
 	reason = a.normalizeHumanRequiredReason(id, st, reason)
-	var extra task.Update
-	if reason != "" {
-		extra.StatusReason = &reason
-	}
-	_, err = a.tasks.Apply(task.TransitionIntent{
-		TaskID:   id,
-		ToStatus: st,
-		Actor:    "workflow.engine.update_status",
-		Extra:    extra,
+	_, err = a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		target := st
+		extra := task.Update{}
+		if reason != "" {
+			extra.StatusReason = &reason
+		} else if cur.Status != st && (st != task.StatusHumanRequired || cur.Status != task.StatusBlocked) {
+			extra.ClearStatusReason = task.Ptr(true)
+		}
+		if st == task.StatusHumanRequired {
+			target = task.StatusBlocked
+			extra.Escalation = task.MachineFailure("workflow.untyped_escalation", reason)
+			extra.AutonomyOutcome = task.QuarantinedOutcome()
+		}
+		return task.TransitionIntent{
+			ToStatus: target,
+			Actor:    "workflow.engine.update_status",
+			Extra:    extra,
+		}, nil
 	})
 	return err
 }
@@ -202,9 +201,8 @@ func (a *taskAdapter) ClearTaskStatusReasonIf(id string, expectedStatus taskstat
 		if cur.Status != expectedStatus || cur.StatusReason != expectedReason {
 			return task.Update{}, errWorkflowStatusReasonNoLongerMatches
 		}
-		empty := ""
 		cleared = true
-		return task.Update{StatusReason: &empty}, nil
+		return task.Update{ClearStatusReason: task.Ptr(true)}, nil
 	})
 	if errors.Is(err, errWorkflowStatusReasonNoLongerMatches) {
 		return false, nil
@@ -212,6 +210,31 @@ func (a *taskAdapter) ClearTaskStatusReasonIf(id string, expectedStatus taskstat
 	return cleared, err
 }
 
+// ClearTaskStatusReasonAndSetWorkflowIf clears a status reason and persists the
+// workflow in a single store write, and only while the task still carries the
+// expected status/reason. It is the atomic form of SetWorkflow followed by
+// ClearTaskStatusReasonIf: on a mismatch nothing is written at all, so a
+// superseded retry cannot leave an incremented counter banked against a budget
+// it never spent, and no crash window can land the bumped counter without the
+// cleared marker (see #2749).
+func (a *taskAdapter) ClearTaskStatusReasonAndSetWorkflowIf(id, expectedStatus, expectedReason string, wf *workflow.Execution) (bool, error) {
+	cleared := false
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		if string(cur.Status) != expectedStatus || cur.StatusReason != expectedReason {
+			return task.TransitionIntent{}, errWorkflowStatusReasonNoLongerMatches
+		}
+		cleared = true
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.clear_reason_and_set_workflow",
+			Extra:    task.Update{ClearStatusReason: task.Ptr(true), Workflow: &wf},
+		}, nil
+	})
+	if errors.Is(err, errWorkflowStatusReasonNoLongerMatches) {
+		return false, nil
+	}
+	return cleared, err
+}
 func (a *taskAdapter) UpdateTaskBlocker(id string, status taskstatus.Status, reason string, state blocker.State) error {
 	st, err := task.ValidateStatus(string(status))
 	if err != nil {
@@ -222,13 +245,19 @@ func (a *taskAdapter) UpdateTaskBlocker(id string, status taskstatus.Status, rea
 	if reason != "" {
 		reasonPtr = &reason
 	}
+	escalation, outcome := typedBlockerEscalation(st, state, reason)
+	if st == task.StatusHumanRequired && !blocker.AllowsHumanRequired(state.Kind) {
+		st = task.StatusBlocked
+	}
 	_, err = a.tasks.Apply(task.TransitionIntent{
 		TaskID:   id,
 		ToStatus: st,
 		Actor:    "workflow.engine.update_blocker",
 		Extra: task.Update{
-			Blocker:      &state,
-			StatusReason: reasonPtr,
+			Blocker:         &state,
+			StatusReason:    reasonPtr,
+			Escalation:      escalation,
+			AutonomyOutcome: outcome,
 		},
 	})
 	return err
@@ -341,8 +370,122 @@ func (a *taskAdapter) ReplaceTaskBody(id, body string) error {
 }
 
 func (a *taskAdapter) SetWorkflow(id string, wf *workflow.Execution) error {
-	_, err := a.tasks.Update(id, task.Update{Workflow: &wf})
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.set_workflow",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
+	})
 	return err
+}
+
+// SetStatusAndWorkflow persists a task's Status/StatusReason and Workflow in
+// a single store write, closing the crash window a paired
+// UpdateTaskStatus+SetWorkflow call leaves open (a restart between the two
+// calls could otherwise land a terminal task status with a still-running
+// workflow, or vice versa — see #2749).
+func (a *taskAdapter) SetStatusAndWorkflow(id, status, reason string, wf *workflow.Execution) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	reason = a.normalizeHumanRequiredReason(id, st, reason)
+	extra := task.Update{Workflow: &wf}
+	if reason != "" {
+		extra.StatusReason = &reason
+	}
+	if st == task.StatusHumanRequired {
+		st = task.StatusBlocked
+		extra.Escalation = task.MachineFailure("workflow.untyped_escalation", reason)
+		extra.AutonomyOutcome = task.QuarantinedOutcome()
+	}
+	_, err = a.tasks.Apply(task.TransitionIntent{
+		TaskID:   id,
+		ToStatus: st,
+		Actor:    "workflow.engine.set_status_and_workflow",
+		Extra:    extra,
+	})
+	return err
+}
+
+func (a *taskAdapter) SetEscalationAndWorkflow(id, status, reason string, escalation autonomy.EscalationReason, outcome autonomy.Outcome, wf *workflow.Execution) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	reason = a.normalizeHumanRequiredReason(id, st, reason)
+	extra := task.Update{
+		Workflow:        &wf,
+		Escalation:      &escalation,
+		AutonomyOutcome: &outcome,
+	}
+	if reason != "" {
+		extra.StatusReason = &reason
+	}
+	_, err = a.tasks.Apply(task.TransitionIntent{
+		TaskID:   id,
+		ToStatus: st,
+		Actor:    "workflow.engine.set_escalation_and_workflow",
+		Extra:    extra,
+	})
+	return err
+}
+
+// SetBlockerAndWorkflow persists a task's Status/StatusReason/Blocker and
+// Workflow in a single store write, the blocker-path counterpart to
+// SetStatusAndWorkflow — closing the same crash window for callers that
+// escalate to a blocked status (via a workflow-owned blocker.State) alongside
+// a workflow mutation (see #2749).
+func (a *taskAdapter) SetBlockerAndWorkflow(id, status, reason string, state blocker.State, wf *workflow.Execution) error {
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return err
+	}
+	reason = a.normalizeHumanRequiredReason(id, st, reason)
+	var reasonPtr *string
+	if reason != "" {
+		reasonPtr = &reason
+	}
+	escalation, outcome := typedBlockerEscalation(st, state, reason)
+	if st == task.StatusHumanRequired && !blocker.AllowsHumanRequired(state.Kind) {
+		st = task.StatusBlocked
+	}
+	_, err = a.tasks.Apply(task.TransitionIntent{
+		TaskID:   id,
+		ToStatus: st,
+		Actor:    "workflow.engine.set_blocker_and_workflow",
+		Extra: task.Update{
+			Blocker:         &state,
+			StatusReason:    reasonPtr,
+			Workflow:        &wf,
+			Escalation:      escalation,
+			AutonomyOutcome: outcome,
+		},
+	})
+	return err
+}
+
+func typedBlockerEscalation(status task.Status, state blocker.State, reason string) (*autonomy.EscalationReason, *autonomy.Outcome) {
+	if status != task.StatusHumanRequired {
+		return nil, nil
+	}
+	owner := blocker.FailureOwner(state.Kind)
+	if owner == autonomy.FailureOwnerUnknown {
+		// An unclassified workflow blocker is not evidence that a human owns
+		// the failure. Treat it as control-plane debt and quarantine it.
+		owner = autonomy.FailureOwnerMachine
+	}
+	code := "workflow.blocker."
+	if state.Kind == "" {
+		code += "unknown"
+	} else {
+		code += string(state.Kind)
+	}
+	if owner.AllowsHumanRequired() {
+		return task.ControlPlaneFailure(code, owner, reason), task.HumanRequiredOutcome()
+	}
+	return task.ControlPlaneFailure(code, owner, reason), task.QuarantinedOutcome()
 }
 
 var errWorkflowWriteFenceMismatch = errors.New("workflow write fence mismatch")
@@ -366,9 +509,9 @@ func (a *taskAdapter) SetWorkflowIf(id string, fence workflow.WorkflowWriteFence
 func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
 	var result workflow.EffectClaimResult
 	var fenceErr error
-	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
 		if cur.Workflow == nil {
-			return task.Update{}, fmt.Errorf("task %s has no workflow", id)
+			return task.TransitionIntent{}, fmt.Errorf("task %s has no workflow", id)
 		}
 		wf := cur.Workflow.Clone()
 		result.Workflow = wf
@@ -378,11 +521,15 @@ func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim)
 		if claimErr != nil {
 			if errors.Is(claimErr, workflow.ErrEffectClaimConflict) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
 				fenceErr = claimErr
-				return task.Update{}, errWorkflowEffectNoPersist
+				return task.TransitionIntent{}, errWorkflowEffectNoPersist
 			}
-			return task.Update{}, claimErr
+			return task.TransitionIntent{}, claimErr
 		}
-		return task.Update{Workflow: &wf}, nil
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.claim_effect",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
 	})
 	if err != nil {
 		if errors.Is(err, errWorkflowEffectNoPersist) {
@@ -396,9 +543,9 @@ func (a *taskAdapter) ClaimWorkflowEffect(id string, claim workflow.EffectClaim)
 func (a *taskAdapter) CompleteWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
 	var result workflow.EffectClaimResult
 	var fenceErr error
-	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
 		if cur.Workflow == nil {
-			return task.Update{}, fmt.Errorf("task %s has no workflow", id)
+			return task.TransitionIntent{}, fmt.Errorf("task %s has no workflow", id)
 		}
 		wf := cur.Workflow.Clone()
 		result.Workflow = wf
@@ -408,11 +555,49 @@ func (a *taskAdapter) CompleteWorkflowEffect(id string, claim workflow.EffectCla
 		if claimErr != nil {
 			if errors.Is(claimErr, workflow.ErrEffectClaimLost) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
 				fenceErr = claimErr
-				return task.Update{}, errWorkflowEffectNoPersist
+				return task.TransitionIntent{}, errWorkflowEffectNoPersist
 			}
-			return task.Update{}, claimErr
+			return task.TransitionIntent{}, claimErr
 		}
-		return task.Update{Workflow: &wf}, nil
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.complete_effect",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errWorkflowEffectNoPersist) {
+			return result, fenceErr
+		}
+		return workflow.EffectClaimResult{}, err
+	}
+	return result, nil
+}
+
+func (a *taskAdapter) ReleaseWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
+	var result workflow.EffectClaimResult
+	var fenceErr error
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		if cur.Workflow == nil {
+			return task.TransitionIntent{}, fmt.Errorf("task %s has no workflow", id)
+		}
+		wf := cur.Workflow.Clone()
+		result.Workflow = wf
+		claimResult, claimErr := wf.ReleaseEffect(claim)
+		claimResult.Workflow = wf
+		result = claimResult
+		if claimErr != nil {
+			if errors.Is(claimErr, workflow.ErrEffectClaimLost) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
+				fenceErr = claimErr
+				return task.TransitionIntent{}, errWorkflowEffectNoPersist
+			}
+			return task.TransitionIntent{}, claimErr
+		}
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.release_effect",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
 	})
 	if err != nil {
 		if errors.Is(err, errWorkflowEffectNoPersist) {
@@ -450,8 +635,14 @@ func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
 		u.PlanDecisions = &content
 	case "plan_brief":
 		u.PlanBrief = &content
+	case "current_test_failures":
+		u.CurrentTestFailures = &content
+	case "acceptance_ledger":
+		u.AcceptanceLedger = &content
+	case "spec_decision":
+		u.SpecDecision = &content
 	default:
-		return fmt.Errorf("unknown sidecar kind %q (want plan|plan_contract|code_review|plan_critique|plan_research|plan_decisions|plan_brief|plan_draft.<name>)", kind)
+		return fmt.Errorf("unknown sidecar kind %q (want plan|plan_contract|code_review|plan_critique|plan_research|plan_decisions|plan_brief|current_test_failures|acceptance_ledger|spec_decision|plan_draft.<name>)", kind)
 	}
 	_, err := a.tasks.Update(id, u)
 	return err
@@ -523,6 +714,9 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		PlanDecisions:         t.PlanDecisions,
 		PlanBrief:             t.PlanBrief,
 		CodeReview:            t.CodeReview,
+		CurrentTestFailures:   t.CurrentTestFailures,
+		AcceptanceLedger:      t.AcceptanceLedger,
+		SpecDecision:          t.SpecDecision,
 		PlanDrafts:            t.PlanDrafts,
 		Attachments:           toAttachmentInfos(t.Attachments),
 		Issue:                 t.Issue,
@@ -576,142 +770,6 @@ func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 		}
 	}
 	return out
-}
-
-// prLinkerAdapter wires the workflow engine's PRLinker interface to
-// the github package. Stateless — all state lives in `gh` / GitHub.
-type prLinkerAdapter struct{}
-
-func (prLinkerAdapter) GetClosingIssues(repo string, prNumber int) (issues []int, body string, err error) {
-	return github.FetchPRClosingIssues(repo, prNumber)
-}
-
-func (prLinkerAdapter) EditBody(repo string, prNumber int, body string) error {
-	return github.EditPRBody(repo, prNumber, body)
-}
-
-// prStateFetcherAdapter wires the workflow engine's PRStateFetcher interface
-// to the github package. Stateless — all state lives in `gh` / GitHub.
-type prStateFetcherAdapter struct{}
-
-func (prStateFetcherAdapter) FetchPRState(repo string, number int) (github.PRState, error) {
-	return github.FetchPRState(repo, number)
-}
-
-// prHeadFetcherAdapter wires the workflow engine's PRHeadFetcher interface to
-// the github package. Stateless — all state lives in `gh` / GitHub.
-type prHeadFetcherAdapter struct{}
-
-func (prHeadFetcherAdapter) FetchPRHeadSHA(ctx context.Context, repo string, number int) (string, error) {
-	return github.FetchPRHeadSHAContext(ctx, repo, number)
-}
-
-// prCreatorAdapter wires the workflow engine's PRCreator interface to the
-// github package. Stateless — all state lives in `gh` / GitHub.
-type prCreatorAdapter struct{}
-
-func (prCreatorAdapter) CreatePR(ctx context.Context, dir string, req workflow.PRCreateRequest) (number int, headSHA string, err error) {
-	return github.CreatePR(ctx, dir, github.CreatePRRequest{
-		Repo:  req.Repo,
-		Head:  req.Head,
-		Draft: req.Draft,
-		Title: req.Title,
-		Body:  req.Body,
-	})
-}
-
-// prCloserAdapter wires the workflow engine's best-effort superseded-PR
-// cleanup to the github package.
-type prCloserAdapter struct{}
-
-func (prCloserAdapter) ClosePR(ctx context.Context, repo string, number int, comment string) error {
-	return github.ClosePR(ctx, repo, number, comment)
-}
-
-// prFinderAdapter wires the workflow engine's PRFinder interface to the github
-// package. Stateless — all state lives in `gh` / GitHub.
-type prFinderAdapter struct{}
-
-func (prFinderAdapter) FindPRForBranch(ctx context.Context, repo, head string) (number int, found bool, err error) {
-	return github.FindPRForBranch(ctx, repo, head)
-}
-
-func (prFinderAdapter) FindPRForBranchAnyState(ctx context.Context, repo, head string) (number int, state string, found bool, err error) {
-	return github.FindPRForBranchAnyState(ctx, repo, head)
-}
-
-// prExistenceCheckerAdapter wires the workflow engine's PRExistenceChecker
-// interface to the github package. Stateless — all state lives in `gh` /
-// GitHub.
-type prExistenceCheckerAdapter struct{}
-
-func (prExistenceCheckerAdapter) PRExists(ctx context.Context, repo string, number int) (bool, error) {
-	return github.PRExists(ctx, repo, number)
-}
-
-// prContentGeneratorAdapter wires the workflow engine's PRContentGenerator
-// interface to internal/prcontent's LLM-backed drafter.
-type prContentGeneratorAdapter struct {
-	gen prcontent.Generator
-}
-
-func (a prContentGeneratorAdapter) GeneratePRContent(ctx context.Context, taskTitle, taskBody string, commitSubjects []string) (title, body string, err error) {
-	c, err := a.gen.Generate(ctx, prcontent.Request{
-		TaskTitle:      taskTitle,
-		TaskBody:       taskBody,
-		CommitSubjects: commitSubjects,
-	})
-	if err != nil {
-		return "", "", err
-	}
-	return c.Title, c.Body, nil
-}
-
-// prReviewRequesterAdapter asks users who left actionable PR feedback to
-// review again after the fix-review workflow pushes updated commits.
-type prReviewRequesterAdapter struct{}
-
-func (prReviewRequesterAdapter) RerequestReview(repo string, prNumber int) ([]string, error) {
-	ctx, err := github.FetchPRContext(repo, prNumber)
-	if err != nil {
-		return nil, err
-	}
-	viewer := github.ViewerLogin()
-	seen := map[string]struct{}{}
-	reviewers := make([]string, 0, len(ctx.Comments))
-	for _, c := range ctx.Comments {
-		login := strings.TrimSpace(c.Author)
-		if !eligibleRerequestReviewer(login, viewer, ctx.Author) {
-			continue
-		}
-		key := strings.ToLower(login)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		reviewers = append(reviewers, login)
-	}
-	if len(reviewers) == 0 {
-		return nil, nil
-	}
-	if err := github.RequestReviewers(repo, prNumber, reviewers); err != nil {
-		return nil, err
-	}
-	return reviewers, nil
-}
-
-func (prReviewRequesterAdapter) RequestCopilotReview(ctx context.Context, repo string, prNumber int) error {
-	return github.RequestCopilotReviewCtx(ctx, repo, prNumber)
-}
-
-func eligibleRerequestReviewer(login, viewer, prAuthor string) bool {
-	if login == "" {
-		return false
-	}
-	if strings.EqualFold(login, viewer) || strings.EqualFold(login, prAuthor) {
-		return false
-	}
-	return !strings.HasSuffix(strings.ToLower(login), "[bot]")
 }
 
 // worktreeGetterAdapter bridges worktree.Manager + task.Manager → workflow.WorktreeGetter.
@@ -859,7 +917,11 @@ func (a *checkConfigGetterAdapter) SetupCommands(ctx context.Context, taskID str
 	return project.MergeSetup(repoSetup, p.SetupCommands)
 }
 
-func ensureReadyPRWorktree(ctx context.Context, tasks *task.Manager, mgr *worktree.Manager, taskID string) (path string, ok bool, err error) {
+// ensurePRTailWorktree restores a missing worktree for deterministic PR-tail
+// operations. Branch-conflict recovery runs while a task is in-progress, not
+// ready-pr, so limiting this to ready-pr strands an otherwise recoverable
+// branch just before push_branch can publish it.
+func ensurePRTailWorktree(ctx context.Context, tasks *task.Manager, mgr *worktree.Manager, taskID string) (path string, ok bool, err error) {
 	if tasks == nil || mgr == nil {
 		return "", false, nil
 	}
@@ -871,7 +933,7 @@ func ensureReadyPRWorktree(ctx context.Context, tasks *task.Manager, mgr *worktr
 	if _, err := os.Stat(path); err == nil {
 		return path, true, nil
 	}
-	if t.Status != task.StatusReadyPR || strings.TrimSpace(t.ProjectID) == "" {
+	if !statusCanRunPRTail(t.Status) || strings.TrimSpace(t.ProjectID) == "" {
 		return "", false, nil
 	}
 
@@ -888,8 +950,17 @@ func ensureReadyPRWorktree(ctx context.Context, tasks *task.Manager, mgr *worktr
 	return prepared, true, nil
 }
 
+func statusCanRunPRTail(status task.Status) bool {
+	switch status {
+	case task.StatusInProgress, task.StatusReadyReview, task.StatusInReview, task.StatusTesting, task.StatusReadyPR:
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {
-	path, ok, err := ensureReadyPRWorktree(context.Background(), a.tasks, a.mgr, taskID)
+	path, ok, err := ensurePRTailWorktree(context.Background(), a.tasks, a.mgr, taskID)
 	if err != nil {
 		return "", false
 	}
@@ -897,7 +968,7 @@ func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {
 }
 
 func (a *worktreeGetterAdapter) ResolvePRWorktree(ctx context.Context, taskID string) (path string, found bool, err error) {
-	return ensureReadyPRWorktree(ctx, a.tasks, a.mgr, taskID)
+	return ensurePRTailWorktree(ctx, a.tasks, a.mgr, taskID)
 }
 
 func (*attemptNoteAppenderAdapter) AppendReimplementNote(ctx context.Context, _, wtPath, marker, note string) error {
@@ -911,7 +982,7 @@ type branchSyncerAdapter struct {
 }
 
 func (a *branchSyncerAdapter) SyncTaskBranch(ctx context.Context, taskID string) (string, error) {
-	if _, ok, err := ensureReadyPRWorktree(ctx, a.tasks, a.mgr, taskID); err != nil {
+	if _, ok, err := ensurePRTailWorktree(ctx, a.tasks, a.mgr, taskID); err != nil {
 		return worktree.SyncFailed.String(), fmt.Errorf("sync branch: ensure worktree: %w", err)
 	} else if !ok {
 		return worktree.SyncSkipped.String(), nil
@@ -933,6 +1004,7 @@ type agentAdapter struct {
 	sandboxes  *sandbox.Manager
 	experience *experience.Store
 	pressure   *pressure.Gate
+	runenv     *runenv.Service
 }
 
 func translatePoolBusy(err error) error {
@@ -1032,6 +1104,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		MaxTurns:               t.MaxTurns,
 		RequirePermissions:     agentorch.ResolvePermission(t, a.agentOrch.Cfg()),
 		HeadlessPermissionMode: posture,
+		SandboxMode:            agentorch.ResolveSandboxMode(t, a.agentOrch.Cfg()),
 		ReasoningEffort:        agentorch.FirstNonEmpty(assignment.ReasoningEffort, t.ReasoningEffort, agentorch.ResolveRoleEffort(r, a.agentOrch.Cfg())),
 		// Code-author roles (implementation/fix-review/pr-fix) are primed with
 		// NOTES.md; verifier roles (review/test-runner/eval) share the same
@@ -1040,7 +1113,8 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// Verifier roles judge a worktree they must not alter. Enforced at the
 		// OS level rather than through the tool allowlist, which cannot express
 		// it — Bash reaches the same files (#2791).
-		ReadOnlyDir: r.JudgesWithoutWriting(),
+		ReadOnlyDir:   r.JudgesWithoutWriting(),
+		ReadOnlyPaths: assignment.ReadOnlyPaths,
 		// fork_subagent is a task-level opt-in, but must never reach a
 		// verifier role (review/test-runner/eval) — a forked subagent's own
 		// token spend would multiply on every independent check, and a
@@ -1063,20 +1137,21 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		}
 	}
 	if cfg.Dir == "" {
-		// System-role fallback (triage, plan, eval, …): no worktree required,
-		// but the agent process still needs an existing cwd. Use the sybra
-		// home dir rather than letting the process inherit Sybra's own cwd
-		// (which in dev mode would be the sybra source repo — the bug that
-		// caused branch changes on main).
-		cfg.Dir = config.HomeDir()
+		// A direct-dispatch role (notably a best-of-N judge) may deliberately
+		// have no worktree: it reads the candidate worktrees by absolute path.
+		// Give it an isolated temporary cwd rather than the operator's Sybra
+		// home. Besides keeping relative writes away from the board, this is a
+		// distinct ReadOnlyDir under enforce mode, so the sandbox can re-bind it
+		// read-only without also re-binding all of os.TempDir read-only.
+		cfg.Dir, err = fallbackAgentWorkingDir()
+		if err != nil {
+			return "", "", "", err
+		}
 	}
 
-	baselineRef = agentorch.CurrentWorktreeHead(context.Background(), cfg.Dir)
-	a.configureTestRunnerRun(&cfg, taskID, r, t)
-
-	ag, err := a.agents.Run(cfg)
+	ag, baselineRef, err := a.launchCertifiedDirect(t, r, &cfg)
 	if err != nil {
-		return "", "", "", translatePoolBusy(err)
+		return "", "", "", err
 	}
 
 	if recErr := a.recordSystemAgentStart(taskID, role, mode, cfg, ag); recErr != nil {
@@ -1086,6 +1161,34 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	return ag.ID, cfg.Dir, baselineRef, nil
 }
 
+func (a *agentAdapter) launchCertifiedDirect(t task.Task, role agent.Role, cfg *agent.RunConfig) (*agent.Agent, string, error) {
+	baselineRef := agentorch.CurrentWorktreeHead(context.Background(), cfg.Dir)
+	a.configureTestRunnerRun(cfg, t.ID, role, t)
+	ag, err := a.agents.Run(*cfg)
+	if err != nil {
+		if a.runenv != nil && runenv.IsEnvironmentFailure(err) {
+			a.runenv.InvalidateTask(t.ID)
+		}
+		return nil, "", translatePoolBusy(err)
+	}
+	return ag, baselineRef, nil
+}
+
+// fallbackAgentWorkingDir creates an otherwise empty, per-run cwd for a
+// direct-dispatch agent that intentionally has no task worktree. It must be a
+// child of the OS temp directory rather than os.TempDir itself: read-only
+// judge runs re-bind their cwd after the sandbox's broad tmp write root, and
+// locking the whole tmp root would break provider scratch files. The OS temp
+// cleaner reclaims these directories if a stopped/crashed process leaves one
+// behind.
+func fallbackAgentWorkingDir() (string, error) {
+	dir, err := os.MkdirTemp("", "sybra-agent-cwd-")
+	if err != nil {
+		return "", fmt.Errorf("create fallback agent working directory: %w", err)
+	}
+	return dir, nil
+}
+
 // ensureWorktreeDir resolves the cwd a direct-dispatch agent should run in.
 // A provided dir is usually already prepared, but if a workflow retry carries
 // a stale `_dir` pointing at a deleted Sybra-managed worktree, rebuild the
@@ -1093,9 +1196,22 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 // the workflow's start-failure circuit breaker.
 func (a *agentAdapter) ensureWorktreeDir(t task.Task, taskID string, role agent.Role, dir, cleanRetryRef string, claim *agent.DispatchClaim) (updated task.Task, resolvedDir string, cleanRetryReset bool, err error) {
 	if dir == "" {
-		return a.resolveWorktreeDir(t, taskID, string(role), cleanRetryRef, claim)
+		return a.resolveWorktreeDir(t, taskID, role, cleanRetryRef, claim)
 	}
 	if _, statErr := os.Stat(dir); statErr == nil {
+		if cleanRetryRef != "" {
+			ready, readyErr := a.cleanRetryWorktreeReady(t, taskID, role, dir)
+			if readyErr != nil {
+				return t, "", false, readyErr
+			}
+			if ready {
+				return t, dir, true, nil
+			}
+			if role.AuthorsCode() && strings.TrimSpace(t.Branch) != "" {
+				updated, resolvedDir, err := a.recreateManagedWorktreeForRetry(t, taskID, role, dir, claim)
+				return updated, resolvedDir, true, err
+			}
+		}
 		repair, repairErr := a.providedWorktreeNeedsRepair(t, taskID, role, dir)
 		if repairErr != nil {
 			return t, "", false, repairErr
@@ -1108,8 +1224,42 @@ func (a *agentAdapter) ensureWorktreeDir(t task.Task, taskID string, role agent.
 	} else if !os.IsNotExist(statErr) {
 		return t, "", false, fmt.Errorf("stat provided worktree dir %s: %w", dir, statErr)
 	}
+	if cleanRetryRef != "" {
+		updated, resolvedDir, _, err = a.reprepareProvidedWorktreeDir(t, taskID, role, dir, "", claim)
+		return updated, resolvedDir, true, err
+	}
 	updated, resolvedDir, cleanRetryReset, err = a.reprepareProvidedWorktreeDir(t, taskID, role, dir, cleanRetryRef, claim)
 	return updated, resolvedDir, cleanRetryReset, err
+}
+
+func (a *agentAdapter) cleanRetryWorktreeReady(t task.Task, taskID string, role agent.Role, dir string) (bool, error) {
+	if !role.AuthorsCode() || strings.TrimSpace(t.Branch) == "" || strings.TrimSpace(dir) == "" {
+		return false, nil
+	}
+	currentBranch, err := project.CurrentBranch(context.Background(), dir)
+	if err != nil {
+		return false, fmt.Errorf("resolve clean retry worktree branch %s: %w", dir, err)
+	}
+	if currentBranch != t.Branch {
+		a.agentOrch.Logger().Warn("workflow.worktree.clean-retry.branch-mismatch",
+			"task_id", taskID, "role", role, "path", dir, "branch", currentBranch, "want_branch", t.Branch)
+		return false, nil
+	}
+	dirty, err := project.IsWorktreeDirty(context.Background(), dir)
+	if err != nil {
+		return false, fmt.Errorf("inspect clean retry worktree %s: %w", dir, err)
+	}
+	if dirty {
+		a.agentOrch.Logger().Warn("workflow.worktree.clean-retry.dirty",
+			"task_id", taskID, "role", role, "path", dir)
+		return false, nil
+	}
+	if project.HasUnpushedCommits(context.Background(), dir) {
+		a.agentOrch.Logger().Warn("workflow.worktree.clean-retry.unpushed",
+			"task_id", taskID, "role", role, "path", dir)
+		return false, nil
+	}
+	return true, nil
 }
 
 func (a *agentAdapter) providedWorktreeNeedsRepair(t task.Task, taskID string, role agent.Role, dir string) (bool, error) {
@@ -1162,6 +1312,39 @@ func (a *agentAdapter) reprepareProvidedWorktreeDir(t task.Task, taskID string, 
 	}
 	resolvedDir, cleanRetryReset, err = a.reprepareMissingWorktreeDir(t, taskID, role, dir, claim)
 	return t, resolvedDir, cleanRetryReset, err
+}
+
+func (a *agentAdapter) recreateManagedWorktreeForRetry(t task.Task, taskID string, role agent.Role, dir string, claim *agent.DispatchClaim) (updated task.Task, resolvedDir string, err error) {
+	if t.WorktreeDir != "" {
+		return t, "", fmt.Errorf("adopted worktree %s is not reusable for clean retry on task branch %q", dir, t.Branch)
+	}
+	proj, err := a.projects.Get(t.ProjectID)
+	if err != nil {
+		return t, "", err
+	}
+	a.agentOrch.Logger().Warn("workflow.worktree.clean-retry.recreate",
+		"task_id", taskID, "role", role, "path", dir, "branch", t.Branch)
+	if fetchErr := project.FetchOrigin(context.Background(), proj.ClonePath); fetchErr != nil {
+		a.agentOrch.Logger().Warn("workflow.worktree.clean-retry.fetch",
+			"task_id", taskID, "role", role, "project", proj.ID, "branch", t.Branch, "err", fetchErr)
+	}
+	remoteRef := "refs/remotes/origin/" + t.Branch
+	if remoteHead, ok := project.ResolveBareRef(context.Background(), proj.ClonePath, remoteRef); ok {
+		if remoteHead != "" {
+			if err := project.SetBranchTo(context.Background(), proj.ClonePath, t.Branch, remoteHead); err != nil {
+				return t, "", fmt.Errorf("reset task branch %s to pushed tip %s: %w", t.Branch, remoteHead, err)
+			}
+		}
+	} else if project.BranchExists(context.Background(), proj.ClonePath, t.Branch) {
+		if err := project.DeleteBranch(context.Background(), proj.ClonePath, t.Branch); err != nil {
+			return t, "", fmt.Errorf("drop local-only task branch %s before clean retry recreate: %w", t.Branch, err)
+		}
+	}
+	if err := project.RemoveWorktreeReconcile(context.Background(), proj.ClonePath, dir); err != nil {
+		return t, "", fmt.Errorf("reconcile clean retry worktree dir %s: %w", dir, err)
+	}
+	resolvedDir, _, err = a.reprepareMissingWorktreeDir(t, taskID, role, dir, claim)
+	return t, resolvedDir, err
 }
 
 func (a *agentAdapter) reprepareExistingWorktreeDir(t task.Task, taskID string, role agent.Role, dir, cleanRetryRef string, claim *agent.DispatchClaim) (resolvedDir string, cleanRetryReset bool, err error) {
@@ -1248,7 +1431,7 @@ func (a *agentAdapter) configureTestRunnerRun(cfg *agent.RunConfig, taskID strin
 // worktree-prep failure this releases it early (see the claim.Release() call
 // below) rather than the caller's own deferred release, which — since
 // DispatchClaim.Release is idempotent — is then a safe no-op.
-func (a *agentAdapter) resolveWorktreeDir(t task.Task, taskID, role, cleanRetryRef string, claim *agent.DispatchClaim) (updated task.Task, dir string, cleanRetryReset bool, err error) {
+func (a *agentAdapter) resolveWorktreeDir(t task.Task, taskID string, role agent.Role, cleanRetryRef string, claim *agent.DispatchClaim) (updated task.Task, dir string, cleanRetryReset bool, err error) {
 	t, err = a.agentOrch.AutoAssignProject(t)
 	if err != nil {
 		return t, "", false, err
@@ -1257,11 +1440,30 @@ func (a *agentAdapter) resolveWorktreeDir(t task.Task, taskID, role, cleanRetryR
 		return t, "", false, fmt.Errorf("task %s has no project_id: refusing to start %s agent without isolated worktree: %w", taskID, role, workflow.ErrNoProjectAssigned)
 	}
 	if cleanRetryRef != "" {
-		reset, resetErr := a.resetWorktreeForRetry(t, "", cleanRetryRef)
-		if resetErr != nil {
-			return t, "", false, resetErr
+		target := a.agentOrch.Worktrees().PathFor(t)
+		if _, statErr := os.Stat(target); statErr == nil {
+			ready, readyErr := a.cleanRetryWorktreeReady(t, taskID, role, target)
+			if readyErr != nil {
+				return t, "", false, readyErr
+			}
+			if ready {
+				cleanRetryReset = true
+			} else if role.AuthorsCode() && strings.TrimSpace(t.Branch) != "" {
+				updated, resolvedDir, recreateErr := a.recreateManagedWorktreeForRetry(t, taskID, role, target, claim)
+				return updated, resolvedDir, true, recreateErr
+			}
+		} else if os.IsNotExist(statErr) {
+			cleanRetryReset = true
+		} else {
+			return t, "", false, fmt.Errorf("stat clean retry worktree: %w", statErr)
 		}
-		cleanRetryReset = reset
+		if !cleanRetryReset {
+			reset, resetErr := a.resetWorktreeForRetry(t, "", cleanRetryRef)
+			if resetErr != nil {
+				return t, "", false, resetErr
+			}
+			cleanRetryReset = reset
+		}
 	}
 	// context.Background(): StartAgent implements workflow.AgentDispatcher,
 	// a fixed interface signature with no ctx parameter (invoked from many

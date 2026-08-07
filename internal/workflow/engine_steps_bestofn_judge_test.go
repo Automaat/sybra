@@ -1,6 +1,24 @@
 package workflow
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
+
+func TestBestOfNAttemptReadRoots_CompletedOnly(t *testing.T) {
+	wf := &Execution{BestOfNInflight: map[string]*BestOfNInflight{
+		"attempts": {Attempts: map[string]*AttemptStatus{
+			"a1": {Status: "completed", Dir: " /tmp/attempt-a1 "},
+			"a2": {Status: "pending", Dir: "/tmp/attempt-a2"},
+			"a3": {Status: "completed", Dir: "/tmp/attempt-b"},
+			"a4": {Status: "completed", Dir: "/tmp/attempt-a1"},
+			"a5": {Status: "completed"},
+		}},
+	}}
+	if got := bestOfNAttemptReadRoots(wf); !slices.Equal(got, []string{"/tmp/attempt-a1", "/tmp/attempt-b"}) {
+		t.Fatalf("bestOfNAttemptReadRoots() = %v", got)
+	}
+}
 
 // The judge parser used to scan from the first `{` to the last `}` with no
 // string-literal tracking, so a brace inside a rationale — which is prose the

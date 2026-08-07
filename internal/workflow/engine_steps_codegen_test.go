@@ -16,9 +16,9 @@ func newCodegenGateStep() *Step { return &Step{ID: "codegen_gate", Type: StepCod
 
 func newCodegenGateEngine(t *testing.T, wt string, cmds []string) (*Engine, *memTasks) {
 	t.Helper()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{codegen: cmds})
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{codegen: cmds})
 	return engine, engine.tasks.(*memTasks)
 }
 
@@ -33,17 +33,17 @@ func codegenGitOutput(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func TestExecCodegenGate_NoGetterSkips(t *testing.T) {
+func TestExecCodegenGate_DefaultGetterSkips(t *testing.T) {
 	t.Parallel()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: t.TempDir(), ok: true})
 
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out.Output != "skipped: no check config getter" {
-		t.Fatalf("Output = %q, want no-getter skip", out.Output)
+	if out.Output != "skipped: no codegen commands configured" {
+		t.Fatalf("Output = %q, want no-commands skip", out.Output)
 	}
 }
 
@@ -63,8 +63,8 @@ func TestExecCodegenGate_NoCommandsSkips(t *testing.T) {
 
 func TestExecCodegenGate_NoWorktreeGetterSkips(t *testing.T) {
 	t.Parallel()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
-	engine.SetCheckConfigGetter(&fakeCheckGetter{codegen: []string{"true"}})
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{codegen: []string{"true"}})
 
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
 	if err != nil {
@@ -77,8 +77,8 @@ func TestExecCodegenGate_NoWorktreeGetterSkips(t *testing.T) {
 
 func TestExecCodegenGate_NoWorktreeForTaskSkips(t *testing.T) {
 	t.Parallel()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
-	engine.SetCheckConfigGetter(&fakeCheckGetter{codegen: []string{"true"}})
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{codegen: []string{"true"}})
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{ok: false})
 
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())

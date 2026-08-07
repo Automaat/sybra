@@ -27,6 +27,7 @@ import (
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/skillinvoke"
+	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -210,6 +211,10 @@ type Orchestrator struct {
 	// exactly as it did before this feature landed) — every read site
 	// nil-guards for this reason.
 	queue *agentqueue.Queue
+	// runenv certifies the concrete worktree, Git admin area, provider, and
+	// host posture immediately before Run. Nil is retained for construction
+	// tests and degraded startup; App always late-binds it before dispatch.
+	runenv *runenv.Service
 	// conflictRecovery turns a worktree-prep rebase conflict into an autonomous
 	// conflict pr-fix instead of a human escalation. Wired via SetConflictRecovery
 	// in wireServices after the review.Handler exists; nil keeps the
@@ -277,6 +282,11 @@ func (o *Orchestrator) SetPressureGate(gate *pressure.Gate) {
 // once the review.Handler that implements it exists.
 func (o *Orchestrator) SetConflictRecovery(fn func(taskID string) bool) {
 	o.conflictRecovery = fn
+}
+
+// SetRunEnvironment late-binds pre-dispatch certification.
+func (o *Orchestrator) SetRunEnvironment(service *runenv.Service) {
+	o.runenv = service
 }
 
 // SetQueue late-binds the admission queue once agentqueue.New succeeds at
@@ -677,14 +687,14 @@ func (o *Orchestrator) startAgent(ctx context.Context, taskID, mode, prompt stri
 	if postureErr != nil {
 		return nil, "", postureErr
 	}
-	return o.runImplementationAgent(taskID, prompt, includeTaskDescription, oneShot, skipWT, dir, effMode, requirePerm, posture, baselineRef, resumeSessionID, model, t, assignment, opts, reservation)
+	return o.runImplementationAgent(ctx, taskID, prompt, includeTaskDescription, oneShot, skipWT, dir, effMode, requirePerm, posture, baselineRef, resumeSessionID, model, t, assignment, opts, reservation)
 }
 
 // runImplementationAgent builds the RunConfig for an implementation dispatch,
 // launches it, and translates a launch failure through the same
 // capacity-race / provider-gate handling startAgent used inline before this
 // was split out to satisfy funlen.
-func (o *Orchestrator) runImplementationAgent(taskID, prompt string, includeTaskDescription, oneShot, skipWT bool, dir, effMode string, requirePerm bool, posture, baselineRef, resumeSessionID, model string, t task.Task, assignment workflow.AgentAssignment, opts startOptions, reservation *agent.CapacityReservation) (*agent.Agent, string, error) {
+func (o *Orchestrator) runImplementationAgent(ctx context.Context, taskID, prompt string, includeTaskDescription, oneShot, skipWT bool, dir, effMode string, requirePerm bool, posture, baselineRef, resumeSessionID, model string, t task.Task, assignment workflow.AgentAssignment, opts startOptions, reservation *agent.CapacityReservation) (*agent.Agent, string, error) {
 	extraEnv := o.SandboxEnvIfRunning(taskID)
 	fullPrompt := BuildTaskStartPrompt(t, prompt, includeTaskDescription)
 	o.logSandboxEscapeHatch(taskID, t)
@@ -704,6 +714,7 @@ func (o *Orchestrator) runImplementationAgent(taskID, prompt string, includeTask
 		ag, err = o.agents.Run(runCfg)
 	}
 	if err != nil {
+		o.invalidateRunEnvironmentOnStartError(taskID, err)
 		o.handleProviderGateStartError(taskID, err)
 		if ag, baselineRef, capErr, handled := o.handleCapacityRace(err, t, taskID, effMode, prompt, includeTaskDescription, skipWT, opts); handled {
 			if ag != nil {
@@ -1110,10 +1121,12 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 		logger.Warn("worktree.rebase-block.disk-space", "task_id", taskID)
 		if _, uerr := tasks.Apply(task.TransitionIntent{
 			TaskID:   taskID,
-			ToStatus: task.StatusHumanRequired,
+			ToStatus: task.StatusBlocked,
 			Actor:    "agentorch.mark_rebase_blocked.disk_space",
 			Extra: task.Update{
-				StatusReason: task.Ptr(worktreeerr.DiskSpaceExhaustedReason),
+				StatusReason:    task.Ptr(worktreeerr.DiskSpaceExhaustedReason),
+				Escalation:      task.MachineFailure("runenv.disk_space_exhausted", worktreeerr.DiskSpaceExhaustedReason),
+				AutonomyOutcome: task.QuarantinedOutcome(),
 			},
 		}); uerr != nil {
 			logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)
@@ -1149,16 +1162,19 @@ func MarkRebaseBlocked(tasks *task.Manager, taskID string, err error, logger *sl
 		// recovery loop apart from a fresh, first-time conflict. This must run
 		// after the remote PR re-probe above, because an externally resolved PR
 		// should still flip back to in-review instead of staying parked.
-		if t, err := tasks.Get(taskID); err == nil && t.Status == task.StatusHumanRequired && t.StatusReason != "" {
+		if t, err := tasks.Get(taskID); err == nil &&
+			(t.Status == task.StatusHumanRequired || t.Status == task.StatusBlocked) && t.StatusReason != "" {
 			return true
 		}
 	}
 	if _, uerr := tasks.Apply(task.TransitionIntent{
 		TaskID:   taskID,
-		ToStatus: task.StatusHumanRequired,
+		ToStatus: task.StatusBlocked,
 		Actor:    "agentorch.mark_rebase_blocked.parked",
 		Extra: task.Update{
-			StatusReason: task.Ptr(worktreeerr.RebaseBlockedReason),
+			StatusReason:    task.Ptr(worktreeerr.RebaseBlockedReason),
+			Escalation:      task.MachineFailure("git.rebase_repair_exhausted", worktreeerr.RebaseBlockedReason),
+			AutonomyOutcome: task.QuarantinedOutcome(),
 		},
 	}); uerr != nil {
 		logger.Error("worktree.rebase-block.status", "task_id", taskID, "err", uerr)
@@ -1392,7 +1408,7 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 		prompt = steered
 	}
 	o.logSandboxEscapeHatch(taskID, t)
-	ag, err := o.agents.Run(agent.RunConfig{
+	runCfg := agent.RunConfig{
 		TaskID:                 taskID,
 		Name:                   agent.RolePRFix.AgentName(t.Title),
 		Role:                   agent.RolePRFix,
@@ -1407,8 +1423,10 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 		// pr-fix is a code-author role — keep the NOTES.md contract airtight so
 		// an adopted (handoff) worktree's scratchpad carries through.
 		SeedWorkingMemory: agent.RolePRFix.AuthorsCode(),
-	})
+	}
+	ag, err := o.agents.Run(runCfg)
 	if err != nil {
+		o.invalidateRunEnvironmentOnStartError(taskID, err)
 		return translatePoolBusy(err)
 	}
 
@@ -1427,6 +1445,12 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 		o.logger.Error("task.add-run", "task_id", taskID, "err", err)
 	}
 	return nil
+}
+
+func (o *Orchestrator) invalidateRunEnvironmentOnStartError(taskID string, err error) {
+	if o.runenv != nil && runenv.IsEnvironmentFailure(err) {
+		o.runenv.InvalidateTask(taskID)
+	}
 }
 
 func fallbackDispatchDir(dir string) string {

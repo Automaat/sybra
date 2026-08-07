@@ -146,6 +146,10 @@ func (c *promptLabCoordinator) fileScrubbedProposals(ctx context.Context, result
 		update := task.Update{
 			Tags: &tags,
 		}
+		if status == task.StatusHumanRequired {
+			update.Escalation = task.PolicyRequired("promptlab.approval_required", "prompt proposal requires approval")
+			update.AutonomyOutcome = task.HumanRequiredOutcome()
+		}
 		if projectID := promptLabTargetProjectID(c.projects); projectID != "" {
 			update.ProjectID = &projectID
 		}

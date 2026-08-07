@@ -110,4 +110,23 @@ describe('AutonomyTrendSection', () => {
 
     expect(screen.getByText('Not enough weekly data yet')).toBeDefined()
   })
+
+  it('renders the cost-per-merged chart, dropping weeks with zero merged PRs', () => {
+    const { container } = render(AutonomyTrendSection, {
+      props: {
+        trend: trend({
+          weekly: [
+            weekPoint({ weekStart: '2026-01-01T00:00:00Z', tasksLanded: 1, mergedPrs: 0, costPerMergedUsd: 0 }),
+            weekPoint({ weekStart: '2026-01-08T00:00:00Z', tasksLanded: 2, mergedPrs: 2, costPerMergedUsd: 4.5 }),
+          ],
+        }),
+      },
+    })
+
+    expect(screen.getByRole('img', { name: 'Cost per merged PR by week' })).toBeDefined()
+    // One week has merged PRs → one plotted point on the cost chart.
+    const costChart = screen.getByRole('img', { name: 'Cost per merged PR by week' })
+    expect(costChart.querySelectorAll('circle').length).toBe(1)
+    expect(container).toBeDefined()
+  })
 })

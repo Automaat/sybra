@@ -24,10 +24,10 @@ func TestIsBadRef(t *testing.T) {
 }
 
 func TestMatchesIsCaseInsensitive(t *testing.T) {
-	if !Matches("FATAL: BAD OBJECT HEAD", badRefPhrases) {
-		t.Fatal("Matches should lowercase the input")
+	if !matches("FATAL: BAD OBJECT HEAD", badRefPhrases) {
+		t.Fatal("matches should lowercase the input")
 	}
-	if Matches("anything", nil) {
-		t.Fatal("Matches with no families should be false")
+	if matches("anything", nil) {
+		t.Fatal("matches with no families should be false")
 	}
 }

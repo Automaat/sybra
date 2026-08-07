@@ -78,7 +78,7 @@ func newRequireEvidenceStep() *Step { return &Step{ID: "require_evidence", Type:
 
 func newRequireEvidenceEngine(t *testing.T, wt string) (*Engine, *memTasks, *fakeEvidenceRecorder) {
 	t.Helper()
-	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
 	rec := newFakeEvidenceRecorder()
 	engine.SetEvidenceRecorder(rec)
@@ -172,7 +172,7 @@ func TestExecRequireEvidence_CompleteAndFreshLands(t *testing.T) {
 	wt := makeGitRepo(t, true)
 	head := headSHAForTest(t, wt)
 	engine, tasks, rec := newRequireEvidenceEngine(t, wt)
-	engine.SetCheckConfigGetter(&fakeCheckGetter{cmds: []string{"true"}})
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{cmds: []string{"true"}})
 	rec.Set("t1", evidence.CompletionEvidence{Criteria: []evidence.CriterionEvidence{
 		{Criterion: evidenceCriterionVerifyCommits, ExitStatus: 0, FinalRev: head},
 		{Criterion: evidenceCriterionDetectTampering, ExitStatus: 0, FinalRev: head},
@@ -197,7 +197,7 @@ func TestExecRequireEvidence_MissingCriterionBlocks(t *testing.T) {
 	wt := makeGitRepo(t, true)
 	head := headSHAForTest(t, wt)
 	engine, tasks, rec := newRequireEvidenceEngine(t, wt)
-	engine.SetCheckConfigGetter(&fakeCheckGetter{cmds: []string{"true"}})
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{cmds: []string{"true"}})
 	// verify_checks omitted entirely, even though a verify suite is configured.
 	rec.Set("t1", evidence.CompletionEvidence{Criteria: []evidence.CriterionEvidence{
 		{Criterion: evidenceCriterionVerifyCommits, ExitStatus: 0, FinalRev: head},

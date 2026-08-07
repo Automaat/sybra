@@ -163,6 +163,7 @@ func TestWrapInvocation_GrantsAppSupportRoot(t *testing.T) {
 		worktree:    "/data/wt",
 		sandboxHome: "/data/home",
 		tmp:         "/tmp",
+		tmpAlias:    `^/private/tmp/claude-[^/]+-cwd(/.*)?$`,
 		sharedCache: "/data/cache",
 		appSupport:  appSupport,
 	}}
@@ -187,6 +188,12 @@ func TestWrapInvocation_GrantsAppSupportRoot(t *testing.T) {
 func TestSandboxProfile_ReferencesAppSupport(t *testing.T) {
 	if !strings.Contains(string(agentSandboxProfile), `(subpath (param "APP_SUPPORT"))`) {
 		t.Fatal("profile has no APP_SUPPORT write rule, so the resolved root grants nothing")
+	}
+}
+
+func TestSandboxProfile_ReferencesTmpAlias(t *testing.T) {
+	if !strings.Contains(string(agentSandboxProfile), `(regex (param "TMP_ALIAS_PATTERN"))`) {
+		t.Fatal("profile has no narrow TMP_ALIAS_PATTERN write rule")
 	}
 }
 

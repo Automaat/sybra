@@ -85,7 +85,7 @@ func setupDispatchTestService(t *testing.T, launcher *fakeAgentLauncher) (*TaskS
 	svc, a := setupTaskService(t)
 	launcher.tasks = a.tasks
 	ta := &taskAdapter{tasks: a.tasks}
-	svc.workflowEngine = workflow.NewEngine(mustWorkflowStore(t), ta, launcher, a.logger)
+	svc.workflowEngine = workflow.NewTestEngine(mustWorkflowStore(t), ta, launcher, a.logger)
 	return svc, a
 }
 
@@ -107,7 +107,7 @@ func newHumanRequiredTask(t *testing.T, a *App, prNumber int) task.Task {
 	if err != nil {
 		t.Fatal(err)
 	}
-	update := task.Update{Status: task.Ptr(task.StatusHumanRequired)}
+	update := task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}
 	if prNumber > 0 {
 		update.PRNumber = task.Ptr(prNumber)
 	}
@@ -205,9 +205,11 @@ func newReadyPRHumanRequiredTask(t *testing.T, a *App, engine *workflow.Engine) 
 		t.Fatal(err)
 	}
 	updated, err := a.tasks.Update(tk.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("acme/widgets"),
-		Branch:    task.Ptr(branch),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("acme/widgets"),
+		Branch:          task.Ptr(branch),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -264,6 +266,37 @@ func TestDispatchFromHumanRequired_HappyPathDispatchingTargets(t *testing.T) {
 			t.Fatalf("startCalls = %d, want 0 (create_pr/push_branch are deterministic Go, not agents)", launcher.startCalls)
 		}
 	})
+}
+
+func TestDispatchFromHumanRequired_ClearsStaleBlocker(t *testing.T) {
+	launcher := &fakeAgentLauncher{}
+	svc, a := setupDispatchTestService(t, launcher)
+	tk := newHumanRequiredTask(t, a, 0)
+	tk, err := a.tasks.Update(tk.ID, task.Update{
+		StatusReason: task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
+		Blocker: task.Ptr(blocker.State{
+			Kind:  blocker.KindTamperDetected,
+			Actor: blocker.ActorWorkflow,
+		}),
+		Tags: task.Ptr([]string{workflow.TamperBlessedTag}),
+	})
+	if err != nil {
+		t.Fatalf("seed blocker: %v", err)
+	}
+
+	got, err := svc.DispatchFromHumanRequired(tk.ID, string(task.StatusInProgress), "resume after accepting false-positive tamper flag")
+	if err != nil {
+		t.Fatalf("DispatchFromHumanRequired: %v", err)
+	}
+	if got.Status != task.StatusInProgress {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
+	}
+	if !got.Blocker.IsZero() {
+		t.Fatalf("Blocker = %+v, want cleared", got.Blocker)
+	}
+	if got.TamperFlagged {
+		t.Fatal("TamperFlagged = true, want false after dispatch")
+	}
 }
 
 // TestDispatchFromHumanRequired_WithStatusHook reproduces the production wiring
@@ -426,8 +459,10 @@ func TestApp_StatusHook_SkipsAgentDispatchForUmbrellaTracker(t *testing.T) {
 	a.initStatusHook()
 
 	tk, err := a.tasks.CreateFull("umbrella tracker", "", task.AgentModeHeadless, task.Update{
-		TaskType: task.Ptr(task.TaskTypeUmbrella),
-		Status:   task.Ptr(task.StatusHumanRequired),
+		TaskType:        task.Ptr(task.TaskTypeUmbrella),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -865,10 +900,12 @@ func TestDispatchFromHumanRequired_RecordsInterventionOnUnblock(t *testing.T) {
 			t.Fatal(err)
 		}
 		updated, err := a.tasks.Update(tk.ID, task.Update{
-			Status:       task.Ptr(task.StatusHumanRequired),
-			ProjectID:    task.Ptr(proj.ID),
-			PRNumber:     task.Ptr(7),
-			StatusReason: task.Ptr("needs manual project assignment"),
+			Status:          task.Ptr(task.StatusHumanRequired),
+			Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+			AutonomyOutcome: task.HumanRequiredOutcome(),
+			ProjectID:       task.Ptr(proj.ID),
+			PRNumber:        task.Ptr(7),
+			StatusReason:    task.Ptr("needs manual project assignment"),
 			Blocker: &blocker.State{
 				Kind: blocker.KindOperatorDecision,
 				Code: "no_project_assigned",
@@ -1049,10 +1086,12 @@ func TestDispatchFromHumanRequired_InterventionScrubsWorkProjects(t *testing.T) 
 	}
 	reason := "resolved by checking https://github.com/acme/api/pull/9 manually"
 	updated, err := a.tasks.Update(tk.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		ProjectID:    task.Ptr(proj.ID),
-		PRNumber:     task.Ptr(7),
-		StatusReason: task.Ptr("needs manual project assignment"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr(proj.ID),
+		PRNumber:        task.Ptr(7),
+		StatusReason:    task.Ptr("needs manual project assignment"),
 		Blocker: &blocker.State{
 			Kind: blocker.KindOperatorDecision,
 			Code: "no_project_assigned",
@@ -1190,7 +1229,7 @@ func TestDispatchFromHumanRequired_FailsClosedOnNoMatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc.workflowEngine = workflow.NewEngine(emptyStore, ta, launcher, a.logger)
+	svc.workflowEngine = workflow.NewTestEngine(emptyStore, ta, launcher, a.logger)
 	tk := newHumanRequiredTask(t, a, 0)
 
 	_, err = svc.DispatchFromHumanRequired(tk.ID, "in-progress", "retry please")
@@ -1202,8 +1241,8 @@ func TestDispatchFromHumanRequired_FailsClosedOnNoMatch(t *testing.T) {
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want revert to human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want machine-owned dispatch failure quarantined", got.Status)
 	}
 	if !strings.Contains(got.StatusReason, "retry please") {
 		t.Fatalf("status_reason = %q, want it to preserve the operator's reason", got.StatusReason)
@@ -1218,7 +1257,7 @@ func TestDispatchFromHumanRequired_ReadyPRAuthorStillFailsClosedOnNoMatch(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc.workflowEngine = workflow.NewEngine(emptyStore, ta, launcher, a.logger)
+	svc.workflowEngine = workflow.NewTestEngine(emptyStore, ta, launcher, a.logger)
 	tk := newHumanRequiredTask(t, a, 42)
 	_, err = a.tasks.Update(tk.ID, task.Update{RunRole: task.Ptr(string(agent.RoleImplementation))})
 	if err != nil {
@@ -1234,8 +1273,8 @@ func TestDispatchFromHumanRequired_ReadyPRAuthorStillFailsClosedOnNoMatch(t *tes
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want revert to human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want machine-owned dispatch failure quarantined", got.Status)
 	}
 	if !strings.Contains(got.StatusReason, "retry please") {
 		t.Fatalf("status_reason = %q, want it to preserve the operator's reason", got.StatusReason)
@@ -1262,8 +1301,8 @@ func TestDispatchFromHumanRequired_NilWorkflowEngineFailsClosed(t *testing.T) {
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want revert to human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want machine-owned dispatch failure quarantined", got.Status)
 	}
 }
 
@@ -1284,8 +1323,8 @@ func TestDispatchFromHumanRequired_FailsClosedOnDispatchError(t *testing.T) {
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want revert to human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want machine-owned dispatch failure quarantined", got.Status)
 	}
 	if !strings.Contains(got.StatusReason, "retry please") {
 		t.Fatalf("status_reason = %q, want it to preserve the operator's reason", got.StatusReason)

@@ -19,7 +19,9 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/backoff"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/limits"
@@ -48,6 +50,9 @@ const (
 	// to a task review sidecar when a review run is stopped by the cost
 	// guardrail before it can post a draft.
 	interruptedReviewMaxLen = 12000
+
+	completionUpdateRunRetryInitialDelay = 250 * time.Millisecond
+	completionUpdateRunRetryMaxDelay     = 5 * time.Second
 )
 
 // Config carries every dependency Handler needs. Only Logger and Tasks are
@@ -258,9 +263,35 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 
 	runUpdates := h.buildRunPatch(ag, state, cost, premiumRequests, resultContent, exitErr)
 	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates); err != nil {
+		if errors.Is(err, fsutil.ErrLockTimeout) {
+			h.logger.Warn("task.update-run.deferred", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+			go h.retryUpdateRunCompletion(ag, runUpdates, resultContent, exitErr)
+			return
+		}
 		h.logger.Error("task.update-run", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
+	h.afterRunPersisted(ag, resultContent, exitErr)
+}
 
+func (h *Handler) retryUpdateRunCompletion(ag *agent.Agent, runUpdates task.RunPatch, resultContent string, exitErr error) {
+	for attempt := 1; ; attempt++ {
+		delay := backoff.ForAttempt(attempt, completionUpdateRunRetryInitialDelay, completionUpdateRunRetryMaxDelay).Delay
+		time.Sleep(delay)
+		err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates)
+		if err == nil {
+			h.logger.Info("task.update-run.deferred.persisted", "task_id", ag.TaskID, "agent_id", ag.ID)
+			h.afterRunPersisted(ag, resultContent, exitErr)
+			return
+		}
+		if !errors.Is(err, fsutil.ErrLockTimeout) {
+			h.logger.Error("task.update-run.deferred.failed", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+			return
+		}
+		h.logger.Warn("task.update-run.deferred.retry", "task_id", ag.TaskID, "agent_id", ag.ID, "delay", delay, "err", err)
+	}
+}
+
+func (h *Handler) afterRunPersisted(ag *agent.Agent, resultContent string, exitErr error) {
 	// Resolved before any review-side-effect or routing side effect below: a
 	// parked adoption may only persist its run and clear the workflow step.
 	// markCompletedReview/salvageInterruptedReview set Task.Reviewed/CodeReview
@@ -759,7 +790,9 @@ func (h *Handler) holdFixReviewForHuman(ag *agent.Agent) {
 		ToStatus: task.StatusHumanRequired,
 		Actor:    "completion.hold_fix_review_for_human",
 		Extra: task.Update{
-			StatusReason: task.Ptr(reason),
+			StatusReason:    task.Ptr(reason),
+			Escalation:      task.OperatorDecisionRequired("review.pending_submission", reason),
+			AutonomyOutcome: task.HumanRequiredOutcome(),
 		},
 	})
 	if err != nil {
@@ -834,10 +867,12 @@ func (h *Handler) recoverDivergedFixReviewPush(ag *agent.Agent, branch string, p
 	reason := "fix-review: branch diverged from remote and needs manual rebase/merge before the fix can be pushed"
 	if _, err := h.tasks.Apply(task.TransitionIntent{
 		TaskID:   ag.TaskID,
-		ToStatus: task.StatusHumanRequired,
+		ToStatus: task.StatusBlocked,
 		Actor:    "completion.recover_diverged_fix_review_push",
 		Extra: task.Update{
-			StatusReason: task.Ptr(reason),
+			StatusReason:    task.Ptr(reason),
+			Escalation:      task.MachineFailure("git.remote_diverged", reason),
+			AutonomyOutcome: task.QuarantinedOutcome(),
 		},
 	}); err != nil {
 		h.logger.Error("fix-review.push-diverged.human-required", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)

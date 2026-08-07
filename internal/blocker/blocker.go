@@ -3,6 +3,9 @@ package blocker
 import (
 	"fmt"
 	"time"
+
+	"github.com/Automaat/sybra/internal/autonomy"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // Kind classifies why a task is parked or retrying.
@@ -12,10 +15,12 @@ const (
 	KindOperatorDecision           Kind = "operator_decision"
 	KindCredentialRequired         Kind = "credential_required"
 	KindPolicyApproval             Kind = "policy_approval"
+	KindTamperDetected             Kind = "tamper_detected"
 	KindWorktreeRepair             Kind = "worktree_repair"
 	KindReviewFixExhausted         Kind = "review_fix_exhausted"
 	KindTriageRetryExhausted       Kind = "triage_retry_exhausted"
 	KindWatchdogRateLimitExhausted Kind = "watchdog_rate_limit_exhausted"
+	KindRunEnvironment             Kind = "run_environment"
 	// KindDependencyScopeUnmet marks a task blocked on a depends_on issue
 	// whose closure a prior agent/human run explicitly verified did NOT
 	// satisfy the scope this task actually needs (e.g. the closing PR only
@@ -65,10 +70,28 @@ func (s State) IsZero() bool {
 
 func AllowsHumanRequired(kind Kind) bool {
 	switch kind {
-	case KindOperatorDecision, KindCredentialRequired, KindPolicyApproval, KindDependencyScopeUnmet, KindDependencyConditionUnmet:
+	case KindOperatorDecision, KindCredentialRequired, KindPolicyApproval, KindTamperDetected, KindDependencyScopeUnmet, KindDependencyConditionUnmet:
 		return true
 	default:
 		return false
+	}
+}
+
+// FailureOwner maps the older blocker vocabulary into the autonomy policy
+// vocabulary without consulting display text. Unknown and machine-repair
+// blockers remain machine-owned by default.
+func FailureOwner(kind Kind) autonomy.FailureOwner {
+	switch kind {
+	case KindCredentialRequired:
+		return autonomy.FailureOwnerOperatorAuthority
+	case KindOperatorDecision:
+		return autonomy.FailureOwnerOperatorDecision
+	case KindPolicyApproval:
+		return autonomy.FailureOwnerPolicy
+	case KindDependencyScopeUnmet, KindDependencyConditionUnmet:
+		return autonomy.FailureOwnerSpecification
+	default:
+		return autonomy.FailureOwnerMachine
 	}
 }
 
@@ -76,7 +99,7 @@ func ValidateStatus(status string, state State) error {
 	if state.IsZero() {
 		return nil
 	}
-	if status == "human-required" && !AllowsHumanRequired(state.Kind) {
+	if status == string(taskstatus.HumanRequired) && !AllowsHumanRequired(state.Kind) {
 		return fmt.Errorf("blocker kind %q cannot transition to human-required", state.Kind)
 	}
 	return nil

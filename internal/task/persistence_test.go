@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -140,6 +141,30 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 	}
 }
 
+func TestTaskFrontmatterMappingBackfillsLegacyTamperBlocker(t *testing.T) {
+	t.Parallel()
+
+	got := taskFromFrontmatter(taskFrontmatter{
+		ID:           "task-legacy-tamper",
+		Title:        "Legacy tamper task",
+		Status:       StatusHumanRequired,
+		StatusReason: workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip",
+	}, "")
+
+	if got.Blocker.Kind != blocker.KindTamperDetected {
+		t.Fatalf("Blocker.Kind = %q, want %q", got.Blocker.Kind, blocker.KindTamperDetected)
+	}
+	if got.Blocker.Actor != blocker.ActorWorkflow {
+		t.Fatalf("Blocker.Actor = %q, want %q", got.Blocker.Actor, blocker.ActorWorkflow)
+	}
+	if got.Blocker.NextAction != "bless_tampering" {
+		t.Fatalf("Blocker.NextAction = %q, want bless_tampering", got.Blocker.NextAction)
+	}
+	if !got.TamperFlagged {
+		t.Fatal("TamperFlagged = false, want true")
+	}
+}
+
 // persistedFields returns the leaf (non-anonymous) fields of a struct type,
 // recursing into embedded fields so a Task built from feature-cluster
 // sub-structs (e.g. `ReviewState`) is still checked field-by-field rather
@@ -211,7 +236,7 @@ func TestPersistenceTypesHaveYAMLTags(t *testing.T) {
 
 func taskSidecarField(name string) bool {
 	switch name {
-	case "Body", "Plan", "PlanContract", "PlanCritique", "PlanResearch", "PlanDecisions", "PlanBrief", "CodeReview", "PlanDrafts", "FilePath", "TamperFlagged", "Degraded", "ParseError":
+	case "Body", "Plan", "PlanContract", "PlanCritique", "PlanResearch", "PlanDecisions", "PlanBrief", "CodeReview", "CurrentTestFailures", "AcceptanceLedger", "SpecDecision", "PlanDrafts", "FilePath", "TamperFlagged", "Degraded", "ParseError":
 		return true
 	default:
 		return false
@@ -256,6 +281,16 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.RefIssue = "owner/repo#999"
 	case "StatusReason":
 		task.StatusReason = "testing"
+	case "Escalation":
+		task.Escalation = autonomy.EscalationReason{
+			Code:       "operator.decision",
+			Owner:      autonomy.FailureOwnerOperatorDecision,
+			Provenance: autonomy.ProvenanceOperator,
+			ObservedAt: now,
+			Message:    "choose an option",
+		}
+	case "AutonomyOutcome":
+		task.AutonomyOutcome = autonomy.OutcomeHumanRequired
 	case "Blocker":
 		task.Blocker = blocker.State{
 			Kind:       blocker.KindWorktreeRepair,

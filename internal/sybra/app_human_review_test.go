@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
@@ -479,10 +480,12 @@ func TestBuildPrompt_DraftApproveRequiresHumanSubmission(t *testing.T) {
 	}
 	reason := "Draft review ready — verify & submit on GitHub"
 	tk, err = tasks.Update(tk.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: &reason,
-		ProjectID:    task.Ptr("Automaat/sybra"),
-		PRNumber:     task.Ptr(42),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    &reason,
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		PRNumber:        task.Ptr(42),
 	})
 	if err != nil {
 		t.Fatalf("seed draft-review task: %v", err)
@@ -630,7 +633,7 @@ func TestOnComplete_HumanVerdict_AppendsNote(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 
@@ -812,8 +815,10 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("Automaat/sybra"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("Automaat/sybra"),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -874,8 +879,10 @@ func TestPrepareRecoveryDispatch_InReviewWithoutPRFallsBackToReadyReview(t *test
 		t.Fatalf("create task: %v", err)
 	}
 	tk, err = tasks.Update(tk.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("Automaat/sybra"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("Automaat/sybra"),
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
@@ -906,10 +913,12 @@ func TestRecoverStrandedUnblockedTasks_ReplaysLegacyReasonWithoutConfiguredWorkt
 	}
 	reason := `circuit breaker: agent start failed: start agent: agent.Run: Dir "/tmp/sybra/worktrees/task-1" not accessible: stat /tmp/sybra/worktrees/task-1: no such file or directory (tripped after 3 dispatch failures for step "fix_review" within 15m0s)`
 	tk, err = tasks.Update(tk.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
-		ProjectID:    task.Ptr("Automaat/sybra"),
-		Workflow:     completedHumanReviewWorkflow(),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(reason),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		Workflow:        completedHumanReviewWorkflow(),
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
@@ -961,10 +970,12 @@ func TestRecoverStrandedUnblockedTasks_DoneActionLandsMergedPR(t *testing.T) {
 	}
 	reason := `circuit breaker: agent start failed: start agent: agent.Run: Dir "/tmp/sybra/worktrees/task-1" not accessible: stat /tmp/sybra/worktrees/task-1: no such file or directory`
 	tk, err = tasks.Update(tk.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
-		ProjectID:    task.Ptr("Automaat/sybra"),
-		Workflow:     completedHumanReviewWorkflow(),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(reason),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		Workflow:        completedHumanReviewWorkflow(),
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
@@ -1044,10 +1055,12 @@ func TestRecoverStrandedUnblockedTasks_DoneActionRejectsUnmergedPR(t *testing.T)
 	}
 	reason := `circuit breaker: agent start failed: start agent: agent.Run: Dir "/tmp/sybra/worktrees/task-1" not accessible: stat /tmp/sybra/worktrees/task-1: no such file or directory`
 	tk, err = tasks.Update(tk.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
-		ProjectID:    task.Ptr("Automaat/sybra"),
-		Workflow:     completedHumanReviewWorkflow(),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(reason),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		Workflow:        completedHumanReviewWorkflow(),
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
@@ -1107,10 +1120,12 @@ func TestRecoverStrandedUnblockedTasks_ReplaysUnrenderedVerdict(t *testing.T) {
 	}
 	reason := `circuit breaker: agent start failed: start agent: agent.Run: Dir "/tmp/sybra/worktrees/task-1" not accessible: stat /tmp/sybra/worktrees/task-1: no such file or directory`
 	tk, err = tasks.Update(tk.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
-		ProjectID:    task.Ptr("Automaat/sybra"),
-		Workflow:     completedHumanReviewWorkflow(),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(reason),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		Workflow:        completedHumanReviewWorkflow(),
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
@@ -1161,10 +1176,12 @@ func TestRecoverStrandedUnblockedTasks_DoesNotRequireLegacyReason(t *testing.T) 
 		t.Fatalf("create task: %v", err)
 	}
 	tk, err = tasks.Update(tk.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("verification could not persist while task storage was unavailable"),
-		ProjectID:    task.Ptr("Automaat/sybra"),
-		Workflow:     completedHumanReviewWorkflow(),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("verification could not persist while task storage was unavailable"),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		Workflow:        completedHumanReviewWorkflow(),
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
@@ -1208,9 +1225,11 @@ func TestRecoverStrandedUnblockedTasks_LatestVerdictWins(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 	tk, err = tasks.Update(tk.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("Automaat/sybra"),
-		Workflow:  completedHumanReviewWorkflow(),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		Workflow:        completedHumanReviewWorkflow(),
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
@@ -1313,10 +1332,12 @@ func TestRecoverStrandedUnblockedTasks_DirtyWorktreeStaysParked(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 	tk, err = tasks.Update(tk.ID, task.Update{
-		Status:      task.Ptr(task.StatusHumanRequired),
-		ProjectID:   task.Ptr("Automaat/sybra"),
-		WorktreeDir: task.Ptr(dir),
-		Workflow:    completedHumanReviewWorkflow(),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		WorktreeDir:     task.Ptr(dir),
+		Workflow:        completedHumanReviewWorkflow(),
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
@@ -1419,9 +1440,11 @@ func TestOnComplete_UnblockedVerdict_ReadyReviewWithPRResumesInReview(t *testing
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("Automaat/sybra"),
-		PRNumber:  task.Ptr(42),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		PRNumber:        task.Ptr(42),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -1477,8 +1500,10 @@ func TestOnComplete_UnblockedVerdict_DispatchNoteFailureKeepsVerdictUnrendered(t
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("Automaat/sybra"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("Automaat/sybra"),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -1552,8 +1577,10 @@ func TestOnComplete_UnblockedVerdict_ReadyPRWithoutPRStaysReadyPR(t *testing.T) 
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("Automaat/sybra"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("Automaat/sybra"),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -1613,10 +1640,12 @@ func TestOnComplete_UnblockedVerdict_DoneActionLandsMergedTask(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("github push preflight failed: auth"),
-		ProjectID:    task.Ptr("Automaat/sybra"),
-		WorktreeDir:  task.Ptr(dir),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("github push preflight failed: auth"),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		WorktreeDir:     task.Ptr(dir),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -1706,10 +1735,12 @@ func TestOnComplete_UnblockedVerdict_DoneActionPrefersVerdictPR(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("waiting on review"),
-		ProjectID:    task.Ptr("Automaat/sybra"),
-		PRNumber:     task.Ptr(100),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("waiting on review"),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		PRNumber:        task.Ptr(100),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -1790,10 +1821,12 @@ func TestOnComplete_UnblockedVerdict_DoneActionPreservesLandingOutcome(t *testin
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("waiting on review"),
-		ProjectID:    task.Ptr("Automaat/sybra"),
-		PRNumber:     task.Ptr(2417),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("waiting on review"),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		PRNumber:        task.Ptr(2417),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -1874,10 +1907,12 @@ func TestOnComplete_UnblockedVerdict_DoneActionRejectsUnmergedPR(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("waiting on review"),
-		ProjectID:    task.Ptr("Automaat/sybra"),
-		PRNumber:     task.Ptr(2417),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("waiting on review"),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		PRNumber:        task.Ptr(2417),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -1942,9 +1977,11 @@ func TestOnComplete_UnblockedVerdict_DoneActionFallbackBackfillsPR(t *testing.T)
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("github push preflight failed: auth"),
-		ProjectID:    task.Ptr("Automaat/sybra"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("github push preflight failed: auth"),
+		ProjectID:       task.Ptr("Automaat/sybra"),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -2018,10 +2055,12 @@ func TestOnComplete_UnblockedVerdict_DoneActionFallsBackWhenLandingFails(t *test
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("waiting on review"),
-		ProjectID:    task.Ptr("Automaat/sybra"),
-		PRNumber:     task.Ptr(2417),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("waiting on review"),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		PRNumber:        task.Ptr(2417),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -2113,9 +2152,12 @@ func TestOnComplete_UnblockedVerdict_TamperRerouteAddsBlessTag(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
-		ProjectID:    task.Ptr("Automaat/sybra"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
+		Blocker:         task.Ptr(blocker.State{Kind: blocker.KindTamperDetected, Actor: blocker.ActorWorkflow}),
+		ProjectID:       task.Ptr("Automaat/sybra"),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -2175,9 +2217,12 @@ func TestOnComplete_UnblockedVerdict_TamperReadyReviewAddsBlessTag(t *testing.T)
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
-		ProjectID:    task.Ptr("Automaat/sybra"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
+		Blocker:         task.Ptr(blocker.State{Kind: blocker.KindTamperDetected, Actor: blocker.ActorWorkflow}),
+		ProjectID:       task.Ptr("Automaat/sybra"),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -2226,6 +2271,59 @@ func TestOnComplete_UnblockedVerdict_TamperReadyReviewAddsBlessTag(t *testing.T)
 	}
 }
 
+func TestOnComplete_UnblockedVerdict_FallbackClearsBlocker(t *testing.T) {
+	t.Parallel()
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+
+	const agentID = "agent-unblocked-fallback-clears-blocker"
+	tk, err := tasks.Create("Recover fallback tamper task", "Original body.", "headless")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
+		Blocker:         task.Ptr(blocker.State{Kind: blocker.KindTamperDetected, Actor: blocker.ActorWorkflow}),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+	}); err != nil {
+		t.Fatalf("flip to human-required: %v", err)
+	}
+	if err := tasks.AddRun(tk.ID, task.AgentRun{
+		AgentID: agentID,
+		Role:    string(agent.RoleHumanReview),
+		Mode:    "headless",
+		State:   "running",
+	}); err != nil {
+		t.Fatalf("add run: %v", err)
+	}
+	h.dispatchFromHumanRequired = nil
+
+	ag := &agent.Agent{ID: agentID, TaskID: tk.ID, Name: agent.RoleHumanReview.AgentName(tk.Title)}
+	ag.AppendOutput(agent.StreamEvent{
+		Type:    "assistant",
+		Content: `{"decision":"unblocked","reason":"resume after accepting the false-positive tamper flag","recoverable_action":"ready-review","confidence":"high","issue_title":null,"issue_body":null,"issue_labels":null}`,
+	})
+	h.inflight[tk.ID] = agentID
+	h.onComplete(ag)
+
+	got, err := tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatalf("re-load: %v", err)
+	}
+	if got.Status != task.StatusReadyReview {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyReview)
+	}
+	if !got.Blocker.IsZero() {
+		t.Fatalf("Blocker = %+v, want cleared", got.Blocker)
+	}
+	if got.TamperFlagged {
+		t.Fatal("TamperFlagged = true, want false after fallback recovery")
+	}
+}
+
 // TestOnComplete_UnblockedVerdict_CleanPushedBranchTransitions is the happy
 // path for verifyUnblocked against a real worktree: a clean, fully pushed
 // branch is exactly the state a genuinely self-unblocked task should be in,
@@ -2242,9 +2340,11 @@ func TestOnComplete_UnblockedVerdict_CleanPushedBranchTransitions(t *testing.T) 
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:      task.Ptr(task.StatusHumanRequired),
-		ProjectID:   task.Ptr("Automaat/sybra"),
-		WorktreeDir: task.Ptr(dir),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		WorktreeDir:     task.Ptr(dir),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -2292,9 +2392,11 @@ func TestOnComplete_UnblockedVerdict_DirtyWorktreeDoesNotTransition(t *testing.T
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:      task.Ptr(task.StatusHumanRequired),
-		ProjectID:   task.Ptr("Automaat/sybra"),
-		WorktreeDir: task.Ptr(dir),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		WorktreeDir:     task.Ptr(dir),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -2356,9 +2458,11 @@ func TestOnComplete_UnblockedVerdict_UnpushedBranchDoesNotTransition(t *testing.
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:      task.Ptr(task.StatusHumanRequired),
-		ProjectID:   task.Ptr("Automaat/sybra"),
-		WorktreeDir: task.Ptr(dir),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		WorktreeDir:     task.Ptr(dir),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -2427,7 +2531,7 @@ func TestOnComplete_BareJSONVerdict_HumanDecision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 
@@ -2466,7 +2570,7 @@ func TestOnComplete_BareJSONVerdict_SybraBug(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 
@@ -2509,7 +2613,7 @@ func TestOnComplete_SybraBugVerdict_DefaultNotesWithoutFiling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 
@@ -2553,7 +2657,7 @@ func TestOnComplete_SybraBugVerdict_NoteOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 
@@ -2603,7 +2707,7 @@ func TestOnComplete_SybraBugVerdict_BlockOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 
@@ -2662,8 +2766,10 @@ func TestOnComplete_SybraBugVerdict_NoteOnlyScrubsWorkProject(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		ProjectID: task.Ptr(workProject),
-		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID:       task.Ptr(workProject),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -2699,7 +2805,7 @@ func TestOnComplete_StaleVerdictSkipsWhenTaskNoLongerHumanRequired(t *testing.T)
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusTodo)}); err != nil {
@@ -2756,8 +2862,10 @@ func TestOnComplete_WorkProject_ConfiguredLocalTaskScrubbed(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		ProjectID: task.Ptr(workProject),
-		Status:    task.Ptr(task.StatusHumanRequired),
+		ProjectID:       task.Ptr(workProject),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
 	}); err != nil {
 		t.Fatalf("assign work project: %v", err)
 	}
@@ -2837,7 +2945,7 @@ func TestOnComplete_MalformedVerdict_AppendsRaw(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip: %v", err)
 	}
 
@@ -2868,8 +2976,10 @@ func TestOnComplete_StructuredVerdictFailure_RetriesAlternateProvider(t *testing
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("owner/repo"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("owner/repo"),
 	}); err != nil {
 		t.Fatalf("flip: %v", err)
 	}
@@ -2949,8 +3059,10 @@ func TestOnComplete_StructuredVerdictFailure_SecondFailureRendersDurableNote(t *
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("owner/repo"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("owner/repo"),
 	}); err != nil {
 		t.Fatalf("flip: %v", err)
 	}
@@ -3019,7 +3131,7 @@ func TestOnComplete_PlaceholderVerdict_RejectedNotFiled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip: %v", err)
 	}
 
@@ -3051,7 +3163,7 @@ func TestOnComplete_RateLimitedVerdictDoesNotRenderNoise(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip: %v", err)
 	}
 	if err := tasks.AddRun(tk.ID, task.AgentRun{AgentID: "hr1", Role: string(agent.RoleHumanReview)}); err != nil {
@@ -3092,7 +3204,7 @@ func TestOnComplete_SilentHangVerdictDoesNotRenderNoise(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip: %v", err)
 	}
 	if err := tasks.AddRun(tk.ID, task.AgentRun{AgentID: "hr1", Role: string(agent.RoleHumanReview)}); err != nil {
@@ -3137,7 +3249,7 @@ func TestOnComplete_ExecutionCrashRendersDiagnosis(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip: %v", err)
 	}
 	if err := tasks.AddRun(tk.ID, task.AgentRun{AgentID: "hr-crash", Role: string(agent.RoleHumanReview)}); err != nil {
@@ -3195,7 +3307,7 @@ func TestMaybeSpawn_IdempotencyGate_SkipsWhenVerdictRendered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 	// Simulate a fully completed review: VerdictRendered proves onComplete ran.
@@ -3260,8 +3372,10 @@ func TestMaybeSpawn_RechecksStatusBeforeRun(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("Automaat/sybra"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("Automaat/sybra"),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -3326,6 +3440,8 @@ func TestMaybeSpawn_IdempotencyGate_IgnoresRenderedVerdictBeforeTestingCycle(t *
 	cycleStart := time.Now().UTC()
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:                task.Ptr(task.StatusHumanRequired),
+		Escalation:            task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome:       task.HumanRequiredOutcome(),
 		ProjectID:             task.Ptr("Automaat/sybra"),
 		TestingCycleStartedAt: &cycleStart,
 	}); err != nil {
@@ -3370,7 +3486,12 @@ func TestMaybeSpawn_IdempotencyGate_SpawnsWhenVerdictSetButNotRendered(t *testin
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), ProjectID: task.Ptr("Automaat/sybra")}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:          task.Ptr(task.StatusHumanRequired),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 	// Verdict is set (persisted by onAgentComplete) but onComplete never ran —
@@ -3415,7 +3536,12 @@ func TestMaybeSpawn_IdempotencyGate_PreexistingAutoReviewTextDoesNotBlock(t *tes
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), ProjectID: task.Ptr("Automaat/sybra")}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:          task.Ptr(task.StatusHumanRequired),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 	// Verdict persisted by onAgentComplete but onComplete never rendered the note.
@@ -3453,7 +3579,12 @@ func TestMaybeSpawn_IdempotencyGate_SpawnsWhenNoVerdict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), ProjectID: task.Ptr("Automaat/sybra")}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{
+		Status:          task.Ptr(task.StatusHumanRequired),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 	// Add a run with NO verdict (e.g. agent was killed mid-run).
@@ -3499,9 +3630,11 @@ func TestMaybeSpawn_SkipsUmbrellaTracker(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		TaskType:  task.Ptr(task.TaskTypeUmbrella),
-		ProjectID: task.Ptr("Automaat/sybra"),
-		Status:    task.Ptr(task.StatusHumanRequired),
+		TaskType:        task.Ptr(task.TaskTypeUmbrella),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -3527,7 +3660,7 @@ func TestMaybeSpawn_SkipsProjectlessTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 
@@ -3579,7 +3712,7 @@ func TestOnComplete_SetsVerdictRendered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 	if err := tasks.AddRun(tk.ID, task.AgentRun{
@@ -3636,8 +3769,10 @@ func TestOnComplete_CrashedVerdict_RetriesOnce(t *testing.T) {
 	// ProjectID must be non-empty: maybeSpawn's no_project gate would
 	// otherwise skip before the retry logic under test ever runs.
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("owner/repo"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("owner/repo"),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -3679,8 +3814,10 @@ func TestOnComplete_CrashedVerdict_ExhaustedRetriesMarksDistinguishableNote(t *t
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("owner/repo"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("owner/repo"),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -3743,8 +3880,10 @@ func TestOnComplete_CrashedVerdict_GlobalCapDeclinesRetrySilently(t *testing.T) 
 		t.Fatalf("create task: %v", err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("owner/repo"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("owner/repo"),
 	}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
@@ -3799,7 +3938,7 @@ func TestOnComplete_TerminalErrorWithToolCalls_SkipsCrashPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
 	}
 	if err := tasks.AddRun(tk.ID, task.AgentRun{

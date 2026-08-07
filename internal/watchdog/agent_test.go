@@ -138,8 +138,9 @@ func TestInspectHeadless_DefersAndBacksOffUnderPressure(t *testing.T) {
 	if inspectCalled {
 		t.Fatal("inspectAgent called under machine pressure")
 	}
-	if s.ready(ag.ID, now.Add(90*time.Second)) {
-		t.Fatal("first pressure backoff expired too early")
+	firstDeadline := s.nextEligibleAt[ag.ID]
+	if delay := firstDeadline.Sub(now); delay < time.Minute || delay > 2*time.Minute {
+		t.Fatalf("first pressure backoff = %v, want jittered window [1m, 2m]", delay)
 	}
 
 	secondAttempt := now.Add(2 * time.Minute)
@@ -147,11 +148,9 @@ func TestInspectHeadless_DefersAndBacksOffUnderPressure(t *testing.T) {
 	if inspectCalled {
 		t.Fatal("inspectAgent called during second pressure defer")
 	}
-	if s.ready(ag.ID, secondAttempt.Add(3*time.Minute+30*time.Second)) {
-		t.Fatal("second pressure backoff expired too early")
-	}
-	if !s.ready(ag.ID, secondAttempt.Add(4*time.Minute)) {
-		t.Fatal("second pressure backoff did not expand to four minutes")
+	secondDeadline := s.nextEligibleAt[ag.ID]
+	if delay := secondDeadline.Sub(secondAttempt); delay < 2*time.Minute || delay > 4*time.Minute {
+		t.Fatalf("second pressure backoff = %v, want jittered window [2m, 4m]", delay)
 	}
 }
 
@@ -280,8 +279,8 @@ func TestApplyVerdict_StopSetsReasonAndStopsAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
 	}
 	if got.StatusReason != "watchdog: loop stop: looping on toolchain setup" {
 		t.Fatalf("status_reason = %q, want watchdog reason", got.StatusReason)
@@ -367,8 +366,8 @@ func TestApplyVerdict_StopWithErrorResultStillEscalates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
 	}
 	if stopped != "a1" {
 		t.Fatalf("stopAgent called with %q, want a1", stopped)
@@ -468,8 +467,8 @@ func TestApplyVerdict_LoopStopWithRewardHackingEscalates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
 	}
 	if got.StatusReason != "watchdog: reward_hacking: repeating the same failing fix with fabricated progress" {
 		t.Fatalf("status_reason = %q, want structured watchdog reason", got.StatusReason)
@@ -499,8 +498,8 @@ func TestApplyVerdict_LoopStopWithRewardHackingEmptyReasonPersistsKind(t *testin
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
 	}
 	if got.StatusReason != "watchdog: reward_hacking" {
 		t.Fatalf("status_reason = %q, want watchdog reason kind", got.StatusReason)
@@ -588,8 +587,8 @@ func TestApplyVerdict_RewardHackingFixReviewWithoutFindingEscalates(t *testing.T
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
 	}
 	if got.StatusReason != "watchdog: reward_hacking: repeating the same failing fix with fabricated progress" {
 		t.Fatalf("status_reason = %q, want structured watchdog reason", got.StatusReason)
@@ -701,8 +700,8 @@ func TestApplyVerdict_RewardHackingPlanningWithoutArtifactsEscalates(t *testing.
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
 	}
 	if got.StatusReason != "watchdog: reward_hacking: kept searching without producing a plan artifact" {
 		t.Fatalf("status_reason = %q, want structured watchdog reason", got.StatusReason)
@@ -738,7 +737,7 @@ func TestApplyVerdict_LoopStopWithEmptyReasonKindVerifiesFirst(t *testing.T) {
 			verifyNow: func(context.Context, string) (bool, bool, string, string, error) {
 				return true, false, "go test ./...", "--- FAIL: TestFoo", nil
 			},
-			wantStatus:     task.StatusHumanRequired,
+			wantStatus:     task.StatusBlocked,
 			wantReasonHas:  "go test ./...",
 			wantVerifyCall: true,
 		},
@@ -747,14 +746,14 @@ func TestApplyVerdict_LoopStopWithEmptyReasonKindVerifiesFirst(t *testing.T) {
 			verifyNow: func(context.Context, string) (bool, bool, string, string, error) {
 				return false, false, "", "", nil
 			},
-			wantStatus:     task.StatusHumanRequired,
+			wantStatus:     task.StatusBlocked,
 			wantReasonHas:  "watchdog: loop stop: agent stuck, unclear why",
 			wantVerifyCall: true,
 		},
 		{
 			name:           "no verifyNow dependency wired — falls back to judge reason",
 			verifyNow:      nil,
-			wantStatus:     task.StatusHumanRequired,
+			wantStatus:     task.StatusBlocked,
 			wantReasonHas:  "watchdog: loop stop: agent stuck, unclear why",
 			wantVerifyCall: false,
 		},
@@ -891,8 +890,8 @@ func TestApplyVerdict_EmptyReasonKindSkipsVerifyWhenKillTimesOut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
 	}
 	if !strings.Contains(got.StatusReason, "could not confirm agent stopped") {
 		t.Fatalf("status_reason = %q, want it to explain the unconfirmed stop", got.StatusReason)
@@ -1036,8 +1035,8 @@ func TestApplyVerdict_BudgetStopWithoutReasonKindEscalates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
 	}
 	if got.StatusReason != "watchdog: budget stop: burned through budget with no forward progress" {
 		t.Fatalf("status_reason = %q, want budget-stop marker", got.StatusReason)
@@ -1551,7 +1550,7 @@ func TestCheckCompletedHang_LiveBackgroundTaskExtendsGrace(t *testing.T) {
 
 func TestReapTaskAgentForStatus_ReleasesOrphanedHeadlessAgent(t *testing.T) {
 	tasks, tk := newTestTasks(t)
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("set human-required: %v", err)
 	}
 
@@ -1581,7 +1580,7 @@ func TestReapTaskAgentForStatus_ReleasesOrphanedHeadlessAgent(t *testing.T) {
 // race.
 func TestReapTaskAgentForStatus_SparesHumanReviewAgent(t *testing.T) {
 	tasks, tk := newTestTasks(t)
-	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired)}); err != nil {
+	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("set human-required: %v", err)
 	}
 

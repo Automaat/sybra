@@ -23,6 +23,11 @@ type AutonomySnapshot struct {
 	TasksLanded        int       `json:"tasksLanded"`
 	AutonomousLandings int       `json:"autonomousLandings"`
 	AutonomyRate       float64   `json:"autonomyRate"`
+	// MergedPRs, CostPerMergedUSD, and TokensPerMergedPR mirror Scorecard's
+	// cost-efficiency north star for this window.
+	MergedPRs         int     `json:"mergedPrs"`
+	CostPerMergedUSD  float64 `json:"costPerMergedUsd"`
+	TokensPerMergedPR float64 `json:"tokensPerMergedPr"`
 }
 
 // AutonomyWeekPoint is autonomy over one 7-day bucket. WeekEnd is exclusive
@@ -36,6 +41,11 @@ type AutonomyWeekPoint struct {
 	TasksLanded        int       `json:"tasksLanded"`
 	AutonomousLandings int       `json:"autonomousLandings"`
 	AutonomyRate       float64   `json:"autonomyRate"`
+	// MergedPRs, CostPerMergedUSD, and TokensPerMergedPR mirror Scorecard's
+	// cost-efficiency north star for this bucket.
+	MergedPRs         int     `json:"mergedPrs"`
+	CostPerMergedUSD  float64 `json:"costPerMergedUsd"`
+	TokensPerMergedPR float64 `json:"tokensPerMergedPr"`
 }
 
 // AutonomyTrend holds all-time / last-week / last-month autonomy snapshots
@@ -67,7 +77,10 @@ func ComputeAutonomyTrend(records []stats.RunRecord, events []audit.Event, now t
 		return AutonomySnapshot{
 			Since: since, Until: now,
 			TasksLanded: sc.TasksLanded, AutonomousLandings: sc.AutonomousLandings,
-			AutonomyRate: sc.AutonomyRate,
+			AutonomyRate:      sc.AutonomyRate,
+			MergedPRs:         sc.Merged + sc.MergedWithEdits,
+			CostPerMergedUSD:  sc.CostPerMergedUSD,
+			TokensPerMergedPR: sc.TokensPerMergedPR,
 		}
 	}
 	if weeks <= 0 {
@@ -88,7 +101,10 @@ func ComputeAutonomyTrend(records []stats.RunRecord, events []audit.Event, now t
 		weekly = append(weekly, AutonomyWeekPoint{
 			WeekStart: weekStart, WeekEnd: weekEnd,
 			TasksLanded: sc.TasksLanded, AutonomousLandings: sc.AutonomousLandings,
-			AutonomyRate: sc.AutonomyRate,
+			AutonomyRate:      sc.AutonomyRate,
+			MergedPRs:         sc.Merged + sc.MergedWithEdits,
+			CostPerMergedUSD:  sc.CostPerMergedUSD,
+			TokensPerMergedPR: sc.TokensPerMergedPR,
 		})
 	}
 	return AutonomyTrend{

@@ -6,9 +6,9 @@ import (
 	"maps"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evidence"
@@ -28,7 +28,7 @@ const triageRetryableStatusReasonPrefix = "triage retryable: "
 // double-delivered callback — from triggering "step not found" errors that
 // would otherwise spam the log and re-persist the task file on every hit.
 func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
-	e.acquireInflight(taskID) // blocks until any concurrent advance releases
+	unlockInflight := e.acquireInflight(taskID) // blocks until any concurrent advance releases
 
 	// Use an idempotent release so we can unlock before executeSteps while
 	// still having a defer as a safety net for early-return paths. Releasing
@@ -40,7 +40,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	release := func() {
 		if !released {
 			released = true
-			e.releaseInflight(taskID)
+			unlockInflight()
 		}
 	}
 	defer release()
@@ -284,14 +284,11 @@ func (e *Engine) handleFanOutCompletion(taskID string, def *Definition, ctx adva
 }
 
 func (e *Engine) finishTerminalStepOutput(taskID string, wfExec *Execution, output StepOutput, release func()) error {
-	if err := e.tasks.UpdateTaskStatus(taskID, output.TerminalStatus, output.TerminalReason); err != nil {
-		return err
-	}
 	now := time.Now()
 	wfExec.CurrentStep = ""
 	wfExec.State = ExecCompleted
 	wfExec.CompletedAt = &now
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if err := e.tasks.SetStatusAndWorkflow(taskID, string(output.TerminalStatus), output.TerminalReason, wfExec); err != nil {
 		return err
 	}
 	release()
@@ -317,47 +314,13 @@ func (e *Engine) executeNextSteps(taskID string, def *Definition, step *Step, wf
 // acquireInflight serializes AdvanceStep for a task. Blocks (rather than
 // returning false) so simultaneous parallel-child completions from
 // different agent goroutines are processed sequentially instead of one
-// silently being dropped. Always returns true; the bool return is kept
-// so callers can preserve the "skip on already-advancing" log line.
+// silently being dropped. It returns the release function for that hold.
 //
 // Re-entry within the same goroutine is not supported — every AdvanceStep
-// path defers releaseInflight before any callback that could re-enter.
-func (e *Engine) acquireInflight(taskID string) bool {
-	mu := e.taskInflightMutex(taskID)
-	mu.Lock()
-	return true
-}
-
-// releaseInflight unlocks the per-task advance mutex.
-func (e *Engine) releaseInflight(taskID string) {
-	mu := e.taskInflightMutex(taskID)
-	mu.Unlock()
-}
-
-// taskInflightMutex returns the lazily-initialized per-task mutex used by
-// acquire/releaseInflight. Old taskInflightMutex entries linger for the
-// life of the process; tasks with hundreds of millions of IDs would leak
-// memory, but task IDs are bounded by the human workload so this is fine.
-func (e *Engine) taskInflightMutex(taskID string) *sync.Mutex {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	mu, ok := e.inflightMutexes[taskID]
-	if !ok {
-		mu = &sync.Mutex{}
-		e.inflightMutexes[taskID] = mu
-	}
-	return mu
-}
-
-func (e *Engine) taskRouteMutex(taskID string) *sync.Mutex {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	mu, ok := e.routeMutexes[taskID]
-	if !ok {
-		mu = &sync.Mutex{}
-		e.routeMutexes[taskID] = mu
-	}
-	return mu
+// path defers the returned release function before any callback that could
+// re-enter.
+func (e *Engine) acquireInflight(taskID string) func() {
+	return e.inflightLocks.LockLocal(taskID)
 }
 
 // advanceContext bundles everything AdvanceStep needs to act on a single
@@ -841,6 +804,22 @@ func execAsyncWaitHumanStep(e *Engine, taskID string, _ *Definition, step *Step,
 // be rejected as re-entrant (the bug that left synchronous mechanical workflows
 // — e.g. simple-task-handoff — never starting their successor).
 func (e *Engine) resolveNext(taskID string, def *Definition, current *Step, wfExec *Execution, t TaskInfo) (*Step, *CompletionInfo, error) {
+	// A deterministic step may quarantine the task through the conservative
+	// typed adapter. Blocked is terminal for the active workflow: evaluating
+	// its ordinary next edge could run a set_status step that erases the
+	// quarantine before an operator or reconciler can inspect it.
+	if t.Status == taskstatus.Blocked {
+		now := time.Now().UTC()
+		wfExec.State = ExecFailed
+		wfExec.CompletedAt = &now
+		wfExec.CurrentStep = ""
+		e.logger.Info("workflow.quarantined", "task_id", taskID, "workflow", def.ID)
+		if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, nil
+	}
+
 	fields := e.transitionFields(t, wfExec)
 	nextID, tErr := ResolveTransition(current.Next, fields)
 	if tErr != nil {
@@ -915,7 +894,7 @@ func (e *Engine) reviewBudgetExhaustion(t TaskInfo) (hourly, lifetime bool) {
 	for i := range t.AgentRuns {
 		runs[i] = reviewbudget.Run{Role: t.AgentRuns[i].Role, StartedAt: t.AgentRuns[i].StartedAt}
 	}
-	now := time.Now()
+	now := e.now()
 	return budget.HourlyExceeded(runs, now), budget.LifetimeExceeded(runs)
 }
 
@@ -1019,20 +998,17 @@ func (e *Engine) blockRetryExhaustedTriageIfNeeded(taskID string, step *Step, wf
 	if reason == "" {
 		return false, nil
 	}
-	if err := e.tasks.UpdateTaskBlocker(taskID, taskstatus.Blocked, reason, blocker.State{
+	now := time.Now().UTC()
+	wfExec.State = ExecFailed
+	wfExec.CompletedAt = &now
+	wfExec.CurrentStep = ""
+	return true, e.tasks.SetBlockerAndWorkflow(taskID, string(taskstatus.Blocked), reason, blocker.State{
 		Kind:       blocker.KindTriageRetryExhausted,
 		Actor:      blocker.ActorWorkflow,
 		Code:       "triage_retryable",
 		NextAction: "wait_for_operator_reclassify",
 		Exhausted:  true,
-	}); err != nil {
-		return true, err
-	}
-	now := time.Now().UTC()
-	wfExec.State = ExecFailed
-	wfExec.CompletedAt = &now
-	wfExec.CurrentStep = ""
-	return true, e.tasks.SetWorkflow(taskID, wfExec)
+	}, wfExec)
 }
 
 func (e *Engine) blockRetryExhaustedPlanningIfNeeded(taskID string, def *Definition, step *Step, wfExec *Execution, output string, attempts int) (bool, error) {
@@ -1044,12 +1020,10 @@ func (e *Engine) blockRetryExhaustedPlanningIfNeeded(taskID string, def *Definit
 	if trimmed := strings.TrimSpace(output); trimmed != "" {
 		reason += ": " + textutil.TruncateBytes(trimmed, 500, "\n... (truncated)")
 	}
-	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
-		return true, err
-	}
 	now := time.Now().UTC()
 	wfExec.State = ExecFailed
 	wfExec.CompletedAt = &now
 	wfExec.CurrentStep = ""
-	return true, e.tasks.SetWorkflow(taskID, wfExec)
+	escalation := autonomy.NewEscalation("planning.retry_exhausted", autonomy.FailureOwnerSpecification, autonomy.ProvenanceControlPlane, reason)
+	return true, e.tasks.SetEscalationAndWorkflow(taskID, string(taskstatus.HumanRequired), reason, escalation, autonomy.OutcomeHumanRequired, wfExec)
 }

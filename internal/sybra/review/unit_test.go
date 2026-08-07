@@ -408,7 +408,7 @@ func TestPushPreflightFailureReasonKeepsValidUTF8(t *testing.T) {
 }
 
 func TestStaffCodeReviewRunConfigLeavesProviderUnpinned(t *testing.T) {
-	cfg := StaffCodeReviewRunConfig(task.Task{ID: "review-task", Title: "Needs review"}, "Run /staff-code-review", t.TempDir(), "default")
+	cfg := StaffCodeReviewRunConfig(task.Task{ID: "review-task", Title: "Needs review"}, "Run /staff-code-review", t.TempDir(), "default", "enforce")
 
 	if cfg.Name != agent.RoleReview.AgentName("Needs review") {
 		t.Fatalf("Name = %q, want %q", cfg.Name, agent.RoleReview.AgentName("Needs review"))
@@ -424,6 +424,12 @@ func TestStaffCodeReviewRunConfigLeavesProviderUnpinned(t *testing.T) {
 	}
 	if cfg.HeadlessPermissionMode != "default" {
 		t.Fatalf("HeadlessPermissionMode = %q, want default", cfg.HeadlessPermissionMode)
+	}
+	if !cfg.ReadOnlyDir {
+		t.Fatal("ReadOnlyDir = false, want verifier worktree protected")
+	}
+	if cfg.SandboxMode != "enforce" {
+		t.Fatalf("SandboxMode = %q, want enforce", cfg.SandboxMode)
 	}
 	if cfg.DisableProviderFailover {
 		t.Fatal("DisableProviderFailover = true, want false (availability preferred)")
@@ -450,7 +456,7 @@ func TestStaffCodeReviewRunConfigCarriesTaskReasoningEffort(t *testing.T) {
 			t.Parallel()
 			cfg := StaffCodeReviewRunConfig(
 				task.Task{ID: "review-task", Title: "Needs review", ReasoningEffort: tt.pinned},
-				"Run /staff-code-review", t.TempDir(), "default",
+				"Run /staff-code-review", t.TempDir(), "default", "enforce",
 			)
 			if cfg.ReasoningEffort != tt.want {
 				t.Fatalf("ReasoningEffort = %q, want %q", cfg.ReasoningEffort, tt.want)
@@ -1002,40 +1008,50 @@ func TestAdoptOrphanPRs(t *testing.T) {
 	// Stranded by a premature verify_commits verdict: human-required, branch
 	// set, no PR number — the exact 94af6462 failure shape.
 	orphan := mk("stranded", task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("implementation agent failed before committing — no commits on branch"),
-		Branch:       task.Ptr("feat/stranded"),
-		ProjectID:    task.Ptr("o/r"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("implementation agent failed before committing — no commits on branch"),
+		Branch:          task.Ptr("feat/stranded"),
+		ProjectID:       task.Ptr("o/r"),
 	})
 	// Ambiguous: two open PRs in the project share the branch → must NOT adopt.
 	ambiguous := mk("ambiguous", task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("no commits pushed to branch"),
-		Branch:       task.Ptr("feat/ambig"),
-		ProjectID:    task.Ptr("o/r"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("no commits pushed to branch"),
+		Branch:          task.Ptr("feat/ambig"),
+		ProjectID:       task.Ptr("o/r"),
 	})
 	// No matching PR → must NOT adopt.
 	noMatch := mk("no-match", task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("no commits pushed to branch"),
-		Branch:       task.Ptr("feat/orphaned-forever"),
-		ProjectID:    task.Ptr("o/r"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("no commits pushed to branch"),
+		Branch:          task.Ptr("feat/orphaned-forever"),
+		ProjectID:       task.Ptr("o/r"),
 	})
 	// Same branch name but the only matching PR is in a DIFFERENT repo → the
 	// repo guard must reject it (monitoredPRs spans every repo the user owns).
 	wrongRepo := mk("wrong-repo", task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("no commits pushed to branch"),
-		Branch:       task.Ptr("feat/cross"),
-		ProjectID:    task.Ptr("o/r"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("no commits pushed to branch"),
+		Branch:          task.Ptr("feat/cross"),
+		ProjectID:       task.Ptr("o/r"),
 	})
 	// Deliberately stopped by the watchdog (not a link-failure strand) → the
 	// reason gate must keep adoption from resurrecting it.
 	watchdog := mk("watchdog", task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("watchdog: runaway loop"),
-		Branch:       task.Ptr("feat/wd"),
-		ProjectID:    task.Ptr("o/r"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("watchdog: runaway loop"),
+		Branch:          task.Ptr("feat/wd"),
+		ProjectID:       task.Ptr("o/r"),
 	})
 	// Already in-review with a PR → not eligible, must be left untouched.
 	healthy := mk("healthy", task.Update{
@@ -1425,7 +1441,7 @@ func TestCancelResolvedPRFixWorkflows(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -1540,7 +1556,7 @@ func TestCancelResolvedPRFixWorkflows_CoalescedSiblingStillLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -1905,7 +1921,7 @@ func TestPrepareWorktree_CircuitBreaker(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Status == task.StatusHumanRequired {
+		if got.Status == task.StatusBlocked {
 			t.Fatalf("call %d: task escalated too early (want %d failures before trip)", i+1, wtFailureLimit)
 		}
 	}
@@ -1920,8 +1936,8 @@ func TestPrepareWorktree_CircuitBreaker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q after circuit break, want human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q after circuit break, want blocked", got.Status)
 	}
 	// Counter must be deleted so the next task start doesn't carry stale state.
 	if n := r.wtFailures[tk.ID]; n != 0 {
@@ -2028,8 +2044,8 @@ func TestAllowPreparedWorktree_SetupFailureTripsCircuitBreaker(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Status == task.StatusHumanRequired {
-			t.Fatalf("call %d: task escalated too early", i+1)
+		if got.Status == task.StatusBlocked {
+			t.Fatalf("call %d: task quarantined too early", i+1)
 		}
 	}
 
@@ -2040,8 +2056,8 @@ func TestAllowPreparedWorktree_SetupFailureTripsCircuitBreaker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q after setup-failure circuit break, want human-required", got.Status)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q after setup-failure circuit break, want blocked", got.Status)
 	}
 }
 
@@ -2070,17 +2086,21 @@ func TestAdoptOrphanMergedPR(t *testing.T) {
 
 	// Task eligible for orphan adoption: stranded in human-required with a branch.
 	orphan := mk("stranded", task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("commits pushed but no PR created"),
-		Branch:       task.Ptr("feat/stranded"),
-		ProjectID:    task.Ptr("o/r"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("commits pushed but no PR created"),
+		Branch:          task.Ptr("feat/stranded"),
+		ProjectID:       task.Ptr("o/r"),
 	})
 	// Already linked — must not be touched.
 	linked := mk("linked", task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		PRNumber:  task.Ptr(99),
-		Branch:    task.Ptr("feat/linked"),
-		ProjectID: task.Ptr("o/r"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		PRNumber:        task.Ptr(99),
+		Branch:          task.Ptr("feat/linked"),
+		ProjectID:       task.Ptr("o/r"),
 	})
 
 	calls := 0
@@ -2161,10 +2181,12 @@ func TestAdoptOrphanPRs_OpenTakesPrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("commits pushed but no PR created"),
-		Branch:       task.Ptr("feat/my-branch"),
-		ProjectID:    task.Ptr("o/r"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("commits pushed but no PR created"),
+		Branch:          task.Ptr("feat/my-branch"),
+		ProjectID:       task.Ptr("o/r"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -2486,12 +2508,17 @@ func TestCloseFinishedReviewTasks(t *testing.T) {
 				t.Fatal(err)
 			}
 			tags := []string{"review"}
-			if _, err := tasks.Update(created.ID, task.Update{
+			update := task.Update{
 				Status:    task.Ptr(tt.taskStatus),
 				Tags:      &tags,
 				ProjectID: task.Ptr("o/r"),
 				PRNumber:  task.Ptr(42),
-			}); err != nil {
+			}
+			if tt.taskStatus == task.StatusHumanRequired {
+				update.Escalation = task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture")
+				update.AutonomyOutcome = task.HumanRequiredOutcome()
+			}
+			if _, err := tasks.Update(created.ID, update); err != nil {
 				t.Fatal(err)
 			}
 
@@ -2698,9 +2725,11 @@ func TestPollAndMonitorPRs_BudgetExhaustedUsesSingleRESTFallbackReconcile(t *tes
 		t.Fatal(err)
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("o/r"),
-		PRNumber:  task.Ptr(77),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("o/r"),
+		PRNumber:        task.Ptr(77),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -2759,7 +2788,7 @@ func TestAdvanceClosedTaskPRs_CancelsStaleWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -2926,9 +2955,11 @@ func TestAdvanceClosedTaskPR_EmitsTaskLanded(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("waiting for review"),
-		PRNumber:     task.Ptr(1446),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("waiting for review"),
+		PRNumber:        task.Ptr(1446),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -2996,10 +3027,12 @@ func TestAdvanceClosedTaskPR_RecordsInterventionWhenHumanRequired(t *testing.T) 
 		t.Fatal(err)
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("waiting for review"),
-		PRNumber:     task.Ptr(1446),
-		ProjectID:    task.Ptr(proj.ID),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("waiting for review"),
+		PRNumber:        task.Ptr(1446),
+		ProjectID:       task.Ptr(proj.ID),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -3068,9 +3101,11 @@ func TestPollSecondaryReconcilesKnownTaskPRsWithoutSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := tasks.Update(closedTask.ID, task.Update{
-		Status:    task.Ptr(task.StatusHumanRequired),
-		ProjectID: task.Ptr("o/r"),
-		PRNumber:  task.Ptr(43),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		ProjectID:       task.Ptr("o/r"),
+		PRNumber:        task.Ptr(43),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -3187,7 +3222,7 @@ func TestCancelResolvedPRFixWorkflows_DefersWhileChecksPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -3258,7 +3293,7 @@ func TestCancelResolvedPRFixWorkflows_CancelsCommentsWorkflowThenDispatchesCIFai
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -3343,7 +3378,7 @@ func TestCancelResolvedPRFixWorkflows_CancelsCommentsWorkflowWhenRemainingCIIsFl
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -3415,7 +3450,7 @@ func TestCancelResolvedPRFixWorkflows_DefersCommentsWorkflowWhileChecksPending(t
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,
@@ -3483,7 +3518,7 @@ func TestCancelResolvedPRFixWorkflows_CancelsWhenChecksSettleGreen(t *testing.T)
 		t.Fatal(err)
 	}
 	agentMgr := newTestAgentManager(t, t.Context(), func(string, any) {}, logger, t.TempDir())
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agentMgr, tasks: tasks},
 		logger,

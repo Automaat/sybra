@@ -64,7 +64,7 @@ func TestInitWorkflowEngine_QueueComparatorPrefersQueuedTask(t *testing.T) {
 	}
 	launcher := &recordingAgentLauncher{}
 
-	engine := workflow.NewEngine(
+	engine := workflow.NewTestEngine(
 		mustWorkflowStoreWithTestSimple(t, home),
 		&taskAdapter{tasks: taskMgr},
 		launcher,

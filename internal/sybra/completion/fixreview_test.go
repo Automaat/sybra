@@ -453,7 +453,7 @@ func TestOnAgentComplete_FixReviewPushDivergedEscalatesToHuman(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusHumanRequired {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
+	if got.Status != task.StatusBlocked {
+		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
 	}
 }

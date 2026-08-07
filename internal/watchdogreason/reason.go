@@ -137,7 +137,6 @@ func RewardHackingRetry(reason string) string {
 func IsRewardHacking(reason string) bool {
 	return Parse(reason).Kind == KindRewardHacking
 }
-
 func RateLimit(reason string) string {
 	return withDetail(rateLimitPrefix, reason)
 }

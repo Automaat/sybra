@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -283,6 +284,42 @@ func TestGetCompactOmitsPlanningSupportSidecars(t *testing.T) {
 	}
 }
 
+func TestGetPrintsSidecarHeadingsOnce(t *testing.T) {
+	dir := setupStore(t)
+
+	store, err := task.NewStore(filepath.Join(dir, "tasks"))
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	manager := task.NewManager(store, nil)
+	created, err := manager.Create("sidecar task", "body", "headless")
+	if err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	if err := store.CurrentTestFailures().Write(created.ID, "## Test Failures\n\nfailing assertion"); err != nil {
+		t.Fatalf("write current test failures: %v", err)
+	}
+	if err := store.AcceptanceLedgers().Write(created.ID, "## Acceptance Ledger\n\nledger entry"); err != nil {
+		t.Fatalf("write acceptance ledger: %v", err)
+	}
+	if err := store.SpecDecisions().Write(created.ID, "## Spec Decision Needed\n\nneeds a call"); err != nil {
+		t.Fatalf("write spec decision: %v", err)
+	}
+
+	code, out := runCLI(t, "get", created.ID)
+	if code != 0 {
+		t.Fatalf("get exit %d: %s", code, out)
+	}
+	if strings.Contains(out, "## Current Test Failures") {
+		t.Fatalf("get output duplicated current test failures heading:\n%s", out)
+	}
+	for _, heading := range []string{"## Test Failures", "## Acceptance Ledger", "## Spec Decision Needed"} {
+		if strings.Count(out, heading) != 1 {
+			t.Fatalf("heading %q count = %d, want 1\n%s", heading, strings.Count(out, heading), out)
+		}
+	}
+}
+
 func validCLIPlanContract(taskID, extra string) string {
 	return fmt.Sprintf(`{
   "task_id": %q,
@@ -317,6 +354,31 @@ func TestUpdateStatus(t *testing.T) {
 	mustUnmarshal(t, out, &updated)
 	if updated.Status != "in-progress" {
 		t.Errorf("status = %q", updated.Status)
+	}
+}
+
+func TestUpdateRetryableLockTimeoutExitsTempFail(t *testing.T) {
+	setupStore(t)
+
+	code, out := runCLI(t, "--json", "create", "--title", "locked update")
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, out)
+	}
+	var created task.Task
+	mustUnmarshal(t, out, &created)
+
+	unlock, err := fsutil.LockFile(created.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unlock() }()
+
+	code, _, errOut := runCLIWithStderr(t, "--json", "update", created.ID, "--status", "in-progress")
+	if code != 75 {
+		t.Fatalf("update exit = %d, want 75 (stderr: %s)", code, errOut)
+	}
+	if !strings.Contains(errOut, created.FilePath+".lock") {
+		t.Fatalf("stderr %q missing lock path %q", errOut, created.FilePath+".lock")
 	}
 }
 

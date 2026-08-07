@@ -46,8 +46,10 @@ func TestRevertToTodoAfterGateBlock_NoOpWhenTaskAlreadyMoved(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("parked by someone else"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("parked by someone else"),
 	}); err != nil {
 		t.Fatal(err)
 	}

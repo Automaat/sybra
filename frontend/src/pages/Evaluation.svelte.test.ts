@@ -63,6 +63,8 @@ const comparisonRow = {
   durationP90S: 1_000,
   totalCostUsd: 50,
   costPerLanded: 5,
+  costPerMergedUsd: 5.5,
+  tokensPerMergedPr: 12_000,
   premiumRequests: 20,
   premiumRequestsPerLanded: 2,
   turnsPerLanded: 3,
@@ -89,6 +91,8 @@ function makeReport() {
       changeFailureRate: 0,
       costPerLanded: 5,
       totalCostUsd: 50,
+      costPerMergedUsd: 5.5,
+      tokensPerMergedPr: 12_000,
       reworkTasks: 1,
       leadTimeP50H: 1,
       leadTimeP90H: 2,
@@ -102,6 +106,8 @@ function makeReport() {
     byRole: [],
     bySkillExecutionMode: [],
     byAgentModel: [comparisonRow],
+    byCostTier: [{ ...comparisonRow, key: 'claude:implementation:cheap' }],
+    costPerMergedBaseline: { costPerMergedUsd: 4.5, tokensPerMergedPr: 10_000, mergedPrs: 8 },
     byExperimentKind: [
       {
         kind: 'model',
@@ -165,6 +171,17 @@ describe('Evaluation', () => {
       expect(within(agentSection as HTMLElement).getByText(label)).toBeDefined()
       expect(within(experimentSection as HTMLElement).getByText(label)).toBeDefined()
     }
+  })
+
+  it('renders the cost-per-merged-PR headline tile with the prior-window baseline and the by-cost-tier table', () => {
+    render(Evaluation, { props: {} })
+
+    const tile = screen.getByText('Cost / merged PR').closest('div') as HTMLElement
+    expect(within(tile).getByText('$5.50')).toBeDefined()
+    expect(within(tile).getByText(/was \$4\.50/)).toBeDefined()
+
+    const tierSection = screen.getByText('By cost tier').closest('div') as HTMLElement
+    expect(within(tierSection).getByText('claude:implementation:cheap')).toBeDefined()
   })
 
   it('renders the skill execution breakdown with friendly labels', () => {

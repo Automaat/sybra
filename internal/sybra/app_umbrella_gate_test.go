@@ -106,9 +106,11 @@ func TestReleaseUnblockedChildren_StuckChildDoesNotConsumeParallelSlot(t *testin
 	tracker := mkTracker(t, m, umb, 1)
 
 	stuck, err := m.CreateFull("stuck", "", task.AgentModeHeadless, task.Update{
-		Issue:         task.Ptr("Automaat/sybra#1"),
-		UmbrellaIssue: task.Ptr(umb),
-		Status:        task.Ptr(task.StatusHumanRequired),
+		Issue:           task.Ptr("Automaat/sybra#1"),
+		UmbrellaIssue:   task.Ptr(umb),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
 	})
 	if err != nil {
 		t.Fatalf("create stuck child: %v", err)
@@ -136,10 +138,12 @@ func TestReleaseUnblockedChildren_RetryableWatchdogStopKeepsTrackerInProgress(t 
 	tracker := mkTracker(t, m, umb, 2)
 
 	stopped, err := m.CreateFull("stopped", "", task.AgentModeHeadless, task.Update{
-		Issue:         task.Ptr("Automaat/sybra#1"),
-		UmbrellaIssue: task.Ptr(umb),
-		Status:        task.Ptr(task.StatusHumanRequired),
-		StatusReason:  task.Ptr("watchdog: loop stop: Agent re-running failing test `go test ./cmd/sybra-cli` despite no code change"),
+		Issue:           task.Ptr("Automaat/sybra#1"),
+		UmbrellaIssue:   task.Ptr(umb),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("watchdog: loop stop: Agent re-running failing test `go test ./cmd/sybra-cli` despite no code change"),
 	})
 	if err != nil {
 		t.Fatalf("create stopped child: %v", err)
@@ -185,8 +189,8 @@ func TestReleaseUnblockedChildren_NonGatedBlockedChildEscalates(t *testing.T) {
 
 	app.releaseUnblockedChildren(context.Background())
 
-	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
-		t.Fatalf("tracker = %q, want human-required on non-gated blocked child", got)
+	if got := mustStatus(t, m, tracker.ID); got != task.StatusInProgress {
+		t.Fatalf("tracker = %q, want in-progress while child is quarantined", got)
 	}
 	if got := mustStatus(t, m, blocked.ID); got != task.StatusBlocked {
 		t.Fatalf("blocked child = %q, want to stay blocked (gate does not own it)", got)
@@ -244,8 +248,8 @@ func TestReleaseUnblockedChildren_WatchdogExhaustedBlockedChildNotReleased(t *te
 	if !slices.Contains(stalledTask.Tags, umbrellaGatedTag) {
 		t.Fatalf("stalled child tags = %v, want the gating tag left untouched since the gate never released it", stalledTask.Tags)
 	}
-	if got := mustStatus(t, m, tracker.ID); got != task.StatusHumanRequired {
-		t.Fatalf("tracker = %q, want human-required to surface the stalled child", got)
+	if got := mustStatus(t, m, tracker.ID); got != task.StatusInProgress {
+		t.Fatalf("tracker = %q, want in-progress while child is quarantined", got)
 	}
 }
 
@@ -457,7 +461,7 @@ func TestTrackerRollup(t *testing.T) {
 	}{
 		{"cycle", umbrellaState{total: 2}, true, true, task.StatusHumanRequired, false},
 		{"stuck child", umbrellaState{total: 2, anyHR: true}, false, true, task.StatusHumanRequired, false},
-		{"blocked child", umbrellaState{total: 2, anyBlocked: true}, false, true, task.StatusHumanRequired, false},
+		{"blocked child", umbrellaState{total: 2, anyBlocked: true}, false, true, task.StatusInProgress, false},
 		{
 			"cancelled child with no live sibling",
 			umbrellaState{total: 2, children: []umbrellaProgressChild{
@@ -561,11 +565,13 @@ func TestReleaseUnblockedChildren_ExpandFailingTrackerNeverAutoCloses(t *testing
 	app.umbrellaCloseIssue = func(string, int, string) error { closes++; return nil }
 	const umb = "https://github.com/Automaat/sybra/issues/100"
 	tracker, err := m.CreateFull("umbrella", "", task.AgentModeHeadless, task.Update{
-		Issue:        task.Ptr(umb),
-		TaskType:     task.Ptr(task.TaskTypeUmbrella),
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("umbrella expansion failed (attempt 3): plan umbrella: run planner: killed"),
-		Tags:         task.Ptr([]string{"umbrella", umbrella.ExpandFailTag(3)}),
+		Issue:           task.Ptr(umb),
+		TaskType:        task.Ptr(task.TaskTypeUmbrella),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("umbrella expansion failed (attempt 3): plan umbrella: run planner: killed"),
+		Tags:            task.Ptr([]string{"umbrella", umbrella.ExpandFailTag(3)}),
 	})
 	if err != nil {
 		t.Fatalf("create failure tracker: %v", err)
@@ -753,13 +759,18 @@ func newUmbrellaGateApp(t *testing.T) (*App, *task.Manager) {
 // carrying the gating marker tag the expander would set.
 func mkChild(t *testing.T, m *task.Manager, title, issue, umb string, deps []string, status task.Status) task.Task {
 	t.Helper()
-	tk, err := m.CreateFull(title, "", task.AgentModeHeadless, task.Update{
+	init := task.Update{
 		Issue:         task.Ptr(issue),
 		UmbrellaIssue: task.Ptr(umb),
 		DependsOn:     task.Ptr(deps),
 		Status:        task.Ptr(status),
 		Tags:          task.Ptr([]string{umbrellaGatedTag}),
-	})
+	}
+	if status == task.StatusHumanRequired {
+		init.Escalation = task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture")
+		init.AutonomyOutcome = task.HumanRequiredOutcome()
+	}
+	tk, err := m.CreateFull(title, "", task.AgentModeHeadless, init)
 	if err != nil {
 		t.Fatalf("CreateFull(%s): %v", title, err)
 	}

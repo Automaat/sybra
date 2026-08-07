@@ -6,6 +6,14 @@ import (
 	"strings"
 	"sync/atomic"
 	"text/template"
+
+	"github.com/Automaat/sybra/internal/textutil"
+)
+
+const (
+	promptInlineMaxBytes  = 8 * 1024
+	promptInlineHeadBytes = promptInlineMaxBytes / 3
+	promptInlineElision   = "\n\n…(middle elided to fit prompt)…\n\n"
 )
 
 // TemplateContext provides data available in prompt templates and shell commands.
@@ -63,19 +71,39 @@ func sidecarDirVar(vars map[string]string) string {
 // or misreading its own `sybra-cli get` output. At most one such section is
 // ever live in a body (see stripTestFailuresSections), so the first match is
 // unambiguously current.
-func currentTestFailures(body string) string {
-	return strings.TrimSpace(testFailSectionOf(body))
-}
-
-func acceptanceLedger(body string) string {
-	start, end, ok := topLevelSectionRange(body, acceptanceLedgerHeading)
-	if !ok {
+func currentTestFailures(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
 		return ""
 	}
-	return strings.TrimSpace(body[start:end])
+	if section, ok := topLevelSection(content, isTestFailuresHeading); ok {
+		return clampPromptInline(section)
+	}
+	return ""
 }
 
-func topLevelSectionRange(body, heading string) (start, end int, ok bool) {
+func acceptanceLedger(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	if section, ok := topLevelSection(content, func(line string) bool {
+		return strings.EqualFold(line, acceptanceLedgerHeading)
+	}); ok {
+		return clampPromptInline(section)
+	}
+	return ""
+}
+
+func topLevelSection(body string, match func(string) bool) (string, bool) {
+	start, end, ok := topLevelSectionRange(body, match)
+	if !ok {
+		return "", false
+	}
+	return strings.TrimSpace(body[start:end]), true
+}
+
+func topLevelSectionRange(body string, match func(string) bool) (start, end int, ok bool) {
 	lines := strings.SplitAfter(body, "\n")
 	offsets := make([]int, len(lines)+1)
 	for i := range lines {
@@ -89,7 +117,7 @@ func topLevelSectionRange(body, heading string) (start, end int, ok bool) {
 			inFence = !inFence
 			continue
 		}
-		if inFence || !strings.EqualFold(trimmed, heading) {
+		if inFence || !match(trimmed) {
 			continue
 		}
 
@@ -172,6 +200,15 @@ func recoveredOrPrev(wf *Execution, prev *StepRecord) string {
 		return ""
 	}
 	return prev.Output
+}
+
+func clampPromptInline(body string) string {
+	if len(body) <= promptInlineMaxBytes {
+		return body
+	}
+	head := textutil.TruncateBytes(body, promptInlineHeadBytes, "")
+	tail := textutil.TailBytes(body, promptInlineMaxBytes-promptInlineHeadBytes)
+	return head + promptInlineElision + tail
 }
 
 // DefaultCommitSignFlags reports the configured fallback. Exported for the

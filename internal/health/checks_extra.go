@@ -9,6 +9,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/runacct"
 	"github.com/Automaat/sybra/internal/runoutcome"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 const (
@@ -18,12 +19,12 @@ const (
 // statusDwellThresholds maps task status → max acceptable hours in that status
 // before flagging a bottleneck. Statuses absent from the map are not checked.
 var statusDwellThresholds = map[string]float64{
-	"plan-review":    12,
-	"in-review":      24,
-	"testing":        12,
-	"ready-pr":       2, // transient (PR opens in seconds); flag fast if PR-open stalls
-	"human-required": 24,
-	"todo":           24,
+	string(taskstatus.PlanReview):    12,
+	string(taskstatus.InReview):      24,
+	string(taskstatus.Testing):       12,
+	string(taskstatus.ReadyPR):       2, // transient (PR opens in seconds); flag fast if PR-open stalls
+	string(taskstatus.HumanRequired): 24,
+	string(taskstatus.Todo):          24,
 }
 
 // isAgentFailure classifies an audit event as a failed agent run. Production
@@ -93,7 +94,7 @@ func checkTriageMismatch(events []audit.Event, now time.Time) []Finding {
 			continue
 		}
 		to, _ := e.Data["to"].(string)
-		if to == "human-required" && classifiedHeadless[e.TaskID] {
+		if to == string(taskstatus.HumanRequired) && classifiedHeadless[e.TaskID] {
 			if isExpectedHumanRequired(e) {
 				continue
 			}
@@ -111,7 +112,7 @@ func checkTriageMismatch(events []audit.Event, now time.Time) []Finding {
 			TaskID:      taskID,
 			Evidence: map[string]any{
 				"classified_mode": "headless",
-				"final_status":    "human-required",
+				"final_status":    string(taskstatus.HumanRequired),
 			},
 			DetectedAt: now,
 		})

@@ -14,19 +14,18 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 	// task's still-legitimate routes mid-completion.
 	defer e.enterCompletion(taskID)()
 
-	routeMu := e.taskRouteMutex(taskID)
-	routeMu.Lock()
+	unlockRoute := e.routeLocks.LockLocal(taskID)
 	e.mu.Lock()
 	t, err := e.tasks.GetTask(taskID)
 	if err != nil {
 		e.mu.Unlock()
-		routeMu.Unlock()
+		unlockRoute()
 		e.logger.Error("workflow.agent-complete.get", "task_id", taskID, "err", err)
 		return
 	}
 	spawnedStep, routeStatus := e.resolveCompletionRouteLocked(t, c)
 	e.mu.Unlock()
-	routeMu.Unlock()
+	unlockRoute()
 	if e.handleAgentCompleteInitialBail(taskID, t, c) {
 		e.clearAgentStep(taskID, c.AgentID)
 		return
@@ -92,19 +91,7 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		}
 	}
 
-	status := "completed"
-	if !c.Success {
-		status = "failed"
-	}
-
-	if c.Success {
-		if def, ok := defs.get(); ok {
-			e.importSidecarIfConfiguredFromDef(taskID, spawnedStep, t, def)
-		} else {
-			e.logger.Info("workflow.agent-complete.bail",
-				"task_id", taskID, "agent_id", c.AgentID, "reason", "workflow-definition-unavailable", "current_step", spawnedStep)
-		}
-	}
+	status := e.importOrAdoptSidecarStatus(taskID, spawnedStep, t, c, &defs)
 
 	e.recordAgentCompletionTrace(taskID, spawnedStep, c, status)
 
@@ -143,6 +130,29 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		}
 	}
 	e.clearAgentStep(taskID, c.AgentID)
+}
+
+// importOrAdoptSidecarStatus resolves the step status a completed agent run
+// should be recorded with. A successful run imports its sidecars and
+// completes normally. A failed run gets one more chance: if it still left a
+// complete, valid set of sidecar artifacts on disk (e.g. aborted_streaming
+// after all plan files were saved), adopting them turns the step into a
+// completed one instead of burning a retry attempt re-doing already-finished
+// work.
+func (e *Engine) importOrAdoptSidecarStatus(taskID, spawnedStep string, t TaskInfo, c AgentCompletion, defs *completionDefinitionCache) string {
+	if c.Success {
+		if def, ok := defs.get(); ok {
+			e.importSidecarIfConfiguredFromDef(taskID, spawnedStep, t, def)
+		} else {
+			e.logger.Info("workflow.agent-complete.bail",
+				"task_id", taskID, "agent_id", c.AgentID, "reason", "workflow-definition-unavailable", "current_step", spawnedStep)
+		}
+		return "completed"
+	}
+	if def, ok := defs.get(); ok && e.adoptSidecarsFromFailedRun(taskID, spawnedStep, t, def) {
+		return "completed"
+	}
+	return "failed"
 }
 
 func (e *Engine) handleAgentCompleteInitialBail(taskID string, t TaskInfo, c AgentCompletion) bool {
@@ -569,13 +579,13 @@ func (e *Engine) rescheduleRunAgent(taskID, agentID string, step *Step, t TaskIn
 			"task_id", taskID, "reason", "other-agent-running", "step", step.ID)
 		return
 	}
-	mu := e.taskInflightMutex(taskID)
-	if !mu.TryLock() {
+	probeUnlock, ok := e.inflightLocks.TryLockLocal(taskID)
+	if !ok {
 		e.logger.Debug(logPrefix+".skip",
 			"task_id", taskID, "reason", "inflight", "step", step.ID)
 		return
 	}
-	mu.Unlock()
+	probeUnlock()
 
 	if !e.tryMarkRescheduleDispatching(taskID, step, logPrefix) {
 		return
@@ -754,8 +764,8 @@ func (e *Engine) handleCheckpointReschedule(taskID string, t *TaskInfo, step *St
 }
 
 func (e *Engine) rescheduleRateLimitedParallelChild(taskID, agentID string, parent, child *Step, t TaskInfo) {
-	e.acquireInflight(taskID)
-	defer e.releaseInflight(taskID)
+	unlockInflight := e.acquireInflight(taskID)
+	defer unlockInflight()
 
 	fresh, err := e.tasks.GetTask(taskID)
 	_, skip := resumeSkipReasonForStatus(fresh.Status)

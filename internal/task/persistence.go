@@ -3,6 +3,7 @@ package task
 import (
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -13,20 +14,22 @@ import (
 // mirrors Task's so the two are easy to diff side by side when a field is
 // added.
 type taskFrontmatter struct {
-	ID           string   `yaml:"id"`
-	Slug         string   `yaml:"slug,omitempty"`
-	Title        string   `yaml:"title"`
-	Status       Status   `yaml:"status"`
-	TaskType     TaskType `yaml:"task_type,omitempty"`
-	AgentMode    string   `yaml:"agent_mode"`
-	AllowedTools []string `yaml:"allowed_tools"`
-	Tags         []string `yaml:"tags"`
-	ProjectID    string   `yaml:"project_id,omitempty"`
-	Branch       string   `yaml:"branch,omitempty"`
-	WorktreeDir  string   `yaml:"worktree_dir,omitempty"`
-	PRNumber     int      `yaml:"pr_number,omitempty"`
-	Issue        string   `yaml:"issue,omitempty"`
-	StatusReason string   `yaml:"status_reason,omitempty"`
+	ID              string                    `yaml:"id"`
+	Slug            string                    `yaml:"slug,omitempty"`
+	Title           string                    `yaml:"title"`
+	Status          Status                    `yaml:"status"`
+	TaskType        TaskType                  `yaml:"task_type,omitempty"`
+	AgentMode       string                    `yaml:"agent_mode"`
+	AllowedTools    []string                  `yaml:"allowed_tools"`
+	Tags            []string                  `yaml:"tags"`
+	ProjectID       string                    `yaml:"project_id,omitempty"`
+	Branch          string                    `yaml:"branch,omitempty"`
+	WorktreeDir     string                    `yaml:"worktree_dir,omitempty"`
+	PRNumber        int                       `yaml:"pr_number,omitempty"`
+	Issue           string                    `yaml:"issue,omitempty"`
+	StatusReason    string                    `yaml:"status_reason,omitempty"`
+	Escalation      autonomy.EscalationReason `yaml:"escalation,omitempty"`
+	AutonomyOutcome autonomy.Outcome          `yaml:"autonomy_outcome,omitempty"`
 	// Blocker matches Task's value type (not a pointer): blocker.State
 	// implements IsZeroer, so yaml.v3's omitempty already skips a zero value
 	// without needing pointer indirection to distinguish "unset" from "set".
@@ -132,6 +135,8 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		PRNumber:               fm.PRNumber,
 		Issue:                  fm.Issue,
 		StatusReason:           fm.StatusReason,
+		Escalation:             fm.Escalation,
+		AutonomyOutcome:        fm.AutonomyOutcome,
 		Blocker:                fm.Blocker,
 		HandoffSourceProvider:  fm.HandoffSourceProvider,
 		BlockedByIssue:         fm.BlockedByIssue,
@@ -174,6 +179,16 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		MirrorUpdatedAt:        fm.MirrorUpdatedAt,
 		Body:                   body,
 	}
+	if t.Status == StatusHumanRequired && t.Escalation.IsZero() {
+		t.Escalation = autonomy.LegacyReason(t.StatusReason)
+	}
+	if t.Status == StatusHumanRequired && t.Blocker.IsZero() && workflow.IsTamperFlaggedReason(t.StatusReason) {
+		t.Blocker = blocker.State{
+			Kind:       blocker.KindTamperDetected,
+			Actor:      blocker.ActorWorkflow,
+			NextAction: "bless_tampering",
+		}
+	}
 	t.AgentRuns = agentRunsFromRecords(fm.AgentRuns)
 	if t.AgentRuns == nil {
 		t.AgentRuns = []AgentRun{}
@@ -181,7 +196,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 	if t.Attachments == nil {
 		t.Attachments = []Attachment{}
 	}
-	t.TamperFlagged = isTamperFlagged(t.Status, t.StatusReason)
+	t.TamperFlagged = isTamperFlagged(t.Status, t.Blocker)
 	return t
 }
 
@@ -208,6 +223,8 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		PRNumber:               t.PRNumber,
 		Issue:                  t.Issue,
 		StatusReason:           t.StatusReason,
+		Escalation:             t.Escalation,
+		AutonomyOutcome:        t.AutonomyOutcome,
 		Blocker:                t.Blocker,
 		HandoffSourceProvider:  t.HandoffSourceProvider,
 		BlockedByIssue:         t.BlockedByIssue,

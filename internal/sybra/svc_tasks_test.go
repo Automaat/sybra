@@ -15,6 +15,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/task"
@@ -475,9 +476,16 @@ func TestTaskService_BlessTampering(t *testing.T) {
 	}
 	reason := workflow.TamperFlaggedReasonPrefix + " removed-test in internal/foo_test.go"
 	flagged, err := svc.tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
-		Tags:         task.Ptr([]string{"backend", "frontend"}),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(reason),
+		Blocker: task.Ptr(blocker.State{
+			Kind:       blocker.KindTamperDetected,
+			Actor:      blocker.ActorWorkflow,
+			NextAction: "bless_tampering",
+		}),
+		Tags: task.Ptr([]string{"backend", "frontend"}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -500,7 +508,7 @@ func TestTaskService_BlessTampering(t *testing.T) {
 	}
 
 	statusHook := make(chan [3]string, 1)
-	svc.tasks.SetStatusChangeHook(func(taskID, from, to string) {
+	svc.tasks.SetStatusChangeHook(func(taskID, from, to string, _ task.Task) {
 		statusHook <- [3]string{taskID, from, to}
 	})
 	got, err := svc.BlessTampering(flagged.ID)
@@ -512,6 +520,9 @@ func TestTaskService_BlessTampering(t *testing.T) {
 	}
 	if got.StatusReason != "" {
 		t.Fatalf("StatusReason = %q, want cleared", got.StatusReason)
+	}
+	if !got.Blocker.IsZero() {
+		t.Fatalf("Blocker = %+v, want cleared", got.Blocker)
 	}
 	if !slices.Equal(got.Tags, []string{"backend", "frontend", workflow.TamperBlessedTag}) {
 		t.Fatalf("Tags = %v, want existing tags plus blessed", got.Tags)
@@ -568,9 +579,16 @@ func TestTaskService_BlessTamperingAlreadyBlessed(t *testing.T) {
 	}
 	reason := workflow.TamperFlaggedReasonPrefix + " removed-test in internal/foo_test.go"
 	flagged, err := svc.tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
-		Tags:         task.Ptr([]string{"backend", workflow.TamperBlessedTag}),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(reason),
+		Blocker: task.Ptr(blocker.State{
+			Kind:       blocker.KindTamperDetected,
+			Actor:      blocker.ActorWorkflow,
+			NextAction: "bless_tampering",
+		}),
+		Tags: task.Ptr([]string{"backend", workflow.TamperBlessedTag}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -593,8 +611,10 @@ func TestTaskService_BlessTamperingRejectsNonTamperTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	human, err := svc.tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("needs human input"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("needs human input"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -604,7 +624,7 @@ func TestTaskService_BlessTamperingRejectsNonTamperTask(t *testing.T) {
 	if err == nil {
 		t.Fatal("BlessTampering non-tamper err = nil, want error")
 	}
-	if !strings.Contains(err.Error(), "status=human-required") || !strings.Contains(err.Error(), workflow.TamperFlaggedReasonPrefix) {
+	if !strings.Contains(err.Error(), "status=human-required") || !strings.Contains(err.Error(), string(blocker.KindTamperDetected)) {
 		t.Fatalf("BlessTampering non-tamper err = %q, want actionable preconditions", err.Error())
 	}
 	got, err := svc.tasks.Get(human.ID)

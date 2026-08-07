@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"gopkg.in/yaml.v3"
@@ -199,7 +200,7 @@ func (d *DurableGHIssueSink) SubmitIssue(ctx context.Context, title, body string
 	if err == nil {
 		return created, url, nil
 	}
-	if !github.IsAuthError(err) {
+	if github.ClassifyError(err, errclass.GitHubCircuitEscalationBiased) != errclass.Auth {
 		return created, url, err
 	}
 	d.persist(title, body, extraLabels, err)

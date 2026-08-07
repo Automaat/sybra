@@ -22,34 +22,6 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
-func TestEligibleRerequestReviewer(t *testing.T) {
-	tests := []struct {
-		name     string
-		login    string
-		viewer   string
-		author   string
-		expected bool
-	}{
-		{name: "comment author", login: "alice", viewer: "me", author: "author", expected: true},
-		{name: "empty", login: "", viewer: "me", author: "author", expected: false},
-		{name: "viewer", login: "me", viewer: "me", author: "author", expected: false},
-		{name: "pr author", login: "author", viewer: "me", author: "author", expected: false},
-		{name: "bot", login: "renovate[bot]", viewer: "me", author: "author", expected: false},
-		{name: "case-insensitive viewer", login: "Me", viewer: "me", author: "author", expected: false},
-		{name: "case-insensitive author", login: "Author", viewer: "me", author: "author", expected: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := eligibleRerequestReviewer(tt.login, tt.viewer, tt.author)
-			if got != tt.expected {
-				t.Fatalf("eligibleRerequestReviewer(%q, %q, %q) = %v, want %v",
-					tt.login, tt.viewer, tt.author, got, tt.expected)
-			}
-		})
-	}
-}
-
 func TestAgentAdapterExperiencePromptPlanAndTriageOnly(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := experience.New(t.TempDir())
@@ -221,14 +193,14 @@ func TestBranchSyncerAdapter_TaskLookupFailureReturnsFailedResult(t *testing.T) 
 	}
 }
 
-type readyPRRecoveryHarness struct {
+type prTailRecoveryHarness struct {
 	branch string
 	task   task.Task
 	tasks  *task.Manager
 	mgr    *worktree.Manager
 }
 
-func newReadyPRRecoveryHarness(t *testing.T) readyPRRecoveryHarness {
+func newPRTailRecoveryHarness(t *testing.T, status task.Status) prTailRecoveryHarness {
 	t.Helper()
 
 	run := func(args ...string) {
@@ -311,7 +283,7 @@ func newReadyPRRecoveryHarness(t *testing.T) readyPRRecoveryHarness {
 		t.Fatal(err)
 	}
 	created, err = taskMgr.Update(created.ID, task.Update{
-		Status:    task.Ptr(task.StatusReadyPR),
+		Status:    task.Ptr(status),
 		ProjectID: task.Ptr("owner/repo"),
 		Branch:    task.Ptr(branch),
 	})
@@ -329,7 +301,7 @@ func newReadyPRRecoveryHarness(t *testing.T) readyPRRecoveryHarness {
 		t.Fatalf("expected no worktree before recovery, got err=%v", err)
 	}
 
-	return readyPRRecoveryHarness{
+	return prTailRecoveryHarness{
 		branch: branch,
 		task:   created,
 		tasks:  taskMgr,
@@ -340,7 +312,7 @@ func newReadyPRRecoveryHarness(t *testing.T) readyPRRecoveryHarness {
 func TestWorktreeGetterAdapter_GetWorktreePath_RecoversReadyPRWorktree(t *testing.T) {
 	t.Parallel()
 
-	h := newReadyPRRecoveryHarness(t)
+	h := newPRTailRecoveryHarness(t, task.StatusReadyPR)
 	adapter := &worktreeGetterAdapter{tasks: h.tasks, mgr: h.mgr}
 
 	path, ok := adapter.GetWorktreePath(h.task.ID)
@@ -365,7 +337,7 @@ func TestWorktreeGetterAdapter_GetWorktreePath_RecoversReadyPRWorktree(t *testin
 func TestWorktreeGetterAdapter_ResolvePRWorktree_RecoversRemoteBranch(t *testing.T) {
 	t.Parallel()
 
-	h := newReadyPRRecoveryHarness(t)
+	h := newPRTailRecoveryHarness(t, task.StatusReadyPR)
 	adapter := &worktreeGetterAdapter{tasks: h.tasks, mgr: h.mgr}
 
 	path, ok, err := adapter.ResolvePRWorktree(context.Background(), h.task.ID)
@@ -383,10 +355,12 @@ func TestWorktreeGetterAdapter_ResolvePRWorktree_RecoversRemoteBranch(t *testing
 	}
 }
 
-func TestBranchSyncerAdapter_SyncTaskBranch_RecoversMissingReadyPRWorktree(t *testing.T) {
+func TestBranchSyncerAdapter_SyncTaskBranch_RecoversMissingInProgressWorktree(t *testing.T) {
 	t.Parallel()
 
-	h := newReadyPRRecoveryHarness(t)
+	// branch-conflict-fix sets the task to in-progress before its deterministic
+	// push/sync tail needs the worktree again.
+	h := newPRTailRecoveryHarness(t, task.StatusInProgress)
 	adapter := &branchSyncerAdapter{tasks: h.tasks, mgr: h.mgr}
 
 	result, err := adapter.SyncTaskBranch(context.Background(), h.task.ID)
@@ -477,6 +451,32 @@ func TestAgentAdapterStartAgentSystemRoleHonorsDispatchClaim(t *testing.T) {
 	}
 	if agentID != "" {
 		t.Fatalf("StartAgent() agentID = %q, want empty on dispatch-in-flight", agentID)
+	}
+}
+
+// TestFallbackAgentWorkingDir pins the no-worktree dispatch path used by the
+// best-of-N judge. A judge intentionally reads candidate worktrees by their
+// absolute paths, so it must not be given a task worktree merely to obtain a
+// cwd; in particular it must never fall back to the operator's Sybra home.
+func TestFallbackAgentWorkingDir(t *testing.T) {
+	dir, err := fallbackAgentWorkingDir()
+	if err != nil {
+		t.Fatalf("fallbackAgentWorkingDir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat fallback cwd: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("fallback cwd %q is not a directory", dir)
+	}
+	if dir == config.HomeDir() {
+		t.Fatalf("fallback cwd = Sybra home %q", dir)
+	}
+	if filepath.Clean(filepath.Dir(dir)) != filepath.Clean(os.TempDir()) {
+		t.Fatalf("fallback cwd parent = %q, want OS temp directory %q", filepath.Dir(dir), os.TempDir())
 	}
 }
 
@@ -1010,15 +1010,80 @@ func TestAgentAdapterStartAgentCleanRetryResetsRecreatedProvidedDir(t *testing.T
 	if startedDir != h.dir {
 		t.Fatalf("startedDir = %q, want recreated original path %q", startedDir, h.dir)
 	}
-	if baselineRef != baseline {
-		t.Fatalf("baselineRef = %q, want clean retry baseline %q", baselineRef, baseline)
-	}
-	if _, err := os.Stat(filepath.Join(startedDir, "stale.txt")); !os.IsNotExist(err) {
-		t.Fatalf("stale retry file survived reset: %v", err)
+	if baselineRef == "" {
+		t.Fatal("baselineRef empty after recreated clean retry worktree")
 	}
 	head := gitOutput(t, "-C", startedDir, "rev-parse", "HEAD")
-	if head != baseline {
-		t.Fatalf("recreated worktree HEAD = %s, want clean retry baseline %s", head, baseline)
+	if head != baselineRef {
+		t.Fatalf("recreated worktree HEAD = %s, want baselineRef %s", head, baselineRef)
+	}
+	if got := gitOutput(t, "-C", startedDir, "branch", "--show-current"); got != h.task.Branch {
+		t.Fatalf("branch = %q, want task branch %q", got, h.task.Branch)
+	}
+	if status := gitOutput(t, "-C", startedDir, "status", "--short"); status != "" {
+		t.Fatalf("status = %q, want clean worktree", status)
+	}
+}
+
+func TestAgentAdapterStartAgentCleanRetryRecreatesDetachedDirtyCheckoutFromTaskBranchTip(t *testing.T) {
+	h := setupProvidedDirRecoveryHarness(t, agent.RoleImplementation)
+	baseline := gitOutput(t, "-C", h.dir, "rev-parse", "HEAD")
+	branch := h.task.Branch
+
+	if err := os.WriteFile(filepath.Join(h.dir, "repair.txt"), []byte("later repair output\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, "-C", h.dir, "add", "repair.txt")
+	gitRun(t, "-C", h.dir, "-c", "user.name=Test", "-c", "user.email=test@test.com", "-c", "commit.gpgsign=false", "commit", "-m", "repair output")
+	gitRun(t, "-C", h.dir, "push", "origin", branch)
+	repairTip := gitOutput(t, "-C", h.dir, "rev-parse", "HEAD")
+
+	gitRun(t, "-C", h.dir, "checkout", "--detach", baseline)
+	if err := os.WriteFile(filepath.Join(h.dir, "generated.txt"), []byte("stale churn\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	agentID, startedDir, baselineRef, err := h.aa.StartAgent(
+		h.task.ID,
+		string(agent.RoleImplementation),
+		"headless",
+		"sonnet",
+		"claude",
+		"prompt",
+		h.dir,
+		nil,
+		true,
+		false,
+		"",
+		baseline,
+		workflow.AgentAssignment{},
+	)
+	if err != nil {
+		t.Fatalf("StartAgent clean retry with detached dirty checkout: %v", err)
+	}
+	if agentID == "" {
+		t.Fatal("StartAgent returned empty agentID")
+	}
+	if startedDir != h.dir {
+		t.Fatalf("startedDir = %q, want canonical task worktree %q", startedDir, h.dir)
+	}
+	if baselineRef != repairTip {
+		t.Fatalf("baselineRef = %q, want task branch tip %q", baselineRef, repairTip)
+	}
+	if got := gitOutput(t, "-C", startedDir, "branch", "--show-current"); got != branch {
+		t.Fatalf("branch = %q, want attached task branch %q", got, branch)
+	}
+	if got := gitOutput(t, "-C", startedDir, "rev-parse", "HEAD"); got != repairTip {
+		t.Fatalf("HEAD = %q, want task branch tip %q", got, repairTip)
+	}
+	if _, err := os.Stat(filepath.Join(startedDir, "generated.txt")); !os.IsNotExist(err) {
+		t.Fatalf("generated.txt survived recreate: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(startedDir, "repair.txt")); err != nil || string(got) != "later repair output\n" {
+		t.Fatalf("repair.txt = %q, err=%v; want pushed repair output", got, err)
+	}
+	if status := gitOutput(t, "-C", startedDir, "status", "--short"); status != "" {
+		t.Fatalf("status = %q, want clean worktree", status)
 	}
 }
 

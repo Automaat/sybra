@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/abtest"
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillinvoke"
 	"github.com/Automaat/sybra/internal/taskstatus"
@@ -47,6 +48,87 @@ func (e *Engine) importSidecarIfConfiguredFromDef(taskID, stepID string, info Ta
 	for _, cfg := range step.Config.sidecarImports() {
 		e.importOneSidecar(taskID, stepID, step, info, cfg)
 	}
+}
+
+// adoptSidecarsFromFailedRun checks whether a run_agent step that just ended
+// in failure (e.g. aborted_streaming, denied-tool noise) nonetheless left a
+// complete, valid set of sidecar artifacts on disk — the case where the
+// agent finished writing everything it was asked for and only died
+// afterwards. A step's declared import_sidecars are treated as a single set:
+// downstream guard steps (require_plan, require_sidecar, ...) already fail
+// the task to human-required if any individual sidecar turns out missing, so
+// adoption only pays off when every declared sidecar — not just the ones
+// marked required at the import step — is present and non-empty, and a
+// plan_contract among them validates. On success it adopts them exactly as a
+// successful run would and reports true so the caller can treat the step as
+// completed instead of burning a retry attempt re-doing already-finished
+// work. Reports false (no adoption, no side effects) on any missing/empty
+// artifact or invalid contract, leaving the ordinary failed/retry path
+// untouched.
+func (e *Engine) adoptSidecarsFromFailedRun(taskID, stepID string, info TaskInfo, def *Definition) bool {
+	if info.Workflow == nil || def == nil {
+		return false
+	}
+	step := def.StepByID(stepID)
+	if step == nil || step.Type != StepRunAgent {
+		return false
+	}
+	imports := step.Config.sidecarImports()
+	if len(imports) == 0 {
+		return false
+	}
+	var contract string
+	hasContract := false
+	for _, cfg := range imports {
+		content, ok := e.probeSidecarContent(taskID, stepID, step, info, cfg)
+		if !ok {
+			return false
+		}
+		if cfg.Kind == "plan_contract" {
+			contract, hasContract = content, true
+		}
+	}
+	if hasContract {
+		if problems := ValidatePlanContractForTask(contract, taskID, info.Body); len(problems) > 0 {
+			e.logger.Info("workflow.adopt-sidecars.invalid-contract",
+				"task_id", taskID, "step", stepID, "problems", strings.Join(problems, "; "))
+			return false
+		}
+	}
+	e.importSidecarIfConfiguredFromDef(taskID, stepID, info, def)
+	e.logger.Info("workflow.adopt-sidecars.recovered", "task_id", taskID, "step", stepID)
+	return true
+}
+
+// probeSidecarContent renders and reads a single sidecar import's source
+// file without writing anything or mutating task status — used to check
+// completeness before committing to adoptSidecarsFromFailedRun's write path.
+func (e *Engine) probeSidecarContent(taskID, stepID string, step *Step, info TaskInfo, cfg ImportSidecar) (string, bool) {
+	path, rErr := RenderTemplate(cfg.From, TemplateContext{
+		Task:     info,
+		Step:     *step,
+		Vars:     info.Workflow.Variables,
+		Workflow: info.Workflow,
+	})
+	if rErr != nil {
+		return "", false
+	}
+	content, readErr := os.ReadFile(path)
+	if readErr != nil {
+		dirVarUnresolved := worktreeDirTemplatePattern.MatchString(cfg.From) && strings.TrimSpace(info.Workflow.Variables[WorkflowVarDir]) == ""
+		if dirVarUnresolved {
+			if _, recovered, ok := e.recoverSidecarFromTaskWorktree(taskID, stepID, step, info, cfg); ok {
+				content, readErr = recovered, nil
+			}
+		}
+		if readErr != nil {
+			return "", false
+		}
+	}
+	if strings.TrimSpace(string(content)) == "" {
+		return "", false
+	}
+	return string(content), true
 }
 
 func (c StepConfig) sidecarImports() []ImportSidecar {
@@ -146,10 +228,10 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 // or the file still doesn't exist at the recovered path — callers fall
 // through to the ordinary escalation path in that case.
 func (e *Engine) recoverSidecarFromTaskWorktree(taskID, stepID string, step *Step, info TaskInfo, cfg ImportSidecar) (path string, content []byte, ok bool) {
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return "", nil, false
 	}
-	wtPath, found := e.worktrees.GetWorktreePath(taskID)
+	wtPath, found := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !found || strings.TrimSpace(wtPath) == "" {
 		return "", nil, false
 	}
@@ -195,7 +277,54 @@ func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
 	}
 }
 
-func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, effectIDs ...EffectID) error {
+func resolveRunAgentDir(step *Step, wfExec *Execution, ctx TemplateContext) (string, error) {
+	dir := ""
+	if wfExec != nil {
+		dir = wfExec.Variables[WorkflowVarDir]
+	}
+	if step.Config.Dir == "" {
+		return dir, nil
+	}
+	renderedDir, err := RenderTemplate(step.Config.Dir, ctx)
+	if err != nil {
+		return "", fmt.Errorf("render dir: %w", err)
+	}
+	if strings.TrimSpace(renderedDir) == "" {
+		return "", errors.New("render dir: resolved to empty path")
+	}
+	return renderedDir, nil
+}
+
+func (e *Engine) releaseRunAgentClaimOnAbort(taskID string, claimedEffectID EffectID, agentStarted bool, runErr error, recovered any) error {
+	releaseClaim := func(current error) error {
+		if claimedEffectID.IsZero() || agentStarted {
+			return current
+		}
+		if _, relErr := e.releaseClaimedEffect(taskID, claimedEffectID); relErr != nil {
+			if effectClaimFence(relErr) {
+				return current
+			}
+			if current == nil {
+				return fmt.Errorf("release claimed effect: %w", relErr)
+			}
+			return errors.Join(current, fmt.Errorf("release claimed effect: %w", relErr))
+		}
+		return current
+	}
+	if recovered != nil {
+		_ = releaseClaim(runErr)
+		panic(recovered)
+	}
+	if runErr != nil {
+		return releaseClaim(runErr)
+	}
+	return nil
+}
+
+func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, effectIDs ...EffectID) (runErr error) {
+	if wfExec == nil {
+		wfExec = &Execution{Variables: maps.Clone(ctx.Vars)}
+	}
 	prepareTestVerdictAttemptVars(wfExec, step.ID, ctx.Task.Body)
 	// Seed the sidecar dir before anything renders a template. Setting it only
 	// after dispatch would leave the first run of a verifier role resolving
@@ -209,20 +338,25 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		}
 		ctx.Vars[WorkflowVarSidecarDir] = sidecar
 	}
-	routeMu := e.taskRouteMutex(taskID)
-	routeMu.Lock()
-	defer routeMu.Unlock()
+	unlockRoute := e.routeLocks.LockLocal(taskID)
+	defer unlockRoute()
+
+	claimedEffectID := EffectID{}
+	if len(effectIDs) > 0 {
+		claimedEffectID = effectIDs[0]
+	}
+	agentStarted := false
+	defer func() {
+		runErr = e.releaseRunAgentClaimOnAbort(taskID, claimedEffectID, agentStarted, runErr, recover())
+	}()
 
 	mode := resolveRunAgentMode(step.Config.Mode, ctx)
 	if admit, reason := e.agents.AdmitDispatch(taskID, step.Config.Role, mode); !admit {
 		err := fmt.Errorf("%w: %s", ErrResourcePressure, reason)
 		failure := ClassifyAgentStartFailure(err)
-		if err := e.tasks.UpdateTaskStatus(taskID, ctx.Task.Status, failure.Reason); err != nil {
-			return err
-		}
 		wfExec.State = ExecWaiting
 		e.logger.Info("workflow.run-agent.resource-pressure", "task_id", taskID, "step", step.ID, "reason", reason)
-		return e.tasks.SetWorkflow(taskID, wfExec)
+		return e.tasks.SetStatusAndWorkflow(taskID, string(ctx.Task.Status), failure.Reason, wfExec)
 	}
 
 	model := resolveRunAgentModel(step.Config.Model, ctx)
@@ -232,6 +366,9 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		return err
 	}
 	applySkillReceiptRecoveryAssignment(step.ID, wfExec, &assignment)
+	if step.Config.Role == "review" && wfExec.Variables["bestofn.attempts.manifest"] != "" {
+		assignment.ReadOnlyPaths = bestOfNAttemptReadRoots(wfExec)
+	}
 
 	prompt, err := e.renderAssignedPrompt(taskID, step, ctx, assignment, "workflow.consume-steer")
 	if err != nil {
@@ -253,16 +390,9 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		}
 	}
 
-	dir := wfExec.Variables[WorkflowVarDir]
-	if step.Config.Dir != "" {
-		renderedDir, dErr := RenderTemplate(step.Config.Dir, ctx)
-		if dErr != nil {
-			return fmt.Errorf("render dir: %w", dErr)
-		}
-		if strings.TrimSpace(renderedDir) == "" {
-			return errors.New("render dir: resolved to empty path")
-		}
-		dir = renderedDir
+	dir, err := resolveRunAgentDir(step, wfExec, ctx)
+	if err != nil {
+		return err
 	}
 	cleanRetryKey := watchdogHangCleanRetryKey(step.ID)
 	cleanRetryRef := wfExec.Variables[cleanRetryKey]
@@ -289,14 +419,6 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// blocking still sees a durable "dispatch in progress" claim via
 	// routeStepPending. Do not hold e.mu across StartAgent: review recovery can
 	// legitimately try to queue another workflow while the launcher is blocked.
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			if len(effectIDs) > 0 {
-				e.clearPendingStepEffect(taskID, effectIDs[0])
-			}
-			panic(recovered)
-		}
-	}()
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
 	if err != nil {
 		if parked, parkErr := e.parkRunAgentStartError(taskID, step.ID, wfExec, err); parked {
@@ -304,7 +426,36 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		}
 		return fmt.Errorf("start agent: %w", err)
 	}
+	agentStarted = true
 	return e.persistStartedAgent(taskID, step, wfExec, agentID, provider, startedDir, baselineRef, cleanRetryKey, cleanRetryRef, dir)
+}
+
+func bestOfNAttemptReadRoots(wfExec *Execution) []string {
+	if wfExec == nil {
+		return nil
+	}
+	var roots []string
+	seen := make(map[string]struct{})
+	for _, parent := range wfExec.BestOfNInflight {
+		if parent == nil {
+			continue
+		}
+		for _, attempt := range parent.Attempts {
+			if attempt == nil || attempt.Status != "completed" {
+				continue
+			}
+			dir := strings.TrimSpace(attempt.Dir)
+			if dir == "" {
+				continue
+			}
+			if _, ok := seen[dir]; !ok {
+				seen[dir] = struct{}{}
+				roots = append(roots, dir)
+			}
+		}
+	}
+	slices.Sort(roots)
+	return roots
 }
 
 func resolveRunAgentMode(mode string, ctx TemplateContext) string {
@@ -745,15 +896,24 @@ var providerAvailable = func(provider string) bool {
 }
 
 func (e *Engine) execWaitHuman(taskID string, step *Step, wfExec *Execution) error {
-	if step.Config.Status != "" {
-		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.Status(step.Config.Status), step.Config.StatusReason); err != nil {
-			return err
-		}
-	}
-
 	wfExec.State = ExecWaiting
 	e.logger.Info("workflow.wait-human", "task_id", taskID, "step", step.ID, "actions", step.Config.HumanActions)
-	if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
+	if step.Config.Status != "" {
+		var err error
+		if taskstatus.Status(step.Config.Status) == taskstatus.HumanRequired {
+			reason := strings.TrimSpace(step.Config.StatusReason)
+			if reason == "" {
+				reason = "workflow is waiting for an operator action"
+			}
+			escalation := autonomy.NewEscalation("workflow.wait_human", autonomy.FailureOwnerOperatorDecision, autonomy.ProvenanceControlPlane, reason)
+			err = e.tasks.SetEscalationAndWorkflow(taskID, step.Config.Status, reason, escalation, autonomy.OutcomeHumanRequired, wfExec)
+		} else {
+			err = e.tasks.SetStatusAndWorkflow(taskID, step.Config.Status, step.Config.StatusReason, wfExec)
+		}
+		if err != nil {
+			return err
+		}
+	} else if err := e.tasks.SetWorkflow(taskID, wfExec); err != nil {
 		return err
 	}
 	e.maybeAutoApprovePlanReview(taskID, step)

@@ -104,10 +104,23 @@ func TestExecVerifyChecks_AutoFixRewindsToImplement(t *testing.T) {
 	t.Parallel()
 	wt := makeLintVerifyRepo(t)
 	engine, tasks := newVerifyChecksEngine(t, wt, []string{lintVerifyCommand("internal/foo/foo.go")})
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "impl-1", Role: "implementation"}},
+	})
 
 	wf := implementedExec()
-	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
+	rec := wf.RecordForStep(verifyChecksImplStepID)
+	if rec == nil {
+		t.Fatal("implement step record missing")
+	}
+	rec.AgentID = "impl-1"
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentRuns: []AgentRunInfo{{AgentID: "impl-1", Role: "implementation"}},
+	})
 	if !errors.Is(err, errStepParked) {
 		t.Fatalf("err = %v, want errStepParked", err)
 	}
@@ -131,6 +144,9 @@ func TestExecVerifyChecks_AutoFixRewindsToImplement(t *testing.T) {
 	}
 	if wf.Variables[workflowRetryAfterVar] == "" {
 		t.Errorf("retry-after not set")
+	}
+	if got := wf.Variables[verifyAutoFixRunIDVar]; got != "impl-1" {
+		t.Errorf("rewound run agent id = %q, want impl-1", got)
 	}
 	if ti := mustGetTaskInfo(t, tasks, "t1"); ti.Status != "in-progress" {
 		t.Errorf("status = %q, want in-progress (not escalated on first failure)", ti.Status)
@@ -513,9 +529,9 @@ steps:
 `)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
-	engine.SetCheckConfigGetter(&fakeCheckGetter{cmds: []string{lintVerifyCommand("internal/foo/foo.go")}})
+	engine.setCheckConfigGetterForTest(&fakeCheckGetter{cmds: []string{lintVerifyCommand("internal/foo/foo.go")}})
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 
 	if err := engine.StartWorkflow("t1", "verify-lint-repair"); err != nil {

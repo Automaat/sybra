@@ -100,7 +100,11 @@ func (f *followerPushStub) server(t *testing.T) *httptest.Server {
 }
 
 func TestDispatchFromHumanRequiredForwardsToAssignedFollower(t *testing.T) {
-	stub := &followerPushStub{live: task.Task{ID: "task-human", Status: task.StatusHumanRequired, ProjectID: "owner/pet", AssignedNode: "pet-box"}}
+	stub := &followerPushStub{live: task.Task{
+		ID: "task-human", Status: task.StatusHumanRequired, ProjectID: "owner/pet", AssignedNode: "pet-box",
+		Escalation:      *task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: *task.HumanRequiredOutcome(),
+	}}
 	srv := stub.server(t)
 	cfg := &config.Config{Cluster: config.ClusterConfig{Role: config.ClusterRoleLeader, Followers: []config.Follower{{Name: "pet-box", Endpoints: []string{srv.URL}, Homes: []string{"owner/pet"}}}}}
 	roster, err := clusterlead.NewRoster(cfg, discardLogger())
@@ -271,12 +275,14 @@ func TestUpdateTaskPushesTagEditToFollowerAtWriteTime(t *testing.T) {
 func TestBlessTamperingForwardsTransitionToAssignedFollower(t *testing.T) {
 	reason := workflow.TamperFlaggedReasonPrefix + " added-skip in internal/foo_test.go"
 	stub := &followerPushStub{live: task.Task{
-		ID:           "task-bless",
-		Status:       task.StatusHumanRequired,
-		StatusReason: reason,
-		ProjectID:    "owner/pet",
-		AssignedNode: "pet-box",
-		Tags:         []string{"backend"},
+		ID:              "task-bless",
+		Status:          task.StatusHumanRequired,
+		StatusReason:    reason,
+		ProjectID:       "owner/pet",
+		AssignedNode:    "pet-box",
+		Tags:            []string{"backend"},
+		Escalation:      *task.PolicyRequired("test.fixture_tamper_review", "test fixture"),
+		AutonomyOutcome: *task.HumanRequiredOutcome(),
 	}}
 	srv := stub.server(t)
 

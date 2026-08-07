@@ -409,7 +409,11 @@ func detectStuckHumanBlocked(t *task.Task, now time.Time, budget time.Duration, 
 	if t.Status != task.StatusHumanRequired {
 		return nil
 	}
-	dwell := now.Sub(t.UpdatedAt)
+	dwellStart := t.StatusChangedAt
+	if dwellStart.IsZero() {
+		dwellStart = t.UpdatedAt
+	}
+	dwell := now.Sub(dwellStart)
 	if dwell <= budget {
 		return nil
 	}
@@ -473,7 +477,10 @@ func currentLostAgentInvestigation(t *task.Task, tracked map[string]openLostAgen
 	if !ok || inv.observedAt.IsZero() {
 		return false
 	}
-	cutoff := t.UpdatedAt
+	cutoff := t.StatusChangedAt
+	if cutoff.IsZero() {
+		cutoff = t.UpdatedAt
+	}
 	if started := latestAgentRunStarted(t.AgentRuns); !started.IsZero() {
 		cutoff = started
 	}
@@ -498,20 +505,24 @@ func detectPRGap(t *task.Task, now time.Time, grace time.Duration) *Anomaly {
 		return nil
 	}
 	dwell := time.Duration(0)
-	if !t.UpdatedAt.IsZero() {
-		dwell = now.Sub(t.UpdatedAt)
+	dwellStart := t.StatusChangedAt
+	if dwellStart.IsZero() {
+		dwellStart = t.UpdatedAt
 	}
-	if grace > 0 && !t.UpdatedAt.IsZero() && dwell >= 0 && dwell < grace {
+	if !dwellStart.IsZero() {
+		dwell = now.Sub(dwellStart)
+	}
+	if grace > 0 && !dwellStart.IsZero() && dwell >= 0 && dwell < grace {
 		return nil
 	}
 	ev := map[string]any{
-		"task_id":       t.ID,
-		"title":         t.Title,
-		"project_id":    t.ProjectID,
-		"branch":        t.Branch,
-		"updated_at":    t.UpdatedAt.Format(time.RFC3339),
-		"dwell_minutes": dwell.Minutes(),
-		"grace_minutes": grace.Minutes(),
+		"task_id":           t.ID,
+		"title":             t.Title,
+		"project_id":        t.ProjectID,
+		"branch":            t.Branch,
+		"status_changed_at": dwellStart.Format(time.RFC3339),
+		"dwell_minutes":     dwell.Minutes(),
+		"grace_minutes":     grace.Minutes(),
 	}
 	return &Anomaly{
 		Kind:        KindPRGap,

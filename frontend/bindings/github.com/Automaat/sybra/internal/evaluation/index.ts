@@ -7,6 +7,7 @@ export {
     AutonomyWeekPoint,
     Breakdown,
     ComparisonBreakdown,
+    CostBaseline,
     ExperimentGroup,
     ExperimentKindBreakdown,
     ExperimentSampleStatus,

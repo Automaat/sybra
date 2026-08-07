@@ -218,7 +218,7 @@ func TestExecAdmissionPreflight_NoWorktreeSkipsCredentialCheck(t *testing.T) {
 	engine.SetAdmissionConfig(config.AdmissionConfig{Enabled: true})
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{ok: false})
 	preflight := &fakePushPreflighter{err: errors.New("should never be called")}
-	engine.SetPushCredentialPreflighter(preflight)
+	engine.setPushCredentialPreflighterForTest(preflight)
 
 	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(), newAdmissionExec(),
 		TaskInfo{ID: "fa6919fc", PlanContract: validPlanContract("fa6919fc")})
@@ -240,7 +240,7 @@ func TestExecAdmissionPreflight_MissingCredentialsBlockAsCredentialRequired(t *t
 	engine.SetAdmissionConfig(config.AdmissionConfig{Enabled: true})
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: "/tmp/wt", ok: true})
 	preflight := &fakePushPreflighter{err: errors.New("gh auth status: Bad credentials")}
-	engine.SetPushCredentialPreflighter(preflight)
+	engine.setPushCredentialPreflighterForTest(preflight)
 
 	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(), newAdmissionExec(),
 		TaskInfo{ID: "fa6919fc", PlanContract: validPlanContract("fa6919fc")})
@@ -277,7 +277,7 @@ func TestExecAdmissionPreflight_TransientCredentialErrorParksForRetry(t *testing
 	// A rate-limited/transient preflight hit must self-heal via a bounded
 	// retry, not permanently strand a re-dispatched task at human-required.
 	preflight := &fakePushPreflighter{err: errors.New("gh: API rate limit exceeded for GitHub")}
-	engine.SetPushCredentialPreflighter(preflight)
+	engine.setPushCredentialPreflighterForTest(preflight)
 
 	wfExec := newAdmissionExec()
 	out, err := engine.execAdmissionPreflight("fa6919fc", newAdmissionPreflightStep(), wfExec,

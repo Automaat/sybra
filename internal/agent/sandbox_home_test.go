@@ -43,6 +43,26 @@ func TestPrepareRunConfig_SandboxHome_Injected(t *testing.T) {
 	}
 }
 
+func TestPreparedScratchRootsIncludeConcreteCacheDirectories(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	sandboxDir := t.TempDir()
+	cfg := RunConfig{TaskID: "task-cache", resolvedSandboxHome: sandboxDir}
+
+	got := preparedScratchRoots(cfg)
+	base := sharedBuildCacheDir()
+	for _, want := range []string{
+		sandboxDir,
+		filepath.Join(sandboxDir, "golangci-lint-cache"),
+		filepath.Join(base, "go-build", "task-cache"),
+		filepath.Join(base, "go-mod"),
+		filepath.Join(base, "npm"),
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("scratch roots %v do not contain %q", got, want)
+		}
+	}
+}
+
 // TestPrepareRunConfig_SandboxHome_SystemRunSkipsInjection pins that only
 // runs with an empty TaskID (system/probe runs) are allowed to skip sandbox
 // injection — every task-scoped run must go through it.

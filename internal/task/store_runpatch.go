@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/fsutil"
 )
 
@@ -33,9 +35,16 @@ func (s *Store) addRun(taskID string, run AgentRun, status *Status) error {
 	now := time.Now().UTC()
 	if status != nil {
 		oldStatus := t.Status
+		if *status == StatusHumanRequired && oldStatus != StatusHumanRequired {
+			return fmt.Errorf("add run with status: transition to human-required requires typed escalation evidence")
+		}
 		t.Status = *status
 		if oldStatus != t.Status {
 			t.StatusChangedAt = now
+			t.StatusReason = ""
+			t.Blocker = blocker.State{}
+			t.Escalation = autonomy.EscalationReason{}
+			t.AutonomyOutcome = ""
 		} else {
 			backfillStatusChangedAt(&t, now)
 		}

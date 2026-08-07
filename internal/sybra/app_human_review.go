@@ -18,11 +18,13 @@ import (
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/scrub"
+	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/verdict"
@@ -610,6 +612,7 @@ func (h *humanReviewHandler) spawnReviewConfig(t task.Task, taskID, prompt, dir 
 		OneShot:                true,
 		OutputSchema:           verdict.Schema,
 		IgnoreConcurrencyLimit: true,
+		SandboxMode:            agentorch.ResolveSandboxMode(t, h.cfg),
 	}
 	if opts.SkipABVariant {
 		return cfg
@@ -757,6 +760,7 @@ func (h *humanReviewHandler) applyUnblockedRecovery(current task.Task, agentID s
 			Extra: task.Update{
 				Body:         &newBody,
 				StatusReason: task.Ptr(statusReason),
+				ClearBlocker: task.Ptr(true),
 			},
 		})
 		if err != nil {
@@ -857,6 +861,7 @@ func (h *humanReviewHandler) applyDoneRecovery(current task.Task, agentID, note 
 	update := task.Update{
 		Body:         &newBody,
 		StatusReason: task.Ptr(""),
+		ClearBlocker: task.Ptr(true),
 	}
 	if mergedPR && current.PRNumber != prNumber {
 		update.PRNumber = task.Ptr(prNumber)
@@ -953,7 +958,8 @@ func (h *humanReviewHandler) verifyDoneRecoveryMergedPR(current task.Task, agent
 
 func (h *humanReviewHandler) finalizeDoneRecovery(taskID string, prNumber int, mergedPR bool) error {
 	update := task.Update{
-		StatusReason: task.Ptr(""),
+		ClearStatusReason: task.Ptr(true),
+		ClearBlocker:      task.Ptr(true),
 	}
 	if mergedPR {
 		current, err := h.tasks.Get(taskID)
@@ -992,7 +998,7 @@ func humanReviewVerdictPRNumber(v verdictDecision) int {
 
 func (h *humanReviewHandler) prepareRecoveryDispatch(current task.Task, status task.Status) (task.Status, error) {
 	target := status
-	if target == task.StatusReadyPR && current.PRNumber == 0 && workflow.IsTamperFlaggedReason(current.StatusReason) {
+	if target == task.StatusReadyPR && current.PRNumber == 0 && current.Blocker.Kind == blocker.KindTamperDetected {
 		target = task.StatusInProgress
 	}
 	if target == task.StatusInReview && current.PRNumber == 0 {
@@ -1157,7 +1163,7 @@ func latestHumanReviewUnblockedVerdict(t task.Task) (agentID string, v verdictDe
 }
 
 func recoveryNeedsTamperBless(current task.Task, target task.Status) bool {
-	if !workflow.IsTamperFlaggedReason(current.StatusReason) {
+	if current.Blocker.Kind != blocker.KindTamperDetected {
 		return false
 	}
 	return target == task.StatusInProgress || target == task.StatusReadyReview
@@ -1244,17 +1250,17 @@ func (h *humanReviewHandler) verifyUnblocked(t task.Task) bool {
 
 func safeHumanReviewRecoveryStatus(action string) (task.Status, bool) {
 	switch strings.TrimSpace(action) {
-	case "in-progress":
+	case string(task.StatusInProgress):
 		return task.StatusInProgress, true
-	case "ready-review":
+	case string(task.StatusReadyReview):
 		return task.StatusReadyReview, true
-	case "in-review":
+	case string(task.StatusInReview):
 		return task.StatusInReview, true
-	case "testing":
+	case string(task.StatusTesting):
 		return task.StatusTesting, true
-	case "ready-pr":
+	case string(task.StatusReadyPR):
 		return task.StatusReadyPR, true
-	case "done":
+	case string(task.StatusDone):
 		return task.StatusDone, true
 	default:
 		return "", false
@@ -1912,7 +1918,7 @@ func (h *humanReviewHandler) retryAfterCrash(taskID string) bool {
 	h.mu.Lock()
 	delete(h.inflight, taskID)
 	h.mu.Unlock()
-	return h.maybeSpawn(h.ctx(), taskID, "human-required")
+	return h.maybeSpawn(h.ctx(), taskID, string(task.StatusHumanRequired))
 }
 
 func (h *humanReviewHandler) logAudit(evt, taskID, agentID string, data map[string]any) {

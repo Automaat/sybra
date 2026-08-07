@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/fsutil"
@@ -19,39 +18,18 @@ import (
 // Put uses atomic-rename for blobs; Append uses O_APPEND for streams.
 // Correctness never depends on index.json — List does a dir scan.
 //
-// Lock ordering: the Store's outer mu guards the locks map only. Per-task
-// mutexes (returned by lockFor) guard all I/O for that task. Nothing that
+// Per-task locks guard all I/O for that task. Nothing that
 // holds a per-task lock may call public methods that re-acquire the same lock.
 // Internal helpers that scan/write under an already-held per-task lock use
 // scanMetaLocked / rebuildIndexLocked directly.
 type Store struct {
 	root  string
-	mu    sync.Mutex // guards locks map only
-	locks map[string]*sync.Mutex
+	locks fsutil.KeyedLocker
 }
 
 // New creates a Store rooted at dir. The directory is created on first write.
 func New(dir string) *Store {
-	return &Store{root: dir, locks: make(map[string]*sync.Mutex)}
-}
-
-// lockFor returns the per-task mutex, creating it if absent.
-func (s *Store) lockFor(taskID string) *sync.Mutex {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	mu, ok := s.locks[taskID]
-	if !ok {
-		mu = &sync.Mutex{}
-		s.locks[taskID] = mu
-	}
-	return mu
-}
-
-// pruneLock removes the per-task lock entry. Call after Delete.
-func (s *Store) pruneLock(taskID string) {
-	s.mu.Lock()
-	delete(s.locks, taskID)
-	s.mu.Unlock()
+	return &Store{root: dir}
 }
 
 // taskDir returns the per-task directory, rejecting hostile IDs and verifying
@@ -127,9 +105,8 @@ func (s *Store) Put(taskID string, a Artifact) (Meta, error) {
 		return Meta{}, fmt.Errorf("artifact: marshal meta: %w", err)
 	}
 
-	mu := s.lockFor(taskID)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := s.locks.LockLocal(taskID)
+	defer unlock()
 
 	if err := fsutil.AtomicWrite(filepath.Join(dir, name), a.Content); err != nil {
 		return Meta{}, fmt.Errorf("artifact: write blob: %w", err)
@@ -163,9 +140,8 @@ func (s *Store) Append(taskID string, kind Kind, event any) error {
 	}
 	line = append(line, '\n')
 
-	mu := s.lockFor(taskID)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := s.locks.LockLocal(taskID)
+	defer unlock()
 
 	metaPath := filepath.Join(dir, name+".meta.json")
 	if _, statErr := os.Stat(metaPath); errors.Is(statErr, os.ErrNotExist) {
@@ -212,9 +188,8 @@ func (s *Store) List(taskID string) ([]Meta, error) {
 	if err != nil {
 		return nil, err
 	}
-	mu := s.lockFor(taskID)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := s.locks.LockLocal(taskID)
+	defer unlock()
 	return s.scanMetaLocked(taskID, dir)
 }
 
@@ -267,9 +242,8 @@ func (s *Store) Read(taskID, name string) ([]byte, Meta, error) {
 		return nil, Meta{}, err
 	}
 
-	mu := s.lockFor(taskID)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := s.locks.LockLocal(taskID)
+	defer unlock()
 
 	data, err := os.ReadFile(filepath.Join(dir, name))
 	if err != nil {
@@ -289,20 +263,18 @@ func (s *Store) Read(taskID, name string) ([]byte, Meta, error) {
 	return data, m, nil
 }
 
-// Delete removes all artifacts for a task and prunes the lock-map entry.
+// Delete removes all artifacts for a task.
 // Ignores a missing directory (idempotent).
 func (s *Store) Delete(taskID string) error {
 	dir, err := s.taskDir(taskID)
 	if err != nil {
 		return err
 	}
-	mu := s.lockFor(taskID)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := s.locks.LockLocal(taskID)
+	defer unlock()
 	if err := os.RemoveAll(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("artifact: delete: %w", err)
 	}
-	s.pruneLock(taskID)
 	return nil
 }
 
@@ -316,9 +288,8 @@ func (s *Store) Reindex(taskID string) error {
 	if err != nil {
 		return err
 	}
-	mu := s.lockFor(taskID)
-	mu.Lock()
-	defer mu.Unlock()
+	unlock := s.locks.LockLocal(taskID)
+	defer unlock()
 	s.rebuildIndexLocked(taskID, dir)
 	return nil
 }

@@ -52,6 +52,29 @@ func TestWithBareRepoLock_SerializesSameClonePath(t *testing.T) {
 	}
 }
 
+func TestBareRepoLockTablesReclaimBurst(t *testing.T) {
+	const paths = 200
+	var wg sync.WaitGroup
+	for i := range paths {
+		path := filepath.Join(t.TempDir(), fmt.Sprintf("repo-%d.git", i))
+		wg.Go(func() {
+			if err := withBareRepoLock(path, func() error { return nil }); err != nil {
+				t.Errorf("withBareRepoLock: %v", err)
+			}
+			if err := withBareRepoPushLock(path, func() error { return nil }); err != nil {
+				t.Errorf("withBareRepoPushLock: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	if got := bareRepoLocks.Len(); got != 0 {
+		t.Fatalf("bare repo lock entries = %d, want burst paths reclaimed", got)
+	}
+	if got := bareRepoPushLocks.Len(); got != 0 {
+		t.Fatalf("bare repo push lock entries = %d, want burst paths reclaimed", got)
+	}
+}
+
 func TestWithBareRepoLock_DoesNotSerializeDifferentClonePaths(t *testing.T) {
 	t.Parallel()
 	bareA := filepath.Join(t.TempDir(), "a.git")

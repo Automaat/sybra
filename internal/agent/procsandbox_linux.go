@@ -50,6 +50,8 @@ func canonicalizeRoot(root string) (string, error) {
 	return resolved, nil
 }
 
+func sandboxTmpAlias(string) string { return "" }
+
 func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName string, wrappedArgs []string) {
 	if cfg == nil || cfg.sandbox.mode != "enforce" {
 		return name, args

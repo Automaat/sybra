@@ -19,21 +19,22 @@ func TestExpBackoff(t *testing.T) {
 		name     string
 		streak   int
 		maxTicks int
-		want     int
+		wantMin  int
+		wantMax  int
 	}{
-		{name: "non-positive streak", streak: 0, maxTicks: 8, want: 0},
-		{name: "first stable poll", streak: 1, maxTicks: 8, want: 1},
-		{name: "second stable poll", streak: 2, maxTicks: 8, want: 2},
-		{name: "third stable poll", streak: 3, maxTicks: 8, want: 4},
-		{name: "clamps to max", streak: 5, maxTicks: 8, want: 8},
-		{name: "disabled when max non-positive", streak: 3, maxTicks: 0, want: 0},
+		{name: "non-positive streak", streak: 0, maxTicks: 8},
+		{name: "first stable poll", streak: 1, maxTicks: 8, wantMin: 1, wantMax: 1},
+		{name: "second stable poll", streak: 2, maxTicks: 8, wantMin: 1, wantMax: 2},
+		{name: "third stable poll", streak: 3, maxTicks: 8, wantMin: 2, wantMax: 4},
+		{name: "clamps to max", streak: 5, maxTicks: 8, wantMin: 4, wantMax: 8},
+		{name: "disabled when max non-positive", streak: 3, maxTicks: 0},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := expBackoff(tt.streak, tt.maxTicks); got != tt.want {
-				t.Fatalf("expBackoff(%d, %d) = %d, want %d", tt.streak, tt.maxTicks, got, tt.want)
+			if got := expBackoff(tt.streak, tt.maxTicks); got < tt.wantMin || got > tt.wantMax {
+				t.Fatalf("expBackoff(%d, %d) = %d, want [%d, %d]", tt.streak, tt.maxTicks, got, tt.wantMin, tt.wantMax)
 			}
 		})
 	}
@@ -419,11 +420,11 @@ func TestSelectKnownPRPoll(t *testing.T) {
 
 		stablePR := github.PullRequest{HeadSHA: "sha-1", UpdatedAt: "2026-07-13T12:00:00Z"}
 		r.noteKnownPRResult("owner/repo", 42, stablePR)
-		wantSkips := []int{1, 2, 4, 8}
+		wantSkips := [][2]int{{1, 1}, {1, 2}, {2, 4}, {4, 8}}
 		for i, want := range wantSkips {
 			r.noteKnownPRResult("owner/repo", 42, stablePR)
-			if _, _, got, _ := r.prSnapshots.Backoff("owner/repo#42"); got != want {
-				t.Fatalf("stable round %d skipTicks = %d, want %d", i+1, got, want)
+			if _, _, got, _ := r.prSnapshots.Backoff("owner/repo#42"); got < want[0] || got > want[1] {
+				t.Fatalf("stable round %d skipTicks = %d, want [%d, %d]", i+1, got, want[0], want[1])
 			}
 		}
 

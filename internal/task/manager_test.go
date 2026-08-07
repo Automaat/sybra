@@ -1,6 +1,7 @@
 package task
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,6 +48,40 @@ func newTestManager(t *testing.T) (*Manager, *recordingEmitter) {
 	return NewManager(store, emitter), emitter
 }
 
+func TestMutationTransportIdentityStableAcrossProbeAndTracksPermissions(t *testing.T) {
+	m, _ := newTestManager(t)
+	created, err := m.Create("mutation identity", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := m.MutationTransportIdentity(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ProbeMutationTransport(created.ID); err != nil {
+		t.Fatal(err)
+	}
+	after, err := m.MutationTransportIdentity(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("probe changed mutation identity\nbefore: %q\nafter:  %q", before, after)
+	}
+	dir := m.store.Dir()
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	readOnly, err := m.MutationTransportIdentity(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readOnly == before {
+		t.Fatal("permission change did not invalidate mutation identity")
+	}
+}
+
 func TestManagerCreateEmitsEvent(t *testing.T) {
 	t.Parallel()
 	m, emitter := newTestManager(t)
@@ -91,7 +126,7 @@ func TestManagerUpdateInvokesStatusHook(t *testing.T) {
 		id, from, to string
 	}
 	var got []change
-	m.SetStatusChangeHook(func(id, from, to string) {
+	m.SetStatusChangeHook(func(id, from, to string, _ Task) {
 		got = append(got, change{id, from, to})
 	})
 
@@ -121,6 +156,42 @@ func TestManagerUpdateInvokesStatusHook(t *testing.T) {
 	}
 	if got[0].id != task.ID {
 		t.Errorf("id = %q, want %q", got[0].id, task.ID)
+	}
+}
+
+func TestManagerStatusHookReceivesWrittenSnapshot(t *testing.T) {
+	m, _ := newTestManager(t)
+	created, err := m.Create("Title", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	captured := make(chan Task, 1)
+	m.SetStatusChangeHook(func(_ string, _, to string, snapshot Task) {
+		if to != string(StatusInProgress) {
+			return
+		}
+		close(entered)
+		<-release
+		captured <- snapshot
+	})
+	firstDone := make(chan error, 1)
+	go func() {
+		_, updateErr := m.Update(created.ID, Update{Status: Ptr(StatusInProgress)})
+		firstDone <- updateErr
+	}()
+	<-entered
+	if _, err := m.Update(created.ID, Update{Status: Ptr(StatusBlocked)}); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := <-captured; snapshot.Status != StatusInProgress {
+		t.Fatalf("first hook snapshot status = %q, want %q", snapshot.Status, StatusInProgress)
 	}
 }
 
@@ -194,7 +265,7 @@ func TestManagerOnExternalUpdateDoesNotDoubleFireRacingInProcessWrite(t *testing
 		mu   sync.Mutex
 		fire []string
 	)
-	m.SetStatusChangeHook(func(id, from, to string) {
+	m.SetStatusChangeHook(func(id, from, to string, _ Task) {
 		mu.Lock()
 		fire = append(fire, from+"->"+to)
 		mu.Unlock()
@@ -285,7 +356,7 @@ func TestManagerAppendBodyDoesNotDeadlockOnSelfRoutedEmit(t *testing.T) {
 	// OnExternalUpdate only takes lockFor(id) when a status-change hook is
 	// registered — without one it returns before locking and the reentrant
 	// path this test targets would never be exercised.
-	m.SetStatusChangeHook(func(string, string, string) {})
+	m.SetStatusChangeHook(func(string, string, string, Task) {})
 	m.emitter = EmitterFunc(func(event string, data any) {
 		if event != events.TaskUpdated {
 			return
@@ -321,7 +392,7 @@ func TestManagerAddRunWithStatusEmitsUpdatedAndHook(t *testing.T) {
 	}
 
 	var hookCalls int
-	m.SetStatusChangeHook(func(id, from, to string) {
+	m.SetStatusChangeHook(func(id, from, to string, _ Task) {
 		hookCalls++
 		if id != task.ID || from != string(StatusTodo) || to != string(StatusInProgress) {
 			t.Fatalf("hook got (%s,%s,%s)", id, from, to)
@@ -457,22 +528,17 @@ func TestManagerConcurrentDifferentIDsParallel(t *testing.T) {
 	}
 }
 
-func TestLockForTypeMismatchNoPanic(t *testing.T) {
+func TestManagerLocksReclaimedAfterBurst(t *testing.T) {
 	t.Parallel()
 	m, _ := newTestManager(t)
 
-	// Manually store a non-*sync.Mutex value to simulate type mismatch.
-	m.locks.Store("bad-id", "not-a-mutex")
-
-	// Must not panic; returned mutex must be usable.
-	mu := m.lockFor("bad-id")
-	if mu == nil {
-		t.Fatal("lockFor returned nil on type mismatch")
+	for i := range 200 {
+		unlock := m.lock(fmt.Sprintf("task-%d", i))
+		unlock()
 	}
-	func() {
-		mu.Lock()
-		defer mu.Unlock()
-	}()
+	if got := m.locks.Len(); got != 0 {
+		t.Fatalf("lock entries = %d, want burst keys reclaimed", got)
+	}
 }
 
 func TestNoopEmitter(t *testing.T) {
@@ -535,7 +601,7 @@ func TestManagerAppendBodyDoesNotDeadlockOnReentrantEmit(t *testing.T) {
 	}
 	m := NewManager(store, nil)
 	m.emitter = &reentrantEmitter{m: m}
-	m.SetStatusChangeHook(func(string, string, string) {})
+	m.SetStatusChangeHook(func(string, string, string, Task) {})
 
 	task, err := m.Create("Title", "", "headless")
 	if err != nil {
@@ -568,7 +634,7 @@ func TestManagerDeleteDoesNotDeadlockOnReentrantEmit(t *testing.T) {
 	}
 	m := NewManager(store, nil)
 	m.emitter = &reentrantEmitter{m: m}
-	m.SetStatusChangeHook(func(string, string, string) {})
+	m.SetStatusChangeHook(func(string, string, string, Task) {})
 
 	task, err := m.Create("Title", "", "headless")
 	if err != nil {
@@ -600,14 +666,13 @@ func TestManagerOnExternalUpdateWaitsForBusyWriterAndStillFires(t *testing.T) {
 		hookMu sync.Mutex
 		fired  []string
 	)
-	m.SetStatusChangeHook(func(_ string, from, to string) {
+	m.SetStatusChangeHook(func(_ string, from, to string, _ Task) {
 		hookMu.Lock()
 		fired = append(fired, from+"->"+to)
 		hookMu.Unlock()
 	})
 
-	mu := m.lockFor(task.ID)
-	mu.Lock()
+	unlock := m.lock(task.ID)
 
 	done := make(chan struct{})
 	go func() {
@@ -620,10 +685,10 @@ func TestManagerOnExternalUpdateWaitsForBusyWriterAndStillFires(t *testing.T) {
 		Status: Ptr(StatusInProgress),
 		Body:   &body,
 	}); err != nil {
-		mu.Unlock()
+		unlock()
 		t.Fatalf("UpdateWithPrev: %v", err)
 	}
-	mu.Unlock()
+	unlock()
 
 	select {
 	case <-done:

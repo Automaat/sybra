@@ -64,7 +64,7 @@ func newOutboundWorkflowTestHandler(t *testing.T) (*Handler, *task.Manager) {
 	if _, err := projects.CreateMeta("https://github.com/Automaat/sybra", project.ProjectTypePet); err != nil {
 		t.Fatal(err)
 	}
-	engine := workflow.NewEngine(wfStore,
+	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
 		&agentAdapter{agents: agents, tasks: tasks},
 		logger,
@@ -676,9 +676,11 @@ func TestReconcilePRPhasesReactivatesEmptyReasonAfterPRFix(t *testing.T) {
 		CompletedAt: &completedAt,
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(""),
-		Workflow:     &wf,
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(""),
+		Workflow:        &wf,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -717,9 +719,11 @@ func TestReconcilePRPhasesDoesNotReactivateFreshManualHumanRequired(t *testing.T
 		CompletedAt: &completedAt,
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(""),
-		Workflow:     &wf,
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(""),
+		Workflow:        &wf,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -751,9 +755,11 @@ func TestReconcilePRPhasesDoesNotReactivateReasonedHumanRequired(t *testing.T) {
 		CompletedAt: &now,
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: &reason,
-		Workflow:     &wf,
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    &reason,
+		Workflow:        &wf,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -787,9 +793,11 @@ func TestReconcilePRPhasesDoesNotReactivateLaterManualHumanRequired(t *testing.T
 		CompletedAt: &completedAt,
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(""),
-		Workflow:     &wf,
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(""),
+		Workflow:        &wf,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -820,9 +828,11 @@ func TestReconcilePRPhasesDoesNotReactivateWithoutLivePR(t *testing.T) {
 		CompletedAt: &now,
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(""),
-		Workflow:     &wf,
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(""),
+		Workflow:        &wf,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -937,11 +947,13 @@ func mkHumanRequiredBlockerTask(t *testing.T, tasks *task.Manager, prNumber int,
 		t.Fatalf("create: %v", err)
 	}
 	updated, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(reason),
-		PRNumber:     task.Ptr(prNumber),
-		ProjectID:    task.Ptr("Automaat/sybra"),
-		Tags:         &tags,
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(reason),
+		PRNumber:        task.Ptr(prNumber),
+		ProjectID:       task.Ptr("Automaat/sybra"),
+		Tags:            &tags,
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -1286,10 +1298,12 @@ func TestReconcileHumanRequiredBlockersIgnoresUnrelatedHumanRequiredReasons(t *t
 		t.Fatalf("create: %v", err)
 	}
 	parked, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr("Draft review ready — verify & submit on GitHub"),
-		PRNumber:     task.Ptr(42),
-		ProjectID:    task.Ptr("Automaat/sybra"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("Draft review ready — verify & submit on GitHub"),
+		PRNumber:        task.Ptr(42),
+		ProjectID:       task.Ptr("Automaat/sybra"),
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -1396,11 +1410,13 @@ func TestPollKnownTaskPRs_MergesReconciledReviewedPetPRSameCycle(t *testing.T) {
 	}
 	reviewed := true
 	parked, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(exhaustedFixReason(3, github.PRIssueCIFailure)),
-		PRNumber:     task.Ptr(42),
-		ProjectID:    task.Ptr("pet-owner/pet-repo"),
-		Reviewed:     &reviewed,
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(exhaustedFixReason(3, github.PRIssueCIFailure)),
+		PRNumber:        task.Ptr(42),
+		ProjectID:       task.Ptr("pet-owner/pet-repo"),
+		Reviewed:        &reviewed,
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -1468,11 +1484,13 @@ func TestPollAndMonitorPRs_MergesReconciledReviewedPetPRSameCycle(t *testing.T) 
 	}
 	reviewed := true
 	parked, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(exhaustedFixReason(3, github.PRIssueCIFailure)),
-		PRNumber:     task.Ptr(42),
-		ProjectID:    task.Ptr("pet-owner/pet-repo"),
-		Reviewed:     &reviewed,
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(exhaustedFixReason(3, github.PRIssueCIFailure)),
+		PRNumber:        task.Ptr(42),
+		ProjectID:       task.Ptr("pet-owner/pet-repo"),
+		Reviewed:        &reviewed,
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -1601,11 +1619,13 @@ func TestReconcileHumanRequiredBlockersSkipsCrossRepoBranchCollision(t *testing.
 		t.Fatalf("create: %v", err)
 	}
 	parked, err := tasks.Update(created.ID, task.Update{
-		Status:       task.Ptr(task.StatusHumanRequired),
-		StatusReason: task.Ptr(exhaustedFixReason(3, github.PRIssueCIFailure)),
-		PRNumber:     task.Ptr(42),
-		Branch:       task.Ptr("renovate/lock-file-maintenance"),
-		ProjectID:    task.Ptr("Automaat/sybra"),
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr(exhaustedFixReason(3, github.PRIssueCIFailure)),
+		PRNumber:        task.Ptr(42),
+		Branch:          task.Ptr("renovate/lock-file-maintenance"),
+		ProjectID:       task.Ptr("Automaat/sybra"),
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)

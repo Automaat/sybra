@@ -64,16 +64,14 @@ func bestOfNSuccessfulVar(stepID string) string { return "bestofn." + stepID + "
 // budget, so this preflights it explicitly and fails closed on
 // ErrTaskCostExceeded.
 func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec *Execution, ctx TemplateContext) (*CompletionInfo, error) {
-	if e.costBudget != nil {
-		if err := e.costBudget.CheckTaskCostBudget(taskID); err != nil {
-			if errors.Is(err, ErrTaskCostExceeded) {
-				return e.failStepClosed(taskID, def, step, wfExec,
-					"best-of-n: cost budget exceeded before attempts started: "+err.Error())
-			}
-			return nil, err
+	if err := e.execution.CostBudget.CheckTaskCostBudget(taskID); err != nil {
+		if errors.Is(err, ErrTaskCostExceeded) {
+			return e.failStepClosed(taskID, def, step, wfExec,
+				"best-of-n: cost budget exceeded before attempts started: "+err.Error())
 		}
+		return nil, err
 	}
-	if e.attemptWorktrees == nil {
+	if e.execution.AttemptWorktrees == nil {
 		return e.failStepClosed(taskID, def, step, wfExec,
 			"best-of-n: no attempt worktree manager configured")
 	}
@@ -120,8 +118,7 @@ func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec 
 	// Released before finalizeBestOfNParent (which may recurse into
 	// executeSteps/StopAgentsForTask) so it cannot deadlock the way holding
 	// this lock through execRunAgent's StopAgentsForTask would.
-	inflight := e.taskInflightMutex(taskID)
-	inflight.Lock()
+	unlockInflight := e.acquireInflight(taskID)
 	for i := 1; i <= n; i++ {
 		id := bestOfNAttemptID(i)
 		status := rec.Attempts[id]
@@ -154,7 +151,7 @@ func (e *Engine) execBestOfN(taskID string, def *Definition, step *Step, wfExec 
 	if !allDone {
 		persistErr = e.tasks.SetWorkflow(taskID, wfExec)
 	}
-	inflight.Unlock()
+	unlockInflight()
 	if persistErr != nil {
 		return nil, persistErr
 	}
@@ -180,7 +177,7 @@ func (e *Engine) spawnBestOfNAttempt(taskID string, step *Step, wfExec *Executio
 	if admit, reason := e.agents.AdmitDispatch(taskID, step.Config.Role, mode); !admit {
 		return fmt.Errorf("%w: %s", ErrResourcePressure, reason)
 	}
-	dir, branch, err := e.attemptWorktrees.PrepareAttempt(taskID, attemptID)
+	dir, branch, err := e.execution.AttemptWorktrees.PrepareAttempt(taskID, attemptID)
 	if err != nil {
 		return fmt.Errorf("prepare attempt worktree: %w", err)
 	}
@@ -360,7 +357,7 @@ func (e *Engine) finalizeBestOfNParent(taskID string, def *Definition, parent *S
 // on the success path, so a block that never reaches promotion doesn't leak
 // attempt directories on disk indefinitely.
 func (e *Engine) cleanupAllBestOfNAttempts(taskID string, rec *BestOfNInflight) {
-	if e.attemptWorktrees == nil || rec == nil {
+	if e.execution.AttemptWorktrees == nil || rec == nil {
 		return
 	}
 	ids := make([]string, 0, len(rec.Attempts))
@@ -371,7 +368,7 @@ func (e *Engine) cleanupAllBestOfNAttempts(taskID string, rec *BestOfNInflight) 
 		return
 	}
 	sort.Strings(ids)
-	e.attemptWorktrees.CleanupAttempts(taskID, ids)
+	e.execution.AttemptWorktrees.CleanupAttempts(taskID, ids)
 }
 
 // preflightRunAgentBudget enforces the cumulative task cost budget BEFORE a
@@ -386,10 +383,10 @@ func (e *Engine) cleanupAllBestOfNAttempts(taskID string, rec *BestOfNInflight) 
 // flips the task to human-required and ends the workflow via the same
 // declarative Next path as every other mechanical gate.
 func (e *Engine) preflightRunAgentBudget(taskID string, def *Definition, step *Step, wfExec *Execution) (comp *CompletionInfo, handled bool, err error) {
-	if !step.Config.BudgetPreflight || e.costBudget == nil {
+	if !step.Config.BudgetPreflight {
 		return nil, false, nil
 	}
-	cErr := e.costBudget.CheckTaskCostBudget(taskID)
+	cErr := e.execution.CostBudget.CheckTaskCostBudget(taskID)
 	if cErr == nil {
 		return nil, false, nil
 	}
@@ -593,16 +590,14 @@ func (e *Engine) execPromoteBestOfN(taskID string, step *Step) (StepOutput, erro
 		return e.humanRequiredStepOutput(taskID, step, "best-of-n promotion: judge named a non-successful attempt "+winnerID)
 	}
 
-	if e.costBudget != nil {
-		if cErr := e.costBudget.CheckTaskCostBudget(taskID); cErr != nil {
-			if errors.Is(cErr, ErrTaskCostExceeded) {
-				return e.humanRequiredStepOutput(taskID, step, "best-of-n promotion: cost budget exceeded before promotion: "+cErr.Error())
-			}
-			return StepOutput{}, cErr
+	if cErr := e.execution.CostBudget.CheckTaskCostBudget(taskID); cErr != nil {
+		if errors.Is(cErr, ErrTaskCostExceeded) {
+			return e.humanRequiredStepOutput(taskID, step, "best-of-n promotion: cost budget exceeded before promotion: "+cErr.Error())
 		}
+		return StepOutput{}, cErr
 	}
 
-	if e.attemptWorktrees == nil {
+	if e.execution.AttemptWorktrees == nil {
 		return e.humanRequiredStepOutput(taskID, step, "best-of-n promotion: no attempt worktree manager configured")
 	}
 
@@ -612,7 +607,7 @@ func (e *Engine) execPromoteBestOfN(taskID string, step *Step) (StepOutput, erro
 		}
 	}
 
-	canonicalDir, promErr := e.attemptWorktrees.PromoteAttempt(taskID, winner.Dir, winner.Branch)
+	canonicalDir, promErr := e.execution.AttemptWorktrees.PromoteAttempt(taskID, winner.Dir, winner.Branch)
 	if promErr != nil {
 		// The fail-closed reasons above are all judgements a human must make.
 		// A canonical path another mutating operation currently owns is not
@@ -643,7 +638,7 @@ func (e *Engine) execPromoteBestOfN(taskID string, step *Step) (StepOutput, erro
 	}
 	sort.Strings(allAttempts)
 	if len(allAttempts) > 0 {
-		e.attemptWorktrees.CleanupAttempts(taskID, allAttempts)
+		e.execution.AttemptWorktrees.CleanupAttempts(taskID, allAttempts)
 	}
 
 	// Persist the loser cleanup + inflight teardown against the CURRENT

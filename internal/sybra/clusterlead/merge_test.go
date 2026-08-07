@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -165,5 +166,44 @@ func TestMergeCarriesReviewGuard(t *testing.T) {
 	if out.ReviewedHeadAttempts != follower.ReviewedHeadAttempts {
 		t.Errorf("ReviewedHeadAttempts = %d, want %d — the review budget would reset on reassign",
 			out.ReviewedHeadAttempts, follower.ReviewedHeadAttempts)
+	}
+}
+
+func TestMergeCarriesAndClearsTypedEscalationEvidence(t *testing.T) {
+	t0 := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	canonical := task.Task{
+		ID: "task-1", Status: task.StatusTodo, UpdatedAt: t0,
+		Escalation: autonomy.NewEscalation(
+			"stale.reason", autonomy.FailureOwnerOperatorDecision,
+			autonomy.ProvenanceControlPlane, "stale"),
+		AutonomyOutcome: autonomy.OutcomeHumanRequired,
+	}
+	reason := autonomy.NewEscalation(
+		"operator.choose", autonomy.FailureOwnerOperatorDecision,
+		autonomy.ProvenanceControlPlane, "choose")
+	follower := task.Task{
+		ID: "task-1", Status: task.StatusHumanRequired, UpdatedAt: t0.Add(time.Minute),
+		Escalation: reason, AutonomyOutcome: autonomy.OutcomeHumanRequired,
+	}
+
+	escalated, ok := Merge(canonical, follower)
+	if !ok {
+		t.Fatal("typed follower update was rejected")
+	}
+	if escalated.Escalation.Code != reason.Code || escalated.AutonomyOutcome != autonomy.OutcomeHumanRequired {
+		t.Fatalf("mirrored evidence = %#v / %q", escalated.Escalation, escalated.AutonomyOutcome)
+	}
+
+	clearedFollower := follower
+	clearedFollower.Status = task.StatusTodo
+	clearedFollower.UpdatedAt = follower.UpdatedAt.Add(time.Minute)
+	clearedFollower.Escalation = autonomy.EscalationReason{}
+	clearedFollower.AutonomyOutcome = ""
+	cleared, ok := Merge(escalated, clearedFollower)
+	if !ok {
+		t.Fatal("clearing follower update was rejected")
+	}
+	if !cleared.Escalation.IsZero() || cleared.AutonomyOutcome != "" {
+		t.Fatalf("stale mirrored evidence survived clear: %#v / %q", cleared.Escalation, cleared.AutonomyOutcome)
 	}
 }
