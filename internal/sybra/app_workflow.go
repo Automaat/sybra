@@ -846,7 +846,11 @@ func (a *checkConfigGetterAdapter) SetupCommands(ctx context.Context, taskID str
 	return project.MergeSetup(repoSetup, p.SetupCommands)
 }
 
-func ensureReadyPRWorktree(ctx context.Context, tasks *task.Manager, mgr *worktree.Manager, taskID string) (path string, ok bool, err error) {
+// ensurePRTailWorktree restores a missing worktree for deterministic PR-tail
+// operations. Branch-conflict recovery runs while a task is in-progress, not
+// ready-pr, so limiting this to ready-pr strands an otherwise recoverable
+// branch just before push_branch can publish it.
+func ensurePRTailWorktree(ctx context.Context, tasks *task.Manager, mgr *worktree.Manager, taskID string) (path string, ok bool, err error) {
 	if tasks == nil || mgr == nil {
 		return "", false, nil
 	}
@@ -858,7 +862,7 @@ func ensureReadyPRWorktree(ctx context.Context, tasks *task.Manager, mgr *worktr
 	if _, err := os.Stat(path); err == nil {
 		return path, true, nil
 	}
-	if t.Status != task.StatusReadyPR || strings.TrimSpace(t.ProjectID) == "" {
+	if !statusCanRunPRTail(t.Status) || strings.TrimSpace(t.ProjectID) == "" {
 		return "", false, nil
 	}
 
@@ -875,8 +879,17 @@ func ensureReadyPRWorktree(ctx context.Context, tasks *task.Manager, mgr *worktr
 	return prepared, true, nil
 }
 
+func statusCanRunPRTail(status task.Status) bool {
+	switch status {
+	case task.StatusInProgress, task.StatusReadyReview, task.StatusInReview, task.StatusTesting, task.StatusReadyPR:
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {
-	path, ok, err := ensureReadyPRWorktree(context.Background(), a.tasks, a.mgr, taskID)
+	path, ok, err := ensurePRTailWorktree(context.Background(), a.tasks, a.mgr, taskID)
 	if err != nil {
 		return "", false
 	}
@@ -884,7 +897,7 @@ func (a *worktreeGetterAdapter) GetWorktreePath(taskID string) (string, bool) {
 }
 
 func (a *worktreeGetterAdapter) ResolvePRWorktree(ctx context.Context, taskID string) (path string, found bool, err error) {
-	return ensureReadyPRWorktree(ctx, a.tasks, a.mgr, taskID)
+	return ensurePRTailWorktree(ctx, a.tasks, a.mgr, taskID)
 }
 
 func (*attemptNoteAppenderAdapter) AppendReimplementNote(ctx context.Context, _, wtPath, marker, note string) error {
@@ -898,7 +911,7 @@ type branchSyncerAdapter struct {
 }
 
 func (a *branchSyncerAdapter) SyncTaskBranch(ctx context.Context, taskID string) (string, error) {
-	if _, ok, err := ensureReadyPRWorktree(ctx, a.tasks, a.mgr, taskID); err != nil {
+	if _, ok, err := ensurePRTailWorktree(ctx, a.tasks, a.mgr, taskID); err != nil {
 		return worktree.SyncFailed.String(), fmt.Errorf("sync branch: ensure worktree: %w", err)
 	} else if !ok {
 		return worktree.SyncSkipped.String(), nil

@@ -193,14 +193,14 @@ func TestBranchSyncerAdapter_TaskLookupFailureReturnsFailedResult(t *testing.T) 
 	}
 }
 
-type readyPRRecoveryHarness struct {
+type prTailRecoveryHarness struct {
 	branch string
 	task   task.Task
 	tasks  *task.Manager
 	mgr    *worktree.Manager
 }
 
-func newReadyPRRecoveryHarness(t *testing.T) readyPRRecoveryHarness {
+func newPRTailRecoveryHarness(t *testing.T, status task.Status) prTailRecoveryHarness {
 	t.Helper()
 
 	run := func(args ...string) {
@@ -283,7 +283,7 @@ func newReadyPRRecoveryHarness(t *testing.T) readyPRRecoveryHarness {
 		t.Fatal(err)
 	}
 	created, err = taskMgr.Update(created.ID, task.Update{
-		Status:    task.Ptr(task.StatusReadyPR),
+		Status:    task.Ptr(status),
 		ProjectID: task.Ptr("owner/repo"),
 		Branch:    task.Ptr(branch),
 	})
@@ -301,7 +301,7 @@ func newReadyPRRecoveryHarness(t *testing.T) readyPRRecoveryHarness {
 		t.Fatalf("expected no worktree before recovery, got err=%v", err)
 	}
 
-	return readyPRRecoveryHarness{
+	return prTailRecoveryHarness{
 		branch: branch,
 		task:   created,
 		tasks:  taskMgr,
@@ -312,7 +312,7 @@ func newReadyPRRecoveryHarness(t *testing.T) readyPRRecoveryHarness {
 func TestWorktreeGetterAdapter_GetWorktreePath_RecoversReadyPRWorktree(t *testing.T) {
 	t.Parallel()
 
-	h := newReadyPRRecoveryHarness(t)
+	h := newPRTailRecoveryHarness(t, task.StatusReadyPR)
 	adapter := &worktreeGetterAdapter{tasks: h.tasks, mgr: h.mgr}
 
 	path, ok := adapter.GetWorktreePath(h.task.ID)
@@ -337,7 +337,7 @@ func TestWorktreeGetterAdapter_GetWorktreePath_RecoversReadyPRWorktree(t *testin
 func TestWorktreeGetterAdapter_ResolvePRWorktree_RecoversRemoteBranch(t *testing.T) {
 	t.Parallel()
 
-	h := newReadyPRRecoveryHarness(t)
+	h := newPRTailRecoveryHarness(t, task.StatusReadyPR)
 	adapter := &worktreeGetterAdapter{tasks: h.tasks, mgr: h.mgr}
 
 	path, ok, err := adapter.ResolvePRWorktree(context.Background(), h.task.ID)
@@ -355,10 +355,12 @@ func TestWorktreeGetterAdapter_ResolvePRWorktree_RecoversRemoteBranch(t *testing
 	}
 }
 
-func TestBranchSyncerAdapter_SyncTaskBranch_RecoversMissingReadyPRWorktree(t *testing.T) {
+func TestBranchSyncerAdapter_SyncTaskBranch_RecoversMissingInProgressWorktree(t *testing.T) {
 	t.Parallel()
 
-	h := newReadyPRRecoveryHarness(t)
+	// branch-conflict-fix sets the task to in-progress before its deterministic
+	// push/sync tail needs the worktree again.
+	h := newPRTailRecoveryHarness(t, task.StatusInProgress)
 	adapter := &branchSyncerAdapter{tasks: h.tasks, mgr: h.mgr}
 
 	result, err := adapter.SyncTaskBranch(context.Background(), h.task.ID)
