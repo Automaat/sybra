@@ -174,6 +174,9 @@ func TestWrapInvocation_GrantsAppSupportRoot(t *testing.T) {
 	}}
 
 	_, args := wrapInvocation("codex", []string{"exec"}, cfg)
+	if len(args) < 2 {
+		t.Fatalf("wrapInvocation returned too few arguments: %v", args)
+	}
 
 	var got string
 	for i := range len(args) - 1 {
@@ -241,6 +244,9 @@ func TestWrapInvocation_GrantsAllGitRoots(t *testing.T) {
 	cfg := &RunConfig{sandbox: spec}
 
 	_, args := wrapInvocation("claude", []string{"-p", "hi"}, cfg)
+	if len(args) < 2 {
+		t.Fatalf("wrapInvocation returned too few arguments: %v", args)
+	}
 
 	want := map[string]string{
 		"GIT_ADMIN_DIR":                   spec.gitAdminDir,

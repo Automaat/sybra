@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 func newParallelGatesStep() *Step { return &Step{ID: "parallel_gates", Type: StepParallelGates} }
@@ -371,7 +372,7 @@ func TestResumeStalled_ResumesParkedParallelGates(t *testing.T) {
 	waitForTestFile(t, filepath.Join(wt1, ".verify-entered"))
 
 	parked, _ := tasks.GetTask("t2")
-	_, err := engine.execParallelGates("t2", newParallelGatesStep(), parked.Workflow, TaskInfo{ID: "t2", Status: "in-progress"})
+	_, err := engine.execParallelGates("t2", newParallelGatesStep(), parked.Workflow, TaskInfo{ID: "t2", Status: taskstatus.InProgress})
 	if !errors.Is(err, errStepParked) {
 		t.Fatalf("err = %v, want errStepParked (verify slot is held by t1)", err)
 	}
@@ -428,9 +429,9 @@ func TestExecParallelGates_FocusedUnconfiguredDegradesToTamperAndVerify(t *testi
 	gitRun(t, wt, "commit", "-m", "feat: touch workflow")
 
 	engine, tasks := newParallelGatesEngine(t, wt, nil, []string{"true"})
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress})
 
-	out, err := engine.execParallelGates("t1", newParallelGatesStep(), nil, TaskInfo{ID: "t1", Status: "in-progress"})
+	out, err := engine.execParallelGates("t1", newParallelGatesStep(), nil, TaskInfo{ID: "t1", Status: taskstatus.InProgress})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

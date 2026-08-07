@@ -206,7 +206,13 @@ func TestFinalizeUsesCertificateAttachedByPreflight(t *testing.T) {
 	if err := mgr.Finalize(t.Context(), lease, []string{"true"}, "ok", ""); err != nil {
 		t.Fatal(err)
 	}
-	items, _ := store.List("task-cert")
+	items, err := store.List("task-cert")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) == 0 {
+		t.Fatal("finalize did not persist a verification artifact")
+	}
 	content, _, err := store.Read("task-cert", items[0].Name)
 	if err != nil {
 		t.Fatal(err)
