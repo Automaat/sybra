@@ -1136,6 +1136,17 @@ export enum StepType {
      * must re-run the missing proof, not retry the same dispatch.
      */
     StepRequireEvidence = "require_evidence",
+
+    /**
+     * StepParallelGates runs the three deterministic post-implement gates —
+     * detect_tampering, focused_checks, verify_checks — concurrently instead
+     * of serially, then routes on their joined outcome. Each gate still
+     * records its own evidence/verdict independently (see
+     * execParallelGates, engine_steps_parallel_gates.go); this only
+     * overlaps their wall-clock, it does not change what any individual gate
+     * decides. Synchronous (no run_agent children, unlike StepParallel).
+     */
+    StepParallelGates = "parallel_gates",
 };
 
 /**
