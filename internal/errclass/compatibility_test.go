@@ -17,14 +17,14 @@ const (
 type downstreamDecision string
 
 const (
-	decisionDefault  downstreamDecision = "default"
-	decisionRetry    downstreamDecision = "retry"
-	decisionCooldown downstreamDecision = "cooldown"
-	decisionAuth     downstreamDecision = "auth-circuit"
-	decisionBlocked  downstreamDecision = "blocked"
-	decisionGit      downstreamDecision = "git-recovery"
-	decisionCapacity downstreamDecision = "capacity-recovery"
-	decisionStop     downstreamDecision = "stop"
+	decisionDefault   downstreamDecision = "default"
+	decisionRetry     downstreamDecision = "retry"
+	decisionCooldown  downstreamDecision = "cooldown"
+	decisionAuth      downstreamDecision = "auth-circuit"
+	decisionMergeHeld downstreamDecision = "merge-held"
+	decisionGit       downstreamDecision = "git-recovery"
+	decisionCapacity  downstreamDecision = "capacity-recovery"
+	decisionStop      downstreamDecision = "stop"
 )
 
 type compatibilitySite struct {
@@ -283,7 +283,7 @@ func legacyMergeDecision(s string) downstreamDecision {
 	case legacyGitHubNetworkTransient(s):
 		return decisionRetry
 	case containsAnyLower(s, legacyMergeBlockedPhrases()...):
-		return decisionBlocked
+		return decisionMergeHeld
 	default:
 		return decisionDefault
 	}
@@ -298,7 +298,7 @@ func currentMergeDecision(s string) downstreamDecision {
 	case Transient:
 		return decisionRetry
 	case Permanent:
-		return decisionBlocked
+		return decisionMergeHeld
 	default:
 		return decisionDefault
 	}

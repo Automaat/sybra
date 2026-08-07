@@ -394,18 +394,12 @@ func isAlphaNumeric(b byte) bool {
 }
 
 func hasStandaloneCode(lower, code string) bool {
-	for start := 0; start < len(lower); {
-		idx := strings.Index(lower[start:], code)
-		if idx < 0 {
-			return false
-		}
-		idx += start
-		end := idx + len(code)
-		if (idx == 0 || !isAlphaNumeric(lower[idx-1])) &&
-			(end == len(lower) || !isAlphaNumeric(lower[end])) {
+	for token := range strings.FieldsFuncSeq(lower, func(r rune) bool {
+		return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z')
+	}) {
+		if token == code {
 			return true
 		}
-		start = idx + 1
 	}
 	return false
 }
