@@ -3,13 +3,21 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/fake"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func TestGitOutputUsesWorkspaceDirectoryAndDisablesPrompts(t *testing.T) {
@@ -83,16 +91,12 @@ func TestK8sRunnerBaseEnvProjectsSecretRefs(t *testing.T) {
 	if len(env) != 5 {
 		t.Fatalf("env len = %d, want 5: %#v", len(env), env)
 	}
-	secret, ok := env[4]["valueFrom"].(map[string]any)
-	if !ok {
-		t.Fatalf("secret env missing valueFrom: %#v", env[4])
+	ref := env[4].ValueFrom
+	if ref == nil || ref.SecretKeyRef == nil {
+		t.Fatalf("secret env missing secretKeyRef: %#v", env[4])
 	}
-	ref, ok := secret["secretKeyRef"].(map[string]any)
-	if !ok {
-		t.Fatalf("secret env missing secretKeyRef: %#v", secret)
-	}
-	if ref["name"] != "sybra-provider-api-keys" || ref["key"] != "anthropic_api_key" {
-		t.Fatalf("secretKeyRef = %#v", ref)
+	if ref.SecretKeyRef.Name != "sybra-provider-api-keys" || ref.SecretKeyRef.Key != "anthropic_api_key" {
+		t.Fatalf("secretKeyRef = %#v", ref.SecretKeyRef)
 	}
 }
 
@@ -109,15 +113,78 @@ func TestK8sRunnerVolumeSpecProjectsPVCMounts(t *testing.T) {
 	if len(volumes) != 1 || len(mounts) != 1 {
 		t.Fatalf("volume spec len = volumes:%d mounts:%d, want 1/1", len(volumes), len(mounts))
 	}
-	pvc, ok := volumes[0]["persistentVolumeClaim"].(map[string]any)
-	if !ok {
+	if volumes[0].PersistentVolumeClaim == nil {
 		t.Fatalf("volume missing pvc spec: %#v", volumes[0])
 	}
-	if pvc["claimName"] != "sybra-home" {
-		t.Fatalf("claimName = %#v, want sybra-home", pvc["claimName"])
+	if volumes[0].PersistentVolumeClaim.ClaimName != "sybra-home" {
+		t.Fatalf("claimName = %#v, want sybra-home", volumes[0].PersistentVolumeClaim.ClaimName)
 	}
-	if mounts[0]["mountPath"] != "/data/sybra/home" {
-		t.Fatalf("mountPath = %#v, want /data/sybra/home", mounts[0]["mountPath"])
+	if mounts[0].MountPath != "/data/sybra/home" {
+		t.Fatalf("mountPath = %#v, want /data/sybra/home", mounts[0].MountPath)
+	}
+}
+
+func TestK8sCreateJobBuildsTypedManifest(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	r := newFakeK8sJobRunner(client, nil, K8sJobRunnerConfig{
+		Namespace: "sybra-poc",
+		Image:     "busybox:1.36",
+		Command:   []string{"sh", "-c", "echo ok"},
+		TTL:       300,
+		Env:       []K8sJobEnvVar{{Name: "PLAIN", Value: "value"}},
+		SecretEnv: []K8sJobSecretEnvVar{{
+			Name:       "SECRET",
+			SecretName: "sybra-provider-api-keys",
+			SecretKey:  "token",
+		}},
+		Volumes: []K8sJobVolume{{
+			Name:      "sybra-home",
+			ClaimName: "sybra-home",
+			MountPath: "/data/sybra/home",
+			ReadOnly:  true,
+		}},
+	})
+
+	a := &Agent{ID: "agent-1", TaskID: "owner/repo"}
+	if err := r.createJob(t.Context(), "sybra-agent-agent-1", a, RunConfig{Prompt: "hello"}); err != nil {
+		t.Fatalf("createJob: %v", err)
+	}
+	actions := client.Actions()
+	if len(actions) == 0 {
+		t.Fatal("expected create action")
+	}
+	createAction, ok := actions[0].(k8stesting.CreateAction)
+	if !ok {
+		t.Fatalf("first action = %T, want CreateAction", actions[0])
+	}
+	job, ok := createAction.GetObject().(*batchv1.Job)
+	if !ok {
+		t.Fatalf("created object = %T, want *batchv1.Job", createAction.GetObject())
+	}
+	if job.Spec.TTLSecondsAfterFinished == nil || *job.Spec.TTLSecondsAfterFinished != 300 {
+		t.Fatalf("ttlSecondsAfterFinished = %#v, want 300", job.Spec.TTLSecondsAfterFinished)
+	}
+	if got := job.Labels["sybra.task/id"]; got != "repo" {
+		t.Fatalf("task label = %q, want repo", got)
+	}
+	if job.Spec.Template.Spec.SecurityContext == nil || job.Spec.Template.Spec.SecurityContext.RunAsNonRoot == nil || !*job.Spec.Template.Spec.SecurityContext.RunAsNonRoot {
+		t.Fatalf("security context = %#v, want runAsNonRoot=true", job.Spec.Template.Spec.SecurityContext)
+	}
+	container := job.Spec.Template.Spec.Containers[0]
+	if strings.Join(container.Command, " ") != "sh -c echo ok" {
+		t.Fatalf("command = %#v, want injected command", container.Command)
+	}
+	if len(container.Env) != 5 {
+		t.Fatalf("env len = %d, want 5", len(container.Env))
+	}
+	if container.Env[4].ValueFrom == nil || container.Env[4].ValueFrom.SecretKeyRef == nil || container.Env[4].ValueFrom.SecretKeyRef.Name != "sybra-provider-api-keys" {
+		t.Fatalf("secret env = %#v", container.Env[4])
+	}
+	if len(job.Spec.Template.Spec.Volumes) != 1 || job.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim == nil {
+		t.Fatalf("volumes = %#v, want pvc volume", job.Spec.Template.Spec.Volumes)
+	}
+	if len(container.VolumeMounts) != 1 || !container.VolumeMounts[0].ReadOnly {
+		t.Fatalf("volumeMounts = %#v, want readonly pvc mount", container.VolumeMounts)
 	}
 }
 
@@ -255,8 +322,8 @@ func TestAppendK8sPRRepoEnv(t *testing.T) {
 
 			var got string
 			for _, e := range env {
-				if e["name"] == "SYBRA_K8S_PR_REPO" {
-					got, _ = e["value"].(string)
+				if e.Name == "SYBRA_K8S_PR_REPO" {
+					got = e.Value
 				}
 			}
 			if got != tt.want {
@@ -285,33 +352,26 @@ func TestK8sRunnerFailedTTLHonorsConfiguredValue(t *testing.T) {
 }
 
 func TestPatchJobTTLSendsMergePatch(t *testing.T) {
-	var gotMethod, gotContentType, gotPath string
-	var gotBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		gotMethod = req.Method
-		gotContentType = req.Header.Get("Content-Type")
-		gotPath = req.URL.Path
-		_ = json.NewDecoder(req.Body).Decode(&gotBody)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	r := newK8sJobRunner(discardK8sLogger(), K8sJobRunnerConfig{Namespace: "sybra-poc"})
-	r.apiURL = srv.URL
-	r.client = srv.Client()
-	r.token = "test-token"
+	client := fake.NewSimpleClientset(&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "sybra-agent-abc", Namespace: "sybra-poc"}})
+	r := newFakeK8sJobRunner(client, nil, K8sJobRunnerConfig{Namespace: "sybra-poc"})
 
 	if err := r.patchJobTTL(context.Background(), "sybra-agent-abc", 86400); err != nil {
 		t.Fatalf("patchJobTTL: %v", err)
 	}
-	if gotMethod != http.MethodPatch {
-		t.Fatalf("method = %s, want PATCH", gotMethod)
+	actions := client.Actions()
+	if len(actions) == 0 {
+		t.Fatal("expected patch action")
 	}
-	if gotContentType != "application/merge-patch+json" {
-		t.Fatalf("content-type = %s, want application/merge-patch+json", gotContentType)
+	patchAction, ok := actions[len(actions)-1].(k8stesting.PatchAction)
+	if !ok {
+		t.Fatalf("last action = %T, want PatchAction", actions[len(actions)-1])
 	}
-	if want := "/apis/batch/v1/namespaces/sybra-poc/jobs/sybra-agent-abc"; gotPath != want {
-		t.Fatalf("path = %s, want %s", gotPath, want)
+	if patchAction.GetPatchType() != types.MergePatchType {
+		t.Fatalf("patch type = %s, want %s", patchAction.GetPatchType(), types.MergePatchType)
+	}
+	var gotBody map[string]any
+	if err := json.Unmarshal(patchAction.GetPatch(), &gotBody); err != nil {
+		t.Fatalf("unmarshal patch: %v", err)
 	}
 	spec, _ := gotBody["spec"].(map[string]any)
 	if got, want := spec["ttlSecondsAfterFinished"], float64(86400); got != want {
@@ -324,49 +384,35 @@ func TestPatchJobTTLSendsMergePatch(t *testing.T) {
 // that dropped the call, inverted the failedTTL!=ttl guard, or moved it into
 // the success branch would pass every other test in this file.
 func TestK8sRunPatchesFailedJobTTL(t *testing.T) {
-	var patchSeen bool
-	var patchTTL float64
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/namespaces/sybra-poc/pods", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
-	})
-	mux.HandleFunc("/apis/batch/v1/namespaces/sybra-poc/jobs", func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != http.MethodPost {
-			t.Errorf("unexpected method on jobs collection: %s", req.Method)
+	jobName := "sybra-agent-test-agent"
+	client := fake.NewSimpleClientset()
+	client.PrependReactor("get", "jobs", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		getAction, ok := action.(k8stesting.GetAction)
+		if !ok || getAction.GetName() != jobName {
+			return false, nil, nil
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{})
+		return true, &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: "sybra-poc"},
+			Status:     batchv1.JobStatus{Failed: 1},
+		}, nil
 	})
-	mux.HandleFunc("/apis/batch/v1/namespaces/sybra-poc/jobs/sybra-agent-test-agent", func(w http.ResponseWriter, req *http.Request) {
-		switch req.Method {
-		case http.MethodGet:
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": map[string]any{"failed": 1}})
-		case http.MethodPatch:
-			patchSeen = true
-			var body map[string]any
-			_ = json.NewDecoder(req.Body).Decode(&body)
-			spec, _ := body["spec"].(map[string]any)
-			patchTTL, _ = spec["ttlSecondsAfterFinished"].(float64)
-			w.WriteHeader(http.StatusOK)
-		default:
-			t.Errorf("unexpected method on job resource: %s", req.Method)
-		}
-	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-
-	r := newK8sJobRunner(discardK8sLogger(), K8sJobRunnerConfig{Namespace: "sybra-poc", TTL: 300, FailedTTL: 86400})
-	r.apiURL = srv.URL
-	r.client = srv.Client()
-	r.token = "test-token"
+	r := newFakeK8sJobRunner(client, newFakePodClient(client.CoreV1().Pods("sybra-poc")), K8sJobRunnerConfig{Namespace: "sybra-poc", TTL: 300, FailedTTL: 86400})
 
 	m, _ := newTestManager(t)
 	a := &Agent{ID: "test-agent", TaskID: "task-1", Provider: "claude"}
 
 	r.Run(t.Context(), m, a, RunConfig{})
 
-	if !patchSeen {
+	patchAction := lastPatchAction(client.Actions())
+	if patchAction == nil {
 		t.Fatal("expected a PATCH to extend TTL on the failed Job, saw none")
 	}
+	var gotBody map[string]any
+	if err := json.Unmarshal(patchAction.GetPatch(), &gotBody); err != nil {
+		t.Fatalf("unmarshal patch: %v", err)
+	}
+	spec, _ := gotBody["spec"].(map[string]any)
+	patchTTL, _ := spec["ttlSecondsAfterFinished"].(float64)
 	if patchTTL != 86400 {
 		t.Fatalf("patched ttlSecondsAfterFinished = %v, want 86400", patchTTL)
 	}
@@ -378,54 +424,79 @@ func TestK8sRunPatchesFailedJobTTL(t *testing.T) {
 // TestK8sRunSkipsPatchWhenFailedTTLMatchesTTL confirms the guard actually
 // saves the extra API call when there's nothing to extend.
 func TestK8sRunSkipsPatchWhenFailedTTLMatchesTTL(t *testing.T) {
-	var patchSeen bool
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/namespaces/sybra-poc/pods", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
-	})
-	mux.HandleFunc("/apis/batch/v1/namespaces/sybra-poc/jobs", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{})
-	})
-	mux.HandleFunc("/apis/batch/v1/namespaces/sybra-poc/jobs/sybra-agent-test-agent", func(w http.ResponseWriter, req *http.Request) {
-		switch req.Method {
-		case http.MethodGet:
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": map[string]any{"failed": 1}})
-		case http.MethodPatch:
-			patchSeen = true
-			w.WriteHeader(http.StatusOK)
+	jobName := "sybra-agent-test-agent"
+	client := fake.NewSimpleClientset()
+	client.PrependReactor("get", "jobs", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		getAction, ok := action.(k8stesting.GetAction)
+		if !ok || getAction.GetName() != jobName {
+			return false, nil, nil
 		}
+		return true, &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{Name: jobName, Namespace: "sybra-poc"},
+			Status:     batchv1.JobStatus{Failed: 1},
+		}, nil
 	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-
-	r := newK8sJobRunner(discardK8sLogger(), K8sJobRunnerConfig{Namespace: "sybra-poc", TTL: 300, FailedTTL: 300})
-	r.apiURL = srv.URL
-	r.client = srv.Client()
-	r.token = "test-token"
+	r := newFakeK8sJobRunner(client, newFakePodClient(client.CoreV1().Pods("sybra-poc")), K8sJobRunnerConfig{Namespace: "sybra-poc", TTL: 300, FailedTTL: 300})
 
 	m, _ := newTestManager(t)
 	a := &Agent{ID: "test-agent", TaskID: "task-1", Provider: "claude"}
 
 	r.Run(t.Context(), m, a, RunConfig{})
 
-	if patchSeen {
+	if lastPatchAction(client.Actions()) != nil {
 		t.Fatal("expected no PATCH when failedTTL equals ttl — the Job already has that TTL from creation")
 	}
 }
 
 func TestPatchJobTTLReturnsErrorOnNonSuccessStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		w.WriteHeader(http.StatusUnsupportedMediaType)
-		_, _ = w.Write([]byte("boom"))
-	}))
-	defer srv.Close()
-
-	r := newK8sJobRunner(discardK8sLogger(), K8sJobRunnerConfig{Namespace: "sybra-poc"})
-	r.apiURL = srv.URL
-	r.client = srv.Client()
-	r.token = "test-token"
+	client := fake.NewSimpleClientset(&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "sybra-agent-abc", Namespace: "sybra-poc"}})
+	client.PrependReactor("patch", "jobs", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, fmt.Errorf("boom")
+	})
+	r := newFakeK8sJobRunner(client, nil, K8sJobRunnerConfig{Namespace: "sybra-poc"})
 
 	if err := r.patchJobTTL(context.Background(), "sybra-agent-abc", 86400); err == nil {
 		t.Fatal("expected error for non-2xx response")
 	}
+}
+
+type fakePodClient struct {
+	corev1client typedcorev1.PodInterface
+	logs         map[string]string
+	logErr       map[string]error
+}
+
+func newFakePodClient(corev1client typedcorev1.PodInterface) *fakePodClient {
+	return &fakePodClient{corev1client: corev1client, logs: map[string]string{}, logErr: map[string]error{}}
+}
+
+func (p *fakePodClient) List(ctx context.Context, opts metav1.ListOptions) (*corev1.PodList, error) {
+	return p.corev1client.List(ctx, opts)
+}
+
+func (p *fakePodClient) Logs(_ context.Context, podName, _ string) (string, error) {
+	if err := p.logErr[podName]; err != nil {
+		return "", err
+	}
+	return p.logs[podName], nil
+}
+
+func newFakeK8sJobRunner(clientset *fake.Clientset, pods k8sPodClient, cfg K8sJobRunnerConfig) *k8sJobRunner {
+	r := newK8sJobRunner(discardK8sLogger(), cfg)
+	r.jobs = clientset.BatchV1().Jobs(cfg.Namespace)
+	if pods == nil {
+		pods = newFakePodClient(clientset.CoreV1().Pods(cfg.Namespace))
+	}
+	r.pods = pods
+	r.clientErr = nil
+	return r
+}
+
+func lastPatchAction(actions []k8stesting.Action) k8stesting.PatchAction {
+	for i := len(actions) - 1; i >= 0; i-- {
+		if patchAction, ok := actions[i].(k8stesting.PatchAction); ok {
+			return patchAction
+		}
+	}
+	return nil
 }

@@ -1,0 +1,7 @@
+./deviceclass.go
+./doc.go
+./generated_expansion.go
+./resource_client.go
+./resourceclaim.go
+./resourceclaimtemplate.go
+./resourceslice.go

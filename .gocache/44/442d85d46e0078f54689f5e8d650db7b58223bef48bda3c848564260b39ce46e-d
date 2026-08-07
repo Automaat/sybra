@@ -1,0 +1,4 @@
+./doc.go
+./fake_coordination_client.go
+./fake_lease.go
+./fake_leasecandidate.go

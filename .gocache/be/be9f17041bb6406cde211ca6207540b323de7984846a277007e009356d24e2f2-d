@@ -1,0 +1,5 @@
+./devicetaintrule.go
+./doc.go
+./generated_expansion.go
+./resource_client.go
+./resourcepoolstatusrequest.go

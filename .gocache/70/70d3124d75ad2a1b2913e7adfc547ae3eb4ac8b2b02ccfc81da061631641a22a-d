@@ -1,0 +1,5 @@
+./batch_client.go
+./cronjob.go
+./doc.go
+./generated_expansion.go
+./job.go

@@ -1,0 +1,4 @@
+./doc.go
+./fake_authentication_client.go
+./fake_selfsubjectreview.go
+./fake_tokenreview.go

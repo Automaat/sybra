@@ -1,0 +1,16 @@
+./controllerrevision.go
+./deployment.go
+./deploymentcondition.go
+./deploymentspec.go
+./deploymentstatus.go
+./deploymentstrategy.go
+./rollbackconfig.go
+./rollingupdatedeployment.go
+./rollingupdatestatefulsetstrategy.go
+./statefulset.go
+./statefulsetcondition.go
+./statefulsetordinals.go
+./statefulsetpersistentvolumeclaimretentionpolicy.go
+./statefulsetspec.go
+./statefulsetstatus.go
+./statefulsetupdatestrategy.go

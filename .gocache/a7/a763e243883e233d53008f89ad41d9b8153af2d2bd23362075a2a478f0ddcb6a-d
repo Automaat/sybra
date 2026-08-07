@@ -1,0 +1,3 @@
+./clientset_generated.go
+./doc.go
+./register.go
