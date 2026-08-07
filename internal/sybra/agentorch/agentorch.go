@@ -714,9 +714,7 @@ func (o *Orchestrator) runImplementationAgent(ctx context.Context, taskID, promp
 		ag, err = o.agents.Run(runCfg)
 	}
 	if err != nil {
-		if o.runenv != nil && runenv.IsEnvironmentFailure(err) {
-			o.runenv.InvalidateTask(taskID)
-		}
+		o.invalidateRunEnvironmentOnStartError(taskID, err)
 		o.handleProviderGateStartError(taskID, err)
 		if ag, baselineRef, capErr, handled := o.handleCapacityRace(err, t, taskID, effMode, prompt, includeTaskDescription, skipWT, opts); handled {
 			if ag != nil {
@@ -1428,6 +1426,7 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 	}
 	ag, err := o.agents.Run(runCfg)
 	if err != nil {
+		o.invalidateRunEnvironmentOnStartError(taskID, err)
 		return translatePoolBusy(err)
 	}
 
@@ -1446,6 +1445,12 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 		o.logger.Error("task.add-run", "task_id", taskID, "err", err)
 	}
 	return nil
+}
+
+func (o *Orchestrator) invalidateRunEnvironmentOnStartError(taskID string, err error) {
+	if o.runenv != nil && runenv.IsEnvironmentFailure(err) {
+		o.runenv.InvalidateTask(taskID)
+	}
 }
 
 func fallbackDispatchDir(dir string) string {
