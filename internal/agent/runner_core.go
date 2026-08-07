@@ -62,7 +62,15 @@ type sandboxSpec struct {
 	// carved back out rather than the directory being narrowed (#2779).
 	stateDenied []string
 	tmp         string
-	sharedCache string
+	// tmpAliasPattern is darwin's escaped Seatbelt regex granting only the
+	// provider-owned helper entries under the resolved /tmp alias
+	// (claude-<uid>/, claude-<session>-cwd), which sit outside $TMPDIR on
+	// darwin. It is deliberately not a root: /private/tmp is shared with every
+	// process on the host, so a subpath grant there would let one task rewrite
+	// or unlink another task's temp files. Empty on platforms or runs with no
+	// safe alias to add.
+	tmpAliasPattern string
+	sharedCache     string
 	// readOnlyDir, when non-empty, is re-locked read-only after every writable
 	// root above is bound — see wrapInvocation. It must never be granted
 	// through worktree/sandboxHome/tmp/sharedCache: those are broad roots (tmp

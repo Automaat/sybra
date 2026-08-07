@@ -190,6 +190,18 @@ func TestSandboxProfile_ReferencesAppSupport(t *testing.T) {
 	}
 }
 
+func TestSandboxProfile_ReferencesTmpAliasPattern(t *testing.T) {
+	profile := string(agentSandboxProfile)
+	if !strings.Contains(profile, `(regex (param "TMP_ALIAS_PATTERN"))`) {
+		t.Fatal("profile has no TMP_ALIAS_PATTERN write rule, so the resolved alias grants nothing")
+	}
+	// A subpath grant on the alias would open all of /private/tmp, which is
+	// shared with every process on the host — see sandboxTmpAliasPattern.
+	if strings.Contains(profile, `(subpath (param "TMP_ALIAS`) {
+		t.Fatal("profile grants the /tmp alias as a subpath, re-opening every sibling task's temp files")
+	}
+}
+
 // A linked worktree's actual gitdir (HEAD, index, logs/HEAD) lives outside
 // WORKTREE, under the shared bare clone's worktrees/<branch>/ subdirectory,
 // and a real commit also needs write on the shared object store plus the

@@ -518,12 +518,13 @@ func (m *Manager) buildEnforceSpec(cfg *RunConfig, gitCtx context.Context, workt
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
 	}
-	cfg.sandbox = enforceSpec(canonWorktree, gitMetadata, canonSandboxHome, canonTmp, canonSharedCache, profilePath, "", gitRoots, gitOverlay)
+	cfg.sandbox = enforceSpec(canonWorktree, gitMetadata, canonSandboxHome, canonTmp, sandboxTmpAliasPattern(canonTmp), canonSharedCache, profilePath, "", gitRoots, gitOverlay)
 	if err := m.applySandboxReadMode(cfg); err != nil {
 		return err
 	}
 	m.logger.Info("agent.sandbox.enforce", "task_id", cfg.TaskID,
 		"worktree", canonWorktree, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
+		"tmp_alias_pattern", cfg.sandbox.tmpAliasPattern,
 		"git_metadata", cfg.sandbox.gitMetadata,
 		"git_shared", cfg.sandbox.gitShared,
 		"git_readonly", cfg.sandbox.gitReadonly,
@@ -566,9 +567,11 @@ func (m *Manager) injectReadOnlyProcessSandbox(cfg *RunConfig, mode string) erro
 		return nil
 	}
 	if mode != "enforce" {
+		logTmp := m.reportSandboxRoot(cfg.TaskID, "tmp", tmp)
 		m.logger.Info("agent.sandbox.report.readonly_dir", "task_id", cfg.TaskID, "dir", dir,
 			"sandbox_home", m.reportSandboxRoot(cfg.TaskID, "sandbox_home", sandboxHome),
-			"tmp", m.reportSandboxRoot(cfg.TaskID, "tmp", tmp),
+			"tmp", logTmp,
+			"tmp_alias_pattern", sandboxTmpAliasPattern(logTmp),
 			"shared_cache", m.reportSandboxRoot(cfg.TaskID, "shared_cache", sharedCache))
 		cfg.sandbox = sandboxSpec{mode: "off"}
 		return nil
@@ -612,9 +615,10 @@ func (m *Manager) injectReadOnlyProcessSandbox(cfg *RunConfig, mode string) erro
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
 	}
-	cfg.sandbox = enforceSpec("", nil, canonSandboxHome, canonTmp, canonSharedCache, profilePath, canonDir, gitSandboxRoots{}, gitSandboxOverlay{})
+	cfg.sandbox = enforceSpec("", nil, canonSandboxHome, canonTmp, sandboxTmpAliasPattern(canonTmp), canonSharedCache, profilePath, canonDir, gitSandboxRoots{}, gitSandboxOverlay{})
 	m.logger.Info("agent.sandbox.enforce.readonly_dir", "task_id", cfg.TaskID,
 		"dir", canonDir, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
+		"tmp_alias_pattern", cfg.sandbox.tmpAliasPattern,
 		"shared_cache", canonSharedCache, "claude_state", cfg.sandbox.claudeState,
 		"codex_state", cfg.sandbox.codexState, "copilot_state", cfg.sandbox.copilotState,
 		"opencode_state", cfg.sandbox.opencodeState, "tool_cache", cfg.sandbox.toolCache,
@@ -630,7 +634,8 @@ func (m *Manager) logProcessSandboxReport(taskID, worktree, sandboxHome, tmp, sh
 	logTmp := m.reportSandboxRoot(taskID, "tmp", tmp)
 	logShared := m.reportSandboxRoot(taskID, "shared_cache", sharedCache)
 	m.logger.Info("agent.sandbox.report", "task_id", taskID,
-		"worktree", logWorktree, "sandbox_home", logSandboxHome, "tmp", logTmp, "shared_cache", logShared,
+		"worktree", logWorktree, "sandbox_home", logSandboxHome, "tmp", logTmp,
+		"tmp_alias_pattern", sandboxTmpAliasPattern(logTmp), "shared_cache", logShared,
 		"git_admin", gitRoots.adminDir, "git_common", gitRoots.commonDir, "git_worktrees", gitRoots.worktreesDir)
 }
 
@@ -653,7 +658,7 @@ func canonicalizeCreatedRoot(root string, perm os.FileMode) (string, error) {
 func enforceSpec(
 	worktree string,
 	gitMetadata []string,
-	sandboxHome, tmp, sharedCache, profilePath, readOnlyDir string,
+	sandboxHome, tmp, tmpAliasPattern, sharedCache, profilePath, readOnlyDir string,
 	gitRoots gitSandboxRoots,
 	gitOverlay gitSandboxOverlay,
 ) sandboxSpec {
@@ -667,6 +672,7 @@ func enforceSpec(
 		gitReadonly:                 slices.Clone(gitRoots.sharedReadonly),
 		sandboxHome:                 sandboxHome,
 		tmp:                         tmp,
+		tmpAliasPattern:             tmpAliasPattern,
 		sharedCache:                 sharedCache,
 		profilePath:                 profilePath,
 		readOnlyDir:                 readOnlyDir,

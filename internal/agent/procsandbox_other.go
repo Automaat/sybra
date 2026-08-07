@@ -25,6 +25,9 @@ func canonicalizeRoot(root string) (string, error) {
 	return "", fmt.Errorf("sandbox: OS-level sandbox unsupported on this host")
 }
 
+// sandboxTmpAliasPattern is darwin-only; no OS-level sandbox exists here.
+func sandboxTmpAliasPattern(string) string { return "" }
+
 // wrapInvocation is a no-op passthrough on non-darwin.
 func wrapInvocation(name string, args []string, _ *RunConfig) (wrappedName string, wrappedArgs []string) {
 	return name, args

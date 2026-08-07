@@ -14,6 +14,16 @@
   (subpath (param "WORKTREE"))
   (subpath (param "SANDBOX_HOME"))
   (subpath (param "TMP"))
+  ;; TMP_ALIAS_PATTERN covers the provider-owned helper entries that live
+  ;; directly under darwin's stable /tmp entrypoint (claude-<uid>/,
+  ;; claude-<session>-cwd) even though $TMPDIR points at /var/folders/...
+  ;; A regex, never a subpath on /private/tmp: that directory is shared by
+  ;; every process on the host, so a subpath grant would let one task
+  ;; rewrite or unlink another task's temp files. Seatbelt matches the
+  ;; resolved path, so a planted /tmp/claude-* symlink still lands outside
+  ;; the pattern and stays denied. Unused slots resolve to the inert
+  ;; sentinel, so non-darwin/no-alias runs stay unchanged.
+  (regex (param "TMP_ALIAS_PATTERN"))
   (subpath (param "SHARED_CACHE"))
   (subpath (param "CLAUDE_STATE"))
   (subpath (param "CODEX_STATE"))

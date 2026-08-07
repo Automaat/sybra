@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -93,6 +94,48 @@ func canonicalizeRoot(root string) (string, error) {
 		return "", fmt.Errorf("sandbox: resolve root %q: %w", root, err)
 	}
 	return resolved, nil
+}
+
+// tmpAliasOwnedPrefix is the filename prefix of the provider-owned entries
+// that live directly under darwin's /tmp rather than under $TMPDIR: Claude
+// Code's per-user scratchpad (claude-<uid>/) and the per-session shell cwd
+// markers (claude-<session>-cwd) that made an agent retry an impossible write
+// instead of progressing. Only these are re-opened — see sandboxTmpAliasPattern.
+const tmpAliasOwnedPrefix = "claude-"
+
+// sandboxTmpAliasPattern returns the Seatbelt regex granting the provider-owned
+// helper entries under darwin's stable /tmp entrypoint, or "" when there is no
+// alias to add.
+//
+// Deliberately a regex over `<tmp>/claude-*` rather than a subpath grant on
+// /private/tmp: that directory is shared by every process on the host, so
+// opening it would let one task rewrite or unlink another task's temp files —
+// exactly the per-task write boundary this sandbox exists to enforce. Anything
+// else an agent wants a scratch file for belongs under $TMPDIR, which is
+// already the whole TMP root.
+//
+// Seatbelt matches the resolved path, so a /tmp/claude-* symlink planted by
+// another local process resolves outside the pattern and stays denied.
+func sandboxTmpAliasPattern(canonTmp string) string {
+	if strings.TrimSpace(canonTmp) == "" {
+		return ""
+	}
+	const alias = "/tmp"
+	resolved, err := canonicalizeRoot(alias)
+	if err != nil {
+		return ""
+	}
+	// A canonical temp root that already *is* the alias needs nothing extra:
+	// the TMP subpath grant covers it. Only the darwin split — $TMPDIR under
+	// /private/var/folders while /tmp resolves to /private/tmp — needs the
+	// second, narrow grant.
+	if canonTmp == resolved {
+		return ""
+	}
+	if !strings.HasPrefix(canonTmp, "/private/var/folders/") || resolved != "/private/tmp" {
+		return ""
+	}
+	return "^" + regexp.QuoteMeta(resolved+"/"+tmpAliasOwnedPrefix) + `[^/]*(/.*)?$`
 }
 
 // wrapInvocation transposes name/args into a sandbox-exec invocation when
@@ -200,6 +243,7 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 		{"WORKTREE", cfg.sandbox.worktree},
 		{"SANDBOX_HOME", home},
 		{"TMP", cfg.sandbox.tmp},
+		{"TMP_ALIAS_PATTERN", cfg.sandbox.tmpAliasPattern},
 		{"SHARED_CACHE", cfg.sandbox.sharedCache},
 		{"CLAUDE_STATE", sandboxRootOr(cfg.sandbox.claudeState, home)},
 		{"CODEX_STATE", sandboxRootOr(cfg.sandbox.codexState, home)},

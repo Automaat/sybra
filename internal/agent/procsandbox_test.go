@@ -5,6 +5,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -111,11 +112,12 @@ func TestWrapInvocation_EnforceModeWraps(t *testing.T) {
 		t.Fatalf("materializeSandboxProfile: %v", err)
 	}
 	cfg := &RunConfig{sandbox: sandboxSpec{
-		mode:        "enforce",
-		worktree:    "/private/tmp/wt",
-		sandboxHome: "/private/tmp/home",
-		tmp:         "/private/tmp",
-		profilePath: profile,
+		mode:            "enforce",
+		worktree:        "/private/tmp/wt",
+		sandboxHome:     "/private/tmp/home",
+		tmp:             "/private/tmp",
+		tmpAliasPattern: `^/private/tmp/claude-[^/]*(/.*)?$`,
+		profilePath:     profile,
 	}}
 	name, args := wrapInvocation("claude", []string{"-p", "hi"}, cfg)
 	if name != sandboxExecPath {
@@ -127,10 +129,58 @@ func TestWrapInvocation_EnforceModeWraps(t *testing.T) {
 		"WORKTREE=/private/tmp/wt",
 		"SANDBOX_HOME=/private/tmp/home",
 		"TMP=/private/tmp",
+		`TMP_ALIAS_PATTERN=^/private/tmp/claude-[^/]*(/.*)?$`,
 		"claude -p hi",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("wrapped args %v missing %q", args, want)
 		}
+	}
+}
+
+func TestSandboxTmpAliasPattern_GrantsOnlyProviderOwnedEntries(t *testing.T) {
+	got := sandboxTmpAliasPattern("/private/var/folders/zz/abcd/T")
+	want := `^/private/tmp/claude-[^/]*(/.*)?$`
+	if got != want {
+		t.Fatalf("sandboxTmpAliasPattern() = %q, want %q", got, want)
+	}
+	re, err := regexp.Compile(got)
+	if err != nil {
+		t.Fatalf("compile %q: %v", got, err)
+	}
+	for _, allowed := range []string{
+		"/private/tmp/claude-501",
+		"/private/tmp/claude-501/session/shell.json",
+		"/private/tmp/claude-abc123-cwd",
+	} {
+		if !re.MatchString(allowed) {
+			t.Fatalf("provider-owned helper path %q not granted by %q", allowed, got)
+		}
+	}
+	// The whole point of the regex: /private/tmp is shared with every process
+	// on the host, so a sibling task's temp file must stay unwritable.
+	for _, denied := range []string{
+		"/private/tmp",
+		"/private/tmp/other-task-artifact",
+		"/private/tmp/com.apple.launchd.XYZ/sock",
+		"/private/tmp/notclaude-1",
+		"/private/var/tmp/claude-501",
+		"/etc/passwd",
+	} {
+		if re.MatchString(denied) {
+			t.Fatalf("unrelated temp path %q granted by %q", denied, got)
+		}
+	}
+}
+
+func TestSandboxTmpAliasPattern_NoAliasWhenTempRootIsAlreadyTmp(t *testing.T) {
+	if got := sandboxTmpAliasPattern("/private/tmp"); got != "" {
+		t.Fatalf("sandboxTmpAliasPattern() = %q when TMP already covers /tmp, want empty", got)
+	}
+}
+
+func TestSandboxTmpAliasPattern_UnrelatedRootDenied(t *testing.T) {
+	if got := sandboxTmpAliasPattern("/opt/not-temp"); got != "" {
+		t.Fatalf("sandboxTmpAliasPattern() = %q for unrelated root, want empty", got)
 	}
 }

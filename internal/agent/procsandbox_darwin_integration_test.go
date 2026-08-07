@@ -348,7 +348,7 @@ func buildEnforceCfg(t *testing.T, worktree string) *RunConfig {
 	if err := prepareGitLooseObjectDirs(gitRoots.objectDir); err != nil {
 		t.Fatalf("prepare loose object dirs: %v", err)
 	}
-	spec := enforceSpec(wtCanon, nil, wtCanon, wtCanon, wtCanon, profilePath, "", gitRoots, gitSandboxOverlay{})
+	spec := enforceSpec(wtCanon, nil, wtCanon, wtCanon, "", wtCanon, profilePath, "", gitRoots, gitSandboxOverlay{})
 	cfg := &RunConfig{sandbox: spec}
 	if err := injectSandboxGitEnv(cfg, gitRoots, gitSandboxOverlay{}); err != nil {
 		t.Fatalf("inject sandbox git env: %v", err)
@@ -455,6 +455,115 @@ func TestSandboxEnforce_LargeFetchUnpacksLooseObjects(t *testing.T) {
 		t.Fatalf("large fetch wrote shared pack/info state instead of loose objects\nbefore: %s\nafter: %s", before, after)
 	}
 	runGitOrFatal(t, wt, "cat-file", "-e", "refs/remotes/origin/main^{commit}")
+}
+
+// The /tmp alias grant is the narrowest thing that fixes the measured helper
+// denial: provider-owned entries under /tmp are writable, everything else under
+// the same shared directory is not. The sibling probe is the load-bearing half —
+// /private/tmp is shared with every process on the host, so a subpath grant
+// there would hand each agent write and unlink access to every other task's
+// temp files.
+func TestSandboxEnforce_TmpAliasAllowsHelpersButKeepsSharedTmpReadOnly(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
+	}
+	worktree := t.TempDir()
+	sandboxHome := t.TempDir()
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return sandboxHome, nil },
+	})
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		TaskID:      "task-darwin-tmp-alias",
+		Mode:        "headless",
+		Dir:         worktree,
+		SandboxMode: "enforce",
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	wantPattern := `^/private/tmp/claude-[^/]*(/.*)?$`
+	if got := cfg.sandbox.tmpAliasPattern; got != wantPattern {
+		t.Fatalf("sandbox tmpAliasPattern = %q, want %q", got, wantPattern)
+	}
+
+	// A sibling task's temp file, already on disk before the agent starts.
+	const siblingContent = "owned-by-another-task\n"
+	sibling := filepath.Join("/tmp", fmt.Sprintf("sybra-enforce-sibling-probe-%d", os.Getpid()))
+	if err := os.WriteFile(sibling, []byte(siblingContent), 0o600); err != nil {
+		t.Fatalf("seed sibling temp file: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(sibling) })
+
+	canonFile := filepath.Join(cfg.sandbox.tmp, "sybra-enforce-canon-probe")
+	// Shaped like the helper markers that made an agent loop on an impossible
+	// write: claude-<session>-cwd, directly under /tmp rather than $TMPDIR.
+	helperFile := filepath.Join("/tmp", fmt.Sprintf("claude-sybra-enforce-%d-cwd", os.Getpid()))
+	newSibling := filepath.Join("/tmp", fmt.Sprintf("sybra-enforce-new-probe-%d", os.Getpid()))
+	varTmpFile := filepath.Join("/private/var/tmp", "sybra-enforce-denied-probe")
+	for _, path := range []string{canonFile, helperFile, newSibling, varTmpFile} {
+		_ = os.Remove(path)
+		t.Cleanup(func() { _ = os.Remove(path) })
+	}
+
+	probes := []struct {
+		label string
+		path  string
+		write bool
+	}{
+		{"canon", canonFile, true},
+		{"helper", helperFile, true},
+		{"sibling", sibling, false},
+		{"new_sibling", newSibling, false},
+		{"var_tmp", varTmpFile, false},
+	}
+	var script strings.Builder
+	script.WriteString("probe() { if echo probe > \"$1\" 2>/dev/null; then echo \"WROTE:$2\"; else echo \"DENIED:$2\"; fi; }\n")
+	for _, p := range probes {
+		fmt.Fprintf(&script, "probe %q %q\n", p.path, p.label)
+	}
+	fmt.Fprintf(&script, "if rm -f %q 2>/dev/null && [ ! -e %q ]; then echo UNLINKED:sibling; else echo KEPT:sibling; fi\n", sibling, sibling)
+
+	cmd := newProviderCmd(context.Background(), &cfg, false, "sh", "-c", script.String())
+	cmd.Env = append(os.Environ(), cfg.ExtraEnv...)
+	out, err := cmd.CombinedOutput()
+	got := string(out)
+	if err != nil {
+		t.Fatalf("tmp alias probe failed: %v: %s", err, got)
+	}
+	for _, p := range probes {
+		want := "DENIED:" + p.label
+		if p.write {
+			want = "WROTE:" + p.label
+		}
+		if !strings.Contains(got, want) {
+			t.Fatalf("probe %s: want %q in output, got %q", p.label, want, got)
+		}
+	}
+	if !strings.Contains(got, "KEPT:sibling") {
+		t.Fatalf("sandboxed agent unlinked another task's temp file: %q", got)
+	}
+	for _, p := range probes {
+		_, statErr := os.Stat(p.path)
+		if p.write {
+			if statErr != nil {
+				t.Fatalf("expected writable temp path %q missing: %v", p.path, statErr)
+			}
+			continue
+		}
+		if p.path == sibling {
+			continue
+		}
+		if !os.IsNotExist(statErr) {
+			t.Fatalf("unrelated temp path %q became writable: %v", p.path, statErr)
+		}
+	}
+	kept, err := os.ReadFile(sibling)
+	if err != nil {
+		t.Fatalf("read sibling temp file: %v", err)
+	}
+	if string(kept) != siblingContent {
+		t.Fatalf("sibling temp file rewritten by sandboxed agent: %q", string(kept))
+	}
 }
 
 // TestSandboxEnforce_BlocksSharedCloneMaintenance proves that provider-run

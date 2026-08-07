@@ -50,6 +50,10 @@ func canonicalizeRoot(root string) (string, error) {
 	return resolved, nil
 }
 
+// sandboxTmpAliasPattern is darwin-only: on Linux /tmp is os.TempDir() itself,
+// already covered by the tmp write root.
+func sandboxTmpAliasPattern(string) string { return "" }
+
 func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName string, wrappedArgs []string) {
 	if cfg == nil || cfg.sandbox.mode != "enforce" {
 		return name, args
