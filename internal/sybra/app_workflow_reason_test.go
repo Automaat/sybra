@@ -75,6 +75,42 @@ func TestTaskAdapterUpdateTaskStatusPreservesSameStatusReasonWhenReasonEmpty(t *
 	}
 }
 
+func TestTaskAdapterUpdateTaskStatusClearsReasonOnStatusChangeWhenReasonEmpty(t *testing.T) {
+	t.Parallel()
+
+	store, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	created, err := tasks.CreateFull("clear transitioned reason", "", "headless", task.Update{
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+		StatusReason:    task.Ptr("manual verification blocker: waiting for linked PR"),
+		PRNumber:        task.Ptr(42),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ta := &taskAdapter{tasks: tasks}
+	if err := ta.UpdateTaskStatus(created.ID, task.StatusInReview, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != task.StatusInReview {
+		t.Fatalf("Status = %q, want %q", updated.Status, task.StatusInReview)
+	}
+	if updated.StatusReason != "" {
+		t.Fatalf("StatusReason = %q, want empty after status transition", updated.StatusReason)
+	}
+}
+
 func TestTaskAdapterUpdateTaskStatusSynthesizesHumanRequiredReasonFromLatestRun(t *testing.T) {
 	t.Parallel()
 
