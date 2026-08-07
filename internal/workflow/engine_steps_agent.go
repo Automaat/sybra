@@ -276,7 +276,7 @@ func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
 	}
 }
 
-func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, effectIDs ...EffectID) error {
+func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, effectIDs ...EffectID) (runErr error) {
 	prepareTestVerdictAttemptVars(wfExec, step.ID, ctx.Task.Body)
 	// Seed the sidecar dir before anything renders a template. Setting it only
 	// after dispatch would leave the first run of a verifier role resolving
@@ -292,6 +292,36 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	}
 	unlockRoute := e.routeLocks.LockLocal(taskID)
 	defer unlockRoute()
+
+	claimedEffectID := EffectID{}
+	if len(effectIDs) > 0 {
+		claimedEffectID = effectIDs[0]
+	}
+	agentStarted := false
+	defer func() {
+		releaseClaim := func() {
+			if claimedEffectID.IsZero() || agentStarted {
+				return
+			}
+			if _, relErr := e.releaseClaimedEffect(taskID, claimedEffectID); relErr != nil {
+				if effectClaimFence(relErr) {
+					return
+				}
+				if runErr == nil {
+					runErr = fmt.Errorf("release claimed effect: %w", relErr)
+					return
+				}
+				runErr = errors.Join(runErr, fmt.Errorf("release claimed effect: %w", relErr))
+			}
+		}
+		if recovered := recover(); recovered != nil {
+			releaseClaim()
+			panic(recovered)
+		}
+		if runErr != nil {
+			releaseClaim()
+		}
+	}()
 
 	mode := resolveRunAgentMode(step.Config.Mode, ctx)
 	if admit, reason := e.agents.AdmitDispatch(taskID, step.Config.Role, mode); !admit {
@@ -366,14 +396,6 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 	// blocking still sees a durable "dispatch in progress" claim via
 	// routeStepPending. Do not hold e.mu across StartAgent: review recovery can
 	// legitimately try to queue another workflow while the launcher is blocked.
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			if len(effectIDs) > 0 {
-				e.clearPendingStepEffect(taskID, effectIDs[0])
-			}
-			panic(recovered)
-		}
-	}()
 	agentID, startedDir, baselineRef, err := e.agents.StartAgent(taskID, step.Config.Role, mode, model, provider, prompt, dir, step.Config.AllowedTools, step.Config.NeedsWorktree, oneShot, step.Config.OutputSchema, cleanRetryRef, assignment)
 	if err != nil {
 		if parked, parkErr := e.parkRunAgentStartError(taskID, step.ID, wfExec, err); parked {
@@ -381,6 +403,7 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		}
 		return fmt.Errorf("start agent: %w", err)
 	}
+	agentStarted = true
 	return e.persistStartedAgent(taskID, step, wfExec, agentID, provider, startedDir, baselineRef, cleanRetryKey, cleanRetryRef, dir)
 }
 

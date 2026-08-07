@@ -505,6 +505,40 @@ func (a *taskAdapter) CompleteWorkflowEffect(id string, claim workflow.EffectCla
 	return result, nil
 }
 
+func (a *taskAdapter) ReleaseWorkflowEffect(id string, claim workflow.EffectClaim) (workflow.EffectClaimResult, error) {
+	var result workflow.EffectClaimResult
+	var fenceErr error
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		if cur.Workflow == nil {
+			return task.TransitionIntent{}, fmt.Errorf("task %s has no workflow", id)
+		}
+		wf := cur.Workflow.Clone()
+		result.Workflow = wf
+		claimResult, claimErr := wf.ReleaseEffect(claim)
+		claimResult.Workflow = wf
+		result = claimResult
+		if claimErr != nil {
+			if errors.Is(claimErr, workflow.ErrEffectClaimLost) || errors.Is(claimErr, workflow.ErrEffectAlreadyComplete) {
+				fenceErr = claimErr
+				return task.TransitionIntent{}, errWorkflowEffectNoPersist
+			}
+			return task.TransitionIntent{}, claimErr
+		}
+		return task.TransitionIntent{
+			ToStatus: cur.Status,
+			Actor:    "workflow.engine.release_effect",
+			Extra:    task.Update{Workflow: &wf},
+		}, nil
+	})
+	if err != nil {
+		if errors.Is(err, errWorkflowEffectNoPersist) {
+			return result, fenceErr
+		}
+		return workflow.EffectClaimResult{}, err
+	}
+	return result, nil
+}
+
 func (a *taskAdapter) ConsumeSupervisorSteer(taskID, prompt string) (string, error) {
 	return agentorch.PrependSupervisorSteer(a.tasks, taskID, prompt)
 }

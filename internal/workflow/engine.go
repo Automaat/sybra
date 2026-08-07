@@ -175,6 +175,7 @@ type TaskProvider interface {
 	SetWorkflowIf(id string, fence WorkflowWriteFence, wf *Execution) (bool, error)
 	ClaimWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
 	CompleteWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
+	ReleaseWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
 	// ConsumeSupervisorSteer prepends a pending watchdog headless-nudge steer to
 	// prompt and clears it, so a re-dispatched (resumed) step's agent carries the
 	// correction exactly once. Returns prompt unchanged when none is pending.

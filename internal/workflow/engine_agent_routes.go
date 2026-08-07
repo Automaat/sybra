@@ -334,25 +334,3 @@ func (e *Engine) clearAgentStepsForTask(taskID string) {
 	_ = e.tasks.SetWorkflow(taskID, t.Workflow)
 	e.clearPendingAgentStepsForTask(taskID)
 }
-
-func (e *Engine) clearPendingStepEffect(taskID string, id EffectID) {
-	t, err := e.tasks.GetTask(taskID)
-	if err != nil || t.Workflow == nil || id.IsZero() {
-		return
-	}
-	kept := t.Workflow.EffectLog[:0]
-	changed := false
-	for i := range t.Workflow.EffectLog {
-		rec := t.Workflow.EffectLog[i]
-		if rec.ID.Equal(id) && rec.CompletedAt == nil {
-			changed = true
-			continue
-		}
-		kept = append(kept, rec)
-	}
-	if !changed {
-		return
-	}
-	t.Workflow.EffectLog = kept
-	_ = e.tasks.SetWorkflow(taskID, t.Workflow)
-}
