@@ -121,7 +121,7 @@ fi
 token=${GH_TOKEN:-$GITHUB_TOKEN}
 if [ '%[4]s' = verifier ]; then
 	shim_path=$(command -v "$0" 2>/dev/null || printf '%%s\n' "$0")
-	token_file=${shim_path%%/*}/.token
+	token_file=$(dirname "$shim_path")/.token
 	if [ -f "$token_file" ]; then
 		token="$(cat "$token_file" 2>/dev/null || true)"
 	fi
