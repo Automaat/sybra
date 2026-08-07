@@ -186,8 +186,8 @@ func (m *Manager) Get(id string) (Task, error) { return m.store.Get(id) }
 
 // ProbeMutationTransport verifies that the task exists and that the same
 // process-local plus cross-process lock used by every Manager mutation can be
-// acquired. It intentionally performs no write, so certification does not
-// change task timestamps or emit lifecycle events.
+// acquired. Its temporary write verifies real directory mutability without
+// changing task contents/timestamps or emitting lifecycle events.
 func (m *Manager) ProbeMutationTransport(id string) error {
 	if _, err := m.store.Get(id); err != nil {
 		return err
@@ -218,18 +218,28 @@ func (m *Manager) MutationTransportIdentity(id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	parts := make([]string, 0, 2)
-	for _, path := range []string{m.store.Dir(), t.FilePath} {
-		resolved, resolveErr := filepath.EvalSymlinks(path)
-		if resolveErr != nil {
-			return "", resolveErr
-		}
-		info, statErr := os.Stat(resolved)
-		if statErr != nil {
-			return "", statErr
-		}
-		parts = append(parts, fmt.Sprintf("%s|%s|%d|%d", resolved, info.Mode(), info.Size(), info.ModTime().UnixNano()))
+	resolvedDir, err := filepath.EvalSymlinks(m.store.Dir())
+	if err != nil {
+		return "", err
 	}
+	dirInfo, err := os.Stat(resolvedDir)
+	if err != nil {
+		return "", err
+	}
+	// Do not include directory mtime/size: ProbeMutationTransport's own
+	// create-remove write changes them. Path + permission mode still detects
+	// the route changes certification needs to invalidate (replacement through
+	// a symlink and writable/read-only transitions).
+	parts := []string{fmt.Sprintf("%s|%s", resolvedDir, dirInfo.Mode())}
+	resolvedTask, err := filepath.EvalSymlinks(t.FilePath)
+	if err != nil {
+		return "", err
+	}
+	taskInfo, err := os.Stat(resolvedTask)
+	if err != nil {
+		return "", err
+	}
+	parts = append(parts, fmt.Sprintf("%s|%s|%d|%d", resolvedTask, taskInfo.Mode(), taskInfo.Size(), taskInfo.ModTime().UnixNano()))
 	return strings.Join(parts, "\x00"), nil
 }
 
