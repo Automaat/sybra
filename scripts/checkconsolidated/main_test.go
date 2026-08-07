@@ -2,7 +2,6 @@ package main
 
 import (
 	"go/ast"
-	"go/importer"
 	"go/parser"
 	"go/token"
 	"testing"
@@ -18,7 +17,7 @@ func findingsFor(t *testing.T, path, source string) []finding {
 	if err != nil {
 		t.Fatalf("parse fixture: %v", err)
 	}
-	info := collectTypeInfo("fixture", fset, []*ast.File{file}, importer.Default())
+	info := collectTypeInfo("fixture", fset, []*ast.File{file}, nil)
 	return inspectFile(fset, path, file, info)
 }
 
@@ -86,6 +85,17 @@ func truncate(s message, boundary int) (message, string) {
 `)
 	if got := countKind(findings, kindStringTruncation); got != 2 {
 		t.Fatalf("truncation findings = %d, want 2: %#v", got, findings)
+	}
+}
+
+func TestDetectsImportedNamedStringWhenTypeIsUnresolved(t *testing.T) {
+	t.Parallel()
+	findings := findingsFor(t, "internal/example/drift.go", `package example
+import "encoding/json"
+func truncate(s json.Number) string { return s[:8] }
+`)
+	if got := countKind(findings, kindStringTruncation); got != 1 {
+		t.Fatalf("truncation findings = %d, want 1: %#v", got, findings)
 	}
 }
 

@@ -278,6 +278,30 @@ func buildAllowances() map[allowanceKey]allowance {
 	add(kindStringTruncation, "internal/sybra/svc_agents.go", "Conservative unresolved tuple-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/sybra/svc_tasks.go", "Conservative unresolved tuple-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 4})
 
+	// A slice whose base type remains unresolved is conservatively treated as a
+	// possible imported named string. These exact existing unknown-base slices
+	// keep that fail-closed policy reviewable without weakening production scans.
+	add(kindStringTruncation, "cmd/fake-claude/main.go", "Unresolved imported/base type reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "cmd/fake-codex/main.go", "Unresolved imported/base type reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "cmd/fake-copilot/main.go", "Unresolved imported/base type reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "cmd/sybra-cli/evaluation.go", "Unresolved imported/base type reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "cmd/sybra-cli/main.go", "Unresolved imported/base type reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/agent/orphan_sweep_other.go", "Unresolved imported/base type reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/experience/record_test.go", "Unresolved imported/base type reaches a controlled non-string test-fixture slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/learning/store.go", "Unresolved imported/base type reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/monitor/detector.go", "Unresolved imported/base type reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/project/conflict_recovery.go", "Unresolved imported/base type reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/provider/probes.go", "Unresolved imported/base type reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/sybra/app_human_review.go", "Unresolved imported/base type reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/sybra/e2e_bootstrap_test.go", "Unresolved imported/base type reaches a controlled non-string test-fixture slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/sybra/svc_tasks_test.go", "Unresolved imported/base type reaches a controlled non-string test-fixture slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/sybra/svc_tasks.go", "Unresolved imported/base type reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/workflow/engine_parallel_test.go", "Unresolved imported/base type reaches a controlled non-string test-fixture slice.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/workflow/engine_steps_prfix.go", "Unresolved imported/base type reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/workflow/engine_steps_verify_checks_test.go", "Unresolved imported/base type reaches a controlled non-string test-fixture slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "scripts/checkatomicwrite/main.go", "Unresolved imported/base type reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "scripts/checkgitexec/main.go", "Unresolved imported/base type reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+
 	// Test fixtures intentionally spell persisted wire values. They remain
 	// exact path/value/count entries so adding or removing a literal forces an
 	// explicit review of this ledger instead of receiving a blanket test exemption.
@@ -684,7 +708,7 @@ func inspectFile(fset *token.FileSet, path string, file *ast.File, info *types.I
 		switch n := node.(type) {
 		case *ast.SliceExpr:
 			if !strings.HasPrefix(path, "internal/textutil/") && (n.Low != nil || n.High != nil) &&
-				(isStringExpr(n.X, info, stringNames, stringFields) || isUnresolvedCall(n.X, info)) {
+				(isStringExpr(n.X, info, stringNames, stringFields) || isUnresolvedCall(n.X, info) || typeUnknown(n.X, info)) {
 				out = append(out, finding{kind: kindStringTruncation, path: path, value: "slice", line: fset.Position(n.Pos()).Line})
 			}
 		case *ast.BasicLit:
@@ -715,6 +739,10 @@ func inspectFile(fset *token.FileSet, path string, file *ast.File, info *types.I
 		}
 	}
 	return out
+}
+
+func typeUnknown(expr ast.Expr, info *types.Info) bool {
+	return info == nil || info.TypeOf(expr) == nil
 }
 
 func isUnresolvedCall(expr ast.Expr, info *types.Info) bool {
