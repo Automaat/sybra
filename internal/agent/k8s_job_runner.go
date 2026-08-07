@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path"
 	"strings"
@@ -146,7 +147,7 @@ func newK8sJobRunner(logger *slog.Logger, cfg K8sJobRunnerConfig) *k8sJobRunner 
 	if failedTTL == 0 {
 		failedTTL = 86400
 	}
-	jobs, pods, clientErr := inClusterK8sClients(logger, ns)
+	jobs, pods, clientErr := inClusterK8sClients(ns)
 	return &k8sJobRunner{
 		logger:    logger,
 		namespace: ns,
@@ -288,10 +289,16 @@ func (r *k8sJobRunner) createJob(ctx context.Context, name string, a *Agent, cfg
 	if err != nil {
 		return err
 	}
+	ttlSeconds, err := k8sTTLSeconds(r.ttl)
+	if err != nil {
+		return err
+	}
 	volumes, mounts := r.volumeSpec()
 	runAsUser := int64(1000)
 	runAsGroup := int64(1000)
 	fsGroup := int64(1000)
+	runAsNonRoot := true
+	noRetries := int32(0)
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
@@ -302,8 +309,8 @@ func (r *k8sJobRunner) createJob(ctx context.Context, name string, a *Agent, cfg
 			},
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit:            int32Ptr(0),
-			TTLSecondsAfterFinished: int32Ptr(int32(r.ttl)),
+			BackoffLimit:            &noRetries,
+			TTLSecondsAfterFinished: &ttlSeconds,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
@@ -314,7 +321,7 @@ func (r *k8sJobRunner) createJob(ctx context.Context, name string, a *Agent, cfg
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
 					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: boolPtr(true),
+						RunAsNonRoot: &runAsNonRoot,
 						RunAsUser:    &runAsUser,
 						RunAsGroup:   &runAsGroup,
 						FSGroup:      &fsGroup,
@@ -653,7 +660,11 @@ func (r *k8sJobRunner) jobDone(ctx context.Context, jobName string) (done, faile
 // runner uses a merge patch so failed Jobs can retain logs longer than
 // succeeded ones without changing the create-time manifest contract.
 func (r *k8sJobRunner) patchJobTTL(ctx context.Context, jobName string, ttlSeconds int) error {
-	data, err := json.Marshal(map[string]any{"spec": map[string]any{"ttlSecondsAfterFinished": ttlSeconds}})
+	boundedTTL, err := k8sTTLSeconds(ttlSeconds)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(map[string]any{"spec": map[string]any{"ttlSecondsAfterFinished": boundedTTL}})
 	if err != nil {
 		return err
 	}
@@ -661,7 +672,7 @@ func (r *k8sJobRunner) patchJobTTL(ctx context.Context, jobName string, ttlSecon
 	return err
 }
 
-func inClusterK8sClients(logger *slog.Logger, namespace string) (k8sJobClient, k8sPodClient, error) {
+func inClusterK8sClients(namespace string) (k8sJobClient, k8sPodClient, error) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, nil, err
@@ -669,9 +680,6 @@ func inClusterK8sClients(logger *slog.Logger, namespace string) (k8sJobClient, k
 	clientset, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
 		return nil, nil, err
-	}
-	if logger == nil {
-		logger = slog.Default()
 	}
 	return clientset.BatchV1().Jobs(namespace), k8sTypedPodClient{PodInterface: clientset.CoreV1().Pods(namespace)}, nil
 }
@@ -684,16 +692,12 @@ func inClusterNamespace() string {
 	return strings.TrimSpace(string(data))
 }
 
-func envOrDefault(key, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		return value
+func k8sTTLSeconds(v int) (int32, error) {
+	if v < 0 || v > math.MaxInt32 {
+		return 0, fmt.Errorf("kubernetes job ttl %d out of int32 range", v)
 	}
-	return fallback
+	return int32(v), nil
 }
-
-func boolPtr(v bool) *bool { return &v }
-
-func int32Ptr(v int32) *int32 { return &v }
 
 func k8sName(s string) string {
 	s = strings.ToLower(s)

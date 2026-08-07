@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -460,6 +461,20 @@ func TestPatchJobTTLReturnsErrorOnNonSuccessStatus(t *testing.T) {
 	}
 }
 
+func TestPatchJobTTLRejectsOutOfRangeValue(t *testing.T) {
+	r := newFakeK8sJobRunner(fake.NewSimpleClientset(), nil, K8sJobRunnerConfig{Namespace: "sybra-poc"})
+
+	if err := r.patchJobTTL(context.Background(), "sybra-agent-abc", -1); err == nil {
+		t.Fatal("expected negative ttl to fail")
+	}
+}
+
+func TestK8sTTLSecondsRejectsOutOfRangeValue(t *testing.T) {
+	if _, err := k8sTTLSeconds(-1); err == nil {
+		t.Fatal("expected negative ttl to fail")
+	}
+}
+
 type fakePodClient struct {
 	corev1client typedcorev1.PodInterface
 	logs         map[string]string
@@ -493,8 +508,8 @@ func newFakeK8sJobRunner(clientset *fake.Clientset, pods k8sPodClient, cfg K8sJo
 }
 
 func lastPatchAction(actions []k8stesting.Action) k8stesting.PatchAction {
-	for i := len(actions) - 1; i >= 0; i-- {
-		if patchAction, ok := actions[i].(k8stesting.PatchAction); ok {
+	for _, action := range slices.Backward(actions) {
+		if patchAction, ok := action.(k8stesting.PatchAction); ok {
 			return patchAction
 		}
 	}
