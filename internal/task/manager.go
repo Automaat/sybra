@@ -2,6 +2,7 @@ package task
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -182,6 +183,65 @@ func (m *Manager) List() ([]Task, error) { return m.store.List() }
 
 // Get returns a single task by ID (lock-free).
 func (m *Manager) Get(id string) (Task, error) { return m.store.Get(id) }
+
+// ProbeMutationTransport verifies that the task exists and that the same
+// process-local plus cross-process lock used by every Manager mutation can be
+// acquired. Its temporary write verifies real directory mutability without
+// changing task contents/timestamps or emitting lifecycle events.
+func (m *Manager) ProbeMutationTransport(id string) error {
+	if _, err := m.store.Get(id); err != nil {
+		return err
+	}
+	unlock, err := m.store.lockTask(id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	probe, err := os.CreateTemp(m.store.Dir(), ".sybra-task-mutation-probe-")
+	if err != nil {
+		return err
+	}
+	name := probe.Name()
+	if closeErr := probe.Close(); closeErr != nil {
+		_ = os.Remove(name)
+		return closeErr
+	}
+	return os.Remove(name)
+}
+
+// MutationTransportIdentity returns read-only cache evidence for the task
+// store path used by ProbeMutationTransport. Permission or replacement
+// changes therefore invalidate a run-environment certificate without exposing
+// Store mutation authority to the certifier.
+func (m *Manager) MutationTransportIdentity(id string) (string, error) {
+	t, err := m.store.Get(id)
+	if err != nil {
+		return "", err
+	}
+	resolvedDir, err := filepath.EvalSymlinks(m.store.Dir())
+	if err != nil {
+		return "", err
+	}
+	dirInfo, err := os.Stat(resolvedDir)
+	if err != nil {
+		return "", err
+	}
+	// Do not include directory mtime/size: ProbeMutationTransport's own
+	// create-remove write changes them. Path + permission mode still detects
+	// the route changes certification needs to invalidate (replacement through
+	// a symlink and writable/read-only transitions).
+	parts := []string{fmt.Sprintf("%s|%s", resolvedDir, dirInfo.Mode())}
+	resolvedTask, err := filepath.EvalSymlinks(t.FilePath)
+	if err != nil {
+		return "", err
+	}
+	taskInfo, err := os.Stat(resolvedTask)
+	if err != nil {
+		return "", err
+	}
+	parts = append(parts, fmt.Sprintf("%s|%s|%d|%d", resolvedTask, taskInfo.Mode(), taskInfo.Size(), taskInfo.ModTime().UnixNano()))
+	return strings.Join(parts, "\x00"), nil
+}
 
 // Create persists a new task and emits task:created.
 func (m *Manager) Create(title, body, mode string) (Task, error) {

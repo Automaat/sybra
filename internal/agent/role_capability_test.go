@@ -1,6 +1,10 @@
 package agent
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/Automaat/sybra/internal/autonomy"
+)
 
 func TestEveryRoleDeclaresValidCapabilities(t *testing.T) {
 	t.Parallel()
@@ -26,10 +30,37 @@ func TestEveryRoleDeclaresValidCapabilities(t *testing.T) {
 func TestVerifierCapabilityContractDoesNotGrantAuthoritativeSourceWrite(t *testing.T) {
 	t.Parallel()
 	for _, role := range []Role{RoleReview, RolePlan, RolePlanCritic, RoleEval, RoleTestRunner} {
+		hasScratchWrite := false
 		for _, requirement := range role.CapabilityRequirements("verify") {
 			if requirement.Capability == "source_write" {
 				t.Errorf("verifier role %q received source_write", role)
 			}
+			if requirement.Capability == "scratch_write" {
+				hasScratchWrite = true
+			}
+		}
+		if !hasScratchWrite {
+			t.Errorf("verifier role %q did not receive scratch_write", role)
+		}
+	}
+}
+
+func TestCheckoutCapabilitiesOnlyForCheckoutRoles(t *testing.T) {
+	t.Parallel()
+	for _, role := range AllRoles() {
+		want := role.AuthorsCode() || role.JudgesWithoutWriting() || role == RoleTestRunner
+		gotObjectStore := false
+		gotCheckoutHealth := false
+		for _, requirement := range role.CapabilityRequirements("dispatch") {
+			if requirement.Capability == autonomy.CapabilityObjectStore {
+				gotObjectStore = true
+			}
+			if requirement.Capability == autonomy.CapabilityCheckoutHealth {
+				gotCheckoutHealth = true
+			}
+		}
+		if gotObjectStore != want || gotCheckoutHealth != want {
+			t.Errorf("role %q checkout capabilities = object_store:%v checkout_health:%v, want both %v", role, gotObjectStore, gotCheckoutHealth, want)
 		}
 	}
 }

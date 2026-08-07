@@ -148,6 +148,7 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 		// the Manager applies agent.role_effort and then the baseline.
 		ReasoningEffort:        t.ReasoningEffort,
 		HeadlessPermissionMode: posture,
+		SandboxMode:            agentorch.ResolveSandboxMode(t, r.cfg),
 		// MaxTurns intentionally not inherited: fix-review agents need
 		// enough turns to fetch the PR, apply fixes, and commit.
 	})
@@ -220,7 +221,7 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 
 	prompt := StaffCodeReviewPrompt(current.ProjectID, current.PRNumber)
 
-	cfg := r.agents.ApplyABVariant(StaffCodeReviewRunConfig(current, prompt, dir, posture), r.abTestingConfig(), current.ID, string(agent.RoleReview))
+	cfg := r.agents.ApplyABVariant(StaffCodeReviewRunConfig(current, prompt, dir, posture, agentorch.ResolveSandboxMode(current, r.cfg)), r.abTestingConfig(), current.ID, string(agent.RoleReview))
 	ag, err := r.agents.Run(cfg)
 	if err != nil {
 		return err
@@ -259,7 +260,7 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 // A/B-disabled fallback keep their high-scrutiny model; an A/B pick overrides it.
 // MaxTurns is intentionally not inherited: review agents need enough turns to
 // fetch the PR, run the skill, and write findings.
-func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.RunConfig {
+func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture, sandboxMode string) agent.RunConfig {
 	return agent.RunConfig{
 		TaskID: t.ID,
 		Name:   agent.RoleReview.AgentName(t.Title),
@@ -273,6 +274,8 @@ func StaffCodeReviewRunConfig(t task.Task, prompt, dir, posture string) agent.Ru
 		// the Manager applies agent.role_effort and then the baseline.
 		ReasoningEffort:        t.ReasoningEffort,
 		HeadlessPermissionMode: posture,
+		SandboxMode:            sandboxMode,
+		ReadOnlyDir:            true,
 	}
 }
 

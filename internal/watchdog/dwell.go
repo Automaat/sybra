@@ -67,7 +67,11 @@ func (w *Watchdog) checkDwell(now time.Time) {
 			continue
 		}
 		budget := dwellBudget(t.Tags)
-		if now.Sub(t.UpdatedAt) <= budget {
+		dwellStart := t.StatusChangedAt
+		if dwellStart.IsZero() {
+			dwellStart = t.UpdatedAt
+		}
+		if now.Sub(dwellStart) <= budget {
 			continue
 		}
 		// A long-running headless agent that hasn't touched the task file (no
@@ -81,7 +85,7 @@ func (w *Watchdog) checkDwell(now time.Time) {
 		reason := fmt.Sprintf("dwell: exceeded %v budget", budget)
 		w.logger.Info("watchdog.dwell.escalate",
 			"task_id", t.ID, "status", string(t.Status),
-			"dwell_h", now.Sub(t.UpdatedAt).Hours(), "budget_h", budget.Hours())
+			"dwell_h", now.Sub(dwellStart).Hours(), "budget_h", budget.Hours())
 		if err := w.applyStatusEffect(t.ID, "watchdog.dwell", task.StatusHumanRequired, t.Status, reason); err != nil {
 			w.logger.Error("watchdog.dwell.update", "task_id", t.ID, "err", err)
 		}

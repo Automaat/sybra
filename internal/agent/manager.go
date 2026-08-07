@@ -89,6 +89,10 @@ type Manager struct {
 	// built-in per-role reasoning-effort baseline, keyed by role name. Read by
 	// resolveReasoningEffort under mu.
 	roleEffort map[string]string
+	// runEnvironmentPreflight is the final application-owned admission gate
+	// after provider, sandbox home, cache roots, and sandbox policy have been
+	// resolved but before a provider process is registered or spawned.
+	runEnvironmentPreflight RunEnvironmentPreflight
 
 	defaultSandboxMode string
 	// defaultSandboxReadMode is the read-visibility posture layered on top of
@@ -198,6 +202,30 @@ type Manager struct {
 	// each free a slot collapses into a single pending wake-up for whatever
 	// dispatch loop reads QueueNudge.
 	queueNudge chan struct{}
+}
+
+// RunEnvironment is the exact provider-facing identity available immediately
+// before a process starts. ScratchRoots are the mutable non-source roots that
+// prepareRunConfig selected for this run.
+type RunEnvironment struct {
+	TaskID        string
+	Role          Role
+	Dir           string
+	ReadOnlyPaths []string
+	Provider      string
+	SandboxMode   string
+	ScratchRoots  []string
+}
+
+// RunEnvironmentPreflight certifies a prepared provider run before spawn.
+type RunEnvironmentPreflight func(context.Context, RunEnvironment) error
+
+// SetRunEnvironmentPreflight late-binds the application certification gate.
+// Nil disables it for focused Manager tests and standalone consumers.
+func (m *Manager) SetRunEnvironmentPreflight(preflight RunEnvironmentPreflight) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.runEnvironmentPreflight = preflight
 }
 
 type LimitGate interface {
