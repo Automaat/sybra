@@ -264,6 +264,20 @@ func buildAllowances() map[allowanceKey]allowance {
 	add(kindStringTruncation, "internal/workflow/envtest_assets.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/workflow/execution.go", "Conservative unresolved-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 4})
 
+	// Multi-result unresolved calls conservatively taint every assignment target.
+	// These exact existing tuple-result slices keep that fail-closed rule reviewable.
+	add(kindStringTruncation, "cmd/gen-api-shim/shim.go", "Conservative unresolved tuple-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/agent/orphan_sweep_linux.go", "Conservative unresolved tuple-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/agent/procsandbox_linux_test.go", "Conservative unresolved tuple-call provenance reaches a controlled non-string test-fixture slice.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/agent/reattach.go", "Conservative unresolved tuple-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/pressure/sample_darwin.go", "Conservative unresolved tuple-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/procstat/procstat.go", "Conservative unresolved tuple-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/project/git.go", "Conservative unresolved tuple-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 5})
+	add(kindStringTruncation, "internal/stats/store.go", "Conservative unresolved tuple-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 3})
+	add(kindStringTruncation, "internal/sybra/clusterlead/mirror_oob_integration_test.go", "Conservative unresolved tuple-call provenance reaches a controlled non-string test-fixture slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/sybra/svc_agents.go", "Conservative unresolved tuple-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/sybra/svc_tasks.go", "Conservative unresolved tuple-call provenance reaches a pre-existing non-string or parser-boundary slice.", map[string]int{"slice": 4})
+
 	// Test fixtures intentionally spell persisted wire values. They remain
 	// exact path/value/count entries so adding or removing a literal forces an
 	// explicit review of this ledger instead of receiving a blanket test exemption.
@@ -763,6 +777,11 @@ func collectStringNames(file *ast.File, info *types.Info) (map[string]struct{}, 
 			switch n := node.(type) {
 			case *ast.AssignStmt:
 				if len(n.Lhs) != len(n.Rhs) {
+					if len(n.Rhs) == 1 && isUnresolvedCall(n.Rhs[0], info) {
+						for _, target := range n.Lhs {
+							rememberStringTarget(target, names, fields)
+						}
+					}
 					return true
 				}
 				for i, rhs := range n.Rhs {
@@ -773,6 +792,11 @@ func collectStringNames(file *ast.File, info *types.Info) (map[string]struct{}, 
 				}
 			case *ast.ValueSpec:
 				if len(n.Names) != len(n.Values) {
+					if len(n.Values) == 1 && isUnresolvedCall(n.Values[0], info) {
+						for _, name := range n.Names {
+							names[name.Name] = struct{}{}
+						}
+					}
 					return true
 				}
 				for i, value := range n.Values {

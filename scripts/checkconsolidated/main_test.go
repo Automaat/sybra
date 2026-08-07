@@ -117,6 +117,21 @@ func shortID() (string, any) {
 	}
 }
 
+func TestTracksUnresolvedTupleCallThroughAssignments(t *testing.T) {
+	t.Parallel()
+	findings := findingsFor(t, "internal/example/drift.go", `package example
+import "os"
+func shortHome() string {
+	home, err := os.UserHomeDir()
+	_ = err
+	return home[:8]
+}
+`)
+	if got := countKind(findings, kindStringTruncation); got != 1 {
+		t.Fatalf("truncation findings = %d, want 1: %#v", got, findings)
+	}
+}
+
 func TestDetectsAssignmentBraceCounterReturningSpan(t *testing.T) {
 	t.Parallel()
 	findings := findingsFor(t, "internal/example/drift.go", `package example
