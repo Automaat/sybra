@@ -67,7 +67,7 @@ steps:
         focused checks pass and you are satisfied with the diff: commit and
         push. If the deterministic suite later fails, you will be re-asked
         with the exact failing command and its output.
-        {{- if currenttestfailures .Task.Body}}
+        {{- if currenttestfailures .Task.CurrentTestFailures}}
 
         A prior implementation FAILED adversarial manual testing. Fix the root
         cause of every defect reported below (not just the symptom) — the
@@ -75,13 +75,13 @@ steps:
 
         ## Current Test Failures
 
-        {{currenttestfailures .Task.Body}}
+        {{currenttestfailures .Task.CurrentTestFailures}}
         {{- end}}
-        {{- if acceptanceledger .Task.Body}}
+        {{- if acceptanceledger .Task.AcceptanceLedger}}
 
         ## Acceptance Ledger — all must hold simultaneously
 
-        {{acceptanceledger .Task.Body}}
+        {{acceptanceledger .Task.AcceptanceLedger}}
         {{- end}}
         {{- if getvar .Vars "verify_reask_note"}}
 
@@ -135,11 +135,6 @@ steps:
         ```json
         {{plancontractjson .Task.PlanContract .Task.ID}}
         ```
-        {{- else if .Task.Plan}}
-
-        ## Plan
-
-        {{.Task.Plan}}
         {{- end}}
     next:
       # Watchdog stop (or any other pre-completion escalation) sets

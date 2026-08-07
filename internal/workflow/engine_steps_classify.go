@@ -21,7 +21,7 @@ const classifyTaskTimeout = 2 * time.Minute
 // /sybra-triage skill around the same classifier, which was a second LLM
 // call for no benefit.
 func (e *Engine) execClassifyTask(taskID string, step *Step, wfExec *Execution) (StepOutput, error) {
-	if e.classifier == nil {
+	if e.execution.Classifier == nil {
 		return e.humanRequiredClassify(taskID, step, "no task classifier configured")
 	}
 
@@ -39,7 +39,7 @@ func (e *Engine) execClassifyTask(taskID string, step *Step, wfExec *Execution) 
 	var err error
 	for attempt := 0; ; attempt++ {
 		attemptCtx, cancel := context.WithTimeout(e.ctx, classifyTaskTimeout)
-		err = e.classifier.ClassifyTask(attemptCtx, taskID)
+		err = e.execution.Classifier.ClassifyTask(attemptCtx, taskID)
 		cancel()
 		if err == nil {
 			e.logger.Info("workflow.classify-task", "task_id", taskID, "step", step.ID)

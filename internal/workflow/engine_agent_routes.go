@@ -280,7 +280,6 @@ func (e *Engine) hasPendingAgentRouteForStep(taskID string, step *Step) bool {
 	}
 	return false
 }
-
 func workflowHasAgentRouteForStep(wf *Execution, step *Step) bool {
 	if wf == nil || step == nil {
 		return false
@@ -292,7 +291,6 @@ func workflowHasAgentRouteForStep(wf *Execution, step *Step) bool {
 	}
 	return false
 }
-
 func clearAgentRouteFromWorkflow(wf *Execution, agentID string) bool {
 	if wf == nil || agentID == "" {
 		return false
@@ -333,26 +331,4 @@ func (e *Engine) clearAgentStepsForTask(taskID string) {
 	t.Workflow.ClearAgentRoutes()
 	_ = e.tasks.SetWorkflow(taskID, t.Workflow)
 	e.clearPendingAgentStepsForTask(taskID)
-}
-
-func (e *Engine) clearPendingStepEffect(taskID string, id EffectID) {
-	t, err := e.tasks.GetTask(taskID)
-	if err != nil || t.Workflow == nil || id.IsZero() {
-		return
-	}
-	kept := t.Workflow.EffectLog[:0]
-	changed := false
-	for i := range t.Workflow.EffectLog {
-		rec := t.Workflow.EffectLog[i]
-		if rec.ID.Equal(id) && rec.CompletedAt == nil {
-			changed = true
-			continue
-		}
-		kept = append(kept, rec)
-	}
-	if !changed {
-		return
-	}
-	t.Workflow.EffectLog = kept
-	_ = e.tasks.SetWorkflow(taskID, t.Workflow)
 }

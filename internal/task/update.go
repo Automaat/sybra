@@ -55,6 +55,9 @@ type Update struct {
 	PlanDecisions         *string
 	PlanBrief             *string
 	CodeReview            *string
+	CurrentTestFailures   *string
+	AcceptanceLedger      *string
+	SpecDecision          *string
 	MaxTurns              *int
 	ForkSubagent          *bool
 	Sandbox               *bool
@@ -74,7 +77,10 @@ func (u Update) writesSidecar() bool {
 		u.PlanResearch != nil ||
 		u.PlanDecisions != nil ||
 		u.PlanBrief != nil ||
-		u.CodeReview != nil
+		u.CodeReview != nil ||
+		u.CurrentTestFailures != nil ||
+		u.AcceptanceLedger != nil ||
+		u.SpecDecision != nil
 }
 
 // Ptr returns a pointer to v. Convenience for building Update literals.
@@ -102,6 +108,7 @@ func applyMapField(u *Update, k string, v any) error {
 	case "title", "slug", "status_reason", "blocked_by_issue", "umbrella_issue", "body",
 		"project_id", "branch", "worktree_dir", "issue", "ref_issue", "run_role", "plan", "plan_critique",
 		"plan_contract", "plan_research", "plan_decisions", "plan_brief", "code_review",
+		"current_test_failures", "acceptance_ledger", "spec_decision",
 		"review_phase", "reviewed_head_sha", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
 		return applyPlainStringField(u, k, v)
 	case "depends_on":
@@ -305,6 +312,12 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.PlanBrief = &s
 	case "code_review":
 		u.CodeReview = &s
+	case "current_test_failures":
+		u.CurrentTestFailures = &s
+	case "acceptance_ledger":
+		u.AcceptanceLedger = &s
+	case "spec_decision":
+		u.SpecDecision = &s
 	case "review_phase":
 		u.ReviewPhase = &s
 	case "reviewed_head_sha":

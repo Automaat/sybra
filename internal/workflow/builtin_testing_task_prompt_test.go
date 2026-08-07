@@ -75,7 +75,7 @@ func TestBuiltinTestingTask_RunTestPromptDoesNotDuplicateSkillProcedure(t *testi
 	for _, want := range []string{
 		`{{if getvar .Vars "testing_reask_note"}}`,
 		"{{if .Task.ManualTest.Kind}}",
-		"{{if acceptanceledger .Task.Body}}",
+		"{{if acceptanceledger .Task.AcceptanceLedger}}",
 		"TEST_VERDICT: PASS",
 		"TEST_VERDICT: FAIL",
 		"output_schema",

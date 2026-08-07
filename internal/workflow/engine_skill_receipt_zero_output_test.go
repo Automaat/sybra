@@ -63,7 +63,7 @@ func TestHandleAgentComplete_ZeroOutputRunSparesConformanceBudget(t *testing.T) 
 	store := zeroOutputSkillReceiptStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	tasks.Put(zeroOutputSkillReceiptTask(t, "agent-1", nil))
 
@@ -91,7 +91,7 @@ func TestHandleAgentComplete_ZeroOutputRunsEscalateAfterOwnCeiling(t *testing.T)
 	store := zeroOutputSkillReceiptStore(t)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	spent := map[string]string{
 		skillReceiptZeroOutputKey("run"): "3",

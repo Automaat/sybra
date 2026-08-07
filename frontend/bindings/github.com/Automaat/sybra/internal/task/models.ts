@@ -611,6 +611,9 @@ export class Task {
     "planDecisions"?: string;
     "planBrief"?: string;
     "codeReview"?: string;
+    "currentTestFailures"?: string;
+    "acceptanceLedger"?: string;
+    "specDecision"?: string;
 
     /**
      * PlanDrafts holds per-provider raw plan outputs during dual- (or N-)
@@ -633,11 +636,10 @@ export class Task {
 
     /**
      * TamperFlagged reports whether this task is parked at human-required
-     * pending a tamper bless. Derived from Status/StatusReason (never
-     * persisted) so the frontend doesn't need to duplicate
-     * workflow.TamperFlaggedReasonPrefix to decide whether to show the bless
-     * action. Recomputed on every load/update — see taskFromFrontmatter and
-     * Store.UpdateWithPrev.
+     * pending a tamper bless. Derived from Status/Blocker (never persisted) so
+     * the frontend doesn't need to duplicate the latch logic to decide whether
+     * to show the bless action. Recomputed on every load/update — see
+     * taskFromFrontmatter and Store.UpdateWithPrev.
      */
     "tamperFlagged": boolean;
 
@@ -729,7 +731,7 @@ export class Task {
         const $$createField43_0 = $$createType7;
         const $$createField44_0 = $$createType9;
         const $$createField45_0 = $$createType11;
-        const $$createField63_0 = $$createType12;
+        const $$createField66_0 = $$createType12;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -759,7 +761,7 @@ export class Task {
             $$parsedSource["workflow"] = $$createField45_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField63_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField66_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -792,7 +794,9 @@ export class Update {
     "Slug": string | null;
     "Status": Status | null;
     "StatusReason": string | null;
+    "ClearStatusReason": boolean | null;
     "Blocker": blocker$0.State | null;
+    "ClearBlocker": boolean | null;
     "BlockedByIssue": string | null;
     "UmbrellaIssue": string | null;
     "DependsOn": string[] | null;
@@ -826,6 +830,9 @@ export class Update {
     "PlanDecisions": string | null;
     "PlanBrief": string | null;
     "CodeReview": string | null;
+    "CurrentTestFailures": string | null;
+    "AcceptanceLedger": string | null;
+    "SpecDecision": string | null;
     "MaxTurns": number | null;
     "ForkSubagent": boolean | null;
     "Sandbox": boolean | null;
@@ -851,8 +858,14 @@ export class Update {
         if (!("StatusReason" in $$source)) {
             this["StatusReason"] = null;
         }
+        if (!("ClearStatusReason" in $$source)) {
+            this["ClearStatusReason"] = null;
+        }
         if (!("Blocker" in $$source)) {
             this["Blocker"] = null;
+        }
+        if (!("ClearBlocker" in $$source)) {
+            this["ClearBlocker"] = null;
         }
         if (!("BlockedByIssue" in $$source)) {
             this["BlockedByIssue"] = null;
@@ -953,6 +966,15 @@ export class Update {
         if (!("CodeReview" in $$source)) {
             this["CodeReview"] = null;
         }
+        if (!("CurrentTestFailures" in $$source)) {
+            this["CurrentTestFailures"] = null;
+        }
+        if (!("AcceptanceLedger" in $$source)) {
+            this["AcceptanceLedger"] = null;
+        }
+        if (!("SpecDecision" in $$source)) {
+            this["SpecDecision"] = null;
+        }
         if (!("MaxTurns" in $$source)) {
             this["MaxTurns"] = null;
         }
@@ -991,34 +1013,34 @@ export class Update {
      * Creates a new Update instance from a string or object.
      */
     static createFrom($$source: any = {}): Update {
-        const $$createField4_0 = $$createType13;
-        const $$createField7_0 = $$createType14;
-        const $$createField8_0 = $$createType15;
-        const $$createField12_0 = $$createType14;
-        const $$createField30_0 = $$createType16;
-        const $$createField46_0 = $$createType17;
-        const $$createField47_0 = $$createType18;
+        const $$createField5_0 = $$createType13;
+        const $$createField9_0 = $$createType14;
+        const $$createField10_0 = $$createType15;
+        const $$createField14_0 = $$createType14;
+        const $$createField32_0 = $$createType16;
+        const $$createField48_0 = $$createType17;
+        const $$createField49_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("Blocker" in $$parsedSource) {
-            $$parsedSource["Blocker"] = $$createField4_0($$parsedSource["Blocker"]);
+            $$parsedSource["Blocker"] = $$createField5_0($$parsedSource["Blocker"]);
         }
         if ("DependsOn" in $$parsedSource) {
-            $$parsedSource["DependsOn"] = $$createField7_0($$parsedSource["DependsOn"]);
+            $$parsedSource["DependsOn"] = $$createField9_0($$parsedSource["DependsOn"]);
         }
         if ("DependsOnConditions" in $$parsedSource) {
-            $$parsedSource["DependsOnConditions"] = $$createField8_0($$parsedSource["DependsOnConditions"]);
+            $$parsedSource["DependsOnConditions"] = $$createField10_0($$parsedSource["DependsOnConditions"]);
         }
         if ("Tags" in $$parsedSource) {
-            $$parsedSource["Tags"] = $$createField12_0($$parsedSource["Tags"]);
+            $$parsedSource["Tags"] = $$createField14_0($$parsedSource["Tags"]);
         }
         if ("Workflow" in $$parsedSource) {
-            $$parsedSource["Workflow"] = $$createField30_0($$parsedSource["Workflow"]);
+            $$parsedSource["Workflow"] = $$createField32_0($$parsedSource["Workflow"]);
         }
         if ("Attachments" in $$parsedSource) {
-            $$parsedSource["Attachments"] = $$createField46_0($$parsedSource["Attachments"]);
+            $$parsedSource["Attachments"] = $$createField48_0($$parsedSource["Attachments"]);
         }
         if ("EffectLog" in $$parsedSource) {
-            $$parsedSource["EffectLog"] = $$createField47_0($$parsedSource["EffectLog"]);
+            $$parsedSource["EffectLog"] = $$createField49_0($$parsedSource["EffectLog"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }

@@ -68,7 +68,7 @@ func TestCascade_SynchronousWorkflowChainsToSuccessor(t *testing.T) {
 		store := newTestStoreWith(t)
 		tasks := newMemTasks()
 		agents := newMockAgents()
-		engine := NewEngine(store, tasks, agents, discardLogger())
+		engine := NewTestEngine(store, tasks, agents, discardLogger())
 		engine.SetOnComplete(cascadeOnComplete(engine, tasks))
 
 		addStatusWorkflow(t, store, "kickoff", "task.created", "", "in-progress")
@@ -92,7 +92,7 @@ func TestCascade_SynchronousWorkflowChainsToSuccessor(t *testing.T) {
 		store := newTestStoreWith(t)
 		tasks := newMemTasks()
 		agents := newMockAgents()
-		engine := NewEngine(store, tasks, agents, discardLogger())
+		engine := NewTestEngine(store, tasks, agents, discardLogger())
 		engine.SetOnComplete(cascadeOnComplete(engine, tasks))
 
 		addStatusWorkflow(t, store, "kickoff", "task.created", "", "in-progress")
@@ -129,7 +129,7 @@ func TestCascade_ParallelTerminalStepCascades(t *testing.T) {
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	agents.failSpawn = errors.New("spawn boom") // force all parallel children to fail at spawn
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	engine.SetOnComplete(cascadeOnComplete(engine, tasks))
 
 	// kickoff ends on a parallel block (no set_status), so it leaves the task
@@ -178,7 +178,7 @@ func TestCascade_DepthGuardStopsRunawayChain(t *testing.T) {
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	var logBuf bytes.Buffer
-	engine := NewEngine(store, tasks, agents, slog.New(slog.NewTextHandler(&logBuf, nil)))
+	engine := NewTestEngine(store, tasks, agents, slog.New(slog.NewTextHandler(&logBuf, nil)))
 	engine.SetOnComplete(cascadeOnComplete(engine, tasks))
 
 	// Ping-pong between two real non-terminal statuses (definition validation

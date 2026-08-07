@@ -877,7 +877,7 @@ func (e *Engine) reviewBudgetExhaustion(t TaskInfo) (hourly, lifetime bool) {
 	for i := range t.AgentRuns {
 		runs[i] = reviewbudget.Run{Role: t.AgentRuns[i].Role, StartedAt: t.AgentRuns[i].StartedAt}
 	}
-	now := time.Now()
+	now := e.now()
 	return budget.HourlyExceeded(runs, now), budget.LifetimeExceeded(runs)
 }
 

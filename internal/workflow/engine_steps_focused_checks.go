@@ -37,17 +37,14 @@ type selectedFocusedCheck struct {
 }
 
 func (e *Engine) execFocusedChecks(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
-	if e.checks == nil {
-		return stepDone(step, "skipped: no check config getter")
-	}
-	focused := e.checks.FocusedChecks(e.ctx, taskID)
+	focused := e.execution.Checks.FocusedChecks(e.ctx, taskID)
 	if len(focused) == 0 {
 		return stepDone(step, "skipped: no focused checks configured")
 	}
-	if e.worktrees == nil {
+	if e.execution.Worktrees == nil {
 		return stepDone(step, "skipped: no worktree getter configured")
 	}
-	wtPath, ok := e.worktrees.GetWorktreePath(taskID)
+	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
 		return stepDone(step, "skipped: no worktree for task")
 	}
@@ -119,7 +116,7 @@ type worktreeBaseRefGetter interface {
 }
 
 func (e *Engine) focusedChecksBaseRef(taskID string) string {
-	if getter, ok := e.checks.(worktreeBaseRefGetter); ok {
+	if getter, ok := e.execution.Checks.(worktreeBaseRefGetter); ok {
 		return getter.WorktreeBaseRef(e.ctx, taskID)
 	}
 	return project.WorktreeBaseRefFresh

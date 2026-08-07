@@ -55,7 +55,7 @@ func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wfDir, "test-status-hook.yaml"), []byte(waitForStatusWorkflowYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	engine := workflow.NewEngine(
+	engine := workflow.NewTestEngine(
 		wfStore,
 		&taskAdapter{tasks: app.tasks},
 		&agentAdapter{agents: app.agents, agentOrch: app.agentOrch, tasks: app.tasks},
@@ -190,7 +190,7 @@ steps:
 		t.Fatal(err)
 	}
 
-	engine := workflow.NewEngine(
+	engine := workflow.NewTestEngine(
 		wfStore,
 		&taskAdapter{tasks: a.tasks},
 		&fakeAgentLauncher{tasks: a.tasks},
@@ -393,7 +393,7 @@ steps:
 
 	ta := &taskAdapter{tasks: a.tasks}
 	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
-	a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+	a.workflowEngine = workflow.NewTestEngine(wfStore, ta, aa, a.logger)
 	a.initStatusHook()
 
 	created, err := a.tasks.Create("ready-review dispatch", "", "headless")
@@ -467,7 +467,7 @@ steps:
 
 	ta := &taskAdapter{tasks: a.tasks}
 	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
-	a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+	a.workflowEngine = workflow.NewTestEngine(wfStore, ta, aa, a.logger)
 	a.initStatusHook()
 
 	created, err := a.tasks.Create("testing dispatch", "", "headless")
@@ -543,7 +543,7 @@ steps:
 
 	ta := &taskAdapter{tasks: a.tasks}
 	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
-	a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+	a.workflowEngine = workflow.NewTestEngine(wfStore, ta, aa, a.logger)
 	a.initStatusHook()
 
 	created, err := a.tasks.Create("ready-pr dispatch", "", "headless")
@@ -621,7 +621,7 @@ steps:
 
 	ta := &taskAdapter{tasks: a.tasks}
 	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
-	a.workflowEngine = workflow.NewEngine(wfStore, ta, aa, a.logger)
+	a.workflowEngine = workflow.NewTestEngine(wfStore, ta, aa, a.logger)
 	a.initStatusHook()
 
 	created, err := a.tasks.Create("umbrella tracker", "", "headless")

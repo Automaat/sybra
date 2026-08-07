@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -3174,6 +3175,32 @@ func TestCheckpointDefaults(t *testing.T) {
 	}
 	if cfg.CheckpointOnTurnCeilingEnabled() {
 		t.Error("configured CheckpointOnTurnCeilingEnabled() = true, want false")
+	}
+}
+
+func TestConfig_VerifyChecksMaxConcurrent(t *testing.T) {
+	t.Parallel()
+
+	var nilCfg *Config
+	if got := nilCfg.VerifyChecksMaxConcurrent(); got < 1 {
+		t.Errorf("nil config VerifyChecksMaxConcurrent() = %d, want >= 1", got)
+	}
+
+	cfg := &Config{}
+	derived := cfg.VerifyChecksMaxConcurrent()
+	if derived < 1 {
+		t.Errorf("zero-value VerifyChecksMaxConcurrent() = %d, want >= 1", derived)
+	}
+	wantDerived := runtime.NumCPU() / 4
+	wantDerived = max(wantDerived, 1)
+	wantDerived = min(wantDerived, 8)
+	if derived != wantDerived {
+		t.Errorf("zero-value VerifyChecksMaxConcurrent() = %d, want CPU-derived %d", derived, wantDerived)
+	}
+
+	cfg.Agent.VerifyChecksMaxConcurrent = 5
+	if got := cfg.VerifyChecksMaxConcurrent(); got != 5 {
+		t.Errorf("configured VerifyChecksMaxConcurrent() = %d, want 5", got)
 	}
 }
 

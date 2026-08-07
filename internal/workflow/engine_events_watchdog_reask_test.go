@@ -20,7 +20,7 @@ func runWatchdogRecoveryAssertion(t *testing.T, assert watchdogRecoveryAssertion
 func TestHandleWatchdogHangRetry_SetsReaskNoteOnRetry(t *testing.T) {
 	t.Parallel()
 	tasks := newMemTasks()
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "test-simple",
 		CurrentStep: "implement",
@@ -164,7 +164,7 @@ func TestHandleWatchdogRecoveryRetry_TableDrivenKinds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			tasks := newMemTasks()
-			engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+			engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 			wf := &Execution{
 				WorkflowID:  "test-simple",
 				CurrentStep: tc.step.ID,
@@ -190,7 +190,7 @@ func TestResumeStalled_WatchdogHangRunTestRendersTestingReaskNote(t *testing.T) 
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{
 		ID:           "t1",
 		Status:       "testing",
@@ -234,14 +234,14 @@ func (f fakeManualTestConfigGetter) ManualTestConfig(taskID string) ManualTestIn
 func TestHandleWatchdogHangRetry_RunTestPrioritizesManualTestSurface(t *testing.T) {
 	t.Parallel()
 	tasks := newMemTasks()
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	manualTest := ManualTestInfo{
 		Kind:          "server",
 		Command:       "go run ./cmd/sybra-server",
 		HealthURL:     "http://127.0.0.1:8080/health",
 		ProbeCommands: []string{"curl -fsS http://127.0.0.1:8080/health"},
 	}
-	engine.SetManualTestConfigGetter(fakeManualTestConfigGetter{"t1": manualTest})
+	engine.setManualTestConfigGetterForTest(fakeManualTestConfigGetter{"t1": manualTest})
 	wf := &Execution{
 		WorkflowID:  "testing-task",
 		CurrentStep: testVerdictSourceStep,
@@ -291,7 +291,7 @@ func TestHandleWatchdogHangRetry_RunTestPrioritizesManualTestSurface(t *testing.
 func TestHandleWatchdogStopRetry_TestRunnerUsesTestingGuidance(t *testing.T) {
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(newTestStore(t), tasks, agents, discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, agents, discardLogger())
 	wf := &Execution{WorkflowID: "testing-task", CurrentStep: "run_test", State: ExecWaiting, Variables: map[string]string{}, StartedAt: time.Now().UTC()}
 	tasks.Put(TaskInfo{ID: "t1", Status: "human-required", StatusReason: "watchdog: loop stop: repeated test", AgentMode: "headless", Workflow: wf})
 	ti := TaskInfo{ID: "t1", Status: "human-required", StatusReason: "watchdog: loop stop: repeated test", AgentMode: "headless", Workflow: wf}
@@ -309,8 +309,8 @@ func TestHandleWatchdogStopRetry_TestRunnerUsesTestingGuidance(t *testing.T) {
 func TestHandleWatchdogHangRetry_NonReadyPRStillRetries(t *testing.T) {
 	t.Parallel()
 	tasks := newMemTasks()
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
-	engine.SetPRStateFetcher(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "CONFLICTING"}})
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine.setPRStateFetcherForTest(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "CONFLICTING"}})
 	wf := &Execution{
 		WorkflowID:  "simple-task-implement",
 		CurrentStep: "implement",
@@ -347,7 +347,7 @@ func TestHandleWatchdogHangRetry_NonReadyPRStillRetries(t *testing.T) {
 func TestHandleWatchdogHangRetry_RunTestExhaustionOpensPRGate(t *testing.T) {
 	t.Parallel()
 	tasks := newMemTasks()
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "testing-task",
 		CurrentStep: testVerdictSourceStep,
@@ -392,8 +392,8 @@ func TestResumeStalled_WatchdogHangReadyPRSkipsRedispatch(t *testing.T) {
 	t.Parallel()
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(newStoreWithBuiltin(t, "simple-task-implement"), tasks, agents, discardLogger())
-	engine.SetPRStateFetcher(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}})
+	engine := NewTestEngine(newStoreWithBuiltin(t, "simple-task-implement"), tasks, agents, discardLogger())
+	engine.setPRStateFetcherForTest(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}})
 	wf := &Execution{
 		WorkflowID:  "simple-task-implement",
 		CurrentStep: "implement",
@@ -460,7 +460,7 @@ func TestBuildWatchdogReaskNote_AttemptCount(t *testing.T) {
 func TestHandleWatchdogRewardHackingRetry_SetsReaskNoteOnRetry(t *testing.T) {
 	t.Parallel()
 	tasks := newMemTasks()
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "test-simple",
 		CurrentStep: "fix_review",
@@ -514,7 +514,7 @@ func TestHandleWatchdogRewardHackingRetry_SetsReaskNoteOnRetry(t *testing.T) {
 func TestHandleWatchdogRewardHackingRetry_ImplementationUsesImplementationBudget(t *testing.T) {
 	t.Parallel()
 	tasks := newMemTasks()
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "simple-task-implement",
 		CurrentStep: "implement",
@@ -551,7 +551,7 @@ func TestHandleWatchdogRewardHackingRetry_ImplementationUsesImplementationBudget
 func TestHandleWatchdogRewardHackingRetry_ExhaustedBudgetEscalates(t *testing.T) {
 	t.Parallel()
 	tasks := newMemTasks()
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "test-simple",
 		CurrentStep: "fix_review",
@@ -600,7 +600,7 @@ func TestBuildRewardHackingFixReviewReaskNote_AttemptCount(t *testing.T) {
 
 func TestResumePreflight_TerminalizesNonRetryableRewardHackingPark(t *testing.T) {
 	tasks := newMemTasks()
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "branch-conflict-fix",
 		CurrentStep: "fix",
@@ -639,7 +639,7 @@ func TestResumePreflight_TerminalizesNonRetryableRewardHackingPark(t *testing.T)
 
 func TestResumePreflight_DoesNotTerminalizeOrdinaryHumanRequired(t *testing.T) {
 	tasks := newMemTasks()
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID:  "branch-conflict-fix",
 		CurrentStep: "fix",
@@ -669,7 +669,7 @@ func TestResumePreflight_DoesNotTerminalizeOrdinaryHumanRequired(t *testing.T) {
 
 func TestResumePreflight_DoesNotOverwriteReplacementWorkflow(t *testing.T) {
 	tasks := newMemTasks()
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	staleWorkflow := &Execution{
 		WorkflowID:  "branch-conflict-fix",
 		CurrentStep: "fix",
@@ -717,7 +717,7 @@ func TestResumeStalled_WatchdogRewardHackingPlanCriticRendersRetryNote(t *testin
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 	tasks.Put(TaskInfo{
 		ID:           "t1",
 		Status:       "planning",
@@ -775,7 +775,7 @@ steps:
 	store := newInlineTestStore(t, "test-fixreview-reset", yaml)
 	tasks := newMemTasks()
 	agents := newMockAgents()
-	engine := NewEngine(store, tasks, agents, discardLogger())
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
 
 	wf := &Execution{
 		WorkflowID:  "test-fixreview-reset",
@@ -829,7 +829,7 @@ steps:
 func TestClearWatchdogReaskNote(t *testing.T) {
 	t.Parallel()
 	tasks := newMemTasks()
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 	wf := &Execution{
 		WorkflowID: "test-simple",
 		Variables:  map[string]string{watchdogReaskNoteVar: "stale hang guidance"},

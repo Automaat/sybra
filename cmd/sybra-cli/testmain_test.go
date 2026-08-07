@@ -19,5 +19,7 @@ import (
 // t.Setenv, which layers on top of this cleanly.
 func TestMain(m *testing.M) {
 	_ = os.Unsetenv("SYBRA_CONTROL_HOME")
+	_ = os.Unsetenv("GIT_OBJECT_DIRECTORY")
+	_ = os.Unsetenv("GIT_ALTERNATE_OBJECT_DIRECTORIES")
 	os.Exit(m.Run())
 }

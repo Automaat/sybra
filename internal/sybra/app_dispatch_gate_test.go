@@ -23,7 +23,7 @@ import (
 func TestDispatchTaskCreatedWorkflow_RefusesDuringStartupRecovery(t *testing.T) {
 	app := setupApp(t)
 	launcher := &recordingAgentLauncher{}
-	app.workflowEngine = workflow.NewEngine(
+	app.workflowEngine = workflow.NewTestEngine(
 		mustWorkflowStoreWithTestSimple(t, t.TempDir()),
 		&taskAdapter{tasks: app.tasks},
 		launcher,
@@ -91,7 +91,7 @@ steps:
 		t.Fatal(err)
 	}
 
-	engine := workflow.NewEngine(wfStore, &taskAdapter{tasks: taskMgr}, &recordingAgentLauncher{}, discardLogger())
+	engine := workflow.NewTestEngine(wfStore, &taskAdapter{tasks: taskMgr}, &recordingAgentLauncher{}, discardLogger())
 	app := &App{tasks: taskMgr, workflowEngine: engine, logger: discardLogger()}
 
 	app.startupRecoveryPending.Store(true)
@@ -136,7 +136,7 @@ func TestStatusHook_WaitForStatus_RefusesDuringStartupRecovery(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wfDir, "test-status-hook.yaml"), []byte(waitForStatusWorkflowYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	engine := workflow.NewEngine(
+	engine := workflow.NewTestEngine(
 		wfStore,
 		&taskAdapter{tasks: app.tasks},
 		&agentAdapter{agents: app.agents, agentOrch: app.agentOrch, tasks: app.tasks},
@@ -229,7 +229,7 @@ func TestReplayDeferredStatusChanges_UsesCurrentStatus(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wfDir, "test-status-hook.yaml"), []byte(waitForStatusWorkflowYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	app.workflowEngine = workflow.NewEngine(
+	app.workflowEngine = workflow.NewTestEngine(
 		wfStore,
 		&taskAdapter{tasks: app.tasks},
 		&agentAdapter{agents: app.agents, agentOrch: app.agentOrch, tasks: app.tasks},
@@ -289,7 +289,7 @@ func TestReplayDeferredStatusChanges_DispatchesHumanReview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app.workflowEngine = workflow.NewEngine(
+	app.workflowEngine = workflow.NewTestEngine(
 		wfStore,
 		&taskAdapter{tasks: app.tasks},
 		&agentAdapter{agents: app.agents, agentOrch: app.agentOrch, tasks: app.tasks},

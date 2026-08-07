@@ -282,7 +282,7 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 	}
 	ta := &taskAdapter{tasks: a.tasks}
 	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
-	engine := workflow.NewEngine(wfStore, ta, aa, a.logger)
+	engine := workflow.NewTestEngine(wfStore, ta, aa, a.logger)
 	// Bind the test context so a background workflow (spawned by CreateTask)
 	// unwinds when the test ends — otherwise classify_task's retry backoff can
 	// outlive the task dir's cleanup and leak a sleeping goroutine.

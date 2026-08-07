@@ -17,8 +17,8 @@ func TestExecRunAgentSeedsSidecarDirBeforeRendering(t *testing.T) {
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	agents.SetAdmitDispatch("pool busy")
-	engine := NewEngine(newTestStore(t), tasks, agents, discardLogger())
-	engine.SetSidecarDirResolver(func(string) (string, error) { return "/sandbox/t1", nil })
+	engine := NewTestEngine(newTestStore(t), tasks, agents, discardLogger())
+	engine.setSidecarDirResolverForTest(func(string) (string, error) { return "/sandbox/t1", nil })
 
 	step := &Step{ID: "review", Type: StepRunAgent}
 	wfExec := &Execution{

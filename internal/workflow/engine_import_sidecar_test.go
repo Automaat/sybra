@@ -26,7 +26,7 @@ func importSidecarFixture(t *testing.T, fixturePath string) (*Engine, *memTasks)
 		},
 	})
 	agents := newMockAgents()
-	return NewEngine(store, tasks, agents, discardLogger()), tasks
+	return NewTestEngine(store, tasks, agents, discardLogger()), tasks
 }
 
 func TestImportSidecar_WritesContentFromFile(t *testing.T) {
@@ -72,7 +72,7 @@ func TestImportSidecar_RequiredMissingFileFlipsHumanRequired(t *testing.T) {
 			Variables:   map[string]string{"contract_path": filepath.Join(t.TempDir(), "missing.json")},
 		},
 	})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	info, _ := tasks.GetTask("t1")
 	engine.importSidecarIfConfigured("t1", "plan", info)
@@ -104,7 +104,7 @@ func TestImportSidecar_EmptyDirVarDistinguishedFromMissing(t *testing.T) {
 			Variables:   map[string]string{}, // _dir never set
 		},
 	})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	info, _ := tasks.GetTask("t1")
 	engine.importSidecarIfConfigured("t1", "review", info)
@@ -139,7 +139,7 @@ func TestImportSidecar_EmptyDirVarRecoversViaWorktreeGetter(t *testing.T) {
 			Variables:   map[string]string{}, // lost during restart/reattach
 		},
 	})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: worktree, ok: true})
 
 	info, _ := tasks.GetTask("t1")
@@ -211,7 +211,7 @@ func TestImportSidecars_RecoveredDirMakesLaterMissingArtifactPlainMissing(t *tes
 			Variables:   map[string]string{},
 		},
 	})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: worktree, ok: true})
 
 	info, _ := tasks.GetTask("t1")
@@ -248,7 +248,7 @@ func TestImportSidecar_MissingFileWithDirSetStillReportsMissing(t *testing.T) {
 			Variables:   map[string]string{"_dir": t.TempDir()},
 		},
 	})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	info, _ := tasks.GetTask("t1")
 	engine.importSidecarIfConfigured("t1", "review", info)
@@ -288,7 +288,7 @@ func TestImportSidecar_RecoversFromTaskWorktreeWhenDirVarEmpty(t *testing.T) {
 			Variables:   map[string]string{}, // _dir never set
 		},
 	})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: wt, ok: true})
 
 	info, _ := tasks.GetTask("t1")
@@ -322,7 +322,7 @@ func TestImportSidecar_RecoveryStillEscalatesWhenFileAlsoMissingInWorktree(t *te
 			Variables:   map[string]string{}, // _dir never set
 		},
 	})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	engine.SetWorktreeGetter(&fakeWorktreeGetter{path: t.TempDir(), ok: true}) // no review.md written here
 
 	info, _ := tasks.GetTask("t1")
@@ -350,7 +350,7 @@ func TestImportSidecar_NonReservedDirTemplateStillReportsMissing(t *testing.T) {
 			Variables:   map[string]string{},
 		},
 	})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	info, _ := tasks.GetTask("t1")
 	engine.importSidecarIfConfigured("t1", "review", info)
@@ -378,7 +378,7 @@ func TestImportSidecar_NoConfigIsNoop(t *testing.T) {
 			CurrentStep: "implement",
 		},
 	})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	info, _ := tasks.GetTask("t1")
 	engine.importSidecarIfConfigured("t1", "implement", info)
@@ -392,7 +392,7 @@ func TestImportSidecar_NoConfigIsNoop(t *testing.T) {
 func TestImportSidecar_NoWorkflowIsNoop(t *testing.T) {
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{ID: "t1"}) // no Workflow attached
-	engine := NewEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(newTestStore(t), tasks, newMockAgents(), discardLogger())
 
 	info, _ := tasks.GetTask("t1")
 	engine.importSidecarIfConfigured("t1", "review", info) // must not panic
@@ -414,7 +414,7 @@ func TestImportSidecar_UnknownKindLogsAndDoesNotWrite(t *testing.T) {
 			Variables:   map[string]string{"sidecar_path": path},
 		},
 	})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	info, _ := tasks.GetTask("t1")
 	engine.importSidecarIfConfigured("t1", "review", info) // must not panic
@@ -457,7 +457,7 @@ func TestImportSidecars_WritesMultiplePlanningArtifacts(t *testing.T) {
 			},
 		},
 	})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 
 	info, _ := tasks.GetTask("t1")
 	engine.importSidecarIfConfigured("t1", "plan", info)
@@ -509,7 +509,7 @@ func newImportSidecarsFixture(t *testing.T, files map[string]string) (*Engine, *
 			Variables:   vars,
 		},
 	})
-	engine := NewEngine(store, tasks, newMockAgents(), discardLogger())
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
 	return engine, tasks, dir
 }
 
