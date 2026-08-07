@@ -4684,6 +4684,7 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 		name             string
 		retries          string
 		freshUsed        bool
+		since            time.Time
 		wantStarts       int
 		wantStatus       taskstatus.Status
 		wantReason       string
@@ -4714,9 +4715,28 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 			wantSessionFence: true,
 		},
 		{
-			name:             "fresh round also exhausts, blocks and fences off the poisoned session",
+			// A second exhaustion still inside maxSilentHangWait of the first
+			// one is another provider-capacity blip, not a latch: it keeps
+			// granting fresh rounds instead of blocking (778422ef, 2026-08-06 —
+			// a task blocked permanently after exactly two rounds while claude
+			// flapped healthy/unhealthy for six hours with no peer to fail
+			// over to).
+			name:             "fresh round exhausts again within the wait ceiling, grants another",
 			retries:          strconv.Itoa(maxWatchdogRateLimitRetries),
 			freshUsed:        true,
+			since:            time.Now().Add(-1 * time.Hour),
+			wantStarts:       0,
+			wantStatus:       "in-progress",
+			wantReason:       watchdogreason.RateLimit(watchdogreason.ZeroOutputBeforeStartup),
+			wantRetry:        "0",
+			wantFresh:        "1",
+			wantSessionFence: true,
+		},
+		{
+			name:             "wait ceiling exceeded, blocks and fences off the poisoned session",
+			retries:          strconv.Itoa(maxWatchdogRateLimitRetries),
+			freshUsed:        true,
+			since:            time.Now().Add(-(maxSilentHangWait + time.Hour)),
 			wantStarts:       0,
 			wantStatus:       "blocked",
 			wantReason:       "watchdog: zero-output startup retry budget exhausted after 3 identical attempts",
@@ -4738,6 +4758,9 @@ func TestResumeStalled_WatchdogZeroOutputUsesSharedRetryBudget(t *testing.T) {
 			}
 			if tc.freshUsed {
 				vars[watchdogZeroOutputFreshRetryKey("implement")] = "1"
+			}
+			if !tc.since.IsZero() {
+				vars[watchdogSilentHangSinceKey("implement")] = tc.since.UTC().Format(time.RFC3339)
 			}
 			tasks.Put(TaskInfo{
 				ID:           "t1",
