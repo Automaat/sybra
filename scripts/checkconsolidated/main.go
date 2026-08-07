@@ -7,12 +7,17 @@ package main
 import (
 	"fmt"
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 type findingKind string
@@ -57,7 +62,15 @@ func buildAllowances() map[allowanceKey]allowance {
 	out := make(map[allowanceKey]allowance)
 	add := func(kind findingKind, path, reason string, counts map[string]int) {
 		for value, count := range counts {
-			out[allowanceKey{kind: kind, path: path, value: value}] = allowance{count: count, reason: reason}
+			key := allowanceKey{kind: kind, path: path, value: value}
+			current := out[key]
+			current.count += count
+			if current.reason == "" {
+				current.reason = reason
+			} else if current.reason != reason {
+				current.reason += "; " + reason
+			}
+			out[key] = current
 		}
 	}
 
@@ -124,18 +137,352 @@ func buildAllowances() map[allowanceKey]allowance {
 	add(kindTaskStatus, "internal/workflow/engine_steps_prfix.go", "PR-fix agent sentinel protocol has its own human/continue/done verdict vocabulary.", map[string]int{"human-required": 2, "done": 1})
 	add(kindTaskStatus, "internal/workflow/engine_steps_verify_checks.go", "StepOutput blocked is a workflow-step result, not the task status field.", map[string]int{"blocked": 1})
 
+	// The type-aware truncation rule intentionally treats every string slice as
+	// suspicious. These pre-existing parser/protocol/test slices are exact
+	// baselines; any added or removed occurrence requires a ledger review.
+	add(kindStringTruncation, "cmd/gen-api-shim/shim.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 7})
+	add(kindStringTruncation, "cmd/gen-config-docs/main.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "cmd/gen-events/main.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "cmd/sybra-cli/selfmonitor.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "cmd/sybra-perf/main.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 5})
+	add(kindStringTruncation, "internal/agent/discovery.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/agent/k8s_job_runner.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/agent/malformed_tool_call.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/agent/orphan_sweep_other.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/agent/procsandbox_darwin_integration_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 3})
+	add(kindStringTruncation, "internal/agent/procsandbox_linux_integration_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/agent/reattach_linux.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/agent/skill_invoke.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/agent/tool_loop_semantic.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 3})
+	add(kindStringTruncation, "internal/cluster/tls_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/config/config_migration.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/experience/record_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/fsutil/fsutil.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/fsutil/projectkey.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/github/client.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/harnessevolution/cluster.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/harnessevolution/collector.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/harnessevolution/propose.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/health/docker.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/issueref/issueref.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/limits/live.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/llmjob/llmjob.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/monitor/issueoutbox.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/monitor/issuesink.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 8})
+	add(kindStringTruncation, "internal/notes/notes_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/project/git.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 4})
+	add(kindStringTruncation, "internal/project/repair_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 5})
+	add(kindStringTruncation, "internal/project/store_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/prompteval/store.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/promptlab/model.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/provider/probes.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/sandbox/docker.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/sandbox/envfile.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/sandbox/k8s_integration_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/scrub/scrub.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 6})
+	add(kindStringTruncation, "internal/skillinvoke/skillinvoke.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 9})
+	add(kindStringTruncation, "internal/stats/pricing.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/sybra/app_automation_routing_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/sybra/app_umbrella_gate.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 4})
+	add(kindStringTruncation, "internal/sybra/config_sparse.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 4})
+	add(kindStringTruncation, "internal/sybra/config_subscribers.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/sybra/review/agent_manager_test_helpers_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/sybra/svc_tasks_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/sybra/svc_tasks.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/task/plan_draft.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 3})
+	add(kindStringTruncation, "internal/task/slug.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/umbrella/expand.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 9})
+	add(kindStringTruncation, "internal/umbrella/planner.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/workflow/builtin_plan_prompt_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/workflow/engine_events_agents.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/workflow/engine_parallel_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/workflow/engine_skill_receipt_summary.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/workflow/engine_steps_bestofn.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 3})
+	add(kindStringTruncation, "internal/workflow/engine_steps_clear_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/workflow/engine_steps_prfix.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/workflow/engine_steps_tamper.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 12})
+	add(kindStringTruncation, "internal/workflow/engine_steps_testroute.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 8})
+	add(kindStringTruncation, "internal/workflow/engine_steps_triage.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/workflow/engine_steps_verify_checks_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/workflow/engine_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/workflow/engine_validate_plan_contract.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/workflow/envtest_assets.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/workflow/template.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/worktree/branch.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 2})
+	add(kindStringTruncation, "internal/worktree/cleanup.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 3})
+	add(kindStringTruncation, "internal/worktree/manager_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})
+
+	// Test fixtures intentionally spell persisted wire values. They remain
+	// exact path/value/count entries so adding or removing a literal forces an
+	// explicit review of this ledger instead of receiving a blanket test exemption.
+	add(kindProvider, "cmd/fake-claude/main_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 5})
+	add(kindProvider, "cmd/sybra-cli/evaluation_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 3})
+	add(kindProvider, "cmd/sybra-cli/main_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 11, "codex": 7, "copilot": 4})
+	add(kindProvider, "cmd/sybra-server/main_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2, "codex": 1, "copilot": 1})
+	add(kindProvider, "internal/abtest/selector_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 53, "codex": 12, "copilot": 2, "opencode": 1})
+	add(kindProvider, "internal/agent/abvariant_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 9, "codex": 11, "copilot": 2})
+	add(kindProvider, "internal/agent/allowed_tools_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2, "codex": 4, "copilot": 3, "opencode": 1})
+	add(kindProvider, "internal/agent/background_task_adversarial_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/agent/copilot_stream_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"copilot": 6})
+	add(kindProvider, "internal/agent/discovery_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"codex": 4})
+	add(kindProvider, "internal/agent/effort_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/agent/foreground_command_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/agent/inspector_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1})
+	add(kindProvider, "internal/agent/k8s_job_runner_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2, "codex": 4, "opencode": 5})
+	add(kindProvider, "internal/agent/logfile_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"codex": 1})
+	add(kindProvider, "internal/agent/malformed_tool_call_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 6, "codex": 1})
+	add(kindProvider, "internal/agent/manager_gate_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 87, "codex": 58, "copilot": 8, "opencode": 5})
+	add(kindProvider, "internal/agent/manager_run_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 41, "codex": 18, "copilot": 3, "opencode": 1})
+	add(kindProvider, "internal/agent/manager_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 16, "codex": 25, "copilot": 5})
+	add(kindProvider, "internal/agent/model_json_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/agent/opencode_stream_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"opencode": 5})
+	add(kindProvider, "internal/agent/orphan_sweep_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/agent/procsandbox_linux_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 5, "codex": 4})
+	add(kindProvider, "internal/agent/procsandbox_read_darwin_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2, "codex": 1})
+	add(kindProvider, "internal/agent/procsandbox_read_linux_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/agent/procsandbox_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 5})
+	add(kindProvider, "internal/agent/provider_lookup_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/agent/reattach_effort_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1})
+	add(kindProvider, "internal/agent/reattach_escalation_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/agent/reattach_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 13})
+	add(kindProvider, "internal/agent/registry_roundtrip_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1, "codex": 1})
+	add(kindProvider, "internal/agent/runner_headless_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 99, "codex": 35, "copilot": 9})
+	add(kindProvider, "internal/agent/session_filter_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 7, "codex": 8})
+	add(kindProvider, "internal/agent/skill_invoke_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1, "codex": 6, "copilot": 2, "opencode": 1})
+	add(kindProvider, "internal/agent/survive_restart_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 19, "codex": 2})
+	add(kindProvider, "internal/agent/tool_failure_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 7})
+	add(kindProvider, "internal/agent/tool_result_bound_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/agent/zz_adversarial_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 4, "copilot": 6})
+	add(kindProvider, "internal/config/config_providers_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2, "codex": 1, "copilot": 1, "opencode": 2})
+	add(kindProvider, "internal/config/config_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 3, "codex": 4})
+	add(kindProvider, "internal/evaluation/scorecard_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 30, "codex": 24, "copilot": 4})
+	add(kindProvider, "internal/evaluation/service_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 6})
+	add(kindProvider, "internal/evaluation/weakness_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1, "codex": 3})
+	add(kindProvider, "internal/experience/record_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1, "codex": 2})
+	add(kindProvider, "internal/github/check_filter_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"copilot": 1})
+	add(kindProvider, "internal/learning/digest_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 4, "codex": 2, "copilot": 1})
+	add(kindProvider, "internal/learning/input_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 3, "codex": 1})
+	add(kindProvider, "internal/learning/model_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1})
+	add(kindProvider, "internal/llmexec/llmexec_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 12, "codex": 20, "copilot": 9, "opencode": 6})
+	add(kindProvider, "internal/llmjob/llmjob_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 31, "codex": 8, "copilot": 4, "opencode": 4})
+	add(kindProvider, "internal/loopagent/scheduler_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1})
+	add(kindProvider, "internal/loopagent/store_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2, "codex": 1, "copilot": 1})
+	add(kindProvider, "internal/metrics/metrics_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 15, "codex": 7})
+	add(kindProvider, "internal/modeltier/tier_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2, "codex": 2, "opencode": 1})
+	add(kindProvider, "internal/monitor/capacity_dispatch_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"codex": 2})
+	add(kindProvider, "internal/monitor/no_capacity_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 3, "codex": 2, "copilot": 2})
+	add(kindProvider, "internal/prompteval/promptfoo_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/provider/health_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 68, "codex": 36, "copilot": 6, "opencode": 4})
+	add(kindProvider, "internal/provider/reset_hint_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"codex": 1})
+	add(kindProvider, "internal/recovery/recovery_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/routing/service_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 6, "codex": 5})
+	add(kindProvider, "internal/selfmonitor/provider_feedback_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1, "codex": 2})
+	add(kindProvider, "internal/stats/pricing_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 3, "codex": 5, "copilot": 1})
+	add(kindProvider, "internal/stats/store_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"codex": 3})
+	add(kindProvider, "internal/sybra/agentorch/agentorch_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 18, "codex": 4})
+	add(kindProvider, "internal/sybra/agentorch/prompt_render_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"codex": 1})
+	add(kindProvider, "internal/sybra/agentorch/scratch_manual_probe_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1})
+	add(kindProvider, "internal/sybra/app_agent_release_lifecycle_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 3})
+	add(kindProvider, "internal/sybra/app_human_review_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 3, "codex": 5})
+	add(kindProvider, "internal/sybra/app_provider_capacity_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 4, "codex": 2})
+	add(kindProvider, "internal/sybra/app_queue_order_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1})
+	add(kindProvider, "internal/sybra/app_startup_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/sybra/app_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 4})
+	add(kindProvider, "internal/sybra/app_tool_ledger_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1})
+	add(kindProvider, "internal/sybra/app_workflow_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 14})
+	add(kindProvider, "internal/sybra/completion/completion_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2, "codex": 4, "copilot": 2})
+	add(kindProvider, "internal/sybra/completion/malformed_tool_call_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/sybra/completion/parked_adoption_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/sybra/completion/permissions_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"codex": 3})
+	add(kindProvider, "internal/sybra/config_diff_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"codex": 1})
+	add(kindProvider, "internal/sybra/e2e_autonomy_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 11, "codex": 2})
+	add(kindProvider, "internal/sybra/e2e_bestofn_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1})
+	add(kindProvider, "internal/sybra/e2e_bootstrap_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1})
+	add(kindProvider, "internal/sybra/e2e_crossprovider_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 4, "codex": 1})
+	add(kindProvider, "internal/sybra/e2e_evaluation_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"codex": 1})
+	add(kindProvider, "internal/sybra/e2e_stats_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 5, "codex": 3})
+	add(kindProvider, "internal/sybra/e2e_workflow_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 76, "codex": 33, "copilot": 2})
+	add(kindProvider, "internal/sybra/lifecycle_metrics_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 9, "codex": 9})
+	add(kindProvider, "internal/sybra/monitor_cluster_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/sybra/orchestrator_resume_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/sybra/review/fix_dispatch_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/sybra/review/rebase_recover_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2, "codex": 3})
+	add(kindProvider, "internal/sybra/svc_config_reload_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 3, "codex": 5})
+	add(kindProvider, "internal/sybra/svc_info_runtimes_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 5, "codex": 5, "opencode": 2})
+	add(kindProvider, "internal/sybra/svc_orchestrator_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1})
+	add(kindProvider, "internal/sybra/svc_reviews_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1})
+	add(kindProvider, "internal/sybra/svc_tasks_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2, "codex": 2, "copilot": 3})
+	add(kindProvider, "internal/sybra/sybra_home_sentinel_e2e_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1})
+	add(kindProvider, "internal/task/model_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1, "codex": 1, "copilot": 1})
+	add(kindProvider, "internal/task/persistence_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2, "codex": 2})
+	add(kindProvider, "internal/task/store_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2, "codex": 2})
+	add(kindProvider, "internal/triage/classifier_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/umbrella/planner_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1})
+	add(kindProvider, "internal/watchdog/agent_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 10})
+	add(kindProvider, "internal/workflow/engine_agent_route_race_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1})
+	add(kindProvider, "internal/workflow/engine_bestofn_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2})
+	add(kindProvider, "internal/workflow/engine_parallel_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 9, "codex": 5})
+	add(kindProvider, "internal/workflow/engine_skill_receipt_zero_output_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1})
+	add(kindProvider, "internal/workflow/engine_steps_testroute_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"codex": 4})
+	add(kindProvider, "internal/workflow/engine_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 41, "codex": 23, "copilot": 3})
+	add(kindProvider, "internal/workflow/permutation_contract_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 2, "codex": 2})
+	add(kindProvider, "internal/workflow/provider_resolution_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 6, "codex": 15, "copilot": 4, "opencode": 2})
+	add(kindProvider, "internal/workflow/start_error_test.go", "Test fixture intentionally spells provider wire values to verify parsing, routing, or compatibility.", map[string]int{"claude": 1, "codex": 2})
+	add(kindTaskStatus, "cmd/sybra-cli/cli_home_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"todo": 1})
+	add(kindTaskStatus, "cmd/sybra-cli/doctor_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 2})
+	add(kindTaskStatus, "cmd/sybra-cli/handoff_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 1, "in-progress": 1, "in-review": 1, "ready-pr": 3, "ready-review": 1, "testing": 2})
+	add(kindTaskStatus, "cmd/sybra-cli/httpclient_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"todo": 5})
+	add(kindTaskStatus, "cmd/sybra-cli/main_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 4, "done": 5, "human-required": 2, "in-progress": 7, "in-review": 1, "ready-pr": 1, "todo": 3})
+	add(kindTaskStatus, "cmd/sybra-cli/progress_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 2, "todo": 1})
+	add(kindTaskStatus, "cmd/sybra-cli/unknown_key_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 2})
+	add(kindTaskStatus, "internal/agent/convo_io_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 2})
+	add(kindTaskStatus, "internal/agent/logfile_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 1})
+	add(kindTaskStatus, "internal/agent/manager_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"cancelled": 1})
+	add(kindTaskStatus, "internal/agent/model_json_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 2})
+	add(kindTaskStatus, "internal/agent/opencode_stream_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 1})
+	add(kindTaskStatus, "internal/agent/reattach_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 1, "done": 3, "human-required": 4, "in-progress": 2, "todo": 3})
+	add(kindTaskStatus, "internal/agent/runner_headless_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 9})
+	add(kindTaskStatus, "internal/agent/stream_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 2})
+	add(kindTaskStatus, "internal/agent/tool_calls_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 1})
+	add(kindTaskStatus, "internal/agentqueue/queue_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"cancelled": 3, "done": 3, "in-progress": 3, "new": 4})
+	add(kindTaskStatus, "internal/audit/summary_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 1, "in-progress": 2, "new": 1, "todo": 2})
+	add(kindTaskStatus, "internal/autoupdate/autoupdate_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 4, "new": 1})
+	add(kindTaskStatus, "internal/blocker/blocker_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 4, "cancelled": 1, "done": 1, "human-required": 10, "in-progress": 2, "new": 1, "todo": 1})
+	add(kindTaskStatus, "internal/evaluation/autonomy_trend_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 1, "in-review": 1})
+	add(kindTaskStatus, "internal/evaluation/phases_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 1, "cancelled": 1, "done": 5, "human-required": 1, "in-progress": 10, "in-review": 9, "new": 1, "plan-review": 1, "planning": 5, "ready-pr": 1, "ready-review": 1, "testing": 3, "todo": 5})
+	add(kindTaskStatus, "internal/evaluation/scorecard_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 6, "in-progress": 6, "in-review": 14, "testing": 3})
+	add(kindTaskStatus, "internal/evaluation/slo_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 5, "in-progress": 6, "in-review": 2, "todo": 3})
+	add(kindTaskStatus, "internal/experience/store_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"new": 4})
+	add(kindTaskStatus, "internal/fsutil/fsutil_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"new": 9})
+	add(kindTaskStatus, "internal/github/issue_close_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 2})
+	add(kindTaskStatus, "internal/github/rest_monitor_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 2})
+	add(kindTaskStatus, "internal/github/review_state_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"new": 1})
+	add(kindTaskStatus, "internal/harnessevolution/cluster_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"testing": 1})
+	add(kindTaskStatus, "internal/health/checks_extra_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 2, "human-required": 4, "in-progress": 7, "in-review": 1, "new": 1, "plan-review": 5, "planning": 2, "todo": 1})
+	add(kindTaskStatus, "internal/health/checks_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 2, "in-progress": 6, "in-review": 1, "todo": 7})
+	add(kindTaskStatus, "internal/health/e2e_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 1, "human-required": 1, "in-progress": 3, "plan-review": 2, "planning": 1})
+	add(kindTaskStatus, "internal/health/fingerprint_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"in-review": 2, "todo": 1})
+	add(kindTaskStatus, "internal/intervention/fingerprint_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 3, "in-progress": 3, "ready-pr": 1})
+	add(kindTaskStatus, "internal/intervention/record_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"in-progress": 3, "todo": 2})
+	add(kindTaskStatus, "internal/intervention/store_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 5, "in-progress": 5})
+	add(kindTaskStatus, "internal/limits/collect_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"new": 5})
+	add(kindTaskStatus, "internal/limits/store_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 1, "new": 2})
+	add(kindTaskStatus, "internal/metrics/metrics_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 1, "todo": 1})
+	add(kindTaskStatus, "internal/monitor/detector_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 1, "in-progress": 2, "new": 1, "plan-review": 3})
+	add(kindTaskStatus, "internal/monitor/prompts_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 12})
+	add(kindTaskStatus, "internal/monitor/remediator_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 9, "in-progress": 1, "plan-review": 2})
+	add(kindTaskStatus, "internal/project/git_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"new": 1})
+	add(kindTaskStatus, "internal/routing/plan_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"new": 5})
+	add(kindTaskStatus, "internal/selfmonitor/ledger_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"new": 2})
+	add(kindTaskStatus, "internal/sybra/app_dispatch_gate_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"planning": 2})
+	add(kindTaskStatus, "internal/sybra/app_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 3})
+	add(kindTaskStatus, "internal/sybra/app_watcher_status_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"planning": 1})
+	add(kindTaskStatus, "internal/sybra/app_workflow_reason_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 1})
+	add(kindTaskStatus, "internal/sybra/completion/evidence_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"new": 1})
+	add(kindTaskStatus, "internal/sybra/completion/parked_adoption_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 1, "human-required": 2, "todo": 2})
+	add(kindTaskStatus, "internal/sybra/e2e_autonomy_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"in-progress": 2})
+	add(kindTaskStatus, "internal/sybra/e2e_bestofn_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 5})
+	add(kindTaskStatus, "internal/sybra/e2e_workflow_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"in-progress": 9, "in-review": 5, "plan-review": 8, "testing": 1, "todo": 1})
+	add(kindTaskStatus, "internal/sybra/review/automerge_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 2})
+	add(kindTaskStatus, "internal/sybra/review/autoresolve_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 1, "in-progress": 1})
+	add(kindTaskStatus, "internal/sybra/review/pr_poll_sched_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 1, "new": 2})
+	add(kindTaskStatus, "internal/sybra/review/rebase_recover_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 2, "in-progress": 2, "in-review": 1})
+	add(kindTaskStatus, "internal/sybra/review/review_hold_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 1})
+	add(kindTaskStatus, "internal/sybra/review/unit_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 1})
+	add(kindTaskStatus, "internal/sybra/svc_orchestrator_replaceable_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"new": 4})
+	add(kindTaskStatus, "internal/sybra/svc_planning_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 2, "plan-review": 1, "planning": 1})
+	add(kindTaskStatus, "internal/sybra/svc_stats_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 5, "in-review": 3, "todo": 2})
+	add(kindTaskStatus, "internal/sybra/svc_tasks_cluster_push_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 1})
+	add(kindTaskStatus, "internal/sybra/svc_tasks_dispatch_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"cancelled": 1, "done": 1, "in-progress": 9, "in-review": 6, "ready-pr": 6, "ready-review": 2, "testing": 2})
+	add(kindTaskStatus, "internal/sybra/svc_tasks_listfornode_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"in-progress": 3})
+	add(kindTaskStatus, "internal/sybra/svc_tasks_lock_timeout_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 1})
+	add(kindTaskStatus, "internal/sybra/svc_tasks_restart_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"in-progress": 2})
+	add(kindTaskStatus, "internal/task/manager_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"in-progress": 1})
+	add(kindTaskStatus, "internal/task/parser_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 2})
+	add(kindTaskStatus, "internal/task/persistence_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 2, "testing": 2})
+	add(kindTaskStatus, "internal/task/store_lock_timeout_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 1})
+	add(kindTaskStatus, "internal/task/store_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 12})
+	add(kindTaskStatus, "internal/umbrella/tags_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 1})
+	add(kindTaskStatus, "internal/verdict/verdict_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"ready-pr": 1})
+	add(kindTaskStatus, "internal/watchdog/agent_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 3})
+	add(kindTaskStatus, "internal/workflow/atomic_status_workflow_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 3, "in-progress": 2})
+	add(kindTaskStatus, "internal/workflow/bounded_retry_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 2, "in-progress": 2})
+	add(kindTaskStatus, "internal/workflow/builtin_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 1, "done": 2, "human-required": 7, "in-progress": 13, "in-review": 1, "planning": 3, "ready-pr": 3, "ready-review": 2, "todo": 1})
+	add(kindTaskStatus, "internal/workflow/condition_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 6, "in-progress": 3, "planning": 2, "todo": 4})
+	add(kindTaskStatus, "internal/workflow/effect_id_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"in-review": 1, "plan-review": 1, "todo": 1})
+	add(kindTaskStatus, "internal/workflow/effect_reclaim_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"planning": 1})
+	add(kindTaskStatus, "internal/workflow/engine_agent_route_race_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"in-progress": 1, "todo": 2})
+	add(kindTaskStatus, "internal/workflow/engine_autodispatch_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"in-progress": 1, "todo": 1})
+	add(kindTaskStatus, "internal/workflow/engine_bench_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"todo": 5})
+	add(kindTaskStatus, "internal/workflow/engine_bestofn_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 2, "human-required": 10, "ready-review": 2, "todo": 3})
+	add(kindTaskStatus, "internal/workflow/engine_cascade_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 6, "in-progress": 7, "new": 4, "todo": 3})
+	add(kindTaskStatus, "internal/workflow/engine_dispatch_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 2, "ready-pr": 2})
+	add(kindTaskStatus, "internal/workflow/engine_drain_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"new": 1})
+	add(kindTaskStatus, "internal/workflow/engine_events_watchdog_reask_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 1, "human-required": 10, "in-progress": 20, "in-review": 2, "planning": 1, "ready-pr": 1, "testing": 5})
+	add(kindTaskStatus, "internal/workflow/engine_import_sidecar_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 8, "in-progress": 8, "planning": 4})
+	add(kindTaskStatus, "internal/workflow/engine_missing_step_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"cancelled": 3, "done": 3, "human-required": 2, "planning": 6})
+	add(kindTaskStatus, "internal/workflow/engine_parallel_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 1, "human-required": 1, "todo": 11})
+	add(kindTaskStatus, "internal/workflow/engine_prompt_undelivered_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 2, "in-progress": 1})
+	add(kindTaskStatus, "internal/workflow/engine_resume_pr_steps_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 1, "in-progress": 1, "ready-pr": 2, "ready-review": 1})
+	add(kindTaskStatus, "internal/workflow/engine_skill_receipt_zero_output_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 2, "in-progress": 1})
+	add(kindTaskStatus, "internal/workflow/engine_stale_route_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 1, "in-progress": 2})
+	add(kindTaskStatus, "internal/workflow/engine_steps_admission_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 1, "human-required": 9, "in-progress": 13})
+	add(kindTaskStatus, "internal/workflow/engine_steps_classify_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 5, "new": 5})
+	add(kindTaskStatus, "internal/workflow/engine_steps_clear_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 7})
+	add(kindTaskStatus, "internal/workflow/engine_steps_codegen_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 4, "in-progress": 12})
+	add(kindTaskStatus, "internal/workflow/engine_steps_evidence_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 1, "human-required": 9})
+	add(kindTaskStatus, "internal/workflow/engine_steps_focused_checks_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 2, "in-progress": 24})
+	add(kindTaskStatus, "internal/workflow/engine_steps_pr_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 2, "human-required": 14, "in-progress": 3, "ready-pr": 47})
+	add(kindTaskStatus, "internal/workflow/engine_steps_prfix_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 14, "in-progress": 29, "in-review": 2})
+	add(kindTaskStatus, "internal/workflow/engine_steps_resume_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 2, "human-required": 6, "in-progress": 10, "testing": 3})
+	add(kindTaskStatus, "internal/workflow/engine_steps_sync_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"ready-pr": 10})
+	add(kindTaskStatus, "internal/workflow/engine_steps_tamper_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 13, "in-progress": 41, "ready-review": 5})
+	add(kindTaskStatus, "internal/workflow/engine_steps_testroute_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 13, "in-progress": 14, "ready-pr": 6, "testing": 29})
+	add(kindTaskStatus, "internal/workflow/engine_steps_verify_checks_autofix_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 4, "in-progress": 25, "ready-review": 1, "todo": 1})
+	add(kindTaskStatus, "internal/workflow/engine_steps_verify_checks_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 5, "human-required": 5, "in-progress": 39})
+	add(kindTaskStatus, "internal/workflow/engine_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 10, "cancelled": 6, "done": 20, "human-required": 83, "in-progress": 168, "in-review": 26, "new": 2, "plan-review": 26, "planning": 37, "ready-pr": 16, "ready-review": 1, "testing": 4, "todo": 48})
+	add(kindTaskStatus, "internal/workflow/engine_validate_plan_contract_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 3, "planning": 8})
+	add(kindTaskStatus, "internal/workflow/engine_validate_plan_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 5, "planning": 5})
+	add(kindTaskStatus, "internal/workflow/evidence_attempts_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"in-progress": 4})
+	add(kindTaskStatus, "internal/workflow/execution_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"new": 2})
+	add(kindTaskStatus, "internal/workflow/handoff_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"in-progress": 1, "ready-pr": 2, "ready-review": 2, "testing": 2})
+	add(kindTaskStatus, "internal/workflow/model_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 2})
+	add(kindTaskStatus, "internal/workflow/permutation_contract_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"plan-review": 3, "todo": 1})
+	add(kindTaskStatus, "internal/workflow/rewind_retry_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"in-progress": 3})
+	add(kindTaskStatus, "internal/workflow/sidecar_seed_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"in-review": 1})
+	add(kindTaskStatus, "internal/workflow/start_error_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 5, "human-required": 8, "in-progress": 35, "todo": 9})
+	add(kindTaskStatus, "internal/workflow/state_reducer_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"done": 5, "human-required": 1, "in-review": 2, "plan-review": 5, "testing": 1, "todo": 2})
+	add(kindTaskStatus, "internal/workflow/status_reason_utf8_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 1, "planning": 1, "todo": 1})
+	add(kindTaskStatus, "internal/workflow/store_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"todo": 2})
+	add(kindTaskStatus, "internal/workflow/triage_review_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"blocked": 2, "human-required": 5, "testing": 10})
+	add(kindTaskStatus, "internal/workflow/zz_adversarial_verify_checks_test.go", "Test fixture intentionally spells persisted task-status wire values to verify workflow or compatibility.", map[string]int{"human-required": 1, "in-progress": 1})
+
 	return out
 }
 
-var taskStatuses = map[string]struct{}{
-	"new": {}, "todo": {}, "in-progress": {}, "ready-review": {},
-	"in-review": {}, "planning": {}, "plan-review": {}, "testing": {},
-	"ready-pr": {}, "human-required": {}, "blocked": {}, "done": {},
-	"cancelled": {},
+var taskStatuses = statusVocabulary()
+
+var providerNames = providerVocabulary()
+
+func statusVocabulary() map[string]struct{} {
+	out := make(map[string]struct{}, len(taskstatus.All()))
+	for _, status := range taskstatus.All() {
+		out[string(status)] = struct{}{}
+	}
+	return out
 }
 
-var providerNames = map[string]struct{}{
-	"claude": {}, "codex": {}, "copilot": {}, "opencode": {},
+func providerVocabulary() map[string]struct{} {
+	out := make(map[string]struct{}, len(providerid.All()))
+	for _, provider := range providerid.All() {
+		out[provider] = struct{}{}
+	}
+	return out
+}
+
+type parsedFile struct {
+	path string
+	file *ast.File
 }
 
 func main() {
@@ -144,7 +491,7 @@ func main() {
 		os.Exit(1)
 	}
 	fset := token.NewFileSet()
-	var findings []finding
+	groups := make(map[string][]parsedFile)
 	failed := false
 	for _, rawPath := range os.Args[1:] {
 		path := filepath.ToSlash(rawPath)
@@ -154,7 +501,20 @@ func main() {
 			failed = true
 			continue
 		}
-		findings = append(findings, inspectFile(fset, path, file)...)
+		key := filepath.Dir(path) + "\x00" + file.Name.Name
+		groups[key] = append(groups[key], parsedFile{path: path, file: file})
+	}
+
+	var findings []finding
+	for key, files := range groups {
+		asts := make([]*ast.File, 0, len(files))
+		for _, file := range files {
+			asts = append(asts, file.file)
+		}
+		info := collectTypeInfo(key, fset, asts)
+		for _, file := range files {
+			findings = append(findings, inspectFile(fset, file.path, file.file, info)...)
+		}
 	}
 
 	for _, issue := range auditFindings(findings, allowances) {
@@ -219,7 +579,19 @@ func canonicalPackage(kind findingKind) string {
 	}
 }
 
-func inspectFile(fset *token.FileSet, path string, file *ast.File) []finding {
+func collectTypeInfo(pkgPath string, fset *token.FileSet, files []*ast.File) *types.Info {
+	info := &types.Info{Types: make(map[ast.Expr]types.TypeAndValue)}
+	config := types.Config{
+		Importer: importer.Default(),
+		// Module-local and generated imports may be unavailable to the source
+		// importer. Retain partial local type facts instead of failing open.
+		Error: func(error) {},
+	}
+	_, _ = config.Check(pkgPath, fset, files, info)
+	return info
+}
+
+func inspectFile(fset *token.FileSet, path string, file *ast.File, info *types.Info) []finding {
 	// The checker necessarily contains the literal vocabulary and synthetic
 	// examples it searches for. It is its own bootstrap implementation, not a
 	// product caller of any consolidated primitive.
@@ -227,19 +599,15 @@ func inspectFile(fset *token.FileSet, path string, file *ast.File) []finding {
 		return nil
 	}
 	var out []finding
-	isTest := strings.HasSuffix(path, "_test.go")
 	stringNames, stringFields := collectStringNames(file)
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch n := node.(type) {
 		case *ast.SliceExpr:
-			if !strings.HasPrefix(path, "internal/textutil/") && isStringExpr(n.X, stringNames, stringFields) && isTruncatingSlice(n) {
+			if !strings.HasPrefix(path, "internal/textutil/") && isStringExpr(n.X, info, stringNames, stringFields) && (n.Low != nil || n.High != nil) {
 				out = append(out, finding{kind: kindStringTruncation, path: path, value: "slice", line: fset.Position(n.Pos()).Line})
 			}
 		case *ast.BasicLit:
-			// Tests intentionally spell persisted/wire values to prove parsing and
-			// compatibility. They are excluded only from the literal gates; their
-			// production helpers remain subject to truncation/extraction checks.
-			if isTest || n.Kind != token.STRING || isStructTag(file, n) {
+			if n.Kind != token.STRING || isStructTag(file, n) || isImportPath(file, n) {
 				return true
 			}
 			value, err := strconv.Unquote(n.Value)
@@ -281,6 +649,15 @@ func isStructTag(file *ast.File, lit *ast.BasicLit) bool {
 	return found
 }
 
+func isImportPath(file *ast.File, lit *ast.BasicLit) bool {
+	for _, spec := range file.Imports {
+		if spec.Path == lit {
+			return true
+		}
+	}
+	return false
+}
+
 func collectStringNames(file *ast.File) (map[string]struct{}, map[string]struct{}) {
 	names := make(map[string]struct{})
 	fields := make(map[string]struct{})
@@ -310,7 +687,7 @@ func collectStringNames(file *ast.File) (map[string]struct{}, map[string]struct{
 					return true
 				}
 				for i, rhs := range n.Rhs {
-					if !isStringExpr(rhs, names, fields) {
+					if !isStringExpr(rhs, nil, names, fields) {
 						continue
 					}
 					if id, ok := n.Lhs[i].(*ast.Ident); ok {
@@ -322,7 +699,7 @@ func collectStringNames(file *ast.File) (map[string]struct{}, map[string]struct{
 					return true
 				}
 				for i, value := range n.Values {
-					if isStringExpr(value, names, fields) {
+					if isStringExpr(value, nil, names, fields) {
 						names[n.Names[i].Name] = struct{}{}
 					}
 				}
@@ -333,7 +710,14 @@ func collectStringNames(file *ast.File) (map[string]struct{}, map[string]struct{
 	return names, fields
 }
 
-func isStringExpr(expr ast.Expr, names, fields map[string]struct{}) bool {
+func isStringExpr(expr ast.Expr, info *types.Info, names, fields map[string]struct{}) bool {
+	if info != nil {
+		if typ := info.TypeOf(expr); typ != nil {
+			if basic, ok := typ.Underlying().(*types.Basic); ok && basic.Kind() == types.String {
+				return true
+			}
+		}
+	}
 	switch e := expr.(type) {
 	case *ast.BasicLit:
 		return e.Kind == token.STRING
@@ -344,11 +728,11 @@ func isStringExpr(expr ast.Expr, names, fields map[string]struct{}) bool {
 		_, ok := fields[e.Sel.Name]
 		return ok
 	case *ast.ParenExpr:
-		return isStringExpr(e.X, names, fields)
+		return isStringExpr(e.X, info, names, fields)
 	case *ast.BinaryExpr:
-		return e.Op == token.ADD && (isStringExpr(e.X, names, fields) || isStringExpr(e.Y, names, fields))
+		return e.Op == token.ADD && (isStringExpr(e.X, info, names, fields) || isStringExpr(e.Y, info, names, fields))
 	case *ast.SliceExpr:
-		return isStringExpr(e.X, names, fields)
+		return isStringExpr(e.X, info, names, fields)
 	case *ast.CallExpr:
 		if id, ok := e.Fun.(*ast.Ident); ok {
 			return id.Name == "string"
@@ -376,63 +760,6 @@ func isStringExpr(expr ast.Expr, names, fields map[string]struct{}) bool {
 		}
 	}
 	return false
-}
-
-func isTruncatingSlice(slice *ast.SliceExpr) bool {
-	if slice.High != nil && looksLikeBound(slice.High) {
-		return true
-	}
-	return isTailBound(slice.Low)
-}
-
-func looksLikeBound(expr ast.Expr) bool {
-	switch e := expr.(type) {
-	case *ast.BasicLit:
-		return e.Kind == token.INT
-	case *ast.Ident:
-		name := strings.ToLower(e.Name)
-		return name == "n" || name == "size" || name == "count" || strings.Contains(name, "max") || strings.Contains(name, "limit") || strings.Contains(name, "cap") || strings.Contains(name, "bytes")
-	case *ast.ParenExpr:
-		return looksLikeBound(e.X)
-	case *ast.CallExpr:
-		if id, ok := e.Fun.(*ast.Ident); ok && (id.Name == "min" || id.Name == "max") {
-			return true
-		}
-	case *ast.BinaryExpr:
-		// A constant inside parser arithmetic (end+1, len(s)-1) is a
-		// delimiter adjustment, not a length budget. Binary bounds count only
-		// when one side carries an explicit max/limit/size signal.
-		return containsBoundSignal(e.X) || containsBoundSignal(e.Y)
-	}
-	return false
-}
-
-func containsBoundSignal(expr ast.Expr) bool {
-	switch e := expr.(type) {
-	case *ast.Ident:
-		return looksLikeBound(e)
-	case *ast.ParenExpr:
-		return containsBoundSignal(e.X)
-	case *ast.BinaryExpr:
-		return containsBoundSignal(e.X) || containsBoundSignal(e.Y)
-	case *ast.CallExpr:
-		id, ok := e.Fun.(*ast.Ident)
-		return ok && (id.Name == "min" || id.Name == "max")
-	}
-	return false
-}
-
-func isTailBound(expr ast.Expr) bool {
-	bin, ok := expr.(*ast.BinaryExpr)
-	if !ok || bin.Op != token.SUB || !looksLikeBound(bin.Y) {
-		return false
-	}
-	call, ok := bin.X.(*ast.CallExpr)
-	if !ok || len(call.Args) != 1 {
-		return false
-	}
-	id, ok := call.Fun.(*ast.Ident)
-	return ok && id.Name == "len"
 }
 
 func extractsJSONByBraces(fn *ast.FuncDecl) bool {
@@ -463,7 +790,7 @@ func extractsJSONByBraces(fn *ast.FuncDecl) bool {
 				braceDirections[id.Name] |= 2
 			}
 		case *ast.AssignStmt:
-			if len(n.Lhs) != 1 {
+			if len(n.Lhs) != 1 || len(n.Rhs) != 1 {
 				return true
 			}
 			id, ok := n.Lhs[0].(*ast.Ident)
@@ -474,6 +801,8 @@ func extractsJSONByBraces(fn *ast.FuncDecl) bool {
 				braceDirections[id.Name] |= 1
 			} else if n.Tok == token.SUB_ASSIGN {
 				braceDirections[id.Name] |= 2
+			} else if n.Tok == token.ASSIGN {
+				braceDirections[id.Name] |= assignmentDirection(id.Name, n.Rhs[0])
 			}
 		}
 		return true
@@ -484,11 +813,52 @@ func extractsJSONByBraces(fn *ast.FuncDecl) bool {
 	name := strings.ToLower(fn.Name.Name)
 	jsonishName := strings.Contains(name, "json") || strings.Contains(name, "object")
 	for _, directions := range braceDirections {
-		if directions == 3 && bodyHasBothBraces(body) && (jsonishName || returnsStringSlice(fn)) {
+		if directions == 3 && bodyHasBothBraces(body) && (jsonishName || returnsStringSlice(fn) || returnsIndexSpan(fn)) {
 			return true
 		}
 	}
 	return false
+}
+
+func assignmentDirection(name string, expr ast.Expr) uint8 {
+	bin, ok := expr.(*ast.BinaryExpr)
+	if !ok {
+		return 0
+	}
+	isName := func(expr ast.Expr) bool {
+		id, ok := expr.(*ast.Ident)
+		return ok && id.Name == name
+	}
+	isOne := func(expr ast.Expr) bool {
+		lit, ok := expr.(*ast.BasicLit)
+		return ok && lit.Kind == token.INT && lit.Value == "1"
+	}
+	if bin.Op == token.ADD && ((isName(bin.X) && isOne(bin.Y)) || (isOne(bin.X) && isName(bin.Y))) {
+		return 1
+	}
+	if bin.Op == token.SUB && isName(bin.X) && isOne(bin.Y) {
+		return 2
+	}
+	return 0
+}
+
+func returnsIndexSpan(fn *ast.FuncDecl) bool {
+	if fn.Type.Results == nil {
+		return false
+	}
+	count := 0
+	for _, field := range fn.Type.Results.List {
+		id, ok := field.Type.(*ast.Ident)
+		if !ok || id.Name != "int" {
+			continue
+		}
+		if len(field.Names) == 0 {
+			count++
+		} else {
+			count += len(field.Names)
+		}
+	}
+	return count >= 2
 }
 
 func returnsStringSlice(fn *ast.FuncDecl) bool {
