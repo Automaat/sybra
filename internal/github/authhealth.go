@@ -268,7 +268,7 @@ func (t *authHealthTracker) applyFailureBackoffLocked() {
 // ObserveCallResult can classify a combined stdout+stderr blob the same way
 // IsAuthError classifies a wrapped error.
 func isAuthErrorMsg(msg string) bool {
-	return errclass.Classify(msg, errclass.GitHubPollerRetryBiased) == errclass.Auth
+	return errclass.Classify(msg, errclass.GitHubCircuitEscalationBiased) == errclass.Auth
 }
 
 // authCircuitOpenMarker tags the synthetic error returned while the circuit

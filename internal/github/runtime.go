@@ -422,7 +422,7 @@ func (g *ghRequestGate) pressure() (fraction float64, known bool) {
 }
 
 func isRateLimitedMessage(msg string) bool {
-	return errclass.Classify(msg, errclass.GitHubPollerRetryBiased) == errclass.RateLimited
+	return errclass.Classify(msg, errclass.MonitorCooldownBiased) == errclass.RateLimited
 }
 
 func isGraphQLRateLimitBody(body []byte) bool {
@@ -462,7 +462,7 @@ func isRateLimitedResponse(resp ghHTTPResponse) bool {
 	if json.Unmarshal(resp.body, &envelope) != nil {
 		return false
 	}
-	return errclass.Classify(envelope.Message, errclass.GitHubPollerRetryBiased) == errclass.RateLimited
+	return errclass.Classify(envelope.Message, errclass.MonitorCooldownBiased) == errclass.RateLimited
 }
 
 func runGHAPIWith(e execer, cacheTTL string, args ...string) (ghHTTPResponse, error) {

@@ -14,8 +14,11 @@ func TestClassifyPolicies(t *testing.T) {
 		want   Class
 	}{
 		{"poller retries plain 500", GitHubPollerRetryBiased, "gh: HTTP 500", Transient},
+		{"retry-biased poller keeps 503 over auth", GitHubPollerRetryBiased, "bad credentials; HTTP 503", Transient},
+		{"retry-biased poller keeps rate over auth", GitHubPollerRetryBiased, "bad credentials; API rate limit exceeded", RateLimited},
 		{"poller shares workflow 401", GitHubPollerRetryBiased, "401 Unauthorized", Auth},
 		{"poller deadline", GitHubPollerRetryBiased, "context deadline exceeded", Transient},
+		{"circuit-biased poller keeps auth over 503", GitHubCircuitEscalationBiased, "bad credentials; HTTP 503", Auth},
 		{"command rejects plain 500", GHCommandEscalationBiased, "gh: HTTP 500", Permanent},
 		{"command retries gateway", GHCommandEscalationBiased, "gh: HTTP 502", Transient},
 		{"command exposes rate limit", GHCommandEscalationBiased, "API rate limit exceeded", RateLimited},
@@ -52,6 +55,7 @@ func TestPolicyBiasIsExplicit(t *testing.T) {
 	t.Parallel()
 	tests := map[Policy]Bias{
 		GitHubPollerRetryBiased:       RetryBiased,
+		GitHubCircuitEscalationBiased: EscalationBiased,
 		GHCommandEscalationBiased:     EscalationBiased,
 		MonitorCooldownBiased:         CooldownBiased,
 		GitHubTokenMintCooldownBiased: CooldownBiased,

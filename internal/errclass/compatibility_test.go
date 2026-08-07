@@ -1,18 +1,49 @@
 package errclass
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"math/rand"
 	"strings"
 	"testing"
 )
 
-const compatibilityCorpusSize = 18_242
+const (
+	compatibilityCorpusSize   = 18_242
+	compatibilityCorpusSHA256 = "ac80280282ec9c65731953d33ca7543e6d61f565192a6c96659b98bc2cce3042"
+)
 
-// TestDifferentialCompatibilityCorpus compares the pre-#3162 downstream
-// decision at every migrated site with the policy result. The corpus size is
-// fixed so adding a phrase cannot silently shrink the exercised surface.
-// Only the two decisions named by #3162 are allowed to differ: GitHub's shared
-// auth circuit learns "401 unauthorized", and monitor learns the complete
+type downstreamDecision string
+
+const (
+	decisionDefault  downstreamDecision = "default"
+	decisionRetry    downstreamDecision = "retry"
+	decisionCooldown downstreamDecision = "cooldown"
+	decisionAuth     downstreamDecision = "auth-circuit"
+	decisionBlocked  downstreamDecision = "blocked"
+	decisionGit      downstreamDecision = "git-recovery"
+	decisionCapacity downstreamDecision = "capacity-recovery"
+	decisionStop     downstreamDecision = "stop"
+)
+
+type compatibilitySite struct {
+	name   string
+	before func(string) downstreamDecision
+	after  func(string) downstreamDecision
+}
+
+// TestDifferentialCompatibilityCorpus replays the pre-#3162 downstream
+// decision order at every migrated operational surface, rather than comparing
+// independent predicates or an invented global precedence. The input sequence
+// reconstructs the corpus recorded for #3161: every pre-image literal in nine
+// casing/token-boundary variants, representative real tool/transport bodies,
+// Unicode case-fold probes, and fixed-seed mixed-phrase inputs. Its hash makes
+// the recording immutable: changing the generator or ordering requires an
+// explicit snapshot review.
+//
+// Only the two behavior changes named by #3162 are accepted: GitHub's auth
+// circuit learns bare "401 unauthorized", and monitor learns the complete
 // GitHub rate-limit vocabulary.
 func TestDifferentialCompatibilityCorpus(t *testing.T) {
 	t.Parallel()
@@ -20,30 +51,21 @@ func TestDifferentialCompatibilityCorpus(t *testing.T) {
 	if len(corpus) != compatibilityCorpusSize {
 		t.Fatalf("corpus has %d inputs, want %d", len(corpus), compatibilityCorpusSize)
 	}
-
-	policies := []Policy{
-		GitHubPollerRetryBiased,
-		GHCommandEscalationBiased,
-		MonitorCooldownBiased,
-		GitHubTokenMintCooldownBiased,
-		GitTransportEscalationBiased,
-		WorkflowProseRetryBiased,
-		AgentRecoveryBiased,
-		AgentStreamRecoveryBiased,
-		LLMExecRecoveryBiased,
-		PRFixProseRetryBiased,
+	hash := corpusHash(corpus)
+	if hash != compatibilityCorpusSHA256 {
+		t.Fatalf("corpus hash = %s, want recorded %s", hash, compatibilityCorpusSHA256)
 	}
+
 	intended := map[string]int{"github-401-auth": 0, "monitor-rate-limit": 0}
 	for _, input := range corpus {
-		for _, policy := range policies {
-			before := legacyDownstreamClass(input, policy)
-			after := downstreamClass(Classify(input, policy), policy)
+		for _, site := range compatibilitySites() {
+			before, after := site.before(input), site.after(input)
 			if before == after {
 				continue
 			}
-			kind, ok := intendedDifference(input, policy, before, after)
+			kind, ok := intendedDifference(input, site.name, before, after)
 			if !ok {
-				t.Errorf("unexpected differential for %q under %s: before=%s after=%s", input, policy, before, after)
+				t.Errorf("unexpected differential for %q at %s: before=%s after=%s", input, site.name, before, after)
 				continue
 			}
 			intended[kind]++
@@ -54,182 +76,448 @@ func TestDifferentialCompatibilityCorpus(t *testing.T) {
 			t.Errorf("corpus did not exercise intended difference %s", kind)
 		}
 	}
-	t.Logf("checked %d inputs across %d policies; intended differences: %v", len(corpus), len(policies), intended)
+	t.Logf("checked %d recorded inputs across %d downstream sites; intended differences: %v", len(corpus), len(compatibilitySites()), intended)
 }
 
-func downstreamClass(class Class, policy Policy) Class {
-	switch policy {
-	case GHCommandEscalationBiased, GitTransportEscalationBiased:
-		if class == Transient {
-			return Transient
-		}
-		return Unknown
-	case MonitorCooldownBiased, GitHubTokenMintCooldownBiased:
-		if class == RateLimited {
-			return RateLimited
-		}
-		return Unknown
-	case PRFixProseRetryBiased:
-		if class == Transient {
-			return Transient
-		}
-		return Unknown
-	case AgentRecoveryBiased:
-		if class == Transient || class == RateLimited {
-			return class
-		}
-		return Unknown
-	case AgentStreamRecoveryBiased, LLMExecRecoveryBiased:
-		if class == RateLimited {
-			return RateLimited
-		}
-		return Unknown
-	default:
-		return class
+func compatibilitySites() []compatibilitySite {
+	return []compatibilitySite{
+		{
+			name: "github-review-fetch-retry-first",
+			before: func(s string) downstreamDecision {
+				switch {
+				case legacyGitHubTransient(s):
+					return decisionRetry
+				case legacyGitHubAuth(s):
+					return decisionAuth
+				default:
+					return decisionDefault
+				}
+			},
+			after: func(s string) downstreamDecision {
+				return githubDecision(Classify(s, GitHubPollerRetryBiased))
+			},
+		},
+		{
+			name: "github-poller-auth-first",
+			before: func(s string) downstreamDecision {
+				switch {
+				case legacyGitHubAuth(s):
+					return decisionAuth
+				case legacyGitHubTransient(s):
+					return decisionRetry
+				default:
+					return decisionDefault
+				}
+			},
+			after: func(s string) downstreamDecision {
+				return githubDecision(Classify(s, GitHubCircuitEscalationBiased))
+			},
+		},
+		{
+			name:   "github-auth-only",
+			before: func(s string) downstreamDecision { return choose(legacyGitHubAuth(s), decisionAuth) },
+			after: func(s string) downstreamDecision {
+				return choose(Classify(s, GitHubCircuitEscalationBiased) == Auth, decisionAuth)
+			},
+		},
+		{
+			name:   "github-rate-cooldown",
+			before: func(s string) downstreamDecision { return choose(legacyGitHubRate(s), decisionCooldown) },
+			after: func(s string) downstreamDecision {
+				return choose(Classify(s, MonitorCooldownBiased) == RateLimited, decisionCooldown)
+			},
+		},
+		{
+			name:   "gh-command-immediate-retry",
+			before: func(s string) downstreamDecision { return choose(legacyGHCommandTransient(s), decisionRetry) },
+			after: func(s string) downstreamDecision {
+				return choose(Classify(s, GHCommandEscalationBiased) == Transient, decisionRetry)
+			},
+		},
+		{
+			name:   "monitor-rate-cooldown",
+			before: func(s string) downstreamDecision { return choose(legacyMonitorRate(s), decisionCooldown) },
+			after: func(s string) downstreamDecision {
+				return choose(Classify(s, MonitorCooldownBiased) == RateLimited, decisionCooldown)
+			},
+		},
+		{
+			name:   "github-token-mint-cooldown",
+			before: func(s string) downstreamDecision { return choose(containsLower(s, "rate limit"), decisionCooldown) },
+			after: func(s string) downstreamDecision {
+				return choose(Classify(s, GitHubTokenMintCooldownBiased) == RateLimited, decisionCooldown)
+			},
+		},
+		{
+			name:   "git-transport-escalation",
+			before: func(s string) downstreamDecision { return choose(legacyGitTransport(s), decisionRetry) },
+			after: func(s string) downstreamDecision {
+				return choose(Classify(s, GitTransportEscalationBiased) == Transient, decisionRetry)
+			},
+		},
+		{
+			name:   "workflow-prose-routing",
+			before: legacyWorkflowDecision,
+			after:  func(s string) downstreamDecision { return workflowDecision(Classify(s, WorkflowProseRetryBiased)) },
+		},
+		{
+			name:   "agent-fatal-recovery",
+			before: legacyAgentDecision,
+			after:  currentAgentDecision,
+		},
+		{
+			name: "agent-stream-overload",
+			before: func(s string) downstreamDecision {
+				return choose(containsAnyLower(s, "529", "overloaded"), decisionCapacity)
+			},
+			after: func(s string) downstreamDecision {
+				return choose(Classify(s, AgentStreamRecoveryBiased) == RateLimited, decisionCapacity)
+			},
+		},
+		{
+			name: "llmexec-overload",
+			before: func(s string) downstreamDecision {
+				return choose(hasStandaloneCode(strings.ToLower(s), "529") || containsLower(s, "overloaded"), decisionCapacity)
+			},
+			after: func(s string) downstreamDecision {
+				return choose(Classify(s, LLMExecRecoveryBiased) == RateLimited, decisionCapacity)
+			},
+		},
+		{
+			name:   "pr-fix-recovery",
+			before: legacyPRFixDecision,
+			after: func(s string) downstreamDecision {
+				return choose(Classify(s, PRFixProseRetryBiased) == Transient, decisionRetry)
+			},
+		},
+		{
+			name:   "merge-backoff",
+			before: legacyMergeDecision,
+			after:  currentMergeDecision,
+		},
 	}
 }
 
-func intendedDifference(input string, policy Policy, before, after Class) (string, bool) {
+func githubDecision(class Class) downstreamDecision {
+	switch class {
+	case Transient, RateLimited:
+		return decisionRetry
+	case Auth:
+		return decisionAuth
+	default:
+		return decisionDefault
+	}
+}
+
+func workflowDecision(class Class) downstreamDecision {
+	switch class {
+	case RateLimited:
+		return decisionCooldown
+	case Transient:
+		return decisionRetry
+	case Auth:
+		return decisionAuth
+	default:
+		return decisionDefault
+	}
+}
+
+func currentAgentDecision(s string) downstreamDecision {
+	class := Classify(s, AgentRecoveryBiased)
+	switch {
+	case class == Transient:
+		return decisionGit
+	case containsAnyLower(s, "permission denied", "eacces", "operation not permitted"):
+		return decisionStop
+	case class == RateLimited:
+		return decisionCapacity
+	default:
+		return decisionDefault
+	}
+}
+
+func legacyWorkflowDecision(s string) downstreamDecision {
+	lower := strings.ToLower(s)
+	switch {
+	case legacyWorkflowRateLimit(lower):
+		return decisionCooldown
+	case containsAny(lower, legacyWorkflowTransientPhrases()...) || hasWorkflowGatewayStatus(lower):
+		return decisionRetry
+	case containsAny(lower, legacyWorkflowAuthPhrases()...):
+		return decisionAuth
+	default:
+		return decisionDefault
+	}
+}
+
+func legacyAgentDecision(s string) downstreamDecision {
+	lower := strings.ToLower(s)
+	switch {
+	case containsAny(lower, legacyAgentGitPhrases()...) || strings.Contains(lower, "git") && strings.Contains(lower, "network"):
+		return decisionGit
+	case containsAny(lower, "permission denied", "eacces", "operation not permitted"):
+		return decisionStop
+	case containsAny(lower, "rate limit", "429", "overloaded"):
+		return decisionCapacity
+	default:
+		return decisionDefault
+	}
+}
+
+func legacyPRFixDecision(s string) downstreamDecision {
+	lower := strings.ToLower(s)
+	if containsAny(lower, "missing credential", "authentication", "permission denied") {
+		return decisionDefault
+	}
+	return choose(containsAny(lower, legacyGitTransportPhrases()...) ||
+		strings.Contains(lower, "remote unreachable") ||
+		strings.Contains(lower, "transport") && strings.Contains(lower, "github"), decisionRetry)
+}
+
+func legacyMergeDecision(s string) downstreamDecision {
+	switch {
+	case legacyGitHubAuth(s):
+		return decisionAuth
+	case legacyGitHubRate(s):
+		return decisionCooldown
+	case legacyGitHubNetworkTransient(s):
+		return decisionRetry
+	case containsAnyLower(s, legacyMergeBlockedPhrases()...):
+		return decisionBlocked
+	default:
+		return decisionDefault
+	}
+}
+
+func currentMergeDecision(s string) downstreamDecision {
+	switch Classify(s, GitHubCircuitEscalationBiased) {
+	case Auth:
+		return decisionAuth
+	case RateLimited:
+		return decisionCooldown
+	case Transient:
+		return decisionRetry
+	case Permanent:
+		return decisionBlocked
+	default:
+		return decisionDefault
+	}
+}
+
+func intendedDifference(input, site string, before, after downstreamDecision) (string, bool) {
 	lower := strings.ToLower(input)
 	switch {
-	case policy == GitHubPollerRetryBiased && before != Auth && after == Auth &&
-		strings.Contains(lower, "401 unauthorized"):
+	case strings.Contains(lower, "401 unauthorized") && before != decisionAuth && after == decisionAuth:
 		return "github-401-auth", true
-	case policy == MonitorCooldownBiased && before == Unknown && after == RateLimited &&
-		(strings.Contains(lower, "rate limit exceeded") || strings.Contains(lower, "github rate-limit wall")):
+	case site == "monitor-rate-cooldown" && before == decisionDefault && after == decisionCooldown &&
+		(strings.Contains(lower, "rate limit exceeded") || strings.Contains(lower, GitHubRateLimitWallMarker)):
 		return "monitor-rate-limit", true
 	default:
 		return "", false
 	}
 }
 
-func legacyDownstreamClass(text string, policy Policy) Class {
-	lower := strings.ToLower(text)
-	contains := func(phrases ...string) bool {
-		for _, phrase := range phrases {
-			if strings.Contains(lower, phrase) {
-				return true
-			}
-		}
-		return false
+func choose(ok bool, yes downstreamDecision) downstreamDecision {
+	if ok {
+		return yes
 	}
-	switch policy {
-	case GitHubPollerRetryBiased:
-		switch {
-		case contains("github auth circuit open", "http 401", "bad credentials", "gh auth login", "gh_token environment variable"):
-			return Auth
-		case contains("github rate-limit wall", "secondary rate limit", "api rate limit exceeded", "rate limit exceeded"):
-			return RateLimited
-		case strings.Contains(lower, "http 5"), contains("dial tcp", "i/o timeout", "context deadline exceeded", "connection reset", "connection refused", "tls handshake timeout", "no route to host"):
-			return Transient
-		case contains("not mergeable", "required status check", "review is required", "changes requested", "waiting for status", "blocked by", "base branch policy prohibits the merge"):
-			return Permanent
-		default:
-			return Unknown
-		}
-	case GHCommandEscalationBiased:
-		if contains("http 502", "http 503", "http 504", "operation timed out", "i/o timeout", "deadline exceeded", "connection reset", "connection refused", "stream error", "unexpected eof", "tls handshake") {
-			return Transient
-		}
-		return Unknown
-	case MonitorCooldownBiased:
-		if contains("api rate limit exceeded", "secondary rate limit") {
-			return RateLimited
-		}
-		return Unknown
-	case GitHubTokenMintCooldownBiased:
-		if contains("rate limit") {
-			return RateLimited
-		}
-		return Unknown
-	case GitTransportEscalationBiased:
-		if contains("connection refused", "connection reset", "connection timed out", "failed to connect", "couldn't connect to server", "could not resolve host", "couldn't resolve host", "network is unreachable", "operation timed out", "temporary failure in name resolution", "no route to host", "ssh: connect to host", "recv failure", "tls handshake timeout", "empty reply from server", "early eof", "unexpected disconnect while reading sideband packet") {
-			return Transient
-		}
-		return Unknown
-	case WorkflowProseRetryBiased:
-		switch {
-		case legacyWorkflowRateLimit(lower):
-			return RateLimited
-		case contains("connection refused", "connection reset", "could not resolve host", "no such host", "no route to host", "network is unreachable", "temporary failure in name resolution", "i/o timeout", "timed out", "context deadline exceeded", "tls handshake", "tls:"), hasWorkflowGatewayStatus(lower):
-			return Transient
-		case contains("bad credentials", "authentication failed", "failed to log in", "gh auth", "gh_token is invalid", "github_token is invalid", "token has expired", "could not read username for 'https://github.com'", "401 unauthorized"):
-			return Auth
-		default:
-			return Unknown
-		}
-	case AgentRecoveryBiased:
-		switch {
-		case contains("clone", "fetch origin", "git fetch", "could not resolve host", "dial tcp", "i/o timeout", "dns"),
-			strings.Contains(lower, "git") && strings.Contains(lower, "network"):
-			return Transient
-		case contains("rate limit", "429", "overloaded"):
-			return RateLimited
-		default:
-			return Unknown
-		}
-	case AgentStreamRecoveryBiased:
-		if contains("529", "overloaded") {
-			return RateLimited
-		}
-		return Unknown
-	case LLMExecRecoveryBiased:
-		if hasStandaloneCode(lower, "529") || contains("overloaded") {
-			return RateLimited
-		}
-		return Unknown
-	case PRFixProseRetryBiased:
-		switch {
-		case contains("missing credential", "authentication", "permission denied"):
-			return Unknown
-		case contains("connection refused", "connection reset", "connection timed out", "failed to connect", "couldn't connect to server", "could not resolve host", "couldn't resolve host", "network is unreachable", "operation timed out", "temporary failure in name resolution", "no route to host", "ssh: connect to host", "recv failure", "tls handshake timeout", "empty reply from server", "early eof", "unexpected disconnect while reading sideband packet"),
-			strings.Contains(lower, "remote unreachable"),
-			strings.Contains(lower, "transport") && strings.Contains(lower, "github"):
-			return Transient
-		default:
-			return Unknown
-		}
-	default:
-		return Unknown
-	}
+	return decisionDefault
+}
+
+func legacyGitHubTransient(s string) bool {
+	return legacyGitHubNetworkTransient(s) || legacyGitHubRate(s)
+}
+
+func legacyGitHubNetworkTransient(s string) bool {
+	lower := strings.ToLower(s)
+	return strings.Contains(lower, "http 5") || containsAny(lower, legacyGitHubTransientPhrases()...)
+}
+
+func legacyGitHubAuth(s string) bool {
+	return containsAnyLower(s, GitHubAuthCircuitMarker, "http 401", "bad credentials", "gh auth login", "gh_token environment variable")
+}
+
+func legacyGitHubRate(s string) bool {
+	return containsAnyLower(s, GitHubRateLimitWallMarker, "secondary rate limit", "api rate limit exceeded", "rate limit exceeded")
+}
+
+func legacyMonitorRate(s string) bool {
+	return containsAnyLower(s, "api rate limit exceeded", "secondary rate limit")
+}
+
+func legacyGHCommandTransient(s string) bool {
+	return containsAnyLower(s, legacyGHCommandTransientPhrases()...)
+}
+
+func legacyGitTransport(s string) bool {
+	return containsAnyLower(s, legacyGitTransportPhrases()...)
 }
 
 func legacyWorkflowRateLimit(lower string) bool {
-	if !strings.Contains(lower, "rate limit") {
-		return false
+	return strings.Contains(lower, "rate limit") &&
+		(strings.Contains(lower, "github") || strings.Contains(lower, "graphql") ||
+			strings.Contains(lower, "gh ") || strings.Contains(lower, "api rate limit") ||
+			strings.Contains(lower, "secondary rate limit"))
+}
+
+func containsLower(s, phrase string) bool { return strings.Contains(strings.ToLower(s), phrase) }
+
+func containsAnyLower(s string, phrases ...string) bool {
+	return containsAny(strings.ToLower(s), phrases...)
+}
+
+func containsAny(lower string, phrases ...string) bool {
+	for _, phrase := range phrases {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
 	}
-	return strings.Contains(lower, "github") || strings.Contains(lower, "graphql") ||
-		strings.Contains(lower, "gh ") || strings.Contains(lower, "api rate limit") ||
-		strings.Contains(lower, "secondary rate limit")
+	return false
+}
+
+func legacyGitHubTransientPhrases() []string {
+	return []string{"dial tcp", "i/o timeout", "context deadline exceeded", "connection reset", "connection refused", "tls handshake timeout", "no route to host"}
+}
+
+func legacyGHCommandTransientPhrases() []string {
+	return []string{"http 502", "http 503", "http 504", "operation timed out", "i/o timeout", "deadline exceeded", "connection reset", "connection refused", "stream error", "unexpected eof", "tls handshake"}
+}
+
+func legacyGitTransportPhrases() []string {
+	return []string{"connection refused", "connection reset", "connection timed out", "failed to connect", "couldn't connect to server", "could not resolve host", "couldn't resolve host", "network is unreachable", "operation timed out", "temporary failure in name resolution", "no route to host", "ssh: connect to host", "recv failure", "tls handshake timeout", "empty reply from server", "early eof", "unexpected disconnect while reading sideband packet"}
+}
+
+func legacyWorkflowTransientPhrases() []string {
+	return []string{"connection refused", "connection reset", "could not resolve host", "no such host", "no route to host", "network is unreachable", "temporary failure in name resolution", "i/o timeout", "timed out", "context deadline exceeded", "tls handshake", "tls:"}
+}
+
+func legacyWorkflowAuthPhrases() []string {
+	return []string{"bad credentials", "authentication failed", "failed to log in", "gh auth", "gh_token is invalid", "github_token is invalid", "token has expired", "could not read username for 'https://github.com'", "401 unauthorized"}
+}
+
+func legacyAgentGitPhrases() []string {
+	return []string{"clone", "fetch origin", "git fetch", "could not resolve host", "dial tcp", "i/o timeout", "dns"}
+}
+
+func legacyMergeBlockedPhrases() []string {
+	return []string{"not mergeable", "required status check", "review is required", "changes requested", "waiting for status", "blocked by", "base branch policy prohibits the merge"}
 }
 
 func recordedCompatibilityCorpus() []string {
-	vocabulary := []string{
-		"", "ordinary failure", "HTTP 500", "HTTP 502", "HTTP 503", "HTTP 504",
-		"401 unauthorized", "HTTP 401", "bad credentials", "gh auth login",
-		"github auth circuit open", "secondary rate limit", "api rate limit exceeded",
-		"rate limit exceeded", "github rate-limit wall", "context deadline exceeded",
-		"connection timed out", "operation timed out", "i/o timeout", "dial tcp",
-		"connection reset", "connection refused", "could not resolve host", "no such host",
-		"network is unreachable", "tls handshake timeout", "tls: certificate signed by unknown authority",
-		"tls: first record does not look like a TLS handshake", "stream error", "unexpected EOF",
-		"git fetch", "clone failed", "DNS", "429", "529", "1529", "overloaded", "waiting for status timed out",
-		"required status check", "review is required", "base branch policy prohibits the merge",
-		"permission denied", "authentication failed", "token has expired", "GitHub API rate limit",
-		"missing credential", "remote unreachable", "GitHub transport failure",
-	}
-	templates := []string{
-		"%s %s", "ERROR: %s (%s)", "prefix[%s]suffix %s", "before %s after %s", "%s; then %s",
-		"(%s) unrelated=%s", "UPPER %s / lower %s", "%s\n%s",
-	}
+	phrases := compatibilityVocabulary()
 	out := make([]string, 0, compatibilityCorpusSize)
-	for _, value := range vocabulary {
-		out = append(out, value, strings.ToUpper(value), "wrapped: "+value)
+	seen := make(map[string]struct{}, compatibilityCorpusSize)
+	add := func(s string) {
+		if len(out) == compatibilityCorpusSize {
+			return
+		}
+		if _, ok := seen[s]; ok {
+			return
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
 	}
-	for i := 0; len(out) < compatibilityCorpusSize; i++ {
-		a := vocabulary[i%len(vocabulary)]
-		b := vocabulary[(i*37+11)%len(vocabulary)]
-		out = append(out, fmt.Sprintf(templates[i%len(templates)], a, b))
+
+	for _, phrase := range phrases {
+		for _, variant := range phraseVariants(phrase) {
+			add(variant)
+		}
 	}
-	return out[:compatibilityCorpusSize]
+	for _, sample := range recordedRealErrors() {
+		add(sample)
+	}
+
+	rng := rand.New(rand.NewSource(0x3162))
+	separators := []string{"; ", "\n", " | ", ": ", " ... ", " [cause] ", " / "}
+	for len(out) < compatibilityCorpusSize {
+		a := phrases[rng.Intn(len(phrases))]
+		b := phrases[rng.Intn(len(phrases))]
+		c := phrases[rng.Intn(len(phrases))]
+		sep1 := separators[rng.Intn(len(separators))]
+		sep2 := separators[rng.Intn(len(separators))]
+		add(fmt.Sprintf("recorded-%05d: %s%s%s%s%s", len(out), a, sep1, b, sep2, c))
+	}
+	return out
+}
+
+func compatibilityVocabulary() []string {
+	groups := [][]string{
+		badRefPhrases,
+		legacyGitHubTransientPhrases(),
+		legacyGHCommandTransientPhrases(),
+		{GitHubRateLimitWallMarker, "secondary rate limit", "api rate limit exceeded", "rate limit exceeded"},
+		{GitHubAuthCircuitMarker, "http 401", "401 unauthorized", "bad credentials", "gh auth login", "gh_token environment variable"},
+		legacyGitTransportPhrases(),
+		legacyWorkflowTransientPhrases(),
+		legacyWorkflowAuthPhrases(),
+		legacyAgentGitPhrases(),
+		{"rate limit", "429", "529", "1529", "overloaded"},
+		legacyMergeBlockedPhrases(),
+		{"x509:", "tls: first record does not look like a tls handshake", "missing credential", "authentication", "permission denied", "eacces", "operation not permitted", "remote unreachable", "github transport failure", "http 500", "http 502", "http 503", "http 504", "ordinary failure", ""},
+	}
+	var out []string
+	seen := map[string]struct{}{}
+	for _, group := range groups {
+		for _, phrase := range group {
+			if _, ok := seen[phrase]; ok {
+				continue
+			}
+			seen[phrase] = struct{}{}
+			out = append(out, phrase)
+		}
+	}
+	return out
+}
+
+func phraseVariants(phrase string) []string {
+	return []string{
+		phrase,
+		strings.ToUpper(phrase),
+		"error: " + phrase,
+		"prefix[" + phrase + "]suffix",
+		"before " + phrase + " after",
+		phrase + "\ncaused by: ordinary failure",
+		"ordinary failure; " + phrase,
+		"token=" + phrase,
+		"İnput «" + phrase + "» Ω",
+	}
+}
+
+func recordedRealErrors() []string {
+	return []string{
+		"gh: Bad credentials (HTTP 401)",
+		"gh: Bad credentials; HTTP 503",
+		"gh: Bad credentials; API rate limit exceeded",
+		"GraphQL: API rate limit exceeded for user ID 1",
+		"You have exceeded a secondary rate limit",
+		"HTTP 403: rate limit exceeded",
+		"Post https://api.github.com/graphql: dial tcp: i/o timeout",
+		"Get https://api.github.com: context deadline exceeded (Client.Timeout exceeded while awaiting headers)",
+		"read tcp 127.0.0.1:443: connection reset by peer",
+		"ssh: connect to host github.com port 22: Operation timed out",
+		"fatal: unable to access 'https://github.com/o/r/': Could not resolve host: github.com",
+		"fatal: unable to access 'https://github.com/o/r/': TLS connect error",
+		"tls: first record does not look like a TLS handshake",
+		"x509: certificate signed by unknown authority",
+		"error: RPC failed; curl 56 Recv failure: Connection reset by peer",
+		"fetch-pack: unexpected disconnect while reading sideband packet",
+		"fatal: early EOF",
+		"waiting for status timed out",
+		"merge blocked by required status check",
+		"git fetch origin failed: API rate limit exceeded",
+		"provider overloaded (529)",
+		"processed 1529 tokens successfully",
+		"could not read Username for 'https://github.com': terminal prompts disabled",
+		"GH_TOKEN environment variable is invalid",
+		"remote unreachable: GitHub transport failure",
+	}
+}
+
+func corpusHash(corpus []string) string {
+	h := sha256.New()
+	for _, input := range corpus {
+		_, _ = h.Write([]byte(input))
+		_, _ = h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }

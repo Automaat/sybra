@@ -59,8 +59,13 @@ type Policy string
 
 const (
 	// GitHubPollerRetryBiased reads wrapped GitHub errors. A missed transient
-	// answer escalates every affected poller, so this policy includes every 5xx.
+	// answer escalates every affected poller, so this policy includes every 5xx
+	// and gives transient evidence precedence over auth/rate-limit overlays.
 	GitHubPollerRetryBiased Policy = "github-poller-retry-biased"
+	// GitHubCircuitEscalationBiased reads the same wrapped GitHub errors at
+	// callers that check authentication first. A mixed error must trip the
+	// shared auth circuit instead of entering the ordinary transient retry path.
+	GitHubCircuitEscalationBiased Policy = "github-circuit-escalation-biased"
 	// GHCommandEscalationBiased reads raw gh output inside the immediate retry
 	// loop. It excludes plain 500 and rate limits so retries do not amplify them.
 	GHCommandEscalationBiased Policy = "gh-command-escalation-biased"
@@ -97,7 +102,7 @@ func (p Policy) Bias() Bias {
 	switch p {
 	case GitHubPollerRetryBiased, WorkflowProseRetryBiased, PRFixProseRetryBiased:
 		return RetryBiased
-	case GHCommandEscalationBiased, GitTransportEscalationBiased:
+	case GitHubCircuitEscalationBiased, GHCommandEscalationBiased, GitTransportEscalationBiased:
 		return EscalationBiased
 	case MonitorCooldownBiased, GitHubTokenMintCooldownBiased:
 		return CooldownBiased
@@ -182,7 +187,9 @@ func Classify(text string, policy Policy) Class {
 	lower := strings.ToLower(text)
 	switch policy {
 	case GitHubPollerRetryBiased:
-		return classifyGitHubPoller(lower)
+		return classifyGitHubPollerRetryFirst(lower)
+	case GitHubCircuitEscalationBiased:
+		return classifyGitHubPollerAuthFirst(lower)
 	case GHCommandEscalationBiased:
 		return classifyGHCommand(lower)
 	case MonitorCooldownBiased:
@@ -206,7 +213,22 @@ func Classify(text string, policy Policy) Class {
 	}
 }
 
-func classifyGitHubPoller(lower string) Class {
+func classifyGitHubPollerRetryFirst(lower string) Class {
+	switch {
+	case strings.Contains(lower, "http 5"), matchesLower(lower, githubTransientPhrases):
+		return Transient
+	case matchesLower(lower, githubRateLimitPhrases):
+		return RateLimited
+	case matchesLower(lower, githubAuthPhrases):
+		return Auth
+	case matchesLower(lower, mergeBlockedPhrases):
+		return Permanent
+	default:
+		return Unknown
+	}
+}
+
+func classifyGitHubPollerAuthFirst(lower string) Class {
 	switch {
 	case matchesLower(lower, githubAuthPhrases):
 		return Auth

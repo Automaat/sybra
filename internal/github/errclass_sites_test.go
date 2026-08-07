@@ -3,7 +3,25 @@ package github
 import (
 	"errors"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/errclass"
 )
+
+func TestClassifyError_MixedEvidenceRespectsCallerBias(t *testing.T) {
+	t.Parallel()
+	for _, msg := range []string{
+		"gh: Bad credentials; HTTP 503",
+		"gh: Bad credentials; API rate limit exceeded",
+	} {
+		err := errors.New(msg)
+		if !IsTransientError(err) {
+			t.Errorf("IsTransientError(%q) = false, want legacy retry-biased true", msg)
+		}
+		if got := ClassifyError(err, errclass.GitHubCircuitEscalationBiased); got != errclass.Auth {
+			t.Errorf("circuit classification for %q = %q, want auth", msg, got)
+		}
+	}
+}
 
 // TestIsTransientGHError_PinsLiterals pins the literal set isTransientGHError
 // matched before it moved onto errclass. StreamPhrases in particular had no

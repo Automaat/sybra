@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/errclass"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/intervention"
@@ -568,10 +569,11 @@ func (r *Handler) fetchSplitReviewSummary(runSybraSearch, runAssignedSearch bool
 }
 
 func (r *Handler) handleReviewSummaryFetchError(ctx context.Context, tasks []task.Task, fetchErr error) time.Duration {
-	switch {
-	case github.IsTransientError(fetchErr):
+	class := github.ClassifyError(fetchErr, errclass.GitHubPollerRetryBiased)
+	switch class {
+	case errclass.Transient, errclass.RateLimited:
 		r.handleTransientReviewFetchError(ctx, tasks, fetchErr)
-	case github.IsAuthError(fetchErr):
+	case errclass.Auth:
 		r.transientFetchFails = 0
 		r.authCircuit.RecordFailure(fetchErr)
 		if r.authCircuit.Open() {
@@ -1013,7 +1015,7 @@ func (r *Handler) fetchKnownTaskPRs(matchers []github.TaskMatcher, retain []stri
 	for i := range results {
 		res := &results[i]
 		if res.Err != nil {
-			if github.IsAuthError(res.Err) {
+			if github.ClassifyError(res.Err, errclass.GitHubCircuitEscalationBiased) == errclass.Auth {
 				if authErr == nil {
 					authErr = res.Err
 				}

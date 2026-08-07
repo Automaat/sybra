@@ -41,14 +41,13 @@ const (
 
 // ClassifyMergeError buckets a failed MergePR/MergePRViaREST/EnableAutoMerge
 // error so AutoMergeBackoff can size its retry window per failure mode.
-// Reuses the same message-matching helpers the rest of the package already
-// uses for retry decisions (IsAuthError, isRateLimitedMessage,
-// IsTransientError) instead of re-deriving the classification.
+// Uses the auth-first policy because the legacy caller checked auth, then rate
+// limit, then transient evidence before its merge-state bucket.
 func ClassifyMergeError(err error) MergeErrorClass {
 	if err == nil {
 		return ""
 	}
-	switch errclass.ClassifyErr(err, errclass.GitHubPollerRetryBiased) {
+	switch errclass.ClassifyErr(err, errclass.GitHubCircuitEscalationBiased) {
 	case errclass.Auth:
 		return MergeErrorAuth
 	case errclass.RateLimited:

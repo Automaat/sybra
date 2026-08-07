@@ -697,16 +697,21 @@ func ViewerLoginCtx(ctx context.Context) string {
 // in-flight request at once, so a gap here turns a ten-second network wobble
 // into a board-wide escalation storm.
 func IsTransientError(err error) bool {
-	if err == nil {
-		return false
-	}
-	// A skipped optional poll (low GraphQL budget) is transient by design: back
-	// off and retry next cycle rather than treating it as a hard fetch failure.
-	if errors.Is(err, ErrBudgetExhausted) {
-		return true
-	}
-	class := errclass.ClassifyErr(err, errclass.GitHubPollerRetryBiased)
+	class := ClassifyError(err, errclass.GitHubPollerRetryBiased)
 	return class == errclass.Transient || class == errclass.RateLimited
+}
+
+// ClassifyError answers once under the caller's explicit GitHub policy. The
+// budget sentinel is transient independently of message text: it means an
+// optional poll was intentionally skipped until the shared budget recovers.
+func ClassifyError(err error, policy errclass.Policy) errclass.Class {
+	if err == nil {
+		return errclass.Unknown
+	}
+	if errors.Is(err, ErrBudgetExhausted) {
+		return errclass.Transient
+	}
+	return errclass.ClassifyErr(err, policy)
 }
 
 // IsAuthError reports whether err is a GitHub authentication failure — an

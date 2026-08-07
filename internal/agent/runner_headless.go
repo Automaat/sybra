@@ -1699,16 +1699,17 @@ func classifyAgentError(err error) string {
 		return ErrorKindPromptUndelivered
 	}
 	msg := strings.ToLower(err.Error())
+	class := errclass.Classify(msg, errclass.AgentRecoveryBiased)
 	switch {
 	case strings.Contains(msg, "worktree") || strings.Contains(msg, "already checked out"):
 		return "worktree_conflict"
-	case errclass.Classify(msg, errclass.AgentRecoveryBiased) == errclass.Transient:
+	case class == errclass.Transient:
 		return "git_clone"
 	case strings.Contains(msg, "permission denied") ||
 		strings.Contains(msg, "eacces") ||
 		strings.Contains(msg, "operation not permitted"):
 		return "permission_denied"
-	case errclass.Classify(msg, errclass.AgentRecoveryBiased) == errclass.RateLimited:
+	case class == errclass.RateLimited:
 		return "rate_limit"
 	default:
 		return "crash"
