@@ -22,6 +22,7 @@ const GhShimReason = "Blocked by Sybra: APPROVE is a human decision. " +
 	"Use --request-changes/--comment (or gh api -f event=REQUEST_CHANGES/COMMENT) to submit feedback, " +
 	"or gh api without an event to leave the review pending for a human to approve."
 
+//nolint:dupword // Nested shell conditionals legitimately end with adjacent fi tokens.
 const ghShimScript = `#!/bin/sh
 if [ "$1" = "pr" ] && [ "$2" = "review" ]; then
 	sawapprove=0
@@ -117,12 +118,23 @@ if [ "$1" = "api" ]; then
 	# Refuse a review payload we cannot inspect rather than assume it is benign.
 	[ "$sawhidden$sawreviews" = "11" ] && printf '%%s\n' '%[1]s' >&2 && exit 1
 fi
-if [ -n '%[3]s' ] && [ -x '%[3]s' ]; then
-	token="$('%[3]s' github-app-token 2>/dev/null || true)"
-elif command -v sybra-cli >/dev/null 2>&1; then
-	token="$(sybra-cli github-app-token 2>/dev/null || true)"
-else
-	token=
+token=${GH_TOKEN:-$GITHUB_TOKEN}
+if [ '%[4]s' = verifier ]; then
+	token_file=${0%%/*}/.token
+	if [ -f "$token_file" ]; then
+		token="$(cat "$token_file" 2>/dev/null || true)"
+	fi
+fi
+if [ -z "$token" ] && [ '%[4]s' != verifier ]; then
+	if [ -n '%[3]s' ] && [ -x '%[3]s' ]; then
+		token="$('%[3]s' github-app-token 2>/dev/null || true)"
+	elif command -v sybra-cli >/dev/null 2>&1; then
+		token="$(sybra-cli github-app-token 2>/dev/null || true)"
+	fi
+fi
+if [ '%[4]s' = verifier ] && [ -z "$token" ]; then
+	printf 'Blocked by Sybra: restricted verifier GitHub token is unavailable.\n' >&2
+	exit 1
 fi
 [ -z "$token" ] || {
 	export GH_TOKEN="$token"
@@ -131,6 +143,7 @@ fi
 exec '%[2]s' "$@"
 `
 
+//nolint:dupword // Nested shell conditionals legitimately end with adjacent fi tokens.
 const gitCredentialShimTemplate = `#!/bin/sh
 case "$1" in
 get)
@@ -145,12 +158,13 @@ get)
 	done
 	case "$protocol:$host" in
 	https:github.com)
-		if [ -n '%[1]s' ] && [ -x '%[1]s' ]; then
-			token="$('%[1]s' github-app-token 2>/dev/null || true)"
-		elif command -v sybra-cli >/dev/null 2>&1; then
-			token="$(sybra-cli github-app-token 2>/dev/null || true)"
-		else
-			token=
+		token=${GH_TOKEN:-$GITHUB_TOKEN}
+		if [ -z "$token" ]; then
+			if [ -n '%[1]s' ] && [ -x '%[1]s' ]; then
+				token="$('%[1]s' github-app-token 2>/dev/null || true)"
+			elif command -v sybra-cli >/dev/null 2>&1; then
+				token="$(sybra-cli github-app-token 2>/dev/null || true)"
+			fi
 		fi
 	[ -z "$token" ] || {
 			printf 'username=x-access-token\n'
@@ -250,8 +264,16 @@ func writeGhShim(dir string) (string, error) {
 		if strings.ContainsAny(realGh, "'\n") {
 			return "", fmt.Errorf("gh path %q is not shell-safe", realGh)
 		}
-		script := fmt.Sprintf(ghShimScript, GhShimReason, realGh, sybraCLI)
+		script := fmt.Sprintf(ghShimScript, GhShimReason, realGh, sybraCLI, "operator")
 		if err := writeExecutableAtomic(filepath.Join(dir, "gh"), script); err != nil {
+			return "", err
+		}
+		verifierDir := filepath.Join(dir, "verifier")
+		if err := os.MkdirAll(verifierDir, 0o755); err != nil {
+			return "", fmt.Errorf("create verifier gh shim dir: %w", err)
+		}
+		verifierScript := fmt.Sprintf(ghShimScript, GhShimReason, realGh, "", "verifier")
+		if err := writeExecutableAtomic(filepath.Join(verifierDir, "gh"), verifierScript); err != nil {
 			return "", err
 		}
 	}
@@ -301,6 +323,40 @@ func (m *Manager) injectGhShim(cfg *RunConfig) {
 	}
 	cfg.ExtraEnv = prependPATH(cfg.ExtraEnv, m.ghShimDir)
 	cfg.ExtraEnv = injectGitCredentialHelperEnv(cfg.ExtraEnv)
+}
+
+func (m *Manager) injectVerifierGhShim(cfg *RunConfig) {
+	if m.ghShimDir == "" {
+		m.logger.Warn("agent.gh-shim.unguarded", "task_id", cfg.TaskID, "reason", "no verifier gh shim")
+		return
+	}
+	cfg.ExtraEnv = prependPATH(cfg.ExtraEnv, filepath.Join(m.ghShimDir, "verifier"))
+}
+
+func (m *Manager) syncGHVerifierAppToken() error {
+	if m.ghShimDir == "" {
+		return nil
+	}
+	m.mu.RLock()
+	tokenFn := m.ghVerifierAppToken
+	m.mu.RUnlock()
+	token := ""
+	if tokenFn != nil {
+		token = tokenFn()
+	}
+	path := filepath.Join(m.ghShimDir, "verifier", ".token")
+	if err := fsutil.AtomicWriteMode(path, []byte(token), 0o600); err != nil {
+		return fmt.Errorf("write verifier GitHub token: %w", err)
+	}
+	return nil
+}
+
+// SyncGHVerifierAppToken publishes the current least-privilege token for
+// already-running review agents. The verifier gh shim reads this file on every
+// invocation, so rotation never leaves a long review pinned to an expired
+// process-environment snapshot.
+func (m *Manager) SyncGHVerifierAppToken() error {
+	return m.syncGHVerifierAppToken()
 }
 
 func prependPATH(env []string, dir string) []string {

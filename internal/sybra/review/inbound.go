@@ -222,8 +222,23 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 	prompt := StaffCodeReviewPrompt(current.ProjectID, current.PRNumber)
 
 	cfg := r.agents.ApplyABVariant(StaffCodeReviewRunConfig(current, prompt, dir, posture, agentorch.ResolveSandboxMode(current, r.cfg)), r.abTestingConfig(), current.ID, string(agent.RoleReview))
+	var release func()
+	if r.verification != nil && dir != config.HomeDir() {
+		lease, prepErr := r.verification.Prepare(context.Background(), current.ID, string(agent.RoleReview), dir)
+		if prepErr != nil {
+			return fmt.Errorf("prepare disposable staff-review workspace: %w", prepErr)
+		}
+		release = func() { r.verification.Release(lease) }
+		cfg.Dir = lease.WorkspaceDir
+		cfg.EphemeralSandboxHome = lease.ScratchDir
+		cfg.ReadOnlyDir = false
+		cfg.BeforeStart = func(agentID string) error { return r.verification.BindAgent(lease.ID, agentID) }
+	}
 	ag, err := r.agents.Run(cfg)
 	if err != nil {
+		if release != nil {
+			release()
+		}
 		return err
 	}
 	if err := r.tasks.AddRun(current.ID, task.AgentRun{

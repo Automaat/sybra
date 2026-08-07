@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 	"github.com/Automaat/sybra/internal/skillinvoke"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/sybra/runenv"
+	"github.com/Automaat/sybra/internal/sybra/verification"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/triage"
@@ -39,19 +41,54 @@ var (
 
 // Compile-time interface checks.
 var (
-	_ workflow.TaskProvider           = (*taskAdapter)(nil)
-	_ workflow.TaskClassifier         = (*taskClassifierAdapter)(nil)
-	_ workflow.AgentLauncher          = (*agentAdapter)(nil)
-	_ workflow.WorktreeGetter         = (*worktreeGetterAdapter)(nil)
-	_ workflow.AttemptNoteAppender    = (*attemptNoteAppenderAdapter)(nil)
-	_ workflow.BranchSyncer           = (*branchSyncerAdapter)(nil)
-	_ workflow.CheckConfigGetter      = (*checkConfigGetterAdapter)(nil)
-	_ workflow.ManualTestConfigGetter = (*manualTestConfigGetterAdapter)(nil)
-	_ workflow.ArtifactRecorder       = (*artifactRecorderAdapter)(nil)
-	_ workflow.EvidenceRecorder       = (*evidenceRecorderAdapter)(nil)
-	_ workflow.CostBudgetChecker      = (*agentAdapter)(nil)
-	_ workflow.AttemptWorktreeManager = (*attemptWorktreeAdapter)(nil)
+	_ workflow.TaskProvider                 = (*taskAdapter)(nil)
+	_ workflow.TaskClassifier               = (*taskClassifierAdapter)(nil)
+	_ workflow.AgentLauncher                = (*agentAdapter)(nil)
+	_ workflow.WorktreeGetter               = (*worktreeGetterAdapter)(nil)
+	_ workflow.AttemptNoteAppender          = (*attemptNoteAppenderAdapter)(nil)
+	_ workflow.BranchSyncer                 = (*branchSyncerAdapter)(nil)
+	_ workflow.CheckConfigGetter            = (*checkConfigGetterAdapter)(nil)
+	_ workflow.ManualTestConfigGetter       = (*manualTestConfigGetterAdapter)(nil)
+	_ workflow.ArtifactRecorder             = (*artifactRecorderAdapter)(nil)
+	_ workflow.EvidenceRecorder             = (*evidenceRecorderAdapter)(nil)
+	_ workflow.CostBudgetChecker            = (*agentAdapter)(nil)
+	_ workflow.AttemptWorktreeManager       = (*attemptWorktreeAdapter)(nil)
+	_ workflow.VerificationWorkspaceManager = (*verificationWorkspaceAdapter)(nil)
+	_ workflow.VerificationCommandRunner    = (*agentAdapter)(nil)
 )
+
+type verificationWorkspaceAdapter struct{ mgr *verification.Manager }
+
+func (a *verificationWorkspaceAdapter) PrepareVerification(ctx context.Context, taskID, purpose, canonicalDir string) (workflow.VerificationWorkspace, error) {
+	lease, err := a.mgr.Prepare(ctx, taskID, purpose, canonicalDir)
+	if err != nil {
+		return workflow.VerificationWorkspace{}, err
+	}
+	return workflow.VerificationWorkspace{ID: lease.ID, Dir: lease.WorkspaceDir, SourceSHA: lease.SourceSHA}, nil
+}
+
+func (a *verificationWorkspaceAdapter) FinalizeVerification(ctx context.Context, workspace workflow.VerificationWorkspace, commands []string, output string) error {
+	lease, err := a.mgr.Lease(workspace.ID)
+	if err != nil {
+		return err
+	}
+	return a.mgr.Finalize(ctx, lease, commands, output, "")
+}
+
+func (a *verificationWorkspaceAdapter) ValidateVerification(ctx context.Context, workspace workflow.VerificationWorkspace) error {
+	lease, err := a.mgr.Lease(workspace.ID)
+	if err != nil {
+		return err
+	}
+	return a.mgr.ValidateSource(ctx, lease)
+}
+
+func (a *verificationWorkspaceAdapter) ReleaseVerification(workspace workflow.VerificationWorkspace) {
+	lease, err := a.mgr.Lease(workspace.ID)
+	if err == nil {
+		a.mgr.Release(lease)
+	}
+}
 
 // attemptWorktreeAdapter bridges worktree.Manager → workflow.AttemptWorktreeManager.
 type attemptWorktreeAdapter struct {
@@ -997,14 +1034,26 @@ func (a *branchSyncerAdapter) SyncTaskBranch(ctx context.Context, taskID string)
 
 // agentAdapter bridges agent.Manager + agentorch.Orchestrator → workflow.AgentLauncher.
 type agentAdapter struct {
-	agents     *agent.Manager
-	agentOrch  *agentorch.Orchestrator
-	tasks      *task.Manager
-	projects   *project.Store
-	sandboxes  *sandbox.Manager
-	experience *experience.Store
-	pressure   *pressure.Gate
-	runenv     *runenv.Service
+	agents       *agent.Manager
+	agentOrch    *agentorch.Orchestrator
+	tasks        *task.Manager
+	projects     *project.Store
+	sandboxes    *sandbox.Manager
+	experience   *experience.Store
+	pressure     *pressure.Gate
+	runenv       *runenv.Service
+	verification *verification.Manager
+}
+
+func (a *agentAdapter) RunVerificationCommand(ctx context.Context, taskID, dir, command string, env []string, output io.Writer) error {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return err
+	}
+	return a.agents.RunVerificationCommand(ctx, agent.RunConfig{
+		TaskID: taskID, Role: agent.RoleTestRunner, Dir: dir, ExtraEnv: env,
+		SandboxMode: agentorch.ResolveSandboxMode(t, a.agentOrch.Cfg()),
+	}, "/bin/sh", []string{"-c", command}, output)
 }
 
 func translatePoolBusy(err error) error {
@@ -1110,9 +1159,9 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// NOTES.md; verifier roles (review/test-runner/eval) share the same
 		// worktree but must stay independent of the implementer's scratchpad.
 		SeedWorkingMemory: r.AuthorsCode(),
-		// Verifier roles judge a worktree they must not alter. Enforced at the
-		// OS level rather than through the tool allowlist, which cannot express
-		// it — Bash reaches the same files (#2791).
+		// Non-disposable judge roles remain read-only. Independent verifier roles
+		// are switched below to writable disposable clones whose mutations are
+		// captured and discarded.
 		ReadOnlyDir:   r.JudgesWithoutWriting(),
 		ReadOnlyPaths: assignment.ReadOnlyPaths,
 		// fork_subagent is a task-level opt-in, but must never reach a
@@ -1136,6 +1185,7 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 			return "", "", "", resetErr
 		}
 	}
+	hasCanonicalWorktree := cfg.Dir != ""
 	if cfg.Dir == "" {
 		// A direct-dispatch role (notably a best-of-N judge) may deliberately
 		// have no worktree: it reads the candidate worktrees by absolute path.
@@ -1149,7 +1199,8 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		}
 	}
 
-	ag, baselineRef, err := a.launchCertifiedDirect(t, r, &cfg)
+	canonicalDir := cfg.Dir
+	ag, baselineRef, err := a.launchDirectWithVerification(t, r, &cfg, hasCanonicalWorktree)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -1158,7 +1209,45 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		return "", "", "", recErr
 	}
 
-	return ag.ID, cfg.Dir, baselineRef, nil
+	return ag.ID, canonicalDir, baselineRef, nil
+}
+
+func (a *agentAdapter) launchDirectWithVerification(t task.Task, role agent.Role, cfg *agent.RunConfig, hasCanonicalWorktree bool) (ag *agent.Agent, baselineRef string, err error) {
+	canonicalDir := cfg.Dir
+	var lease verification.Lease
+	if role.IsVerifier() && a.verification != nil {
+		if hasCanonicalWorktree {
+			lease, err = a.verification.Prepare(context.Background(), t.ID, string(role), canonicalDir)
+		} else {
+			lease, err = a.verification.PrepareScratch(t.ID, string(role))
+		}
+		if err != nil {
+			return nil, "", fmt.Errorf("prepare disposable verification lease: %w", err)
+		}
+		defer func() {
+			if err != nil && ag == nil {
+				a.verification.Release(lease)
+			}
+		}()
+		cfg.EphemeralSandboxHome = lease.ScratchDir
+		if lease.WorkspaceDir != "" {
+			cfg.Dir = lease.WorkspaceDir
+			// The clone is deliberately writable: its entire mutation footprint is
+			// captured and discarded, while the canonical checkout stays outside
+			// the process sandbox's write roots.
+			cfg.ReadOnlyDir = false
+		}
+		cfg.BeforeStart = func(agentID string) error {
+			return a.verification.BindAgent(lease.ID, agentID)
+		}
+	}
+	ag, baselineRef, err = a.launchCertifiedDirect(t, role, cfg)
+	if err != nil || lease.WorkspaceDir == "" {
+		return ag, baselineRef, err
+	}
+	// Tamper baselines and workflow state are authoritative-branch data, not a
+	// detached verifier clone's private HEAD.
+	return ag, agentorch.CurrentWorktreeHead(context.Background(), canonicalDir), nil
 }
 
 func (a *agentAdapter) launchCertifiedDirect(t task.Task, role agent.Role, cfg *agent.RunConfig) (*agent.Agent, string, error) {

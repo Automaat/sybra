@@ -45,6 +45,11 @@ func TestBuildReadProfile_DeniesReadsOutsideAllowlist(t *testing.T) {
 	if !strings.Contains(profile, `(literal "/usr")`) {
 		t.Errorf("profile has no literal rules, so file allowlist entries never match:\n%s", profile)
 	}
+	for _, ancestor := range []string{`(literal "/")`, `(literal "/data")`} {
+		if !strings.Contains(profile, ancestor) {
+			t.Errorf("profile cannot traverse allowlist ancestor %s:\n%s", ancestor, profile)
+		}
+	}
 	if !strings.Contains(profile, "(deny file-write*)") {
 		t.Errorf("read block clobbered the base write rules:\n%s", profile)
 	}
