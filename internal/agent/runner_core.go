@@ -62,6 +62,10 @@ type sandboxSpec struct {
 	// carved back out rather than the directory being narrowed (#2779).
 	stateDenied []string
 	tmp         string
+	// tmpAlias re-opens darwin's stable /tmp entrypoint for helpers that
+	// bypass $TMPDIR and write there directly. Empty on platforms or runs
+	// with no safe alias to add.
+	tmpAlias    string
 	sharedCache string
 	// readOnlyDir, when non-empty, is re-locked read-only after every writable
 	// root above is bound — see wrapInvocation. It must never be granted
@@ -173,7 +177,7 @@ type sandboxSpec struct {
 // are dropped by the caller's dedupeRoots.
 func (s sandboxSpec) writeRoots() []string {
 	roots := []string{
-		s.worktree, s.sandboxHome, s.tmp, s.sharedCache,
+		s.worktree, s.sandboxHome, s.tmp, s.tmpAlias, s.sharedCache,
 		s.claudeState, s.codexState, s.copilotState, s.opencodeState, s.toolCache,
 		s.appSupport, s.claudeScratch,
 		s.gitAdminDir, s.gitCommonDir, s.gitWorktrees, s.gitObjectDir,
