@@ -33,6 +33,7 @@ func setupReviewService(t *testing.T) (*ReviewService, *task.Manager, string) {
 	home, err := os.MkdirTemp("", "sybra-rev-e2e-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
 	t.Setenv("SYBRA_HOME", home)
@@ -40,10 +41,12 @@ func setupReviewService(t *testing.T) (*ReviewService, *task.Manager, string) {
 	tasksDir := filepath.Join(home, "tasks")
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskStore, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(taskStore, nil)
 
@@ -53,6 +56,7 @@ func setupReviewService(t *testing.T) (*ReviewService, *task.Manager, string) {
 	)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Build a real source repo with a commit, then clone it as bare so
@@ -61,9 +65,11 @@ func setupReviewService(t *testing.T) (*ReviewService, *task.Manager, string) {
 	barePath := filepath.Join(home, "clones", "testowner", "testrepo.git")
 	if err := os.MkdirAll(filepath.Dir(barePath), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := project.CloneBare(context.Background(), src, barePath); err != nil {
 		t.Fatalf("clone bare: %v", err)
+		panic("unreachable")
 	}
 
 	// Seed a project YAML manually — project.Store.Create would try to
@@ -81,6 +87,7 @@ updated_at: 2025-01-01T00:00:00Z
 	projFile := filepath.Join(home, "projects", "testowner--testrepo.yaml")
 	if err := os.WriteFile(projFile, []byte(projYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	logger := slog.New(slog.DiscardHandler)
@@ -115,6 +122,7 @@ func initSourceRepo(t *testing.T) string {
 	dir := filepath.Join(t.TempDir(), "src")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	runs := [][]string{
 		{"init", dir},
@@ -125,10 +133,12 @@ func initSourceRepo(t *testing.T) string {
 	for _, args := range runs {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	commit := [][]string{
 		{"-C", dir, "add", "."},
@@ -137,6 +147,7 @@ func initSourceRepo(t *testing.T) string {
 	for _, args := range commit {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	return dir
@@ -146,6 +157,7 @@ func TestReviewService_StartFixReview_NotFound(t *testing.T) {
 	svc, _, _ := setupReviewService(t)
 	if err := svc.StartFixReview("does-not-exist"); err == nil {
 		t.Fatal("expected error for nonexistent task")
+		panic("unreachable")
 	}
 }
 
@@ -155,11 +167,13 @@ func TestReviewService_StartFixReview_NoPR(t *testing.T) {
 	tk, err := taskMgr.Create("no pr task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	err = svc.StartFixReview(tk.ID)
 	if err == nil {
 		t.Fatal("expected error for task with no linked PR")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "no linked PR") {
 		t.Errorf("error = %q, want substring %q", err.Error(), "no linked PR")
@@ -172,6 +186,7 @@ func TestReviewService_StartFixReview_NoProjectID(t *testing.T) {
 	tk, err := taskMgr.Create("pr without project", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := taskMgr.Update(tk.ID, task.Update{PRNumber: task.Ptr(42)}); err != nil {
 		t.Fatal(err)
@@ -180,6 +195,7 @@ func TestReviewService_StartFixReview_NoProjectID(t *testing.T) {
 	err = svc.StartFixReview(tk.ID)
 	if err == nil {
 		t.Fatal("expected error for task without projectID")
+		panic("unreachable")
 	}
 }
 
@@ -194,6 +210,7 @@ func TestReviewService_StartFixReview_HappyPath(t *testing.T) {
 	tk, err := taskMgr.Create("fix pr 42", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := taskMgr.Update(tk.ID, task.Update{
 		ProjectID: task.Ptr("testowner/testrepo"),
@@ -205,12 +222,14 @@ func TestReviewService_StartFixReview_HappyPath(t *testing.T) {
 
 	if err := svc.StartFixReview(tk.ID); err != nil {
 		t.Fatalf("StartFixReview: %v", err)
+		panic("unreachable")
 	}
 
 	wtPath := filepath.Join(os.Getenv("SYBRA_HOME"), "worktrees", tk.DirName())
 	branchOut, err := exec.Command("git", "-C", wtPath, "branch", "--show-current").Output()
 	if err != nil {
 		t.Fatalf("show current branch: %v", err)
+		panic("unreachable")
 	}
 	if branch := strings.TrimSpace(string(branchOut)); branch == "" {
 		t.Fatalf("fix-review worktree is detached HEAD")
@@ -224,6 +243,7 @@ func TestReviewService_StartFixReview_HappyPath(t *testing.T) {
 	data, err := os.ReadFile(argsLog)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	args := string(data)
 
@@ -249,6 +269,7 @@ func TestReviewService_StartFixReview_HappyPath(t *testing.T) {
 	stdinData, err := os.ReadFile(stdinLog)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	prompt := string(stdinData)
 	for _, want := range []string{

@@ -109,12 +109,14 @@ func TestDispatchFixIssues_ReviewHoldSetsParkVar(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
 	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wfStore.Dir(), "test-pr-fix.yaml"),
 		[]byte(mechanicalPRFixYAML), 0o644); err != nil {
@@ -131,6 +133,7 @@ func TestDispatchFixIssues_ReviewHoldSetsParkVar(t *testing.T) {
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:   task.Ptr(task.StatusInReview),
@@ -162,9 +165,11 @@ func TestDispatchFixIssues_ReviewHoldSetsParkVar(t *testing.T) {
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("no workflow dispatched")
+		panic("unreachable")
 	}
 	if v := got.Workflow.Variables[workflow.ReviewHoldParkVar]; v != "true" {
 		t.Errorf("%s = %q, want \"true\" (deterministic park backstop must be set)", workflow.ReviewHoldParkVar, v)
@@ -208,12 +213,14 @@ func TestHandleMatchedPRIssues_CoalescesFixIssues(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
 	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wfStore.Dir(), "test-pr-fix.yaml"),
 		[]byte(mechanicalPRFixYAML), 0o644); err != nil {
@@ -230,6 +237,7 @@ func TestHandleMatchedPRIssues_CoalescesFixIssues(t *testing.T) {
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// ProjectID left empty so prepareWorktree short-circuits (no worktree).
 	if _, err := tasks.Update(created.ID, task.Update{
@@ -270,9 +278,11 @@ func TestHandleMatchedPRIssues_CoalescesFixIssues(t *testing.T) {
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("no workflow dispatched")
+		panic("unreachable")
 	}
 	// comments outranks ci_failure for the primary kind (branch-preserving
 	// worktree prep + cancel/phase reconciliation key on it).

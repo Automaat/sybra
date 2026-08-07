@@ -19,6 +19,7 @@ func assertRetryableTaskLockError(t *testing.T, err error, lockPath string) {
 	t.Helper()
 	if err == nil {
 		t.Fatal("expected lock timeout error")
+		panic("unreachable")
 	}
 	var ce interface{ HTTPStatus() int }
 	if !errors.As(err, &ce) {
@@ -42,10 +43,12 @@ func TestTaskService_UpdateTask_LockTimeoutReturnsUnavailable(t *testing.T) {
 	created, err := svc.tasks.Create("locked update", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	unlock, err := fsutil.LockFile(created.FilePath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer func() { _ = unlock() }()
 
@@ -60,10 +63,12 @@ func TestTaskService_AssignTask_LockTimeoutReturnsUnavailable(t *testing.T) {
 	created, err := svc.tasks.Create("locked assign", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	unlock, err := fsutil.LockFile(created.FilePath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer func() { _ = unlock() }()
 
@@ -84,6 +89,7 @@ func TestTaskService_BlessTampering_LockTimeoutReturnsUnavailable(t *testing.T) 
 	created, err := svc.tasks.Create("locked bless", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	flagged, err := svc.tasks.Update(created.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -98,10 +104,12 @@ func TestTaskService_BlessTampering_LockTimeoutReturnsUnavailable(t *testing.T) 
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	unlock, err := fsutil.LockFile(flagged.FilePath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer func() { _ = unlock() }()
 
@@ -116,6 +124,7 @@ func TestTaskService_DispatchFromHumanRequired_LockTimeoutReturnsUnavailable(t *
 	created, err := svc.tasks.Create("locked dispatch", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	human, err := svc.tasks.Update(created.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -125,10 +134,12 @@ func TestTaskService_DispatchFromHumanRequired_LockTimeoutReturnsUnavailable(t *
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	unlock, err := fsutil.LockFile(human.FilePath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer func() { _ = unlock() }()
 
@@ -142,15 +153,18 @@ func TestTaskService_DeleteTask_LockTimeoutReturnsBeforeCleanup(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 	created, err := mgr.Create("locked delete", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	unlock, err := fsutil.LockFile(created.FilePath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer func() { _ = unlock() }()
 
@@ -163,5 +177,6 @@ func TestTaskService_DeleteTask_LockTimeoutReturnsBeforeCleanup(t *testing.T) {
 
 	if _, err := mgr.Get(created.ID); err != nil {
 		t.Fatalf("task should remain after failed delete: %v", err)
+		panic("unreachable")
 	}
 }

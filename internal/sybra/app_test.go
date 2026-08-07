@@ -39,12 +39,14 @@ func setupApp(t *testing.T) *App {
 	dir, err := os.MkdirTemp("", "sybra-test-tasks-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 
@@ -84,6 +86,7 @@ func setupManualQueueApp(t *testing.T, taskDir, queueDir string, maxConcurrent i
 		taskDir, err = os.MkdirTemp("", "sybra-manual-queue-tasks-*")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		t.Cleanup(func() { _ = os.RemoveAll(taskDir) })
 	}
@@ -94,6 +97,7 @@ func setupManualQueueApp(t *testing.T, taskDir, queueDir string, maxConcurrent i
 	store, err := task.NewStore(taskDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 
@@ -121,11 +125,13 @@ func setupManualQueueApp(t *testing.T, taskDir, queueDir string, maxConcurrent i
 	})
 	if err != nil {
 		t.Fatalf("agent.NewManager: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { mgr.ShutdownWithGrace(2 * time.Second) })
 	q, err := agentqueue.New(queueDir, agentqueue.Options{}, logger)
 	if err != nil {
 		t.Fatalf("agentqueue.New: %v", err)
+		panic("unreachable")
 	}
 
 	noPermissions := false
@@ -155,12 +161,14 @@ func createTaskWithPriority(t *testing.T, tasks *task.Manager, title string, pri
 	created, err := tasks.Create(title, "", "headless")
 	if err != nil {
 		t.Fatalf("task Create(%q): %v", title, err)
+		panic("unreachable")
 	}
 	updated, err := tasks.Update(created.ID, task.Update{
 		Priority: task.Ptr(priority),
 	})
 	if err != nil {
 		t.Fatalf("task Update(%q): %v", title, err)
+		panic("unreachable")
 	}
 	return updated
 }
@@ -185,6 +193,7 @@ func TestInitAgentManagerEmitsDegradedWhenSurvivalDisabled(t *testing.T) {
 	t.Setenv("SYBRA_HOME", home)
 	if err := os.WriteFile(filepath.Join(home, "agents"), []byte("not a dir"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg := config.DefaultConfig()
@@ -201,12 +210,14 @@ func TestInitAgentManagerEmitsDegradedWhenSurvivalDisabled(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("initAgentManager: %v", err)
+		panic("unreachable")
 	}
 	if a.agentSvc.approval != nil {
 		t.Cleanup(func() { _ = a.agentSvc.approval.Shutdown(context.Background()) })
 	}
 	if a.agents == nil {
 		t.Fatal("manager was not initialized")
+		panic("unreachable")
 	}
 	if a.agents.DefaultProvider() != "claude" {
 		t.Fatalf("DefaultProvider = %q, want claude", a.agents.DefaultProvider())
@@ -220,10 +231,12 @@ func TestInitAgentManagerClosesApprovalServerOnFailure(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
 	if err := listener.Close(); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg := config.DefaultConfig()
@@ -243,9 +256,11 @@ func TestInitAgentManagerClosesApprovalServerOnFailure(t *testing.T) {
 	rebound, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		t.Fatalf("approval server still bound port %d: %v", port, err)
+		panic("unreachable")
 	}
 	if err := rebound.Close(); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -276,9 +291,11 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 	wfStore, err := workflow.NewStore(wfDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := workflow.SyncBuiltins(wfStore); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	ta := &taskAdapter{tasks: a.tasks}
 	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
@@ -307,11 +324,13 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 	attachments, err := attachment.NewStore(t.TempDir(), int64(config.DefaultAttachmentMaxSizeMB)*1024*1024)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.attachments = attachments
 	a.tasks.SetDeleteHook(func(id string) {
 		if err := attachments.DeleteTask(id); err != nil {
 			t.Fatalf("attachments.DeleteTask(%s): %v", id, err)
+			panic("unreachable")
 		}
 	})
 	// t.Cleanup runs last-added-first: registering this after every t.TempDir()
@@ -384,9 +403,11 @@ func TestGetPressureGateWiresDiskReclaimer(t *testing.T) {
 	a.cfg = cfg
 	if gate := a.getPressureGate(); gate == nil {
 		t.Fatal("getPressureGate() = nil, want gate")
+		panic("unreachable")
 	}
 	if a.diskReclaimer == nil {
 		t.Fatal("diskReclaimer = nil, want shared reclaimer wired with pressure gate")
+		panic("unreachable")
 	}
 }
 
@@ -423,6 +444,7 @@ func TestPressureGateReclaimSurfacesInHealthTelemetry(t *testing.T) {
 	gate := a.getPressureGate()
 	if gate == nil {
 		t.Fatal("getPressureGate() = nil, want gate")
+		panic("unreachable")
 	}
 	if ok, reason := gate.Admit(); !ok {
 		t.Fatalf("Admit() = false (%q), want true (critical threshold not crossed)", reason)
@@ -439,6 +461,7 @@ func TestPressureGateReclaimSurfacesInHealthTelemetry(t *testing.T) {
 	}
 	if status == nil {
 		t.Fatal("healthPressureStatus() never surfaced LastReclaim after Admit() triggered a reclaim pass")
+		panic("unreachable")
 	}
 	if status.LastReclaim.RanAt.IsZero() {
 		t.Error("LastReclaim.RanAt is zero, want the reclaim pass's timestamp")
@@ -463,6 +486,7 @@ func TestHealthPressureStatusSurfacesLastReclaimWithoutGate(t *testing.T) {
 	reclaimer := a.getDiskReclaimer()
 	if reclaimer == nil {
 		t.Fatal("getDiskReclaimer() = nil, want reclaimer")
+		panic("unreachable")
 	}
 	if !reclaimer.TryRun() {
 		t.Fatal("TryRun() = false, want first reclaim pass to start")
@@ -479,6 +503,7 @@ func TestHealthPressureStatusSurfacesLastReclaimWithoutGate(t *testing.T) {
 	}
 	if status == nil {
 		t.Fatal("healthPressureStatus() = nil, want last reclaim telemetry even without a pressure gate")
+		panic("unreachable")
 	}
 	if status.DiskFreePct != -1 || status.MemAvailablePct != -1 || status.LoadPerCPU != -1 {
 		t.Fatalf("pressure sample = %+v, want unavailable sentinels without a gate", *status)
@@ -496,6 +521,7 @@ func TestListTasksEmpty(t *testing.T) {
 	tasks, err := svc.ListTasks()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(tasks) != 0 {
 		t.Errorf("got %d tasks, want 0", len(tasks))
@@ -508,6 +534,7 @@ func TestCreateAndGetTask(t *testing.T) {
 	created, err := svc.CreateTask("test title", "body", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if created.Title != "test title" {
 		t.Errorf("Title = %q, want %q", created.Title, "test title")
@@ -516,6 +543,7 @@ func TestCreateAndGetTask(t *testing.T) {
 	got, err := svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.ID != created.ID {
 		t.Errorf("ID = %q, want %q", got.ID, created.ID)
@@ -538,11 +566,13 @@ func TestUpdateTask(t *testing.T) {
 	created, err := svc.CreateTask("update me", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	updated, err := svc.UpdateTask(created.ID, map[string]any{"status": "done"})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if updated.Status != "done" {
 		t.Errorf("Status = %q, want %q", updated.Status, "done")
@@ -555,12 +585,14 @@ func TestListTasksAfterCreate(t *testing.T) {
 	for _, title := range []string{"one", "two", "three"} {
 		if _, err := svc.CreateTask(title, "", "headless"); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
 	tasks, err := svc.ListTasks()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(tasks) != 3 {
 		t.Errorf("got %d tasks, want 3", len(tasks))
@@ -572,6 +604,7 @@ func TestGetTaskNotFound(t *testing.T) {
 	_, err := svc.GetTask("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent task")
+		panic("unreachable")
 	}
 }
 
@@ -585,11 +618,13 @@ func TestStartAgentRejectsMissingProject(t *testing.T) {
 	created, err := taskSvc.CreateTask("agent task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	_, err = a.StartAgent(created.ID, "headless", "test prompt", false)
 	if err == nil {
 		t.Fatal("expected error: task without project_id must be rejected")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "project_id") {
 		t.Errorf("expected project_id error, got: %v", err)
@@ -601,6 +636,7 @@ func TestStartAgentTaskNotFound(t *testing.T) {
 	_, err := a.StartAgent("nonexistent", "headless", "prompt", false)
 	if err == nil {
 		t.Fatal("expected error for nonexistent task")
+		panic("unreachable")
 	}
 }
 
@@ -611,6 +647,7 @@ func TestStartAgentQueuedManualDoesNotRegisterLiveAgent(t *testing.T) {
 	blockerAgent, err := a.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
 	if err != nil {
 		t.Fatalf("StartAgent(blocker): %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = a.agents.StopAgent(blockerAgent.ID) })
 
@@ -618,12 +655,14 @@ func TestStartAgentQueuedManualDoesNotRegisterLiveAgent(t *testing.T) {
 	queued, err := a.StartAgent(queuedTask.ID, "headless", "ship it", true)
 	if err != nil {
 		t.Fatalf("StartAgent(queuedTask): %v", err)
+		panic("unreachable")
 	}
 	if queued.State != agent.StateQueued {
 		t.Fatalf("queued State = %q, want %q", queued.State, agent.StateQueued)
 	}
 	if _, err := a.agents.GetAgent(queued.ID); err == nil {
 		t.Fatalf("queued agent %q must not be registered live", queued.ID)
+		panic("unreachable")
 	}
 	if got := a.agents.RunningCount(); got != 1 {
 		t.Fatalf("RunningCount = %d, want 1", got)
@@ -659,15 +698,18 @@ func TestManualQueueDrainPriorityAndWorkflowPreservation(t *testing.T) {
 	_, err := a.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
 	if err != nil {
 		t.Fatalf("StartAgent(blocker): %v", err)
+		panic("unreachable")
 	}
 
 	high := createTaskWithPriority(t, a.tasks, "manual high", task.PriorityHigh)
 	low := createTaskWithPriority(t, a.tasks, "manual low", task.PriorityLow)
 	if _, err := a.StartAgent(high.ID, "headless", "high", false); err != nil {
 		t.Fatalf("StartAgent(high): %v", err)
+		panic("unreachable")
 	}
 	if _, err := a.StartAgent(low.ID, "headless", "low", false); err != nil {
 		t.Fatalf("StartAgent(low): %v", err)
+		panic("unreachable")
 	}
 	workflowTask := createTaskWithPriority(t, a.tasks, "workflow token", task.PriorityUrgent)
 	a.agentQueue.Offer(agentqueue.Item{
@@ -687,6 +729,7 @@ func TestManualQueueDrainPriorityAndWorkflowPreservation(t *testing.T) {
 	for _, ag := range a.agents.ListAgents() {
 		if ag != nil && ag.TaskID == low.ID {
 			t.Fatalf("low-priority manual task started before high-priority task: %+v", ag)
+			panic("unreachable")
 		}
 	}
 	snap := a.agentQueue.Snapshot()
@@ -717,13 +760,16 @@ func TestManualQueueReloadDrainsAfterRestart(t *testing.T) {
 	blockerAgent, err := first.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
 	if err != nil {
 		t.Fatalf("StartAgent(blocker): %v", err)
+		panic("unreachable")
 	}
 	queuedTask := createTaskWithPriority(t, first.tasks, "restart queued", task.PriorityHigh)
 	if _, err := first.StartAgent(queuedTask.ID, "headless", "after restart", false); err != nil {
 		t.Fatalf("StartAgent(queuedTask): %v", err)
+		panic("unreachable")
 	}
 	if err := first.agents.StopAgent(blockerAgent.ID); err != nil {
 		t.Fatalf("StopAgent(blocker): %v", err)
+		panic("unreachable")
 	}
 
 	restored := setupManualQueueApp(t, taskDir, queueDir, 1)
@@ -748,6 +794,7 @@ func runTestAgent(t *testing.T, a *App, taskID, title string) *agent.Agent {
 	dir, err := os.MkdirTemp("", "sybra-app-agent-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	ag, err := a.agents.Run(agent.RunConfig{
@@ -759,6 +806,7 @@ func runTestAgent(t *testing.T, a *App, taskID, title string) *agent.Agent {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return ag
 }
@@ -770,12 +818,14 @@ func TestStopAgent(t *testing.T) {
 	created, err := taskSvc.CreateTask("stop task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ag := runTestAgent(t, a, created.ID, "stop task")
 
 	if err := agentSvc.StopAgent(ag.ID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -784,6 +834,7 @@ func TestStopAgentNotFound(t *testing.T) {
 	err := svc.StopAgent("nonexistent")
 	if err == nil {
 		t.Fatal("expected error")
+		panic("unreachable")
 	}
 }
 
@@ -808,6 +859,7 @@ func TestGetAgentOutput(t *testing.T) {
 	created, err := taskSvc.CreateTask("output task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ag := runTestAgent(t, a, created.ID, "output task")
@@ -815,6 +867,7 @@ func TestGetAgentOutput(t *testing.T) {
 	events, err := agentSvc.GetAgentOutput(ag.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if events == nil {
 		events = []agent.StreamEvent{}
@@ -827,6 +880,7 @@ func TestGetAgentOutputNotFound(t *testing.T) {
 	_, err := svc.GetAgentOutput("nonexistent")
 	if err == nil {
 		t.Fatal("expected error")
+		panic("unreachable")
 	}
 }
 

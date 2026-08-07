@@ -188,11 +188,13 @@ func TestParse(t *testing.T) {
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("want error, got %+v (source=%s)", got, src)
+					panic("unreachable")
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("Parse: %v", err)
+				panic("unreachable")
 			}
 			if got.Decision != tc.want.Decision || got.Summary != tc.want.Summary || got.Reason != tc.want.Reason {
 				t.Errorf("decision/summary: got %+v want %+v", got, tc.want)

@@ -80,6 +80,7 @@ func TestClassifyErr(t *testing.T) {
 	t.Parallel()
 	if got := ClassifyErr(nil, GitHubPollerRetryBiased); got != Unknown {
 		t.Fatalf("nil = %q, want unknown", got)
+		panic("unreachable")
 	}
 	if got := ClassifyErr(errors.New("HTTP 503"), GitHubPollerRetryBiased); got != Transient {
 		t.Fatalf("HTTP 503 = %q, want transient", got)

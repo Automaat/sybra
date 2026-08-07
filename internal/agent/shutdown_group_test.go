@@ -16,6 +16,7 @@ func TestSignalTarget_GroupLeaderVsMember(t *testing.T) {
 	leader.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := leader.Start(); err != nil {
 		t.Fatalf("start leader: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = leader.Process.Kill() })
 	go func() { _ = leader.Wait() }()
@@ -23,6 +24,7 @@ func TestSignalTarget_GroupLeaderVsMember(t *testing.T) {
 	member := exec.Command("sleep", "30")
 	if err := member.Start(); err != nil {
 		t.Fatalf("start member: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = member.Process.Kill() })
 	go func() { _ = member.Wait() }()
@@ -41,6 +43,7 @@ func TestReapProcessGroup_KillsDescendants(t *testing.T) {
 	leader.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := leader.Start(); err != nil {
 		t.Fatalf("start leader: %v", err)
+		panic("unreachable")
 	}
 	go func() { _ = leader.Wait() }()
 

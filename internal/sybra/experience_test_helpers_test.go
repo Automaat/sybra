@@ -14,6 +14,7 @@ func newExperienceProjectStore(t *testing.T, tmp string) *project.Store {
 	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return projects
 }
@@ -22,6 +23,7 @@ func seedExperienceProject(t *testing.T, dir string, proj project.Project) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if proj.Name == "" {
 		proj.Name = proj.Repo
@@ -45,5 +47,6 @@ func seedExperienceProject(t *testing.T, dir string, proj project.Project) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, strings.ReplaceAll(proj.ID, "/", "--")+".yaml"), []byte(b.String()), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }

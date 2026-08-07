@@ -39,11 +39,13 @@ func TestWatcher_SingleWrite(t *testing.T) {
 	w := New(path, func() { calls.Add(1) }, discardLogger())
 	if err := w.Start(ctx); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	<-w.Ready()
 
 	if err := os.WriteFile(path, []byte("level: info\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitForCount(t, &calls, 1, 3*time.Second)
@@ -64,6 +66,7 @@ func TestWatcher_BurstCoalescesToOne(t *testing.T) {
 	w := New(path, func() { calls.Add(1) }, discardLogger())
 	if err := w.Start(ctx); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	<-w.Ready()
 
@@ -71,6 +74,7 @@ func TestWatcher_BurstCoalescesToOne(t *testing.T) {
 	for range 5 {
 		if err := os.WriteFile(path, []byte("level: debug\n"), 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -98,6 +102,7 @@ func TestWatcher_AtomicSave(t *testing.T) {
 	w := New(path, func() { calls.Add(1) }, discardLogger())
 	if err := w.Start(ctx); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	<-w.Ready()
 
@@ -105,9 +110,11 @@ func TestWatcher_AtomicSave(t *testing.T) {
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, []byte("level: warn\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitForCount(t, &calls, 1, 3*time.Second)
@@ -121,6 +128,7 @@ func TestWatcher_DeleteIgnored(t *testing.T) {
 	// Pre-create the file
 	if err := os.WriteFile(path, []byte("level: info\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	var calls atomic.Int64
@@ -130,11 +138,13 @@ func TestWatcher_DeleteIgnored(t *testing.T) {
 	w := New(path, func() { calls.Add(1) }, discardLogger())
 	if err := w.Start(ctx); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	<-w.Ready()
 
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Absence check bound by the real 500ms debounce window — see comment in
@@ -157,6 +167,7 @@ func TestWatcher_SiblingFileIgnored(t *testing.T) {
 	w := New(path, func() { calls.Add(1) }, discardLogger())
 	if err := w.Start(ctx); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	<-w.Ready()
 
@@ -164,6 +175,7 @@ func TestWatcher_SiblingFileIgnored(t *testing.T) {
 	sibling := filepath.Join(dir, "other.yaml")
 	if err := os.WriteFile(sibling, []byte("x: 1\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Absence check bound by the real 500ms debounce window — see comment in
@@ -184,6 +196,7 @@ func TestWatcher_ContextCancelCleans(t *testing.T) {
 	w := New(path, func() {}, discardLogger())
 	if err := w.Start(ctx); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	<-w.Ready()
 

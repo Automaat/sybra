@@ -13,6 +13,7 @@ func TestLoggerWritesEvent(t *testing.T) {
 	l, err := NewLogger(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer func() { _ = l.Close() }()
 
@@ -25,11 +26,13 @@ func TestLoggerWritesEvent(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	data, err := os.ReadFile(filepath.Join(dir, "2026-04-03.ndjson"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(data) == 0 {
 		t.Fatal("expected non-empty file")
@@ -42,6 +45,7 @@ func TestLoggerRotatesDaily(t *testing.T) {
 	l, err := NewLogger(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer func() { _ = l.Close() }()
 
@@ -53,9 +57,11 @@ func TestLoggerRotatesDaily(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(dir, "2026-04-01.ndjson")); err != nil {
 		t.Fatal("day1 file missing")
+		panic("unreachable")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "2026-04-02.ndjson")); err != nil {
 		t.Fatal("day2 file missing")
+		panic("unreachable")
 	}
 }
 
@@ -65,11 +71,13 @@ func TestLogEventNilFallbackDoesNotPanic(t *testing.T) {
 	l, err := NewLogger(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer func() { _ = l.Close() }()
 
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		_ = os.Chmod(dir, 0o700)

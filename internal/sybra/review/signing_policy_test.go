@@ -23,6 +23,7 @@ func keyBearingHost(t *testing.T) {
 	contents := "[user]\n\tname = Test\n\temail = test@example.invalid\n\tsigningkey = DEADBEEFDEADBEEF\n"
 	if err := os.WriteFile(cfgPath, []byte(contents), 0o600); err != nil {
 		t.Fatalf("write git config: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", cfgPath)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -92,6 +93,7 @@ func TestReviewPrompts_HonorRequirePolicyOnKeylessHost(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "gitconfig")
 	if err := os.WriteFile(cfgPath, []byte("[user]\n\tname = Test\n"), 0o600); err != nil {
 		t.Fatalf("write git config: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", cfgPath)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")

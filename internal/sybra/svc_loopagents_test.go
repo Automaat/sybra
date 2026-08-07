@@ -20,11 +20,13 @@ func TestScanAuditFileForRuns(t *testing.T) {
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	runs, err := scanAuditFileForRuns(path, "loop:self-monitor")
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 
 	if len(runs) != 2 {
@@ -56,6 +58,7 @@ func TestScanAuditFileForRuns(t *testing.T) {
 	otherRuns, err := scanAuditFileForRuns(path, "loop:other-loop")
 	if err != nil {
 		t.Fatalf("scan other: %v", err)
+		panic("unreachable")
 	}
 	if len(otherRuns) != 1 || otherRuns[0].AgentID != "a3" {
 		t.Fatalf("other: expected 1 run for a3, got %d", len(otherRuns))
@@ -65,6 +68,7 @@ func TestScanAuditFileForRuns(t *testing.T) {
 	noRuns, err := scanAuditFileForRuns(path, "loop:nonexistent")
 	if err != nil {
 		t.Fatalf("scan nonexistent: %v", err)
+		panic("unreachable")
 	}
 	if len(noRuns) != 0 {
 		t.Fatalf("expected 0 runs for nonexistent loop, got %d", len(noRuns))
@@ -74,6 +78,7 @@ func TestScanAuditFileForRuns(t *testing.T) {
 	triageRuns, err := scanAuditFileForRuns(path, "triage:My Task")
 	if err != nil {
 		t.Fatalf("scan triage: %v", err)
+		panic("unreachable")
 	}
 	if len(triageRuns) != 1 || triageRuns[0].AgentID != "a4" {
 		t.Fatalf("expected 1 triage run for a4, got %d", len(triageRuns))
@@ -84,6 +89,7 @@ func TestScanAuditFileForRuns_MissingFile(t *testing.T) {
 	_, err := scanAuditFileForRuns("/nonexistent/file.ndjson", "loop:x")
 	if err == nil {
 		t.Fatal("expected error for missing file")
+		panic("unreachable")
 	}
 }
 
@@ -92,10 +98,12 @@ func TestScanAuditFileForRuns_EmptyFile(t *testing.T) {
 	path := filepath.Join(dir, "empty.ndjson")
 	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	runs, err := scanAuditFileForRuns(path, "loop:x")
 	if err != nil {
 		t.Fatalf("scan empty: %v", err)
+		panic("unreachable")
 	}
 	if len(runs) != 0 {
 		t.Fatalf("expected 0 runs, got %d", len(runs))
@@ -113,6 +121,7 @@ func TestAuditFilesNewestFirst(t *testing.T) {
 	files, err := auditFilesNewestFirst(dir)
 	if err != nil {
 		t.Fatalf("list: %v", err)
+		panic("unreachable")
 	}
 	if len(files) != 3 {
 		t.Fatalf("expected 3 ndjson files, got %d", len(files))
@@ -130,6 +139,7 @@ func TestAuditFilesNewestFirst_MissingDir(t *testing.T) {
 	files, err := auditFilesNewestFirst("/nonexistent/dir")
 	if err != nil {
 		t.Fatalf("expected nil error for missing dir, got %v", err)
+		panic("unreachable")
 	}
 	if len(files) != 0 {
 		t.Fatalf("expected 0 files, got %d", len(files))

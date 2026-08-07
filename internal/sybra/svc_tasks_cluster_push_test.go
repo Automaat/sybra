@@ -110,10 +110,12 @@ func TestDispatchFromHumanRequiredForwardsToAssignedFollower(t *testing.T) {
 	roster, err := clusterlead.NewRoster(cfg, discardLogger())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	leaderTasks := newTaskManagerForMonitorCluster(t)
 	if _, _, err := leaderTasks.Put(stub.live); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// The remote branch returns before local agent/workflow checks; this is
 	// intentional because the follower is authoritative for those checks.
@@ -121,6 +123,7 @@ func TestDispatchFromHumanRequiredForwardsToAssignedFollower(t *testing.T) {
 	got, err := svc.DispatchFromHumanRequired("task-human", "done", "completed remotely")
 	if err != nil {
 		t.Fatalf("DispatchFromHumanRequired: %v", err)
+		panic("unreachable")
 	}
 	stub.mu.Lock()
 	calls := stub.dispatch
@@ -138,10 +141,12 @@ func TestUpdateTaskForwardsStatusToAssignedFollowerBeforeLeaderMirror(t *testing
 	roster, err := clusterlead.NewRoster(cfg, discardLogger())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	leaderTasks := newTaskManagerForMonitorCluster(t)
 	if _, _, err := leaderTasks.Put(stub.live); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc := &TaskService{tasks: leaderTasks, cfg: cfg, assigner: clusterlead.NewAssigner(cfg, leaderTasks, roster, func(string) bool { return false }, nil, discardLogger()), logger: discardLogger(), wg: &sync.WaitGroup{}}
 
@@ -151,6 +156,7 @@ func TestUpdateTaskForwardsStatusToAssignedFollowerBeforeLeaderMirror(t *testing
 	got, err := leaderTasks.Get("task-status")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview || stub.live.Status != task.StatusInReview {
 		t.Fatalf("leader/follower status = %q/%q, want in-review", got.Status, stub.live.Status)
@@ -170,6 +176,7 @@ func TestUpdateTaskKeepsLeaderMirrorWhenAssignedFollowerRejectsStatus(t *testing
 	roster, err := clusterlead.NewRoster(cfg, discardLogger())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	leaderTasks := newTaskManagerForMonitorCluster(t)
 	if _, _, err := leaderTasks.Put(task.Task{ID: "task-reject", Status: task.StatusInProgress, ProjectID: "owner/pet", AssignedNode: "pet-box"}); err != nil {
@@ -182,6 +189,7 @@ func TestUpdateTaskKeepsLeaderMirrorWhenAssignedFollowerRejectsStatus(t *testing
 	got, err := leaderTasks.Get("task-reject")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("leader status = %q, want unchanged in-progress", got.Status)
@@ -234,6 +242,7 @@ func TestUpdateTaskPushesTagEditToFollowerAtWriteTime(t *testing.T) {
 	roster, err := clusterlead.NewRoster(cfg, discardLogger())
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 	assigner := clusterlead.NewAssigner(cfg, nil, roster, func(string) bool { return false }, nil, discardLogger())
 
@@ -293,10 +302,12 @@ func TestBlessTamperingForwardsTransitionToAssignedFollower(t *testing.T) {
 	roster, err := clusterlead.NewRoster(cfg, discardLogger())
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 	leaderTasks := newTaskManagerForMonitorCluster(t)
 	if _, _, err := leaderTasks.Put(stub.live); err != nil {
 		t.Fatalf("seed leader task: %v", err)
+		panic("unreachable")
 	}
 	svc := &TaskService{
 		tasks:    leaderTasks,
@@ -308,6 +319,7 @@ func TestBlessTamperingForwardsTransitionToAssignedFollower(t *testing.T) {
 	got, err := svc.BlessTampering("task-bless")
 	if err != nil {
 		t.Fatalf("BlessTampering: %v", err)
+		panic("unreachable")
 	}
 	if stub.blessCount() != 1 {
 		t.Fatalf("follower bless calls = %d, want 1", stub.blessCount())
@@ -325,6 +337,7 @@ func TestUpdateTaskSkipsFollowerPushForLocalTask(t *testing.T) {
 	roster, err := clusterlead.NewRoster(cfg, discardLogger())
 	if err != nil {
 		t.Fatalf("NewRoster: %v", err)
+		panic("unreachable")
 	}
 	assigner := clusterlead.NewAssigner(cfg, nil, roster, func(string) bool { return false }, nil, discardLogger())
 
@@ -343,6 +356,7 @@ func TestUpdateTaskSkipsFollowerPushForLocalTask(t *testing.T) {
 	got, err := leaderTasks.Get("task-local")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got.Tags) != 2 {
 		t.Fatalf("local update did not apply: %+v", got.Tags)

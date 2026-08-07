@@ -53,6 +53,7 @@ spec:
 	manifestPath := worktree + "/nginx.yaml"
 	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
 		t.Fatalf("write manifest: %v", err)
+		panic("unreachable")
 	}
 
 	cfg := &project.SandboxConfig{
@@ -65,9 +66,11 @@ spec:
 	inst, err := m.Start(ctx, "task-k8s-start-stop", worktree, cfg)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
+		panic("unreachable")
 	}
 	if inst == nil {
 		t.Fatal("expected non-nil instance")
+		panic("unreachable")
 	}
 	if inst.Kubeconfig == "" {
 		t.Error("Kubeconfig path should be set")

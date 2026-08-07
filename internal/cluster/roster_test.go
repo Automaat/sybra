@@ -43,6 +43,7 @@ func TestRosterProbeStatuses(t *testing.T) {
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	roster.ProbeAll(context.Background(), now)
@@ -74,6 +75,7 @@ func TestRosterSetHealthFromEvent(t *testing.T) {
 	roster, err := NewRoster([]Node{{Name: "n1", Endpoints: []string{"http://x"}}}, nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
 	roster.SetHealthFromEvent("n1", true, now)

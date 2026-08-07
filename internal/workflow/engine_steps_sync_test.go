@@ -51,6 +51,7 @@ func TestExecSyncBranch_NoSyncerSkips(t *testing.T) {
 	out, err := engine.execSyncBranch("t1", newSyncBranchStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Errorf("Status = %q, want completed", out.Status)
@@ -72,6 +73,7 @@ func TestExecSyncBranch_Success(t *testing.T) {
 	out, err := engine.execSyncBranch("t1", newSyncBranchStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Errorf("Status = %q, want completed", out.Status)
@@ -90,6 +92,7 @@ func TestExecSyncBranch_NoopIsCompleted(t *testing.T) {
 	out, err := engine.execSyncBranch("t1", newSyncBranchStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "noop" {
 		t.Errorf("Output = %q, want noop", out.Output)
@@ -105,6 +108,7 @@ func TestExecSyncBranch_ConflictDoesNotBlock(t *testing.T) {
 	out, err := engine.execSyncBranch("t1", newSyncBranchStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Errorf("Status = %q, want completed (never blocks)", out.Status)
@@ -126,6 +130,7 @@ func TestExecSyncBranch_FailedDoesNotBlock(t *testing.T) {
 	out, err := engine.execSyncBranch("t1", newSyncBranchStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Errorf("Status = %q, want completed", out.Status)
@@ -145,6 +150,7 @@ func TestExecSyncBranch_UsesShellTimeout(t *testing.T) {
 	out, err := engine.execSyncBranch("t1", newSyncBranchStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "noop" {
 		t.Fatalf("Output = %q, want noop", out.Output)
@@ -166,6 +172,7 @@ func TestExecSyncBranch_PanicIsContained(t *testing.T) {
 	out, err := engine.execSyncBranch("t1", newSyncBranchStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Errorf("Status = %q, want completed — a syncer panic must not crash workflow advancement", out.Status)

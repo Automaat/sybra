@@ -13,6 +13,7 @@ func TestValidate_MaxRetriesWithinLimit(t *testing.T) {
 	}
 	if err := d.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -24,6 +25,7 @@ func TestValidate_MaxRetriesExceedsLimit(t *testing.T) {
 	}
 	if err := d.Validate(); err == nil {
 		t.Fatal("expected error for max_retries exceeding limit")
+		panic("unreachable")
 	}
 }
 
@@ -35,6 +37,7 @@ func TestValidate_ZeroMaxRetries(t *testing.T) {
 	}
 	if err := d.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -46,6 +49,7 @@ func TestValidate_ExactlyAtLimit(t *testing.T) {
 	}
 	if err := d.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -58,6 +62,7 @@ func TestValidate_RejectsStepIDContainingBestOfNAttemptSeparator(t *testing.T) {
 	err := d.Validate()
 	if err == nil {
 		t.Fatal("expected validation error for step id containing best-of-n attempt separator")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "::") {
 		t.Fatalf("error = %v, want mention of :: separator", err)
@@ -68,6 +73,7 @@ func TestStepByID_NotFound(t *testing.T) {
 	d := Definition{Steps: []Step{{ID: "a"}}}
 	if s := d.StepByID("missing"); s != nil {
 		t.Fatalf("expected nil, got %q", s.ID)
+		panic("unreachable")
 	}
 }
 
@@ -75,6 +81,7 @@ func TestFirstStep_Empty(t *testing.T) {
 	d := Definition{}
 	if s := d.FirstStep(); s != nil {
 		t.Fatal("expected nil for empty steps")
+		panic("unreachable")
 	}
 }
 
@@ -137,6 +144,7 @@ func TestValidateFields_RejectsUnknown(t *testing.T) {
 	err := d.ValidateFields()
 	if err == nil {
 		t.Fatal("expected error for unknown field project.type")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "project.type") {
 		t.Errorf("error should name the unknown field, got: %v", err)
@@ -160,6 +168,7 @@ func TestValidateFields_RejectsUnknownInTransition(t *testing.T) {
 	}
 	if err := d.ValidateFields(); err == nil {
 		t.Fatal("expected error for typo in transition field")
+		panic("unreachable")
 	}
 }
 
@@ -180,6 +189,7 @@ func TestValidateFields_RejectsStaleEnumValue(t *testing.T) {
 	err := d.ValidateFields()
 	if err == nil {
 		t.Fatal("expected error for stale ci-failure value")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "pr.issue_kind") || !strings.Contains(err.Error(), "ci-failure") {
 		t.Errorf("error should mention field and bad value, got: %v", err)
@@ -201,6 +211,7 @@ func TestValidateFields_RejectsInvalidStatus(t *testing.T) {
 	}
 	if err := d.ValidateFields(); err == nil {
 		t.Fatal("expected error for in_review (should be in-review)")
+		panic("unreachable")
 	}
 }
 
@@ -236,6 +247,7 @@ func TestValidateFields_InOperatorChecksEachCSVEntry(t *testing.T) {
 	err := d.ValidateFields()
 	if err == nil {
 		t.Fatal("expected error for bogus csv entry")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "bogus") {
 		t.Errorf("error should name the bad entry, got: %v", err)
@@ -277,6 +289,7 @@ func TestValidateFields_RejectsContainsOnEnumField(t *testing.T) {
 	err := d.ValidateFields()
 	if err == nil {
 		t.Fatal("expected error for contains on pr.issue_kind")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "pr.issue_kind") ||
 		!strings.Contains(err.Error(), "contains") {
@@ -297,6 +310,7 @@ func TestValidateFields_RejectsNotContainsOnEnumField(t *testing.T) {
 	}
 	if err := d.ValidateFields(); err == nil {
 		t.Fatal("expected error for not_contains on task.status")
+		panic("unreachable")
 	}
 }
 
@@ -315,5 +329,6 @@ func TestValidateFields_RejectsUnknownInParallel(t *testing.T) {
 	}
 	if err := d.ValidateFields(); err == nil {
 		t.Fatal("expected error for unknown field in parallel sub-step")
+		panic("unreachable")
 	}
 }

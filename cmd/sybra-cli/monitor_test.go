@@ -20,14 +20,17 @@ func backdateCreatedAt(t *testing.T, home, id string, age time.Duration) {
 	tk, err := task.Parse(p)
 	if err != nil {
 		t.Fatalf("parse %s: %v", id, err)
+		panic("unreachable")
 	}
 	tk.CreatedAt = time.Now().Add(-age).UTC()
 	data, err := task.Marshal(tk)
 	if err != nil {
 		t.Fatalf("marshal %s: %v", id, err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(p, data, 0o600); err != nil {
 		t.Fatalf("write %s: %v", id, err)
+		panic("unreachable")
 	}
 }
 
@@ -42,14 +45,17 @@ func backdateStatusChangedAt(t *testing.T, home, id string, age time.Duration) {
 	tk, err := task.Parse(p)
 	if err != nil {
 		t.Fatalf("parse %s: %v", id, err)
+		panic("unreachable")
 	}
 	tk.StatusChangedAt = time.Now().Add(-age).UTC()
 	data, err := task.Marshal(tk)
 	if err != nil {
 		t.Fatalf("marshal %s: %v", id, err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(p, data, 0o600); err != nil {
 		t.Fatalf("write %s: %v", id, err)
+		panic("unreachable")
 	}
 }
 
@@ -76,6 +82,7 @@ func writeConfig(t *testing.T, home, yaml string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte(yaml), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
+		panic("unreachable")
 	}
 }
 

@@ -55,10 +55,12 @@ func TestConfigService_SaveRawConfigReachesSubscribers(t *testing.T) {
 	}, "\n")
 	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.cfg = cfg
 	svc.persisted = cloneConfig(cfg)
@@ -78,6 +80,7 @@ func TestConfigService_SaveRawConfigReachesSubscribers(t *testing.T) {
 	}, "\n")
 	if err := svc.SaveRawConfig(edited); err != nil {
 		t.Fatalf("SaveRawConfig: %v", err)
+		panic("unreachable")
 	}
 
 	if len(saw) != 1 || saw[0] != "never" {
@@ -149,10 +152,12 @@ func TestConfigService_ConcurrentMutationsConvergeOnLiveConfig(t *testing.T) {
 	}
 	if err := os.WriteFile(cfgPath, []byte(write("auto")), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.cfg = cfg
 	svc.persisted = cloneConfig(cfg)
@@ -172,6 +177,7 @@ func TestConfigService_ConcurrentMutationsConvergeOnLiveConfig(t *testing.T) {
 	for _, v := range []string{"never", "require", "never"} {
 		if err := svc.SaveRawConfig(write(v)); err != nil {
 			t.Fatalf("SaveRawConfig(%s): %v", v, err)
+			panic("unreachable")
 		}
 	}
 

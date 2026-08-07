@@ -19,6 +19,7 @@ func TestGetSettingsRedactsAndPreservesGitHubWebhookSecrets(t *testing.T) {
 	data, err := json.Marshal(settings)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if strings.Contains(string(data), "github-secret") || strings.Contains(string(data), "task-secret") {
 		t.Fatalf("GetSettings leaked webhook secrets: %s", data)
@@ -33,6 +34,7 @@ func TestGetSettingsRedactsAndPreservesGitHubWebhookSecrets(t *testing.T) {
 	settings.GitHub.Enabled = !settings.GitHub.Enabled
 	if _, err := svc.UpdateSettings(settings); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
+		panic("unreachable")
 	}
 	if svc.persisted.GitHub.Webhook.Secret != "github-secret" {
 		t.Fatalf("GitHub webhook secret = %q, want preserved value", svc.persisted.GitHub.Webhook.Secret)
@@ -46,6 +48,7 @@ func TestGetSettingsRedactsAndPreservesGitHubWebhookSecrets(t *testing.T) {
 	settings.GitHub.Webhook.TaskSecret = ""
 	if _, err := svc.UpdateSettings(settings); err != nil {
 		t.Fatalf("UpdateSettings clearing secrets: %v", err)
+		panic("unreachable")
 	}
 	if svc.persisted.GitHub.Webhook.Secret != "" {
 		t.Fatalf("GitHub webhook secret = %q, want cleared value", svc.persisted.GitHub.Webhook.Secret)
@@ -106,6 +109,7 @@ func TestUpdateSettings_ValidationRejectsLogRetentionValuesBelowDisableSentinel(
 			_, err := svc.UpdateSettings(settings)
 			if err == nil {
 				t.Fatalf("expected validation error for %s, got nil", tc.name)
+				panic("unreachable")
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
@@ -125,6 +129,7 @@ func TestUpdateSettings_AcceptsLogRetentionDisableSentinels(t *testing.T) {
 
 	if _, err := svc.UpdateSettings(settings); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
+		panic("unreachable")
 	}
 	if svc.cfg.Agent.LogRetentionDays != -1 ||
 		svc.cfg.Agent.LogGzipAfterDays != -1 ||
@@ -143,6 +148,7 @@ func TestUpdateSettings_PreservesAttachmentLimitWhenOmitted(t *testing.T) {
 
 	if _, err := svc.UpdateSettings(settings); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
+		panic("unreachable")
 	}
 	if got := svc.cfg.Attachments.MaxSizeMB; got != 12 {
 		t.Fatalf("Attachments.MaxSizeMB = %d, want preserved value 12", got)

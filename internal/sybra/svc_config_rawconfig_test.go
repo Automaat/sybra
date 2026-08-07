@@ -34,6 +34,7 @@ func TestGetSettings_ExposesExpandedSections(t *testing.T) {
 	explanations, err := svc.GetPathExplanations()
 	if err != nil {
 		t.Fatalf("GetPathExplanations: %v", err)
+		panic("unreachable")
 	}
 	var githubEnabled *ConfigPathExplanation
 	for i := range explanations {
@@ -44,6 +45,7 @@ func TestGetSettings_ExposesExpandedSections(t *testing.T) {
 	}
 	if githubEnabled == nil {
 		t.Fatal("github.enabled explanation missing")
+		panic("unreachable")
 	}
 	if githubEnabled.ReloadPolicy != configPolicyRestart {
 		t.Fatalf("github.enabled reload = %q, want %q", githubEnabled.ReloadPolicy, configPolicyRestart)
@@ -77,11 +79,13 @@ func TestGetDefaultSettings_UsesRenamedGuardrailJSONFields(t *testing.T) {
 	raw, err := json.Marshal(svc.GetDefaultSettings())
 	if err != nil {
 		t.Fatalf("Marshal(GetDefaultSettings): %v", err)
+		panic("unreachable")
 	}
 
 	var payload map[string]any
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		t.Fatalf("Unmarshal(GetDefaultSettings): %v", err)
+		panic("unreachable")
 	}
 	agent, ok := payload["agent"].(map[string]any)
 	if !ok {
@@ -116,6 +120,7 @@ func TestUpdateSettings_RoundTripsExpandedSections(t *testing.T) {
 
 	if _, err := svc.UpdateSettings(s); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
+		panic("unreachable")
 	}
 	if svc.cfg.GitHub.PollerRole == "secondary" ||
 		svc.cfg.Monitor.IntervalSeconds == 600 || svc.cfg.Umbrella.Enabled {
@@ -136,6 +141,7 @@ func TestUpdateSettings_RoundTripsExpandedSections(t *testing.T) {
 	saved, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(saved), "poller_role: secondary") {
 		t.Error("expanded section not persisted to disk")
@@ -157,10 +163,12 @@ func TestUpdateSettings_PatchesOnlyChangedLeafAndPreservesComments(t *testing.T)
 	}, "\n")
 	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.cfg = cfg
 	svc.persisted = cloneConfig(cfg)
@@ -170,11 +178,13 @@ func TestUpdateSettings_PatchesOnlyChangedLeafAndPreservesComments(t *testing.T)
 
 	if _, err := svc.UpdateSettings(settings); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
+		panic("unreachable")
 	}
 
 	saved, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	text := string(saved)
 	for _, want := range []string{
@@ -206,10 +216,12 @@ func TestUpdateSettings_ResetToDefaultRemovesExplicitKey(t *testing.T) {
 	}, "\n")
 	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.cfg = cfg
 	svc.persisted = cloneConfig(cfg)
@@ -219,11 +231,13 @@ func TestUpdateSettings_ResetToDefaultRemovesExplicitKey(t *testing.T) {
 
 	if _, err := svc.UpdateSettings(settings); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
+		panic("unreachable")
 	}
 
 	saved, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	text := string(saved)
 	if strings.Contains(text, "in_app:") || strings.Contains(text, "browser:") {
@@ -245,10 +259,12 @@ func TestUpdateSettings_UpdatesDurationAliasInPlace(t *testing.T) {
 	}, "\n")
 	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.cfg = cfg
 	svc.persisted = cloneConfig(cfg)
@@ -262,11 +278,13 @@ func TestUpdateSettings_UpdatesDurationAliasInPlace(t *testing.T) {
 
 	if _, err := svc.UpdateSettings(settings); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
+		panic("unreachable")
 	}
 
 	saved, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	text := string(saved)
 	if strings.Contains(text, "bash_timeout_seconds") {
@@ -283,6 +301,7 @@ func TestUpdateSettings_UpdatesDurationAliasInPlace(t *testing.T) {
 	reloaded, err := config.Load()
 	if err != nil {
 		t.Fatalf("patched config no longer loads: %v", err)
+		panic("unreachable")
 	}
 	if reloaded.Agent.BashTimeoutSeconds != 300 {
 		t.Fatalf("reloaded bash_timeout_seconds = %d, want 300", reloaded.Agent.BashTimeoutSeconds)
@@ -301,10 +320,12 @@ func TestUpdateSettings_KeepsNamespacedV2Layout(t *testing.T) {
 	}, "\n")
 	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.cfg = cfg
 	svc.persisted = cloneConfig(cfg)
@@ -315,11 +336,13 @@ func TestUpdateSettings_KeepsNamespacedV2Layout(t *testing.T) {
 
 	if _, err := svc.UpdateSettings(settings); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
+		panic("unreachable")
 	}
 
 	saved, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	text := string(saved)
 	if regexp.MustCompile(`(?m)^agent:`).MatchString(text) {
@@ -349,10 +372,12 @@ func TestUpdateSettings_ResetToDefaultRemovesDurationAlias(t *testing.T) {
 	}, "\n")
 	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.cfg = cfg
 	svc.persisted = cloneConfig(cfg)
@@ -362,11 +387,13 @@ func TestUpdateSettings_ResetToDefaultRemovesDurationAlias(t *testing.T) {
 
 	if _, err := svc.UpdateSettings(settings); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
+		panic("unreachable")
 	}
 
 	saved, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	text := string(saved)
 	if strings.Contains(text, "bash_timeout") {
@@ -377,6 +404,7 @@ func TestUpdateSettings_ResetToDefaultRemovesDurationAlias(t *testing.T) {
 	}
 	if _, err := config.Load(); err != nil {
 		t.Fatalf("patched config no longer loads: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -392,11 +420,13 @@ func TestSparseConfigSequence_RawSaveThenSettingsEditThenResetStaysSparse(t *tes
 	}, "\n")
 	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.Server.AuthToken == "" {
 		t.Fatal("expected generated server auth token in memory")
@@ -404,6 +434,7 @@ func TestSparseConfigSequence_RawSaveThenSettingsEditThenResetStaysSparse(t *tes
 	tokenPath := filepath.Join(filepath.Dir(cfgPath), "server_auth_token")
 	if _, err := os.Stat(tokenPath); err != nil {
 		t.Fatalf("expected generated server_auth_token file: %v", err)
+		panic("unreachable")
 	}
 	svc.cfg = cfg
 	svc.persisted = cloneConfig(cfg)
@@ -418,6 +449,7 @@ func TestSparseConfigSequence_RawSaveThenSettingsEditThenResetStaysSparse(t *tes
 	}, "\n")
 	if err := svc.SaveRawConfig(editedRaw); err != nil {
 		t.Fatalf("SaveRawConfig: %v", err)
+		panic("unreachable")
 	}
 
 	assertSparse := func(stage, want string) {
@@ -425,6 +457,7 @@ func TestSparseConfigSequence_RawSaveThenSettingsEditThenResetStaysSparse(t *tes
 		saved, err := os.ReadFile(cfgPath)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		got := string(saved)
 		if got != want {
@@ -444,6 +477,7 @@ func TestSparseConfigSequence_RawSaveThenSettingsEditThenResetStaysSparse(t *tes
 	settings.Agent.MaxConcurrent = 7
 	if _, err := svc.UpdateSettings(settings); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
+		panic("unreachable")
 	}
 	assertSparse("after settings edit", strings.Join([]string{
 		"schema_version: 2",
@@ -459,6 +493,7 @@ func TestSparseConfigSequence_RawSaveThenSettingsEditThenResetStaysSparse(t *tes
 	settings.Agent.MaxConcurrent = svc.GetDefaultSettings().Agent.MaxConcurrent
 	if _, err := svc.UpdateSettings(settings); err != nil {
 		t.Fatalf("UpdateSettings reset: %v", err)
+		panic("unreachable")
 	}
 	assertSparse("after reset", editedRaw)
 }
@@ -470,6 +505,7 @@ func TestGetRawConfig_ReturnsFileContents(t *testing.T) {
 	raw, err := svc.GetRawConfig()
 	if err != nil {
 		t.Fatalf("GetRawConfig: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(raw, "agent:") || !strings.Contains(raw, "provider: claude") {
 		t.Errorf("raw config missing expected keys:\n%s", raw)
@@ -483,12 +519,14 @@ func TestSaveRawConfig_ValidRoundTrip(t *testing.T) {
 	raw, err := svc.GetRawConfig()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// A user comment must survive the save verbatim (raw bytes, not re-marshalled).
 	edited := "# my hand-written note\n" + strings.Replace(raw, "max_files: 5", "max_files: 9", 1)
 
 	if err := svc.SaveRawConfig(edited); err != nil {
 		t.Fatalf("SaveRawConfig: %v", err)
+		panic("unreachable")
 	}
 	if svc.cfg.Logging.MaxFiles != 9 {
 		t.Errorf("in-memory maxFiles = %d, want 9 (hot reload)", svc.cfg.Logging.MaxFiles)
@@ -496,6 +534,7 @@ func TestSaveRawConfig_ValidRoundTrip(t *testing.T) {
 	saved, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(saved), "# my hand-written note") {
 		t.Error("raw save did not preserve the user comment")
@@ -530,6 +569,7 @@ func TestSaveRawConfig_AcceptsLegacyGitHubPollingDurationAliases(t *testing.T) {
 
 	if err := svc.SaveRawConfig(raw); err != nil {
 		t.Fatalf("SaveRawConfig: %v", err)
+		panic("unreachable")
 	}
 	got := svc.GetSettings().GitHub
 	if got.PollerRole != "secondary" {
@@ -554,6 +594,7 @@ func TestSaveRawConfig_AcceptsLegacyGitHubPollingDurationAliases(t *testing.T) {
 	saved, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	savedText := string(saved)
 	for _, want := range []string{
@@ -578,6 +619,7 @@ func TestSaveRawConfig_PreservesServerAuthTokenWhenOmitted(t *testing.T) {
 	raw := "schema_version: 2\nagent:\n  bash_timeout: 2m\n"
 	if err := svc.SaveRawConfig(raw); err != nil {
 		t.Fatalf("SaveRawConfig: %v", err)
+		panic("unreachable")
 	}
 	if svc.cfg.Server.AuthToken != "persist-me" {
 		t.Fatalf("in-memory auth token = %q, want persist-me", svc.cfg.Server.AuthToken)
@@ -586,6 +628,7 @@ func TestSaveRawConfig_PreservesServerAuthTokenWhenOmitted(t *testing.T) {
 	saved, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	savedText := string(saved)
 	if !strings.Contains(savedText, "auth_token: persist-me") {
@@ -601,6 +644,7 @@ func TestSaveRawConfig_DoesNotMaterializeGeneratedTokenWhenAbsentFromFile(t *tes
 	svc, cfgPath := setupConfigSvc(t)
 	if err := os.WriteFile(cfgPath, []byte("schema_version: 2\nagent:\n  provider: codex\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Simulates ensureServerAuthToken resolving a generated token from
 	// server_auth_token at load time: present in memory, absent from the file.
@@ -610,11 +654,13 @@ func TestSaveRawConfig_DoesNotMaterializeGeneratedTokenWhenAbsentFromFile(t *tes
 	raw := "schema_version: 2\nagent:\n  provider: claude\n"
 	if err := svc.SaveRawConfig(raw); err != nil {
 		t.Fatalf("SaveRawConfig: %v", err)
+		panic("unreachable")
 	}
 
 	saved, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	savedText := string(saved)
 	if strings.Contains(savedText, "auth_token") {
@@ -629,17 +675,20 @@ func TestSaveRawConfig_PreservesFormattingWhenBuiltinVersionMissing(t *testing.T
 	raw, err := svc.GetRawConfig()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	edited := "# keep this comment\n" + regexp.MustCompile(`(?m)^\s*builtin_version: \d+\n`).ReplaceAllString(raw, "")
 	edited = strings.Replace(edited, "max_files: 5", "max_files: 7", 1)
 
 	if err := svc.SaveRawConfig(edited); err != nil {
 		t.Fatalf("SaveRawConfig: %v", err)
+		panic("unreachable")
 	}
 
 	saved, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	savedText := string(saved)
 	if !strings.Contains(savedText, "# keep this comment") {
@@ -674,6 +723,7 @@ func TestSaveRawConfig_RejectsOutOfRangeValue(t *testing.T) {
 	raw, err := svc.GetRawConfig()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// max_concurrent must be 1–100; 999 fails validateSettings.
 	bad := strings.Replace(raw, "max_concurrent: 3", "max_concurrent: 999", 1)

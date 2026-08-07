@@ -17,12 +17,14 @@ func TestResolvedUnmergedPaths(t *testing.T) {
 		wtPath := newConflictedWorktree(t)
 		if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("feature\nmain\n"), 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		runGitInDir(t, wtPath, "add", "README.md")
 
 		got, err := ResolvedUnmergedPaths(context.Background(), wtPath)
 		if err != nil {
 			t.Fatalf("ResolvedUnmergedPaths: %v", err)
+			panic("unreachable")
 		}
 		if !slices.Equal(got, []string{"README.md"}) {
 			t.Fatalf("paths = %v, want [README.md]", got)
@@ -34,11 +36,13 @@ func TestResolvedUnmergedPaths(t *testing.T) {
 		wtPath := newConflictedWorktree(t)
 		if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("feature\nmain\n"), 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		got, err := ResolvedUnmergedPaths(context.Background(), wtPath)
 		if err != nil {
 			t.Fatalf("ResolvedUnmergedPaths: %v", err)
+			panic("unreachable")
 		}
 		if !slices.Equal(got, []string{"README.md"}) {
 			t.Fatalf("paths = %v, want [README.md] even though it was never `git add`ed", got)
@@ -50,11 +54,13 @@ func TestResolvedUnmergedPaths(t *testing.T) {
 		wtPath := newConflictedWorktree(t)
 		if err := os.Remove(filepath.Join(wtPath, "README.md")); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		got, err := ResolvedUnmergedPaths(context.Background(), wtPath)
 		if err != nil {
 			t.Fatalf("ResolvedUnmergedPaths: %v", err)
+			panic("unreachable")
 		}
 		if len(got) != 0 {
 			t.Fatalf("paths = %v, want none when the resolution deleted the file", got)
@@ -66,12 +72,14 @@ func TestResolvedUnmergedPaths(t *testing.T) {
 		wtPath := newConflictedWorktree(t)
 		if err := os.Remove(filepath.Join(wtPath, "README.md")); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		runGitInDir(t, wtPath, "add", "-A")
 
 		got, err := ResolvedUnmergedPaths(context.Background(), wtPath)
 		if err != nil {
 			t.Fatalf("ResolvedUnmergedPaths: %v", err)
+			panic("unreachable")
 		}
 		if !slices.Equal(got, []string{"README.md"}) {
 			t.Fatalf("paths = %v, want [README.md] when the deletion was staged", got)
@@ -85,6 +93,7 @@ func TestResolvedUnmergedPaths(t *testing.T) {
 		got, err := ResolvedUnmergedPaths(context.Background(), wtPath)
 		if err != nil {
 			t.Fatalf("ResolvedUnmergedPaths: %v", err)
+			panic("unreachable")
 		}
 		if len(got) != 0 {
 			t.Fatalf("paths = %v, want none while binary conflict remains unmerged", got)
@@ -98,6 +107,7 @@ func TestResolvedUnmergedPaths(t *testing.T) {
 		got, err := ResolvedUnmergedPaths(context.Background(), wtPath)
 		if err != nil {
 			t.Fatalf("ResolvedUnmergedPaths: %v", err)
+			panic("unreachable")
 		}
 		if len(got) != 0 {
 			t.Fatalf("paths = %v, want none while markers remain", got)
@@ -111,6 +121,7 @@ func TestResolvedUnmergedPaths(t *testing.T) {
 		got, err := ResolvedUnmergedPaths(context.Background(), wtPath)
 		if err != nil {
 			t.Fatalf("ResolvedUnmergedPaths: %v", err)
+			panic("unreachable")
 		}
 		if len(got) != 0 {
 			t.Fatalf("paths = %v, want none on a clean tree", got)
@@ -124,6 +135,7 @@ func newConflictedWorktree(t *testing.T) string {
 	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("DefaultBranch: %v", err)
+		panic("unreachable")
 	}
 
 	writeAndCommit(t, featureWT, "README.md", "feature\n", "feature edit")
@@ -135,6 +147,7 @@ func newConflictedWorktree(t *testing.T) string {
 	cmd.Dir = featureWT
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("git merge unexpectedly succeeded: %s", out)
+		panic("unreachable")
 	}
 	return featureWT
 }
@@ -145,6 +158,7 @@ func newBinaryConflictedWorktree(t *testing.T) string {
 	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("DefaultBranch: %v", err)
+		panic("unreachable")
 	}
 
 	writeBytesAndCommit(t, featureWT, "a.bin", []byte{0, 1, 2, 'f'}, "feature binary edit")
@@ -156,6 +170,7 @@ func newBinaryConflictedWorktree(t *testing.T) string {
 	cmd.Dir = featureWT
 	if out, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("git merge unexpectedly succeeded: %s", out)
+		panic("unreachable")
 	}
 	return featureWT
 }
@@ -164,6 +179,7 @@ func writeBytesAndCommit(t *testing.T, dir, file string, content []byte, message
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, file), content, 0o644); err != nil {
 		t.Fatalf("write %s: %v", file, err)
+		panic("unreachable")
 	}
 	runGitInDir(t, dir, "add", file)
 	runGitInDir(t, dir, "commit", "-m", message)
@@ -175,5 +191,6 @@ func runGitInDir(t *testing.T, dir string, args ...string) {
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
+		panic("unreachable")
 	}
 }

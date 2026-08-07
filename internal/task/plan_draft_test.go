@@ -13,6 +13,7 @@ func mustListDrafts(t *testing.T, s *PlanDraftStore, id string) map[string]strin
 	got, err := s.List(id)
 	if err != nil {
 		t.Fatalf("List(%s): %v", id, err)
+		panic("unreachable")
 	}
 	return got
 }
@@ -22,14 +23,17 @@ func TestPlanDraftStore_WriteListReadDelete(t *testing.T) {
 
 	if err := s.Write("task1", "plan_claude", "claude body"); err != nil {
 		t.Fatalf("Write: %v", err)
+		panic("unreachable")
 	}
 	if err := s.Write("task1", "plan_codex", "codex body"); err != nil {
 		t.Fatalf("Write: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := s.List("task1")
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(got) != 2 || got["plan_claude"] != "claude body" || got["plan_codex"] != "codex body" {
 		t.Fatalf("List = %v, want both drafts", got)
@@ -41,6 +45,7 @@ func TestPlanDraftStore_WriteListReadDelete(t *testing.T) {
 
 	if err := s.Delete("task1", "plan_claude"); err != nil {
 		t.Fatalf("Delete: %v", err)
+		panic("unreachable")
 	}
 	got = mustListDrafts(t, s, "task1")
 	if len(got) != 1 || got["plan_codex"] != "codex body" {
@@ -66,6 +71,7 @@ func TestPlanDraftStore_NegativeCache(t *testing.T) {
 	// discoverable rather than masked by the cached empty set.
 	if err := s.Write("taskB", "plan_claude", "b"); err != nil {
 		t.Fatalf("Write: %v", err)
+		panic("unreachable")
 	}
 	if s.indexed {
 		t.Fatal("write must invalidate the index")
@@ -81,6 +87,7 @@ func TestPlanDraftStore_NegativeCache(t *testing.T) {
 	// A later write to taskA itself must surface immediately.
 	if err := s.Write("taskA", "plan_codex", "a"); err != nil {
 		t.Fatalf("Write: %v", err)
+		panic("unreachable")
 	}
 	if got := mustListDrafts(t, s, "taskA"); got["plan_codex"] != "a" {
 		t.Fatalf("List(taskA) = %v, want the new draft", got)
@@ -95,6 +102,7 @@ func TestPlanDraftStore_ExternalWriteInvalidates(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	// Prime the negative cache: taskX has no drafts.
@@ -106,6 +114,7 @@ func TestPlanDraftStore_ExternalWriteInvalidates(t *testing.T) {
 	external := filepath.Join(dir, "taskX"+PlanDraftSidecarPrefix+"plan_ext.md")
 	if err := os.WriteFile(external, []byte("ext body"), 0o644); err != nil {
 		t.Fatalf("external write: %v", err)
+		panic("unreachable")
 	}
 
 	// Watcher notifies the store of the sidecar change.

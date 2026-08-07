@@ -24,6 +24,7 @@ func TestLearningServiceHTTPAllowlist(t *testing.T) {
 	store, err := learning.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("learning.New: %v", err)
+		panic("unreachable")
 	}
 	a := &App{learningSvc: &LearningService{store: store}}
 
@@ -36,6 +37,7 @@ func TestLearningServiceHTTPAllowlist(t *testing.T) {
 		resp, err := http.Post(srv.URL+"/api/LearningService/"+method, "application/json", nil)
 		if err != nil {
 			t.Fatalf("POST %s: %v", method, err)
+			panic("unreachable")
 		}
 		defer resp.Body.Close()
 		return resp.StatusCode
@@ -56,6 +58,7 @@ func TestQueueServiceHTTPAllowlist(t *testing.T) {
 	queue, err := agentqueue.New(t.TempDir(), agentqueue.Options{}, slog.Default())
 	if err != nil {
 		t.Fatalf("agentqueue.New: %v", err)
+		panic("unreachable")
 	}
 	a := &App{queueSvc: &QueueService{queue: queue}}
 
@@ -68,6 +71,7 @@ func TestQueueServiceHTTPAllowlist(t *testing.T) {
 		resp, err := http.Post(srv.URL+"/api/QueueService/"+method, "application/json", nil)
 		if err != nil {
 			t.Fatalf("POST %s: %v", method, err)
+			panic("unreachable")
 		}
 		defer resp.Body.Close()
 		return resp.StatusCode
@@ -88,6 +92,7 @@ func TestAppHTTPAllowlist(t *testing.T) {
 	queue, err := agentqueue.New(t.TempDir(), agentqueue.Options{}, slog.Default())
 	if err != nil {
 		t.Fatalf("agentqueue.New: %v", err)
+		panic("unreachable")
 	}
 	if added := queue.Offer(agentqueue.Item{
 		TaskID:   "queued-task",
@@ -107,6 +112,7 @@ func TestAppHTTPAllowlist(t *testing.T) {
 	resp, err := http.Post(srv.URL+"/api/App/AgentQueueSnapshot", "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST AgentQueueSnapshot: %v", err)
+		panic("unreachable")
 	}
 	defer resp.Body.Close()
 
@@ -116,6 +122,7 @@ func TestAppHTTPAllowlist(t *testing.T) {
 	var got AgentQueueSnapshot
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatalf("decode AgentQueueSnapshot response: %v", err)
+		panic("unreachable")
 	}
 	if got.Depth != 1 || len(got.Items) != 1 {
 		t.Fatalf("AgentQueueSnapshot response = %+v, want single queued item", got)
@@ -142,6 +149,7 @@ func TestAgentServiceHTTPAdmissionRejectsDiscoverAgentsDuringDrain(t *testing.T)
 	resp, err := http.Post(srv.URL+"/api/AgentService/DiscoverAgents", "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST DiscoverAgents: %v", err)
+		panic("unreachable")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
@@ -151,6 +159,7 @@ func TestAgentServiceHTTPAdmissionRejectsDiscoverAgentsDuringDrain(t *testing.T)
 	readResp, err := http.Post(srv.URL+"/api/AgentService/ListAgents", "application/json", nil)
 	if err != nil {
 		t.Fatalf("POST ListAgents: %v", err)
+		panic("unreachable")
 	}
 	defer readResp.Body.Close()
 	if readResp.StatusCode != http.StatusOK {
@@ -173,6 +182,7 @@ func TestTaskServiceHTTPAllowlist_ListTaskProgress(t *testing.T) {
 	resp, err := http.Post(srv.URL+"/api/TaskService/ListTaskProgress", "application/json", strings.NewReader(`["any"]`))
 	if err != nil {
 		t.Fatalf("POST ListTaskProgress: %v", err)
+		panic("unreachable")
 	}
 	defer resp.Body.Close()
 
@@ -182,9 +192,11 @@ func TestTaskServiceHTTPAllowlist_ListTaskProgress(t *testing.T) {
 	var entries []artifact.ProgressEntry
 	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
 		t.Fatalf("decode ListTaskProgress response: %v", err)
+		panic("unreachable")
 	}
 	if entries == nil {
 		t.Fatal("ListTaskProgress response decoded to nil, want empty slice")
+		panic("unreachable")
 	}
 }
 
@@ -196,6 +208,7 @@ func TestPromptLabServiceHTTPAllowlist(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 	artifacts := artifact.New(t.TempDir())
@@ -214,11 +227,13 @@ func TestPromptLabServiceHTTPAllowlist(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create stale proposal: %v", err)
+		panic("unreachable")
 	}
 
 	resp, err := http.Post(srv.URL+"/api/PromptLabService/ApproveProposal", "application/json", strings.NewReader(`["`+stale.ID+`"]`))
 	if err != nil {
 		t.Fatalf("POST ApproveProposal: %v", err)
+		panic("unreachable")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
@@ -230,6 +245,7 @@ func TestPromptLabServiceHTTPAllowlist(t *testing.T) {
 	after, err := mgr.Get(stale.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if after.Status != staleStatus {
 		t.Fatalf("status mutated to %q by guard-rejected HTTP call, want unchanged %q", after.Status, staleStatus)
@@ -245,11 +261,13 @@ func TestPromptLabServiceHTTPAllowlist(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create pending proposal: %v", err)
+		panic("unreachable")
 	}
 
 	resp2, err := http.Post(srv.URL+"/api/PromptLabService/RejectProposal", "application/json", strings.NewReader(`["`+pending.ID+`", "no thanks"]`))
 	if err != nil {
 		t.Fatalf("POST RejectProposal: %v", err)
+		panic("unreachable")
 	}
 	defer resp2.Body.Close()
 	if resp2.StatusCode != http.StatusOK {
@@ -258,6 +276,7 @@ func TestPromptLabServiceHTTPAllowlist(t *testing.T) {
 	var got task.Task
 	if err := json.NewDecoder(resp2.Body).Decode(&got); err != nil {
 		t.Fatalf("decode RejectProposal response: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusCancelled {
 		t.Fatalf("status = %q, want cancelled", got.Status)

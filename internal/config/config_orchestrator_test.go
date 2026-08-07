@@ -11,6 +11,7 @@ func mustUnmarshalOrchestrator(t *testing.T, in string) OrchestratorConfig {
 	cfg := DefaultConfig().Orchestrator
 	if err := yaml.Unmarshal([]byte(in), &cfg); err != nil {
 		t.Fatalf("unmarshal orchestrator config: %v", err)
+		panic("unreachable")
 	}
 	return cfg
 }
@@ -36,11 +37,13 @@ func TestNormalizeInstanceRole(t *testing.T) {
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("NormalizeInstanceRole(%q) = %q, want error", tt.in, got)
+					panic("unreachable")
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("NormalizeInstanceRole(%q): unexpected error: %v", tt.in, err)
+				panic("unreachable")
 			}
 			if got != tt.want {
 				t.Errorf("NormalizeInstanceRole(%q) = %q, want %q", tt.in, got, tt.want)

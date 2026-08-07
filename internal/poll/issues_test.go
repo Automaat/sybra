@@ -49,11 +49,13 @@ func newIssuesFetcherForTest(
 	projStore, err := project.NewStore(projectsDir, clonesDir)
 	if err != nil {
 		t.Fatalf("project.NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	taskStore, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(taskStore, nil)
 
@@ -156,10 +158,12 @@ func TestIssuesFetcher_SyncIssuesToTasks_DegradedUmbrellaEmitsStartupDegraded(t 
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
+		panic("unreachable")
 	}
 	var decoded map[string]any
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatalf("json.Unmarshal: %v", err)
+		panic("unreachable")
 	}
 	if decoded["subsystem"] != "umbrella" {
 		t.Fatalf("JSON subsystem = %v, want umbrella", decoded["subsystem"])
@@ -224,6 +228,7 @@ func TestIssuesFetcher_SyncIssuesToTasks_UmbrellaChildNotDuplicated(t *testing.T
 	all, err := env.tasks.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	matches := 0
 	for i := range all {
@@ -429,6 +434,7 @@ func TestIssuesFetcher_SyncIssuesToTasks_SkipsAlreadyTracked(t *testing.T) {
 	existing, err := env.tasks.Create("already there", "", "headless")
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.Update(existing.ID, task.Update{
 		Issue: task.Ptr("https://github.com/acme/pet1/issues/1"),
@@ -443,6 +449,7 @@ func TestIssuesFetcher_SyncIssuesToTasks_SkipsAlreadyTracked(t *testing.T) {
 	tasks, err := env.tasks.List()
 	if err != nil {
 		t.Fatalf("list: %v", err)
+		panic("unreachable")
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("task count = %d, want 1 (existing one only)", len(tasks))
@@ -461,6 +468,7 @@ func TestIssuesFetcher_SyncIssuesToTasks_EnrichesURLTitledTasks(t *testing.T) {
 	stub, err := env.tasks.Create("https://github.com/acme/pet1/issues/5", "", "headless")
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 
 	env.fetcher.syncIssuesToTasks([]github.Issue{{
@@ -474,6 +482,7 @@ func TestIssuesFetcher_SyncIssuesToTasks_EnrichesURLTitledTasks(t *testing.T) {
 	tasks, err := env.tasks.List()
 	if err != nil {
 		t.Fatalf("list: %v", err)
+		panic("unreachable")
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("task count = %d, want 1 (enriched, not duplicated)", len(tasks))
@@ -481,6 +490,7 @@ func TestIssuesFetcher_SyncIssuesToTasks_EnrichesURLTitledTasks(t *testing.T) {
 	got, err := env.tasks.Get(stub.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
+		panic("unreachable")
 	}
 	if got.Title != "real title" {
 		t.Errorf("Title = %q, want %q", got.Title, "real title")
@@ -565,6 +575,7 @@ func TestIssuesFetcher_SyncIssuesToTasks_TwoIssuesLinkedToSamePR_OnlyOneClaimsBr
 	tasks, err := env.tasks.List()
 	if err != nil {
 		t.Fatalf("list: %v", err)
+		panic("unreachable")
 	}
 	if len(tasks) != 2 {
 		t.Fatalf("task count = %d, want 2", len(tasks))
@@ -605,6 +616,7 @@ func TestIssuesFetcher_SyncIssuesToTasks_LinkedPRBranchAlreadyOwnedKeepsTodo(t *
 	})
 	if err != nil {
 		t.Fatalf("create owner task: %v", err)
+		panic("unreachable")
 	}
 
 	env.fetcher.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) {
@@ -621,6 +633,7 @@ func TestIssuesFetcher_SyncIssuesToTasks_LinkedPRBranchAlreadyOwnedKeepsTodo(t *
 	tasks, err := env.tasks.List()
 	if err != nil {
 		t.Fatalf("list: %v", err)
+		panic("unreachable")
 	}
 	if len(tasks) != 2 {
 		t.Fatalf("task count = %d, want 2", len(tasks))
@@ -643,6 +656,7 @@ func TestIssuesFetcher_SyncIssuesToTasks_URLTitleLinkedViewerPR(t *testing.T) {
 	stub, err := env.tasks.Create("https://github.com/acme/pet1/issues/7", "", "headless")
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	env.fetcher.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) {
 		return []github.PullRequest{{Number: 43, HeadRefName: "fix/issue-7", Author: "me"}}, nil
@@ -658,6 +672,7 @@ func TestIssuesFetcher_SyncIssuesToTasks_URLTitleLinkedViewerPR(t *testing.T) {
 	tasks, err := env.tasks.List()
 	if err != nil {
 		t.Fatalf("list: %v", err)
+		panic("unreachable")
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("task count = %d, want 1", len(tasks))
@@ -665,6 +680,7 @@ func TestIssuesFetcher_SyncIssuesToTasks_URLTitleLinkedViewerPR(t *testing.T) {
 	got, err := env.tasks.Get(stub.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
+		panic("unreachable")
 	}
 	if got.Title != "real title" || got.PRNumber != 43 || got.Status != task.StatusInReview {
 		t.Fatalf("task = %+v, want enriched linked viewer PR", got)
@@ -830,6 +846,7 @@ func taskIssueURLs(t *testing.T, tm *task.Manager) []string {
 	tasks, err := tm.List()
 	if err != nil {
 		t.Fatalf("tasks.List: %v", err)
+		panic("unreachable")
 	}
 	out := make([]string, 0, len(tasks))
 	for i := range tasks {
@@ -845,6 +862,7 @@ func onlyTask(t *testing.T, tm *task.Manager) task.Task {
 	tasks, err := tm.List()
 	if err != nil {
 		t.Fatalf("tasks.List: %v", err)
+		panic("unreachable")
 	}
 	if len(tasks) != 1 {
 		t.Fatalf("task count = %d, want 1", len(tasks))

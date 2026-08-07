@@ -52,10 +52,12 @@ func TestAppStartupWiresSubsystemsAndServices(t *testing.T) {
 	// desktop binding generation can see stable service targets.
 	if app.taskSvc == nil || app.agentSvc == nil || app.projectSvc == nil || app.configSvc == nil {
 		t.Fatal("NewApp did not pre-allocate bound services")
+		panic("unreachable")
 	}
 
 	if err := app.Startup(context.Background()); err != nil {
 		t.Fatalf("Startup: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		if app.agentSvc != nil && app.agentSvc.approval != nil {
@@ -96,6 +98,7 @@ func TestAppStartup_PrimesRoutingBeforeReturning(t *testing.T) {
 	app := NewApp(slog.New(slog.DiscardHandler), &slog.LevelVar{}, cfg)
 	if err := app.Startup(context.Background()); err != nil {
 		t.Fatalf("Startup: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		if app.agentSvc != nil && app.agentSvc.approval != nil {
@@ -106,10 +109,12 @@ func TestAppStartup_PrimesRoutingBeforeReturning(t *testing.T) {
 
 	if app.routingSvc == nil {
 		t.Fatal("routingSvc = nil, want initialized during Startup")
+		panic("unreachable")
 	}
 	got := app.abTestingConfig()
 	if got.WeightsVersion == nil || *got.WeightsVersion != 1 {
 		t.Fatalf("live ABTesting.WeightsVersion = %+v, want 1 before Startup returns", got.WeightsVersion)
+		panic("unreachable")
 	}
 	overlay, ok := app.routingSvc.LastOverlay()
 	if !ok {
@@ -126,6 +131,7 @@ func TestAppStartup_PrimesRoutingBeforeReturning(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("audit.Read: %v", err)
+		panic("unreachable")
 	}
 	if len(auditEvents) != 1 {
 		t.Fatalf("routing audit events = %d, want 1 bootstrap event", len(auditEvents))
@@ -167,12 +173,14 @@ func TestAppStartup_SecondInstanceOnSameHomeFailsFast(t *testing.T) {
 	first := NewApp(logger, &slog.LevelVar{}, startupTestConfig(home))
 	if err := first.Startup(context.Background()); err != nil {
 		t.Fatalf("first Startup: %v", err)
+		panic("unreachable")
 	}
 
 	second := NewApp(logger, &slog.LevelVar{}, startupTestConfig(home))
 	err := second.Startup(context.Background())
 	if err == nil {
 		t.Fatal("second Startup against the same home succeeded, want a fail-fast lock error")
+		panic("unreachable")
 	}
 	if !errors.Is(err, fsutil.ErrLocked) {
 		t.Fatalf("second Startup error = %v, want fsutil.ErrLocked", err)
@@ -183,6 +191,7 @@ func TestAppStartup_SecondInstanceOnSameHomeFailsFast(t *testing.T) {
 	third := NewApp(logger, &slog.LevelVar{}, startupTestConfig(home))
 	if err := third.Startup(context.Background()); err != nil {
 		t.Fatalf("Startup after releasing the lock: %v", err)
+		panic("unreachable")
 	}
 	shutdown(third)
 }
@@ -196,6 +205,7 @@ func TestAppStartup_ReleasesHomeLockOnStartupFailure(t *testing.T) {
 	cfg := startupTestConfig(home)
 	if err := os.WriteFile(cfg.TasksDir, []byte("not a directory"), 0o644); err != nil {
 		t.Fatalf("seed tasks path as file: %v", err)
+		panic("unreachable")
 	}
 
 	logger := slog.New(slog.DiscardHandler)
@@ -203,14 +213,17 @@ func TestAppStartup_ReleasesHomeLockOnStartupFailure(t *testing.T) {
 	first := NewApp(logger, &slog.LevelVar{}, cfg)
 	if err := first.Startup(context.Background()); err == nil {
 		t.Fatal("Startup succeeded with tasks dir blocked by a regular file, want failure")
+		panic("unreachable")
 	}
 	if err := os.Remove(cfg.TasksDir); err != nil {
 		t.Fatalf("remove blocking tasks file: %v", err)
+		panic("unreachable")
 	}
 
 	second := NewApp(logger, &slog.LevelVar{}, startupTestConfig(home))
 	if err := second.Startup(context.Background()); err != nil {
 		t.Fatalf("Startup after failed startup should reacquire released lock: %v", err)
+		panic("unreachable")
 	}
 	if second.agentSvc != nil && second.agentSvc.approval != nil {
 		_ = second.agentSvc.approval.Shutdown(context.Background())
@@ -227,6 +240,7 @@ func TestAppStartup_QueueInitFailureDegradesGracefully(t *testing.T) {
 
 	if err := os.WriteFile(filepath.Join(home, "agentqueue"), []byte("blocks mkdir"), 0o644); err != nil {
 		t.Fatalf("seed queue path as file: %v", err)
+		panic("unreachable")
 	}
 
 	cfg := startupTestConfig(home)
@@ -235,6 +249,7 @@ func TestAppStartup_QueueInitFailureDegradesGracefully(t *testing.T) {
 
 	if err := app.Startup(context.Background()); err != nil {
 		t.Fatalf("Startup: %v (queue init failure must not be fatal)", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		if app.agentSvc != nil && app.agentSvc.approval != nil {
@@ -245,9 +260,11 @@ func TestAppStartup_QueueInitFailureDegradesGracefully(t *testing.T) {
 
 	if app.agentQueue != nil {
 		t.Fatal("agentQueue must stay nil when agentqueue.New fails")
+		panic("unreachable")
 	}
 	if app.workflowEngine == nil {
 		t.Fatal("workflowEngine must still be created when the queue degrades — admission gating is optional, not fail-closed")
+		panic("unreachable")
 	}
 }
 
@@ -258,12 +275,14 @@ func TestQueueDrainPass_ReplaysPersistedEffectsBeforeResumeFallback(t *testing.T
 	store, err := task.NewStore(filepath.Join(home, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 
 	created, err := taskMgr.Create("queue replay", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	updated, err := taskMgr.UpdateMap(created.ID, map[string]any{
 		"status": string(task.StatusInProgress),
@@ -275,6 +294,7 @@ func TestQueueDrainPass_ReplaysPersistedEffectsBeforeResumeFallback(t *testing.T
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	updated, err = taskMgr.UpdateMap(created.ID, map[string]any{
 		"workflow": &workflow.Execution{
@@ -294,11 +314,13 @@ func TestQueueDrainPass_ReplaysPersistedEffectsBeforeResumeFallback(t *testing.T
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wfDir := filepath.Join(home, "workflows")
 	if err := os.MkdirAll(wfDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	const yaml = `id: replay-set-status
 name: Replay Set Status
@@ -310,10 +332,12 @@ steps:
 `
 	if err := os.WriteFile(filepath.Join(wfDir, "replay-set-status.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wfStore, err := workflow.NewStore(wfDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	engine := workflow.NewTestEngine(wfStore, &taskAdapter{tasks: taskMgr}, &recordingAgentLauncher{}, discardLogger())
@@ -327,12 +351,14 @@ steps:
 	got, err := taskMgr.Get(updated.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusTesting {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusTesting)
 	}
 	if got.Workflow == nil {
 		t.Fatal("workflow = nil, want completed workflow after replay")
+		panic("unreachable")
 	}
 	if got.Workflow.State != workflow.ExecCompleted || got.Workflow.CurrentStep != "" {
 		t.Fatalf("workflow = %+v, want completed with empty current step", got.Workflow)
@@ -345,6 +371,7 @@ func TestAppShutdownBeforeStartupDoesNotPanic(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("Shutdown before Startup panicked: %v", r)
+			panic("unreachable")
 		}
 	}()
 
@@ -390,11 +417,13 @@ func TestInitSandboxes_AppliesRetentionWindow(t *testing.T) {
 
 	if app.sandboxes == nil {
 		t.Fatal("initSandboxes left sandboxes nil")
+		panic("unreachable")
 	}
 
 	dir, err := app.sandboxes.SybraHomeDir("task-done")
 	if err != nil {
 		t.Fatalf("SybraHomeDir: %v", err)
+		panic("unreachable")
 	}
 
 	app.sandboxes.CleanupOrphaned(context.Background(), []task.Task{{
@@ -405,6 +434,7 @@ func TestInitSandboxes_AppliesRetentionWindow(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Dir(dir)); err != nil {
 		t.Fatalf("recent done sandbox removed despite positive retention: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -413,57 +443,73 @@ func assertStartupCoreWiring(t *testing.T, app *App, logger *slog.Logger, cfg *c
 
 	if app.ctx == nil || app.cancel == nil {
 		t.Fatal("startup context was not installed")
+		panic("unreachable")
 	}
 	if app.cfg != cfg || app.logger != logger || app.logLevel != logLevel {
 		t.Fatal("constructor-supplied app dependencies were not retained")
 	}
 	if app.tasks == nil {
 		t.Fatal("task manager is nil")
+		panic("unreachable")
 	}
 	if app.projects == nil {
 		t.Fatal("project store is nil")
+		panic("unreachable")
 	}
 	if app.loopAgents == nil || app.loopSched == nil {
 		t.Fatal("loop agent store/scheduler were not initialized")
+		panic("unreachable")
 	}
 	if app.bgops == nil {
 		t.Fatal("background operation tracker is nil")
+		panic("unreachable")
 	}
 	if app.agents == nil {
 		t.Fatal("agent manager is nil")
+		panic("unreachable")
 	}
 	if app.providerHealth != nil {
 		t.Fatal("provider health checker should be nil when disabled")
+		panic("unreachable")
 	}
 	if app.worktrees == nil || app.sandboxes == nil {
 		t.Fatal("worktree/sandbox managers were not initialized")
+		panic("unreachable")
 	}
 	if app.agentOrch == nil || app.reviewer == nil {
 		t.Fatal("agent orchestrator/reviewer were not initialized")
+		panic("unreachable")
 	}
 	if app.workflowEngine == nil || app.workflowStore == nil {
 		t.Fatal("workflow engine/store were not initialized")
+		panic("unreachable")
 	}
 	if app.agentQueue == nil {
 		t.Fatal("agent admission queue was not initialized")
+		panic("unreachable")
 	}
 	if app.agentCompletion == nil || app.recovery == nil {
 		t.Fatal("completion/recovery handlers were not initialized")
+		panic("unreachable")
 	}
 	if app.recovery.WorkflowEngine != app.workflowEngine {
 		t.Fatal("recovery was not wired to the workflow engine")
 	}
 	if app.evaluationSvc == nil || app.routingSvc == nil {
 		t.Fatal("evaluation/routing services were not initialized before Startup returned")
+		panic("unreachable")
 	}
 	if app.watcher == nil || app.configWatcher == nil {
 		t.Fatal("file/config watchers were not started")
+		panic("unreachable")
 	}
 	if app.notifier == nil || app.artifacts == nil || app.experience == nil || app.stats == nil || app.limits == nil {
 		t.Fatal("support stores were not initialized")
+		panic("unreachable")
 	}
 	if app.agentQueue == nil {
 		t.Fatal("agent queue is nil")
+		panic("unreachable")
 	}
 }
 
@@ -484,6 +530,7 @@ func assertStartupServiceWiring(t *testing.T, app *App) {
 	}
 	if app.queueSvc == nil || app.queueSvc.queue != app.agentQueue {
 		t.Fatal("queue service was not wired")
+		panic("unreachable")
 	}
 	if app.loopAgentSvc.store != app.loopAgents || app.loopAgentSvc.sched != app.loopSched {
 		t.Fatal("loop-agent service was not wired")

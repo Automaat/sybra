@@ -223,6 +223,7 @@ func TestHandleAutoMerge_GatesOnCopilot(t *testing.T) {
 			projStore, err := project.NewStore(projDir, t.TempDir())
 			if err != nil {
 				t.Fatalf("NewStore: %v", err)
+				panic("unreachable")
 			}
 			mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
 			mustWriteProjectYAML(t, projDir, "work-owner/work-repo", project.ProjectTypeWork)
@@ -230,11 +231,13 @@ func TestHandleAutoMerge_GatesOnCopilot(t *testing.T) {
 			taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 			if err != nil {
 				t.Fatalf("task NewStore: %v", err)
+				panic("unreachable")
 			}
 			tasks := task.NewManager(taskStore, nil)
 			created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 			if err != nil {
 				t.Fatalf("create: %v", err)
+				panic("unreachable")
 			}
 			upd := task.Update{
 				Status:    task.Ptr(task.StatusInReview),
@@ -247,6 +250,7 @@ func TestHandleAutoMerge_GatesOnCopilot(t *testing.T) {
 			}
 			if _, err := tasks.Update(created.ID, upd); err != nil {
 				t.Fatalf("update: %v", err)
+				panic("unreachable")
 			}
 
 			var mergedRepo string
@@ -384,17 +388,20 @@ func TestHandleAutoMerge_ArmsNative(t *testing.T) {
 			projStore, err := project.NewStore(projDir, t.TempDir())
 			if err != nil {
 				t.Fatalf("NewStore: %v", err)
+				panic("unreachable")
 			}
 			mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", tt.projectType)
 
 			taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 			if err != nil {
 				t.Fatalf("task NewStore: %v", err)
+				panic("unreachable")
 			}
 			tasks := task.NewManager(taskStore, nil)
 			created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 			if err != nil {
 				t.Fatalf("create: %v", err)
+				panic("unreachable")
 			}
 			if _, err := tasks.Update(created.ID, task.Update{
 				Status:    task.Ptr(task.StatusInReview),
@@ -458,17 +465,20 @@ func TestHandleAutoMerge_FallsBackToNativeWhenDirectMergeBlockedByPolicy(t *test
 	projStore, err := project.NewStore(projDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
 
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatalf("task NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -534,17 +544,20 @@ func TestHandleAutoMerge_DirectMergePolicyBlockedHonorsNativeKillSwitch(t *testi
 	projStore, err := project.NewStore(projDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
 
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatalf("task NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -611,17 +624,20 @@ func TestHandleAutoMerge_DirectMergeOrdinaryFailureDoesNotArmNative(t *testing.T
 	projStore, err := project.NewStore(projDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
 
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatalf("task NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -719,17 +735,20 @@ func TestHandleAutoMerge_REST(t *testing.T) {
 			projStore, err := project.NewStore(projDir, t.TempDir())
 			if err != nil {
 				t.Fatalf("NewStore: %v", err)
+				panic("unreachable")
 			}
 			mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
 
 			taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 			if err != nil {
 				t.Fatalf("task NewStore: %v", err)
+				panic("unreachable")
 			}
 			tasks := task.NewManager(taskStore, nil)
 			created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 			if err != nil {
 				t.Fatalf("create: %v", err)
+				panic("unreachable")
 			}
 			upd := task.Update{
 				Status:    task.Ptr(task.StatusInReview),
@@ -741,6 +760,7 @@ func TestHandleAutoMerge_REST(t *testing.T) {
 			}
 			if _, err := tasks.Update(created.ID, upd); err != nil {
 				t.Fatalf("update: %v", err)
+				panic("unreachable")
 			}
 
 			var restMergedRepo, restMergedSHA string
@@ -791,6 +811,7 @@ func TestHandleAutoMerge_REST_AuditPayload(t *testing.T) {
 	auditLog, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatalf("audit.NewLogger: %v", err)
+		panic("unreachable")
 	}
 	defer auditLog.Close()
 
@@ -798,17 +819,20 @@ func TestHandleAutoMerge_REST_AuditPayload(t *testing.T) {
 	projStore, err := project.NewStore(projDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
 
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatalf("task NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -865,17 +889,20 @@ func TestHandleAutoMerge_FiresAppliedHook(t *testing.T) {
 	projStore, err := project.NewStore(projDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
 
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatalf("task NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -927,17 +954,20 @@ func TestHandleAutoMerge_BacksOffRepeatedDirectMergeFailures(t *testing.T) {
 	projStore, err := project.NewStore(projDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
 
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatalf("task NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -992,17 +1022,20 @@ func TestHandleAutoMerge_BackoffClearsOnSuccess(t *testing.T) {
 	projStore, err := project.NewStore(projDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
 
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatalf("task NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -1074,17 +1107,20 @@ func TestHandleAutoMerge_ArmNotSupportedFallsThroughToDirectMerge(t *testing.T) 
 	projStore, err := project.NewStore(projDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
 
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatalf("task NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -1139,17 +1175,20 @@ func TestHandleAutoMerge_ArmFailureBacksOff(t *testing.T) {
 	projStore, err := project.NewStore(projDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
 
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatalf("task NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -1210,17 +1249,20 @@ func TestMaybeArmNativeAutoMerge_BacksOffRepeatedFailuresUntilStateChanges(t *te
 	projStore, err := project.NewStore(projDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
 
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatalf("task NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -1233,6 +1275,7 @@ func TestMaybeArmNativeAutoMerge_BacksOffRepeatedFailuresUntilStateChanges(t *te
 	taskList, err := tasks.List()
 	if err != nil {
 		t.Fatalf("list: %v", err)
+		panic("unreachable")
 	}
 
 	var armCalls int
@@ -1283,11 +1326,13 @@ func TestHandleKnownPRConflictsViaREST_RoutesReadyToMerge(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	tk, err := tasks.Create("Ready PR", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -1301,6 +1346,7 @@ func TestHandleKnownPRConflictsViaREST_RoutesReadyToMerge(t *testing.T) {
 	projStore, err := project.NewStore(projDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
 
@@ -1342,6 +1388,7 @@ func TestHandleKnownPRConflictsViaREST_RoutesReadyToMerge(t *testing.T) {
 	got, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.handleKnownPRConflictsViaREST(context.Background(), got)
 
@@ -1394,17 +1441,20 @@ func TestResolveAddressedCopilotThreads(t *testing.T) {
 	projStore, err := project.NewStore(projDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
 
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatalf("task NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 	created, err := tasks.Create("ship", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -1416,6 +1466,7 @@ func TestResolveAddressedCopilotThreads(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("list: %v", err)
+		panic("unreachable")
 	}
 
 	// T1: addressed Copilot thread (outdated) -> resolve. T2: live Copilot thread
@@ -1523,12 +1574,14 @@ func TestHandleTaskPRIssues_ExhaustedRetryParksOnlyWhenNoSiblingHandleable(t *te
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
 	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wfStore.Dir(), "test-pr-fix.yaml"),
 		[]byte(mechanicalPRFixYAML), 0o644); err != nil {
@@ -1545,6 +1598,7 @@ func TestHandleTaskPRIssues_ExhaustedRetryParksOnlyWhenNoSiblingHandleable(t *te
 	created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(created.ID, task.Update{
 		Status:   task.Ptr(task.StatusInReview),
@@ -1585,12 +1639,14 @@ func TestHandleTaskPRIssues_ExhaustedRetryParksOnlyWhenNoSiblingHandleable(t *te
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status == task.StatusHumanRequired {
 		t.Fatalf("status = %q, want NOT human-required: the handleable comments sibling must dispatch a fix instead of being stranded by ci_failure's exhaustion", got.Status)
 	}
 	if got.Workflow == nil {
 		t.Fatal("no workflow dispatched; the handleable comments issue should have triggered a coalesced fix")
+		panic("unreachable")
 	}
 	if k := got.Workflow.Variables["pr_issue_kind"]; k != string(github.PRIssueComments) {
 		t.Errorf("pr_issue_kind = %q, want %q (only the handleable issue drives dispatch)", k, github.PRIssueComments)
@@ -1605,12 +1661,14 @@ func TestHandleTaskPRIssues_CancelsStalePlanWorkflowForLinkedPR(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
 	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wfStore.Dir(), "test-pr-fix.yaml"),
 		[]byte(mechanicalPRFixYAML), 0o644); err != nil {
@@ -1627,6 +1685,7 @@ func TestHandleTaskPRIssues_CancelsStalePlanWorkflowForLinkedPR(t *testing.T) {
 	created, err := tasks.Create("linked PR stuck in plan review", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitingPlan := &workflow.Execution{
 		WorkflowID:  "simple-task-plan",
@@ -1664,9 +1723,11 @@ func TestHandleTaskPRIssues_CancelsStalePlanWorkflowForLinkedPR(t *testing.T) {
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("workflow missing after PR issue dispatch")
+		panic("unreachable")
 	}
 	if got.Workflow.WorkflowID != "test-pr-fix" {
 		t.Fatalf("workflow id = %q, want test-pr-fix; stale plan workflow was not cancelled", got.Workflow.WorkflowID)
@@ -1692,12 +1753,14 @@ func TestHandleKnownPRConflictsViaREST_SkipsCommentsWithoutGraphQLThreadData(t *
 		store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		tasks := task.NewManager(store, nil)
 		logger := slog.New(slog.DiscardHandler)
 		wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if err := os.WriteFile(filepath.Join(wfStore.Dir(), "test-pr-fix.yaml"),
 			[]byte(mechanicalPRFixYAML), 0o644); err != nil {
@@ -1714,6 +1777,7 @@ func TestHandleKnownPRConflictsViaREST_SkipsCommentsWithoutGraphQLThreadData(t *
 		created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if _, err := tasks.Update(created.ID, task.Update{
 			Status:    task.Ptr(task.StatusInReview),
@@ -1754,15 +1818,18 @@ func TestHandleKnownPRConflictsViaREST_SkipsCommentsWithoutGraphQLThreadData(t *
 		got, err := h.tasks.List()
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		h.r.handleKnownPRConflictsViaREST(context.Background(), got)
 
 		gotTask, err := h.tasks.Get(tk.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if gotTask.Workflow == nil {
 			t.Fatal("no workflow dispatched; the fixable conflict issue should have routed through")
+			panic("unreachable")
 		}
 		if k := gotTask.Workflow.Variables["pr_issue_kind"]; k != string(github.PRIssueConflict) {
 			t.Errorf("pr_issue_kind = %q, want %q", k, github.PRIssueConflict)
@@ -1799,15 +1866,18 @@ func TestHandleKnownPRConflictsViaREST_SkipsCommentsWithoutGraphQLThreadData(t *
 		got, err := tasks.List()
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		r.handleKnownPRConflictsViaREST(context.Background(), got)
 
 		gotTask, err := tasks.Get(taskID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if gotTask.Workflow != nil {
 			t.Fatalf("workflow dispatched = %+v, want none: a comments-only REST issue must never dispatch", gotTask.Workflow)
+			panic("unreachable")
 		}
 		if n := r.prTracker.Retries(taskID, github.PRIssueComments); n != 0 {
 			t.Errorf("comments retries = %d, want 0 (never marked handled)", n)
@@ -1826,11 +1896,13 @@ func TestEscalateExhaustedFix(t *testing.T) {
 		store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 		if err != nil {
 			t.Fatalf("NewStore: %v", err)
+			panic("unreachable")
 		}
 		tasks := task.NewManager(store, nil)
 		created, err := tasks.Create("ship it", "", string(task.AgentModeHeadless))
 		if err != nil {
 			t.Fatalf("create: %v", err)
+			panic("unreachable")
 		}
 		if _, err := tasks.Update(created.ID, task.Update{
 			Status:   task.Ptr(task.StatusInReview),

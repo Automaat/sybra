@@ -23,10 +23,12 @@ func TestSyncFile(t *testing.T) {
 	srcDir := filepath.Join(t.TempDir(), "sub")
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcFile := filepath.Join(srcDir, "test.md")
 	if err := os.WriteFile(srcFile, []byte("# hello"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	dstFile := filepath.Join(t.TempDir(), "out", "test.md")
@@ -35,6 +37,7 @@ func TestSyncFile(t *testing.T) {
 	data, err := os.ReadFile(dstFile)
 	if err != nil {
 		t.Fatalf("dst not written: %v", err)
+		panic("unreachable")
 	}
 	if string(data) != "# hello" {
 		t.Errorf("content = %q, want %q", string(data), "# hello")
@@ -54,6 +57,7 @@ func TestSyncDir(t *testing.T) {
 	srcDir := filepath.Join(t.TempDir(), "skills")
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	frontmatter := func(name string) []byte {
 		return []byte("---\nname: " + name + "\ndescription: test\n---\n\n# " + name)
@@ -61,13 +65,16 @@ func TestSyncDir(t *testing.T) {
 	for _, name := range []string{"a", "b"} {
 		if err := os.WriteFile(filepath.Join(srcDir, name+".md"), frontmatter(name), 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 	if err := os.WriteFile(filepath.Join(srcDir, "c.txt"), []byte("content-c"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(srcDir, "no-frontmatter.md"), []byte("# nope"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	dstDir := filepath.Join(t.TempDir(), "dst-skills")
@@ -88,27 +95,33 @@ func TestSyncDirRemovesOrphans(t *testing.T) {
 	srcDir := filepath.Join(t.TempDir(), "skills")
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	keep := []byte("---\nname: sybra-keep\ndescription: test\n---\n\n# sybra-keep")
 	if err := os.WriteFile(filepath.Join(srcDir, "sybra-keep.md"), keep, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	dstDir := filepath.Join(t.TempDir(), "dst-skills")
 	sybraOrphan := filepath.Join(dstDir, "sybra-orphan")
 	if err := os.MkdirAll(sybraOrphan, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(sybraOrphan, "SKILL.md"), []byte("---\nname: sybra-orphan\n---\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	userSkill := filepath.Join(dstDir, "ship-issue")
 	if err := os.MkdirAll(userSkill, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(userSkill, "SKILL.md"), []byte("---\nname: ship-issue\n---\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	newSyncer().SyncDir(srcDir, dstDir)
@@ -130,20 +143,25 @@ func TestSyncDirCopiesDirectoryStyleSkill(t *testing.T) {
 	refDir := filepath.Join(skillDir, "references")
 	if err := os.MkdirAll(refDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	skillMD := []byte("---\nname: plan-critic\ndescription: test\n---\n\n# plan-critic")
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), skillMD, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(refDir, "checklist.md"), []byte("# checklist"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	badDir := filepath.Join(srcDir, "bad-skill")
 	if err := os.MkdirAll(badDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(badDir, "SKILL.md"), []byte("# no frontmatter"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	dstDir := filepath.Join(t.TempDir(), "dst-skills")
@@ -164,31 +182,38 @@ func TestSyncDirDirectoryStyleAndFrontmatter(t *testing.T) {
 	srcDir := filepath.Join(t.TempDir(), "skills")
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	flat := []byte("---\nname: good-flat\ndescription: t\n---\n\n# flat")
 	if err := os.WriteFile(filepath.Join(srcDir, "good-flat.md"), flat, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(srcDir, "bad-flat.md"), []byte("# no-fm"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	dirSkill := filepath.Join(srcDir, "good-dir")
 	if err := os.MkdirAll(dirSkill, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	dirMD := []byte("---\nname: good-dir\ndescription: t\n---\n\n# dir")
 	if err := os.WriteFile(filepath.Join(dirSkill, "SKILL.md"), dirMD, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	dstDir := filepath.Join(t.TempDir(), "codex-skills")
 	preExisting := filepath.Join(dstDir, "bad-flat")
 	if err := os.MkdirAll(preExisting, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	preExistingContent := []byte("---\nname: bad-flat\ndescription: valid\n---\n\n# valid")
 	if err := os.WriteFile(filepath.Join(preExisting, "SKILL.md"), preExistingContent, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	newSyncer().SyncDir(srcDir, dstDir)
@@ -228,9 +253,11 @@ func TestSyncDirSkipsUserOwnedSymlink(t *testing.T) {
 	userSrc := t.TempDir()
 	if err := os.WriteFile(filepath.Join(userSrc, "SKILL.md"), []byte("USER OWNED"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Symlink(userSrc, filepath.Join(dst, "shared")); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	newSyncer().SyncDir(src, dst)
@@ -238,6 +265,7 @@ func TestSyncDirSkipsUserOwnedSymlink(t *testing.T) {
 	info, err := os.Lstat(filepath.Join(dst, "shared"))
 	if err != nil || info.Mode()&os.ModeSymlink == 0 {
 		t.Fatalf("user-owned symlink was replaced (err=%v)", err)
+		panic("unreachable")
 	}
 	got, _ := os.ReadFile(filepath.Join(dst, "shared", "SKILL.md"))
 	if string(got) != "USER OWNED" {
@@ -250,19 +278,23 @@ func TestRunPrefersEmbeddedWhenNoGoMod(t *testing.T) {
 	dataDir := filepath.Join(embeddedSrc, "data")
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	embedded := []byte("---\nname: embedded-skill\ndescription: from embed\n---\n\n# embed")
 	if err := os.WriteFile(filepath.Join(dataDir, "embedded-skill.md"), embedded, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	repoDir := t.TempDir()
 	skillsSrc := filepath.Join(repoDir, ".claude", "skills")
 	if err := os.MkdirAll(skillsSrc, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(skillsSrc, "rogue.md"), []byte("# no-fm"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	primaryDst := filepath.Join(t.TempDir(), "app-skills")
 
@@ -289,10 +321,12 @@ func TestRunInstallsToAgentDirs(t *testing.T) {
 	dataDir := filepath.Join(embeddedSrc, "data")
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	skill := []byte("---\nname: embedded-skill\ndescription: from embed\n---\n\n# embed")
 	if err := os.WriteFile(filepath.Join(dataDir, "embedded-skill.md"), skill, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	userHome := t.TempDir()
@@ -317,30 +351,37 @@ func TestRunMergesRepoAndEmbeddedWhenGoModPresent(t *testing.T) {
 	repoDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repoDir, "go.mod"), []byte("module x\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	skillsSrc := filepath.Join(repoDir, ".claude", "skills")
 	if err := os.MkdirAll(skillsSrc, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	repoSkill := []byte("---\nname: repo-skill\ndescription: t\n---\n")
 	if err := os.WriteFile(filepath.Join(skillsSrc, "repo-skill.md"), repoSkill, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	repoOverride := []byte("---\nname: shared\ndescription: repo\n---\n")
 	if err := os.WriteFile(filepath.Join(skillsSrc, "shared.md"), repoOverride, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	embeddedSrc := filepath.Join(t.TempDir(), "embedded")
 	dataDir := filepath.Join(embeddedSrc, "data")
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(dataDir, "embed-only.md"), []byte("---\nname: embed-only\n---\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(dataDir, "shared.md"), []byte("---\nname: shared\ndescription: embed\n---\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	primaryDst := filepath.Join(t.TempDir(), "app-skills")
 
@@ -359,6 +400,7 @@ func TestRunMergesRepoAndEmbeddedWhenGoModPresent(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(primaryDst, "shared", "SKILL.md"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(got), "description: repo") {
 		t.Errorf("repo skill should override embedded duplicate, got %q", got)
@@ -369,10 +411,12 @@ func TestRunShipsWorkflowSkillsFromEmbeddedBundle(t *testing.T) {
 	repoDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repoDir, "go.mod"), []byte("module x\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	skillsSrc := filepath.Join(repoDir, ".claude", "skills")
 	if err := os.MkdirAll(skillsSrc, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	primaryDst := filepath.Join(t.TempDir(), "app-skills")
@@ -398,16 +442,19 @@ func TestRunEmbeddedSkillsLandInAllDirsWhenGoModPresent(t *testing.T) {
 	repoDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repoDir, "go.mod"), []byte("module x\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Repo .claude/skills has a disk skill but NOT sybra-test — that one comes
 	// only from the embedded bundle.
 	skillsSrc := filepath.Join(repoDir, ".claude", "skills")
 	if err := os.MkdirAll(skillsSrc, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	repoSkill := []byte("---\nname: repo-only\ndescription: t\n---\n")
 	if err := os.WriteFile(filepath.Join(skillsSrc, "repo-only.md"), repoSkill, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	primaryDst := filepath.Join(t.TempDir(), "app-skills")
@@ -443,6 +490,7 @@ func TestRunPreservesUserCopilotSkillsPrunesSybraOrphans(t *testing.T) {
 	repoDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repoDir, "go.mod"), []byte("module x\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	primaryDst := filepath.Join(t.TempDir(), "app-skills")
 	userHome := t.TempDir()
@@ -453,9 +501,11 @@ func TestRunPreservesUserCopilotSkillsPrunesSybraOrphans(t *testing.T) {
 	for _, d := range []string{vendor, stale} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if err := os.WriteFile(filepath.Join(d, "SKILL.md"), []byte("---\nname: x\ndescription: t\n---\n"), 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
@@ -488,17 +538,21 @@ func TestRunWithRepoDirAndOrchestrator(t *testing.T) {
 	skillsSrc := filepath.Join(repoDir, ".claude", "skills")
 	if err := os.MkdirAll(skillsSrc, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	skillContent := []byte("---\nname: skill\ndescription: test\n---\n\n# skill")
 	if err := os.WriteFile(filepath.Join(skillsSrc, "skill.md"), skillContent, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	orchDir := filepath.Join(repoDir, "orchestrator")
 	if err := os.MkdirAll(orchDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(orchDir, "CLAUDE.md"), []byte("# orchestrator"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	primaryDst := filepath.Join(t.TempDir(), "app-skills")
@@ -527,22 +581,27 @@ func TestRunDowngradesCommitFlags(t *testing.T) {
 	dirSkillSrc := filepath.Join(skillsSrc, "dirskill")
 	if err := os.MkdirAll(dirSkillSrc, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	flatSkill := []byte("---\nname: flat\ndescription: test\n---\n\nCommit with `git commit -s -S -m msg`.")
 	if err := os.WriteFile(filepath.Join(skillsSrc, "flat.md"), flatSkill, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	dirSkill := []byte("---\nname: dirskill\ndescription: test\n---\n\nRun `git commit -sS -m msg`.")
 	if err := os.WriteFile(filepath.Join(dirSkillSrc, "SKILL.md"), dirSkill, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	orchDir := filepath.Join(repoDir, "orchestrator")
 	if err := os.MkdirAll(orchDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	claude := []byte("# orchestrator\n\n```bash\ngit commit -s -S -m \"type(scope): desc\"\n```")
 	if err := os.WriteFile(filepath.Join(orchDir, "CLAUDE.md"), claude, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	primaryDst := filepath.Join(t.TempDir(), "app-skills")
@@ -559,6 +618,7 @@ func TestRunDowngradesCommitFlags(t *testing.T) {
 		b, err := os.ReadFile(p)
 		if err != nil {
 			t.Fatalf("read %s: %v", p, err)
+			panic("unreachable")
 		}
 		return string(b)
 	}
@@ -582,10 +642,12 @@ func TestRunKeepsCommitFlagsWhenSigningAvailable(t *testing.T) {
 	skillsSrc := filepath.Join(repoDir, ".claude", "skills")
 	if err := os.MkdirAll(skillsSrc, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	flatSkill := []byte("---\nname: flat\ndescription: test\n---\n\nCommit with `git commit -s -S -m msg`.")
 	if err := os.WriteFile(filepath.Join(skillsSrc, "flat.md"), flatSkill, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	primaryDst := filepath.Join(t.TempDir(), "app-skills")
 	newSyncer().Run(skillsync.Options{
@@ -596,6 +658,7 @@ func TestRunKeepsCommitFlagsWhenSigningAvailable(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(primaryDst, "flat", "SKILL.md"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(b), "git commit -s -S") {
 		t.Errorf("expected -s -S preserved, got:\n%s", b)

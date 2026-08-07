@@ -22,6 +22,7 @@ func TestListAgentsReturnsFollowerAgents(t *testing.T) {
 	agents, err := c.ListAgents(t.Context())
 	if err != nil {
 		t.Fatalf("ListAgents: %v", err)
+		panic("unreachable")
 	}
 	if len(agents) != 1 || agents[0].ID != "a1" {
 		t.Fatalf("want one agent a1, got %+v", agents)

@@ -97,10 +97,12 @@ func TestQueueDrainPassDrainsManualStartsForEveryRole(t *testing.T) {
 			blockerAgent, err := a.agentOrch.StartAgent(blocker.ID, "headless", "hold", false, false)
 			if err != nil {
 				t.Fatalf("StartAgent(blocker): %v", err)
+				panic("unreachable")
 			}
 			queued := createTaskWithPriority(t, a.tasks, "queued", task.PriorityMedium)
 			if _, err := a.StartAgent(queued.ID, "headless", "queued", false); err != nil {
 				t.Fatalf("StartAgent(queued): %v", err)
+				panic("unreachable")
 			}
 			if got := len(a.agentQueue.Snapshot()); got != 1 {
 				t.Fatalf("queue depth before drain = %d, want 1", got)
@@ -108,6 +110,7 @@ func TestQueueDrainPassDrainsManualStartsForEveryRole(t *testing.T) {
 
 			if err := a.agents.StopAgent(blockerAgent.ID); err != nil {
 				t.Fatalf("StopAgent(blocker): %v", err)
+				panic("unreachable")
 			}
 			waitForFreeSlot(t, a)
 
@@ -155,6 +158,7 @@ func TestAgentOnlyStatusHookDoesNotDispatchWorkflow(t *testing.T) {
 			wfStore, err := workflow.NewStore(wfDir)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			const testReviewWF = `id: simple-task-review
 name: Test Review
@@ -175,6 +179,7 @@ steps:
 `
 			if err := os.WriteFile(filepath.Join(wfDir, "simple-task-review.yaml"), []byte(testReviewWF), 0o644); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			ta := &taskAdapter{tasks: a.tasks}
 			aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
@@ -185,6 +190,7 @@ steps:
 			created, err := a.tasks.Create("ready-review dispatch", "", "headless")
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if _, err := a.tasks.UpdateMap(created.ID, map[string]any{
 				"status": string(task.StatusReadyReview),
@@ -195,6 +201,7 @@ steps:
 			tk, err := a.tasks.Get(created.ID)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if got := tk.Workflow != nil; got != tt.wantWorkflow {
 				t.Fatalf("workflow attached = %v, want %v (status-change dispatch on role %q)",
@@ -239,10 +246,12 @@ steps:
 			wfDir := t.TempDir()
 			if err := os.WriteFile(filepath.Join(wfDir, "probe-created.yaml"), []byte(createdWF), 0o644); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			wfStore, err := workflow.NewStore(wfDir)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			ta := &taskAdapter{tasks: a.tasks}
 			aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
@@ -252,6 +261,7 @@ steps:
 			created, err := a.tasks.Create("todo plan-contract probe", "", "headless")
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			planContract := ""
 			if tc.hasPlanContract {
@@ -270,6 +280,7 @@ steps:
 			tk, err := a.tasks.Get(created.ID)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if tk.Status != tc.wantStatus {
 				t.Errorf("status = %q, want %q", tk.Status, tc.wantStatus)
@@ -318,10 +329,12 @@ steps:
 				wfDir := t.TempDir()
 				if err := os.WriteFile(filepath.Join(wfDir, "probe-created.yaml"), []byte(createdWF), 0o644); err != nil {
 					t.Fatal(err)
+					panic("unreachable")
 				}
 				wfStore, err := workflow.NewStore(wfDir)
 				if err != nil {
 					t.Fatal(err)
+					panic("unreachable")
 				}
 				ta := &taskAdapter{tasks: a.tasks}
 				aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
@@ -331,6 +344,7 @@ steps:
 				created, err := a.tasks.Create("dispatch sink probe", "", "headless")
 				if err != nil {
 					t.Fatal(err)
+					panic("unreachable")
 				}
 
 				sink.call(a, created.ID)
@@ -339,6 +353,7 @@ steps:
 				tk, err := a.tasks.Get(created.ID)
 				if err != nil {
 					t.Fatal(err)
+					panic("unreachable")
 				}
 				if got := tk.Workflow != nil; got != r.wantWorkflow {
 					t.Fatalf("%s on role %q: workflow attached = %v, want %v (workflow=%+v)",
@@ -383,11 +398,13 @@ func TestRecoveryDispatchGateRespectsInstanceRole(t *testing.T) {
 			rec := a.newRecovery()
 			if rec.DispatchGate == nil {
 				t.Fatal("newRecovery left DispatchGate nil; the startup stale-restart sweep would be ungated")
+				panic("unreachable")
 			}
 
 			created, err := a.tasks.Create("stale probe", "", "headless")
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if got := rec.DispatchGate(created); got != tt.wantGate {
 				t.Fatalf("recovery DispatchGate = %v on role %q, want %v", got, tt.role, tt.wantGate)
@@ -423,6 +440,7 @@ func TestFullTaskLifecycle_SchedulerDispatchesBrainStaysDisabled(t *testing.T) {
 	ag, err := a.agentOrch.StartAgent(created.ID, "headless", "advance the task", false, false)
 	if err != nil {
 		t.Fatalf("StartAgent: %v", err)
+		panic("unreachable")
 	}
 
 	for range 5 {

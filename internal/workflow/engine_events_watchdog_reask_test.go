@@ -78,6 +78,7 @@ func TestHandleWatchdogRecoveryRetry_TableDrivenKinds(t *testing.T) {
 				got, err := tasks.GetTask("t1")
 				if err != nil {
 					t.Fatalf("get task: %v", err)
+					panic("unreachable")
 				}
 				if got.StatusReason != "" {
 					t.Fatalf("status_reason = %q, want cleared", got.StatusReason)
@@ -124,6 +125,7 @@ func TestHandleWatchdogRecoveryRetry_TableDrivenKinds(t *testing.T) {
 				got, err := tasks.GetTask("t1")
 				if err != nil {
 					t.Fatalf("get task: %v", err)
+					panic("unreachable")
 				}
 				if got.Status != "in-progress" {
 					t.Fatalf("status = %q, want in-progress", got.Status)
@@ -149,6 +151,7 @@ func TestHandleWatchdogRecoveryRetry_TableDrivenKinds(t *testing.T) {
 				got, err := tasks.GetTask("t1")
 				if err != nil {
 					t.Fatalf("get task: %v", err)
+					panic("unreachable")
 				}
 				if got.Status != "in-progress" {
 					t.Fatalf("status = %q, want in-progress", got.Status)
@@ -187,6 +190,7 @@ func TestResumeStalled_WatchdogHangRunTestRendersTestingReaskNote(t *testing.T) 
 	store := newTestStore(t)
 	if err := store.Save(*mustBuiltinDefinition(t, "testing-task")); err != nil {
 		t.Fatalf("save testing-task: %v", err)
+		panic("unreachable")
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -370,6 +374,7 @@ func TestHandleWatchdogHangRetry_RunTestExhaustionOpensPRGate(t *testing.T) {
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != "ready-pr" {
 		t.Fatalf("status = %q, want ready-pr", got.Status)
@@ -382,6 +387,7 @@ func TestHandleWatchdogHangRetry_RunTestExhaustionOpensPRGate(t *testing.T) {
 	}
 	if got.Workflow.CompletedAt == nil {
 		t.Fatal("completed_at should be set for exhausted run_test open-pr path")
+		panic("unreachable")
 	}
 	if reason := tasks.Reason("t1"); !strings.Contains(reason, "harness/infra limitation") {
 		t.Fatalf("reason = %q, want unrunnable gate reason", reason)
@@ -420,6 +426,7 @@ func TestResumeStalled_WatchdogHangReadyPRSkipsRedispatch(t *testing.T) {
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != "in-review" {
 		t.Fatalf("status = %q, want %q", got.Status, "in-review")
@@ -429,6 +436,7 @@ func TestResumeStalled_WatchdogHangReadyPRSkipsRedispatch(t *testing.T) {
 	}
 	if got.Workflow == nil {
 		t.Fatal("workflow = nil, want completed workflow persisted")
+		panic("unreachable")
 	}
 	if got.Workflow.State != ExecCompleted {
 		t.Fatalf("workflow state = %q, want %q", got.Workflow.State, ExecCompleted)
@@ -438,6 +446,7 @@ func TestResumeStalled_WatchdogHangReadyPRSkipsRedispatch(t *testing.T) {
 	}
 	if got.Workflow.CompletedAt == nil {
 		t.Fatal("workflow completed_at not set")
+		panic("unreachable")
 	}
 	if got.Workflow.Variables[watchdogHangRetryKey("implement")] != "" {
 		t.Fatalf("hang retry var = %q, want empty (no redispatch budget consumed)", got.Workflow.Variables[watchdogHangRetryKey("implement")])
@@ -505,6 +514,7 @@ func TestHandleWatchdogRewardHackingRetry_SetsReaskNoteOnRetry(t *testing.T) {
 	fresh, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if fresh.StatusReason != "" {
 		t.Fatalf("status_reason = %q, want cleared so the workflow resumes cleanly", fresh.StatusReason)
@@ -579,6 +589,7 @@ func TestHandleWatchdogRewardHackingRetry_ExhaustedBudgetEscalates(t *testing.T)
 	fresh, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if fresh.Status != "human-required" {
 		t.Fatalf("status = %q, want human-required", fresh.Status)
@@ -622,6 +633,7 @@ func TestResumePreflight_TerminalizesNonRetryableRewardHackingPark(t *testing.T)
 	fresh, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if fresh.Status != "human-required" {
 		t.Fatalf("status = %q, want human-required", fresh.Status)
@@ -631,6 +643,7 @@ func TestResumePreflight_TerminalizesNonRetryableRewardHackingPark(t *testing.T)
 	}
 	if fresh.Workflow.CompletedAt == nil {
 		t.Fatal("workflow completed_at not set")
+		panic("unreachable")
 	}
 	if fresh.Workflow.CurrentStep != "fix" {
 		t.Fatalf("current step = %q, want preserved for diagnosis", fresh.Workflow.CurrentStep)
@@ -661,6 +674,7 @@ func TestResumePreflight_DoesNotTerminalizeOrdinaryHumanRequired(t *testing.T) {
 	fresh, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if fresh.Workflow.State != ExecWaiting {
 		t.Fatalf("workflow state = %q, want ExecWaiting", fresh.Workflow.State)
@@ -704,6 +718,7 @@ func TestResumePreflight_DoesNotOverwriteReplacementWorkflow(t *testing.T) {
 	fresh, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if fresh.Workflow.WorkflowID != replacement.WorkflowID || fresh.Workflow.CurrentStep != replacement.CurrentStep || fresh.Workflow.State != ExecRunning {
 		t.Fatalf("replacement workflow was overwritten: %+v", fresh.Workflow)
@@ -714,6 +729,7 @@ func TestResumeStalled_WatchdogRewardHackingPlanCriticRendersRetryNote(t *testin
 	store := newTestStore(t)
 	if err := store.Save(*mustBuiltinDefinition(t, "simple-task-plan")); err != nil {
 		t.Fatalf("save simple-task-plan: %v", err)
+		panic("unreachable")
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -800,6 +816,7 @@ steps:
 	fresh, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	for _, key := range []string{
 		watchdogRewardHackingRetryKey("fix_review"),

@@ -71,6 +71,7 @@ func TestExecResumeWorkflow_ResumesCapturedTarget(t *testing.T) {
 	got, gerr := tasks.GetTask("t1")
 	if gerr != nil {
 		t.Fatal(gerr)
+		panic("unreachable")
 	}
 	if got.Status != "testing" {
 		t.Fatalf("status = %q, want restored %q", got.Status, "testing")
@@ -80,6 +81,7 @@ func TestExecResumeWorkflow_ResumesCapturedTarget(t *testing.T) {
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != "resume-target" {
 		t.Fatalf("workflow = %+v, want resumed resume-target", got.Workflow)
+		panic("unreachable")
 	}
 	if got.Workflow.CurrentStep != "resume_here" {
 		t.Fatalf("current step = %q, want captured resume_here step", got.Workflow.CurrentStep)
@@ -119,6 +121,7 @@ func TestExecResumeWorkflow_NoTargetCompletesNormally(t *testing.T) {
 	out, err := engine.execResumeWorkflow("t2", &Step{ID: "resume_original"}, wf)
 	if err != nil {
 		t.Fatalf("execResumeWorkflow: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("status = %q, want completed", out.Status)
@@ -127,6 +130,7 @@ func TestExecResumeWorkflow_NoTargetCompletesNormally(t *testing.T) {
 	got, gerr := tasks.GetTask("t2")
 	if gerr != nil {
 		t.Fatal(gerr)
+		panic("unreachable")
 	}
 	if got.Status != "in-progress" {
 		t.Fatalf("status = %q, want restored in-progress", got.Status)
@@ -139,6 +143,7 @@ func TestExecResumeWorkflow_NoTargetCompletesNormally(t *testing.T) {
 	// resolveNext path.
 	if got.Workflow == nil || got.Workflow.WorkflowID != "branch-conflict-fix" {
 		t.Fatalf("workflow = %+v, want unchanged branch-conflict-fix pending resolveNext", got.Workflow)
+		panic("unreachable")
 	}
 }
 
@@ -176,6 +181,7 @@ func TestExecResumeWorkflow_SkipsStaleRebaseHumanRequired(t *testing.T) {
 	out, err := engine.execResumeWorkflow("t3", &Step{ID: "resume_original"}, wf)
 	if err != nil {
 		t.Fatalf("execResumeWorkflow: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("status = %q, want completed", out.Status)
@@ -184,6 +190,7 @@ func TestExecResumeWorkflow_SkipsStaleRebaseHumanRequired(t *testing.T) {
 	got, gerr := tasks.GetTask("t3")
 	if gerr != nil {
 		t.Fatal(gerr)
+		panic("unreachable")
 	}
 	if got.Status == "human-required" {
 		t.Fatalf("status = %q, must not restore the stale rebase-blocked human-required park", got.Status)
@@ -227,11 +234,13 @@ func TestExecResumeWorkflow_RestoresUnrelatedHumanRequired(t *testing.T) {
 	_, err := engine.execResumeWorkflow("t4", &Step{ID: "resume_original"}, wf)
 	if err != nil {
 		t.Fatalf("execResumeWorkflow: %v", err)
+		panic("unreachable")
 	}
 
 	got, gerr := tasks.GetTask("t4")
 	if gerr != nil {
 		t.Fatal(gerr)
+		panic("unreachable")
 	}
 	if got.Status != "human-required" {
 		t.Fatalf("status = %q, want restored human-required", got.Status)
@@ -300,12 +309,14 @@ func TestExecResumeWorkflow_SkipsStaleRebaseHumanRequiredWithResumeTarget(t *tes
 	got, gerr := tasks.GetTask("t5")
 	if gerr != nil {
 		t.Fatal(gerr)
+		panic("unreachable")
 	}
 	if got.Status == "human-required" {
 		t.Fatalf("status = %q, must not re-park mid-stream resume on the stale rebase-blocked reason", got.Status)
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != "resume-target" {
 		t.Fatalf("workflow = %+v, want resumed resume-target", got.Workflow)
+		panic("unreachable")
 	}
 	if got.Workflow.CurrentStep != "resume_here" {
 		t.Fatalf("current step = %q, want captured resume_here step", got.Workflow.CurrentStep)

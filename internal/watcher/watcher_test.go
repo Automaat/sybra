@@ -60,6 +60,7 @@ func TestStartInvalidDir(t *testing.T) {
 	err := w.Start(t.Context())
 	if err == nil {
 		t.Fatal("expected error for nonexistent dir")
+		panic("unreachable")
 	}
 }
 
@@ -77,12 +78,14 @@ func TestStartAndEmitCreate(t *testing.T) {
 	w := New(dir, emit, discardLogger())
 	if err := w.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
+		panic("unreachable")
 	}
 	waitReady(t, w)
 
 	mdPath := filepath.Join(dir, "test-task.md")
 	if err := os.WriteFile(mdPath, []byte("# Task"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	select {
@@ -102,6 +105,7 @@ func TestStartAndEmitDelete(t *testing.T) {
 	mdPath := filepath.Join(dir, "to-delete.md")
 	if err := os.WriteFile(mdPath, []byte("# Delete me"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got := make(chan string, 10)
@@ -115,11 +119,13 @@ func TestStartAndEmitDelete(t *testing.T) {
 	w := New(dir, emit, discardLogger())
 	if err := w.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
+		panic("unreachable")
 	}
 	waitReady(t, w)
 
 	if err := os.Remove(mdPath); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	timeout := time.After(2 * time.Second)
@@ -150,11 +156,13 @@ func TestNonMarkdownIgnored(t *testing.T) {
 	w := New(dir, emit, discardLogger())
 	if err := w.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
+		panic("unreachable")
 	}
 	waitReady(t, w)
 
 	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Wait past debounce window; any event arriving is a failure.
@@ -175,6 +183,7 @@ func TestContextCancellation(t *testing.T) {
 	w := New(dir, func(string, any) {}, discardLogger())
 	if err := w.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
+		panic("unreachable")
 	}
 
 	select {
@@ -201,6 +210,7 @@ func TestDebounce(t *testing.T) {
 	w := New(dir, emit, discardLogger())
 	if err := w.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
+		panic("unreachable")
 	}
 	waitReady(t, w)
 
@@ -208,6 +218,7 @@ func TestDebounce(t *testing.T) {
 	for range 5 {
 		if err := os.WriteFile(mdPath, []byte("data"), 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
@@ -270,6 +281,7 @@ func TestDebounceDoesNotDropTrailingWrite(t *testing.T) {
 	w := New(dir, emit, discardLogger())
 	if err := w.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
+		panic("unreachable")
 	}
 	waitReady(t, w)
 
@@ -278,6 +290,7 @@ func TestDebounceDoesNotDropTrailingWrite(t *testing.T) {
 	// First write — fills the debounce slot for this file.
 	if err := os.WriteFile(mdPath, []byte("v1"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Wait until the first event has been observed so the debounce slot
@@ -296,6 +309,7 @@ func TestDebounceDoesNotDropTrailingWrite(t *testing.T) {
 	secondWriteAt := time.Now()
 	if err := os.WriteFile(mdPath, []byte("v2-final-content"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Poll for the deferred emission instead of blindly sleeping past the
@@ -361,11 +375,13 @@ func TestAtomicRenameOverExistingEmitsUpdate(t *testing.T) {
 	target := filepath.Join(dir, "t.md")
 	if err := os.WriteFile(target, []byte("v1"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	w := New(dir, emit, discardLogger())
 	if err := w.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
+		panic("unreachable")
 	}
 	waitReady(t, w)
 
@@ -376,9 +392,11 @@ func TestAtomicRenameOverExistingEmitsUpdate(t *testing.T) {
 	staging := filepath.Join(dir, "t.md.tmp")
 	if err := os.WriteFile(staging, []byte("v2-atomic-final"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Rename(staging, target); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Poll for the emission instead of blindly sleeping past the 200ms
@@ -428,6 +446,7 @@ func TestWatcherNoGoroutineLeakOnCancel(t *testing.T) {
 		w := New(dir, func(string, any) {}, discardLogger())
 		if err := w.Start(ctx); err != nil {
 			t.Fatalf("Start: %v", err)
+			panic("unreachable")
 		}
 		<-w.Ready()
 		cancel()
@@ -479,6 +498,7 @@ func TestDebounceIsolatesPerFile(t *testing.T) {
 	w := New(dir, emit, discardLogger())
 	if err := w.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
+		panic("unreachable")
 	}
 	waitReady(t, w)
 
@@ -489,11 +509,13 @@ func TestDebounceIsolatesPerFile(t *testing.T) {
 	for range 3 {
 		if err := os.WriteFile(a, []byte("a"), 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 	for range 3 {
 		if err := os.WriteFile(b, []byte("b"), 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
@@ -542,15 +564,18 @@ func TestReconcileRecoversFromStaleKnownState(t *testing.T) {
 	tracked := filepath.Join(dir, "tracked.md")
 	if err := os.WriteFile(tracked, []byte("v1"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	untouched := filepath.Join(dir, "untouched.md")
 	if err := os.WriteFile(untouched, []byte("v1"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	newFile := filepath.Join(dir, "new.md")
 	gone := filepath.Join(dir, "gone.md")
 	if err := os.WriteFile(gone, []byte("v1"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	w := New(dir, emit, discardLogger())
@@ -567,12 +592,15 @@ func TestReconcileRecoversFromStaleKnownState(t *testing.T) {
 	time.Sleep(10 * time.Millisecond) // ensure a distinguishable mtime
 	if err := os.WriteFile(tracked, []byte("v2-missed-by-fsnotify"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(newFile, []byte("v1"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Remove(gone); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	w.reconcile(known, nil, true)
@@ -616,12 +644,14 @@ func TestReconcilePassEventuallyFiresOnShortInterval(t *testing.T) {
 	w.reconcileInterval = 20 * time.Millisecond
 	if err := w.Start(t.Context()); err != nil {
 		t.Fatalf("Start: %v", err)
+		panic("unreachable")
 	}
 	waitReady(t, w)
 
 	mdPath := filepath.Join(dir, "poll-created.md")
 	if err := os.WriteFile(mdPath, []byte("v1"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if !pollUntil(1*time.Second, 10*time.Millisecond, func() bool {
@@ -659,6 +689,7 @@ func TestReconcileSkipsFailedScan(t *testing.T) {
 	for _, name := range []string{"a.md", "b.md", "c.md"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("v1"), 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
@@ -672,6 +703,7 @@ func TestReconcileSkipsFailedScan(t *testing.T) {
 	// unreadable directory rather than a legitimately empty one.
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	w.reconcile(known, nil, true)
@@ -707,6 +739,7 @@ func TestReconcileEstablishesBaselineAfterInitialScanFailure(t *testing.T) {
 	for _, name := range []string{"a.md", "b.md"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("v1"), 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 

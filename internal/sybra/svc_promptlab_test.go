@@ -29,9 +29,11 @@ func setupPromptLabService(t *testing.T) *PromptLabService {
 	wfStore, err := workflow.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := workflow.SyncBuiltins(wfStore); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	engine := workflow.NewTestEngine(
 		wfStore,
@@ -46,10 +48,12 @@ func setupPromptLabService(t *testing.T) *PromptLabService {
 		projects, err = project.NewStore(t.TempDir(), t.TempDir())
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 	if _, err := projects.CreateMeta("https://github.com/Automaat/sybra.git", project.ProjectTypePet); err != nil {
 		t.Fatalf("CreateMeta: %v", err)
+		panic("unreachable")
 	}
 
 	return &PromptLabService{
@@ -73,6 +77,7 @@ func createProposal(t *testing.T, svc *PromptLabService, status task.Status, tag
 	created, err := svc.tasks.CreateFull("Tighten instructions for role test-runner", "body", task.AgentModeHeadless, init)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return created
 }
@@ -90,6 +95,7 @@ func TestPromptLabService_ApproveProposal(t *testing.T) {
 	got, err := svc.ApproveProposal(created.ID)
 	if err != nil {
 		t.Fatalf("ApproveProposal: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want in-progress", got.Status)
@@ -107,6 +113,7 @@ func TestPromptLabService_ApproveProposal(t *testing.T) {
 	entries, err := svc.artifacts.ReadProgress(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(entries) != 1 || entries[0].Kind != artifact.ProgressKindDecision {
 		t.Fatalf("progress entries = %+v, want one decision entry", entries)
@@ -124,11 +131,13 @@ func TestPromptLabService_autoApprove(t *testing.T) {
 
 	if err := svc.autoApprove(created.ID); err != nil {
 		t.Fatalf("autoApprove: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := svc.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want in-progress", got.Status)
@@ -140,6 +149,7 @@ func TestPromptLabService_autoApprove(t *testing.T) {
 	entries, err := svc.artifacts.ReadProgress(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(entries) != 1 || entries[0].Message != autoApprovedProgressNote {
 		t.Fatalf("progress entries = %+v, want the auto-approved note for audit", entries)
@@ -159,10 +169,12 @@ func TestPromptLabService_autoApprove_StaleStatusGuard(t *testing.T) {
 
 			if err := svc.autoApprove(created.ID); err == nil {
 				t.Fatal("autoApprove: want error for non-pending status")
+				panic("unreachable")
 			}
 			after, err := svc.tasks.Get(created.ID)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if after.Status != status {
 				t.Fatalf("status mutated to %q, want unchanged %q", after.Status, status)
@@ -182,16 +194,19 @@ func TestPromptLabService_ApproveProposal_NoProjectFailsEarly(t *testing.T) {
 	svc := setupPromptLabService(t)
 	if err := svc.projects.Delete(promptLabProjectID); err != nil {
 		t.Fatalf("Delete: %v", err)
+		panic("unreachable")
 	}
 	created := createProposal(t, svc, task.StatusHumanRequired, []string{promptlab.ProposalTag, "requires-human"})
 
 	if _, err := svc.ApproveProposal(created.ID); err == nil {
 		t.Fatal("ApproveProposal: want error when no project can be assigned")
+		panic("unreachable")
 	}
 
 	after, err := svc.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if after.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want human-required (no mutation)", after.Status)
@@ -209,6 +224,7 @@ func TestPromptLabService_ApproveProposal_BackfillsSybraProject(t *testing.T) {
 	got, err := svc.ApproveProposal(created.ID)
 	if err != nil {
 		t.Fatalf("ApproveProposal: %v", err)
+		panic("unreachable")
 	}
 	if got.ProjectID != promptLabProjectID {
 		t.Fatalf("ProjectID = %q, want %q", got.ProjectID, promptLabProjectID)
@@ -223,6 +239,7 @@ func TestPromptLabService_RejectProposal_WithFeedback(t *testing.T) {
 	got, err := svc.RejectProposal(created.ID, "not worth it")
 	if err != nil {
 		t.Fatalf("RejectProposal: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusCancelled {
 		t.Fatalf("status = %q, want cancelled", got.Status)
@@ -237,6 +254,7 @@ func TestPromptLabService_RejectProposal_WithFeedback(t *testing.T) {
 	entries, err := svc.artifacts.ReadProgress(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(entries) != 1 || entries[0].Kind != artifact.ProgressKindBlocker || entries[0].Message != "not worth it" {
 		t.Fatalf("progress entries = %+v, want one blocker entry with feedback", entries)
@@ -251,6 +269,7 @@ func TestPromptLabService_RejectProposal_EmptyFeedback(t *testing.T) {
 	got, err := svc.RejectProposal(created.ID, "")
 	if err != nil {
 		t.Fatalf("RejectProposal: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusCancelled {
 		t.Fatalf("status = %q, want cancelled", got.Status)
@@ -262,6 +281,7 @@ func TestPromptLabService_RejectProposal_EmptyFeedback(t *testing.T) {
 	entries, err := svc.artifacts.ReadProgress(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(entries) != 1 || entries[0].Message != rejectedNoFeedbackReason {
 		t.Fatalf("progress entries = %+v, want sentinel-logged blocker entry", entries)
@@ -276,6 +296,7 @@ func TestPromptLabService_RejectProposal_WhitespaceOnlyFeedback(t *testing.T) {
 	got, err := svc.RejectProposal(created.ID, "   \n\t  ")
 	if err != nil {
 		t.Fatalf("RejectProposal: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusCancelled {
 		t.Fatalf("status = %q, want cancelled", got.Status)
@@ -287,6 +308,7 @@ func TestPromptLabService_RejectProposal_WhitespaceOnlyFeedback(t *testing.T) {
 	entries, err := svc.artifacts.ReadProgress(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(entries) != 1 || entries[0].Message != rejectedNoFeedbackReason {
 		t.Fatalf("progress entries = %+v, want sentinel-logged blocker entry", entries)
@@ -303,10 +325,12 @@ func TestPromptLabService_StaleStatusGuard(t *testing.T) {
 
 			if _, err := svc.ApproveProposal(created.ID); err == nil {
 				t.Fatal("ApproveProposal: want error for non-pending status")
+				panic("unreachable")
 			}
 			after, err := svc.tasks.Get(created.ID)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if after.Status != status {
 				t.Fatalf("status mutated to %q, want unchanged %q", after.Status, status)
@@ -314,10 +338,12 @@ func TestPromptLabService_StaleStatusGuard(t *testing.T) {
 
 			if _, err := svc.RejectProposal(created.ID, "feedback"); err == nil {
 				t.Fatal("RejectProposal: want error for non-pending status")
+				panic("unreachable")
 			}
 			after, err = svc.tasks.Get(created.ID)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if after.Status != status {
 				t.Fatalf("status mutated to %q, want unchanged %q", after.Status, status)
@@ -333,10 +359,12 @@ func TestPromptLabService_MissingTagGuard(t *testing.T) {
 
 	if _, err := svc.ApproveProposal(created.ID); err == nil {
 		t.Fatal("ApproveProposal: want error for missing prompt-lab-proposal tag")
+		panic("unreachable")
 	}
 	after, err := svc.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if after.Status != task.StatusHumanRequired {
 		t.Fatalf("status mutated to %q, want unchanged", after.Status)
@@ -350,13 +378,16 @@ func TestPromptLabService_DoubleApprove_Idempotency(t *testing.T) {
 
 	if _, err := svc.ApproveProposal(created.ID); err != nil {
 		t.Fatalf("first ApproveProposal: %v", err)
+		panic("unreachable")
 	}
 	if _, err := svc.ApproveProposal(created.ID); err == nil {
 		t.Fatal("second ApproveProposal: want error, task is no longer pending")
+		panic("unreachable")
 	}
 	after, err := svc.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if after.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want in-progress (unchanged by the rejected re-approve)", after.Status)
@@ -372,6 +403,7 @@ func TestPromptLabService_AppendProgressFailure_BestEffort(t *testing.T) {
 	badRoot, err := os.CreateTemp(t.TempDir(), "not-a-dir")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	badRoot.Close()
 	svc.artifacts = artifact.New(badRoot.Name())
@@ -381,6 +413,7 @@ func TestPromptLabService_AppendProgressFailure_BestEffort(t *testing.T) {
 	got, err := svc.ApproveProposal(created.ID)
 	if err != nil {
 		t.Fatalf("ApproveProposal: %v, want nil error despite progress-log failure", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want in-progress (status change not rolled back)", got.Status)
@@ -410,9 +443,11 @@ func TestPromptLabDispatchStarted_RequiresActiveWorkflowForAlreadyActive(t *test
 	}
 	if !svc.promptLabDispatchStarted(created.ID, "prompt-lab-author", nil) {
 		t.Fatal("matched workflow without error should count as started")
+		panic("unreachable")
 	}
 	if svc.promptLabDispatchStarted(created.ID, "", nil) {
 		t.Fatal("no match and no error should not count as started")
+		panic("unreachable")
 	}
 	if svc.promptLabDispatchStarted(created.ID, "", errors.New("boom")) {
 		t.Fatal("ordinary dispatch error should not count as started")

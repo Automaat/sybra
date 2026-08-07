@@ -141,6 +141,7 @@ func TestPRIssueKindConstants_MatchBuiltinWorkflowTriggers(t *testing.T) {
 			raw, err := os.ReadFile(tc.yamlFile)
 			if err != nil {
 				t.Fatalf("read %s: %v", tc.yamlFile, err)
+				panic("unreachable")
 			}
 			if !strings.Contains(string(raw), tc.needle) {
 				t.Errorf("%s missing trigger %q — dispatch would not match", tc.yamlFile, tc.needle)

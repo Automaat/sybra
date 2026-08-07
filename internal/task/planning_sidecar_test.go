@@ -88,20 +88,24 @@ func TestPlanningSidecarStoreReadWriteDelete(t *testing.T) {
 			store, err := NewStore(dir)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			sidecar := tc.store(store)
 
 			if content, err := sidecar.Read("nonexistent"); err != nil || content != "" {
 				t.Fatalf("Read missing = (%q, %v), want (%q, nil)", content, err, "")
+				panic("unreachable")
 			}
 
 			want := "# " + tc.name + "\n\ncontent"
 			if err := sidecar.Write("task-abc", want); err != nil {
 				t.Fatalf("Write: %v", err)
+				panic("unreachable")
 			}
 			got, err := sidecar.Read("task-abc")
 			if err != nil {
 				t.Fatalf("Read: %v", err)
+				panic("unreachable")
 			}
 			if got != want {
 				t.Errorf("Read = %q, want %q", got, want)
@@ -112,19 +116,24 @@ func TestPlanningSidecarStoreReadWriteDelete(t *testing.T) {
 
 			if err := sidecar.Delete("task-abc"); err != nil {
 				t.Fatalf("Delete: %v", err)
+				panic("unreachable")
 			}
 			if content, err := sidecar.Read("task-abc"); err != nil || content != "" {
 				t.Fatalf("Read after delete = (%q, %v), want (%q, nil)", content, err, "")
+				panic("unreachable")
 			}
 			if err := sidecar.Delete("task-abc"); err != nil {
 				t.Fatalf("Delete missing should not error, got %v", err)
+				panic("unreachable")
 			}
 
 			if err := sidecar.Write("task-clear", "initial"); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if err := sidecar.Write("task-clear", ""); err != nil {
 				t.Fatalf("Write empty: %v", err)
+				panic("unreachable")
 			}
 			if path := filepath.Join(dir, "task-clear"+tc.suffix); fileExists(path) {
 				t.Errorf("sidecar %s should be removed by an empty write", path)
@@ -144,6 +153,7 @@ func TestPlanningSidecarStoreErrorsNameTheSidecar(t *testing.T) {
 			store, err := NewStore(dir)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			sidecar := tc.store(store)
 
@@ -152,6 +162,7 @@ func TestPlanningSidecarStoreErrorsNameTheSidecar(t *testing.T) {
 			blocked := filepath.Join(dir, "task-err"+tc.suffix)
 			if err := os.MkdirAll(filepath.Join(blocked, "child"), 0o755); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			_, readErr := sidecar.Read("task-err")
@@ -166,6 +177,7 @@ func assertErrPrefix(t *testing.T, op string, err error, want string) {
 	t.Helper()
 	if err == nil {
 		t.Fatalf("%s: want an error naming %q, got nil", op, want)
+		panic("unreachable")
 	}
 	if !strings.HasPrefix(err.Error(), want+": ") {
 		t.Errorf("%s error = %q, want prefix %q", op, err, want+": ")
@@ -181,10 +193,12 @@ func TestStoreRoundTripsEachSidecar(t *testing.T) {
 			store, err := NewStore(dir)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			created, err := store.Create("Sidecar task", "body", "headless")
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			want := "# " + tc.name + "\n\nfindings"
@@ -193,6 +207,7 @@ func TestStoreRoundTripsEachSidecar(t *testing.T) {
 			updated, err := store.Update(created.ID, update)
 			if err != nil {
 				t.Fatalf("Update: %v", err)
+				panic("unreachable")
 			}
 			if got := tc.get(updated); got != want {
 				t.Errorf("Update returned %q, want %q", got, want)
@@ -202,6 +217,7 @@ func TestStoreRoundTripsEachSidecar(t *testing.T) {
 			data, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatalf("sidecar not written: %v", err)
+				panic("unreachable")
 			}
 			if string(data) != want {
 				t.Errorf("sidecar file = %q, want %q", string(data), want)
@@ -210,6 +226,7 @@ func TestStoreRoundTripsEachSidecar(t *testing.T) {
 			got, err := store.Get(created.ID)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if v := tc.get(got); v != want {
 				t.Errorf("Get = %q, want %q", v, want)
@@ -218,6 +235,7 @@ func TestStoreRoundTripsEachSidecar(t *testing.T) {
 			listed, err := store.List()
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if len(listed) != 1 {
 				t.Fatalf("List length = %d, want 1", len(listed))
@@ -228,6 +246,7 @@ func TestStoreRoundTripsEachSidecar(t *testing.T) {
 
 			if err := store.Delete(created.ID); err != nil {
 				t.Fatalf("Delete: %v", err)
+				panic("unreachable")
 			}
 			if fileExists(path) {
 				t.Errorf("sidecar %s should be removed with the task", path)
@@ -247,10 +266,12 @@ func TestStoreUpdateGetListPlanningSidecars(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	created, err := store.Create("Plan artifacts", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	research := "# Research\n\nFacts."
 	decisions := "# Decisions\n\nNone."
@@ -265,6 +286,7 @@ func TestStoreUpdateGetListPlanningSidecars(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Update planning sidecars: %v", err)
+		panic("unreachable")
 	}
 	if updated.PlanResearch != research || updated.PlanDecisions != decisions || updated.PlanBrief != brief || updated.PlanContract != contract {
 		t.Fatalf("updated sidecars = (%q, %q, %q, %q)", updated.PlanResearch, updated.PlanDecisions, updated.PlanBrief, updated.PlanContract)
@@ -273,6 +295,7 @@ func TestStoreUpdateGetListPlanningSidecars(t *testing.T) {
 	got, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.PlanResearch != research {
 		t.Errorf("Get PlanResearch = %q, want %q", got.PlanResearch, research)
@@ -290,6 +313,7 @@ func TestStoreUpdateGetListPlanningSidecars(t *testing.T) {
 	listed, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(listed) != 1 {
 		t.Fatalf("List length = %d, want 1", len(listed))
@@ -305,13 +329,16 @@ func TestStoreSequentialPlanningSidecarUpdatesPreserveWarmListCache(t *testing.T
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	created, err := store.Create("Warm cache", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.List(); err != nil {
 		t.Fatalf("warm list cache: %v", err)
+		panic("unreachable")
 	}
 
 	research := "# Research\n"
@@ -328,12 +355,14 @@ func TestStoreSequentialPlanningSidecarUpdatesPreserveWarmListCache(t *testing.T
 	} {
 		if _, err := store.Update(created.ID, update); err != nil {
 			t.Fatalf("Update: %v", err)
+			panic("unreachable")
 		}
 	}
 
 	listed, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(listed) != 1 {
 		t.Fatalf("List length = %d, want 1", len(listed))
@@ -350,10 +379,12 @@ func TestStoreDeleteCascadesPlanningSidecars(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	created, err := store.Create("Delete sidecars", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.Update(created.ID, Update{
 		PlanResearch:  Ptr("# Research\n"),
@@ -365,6 +396,7 @@ func TestStoreDeleteCascadesPlanningSidecars(t *testing.T) {
 	}
 	if err := store.Delete(created.ID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, suffix := range []string{".plan-research.md", ".plan-decisions.md", ".plan-brief.md", ".plan-contract.json"} {
 		path := filepath.Join(dir, created.ID+suffix)

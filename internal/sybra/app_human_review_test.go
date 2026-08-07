@@ -36,16 +36,19 @@ func setupUnblockedRecoveryWorktree(t *testing.T, branch string) string {
 	bare := filepath.Join(t.TempDir(), "origin.git")
 	if out, err := exec.Command("git", "init", "--bare", bare).CombinedOutput(); err != nil {
 		t.Fatalf("git init --bare: %v: %s", err, out)
+		panic("unreachable")
 	}
 	clone := t.TempDir()
 	if out, err := exec.Command("git", "clone", bare, clone).CombinedOutput(); err != nil {
 		t.Fatalf("git clone: %v: %s", err, out)
+		panic("unreachable")
 	}
 	runGit := func(args ...string) {
 		t.Helper()
 		full := append([]string{"-C", clone}, args...)
 		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	runGit("config", "user.email", "test@test.com")
@@ -54,6 +57,7 @@ func setupUnblockedRecoveryWorktree(t *testing.T, branch string) string {
 	runGit("checkout", "-b", branch)
 	if err := os.WriteFile(filepath.Join(clone, "file.txt"), []byte("initial"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	runGit("add", ".")
 	runGit("commit", "-m", "initial")
@@ -86,6 +90,7 @@ func newReviewTestEnv(t *testing.T) (*humanReviewHandler, *task.Manager, func())
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, task.EmitterFunc(func(string, any) {}))
 	cfg := &config.Config{}
@@ -111,6 +116,7 @@ func TestVerdictDecisionIsSharedParserType(t *testing.T) {
 	got, source, err := verdict.Parse(input)
 	if err != nil {
 		t.Fatalf("verdict.Parse: %v", err)
+		panic("unreachable")
 	}
 	if source != verdict.SourceFence {
 		t.Errorf("source: got %s want %s", source, verdict.SourceFence)
@@ -229,6 +235,7 @@ func TestHumanReviewSpawn_HoldsDispatchClaimAcrossPreparationAndRun(t *testing.T
 	tk, err := tasks.Create("recover with claim", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tk, err = tasks.UpdateMap(tk.ID, map[string]any{
 		"project_id": "Automaat/sybra",
@@ -236,6 +243,7 @@ func TestHumanReviewSpawn_HoldsDispatchClaimAcrossPreparationAndRun(t *testing.T
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	held := false
@@ -277,6 +285,7 @@ func TestHumanReviewSpawn_ClaimConflictRetriesAfterRelease(t *testing.T) {
 	auditLog, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = auditLog.Close() })
 	h.audit = auditLog
@@ -284,6 +293,7 @@ func TestHumanReviewSpawn_ClaimConflictRetriesAfterRelease(t *testing.T) {
 	tk, err := tasks.Create("claim conflict", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
 		"project_id": "Automaat/sybra",
@@ -307,6 +317,7 @@ func TestHumanReviewSpawn_ClaimConflictRetriesAfterRelease(t *testing.T) {
 		}
 		if scheduled != nil {
 			t.Fatal("claim conflict scheduled more than one retry")
+			panic("unreachable")
 		}
 		scheduled = fn
 	}
@@ -335,6 +346,7 @@ func TestHumanReviewSpawn_ClaimConflictRetriesAfterRelease(t *testing.T) {
 	}
 	if scheduled == nil {
 		t.Fatal("claim conflict did not schedule a retry")
+		panic("unreachable")
 	}
 	events, err := audit.Read(auditDir, audit.Query{
 		Since: time.Now().Add(-time.Minute),
@@ -342,6 +354,7 @@ func TestHumanReviewSpawn_ClaimConflictRetriesAfterRelease(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, event := range events {
 		if event.Type == audit.EventHumanReviewSkipped {
@@ -379,6 +392,7 @@ func TestHumanReviewSpawn_ClaimConflictRetryIsBounded(t *testing.T) {
 	tk, err := tasks.Create("persistent claim conflict", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
 		"project_id": "Automaat/sybra",
@@ -432,6 +446,7 @@ func TestBuildPrompt_NoFencedVerdictInstruction(t *testing.T) {
 	tk, err := tasks.Create("Some task", "body", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 
 	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
@@ -456,6 +471,7 @@ func TestBuildPrompt_RequiresVerificationBeforeTransient(t *testing.T) {
 	tk, err := tasks.Create("Some task", "body", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 
 	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
@@ -477,6 +493,7 @@ func TestBuildPrompt_DraftApproveRequiresHumanSubmission(t *testing.T) {
 	tk, err := tasks.Create("Review draft task", "body", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	reason := "Draft review ready — verify & submit on GitHub"
 	tk, err = tasks.Update(tk.ID, task.Update{
@@ -489,6 +506,7 @@ func TestBuildPrompt_DraftApproveRequiresHumanSubmission(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("seed draft-review task: %v", err)
+		panic("unreachable")
 	}
 
 	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
@@ -519,6 +537,7 @@ func TestBuildPrompt_RequiresRecheckingSupersededFailures(t *testing.T) {
 	tk, err := tasks.Create("Some task", "body", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 
 	dir, _ := humanReviewDispatchDir(tk, h.cfg.HumanReview.SybraRepoDir)
@@ -632,6 +651,7 @@ func TestOnComplete_HumanVerdict_AppendsNote(t *testing.T) {
 	tk, err := tasks.Create("Refactor billing", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
@@ -650,6 +670,7 @@ func TestOnComplete_HumanVerdict_AppendsNote(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status: got %q want human-required", got.Status)
@@ -676,6 +697,7 @@ func TestOnComplete_StaleHumanVerdictMarksRendered(t *testing.T) {
 	tk, err := tasks.Create("Prompt Lab approval", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
 		t.Fatalf("advance task: %v", err)
@@ -699,6 +721,7 @@ func TestOnComplete_StaleHumanVerdictMarksRendered(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Errorf("status: got %q want in-progress", got.Status)
@@ -722,6 +745,7 @@ func TestOnComplete_UnblockedVerdict_NotesAndDoesNotBlock(t *testing.T) {
 	tk, err := tasks.Create("Fix flaky test", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusReadyPR)}); err != nil {
 		t.Fatalf("advance to ready-pr: %v", err)
@@ -740,6 +764,7 @@ func TestOnComplete_UnblockedVerdict_NotesAndDoesNotBlock(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusReadyPR {
 		t.Errorf("status: got %q want ready-pr (unblocked must not re-block or revert the agent's advance)", got.Status)
@@ -771,6 +796,7 @@ func TestOnComplete_UnblockedVerdict_TerminalResultWinsOverFuzzyAssistantProse(t
 	tk, err := tasks.Create("Fix flaky test", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusReadyPR)}); err != nil {
 		t.Fatalf("advance to ready-pr: %v", err)
@@ -795,6 +821,7 @@ func TestOnComplete_UnblockedVerdict_TerminalResultWinsOverFuzzyAssistantProse(t
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusReadyPR {
 		t.Errorf("status: got %q want ready-pr (unblocked must not re-block or revert the agent's advance)", got.Status)
@@ -813,6 +840,7 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 	tk, err := tasks.Create("Recover task", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -851,6 +879,7 @@ func TestOnComplete_UnblockedVerdict_AppliesRecoverableAction(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if dispatchedTarget != string(task.StatusReadyReview) {
 		t.Fatalf("dispatch target = %q, want %q", dispatchedTarget, task.StatusReadyReview)
@@ -877,6 +906,7 @@ func TestPrepareRecoveryDispatch_InReviewWithoutPRFallsBackToReadyReview(t *test
 	tk, err := tasks.Create("Recover pre-PR review", "body", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -886,11 +916,13 @@ func TestPrepareRecoveryDispatch_InReviewWithoutPRFallsBackToReadyReview(t *test
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := h.prepareRecoveryDispatch(tk, task.StatusInReview)
 	if err != nil {
 		t.Fatalf("prepareRecoveryDispatch: %v", err)
+		panic("unreachable")
 	}
 	if got != task.StatusReadyReview {
 		t.Fatalf("target = %q, want %q", got, task.StatusReadyReview)
@@ -910,6 +942,7 @@ func TestRecoverStrandedUnblockedTasks_ReplaysLegacyReasonWithoutConfiguredWorkt
 	tk, err := tasks.Create("Recover old missing worktree park", "body", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	reason := `circuit breaker: agent start failed: start agent: agent.Run: Dir "/tmp/sybra/worktrees/task-1" not accessible: stat /tmp/sybra/worktrees/task-1: no such file or directory (tripped after 3 dispatch failures for step "fix_review" within 15m0s)`
 	tk, err = tasks.Update(tk.ID, task.Update{
@@ -922,6 +955,7 @@ func TestRecoverStrandedUnblockedTasks_ReplaysLegacyReasonWithoutConfiguredWorkt
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 	if err := tasks.AddRun(tk.ID, task.AgentRun{
 		AgentID:         "hr-rendered",
@@ -952,6 +986,7 @@ func TestRecoverStrandedUnblockedTasks_ReplaysLegacyReasonWithoutConfiguredWorkt
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusReadyReview {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyReview)
@@ -967,6 +1002,7 @@ func TestRecoverStrandedUnblockedTasks_DoneActionLandsMergedPR(t *testing.T) {
 	tk, err := tasks.Create("Recover rendered merged PR", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	reason := `circuit breaker: agent start failed: start agent: agent.Run: Dir "/tmp/sybra/worktrees/task-1" not accessible: stat /tmp/sybra/worktrees/task-1: no such file or directory`
 	tk, err = tasks.Update(tk.ID, task.Update{
@@ -979,6 +1015,7 @@ func TestRecoverStrandedUnblockedTasks_DoneActionLandsMergedPR(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 	if err := tasks.AddRun(tk.ID, task.AgentRun{
 		AgentID:         agentID,
@@ -1028,6 +1065,7 @@ func TestRecoverStrandedUnblockedTasks_DoneActionLandsMergedPR(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusDone {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
@@ -1052,6 +1090,7 @@ func TestRecoverStrandedUnblockedTasks_DoneActionRejectsUnmergedPR(t *testing.T)
 	tk, err := tasks.Create("Recover rendered closed PR", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	reason := `circuit breaker: agent start failed: start agent: agent.Run: Dir "/tmp/sybra/worktrees/task-1" not accessible: stat /tmp/sybra/worktrees/task-1: no such file or directory`
 	tk, err = tasks.Update(tk.ID, task.Update{
@@ -1064,6 +1103,7 @@ func TestRecoverStrandedUnblockedTasks_DoneActionRejectsUnmergedPR(t *testing.T)
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 	if err := tasks.AddRun(tk.ID, task.AgentRun{
 		AgentID:         agentID,
@@ -1097,6 +1137,7 @@ func TestRecoverStrandedUnblockedTasks_DoneActionRejectsUnmergedPR(t *testing.T)
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
@@ -1117,6 +1158,7 @@ func TestRecoverStrandedUnblockedTasks_ReplaysUnrenderedVerdict(t *testing.T) {
 	tk, err := tasks.Create("Recover old missing worktree park", "body", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	reason := `circuit breaker: agent start failed: start agent: agent.Run: Dir "/tmp/sybra/worktrees/task-1" not accessible: stat /tmp/sybra/worktrees/task-1: no such file or directory`
 	tk, err = tasks.Update(tk.ID, task.Update{
@@ -1129,6 +1171,7 @@ func TestRecoverStrandedUnblockedTasks_ReplaysUnrenderedVerdict(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 	if err := tasks.AddRun(tk.ID, task.AgentRun{
 		AgentID:         "hr-unrendered",
@@ -1157,6 +1200,7 @@ func TestRecoverStrandedUnblockedTasks_ReplaysUnrenderedVerdict(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusReadyReview {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyReview)
@@ -1174,6 +1218,7 @@ func TestRecoverStrandedUnblockedTasks_DoesNotRequireLegacyReason(t *testing.T) 
 	tk, err := tasks.Create("Recover verification park", "body", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -1185,6 +1230,7 @@ func TestRecoverStrandedUnblockedTasks_DoesNotRequireLegacyReason(t *testing.T) 
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 	if err := tasks.AddRun(tk.ID, task.AgentRun{
 		AgentID: "hr-storage", Role: string(agent.RoleHumanReview), State: string(agent.StateStopped),
@@ -1209,6 +1255,7 @@ func TestRecoverStrandedUnblockedTasks_DoesNotRequireLegacyReason(t *testing.T) 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
@@ -1223,6 +1270,7 @@ func TestRecoverStrandedUnblockedTasks_LatestVerdictWins(t *testing.T) {
 	tk, err := tasks.Create("Do not replay stale verdict", "body", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -1233,6 +1281,7 @@ func TestRecoverStrandedUnblockedTasks_LatestVerdictWins(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 	for _, run := range []task.AgentRun{
 		{
@@ -1248,6 +1297,7 @@ func TestRecoverStrandedUnblockedTasks_LatestVerdictWins(t *testing.T) {
 	} {
 		if err := tasks.AddRun(tk.ID, run); err != nil {
 			t.Fatalf("add run %s: %v", run.AgentID, err)
+			panic("unreachable")
 		}
 	}
 	h.dispatchFromHumanRequired = func(string, string, string, string) (task.Task, error) {
@@ -1260,6 +1310,7 @@ func TestRecoverStrandedUnblockedTasks_LatestVerdictWins(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
@@ -1326,10 +1377,12 @@ func TestRecoverStrandedUnblockedTasks_DirtyWorktreeStaysParked(t *testing.T) {
 	dir := setupUnblockedRecoveryWorktree(t, "fix/stranded-dirty")
 	if err := os.WriteFile(filepath.Join(dir, "dirty.txt"), []byte("not committed"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tk, err := tasks.Create("Keep dirty recovery parked", "body", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -1341,6 +1394,7 @@ func TestRecoverStrandedUnblockedTasks_DirtyWorktreeStaysParked(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 	if err := tasks.AddRun(tk.ID, task.AgentRun{
 		AgentID: "hr-dirty", Role: string(agent.RoleHumanReview), State: string(agent.StateStopped),
@@ -1358,10 +1412,12 @@ func TestRecoverStrandedUnblockedTasks_DirtyWorktreeStaysParked(t *testing.T) {
 	first, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get first rejection: %v", err)
+		panic("unreachable")
 	}
 	reopenedStore, err := task.NewStore(filepath.Dir(first.FilePath))
 	if err != nil {
 		t.Fatalf("reopen task store: %v", err)
+		panic("unreachable")
 	}
 	tasks = task.NewManager(reopenedStore, nil)
 	h.tasks = tasks
@@ -1370,6 +1426,7 @@ func TestRecoverStrandedUnblockedTasks_DirtyWorktreeStaysParked(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
@@ -1383,6 +1440,7 @@ func TestRecoverStrandedUnblockedTasks_DirtyWorktreeStaysParked(t *testing.T) {
 
 	if err := os.Remove(filepath.Join(dir, "dirty.txt")); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := tasks.AddRun(tk.ID, task.AgentRun{
 		AgentID: "hr-dirty-repaired", Role: string(agent.RoleHumanReview), State: string(agent.StateStopped),
@@ -1399,6 +1457,7 @@ func TestRecoverStrandedUnblockedTasks_DirtyWorktreeStaysParked(t *testing.T) {
 	got, err = tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get repaired task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusReadyPR {
 		t.Fatalf("new same-summary verdict status = %q, want %q", got.Status, task.StatusReadyPR)
@@ -1413,6 +1472,7 @@ func TestVerifyUnblocked_ConfiguredInvalidWorktreeStaysParked(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, tc := range []struct {
 		name string
@@ -1438,6 +1498,7 @@ func TestOnComplete_UnblockedVerdict_ReadyReviewWithPRResumesInReview(t *testing
 	tk, err := tasks.Create("Recover PR task", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -1477,6 +1538,7 @@ func TestOnComplete_UnblockedVerdict_ReadyReviewWithPRResumesInReview(t *testing
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if dispatchedTarget != string(task.StatusInReview) {
 		t.Fatalf("dispatch target = %q, want %q for linked PR recovery", dispatchedTarget, task.StatusInReview)
@@ -1498,6 +1560,7 @@ func TestOnComplete_UnblockedVerdict_DispatchNoteFailureKeepsVerdictUnrendered(t
 	tk, err := tasks.Create("Recover task", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -1520,6 +1583,7 @@ func TestOnComplete_UnblockedVerdict_DispatchNoteFailureKeepsVerdictUnrendered(t
 	info, err := os.Stat(taskDir)
 	if err != nil {
 		t.Fatalf("stat task dir: %v", err)
+		panic("unreachable")
 	}
 	restoreMode := info.Mode().Perm()
 	h.dispatchFromHumanRequired = func(id, target, reason, _ string) (task.Task, error) {
@@ -1532,6 +1596,7 @@ func TestOnComplete_UnblockedVerdict_DispatchNoteFailureKeepsVerdictUnrendered(t
 		}
 		if err := os.Chmod(taskDir, 0o555); err != nil {
 			t.Fatalf("chmod task dir read-only: %v", err)
+			panic("unreachable")
 		}
 		return updated, nil
 	}
@@ -1546,11 +1611,13 @@ func TestOnComplete_UnblockedVerdict_DispatchNoteFailureKeepsVerdictUnrendered(t
 
 	if err := os.Chmod(taskDir, restoreMode); err != nil {
 		t.Fatalf("restore task dir mode: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusReadyReview {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyReview)
@@ -1575,6 +1642,7 @@ func TestOnComplete_UnblockedVerdict_ReadyPRWithoutPRStaysReadyPR(t *testing.T) 
 	tk, err := tasks.Create("Recover PR fallback task", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -1613,6 +1681,7 @@ func TestOnComplete_UnblockedVerdict_ReadyPRWithoutPRStaysReadyPR(t *testing.T) 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if dispatchedTarget != string(task.StatusReadyPR) {
 		t.Fatalf("dispatch target = %q, want %q for no-PR fallback recovery", dispatchedTarget, task.StatusReadyPR)
@@ -1634,10 +1703,12 @@ func TestOnComplete_UnblockedVerdict_DoneActionLandsMergedTask(t *testing.T) {
 	dir := setupUnblockedRecoveryWorktree(t, "feat/merged")
 	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("dirty local change"), 0o644); err != nil {
 		t.Fatalf("dirty file: %v", err)
+		panic("unreachable")
 	}
 	tk, err := tasks.Create("Already merged task", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -1700,6 +1771,7 @@ func TestOnComplete_UnblockedVerdict_DoneActionLandsMergedTask(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusDone {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
@@ -1733,6 +1805,7 @@ func TestOnComplete_UnblockedVerdict_DoneActionPrefersVerdictPR(t *testing.T) {
 	tk, err := tasks.Create("Merged replacement PR task", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -1795,6 +1868,7 @@ func TestOnComplete_UnblockedVerdict_DoneActionPrefersVerdictPR(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusDone {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
@@ -1819,6 +1893,7 @@ func TestOnComplete_UnblockedVerdict_DoneActionPreservesLandingOutcome(t *testin
 	tk, err := tasks.Create("Merged task with human edits", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -1881,6 +1956,7 @@ func TestOnComplete_UnblockedVerdict_DoneActionPreservesLandingOutcome(t *testin
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusDone {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusDone)
@@ -1905,6 +1981,7 @@ func TestOnComplete_UnblockedVerdict_DoneActionRejectsUnmergedPR(t *testing.T) {
 	tk, err := tasks.Create("Closed PR task", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -1951,6 +2028,7 @@ func TestOnComplete_UnblockedVerdict_DoneActionRejectsUnmergedPR(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
@@ -1975,6 +2053,7 @@ func TestOnComplete_UnblockedVerdict_DoneActionFallbackBackfillsPR(t *testing.T)
 	tk, err := tasks.Create("Merged task missing PR link", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -2020,6 +2099,7 @@ func TestOnComplete_UnblockedVerdict_DoneActionFallbackBackfillsPR(t *testing.T)
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if dispatchedTarget != string(task.StatusDone) {
 		t.Fatalf("dispatch target = %q, want %q", dispatchedTarget, task.StatusDone)
@@ -2053,6 +2133,7 @@ func TestOnComplete_UnblockedVerdict_DoneActionFallsBackWhenLandingFails(t *test
 	tk, err := tasks.Create("Merged task with landing error", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -2120,6 +2201,7 @@ func TestOnComplete_UnblockedVerdict_DoneActionFallsBackWhenLandingFails(t *test
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if dispatchedTarget != string(task.StatusDone) {
 		t.Fatalf("dispatch target = %q, want %q", dispatchedTarget, task.StatusDone)
@@ -2150,6 +2232,7 @@ func TestOnComplete_UnblockedVerdict_TamperRerouteAddsBlessTag(t *testing.T) {
 	tk, err := tasks.Create("Recover tamper task", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -2197,6 +2280,7 @@ func TestOnComplete_UnblockedVerdict_TamperRerouteAddsBlessTag(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(got.Tags, workflow.TamperBlessedTag) {
 		t.Fatalf("tags = %v, want %q", got.Tags, workflow.TamperBlessedTag)
@@ -2215,6 +2299,7 @@ func TestOnComplete_UnblockedVerdict_TamperReadyReviewAddsBlessTag(t *testing.T)
 	tk, err := tasks.Create("Recover tamper review task", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -2262,6 +2347,7 @@ func TestOnComplete_UnblockedVerdict_TamperReadyReviewAddsBlessTag(t *testing.T)
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(got.Tags, workflow.TamperBlessedTag) {
 		t.Fatalf("tags = %v, want %q", got.Tags, workflow.TamperBlessedTag)
@@ -2280,6 +2366,7 @@ func TestOnComplete_UnblockedVerdict_FallbackClearsBlocker(t *testing.T) {
 	tk, err := tasks.Create("Recover fallback tamper task", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -2312,6 +2399,7 @@ func TestOnComplete_UnblockedVerdict_FallbackClearsBlocker(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusReadyReview {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusReadyReview)
@@ -2338,6 +2426,7 @@ func TestOnComplete_UnblockedVerdict_CleanPushedBranchTransitions(t *testing.T) 
 	tk, err := tasks.Create("Recover task", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -2365,6 +2454,7 @@ func TestOnComplete_UnblockedVerdict_CleanPushedBranchTransitions(t *testing.T) 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusReadyPR {
 		t.Fatalf("status = %q, want %q (clean, pushed branch must be trusted)", got.Status, task.StatusReadyPR)
@@ -2385,11 +2475,13 @@ func TestOnComplete_UnblockedVerdict_DirtyWorktreeDoesNotTransition(t *testing.T
 	dir := setupUnblockedRecoveryWorktree(t, "fix/dirty")
 	if err := os.WriteFile(filepath.Join(dir, "uncommitted.txt"), []byte("still editing"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	tk, err := tasks.Create("Recover task", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -2417,6 +2509,7 @@ func TestOnComplete_UnblockedVerdict_DirtyWorktreeDoesNotTransition(t *testing.T
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want unchanged %q (dirty worktree must not be trusted)", got.Status, task.StatusHumanRequired)
@@ -2445,10 +2538,12 @@ func TestOnComplete_UnblockedVerdict_UnpushedBranchDoesNotTransition(t *testing.
 		full := append([]string{"-C", dir}, args...)
 		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	if err := os.WriteFile(filepath.Join(dir, "unpushed.txt"), []byte("local only"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	runGit("add", ".")
 	runGit("commit", "-m", "unpushed local commit")
@@ -2456,6 +2551,7 @@ func TestOnComplete_UnblockedVerdict_UnpushedBranchDoesNotTransition(t *testing.
 	tk, err := tasks.Create("Recover task", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -2483,6 +2579,7 @@ func TestOnComplete_UnblockedVerdict_UnpushedBranchDoesNotTransition(t *testing.
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want unchanged %q (unpushed commit must not be trusted)", got.Status, task.StatusHumanRequired)
@@ -2530,6 +2627,7 @@ func TestOnComplete_BareJSONVerdict_HumanDecision(t *testing.T) {
 	tk, err := tasks.Create("Refactor billing", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
@@ -2546,6 +2644,7 @@ func TestOnComplete_BareJSONVerdict_HumanDecision(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status: got %q want human-required", got.Status)
@@ -2569,6 +2668,7 @@ func TestOnComplete_BareJSONVerdict_SybraBug(t *testing.T) {
 	tk, err := tasks.Create("Workflow misfire", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
@@ -2591,6 +2691,7 @@ func TestOnComplete_BareJSONVerdict_SybraBug(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status: got %q want human-required", got.Status)
@@ -2612,6 +2713,7 @@ func TestOnComplete_SybraBugVerdict_DefaultNotesWithoutFiling(t *testing.T) {
 	tk, err := tasks.Create("Workflow misfire", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
@@ -2634,6 +2736,7 @@ func TestOnComplete_SybraBugVerdict_DefaultNotesWithoutFiling(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status: got %q want human-required", got.Status)
@@ -2656,6 +2759,7 @@ func TestOnComplete_SybraBugVerdict_NoteOnly(t *testing.T) {
 	tk, err := tasks.Create("Workflow misfire", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
@@ -2677,6 +2781,7 @@ func TestOnComplete_SybraBugVerdict_NoteOnly(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status: got %q want human-required", got.Status)
@@ -2691,6 +2796,7 @@ func TestOnComplete_SybraBugVerdict_NoteOnly(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
+		panic("unreachable")
 	}
 	if len(all) != 1 {
 		t.Fatalf("note_only should not create tasks; got %d tasks", len(all))
@@ -2706,6 +2812,7 @@ func TestOnComplete_SybraBugVerdict_BlockOnly(t *testing.T) {
 	tk, err := tasks.Create("Workflow misfire", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
@@ -2726,6 +2833,7 @@ func TestOnComplete_SybraBugVerdict_BlockOnly(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Errorf("status: got %q want blocked", got.Status)
@@ -2739,6 +2847,7 @@ func TestOnComplete_SybraBugVerdict_BlockOnly(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
+		panic("unreachable")
 	}
 	if len(all) != 1 {
 		t.Fatalf("block_only should not create tasks; got %d tasks", len(all))
@@ -2764,6 +2873,7 @@ func TestOnComplete_SybraBugVerdict_NoteOnlyScrubsWorkProject(t *testing.T) {
 	tk, err := tasks.Create("Workflow misfire", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		ProjectID:       task.Ptr(workProject),
@@ -2788,6 +2898,7 @@ func TestOnComplete_SybraBugVerdict_NoteOnlyScrubsWorkProject(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	for _, leak := range []string{workProject, "work-owner", "work-repo"} {
 		if strings.Contains(got.Body, leak) {
@@ -2804,6 +2915,7 @@ func TestOnComplete_StaleVerdictSkipsWhenTaskNoLongerHumanRequired(t *testing.T)
 	tk, err := tasks.Create("Transient failure", "Original body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
@@ -2828,6 +2940,7 @@ func TestOnComplete_StaleVerdictSkipsWhenTaskNoLongerHumanRequired(t *testing.T)
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusTodo {
 		t.Errorf("status: got %q want todo", got.Status)
@@ -2860,6 +2973,7 @@ func TestOnComplete_WorkProject_ConfiguredLocalTaskScrubbed(t *testing.T) {
 	tk, err := tasks.Create("Workflow misfire", "Body with KAG-1234 reference.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		ProjectID:       task.Ptr(workProject),
@@ -2891,6 +3005,7 @@ func TestOnComplete_WorkProject_ConfiguredLocalTaskScrubbed(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load origin: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Errorf("origin status: got %q want blocked", got.Status)
@@ -2903,6 +3018,7 @@ func TestOnComplete_WorkProject_ConfiguredLocalTaskScrubbed(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
+		panic("unreachable")
 	}
 	var local *task.Task
 	for i := range all {
@@ -2944,6 +3060,7 @@ func TestOnComplete_MalformedVerdict_AppendsRaw(t *testing.T) {
 	tk, err := tasks.Create("Mystery", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip: %v", err)
@@ -2956,6 +3073,7 @@ func TestOnComplete_MalformedVerdict_AppendsRaw(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status: got %q want human-required", got.Status)
@@ -2974,6 +3092,7 @@ func TestOnComplete_StructuredVerdictFailure_RetriesAlternateProvider(t *testing
 	tk, err := tasks.Create("Retry structured review", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -3030,6 +3149,7 @@ func TestOnComplete_StructuredVerdictFailure_RetriesAlternateProvider(t *testing
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if len(got.AgentRuns) != 2 {
 		t.Fatalf("agent runs = %d, want 2 (failed structured run + fallback run)", len(got.AgentRuns))
@@ -3057,6 +3177,7 @@ func TestOnComplete_StructuredVerdictFailure_SecondFailureRendersDurableNote(t *
 	tk, err := tasks.Create("Retry exhausted structured review", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -3105,6 +3226,7 @@ func TestOnComplete_StructuredVerdictFailure_SecondFailureRendersDurableNote(t *
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if len(got.AgentRuns) != 2 {
 		t.Fatalf("agent runs = %d, want no third retry", len(got.AgentRuns))
@@ -3130,6 +3252,7 @@ func TestOnComplete_PlaceholderVerdict_RejectedNotFiled(t *testing.T) {
 	tk, err := tasks.Create("Some task", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip: %v", err)
@@ -3145,6 +3268,7 @@ func TestOnComplete_PlaceholderVerdict_RejectedNotFiled(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status: got %q want human-required (placeholder verdict must not block)", got.Status)
@@ -3162,6 +3286,7 @@ func TestOnComplete_RateLimitedVerdictDoesNotRenderNoise(t *testing.T) {
 	tk, err := tasks.Create("Quota limited", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip: %v", err)
@@ -3178,6 +3303,7 @@ func TestOnComplete_RateLimitedVerdictDoesNotRenderNoise(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(got.Body, "unparseable verdict") {
 		t.Errorf("rate-limited human-review should not append unparseable verdict noise; got:\n%s", got.Body)
@@ -3203,6 +3329,7 @@ func TestOnComplete_SilentHangVerdictDoesNotRenderNoise(t *testing.T) {
 	tk, err := tasks.Create("Silent review", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip: %v", err)
@@ -3218,6 +3345,7 @@ func TestOnComplete_SilentHangVerdictDoesNotRenderNoise(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(got.Body, "unparseable verdict") || strings.Contains(got.Body, "crashed before producing a verdict") {
 		t.Errorf("silently-hung human-review should not append verdict noise; got:\n%s", got.Body)
@@ -3248,6 +3376,7 @@ func TestOnComplete_ExecutionCrashRendersDiagnosis(t *testing.T) {
 	tk, err := tasks.Create("Crashed review", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip: %v", err)
@@ -3270,6 +3399,7 @@ func TestOnComplete_ExecutionCrashRendersDiagnosis(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(got.Body, "unparseable verdict") {
 		t.Errorf("crashed human-review must not mislabel the crash as unparseable; got:\n%s", got.Body)
@@ -3306,6 +3436,7 @@ func TestMaybeSpawn_IdempotencyGate_SkipsWhenVerdictRendered(t *testing.T) {
 	tk, err := tasks.Create("Stale task", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
@@ -3343,6 +3474,7 @@ func TestMaybeSpawn_SkipsWhenTaskNoLongerHumanRequired(t *testing.T) {
 	tk, err := tasks.Create("Stale hook task", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:    task.Ptr(task.StatusBlocked),
@@ -3370,6 +3502,7 @@ func TestMaybeSpawn_RechecksStatusBeforeRun(t *testing.T) {
 	tk, err := tasks.Create("Racey hook task", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -3419,6 +3552,7 @@ func TestMaybeSpawn_RechecksStatusBeforeRun(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
@@ -3436,6 +3570,7 @@ func TestMaybeSpawn_IdempotencyGate_IgnoresRenderedVerdictBeforeTestingCycle(t *
 	tk, err := tasks.Create("Re-tested task", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	cycleStart := time.Now().UTC()
 	if _, err := tasks.Update(tk.ID, task.Update{
@@ -3485,6 +3620,7 @@ func TestMaybeSpawn_IdempotencyGate_SpawnsWhenVerdictSetButNotRendered(t *testin
 	tk, err := tasks.Create("Crash-window task", "Body without auto-review section.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -3535,6 +3671,7 @@ func TestMaybeSpawn_IdempotencyGate_PreexistingAutoReviewTextDoesNotBlock(t *tes
 	tk, err := tasks.Create("Crash window with preexisting auto-review text", body, "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -3578,6 +3715,7 @@ func TestMaybeSpawn_IdempotencyGate_SpawnsWhenNoVerdict(t *testing.T) {
 	tk, err := tasks.Create("Fresh task", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -3628,6 +3766,7 @@ func TestMaybeSpawn_SkipsUmbrellaTracker(t *testing.T) {
 	tk, err := tasks.Create("Umbrella tracker", "queued", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		TaskType:        task.Ptr(task.TaskTypeUmbrella),
@@ -3659,6 +3798,7 @@ func TestMaybeSpawn_SkipsProjectlessTask(t *testing.T) {
 	tk, err := tasks.Create("Orphan smoke-test task", "queued", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
@@ -3682,6 +3822,7 @@ func TestMaybeSpawn_SkipsStaleNonHumanRequiredTask(t *testing.T) {
 	tk, err := tasks.Create("Already handled task", "queued", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:    task.Ptr(task.StatusBlocked),
@@ -3711,6 +3852,7 @@ func TestOnComplete_SetsVerdictRendered(t *testing.T) {
 	tk, err := tasks.Create("Billing refactor", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
@@ -3737,6 +3879,7 @@ func TestOnComplete_SetsVerdictRendered(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	var rendered bool
 	for i := range got.AgentRuns {
@@ -3765,6 +3908,7 @@ func TestOnComplete_CrashedVerdict_RetriesOnce(t *testing.T) {
 	tk, err := tasks.Create("Crashed review", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	// ProjectID must be non-empty: maybeSpawn's no_project gate would
 	// otherwise skip before the retry logic under test ever runs.
@@ -3792,6 +3936,7 @@ func TestOnComplete_CrashedVerdict_RetriesOnce(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected a retry spawn attempt (nil h.agents panics inside maybeSpawn)")
+			panic("unreachable")
 		}
 	}()
 	h.onComplete(ag)
@@ -3812,6 +3957,7 @@ func TestOnComplete_CrashedVerdict_ExhaustedRetriesMarksDistinguishableNote(t *t
 	tk, err := tasks.Create("Crashed review, exhausted", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -3841,6 +3987,7 @@ func TestOnComplete_CrashedVerdict_ExhaustedRetriesMarksDistinguishableNote(t *t
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(got.Body, "crashed") {
 		t.Errorf("expected a distinguishable crash note in body; got:\n%s", got.Body)
@@ -3878,6 +4025,7 @@ func TestOnComplete_CrashedVerdict_GlobalCapDeclinesRetrySilently(t *testing.T) 
 	tk, err := tasks.Create("Crashed review, global cap", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -3907,6 +4055,7 @@ func TestOnComplete_CrashedVerdict_GlobalCapDeclinesRetrySilently(t *testing.T) 
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(got.Body, "crashed") {
 		t.Errorf("expected a distinguishable crash note in body; got:\n%s", got.Body)
@@ -3937,6 +4086,7 @@ func TestOnComplete_TerminalErrorWithToolCalls_SkipsCrashPath(t *testing.T) {
 	tk, err := tasks.Create("Errored after real work", "Body.", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusHumanRequired), Escalation: task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"), AutonomyOutcome: task.HumanRequiredOutcome()}); err != nil {
 		t.Fatalf("flip to human-required: %v", err)
@@ -3966,6 +4116,7 @@ func TestOnComplete_TerminalErrorWithToolCalls_SkipsCrashPath(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("re-load: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(got.Body, "Auto-review (crashed)") {
 		t.Errorf("a run with tool calls should not use the crashed-run note; got:\n%s", got.Body)
@@ -3987,6 +4138,7 @@ func TestHumanReviewSpawn_ContendedFallbackRetryIgnoresRenderedVerdict(t *testin
 	tk, err := tasks.Create("contended fallback", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
 		"project_id": "Automaat/sybra",
@@ -4009,6 +4161,7 @@ func TestHumanReviewSpawn_ContendedFallbackRetryIgnoresRenderedVerdict(t *testin
 	seeded, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !verdictAlreadyRendered(seeded) {
 		t.Fatal("precondition: verdict must already be rendered or this asserts nothing")
@@ -4038,6 +4191,7 @@ func TestHumanReviewSpawn_ContendedFallbackRetryIgnoresRenderedVerdict(t *testin
 	}
 	if scheduled == nil {
 		t.Fatal("contended fallback did not schedule a retry")
+		panic("unreachable")
 	}
 
 	claimAvailable = true
@@ -4058,6 +4212,7 @@ func TestHumanReviewPrompt_HonorsCommitSigningPolicy(t *testing.T) {
 	contents := "[user]\n\tname = Test\n\temail = t@example.invalid\n\tsigningkey = DEADBEEFDEADBEEF\n"
 	if err := os.WriteFile(cfgPath, []byte(contents), 0o600); err != nil {
 		t.Fatalf("write git config: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", cfgPath)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -4146,6 +4301,7 @@ func TestScheduleClaimRetry_ExhaustionIsAudited(t *testing.T) {
 	auditLog, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatalf("audit.NewLogger: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = auditLog.Close() })
 	h.audit = auditLog
@@ -4161,6 +4317,7 @@ func TestScheduleClaimRetry_ExhaustionIsAudited(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("audit.Read: %v", err)
+		panic("unreachable")
 	}
 	if len(events) != 1 {
 		t.Fatalf("exhausted ladder wrote %d audit events, want 1", len(events))
@@ -4184,6 +4341,7 @@ func TestScheduleClaimRetry_InProgressIsNotAudited(t *testing.T) {
 	auditLog, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatalf("audit.NewLogger: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = auditLog.Close() })
 	h.audit = auditLog
@@ -4198,6 +4356,7 @@ func TestScheduleClaimRetry_InProgressIsNotAudited(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("audit.Read: %v", err)
+		panic("unreachable")
 	}
 	if len(events) != 0 {
 		t.Fatalf("first retry audited as exhausted: %+v", events)
@@ -4214,6 +4373,7 @@ func TestScheduleClaimRetry_InProgressIsNotAudited(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("audit.Read: %v", err)
+		panic("unreachable")
 	}
 	if len(events) != 0 {
 		t.Fatalf("absent scheduler audited as exhausted: %+v", events)
@@ -4255,6 +4415,7 @@ func TestRespawnDroppedReviews(t *testing.T) {
 			tk, err := tasks.Create("dropped review", "", task.AgentModeHeadless)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if _, err := tasks.UpdateMap(tk.ID, map[string]any{
 				"project_id": "Automaat/sybra",
@@ -4343,6 +4504,7 @@ func TestRespawnDroppedReviews_DoesNotBlockOnPreparation(t *testing.T) {
 		tk, err := tasks.Create("dropped review", "", task.AgentModeHeadless)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if _, err := tasks.UpdateMap(tk.ID, map[string]any{
 			"project_id": "Automaat/sybra",
@@ -4433,6 +4595,7 @@ func TestHumanReviewSpawn_RetryablePrepareSchedulesRetry(t *testing.T) {
 	tk, err := tasks.Create("retryable prepare", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
 		"project_id": "Automaat/sybra",
@@ -4468,6 +4631,7 @@ func TestHumanReviewSpawn_RetryablePrepareSchedulesRetry(t *testing.T) {
 	}
 	if scheduled == nil {
 		t.Fatal("retryable prepare did not schedule a retry")
+		panic("unreachable")
 	}
 
 	scheduled()
@@ -4487,6 +4651,7 @@ func TestHumanReviewSpawn_RefusesAfterDrain(t *testing.T) {
 	tk, err := tasks.Create("drain", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
 		"project_id": "Automaat/sybra",
@@ -4525,6 +4690,7 @@ func TestRespawnDroppedReviews_RecoversAnExhaustedLadder(t *testing.T) {
 	tk, err := tasks.Create("exhausted ladder", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
 		"project_id": "Automaat/sybra",
@@ -4573,6 +4739,7 @@ func TestMaintenancePass_RunsTheDroppedReviewSweep(t *testing.T) {
 	tk, err := tasks.Create("swept on tick", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
 		"project_id": "Automaat/sybra",
@@ -4617,6 +4784,7 @@ func TestHumanReviewSpawn_BeginDrainRefusesEvenWithLiveContext(t *testing.T) {
 	tk, err := tasks.Create("drain race", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
 		"project_id": "Automaat/sybra",
@@ -4656,6 +4824,7 @@ func TestRespawnDroppedReviews_SkipsIneligibleWithoutAuditing(t *testing.T) {
 	auditLog, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = auditLog.Close() })
 	h.audit = auditLog
@@ -4673,9 +4842,11 @@ func TestRespawnDroppedReviews_SkipsIneligibleWithoutAuditing(t *testing.T) {
 		tk, err := tasks.Create(seed.title, "", task.AgentModeHeadless)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if _, err := tasks.UpdateMap(tk.ID, seed.fields); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
@@ -4695,6 +4866,7 @@ func TestRespawnDroppedReviews_SkipsIneligibleWithoutAuditing(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(events) != 0 {
 		t.Errorf("sweep wrote %d skip events for permanently-ineligible tasks, want 0", len(events))
@@ -4878,6 +5050,7 @@ func TestHumanReviewSpawn_PreparedFlagIsStickyPerEpisode(t *testing.T) {
 	tk, err := tasks.Create("sticky prepared", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
 		"project_id": "Automaat/sybra",
@@ -4956,6 +5129,7 @@ func TestHumanReviewSpawn_PreparedFlagSurvivesRetry(t *testing.T) {
 	tk, err := tasks.Create("transient prepare", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
 		"project_id": "Automaat/sybra",
@@ -4994,6 +5168,7 @@ func TestHumanReviewSpawn_PreparedFlagSurvivesRetry(t *testing.T) {
 	}
 	if retry == nil {
 		t.Fatal("no retry scheduled after a retryable preparation failure")
+		panic("unreachable")
 	}
 	retry()
 
@@ -5025,6 +5200,7 @@ func TestHumanReviewSpawn_RebuiltWarningReachesTheAgent(t *testing.T) {
 			tk, err := tasks.Create("rebuilt warning", "", task.AgentModeHeadless)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if _, err := tasks.UpdateMap(tk.ID, map[string]any{
 				"project_id": "Automaat/sybra",

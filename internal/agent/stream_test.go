@@ -82,6 +82,7 @@ func TestParseClaudeLine(t *testing.T) {
 				}
 				if got.Result == nil {
 					t.Fatal("Result is nil")
+					panic("unreachable")
 				}
 				if got.Result.Text != "done" {
 					t.Errorf("Result.Text = %q, want done", got.Result.Text)
@@ -107,6 +108,7 @@ func TestParseClaudeLine(t *testing.T) {
 				t.Helper()
 				if got.Result == nil {
 					t.Fatal("Result is nil")
+					panic("unreachable")
 				}
 				if got.Result.CostUSD != 0 {
 					t.Errorf("CostUSD = %f, want 0", got.Result.CostUSD)
@@ -120,6 +122,7 @@ func TestParseClaudeLine(t *testing.T) {
 				t.Helper()
 				if got.Result == nil {
 					t.Fatal("Result is nil")
+					panic("unreachable")
 				}
 				if got.Result.CostUSD != 0 {
 					t.Errorf("CostUSD = %f, want 0", got.Result.CostUSD)
@@ -139,6 +142,7 @@ func TestParseClaudeLine(t *testing.T) {
 				t.Helper()
 				if got.Result == nil {
 					t.Fatal("Result is nil")
+					panic("unreachable")
 				}
 				if got.Result.InputTokens != 24 {
 					t.Errorf("InputTokens = %d, want 24", got.Result.InputTokens)
@@ -180,6 +184,7 @@ func TestParseClaudeLine(t *testing.T) {
 				}
 				if got.Message == nil {
 					t.Fatal("Message is nil")
+					panic("unreachable")
 				}
 				if got.Message.Text != "hello" {
 					t.Errorf("Message.Text = %q, want hello", got.Message.Text)
@@ -196,6 +201,7 @@ func TestParseClaudeLine(t *testing.T) {
 				}
 				if got.Message == nil {
 					t.Fatal("Message is nil")
+					panic("unreachable")
 				}
 				if len(got.Message.ToolResults) != 1 {
 					t.Fatalf("len(ToolResults) = %d, want 1", len(got.Message.ToolResults))
@@ -258,6 +264,7 @@ func TestParseClaudeLine(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
+				panic("unreachable")
 			}
 			if tt.check != nil {
 				tt.check(t, got)
@@ -559,11 +566,13 @@ func TestParseClaudeLine_RawIsIndependentOfScannerBuffer(t *testing.T) {
 		ev, err := ParseClaudeLine(scanner.Bytes())
 		if err != nil {
 			t.Fatalf("ParseClaudeLine: %v", err)
+			panic("unreachable")
 		}
 		events = append(events, ev)
 	}
 	if err := scanner.Err(); err != nil {
 		t.Fatalf("scanner: %v", err)
+		panic("unreachable")
 	}
 
 	if len(events) != 3 {
@@ -576,6 +585,7 @@ func TestParseClaudeLine_RawIsIndependentOfScannerBuffer(t *testing.T) {
 		got, err := json.Marshal(events[i].Raw)
 		if err != nil {
 			t.Fatalf("marshal event[%d].Raw: %v", i, err)
+			panic("unreachable")
 		}
 		if !bytes.Equal(got, []byte(want)) {
 			t.Errorf("event[%d].Raw = %s\nwant %s", i, got, want)
@@ -589,12 +599,14 @@ func TestParseCodexLine_AgentMessage(t *testing.T) {
 	got, err := ParseCodexLine(line)
 	if err != nil {
 		t.Fatalf("ParseCodexLine: %v", err)
+		panic("unreachable")
 	}
 	if got.Type != "assistant" {
 		t.Fatalf("Type = %q, want assistant", got.Type)
 	}
 	if got.Message == nil {
 		t.Fatal("Message is nil")
+		panic("unreachable")
 	}
 	if got.Message.Text != "hi" {
 		t.Fatalf("Message.Text = %q, want hi", got.Message.Text)
@@ -608,12 +620,14 @@ func TestParseCodexLine_CommandExecution(t *testing.T) {
 	startEv, err := ParseCodexLine(started)
 	if err != nil {
 		t.Fatalf("ParseCodexLine started: %v", err)
+		panic("unreachable")
 	}
 	if startEv.Type != "tool_use" {
 		t.Fatalf("started Type = %q, want tool_use", startEv.Type)
 	}
 	if startEv.Message == nil || len(startEv.Message.ToolUses) == 0 {
 		t.Fatal("started: no ToolUses")
+		panic("unreachable")
 	}
 	if cmd, _ := startEv.Message.ToolUses[0].Input["command"].(string); cmd != "pwd" {
 		t.Fatalf("started command = %q, want pwd", cmd)
@@ -622,12 +636,14 @@ func TestParseCodexLine_CommandExecution(t *testing.T) {
 	doneEv, err := ParseCodexLine(completed)
 	if err != nil {
 		t.Fatalf("ParseCodexLine completed: %v", err)
+		panic("unreachable")
 	}
 	if doneEv.Type != "tool_result" {
 		t.Fatalf("completed Type = %q, want tool_result", doneEv.Type)
 	}
 	if doneEv.Message == nil || len(doneEv.Message.ToolResults) == 0 {
 		t.Fatal("completed: no ToolResults")
+		panic("unreachable")
 	}
 	if doneEv.Message.ToolResults[0].Content != "/repo\n" {
 		t.Fatalf("completed Content = %q, want /repo\\n", doneEv.Message.ToolResults[0].Content)
@@ -640,12 +656,14 @@ func TestParseCodexLine_TurnCompleted(t *testing.T) {
 	got, err := ParseCodexLine(line)
 	if err != nil {
 		t.Fatalf("ParseCodexLine: %v", err)
+		panic("unreachable")
 	}
 	if got.Type != "result" {
 		t.Fatalf("Type = %q, want result", got.Type)
 	}
 	if got.Result == nil {
 		t.Fatal("Result is nil")
+		panic("unreachable")
 	}
 	if got.Result.InputTokens != 16012 || got.Result.OutputTokens != 18 {
 		t.Fatalf("tokens = %d/%d, want 16012/18", got.Result.InputTokens, got.Result.OutputTokens)
@@ -664,6 +682,7 @@ func TestParseCodexLine_ThreadStarted(t *testing.T) {
 	got, err := ParseCodexLine(line)
 	if err != nil {
 		t.Fatalf("ParseCodexLine: %v", err)
+		panic("unreachable")
 	}
 	if got.Type != "init" {
 		t.Fatalf("Type = %q, want init", got.Type)
@@ -738,6 +757,7 @@ func TestClaudeEventToStreamEvent(t *testing.T) {
 			parsed, err := ParseClaudeLine([]byte(tt.line))
 			if err != nil {
 				t.Fatalf("ParseClaudeLine: %v", err)
+				panic("unreachable")
 			}
 			got := claudeEventToStreamEvent(parsed)
 			if got.Type != tt.want.Type {
@@ -804,6 +824,7 @@ func TestCodexEventToStreamEvent(t *testing.T) {
 			parsed, err := ParseCodexLine([]byte(tt.line))
 			if err != nil {
 				t.Fatalf("ParseCodexLine: %v", err)
+				panic("unreachable")
 			}
 			got := codexEventToStreamEvent(parsed)
 			if got.Type != tt.want.Type {

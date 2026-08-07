@@ -40,6 +40,7 @@ func startFakeAPIServer(t *testing.T, tasksDir string) string {
 	rawStore, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc := &fakeTaskService{tasks: task.NewManager(rawStore, nil)}
 	mux := http.NewServeMux()
@@ -67,6 +68,7 @@ func startFailingAPIServer(t *testing.T, tasksDir string) string {
 	rawStore, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc := &failingTaskService{fakeTaskService{tasks: task.NewManager(rawStore, nil)}}
 	mux := http.NewServeMux()
@@ -85,6 +87,7 @@ func lockdownDir(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 }
@@ -112,6 +115,7 @@ func TestUpdate_UsesHTTPModeWhenFilesystemIsReadOnly(t *testing.T) {
 	tasksDir := useDefaultHTTPCLIHome(t, home)
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	code, out := runCLI(t, "--json", "create", "--title", "http mode target")
@@ -122,10 +126,12 @@ func TestUpdate_UsesHTTPModeWhenFilesystemIsReadOnly(t *testing.T) {
 	tasks, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	list, err := tasks.List()
 	if err != nil || len(list) != 1 {
 		t.Fatalf("expected exactly one seeded task, got %v (err=%v)", list, err)
+		panic("unreachable")
 	}
 	id := list[0].ID
 
@@ -134,9 +140,11 @@ func TestUpdate_UsesHTTPModeWhenFilesystemIsReadOnly(t *testing.T) {
 	seeded, err := os.ReadFile(filepath.Join(tasksDir, taskFile))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(serverTasksDir, taskFile), seeded, 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	port := startFakeAPIServer(t, serverTasksDir)
@@ -155,10 +163,12 @@ func TestUpdate_UsesHTTPModeWhenFilesystemIsReadOnly(t *testing.T) {
 	served, err := task.NewStore(serverTasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	got, err := served.Get(id)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusTodo || got.StatusReason != "via http" {
 		t.Fatalf("server-side task = %+v, want the update to have landed via HTTP", got)
@@ -173,11 +183,13 @@ func TestUpdate_UsesHTTPModeWhenTaskOnlyExistsOnServer(t *testing.T) {
 	serverStore, err := task.NewStore(serverTasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	serverTasks := task.NewManager(serverStore, nil)
 	created, err := serverTasks.Create("api only target", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	port := startFakeAPIServer(t, serverTasksDir)
@@ -202,11 +214,13 @@ func TestLinkPR_UsesHTTPModeWhenTaskOnlyExistsOnServer(t *testing.T) {
 	serverStore, err := task.NewStore(serverTasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	serverTasks := task.NewManager(serverStore, nil)
 	created, err := serverTasks.Create("api only pr target", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	port := startFakeAPIServer(t, serverTasksDir)
@@ -228,6 +242,7 @@ func TestUpdate_FailsClosedWhenNoServerAndFilesystemReadOnly(t *testing.T) {
 	tasksDir := useDefaultHTTPCLIHome(t, home)
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	code, out := runCLI(t, "--json", "create", "--title", "no server target")
@@ -238,10 +253,12 @@ func TestUpdate_FailsClosedWhenNoServerAndFilesystemReadOnly(t *testing.T) {
 	tasks, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	list, err := tasks.List()
 	if err != nil || len(list) != 1 {
 		t.Fatalf("expected exactly one seeded task, got %v (err=%v)", list, err)
+		panic("unreachable")
 	}
 	id := list[0].ID
 
@@ -258,6 +275,7 @@ func TestUpdate_ServerErrorNeverFallsBackToFilesystem(t *testing.T) {
 	tasksDir := useDefaultHTTPCLIHome(t, home)
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	code, out := runCLI(t, "--json", "create", "--title", "server error target")
@@ -268,15 +286,18 @@ func TestUpdate_ServerErrorNeverFallsBackToFilesystem(t *testing.T) {
 	tasks, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	list, err := tasks.List()
 	if err != nil || len(list) != 1 {
 		t.Fatalf("expected exactly one seeded task, got %v (err=%v)", list, err)
+		panic("unreachable")
 	}
 	id := list[0].ID
 	before, err := tasks.Get(id)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	port := startFailingAPIServer(t, t.TempDir())
@@ -290,6 +311,7 @@ func TestUpdate_ServerErrorNeverFallsBackToFilesystem(t *testing.T) {
 	after, err := tasks.Get(id)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if after.Status != before.Status {
 		t.Fatalf("filesystem task status changed to %q despite the server call failing — HTTP 5xx must not fall back to a direct write", after.Status)
@@ -301,6 +323,7 @@ func TestUpdate_HomeFlagForcesFilesystemModeEvenWithServerRunning(t *testing.T) 
 	tasksDir := filepath.Join(home, "tasks")
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	isolateHTTPCLITestHome(t, home)
 
@@ -312,10 +335,12 @@ func TestUpdate_HomeFlagForcesFilesystemModeEvenWithServerRunning(t *testing.T) 
 	tasks, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	list, err := tasks.List()
 	if err != nil || len(list) != 1 {
 		t.Fatalf("expected exactly one seeded task, got %v (err=%v)", list, err)
+		panic("unreachable")
 	}
 	id := list[0].ID
 
@@ -337,6 +362,7 @@ func TestNewAPIClient_RequiresExplicitServerTarget(t *testing.T) {
 
 	if client, ok := newAPIClient(cfg); ok || client != nil {
 		t.Fatalf("newAPIClient() = %#v, %v, want no client without %s", client, ok, serverTargetEnv)
+		panic("unreachable")
 	}
 }
 
@@ -348,6 +374,7 @@ func TestNewAPIClient_IgnoresSYBRAPortWithoutDedicatedTarget(t *testing.T) {
 
 	if client, ok := newAPIClient(cfg); ok || client != nil {
 		t.Fatalf("newAPIClient() = %#v, %v, want no client when only SYBRA_PORT is set", client, ok)
+		panic("unreachable")
 	}
 }
 
@@ -359,6 +386,7 @@ func TestNewAPIClient_UsesDedicatedServerTargetEnv(t *testing.T) {
 	client, ok := newAPIClient(cfg)
 	if !ok || client == nil {
 		t.Fatal("newAPIClient() did not build a client from a valid dedicated target")
+		panic("unreachable")
 	}
 	if client.baseURL != "http://127.0.0.1:4123" {
 		t.Fatalf("baseURL = %q, want http://127.0.0.1:4123", client.baseURL)
@@ -386,6 +414,7 @@ func TestNewAPIClient_RejectsInvalidDedicatedServerTarget(t *testing.T) {
 
 			if client, ok := newAPIClient(cfg); ok || client != nil {
 				t.Fatalf("newAPIClient() = %#v, %v, want invalid target %q to be rejected", client, ok, tc.raw)
+				panic("unreachable")
 			}
 		})
 	}

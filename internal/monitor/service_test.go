@@ -269,6 +269,7 @@ func TestServiceTickEndToEnd(t *testing.T) {
 	report, err := svc.tick(context.Background())
 	if err != nil {
 		t.Fatalf("tick: %v", err)
+		panic("unreachable")
 	}
 
 	wantKinds := map[AnomalyKind]bool{
@@ -350,6 +351,7 @@ func TestServiceTickClosesHumanRequiredTaskWithMergedPR(t *testing.T) {
 	report, err := svc.tick(context.Background())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if fetched != 1 {
 		t.Fatalf("FetchPRState calls = %d, want 1", fetched)
@@ -357,6 +359,7 @@ func TestServiceTickClosesHumanRequiredTaskWithMergedPR(t *testing.T) {
 	got, err := tasks.Get("merged")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusDone {
 		t.Fatalf("status = %q, want done", got.Status)
@@ -390,6 +393,7 @@ func TestServiceTick_LostAgentRecoverySuppressesIssue(t *testing.T) {
 	report, err := svc.tick(context.Background())
 	if err != nil {
 		t.Fatalf("tick: %v", err)
+		panic("unreachable")
 	}
 	if recoverCalls != 1 {
 		t.Fatalf("want 1 lost-agent recovery call, got %d", recoverCalls)
@@ -436,6 +440,7 @@ func TestServiceTick_LostAgentDedupeThenAutoClose(t *testing.T) {
 		r, err := svc.tick(context.Background())
 		if err != nil {
 			t.Fatalf("tick: %v", err)
+			panic("unreachable")
 		}
 		return r
 	}
@@ -543,6 +548,7 @@ func TestServiceTick_LostAgentAutoCloseRetriesAfterTransientFailure(t *testing.T
 		r, err := svc.tick(context.Background())
 		if err != nil {
 			t.Fatalf("tick: %v", err)
+			panic("unreachable")
 		}
 		return r
 	}
@@ -619,6 +625,7 @@ func TestServiceTick_UntriagedAutoClosesAfterTriage(t *testing.T) {
 	report, err := svc.tick(context.Background())
 	if err != nil {
 		t.Fatalf("tick: %v", err)
+		panic("unreachable")
 	}
 	if len(sink.closed) != 1 {
 		t.Fatalf("want 1 close attempt, got %d", len(sink.closed))
@@ -662,6 +669,7 @@ func TestServiceTick_UntriagedAutoClosesWhenSourceTaskDeleted(t *testing.T) {
 	report, err := svc.tick(context.Background())
 	if err != nil {
 		t.Fatalf("tick: %v", err)
+		panic("unreachable")
 	}
 	if len(sink.closed) != 1 {
 		t.Fatalf("want 1 close attempt, got %d", len(sink.closed))
@@ -706,6 +714,7 @@ func TestServiceTick_LostAgentRemediationFailureFilesImmediately(t *testing.T) {
 	report, err := svc.tick(context.Background())
 	if err != nil {
 		t.Fatalf("tick1: %v", err)
+		panic("unreachable")
 	}
 	if len(sink.submissions) != 1 {
 		t.Fatalf("tick1: want 1 submission on the very first tick, got %d", len(sink.submissions))
@@ -716,6 +725,7 @@ func TestServiceTick_LostAgentRemediationFailureFilesImmediately(t *testing.T) {
 	filedFP := sink.submissions[0].Fingerprint
 	if filedFP == Fingerprint(KindLostAgent, "conflict", nil) {
 		t.Fatalf("tick1: want a cause-qualified fingerprint, got the bare base one %q", filedFP)
+		panic("unreachable")
 	}
 
 	// The write conflict clears, but the task is still stuck — resetLostAgent
@@ -726,6 +736,7 @@ func TestServiceTick_LostAgentRemediationFailureFilesImmediately(t *testing.T) {
 	now = now.Add(15 * time.Minute)
 	if _, err := svc.tick(context.Background()); err != nil {
 		t.Fatalf("tick2: %v", err)
+		panic("unreachable")
 	}
 	if len(sink.submissions) != 2 {
 		t.Fatalf("tick2: want 2 submissions total, got %d", len(sink.submissions))
@@ -764,6 +775,7 @@ func TestServiceCooldownSuppressesSecondTick(t *testing.T) {
 
 	if _, err := svc.tick(context.Background()); err != nil {
 		t.Fatalf("tick1: %v", err)
+		panic("unreachable")
 	}
 	if got := len(sink.submissions); got != 1 {
 		t.Fatalf("tick1 want 1 submission, got %d", got)
@@ -773,6 +785,7 @@ func TestServiceCooldownSuppressesSecondTick(t *testing.T) {
 	now = base.Add(5 * time.Minute)
 	if _, err := svc.tick(context.Background()); err != nil {
 		t.Fatalf("tick2: %v", err)
+		panic("unreachable")
 	}
 	if got := len(sink.submissions); got != 1 {
 		t.Fatalf("tick2 (within cooldown) want 1 submission total, got %d", got)
@@ -782,6 +795,7 @@ func TestServiceCooldownSuppressesSecondTick(t *testing.T) {
 	now = base.Add(40 * time.Minute)
 	if _, err := svc.tick(context.Background()); err != nil {
 		t.Fatalf("tick3: %v", err)
+		panic("unreachable")
 	}
 	if got := len(sink.submissions); got != 2 {
 		t.Fatalf("tick3 (after cooldown) want 2 submissions total, got %d", got)
@@ -810,6 +824,7 @@ func TestServiceScanHasNoSideEffects(t *testing.T) {
 	r, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	if len(r.Anomalies) != 1 {
 		t.Fatalf("want 1 anomaly, got %d", len(r.Anomalies))
@@ -847,6 +862,7 @@ func TestServiceTickObserverOnlyHasNoSideEffects(t *testing.T) {
 	report, err := svc.tick(context.Background())
 	if err != nil {
 		t.Fatalf("tick: %v", err)
+		panic("unreachable")
 	}
 	if len(report.Anomalies) != 1 || report.Anomalies[0].Kind != KindLostAgent {
 		t.Fatalf("want one lost_agent anomaly, got %v", report.Anomalies)
@@ -887,6 +903,7 @@ func TestServiceTick_PlanReviewStuck_NotFlagged(t *testing.T) {
 	report, err := svc.tick(context.Background())
 	if err != nil {
 		t.Fatalf("tick: %v", err)
+		panic("unreachable")
 	}
 
 	for _, a := range report.Anomalies {
@@ -935,6 +952,7 @@ func TestServiceTick_HumanRequiredStuck_RemediatesDirectly(t *testing.T) {
 	report, err := svc.tick(context.Background())
 	if err != nil {
 		t.Fatalf("tick: %v", err)
+		panic("unreachable")
 	}
 
 	if len(report.Anomalies) != 1 || report.Anomalies[0].Kind != KindStuckHumanBlocked {
@@ -1004,6 +1022,7 @@ func TestServiceTick_HumanRequiredStuck_FailedRunKeepsVerdict(t *testing.T) {
 	report, err := svc.tick(context.Background())
 	if err != nil {
 		t.Fatalf("tick: %v", err)
+		panic("unreachable")
 	}
 
 	if len(report.Anomalies) != 1 || report.Anomalies[0].Kind != KindStuckHumanBlocked {
@@ -1054,6 +1073,7 @@ func TestServiceTick_HumanRequiredStuck_DowngradedLLM_RemediatesDirectly(t *test
 	report, err := svc.tick(context.Background())
 	if err != nil {
 		t.Fatalf("tick: %v", err)
+		panic("unreachable")
 	}
 
 	if len(report.Anomalies) != 1 || report.Anomalies[0].Kind != KindStuckHumanBlocked {
@@ -1154,6 +1174,7 @@ func TestServiceTick_HumanRequiredStuck_DowngradedLLM_MergedPRUsesLandingPipelin
 	report, err := svc.tick(context.Background())
 	if err != nil {
 		t.Fatalf("tick: %v", err)
+		panic("unreachable")
 	}
 
 	if len(tasks.updates) != 0 {
@@ -1211,6 +1232,7 @@ func TestServiceTick_HumanRequiredStuck_ResultFallback(t *testing.T) {
 	report, err := svc.tick(context.Background())
 	if err != nil {
 		t.Fatalf("tick: %v", err)
+		panic("unreachable")
 	}
 
 	if len(report.Anomalies) != 1 || report.Anomalies[0].Kind != KindStuckHumanBlocked {

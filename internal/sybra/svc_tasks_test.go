@@ -83,6 +83,7 @@ func TestTaskService_RecoverLostAgent_ForwardsAppContext(t *testing.T) {
 	created, err := svc.tasks.Create("lost agent recover", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	type ctxKey struct{}
@@ -100,6 +101,7 @@ func TestTaskService_RecoverLostAgent_ForwardsAppContext(t *testing.T) {
 
 	if err := svc.RecoverLostAgent(created.ID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if gotMarker != "app-root-ctx" {
 		t.Fatalf("recoverLostAgent received ctx marker %v, want svc.ctx (marked app-root context)", gotMarker)
@@ -152,6 +154,7 @@ func TestTaskService_GetTaskPersistsEstimatedAgentRunCosts(t *testing.T) {
 	created, err := svc.tasks.Create("Persist cost", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := svc.tasks.AddRun(created.ID, task.AgentRun{
 		AgentID:   "agent-cost",
@@ -167,6 +170,7 @@ func TestTaskService_GetTaskPersistsEstimatedAgentRunCosts(t *testing.T) {
 	got, err := svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if diff := got.AgentRuns[0].CostUSD - 0.075; diff > 1e-9 || diff < -1e-9 {
 		t.Fatalf("returned cost = %g, want 0.075", got.AgentRuns[0].CostUSD)
@@ -174,6 +178,7 @@ func TestTaskService_GetTaskPersistsEstimatedAgentRunCosts(t *testing.T) {
 	persisted, err := svc.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if diff := persisted.AgentRuns[0].CostUSD - 0.075; diff > 1e-9 || diff < -1e-9 {
 		t.Fatalf("persisted cost = %g, want 0.075", persisted.AgentRuns[0].CostUSD)
@@ -190,6 +195,7 @@ func TestTaskService_ListTaskArtifactsIncludesContent(t *testing.T) {
 	created, err := svc.tasks.Create("Artifacts", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := svc.artifacts.Put(created.ID, artifact.Artifact{
 		Kind:    artifact.KindPlan,
@@ -202,6 +208,7 @@ func TestTaskService_ListTaskArtifactsIncludesContent(t *testing.T) {
 	got, err := svc.ListTaskArtifacts(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 1 {
 		t.Fatalf("len = %d, want 1", len(got))
@@ -218,6 +225,7 @@ func TestTaskService_ListTaskArtifactsStripsSourcePath(t *testing.T) {
 	created, err := svc.tasks.Create("Artifacts", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := svc.artifacts.Put(created.ID, artifact.Artifact{
 		Kind:       artifact.KindPlan,
@@ -231,6 +239,7 @@ func TestTaskService_ListTaskArtifactsStripsSourcePath(t *testing.T) {
 	got, err := svc.ListTaskArtifacts(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 1 {
 		t.Fatalf("len = %d, want 1", len(got))
@@ -247,6 +256,7 @@ func TestTaskService_ListTaskArtifactsTruncatesStreamFromTail(t *testing.T) {
 	created, err := svc.tasks.Create("Artifacts", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	padding := strings.Repeat("a", 1024)
 	for range taskDiagnosticReadLimit/1024 + 2 {
@@ -261,6 +271,7 @@ func TestTaskService_ListTaskArtifactsTruncatesStreamFromTail(t *testing.T) {
 	got, err := svc.ListTaskArtifacts(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 1 {
 		t.Fatalf("len = %d, want 1", len(got))
@@ -282,14 +293,17 @@ func TestTaskService_GetTaskSetupLog(t *testing.T) {
 	logPath := filepath.Join(logDir, "worktrees", taskID+"-setup.log")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(logPath, []byte("setup failed\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got, err := svc.GetTaskSetupLog(taskID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !got.Exists || got.Content != "setup failed\n" || got.Path != logPath {
 		t.Fatalf("setup log = %+v", got)
@@ -304,6 +318,7 @@ func TestTaskService_ListTaskAuditEventsNewestFirst(t *testing.T) {
 	al, err := audit.NewLogger(svc.cfg.AuditDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer al.Close()
 	if err := al.Log(audit.Event{Type: audit.EventTaskCreated, TaskID: "task-a"}); err != nil {
@@ -319,6 +334,7 @@ func TestTaskService_ListTaskAuditEventsNewestFirst(t *testing.T) {
 	got, err := svc.ListTaskAuditEvents("task-a", 14)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 2 {
 		t.Fatalf("len = %d, want 2: %+v", len(got), got)
@@ -338,6 +354,7 @@ func TestTaskService_GetTamperReport(t *testing.T) {
 	created, err := svc.tasks.Create("Tamper report", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	reportJSON := `{
   "taskId": "ignored",
@@ -364,6 +381,7 @@ func TestTaskService_GetTamperReport(t *testing.T) {
 	got, err := svc.GetTamperReport(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !got.ReportAvailable {
 		t.Fatal("ReportAvailable = false, want true")
@@ -389,10 +407,12 @@ func TestTaskService_ListTaskProgress(t *testing.T) {
 	created, err := svc.tasks.Create("Progress task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if got, err := svc.ListTaskProgress(created.ID); err != nil || len(got) != 0 {
 		t.Fatalf("empty log = %v, %v; want [], nil", got, err)
+		panic("unreachable")
 	}
 
 	for _, m := range []string{"first", "second"} {
@@ -406,6 +426,7 @@ func TestTaskService_ListTaskProgress(t *testing.T) {
 	got, err := svc.ListTaskProgress(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 2 || got[0].Message != "second" || got[1].Message != "first" {
 		t.Fatalf("ListTaskProgress = %+v, want newest-first [second, first]", got)
@@ -418,6 +439,7 @@ func TestTaskService_ListTaskProgressNoStore(t *testing.T) {
 	got, err := svc.ListTaskProgress("any")
 	if err != nil || len(got) != 0 {
 		t.Fatalf("nil store = %v, %v; want [], nil", got, err)
+		panic("unreachable")
 	}
 }
 
@@ -429,6 +451,7 @@ func TestTaskService_GetTamperReportMissing(t *testing.T) {
 	got, err := svc.GetTamperReport("missing-report")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.TaskID != "missing-report" || got.ReportAvailable {
 		t.Fatalf("missing report = %+v, want unavailable for task", got)
@@ -445,6 +468,7 @@ func TestTaskService_GetTamperReportMalformed(t *testing.T) {
 	created, err := svc.tasks.Create("Bad tamper report", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := svc.artifacts.Put(created.ID, artifact.Artifact{
 		Kind:    artifact.KindGeneric,
@@ -456,6 +480,7 @@ func TestTaskService_GetTamperReportMalformed(t *testing.T) {
 
 	if _, err := svc.GetTamperReport(created.ID); err == nil {
 		t.Fatal("GetTamperReport malformed JSON err = nil, want error")
+		panic("unreachable")
 	}
 }
 
@@ -466,6 +491,7 @@ func TestTaskService_BlessTampering(t *testing.T) {
 	al, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer al.Close()
 	svc.audit = al
@@ -473,6 +499,7 @@ func TestTaskService_BlessTampering(t *testing.T) {
 	created, err := svc.tasks.Create("Bless tamper", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	reason := workflow.TamperFlaggedReasonPrefix + " removed-test in internal/foo_test.go"
 	flagged, err := svc.tasks.Update(created.ID, task.Update{
@@ -489,6 +516,7 @@ func TestTaskService_BlessTampering(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := svc.artifacts.Put(flagged.ID, artifact.Artifact{
 		Kind: artifact.KindGeneric,
@@ -514,6 +542,7 @@ func TestTaskService_BlessTampering(t *testing.T) {
 	got, err := svc.BlessTampering(flagged.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusReadyReview {
 		t.Fatalf("Status = %q, want %q", got.Status, task.StatusReadyReview)
@@ -576,6 +605,7 @@ func TestTaskService_BlessTamperingAlreadyBlessed(t *testing.T) {
 	created, err := svc.tasks.Create("Already blessed", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	reason := workflow.TamperFlaggedReasonPrefix + " removed-test in internal/foo_test.go"
 	flagged, err := svc.tasks.Update(created.ID, task.Update{
@@ -592,11 +622,13 @@ func TestTaskService_BlessTamperingAlreadyBlessed(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got, err := svc.BlessTampering(flagged.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !slices.Equal(got.Tags, []string{"backend", workflow.TamperBlessedTag}) {
 		t.Fatalf("Tags = %v, want no duplicate blessed tag", got.Tags)
@@ -609,6 +641,7 @@ func TestTaskService_BlessTamperingRejectsNonTamperTask(t *testing.T) {
 	created, err := svc.tasks.Create("Not tamper", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	human, err := svc.tasks.Update(created.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -618,11 +651,13 @@ func TestTaskService_BlessTamperingRejectsNonTamperTask(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	_, err = svc.BlessTampering(human.ID)
 	if err == nil {
 		t.Fatal("BlessTampering non-tamper err = nil, want error")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "status=human-required") || !strings.Contains(err.Error(), string(blocker.KindTamperDetected)) {
 		t.Fatalf("BlessTampering non-tamper err = %q, want actionable preconditions", err.Error())
@@ -630,6 +665,7 @@ func TestTaskService_BlessTamperingRejectsNonTamperTask(t *testing.T) {
 	got, err := svc.tasks.Get(human.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired || slices.Contains(got.Tags, workflow.TamperBlessedTag) {
 		t.Fatalf("task after rejected bless = status %q tags %v", got.Status, got.Tags)
@@ -641,6 +677,7 @@ func readTaskServiceAuditEvents(t *testing.T, dir string) []audit.Event {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	var events []audit.Event
 	for _, entry := range entries {
@@ -650,6 +687,7 @@ func readTaskServiceAuditEvents(t *testing.T, dir string) []audit.Event {
 		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		for line := range strings.SplitSeq(string(data), "\n") {
 			if strings.TrimSpace(line) == "" {
@@ -658,6 +696,7 @@ func readTaskServiceAuditEvents(t *testing.T, dir string) []audit.Event {
 			var ev audit.Event
 			if err := json.Unmarshal([]byte(line), &ev); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			events = append(events, ev)
 		}
@@ -695,6 +734,7 @@ func TestTaskService_CreateTask_IssueURLWaitsForEnrichment(t *testing.T) {
 	created, err := svc.CreateTask("https://github.com/owner/repo/issues/12", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	select {
@@ -706,9 +746,11 @@ func TestTaskService_CreateTask_IssueURLWaitsForEnrichment(t *testing.T) {
 	got, err := svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow != nil {
 		t.Fatalf("workflow = %+v, want nil before issue enrichment", got.Workflow)
+		panic("unreachable")
 	}
 
 	close(releaseFetch)
@@ -717,6 +759,7 @@ func TestTaskService_CreateTask_IssueURLWaitsForEnrichment(t *testing.T) {
 	got, err = svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Fatalf("Status = %q, want %q", got.Status, task.StatusInReview)
@@ -726,6 +769,7 @@ func TestTaskService_CreateTask_IssueURLWaitsForEnrichment(t *testing.T) {
 	}
 	if got.Workflow != nil {
 		t.Fatalf("workflow = %+v, want nil for linked viewer PR", got.Workflow)
+		panic("unreachable")
 	}
 }
 
@@ -758,6 +802,7 @@ func TestTaskService_CreateTask_UmbrellaIssueExpandsAndDropsStub(t *testing.T) {
 	created, err := svc.CreateTask("https://github.com/owner/repo/issues/1151", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.wg.Wait()
 
@@ -770,6 +815,7 @@ func TestTaskService_CreateTask_UmbrellaIssueExpandsAndDropsStub(t *testing.T) {
 	// The stub must be deleted — the expander created its own tracker.
 	if _, err := svc.GetTask(created.ID); err == nil {
 		t.Fatalf("stub task %s still exists; want it deleted after expansion", created.ID)
+		panic("unreachable")
 	}
 }
 
@@ -792,12 +838,14 @@ func TestTaskService_CreateTask_UmbrellaExpandFailureKeepsInertStub(t *testing.T
 	created, err := svc.CreateTask("https://github.com/owner/repo/issues/1151", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.wg.Wait()
 
 	got, err := svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatalf("stub task should survive a failed expansion: %v", err)
+		panic("unreachable")
 	}
 	if got.Title != "☂️ broken umbrella" {
 		t.Fatalf("Title = %q, want enriched umbrella title", got.Title)
@@ -814,6 +862,7 @@ func TestTaskService_CreateTask_UmbrellaExpandFailureKeepsInertStub(t *testing.T
 	// No flat workflow may be started on a known umbrella, even when expansion failed.
 	if got.Workflow != nil {
 		t.Fatalf("workflow = %+v, want nil for a failed umbrella expansion", got.Workflow)
+		panic("unreachable")
 	}
 	// TaskType must be set durably — the enrich write above clears
 	// enrich-pending, and that write re-fires the emit-path task.created
@@ -864,12 +913,14 @@ func TestTaskService_CreateTask_UmbrellaExpandFailureWithExistingTrackerMarksDup
 	created, err := svc.CreateTask(issueURL, "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.wg.Wait()
 
 	got, err := svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatalf("duplicate stub should survive a failed expansion: %v", err)
+		panic("unreachable")
 	}
 	if got.TaskType == task.TaskTypeUmbrella {
 		t.Fatalf("TaskType = %q, want non-umbrella duplicate since a failure tracker already exists for this issue", got.TaskType)
@@ -904,12 +955,14 @@ func TestTaskService_CreateTask_UmbrellaExpandDeleteFailureKeepsDuplicateNonTrac
 	created, err := svc.CreateTask("https://github.com/owner/repo/issues/1151", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.wg.Wait()
 
 	got, err := svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatalf("duplicate stub should remain when cleanup delete fails: %v", err)
+		panic("unreachable")
 	}
 	if got.Title != "☂️ duplicate cleanup failed" {
 		t.Fatalf("Title = %q, want enriched duplicate title", got.Title)
@@ -929,6 +982,7 @@ func TestTaskService_CreateTask_UmbrellaExpandDeleteFailureKeepsDuplicateNonTrac
 	// a re-fired task:created dispatch (fsnotify watcher) must still be skipped.
 	if got.Workflow != nil {
 		t.Fatalf("workflow = %+v, want nil for a duplicate umbrella stub", got.Workflow)
+		panic("unreachable")
 	}
 	if !skipTaskCreatedWorkflow(got) {
 		t.Fatal("simulated watcher re-dispatch on the duplicate stub must be skipped, want no flat workflow")
@@ -957,6 +1011,7 @@ func TestTaskService_CreateTask_UmbrellaDisabledFallsBackToFlat(t *testing.T) {
 	created, err := svc.CreateTask("https://github.com/owner/repo/issues/1151", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.wg.Wait()
 
@@ -999,6 +1054,7 @@ func TestTaskService_CreateTask_IssueURLStubMarkedThenCleared(t *testing.T) {
 	created, err := svc.CreateTask("https://github.com/owner/repo/issues/13", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Before enrichment: the stub carries the marker so the emit-path
@@ -1006,6 +1062,7 @@ func TestTaskService_CreateTask_IssueURLStubMarkedThenCleared(t *testing.T) {
 	got, err := svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !slices.Contains(got.Tags, enrichPendingTag) {
 		t.Fatalf("Tags = %v, want enrich-pending marker before enrichment", got.Tags)
@@ -1048,11 +1105,13 @@ func TestTaskService_CreateTaskWithInit_IssueURLStubPreservesCallerTags(t *testi
 	)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got, err := svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !slices.Contains(got.Tags, enrichPendingTag) {
 		t.Fatalf("Tags = %v, want enrich-pending marker before enrichment", got.Tags)
@@ -1083,6 +1142,7 @@ func TestTaskService_CreateTask_IssueURLNoPRStartsWorkflowAfterEnrichment(t *tes
 	created, err := svc.CreateTask("https://github.com/owner/repo/issues/13", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.wg.Wait()
 
@@ -1117,12 +1177,14 @@ func TestTaskService_ReconcilePendingEnrichment_RetriesOrphanedStub(t *testing.T
 	created, err := svc.CreateTask("https://github.com/owner/repo/issues/42", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.wg.Wait()
 
 	got, err := svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !slices.Contains(got.Tags, enrichPendingTag) {
 		t.Fatalf("Tags = %v, want enrich-pending marker after a failed initial fetch", got.Tags)
@@ -1132,6 +1194,7 @@ func TestTaskService_ReconcilePendingEnrichment_RetriesOrphanedStub(t *testing.T
 	}
 	if got.Workflow != nil {
 		t.Fatalf("Workflow = %+v, want none while the stub is still enrich-pending", got.Workflow)
+		panic("unreachable")
 	}
 
 	// gh recovers; the maintenance reconcile pass re-enriches and dispatches.
@@ -1173,12 +1236,14 @@ func TestTaskService_EnrichFromIssue_LinkedPRsFailureKeepsPendingMarker(t *testi
 	created, err := svc.CreateTask("https://github.com/owner/repo/issues/42", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.wg.Wait()
 
 	got, err := svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !slices.Contains(got.Tags, enrichPendingTag) {
 		t.Fatalf("Tags = %v, want enrich-pending marker retained after a linked-PRs fetch failure", got.Tags)
@@ -1191,6 +1256,7 @@ func TestTaskService_EnrichFromIssue_LinkedPRsFailureKeepsPendingMarker(t *testi
 	}
 	if got.Workflow != nil {
 		t.Fatalf("Workflow = %+v, want none while the stub is still enrich-pending", got.Workflow)
+		panic("unreachable")
 	}
 }
 
@@ -1211,6 +1277,7 @@ func TestTaskService_EnrichFromIssue_LinkedPRBranchAlreadyOwnedSkipsBranch(t *te
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	svc.fetchIssue = func(string, int) (github.Issue, error) {
@@ -1229,12 +1296,14 @@ func TestTaskService_EnrichFromIssue_LinkedPRBranchAlreadyOwnedSkipsBranch(t *te
 	created, err := svc.CreateTask("https://github.com/owner/repo/issues/42", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.wg.Wait()
 
 	got, err := svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Branch != "" || got.PRNumber != 0 || got.Status == task.StatusInReview {
 		t.Fatalf("task = %+v, want no branch/PR cross-assigned from task %s", got, owner.ID)
@@ -1246,6 +1315,7 @@ func TestTaskService_EnrichFromIssue_LinkedPRBranchAlreadyOwnedSkipsBranch(t *te
 	ownerStillOwns, err := svc.GetTask(owner.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if ownerStillOwns.Branch != "fix/shared-pr" || ownerStillOwns.PRNumber != 99 {
 		t.Fatalf("owner task = %+v, want its original branch/PR untouched", ownerStillOwns)
@@ -1265,6 +1335,7 @@ func TestTaskService_EnrichFromPR_BranchAlreadyOwnedSkipsBranch(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	svc.fetchPR = func(string, int) (github.PullRequest, error) {
@@ -1280,12 +1351,14 @@ func TestTaskService_EnrichFromPR_BranchAlreadyOwnedSkipsBranch(t *testing.T) {
 	created, err := svc.CreateTask("https://github.com/owner/repo/pull/7", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.wg.Wait()
 
 	got, err := svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Branch != "" {
 		t.Fatalf("Branch = %q, want empty (must not cross-assign task %s's branch)", got.Branch, owner.ID)
@@ -1311,18 +1384,21 @@ func TestTaskService_EnrichFromPR_NotMyPRStartsPRReviewWorkflow(t *testing.T) {
 	created, err := svc.CreateTask("https://github.com/owner/repo/pull/7", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.wg.Wait()
 
 	got, err := svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !slices.Contains(got.Tags, "review") {
 		t.Fatalf("Tags = %v, want inbound review tag", got.Tags)
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != "pr-review" {
 		t.Fatalf("Workflow = %+v, want pr-review", got.Workflow)
+		panic("unreachable")
 	}
 	if len(got.AgentRuns) != 1 {
 		t.Fatalf("AgentRuns = %+v, want one pr-review workflow agent", got.AgentRuns)
@@ -1364,12 +1440,14 @@ func TestTaskService_ReconcilePendingEnrichment_RetriesAfterLinkedPRsFailure(t *
 	created, err := svc.CreateTask("https://github.com/owner/repo/issues/42", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.wg.Wait()
 
 	got, err := svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !slices.Contains(got.Tags, enrichPendingTag) {
 		t.Fatalf("Tags = %v, want enrich-pending marker before reconcile", got.Tags)
@@ -1405,6 +1483,7 @@ func TestTaskService_ReconcilePendingEnrichment_CoolsDownLinkedPRsFailure(t *tes
 	created, err := svc.CreateTask("https://github.com/owner/repo/issues/42", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.wg.Wait()
 
@@ -1427,6 +1506,7 @@ func TestTaskService_ReconcilePendingEnrichment_CoolsDownLinkedPRsFailure(t *tes
 	got, err := svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !slices.Contains(got.Tags, enrichPendingTag) {
 		t.Fatalf("Tags = %v, marker should remain while linked-PRs fetch keeps failing", got.Tags)
@@ -1484,6 +1564,7 @@ func TestTaskService_ReconcilePendingEnrichment_SkipsInFlightInitialEnrichment(t
 	created, err := svc.CreateTask("https://github.com/owner/repo/issues/42", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	<-block
 
@@ -1499,6 +1580,7 @@ func TestTaskService_ReconcilePendingEnrichment_SkipsInFlightInitialEnrichment(t
 	got, err := svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Title != "recovered issue" {
 		t.Fatalf("Title = %q, want the enriched title once the in-flight fetch completes", got.Title)
@@ -1517,6 +1599,7 @@ func TestTaskService_ReconcilePendingEnrichment_SkipsNonStubs(t *testing.T) {
 	// An ordinary task without the marker must never be touched by reconcile.
 	if _, err := svc.tasks.Create("ordinary task", "", "headless"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// A stub whose title is no longer a URL cannot be re-fetched; reconcile
 	// must skip it rather than crash or spuriously fetch.
@@ -1556,6 +1639,7 @@ func TestTaskService_EnrichFromPR_UnknownViewerDefersInsteadOfMisrouting(t *test
 	created, err := svc.CreateTask("https://github.com/owner/repo/pull/151", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.wg.Wait()
 
@@ -1565,6 +1649,7 @@ func TestTaskService_EnrichFromPR_UnknownViewerDefersInsteadOfMisrouting(t *test
 	got, err := svc.GetTask(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// The marker is what ReconcilePendingEnrichment retries on. Any Update in
 	// enrichFromPR replaces Tags and would drop it.
@@ -1582,11 +1667,13 @@ func TestTaskService_AttachmentsCRUD(t *testing.T) {
 	created, err := svc.tasks.Create("attachment task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	uploaded, err := svc.UploadAttachment(created.ID, "diagram?.png", []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
 	if err != nil {
 		t.Fatalf("UploadAttachment: %v", err)
+		panic("unreachable")
 	}
 	if uploaded.ID == "" {
 		t.Fatal("UploadAttachment returned empty ID")
@@ -1598,6 +1685,7 @@ func TestTaskService_AttachmentsCRUD(t *testing.T) {
 	listed, err := svc.ListAttachments(created.ID)
 	if err != nil {
 		t.Fatalf("ListAttachments: %v", err)
+		panic("unreachable")
 	}
 	if len(listed) != 1 || listed[0].ID != uploaded.ID {
 		t.Fatalf("ListAttachments = %+v, want uploaded attachment", listed)
@@ -1606,6 +1694,7 @@ func TestTaskService_AttachmentsCRUD(t *testing.T) {
 	url, err := svc.GetAttachmentURL(created.ID, uploaded.ID)
 	if err != nil {
 		t.Fatalf("GetAttachmentURL: %v", err)
+		panic("unreachable")
 	}
 	if !strings.HasPrefix(url, "data:image/") {
 		t.Fatalf("GetAttachmentURL = %q, want image data URL", url)
@@ -1613,17 +1702,20 @@ func TestTaskService_AttachmentsCRUD(t *testing.T) {
 
 	if err := svc.DeleteAttachment(created.ID, uploaded.ID); err != nil {
 		t.Fatalf("DeleteAttachment: %v", err)
+		panic("unreachable")
 	}
 
 	listed, err = svc.ListAttachments(created.ID)
 	if err != nil {
 		t.Fatalf("ListAttachments after delete: %v", err)
+		panic("unreachable")
 	}
 	if len(listed) != 0 {
 		t.Fatalf("len(ListAttachments after delete) = %d, want 0", len(listed))
 	}
 	if _, err := svc.GetAttachmentURL(created.ID, uploaded.ID); err == nil {
 		t.Fatal("GetAttachmentURL after delete returned nil error")
+		panic("unreachable")
 	}
 }
 
@@ -1633,13 +1725,16 @@ func TestTaskService_DeleteTaskRemovesAttachmentBlobs(t *testing.T) {
 	created, err := svc.tasks.Create("attachment cleanup task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	uploaded, err := svc.UploadAttachment(created.ID, "cleanup.txt", []byte("cleanup"))
 	if err != nil {
 		t.Fatalf("UploadAttachment: %v", err)
+		panic("unreachable")
 	}
 	if err := svc.DeleteTask(created.ID); err != nil {
 		t.Fatalf("DeleteTask: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(uploaded.Path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("attachment blob still exists after task delete: %v", err)

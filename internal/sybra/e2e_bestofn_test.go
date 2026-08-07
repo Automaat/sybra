@@ -33,10 +33,12 @@ func bestOfNE2EBareRepo(t *testing.T) string {
 	} {
 		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
 			t.Fatalf("%v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("# best-of-n e2e\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"git", "-C", src, "add", "."},
@@ -44,18 +46,22 @@ func bestOfNE2EBareRepo(t *testing.T) string {
 	} {
 		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
 			t.Fatalf("%v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 
 	bare := filepath.Join(t.TempDir(), "origin.git")
 	if out, err := exec.Command("git", "clone", "--bare", src, bare).CombinedOutput(); err != nil {
 		t.Fatalf("git clone --bare: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
 		t.Fatalf("git config: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
 		t.Fatalf("git fetch: %v: %s", err, out)
+		panic("unreachable")
 	}
 	return bare
 }
@@ -134,6 +140,7 @@ func TestE2E_BestOfN_PromotesWinnerCleansUpLosers(t *testing.T) {
 	scenarioFile := filepath.Join(t.TempDir(), "scenarios.txt")
 	if err := os.WriteFile(scenarioFile, []byte("best_of_n_attempt\nbest_of_n_attempt\nbest_of_n_judge\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("FAKE_CLAUDE_SCENARIO_FILE", scenarioFile)
 	t.Setenv("FAKE_CODEX_SCENARIO_FILE", scenarioFile)
@@ -141,16 +148,19 @@ func TestE2E_BestOfN_PromotesWinnerCleansUpLosers(t *testing.T) {
 	taskDir, err := os.MkdirTemp("", "sybra-e2e-bestofn-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(taskDir) })
 	t.Setenv("SYBRA_HOME", taskDir)
 	tasksDir := filepath.Join(taskDir, "tasks")
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskStore, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(taskStore, nil)
 
@@ -160,6 +170,7 @@ func TestE2E_BestOfN_PromotesWinnerCleansUpLosers(t *testing.T) {
 	logDir, err := os.MkdirTemp("", "sybra-e2e-bestofn-logs-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { keepAgentLogsOnFailure(t, logDir) })
 
@@ -167,11 +178,13 @@ func TestE2E_BestOfN_PromotesWinnerCleansUpLosers(t *testing.T) {
 	projectsDir, err := os.MkdirTemp("", "sybra-e2e-bestofn-projects-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(projectsDir) })
 	projStore, err := project.NewStore(filepath.Join(projectsDir, "meta"), filepath.Join(projectsDir, "clones"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	proj := project.Project{
 		ID: "test/bestofn", Name: "bestofn", Owner: "test", Repo: "bestofn",
@@ -181,6 +194,7 @@ func TestE2E_BestOfN_PromotesWinnerCleansUpLosers(t *testing.T) {
 	proj, err = projStore.Get(proj.ID)
 	if err != nil {
 		t.Fatalf("reload seeded project: %v", err)
+		panic("unreachable")
 	}
 
 	// engine is assigned below, after the worktree/agentorch wiring it depends
@@ -216,6 +230,7 @@ func TestE2E_BestOfN_PromotesWinnerCleansUpLosers(t *testing.T) {
 	wtDir, err := os.MkdirTemp("", "sybra-e2e-bestofn-wt-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(wtDir) })
 	wm := worktree.New(worktree.Config{
@@ -230,19 +245,23 @@ func TestE2E_BestOfN_PromotesWinnerCleansUpLosers(t *testing.T) {
 	wfDir, err := os.MkdirTemp("", "sybra-e2e-bestofn-wf-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(wfDir) })
 	wfStore, err := workflow.NewStore(wfDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := wfStore.Save(bestOfNTestWorkflowDef()); err != nil {
 		t.Fatalf("save workflow: %v", err)
+		panic("unreachable")
 	}
 
 	artifactsDir, err := os.MkdirTemp("", "sybra-e2e-bestofn-artifacts-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(artifactsDir) })
 	artifactStore := artifact.New(artifactsDir)
@@ -273,6 +292,7 @@ func TestE2E_BestOfN_PromotesWinnerCleansUpLosers(t *testing.T) {
 	tk, err := taskMgr.Store().Create("best-of-n e2e task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	trueBool := true
 	if _, err := taskMgr.Update(tk.ID, task.Update{
@@ -285,6 +305,7 @@ func TestE2E_BestOfN_PromotesWinnerCleansUpLosers(t *testing.T) {
 
 	if err := engine.StartWorkflow(tk.ID, "e2e-best-of-n"); err != nil {
 		t.Fatalf("StartWorkflow: %v", err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 20*time.Second, "workflow terminates", func() bool {
@@ -298,6 +319,7 @@ func TestE2E_BestOfN_PromotesWinnerCleansUpLosers(t *testing.T) {
 	final, err := taskMgr.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if final.Status == "human-required" {
 		t.Fatalf("workflow escalated to human-required: %s", final.StatusReason)
@@ -306,6 +328,7 @@ func TestE2E_BestOfN_PromotesWinnerCleansUpLosers(t *testing.T) {
 	canonicalDir := wm.PathFor(final)
 	if _, statErr := os.Stat(canonicalDir); statErr != nil {
 		t.Fatalf("canonical worktree missing after promotion: %v", statErr)
+		panic("unreachable")
 	}
 
 	// (a) + (b): only attempt_2 (the judged winner)'s committed file is on
@@ -324,6 +347,7 @@ func TestE2E_BestOfN_PromotesWinnerCleansUpLosers(t *testing.T) {
 	out, err := exec.Command("git", "-C", canonicalDir, "log", "--name-only", "--format=").Output()
 	if err != nil {
 		t.Fatalf("git log: %v", err)
+		panic("unreachable")
 	}
 	history := string(out)
 	if !strings.Contains(history, winnerFile) {

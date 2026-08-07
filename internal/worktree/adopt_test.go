@@ -19,6 +19,7 @@ func signoffHookPath(t *testing.T, wtPath string) string {
 	out, err := exec.Command("git", "-C", wtPath, "rev-parse", "--git-common-dir").CombinedOutput()
 	if err != nil {
 		t.Fatalf("resolve git common dir: %v: %s", err, out)
+		panic("unreachable")
 	}
 	gitDir := strings.TrimSpace(string(out))
 	if !filepath.IsAbs(gitDir) {
@@ -40,11 +41,13 @@ func TestPrepareForTask_AdoptsExternalWorktree(t *testing.T) {
 	const extBranch = "orca/feature-x"
 	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", h.proj.ClonePath, "worktree", "add", "-b", extBranch, ext, "main").CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	tk, err := h.tasks.Create("adopt me", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{
 		"project_id":   h.proj.ID,
@@ -52,11 +55,13 @@ func TestPrepareForTask_AdoptsExternalWorktree(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	if got != ext {
 		t.Fatalf("adopted path = %q, want %q", got, ext)
@@ -71,6 +76,7 @@ func TestPrepareForTask_AdoptsExternalWorktree(t *testing.T) {
 	reloaded, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if reloaded.Branch != extBranch {
 		t.Errorf("task branch = %q, want %q", reloaded.Branch, extBranch)
@@ -80,6 +86,7 @@ func TestPrepareForTask_AdoptsExternalWorktree(t *testing.T) {
 	entries, err := os.ReadDir(h.wtDir)
 	if err != nil {
 		t.Fatalf("read worktrees dir: %v", err)
+		panic("unreachable")
 	}
 	if len(entries) != 0 {
 		t.Errorf("managed worktrees dir not empty: %v", entries)
@@ -105,11 +112,13 @@ func TestPrepareForFix_AdoptsExternalWorktree(t *testing.T) {
 	const extBranch = "orca/fix-x"
 	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", h.proj.ClonePath, "worktree", "add", "-b", extBranch, ext, "main").CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	tk, err := h.tasks.Create("adopt fix", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{
 		"project_id":   h.proj.ID,
@@ -117,11 +126,13 @@ func TestPrepareForFix_AdoptsExternalWorktree(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := h.m.PrepareForFix(context.Background(), tk, 1)
 	if err != nil {
 		t.Fatalf("PrepareForFix: %v", err)
+		panic("unreachable")
 	}
 	if got != ext {
 		t.Fatalf("adopted path = %q, want %q", got, ext)
@@ -136,6 +147,7 @@ func TestPrepareForFix_AdoptsExternalWorktree(t *testing.T) {
 	reloaded, err := h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if reloaded.Branch != extBranch {
 		t.Errorf("task branch = %q, want %q", reloaded.Branch, extBranch)
@@ -145,6 +157,7 @@ func TestPrepareForFix_AdoptsExternalWorktree(t *testing.T) {
 	entries, err := os.ReadDir(h.wtDir)
 	if err != nil {
 		t.Fatalf("read worktrees dir: %v", err)
+		panic("unreachable")
 	}
 	if len(entries) != 0 {
 		t.Errorf("managed worktrees dir not empty: %v", entries)
@@ -170,17 +183,20 @@ func TestPrepareForFix_FallsBackToPRHead(t *testing.T) {
 		full := append([]string{"-C", h.src}, args...)
 		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	srcGit("checkout", "-b", branch)
 	if err := os.WriteFile(filepath.Join(h.src, "feature.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "pr head")
 	shaOut, err := exec.Command("git", "-C", h.src, "rev-parse", "HEAD").CombinedOutput()
 	if err != nil {
 		t.Fatalf("rev-parse: %v: %s", err, shaOut)
+		panic("unreachable")
 	}
 	prSHA := strings.TrimSpace(string(shaOut))
 	srcGit("update-ref", "refs/pull/7/head", prSHA)
@@ -193,21 +209,25 @@ func TestPrepareForFix_FallsBackToPRHead(t *testing.T) {
 	tk, err := h.tasks.Create("fix fork pr", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
 	if err != nil {
 		t.Fatalf("PrepareForFix: %v", err)
+		panic("unreachable")
 	}
 
 	// Worktree is on a real local branch (not detached) at the PR head commit.
 	headBranch, err := exec.Command("git", "-C", wtPath, "rev-parse", "--abbrev-ref", "HEAD").CombinedOutput()
 	if err != nil {
 		t.Fatalf("rev-parse HEAD branch: %v: %s", err, headBranch)
+		panic("unreachable")
 	}
 	if got := strings.TrimSpace(string(headBranch)); got != branch {
 		t.Errorf("worktree branch = %q, want %q", got, branch)
@@ -215,6 +235,7 @@ func TestPrepareForFix_FallsBackToPRHead(t *testing.T) {
 	headSHA, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").CombinedOutput()
 	if err != nil {
 		t.Fatalf("rev-parse HEAD: %v: %s", err, headSHA)
+		panic("unreachable")
 	}
 	if got := strings.TrimSpace(string(headSHA)); got != prSHA {
 		t.Errorf("worktree HEAD = %q, want PR head %q", got, prSHA)
@@ -238,6 +259,7 @@ func TestPrepareForFix_ReusesHealthyWorktree(t *testing.T) {
 		full := append([]string{"-C", h.src}, args...)
 		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	// setup-count.txt is a byproduct of the setup command, not agent work —
@@ -246,12 +268,14 @@ func TestPrepareForFix_ReusesHealthyWorktree(t *testing.T) {
 	// remote push and defeats reuse.
 	if err := os.WriteFile(filepath.Join(h.src, ".gitignore"), []byte("setup-count.txt\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "gitignore setup byproduct")
 	srcGit("checkout", "-b", branch)
 	if err := os.WriteFile(filepath.Join(h.src, "feature.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "initial fix commit")
@@ -262,20 +286,24 @@ func TestPrepareForFix_ReusesHealthyWorktree(t *testing.T) {
 	tk, err := h.tasks.Create("reuse fix worktree", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
 	if err != nil {
 		t.Fatalf("PrepareForFix (initial): %v", err)
+		panic("unreachable")
 	}
 	setupCountPath := filepath.Join(wtPath, "setup-count.txt")
 	countAfterFirst, err := os.ReadFile(setupCountPath)
 	if err != nil {
 		t.Fatalf("read setup-count.txt: %v", err)
+		panic("unreachable")
 	}
 	if got := strings.Count(string(countAfterFirst), "run"); got != 1 {
 		t.Fatalf("setup ran %d times on initial prepare, want 1", got)
@@ -283,9 +311,11 @@ func TestPrepareForFix_ReusesHealthyWorktree(t *testing.T) {
 	hookPath := signoffHookPath(t, wtPath)
 	if err := os.Remove(hookPath); err != nil {
 		t.Fatalf("remove signoff hook: %v", err)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", wtPath, "config", "--unset", "core.hooksPath").CombinedOutput(); err != nil {
 		t.Fatalf("unset core.hooksPath: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	// A second commit lands on the fix branch (e.g. pushed from another
@@ -293,6 +323,7 @@ func TestPrepareForFix_ReusesHealthyWorktree(t *testing.T) {
 	srcGit("checkout", branch)
 	if err := os.WriteFile(filepath.Join(h.src, "feature2.txt"), []byte("y"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "second fix commit")
@@ -301,6 +332,7 @@ func TestPrepareForFix_ReusesHealthyWorktree(t *testing.T) {
 	got, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
 	if err != nil {
 		t.Fatalf("PrepareForFix (reuse): %v", err)
+		panic("unreachable")
 	}
 	if got != wtPath {
 		t.Fatalf("reused path = %q, want the same worktree %q", got, wtPath)
@@ -310,6 +342,7 @@ func TestPrepareForFix_ReusesHealthyWorktree(t *testing.T) {
 	countAfterSecond, err := os.ReadFile(setupCountPath)
 	if err != nil {
 		t.Fatalf("read setup-count.txt after reuse: %v", err)
+		panic("unreachable")
 	}
 	if got := strings.Count(string(countAfterSecond), "run"); got != 1 {
 		t.Fatalf("setup ran %d times across both prepares, want 1 (setup must be skipped on reuse)", got)
@@ -339,11 +372,13 @@ func TestPrepareForFix_SetupFailureDoesNotBlock(t *testing.T) {
 		full := append([]string{"-C", h.src}, args...)
 		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	srcGit("checkout", "-b", branch)
 	if err := os.WriteFile(filepath.Join(h.src, "feature.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "pr commit")
@@ -354,20 +389,24 @@ func TestPrepareForFix_SetupFailureDoesNotBlock(t *testing.T) {
 	tk, err := h.tasks.Create("fix broken build", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
 	if err != nil {
 		t.Fatalf("PrepareForFix must succeed despite a failing setup command: %v", err)
+		panic("unreachable")
 	}
 
 	content, readErr := os.ReadFile(filepath.Join(wtPath, notes.FileName))
 	if readErr != nil {
 		t.Fatalf("read scratchpad: %v", readErr)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(content), "Setup failure") {
 		t.Errorf("scratchpad missing setup failure note: %q", content)
@@ -393,11 +432,13 @@ func TestPrepareForFix_ReconcilesOrphanWorktreeDir(t *testing.T) {
 		full := append([]string{"-C", h.src}, args...)
 		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	srcGit("checkout", "-b", branch)
 	if err := os.WriteFile(filepath.Join(h.src, "fix.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "fix commit")
@@ -407,15 +448,18 @@ func TestPrepareForFix_ReconcilesOrphanWorktreeDir(t *testing.T) {
 	tk, err := h.tasks.Create("orphan fix", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForFix(context.Background(), tk, 1)
 	if err != nil {
 		t.Fatalf("PrepareForFix (initial): %v", err)
+		panic("unreachable")
 	}
 
 	// Simulate the orphan: drop the bare repo's admin entry for this worktree
@@ -424,6 +468,7 @@ func TestPrepareForFix_ReconcilesOrphanWorktreeDir(t *testing.T) {
 	gitFile, err := os.ReadFile(filepath.Join(wtPath, ".git"))
 	if err != nil {
 		t.Fatalf("read .git file: %v", err)
+		panic("unreachable")
 	}
 	adminDir := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(gitFile)), "gitdir:"))
 	if adminDir == "" {
@@ -434,6 +479,7 @@ func TestPrepareForFix_ReconcilesOrphanWorktreeDir(t *testing.T) {
 	}
 	if err := os.RemoveAll(adminDir); err != nil {
 		t.Fatalf("remove admin dir: %v", err)
+		panic("unreachable")
 	}
 	if project.WorktreeHealthy(context.Background(), wtPath) {
 		t.Fatalf("expected worktree to be unhealthy after dropping its admin entry")
@@ -441,14 +487,17 @@ func TestPrepareForFix_ReconcilesOrphanWorktreeDir(t *testing.T) {
 	sentinel := filepath.Join(wtPath, "uncommitted-sentinel.txt")
 	if err := os.WriteFile(sentinel, []byte("recoverable local edit"), 0o644); err != nil {
 		t.Fatalf("write sentinel: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Fatalf("expected orphan checkout dir to still exist: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := h.m.PrepareForFix(context.Background(), tk, 1)
 	if err != nil {
 		t.Fatalf("PrepareForFix (orphan reconcile): %v", err)
+		panic("unreachable")
 	}
 	if got != wtPath {
 		t.Fatalf("reconciled path = %q, want %q", got, wtPath)
@@ -459,6 +508,7 @@ func TestPrepareForFix_ReconcilesOrphanWorktreeDir(t *testing.T) {
 	headBranch, err := exec.Command("git", "-C", got, "rev-parse", "--abbrev-ref", "HEAD").CombinedOutput()
 	if err != nil {
 		t.Fatalf("rev-parse HEAD branch: %v: %s", err, headBranch)
+		panic("unreachable")
 	}
 	if gotBranch := strings.TrimSpace(string(headBranch)); gotBranch != branch {
 		t.Errorf("worktree branch = %q, want %q", gotBranch, branch)
@@ -467,6 +517,7 @@ func TestPrepareForFix_ReconcilesOrphanWorktreeDir(t *testing.T) {
 	slots, err := os.ReadDir(quarantineRoot)
 	if err != nil {
 		t.Fatalf("read quarantine: %v", err)
+		panic("unreachable")
 	}
 	if len(slots) != 1 {
 		t.Fatalf("quarantine entries = %d, want 1", len(slots))
@@ -474,6 +525,7 @@ func TestPrepareForFix_ReconcilesOrphanWorktreeDir(t *testing.T) {
 	quarantinedSentinel := filepath.Join(quarantineRoot, slots[0].Name(), "worktree", "uncommitted-sentinel.txt")
 	if body, readErr := os.ReadFile(quarantinedSentinel); readErr != nil || string(body) != "recoverable local edit" {
 		t.Fatalf("quarantined sentinel body=%q err=%v", body, readErr)
+		panic("unreachable")
 	}
 }
 
@@ -495,11 +547,13 @@ func TestPrepareForFix_ReconcilesDivergedTaskBranch(t *testing.T) {
 		full := append([]string{"-C", h.src}, args...)
 		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	srcGit("checkout", "-b", branch)
 	if err := os.WriteFile(filepath.Join(h.src, "feature.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "initial fix commit")
@@ -510,27 +564,33 @@ func TestPrepareForFix_ReconcilesDivergedTaskBranch(t *testing.T) {
 	tk, err := h.tasks.Create("reconcile diverged fix worktree", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
 	if err != nil {
 		t.Fatalf("PrepareForFix (initial): %v", err)
+		panic("unreachable")
 	}
 
 	// Simulate an unpushed local fix commit left behind in the worktree from a
 	// prior run — local is now "ahead" of the branch's own remote head.
 	if err := os.WriteFile(filepath.Join(wtPath, "local-fix.txt"), []byte("local"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", wtPath, "add", "local-fix.txt").CombinedOutput(); err != nil {
 		t.Fatalf("git add: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", wtPath, "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "unpushed local fix").CombinedOutput(); err != nil {
 		t.Fatalf("git commit: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	// Independently, the branch advances on the remote (e.g. pushed from
@@ -538,6 +598,7 @@ func TestPrepareForFix_ReconcilesDivergedTaskBranch(t *testing.T) {
 	srcGit("checkout", branch)
 	if err := os.WriteFile(filepath.Join(h.src, "remote-fix.txt"), []byte("remote"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "remote fix pushed independently")
@@ -546,6 +607,7 @@ func TestPrepareForFix_ReconcilesDivergedTaskBranch(t *testing.T) {
 	got, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
 	if err != nil {
 		t.Fatalf("PrepareForFix (diverged reconcile): %v", err)
+		panic("unreachable")
 	}
 	if got != wtPath {
 		t.Fatalf("reconciled path = %q, want the same worktree %q (reconciled in place, not recreated)", got, wtPath)
@@ -561,6 +623,7 @@ func TestPrepareForFix_ReconcilesDivergedTaskBranch(t *testing.T) {
 	statusOut, statusErr := exec.Command("git", "-C", got, "status", "--porcelain").CombinedOutput()
 	if statusErr != nil {
 		t.Fatalf("git status: %v: %s", statusErr, statusOut)
+		panic("unreachable")
 	}
 	if strings.TrimSpace(string(statusOut)) != "" {
 		t.Fatalf("reconciled worktree not clean: %q", statusOut)
@@ -572,9 +635,11 @@ func TestPrepareForFix_ReconcilesDivergedTaskBranch(t *testing.T) {
 	remoteHead, err := exec.Command("git", "-C", got, "rev-parse", "origin/"+branch).Output()
 	if err != nil {
 		t.Fatalf("resolve origin/%s: %v", branch, err)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", got, "merge-base", "--is-ancestor", strings.TrimSpace(string(remoteHead)), "HEAD").CombinedOutput(); err != nil {
 		t.Fatalf("remote head not an ancestor of reconciled HEAD (still diverged): %v: %s", err, out)
+		panic("unreachable")
 	}
 }
 
@@ -592,11 +657,13 @@ func TestPrepareForFix_RecreatedWorktreeReconcilesDivergedTaskBranch(t *testing.
 		full := append([]string{"-C", h.src}, args...)
 		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	srcGit("checkout", "-b", branch)
 	if err := os.WriteFile(filepath.Join(h.src, "feature.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "initial fix commit")
@@ -607,30 +674,37 @@ func TestPrepareForFix_RecreatedWorktreeReconcilesDivergedTaskBranch(t *testing.
 	tk, err := h.tasks.Create("recreate diverged fix worktree", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
 	if err != nil {
 		t.Fatalf("PrepareForFix (initial): %v", err)
+		panic("unreachable")
 	}
 
 	if err := os.WriteFile(filepath.Join(wtPath, "local-fix.txt"), []byte("local"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", wtPath, "add", "local-fix.txt").CombinedOutput(); err != nil {
 		t.Fatalf("git add: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", wtPath, "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "unpushed local fix").CombinedOutput(); err != nil {
 		t.Fatalf("git commit: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	srcGit("checkout", branch)
 	if err := os.WriteFile(filepath.Join(h.src, "remote-fix.txt"), []byte("remote"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "remote fix pushed independently")
@@ -638,19 +712,23 @@ func TestPrepareForFix_RecreatedWorktreeReconcilesDivergedTaskBranch(t *testing.
 
 	if err := project.RemoveWorktreeReconcile(context.Background(), h.proj.ClonePath, wtPath); err != nil {
 		t.Fatalf("remove old worktree: %v", err)
+		panic("unreachable")
 	}
 
 	forkBare := filepath.Join(t.TempDir(), "fork.git")
 	if out, err := exec.Command("git", "init", "--bare", forkBare).CombinedOutput(); err != nil {
 		t.Fatalf("init fork bare: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", h.proj.ClonePath, "remote", "add", "fork", forkBare).CombinedOutput(); err != nil {
 		t.Fatalf("add fork remote: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	got, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
 	if err != nil {
 		t.Fatalf("PrepareForFix (recreated diverged reconcile): %v", err)
+		panic("unreachable")
 	}
 	if got != wtPath {
 		t.Fatalf("recreated path = %q, want %q", got, wtPath)
@@ -666,6 +744,7 @@ func TestPrepareForFix_RecreatedWorktreeReconcilesDivergedTaskBranch(t *testing.
 	statusOut, statusErr := exec.Command("git", "-C", got, "status", "--porcelain").CombinedOutput()
 	if statusErr != nil {
 		t.Fatalf("git status: %v: %s", statusErr, statusOut)
+		panic("unreachable")
 	}
 	if strings.TrimSpace(string(statusOut)) != "" {
 		t.Fatalf("recreated worktree not clean: %q", statusOut)
@@ -674,9 +753,11 @@ func TestPrepareForFix_RecreatedWorktreeReconcilesDivergedTaskBranch(t *testing.
 	remoteHead, err := exec.Command("git", "-C", got, "rev-parse", "origin/"+branch).Output()
 	if err != nil {
 		t.Fatalf("resolve origin/%s: %v", branch, err)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", got, "merge-base", "--is-ancestor", strings.TrimSpace(string(remoteHead)), "HEAD").CombinedOutput(); err != nil {
 		t.Fatalf("remote head not an ancestor of recreated HEAD (still diverged): %v: %s", err, out)
+		panic("unreachable")
 	}
 }
 
@@ -694,17 +775,20 @@ func TestPrepareForFix_PRHeadFallbackIgnoresSameNamedForkBranch(t *testing.T) {
 		full := append([]string{"-C", h.src}, args...)
 		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	srcGit("checkout", "-b", branch)
 	if err := os.WriteFile(filepath.Join(h.src, "pr-head.txt"), []byte("pr"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "pr head")
 	shaOut, err := exec.Command("git", "-C", h.src, "rev-parse", "HEAD").CombinedOutput()
 	if err != nil {
 		t.Fatalf("rev-parse pr head: %v: %s", err, shaOut)
+		panic("unreachable")
 	}
 	prSHA := strings.TrimSpace(string(shaOut))
 	srcGit("update-ref", "refs/pull/24/head", prSHA)
@@ -714,28 +798,36 @@ func TestPrepareForFix_PRHeadFallbackIgnoresSameNamedForkBranch(t *testing.T) {
 	forkBare := filepath.Join(t.TempDir(), "fork.git")
 	if out, err := exec.Command("git", "init", "--bare", forkBare).CombinedOutput(); err != nil {
 		t.Fatalf("init fork bare: %v: %s", err, out)
+		panic("unreachable")
 	}
 	forkSrc := filepath.Join(t.TempDir(), "fork-src")
 	if out, err := exec.Command("git", "clone", h.src, forkSrc).CombinedOutput(); err != nil {
 		t.Fatalf("clone fork source: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", forkSrc, "checkout", "-b", branch).CombinedOutput(); err != nil {
 		t.Fatalf("checkout fork branch: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(forkSrc, "fork-only.txt"), []byte("fork"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", forkSrc, "add", ".").CombinedOutput(); err != nil {
 		t.Fatalf("git add fork: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", forkSrc, "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "same named fork branch").CombinedOutput(); err != nil {
 		t.Fatalf("git commit fork: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", forkSrc, "push", forkBare, branch).CombinedOutput(); err != nil {
 		t.Fatalf("push fork branch: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", h.proj.ClonePath, "remote", "add", "fork", forkBare).CombinedOutput(); err != nil {
 		t.Fatalf("add fork remote: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	h.m.prBranch = func(_ string, _ int) (string, error) { return branch, nil }
@@ -743,19 +835,23 @@ func TestPrepareForFix_PRHeadFallbackIgnoresSameNamedForkBranch(t *testing.T) {
 	tk, err := h.tasks.Create("fix fork collision pr", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
 	if err != nil {
 		t.Fatalf("PrepareForFix: %v", err)
+		panic("unreachable")
 	}
 	headSHA, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").CombinedOutput()
 	if err != nil {
 		t.Fatalf("rev-parse HEAD: %v: %s", err, headSHA)
+		panic("unreachable")
 	}
 	if got := strings.TrimSpace(string(headSHA)); got != prSHA {
 		t.Fatalf("worktree HEAD = %q, want PR head %q", got, prSHA)
@@ -780,11 +876,13 @@ func TestPrepareForFix_DivergedTaskBranchConflictEscalates(t *testing.T) {
 		full := append([]string{"-C", h.src}, args...)
 		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	srcGit("checkout", "-b", branch)
 	if err := os.WriteFile(filepath.Join(h.src, "shared.txt"), []byte("base"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "initial fix commit")
@@ -795,32 +893,39 @@ func TestPrepareForFix_DivergedTaskBranchConflictEscalates(t *testing.T) {
 	tk, err := h.tasks.Create("diverged conflict fix worktree", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForFix(context.Background(), tk, prNumber)
 	if err != nil {
 		t.Fatalf("PrepareForFix (initial): %v", err)
+		panic("unreachable")
 	}
 
 	// Local edits shared.txt one way (unpushed)...
 	if err := os.WriteFile(filepath.Join(wtPath, "shared.txt"), []byte("local-edit"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", wtPath, "add", "shared.txt").CombinedOutput(); err != nil {
 		t.Fatalf("git add: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", wtPath, "-c", "user.name=Test", "-c", "user.email=test@test.com", "commit", "-m", "local edit").CombinedOutput(); err != nil {
 		t.Fatalf("git commit: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	// ...while the remote edits it a conflicting way.
 	srcGit("checkout", branch)
 	if err := os.WriteFile(filepath.Join(h.src, "shared.txt"), []byte("remote-edit"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "remote edit")
@@ -829,6 +934,7 @@ func TestPrepareForFix_DivergedTaskBranchConflictEscalates(t *testing.T) {
 	_, err = h.m.PrepareForFix(context.Background(), tk, prNumber)
 	if err == nil {
 		t.Fatal("PrepareForFix (diverged conflict) = nil error, want a genuine-conflict error")
+		panic("unreachable")
 	}
 	if !errors.Is(err, project.ErrBranchDiverged) {
 		t.Errorf("PrepareForFix (diverged conflict) err = %v, want wrapping project.ErrBranchDiverged", err)
@@ -852,6 +958,7 @@ func TestPrepareForTask_AdoptRejectsMissingDir(t *testing.T) {
 	}
 	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); err == nil {
 		t.Fatal("expected error for missing adopted worktree dir, got nil")
+		panic("unreachable")
 	}
 }
 
@@ -864,11 +971,13 @@ func TestPrepareForTask_AdoptRejectsDefaultBranch(t *testing.T) {
 	ext := filepath.Join(t.TempDir(), "orca-on-main")
 	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", h.proj.ClonePath, "worktree", "add", ext, "main").CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	tk := task.Task{ID: "cafe1234", Title: "adopt main", ProjectID: h.proj.ID, WorktreeDir: ext}
 	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); err == nil {
 		t.Fatal("expected error adopting a worktree on the default branch, got nil")
+		panic("unreachable")
 	}
 }
 
@@ -881,10 +990,12 @@ func TestPrepareForTask_AdoptRejectsDetachedHead(t *testing.T) {
 	ext := filepath.Join(t.TempDir(), "orca-detached")
 	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", h.proj.ClonePath, "worktree", "add", "--detach", ext, "main").CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add --detach: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	tk := task.Task{ID: "beef5678", Title: "adopt detached", ProjectID: h.proj.ID, WorktreeDir: ext}
 	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); err == nil {
 		t.Fatal("expected error adopting a detached-HEAD worktree, got nil")
+		panic("unreachable")
 	}
 }

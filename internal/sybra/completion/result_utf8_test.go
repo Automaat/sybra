@@ -27,6 +27,7 @@ func TestBuildRunPatchResultSurvivesMultibyteAgentOutput(t *testing.T) {
 
 			if patch.Result == nil {
 				t.Fatal("Result not set on the run patch")
+				panic("unreachable")
 			}
 			if !utf8.ValidString(*patch.Result) {
 				t.Fatalf("run result is not valid UTF-8: %q", *patch.Result)
@@ -38,6 +39,7 @@ func TestBuildRunPatchResultSurvivesMultibyteAgentOutput(t *testing.T) {
 			data, err := yaml.Marshal(map[string]string{"result": *patch.Result})
 			if err != nil {
 				t.Fatalf("yaml.Marshal: %v", err)
+				panic("unreachable")
 			}
 			if strings.Contains(string(data), "!!binary") {
 				t.Fatalf("run result marshalled as a binary block:\n%s", data)

@@ -37,22 +37,27 @@ func newEnforceSandboxCfg(t *testing.T, worktree, sandboxHome, tmp string) *RunC
 	profile, err := materializeSandboxProfile()
 	if err != nil {
 		t.Fatalf("materializeSandboxProfile: %v", err)
+		panic("unreachable")
 	}
 	wt, err := canonicalizeRoot(worktree)
 	if err != nil {
 		t.Fatalf("canonicalizeRoot(worktree): %v", err)
+		panic("unreachable")
 	}
 	home, err := canonicalizeRoot(sandboxHome)
 	if err != nil {
 		t.Fatalf("canonicalizeRoot(sandboxHome): %v", err)
+		panic("unreachable")
 	}
 	tp, err := canonicalizeRoot(tmp)
 	if err != nil {
 		t.Fatalf("canonicalizeRoot(tmp): %v", err)
+		panic("unreachable")
 	}
 	shared, err := canonicalizeRoot(t.TempDir())
 	if err != nil {
 		t.Fatalf("canonicalizeRoot(sharedCache): %v", err)
+		panic("unreachable")
 	}
 	return &RunConfig{sandbox: sandboxSpec{
 		mode:        "enforce",
@@ -115,6 +120,7 @@ func TestSandboxBreakout_DeniesHomeWrite(t *testing.T) {
 			}
 			if _, statErr := os.Stat(victim); statErr == nil {
 				t.Fatalf("victim file %q was created despite enforce mode", victim)
+				panic("unreachable")
 			}
 		})
 	}
@@ -139,6 +145,7 @@ func TestSandboxBreakout_AllowsRootWrites(t *testing.T) {
 	for _, f := range []string{filepath.Join(worktree, "a.txt"), filepath.Join(home, "b.txt"), filepath.Join(tmp, "c.txt")} {
 		if _, err := os.Stat(f); err != nil {
 			t.Fatalf("expected %q to exist: %v", f, err)
+			panic("unreachable")
 		}
 	}
 }
@@ -162,6 +169,7 @@ func TestSandboxBreakout_DeniesGrandchildWrite(t *testing.T) {
 	}
 	if _, statErr := os.Stat(victim); statErr == nil {
 		t.Fatalf("victim file %q was created by a grandchild process despite enforce mode", victim)
+		panic("unreachable")
 	}
 }
 
@@ -183,6 +191,7 @@ func TestSandboxBreakout_DeniesSymlinkEscape(t *testing.T) {
 	link := filepath.Join(worktree, "escape-link")
 	if err := os.Symlink(realHome, link); err != nil {
 		t.Fatalf("symlink: %v", err)
+		panic("unreachable")
 	}
 	cfg := newEnforceSandboxCfg(t, worktree, sandboxHome, os.TempDir())
 
@@ -192,6 +201,7 @@ func TestSandboxBreakout_DeniesSymlinkEscape(t *testing.T) {
 	}
 	if _, statErr := os.Stat(victim); statErr == nil {
 		t.Fatalf("victim file %q was created via a symlink escape despite enforce mode", victim)
+		panic("unreachable")
 	}
 }
 
@@ -210,11 +220,13 @@ func TestSandboxBreakout_PreservesPIDAndSignal(t *testing.T) {
 	cmd := newProviderCmd(ctx, cfg, false, "bash", "-c", "sleep 30")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
+		panic("unreachable")
 	}
 	pid := cmd.Process.Pid
 
 	if err := cmd.Process.Signal(os.Interrupt); err != nil {
 		t.Fatalf("signal pid %d: %v", pid, err)
+		panic("unreachable")
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -222,6 +234,7 @@ func TestSandboxBreakout_PreservesPIDAndSignal(t *testing.T) {
 	case waitErr := <-done:
 		if waitErr == nil {
 			t.Fatal("expected non-nil wait error for a signaled process")
+			panic("unreachable")
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("process did not exit within 5s of SIGINT — sandbox-exec may not be forwarding signals to the exec'd child")
@@ -249,10 +262,12 @@ func TestSurviveHeadlessEnforceSandboxNoDenial(t *testing.T) {
 	fifoPath := filepath.Join(fifoDir, "steer.stdin")
 	if err := makeFIFO(fifoPath); err != nil {
 		t.Fatalf("makeFIFO: %v", err)
+		panic("unreachable")
 	}
 	fifo, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
 	if err != nil {
 		t.Fatalf("open fifo: %v", err)
+		panic("unreachable")
 	}
 	defer func() { _ = fifo.Close() }()
 
@@ -264,17 +279,21 @@ func TestSurviveHeadlessEnforceSandboxNoDenial(t *testing.T) {
 
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
+		panic("unreachable")
 	}
 	if _, err := fifo.WriteString("steer message\n"); err != nil {
 		t.Fatalf("write fifo: %v", err)
+		panic("unreachable")
 	}
 	if err := cmd.Wait(); err != nil {
 		t.Fatalf("sandboxed child exited non-zero reading its FIFO stdin: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := os.ReadFile(outPath)
 	if err != nil {
 		t.Fatalf("read output: %v", err)
+		panic("unreachable")
 	}
 	if strings.TrimSpace(string(got)) != "got:steer message" {
 		t.Fatalf("output = %q, want %q", got, "got:steer message")

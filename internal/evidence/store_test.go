@@ -37,6 +37,7 @@ func TestStore_Load_AbsentTaskReturnsZeroValue(t *testing.T) {
 	ce, err := s.Load("no-such-task")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+		panic("unreachable")
 	}
 	if ce.TaskID != "" || len(ce.Criteria) != 0 {
 		t.Fatalf("Load on absent task = %+v, want zero value", ce)
@@ -48,6 +49,7 @@ func TestStore_Load_ReadErrorFailsClosed(t *testing.T) {
 	ce, err := s.Load("t1")
 	if err == nil {
 		t.Fatal("Load: want an error on an unreadable blob, got nil — a storage failure must not look like an absent baseline")
+		panic("unreachable")
 	}
 	if len(ce.Criteria) != 0 {
 		t.Errorf("Load on read error = %+v, want zero value", ce)
@@ -59,6 +61,7 @@ func TestStore_Load_CorruptJSONFailsClosed(t *testing.T) {
 	ce, err := s.Load("t1")
 	if err == nil {
 		t.Fatal("Load: want an error on corrupt JSON, got nil — corrupted evidence must not look like an absent baseline")
+		panic("unreachable")
 	}
 	if len(ce.Criteria) != 0 {
 		t.Errorf("Load on corrupt JSON = %+v, want zero value", ce)
@@ -70,6 +73,7 @@ func TestStore_Load_NilReceiverFailsOpen(t *testing.T) {
 	ce, err := s.Load("t1")
 	if err != nil {
 		t.Fatalf("Load on nil store: %v", err)
+		panic("unreachable")
 	}
 	if len(ce.Criteria) != 0 {
 		t.Fatalf("Load on nil store = %+v, want zero value", ce)
@@ -79,6 +83,7 @@ func TestStore_Load_NilReceiverFailsOpen(t *testing.T) {
 	}
 	if err := s.Rebind("t1", time.Now()); err != nil {
 		t.Fatalf("Rebind on nil store: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -95,11 +100,13 @@ func TestStore_Append_PersistsAndRoundTrips(t *testing.T) {
 	}
 	if err := s.Append("t1", entry); err != nil {
 		t.Fatalf("Append: %v", err)
+		panic("unreachable")
 	}
 
 	ce, err := s.Load("t1")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+		panic("unreachable")
 	}
 	if ce.TaskID != "t1" {
 		t.Errorf("TaskID = %q, want t1", ce.TaskID)
@@ -123,14 +130,17 @@ func TestStore_Append_ReplacesSameCriterionInsteadOfGrowing(t *testing.T) {
 
 	if err := s.Append("t1", first); err != nil {
 		t.Fatalf("Append(first): %v", err)
+		panic("unreachable")
 	}
 	if err := s.Append("t1", second); err != nil {
 		t.Fatalf("Append(second): %v", err)
+		panic("unreachable")
 	}
 
 	ce, err := s.Load("t1")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+		panic("unreachable")
 	}
 	if len(ce.Criteria) != 1 {
 		t.Fatalf("Criteria = %d entries, want 1 (upsert, not append)", len(ce.Criteria))
@@ -153,6 +163,7 @@ func TestStore_Append_DistinctCriteriaCoexist(t *testing.T) {
 	ce, err := s.Load("t1")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+		panic("unreachable")
 	}
 	if len(ce.Criteria) != 2 {
 		t.Fatalf("Criteria = %d entries, want 2 distinct criteria", len(ce.Criteria))
@@ -168,11 +179,13 @@ func TestStore_Rebind_ClearsPriorCriteria(t *testing.T) {
 	at := time.Now().UTC().Truncate(time.Second)
 	if err := s.Rebind("t1", at); err != nil {
 		t.Fatalf("Rebind: %v", err)
+		panic("unreachable")
 	}
 
 	ce, err := s.Load("t1")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+		panic("unreachable")
 	}
 	if len(ce.Criteria) != 0 {
 		t.Fatalf("Criteria after Rebind = %d entries, want 0", len(ce.Criteria))
@@ -192,6 +205,7 @@ func TestStore_Append_AfterRebindStartsFreshGeneration(t *testing.T) {
 	}
 	if err := s.Rebind("t1", time.Now()); err != nil {
 		t.Fatalf("Rebind: %v", err)
+		panic("unreachable")
 	}
 	if err := s.Append("t1", CriterionEvidence{Criterion: "verify_checks", FinalRev: "fresh-rev"}); err != nil {
 		t.Fatalf("Append after Rebind: %v", err)
@@ -200,6 +214,7 @@ func TestStore_Append_AfterRebindStartsFreshGeneration(t *testing.T) {
 	ce, err := s.Load("t1")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+		panic("unreachable")
 	}
 	if len(ce.Criteria) != 1 {
 		t.Fatalf("Criteria = %d entries, want 1", len(ce.Criteria))

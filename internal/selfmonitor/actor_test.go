@@ -264,6 +264,7 @@ func TestActor_FlipsAgentModeViaServicePipeline(t *testing.T) {
 	r, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 
 	if len(r.ActionsTaken) != 1 {
@@ -288,6 +289,7 @@ func TestActor_RespectsMaxAutoActionsPerDay(t *testing.T) {
 	ledger, err := Open(ledgerPath)
 	if err != nil {
 		t.Fatalf("Open ledger: %v", err)
+		panic("unreachable")
 	}
 	if err := ledger.Append(LedgerEntry{
 		Fingerprint: "fp-old",
@@ -322,6 +324,7 @@ func TestActor_RespectsMaxAutoActionsPerDay(t *testing.T) {
 	r, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 	if len(r.ActionsTaken) != 0 {
 		t.Fatalf("ActionsTaken = %d, want 0 when budget exhausted", len(r.ActionsTaken))
@@ -338,6 +341,7 @@ func TestActor_RecordsActionToLedger(t *testing.T) {
 	ledger, err := Open(ledgerPath)
 	if err != nil {
 		t.Fatalf("Open ledger: %v", err)
+		panic("unreachable")
 	}
 
 	logPath := writeFixture(t, fixtureLines())
@@ -364,6 +368,7 @@ func TestActor_RecordsActionToLedger(t *testing.T) {
 	r, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 	if len(r.ActionsTaken) != 1 {
 		t.Fatalf("ActionsTaken = %d, want 1", len(r.ActionsTaken))

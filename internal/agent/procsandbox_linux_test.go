@@ -147,6 +147,7 @@ func TestInjectProcessSandbox_ReadOnlyDirNeverBindsDirWritable(t *testing.T) {
 	cfg := &RunConfig{TaskID: "task-1", Dir: dir, ReadOnlyDir: true, resolvedSandboxHome: t.TempDir()}
 	if err := m.injectProcessSandbox(cfg); err != nil {
 		t.Fatalf("injectProcessSandbox: %v", err)
+		panic("unreachable")
 	}
 	if cfg.sandbox.mode != "enforce" {
 		t.Fatalf("sandbox.mode = %q, want enforce", cfg.sandbox.mode)
@@ -157,6 +158,7 @@ func TestInjectProcessSandbox_ReadOnlyDirNeverBindsDirWritable(t *testing.T) {
 	canonDir, err := canonicalizeRoot(dir)
 	if err != nil {
 		t.Fatalf("canonicalizeRoot(%q): %v", dir, err)
+		panic("unreachable")
 	}
 	if cfg.sandbox.readOnlyDir != canonDir {
 		t.Fatalf("sandbox.readOnlyDir = %q, want %q: ReadOnlyDir must be re-locked explicitly", cfg.sandbox.readOnlyDir, canonDir)
@@ -180,6 +182,7 @@ func TestInjectProcessSandbox_ReadOnlyDirNeverBindsDirWritable(t *testing.T) {
 	// sandbox (the exact shape that shipped this bug).
 	if args == nil {
 		t.Fatalf("wrapInvocation returned nil args")
+		panic("unreachable")
 	}
 	sep := slices.Index(args, "--")
 	if sep < 3 || args[sep-3] != "--ro-bind" || args[sep-2] != canonDir || args[sep-1] != canonDir {

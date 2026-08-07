@@ -44,6 +44,7 @@ func TestGenerate_EmitsRepairAndSuccessProgress(t *testing.T) {
 	}))
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
+		panic("unreachable")
 	}
 	if plan.MaxParallel != 2 {
 		t.Fatalf("plan = %+v, want MaxParallel=2", plan)
@@ -75,6 +76,7 @@ func TestGenerate_EmitsCriticReaskProgress(t *testing.T) {
 	}))
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
+		panic("unreachable")
 	}
 	if plan.MaxParallel != 1 {
 		t.Fatalf("plan = %+v, want critic re-ask plan to win", plan)
@@ -99,6 +101,7 @@ func TestGenerate_EmitsExhaustedFallbackProgress(t *testing.T) {
 	}))
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
+		panic("unreachable")
 	}
 	if !plan.Fallback {
 		t.Fatalf("plan = %+v, want fallback plan", plan)
@@ -137,6 +140,7 @@ func TestBuildPlanSchema(t *testing.T) {
 	var decoded map[string]any
 	if err := json.Unmarshal([]byte(schema), &decoded); err != nil {
 		t.Fatalf("schema is not valid JSON: %v\n%s", err, schema)
+		panic("unreachable")
 	}
 
 	children, ok := decoded["properties"].(map[string]any)["children"].(map[string]any)
@@ -205,6 +209,7 @@ func TestAdversarialSchemaRejectsDuplicateCoverage(t *testing.T) {
 	var decoded map[string]any
 	if err := json.Unmarshal([]byte(schema), &decoded); err != nil {
 		t.Fatalf("schema is not valid JSON: %v\n%s", err, schema)
+		panic("unreachable")
 	}
 	children, ok := decoded["properties"].(map[string]any)["children"].(map[string]any)
 	if !ok {
@@ -259,6 +264,7 @@ func TestParsePlan(t *testing.T) {
 			p, err := ParsePlan(c.raw)
 			if err != nil {
 				t.Fatalf("ParsePlan: %v", err)
+				panic("unreachable")
 			}
 			if len(p.Children) != 1 || p.Children[0].Ref != "o/r#1" || p.MaxParallel != 3 {
 				t.Fatalf("unexpected plan: %+v", p)
@@ -285,6 +291,7 @@ func TestPlanResolve(t *testing.T) {
 		}}
 		if err := p.resolve(idx); err != nil {
 			t.Fatalf("resolve: %v", err)
+			panic("unreachable")
 		}
 		if p.Children[1].Ref != "o/r#2" {
 			t.Errorf("child ref not canonicalized: %q", p.Children[1].Ref)
@@ -320,6 +327,7 @@ func TestPlanResolve(t *testing.T) {
 		}}
 		if err := p.resolve(idx); err != nil {
 			t.Fatalf("resolve: %v", err)
+			panic("unreachable")
 		}
 		if len(p.Children[1].ParallelJustification) != 0 {
 			t.Errorf("ParallelJustification = %v, want dropped", p.Children[1].ParallelJustification)
@@ -333,6 +341,7 @@ func TestPlanResolve(t *testing.T) {
 		}}
 		if err := p.resolve(idx); err != nil {
 			t.Fatalf("resolve: %v", err)
+			panic("unreachable")
 		}
 		if len(p.Children[0].ParallelJustification) != 0 {
 			t.Errorf("ParallelJustification = %v, want self-key dropped", p.Children[0].ParallelJustification)
@@ -347,6 +356,7 @@ func TestPlanResolve(t *testing.T) {
 		}}
 		if err := p.resolve(idx); err != nil {
 			t.Fatalf("resolve: %v", err)
+			panic("unreachable")
 		}
 		if len(p.Children[1].ParallelJustification) != 0 {
 			t.Errorf("ParallelJustification = %v, want blank value dropped", p.Children[1].ParallelJustification)
@@ -361,6 +371,7 @@ func TestPlanResolve(t *testing.T) {
 		}}
 		if err := p.resolve(idx); err != nil {
 			t.Fatalf("resolve: %v", err)
+			panic("unreachable")
 		}
 		if got := p.Children[1].ParallelJustification["o/r#1"]; got != "disjoint dirs" {
 			t.Errorf("ParallelJustification = %v, want canonical key o/r#1", p.Children[1].ParallelJustification)
@@ -433,11 +444,13 @@ func TestPlanValidate(t *testing.T) {
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected err: %v", err)
+					panic("unreachable")
 				}
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+				panic("unreachable")
 			}
 		})
 	}
@@ -679,6 +692,7 @@ func TestDeriveEdges(t *testing.T) {
 		plan.deriveEdges(s)
 		if err := plan.validate(s); err != nil {
 			t.Fatalf("validate: %v (deps: %+v)", err, plan.Children)
+			panic("unreachable")
 		}
 		if got := depsOf(plan, "o/r#1"); len(got) != 1 || got[0] != "o/r#2" {
 			t.Fatalf("o/r#1 DependsOn = %v, want [o/r#2]", got)
@@ -706,6 +720,7 @@ func TestDeriveEdges(t *testing.T) {
 		plan.deriveEdges(s)
 		if err := plan.validate(s); err != nil {
 			t.Fatalf("validate: %v (deps: %+v)", err, plan.Children)
+			panic("unreachable")
 		}
 	})
 }
@@ -726,6 +741,7 @@ func TestGenerate(t *testing.T) {
 		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2"))
 		if err != nil {
 			t.Fatalf("Generate: %v", err)
+			panic("unreachable")
 		}
 		if plan.MaxParallel != 2 || len(plan.Children) != 2 {
 			t.Fatalf("unexpected plan: %+v", plan)
@@ -750,6 +766,7 @@ func TestGenerate(t *testing.T) {
 		}
 		if _, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2")); err != nil {
 			t.Fatalf("Generate: %v", err)
+			panic("unreachable")
 		}
 		if !strings.Contains(gotSchema, `"o/r#1"`) || !strings.Contains(gotSchema, `"o/r#2"`) {
 			t.Fatalf("schema missing sub-issue refs: %s", gotSchema)
@@ -775,6 +792,7 @@ func TestGenerate(t *testing.T) {
 		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2"))
 		if err != nil {
 			t.Fatalf("Generate: %v", err)
+			panic("unreachable")
 		}
 		if len(plan.Children) != 2 {
 			t.Fatalf("expected the corrective retry to recover a full plan: %+v", plan)
@@ -793,6 +811,7 @@ func TestGenerate(t *testing.T) {
 		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2"))
 		if err != nil {
 			t.Fatalf("Generate: %v", err)
+			panic("unreachable")
 		}
 		var child2 PlannedChild
 		for _, c := range plan.Children {
@@ -811,6 +830,7 @@ func TestGenerate(t *testing.T) {
 		_, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1"))
 		if err == nil {
 			t.Fatal("expected runner error to propagate")
+			panic("unreachable")
 		}
 		if errors.Is(err, errPlannerExhausted) {
 			t.Errorf("runner error must not match errPlannerExhausted (fallback must not fire): %v", err)
@@ -823,6 +843,7 @@ func TestGenerate(t *testing.T) {
 		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2", "o/r#3"))
 		if err != nil {
 			t.Fatalf("Generate: %v, want a fallback plan instead of an error", err)
+			panic("unreachable")
 		}
 		if !plan.Fallback {
 			t.Fatalf("Fallback = false, want true")
@@ -871,6 +892,7 @@ func TestGenerate(t *testing.T) {
 		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2"))
 		if err != nil {
 			t.Fatalf("Generate: %v, want a fallback plan instead of an error", err)
+			panic("unreachable")
 		}
 		if !plan.Fallback {
 			t.Fatalf("expected the cyclic plan to be rejected in favor of a fallback: %+v", plan)
@@ -890,6 +912,7 @@ func TestGenerate(t *testing.T) {
 		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2"))
 		if err != nil {
 			t.Fatalf("Generate: %v, want a fallback plan instead of an error", err)
+			panic("unreachable")
 		}
 		if !plan.Fallback {
 			t.Fatalf("expected the derived cycle to be rejected in favor of a fallback: %+v", plan)
@@ -920,6 +943,7 @@ func TestGenerate(t *testing.T) {
 		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2", "o/r#3"))
 		if err != nil {
 			t.Fatalf("Generate: %v", err)
+			panic("unreachable")
 		}
 		if calls != 2 {
 			t.Fatalf("expected exactly one re-ask (2 total calls), got %d", calls)
@@ -945,6 +969,7 @@ func TestGenerate(t *testing.T) {
 		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2", "o/r#3"))
 		if err != nil {
 			t.Fatalf("Generate: %v", err)
+			panic("unreachable")
 		}
 		if calls != 2 {
 			t.Fatalf("expected exactly one re-ask (2 total calls), got %d", calls)
@@ -969,6 +994,7 @@ func TestGenerate(t *testing.T) {
 		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2", "o/r#3"))
 		if err != nil {
 			t.Fatalf("Generate: %v", err)
+			panic("unreachable")
 		}
 		if calls != 1+plannerAttempts {
 			t.Fatalf("expected 1 initial call + %d re-ask attempts, got %d", plannerAttempts, calls)
@@ -992,6 +1018,7 @@ func TestGenerate(t *testing.T) {
 		plan, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2", "o/r#3"))
 		if err != nil {
 			t.Fatalf("Generate: %v", err)
+			panic("unreachable")
 		}
 		if len(plan.Children) != 3 {
 			t.Fatalf("expected fallback to original flat plan: %+v", plan)
@@ -1010,6 +1037,7 @@ func TestGenerate(t *testing.T) {
 		}
 		if _, err := Generate(context.Background(), run, "o/r#100", "body", subs("o/r#1", "o/r#2")); err != nil {
 			t.Fatalf("Generate: %v", err)
+			panic("unreachable")
 		}
 		if calls != 1 {
 			t.Fatalf("expected no re-ask below the 3-child floor, got %d calls", calls)
@@ -1036,6 +1064,7 @@ func TestGenerateGroundedEdge(t *testing.T) {
 		plan, err := Generate(context.Background(), run, "o/r#100", "body", s)
 		if err != nil {
 			t.Fatalf("Generate: %v", err)
+			panic("unreachable")
 		}
 		for _, c := range plan.Children {
 			if len(c.DependsOn) != 0 {
@@ -1055,6 +1084,7 @@ func TestGenerateGroundedEdge(t *testing.T) {
 		plan, err := Generate(context.Background(), run, "o/r#100", "body", s, WithGrounder(lister, 0))
 		if err != nil {
 			t.Fatalf("Generate: %v", err)
+			panic("unreachable")
 		}
 		var child2 PlannedChild
 		for _, c := range plan.Children {
@@ -1087,6 +1117,7 @@ func TestLinearChainFallback(t *testing.T) {
 		p, err := linearChainFallback(subs("o/r#3", "o/r#1", "o/r#2"))
 		if err != nil {
 			t.Fatalf("linearChainFallback: %v", err)
+			panic("unreachable")
 		}
 		if len(depsOf(t, p, "o/r#1")) != 0 {
 			t.Errorf("o/r#1 should be first, deps = %v", depsOf(t, p, "o/r#1"))
@@ -1110,6 +1141,7 @@ func TestLinearChainFallback(t *testing.T) {
 		p, err := linearChainFallback(s)
 		if err != nil {
 			t.Fatalf("linearChainFallback: %v", err)
+			panic("unreachable")
 		}
 		if got := depsOf(t, p, "o/r#2"); len(got) != 0 {
 			t.Errorf("closed o/r#2 should carry no edges, got %v", got)
@@ -1130,6 +1162,7 @@ func TestLinearChainFallback(t *testing.T) {
 		p, err := linearChainFallback(s)
 		if err != nil {
 			t.Fatalf("linearChainFallback: %v", err)
+			panic("unreachable")
 		}
 		if err := p.validate(s); err != nil {
 			t.Errorf("validate: %v", err)
@@ -1147,6 +1180,7 @@ func TestLinearChainFallback(t *testing.T) {
 		p, err := linearChainFallback(s)
 		if err != nil {
 			t.Fatalf("linearChainFallback: %v", err)
+			panic("unreachable")
 		}
 		if got := depsOf(t, p, "x/y#1"); len(got) != 1 || got[0] != "o/r#1" {
 			t.Errorf("x/y#1 deps = %v, want [o/r#1] (tie keeps fetch order)", got)
@@ -1162,6 +1196,7 @@ func TestLinearChainFallback(t *testing.T) {
 		p, err := linearChainFallback(s)
 		if err != nil {
 			t.Fatalf("linearChainFallback: %v", err)
+			panic("unreachable")
 		}
 		if got := depsOf(t, p, "o/r#bar"); len(got) != 1 || got[0] != "o/r#foo" {
 			t.Errorf("o/r#bar deps = %v, want [o/r#foo] (fetch order preserved)", got)
@@ -1179,6 +1214,7 @@ func TestLinearChainFallback(t *testing.T) {
 		p, err := linearChainFallback(s)
 		if err != nil {
 			t.Fatalf("linearChainFallback: %v", err)
+			panic("unreachable")
 		}
 		if got := depsOf(t, p, "o/r#1"); len(got) != 1 || got[0] != "o/r#foo" {
 			t.Errorf("o/r#1 deps = %v, want [o/r#foo] (non-numeric keeps its fetch slot)", got)
@@ -1208,6 +1244,7 @@ func TestLinearChainFallback(t *testing.T) {
 		fallback, err := linearChainFallback(s)
 		if err != nil {
 			t.Fatalf("linearChainFallback: %v", err)
+			panic("unreachable")
 		}
 
 		dense := Plan{Children: []PlannedChild{
@@ -1216,6 +1253,7 @@ func TestLinearChainFallback(t *testing.T) {
 		dense.deriveEdges(s)
 		if err := dense.validate(s); err != nil {
 			t.Fatalf("dense plan validate: %v", err)
+			panic("unreachable")
 		}
 
 		existing := map[string]bool{}
@@ -1375,6 +1413,7 @@ printf '%s\n' '{"result":"{\"children\":[{\"issue\":\"o/r#1\",\"dependsOn\":[]}]
 	out, err := FallbackPlannerRunner("opus")(context.Background(), "prompt", "")
 	if err != nil {
 		t.Fatalf("runner: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(out, `"maxParallel":1`) {
 		t.Fatalf("planner output = %q, want marshaled plan", out)
@@ -1385,5 +1424,6 @@ func writePlannerTestExe(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+		panic("unreachable")
 	}
 }

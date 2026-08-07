@@ -27,6 +27,7 @@ func newPRWorktree(t *testing.T, branch string) (bare, wtPath string) {
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	run(src, "init", "-b", "main")
@@ -34,6 +35,7 @@ func newPRWorktree(t *testing.T, branch string) (bare, wtPath string) {
 	run(src, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("init\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	run(src, "add", "README.md")
 	run(src, "commit", "-m", "init")
@@ -41,10 +43,12 @@ func newPRWorktree(t *testing.T, branch string) (bare, wtPath string) {
 	bare = filepath.Join(t.TempDir(), "bare.git")
 	if err := project.CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("CloneBare: %v", err)
+		panic("unreachable")
 	}
 	wtPath = filepath.Join(t.TempDir(), "wt")
 	if err := project.CreateWorktree(context.Background(), bare, wtPath, branch, "main"); err != nil {
 		t.Fatalf("CreateWorktree: %v", err)
+		panic("unreachable")
 	}
 	run(wtPath, "config", "user.email", "test@test.com")
 	run(wtPath, "config", "user.name", "Test")
@@ -55,6 +59,7 @@ func commitFile(t *testing.T, wtPath, name, msg string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(wtPath, name), []byte(msg+"\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"add", name},
@@ -64,6 +69,7 @@ func commitFile(t *testing.T, wtPath, name, msg string) {
 		cmd.Dir = wtPath
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
+			panic("unreachable")
 		}
 	}
 }
@@ -73,6 +79,7 @@ func headSHA(t *testing.T, wtPath string) string {
 	sha, err := project.CurrentCommit(context.Background(), wtPath)
 	if err != nil {
 		t.Fatalf("CurrentCommit: %v", err)
+		panic("unreachable")
 	}
 	return sha
 }
@@ -212,6 +219,7 @@ func TestExecPushBranch_RecoversMissingWorktreeOnce(t *testing.T) {
 	out, err := engine.execPushBranch("t1", newPushBranchStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
 		t.Fatalf("execPushBranch: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("status = %q, want completed", out.Status)
@@ -232,6 +240,7 @@ func TestExecCreatePR_WorktreeRecoveryErrorIsPrecise(t *testing.T) {
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
 		t.Fatalf("execCreatePR: %v", err)
+		panic("unreachable")
 	}
 	if resolver.resolveCalls != 1 || resolver.getCalls != 0 {
 		t.Fatalf("resolver calls = %d, getter calls = %d; want one resolve and no fallback get", resolver.resolveCalls, resolver.getCalls)
@@ -256,6 +265,7 @@ func TestExecCreatePR_WorktreeRecoveryPropagatesStatusFailure(t *testing.T) {
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
 	if err == nil || !strings.Contains(err.Error(), "persist status: disk full") {
 		t.Fatalf("err = %v, want status persistence failure", err)
+		panic("unreachable")
 	}
 	if out != (StepOutput{}) {
 		t.Fatalf("output = %+v, want zero output on status persistence failure", out)
@@ -266,6 +276,7 @@ func TestExecCreatePR_WorktreeRecoveryPropagatesStatusFailure(t *testing.T) {
 	stored, getErr := baseTasks.GetTask("t1")
 	if getErr != nil {
 		t.Fatal(getErr)
+		panic("unreachable")
 	}
 	if stored.Status != "ready-pr" {
 		t.Fatalf("status = %q, want unchanged ready-pr", stored.Status)
@@ -286,6 +297,7 @@ func TestExecPushBranch_Success(t *testing.T) {
 	out, err := engine.execPushBranch("t1", newPushBranchStep(), &Execution{Variables: map[string]string{}}, TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
 	if err != nil {
 		t.Fatalf("execPushBranch: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("status = %q, want completed", out.Status)
@@ -305,10 +317,12 @@ func TestExecPushBranch_BranchConflictUsesTrustedSelectedRemote(t *testing.T) {
 	commitFile(t, wtPath, "change.txt", "feat: recovered merge")
 	if out, err := exec.Command("git", "-C", wtPath, "config", "remote.origin.pushurl", "sybra-disabled-do-not-push-to-upstream-use-fork").CombinedOutput(); err != nil {
 		t.Fatalf("install origin push sentinel: %v\n%s", err, out)
+		panic("unreachable")
 	}
 	originURL, err := project.RemoteURL(context.Background(), wtPath, "origin")
 	if err != nil {
 		t.Fatalf("resolve origin URL: %v", err)
+		panic("unreachable")
 	}
 
 	tasks := newMemTasks()
@@ -324,6 +338,7 @@ func TestExecPushBranch_BranchConflictUsesTrustedSelectedRemote(t *testing.T) {
 	out, err := engine.execPushBranch("t1", newPushBranchStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
 	if err != nil {
 		t.Fatalf("execPushBranch: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("status = %q, want completed", out.Status)
@@ -353,6 +368,7 @@ func TestExecPushBranch_PreflightFailureFallsThroughToSuccessfulPush(t *testing.
 	out, err := engine.execPushBranch("t1", newPushBranchStep(), wfExec, TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5, ProjectID: "acme/widgets"})
 	if err != nil {
 		t.Fatalf("execPushBranch: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("status = %q, want completed", out.Status)
@@ -366,6 +382,7 @@ func TestExecPushBranch_PreflightFailureFallsThroughToSuccessfulPush(t *testing.
 	ti, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if ti.Status != "ready-pr" {
 		t.Fatalf("status = %q, want unchanged ready-pr (push succeeded despite the failed probe)", ti.Status)
@@ -403,6 +420,7 @@ func TestExecPushBranch_PreflightAndPushBothFailParksForRetry(t *testing.T) {
 	ti, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if ti.Status != "ready-pr" {
 		t.Fatalf("status = %q, want ready-pr (parked)", ti.Status)
@@ -427,6 +445,7 @@ func TestExecPushBranch_NoWorktreeFlipsHumanRequired(t *testing.T) {
 	out, err := engine.execPushBranch("t1", newPushBranchStep(), &Execution{Variables: map[string]string{}}, TaskInfo{ID: "t1", Status: "ready-pr", Branch: "main", PRNumber: 5})
 	if err != nil {
 		t.Fatalf("execPushBranch: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("status = %q, want completed", out.Status)
@@ -462,6 +481,7 @@ func TestExecPushBranch_DivergedFlipsHumanRequired(t *testing.T) {
 	out, err := engine.execPushBranch("t1", newPushBranchStep(), &Execution{Variables: map[string]string{}}, TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5})
 	if err != nil {
 		t.Fatalf("execPushBranch: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("status = %q, want completed", out.Status)
@@ -531,6 +551,7 @@ func TestExecPushBranch_DivergedRecoveryDeclinesFallsBackToHumanRequired(t *test
 	out, err := engine.execPushBranch("t1", newPushBranchStep(), &Execution{Variables: map[string]string{}}, TaskInfo{ID: "t1", Status: "ready-pr", Branch: "feat/existing-pr", PRNumber: 5})
 	if err != nil {
 		t.Fatalf("execPushBranch: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("status = %q, want completed", out.Status)
@@ -710,6 +731,7 @@ func runGit(t *testing.T, dir string, args ...string) {
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
+		panic("unreachable")
 	}
 }
 
@@ -731,6 +753,7 @@ func TestExecCreatePR_Success(t *testing.T) {
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
 		t.Fatalf("execCreatePR: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
@@ -774,6 +797,7 @@ func TestExecCreatePR_CopilotReviewFailureDoesNotBlockPR(t *testing.T) {
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
 		t.Fatalf("execCreatePR: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
@@ -812,6 +836,7 @@ func TestExecCreatePR_ClosesSupersededLinkedPR(t *testing.T) {
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
 		t.Fatalf("execCreatePR: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
@@ -855,6 +880,7 @@ func TestExecCreatePR_SupersededCloseFailureDoesNotBlockRelink(t *testing.T) {
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
 		t.Fatalf("execCreatePR: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
@@ -884,6 +910,7 @@ func TestExecCreatePR_ExistingPRShortCircuitsWithoutCreating(t *testing.T) {
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
 		t.Fatalf("execCreatePR: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
@@ -913,9 +940,11 @@ func TestExecCreatePR_MergedSameBranchWithAppliedPatchMarksDoneWithoutCreating(t
 	runGit(t, upstream, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(upstream, "change.txt"), []byte("feat: task work\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(upstream, "unrelated.txt"), []byte("newer main work\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	runGit(t, upstream, "add", "change.txt", "unrelated.txt")
 	runGit(t, upstream, "commit", "-m", "squash equivalent plus unrelated")
@@ -935,6 +964,7 @@ func TestExecCreatePR_MergedSameBranchWithAppliedPatchMarksDoneWithoutCreating(t
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
 		t.Fatalf("execCreatePR: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
@@ -973,6 +1003,7 @@ func TestExecCreatePR_MergedSameBranchWithRemainingPatchStillCreates(t *testing.
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
 		t.Fatalf("execCreatePR: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
@@ -1007,6 +1038,7 @@ func TestExecCreatePR_FinderErrorFallsThroughToCreate(t *testing.T) {
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
 		t.Fatalf("execCreatePR: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("status = %q, output = %q", out.Status, out.Output)
@@ -1140,6 +1172,7 @@ func TestClassifyPRGitError_AuthFailureEscalatesAfterMaxRetries(t *testing.T) {
 	}
 	if _, err := engine.classifyPRGitError("t1", step, wfExec, task, authErr, "create_pr"); err != nil {
 		t.Fatalf("final attempt: unexpected error %v", err)
+		panic("unreachable")
 	}
 	ti, _ := tasks.GetTask("t1")
 	if ti.Status != "human-required" {
@@ -1237,6 +1270,7 @@ func TestClassifyPRGitError_UnclassifiedFailureParksOnceThenEscalates(t *testing
 	}
 	if _, err := engine.classifyPRGitError("t1", step, wfExec, task, hookErr, "git push"); err != nil {
 		t.Fatalf("final attempt: unexpected error %v", err)
+		panic("unreachable")
 	}
 	ti, _ = tasks.GetTask("t1")
 	if ti.Status != "human-required" {
@@ -1270,6 +1304,7 @@ func TestExecCreatePR_AdoptsExistingPROnAlreadyExistsConflict(t *testing.T) {
 	out, err := engine.execCreatePR("t1", newCreatePRStep(), &Execution{Variables: map[string]string{}}, task)
 	if err != nil {
 		t.Fatalf("execCreatePR: %v", err)
+		panic("unreachable")
 	}
 	if out.Status != "completed" {
 		t.Fatalf("status = %q, output = %q", out.Status, out.Output)

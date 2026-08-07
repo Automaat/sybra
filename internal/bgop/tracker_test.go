@@ -139,6 +139,7 @@ func TestTracker_SaveAndLoadFromDisk_RoundTrip(t *testing.T) {
 
 	if _, err := os.Stat(tr.diskPath); err != nil {
 		t.Fatalf("expected persisted file at %s: %v", tr.diskPath, err)
+		panic("unreachable")
 	}
 
 	// Fresh tracker sharing the same disk path should restore the op.
@@ -174,9 +175,11 @@ func TestTracker_LoadFromDisk_MarksRunningOpsFailed(t *testing.T) {
 	data, err := json.Marshal(ops)
 	if err != nil {
 		t.Fatalf("marshal fixture: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(diskPath, data, 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
+		panic("unreachable")
 	}
 
 	tr := NewTracker(func(string, any) {}, diskPath, nil)
@@ -199,10 +202,12 @@ func TestTracker_LoadFromDisk_MarksRunningOpsFailed(t *testing.T) {
 	data, err = os.ReadFile(diskPath)
 	if err != nil {
 		t.Fatalf("read persisted file: %v", err)
+		panic("unreachable")
 	}
 	var persisted []Operation
 	if err := json.Unmarshal(data, &persisted); err != nil {
 		t.Fatalf("unmarshal persisted file: %v", err)
+		panic("unreachable")
 	}
 	if len(persisted) != 1 {
 		t.Fatalf("expected 1 persisted op after rewrite, got %d", len(persisted))
@@ -236,9 +241,11 @@ func TestTracker_LoadFromDisk_DiscardsExpiredCompletions(t *testing.T) {
 	data, err := json.Marshal(ops)
 	if err != nil {
 		t.Fatalf("marshal fixture: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(diskPath, data, 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
+		panic("unreachable")
 	}
 
 	tr := NewTracker(func(string, any) {}, diskPath, nil)
@@ -255,10 +262,12 @@ func TestTracker_LoadFromDisk_DiscardsExpiredCompletions(t *testing.T) {
 	data, err = os.ReadFile(diskPath)
 	if err != nil {
 		t.Fatalf("read rewritten file: %v", err)
+		panic("unreachable")
 	}
 	var persisted []Operation
 	if err := json.Unmarshal(data, &persisted); err != nil {
 		t.Fatalf("unmarshal rewritten file: %v", err)
+		panic("unreachable")
 	}
 	if len(persisted) != 1 || persisted[0].ID != "recent-done" {
 		t.Fatalf("expected rewritten file to keep only recent-done, got %+v", persisted)
@@ -289,10 +298,12 @@ func TestTracker_SaveToDisk_DropsTransientState(t *testing.T) {
 	data, err := os.ReadFile(tr.diskPath)
 	if err != nil {
 		t.Fatalf("read persisted file: %v", err)
+		panic("unreachable")
 	}
 	var persisted []Operation
 	if err := json.Unmarshal(data, &persisted); err != nil {
 		t.Fatalf("unmarshal persisted file: %v", err)
+		panic("unreachable")
 	}
 	if len(persisted) != 1 {
 		t.Fatalf("expected only the non-expired op to persist, got %d", len(persisted))

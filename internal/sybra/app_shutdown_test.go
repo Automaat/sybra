@@ -103,6 +103,7 @@ func TestBeginDrainCancelsSchedulerOnly(t *testing.T) {
 	err := a.HTTPAdmission("App", "SetDesktopNotifications", httpapi.MethodMeta{})
 	if err == nil {
 		t.Fatal("mutating admission error = nil, want service unavailable")
+		panic("unreachable")
 	}
 	var clientErr interface {
 		error
@@ -242,6 +243,7 @@ func TestTaskWatcherStaysAliveUntilAgentShutdownFinishes(t *testing.T) {
 
 	if err := os.WriteFile(a.tasksDir+"/during-shutdown.md", []byte("---\nid: during-shutdown\nstatus: done\n---\n"), 0o644); err != nil {
 		t.Fatalf("write task file: %v", err)
+		panic("unreachable")
 	}
 	select {
 	case got := <-taskEvents:

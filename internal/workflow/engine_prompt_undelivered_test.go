@@ -63,6 +63,7 @@ func TestReschedulePromptUndeliveredAgent_ChargesItsOwnBudget(t *testing.T) {
 	ti, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := ti.Workflow.Variables[promptUndeliveredKey("run")]; got != "1" {
 		t.Fatalf("prompt-undelivered counter = %q, want 1", got)
@@ -85,6 +86,7 @@ func TestReschedulePromptUndeliveredAgent_EscalatesWhenBudgetSpent(t *testing.T)
 	ti, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if ti.Status != "human-required" {
 		t.Fatalf("Status = %q, want human-required once the budget is spent", ti.Status)

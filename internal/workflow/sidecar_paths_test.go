@@ -23,6 +23,7 @@ func TestVerifierWorkflowsWriteOutsideTheWorktree(t *testing.T) {
 		data, err := builtinFS.ReadFile(name)
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
+			panic("unreachable")
 		}
 		body := string(data)
 		refs := sidecarRefPattern.FindAllString(body, -1)

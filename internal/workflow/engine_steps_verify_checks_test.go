@@ -64,6 +64,7 @@ func TestExecVerifyChecks_DefaultGetterSkips(t *testing.T) {
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "skipped: no verify commands configured" {
 		t.Errorf("Output = %q, want skip", out.Output)
@@ -78,6 +79,7 @@ func TestExecVerifyChecks_NoCommandsSkips(t *testing.T) {
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "skipped: no verify commands configured" {
 		t.Errorf("Output = %q, want skip", out.Output)
@@ -92,6 +94,7 @@ func TestVerifyTaskNow_NoGetterNotVerified(t *testing.T) {
 	verified, passed, _, _, err := engine.VerifyTaskNow(t.Context(), "t1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if verified || passed {
 		t.Fatalf("verified=%v passed=%v, want both false with no CheckConfigGetter", verified, passed)
@@ -105,6 +108,7 @@ func TestVerifyTaskNow_NoCommandsNotVerified(t *testing.T) {
 	verified, passed, _, _, err := engine.VerifyTaskNow(t.Context(), "t1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if verified || passed {
 		t.Fatalf("verified=%v passed=%v, want both false with no configured commands", verified, passed)
@@ -120,6 +124,7 @@ func TestVerifyTaskNow_NoWorktreeNotVerified(t *testing.T) {
 	verified, passed, _, _, err := engine.VerifyTaskNow(t.Context(), "t1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if verified || passed {
 		t.Fatalf("verified=%v passed=%v, want both false with no worktree", verified, passed)
@@ -134,6 +139,7 @@ func TestVerifyTaskNow_CommandsPass(t *testing.T) {
 	verified, passed, failedCmd, _, err := engine.VerifyTaskNow(t.Context(), "t1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if !verified || !passed {
 		t.Fatalf("verified=%v passed=%v, want both true", verified, passed)
@@ -151,6 +157,7 @@ func TestVerifyTaskNow_CommandFails(t *testing.T) {
 	verified, passed, failedCmd, output, err := engine.VerifyTaskNow(t.Context(), "t1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if !verified || passed {
 		t.Fatalf("verified=%v passed=%v, want verified=true passed=false", verified, passed)
@@ -172,6 +179,7 @@ func TestVerifyTaskNow_TimeoutFailsClosed(t *testing.T) {
 	verified, passed, _, _, err := engine.VerifyTaskNow(t.Context(), "t1")
 	if err == nil {
 		t.Fatal("expected timeout error")
+		panic("unreachable")
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
@@ -200,6 +208,7 @@ func TestVerifyTaskNow_ScaledTimeoutAbsorbsHostOversubscription(t *testing.T) {
 	verified, passed, failedCmd, output, err := engine.VerifyTaskNow(t.Context(), "t1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v\n%s", err, output)
+		panic("unreachable")
 	}
 	if !verified || !passed {
 		t.Fatalf("verified=%v passed=%v failedCmd=%q output=%q, want both true", verified, passed, failedCmd, output)
@@ -212,6 +221,7 @@ func TestVerifyTaskNow_RepairsTornNodeModulesBeforeRunning(t *testing.T) {
 	nm := filepath.Join(frontend, "node_modules")
 	if err := os.MkdirAll(filepath.Join(nm, "vite"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
@@ -224,6 +234,7 @@ func TestVerifyTaskNow_RepairsTornNodeModulesBeforeRunning(t *testing.T) {
 	npmScript := "#!/bin/sh\nmkdir -p node_modules/.bin\ntouch node_modules/.package-lock.json\n"
 	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte(npmScript), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -233,6 +244,7 @@ func TestVerifyTaskNow_RepairsTornNodeModulesBeforeRunning(t *testing.T) {
 	verified, passed, failedCmd, output, err := engine.VerifyTaskNow(t.Context(), "t1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if !verified || !passed {
 		t.Fatalf("verified=%v passed=%v failedCmd=%q output=%q, want both true (repair should have fixed node_modules first)",
@@ -249,6 +261,7 @@ func TestExecVerifyChecks_PassIsClean(t *testing.T) {
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean", out.Output)
@@ -268,6 +281,7 @@ func TestExecVerifyChecks_FailureFlags(t *testing.T) {
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged", out.Output)
@@ -298,6 +312,7 @@ func TestExecVerifyChecks_CacheHitSkipsUnchangedTree(t *testing.T) {
 	out1, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("first run: unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out1.Output != "clean" {
 		t.Fatalf("first run: Output = %q, want clean", out1.Output)
@@ -306,6 +321,7 @@ func TestExecVerifyChecks_CacheHitSkipsUnchangedTree(t *testing.T) {
 	out2, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("second run: unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if !strings.HasPrefix(out2.Output, "clean (cached:") {
 		t.Fatalf("second run: Output = %q, want a cache-hit output", out2.Output)
@@ -314,6 +330,7 @@ func TestExecVerifyChecks_CacheHitSkipsUnchangedTree(t *testing.T) {
 	runs, err := os.ReadFile(counter)
 	if err != nil {
 		t.Fatalf("expected counter file to exist: %v", err)
+		panic("unreachable")
 	}
 	if got := strings.Count(string(runs), "run"); got != 1 {
 		t.Fatalf("verify command ran %d times, want exactly 1 (second call should have hit the cache)", got)
@@ -341,6 +358,7 @@ func TestExecVerifyChecks_WorktreeEditForcesRerun(t *testing.T) {
 	out2, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("second run: unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out2.Output != "clean" {
 		t.Fatalf("second run: Output = %q, want a fresh clean run (not cached)", out2.Output)
@@ -349,6 +367,7 @@ func TestExecVerifyChecks_WorktreeEditForcesRerun(t *testing.T) {
 	runs, err := os.ReadFile(counter)
 	if err != nil {
 		t.Fatalf("expected counter file to exist: %v", err)
+		panic("unreachable")
 	}
 	if got := strings.Count(string(runs), "run"); got != 2 {
 		t.Fatalf("verify command ran %d times, want exactly 2 (tree edit should have forced a re-run)", got)
@@ -380,6 +399,7 @@ func TestExecVerifyChecks_CommandChangeForcesRerun(t *testing.T) {
 	out2, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("second run: unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out2.Output != "clean" {
 		t.Fatalf("second run: Output = %q, want a fresh clean run (not cached)", out2.Output)
@@ -388,6 +408,7 @@ func TestExecVerifyChecks_CommandChangeForcesRerun(t *testing.T) {
 	runs, err := os.ReadFile(counter)
 	if err != nil {
 		t.Fatalf("expected counter file to exist: %v", err)
+		panic("unreachable")
 	}
 	if got := strings.Count(string(runs), "run"); got != 2 {
 		t.Fatalf("verify command ran %d times, want exactly 2 (commands change should have forced a re-run)", got)
@@ -442,6 +463,7 @@ func TestExecVerifyChecks_LongOutputNotTruncated(t *testing.T) {
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged", out.Output)
@@ -455,11 +477,13 @@ func TestExecVerifyChecks_LongOutputNotTruncated(t *testing.T) {
 		var r verifyChecksReport
 		if err := json.Unmarshal([]byte(put.content), &r); err != nil {
 			t.Fatalf("unmarshal artifact: %v", err)
+			panic("unreachable")
 		}
 		report = &r
 	}
 	if report == nil {
 		t.Fatalf("no verify-checks.json artifact recorded; puts: %+v", rec.puts)
+		panic("unreachable")
 	}
 	if len(report.OutputTail) < 9000 {
 		t.Fatalf("OutputTail = %d bytes, want the full >9000-byte output preserved", len(report.OutputTail))
@@ -489,6 +513,7 @@ func TestExecVerifyChecks_OutputPastStreamingCapKeepsStartAndEnd(t *testing.T) {
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged", out.Output)
@@ -502,11 +527,13 @@ func TestExecVerifyChecks_OutputPastStreamingCapKeepsStartAndEnd(t *testing.T) {
 		var r verifyChecksReport
 		if err := json.Unmarshal([]byte(put.content), &r); err != nil {
 			t.Fatalf("unmarshal artifact: %v", err)
+			panic("unreachable")
 		}
 		report = &r
 	}
 	if report == nil {
 		t.Fatalf("no verify-checks.json artifact recorded; puts: %+v", rec.puts)
+		panic("unreachable")
 	}
 	if !strings.Contains(report.OutputTail, "MARKER_START") {
 		t.Errorf("artifact lost the start of a >64KB run — the streaming buffer evicted it before the artifact layer ever saw it")
@@ -526,6 +553,7 @@ func TestExecVerifyChecks_BlessedTagSkips(t *testing.T) {
 		TaskInfo{ID: "t1", Tags: []string{"verify-blessed"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "blessed" {
 		t.Errorf("Output = %q, want blessed (tag short-circuits before running)", out.Output)
@@ -545,6 +573,7 @@ func TestExecVerifyChecks_TimeoutFailsClosed(t *testing.T) {
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged (our own timeout must fail closed)", out.Output)
@@ -579,6 +608,7 @@ func TestExecVerifyChecks_ScaledTimeoutAbsorbsHostOversubscription(t *testing.T)
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean (scaled timeout should cover host oversubscription)", out.Output)
@@ -599,6 +629,7 @@ func TestExecVerifyChecks_TimeoutRetryAbsorbsLoadSpike(t *testing.T) {
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean (one-off timeout absorbed by suite retry)", out.Output)
@@ -688,11 +719,13 @@ func TestExecVerifyChecks_BackpressureParksWhilePeerVerifyInFlight(t *testing.T)
 
 	if err := os.WriteFile(filepath.Join(wt1, ".verify-release"), []byte("ok\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	select {
 	case got := <-firstDone:
 		if got.err != nil {
 			t.Fatalf("first verify err = %v", got.err)
+			panic("unreachable")
 		}
 		if got.out.Output != "clean" {
 			t.Fatalf("first verify output = %q, want clean", got.out.Output)
@@ -707,10 +740,12 @@ func TestExecVerifyChecks_BackpressureParksWhilePeerVerifyInFlight(t *testing.T)
 	ti2, err := tasks.GetTask("t2")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	ti2.Workflow.SetVar(workflowRetryAfterVar, time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
 	if err := tasks.SetWorkflow("t2", ti2.Workflow); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	engine.ResumeStalled()
@@ -718,9 +753,11 @@ func TestExecVerifyChecks_BackpressureParksWhilePeerVerifyInFlight(t *testing.T)
 	ti2, err = tasks.GetTask("t2")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if ti2.Workflow == nil {
 		t.Fatal("workflow missing after ResumeStalled")
+		panic("unreachable")
 	}
 	if ti2.Workflow.State != ExecCompleted {
 		t.Fatalf("workflow state = %q, want completed - parked verify_checks was not resumed (reason=%q)\nlogs:\n%s",
@@ -731,6 +768,7 @@ func TestExecVerifyChecks_BackpressureParksWhilePeerVerifyInFlight(t *testing.T)
 	}
 	if got := ti2.Workflow.LastRecord(); got == nil || got.StepID != "verify_checks" || got.Output != "clean" {
 		t.Fatalf("last step = %+v, want verify_checks clean", got)
+		panic("unreachable")
 	}
 }
 
@@ -752,6 +790,7 @@ func TestExecVerifyChecks_ToolchainHealRepairs(t *testing.T) {
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean (setup re-run repaired the toolchain)", out.Output)
@@ -771,6 +810,7 @@ func TestExecVerifyChecks_ToolchainHealMatchesDashNotFound(t *testing.T) {
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean (dash '<cmd>: not found' must trigger heal)", out.Output)
@@ -787,6 +827,7 @@ func TestExecVerifyChecks_ToolchainHealSetupFailsEscalates(t *testing.T) {
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged (setup could not repair)", out.Output)
@@ -806,6 +847,7 @@ func TestExecVerifyChecks_RealFailureSkipsToolchainHeal(t *testing.T) {
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged (non-toolchain failure must not trigger setup heal)", out.Output)
@@ -822,6 +864,7 @@ func TestExecVerifyChecks_GoInfraFailureBlocks(t *testing.T) {
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "blocked" {
 		t.Fatalf("Output = %q, want blocked", out.Output)
@@ -857,6 +900,7 @@ func TestExecVerifyChecks_UnrelatedGoPackageFailureBlocks(t *testing.T) {
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "blocked" {
 		t.Fatalf("Output = %q, want blocked", out.Output)
@@ -886,6 +930,7 @@ func TestClassifyVerifyFailure_UntouchedLintFileIsNotCodeFixable(t *testing.T) {
 	)
 	if classification != nil && classification.Kind == "code_fixable_lint" {
 		t.Fatalf("classification = %+v, must not auto-fix lint in untouched file", classification)
+		panic("unreachable")
 	}
 }
 
@@ -902,6 +947,7 @@ func TestClassifyVerifyFailure_MixedTouchedAndUntouchedLintFilesNotCodeFixable(t
 	)
 	if classification != nil && classification.Kind == "code_fixable_lint" {
 		t.Fatalf("classification = %+v, must not auto-fix mixed touched/untouched lint files", classification)
+		panic("unreachable")
 	}
 }
 
@@ -952,6 +998,7 @@ func TestExecVerifyChecks_FlakeRetryPasses(t *testing.T) {
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean (flake absorbed by retry)", out.Output)
@@ -970,6 +1017,7 @@ func TestRunVerifyCommands_DeadlineReturnsCtxErr(t *testing.T) {
 	failed, _, err := engine.runVerifyCommands(ctx, "t1", wt, []string{"sleep 20"})
 	if err == nil {
 		t.Fatal("expected a context error on deadline, got nil")
+		panic("unreachable")
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("err = %v, want context.DeadlineExceeded", err)
@@ -989,10 +1037,12 @@ func TestRunVerifyCommands_GOCACHEIsPerTaskWhileGOMODCACHEStaysShared(t *testing
 	_, out1, err := engine.runVerifyCommands(ctx, "task-1", wt, []string{cmd})
 	if err != nil {
 		t.Fatalf("runVerifyCommands(task-1): %v", err)
+		panic("unreachable")
 	}
 	_, out2, err := engine.runVerifyCommands(ctx, "task-2", wt, []string{cmd})
 	if err != nil {
 		t.Fatalf("runVerifyCommands(task-2): %v", err)
+		panic("unreachable")
 	}
 
 	line1 := strings.TrimSpace(strings.TrimPrefix(out1, "$ "+cmd))
@@ -1039,6 +1089,7 @@ import "sigs.k8s.io/controller-runtime/pkg/envtest"
 	plan, err := discoverEnvtestPlan(wt)
 	if err != nil {
 		t.Fatalf("discoverEnvtestPlan: %v", err)
+		panic("unreachable")
 	}
 	if !plan.Needed {
 		t.Fatal("Needed = false, want true")
@@ -1079,6 +1130,7 @@ func TestUnit(t *testing.T) {}
 	plan, err := discoverEnvtestPlan(wt)
 	if err != nil {
 		t.Fatalf("discoverEnvtestPlan: %v", err)
+		panic("unreachable")
 	}
 	if plan.Needed {
 		t.Fatal("Needed = true, want false")
@@ -1113,6 +1165,7 @@ import "sigs.k8s.io/controller-runtime/pkg/envtest"
 	plan, err := discoverEnvtestPlan(wt)
 	if err != nil {
 		t.Fatalf("discoverEnvtestPlan: %v", err)
+		panic("unreachable")
 	}
 	if !plan.Needed {
 		t.Fatal("Needed = false, want true")
@@ -1144,6 +1197,7 @@ import "sigs.k8s.io/controller-runtime/pkg/envtest"
 	env, err := verifyCommandEnv(context.Background(), "t1", wt, "mise exec -- go test ./...")
 	if err != nil {
 		t.Fatalf("verifyCommandEnv: %v", err)
+		panic("unreachable")
 	}
 	if got := envValue(env, "KUBEBUILDER_ASSETS"); got != assetsDir {
 		t.Fatalf("KUBEBUILDER_ASSETS = %q, want %q", got, assetsDir)
@@ -1151,6 +1205,7 @@ import "sigs.k8s.io/controller-runtime/pkg/envtest"
 	args, err := os.ReadFile(argsLog)
 	if err != nil {
 		t.Fatalf("read args log: %v", err)
+		panic("unreachable")
 	}
 	if got := strings.TrimSpace(string(args)); got != "use -p path 1.32.x!" {
 		t.Fatalf("setup-envtest args = %q, want %q", got, "use -p path 1.32.x!")
@@ -1180,6 +1235,7 @@ import "sigs.k8s.io/controller-runtime/pkg/envtest"
 	}, "example.com/operator")
 	if err != nil {
 		t.Fatalf("goPackageAffectedByChanges: %v", err)
+		panic("unreachable")
 	}
 	if affected {
 		t.Fatal("affected = true, want false")
@@ -1211,6 +1267,7 @@ import "sigs.k8s.io/controller-runtime/pkg/envtest"
 	env, err := verifyCommandEnv(context.Background(), "t1", wt, "go list -deps ./internal/controller")
 	if err != nil {
 		t.Fatalf("verifyCommandEnv: %v", err)
+		panic("unreachable")
 	}
 	if got := envValue(env, "KUBEBUILDER_ASSETS"); got != assetsDir {
 		t.Fatalf("KUBEBUILDER_ASSETS = %q, want %q", got, assetsDir)
@@ -1218,6 +1275,7 @@ import "sigs.k8s.io/controller-runtime/pkg/envtest"
 	args, err := os.ReadFile(argsLog)
 	if err != nil {
 		t.Fatalf("read args log: %v", err)
+		panic("unreachable")
 	}
 	if got := strings.TrimSpace(string(args)); got != "use -p path 1.32.x!" {
 		t.Fatalf("setup-envtest args = %q, want %q", got, "use -p path 1.32.x!")
@@ -1245,12 +1303,14 @@ import "sigs.k8s.io/controller-runtime/pkg/envtest"
 	env, err := verifyCommandEnv(context.Background(), "t1", wt, "(cd frontend && npm run check)")
 	if err != nil {
 		t.Fatalf("verifyCommandEnv: %v", err)
+		panic("unreachable")
 	}
 	if got := envValue(env, "KUBEBUILDER_ASSETS"); got != "" {
 		t.Fatalf("KUBEBUILDER_ASSETS = %q, want empty", got)
 	}
 	if _, err := os.Stat(argsLog); err == nil {
 		t.Fatal("setup-envtest should not run for non-Go commands")
+		panic("unreachable")
 	}
 }
 
@@ -1260,6 +1320,7 @@ func TestEnsureNodeToolchain_RepairsCorruptBin(t *testing.T) {
 	binDir := filepath.Join(dir, "node_modules", ".bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Present but zero-byte — the exact corruption shape from the bug report
 	// (ls lists entries, du -sh reports 0 bytes).
@@ -1302,6 +1363,7 @@ func TestEnsureNodeToolchain_IntactBinSkipsRepair(t *testing.T) {
 	binDir := filepath.Join(dir, "node_modules", ".bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	writeTestFile(t, filepath.Join(binDir, "vite"), "#!/bin/sh\necho vite\n")
 
@@ -1338,6 +1400,7 @@ func TestEnsureNodeToolchain_ConcurrentCallersInstallOnce(t *testing.T) {
 		"printf '#!/bin/sh\\n' > node_modules/.bin/vite\n"
 	if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -1354,6 +1417,7 @@ func TestEnsureNodeToolchain_ConcurrentCallersInstallOnce(t *testing.T) {
 	data, err := os.ReadFile(runLog)
 	if err != nil {
 		t.Fatalf("npm never ran: %v", err)
+		panic("unreachable")
 	}
 	if runs := strings.Count(string(data), "run"); runs != 1 {
 		t.Fatalf("npm ci ran %d times, want exactly 1 — concurrent gates must not race two installs", runs)
@@ -1365,11 +1429,13 @@ func TestEnsureNodeToolchain_ResolvesCdPrefix(t *testing.T) {
 	frontend := filepath.Join(root, "frontend")
 	if err := os.MkdirAll(frontend, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	writeTestFile(t, filepath.Join(frontend, "package.json"), "{}")
 	binDir := filepath.Join(frontend, "node_modules", ".bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	writeTestFile(t, filepath.Join(binDir, "vite"), "")
 
@@ -1392,6 +1458,7 @@ func TestEnsureNodeToolchain_CdSubstringIsNotAFalseMatch(t *testing.T) {
 	binDir := filepath.Join(root, "node_modules", ".bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	writeTestFile(t, filepath.Join(binDir, "vite"), "#!/bin/sh\necho vite\n") // intact
 	fakeNPM(t, "marker-npm-ci-ran")
@@ -1414,6 +1481,7 @@ func TestEnsureNodeToolchain_QuotedDirWithSpace(t *testing.T) {
 	binDir := filepath.Join(spaced, "node_modules", ".bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	writeTestFile(t, filepath.Join(spaced, "package.json"), "{}")
 	writeTestFile(t, filepath.Join(binDir, "vite"), "") // corrupt
@@ -1434,6 +1502,7 @@ func TestEnsureNodeToolchain_ChainedCdRepairsEachLeg(t *testing.T) {
 		binDir := filepath.Join(root, leg, "node_modules", ".bin")
 		if err := os.MkdirAll(binDir, 0o755); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		writeTestFile(t, filepath.Join(root, leg, "package.json"), "{}")
 		writeTestFile(t, filepath.Join(binDir, "vite"), "") // corrupt in both
@@ -1459,6 +1528,7 @@ func TestEnsureNodeToolchain_TraversalIsRejected(t *testing.T) {
 	binDir := filepath.Join(outside, "node_modules", ".bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	writeTestFile(t, filepath.Join(outside, "package.json"), "{}")
 	writeTestFile(t, filepath.Join(binDir, "vite"), "") // corrupt
@@ -1467,6 +1537,7 @@ func TestEnsureNodeToolchain_TraversalIsRejected(t *testing.T) {
 	wt := filepath.Join(root, "wt")
 	if err := os.MkdirAll(wt, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
 	tail := &boundedTail{max: 4096}
@@ -1500,6 +1571,7 @@ func fakeNPM(t *testing.T, markerName string) {
 	script := "#!/bin/sh\ntouch \"" + markerName + "\"\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
@@ -1511,6 +1583,7 @@ func fakeSetupEnvtest(t *testing.T, assetsDir string) string {
 	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s' \"$*\" > %q\nprintf '%%s\\n' %q\n", argsLog, assetsDir)
 	if err := os.WriteFile(filepath.Join(fakeBin, "setup-envtest"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return argsLog
@@ -1520,9 +1593,11 @@ func writeTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -1546,20 +1621,24 @@ func TestIsCorruptedNodeModules(t *testing.T) {
 			nm := filepath.Join(dir, "node_modules")
 			if err := os.MkdirAll(nm, 0o755); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			for name, content := range nmEntries {
 				full := filepath.Join(nm, name)
 				if content == "<dir>" {
 					if err := os.MkdirAll(full, 0o755); err != nil {
 						t.Fatal(err)
+						panic("unreachable")
 					}
 					continue
 				}
 				if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 					t.Fatal(err)
+					panic("unreachable")
 				}
 				if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
 					t.Fatal(err)
+					panic("unreachable")
 				}
 			}
 		}
@@ -1676,6 +1755,7 @@ func TestRepairCorruptedNodeModules_RepairsPartialInstall(t *testing.T) {
 	nm := filepath.Join(frontend, "node_modules")
 	if err := os.MkdirAll(filepath.Join(nm, "vite"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1691,6 +1771,7 @@ func TestRepairCorruptedNodeModules_RepairsPartialInstall(t *testing.T) {
 	npmScript := "#!/bin/sh\nmkdir -p node_modules/.bin\ntouch node_modules/.package-lock.json\n"
 	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte(npmScript), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -1711,6 +1792,7 @@ func TestExecVerifyChecks_NodeModulesRepairFailureFlags(t *testing.T) {
 	nm := filepath.Join(frontend, "node_modules")
 	if err := os.MkdirAll(filepath.Join(nm, "vite"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	writeTestFile(t, filepath.Join(frontend, "package.json"), "{}")
 	writeTestFile(t, filepath.Join(frontend, "package-lock.json"), "{}")
@@ -1718,6 +1800,7 @@ func TestExecVerifyChecks_NodeModulesRepairFailureFlags(t *testing.T) {
 	binDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte("#!/bin/sh\nexit 42\n"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -1727,6 +1810,7 @@ func TestExecVerifyChecks_NodeModulesRepairFailureFlags(t *testing.T) {
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged", out.Output)
@@ -1746,6 +1830,7 @@ func TestVerifyTaskNow_NodeModulesRepairFailureIsNotVerified(t *testing.T) {
 	nm := filepath.Join(frontend, "node_modules")
 	if err := os.MkdirAll(filepath.Join(nm, "vite"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	writeTestFile(t, filepath.Join(frontend, "package.json"), "{}")
 	writeTestFile(t, filepath.Join(frontend, "package-lock.json"), "{}")
@@ -1753,6 +1838,7 @@ func TestVerifyTaskNow_NodeModulesRepairFailureIsNotVerified(t *testing.T) {
 	binDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte("#!/bin/sh\nexit 42\n"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -1760,6 +1846,7 @@ func TestVerifyTaskNow_NodeModulesRepairFailureIsNotVerified(t *testing.T) {
 	verified, passed, _, output, err := engine.VerifyTaskNow(t.Context(), "t1")
 	if err == nil {
 		t.Fatal("expected repair error")
+		panic("unreachable")
 	}
 	if verified || passed {
 		t.Fatalf("verified=%v passed=%v, want verified=false passed=false", verified, passed)
@@ -1775,6 +1862,7 @@ func TestRepairCorruptedNodeModules_UsesSubdirMiseConfig(t *testing.T) {
 	nm := filepath.Join(frontend, "node_modules")
 	if err := os.MkdirAll(filepath.Join(nm, "vite"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	writeTestFile(t, filepath.Join(frontend, "package.json"), "{}")
 	writeTestFile(t, filepath.Join(frontend, "package-lock.json"), "{}")
@@ -1788,6 +1876,7 @@ func TestRepairCorruptedNodeModules_UsesSubdirMiseConfig(t *testing.T) {
 		"FROM_MISE=1 exec \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(fakeBin, "mise"), []byte(miseScript), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	npmScript := "#!/bin/sh\n" +
 		"test \"$FROM_MISE\" = 1 || exit 43\n" +
@@ -1795,6 +1884,7 @@ func TestRepairCorruptedNodeModules_UsesSubdirMiseConfig(t *testing.T) {
 		"touch node_modules/.package-lock.json\n"
 	if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte(npmScript), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -1804,9 +1894,11 @@ func TestRepairCorruptedNodeModules_UsesSubdirMiseConfig(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(frontend, "node_modules", ".bin")); err != nil {
 		t.Fatalf("node_modules/.bin missing after repair: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(filepath.Join(frontend, "node_modules", ".package-lock.json")); err != nil {
 		t.Fatalf("node_modules/.package-lock.json missing after repair: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -1816,6 +1908,7 @@ func TestRepairCorruptedNodeModules_LeavesHealthyInstallAlone(t *testing.T) {
 	nm := filepath.Join(frontend, "node_modules")
 	if err := os.MkdirAll(filepath.Join(nm, ".bin"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(nm, ".package-lock.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1839,6 +1932,7 @@ func TestRepairCorruptedNodeModules_SkipsPnpmWorkspace(t *testing.T) {
 	// which looks "corrupted" to the npm heuristic but is legitimate here.
 	if err := os.MkdirAll(filepath.Join(nm, "vite"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1853,6 +1947,7 @@ func TestRepairCorruptedNodeModules_SkipsPnpmWorkspace(t *testing.T) {
 	npmScript := "#!/bin/sh\ntouch invoked\nexit 1\n"
 	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte(npmScript), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -1870,6 +1965,7 @@ func TestExecVerifyChecks_RepairsCorruptedNodeModulesBeforeRunning(t *testing.T)
 	nm := filepath.Join(frontend, "node_modules")
 	if err := os.MkdirAll(filepath.Join(nm, "vite"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1882,6 +1978,7 @@ func TestExecVerifyChecks_RepairsCorruptedNodeModulesBeforeRunning(t *testing.T)
 	npmScript := "#!/bin/sh\nmkdir -p node_modules/.bin\ntouch node_modules/.package-lock.json\n"
 	if err := os.WriteFile(filepath.Join(binDir, "npm"), []byte(npmScript), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -1894,6 +1991,7 @@ func TestExecVerifyChecks_RepairsCorruptedNodeModulesBeforeRunning(t *testing.T)
 	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean (repair should have fixed node_modules first)", out.Output)
@@ -1915,6 +2013,7 @@ func TestBuiltinSimpleTaskImplement_VerifyChecksWiring(t *testing.T) {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("BuiltinDefinitions: %v", err)
+		panic("unreachable")
 	}
 	var impl *Definition
 	for i := range defs {
@@ -1968,6 +2067,7 @@ func TestNodeModulesTorn(t *testing.T) {
 		nodeModules = filepath.Join(dir, "node_modules")
 		if err := os.MkdirAll(nodeModules, 0o755); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		return dir, nodeModules
 	}
@@ -1985,6 +2085,7 @@ func TestNodeModulesTorn(t *testing.T) {
 		dir, nm := newProject(t, false)
 		if err := os.WriteFile(filepath.Join(nm, ".bin"), []byte("not-a-dir"), 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if !nodeModulesTorn(dir, nm) {
 			t.Error("want torn: node_modules/.bin exists but is not a directory")
@@ -1996,6 +2097,7 @@ func TestNodeModulesTorn(t *testing.T) {
 		dir, nm := newProject(t, false)
 		if err := os.MkdirAll(filepath.Join(nm, ".bin"), 0o755); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if nodeModulesTorn(dir, nm) {
 			t.Error("want healthy: .bin present, no lockfile to compare stamp against")
@@ -2007,6 +2109,7 @@ func TestNodeModulesTorn(t *testing.T) {
 		dir, nm := newProject(t, true)
 		if err := os.MkdirAll(filepath.Join(nm, ".bin"), 0o755); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if !nodeModulesTorn(dir, nm) {
 			t.Error("want torn: npm never finished writing node_modules/.package-lock.json")
@@ -2018,6 +2121,7 @@ func TestNodeModulesTorn(t *testing.T) {
 		dir, nm := newProject(t, true)
 		if err := os.MkdirAll(filepath.Join(nm, ".bin"), 0o755); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		stamp := filepath.Join(nm, ".package-lock.json")
 		if err := os.WriteFile(stamp, []byte("{}"), 0o644); err != nil {
@@ -2026,6 +2130,7 @@ func TestNodeModulesTorn(t *testing.T) {
 		old := time.Now().Add(-time.Hour)
 		if err := os.Chtimes(stamp, old, old); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if !nodeModulesTorn(dir, nm) {
 			t.Error("want torn: stamp predates the lockfile it should have installed")
@@ -2037,6 +2142,7 @@ func TestNodeModulesTorn(t *testing.T) {
 		dir, nm := newProject(t, true)
 		if err := os.MkdirAll(filepath.Join(nm, ".bin"), 0o755); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if err := os.WriteFile(filepath.Join(nm, ".package-lock.json"), []byte("{}"), 0o644); err != nil {
 			t.Fatal(err)
@@ -2059,6 +2165,7 @@ func fakeNpmOnPath(t *testing.T, markerPath string) {
 	npmPath := filepath.Join(binDir, "npm")
 	if err := os.WriteFile(npmPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
@@ -2068,6 +2175,7 @@ func TestRepairTornNodeModules_RepairsWhenTorn(t *testing.T) {
 	frontend := filepath.Join(wt, "frontend")
 	if err := os.MkdirAll(frontend, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
@@ -2078,6 +2186,7 @@ func TestRepairTornNodeModules_RepairsWhenTorn(t *testing.T) {
 	// node_modules present but missing .bin — the torn signature.
 	if err := os.MkdirAll(filepath.Join(frontend, "node_modules"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	marker := filepath.Join(t.TempDir(), "marker")
@@ -2089,6 +2198,7 @@ func TestRepairTornNodeModules_RepairsWhenTorn(t *testing.T) {
 	out, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatalf("expected npm ci to run and write a marker, got: %v", err)
+		panic("unreachable")
 	}
 	if got := string(out); got != frontend+"\nci --ignore-scripts\n" {
 		t.Errorf("npm repair marker = %q, want dir and safe args", got)
@@ -2106,6 +2216,7 @@ func TestRepairTornNodeModules_RepairsRootProject(t *testing.T) {
 	// node_modules present but missing .bin — the torn signature.
 	if err := os.MkdirAll(filepath.Join(wt, "node_modules"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	marker := filepath.Join(t.TempDir(), "marker")
@@ -2117,6 +2228,7 @@ func TestRepairTornNodeModules_RepairsRootProject(t *testing.T) {
 	out, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatalf("expected npm ci to run for root package and write a marker, got: %v", err)
+		panic("unreachable")
 	}
 	if got := string(out); got != wt+"\nci --ignore-scripts\n" {
 		t.Errorf("npm repair marker = %q, want root dir and safe args", got)
@@ -2128,6 +2240,7 @@ func TestRepairTornNodeModules_SkipsWithoutLockfile(t *testing.T) {
 	frontend := filepath.Join(wt, "frontend")
 	if err := os.MkdirAll(filepath.Join(frontend, "node_modules"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
@@ -2149,6 +2262,7 @@ func TestRepairTornNodeModules_LogsRepairFailure(t *testing.T) {
 	frontend := filepath.Join(wt, "frontend")
 	if err := os.MkdirAll(filepath.Join(frontend, "node_modules"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
@@ -2161,6 +2275,7 @@ func TestRepairTornNodeModules_LogsRepairFailure(t *testing.T) {
 	npmPath := filepath.Join(binDir, "npm")
 	if err := os.WriteFile(npmPath, []byte("#!/bin/sh\nexit 17\n"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -2180,6 +2295,7 @@ func TestRepairTornNodeModules_DisablesLifecycleScripts(t *testing.T) {
 	frontend := filepath.Join(wt, "frontend")
 	if err := os.MkdirAll(filepath.Join(frontend, "node_modules"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte(`{
   "scripts": {
@@ -2206,6 +2322,7 @@ esac
 	npmPath := filepath.Join(binDir, "npm")
 	if err := os.WriteFile(npmPath, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -2218,6 +2335,7 @@ esac
 	out, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatalf("expected npm repair marker: %v", err)
+		panic("unreachable")
 	}
 	if got := string(out); got != frontend+"\nci --ignore-scripts\n" {
 		t.Errorf("npm repair marker = %q, want dir and safe args", got)
@@ -2229,6 +2347,7 @@ func TestRepairTornNodeModules_SkipsWhenHealthy(t *testing.T) {
 	frontend := filepath.Join(wt, "frontend")
 	if err := os.MkdirAll(filepath.Join(frontend, "node_modules", ".bin"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(frontend, "package.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)

@@ -29,6 +29,7 @@ func TestPutListRead(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Put: %v", err)
+		panic("unreachable")
 	}
 	if meta.Name != "plan.md" {
 		t.Errorf("Name = %q, want plan.md", meta.Name)
@@ -40,6 +41,7 @@ func TestPutListRead(t *testing.T) {
 	metas, err := s.List("task-abc")
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(metas) != 1 {
 		t.Fatalf("List len = %d, want 1", len(metas))
@@ -48,6 +50,7 @@ func TestPutListRead(t *testing.T) {
 	got, gotMeta, err := s.Read("task-abc", "plan.md")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(got, content) {
 		t.Errorf("content mismatch: got %q, want %q", got, content)
@@ -80,16 +83,19 @@ func TestListIgnoresCorruptIndex(t *testing.T) {
 	_, err := s.Put("task-1", Artifact{Kind: KindPlan, Content: []byte("x")})
 	if err != nil {
 		t.Fatalf("Put: %v", err)
+		panic("unreachable")
 	}
 
 	dir := filepath.Join(s.root, "task-1")
 	if wErr := os.WriteFile(filepath.Join(dir, "index.json"), []byte("!!!not json!!!"), 0o644); wErr != nil {
 		t.Fatal(wErr)
+		panic("unreachable")
 	}
 
 	metas, err := s.List("task-1")
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(metas) != 1 {
 		t.Errorf("List len = %d, want 1", len(metas))
@@ -103,6 +109,7 @@ func TestListSkipsMalformedMeta(t *testing.T) {
 	_, err := s.Put("task-2", Artifact{Kind: KindPlan, Content: []byte("x")})
 	if err != nil {
 		t.Fatalf("Put: %v", err)
+		panic("unreachable")
 	}
 	dir := filepath.Join(s.root, "task-2")
 	if wErr := os.WriteFile(filepath.Join(dir, "bad.meta.json"), []byte("{bad"), 0o644); wErr != nil {
@@ -112,6 +119,7 @@ func TestListSkipsMalformedMeta(t *testing.T) {
 	metas, err := s.List("task-2")
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(metas) != 1 {
 		t.Errorf("List len = %d, want 1 (bad row skipped)", len(metas))
@@ -135,6 +143,7 @@ func TestAppend(t *testing.T) {
 	data, _, err := s.Read("task-3", "trace.jsonl")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
+		panic("unreachable")
 	}
 	lines := splitLines(data)
 	if len(lines) != 2 {
@@ -143,9 +152,11 @@ func TestAppend(t *testing.T) {
 	var e0, e1 event
 	if err := json.Unmarshal([]byte(lines[0]), &e0); err != nil {
 		t.Fatalf("line 0 parse: %v", err)
+		panic("unreachable")
 	}
 	if err := json.Unmarshal([]byte(lines[1]), &e1); err != nil {
 		t.Fatalf("line 1 parse: %v", err)
+		panic("unreachable")
 	}
 	if e0.Step != "a" || e1.Step != "b" {
 		t.Errorf("order wrong: got %q %q", e0.Step, e1.Step)
@@ -192,6 +203,7 @@ func TestRace(t *testing.T) {
 	metas, err := s.List("race-task")
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(metas) == 0 {
 		t.Error("expected at least one artifact")
@@ -205,13 +217,16 @@ func TestDelete(t *testing.T) {
 	_, err := s.Put("del-task", Artifact{Kind: KindPlan, Content: []byte("x")})
 	if err != nil {
 		t.Fatalf("Put: %v", err)
+		panic("unreachable")
 	}
 
 	if err := s.Delete("del-task"); err != nil {
 		t.Fatalf("Delete: %v", err)
+		panic("unreachable")
 	}
 	if err := s.Delete("del-task"); err != nil {
 		t.Fatalf("second Delete: %v", err)
+		panic("unreachable")
 	}
 
 	if got := s.locks.Len(); got != 0 {
@@ -221,6 +236,7 @@ func TestDelete(t *testing.T) {
 	metas, err := s.List("del-task")
 	if err != nil {
 		t.Fatalf("List after delete: %v", err)
+		panic("unreachable")
 	}
 	if len(metas) != 0 {
 		t.Errorf("expected empty list after delete, got %d", len(metas))
@@ -234,24 +250,29 @@ func TestReindex(t *testing.T) {
 	_, err := s.Put("reindex-task", Artifact{Kind: KindPlan, Content: []byte("x")})
 	if err != nil {
 		t.Fatalf("Put: %v", err)
+		panic("unreachable")
 	}
 
 	dir := filepath.Join(s.root, "reindex-task")
 	if wErr := os.WriteFile(filepath.Join(dir, "index.json"), []byte("corrupt"), 0o644); wErr != nil {
 		t.Fatal(wErr)
+		panic("unreachable")
 	}
 
 	if err := s.Reindex("reindex-task"); err != nil {
 		t.Fatalf("Reindex: %v", err)
+		panic("unreachable")
 	}
 
 	data, err := os.ReadFile(filepath.Join(dir, "index.json"))
 	if err != nil {
 		t.Fatalf("read index.json: %v", err)
+		panic("unreachable")
 	}
 	var metas []Meta
 	if err := json.Unmarshal(data, &metas); err != nil {
 		t.Fatalf("parse index.json: %v", err)
+		panic("unreachable")
 	}
 	if len(metas) != 1 {
 		t.Errorf("index has %d entries, want 1", len(metas))
@@ -266,10 +287,12 @@ func TestBinaryContent(t *testing.T) {
 	_, err := s.Put("bin-task", Artifact{Kind: KindGeneric, Name: "blob.bin", Content: content})
 	if err != nil {
 		t.Fatalf("Put: %v", err)
+		panic("unreachable")
 	}
 	got, _, err := s.Read("bin-task", "blob.bin")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(got, content) {
 		t.Errorf("content mismatch: got %v, want %v", got, content)
@@ -311,6 +334,7 @@ func TestListEmptyDir(t *testing.T) {
 	metas, err := s.List("no-such-task")
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(metas) != 0 {
 		t.Errorf("expected empty, got %d", len(metas))

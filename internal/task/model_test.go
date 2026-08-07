@@ -13,6 +13,7 @@ func TestValidateStatus_Valid(t *testing.T) {
 			got, err := ValidateStatus(string(s))
 			if err != nil {
 				t.Fatalf("ValidateStatus(%q): %v", s, err)
+				panic("unreachable")
 			}
 			if got != s {
 				t.Errorf("got %q, want %q", got, s)
@@ -25,6 +26,7 @@ func TestValidateStatus_Invalid(t *testing.T) {
 	t.Parallel()
 	if _, err := ValidateStatus("invalid-status"); err == nil {
 		t.Fatal("expected error for invalid status")
+		panic("unreachable")
 	}
 }
 
@@ -54,6 +56,7 @@ func TestValidateTaskType_Valid(t *testing.T) {
 			got, err := ValidateTaskType(string(tt))
 			if err != nil {
 				t.Fatalf("ValidateTaskType(%q): %v", tt, err)
+				panic("unreachable")
 			}
 			if got != tt {
 				t.Errorf("got %q, want %q", got, tt)
@@ -66,6 +69,7 @@ func TestValidateTaskType_Invalid(t *testing.T) {
 	t.Parallel()
 	if _, err := ValidateTaskType("unknown"); err == nil {
 		t.Fatal("expected error for invalid task type")
+		panic("unreachable")
 	}
 }
 
@@ -85,6 +89,7 @@ func TestValidateAgentMode_Valid(t *testing.T) {
 			got, err := ValidateAgentMode(m)
 			if err != nil {
 				t.Fatalf("ValidateAgentMode(%q): %v", m, err)
+				panic("unreachable")
 			}
 			if got != m {
 				t.Errorf("got %q, want %q", got, m)
@@ -101,6 +106,7 @@ func TestValidateAgentMode_Invalid(t *testing.T) {
 			t.Parallel()
 			if _, err := ValidateAgentMode(c); err == nil {
 				t.Fatalf("expected error for %q", c)
+				panic("unreachable")
 			}
 		})
 	}
@@ -129,6 +135,7 @@ func TestValidateReasoningEffort(t *testing.T) {
 		got, err := ValidateReasoningEffort("")
 		if err != nil {
 			t.Fatalf("ValidateReasoningEffort(%q): %v", "", err)
+			panic("unreachable")
 		}
 		if got != "" {
 			t.Errorf("got %q, want empty", got)
@@ -142,6 +149,7 @@ func TestValidateReasoningEffort(t *testing.T) {
 			got, err := ValidateReasoningEffort(v)
 			if err != nil {
 				t.Fatalf("ValidateReasoningEffort(%q): %v", v, err)
+				panic("unreachable")
 			}
 			if got != v {
 				t.Errorf("got %q, want %q", got, v)
@@ -155,6 +163,7 @@ func TestValidateReasoningEffort(t *testing.T) {
 			t.Parallel()
 			if _, err := ValidateReasoningEffort(v); err == nil {
 				t.Fatalf("expected error for %q, got nil", v)
+				panic("unreachable")
 			}
 		})
 	}
@@ -177,6 +186,7 @@ func TestValidateAgentProvider(t *testing.T) {
 			got, err := ValidateAgentProvider(v)
 			if err != nil {
 				t.Fatalf("ValidateAgentProvider(%q): %v", v, err)
+				panic("unreachable")
 			}
 			if got != v {
 				t.Errorf("got %q, want %q", got, v)
@@ -189,6 +199,7 @@ func TestValidateAgentProvider(t *testing.T) {
 			t.Parallel()
 			if _, err := ValidateAgentProvider(v); err == nil {
 				t.Fatalf("expected error for %q, got nil", v)
+				panic("unreachable")
 			}
 		})
 	}

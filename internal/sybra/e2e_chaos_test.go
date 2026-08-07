@@ -116,10 +116,12 @@ func runChaosSeed(t *testing.T, seed uint64) {
 	created, err := env.tasks.Create(fmt.Sprintf("chaos-task-%d", seed), "body", "headless")
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 
 	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatalf("startWorkflow: %v", err)
+		panic("unreachable")
 	}
 
 	// Wait for the system to settle. Settled = workflow terminal OR
@@ -137,6 +139,7 @@ func runChaosSeed(t *testing.T, seed uint64) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatalf("seed %d: post-settle task parse: %v", seed, err)
+		panic("unreachable")
 	}
 
 	// Invariant 2: no live agents for this task (no leaked subprocess).
@@ -384,6 +387,7 @@ func TestE2E_ChaosConcurrentTasks(t *testing.T) {
 		created, err := env.tasks.Create(fmt.Sprintf("chaos-concurrent-%d", i), "body", "headless")
 		if err != nil {
 			t.Fatalf("create task %d: %v", i, err)
+			panic("unreachable")
 		}
 		taskIDs[i] = created.ID
 	}
@@ -471,6 +475,7 @@ func TestE2E_ChaosConcurrentTasks(t *testing.T) {
 	listed, err := env.tasks.List()
 	if err != nil {
 		t.Fatalf("List after concurrent chaos: %v", err)
+		panic("unreachable")
 	}
 	seen := map[string]int{}
 	for _, lt := range listed {

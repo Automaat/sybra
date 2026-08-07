@@ -21,6 +21,7 @@ func TestRenovateHandlerRepos_FilterByProjectType(t *testing.T) {
 	store, err := project.NewStore(dir, clones)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 
 	writeProject(t, dir, "owner1--pet1.yaml", "owner1/pet1", "owner1", "pet1", project.ProjectTypePet)
@@ -74,6 +75,7 @@ func TestRenovateHandlerPoll_AuthFailureResetsTransientFetchStreak(t *testing.T)
 	store, err := project.NewStore(dir, clones)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 	writeProject(t, dir, "owner1--pet1.yaml", "owner1/pet1", "owner1", "pet1", project.ProjectTypePet)
 
@@ -107,6 +109,7 @@ func writeProject(t *testing.T, dir, filename, id, owner, repo string, ptype pro
 	body := "id: " + id + "\nname: " + repo + "\nowner: " + owner + "\nrepo: " + repo + "\ntype: " + string(ptype) + "\n"
 	if err := os.WriteFile(filepath.Join(dir, filename), []byte(body), 0o644); err != nil {
 		t.Fatalf("write project: %v", err)
+		panic("unreachable")
 	}
 }
 

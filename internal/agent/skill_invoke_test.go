@@ -146,6 +146,7 @@ func TestBuildHeadlessInvocation_CodexConvertsAliasedSkill(t *testing.T) {
 	inv, err := (codexProvider{}).BuildHeadlessInvocation(&Agent{ID: "a", Provider: "codex"}, RunConfig{Prompt: aliased})
 	if err != nil {
 		t.Fatalf("BuildHeadlessInvocation: %v", err)
+		panic("unreachable")
 	}
 	got := inv.args[len(inv.args)-1]
 	if got != "Run $sybra-test-v2 now" {
@@ -171,6 +172,7 @@ func TestBuildHeadlessInvocation_CodexLoadsUserConfigForOperatorSkills(t *testin
 			inv, err := (codexProvider{}).BuildHeadlessInvocation(&Agent{ID: "a", Provider: "codex"}, RunConfig{Prompt: "Run /" + skill + " now"})
 			if err != nil {
 				t.Fatalf("BuildHeadlessInvocation: %v", err)
+				panic("unreachable")
 			}
 			if slices.Contains(inv.args, "--ignore-user-config") {
 				t.Fatalf("Codex operator skill args included --ignore-user-config: %v", inv.args)
@@ -194,6 +196,7 @@ func TestBuildHeadlessInvocation_CodexKeepsUserConfigIgnoredWithoutSkill(t *test
 	inv, err := (codexProvider{}).BuildHeadlessInvocation(&Agent{ID: "a", Provider: "codex"}, RunConfig{Prompt: "Review this directly"})
 	if err != nil {
 		t.Fatalf("BuildHeadlessInvocation: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(inv.args, "--ignore-user-config") {
 		t.Fatalf("Codex non-skill args omitted --ignore-user-config: %v", inv.args)
@@ -211,6 +214,7 @@ func TestBuildHeadlessInvocation_CodexStampsPromptRender(t *testing.T) {
 	_, err := (codexProvider{}).BuildHeadlessInvocation(a, RunConfig{Prompt: "Run /staff-code-review then /totally-unknown-skill"})
 	if err != nil {
 		t.Fatalf("BuildHeadlessInvocation: %v", err)
+		panic("unreachable")
 	}
 	syntax, rendered, unrendered := a.GetPromptRender()
 	if syntax != "slash-to-dollar" {
@@ -234,6 +238,7 @@ func TestBuildHeadlessInvocationCodex_LoadsUserConfigForSkill(t *testing.T) {
 	inv, err := (codexProvider{}).BuildHeadlessInvocation(&Agent{ID: "a", Provider: "codex"}, RunConfig{Prompt: "Run /staff-code-review"})
 	if err != nil {
 		t.Fatalf("BuildHeadlessInvocation: %v", err)
+		panic("unreachable")
 	}
 	if slices.Contains(inv.args, "--ignore-user-config") {
 		t.Fatalf("Codex headless skill args included --ignore-user-config: %v", inv.args)
@@ -255,6 +260,7 @@ func TestBuildHeadlessInvocationCodex_LoadsUserConfigForOperatorSkills(t *testin
 			inv, err := (codexProvider{}).BuildHeadlessInvocation(&Agent{ID: "a", Provider: "codex"}, RunConfig{Prompt: "Run /" + skill})
 			if err != nil {
 				t.Fatalf("BuildHeadlessInvocation: %v", err)
+				panic("unreachable")
 			}
 			if slices.Contains(inv.args, "--ignore-user-config") {
 				t.Fatalf("Codex headless operator skill args included --ignore-user-config: %v", inv.args)
@@ -278,6 +284,7 @@ func TestBuildHeadlessInvocation_CopilotStripsOperatorSkillSlashInvocation(t *te
 			inv, err := (copilotProvider{}).BuildHeadlessInvocation(&Agent{ID: "a", Provider: "copilot"}, RunConfig{Prompt: "Run /" + skill + " now"})
 			if err != nil {
 				t.Fatalf("BuildHeadlessInvocation: %v", err)
+				panic("unreachable")
 			}
 			if len(inv.args) < 2 {
 				t.Fatalf("unexpected Copilot args: %v", inv.args)
@@ -303,6 +310,7 @@ func TestBuildHeadlessInvocation_CopilotStampsPromptRender(t *testing.T) {
 	_, err := (copilotProvider{}).BuildHeadlessInvocation(a, RunConfig{Prompt: "Run /sybra-plan then /totally-unknown-skill"})
 	if err != nil {
 		t.Fatalf("BuildHeadlessInvocation: %v", err)
+		panic("unreachable")
 	}
 	syntax, rendered, unrendered := a.GetPromptRender()
 	if syntax != "slash-stripped" {
@@ -325,6 +333,7 @@ func TestBuildHeadlessInvocation_OpencodeStampsPromptRender(t *testing.T) {
 	inv, err := (opencodeProvider{}).BuildHeadlessInvocation(a, RunConfig{Prompt: "Run /sybra-plan then /totally-unknown-skill"})
 	if err != nil {
 		t.Fatalf("BuildHeadlessInvocation: %v", err)
+		panic("unreachable")
 	}
 	syntax, rendered, unrendered := a.GetPromptRender()
 	if syntax != "slash-stripped" {
@@ -349,6 +358,7 @@ func TestBuildHeadlessInvocation_ClaudeStampsPromptRenderNone(t *testing.T) {
 	_, err := (claudeProvider{}).BuildHeadlessInvocation(a, RunConfig{Prompt: "Run /some-skill", RequirePermissions: true})
 	if err != nil {
 		t.Fatalf("BuildHeadlessInvocation: %v", err)
+		panic("unreachable")
 	}
 	syntax, rendered, unrendered := a.GetPromptRender()
 	if syntax != "none" {
@@ -356,6 +366,7 @@ func TestBuildHeadlessInvocation_ClaudeStampsPromptRenderNone(t *testing.T) {
 	}
 	if rendered != nil || unrendered != nil {
 		t.Fatalf("rendered/unrendered = %v/%v, want nil/nil", rendered, unrendered)
+		panic("unreachable")
 	}
 }
 
@@ -715,25 +726,31 @@ func TestListSkillDirs(t *testing.T) {
 	validDir := filepath.Join(root, "plan-critic")
 	if err := os.MkdirAll(validDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(validDir, "SKILL.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Dir without SKILL.md (skipped).
 	if err := os.MkdirAll(filepath.Join(root, "no-skill-md"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Hidden dir (skipped).
 	hidden := filepath.Join(root, ".system")
 	if err := os.MkdirAll(hidden, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(hidden, "SKILL.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Plain file (skipped).
 	if err := os.WriteFile(filepath.Join(root, "foo.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got := listSkillDirs(root)
@@ -767,6 +784,7 @@ func TestListPluginSkillDirs(t *testing.T) {
 	// Skill dir missing SKILL.md is ignored.
 	if err := os.MkdirAll(filepath.Join(root, "sai", "no-skill", "1.0.0", "skills", "no-skill"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got := listPluginSkillDirs(root)
@@ -923,6 +941,7 @@ func TestDiscoverCodexSkillsFallsBackOnMalformedManifest(t *testing.T) {
 	pluginRoot := filepath.Join(home, "broken-plugin")
 	if err := os.MkdirAll(filepath.Join(pluginRoot, ".codex-plugin"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(pluginRoot, ".codex-plugin", "plugin.json"), []byte("{"), 0o644); err != nil {
 		t.Fatal(err)
@@ -943,6 +962,7 @@ func TestDiscoverCodexSkillsFallsBackOnUnsupportedManifestSkills(t *testing.T) {
 	mkLocalSkill(t, filepath.Join(pluginRoot, "skills"), "direct-skill")
 	if err := os.MkdirAll(filepath.Join(pluginRoot, ".codex-plugin"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(pluginRoot, ".codex-plugin", "plugin.json"), []byte(`{"skills":{"path":"skills"}}`), 0o644); err != nil {
 		t.Fatal(err)
@@ -969,6 +989,7 @@ func TestDiscoverCodexSkillsFallsBackOnMissingPluginSourcePath(t *testing.T) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	withCodexPluginListJSON(t, data)
 
@@ -997,6 +1018,7 @@ func TestDiscoverCodexSkillsFallsBackOnEmptyPluginSourcePath(t *testing.T) {
 	emptyPluginRoot := filepath.Join(home, "empty-plugin")
 	if err := os.MkdirAll(emptyPluginRoot, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	withCodexPluginListJSON(t, codexPluginListPayload(t, emptyPluginRoot, true))
 
@@ -1017,6 +1039,7 @@ func TestDiscoverCodexSkillsDoesNotFallbackForNoSkillManifest(t *testing.T) {
 	got := discoverCodexSkillsInHome(home)
 	if got != nil {
 		t.Fatalf("got %v, want nil", got)
+		panic("unreachable")
 	}
 }
 
@@ -1045,6 +1068,7 @@ func TestDiscoverCodexSkillsRejectsUnsafeAbsolutePeerPath(t *testing.T) {
 	got := discoverCodexSkillsInHome(home)
 	if got != nil {
 		t.Fatalf("got %v, want nil", got)
+		panic("unreachable")
 	}
 }
 
@@ -1111,6 +1135,7 @@ func TestDiscoverCodexSkillsScopesFallbackToFailedPlugins(t *testing.T) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	withCodexPluginListJSON(t, data)
 
@@ -1141,11 +1166,13 @@ func TestParseCodexPluginListSkills(t *testing.T) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got, fallbackPlugins, err := parseCodexPluginListSkills(data)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(fallbackPlugins) > 0 {
 		t.Fatalf("parseCodexPluginListSkills returned fallbackPlugins=%v", fallbackPlugins)
@@ -1181,9 +1208,11 @@ func mkSkill(t *testing.T, root, marketplace, plugin, version, skill string) {
 	skillDir := filepath.Join(root, marketplace, plugin, version, "skills", skill)
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -1197,9 +1226,11 @@ func mkSkillRoot(t *testing.T, skillDir string) {
 	t.Helper()
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -1207,10 +1238,12 @@ func mkNamedSkillRoot(t *testing.T, skillDir, name, newline string) {
 	t.Helper()
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	data := []byte("---" + newline + "name: " + name + newline + "---" + newline)
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -1221,6 +1254,7 @@ func writePluginManifest(t *testing.T, path, skills string) {
 	}{Skills: skills})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	writePluginManifestJSON(t, path, data)
 }
@@ -1248,9 +1282,11 @@ func writePluginManifestJSON(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -1312,6 +1348,7 @@ func codexPluginListPayloadForRoots(t *testing.T, enabled bool, pluginRoots ...s
 	data, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return data
 }

@@ -42,6 +42,7 @@ func mustMkdir(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", path, err)
+		panic("unreachable")
 	}
 }
 
@@ -50,9 +51,11 @@ func writeFileAt(t *testing.T, path string, size int, mtime time.Time) {
 	mustMkdir(t, filepath.Dir(path))
 	if err := os.WriteFile(path, make([]byte, size), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+		panic("unreachable")
 	}
 	if err := os.Chtimes(path, mtime, mtime); err != nil {
 		t.Fatalf("chtimes %s: %v", path, err)
+		panic("unreachable")
 	}
 }
 
@@ -65,6 +68,7 @@ func runGit(t *testing.T, dir string, args ...string) {
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
+		panic("unreachable")
 	}
 }
 
@@ -110,6 +114,7 @@ func makeGitWorktree(t *testing.T, path string, dirty bool) {
 	runGit(t, path, "init", "-q", "-b", "main")
 	if err := os.WriteFile(filepath.Join(path, "f.txt"), []byte("a"), 0o644); err != nil {
 		t.Fatalf("seed file: %v", err)
+		panic("unreachable")
 	}
 	runGit(t, path, "add", "-A")
 	runGit(t, path, "commit", "-q", "-m", "init")
@@ -123,6 +128,7 @@ func makeGitWorktree(t *testing.T, path string, dirty bool) {
 	if dirty {
 		if err := os.WriteFile(filepath.Join(path, "f.txt"), []byte("b"), 0o644); err != nil {
 			t.Fatalf("dirty file: %v", err)
+			panic("unreachable")
 		}
 	}
 }
@@ -135,6 +141,7 @@ func makeGitWorktreeUnpushed(t *testing.T, path string) {
 	makeGitWorktree(t, path, false)
 	if err := os.WriteFile(filepath.Join(path, "f.txt"), []byte("c"), 0o644); err != nil {
 		t.Fatalf("unpushed file: %v", err)
+		panic("unreachable")
 	}
 	runGit(t, path, "commit", "-q", "-am", "unpushed work")
 }
@@ -267,6 +274,7 @@ func TestIsSymlink(t *testing.T) {
 	link := filepath.Join(dir, "link")
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatalf("symlink: %v", err)
+		panic("unreachable")
 	}
 	if !isSymlink(link) {
 		t.Error("expected link to be reported as a symlink")
@@ -286,6 +294,7 @@ func TestDirSize(t *testing.T) {
 	size, err := dirSize(dir)
 	if err != nil {
 		t.Fatalf("dirSize: %v", err)
+		panic("unreachable")
 	}
 	if size != 350 {
 		t.Fatalf("dirSize = %d, want 350", size)
@@ -310,6 +319,7 @@ func TestScanLogsOlderThanOverride(t *testing.T) {
 	res, err := s.Scan(Options{Only: []string{BucketLogs}})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	if got := res.Buckets[0].Items; got != 0 {
 		t.Fatalf("expected 0 eligible logs under the config default, got %d", got)
@@ -319,6 +329,7 @@ func TestScanLogsOlderThanOverride(t *testing.T) {
 	res, err = s.Scan(Options{Only: []string{BucketLogs}, OlderThan: 24 * time.Hour})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	if got := res.Buckets[0].Items; got != 1 {
 		t.Fatalf("expected 1 eligible log with --older-than 24h, got %d", got)
@@ -342,6 +353,7 @@ func TestScanLogsIncludesWorktreeSetupLogs(t *testing.T) {
 	res, err := s.Scan(Options{Only: []string{BucketLogs}})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	if got := res.Buckets[0].Items; got != 1 {
 		t.Fatalf("expected 1 eligible setup log, got %d (%v)", got, res.Buckets[0].Paths)
@@ -355,6 +367,7 @@ func TestScanLogsIncludesWorktreeSetupLogs(t *testing.T) {
 	applyRes, err := s.Apply(res.Buckets, Options{Only: []string{BucketLogs}})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
+		panic("unreachable")
 	}
 	if applyRes.Buckets[0].Removed != 1 {
 		t.Fatalf("expected 1 removed, got %d (skipped: %v, errors: %v)", applyRes.Buckets[0].Removed, applyRes.Buckets[0].Skipped, applyRes.Buckets[0].Errors)
@@ -364,6 +377,7 @@ func TestScanLogsIncludesWorktreeSetupLogs(t *testing.T) {
 	}
 	if _, err := os.Stat(newSetupLog); err != nil {
 		t.Fatalf("expected fresh setup log to survive, stat err = %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -382,6 +396,7 @@ func TestScanAuditUsesOwnRetentionNotOverriddenByDefault(t *testing.T) {
 	res, err := s.Scan(Options{Only: []string{BucketAudit}})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	b := res.Buckets[0]
 	if b.Items != 1 || b.Paths[0] != oldAudit {
@@ -414,6 +429,7 @@ func TestScanSandboxesSkipsActiveOrphanAndTerminal(t *testing.T) {
 	res, err := s.Scan(Options{Only: []string{BucketSandboxes}})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	b := res.Buckets[0]
 	if b.Items != 2 {
@@ -453,6 +469,7 @@ func TestScanSandboxesSkipsDeletedTaskUnpushedWorktree(t *testing.T) {
 	res, err := s.Scan(Options{Only: []string{BucketSandboxes}})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	if res.Buckets[0].Items != 0 {
 		t.Fatalf("deleted task's sandbox must be preserved while its worktree holds unpushed commits, got %+v", res.Buckets[0])
@@ -471,6 +488,7 @@ func TestScanGoBuildCacheOrphanEligible(t *testing.T) {
 	res, err := s.Scan(Options{Only: []string{BucketGoBuildCache}})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	b := res.Buckets[0]
 	if b.Items != 1 || b.Bytes != 42 {
@@ -492,6 +510,7 @@ func TestScanWorktreesRequiresGateFlag(t *testing.T) {
 	res, err := s.Scan(Options{Only: []string{BucketWorktrees}})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	if len(res.Buckets) != 0 {
 		t.Fatalf("worktrees bucket must be absent without --worktrees, got %+v", res.Buckets)
@@ -500,6 +519,7 @@ func TestScanWorktreesRequiresGateFlag(t *testing.T) {
 	res, err = s.Scan(Options{Only: []string{BucketWorktrees}, Worktrees: true})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	if len(res.Buckets) != 1 || res.Buckets[0].Items != 1 {
 		t.Fatalf("expected 1 eligible worktree with --worktrees, got %+v", res.Buckets)
@@ -521,6 +541,7 @@ func TestScanWorktreesDirtySkippedWithoutForce(t *testing.T) {
 	res, err := s.Scan(Options{Only: []string{BucketWorktrees}, Worktrees: true})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	if res.Buckets[0].Items != 0 {
 		t.Fatalf("dirty worktree must not be reported eligible without --force, got %+v", res.Buckets[0])
@@ -529,6 +550,7 @@ func TestScanWorktreesDirtySkippedWithoutForce(t *testing.T) {
 	res, err = s.Scan(Options{Only: []string{BucketWorktrees}, Worktrees: true, Force: true})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	if res.Buckets[0].Items != 1 {
 		t.Fatalf("dirty worktree must be reported eligible with --force, got %+v", res.Buckets[0])
@@ -557,6 +579,7 @@ func TestScanWorktreesUnpushedSkippedEvenWithForce(t *testing.T) {
 		res, err := s.Scan(opts)
 		if err != nil {
 			t.Fatalf("scan (force=%v): %v", opts.Force, err)
+			panic("unreachable")
 		}
 		if res.Buckets[0].Items != 0 {
 			t.Fatalf("worktree with unpushed commits must never be eligible (force=%v), got %+v", opts.Force, res.Buckets[0])
@@ -581,12 +604,14 @@ func TestApplyWorktreesRevalidatesUnpushedCommits(t *testing.T) {
 	res, err := s.Apply([]Bucket{staleBucket}, Options{Worktrees: true, Force: true})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
+		panic("unreachable")
 	}
 	if len(res.Buckets) != 1 || res.Buckets[0].Removed != 0 {
 		t.Fatalf("worktree with unpushed commits must not be removed, got %+v", res.Buckets)
 	}
 	if _, err := os.Stat(unpushedPath); err != nil {
 		t.Fatalf("worktree with unpushed commits must survive apply: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -599,6 +624,7 @@ func TestScanWorktreesUnknownNameNeverEligible(t *testing.T) {
 	res, err := s.Scan(Options{Only: []string{BucketWorktrees}, Worktrees: true, Force: true})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	if res.Buckets[0].Items != 0 {
 		t.Fatalf("unknown-named worktree dir must never be eligible, even with --force: %+v", res.Buckets[0])
@@ -611,6 +637,7 @@ func TestScanSymlinkedSandboxRefused(t *testing.T) {
 	outsideDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outsideDir, "secret"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("seed outside file: %v", err)
+		panic("unreachable")
 	}
 
 	sbDir := sandboxesDir()
@@ -618,18 +645,21 @@ func TestScanSymlinkedSandboxRefused(t *testing.T) {
 	link := filepath.Join(sbDir, "orphanlink")
 	if err := os.Symlink(outsideDir, link); err != nil {
 		t.Fatalf("symlink: %v", err)
+		panic("unreachable")
 	}
 
 	s := NewScanner(cfg, &fakeLister{})
 	res, err := s.Scan(Options{Only: []string{BucketSandboxes}})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	if res.Buckets[0].Items != 0 {
 		t.Fatalf("symlinked sandbox dir must never be reported eligible: %+v", res.Buckets[0])
 	}
 	if _, err := os.Lstat(outsideDir); err != nil {
 		t.Fatalf("outside dir must be untouched: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -643,6 +673,7 @@ func TestScanSharedCacheRequiresExternal(t *testing.T) {
 	res, err := s.Scan(Options{Only: []string{BucketSharedCache}})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	if len(res.Buckets) != 0 {
 		t.Fatalf("shared-cache must be absent without --external, got %+v", res.Buckets)
@@ -651,6 +682,7 @@ func TestScanSharedCacheRequiresExternal(t *testing.T) {
 	res, err = s.Scan(Options{Only: []string{BucketSharedCache}, External: true})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	if len(res.Buckets) != 1 || res.Buckets[0].Bytes != 100 {
 		t.Fatalf("expected shared-cache bucket with 100 bytes given --external, got %+v", res.Buckets)
@@ -668,6 +700,7 @@ func TestScanExternalIsReportOnlyAndNeverErrors(t *testing.T) {
 	res, err := s.Scan(Options{Only: []string{BucketExternal}, External: true})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	if len(res.Buckets) != 1 {
 		t.Fatalf("expected external bucket present with --external, got %+v", res.Buckets)
@@ -700,11 +733,13 @@ func TestApplyDeletesOnlySafeBucketsSelected(t *testing.T) {
 	scan, err := s.Scan(Options{Only: []string{BucketSandboxes}})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 
 	applyRes, err := s.Apply(scan.Buckets, Options{Only: []string{BucketSandboxes}})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
+		panic("unreachable")
 	}
 	if applyRes.Buckets[0].Removed != 1 || applyRes.Buckets[0].ReclaimedBytes != 10 {
 		t.Fatalf("expected 1 removed / 10 bytes reclaimed, got %+v", applyRes.Buckets[0])
@@ -728,6 +763,7 @@ func TestScanSandboxesSkipsQuarantineLedger(t *testing.T) {
 	res, err := s.Scan(Options{Only: []string{BucketSandboxes}})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	if len(res.Buckets) != 1 {
 		t.Fatalf("scan buckets = %+v, want exactly sandboxes", res.Buckets)
@@ -750,6 +786,7 @@ func TestApplySandboxesSkipsQuarantineLedger(t *testing.T) {
 	res, err := s.Apply([]Bucket{fakeBucket}, Options{Only: []string{BucketSandboxes}})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
+		panic("unreachable")
 	}
 	if res.Buckets[0].Removed != 0 {
 		t.Fatalf("quarantine dir removed unexpectedly: %+v", res.Buckets[0])
@@ -759,6 +796,7 @@ func TestApplySandboxesSkipsQuarantineLedger(t *testing.T) {
 	}
 	if _, err := os.Stat(quarantineDir); err != nil {
 		t.Fatalf("quarantine dir must survive apply: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -775,6 +813,7 @@ func TestApplyRevalidatesAgainstFreshSnapshotRace(t *testing.T) {
 	scan, err := s.Scan(Options{Only: []string{BucketSandboxes}})
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	if scan.Buckets[0].Items != 1 {
 		t.Fatalf("expected orphan sandbox reported eligible at scan time, got %+v", scan.Buckets[0])
@@ -786,6 +825,7 @@ func TestApplyRevalidatesAgainstFreshSnapshotRace(t *testing.T) {
 	applyRes, err := s.Apply(scan.Buckets, Options{Only: []string{BucketSandboxes}})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
+		panic("unreachable")
 	}
 	if applyRes.Buckets[0].Removed != 0 {
 		t.Fatalf("expected 0 removed once the task became active again, got %+v", applyRes.Buckets[0])
@@ -795,6 +835,7 @@ func TestApplyRevalidatesAgainstFreshSnapshotRace(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatalf("expected sandbox dir to survive the race, stat err = %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -806,6 +847,7 @@ func TestApplyExternalBucketNeverDeletes(t *testing.T) {
 	res, err := s.Apply([]Bucket{fakeBucket}, Options{External: true})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
+		panic("unreachable")
 	}
 	if res.Buckets[0].Removed != 0 || len(res.Buckets[0].Skipped) != 1 {
 		t.Fatalf("expected external bucket entirely skipped, got %+v", res.Buckets[0])
@@ -818,6 +860,7 @@ func TestApplyOutOfRootPathRefused(t *testing.T) {
 	secret := filepath.Join(outside, "secret")
 	if err := os.WriteFile(secret, []byte("x"), 0o644); err != nil {
 		t.Fatalf("seed: %v", err)
+		panic("unreachable")
 	}
 
 	s := NewScanner(cfg, &fakeLister{})
@@ -827,12 +870,14 @@ func TestApplyOutOfRootPathRefused(t *testing.T) {
 	res, err := s.Apply([]Bucket{fakeBucket}, Options{})
 	if err != nil {
 		t.Fatalf("apply: %v", err)
+		panic("unreachable")
 	}
 	if res.Buckets[0].Removed != 0 {
 		t.Fatalf("expected out-of-root path to be refused, got %+v", res.Buckets[0])
 	}
 	if _, err := os.Stat(secret); err != nil {
 		t.Fatalf("expected out-of-root file to survive: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -863,16 +908,19 @@ func TestApplyForceWorktreesSurvivesActiveTask(t *testing.T) {
 	scan, err := s.Scan(opts)
 	if err != nil {
 		t.Fatalf("scan: %v", err)
+		panic("unreachable")
 	}
 	applyRes, err := s.Apply(scan.Buckets, opts)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
+		panic("unreachable")
 	}
 	_ = applyRes
 
 	for _, p := range []string{activeSandbox, activeGoBuild, activeWorktree} {
 		if _, err := os.Stat(p); err != nil {
 			t.Fatalf("active task resource must survive --apply --force --worktrees: %s: %v", p, err)
+			panic("unreachable")
 		}
 	}
 	if _, err := os.Stat(doneWorktree); !os.IsNotExist(err) {

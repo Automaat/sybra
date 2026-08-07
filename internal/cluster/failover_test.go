@@ -42,14 +42,17 @@ func TestMutatingRPCNoRetryAfterPartialSend(t *testing.T) {
 	err := client.AssignTask(context.Background(), task.Task{ID: "z"})
 	if err == nil {
 		t.Fatal("AssignTask should fail: the request may have been delivered to the reset endpoint")
+		panic("unreachable")
 	}
 	if stub.assigned != nil {
 		t.Fatalf("mutating RPC must NOT fail over after a partial send; live endpoint saw assign %+v", stub.assigned)
+		panic("unreachable")
 	}
 
 	got, err := client.ListTasks(context.Background())
 	if err != nil {
 		t.Fatalf("idempotent ListTasks should fail over to the live endpoint: %v", err)
+		panic("unreachable")
 	}
 	if len(got) != 1 || got[0].ID != "ok" {
 		t.Fatalf("ListTasks after failover = %+v", got)
@@ -77,6 +80,7 @@ func TestGatewayDownFailsOverForIdempotent(t *testing.T) {
 	got, err := client.ListTasks(context.Background())
 	if err != nil {
 		t.Fatalf("503 gateway-down should fail over for idempotent read: %v", err)
+		panic("unreachable")
 	}
 	if len(got) != 1 || got[0].ID != "ok" {
 		t.Fatalf("ListTasks = %+v", got)

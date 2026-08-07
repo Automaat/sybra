@@ -25,6 +25,7 @@ func writeTestKey(t *testing.T, pkcs8 bool) (string, *rsa.PrivateKey) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("gen key: %v", err)
+		panic("unreachable")
 	}
 	var der []byte
 	var typ string
@@ -37,6 +38,7 @@ func writeTestKey(t *testing.T, pkcs8 bool) (string, *rsa.PrivateKey) {
 	}
 	if err != nil {
 		t.Fatalf("marshal key: %v", err)
+		panic("unreachable")
 	}
 	path := filepath.Join(t.TempDir(), "key.pem")
 	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der}), 0o600); err != nil {
@@ -50,6 +52,7 @@ func TestLoadPrivateKey_PKCS1AndPKCS8(t *testing.T) {
 		path, _ := writeTestKey(t, pkcs8)
 		if _, err := loadPrivateKey(path); err != nil {
 			t.Fatalf("pkcs8=%v load: %v", pkcs8, err)
+			panic("unreachable")
 		}
 	}
 }
@@ -65,6 +68,7 @@ func TestSignJWT_VerifiableRS256(t *testing.T) {
 	tok, err := src.signJWT(now)
 	if err != nil {
 		t.Fatalf("sign: %v", err)
+		panic("unreachable")
 	}
 	parts := strings.Split(tok, ".")
 	if len(parts) != 3 {
@@ -74,9 +78,11 @@ func TestSignJWT_VerifiableRS256(t *testing.T) {
 	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
 		t.Fatalf("decode sig: %v", err)
+		panic("unreachable")
 	}
 	if err := rsa.VerifyPKCS1v15(&key.PublicKey, crypto.SHA256, digest[:], sig); err != nil {
 		t.Fatalf("verify: %v", err)
+		panic("unreachable")
 	}
 	claims, _ := base64.RawURLEncoding.DecodeString(parts[1])
 	var c struct {
@@ -85,6 +91,7 @@ func TestSignJWT_VerifiableRS256(t *testing.T) {
 	}
 	if err := json.Unmarshal(claims, &c); err != nil {
 		t.Fatalf("claims: %v", err)
+		panic("unreachable")
 	}
 	if c.Iss != "42" {
 		t.Fatalf("iss = %q, want 42", c.Iss)
@@ -116,6 +123,7 @@ func TestRefreshAppToken_MintsAndInjectsEnv(t *testing.T) {
 	}
 	if err := RefreshAppToken(context.Background()); err != nil {
 		t.Fatalf("refresh: %v", err)
+		panic("unreachable")
 	}
 	if got := cachedAppToken(); got != "ghs_installationtoken" {
 		t.Fatalf("cached token = %q", got)
@@ -147,9 +155,11 @@ func TestRefreshAppToken_MintsAndInjectsEnv(t *testing.T) {
 	DisableAppAuth()
 	if ghEnv() != nil {
 		t.Fatal("expected nil env when app auth disabled")
+		panic("unreachable")
 	}
 	if GHEnv() != nil {
 		t.Fatal("expected nil env from GHEnv() when app auth disabled")
+		panic("unreachable")
 	}
 }
 
@@ -174,6 +184,7 @@ func TestForceRefreshAppToken_AlwaysRemintsEvenWhenFresh(t *testing.T) {
 	}
 	if err := RefreshAppToken(context.Background()); err != nil {
 		t.Fatalf("refresh: %v", err)
+		panic("unreachable")
 	}
 	if mints != 1 {
 		t.Fatalf("mints after initial refresh = %d, want 1", mints)
@@ -184,6 +195,7 @@ func TestForceRefreshAppToken_AlwaysRemintsEvenWhenFresh(t *testing.T) {
 	// hour-long lifetime, so this must not mint again.
 	if err := RefreshAppToken(context.Background()); err != nil {
 		t.Fatalf("refresh: %v", err)
+		panic("unreachable")
 	}
 	if mints != 1 {
 		t.Fatalf("mints after fresh refresh = %d, want still 1", mints)
@@ -195,6 +207,7 @@ func TestForceRefreshAppToken_AlwaysRemintsEvenWhenFresh(t *testing.T) {
 	// rotated out from under it (#2160).
 	if err := ForceRefreshAppToken(context.Background()); err != nil {
 		t.Fatalf("force refresh: %v", err)
+		panic("unreachable")
 	}
 	if mints != 2 {
 		t.Fatalf("mints after forced refresh = %d, want 2", mints)

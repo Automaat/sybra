@@ -15,12 +15,14 @@ func TestAgentNodeStampSurvivesJSON(t *testing.T) {
 	raw, err := json.Marshal(a)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
+		panic("unreachable")
 	}
 	var got struct {
 		Node string `json:"node"`
 	}
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 	if got.Node != "pet-box" {
 		t.Fatalf("node stamp dropped on the wire: %s", raw)
@@ -65,6 +67,7 @@ func TestRelayFollowerError(t *testing.T) {
 			got := svc.relayFollowerError("pet-box", tc.err)
 			if got == nil {
 				t.Fatal("want error, got nil")
+				panic("unreachable")
 			}
 			var ce *clientError
 			isClient := errors.As(got, &ce)
@@ -99,5 +102,6 @@ func TestRelayFollowerErrorNilIsNil(t *testing.T) {
 	svc := &ClusterService{}
 	if err := svc.relayFollowerError("pet-box", nil); err != nil {
 		t.Fatalf("want nil, got %v", err)
+		panic("unreachable")
 	}
 }

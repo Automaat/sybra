@@ -54,6 +54,7 @@ func TestMirrorApplyAppliesLegitimateFollowerUpdateAfterLeaderLocalEdit(t *testi
 	}
 	if got.MirrorUpdatedAt == nil || !got.MirrorUpdatedAt.Equal(firstFollowerUpdate) {
 		t.Fatalf("setup: MirrorUpdatedAt = %v, want %v", got.MirrorUpdatedAt, firstFollowerUpdate)
+		panic("unreachable")
 	}
 
 	// Step 2: an ordinary LEADER-side edit through the normal Update path

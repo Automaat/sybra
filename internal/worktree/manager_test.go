@@ -37,10 +37,12 @@ func initBareWithCommitReturnSrc(t *testing.T) (bare, src string) {
 	} {
 		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
 			t.Fatalf("%v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("# bootstrap-test\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"git", "-C", src, "add", "."},
@@ -48,19 +50,23 @@ func initBareWithCommitReturnSrc(t *testing.T) (bare, src string) {
 	} {
 		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
 			t.Fatalf("%v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 
 	bare = filepath.Join(t.TempDir(), "origin.git")
 	if out, err := exec.Command("git", "clone", "--bare", src, bare).CombinedOutput(); err != nil {
 		t.Fatalf("git clone --bare: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
 		t.Fatalf("git config: %v: %s", err, out)
+		panic("unreachable")
 	}
 	// Ensure the bare has the tracking refs populated (origin/main).
 	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
 		t.Fatalf("git fetch: %v: %s", err, out)
+		panic("unreachable")
 	}
 	return bare, src
 }
@@ -89,6 +95,7 @@ func prepareHarness(t *testing.T, setupCommands []string, timeout time.Duration)
 	store, err := project.NewStore(projDir, clonesDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Write project YAML directly — bypass Store.Create which would try to
@@ -112,11 +119,13 @@ func prepareHarness(t *testing.T, setupCommands []string, timeout time.Duration)
 	projYAML := filepath.Join(projDir, "test--proj.yaml")
 	if err := os.WriteFile(projYAML, mustMarshalProject(t, proj), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(taskStore, nil)
 
@@ -192,6 +201,7 @@ func TestExists(t *testing.T) {
 
 	if err := os.MkdirAll(filepath.Join(dir, tk.DirName()), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !m.Exists(tk) {
 		t.Error("should exist after mkdir")
@@ -216,6 +226,7 @@ func TestValidatePath(t *testing.T) {
 	sub := filepath.Join(dir, "valid")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := m.ValidatePath(sub); err != nil {
 		t.Errorf("unexpected error: %v", err)
@@ -239,9 +250,11 @@ func TestValidatePath_PrefixEscapeBug(t *testing.T) {
 	siblingDir := filepath.Join(base, "wt-evil")
 	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.MkdirAll(siblingDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	m := &Manager{dir: worktreesDir}
@@ -308,12 +321,14 @@ func makePushedGitDir(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, dir, "git", "init", "-q")
 	mustRunInDir(t, dir, "git", "config", "user.email", "test@test.com")
 	mustRunInDir(t, dir, "git", "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("a"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, dir, "git", "add", "-A")
 	mustRunInDir(t, dir, "git", "commit", "-q", "-m", "init")
@@ -331,12 +346,14 @@ func TestCleanupOrphaned(t *testing.T) {
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 
 	tk, err := store.Create("test task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Create worktree dirs: one matching task (not done), one orphaned —
@@ -370,11 +387,13 @@ func TestCleanupOrphaned_PreservesInflightAttemptAndReapsFinishedAttempt(t *test
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 	tk, err := store.Create("best of n task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wf := &workflow.Execution{BestOfNInflight: map[string]*workflow.BestOfNInflight{
 		"attempts": {
@@ -398,6 +417,7 @@ func TestCleanupOrphaned_PreservesInflightAttemptAndReapsFinishedAttempt(t *test
 
 	if _, err := os.Stat(inflightDir); err != nil {
 		t.Fatalf("in-flight attempt removed unexpectedly: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(finishedDir); !os.IsNotExist(err) {
 		t.Fatalf("finished attempt still exists after cleanup: %v", err)
@@ -411,16 +431,19 @@ func TestCleanupOrphaned_PreservesDeletedTaskAttemptWithLiveAgent(t *testing.T) 
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 	tk, err := store.Create("deleted best of n task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	attemptDir := filepath.Join(dir, attemptDirName(tk, "attempt_1"))
 	makePushedGitDir(t, attemptDir)
 	if err := taskMgr.Delete(tk.ID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	live := true
@@ -433,6 +456,7 @@ func TestCleanupOrphaned_PreservesDeletedTaskAttemptWithLiveAgent(t *testing.T) 
 	m.CleanupOrphaned(context.Background())
 	if _, err := os.Stat(attemptDir); err != nil {
 		t.Fatalf("deleted task's live attempt removed unexpectedly: %v", err)
+		panic("unreachable")
 	}
 
 	live = false
@@ -449,11 +473,13 @@ func TestCleanupOrphaned_ReapsTerminalTaskAttemptWithStaleInflightRecord(t *test
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 	tk, err := store.Create("terminal best of n task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wf := &workflow.Execution{BestOfNInflight: map[string]*workflow.BestOfNInflight{
 		"attempts": {
@@ -485,11 +511,13 @@ func TestCleanupOrphaned_PreservesInflightAttemptAfterSlugChange(t *testing.T) {
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 	tk, err := store.Create("old slug", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	attemptDir := filepath.Join(dir, attemptDirName(tk, "attempt_1"))
 	wf := &workflow.Execution{BestOfNInflight: map[string]*workflow.BestOfNInflight{
@@ -511,6 +539,7 @@ func TestCleanupOrphaned_PreservesInflightAttemptAfterSlugChange(t *testing.T) {
 
 	if _, err := os.Stat(attemptDir); err != nil {
 		t.Fatalf("renamed task's in-flight attempt removed unexpectedly: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -526,6 +555,7 @@ func TestManager_HasUnpushedCommits(t *testing.T) {
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 	m := New(Config{WorktreesDir: dir, Tasks: taskMgr, Logger: discardLogger()})
@@ -533,6 +563,7 @@ func TestManager_HasUnpushedCommits(t *testing.T) {
 	pushedTask, err := store.Create("pushed task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.Update(pushedTask.ID, task.Update{ProjectID: task.Ptr("owner/repo")}); err != nil {
 		t.Fatal(err)
@@ -542,6 +573,7 @@ func TestManager_HasUnpushedCommits(t *testing.T) {
 	unpushedTask, err := store.Create("unpushed task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.Update(unpushedTask.ID, task.Update{ProjectID: task.Ptr("owner/repo")}); err != nil {
 		t.Fatal(err)
@@ -550,12 +582,14 @@ func TestManager_HasUnpushedCommits(t *testing.T) {
 	makePushedGitDir(t, unpushedDir)
 	if err := os.WriteFile(filepath.Join(unpushedDir, "f.txt"), []byte("b"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, unpushedDir, "git", "commit", "-q", "-am", "unpushed work")
 
 	adoptedTask, err := store.Create("adopted task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.Update(adoptedTask.ID, task.Update{
 		ProjectID:   task.Ptr("owner/repo"),
@@ -586,6 +620,7 @@ func TestManager_HasUnpushedCommits(t *testing.T) {
 	makePushedGitDir(t, deletedDir)
 	if err := os.WriteFile(filepath.Join(deletedDir, "f.txt"), []byte("c"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, deletedDir, "git", "commit", "-q", "-am", "unpushed work")
 	if got := m.HasUnpushedCommits(ctx, deletedID); !got {
@@ -604,6 +639,7 @@ func TestCleanupOrphaned_PreservesUnpushedCommits(t *testing.T) {
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 
@@ -611,6 +647,7 @@ func TestCleanupOrphaned_PreservesUnpushedCommits(t *testing.T) {
 	makePushedGitDir(t, orphanDir)
 	if err := os.WriteFile(filepath.Join(orphanDir, "f.txt"), []byte("b"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, orphanDir, "git", "commit", "-q", "-am", "unpushed work")
 
@@ -640,6 +677,7 @@ func TestRemove_PreservesUnpushedCommits(t *testing.T) {
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 	m := New(Config{WorktreesDir: dir, Tasks: taskMgr, Logger: discardLogger()})
@@ -647,6 +685,7 @@ func TestRemove_PreservesUnpushedCommits(t *testing.T) {
 	tk, err := store.Create("unpushed task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := store.Update(tk.ID, task.Update{ProjectID: task.Ptr("owner/repo")}); err != nil {
 		t.Fatal(err)
@@ -655,6 +694,7 @@ func TestRemove_PreservesUnpushedCommits(t *testing.T) {
 	makePushedGitDir(t, wtDir)
 	if err := os.WriteFile(filepath.Join(wtDir, "f.txt"), []byte("b"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, wtDir, "git", "commit", "-q", "-am", "unpushed work")
 
@@ -676,6 +716,7 @@ func TestRunSetup_EmptyIsNoOp(t *testing.T) {
 
 	if err := m.runSetup(context.Background(), "task-empty", wtDir, nil); err != nil {
 		t.Fatalf("runSetup(nil): %v", err)
+		panic("unreachable")
 	}
 	if err := m.runSetup(context.Background(), "task-empty", wtDir, []string{}); err != nil {
 		t.Fatalf("runSetup([]): %v", err)
@@ -712,6 +753,7 @@ func TestRunSetup_WritesLogOnSuccess(t *testing.T) {
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("read setup log: %v", err)
+		panic("unreachable")
 	}
 	logText := string(data)
 	for _, want := range []string{"touch ", "greetings-from-setup", "ok duration", "completed_at"} {
@@ -737,6 +779,7 @@ func TestRunSetup_FailureBlocks(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error from failing command")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "exit 17") {
 		t.Errorf("error missing command text: %v", err)
@@ -768,18 +811,22 @@ func TestRunSetup_CacheHitSkipsRerun(t *testing.T) {
 
 	if err := m.runSetup(context.Background(), "task-cache", wtDir, cmds); err != nil {
 		t.Fatalf("first runSetup: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(filepath.Join(wtDir, setupCacheMarkerName)); err != nil {
 		t.Fatalf("expected cache marker after successful run: %v", err)
+		panic("unreachable")
 	}
 
 	if err := m.runSetup(context.Background(), "task-cache", wtDir, cmds); err != nil {
 		t.Fatalf("second runSetup: %v", err)
+		panic("unreachable")
 	}
 
 	data, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatalf("read marker: %v", err)
+		panic("unreachable")
 	}
 	if got := string(data); got != "x" {
 		t.Errorf("setup command ran again on an unchanged reuse (want cache hit); marker=%q", got)
@@ -788,6 +835,7 @@ func TestRunSetup_CacheHitSkipsRerun(t *testing.T) {
 	setupLog, err := os.ReadFile(filepath.Join(logsDir, "worktrees", "task-cache-setup.log"))
 	if err != nil {
 		t.Fatalf("read setup log: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(setupLog), "reason=cache-hit") {
 		t.Errorf("setup log missing cache-hit record:\n%s", setupLog)
@@ -807,25 +855,30 @@ func TestRunSetup_LockfileChangeForcesRerun(t *testing.T) {
 	lockfile := filepath.Join(wtDir, "go.sum")
 	if err := os.WriteFile(lockfile, []byte("v1\n"), 0o644); err != nil {
 		t.Fatalf("seed go.sum: %v", err)
+		panic("unreachable")
 	}
 	marker := filepath.Join(wtDir, "ran-count")
 	cmds := []string{"printf x >> " + marker}
 
 	if err := m.runSetup(context.Background(), "task-lock", wtDir, cmds); err != nil {
 		t.Fatalf("first runSetup: %v", err)
+		panic("unreachable")
 	}
 
 	if err := os.WriteFile(lockfile, []byte("v2\n"), 0o644); err != nil {
 		t.Fatalf("edit go.sum: %v", err)
+		panic("unreachable")
 	}
 
 	if err := m.runSetup(context.Background(), "task-lock", wtDir, cmds); err != nil {
 		t.Fatalf("second runSetup: %v", err)
+		panic("unreachable")
 	}
 
 	data, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatalf("read marker: %v", err)
+		panic("unreachable")
 	}
 	if got := string(data); got != "xx" {
 		t.Errorf("lockfile edit did not force a rerun; marker=%q, want \"xx\"", got)
@@ -846,6 +899,7 @@ func TestRunSetup_SubdirLockfileChangeForcesRerun(t *testing.T) {
 
 	if err := os.MkdirAll(filepath.Join(wtDir, "frontend"), 0o755); err != nil {
 		t.Fatalf("mkdir frontend: %v", err)
+		panic("unreachable")
 	}
 	lockfile := filepath.Join(wtDir, "frontend", "package-lock.json")
 	if err := os.WriteFile(lockfile, []byte(`{"v":1}`), 0o644); err != nil {
@@ -856,6 +910,7 @@ func TestRunSetup_SubdirLockfileChangeForcesRerun(t *testing.T) {
 
 	if err := m.runSetup(context.Background(), "task-subdir-lock", wtDir, cmds); err != nil {
 		t.Fatalf("first runSetup: %v", err)
+		panic("unreachable")
 	}
 
 	if err := os.WriteFile(lockfile, []byte(`{"v":2}`), 0o644); err != nil {
@@ -864,11 +919,13 @@ func TestRunSetup_SubdirLockfileChangeForcesRerun(t *testing.T) {
 
 	if err := m.runSetup(context.Background(), "task-subdir-lock", wtDir, cmds); err != nil {
 		t.Fatalf("second runSetup: %v", err)
+		panic("unreachable")
 	}
 
 	data, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatalf("read marker: %v", err)
+		panic("unreachable")
 	}
 	if got := string(data); got != "xx" {
 		t.Errorf("subdir lockfile edit did not force a rerun; marker=%q, want \"xx\"", got)
@@ -890,6 +947,7 @@ func TestRunSetup_FailedRunNeverRecordsCacheKey(t *testing.T) {
 
 	if err := m.runSetup(context.Background(), "task-fail-cache", wtDir, cmds); err == nil {
 		t.Fatal("expected error from failing command")
+		panic("unreachable")
 	}
 	if _, statErr := os.Stat(filepath.Join(wtDir, setupCacheMarkerName)); !os.IsNotExist(statErr) {
 		t.Fatalf("expected no cache marker after a failed run, stat err: %v", statErr)
@@ -897,10 +955,12 @@ func TestRunSetup_FailedRunNeverRecordsCacheKey(t *testing.T) {
 
 	if err := m.runSetup(context.Background(), "task-fail-cache", wtDir, cmds); err == nil {
 		t.Fatal("expected second run with the same failing command to fail too")
+		panic("unreachable")
 	}
 	data, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatalf("read marker: %v", err)
+		panic("unreachable")
 	}
 	if got := string(data); got != "xx" {
 		t.Errorf("a failed run was treated as a cache hit; marker=%q, want \"xx\" (ran twice)", got)
@@ -924,11 +984,13 @@ func TestRunSetupNonGating_FailureDoesNotBlock(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("runSetupNonGating must not fail worktree creation: %v", err)
+		panic("unreachable")
 	}
 
 	content, readErr := os.ReadFile(filepath.Join(wtDir, notes.FileName))
 	if readErr != nil {
 		t.Fatalf("read scratchpad: %v", readErr)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(content), "Setup failure") {
 		t.Errorf("scratchpad missing setup failure note: %q", content)
@@ -966,6 +1028,7 @@ func TestRunSetupNonGating_PersistFailureReturnsError(t *testing.T) {
 	mustRunInDir(t, wtDir, "git", "init", "-b", "main")
 	if err := os.Mkdir(filepath.Join(wtDir, notes.FileName), 0o755); err != nil {
 		t.Fatalf("mkdir fake NOTES.md: %v", err)
+		panic("unreachable")
 	}
 	m := New(Config{WorktreesDir: wtDir, LogsDir: logsDir, Logger: discardLogger()})
 
@@ -974,6 +1037,7 @@ func TestRunSetupNonGating_PersistFailureReturnsError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error when failure context cannot be persisted")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "persist setup failure context") {
 		t.Fatalf("error = %v, want persistence failure context", err)
@@ -996,6 +1060,7 @@ func TestRunSetup_CwdIsWorktreeRoot(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(wtDir, ".cwd"))
 	if err != nil {
 		t.Fatalf("read .cwd: %v", err)
+		panic("unreachable")
 	}
 	// macOS $TMPDIR resolves through /private/var/folders/... while the
 	// directory we pass resolves via /var/folders/... — compare eval'd paths.
@@ -1022,10 +1087,12 @@ func TestRunSetup_GOCACHEIsPerTaskWhileGOMODCACHEStaysShared(t *testing.T) {
 	data1, err := os.ReadFile(filepath.Join(wtDir, "cache-env-1.txt"))
 	if err != nil {
 		t.Fatalf("read cache-env-1: %v", err)
+		panic("unreachable")
 	}
 	data2, err := os.ReadFile(filepath.Join(wtDir, "cache-env-2.txt"))
 	if err != nil {
 		t.Fatalf("read cache-env-2: %v", err)
+		panic("unreachable")
 	}
 
 	parts1 := strings.Split(strings.TrimSpace(string(data1)), "|")
@@ -1069,6 +1136,7 @@ func TestRunSetup_TimeoutKillsProcess(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error on timeout")
+		panic("unreachable")
 	}
 	if dur > 3*time.Second {
 		t.Errorf("timeout did not fire quickly: took %s", dur)
@@ -1102,6 +1170,7 @@ func TestRunSetup_ParentCancellationKillsProcess(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error when parent context is cancelled")
+		panic("unreachable")
 	}
 	if dur > 3*time.Second {
 		t.Errorf("parent cancellation did not abort setup quickly: took %s", dur)
@@ -1132,6 +1201,7 @@ func TestRunSetup_TimeoutKillsProcessGroup(t *testing.T) {
 	err := m.runSetup(context.Background(), "task-timeout-pg", wtDir, []string{cmd})
 	if err == nil {
 		t.Fatal("expected error on timeout")
+		panic("unreachable")
 	}
 
 	// Give the grandchild a moment to have written its pid before we assert
@@ -1148,11 +1218,13 @@ func TestRunSetup_TimeoutKillsProcessGroup(t *testing.T) {
 	}
 	if err != nil {
 		t.Fatalf("grandchild never wrote pid file: %v", err)
+		panic("unreachable")
 	}
 
 	pid, convErr := strconv.Atoi(strings.TrimSpace(string(pidRaw)))
 	if convErr != nil {
 		t.Fatalf("parse pid: %v", convErr)
+		panic("unreachable")
 	}
 
 	deadline = time.Now().Add(3 * time.Second)
@@ -1217,6 +1289,7 @@ func installFakeMise(t *testing.T, exitCode int) (shimPath, logPath, envLogPath 
 	shimPath = filepath.Join(binDir, "mise")
 	if err := os.WriteFile(shimPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write shim: %v", err)
+		panic("unreachable")
 	}
 	return shimPath, logPath, envLogPath
 }
@@ -1232,6 +1305,7 @@ func TestRunSetup_TrustsMiseConfig(t *testing.T) {
 	wtDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(wtDir, "mise.toml"), []byte("[tools]\n"), 0o644); err != nil {
 		t.Fatalf("seed mise.toml: %v", err)
+		panic("unreachable")
 	}
 	miseBin, miseLog, _ := installFakeMise(t, 0)
 
@@ -1243,6 +1317,7 @@ func TestRunSetup_TrustsMiseConfig(t *testing.T) {
 	data, err := os.ReadFile(miseLog)
 	if err != nil {
 		t.Fatalf("mise shim was never invoked: %v", err)
+		panic("unreachable")
 	}
 	if got := strings.TrimSpace(string(data)); got != "trust --yes" {
 		t.Errorf("mise invoked with %q, want %q", got, "trust --yes")
@@ -1251,6 +1326,7 @@ func TestRunSetup_TrustsMiseConfig(t *testing.T) {
 	setupLog, err := os.ReadFile(filepath.Join(logsDir, "worktrees", "task-trust-setup.log"))
 	if err != nil {
 		t.Fatalf("read setup log: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(setupLog), "mise trust --yes") {
 		t.Errorf("setup log missing trust entry:\n%s", setupLog)
@@ -1286,6 +1362,7 @@ func TestRunSetup_TrustFailureIsNonFatal(t *testing.T) {
 	wtDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(wtDir, ".mise.toml"), []byte(""), 0o644); err != nil {
 		t.Fatalf("seed .mise.toml: %v", err)
+		panic("unreachable")
 	}
 	miseBin, _, _ := installFakeMise(t, 3)
 
@@ -1305,6 +1382,7 @@ func TestRunSetup_TrustUsesTaskScopedGoBuildCache(t *testing.T) {
 	wtDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(wtDir, "mise.toml"), []byte("[tools]\n"), 0o644); err != nil {
 		t.Fatalf("seed mise.toml: %v", err)
+		panic("unreachable")
 	}
 	miseBin, _, envLog := installFakeMise(t, 0)
 
@@ -1316,6 +1394,7 @@ func TestRunSetup_TrustUsesTaskScopedGoBuildCache(t *testing.T) {
 	data, err := os.ReadFile(envLog)
 	if err != nil {
 		t.Fatalf("read env log: %v", err)
+		panic("unreachable")
 	}
 	parts := strings.Split(strings.TrimSpace(string(data)), "|")
 	if len(parts) != 2 {
@@ -1348,6 +1427,7 @@ func TestHasMiseConfig(t *testing.T) {
 			path := filepath.Join(dir, tc.file)
 			if err := os.WriteFile(path, nil, 0o644); err != nil {
 				t.Fatalf("write: %v", err)
+				panic("unreachable")
 			}
 			if got := hasMiseConfig(dir); got != tc.want {
 				t.Errorf("hasMiseConfig(%s)=%v want %v", tc.file, got, tc.want)
@@ -1368,6 +1448,7 @@ func TestPrepareForTask_RunsBootstrap(t *testing.T) {
 	tk, err := h.tasks.Store().Create("bootstrap task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -1375,11 +1456,13 @@ func TestPrepareForTask_RunsBootstrap(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	path, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 
 	if _, statErr := os.Stat(filepath.Join(path, "bootstrap-marker")); statErr != nil {
@@ -1391,6 +1474,7 @@ func TestPrepareForTask_RunsBootstrap(t *testing.T) {
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("read setup log: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(data), "bootstrap-marker") {
 		t.Errorf("setup log missing command: %s", data)
@@ -1405,6 +1489,7 @@ func TestPrepareForTask_RebranchesOnBranchCollision(t *testing.T) {
 		tk, err := h.tasks.Store().Create(title, "", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 			t.Fatal(err)
@@ -1412,6 +1497,7 @@ func TestPrepareForTask_RebranchesOnBranchCollision(t *testing.T) {
 		got, err := h.tasks.Get(tk.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		return got
 	}
@@ -1419,10 +1505,12 @@ func TestPrepareForTask_RebranchesOnBranchCollision(t *testing.T) {
 	t1 := mk("fix: first task")
 	if _, err := h.m.PrepareForTask(ctx, t1, nil); err != nil {
 		t.Fatalf("PrepareForTask t1: %v", err)
+		panic("unreachable")
 	}
 	t1, err := h.tasks.Get(t1.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if t1.Branch == "" {
 		t.Fatal("t1 branch not set after prepare")
@@ -1435,14 +1523,17 @@ func TestPrepareForTask_RebranchesOnBranchCollision(t *testing.T) {
 	t2, err = h.tasks.Get(t2.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := h.m.PrepareForTask(ctx, t2, nil); err != nil {
 		t.Fatalf("PrepareForTask t2 with colliding branch: %v", err)
+		panic("unreachable")
 	}
 	t2, err = h.tasks.Get(t2.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if t2.Branch == t1.Branch {
 		t.Fatalf("t2 branch %q still collides with t1 — should have re-derived a unique branch", t2.Branch)
@@ -1462,6 +1553,7 @@ func TestPrepareForTask_SkipsBootstrapOnUnchangedWorktreeReuse(t *testing.T) {
 	tk, err := h.tasks.Store().Create("reuse bootstrap task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -1469,15 +1561,18 @@ func TestPrepareForTask_SkipsBootstrapOnUnchangedWorktreeReuse(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	firstPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	secondPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("reused PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	if secondPath != firstPath {
 		t.Fatalf("reused PrepareForTask path = %q, want %q", secondPath, firstPath)
@@ -1486,6 +1581,7 @@ func TestPrepareForTask_SkipsBootstrapOnUnchangedWorktreeReuse(t *testing.T) {
 	count, err := os.ReadFile(counterPath)
 	if err != nil {
 		t.Fatalf("read setup counter: %v", err)
+		panic("unreachable")
 	}
 	if got, want := string(count), "x"; got != want {
 		t.Fatalf("setup command ran %d times, want 1 (unchanged reuse should be a cache hit): counter %q", len(got), got)
@@ -1503,6 +1599,7 @@ func TestPrepareForTask_RerunsBootstrapWhenSetupCommandsChange(t *testing.T) {
 	tk, err := h.tasks.Store().Create("reuse bootstrap task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -1510,10 +1607,12 @@ func TestPrepareForTask_RerunsBootstrapWhenSetupCommandsChange(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 
 	if _, err := h.store.SetSetupCommands(h.proj.ID, []string{
@@ -1524,11 +1623,13 @@ func TestPrepareForTask_RerunsBootstrapWhenSetupCommandsChange(t *testing.T) {
 
 	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); err != nil {
 		t.Fatalf("reused PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 
 	count, err := os.ReadFile(counterPath)
 	if err != nil {
 		t.Fatalf("read setup counter: %v", err)
+		panic("unreachable")
 	}
 	if got, want := string(count), "xxx"; got != want {
 		t.Fatalf("setup counter = %q, want %q (changed setup commands must force a rerun)", got, want)
@@ -1551,6 +1652,7 @@ func TestPrepareForTask_MergesRepoAndAppSetup(t *testing.T) {
 	repoYAML := "setup:\n  - echo repo1 > repo1.marker\n  - echo repo2 > repo2.marker\n"
 	if err := os.WriteFile(filepath.Join(h.src, ".sybra.yaml"), []byte(repoYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, h.src, "git", "add", ".sybra.yaml")
 	mustRunInDir(t, h.src, "git", "commit", "-m", "add repo setup")
@@ -1558,6 +1660,7 @@ func TestPrepareForTask_MergesRepoAndAppSetup(t *testing.T) {
 	tk, err := h.tasks.Store().Create("merged setup", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -1565,11 +1668,13 @@ func TestPrepareForTask_MergesRepoAndAppSetup(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	path, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 
 	for _, m := range []string{"repo1.marker", "repo2.marker", "app.marker"} {
@@ -1583,6 +1688,7 @@ func TestPrepareForTask_MergesRepoAndAppSetup(t *testing.T) {
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("read setup log: %v", err)
+		panic("unreachable")
 	}
 	text := string(data)
 	// Precedence check: repo1 must appear before app in the log.
@@ -1601,11 +1707,13 @@ func TestPrepareForTask_WorktreeBaseRefHead(t *testing.T) {
 	// Switch the project to head mode.
 	if _, err := h.store.SetWorktreeBaseRef(h.proj.ID, project.WorktreeBaseRefHead); err != nil {
 		t.Fatalf("SetWorktreeBaseRef: %v", err)
+		panic("unreachable")
 	}
 
 	// Add a commit to the upstream src after the bare was cloned.
 	if err := os.WriteFile(filepath.Join(h.src, "upstream.txt"), []byte("upstream\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, h.src, "git", "add", "upstream.txt")
 	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream progress")
@@ -1614,12 +1722,14 @@ func TestPrepareForTask_WorktreeBaseRefHead(t *testing.T) {
 	rawSHA, err := exec.Command("git", "-C", h.src, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatalf("rev-parse src HEAD: %v", err)
+		panic("unreachable")
 	}
 	wantSHA := strings.TrimSpace(string(rawSHA))
 
 	tk, err := h.tasks.Store().Create("head-mode task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -1627,11 +1737,13 @@ func TestPrepareForTask_WorktreeBaseRefHead(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 
 	// The upstream commit must be an ancestor of the worktree HEAD — confirming
@@ -1640,6 +1752,7 @@ func TestPrepareForTask_WorktreeBaseRefHead(t *testing.T) {
 	out, err := exec.Command("git", "-C", wtPath, "merge-base", wantSHA, "HEAD").Output()
 	if err != nil {
 		t.Fatalf("merge-base: %v", err)
+		panic("unreachable")
 	}
 	if got := strings.TrimSpace(string(out)); got != wantSHA {
 		t.Errorf("worktree does not contain upstream commit %s; merge-base=%s", wantSHA, got)
@@ -1652,6 +1765,7 @@ func TestPrepareForTask_RebaseConflictFailsClosed(t *testing.T) {
 	tk, err := h.tasks.Store().Create("conflicting task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -1659,11 +1773,13 @@ func TestPrepareForTask_RebaseConflictFailsClosed(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
 	mustRunInDir(t, wtPath, "git", "push", "origin", "--delete", branch)
@@ -1673,12 +1789,14 @@ func TestPrepareForTask_RebaseConflictFailsClosed(t *testing.T) {
 	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, wtPath, "git", "add", "README.md")
 	mustRunInDir(t, wtPath, "git", "commit", "-m", "branch edit")
 
 	if err := os.WriteFile(filepath.Join(h.src, "README.md"), []byte("upstream edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, h.src, "git", "add", "README.md")
 	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
@@ -1709,6 +1827,7 @@ func TestPrepareForTask_RebaseSkipsWhenBaseAlreadyMerged(t *testing.T) {
 	tk, err := h.tasks.Store().Create("merged-then-rebased task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -1716,23 +1835,27 @@ func TestPrepareForTask_RebaseSkipsWhenBaseAlreadyMerged(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 
 	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
 	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, wtPath, "git", "add", "README.md")
 	mustRunInDir(t, wtPath, "git", "commit", "-m", "branch edit")
 
 	if err := os.WriteFile(filepath.Join(h.src, "README.md"), []byte("upstream edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, h.src, "git", "add", "README.md")
 	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
@@ -1744,9 +1867,11 @@ func TestPrepareForTask_RebaseSkipsWhenBaseAlreadyMerged(t *testing.T) {
 	mergeErr := exec.Command("git", "-C", wtPath, "merge", "--no-edit", "origin/main").Run()
 	if mergeErr == nil {
 		t.Fatal("expected the merge to stop for conflicts, got a clean merge")
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\nupstream edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, wtPath, "git", "add", "README.md")
 	mustRunInDir(t, wtPath, "git", "commit", "--no-edit")
@@ -1759,6 +1884,7 @@ func TestPrepareForTask_RebaseSkipsWhenBaseAlreadyMerged(t *testing.T) {
 	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("PrepareForTask after merge recovery should succeed, got err: %v", err)
+		panic("unreachable")
 	}
 	if gotPath == "" {
 		t.Fatal("PrepareForTask path is empty, want the recovered worktree path")
@@ -1767,6 +1893,7 @@ func TestPrepareForTask_RebaseSkipsWhenBaseAlreadyMerged(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(gotPath, "README.md"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if want := "branch edit\nupstream edit\n"; string(got) != want {
 		t.Fatalf("README.md = %q, want %q (the merge-resolved content, untouched by a skipped rebase)", got, want)
@@ -1779,6 +1906,7 @@ func TestPrepareForTask_ReusesVerifiedPreparedWorktreeAfterConflictRecovery(t *t
 	tk, err := h.tasks.Store().Create("reuse prepared recovery worktree", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -1786,23 +1914,27 @@ func TestPrepareForTask_ReusesVerifiedPreparedWorktreeAfterConflictRecovery(t *t
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
 	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
 
 	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, wtPath, "git", "add", "README.md")
 	mustRunInDir(t, wtPath, "git", "commit", "-m", "branch edit")
 
 	if err := os.WriteFile(filepath.Join(h.src, "README.md"), []byte("upstream edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, h.src, "git", "add", "README.md")
 	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
@@ -1810,9 +1942,11 @@ func TestPrepareForTask_ReusesVerifiedPreparedWorktreeAfterConflictRecovery(t *t
 	mustRunInDir(t, wtPath, "git", "fetch", "origin")
 	if err := exec.Command("git", "-C", wtPath, "merge", "--no-edit", "origin/main").Run(); err == nil {
 		t.Fatal("expected conflict merge during simulated recovery")
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\nupstream edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, wtPath, "git", "add", "README.md")
 	mustRunInDir(t, wtPath, "git", "commit", "--no-edit")
@@ -1822,6 +1956,7 @@ func TestPrepareForTask_ReusesVerifiedPreparedWorktreeAfterConflictRecovery(t *t
 	wrote, err := prepstate.WriteVerified(context.Background(), wtPath, branch)
 	if err != nil {
 		t.Fatalf("WriteVerified: %v", err)
+		panic("unreachable")
 	}
 	if !wrote {
 		t.Fatal("WriteVerified = false, want published prepared state")
@@ -1830,6 +1965,7 @@ func TestPrepareForTask_ReusesVerifiedPreparedWorktreeAfterConflictRecovery(t *t
 	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("PrepareForTask after recovery: %v", err)
+		panic("unreachable")
 	}
 	if gotPath != wtPath {
 		t.Fatalf("reused path = %q, want %q", gotPath, wtPath)
@@ -1838,6 +1974,7 @@ func TestPrepareForTask_ReusesVerifiedPreparedWorktreeAfterConflictRecovery(t *t
 	data, err := os.ReadFile(filepath.Join(wtPath, "ran-count"))
 	if err != nil {
 		t.Fatalf("read setup counter: %v", err)
+		panic("unreachable")
 	}
 	if got := string(data); got != "x" {
 		t.Fatalf("setup reran after verified prep reuse; counter=%q, want \"x\"", got)
@@ -1850,6 +1987,7 @@ func TestRecordPreparedStateRequiresPublishedRemoteHead(t *testing.T) {
 	tk, err := h.tasks.Store().Create("unpublished prep state", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -1857,16 +1995,19 @@ func TestRecordPreparedStateRequiresPublishedRemoteHead(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
 	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(wtPath, "local-only.txt"), []byte("not pushed\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, wtPath, "git", "add", "local-only.txt")
 	mustRunInDir(t, wtPath, "git", "commit", "-m", "local only")
@@ -1875,12 +2016,14 @@ func TestRecordPreparedStateRequiresPublishedRemoteHead(t *testing.T) {
 	wrote, err := prepstate.WriteVerified(context.Background(), wtPath, branch)
 	if err != nil {
 		t.Fatalf("WriteVerified: %v", err)
+		panic("unreachable")
 	}
 	if wrote {
 		t.Fatal("WriteVerified = true for an unpublished head, want false")
 	}
 	if _, ok, err := prepstate.Read(wtPath); err != nil {
 		t.Fatalf("Read prep state: %v", err)
+		panic("unreachable")
 	} else if ok {
 		t.Fatal("prep state marker exists for an unpublished head")
 	}
@@ -1897,6 +2040,7 @@ func TestRecreateFromBase_DeletesPublishedBranch(t *testing.T) {
 	tk, err := h.tasks.Store().Create("recreate branch from base", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -1904,11 +2048,13 @@ func TestRecreateFromBase_DeletesPublishedBranch(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
 
@@ -1916,6 +2062,7 @@ func TestRecreateFromBase_DeletesPublishedBranch(t *testing.T) {
 	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(wtPath, "recreate.txt"), []byte("stale remote tip\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, wtPath, "git", "add", "recreate.txt")
 	mustRunInDir(t, wtPath, "git", "commit", "-m", "stale remote tip")
@@ -1924,6 +2071,7 @@ func TestRecreateFromBase_DeletesPublishedBranch(t *testing.T) {
 
 	if err := project.FetchOrigin(context.Background(), h.proj.ClonePath); err != nil {
 		t.Fatalf("FetchOrigin after push: %v", err)
+		panic("unreachable")
 	}
 	trackingRef := "refs/remotes/origin/" + branch
 	if !project.RefExists(context.Background(), h.proj.ClonePath, trackingRef) {
@@ -1932,6 +2080,7 @@ func TestRecreateFromBase_DeletesPublishedBranch(t *testing.T) {
 
 	if err := h.m.RecreateFromBase(context.Background(), tk); err != nil {
 		t.Fatalf("RecreateFromBase: %v", err)
+		panic("unreachable")
 	}
 	if project.BranchExists(context.Background(), h.proj.ClonePath, branch) {
 		t.Fatalf("local branch %s still exists after recreate", branch)
@@ -1941,6 +2090,7 @@ func TestRecreateFromBase_DeletesPublishedBranch(t *testing.T) {
 	}
 	if out, err := exec.Command("git", "-C", h.src, "show-ref", "--verify", "--quiet", "refs/heads/"+branch).CombinedOutput(); err == nil {
 		t.Fatalf("remote branch %s still exists after recreate", branch)
+		panic("unreachable")
 	} else {
 		var exitErr *exec.ExitError
 		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
@@ -1958,11 +2108,13 @@ func TestRecreateFromBase_DeletesPublishedBranch(t *testing.T) {
 	wtPath, err = h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("recreated PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
 	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(wtPath, "recreate.txt"), []byte("fresh implementation\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, wtPath, "git", "add", "recreate.txt")
 	mustRunInDir(t, wtPath, "git", "commit", "-m", "fresh implementation")
@@ -1990,6 +2142,7 @@ func TestRecreateFromBase_UnreachableForkWithoutTrackingRefDoesNotFail(t *testin
 	tk, err := h.tasks.Store().Create("recreate without reachable remote", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -1997,11 +2150,13 @@ func TestRecreateFromBase_UnreachableForkWithoutTrackingRefDoesNotFail(t *testin
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
 
@@ -2014,6 +2169,7 @@ func TestRecreateFromBase_UnreachableForkWithoutTrackingRefDoesNotFail(t *testin
 
 	if err := h.m.RecreateFromBase(context.Background(), tk); err != nil {
 		t.Fatalf("RecreateFromBase with unreachable fork: %v", err)
+		panic("unreachable")
 	}
 	if project.BranchExists(context.Background(), h.proj.ClonePath, branch) {
 		t.Fatalf("local branch %s still exists after recreate", branch)
@@ -2045,6 +2201,7 @@ func TestPrepareForTask_TransientFetchFailureIsNotRebaseFailed(t *testing.T) {
 	tk, err := h.tasks.Store().Create("transient network task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -2052,11 +2209,13 @@ func TestPrepareForTask_TransientFetchFailureIsNotRebaseFailed(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 
 	// Point the push remote at a port nothing listens on: fetch fails fast
@@ -2086,6 +2245,7 @@ func TestPrepareForTask_RebaseFailureFailsClosedWithoutMerge(t *testing.T) {
 	tk, err := h.tasks.Store().Create("recoverable task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -2093,11 +2253,13 @@ func TestPrepareForTask_RebaseFailureFailsClosedWithoutMerge(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	branch := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "branch", "--show-current"))
 	mustRunInDir(t, wtPath, "git", "push", "origin", "--delete", branch)
@@ -2109,6 +2271,7 @@ func TestPrepareForTask_RebaseFailureFailsClosedWithoutMerge(t *testing.T) {
 	base, err := os.ReadFile(filepath.Join(wtPath, "README.md"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Commit A: append a line — this is the commit whose patch context will
@@ -2118,6 +2281,7 @@ func TestPrepareForTask_RebaseFailureFailsClosedWithoutMerge(t *testing.T) {
 	withLine2 := append(append([]byte{}, base...), []byte("line2\n")...)
 	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), withLine2, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, wtPath, "git", "add", "README.md")
 	mustRunInDir(t, wtPath, "git", "commit", "-m", "add line2")
@@ -2126,6 +2290,7 @@ func TestPrepareForTask_RebaseFailureFailsClosedWithoutMerge(t *testing.T) {
 	// base, so a three-way merge against upstream has nothing to reconcile.
 	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), base, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, wtPath, "git", "add", "README.md")
 	mustRunInDir(t, wtPath, "git", "commit", "-m", "revert line2")
@@ -2136,6 +2301,7 @@ func TestPrepareForTask_RebaseFailureFailsClosedWithoutMerge(t *testing.T) {
 	upstream := append(append([]byte{}, base...), []byte("upstream addition\n")...)
 	if err := os.WriteFile(filepath.Join(h.src, "README.md"), upstream, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, h.src, "git", "add", "README.md")
 	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
@@ -2150,6 +2316,7 @@ func TestPrepareForTask_RebaseFailureFailsClosedWithoutMerge(t *testing.T) {
 	out, err := exec.Command("git", "-C", wtPath, "log", "--merges", "-1", "--format=%H").Output()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(strings.TrimSpace(string(out))) != 0 {
 		t.Fatalf("unexpected merge commit after failed rebase: %s", out)
@@ -2170,6 +2337,7 @@ func TestPrepareForTask_ReuseRecreatesOnBranchMismatch(t *testing.T) {
 	tk, err := h.tasks.Store().Create("branch mismatch task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -2177,11 +2345,13 @@ func TestPrepareForTask_ReuseRecreatesOnBranchMismatch(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 
 	// Simulate a leftover detached HEAD from an interrupted prior run — still
@@ -2189,16 +2359,19 @@ func TestPrepareForTask_ReuseRecreatesOnBranchMismatch(t *testing.T) {
 	mustRunInDir(t, wtPath, "git", "checkout", "--detach", "HEAD")
 	if branch, err := project.CurrentBranch(context.Background(), wtPath); err != nil || branch != "" {
 		t.Fatalf("precondition: expected detached HEAD, got branch=%q err=%v", branch, err)
+		panic("unreachable")
 	}
 
 	gotPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("PrepareForTask after branch mismatch: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := project.CurrentBranch(context.Background(), gotPath)
 	if err != nil {
 		t.Fatalf("resolve branch: %v", err)
+		panic("unreachable")
 	}
 	want := branchNameForTask(tk)
 	if got != want {
@@ -2218,6 +2391,7 @@ func TestPrepareForTask_RefusesReuseWhileAgentRunning(t *testing.T) {
 	tk, err := h.tasks.Store().Create("live agent task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -2225,21 +2399,25 @@ func TestPrepareForTask_RefusesReuseWhileAgentRunning(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	preHEAD, err := project.CurrentCommit(context.Background(), wtPath)
 	if err != nil {
 		t.Fatalf("resolve pre-attempt HEAD: %v", err)
+		panic("unreachable")
 	}
 
 	// Advance the upstream default branch so a rebase, if it ran, would be
 	// observable (HEAD would move).
 	if err := os.WriteFile(filepath.Join(h.src, "README.md"), []byte("upstream edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, h.src, "git", "add", "README.md")
 	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
@@ -2264,6 +2442,7 @@ func TestPrepareForTask_RefusesReuseWhileAgentRunning(t *testing.T) {
 	postHEAD, err := project.CurrentCommit(context.Background(), wtPath)
 	if err != nil {
 		t.Fatalf("resolve post-attempt HEAD: %v", err)
+		panic("unreachable")
 	}
 	if postHEAD != preHEAD {
 		t.Fatalf("worktree HEAD changed from %q to %q — PrepareForTask must not touch a worktree with a live agent", preHEAD, postHEAD)
@@ -2287,6 +2466,7 @@ func TestPrepareForTask_BadSlugRejected(t *testing.T) {
 	_, err := h.m.PrepareForTask(context.Background(), badTask, nil)
 	if err == nil {
 		t.Fatal("PrepareForTask with path-traversal slug: expected error, got nil")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "slug") {
 		t.Errorf("error should mention slug; got: %v", err)
@@ -2301,6 +2481,7 @@ func mustRunInDir(t *testing.T, dir, name string, args ...string) {
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%s %v: %v: %s", name, args, err, out)
+		panic("unreachable")
 	}
 }
 
@@ -2313,6 +2494,7 @@ func mustOutputInDir(t *testing.T, dir, name string, args ...string) string {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s %v: %v: %s", name, args, err, out)
+		panic("unreachable")
 	}
 	return string(out)
 }
@@ -2327,6 +2509,7 @@ func TestPrepareForTask_BootstrapFailureBlocks(t *testing.T) {
 	tk, err := h.tasks.Store().Create("failing bootstrap", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -2334,11 +2517,13 @@ func TestPrepareForTask_BootstrapFailureBlocks(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	_, err = h.m.PrepareForTask(context.Background(), tk, nil)
 	if err == nil {
 		t.Fatal("expected PrepareForTask to fail when bootstrap exits non-zero")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "exit 42") {
 		t.Errorf("error does not carry bootstrap command text: %v", err)
@@ -2360,6 +2545,7 @@ func TestManager_RefuseRecreateWithUnpushedWork(t *testing.T) {
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
 
@@ -2367,6 +2553,7 @@ func TestManager_RefuseRecreateWithUnpushedWork(t *testing.T) {
 	makePushedGitDir(t, wt)
 	if err := os.WriteFile(filepath.Join(wt, "f.txt"), []byte("merge resolution"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, wt, "git", "add", "-A")
 	mustRunInDir(t, wt, "git", "commit", "-q", "-m", "resolve conflict")
@@ -2377,9 +2564,11 @@ func TestManager_RefuseRecreateWithUnpushedWork(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("recreate allowed on a worktree holding commits origin never saw; that discards the agent's work")
+		panic("unreachable")
 	}
 	if _, statErr := os.Stat(filepath.Join(wt, "f.txt")); statErr != nil {
 		t.Fatalf("worktree contents gone: %v", statErr)
+		panic("unreachable")
 	}
 }
 
@@ -2391,6 +2580,7 @@ func TestManager_AllowsRecreateWhenPushed(t *testing.T) {
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
 
@@ -2399,6 +2589,7 @@ func TestManager_AllowsRecreateWhenPushed(t *testing.T) {
 
 	if err := m.refuseRecreateWithLocalWork(context.Background(), "t1", wt, "branch-mismatch"); err != nil {
 		t.Fatalf("guard blocked recreate of a fully-pushed worktree: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -2408,6 +2599,7 @@ func TestManager_RefuseRecreateWithUncommittedWork(t *testing.T) {
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
 
@@ -2415,14 +2607,17 @@ func TestManager_RefuseRecreateWithUncommittedWork(t *testing.T) {
 	makePushedGitDir(t, wt)
 	if err := os.WriteFile(filepath.Join(wt, "uncommitted.txt"), []byte("local recovery state"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	err = m.refuseRecreateWithLocalWork(context.Background(), "t1", wt, "branch-mismatch")
 	if err == nil {
 		t.Fatal("recreate allowed on a worktree holding uncommitted work")
+		panic("unreachable")
 	}
 	if _, statErr := os.Stat(filepath.Join(wt, "uncommitted.txt")); statErr != nil {
 		t.Fatalf("uncommitted worktree contents gone: %v", statErr)
+		panic("unreachable")
 	}
 }
 
@@ -2435,6 +2630,7 @@ func TestManager_ResolveExistingLeavesTheTreeUntouched(t *testing.T) {
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
 
@@ -2445,6 +2641,7 @@ func TestManager_ResolveExistingLeavesTheTreeUntouched(t *testing.T) {
 	// would auto-commit then reset them away.
 	if err := os.WriteFile(filepath.Join(wt, "uncommitted.txt"), []byte("the state that failed"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	headBefore := gitOut(t, wt, "rev-parse", "HEAD")
 	statusBefore := gitOut(t, wt, "status", "--porcelain")
@@ -2452,6 +2649,7 @@ func TestManager_ResolveExistingLeavesTheTreeUntouched(t *testing.T) {
 	got, err := m.ResolveExisting(context.Background(), tk)
 	if err != nil {
 		t.Fatalf("healthy worktree not resolved: %v", err)
+		panic("unreachable")
 	}
 	if got != wt {
 		t.Errorf("resolved %q, want %q", got, wt)
@@ -2473,6 +2671,7 @@ func TestManager_ResolveExistingRejectsMissingAndNonGit(t *testing.T) {
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
 
@@ -2484,6 +2683,7 @@ func TestManager_ResolveExistingRejectsMissingAndNonGit(t *testing.T) {
 	notRepo := filepath.Join(dir, bare.DirName())
 	if err := os.MkdirAll(notRepo, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got, err := m.ResolveExisting(context.Background(), bare); err == nil {
 		t.Errorf("resolved a directory git cannot resolve: %q", got)
@@ -2498,6 +2698,7 @@ func TestManager_ResolveExistingRefusesLiveAgent(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	m := New(Config{
 		WorktreesDir:     dir,
@@ -2576,6 +2777,7 @@ func TestManager_ResolveExistingRefusesUnpushableCheckout(t *testing.T) {
 			store, err := task.NewStore(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			m := New(Config{WorktreesDir: dir, Tasks: task.NewManager(store, nil), Logger: discardLogger()})
 
@@ -2585,12 +2787,14 @@ func TestManager_ResolveExistingRefusesUnpushableCheckout(t *testing.T) {
 			mustRunInDir(t, wt, "git", "checkout", "-q", "-b", "feature")
 			if _, err := m.ResolveExisting(context.Background(), tk); err != nil {
 				t.Fatalf("healthy worktree refused before the break: %v", err)
+				panic("unreachable")
 			}
 			tc.breakWT(t, wt)
 
 			got, err := m.ResolveExisting(context.Background(), tk)
 			if err == nil {
 				t.Fatalf("ResolveExisting returned %q for a checkout that cannot be pushed from", got)
+				panic("unreachable")
 			}
 		})
 	}
@@ -2649,6 +2853,7 @@ func writeFileT(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -2670,6 +2875,7 @@ func TestManager_ResolveExistingRefusesDefaultBranch(t *testing.T) {
 	tk, err := h.tasks.Store().Create("default branch reuse", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -2677,6 +2883,7 @@ func TestManager_ResolveExistingRefusesDefaultBranch(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wt := h.m.PathFor(tk)
@@ -2685,6 +2892,7 @@ func TestManager_ResolveExistingRefusesDefaultBranch(t *testing.T) {
 	def, err := project.DefaultBranch(context.Background(), h.proj.ClonePath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if branch != def {
 		t.Fatalf("clone landed on %q, want the default branch %q", branch, def)
@@ -2693,6 +2901,7 @@ func TestManager_ResolveExistingRefusesDefaultBranch(t *testing.T) {
 	got, err := h.m.ResolveExisting(context.Background(), tk)
 	if err == nil {
 		t.Fatalf("ResolveExisting returned %q for a checkout on the default branch", got)
+		panic("unreachable")
 	}
 
 	// A feature branch in the same worktree is still fine.
@@ -2709,6 +2918,7 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
+		panic("unreachable")
 	}
 	return strings.TrimSpace(string(out))
 }

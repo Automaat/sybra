@@ -53,6 +53,7 @@ func TestConcurrentAppend_LineIntegrity(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
+		panic("unreachable")
 	}
 	var raw []byte
 	for _, e := range entries {
@@ -62,6 +63,7 @@ func TestConcurrentAppend_LineIntegrity(t *testing.T) {
 		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
 			t.Fatalf("ReadFile %s: %v", e.Name(), err)
+			panic("unreachable")
 		}
 		raw = append(raw, b...)
 	}

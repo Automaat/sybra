@@ -125,10 +125,12 @@ func TestAgentMarshalJSON_MatchesView(t *testing.T) {
 	viaPointer, err := json.Marshal(a)
 	if err != nil {
 		t.Fatalf("marshal *Agent: %v", err)
+		panic("unreachable")
 	}
 	viaView, err := json.Marshal(a.View())
 	if err != nil {
 		t.Fatalf("marshal View: %v", err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(viaPointer, viaView) {
 		t.Fatalf("json.Marshal(*Agent) != json.Marshal(View)\nagent: %s\nview:  %s", viaPointer, viaView)
@@ -328,10 +330,12 @@ func assertJSONKeys(t *testing.T, value any, want []string) {
 	data, err := json.Marshal(value)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
+		panic("unreachable")
 	}
 	var gotMap map[string]json.RawMessage
 	if err := json.Unmarshal(data, &gotMap); err != nil {
 		t.Fatalf("unmarshal object: %v", err)
+		panic("unreachable")
 	}
 
 	got := make([]string, 0, len(gotMap))

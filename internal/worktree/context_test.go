@@ -25,11 +25,13 @@ func TestWriteContextFile_WritesBeacon(t *testing.T) {
 
 	if err := writeContextFile(context.Background(), tk, wt, branch); err != nil {
 		t.Fatalf("writeContextFile: %v", err)
+		panic("unreachable")
 	}
 
 	content, err := os.ReadFile(filepath.Join(wt, contextFileName))
 	if err != nil {
 		t.Fatalf("read beacon: %v", err)
+		panic("unreachable")
 	}
 	body := string(content)
 	for _, want := range []string{tk.ID, branch, tk.Title, tk.ProjectID, wt} {
@@ -46,11 +48,13 @@ func TestWriteContextFile_AddsToInfoExclude(t *testing.T) {
 	tk := task.Task{ID: "fa6919fc", Slug: "x", ProjectID: "p/r"}
 	if err := writeContextFile(context.Background(), tk, wt, "sybra/x-fa6919fc"); err != nil {
 		t.Fatalf("writeContextFile: %v", err)
+		panic("unreachable")
 	}
 
 	out, err := exec.Command("git", "-C", wt, "status", "--porcelain").Output()
 	if err != nil {
 		t.Fatalf("git status: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(string(out), contextFileName) {
 		t.Errorf("expected %s to be ignored by git, got status:\n%s", contextFileName, out)
@@ -63,18 +67,22 @@ func TestExcludeEvidenceDir_AddsToInfoExclude(t *testing.T) {
 
 	if err := os.MkdirAll(filepath.Join(wt, EvidenceDirName), 0o755); err != nil {
 		t.Fatalf("mkdir evidence dir: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wt, EvidenceDirName, "screenshot.png"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("write evidence file: %v", err)
+		panic("unreachable")
 	}
 
 	if err := ExcludeEvidenceDir(context.Background(), wt); err != nil {
 		t.Fatalf("ExcludeEvidenceDir: %v", err)
+		panic("unreachable")
 	}
 
 	out, err := exec.Command("git", "-C", wt, "status", "--porcelain").Output()
 	if err != nil {
 		t.Fatalf("git status: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(string(out), EvidenceDirName) {
 		t.Errorf("expected %s to be ignored by git, got status:\n%s", EvidenceDirName, out)
@@ -83,10 +91,12 @@ func TestExcludeEvidenceDir_AddsToInfoExclude(t *testing.T) {
 	// Idempotent: calling twice must not duplicate the exclude entry.
 	if err := ExcludeEvidenceDir(context.Background(), wt); err != nil {
 		t.Fatalf("second ExcludeEvidenceDir: %v", err)
+		panic("unreachable")
 	}
 	excludePathBytes, err := exec.Command("git", "-C", wt, "rev-parse", "--git-path", "info/exclude").Output()
 	if err != nil {
 		t.Fatalf("rev-parse: %v", err)
+		panic("unreachable")
 	}
 	excludePath := strings.TrimSpace(string(excludePathBytes))
 	if !filepath.IsAbs(excludePath) {
@@ -95,6 +105,7 @@ func TestExcludeEvidenceDir_AddsToInfoExclude(t *testing.T) {
 	data, err := os.ReadFile(excludePath)
 	if err != nil {
 		t.Fatalf("read info/exclude: %v", err)
+		panic("unreachable")
 	}
 	if got := strings.Count(string(data), "/"+EvidenceDirName); got != 1 {
 		t.Errorf("expected exactly one exclude entry for %s, got %d in:\n%s", EvidenceDirName, got, data)
@@ -108,18 +119,22 @@ func TestExcludeWorktreePath_AddsRelativePathToInfoExclude(t *testing.T) {
 	rel := filepath.Join("custom-evidence", "screens")
 	if err := os.MkdirAll(filepath.Join(wt, rel), 0o755); err != nil {
 		t.Fatalf("mkdir custom evidence dir: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wt, rel, "shot.png"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("write evidence file: %v", err)
+		panic("unreachable")
 	}
 
 	if err := ExcludeWorktreePath(context.Background(), wt, rel); err != nil {
 		t.Fatalf("ExcludeWorktreePath: %v", err)
+		panic("unreachable")
 	}
 
 	out, err := exec.Command("git", "-C", wt, "status", "--porcelain").Output()
 	if err != nil {
 		t.Fatalf("git status: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(string(out), rel) {
 		t.Fatalf("expected %s to be ignored by git, got status:\n%s", rel, out)
@@ -134,12 +149,14 @@ func TestWriteContextFile_IdempotentExclude(t *testing.T) {
 	for range 3 {
 		if err := writeContextFile(context.Background(), tk, wt, "sybra/x-fa6919fc"); err != nil {
 			t.Fatalf("writeContextFile: %v", err)
+			panic("unreachable")
 		}
 	}
 
 	excludePathBytes, err := exec.Command("git", "-C", wt, "rev-parse", "--git-path", "info/exclude").Output()
 	if err != nil {
 		t.Fatalf("rev-parse: %v", err)
+		panic("unreachable")
 	}
 	excludePath := strings.TrimSpace(string(excludePathBytes))
 	if !filepath.IsAbs(excludePath) {
@@ -148,6 +165,7 @@ func TestWriteContextFile_IdempotentExclude(t *testing.T) {
 	data, err := os.ReadFile(excludePath)
 	if err != nil {
 		t.Fatalf("read exclude: %v", err)
+		panic("unreachable")
 	}
 	count := strings.Count(string(data), "/"+contextFileName)
 	if count != 1 {
@@ -161,6 +179,7 @@ func TestExcludeWorkflowScratchFiles(t *testing.T) {
 
 	if err := excludeWorkflowScratchFiles(context.Background(), wt); err != nil {
 		t.Fatalf("excludeWorkflowScratchFiles: %v", err)
+		panic("unreachable")
 	}
 	for _, file := range []string{
 		".sybra-review-task.md",
@@ -171,12 +190,14 @@ func TestExcludeWorkflowScratchFiles(t *testing.T) {
 	} {
 		if err := os.WriteFile(filepath.Join(wt, file), []byte("scratch"), 0o644); err != nil {
 			t.Fatalf("write scratch file: %v", err)
+			panic("unreachable")
 		}
 	}
 
 	out, err := exec.Command("git", "-C", wt, "status", "--porcelain").Output()
 	if err != nil {
 		t.Fatalf("git status: %v", err)
+		panic("unreachable")
 	}
 	if got := strings.TrimSpace(string(out)); got != "" {
 		t.Fatalf("workflow scratch files should be ignored, got status:\n%s", got)

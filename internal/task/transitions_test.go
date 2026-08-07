@@ -116,6 +116,7 @@ func TestApply_RejectsIllegalTransition(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := m.Update(created.ID, Update{Status: Ptr(StatusInReview)}); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -141,6 +142,7 @@ func TestApply_RejectsIllegalTransition(t *testing.T) {
 	after, err := m.Get(created.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if after.Status != StatusInReview {
 		t.Fatalf("status after rejected illegal transition = %q, want unchanged %q", after.Status, StatusInReview)
@@ -157,6 +159,7 @@ func TestApply_RejectsDoneToInProgress(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := m.Update(created.ID, Update{Status: Ptr(StatusDone)}); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -179,6 +182,7 @@ func TestApply_OperatorOverrideBypassesIllegalTransition(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := m.Update(created.ID, Update{Status: Ptr(StatusDone)}); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -192,6 +196,7 @@ func TestApply_OperatorOverrideBypassesIllegalTransition(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Apply with OperatorOverride: %v", err)
+		panic("unreachable")
 	}
 	if result.Task.Status != StatusTodo {
 		t.Fatalf("status = %q, want %q", result.Task.Status, StatusTodo)
@@ -205,6 +210,7 @@ func TestApplyFn_RejectsIllegalTransition(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := m.Update(created.ID, Update{Status: Ptr(StatusDone)}); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -228,6 +234,7 @@ func TestApplyStatusEffect_RejectsIllegalTransition(t *testing.T) {
 	created, err := m.Create("Title", "", "headless")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := m.Update(created.ID, Update{Status: Ptr(StatusInReview)}); err != nil {
 		t.Fatalf("Update: %v", err)

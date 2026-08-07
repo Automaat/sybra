@@ -28,6 +28,7 @@ func newOutboundTestHandler(t *testing.T) (*Handler, *task.Manager) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
@@ -46,6 +47,7 @@ func newOutboundWorkflowTestHandler(t *testing.T) (*Handler, *task.Manager) {
 	store, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
@@ -53,16 +55,20 @@ func newOutboundWorkflowTestHandler(t *testing.T) (*Handler, *task.Manager) {
 	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := workflow.SyncBuiltins(wfStore); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := projects.CreateMeta("https://github.com/Automaat/sybra", project.ProjectTypePet); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	engine := workflow.NewTestEngine(wfStore,
 		&taskAdapter{tasks: tasks},
@@ -85,6 +91,7 @@ func mkOwnPRTask(t *testing.T, tasks *task.Manager, prNumber int, tags []string)
 	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	updated, err := tasks.Update(created.ID, task.Update{
 		Status:    task.Ptr(task.StatusInReview),
@@ -94,6 +101,7 @@ func mkOwnPRTask(t *testing.T, tasks *task.Manager, prNumber int, tags []string)
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
+		panic("unreachable")
 	}
 	return updated
 }
@@ -105,6 +113,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		wf := &workflow.Execution{
 			WorkflowID:  "simple-task-implement",
@@ -126,6 +135,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		all, err := tasks.List()
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		r.cancelSettledImplementationWorkflows(context.Background(), all, []github.PullRequest{{
 			Number:      42,
@@ -138,6 +148,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		got, err := tasks.Get(created.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.Status != task.StatusInReview {
 			t.Fatalf("status = %q, want in-review", got.Status)
@@ -147,6 +158,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		}
 		if got.Workflow == nil || got.Workflow.State != workflow.ExecCompleted || got.Workflow.CurrentStep != "" {
 			t.Fatalf("workflow = %+v, want completed with empty current step", got.Workflow)
+			panic("unreachable")
 		}
 	})
 
@@ -156,6 +168,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		wf := &workflow.Execution{
 			WorkflowID:  "simple-task-implement",
@@ -174,6 +187,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		all, err := tasks.List()
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		r.cancelSettledImplementationWorkflows(context.Background(), all, []github.PullRequest{{
 			Number:      77,
@@ -186,6 +200,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		got, err := tasks.Get(created.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.PRNumber != 77 {
 			t.Fatalf("PRNumber = %d, want 77", got.PRNumber)
@@ -195,6 +210,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		}
 		if got.Workflow == nil || got.Workflow.State != workflow.ExecCompleted {
 			t.Fatalf("workflow = %+v, want completed", got.Workflow)
+			panic("unreachable")
 		}
 	})
 
@@ -204,6 +220,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		wf := &workflow.Execution{
 			WorkflowID:  "simple-task-implement",
@@ -234,6 +251,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		all, err := tasks.List()
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		r.cancelSettledImplementationWorkflows(context.Background(), all, []github.PullRequest{{
 			Number:      42,
@@ -246,6 +264,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		got, err := tasks.Get(created.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.Status != task.StatusInProgress {
 			t.Fatalf("status = %q, want in-progress", got.Status)
@@ -255,6 +274,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		}
 		if got.Workflow == nil || got.Workflow.State != workflow.ExecRunning || got.Workflow.CurrentStep != "implement" {
 			t.Fatalf("workflow = %+v, want running on implement", got.Workflow)
+			panic("unreachable")
 		}
 	})
 
@@ -264,6 +284,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		wf := &workflow.Execution{
 			WorkflowID:  "simple-task-implement",
@@ -285,6 +306,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		all, err := tasks.List()
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		r.cancelSettledImplementationWorkflows(context.Background(), all, []github.PullRequest{{
 			Number:           55,
@@ -298,6 +320,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		got, err := tasks.Get(created.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.Status != task.StatusInProgress {
 			t.Fatalf("status = %q, want in-progress", got.Status)
@@ -307,6 +330,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		}
 		if got.Workflow == nil || got.Workflow.State != workflow.ExecWaiting || got.Workflow.CurrentStep != "implement" {
 			t.Fatalf("workflow = %+v, want waiting on implement", got.Workflow)
+			panic("unreachable")
 		}
 	})
 
@@ -316,6 +340,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		wf := &workflow.Execution{
 			WorkflowID:  "simple-task-implement",
@@ -337,6 +362,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		all, err := tasks.List()
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		r.cancelSettledImplementationWorkflows(context.Background(), all, []github.PullRequest{{
 			Number:         66,
@@ -351,6 +377,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		got, err := tasks.Get(created.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.Status != task.StatusInProgress {
 			t.Fatalf("status = %q, want in-progress", got.Status)
@@ -360,6 +387,7 @@ func TestCancelSettledImplementationWorkflows(t *testing.T) {
 		}
 		if got.Workflow == nil || got.Workflow.State != workflow.ExecWaiting || got.Workflow.CurrentStep != "implement" {
 			t.Fatalf("workflow = %+v, want waiting on implement", got.Workflow)
+			panic("unreachable")
 		}
 	})
 }
@@ -374,6 +402,7 @@ func TestPollKnownTaskPRs_CancelsBranchOnlySettledImplementationWorkflow(t *test
 	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wf := &workflow.Execution{
 		WorkflowID:  "simple-task-implement",
@@ -422,6 +451,7 @@ func TestPollKnownTaskPRs_CancelsBranchOnlySettledImplementationWorkflow(t *test
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.PRNumber != 77 {
 		t.Fatalf("PRNumber = %d, want 77", got.PRNumber)
@@ -431,6 +461,7 @@ func TestPollKnownTaskPRs_CancelsBranchOnlySettledImplementationWorkflow(t *test
 	}
 	if got.Workflow == nil || got.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("workflow = %+v, want completed", got.Workflow)
+		panic("unreachable")
 	}
 }
 
@@ -441,6 +472,7 @@ func TestHandleKnownPRConflictsViaREST_CancelsBranchOnlySettledImplementationWor
 	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wf := &workflow.Execution{
 		WorkflowID:  "simple-task-implement",
@@ -483,6 +515,7 @@ func TestHandleKnownPRConflictsViaREST_CancelsBranchOnlySettledImplementationWor
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	r.handleKnownPRConflictsViaREST(context.Background(), all)
@@ -493,6 +526,7 @@ func TestHandleKnownPRConflictsViaREST_CancelsBranchOnlySettledImplementationWor
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.PRNumber != 88 {
 		t.Fatalf("PRNumber = %d, want 88", got.PRNumber)
@@ -502,6 +536,7 @@ func TestHandleKnownPRConflictsViaREST_CancelsBranchOnlySettledImplementationWor
 	}
 	if got.Workflow == nil || got.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("workflow = %+v, want completed", got.Workflow)
+		panic("unreachable")
 	}
 }
 
@@ -510,6 +545,7 @@ func TestSettledImplementationFetchMatchers_QualifiesForkHead(t *testing.T) {
 	wtPath := initReviewGitWorktree(t)
 	if out, err := exec.Command("git", "-C", wtPath, "remote", "add", "fork", "git@github.com:someuser/sybra.git").CombinedOutput(); err != nil {
 		t.Fatalf("add fork remote: %v: %s", err, out)
+		panic("unreachable")
 	}
 	r.worktrees = worktree.New(worktree.Config{
 		WorktreesDir: filepath.Join(t.TempDir(), "worktrees"),
@@ -521,6 +557,7 @@ func TestSettledImplementationFetchMatchers_QualifiesForkHead(t *testing.T) {
 	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wf := &workflow.Execution{
 		WorkflowID:  "simple-task-implement",
@@ -536,6 +573,7 @@ func TestSettledImplementationFetchMatchers_QualifiesForkHead(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	var lookedUpHead string
@@ -566,6 +604,7 @@ func TestReconcilePRPhases(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	prs := []github.PullRequest{
 		{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"},
@@ -576,6 +615,7 @@ func TestReconcilePRPhases(t *testing.T) {
 	got, err := tasks.Get(own.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.PRPhase != PRPhaseApproved {
 		t.Errorf("own PR phase = %q, want %q", got.PRPhase, PRPhaseApproved)
@@ -586,6 +626,7 @@ func TestReconcilePRPhases(t *testing.T) {
 	gotReview, err := tasks.Get(review.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if gotReview.PRPhase != "" {
 		t.Errorf("review task PRPhase = %q, want empty", gotReview.PRPhase)
@@ -597,6 +638,7 @@ func initReviewGitWorktree(t *testing.T) string {
 	wtPath := t.TempDir()
 	if out, err := exec.Command("git", "-C", wtPath, "init", "-b", "main").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
+		panic("unreachable")
 	}
 	return wtPath
 }
@@ -615,12 +657,14 @@ func TestReconcilePRPhasesClearsStaleWhenIneligible(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.reconcilePRPhases(context.Background(), all, []github.PullRequest{{Number: 42, CIStatus: "SUCCESS"}})
 
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.PRPhase != "" {
 		t.Errorf("stale PRPhase = %q, want cleared", got.PRPhase)
@@ -688,6 +732,7 @@ func TestReconcilePRPhasesReactivatesEmptyReasonAfterPRFix(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.reconcilePRPhases(context.Background(), all, []github.PullRequest{{
 		Number:         42,
@@ -699,6 +744,7 @@ func TestReconcilePRPhasesReactivatesEmptyReasonAfterPRFix(t *testing.T) {
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Errorf("status = %q, want in-review", got.Status)
@@ -731,12 +777,14 @@ func TestReconcilePRPhasesDoesNotReactivateFreshManualHumanRequired(t *testing.T
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.reconcilePRPhases(context.Background(), all, []github.PullRequest{{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
 
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status = %q, want human-required", got.Status)
@@ -767,12 +815,14 @@ func TestReconcilePRPhasesDoesNotReactivateReasonedHumanRequired(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.reconcilePRPhases(context.Background(), all, []github.PullRequest{{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
 
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status = %q, want human-required", got.Status)
@@ -805,12 +855,14 @@ func TestReconcilePRPhasesDoesNotReactivateLaterManualHumanRequired(t *testing.T
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.reconcilePRPhases(context.Background(), all, []github.PullRequest{{Number: 42, ReviewDecision: "APPROVED", Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
 
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status = %q, want human-required", got.Status)
@@ -840,12 +892,14 @@ func TestReconcilePRPhasesDoesNotReactivateWithoutLivePR(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.reconcilePRPhases(context.Background(), all, nil)
 
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status = %q, want human-required", got.Status)
@@ -945,6 +999,7 @@ func mkHumanRequiredBlockerTask(t *testing.T, tasks *task.Manager, prNumber int,
 	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	updated, err := tasks.Update(created.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -957,6 +1012,7 @@ func mkHumanRequiredBlockerTask(t *testing.T, tasks *task.Manager, prNumber int,
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
+		panic("unreachable")
 	}
 	return updated
 }
@@ -1049,12 +1105,14 @@ func TestReconcileHumanRequiredBlockersFallbackProbe(t *testing.T) {
 			all, err := tasks.List()
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			r.reconcileHumanRequiredBlockers(all, nil)
 
 			got, err := tasks.Get(created.ID)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if got.Status != tt.wantStatus {
 				t.Errorf("status = %q, want %q", got.Status, tt.wantStatus)
@@ -1086,11 +1144,13 @@ func TestReconcileHumanRequiredBlockersNoDoubleMoveWithReactivateLinkedOwnPR(t *
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.reconcilePRPhases(context.Background(), all, []github.PullRequest{{Number: 42, Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}})
 	afterPhases, err := tasks.Get(parked.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if afterPhases.Status != task.StatusHumanRequired {
 		t.Fatalf("reconcilePRPhases moved the task prematurely: status = %q", afterPhases.Status)
@@ -1099,12 +1159,14 @@ func TestReconcileHumanRequiredBlockersNoDoubleMoveWithReactivateLinkedOwnPR(t *
 	all, err = tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.reconcileHumanRequiredBlockers(all, nil)
 
 	got, err := tasks.Get(parked.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Errorf("status = %q, want in-review via blocker reconciliation", got.Status)
@@ -1122,6 +1184,7 @@ func TestReconcileHumanRequiredBlockersClearsOnCleanPR(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	prs := []github.PullRequest{{Number: 42, Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}}
 	r.reconcileHumanRequiredBlockers(all, prs)
@@ -1129,6 +1192,7 @@ func TestReconcileHumanRequiredBlockersClearsOnCleanPR(t *testing.T) {
 	got, err := tasks.Get(parked.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Errorf("status = %q, want in-review", got.Status)
@@ -1159,10 +1223,12 @@ func TestReconcileHumanRequiredBlockersRecordsIntervention(t *testing.T) {
 	projStore, err := project.NewStore(t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	proj, err := projStore.CreateMeta("https://github.com/Automaat/sybra.git", project.ProjectTypePet)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.projects = projStore
 	r.cfg = &config.Config{Intervention: config.InterventionConfig{Enabled: true}}
@@ -1170,12 +1236,14 @@ func TestReconcileHumanRequiredBlockersRecordsIntervention(t *testing.T) {
 	al, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer al.Close()
 	r.audit = al
 	store, err := intervention.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.intervention = store
 
@@ -1184,6 +1252,7 @@ func TestReconcileHumanRequiredBlockersRecordsIntervention(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	prs := []github.PullRequest{{Number: 42, Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}}
 	r.reconcileHumanRequiredBlockers(all, prs)
@@ -1191,6 +1260,7 @@ func TestReconcileHumanRequiredBlockersRecordsIntervention(t *testing.T) {
 	records, err := store.Query(intervention.ProjectKey(proj), 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(records) != 1 {
 		t.Fatalf("len(records) = %d, want 1: %+v", len(records), records)
@@ -1213,6 +1283,7 @@ func TestReconcileHumanRequiredBlockersRecordsIntervention(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(events) != 1 {
 		t.Fatalf("len(EventInterventionRecorded) = %d, want 1: %+v", len(events), events)
@@ -1230,6 +1301,7 @@ func TestReconcileHumanRequiredBlockersStaysParkedWhileCIStillFailing(t *testing
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	prs := []github.PullRequest{{Number: 42, Mergeable: "MERGEABLE", CIStatus: "FAILURE"}}
 	r.reconcileHumanRequiredBlockers(all, prs)
@@ -1237,6 +1309,7 @@ func TestReconcileHumanRequiredBlockersStaysParkedWhileCIStillFailing(t *testing
 	got, err := tasks.Get(parked.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status = %q, want still human-required", got.Status)
@@ -1251,6 +1324,7 @@ func TestReconcileHumanRequiredBlockersStaysParkedWhileChecksStillPending(t *tes
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	prs := []github.PullRequest{{
 		Number:           42,
@@ -1263,6 +1337,7 @@ func TestReconcileHumanRequiredBlockersStaysParkedWhileChecksStillPending(t *tes
 	got, err := tasks.Get(parked.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status = %q, want still human-required while checks are pending", got.Status)
@@ -1277,6 +1352,7 @@ func TestReconcileHumanRequiredBlockersStaysParkedOnFreshConflict(t *testing.T) 
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	prs := []github.PullRequest{{Number: 42, Mergeable: "CONFLICTING", CIStatus: "SUCCESS"}}
 	r.reconcileHumanRequiredBlockers(all, prs)
@@ -1284,6 +1360,7 @@ func TestReconcileHumanRequiredBlockersStaysParkedOnFreshConflict(t *testing.T) 
 	got, err := tasks.Get(parked.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status = %q, want still human-required", got.Status)
@@ -1296,6 +1373,7 @@ func TestReconcileHumanRequiredBlockersIgnoresUnrelatedHumanRequiredReasons(t *t
 	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	parked, err := tasks.Update(created.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -1307,11 +1385,13 @@ func TestReconcileHumanRequiredBlockersIgnoresUnrelatedHumanRequiredReasons(t *t
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
+		panic("unreachable")
 	}
 
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	prs := []github.PullRequest{{Number: 42, Mergeable: "MERGEABLE", CIStatus: "SUCCESS"}}
 	r.reconcileHumanRequiredBlockers(all, prs)
@@ -1319,6 +1399,7 @@ func TestReconcileHumanRequiredBlockersIgnoresUnrelatedHumanRequiredReasons(t *t
 	got, err := tasks.Get(parked.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status = %q, want still human-required", got.Status)
@@ -1336,12 +1417,14 @@ func TestReconcileHumanRequiredBlockersSkipsWhenPRNotFound(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.reconcileHumanRequiredBlockers(all, nil)
 
 	got, err := tasks.Get(parked.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status = %q, want still human-required", got.Status)
@@ -1382,6 +1465,7 @@ func TestPollKnownTaskPRs_ReconcilesHumanRequiredBlocker(t *testing.T) {
 	got, err := tasks.Get(parked.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Errorf("status = %q, want in-review", got.Status)
@@ -1400,6 +1484,7 @@ func TestPollKnownTaskPRs_MergesReconciledReviewedPetPRSameCycle(t *testing.T) {
 	projStore, err := project.NewStore(projDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
 	r.projects = projStore
@@ -1407,6 +1492,7 @@ func TestPollKnownTaskPRs_MergesReconciledReviewedPetPRSameCycle(t *testing.T) {
 	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	reviewed := true
 	parked, err := tasks.Update(created.ID, task.Update{
@@ -1420,6 +1506,7 @@ func TestPollKnownTaskPRs_MergesReconciledReviewedPetPRSameCycle(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
+		panic("unreachable")
 	}
 
 	var mergedRepo string
@@ -1453,6 +1540,7 @@ func TestPollKnownTaskPRs_MergesReconciledReviewedPetPRSameCycle(t *testing.T) {
 	got, err := tasks.Get(parked.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Errorf("status = %q, want in-review after reconciliation", got.Status)
@@ -1474,6 +1562,7 @@ func TestPollAndMonitorPRs_MergesReconciledReviewedPetPRSameCycle(t *testing.T) 
 	projStore, err := project.NewStore(projDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
 	r.projects = projStore
@@ -1481,6 +1570,7 @@ func TestPollAndMonitorPRs_MergesReconciledReviewedPetPRSameCycle(t *testing.T) 
 	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	reviewed := true
 	parked, err := tasks.Update(created.ID, task.Update{
@@ -1494,6 +1584,7 @@ func TestPollAndMonitorPRs_MergesReconciledReviewedPetPRSameCycle(t *testing.T) 
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
+		panic("unreachable")
 	}
 
 	var mergedRepo string
@@ -1522,6 +1613,7 @@ func TestPollAndMonitorPRs_MergesReconciledReviewedPetPRSameCycle(t *testing.T) 
 	got, err := tasks.Get(parked.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Errorf("status = %q, want in-review after reconciliation", got.Status)
@@ -1538,6 +1630,7 @@ func TestMergeReconciledReady_SkipsTaskWithRunningAgent(t *testing.T) {
 	projStore, err := project.NewStore(projDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mustWriteProjectYAML(t, projDir, "pet-owner/pet-repo", project.ProjectTypePet)
 	r.projects = projStore
@@ -1545,6 +1638,7 @@ func TestMergeReconciledReady_SkipsTaskWithRunningAgent(t *testing.T) {
 	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 
 	claim, ok := r.agents.TryClaimDispatch(created.ID)
@@ -1580,6 +1674,7 @@ func TestMergeReconciledReady_SkipsTaskWithActiveWorkflow(t *testing.T) {
 	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	wf := &workflow.Execution{
 		WorkflowID:  "simple-task-implement",
@@ -1617,6 +1712,7 @@ func TestReconcileHumanRequiredBlockersSkipsCrossRepoBranchCollision(t *testing.
 	created, err := tasks.Create("Implement thing", "", string(task.AgentModeHeadless))
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	parked, err := tasks.Update(created.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -1629,11 +1725,13 @@ func TestReconcileHumanRequiredBlockersSkipsCrossRepoBranchCollision(t *testing.
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
+		panic("unreachable")
 	}
 
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	prs := []github.PullRequest{{
 		Number: 42, Repository: "other/repo",
@@ -1645,6 +1743,7 @@ func TestReconcileHumanRequiredBlockersSkipsCrossRepoBranchCollision(t *testing.
 	got, err := tasks.Get(parked.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status = %q, want still human-required", got.Status)
@@ -1661,6 +1760,7 @@ func TestApplyPRPhaseSkipsNoOp(t *testing.T) {
 	cur, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	before := cur.UpdatedAt
 
@@ -1668,6 +1768,7 @@ func TestApplyPRPhaseSkipsNoOp(t *testing.T) {
 	after, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !after.UpdatedAt.Equal(before) {
 		t.Errorf("no-op applyPRPhase wrote the task (updatedAt changed)")

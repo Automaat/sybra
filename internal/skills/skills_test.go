@@ -13,6 +13,7 @@ func TestSybraTriageDoesNotEscalateClassifierFailures(t *testing.T) {
 	data, err := skills.FS.ReadFile("data/sybra-triage.md")
 	if err != nil {
 		t.Fatalf("read sybra-triage skill: %v", err)
+		panic("unreachable")
 	}
 	text := string(data)
 	for _, forbidden := range []string{

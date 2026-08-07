@@ -37,6 +37,7 @@ func TestAssertFeatureBranch(t *testing.T) {
 			runGit(t, work, "config", "commit.gpgsign", "false")
 			if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("x\n"), 0o644); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			runGit(t, work, "add", ".")
 			runGit(t, work, "commit", "-m", "init")
@@ -50,11 +51,13 @@ func TestAssertFeatureBranch(t *testing.T) {
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("assertFeatureBranch on %q: %v", tt.checkout, err)
+					panic("unreachable")
 				}
 				return
 			}
 			if err == nil {
 				t.Fatalf("handoff accepted a worktree on the default branch %q", tt.defaultBranch)
+				panic("unreachable")
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("error = %q, want it to contain %q", err, tt.wantErr)
@@ -76,6 +79,7 @@ func TestAssertFeatureBranch_NoClonePathFailsClosed(t *testing.T) {
 	err := assertFeatureBranch(work, project.Project{ID: "owner/repo"})
 	if err == nil {
 		t.Fatal("handoff accepted a project with no clone path")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "clone path") {
 		t.Errorf("error = %q, want it to name the missing clone path", err)

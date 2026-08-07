@@ -21,6 +21,7 @@ func TestMarkRebaseBlocked_RecoversInsteadOfEscalating(t *testing.T) {
 	tk, err := a.tasks.Create("rebase recover", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	recoverCalls := 0
@@ -42,6 +43,7 @@ func TestMarkRebaseBlocked_RecoversInsteadOfEscalating(t *testing.T) {
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status == task.StatusHumanRequired {
 		t.Errorf("task escalated to human-required despite successful recovery")
@@ -56,6 +58,7 @@ func TestMarkRebaseBlocked_EscalatesWhenRecoveryDeclines(t *testing.T) {
 	tk, err := a.tasks.Create("rebase escalate", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	rebaseErr := fmt.Errorf("rebase x onto main: %w", worktree.ErrRebaseFailed)
@@ -65,6 +68,7 @@ func TestMarkRebaseBlocked_EscalatesWhenRecoveryDeclines(t *testing.T) {
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want blocked when recovery declines", got.Status)
@@ -78,15 +82,18 @@ func TestMarkRebaseBlocked_NilRecoverEscalates(t *testing.T) {
 	tk, err := a.tasks.Create("rebase nil recover", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	rebaseErr := fmt.Errorf("rebase x onto main: %w", worktree.ErrRebaseFailed)
 	if !agentorch.MarkRebaseBlocked(a.tasks, tk.ID, rebaseErr, a.logger, nil) {
 		t.Fatal("MarkRebaseBlocked returned false for a rebase failure")
+		panic("unreachable")
 	}
 	got, err := a.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want blocked with nil recovery", got.Status)
@@ -101,6 +108,7 @@ func TestMarkRebaseBlocked_IgnoresNonRebaseError(t *testing.T) {
 	tk, err := a.tasks.Create("non rebase", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	called := false

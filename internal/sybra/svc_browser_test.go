@@ -28,6 +28,7 @@ func TestBrowserServiceOpen(t *testing.T) {
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("Open(%q) = nil error, want error", tt.url)
+					panic("unreachable")
 				}
 				if got != "" {
 					t.Fatalf("Open(%q) called opener with %q on a rejected URL", tt.url, got)
@@ -36,6 +37,7 @@ func TestBrowserServiceOpen(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("Open(%q) unexpected error: %v", tt.url, err)
+				panic("unreachable")
 			}
 			if got != tt.wantOpen {
 				t.Fatalf("Open(%q) opened %q, want %q", tt.url, got, tt.wantOpen)
@@ -50,5 +52,6 @@ func TestBrowserServiceOpenUnavailable(t *testing.T) {
 	s := &BrowserService{}
 	if err := s.Open("https://github.com"); err == nil {
 		t.Fatal("Open with nil opener = nil error, want unavailable error")
+		panic("unreachable")
 	}
 }

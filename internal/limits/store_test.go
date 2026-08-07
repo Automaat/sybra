@@ -16,9 +16,11 @@ func writeLimitsFile(t *testing.T, path string, p persisted) {
 	data, err := json.Marshal(p)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -38,10 +40,12 @@ func TestStore_ReloadPrunesExpiredEvents(t *testing.T) {
 	s, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	s.clock = clock.NewFake(now)
 	if err := s.reloadLocked(); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if len(s.events) != 2 {
@@ -73,6 +77,7 @@ func TestStore_RecordUsageFlushesPrunedEvents(t *testing.T) {
 	s, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	s.clock = clock.NewFake(now)
 
@@ -83,10 +88,12 @@ func TestStore_RecordUsageFlushesPrunedEvents(t *testing.T) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	var p persisted
 	if err := json.Unmarshal(data, &p); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(p.Events) != 1 || p.Events[0].ID != "new" {
 		t.Fatalf("expected only the fresh event on disk, got %+v", p.Events)
@@ -98,10 +105,12 @@ func TestStore_LockContentionDoesNotBlockProviderAvailability(t *testing.T) {
 	s, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	unlock, err := fsutil.LockFile(path)
 	if err != nil {
 		t.Fatalf("LockFile: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		if unlock != nil {
@@ -131,10 +140,12 @@ func TestStore_LockContentionDoesNotBlockProviderAvailability(t *testing.T) {
 	}
 	if err := unlock(); err != nil {
 		t.Fatalf("unlock: %v", err)
+		panic("unreachable")
 	}
 	unlock = nil
 	if err := <-recorded; err != nil {
 		t.Fatalf("RecordUsage after lock release: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -143,6 +154,7 @@ func TestStore_InvalidateLiveExactSnapshot(t *testing.T) {
 	s, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	now := time.Date(2026, 7, 14, 22, 0, 0, 0, time.UTC)
 	s.clock = clock.NewFake(now)
@@ -158,6 +170,7 @@ func TestStore_InvalidateLiveExactSnapshot(t *testing.T) {
 
 	if err := s.InvalidateLiveExactSnapshot(ProviderClaude); err != nil {
 		t.Fatalf("InvalidateLiveExactSnapshot: %v", err)
+		panic("unreachable")
 	}
 
 	snap, ok := s.Snapshot(ProviderClaude)
@@ -169,6 +182,7 @@ func TestStore_InvalidateLiveExactSnapshot(t *testing.T) {
 	}
 	if snap.Primary == nil || snap.Primary.UsedPercent != 88 {
 		t.Fatalf("primary cycle changed unexpectedly: %+v", snap.Primary)
+		panic("unreachable")
 	}
 }
 
@@ -177,6 +191,7 @@ func TestStore_InvalidateLiveExactSnapshot_FallsBackForRouting(t *testing.T) {
 	s, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	now := time.Date(2026, 7, 14, 22, 0, 0, 0, time.UTC)
 	s.clock = clock.NewFake(now)
@@ -208,6 +223,7 @@ func TestStore_InvalidateLiveExactSnapshot_FallsBackForRouting(t *testing.T) {
 
 	if err := s.InvalidateLiveExactSnapshot(ProviderClaude); err != nil {
 		t.Fatalf("InvalidateLiveExactSnapshot: %v", err)
+		panic("unreachable")
 	}
 
 	summary := s.Summary(policy)

@@ -64,6 +64,7 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 			home, err := os.MkdirTemp("", "sybra-stats-e2e-*")
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			t.Cleanup(func() { _ = os.RemoveAll(home) })
 			t.Setenv("SYBRA_HOME", home)
@@ -71,29 +72,34 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 			tasksDir := filepath.Join(home, "tasks")
 			if err := os.MkdirAll(tasksDir, 0o755); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			statsPath := filepath.Join(home, "stats.json")
 			statsStore, err := stats.NewStore(statsPath)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			auditDir := filepath.Join(home, "audit")
 			auditLogger, err := audit.NewLogger(auditDir)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			t.Cleanup(func() { _ = auditLogger.Close() })
 
 			store, err := task.NewStore(tasksDir)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			taskMgr := task.NewManager(store, nil)
 
 			logDir, err := os.MkdirTemp("", "sybra-stats-e2e-logs-*")
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			t.Cleanup(func() { keepAgentLogsOnFailure(t, logDir) })
 
@@ -129,6 +135,7 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 			tk, err := taskMgr.Create("stats e2e", "", "headless")
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			workDir := t.TempDir()
@@ -140,6 +147,7 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			select {
@@ -177,6 +185,7 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 			reloaded, err := stats.NewStore(statsPath)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if reloaded.Len() != 1 {
 				t.Fatalf("after reload: expected 1 record, got %d", reloaded.Len())
@@ -189,6 +198,7 @@ func TestE2E_Stats_RecordedOnAgentComplete(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			summary := audit.Summarize(events, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
 			if summary.AgentRuns != 1 {
@@ -211,11 +221,13 @@ func TestE2E_RoutingDecisionVersion_RecordedOnTaskAndStats(t *testing.T) {
 	statsStore, err := stats.NewStore(statsPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	auditDir := filepath.Join(env.taskDir, "audit")
 	auditLogger, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = auditLogger.Close() })
 
@@ -257,9 +269,11 @@ func TestE2E_RoutingDecisionVersion_RecordedOnTaskAndStats(t *testing.T) {
 	created, err := env.tasks.Create("routing decision version e2e", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 30*time.Second, "workflow and stats reach terminal quarantine", func() bool {
@@ -275,6 +289,7 @@ func TestE2E_RoutingDecisionVersion_RecordedOnTaskAndStats(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	assertMachineQuarantine(t, tk, "workflow.evaluate_no_pr")
 	var gotImpl *task.AgentRun
@@ -286,6 +301,7 @@ func TestE2E_RoutingDecisionVersion_RecordedOnTaskAndStats(t *testing.T) {
 	}
 	if gotImpl == nil {
 		t.Fatalf("implementation run missing from task: %+v", tk.AgentRuns)
+		panic("unreachable")
 	}
 	if gotImpl.DecisionVersion != version {
 		t.Fatalf("task implementation DecisionVersion = %d, want %d", gotImpl.DecisionVersion, version)
@@ -321,6 +337,7 @@ func TestE2E_Stats_WorkflowSkillExecutionModeRecorded(t *testing.T) {
 	statsStore, err := stats.NewStore(statsPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wm := worktree.New(worktree.Config{
 		WorktreesDir: env.worktreesDir,
@@ -344,9 +361,11 @@ func TestE2E_Stats_WorkflowSkillExecutionModeRecorded(t *testing.T) {
 	created, err := env.tasks.Create("workflow skill stats", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-mandatory-skill"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 30*time.Second, "workflow stats completion", func() bool {

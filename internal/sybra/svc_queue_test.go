@@ -15,6 +15,7 @@ func TestQueueService_SnapshotDepth(t *testing.T) {
 	queue, err := agentqueue.New(t.TempDir(), agentqueue.Options{MaxDepth: 2}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("agentqueue.New: %v", err)
+		panic("unreachable")
 	}
 
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
@@ -52,6 +53,7 @@ func TestQueueService_AgentQueueSnapshot(t *testing.T) {
 	queue, err := agentqueue.New(t.TempDir(), agentqueue.Options{StarvationBoostAfter: time.Hour}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("agentqueue.New: %v", err)
+		panic("unreachable")
 	}
 
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
@@ -107,6 +109,7 @@ func TestQueueService_AgentQueueSnapshot(t *testing.T) {
 	encoded, err := json.Marshal(got)
 	if err != nil {
 		t.Fatalf("json.Marshal(snapshot): %v", err)
+		panic("unreachable")
 	}
 	if jsonContainsField(encoded, "prompt") {
 		t.Fatalf("snapshot JSON leaked prompt field: %s", encoded)
@@ -116,6 +119,7 @@ func TestQueueService_AgentQueueSnapshot(t *testing.T) {
 	nilSnap := nilSvc.AgentQueueSnapshot()
 	if nilSnap.Depth != 0 || len(nilSnap.Items) != 0 {
 		t.Fatalf("nil AgentQueueSnapshot() = %+v, want empty snapshot", nilSnap)
+		panic("unreachable")
 	}
 }
 

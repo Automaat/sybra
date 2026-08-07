@@ -45,12 +45,14 @@ func TestDispatchPRIssueWithOptions_RecoversRetryableHumanRequiredPRFix(t *testi
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 
 	wfStore, err := workflow.NewStore(filepath.Join(t.TempDir(), "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := wfStore.Save(workflow.Definition{
 		ID:   prFixWorkflowID,
@@ -91,6 +93,7 @@ func TestDispatchPRIssueWithOptions_RecoversRetryableHumanRequiredPRFix(t *testi
 	created, err := tasks.Create("retry pr fix", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	created, err = tasks.Update(created.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -103,6 +106,7 @@ func TestDispatchPRIssueWithOptions_RecoversRetryableHumanRequiredPRFix(t *testi
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ok := handler.dispatchPRIssueWithOptions(context.Background(), created, github.PRIssue{
@@ -129,6 +133,7 @@ func TestDispatchPRIssueWithOptions_RecoversRetryableHumanRequiredPRFix(t *testi
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusInReview)
@@ -138,6 +143,7 @@ func TestDispatchPRIssueWithOptions_RecoversRetryableHumanRequiredPRFix(t *testi
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != prFixWorkflowID || got.Workflow.CurrentStep != "fix" {
 		t.Fatalf("workflow = %+v, want live pr-fix at fix step", got.Workflow)
+		panic("unreachable")
 	}
 	if launcher.calls != 1 {
 		t.Fatalf("launch calls = %d, want 1", launcher.calls)
@@ -154,12 +160,14 @@ func TestDispatchPRIssueWithOptions_DoesNotRewritePermanentFailure(t *testing.T)
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 
 	wfStore, err := workflow.NewStore(filepath.Join(t.TempDir(), "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := wfStore.Save(workflow.Definition{
 		ID:   prFixWorkflowID,
@@ -198,6 +206,7 @@ func TestDispatchPRIssueWithOptions_DoesNotRewritePermanentFailure(t *testing.T)
 	created, err := tasks.Create("permanent failure", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	created, err = tasks.Update(created.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -209,6 +218,7 @@ func TestDispatchPRIssueWithOptions_DoesNotRewritePermanentFailure(t *testing.T)
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if handler.dispatchPRIssueWithOptions(context.Background(), created, github.PRIssue{
@@ -226,6 +236,7 @@ func TestDispatchPRIssueWithOptions_DoesNotRewritePermanentFailure(t *testing.T)
 	got, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)

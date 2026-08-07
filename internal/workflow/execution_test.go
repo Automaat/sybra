@@ -122,6 +122,7 @@ func TestRecordStep_SeedsStepCountsFromExistingHistory(t *testing.T) {
 	}
 	if e.StepCounts != nil {
 		t.Fatalf("precondition: expected nil StepCounts, got %v", e.StepCounts)
+		panic("unreachable")
 	}
 
 	e.RecordStep(StepRecord{StepID: "start_replan", Status: "completed"})
@@ -343,6 +344,7 @@ func TestEffectLog_CloneIsolation(t *testing.T) {
 	cloned := e.Clone()
 	if cloned == nil {
 		t.Fatal("Clone of non-nil Execution returned nil")
+		panic("unreachable")
 	}
 	now2 := time.Now().Add(time.Second)
 	cloned.RecordEffectCompletion(id, now2)
@@ -361,6 +363,7 @@ func TestEffectLog_CloneDeepCopiesCompletedAt(t *testing.T) {
 	cloned := e.Clone()
 	if cloned == nil {
 		t.Fatal("Clone of non-nil Execution returned nil")
+		panic("unreachable")
 	}
 	if cloned.EffectLog[0].CompletedAt == e.EffectLog[0].CompletedAt {
 		t.Fatal("clone should not alias original's CompletedAt pointer")
@@ -388,6 +391,7 @@ func TestEffectLog_CloneDeepCopiesLeaseExpiry(t *testing.T) {
 	cloned := e.Clone()
 	if cloned == nil {
 		t.Fatal("Clone of non-nil Execution returned nil")
+		panic("unreachable")
 	}
 	if cloned.EffectLog[0].LeaseExpiresAt == e.EffectLog[0].LeaseExpiresAt {
 		t.Fatal("clone should not alias original's LeaseExpiresAt pointer")
@@ -410,6 +414,7 @@ func TestExecutionClone_PreservesDefinitionHash(t *testing.T) {
 	cloned := e.Clone()
 	if cloned == nil {
 		t.Fatal("Clone returned nil")
+		panic("unreachable")
 	}
 	if cloned.DefinitionHash != e.DefinitionHash {
 		t.Fatalf("DefinitionHash = %q, want %q", cloned.DefinitionHash, e.DefinitionHash)

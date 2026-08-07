@@ -30,12 +30,14 @@ func newRebaseRecoveryDeps(t *testing.T) (tasks *task.Manager, agents *agent.Man
 	dir, err := os.MkdirTemp("", "sybra-test-tasks-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks = task.NewManager(store, nil)
 
@@ -63,6 +65,7 @@ func TestRecoverStaleBranchConflict_EscalatesWhenWorkflowAlreadyActive(t *testin
 	got, err := r.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want blocked when recovery dispatch is rejected", got.Status)
@@ -95,12 +98,14 @@ func TestRecoverStaleBranchConflict_ReplacesActiveWorkflowDuringDispatch(t *test
 	got, err := r.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status == task.StatusHumanRequired {
 		t.Fatalf("status = %q, want conflict workflow dispatch instead of human-required", got.Status)
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != "pr-conflict-fix-test" {
 		t.Fatalf("workflow = %+v, want pr-conflict-fix-test", got.Workflow)
+		panic("unreachable")
 	}
 	if r.prTracker.Retries(tk.ID, github.PRIssueConflict) == 0 {
 		t.Fatal("conflict issue was not marked handled after workflow start")
@@ -118,6 +123,7 @@ func TestRecoverStaleBranchConflict_EscalatesWhenNoWorkflowMatches(t *testing.T)
 	got, err := r.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want blocked when no conflict workflow matches", got.Status)
@@ -137,9 +143,11 @@ func TestRecoverStaleBranchConflict_ReturnsTrueWhenWorkflowStarts(t *testing.T) 
 	got, err := r.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != "pr-conflict-fix-test" {
 		t.Fatalf("workflow = %+v, want pr-conflict-fix-test", got.Workflow)
+		panic("unreachable")
 	}
 	if r.prTracker.Retries(tk.ID, github.PRIssueConflict) == 0 {
 		t.Fatal("conflict issue was not marked handled after workflow start")
@@ -164,12 +172,14 @@ func TestRecoverStaleBranchConflict_LeavesParkedFixWorkflowWithoutBurningBudget(
 	got, err := r.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status == task.StatusHumanRequired {
 		t.Fatalf("status = %q, want the task left parked, not escalated to human-required", got.Status)
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != branchConflictFixWorkflowID || got.Workflow.State != workflow.ExecWaiting || got.Workflow.CurrentStep != "fix" {
 		t.Fatalf("workflow = %+v, want the parked branch-conflict-fix workflow untouched", got.Workflow)
+		panic("unreachable")
 	}
 	if n := r.prTracker.Retries(tk.ID, branchConflictRetryKind); n != 0 {
 		t.Fatalf("branch-conflict retry budget = %d, want 0 (no agent ran, so nothing to charge)", n)
@@ -208,12 +218,14 @@ func TestRecoverStaleBranchConflict_LeavesParkedPRFixWorkflowWithoutBurningBudge
 	got, err := r.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status == task.StatusHumanRequired {
 		t.Fatalf("status = %q, want the task left parked, not escalated to human-required", got.Status)
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != prFixWorkflowID || got.Workflow.State != workflow.ExecWaiting || got.Workflow.CurrentStep != "fix" {
 		t.Fatalf("workflow = %+v, want the parked pr-fix workflow untouched", got.Workflow)
+		panic("unreachable")
 	}
 	if n := r.prTracker.Retries(tk.ID, github.PRIssueConflict); n != 0 {
 		t.Fatalf("conflict retry budget = %d, want 0 (no agent ran, so nothing to charge)", n)
@@ -255,6 +267,7 @@ func TestRecoverStaleBranchConflict_ProceedsPastNonConflictParkedPRFix(t *testin
 	got, err := r.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want blocked (proves it proceeded past the parked-fix guard to the exhausted-conflict path)", got.Status)
@@ -273,6 +286,7 @@ func setupRebaseRecoveryHandler(t *testing.T, withConflictWorkflow bool) (*Handl
 	runGit(t, repo, "config", "commit.gpgsign", "false")
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("test\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	runGit(t, repo, "add", "README.md")
 	runGit(t, repo, "commit", "-m", "initial")
@@ -289,6 +303,7 @@ func setupRebaseRecoveryHandler(t *testing.T, withConflictWorkflow bool) (*Handl
 	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	seedExperienceProject(t, filepath.Join(tmp, "projects"), project.Project{
 		ID:        "owner/repo",
@@ -303,6 +318,7 @@ func setupRebaseRecoveryHandler(t *testing.T, withConflictWorkflow bool) (*Handl
 	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if withConflictWorkflow {
 		if err := wfStore.Save(workflow.Definition{
@@ -375,6 +391,7 @@ func setupRebaseRecoveryHandler(t *testing.T, withConflictWorkflow bool) (*Handl
 	tk, err := tasks.Create("rebase recover dispatch", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	pr := 42
 	tk, err = tasks.Update(tk.ID, task.Update{
@@ -384,6 +401,7 @@ func setupRebaseRecoveryHandler(t *testing.T, withConflictWorkflow bool) (*Handl
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return r, tk
 }
@@ -401,6 +419,7 @@ func commitRecoveryTestFile(t *testing.T, repo, name, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	runGit(t, repo, "add", name)
 	runGit(t, repo, "commit", "-m", "add "+name)
@@ -428,17 +447,20 @@ func TestRecoverStaleBranchConflict_ReplacesExistingPRWorkflowReentrantly(t *tes
 
 	if err := r.WorkflowEngine.StartWorkflowWithVars(tk.ID, "existing-pr-push-test", nil); err != nil {
 		t.Fatalf("StartWorkflowWithVars(existing-pr-push-test): %v", err)
+		panic("unreachable")
 	}
 
 	got, err := r.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status == task.StatusHumanRequired {
 		t.Fatalf("status = %q, want reentrant recovery to take over existing PR workflow", got.Status)
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != "pr-conflict-fix-test" {
 		t.Fatalf("workflow = %+v, want pr-conflict-fix-test", got.Workflow)
+		panic("unreachable")
 	}
 	if got.Workflow.CurrentStep != "wait" {
 		t.Fatalf("current step = %q, want wait", got.Workflow.CurrentStep)
@@ -479,12 +501,14 @@ func setupBranchConflictNoPRHandler(t *testing.T, initialStatus task.Status, pri
 	runGit(t, repo, "config", "commit.gpgsign", "false")
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("test\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	runGit(t, repo, "add", "README.md")
 	runGit(t, repo, "commit", "-m", "initial")
 	runGit(t, repo, "checkout", "-b", "feature/no-pr-recover")
 	if err := os.WriteFile(filepath.Join(repo, "work.md"), []byte("wip\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	runGit(t, repo, "add", "work.md")
 	runGit(t, repo, "commit", "-m", "task work")
@@ -495,6 +519,7 @@ func setupBranchConflictNoPRHandler(t *testing.T, initialStatus task.Status, pri
 	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	seedExperienceProject(t, filepath.Join(tmp, "projects"), project.Project{
 		ID:        "owner/repo",
@@ -509,6 +534,7 @@ func setupBranchConflictNoPRHandler(t *testing.T, initialStatus task.Status, pri
 	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := wfStore.Save(workflow.Definition{
 		ID:   branchConflictFixTestWorkflowID,
@@ -602,6 +628,7 @@ func setupBranchConflictNoPRHandler(t *testing.T, initialStatus task.Status, pri
 	tk, err := tasks.Create("no pr rebase recover", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tk, err = tasks.Update(tk.ID, task.Update{
 		ProjectID: task.Ptr("owner/repo"),
@@ -611,6 +638,7 @@ func setupBranchConflictNoPRHandler(t *testing.T, initialStatus task.Status, pri
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return r, tk
 }
@@ -633,6 +661,7 @@ func TestRecoverBranchConflictNoPR_ReturnsTrueAndDispatchesRecoveryWorkflow(t *t
 	tk, err := r.tasks.Update(tk.ID, task.Update{StatusReason: task.Ptr("paused for testing before recovery")})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if !r.RecoverStaleBranchConflict(tk.ID) {
@@ -642,6 +671,7 @@ func TestRecoverBranchConflictNoPR_ReturnsTrueAndDispatchesRecoveryWorkflow(t *t
 	got, err := r.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status == task.StatusHumanRequired {
 		t.Fatalf("status = %q, want dispatched recovery instead of human-required", got.Status)
@@ -652,6 +682,7 @@ func TestRecoverBranchConflictNoPR_ReturnsTrueAndDispatchesRecoveryWorkflow(t *t
 	// runs after that async step's own completion drives AdvanceStep forward.
 	if got.Workflow == nil || got.Workflow.WorkflowID != branchConflictFixTestWorkflowID {
 		t.Fatalf("workflow = %+v, want %s dispatched", got.Workflow, branchConflictFixTestWorkflowID)
+		panic("unreachable")
 	}
 	if got.Workflow.CurrentStep != "await_fix" {
 		t.Fatalf("current step = %q, want await_fix", got.Workflow.CurrentStep)
@@ -695,9 +726,11 @@ func TestRecoverBranchConflictNoPR_PushPreflightFailureBlocksRecoveryWorkflow(t 
 	got, err := r.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow != nil {
 		t.Fatalf("workflow = %+v, want no branch-conflict-fix workflow after preflight failure", got.Workflow)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want human-required", got.Status)
@@ -727,9 +760,11 @@ func TestRecoverBranchConflictNoPR_AtCapEscalates(t *testing.T) {
 	got, err := r.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow != nil {
 		t.Fatalf("workflow = %+v, want no recovery workflow dispatched", got.Workflow)
+		panic("unreachable")
 	}
 	// markConflictRecoveryExhausted must park the task itself with an
 	// attempt-count reason (task bdcc90a4) so an operator — or the automated
@@ -761,6 +796,7 @@ func TestRecoverBranchConflictNoPR_MissingBranchEscalates(t *testing.T) {
 		got, err := r.tasks.Get(tk.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.Status == task.StatusBlocked {
 			t.Fatalf("call %d: escalated before the circuit limit", i+1)
@@ -772,6 +808,7 @@ func TestRecoverBranchConflictNoPR_MissingBranchEscalates(t *testing.T) {
 	got, err := r.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want blocked after the circuit trips", got.Status)
@@ -807,6 +844,7 @@ func TestRecoverBranchConflictNoPR_DispatchFailureRestoresPriorWorkflow(t *testi
 	emptyStore, err := workflow.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r.WorkflowEngine = workflow.NewTestEngine(emptyStore, &taskAdapter{tasks: r.tasks}, &agentAdapter{agents: r.agents, tasks: r.tasks}, slog.New(slog.DiscardHandler))
 
@@ -817,12 +855,14 @@ func TestRecoverBranchConflictNoPR_DispatchFailureRestoresPriorWorkflow(t *testi
 	got, err := r.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusTesting {
 		t.Fatalf("status = %q, want restored %q", got.Status, task.StatusTesting)
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != priorWorkflow.WorkflowID {
 		t.Fatalf("workflow = %+v, want restored prior workflow", got.Workflow)
+		panic("unreachable")
 	}
 	if got.Workflow.CurrentStep != priorWorkflow.CurrentStep {
 		t.Fatalf("current step = %q, want restored %q", got.Workflow.CurrentStep, priorWorkflow.CurrentStep)
@@ -884,11 +924,13 @@ func TestDispatchBranchConflictRecovery_QueuesRetryInsteadOfGivingUpWhenMarkerHe
 	dir, err := os.MkdirTemp("", "sybra-test-tasks-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	logger := slog.New(slog.DiscardHandler)
@@ -896,6 +938,7 @@ func TestDispatchBranchConflictRecovery_QueuesRetryInsteadOfGivingUpWhenMarkerHe
 	tk, err := tasks.Create("blocked dispatch", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tk, err = tasks.Update(tk.ID, task.Update{
 		ProjectID: task.Ptr("owner/repo"),
@@ -903,11 +946,13 @@ func TestDispatchBranchConflictRecovery_QueuesRetryInsteadOfGivingUpWhenMarkerHe
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wfStore, err := workflow.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	const blockerWorkflowID = "blocker-test"
 	if err := wfStore.Save(workflow.Definition{
@@ -981,6 +1026,7 @@ func TestDispatchBranchConflictRecovery_QueuesRetryInsteadOfGivingUpWhenMarkerHe
 	fresh, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	resume := r.captureBranchConflictResumeState(fresh)
 	if !r.dispatchBranchConflictRecovery(context.Background(), tk.ID, "/fake/dir", branchConflictPrompt(context.Background(), fresh, "main", project.SigningAuto), fresh, "", resume, false, branchConflictRetryKind) {
@@ -990,22 +1036,27 @@ func TestDispatchBranchConflictRecovery_QueuesRetryInsteadOfGivingUpWhenMarkerHe
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != blockerWorkflowID {
 		t.Fatalf("workflow = %+v, want unchanged %s (no restore while a retry is queued)", got.Workflow, blockerWorkflowID)
+		panic("unreachable")
 	}
 
 	close(launcher.releaseCh)
 	if err := <-done; err != nil {
 		t.Fatalf("blocker workflow start: %v", err)
+		panic("unreachable")
 	}
 
 	got, err = tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil || got.Workflow.WorkflowID != branchConflictFixTestWorkflowID {
 		t.Fatalf("workflow after drain = %+v, want %s dispatched by the drained retry", got.Workflow, branchConflictFixTestWorkflowID)
+		panic("unreachable")
 	}
 }
 
@@ -1022,6 +1073,7 @@ func TestRecoverBranchConflictNoPR_WorktreeFailuresTripCircuitBreaker(t *testing
 		got, err := r.tasks.Get(tk.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.Status == task.StatusBlocked {
 			t.Fatalf("call %d: escalated too early", i+1)
@@ -1034,6 +1086,7 @@ func TestRecoverBranchConflictNoPR_WorktreeFailuresTripCircuitBreaker(t *testing
 	got, err := r.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q after circuit break, want blocked", got.Status)
@@ -1058,6 +1111,7 @@ func TestRecoverBranchConflictNoPR_RecreatesWhenExhausted(t *testing.T) {
 	got, err := r.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want in-progress (recreated, re-implementing)", got.Status)
@@ -1128,6 +1182,7 @@ func newDispatchFailureHandler(t *testing.T, launchErr error) (*Handler, task.Ta
 	wfStore, err := workflow.NewStore(filepath.Join(tmp, "workflows"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := wfStore.Save(workflow.Definition{
 		ID:   branchConflictFixTestWorkflowID,
@@ -1175,6 +1230,7 @@ func newDispatchFailureHandler(t *testing.T, launchErr error) (*Handler, task.Ta
 	tk, err := tasks.Create("dispatch failure test", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tk, err = tasks.Update(tk.ID, task.Update{
 		ProjectID: task.Ptr("owner/repo"),
@@ -1184,6 +1240,7 @@ func newDispatchFailureHandler(t *testing.T, launchErr error) (*Handler, task.Ta
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return r, tk
 }
@@ -1205,6 +1262,7 @@ func TestDispatchBranchConflictRecovery_RateLimitedParksIndefinitely(t *testing.
 	for i := range branchConflictDispatchFailureLimit + 3 {
 		if _, err := r.WorkflowEngine.CancelWorkflow(tk.ID, "test: branch conflict recovery"); err != nil {
 			t.Fatalf("attempt %d: cancel prior workflow: %v", i+1, err)
+			panic("unreachable")
 		}
 		if !r.dispatchBranchConflictRecovery(context.Background(), tk.ID, "/tmp/does-not-matter", branchConflictPrompt(context.Background(), tk, "main", project.SigningAuto), tk, "deadbeef", resume, false, branchConflictRetryKind) {
 			t.Fatalf("attempt %d: want true (parked) on rate-limited dispatch failure", i+1)
@@ -1212,12 +1270,14 @@ func TestDispatchBranchConflictRecovery_RateLimitedParksIndefinitely(t *testing.
 		got, err := r.tasks.Get(tk.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.Status == task.StatusHumanRequired {
 			t.Fatalf("attempt %d: escalated to human-required on a rate limit", i+1)
 		}
 		if got.Status != task.StatusTesting || got.Workflow == nil || got.Workflow.WorkflowID != resume.workflowID {
 			t.Fatalf("attempt %d: prior status/workflow not restored: status=%q workflow=%+v", i+1, got.Status, got.Workflow)
+			panic("unreachable")
 		}
 	}
 	if n := r.dispatchFailures[tk.ID]; n != 0 {
@@ -1238,6 +1298,7 @@ func TestDispatchBranchConflictRecovery_NonRateLimitCooldownParksThenEscalates(t
 	for i := range branchConflictDispatchFailureLimit - 1 {
 		if _, err := r.WorkflowEngine.CancelWorkflow(tk.ID, "test: branch conflict recovery"); err != nil {
 			t.Fatalf("attempt %d: cancel prior workflow: %v", i+1, err)
+			panic("unreachable")
 		}
 		if !r.dispatchBranchConflictRecovery(context.Background(), tk.ID, "/tmp/does-not-matter", branchConflictPrompt(context.Background(), tk, "main", project.SigningAuto), tk, "deadbeef", resume, false, branchConflictRetryKind) {
 			t.Fatalf("attempt %d: want true (parked for retry) on transient cooldown dispatch failure", i+1)
@@ -1245,6 +1306,7 @@ func TestDispatchBranchConflictRecovery_NonRateLimitCooldownParksThenEscalates(t
 		got, err := r.tasks.Get(tk.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.Status == task.StatusHumanRequired {
 			t.Fatalf("attempt %d: escalated to human-required too early", i+1)
@@ -1253,6 +1315,7 @@ func TestDispatchBranchConflictRecovery_NonRateLimitCooldownParksThenEscalates(t
 
 	if _, err := r.WorkflowEngine.CancelWorkflow(tk.ID, "test: branch conflict recovery"); err != nil {
 		t.Fatalf("cancel prior workflow before final attempt: %v", err)
+		panic("unreachable")
 	}
 	if r.dispatchBranchConflictRecovery(context.Background(), tk.ID, "/tmp/does-not-matter", branchConflictPrompt(context.Background(), tk, "main", project.SigningAuto), tk, "deadbeef", resume, false, branchConflictRetryKind) {
 		t.Fatal("budget-exhausted attempt: want false (escalate)")
@@ -1260,6 +1323,7 @@ func TestDispatchBranchConflictRecovery_NonRateLimitCooldownParksThenEscalates(t
 	got, err := r.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q after dispatch-failure budget exhausted, want blocked", got.Status)
@@ -1274,6 +1338,7 @@ func TestDispatchBranchConflictRecovery_NonTransientProviderUnhealthyEscalatesIm
 	resume := r.captureBranchConflictResumeState(tk)
 	if _, err := r.WorkflowEngine.CancelWorkflow(tk.ID, "test: branch conflict recovery"); err != nil {
 		t.Fatalf("cancel prior workflow: %v", err)
+		panic("unreachable")
 	}
 
 	if r.dispatchBranchConflictRecovery(context.Background(), tk.ID, "/tmp/does-not-matter", branchConflictPrompt(context.Background(), tk, "main", project.SigningAuto), tk, "deadbeef", resume, false, branchConflictRetryKind) {
@@ -1293,6 +1358,7 @@ func TestDispatchBranchConflictRecovery_PermanentErrorEscalatesImmediately(t *te
 	resume := r.captureBranchConflictResumeState(tk)
 	if _, err := r.WorkflowEngine.CancelWorkflow(tk.ID, "test: branch conflict recovery"); err != nil {
 		t.Fatalf("cancel prior workflow: %v", err)
+		panic("unreachable")
 	}
 
 	if r.dispatchBranchConflictRecovery(context.Background(), tk.ID, "/tmp/does-not-matter", branchConflictPrompt(context.Background(), tk, "main", project.SigningAuto), tk, "deadbeef", resume, false, branchConflictRetryKind) {
@@ -1301,6 +1367,7 @@ func TestDispatchBranchConflictRecovery_PermanentErrorEscalatesImmediately(t *te
 	got, err := r.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status == task.StatusHumanRequired {
 		t.Fatal("dispatchBranchConflictRecovery itself must not set human-required for a non-transient error — that is MarkRebaseBlocked's job")
@@ -1323,6 +1390,7 @@ func TestDispatchBranchConflictRecovery_PreservesEscalationFromInitialDispatch(t
 	resume := r.captureBranchConflictResumeState(tk)
 	if _, err := r.WorkflowEngine.CancelWorkflow(tk.ID, "test: branch conflict recovery"); err != nil {
 		t.Fatalf("cancel prior workflow: %v", err)
+		panic("unreachable")
 	}
 
 	if r.dispatchBranchConflictRecovery(context.Background(), tk.ID, "/tmp/does-not-matter", branchConflictPrompt(context.Background(), tk, "main", project.SigningAuto), tk, "deadbeef", resume, false, branchConflictRetryKind) {
@@ -1332,12 +1400,14 @@ func TestDispatchBranchConflictRecovery_PreservesEscalationFromInitialDispatch(t
 	got, err := r.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want human-required preserved from the initial-dispatch escalation (restore must not clobber it)", got.Status)
 	}
 	if got.Workflow != nil && got.Workflow.WorkflowID == resume.workflowID {
 		t.Fatalf("prior workflow %q was resurrected by the restore — escalation defeated", resume.workflowID)
+		panic("unreachable")
 	}
 }
 
@@ -1370,5 +1440,6 @@ func runGit(t *testing.T, dir string, args ...string) {
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
+		panic("unreachable")
 	}
 }

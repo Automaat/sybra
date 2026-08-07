@@ -18,6 +18,7 @@ func TestNewAgentOutputFile(t *testing.T) {
 	f, err := NewAgentOutputFile(dir, agentID)
 	if err != nil {
 		t.Fatalf("NewAgentOutputFile: %v", err)
+		panic("unreachable")
 	}
 	defer f.Close()
 
@@ -42,6 +43,7 @@ func TestNewAgentOutputFile_CreatesDir(t *testing.T) {
 	f, err := NewAgentOutputFile(dir, "agt-001")
 	if err != nil {
 		t.Fatalf("NewAgentOutputFile: %v", err)
+		panic("unreachable")
 	}
 	defer f.Close()
 
@@ -81,14 +83,17 @@ func TestPruneAgentLogs(t *testing.T) {
 			agents := filepath.Join(dir, "agents")
 			if err := os.MkdirAll(agents, 0o755); err != nil {
 				t.Fatalf("mkdir: %v", err)
+				panic("unreachable")
 			}
 			path := filepath.Join(agents, "f-"+time.Now().Format("150405.000000000")+".ndjson")
 			if err := os.WriteFile(path, make([]byte, tc.size), 0o644); err != nil {
 				t.Fatalf("write: %v", err)
+				panic("unreachable")
 			}
 			mtime := now.Add(-time.Duration(tc.ageDays) * 24 * time.Hour)
 			if err := os.Chtimes(path, mtime, mtime); err != nil {
 				t.Fatalf("chtimes: %v", err)
+				panic("unreachable")
 			}
 
 			r := PruneAgentLogs(dir, tc.maxAge, now)
@@ -125,12 +130,14 @@ func TestPruneAgentLogs_SkipsNonNDJSON(t *testing.T) {
 	agents := filepath.Join(dir, "agents")
 	if err := os.MkdirAll(agents, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	// A debris file that predates this change — sweep must ignore it
 	// even though it is empty and old.
 	decoy := filepath.Join(agents, "notes.txt")
 	if err := os.WriteFile(decoy, nil, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
+		panic("unreachable")
 	}
 
 	r := PruneAgentLogs(dir, 24*time.Hour, time.Now())
@@ -163,10 +170,12 @@ func writeAgentLog(t *testing.T, agentsDir, name, content string, age time.Durat
 	path := filepath.Join(agentsDir, name)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", name, err)
+		panic("unreachable")
 	}
 	mtime := now.Add(-age)
 	if err := os.Chtimes(path, mtime, mtime); err != nil {
 		t.Fatalf("chtimes %s: %v", name, err)
+		panic("unreachable")
 	}
 	return path
 }
@@ -178,6 +187,7 @@ func TestEnforceAgentLogRetention_Gzip(t *testing.T) {
 	agents := filepath.Join(dir, "agents")
 	if err := os.MkdirAll(agents, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	content := strings.Repeat("hello world\n", 100)
 	old := writeAgentLog(t, agents, "agt-1-2026-04-01T00-00-00.ndjson", content, 5*24*time.Hour, now)
@@ -195,15 +205,18 @@ func TestEnforceAgentLogRetention_Gzip(t *testing.T) {
 	f, err := os.Open(gzPath)
 	if err != nil {
 		t.Fatalf("open .gz sibling: %v", err)
+		panic("unreachable")
 	}
 	defer f.Close()
 	gr, err := gzip.NewReader(f)
 	if err != nil {
 		t.Fatalf("gzip.NewReader: %v", err)
+		panic("unreachable")
 	}
 	got, err := io.ReadAll(gr)
 	if err != nil {
 		t.Fatalf("read gzip content: %v", err)
+		panic("unreachable")
 	}
 	if string(got) != content {
 		t.Errorf("decompressed content mismatch: got %d bytes, want %d", len(got), len(content))
@@ -221,6 +234,7 @@ func TestEnforceAgentLogRetention_GzipPreservesAgeForLaterPrune(t *testing.T) {
 	agents := filepath.Join(dir, "agents")
 	if err := os.MkdirAll(agents, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	old := writeAgentLog(t, agents, "agt-1-2026-04-01T00-00-00.ndjson", "old\n", 10*24*time.Hour, now)
 
@@ -236,6 +250,7 @@ func TestEnforceAgentLogRetention_GzipPreservesAgeForLaterPrune(t *testing.T) {
 	info, err := os.Stat(gzPath)
 	if err != nil {
 		t.Fatalf("stat .gz sibling: %v", err)
+		panic("unreachable")
 	}
 	if !info.ModTime().Equal(now.Add(-10 * 24 * time.Hour)) {
 		t.Fatalf("compressed mtime = %s, want %s", info.ModTime(), now.Add(-10*24*time.Hour))
@@ -259,6 +274,7 @@ func TestEnforceAgentLogRetention_SizeCap(t *testing.T) {
 	agents := filepath.Join(dir, "agents")
 	if err := os.MkdirAll(agents, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	chunk := strings.Repeat("x", 100)
 	oldest := writeAgentLog(t, agents, "agt-1.ndjson", chunk, 3*time.Hour, now)
@@ -292,6 +308,7 @@ func TestEnforceAgentLogRetention_ProtectsActiveLogPaths(t *testing.T) {
 	agents := filepath.Join(dir, "agents")
 	if err := os.MkdirAll(agents, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	chunk := strings.Repeat("x", 100)
 	// Old, empty-eligible, and over-cap on every axis — would be deleted by
@@ -327,6 +344,7 @@ func TestEnforceAgentLogRetention_ProtectsExplicitEvidencePaths(t *testing.T) {
 	agents := filepath.Join(dir, "agents")
 	if err := os.MkdirAll(agents, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	chunk := strings.Repeat("x", 100)
 	protected := writeAgentLog(t, agents, "agt-protected.ndjson", chunk, 30*24*time.Hour, now)
@@ -345,6 +363,7 @@ func TestEnforceAgentLogRetention_ProtectsExplicitEvidencePaths(t *testing.T) {
 	}
 	if _, err := os.Stat(protected); err != nil {
 		t.Fatalf("protected evidence log removed: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(unprotected); !os.IsNotExist(err) {
 		t.Fatalf("unprotected log still exists, stat err = %v", err)

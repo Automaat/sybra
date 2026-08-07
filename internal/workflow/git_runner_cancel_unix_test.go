@@ -35,6 +35,7 @@ esac
 `
 	if err := os.WriteFile(gitPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake git: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	pidFile := filepath.Join(t.TempDir(), "helper.pid")
@@ -54,6 +55,7 @@ esac
 	case err := <-done:
 		if err == nil {
 			t.Fatal("gitDo unexpectedly succeeded after cancellation")
+			panic("unreachable")
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("workflow Git command did not stop after cancellation")

@@ -11,6 +11,7 @@ func TestSybraTestSkill_SupersedingSpecRequiresTrustedProvenance(t *testing.T) {
 	data, err := FS.ReadFile("data/sybra-test.md")
 	if err != nil {
 		t.Fatalf("read sybra-test skill: %v", err)
+		panic("unreachable")
 	}
 	text := string(data)
 

@@ -30,6 +30,7 @@ func TestLegacyReasonIsConservativelyIneligible(t *testing.T) {
 	}
 	if err := r.ValidateHumanRequired(); err == nil {
 		t.Fatal("legacy reason unexpectedly eligible for human-required")
+		panic("unreachable")
 	}
 }
 

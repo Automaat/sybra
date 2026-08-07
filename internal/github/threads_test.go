@@ -14,6 +14,7 @@ func TestFetchReviewThreads_parse(t *testing.T) {
 	threads, err := fetchReviewThreadsWith(fe, "o/r", 9)
 	if err != nil {
 		t.Fatalf("fetchReviewThreadsWith: %v", err)
+		panic("unreachable")
 	}
 	if len(threads) != 3 {
 		t.Fatalf("got %d threads, want 3", len(threads))
@@ -45,6 +46,7 @@ func TestResolveReviewThread(t *testing.T) {
 		fe := &fakeExecer{output: []byte(`{"data":{"resolveReviewThread":{"thread":{"id":"T1"}}}}`)}
 		if err := resolveReviewThreadWith(fe, "T1"); err != nil {
 			t.Fatalf("resolveReviewThreadWith: %v", err)
+			panic("unreachable")
 		}
 	})
 	t.Run("graphql error", func(t *testing.T) {
@@ -52,6 +54,7 @@ func TestResolveReviewThread(t *testing.T) {
 		fe := &fakeExecer{output: []byte(`{"errors":[{"message":"thread not found"}]}`)}
 		if err := resolveReviewThreadWith(fe, "T1"); err == nil {
 			t.Fatal("want error from graphql errors, got nil")
+			panic("unreachable")
 		}
 	})
 }

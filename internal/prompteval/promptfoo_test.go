@@ -12,10 +12,12 @@ func TestParseOutputGoldenFixture(t *testing.T) {
 	data, err := os.ReadFile("testdata/promptfoo_out.json")
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
+		panic("unreachable")
 	}
 	res, err := parseOutput(data)
 	if err != nil {
 		t.Fatalf("parseOutput: %v", err)
+		panic("unreachable")
 	}
 	if res.Output != "The answer is 42." {
 		t.Errorf("Output = %q", res.Output)
@@ -47,6 +49,7 @@ func TestParseOutputFailureFlagsOverrideScore(t *testing.T) {
 	res, err := parseOutput(data)
 	if err != nil {
 		t.Fatalf("parseOutput: %v", err)
+		panic("unreachable")
 	}
 	if res.Score != 1 {
 		t.Fatalf("Score = %v, want 1 (fixture reports a high score despite failure)", res.Score)
@@ -70,6 +73,7 @@ func TestParseOutputTruncatedIsUnavailable(t *testing.T) {
 			_, err := parseOutput(data)
 			if err == nil {
 				t.Fatalf("parseOutput(%q): expected error, got nil (would silently score a pass)", name)
+				panic("unreachable")
 			}
 		})
 	}
@@ -99,6 +103,7 @@ func TestGenerateConfigEscapesInjectedYAML(t *testing.T) {
 	data, err := generateConfig(spec)
 	if err != nil {
 		t.Fatalf("generateConfig: %v", err)
+		panic("unreachable")
 	}
 	// Round-tripping through yaml must reproduce exactly one test entry with
 	// the injected text preserved as a scalar value, not smuggled in as
@@ -106,6 +111,7 @@ func TestGenerateConfigEscapesInjectedYAML(t *testing.T) {
 	var parsed promptfooConfig
 	if err := yaml.Unmarshal(data, &parsed); err != nil {
 		t.Fatalf("generated config is not valid YAML: %v\n%s", err, data)
+		panic("unreachable")
 	}
 	if len(parsed.Tests) != 1 {
 		t.Fatalf("Tests = %d, want 1 (injection smuggled an extra entry)", len(parsed.Tests))
@@ -136,10 +142,12 @@ func TestGenerateConfigCarriesVariantPrompt(t *testing.T) {
 	data, err := generateConfig(spec)
 	if err != nil {
 		t.Fatalf("generateConfig: %v", err)
+		panic("unreachable")
 	}
 	var parsed promptfooConfig
 	if err := yaml.Unmarshal(data, &parsed); err != nil {
 		t.Fatalf("generated config is not valid YAML: %v\n%s", err, data)
+		panic("unreachable")
 	}
 	if got := parsed.Tests[0].Vars["variantPrompt"]; got != spec.Variant.Prompt {
 		t.Fatalf("variantPrompt vars = %q, want %q", got, spec.Variant.Prompt)

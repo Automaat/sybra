@@ -19,6 +19,7 @@ func TestBuildPlaywrightMCPConfig(t *testing.T) {
 		got, err := buildPlaywrightMCPConfig("/tmp/evidence", nil)
 		if err != nil {
 			t.Fatalf("buildPlaywrightMCPConfig: %v", err)
+			panic("unreachable")
 		}
 		var parsed struct {
 			McpServers struct {
@@ -30,6 +31,7 @@ func TestBuildPlaywrightMCPConfig(t *testing.T) {
 		}
 		if err := json.Unmarshal([]byte(got), &parsed); err != nil {
 			t.Fatalf("unmarshal config: %v; raw=%s", err, got)
+			panic("unreachable")
 		}
 		p := parsed.McpServers.Playwright
 		if p.Command != "npx" {
@@ -50,6 +52,7 @@ func TestBuildPlaywrightMCPConfig(t *testing.T) {
 		got, err := buildPlaywrightMCPConfig("/tmp/evidence", []string{"--browser", "firefox"})
 		if err != nil {
 			t.Fatalf("buildPlaywrightMCPConfig: %v", err)
+			panic("unreachable")
 		}
 		if !jsonContainsArgs(t, got, "--browser", "firefox") {
 			t.Errorf("expected extra args in config; got %s", got)
@@ -59,6 +62,7 @@ func TestBuildPlaywrightMCPConfig(t *testing.T) {
 	t.Run("empty_output_dir_errors", func(t *testing.T) {
 		if _, err := buildPlaywrightMCPConfig("", nil); err == nil {
 			t.Fatal("expected error for empty output dir")
+			panic("unreachable")
 		}
 	})
 }
@@ -69,6 +73,7 @@ func TestWrapMCPConfigWithOwnership(t *testing.T) {
 		got, err := wrapMCPConfigWithOwnership(raw, mcpOwner{AgentID: "agent-1", TaskID: "task-1", Mode: "headless"})
 		if err != nil {
 			t.Fatalf("wrapMCPConfigWithOwnership: %v", err)
+			panic("unreachable")
 		}
 		if !strings.Contains(got, `"command":"env"`) {
 			t.Fatalf("wrapped config missing env command: %s", got)
@@ -93,6 +98,7 @@ func TestWrapMCPConfigWithOwnership(t *testing.T) {
 		got, err := wrapMCPConfigWithOwnership(raw, mcpOwner{})
 		if err != nil {
 			t.Fatalf("wrapMCPConfigWithOwnership: %v", err)
+			panic("unreachable")
 		}
 		if got != raw {
 			t.Fatalf("got %s, want unchanged %s", got, raw)
@@ -140,6 +146,7 @@ func jsonContainsArgs(t *testing.T, raw string, want ...string) bool {
 	}
 	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 	args := parsed.McpServers.Playwright.Args
 	for _, w := range want {
@@ -158,6 +165,7 @@ func TestPreflightPlaywrightMCP(t *testing.T) {
 		outputDir, err := preflightPlaywrightMCP(wt, "")
 		if err != nil {
 			t.Fatalf("preflightPlaywrightMCP: %v", err)
+			panic("unreachable")
 		}
 		wantDir := filepath.Join(wt, worktree.EvidenceDirName)
 		if outputDir != wantDir {
@@ -165,17 +173,21 @@ func TestPreflightPlaywrightMCP(t *testing.T) {
 		}
 		if info, statErr := os.Stat(outputDir); statErr != nil || !info.IsDir() {
 			t.Fatalf("output dir not created: %v", statErr)
+			panic("unreachable")
 		}
 		if info, statErr := os.Stat(filepath.Join(outputDir, worktree.EvidenceBrowsersDirName)); statErr != nil || !info.IsDir() {
 			t.Fatalf("browsers dir not created: %v", statErr)
+			panic("unreachable")
 		}
 		if info, statErr := os.Stat(filepath.Join(outputDir, worktree.EvidenceNPMCacheDirName)); statErr != nil || !info.IsDir() {
 			t.Fatalf("npm cache dir not created: %v", statErr)
+			panic("unreachable")
 		}
 
 		out, err := exec.Command("git", "-C", wt, "status", "--porcelain").Output()
 		if err != nil {
 			t.Fatalf("git status: %v", err)
+			panic("unreachable")
 		}
 		if len(out) != 0 {
 			t.Errorf("expected evidence dir excluded from git status; got:\n%s", out)
@@ -185,6 +197,7 @@ func TestPreflightPlaywrightMCP(t *testing.T) {
 	t.Run("empty_worktree_dir_errors", func(t *testing.T) {
 		if _, err := preflightPlaywrightMCP("", ""); err == nil {
 			t.Fatal("expected error for empty worktree dir")
+			panic("unreachable")
 		}
 	})
 
@@ -196,6 +209,7 @@ func TestPreflightPlaywrightMCP(t *testing.T) {
 		outputDir, err := preflightPlaywrightMCP(wt, custom)
 		if err != nil {
 			t.Fatalf("preflightPlaywrightMCP: %v", err)
+			panic("unreachable")
 		}
 		if outputDir != custom {
 			t.Errorf("outputDir = %q, want %q", outputDir, custom)
@@ -203,6 +217,7 @@ func TestPreflightPlaywrightMCP(t *testing.T) {
 		out, err := exec.Command("git", "-C", wt, "status", "--porcelain").Output()
 		if err != nil {
 			t.Fatalf("git status: %v", err)
+			panic("unreachable")
 		}
 		if len(out) != 0 {
 			t.Fatalf("expected configured evidence dir excluded from git status; got:\n%s", out)
@@ -312,5 +327,6 @@ func mustRunGit(t *testing.T, dir string, args ...string) {
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
+		panic("unreachable")
 	}
 }

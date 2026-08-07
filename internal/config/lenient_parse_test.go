@@ -31,12 +31,15 @@ func TestParseFileConfigLenient(t *testing.T) {
 			cfg, schemaErr, err := parseFileConfigLenient([]byte(tt.yaml))
 			if err != nil {
 				t.Fatalf("err = %v, want nil (a stale key is not unparseable input)", err)
+				panic("unreachable")
 			}
 			if cfg == nil {
 				t.Fatal("config = nil; a lenient parse must still return the document")
+				panic("unreachable")
 			}
 			if schemaErr == nil {
 				t.Fatalf("schemaErr = nil for %q", tt.key)
+				panic("unreachable")
 			}
 			if !errors.Is(schemaErr, ErrUnknownConfigKey) {
 				t.Errorf("schemaErr = %v, does not match ErrUnknownConfigKey", schemaErr)
@@ -63,9 +66,11 @@ func TestParseFileConfigLenient_ReportsEveryUnknownKey(t *testing.T) {
 	_, schemaErr, err := parseFileConfigLenient([]byte(doc))
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
+		panic("unreachable")
 	}
 	if schemaErr == nil {
 		t.Fatal("schemaErr = nil")
+		panic("unreachable")
 	}
 	for _, key := range []string{"integrations.slack", "storage.bogus", "future_namespace"} {
 		if !strings.Contains(schemaErr.Error(), key) {
@@ -83,9 +88,11 @@ func TestParseFileConfigLenient_CleanConfig(t *testing.T) {
 	cfg, schemaErr, err := parseFileConfigLenient([]byte("schema_version: 2\nexecution:\n  agent:\n    provider: claude\n"))
 	if err != nil || schemaErr != nil {
 		t.Fatalf("clean config: err=%v schemaErr=%v, want both nil", err, schemaErr)
+		panic("unreachable")
 	}
 	if cfg == nil {
 		t.Fatal("config = nil for a clean document")
+		panic("unreachable")
 	}
 
 	if _, _, err := parseFileConfigLenient([]byte("::not yaml at all\n")); err == nil {
@@ -101,12 +108,15 @@ func TestNormalizeV2DocumentStaysStrict(t *testing.T) {
 	cfg, _, err := parseFileConfigLenient([]byte("schema_version: 2\nintegrations:\n  slack:\n    enabled: true\n"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg == nil {
 		t.Fatal("config = nil")
+		panic("unreachable")
 	}
 	if _, _, err := NormalizeV2Document(cfg.root); err == nil {
 		t.Fatal("NormalizeV2Document accepted an unknown namespace key")
+		panic("unreachable")
 	} else if !errors.Is(err, ErrUnknownConfigKey) {
 		t.Errorf("err = %v, does not match ErrUnknownConfigKey", err)
 	}

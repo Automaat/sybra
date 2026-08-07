@@ -27,6 +27,7 @@ func TestUmbrella_JSONStdoutStaysClean(t *testing.T) {
 	var decoded map[string]any
 	if err := json.Unmarshal([]byte(stdout), &decoded); err != nil {
 		t.Fatalf("stdout is not clean JSON: %v\n%s", err, stdout)
+		panic("unreachable")
 	}
 	if strings.Contains(stdout, "WARNING: planner exhausted") {
 		t.Fatalf("stdout leaked human text in JSON mode:\n%s", stdout)

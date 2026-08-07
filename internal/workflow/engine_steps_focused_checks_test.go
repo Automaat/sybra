@@ -116,6 +116,7 @@ func TestExecFocusedChecks_PassIsClean(t *testing.T) {
 	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), nil, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean", out.Output)
@@ -156,6 +157,7 @@ func TestExecFocusedChecks_ScaledTimeoutAbsorbsHostOversubscription(t *testing.T
 	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), nil, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean (scaled timeout should cover host oversubscription)", out.Output)
@@ -183,6 +185,7 @@ func TestExecFocusedChecks_UnmappedChangesSkipWithoutVerifyFallback(t *testing.T
 	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), nil, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "skipped: no safe focused mapping matched changed files" {
 		t.Fatalf("Output = %q, want focused skip", out.Output)
@@ -228,6 +231,7 @@ func TestExecFocusedChecks_HeadBaseExcludesLocalDefaultBranchChanges(t *testing.
 	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), nil, TaskInfo{ID: "t1", Status: "in-progress", ProjectID: "owner/repo"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean", out.Output)
@@ -259,6 +263,7 @@ func TestExecFocusedChecks_HealsCorruptNodeModules(t *testing.T) {
 	binDir := filepath.Join(wt, "node_modules", ".bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	writeTestFile(t, filepath.Join(binDir, "vite"), "")
 	fakeNPM(t, "marker-npm-ci-ran")
@@ -273,6 +278,7 @@ func TestExecFocusedChecks_HealsCorruptNodeModules(t *testing.T) {
 	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), nil, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean (focused_checks should repair node_modules before running the check)", out.Output)
@@ -338,6 +344,7 @@ func TestExecFocusedChecks_FailureReasksImplement(t *testing.T) {
 	var report focusedChecksReport
 	if err := json.Unmarshal([]byte(rec.puts[0].content), &report); err != nil {
 		t.Fatalf("unmarshal artifact: %v", err)
+		panic("unreachable")
 	}
 	if report.FailedCmd != "echo boom >&2; exit 1" {
 		t.Fatalf("FailedCmd = %q", report.FailedCmd)
@@ -381,11 +388,13 @@ func TestExecFocusedChecks_LongOutputNotTruncated(t *testing.T) {
 		var r focusedChecksReport
 		if err := json.Unmarshal([]byte(put.content), &r); err != nil {
 			t.Fatalf("unmarshal artifact: %v", err)
+			panic("unreachable")
 		}
 		report = &r
 	}
 	if report == nil {
 		t.Fatalf("no focused-checks.json artifact recorded; puts: %+v", rec.puts)
+		panic("unreachable")
 	}
 	if len(report.OutputTail) < 9000 {
 		t.Fatalf("OutputTail = %d bytes, want the full >9000-byte output preserved", len(report.OutputTail))
@@ -460,6 +469,7 @@ func TestExecFocusedChecks_IdenticalFingerprintEscalatesEarly(t *testing.T) {
 	out, err = engine.execFocusedChecks("t1", newFocusedChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("second attempt: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged", out.Output)
@@ -494,6 +504,7 @@ func TestExecFocusedChecks_FailureCeilingEscalates(t *testing.T) {
 	out, err := engine.execFocusedChecks("t1", newFocusedChecksStep(), wf, TaskInfo{ID: "t1", Status: "in-progress"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged", out.Output)

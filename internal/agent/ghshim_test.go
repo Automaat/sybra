@@ -21,16 +21,20 @@ func fakeGhOnPath(t *testing.T) string {
 	path := filepath.Join(dir, "gh")
 	if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(path, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	cli := filepath.Join(dir, "sybra-cli")
 	if err := os.WriteFile(cli, []byte("#!/bin/sh\nexit 1\n"), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(cli, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return dir
@@ -42,6 +46,7 @@ func newShim(t *testing.T) string {
 	dir, err := writeGhShim(t.TempDir())
 	if err != nil {
 		t.Fatalf("writeGhShim: %v", err)
+		panic("unreachable")
 	}
 	if dir == "" {
 		t.Fatal("writeGhShim returned empty dir despite gh on PATH")
@@ -93,9 +98,11 @@ func TestGhShim_MintsFreshAppTokenPerGhInvocation(t *testing.T) {
 	ghScript := "#!/bin/sh\nprintf 'REAL-GH GH_TOKEN=%s GITHUB_TOKEN=%s:' \"$GH_TOKEN\" \"$GITHUB_TOKEN\"\nfor a in \"$@\"; do printf ' [%s]' \"$a\"; done\nprintf '\\n'\n"
 	if err := os.WriteFile(realGh, []byte(ghScript), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(realGh, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cliDir := t.TempDir()
@@ -104,15 +111,18 @@ func TestGhShim_MintsFreshAppTokenPerGhInvocation(t *testing.T) {
 	cliScript := "#!/bin/sh\n[ \"$1\" = \"github-app-token\" ] || exit 2\nn=$(cat '" + counter + "' 2>/dev/null || echo 0)\nn=$((n + 1))\nprintf '%s\\n' \"$n\" > '" + counter + "'\nprintf 'token-%s\\n' \"$n\"\n"
 	if err := os.WriteFile(fakeCLI, []byte(cliScript), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(fakeCLI, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	shimDir, err := writeGhShim(t.TempDir())
 	if err != nil {
 		t.Fatalf("writeGhShim: %v", err)
+		panic("unreachable")
 	}
 
 	stdout, stderr, code := runShim(t, shimDir, "api", "rate_limit")
@@ -139,9 +149,11 @@ func TestGhShim_UsesResolvedSybraCLIWhenInvocationPathOmitsIt(t *testing.T) {
 	ghScript := "#!/bin/sh\nprintf 'REAL-GH GH_TOKEN=%s GITHUB_TOKEN=%s\\n' \"$GH_TOKEN\" \"$GITHUB_TOKEN\"\n"
 	if err := os.WriteFile(realGh, []byte(ghScript), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(realGh, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cliDir := t.TempDir()
@@ -149,15 +161,18 @@ func TestGhShim_UsesResolvedSybraCLIWhenInvocationPathOmitsIt(t *testing.T) {
 	cliScript := "#!/bin/sh\n[ \"$1\" = \"github-app-token\" ] || exit 2\nprintf 'resolved-token\\n'\n"
 	if err := os.WriteFile(fakeCLI, []byte(cliScript), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(fakeCLI, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	shimDir, err := writeGhShim(t.TempDir())
 	if err != nil {
 		t.Fatalf("writeGhShim: %v", err)
+		panic("unreachable")
 	}
 
 	t.Setenv("PATH", ghDir)
@@ -176,13 +191,16 @@ func TestLookRealSybraCLI_ReturnsAbsolutePath(t *testing.T) {
 	binDir := filepath.Join(root, "bin")
 	if err := os.Mkdir(binDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	fakeCLI := filepath.Join(binDir, "sybra-cli")
 	if err := os.WriteFile(fakeCLI, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(fakeCLI, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Chdir(root)
 	t.Setenv("PATH", "bin")
@@ -194,10 +212,12 @@ func TestLookRealSybraCLI_ReturnsAbsolutePath(t *testing.T) {
 	gotInfo, err := os.Stat(got)
 	if err != nil {
 		t.Fatalf("stat resolved path %q: %v", got, err)
+		panic("unreachable")
 	}
 	wantInfo, err := os.Stat(fakeCLI)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !os.SameFile(gotInfo, wantInfo) {
 		t.Fatalf("lookRealSybraCLI() = %q, not same file as %q", got, fakeCLI)
@@ -211,23 +231,29 @@ func TestLookRealSybraCLI_PrefersStableHomeInstallOverStalePathEntry(t *testing.
 	stableDir := filepath.Join(home, ".local", "bin")
 	if err := os.MkdirAll(staleDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.MkdirAll(stableDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	staleCLI := filepath.Join(staleDir, "sybra-cli")
 	stableCLI := filepath.Join(stableDir, "sybra-cli")
 	if err := os.WriteFile(staleCLI, []byte("#!/bin/sh\nexit 1\n"), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(staleCLI, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(stableCLI, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(stableCLI, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("HOME", home)
 	t.Setenv("PATH", staleDir+string(os.PathListSeparator)+stableDir)
@@ -236,10 +262,12 @@ func TestLookRealSybraCLI_PrefersStableHomeInstallOverStalePathEntry(t *testing.
 	gotInfo, err := os.Stat(got)
 	if err != nil {
 		t.Fatalf("stat resolved path %q: %v", got, err)
+		panic("unreachable")
 	}
 	wantInfo, err := os.Stat(stableCLI)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !os.SameFile(gotInfo, wantInfo) {
 		t.Fatalf("lookRealSybraCLI() = %q, want stable home install %q over stale PATH entry %q", got, stableCLI, staleCLI)
@@ -254,15 +282,18 @@ func TestGitCredentialShim_MintsFreshAppTokenPerLookup(t *testing.T) {
 	cliScript := "#!/bin/sh\n[ \"$1\" = \"github-app-token\" ] || exit 2\nn=$(cat '" + counter + "' 2>/dev/null || echo 0)\nn=$((n + 1))\nprintf '%s\\n' \"$n\" > '" + counter + "'\nprintf 'token-%s\\n' \"$n\"\n"
 	if err := os.WriteFile(fakeCLI, []byte(cliScript), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(fakeCLI, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	shimDir, err := writeGhShim(t.TempDir())
 	if err != nil {
 		t.Fatalf("writeGhShim: %v", err)
+		panic("unreachable")
 	}
 
 	stdout, stderr, code := runCredentialShim(t, shimDir, "protocol=https\nhost=github.com\n\n", "get")
@@ -290,15 +321,18 @@ func TestGitCredentialShim_IgnoresNonGitHubAndStoreErase(t *testing.T) {
 	cliScript := "#!/bin/sh\n[ \"$1\" = \"github-app-token\" ] || exit 2\nprintf minted > '" + marker + "'\nprintf 'token\\n'\n"
 	if err := os.WriteFile(fakeCLI, []byte(cliScript), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(fakeCLI, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	shimDir, err := writeGhShim(t.TempDir())
 	if err != nil {
 		t.Fatalf("writeGhShim: %v", err)
+		panic("unreachable")
 	}
 
 	for _, tc := range []struct {
@@ -321,6 +355,7 @@ func TestGitCredentialShim_IgnoresNonGitHubAndStoreErase(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("credential shim minted token for a non-credential lookup")
+		panic("unreachable")
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("stat marker: %v", err)
 	}
@@ -332,9 +367,11 @@ func TestGhShim_DoesNotMintAppTokenForBlockedInvocation(t *testing.T) {
 	realGh := filepath.Join(ghDir, "gh")
 	if err := os.WriteFile(realGh, []byte("#!/bin/sh\nprintf 'REAL-GH\\n'\n"), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(realGh, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cliDir := t.TempDir()
@@ -343,15 +380,18 @@ func TestGhShim_DoesNotMintAppTokenForBlockedInvocation(t *testing.T) {
 	cliScript := "#!/bin/sh\n[ \"$1\" = \"github-app-token\" ] || exit 2\nprintf minted > '" + marker + "'\nprintf 'token\\n'\n"
 	if err := os.WriteFile(fakeCLI, []byte(cliScript), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(fakeCLI, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	shimDir, err := writeGhShim(t.TempDir())
 	if err != nil {
 		t.Fatalf("writeGhShim: %v", err)
+		panic("unreachable")
 	}
 
 	stdout, stderr, code := runShim(t, shimDir, "pr", "review", "--approve", "1")
@@ -366,6 +406,7 @@ func TestGhShim_DoesNotMintAppTokenForBlockedInvocation(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("blocked invocation minted a GitHub App token")
+		panic("unreachable")
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("stat marker: %v", err)
 	}
@@ -500,12 +541,14 @@ func TestWriteGhShim_RewriteIsAtomicAndIdempotent(t *testing.T) {
 	for range 3 {
 		if _, err := writeGhShim(dir); err != nil {
 			t.Fatalf("writeGhShim: %v", err)
+			panic("unreachable")
 		}
 	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	var names []string
 	for _, e := range entries {
@@ -521,6 +564,7 @@ func TestWriteGhShim_RewriteIsAtomicAndIdempotent(t *testing.T) {
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if info.Mode().Perm()&0o111 == 0 {
 			t.Fatalf("%s mode = %v, want executable", name, info.Mode().Perm())
@@ -539,6 +583,7 @@ func TestWriteGhShim_NoGhInstalled(t *testing.T) {
 	dir, err := writeGhShim(t.TempDir())
 	if err != nil {
 		t.Fatalf("writeGhShim: %v", err)
+		panic("unreachable")
 	}
 	if dir == "" {
 		t.Fatal("writeGhShim returned empty; git credential helper should still be installed without gh")
@@ -546,6 +591,7 @@ func TestWriteGhShim_NoGhInstalled(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(entries) != 1 || entries[0].Name() != "git-credential-sybra" {
 		t.Fatalf("shim dir entries = %v, want only git-credential-sybra", entries)

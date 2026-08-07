@@ -21,6 +21,7 @@ func TestRegistryStore_RoundTrip(t *testing.T) {
 	s, err := newRegistryStore(dir)
 	if err != nil {
 		t.Fatalf("newRegistryStore: %v", err)
+		panic("unreachable")
 	}
 
 	rec := Record{
@@ -35,11 +36,13 @@ func TestRegistryStore_RoundTrip(t *testing.T) {
 	}
 	if err := s.Save(rec); err != nil {
 		t.Fatalf("Save: %v", err)
+		panic("unreachable")
 	}
 
 	list, err := s.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(list) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(list))
@@ -51,6 +54,7 @@ func TestRegistryStore_RoundTrip(t *testing.T) {
 
 	if err := s.Delete("a1"); err != nil {
 		t.Fatalf("Delete: %v", err)
+		panic("unreachable")
 	}
 	list, _ = s.List()
 	if len(list) != 0 {
@@ -59,6 +63,7 @@ func TestRegistryStore_RoundTrip(t *testing.T) {
 	// Deleting a missing record is not an error.
 	if err := s.Delete("a1"); err != nil {
 		t.Fatalf("Delete missing: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -100,6 +105,7 @@ func TestAgentRecordMappingRoundTrip(t *testing.T) {
 	}
 	if restored.cancel != nil || restored.done != nil || restored.convo.hasStdinPipe() || restored.GetCmd() != nil {
 		t.Fatal("fromRecord must leave live runtime wiring to reattach callers")
+		panic("unreachable")
 	}
 
 	withProcStart := want
@@ -117,6 +123,7 @@ func TestRegistryStore_CurrentYAMLFixture(t *testing.T) {
 	raw := readRegistryFixture(t, "registry_current.yaml")
 	if err := yaml.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("unmarshal current registry fixture: %v", err)
+		panic("unreachable")
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("current registry fixture mismatch:\n got: %+v\nwant: %+v", got, want)
@@ -125,6 +132,7 @@ func TestRegistryStore_CurrentYAMLFixture(t *testing.T) {
 	marshaled, err := yaml.Marshal(want)
 	if err != nil {
 		t.Fatalf("marshal current registry fixture: %v", err)
+		panic("unreachable")
 	}
 	if strings.TrimSpace(string(marshaled)) != strings.TrimSpace(string(raw)) {
 		t.Fatalf("current registry YAML drift:\n got:\n%s\nwant:\n%s", marshaled, raw)
@@ -149,6 +157,7 @@ func TestRegistryStore_LegacyYAMLFixture(t *testing.T) {
 	var got Record
 	if err := yaml.Unmarshal(readRegistryFixture(t, "registry_legacy.yaml"), &got); err != nil {
 		t.Fatalf("unmarshal legacy registry fixture: %v", err)
+		panic("unreachable")
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("legacy registry fixture mismatch:\n got: %+v\nwant: %+v", got, want)
@@ -257,6 +266,7 @@ func readRegistryFixture(t *testing.T, name string) []byte {
 	raw, err := os.ReadFile(filepath.Join("testdata", name))
 	if err != nil {
 		t.Fatalf("read registry fixture %s: %v", name, err)
+		panic("unreachable")
 	}
 	return raw
 }
@@ -282,6 +292,7 @@ func TestRegistryStore_RejectsEmptyID(t *testing.T) {
 	s, err := newRegistryStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("newRegistryStore: %v", err)
+		panic("unreachable")
 	}
 	if err := s.Save(Record{}); err == nil {
 		t.Fatal("expected error saving record with empty ID")
@@ -293,6 +304,7 @@ func TestConfigureDetached_SetsSid(t *testing.T) {
 	configureDetached(cmd)
 	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setsid {
 		t.Fatal("expected configureDetached to set Setsid")
+		panic("unreachable")
 	}
 }
 
@@ -332,11 +344,13 @@ func TestReattachAll_ReattachesLiveHeadlessAgent(t *testing.T) {
 	logPath := filepath.Join(logDir, "agents", "reat1.ndjson")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	// Pre-seed history so rehydration has something to load.
 	history := `{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}` + "\n"
 	if err := os.WriteFile(logPath, []byte(history), 0o644); err != nil {
 		t.Fatalf("seed log: %v", err)
+		panic("unreachable")
 	}
 
 	var completed atomic.Bool
@@ -354,6 +368,7 @@ func TestReattachAll_ReattachesLiveHeadlessAgent(t *testing.T) {
 	cmd := exec.Command("sh", "-c", fmt.Sprintf("sleep 0.3; printf '%%s\\n' '%s' >> %q", resultLine, logPath))
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start helper: %v", err)
+		panic("unreachable")
 	}
 	// Reap on exit so processAlive flips to false (mirrors init reaping a
 	// reparented orphan in production).
@@ -371,6 +386,7 @@ func TestReattachAll_ReattachesLiveHeadlessAgent(t *testing.T) {
 	}
 	if err := m.reg.Save(rec); err != nil {
 		t.Fatalf("save record: %v", err)
+		panic("unreachable")
 	}
 
 	reattached := m.ReattachAll()
@@ -381,6 +397,7 @@ func TestReattachAll_ReattachesLiveHeadlessAgent(t *testing.T) {
 	a, err := m.GetAgent("reat1")
 	if err != nil {
 		t.Fatalf("GetAgent: %v", err)
+		panic("unreachable")
 	}
 	if a.GetState() != StateRunning {
 		t.Fatalf("expected reattached agent running, got %s", a.GetState())
@@ -407,6 +424,7 @@ func TestReattachAll_ReattachesLiveHeadlessAgent(t *testing.T) {
 	}
 	if a.GetExitErr() != nil {
 		t.Fatalf("expected clean completion (terminal result seen), got err: %v", a.GetExitErr())
+		panic("unreachable")
 	}
 	if found, isError := a.lastHeadlessResult(); !found || isError {
 		t.Fatal("expected terminal result in buffer")
@@ -462,6 +480,7 @@ printf '%%s\n' '{"type":"result","result":"done","session_id":"sess-lifecycle","
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 
 	rec := waitForRegistryRecord(t, m1, ag.ID)
@@ -507,6 +526,7 @@ printf '%%s\n' '{"type":"result","result":"done","session_id":"sess-lifecycle","
 
 	if err := os.WriteFile(releaseFile, nil, 0o644); err != nil {
 		t.Fatalf("release fake claude: %v", err)
+		panic("unreachable")
 	}
 	waitForAgentDone(t, got, 15*time.Second)
 	if got.GetState() != StateStopped {
@@ -514,6 +534,7 @@ printf '%%s\n' '{"type":"result","result":"done","session_id":"sess-lifecycle","
 	}
 	if got.GetExitErr() != nil {
 		t.Fatalf("completed reattached agent has exit error: %v", got.GetExitErr())
+		panic("unreachable")
 	}
 }
 
@@ -542,6 +563,7 @@ func TestTailHeadlessFile_StopVsShutdown(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "tail.ndjson")
 	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
 		t.Fatalf("seed: %v", err)
+		panic("unreachable")
 	}
 
 	// Shutdown (not stopped): ctx cancelled, process still alive -> survive.
@@ -585,6 +607,7 @@ func TestTailHeadlessFile_EndOffsetExcludesPartialLine(t *testing.T) {
 	partial := `{"type":"result","result":"in-flight` // no newline yet
 	if err := os.WriteFile(logPath, []byte(complete+partial), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
+		panic("unreachable")
 	}
 	a := &Agent{ID: "o", Provider: "claude"}
 	procDone := make(chan struct{})
@@ -609,6 +632,7 @@ func TestTailHeadlessFile_ReattachedFastCloseDoesNotWaitFullGrace(t *testing.T) 
 	content := `{"type":"result","result":"done","session_id":"sess-1","total_cost_usd":0}` + "\n"
 	if err := os.WriteFile(logPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write log: %v", err)
+		panic("unreachable")
 	}
 
 	a := &Agent{
@@ -643,6 +667,7 @@ func TestTailHeadlessFile_ForkSubagentOutputAfterResultKeepsGrace(t *testing.T) 
 		`{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"content":[{"type":"text","text":"still working"}]}}` + "\n"
 	if err := os.WriteFile(logPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write log: %v", err)
+		panic("unreachable")
 	}
 
 	a := &Agent{
@@ -696,11 +721,13 @@ func TestReattachAll_RecoversCompletedDuringDowntime(t *testing.T) {
 	logPath := filepath.Join(logDir, "agents", "comp1.ndjson")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	content := `{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}` + "\n" +
 		`{"type":"result","result":"done","session_id":"sess-9","total_cost_usd":0.2}` + "\n"
 	if err := os.WriteFile(logPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write log: %v", err)
+		panic("unreachable")
 	}
 
 	var completedID atomic.Value
@@ -737,17 +764,20 @@ func TestReattachAll_RecoversCompletedDuringDowntime_UsesLogMtimeForDuration(t *
 	logPath := filepath.Join(logDir, "agents", "comp2.ndjson")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	content := `{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}` + "\n" +
 		`{"type":"result","result":"done","session_id":"sess-9","total_cost_usd":0.2}` + "\n"
 	if err := os.WriteFile(logPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write log: %v", err)
+		panic("unreachable")
 	}
 	// Simulate the process having actually finished writing well before this
 	// reattach runs (the app-downtime gap).
 	finishedAt := time.Now().Add(-2 * time.Hour).UTC()
 	if err := os.Chtimes(logPath, finishedAt, finishedAt); err != nil {
 		t.Fatalf("chtimes: %v", err)
+		panic("unreachable")
 	}
 
 	var completed atomic.Value
@@ -767,6 +797,7 @@ func TestReattachAll_RecoversCompletedDuringDowntime_UsesLogMtimeForDuration(t *
 	ag, _ := completed.Load().(*Agent)
 	if ag == nil {
 		t.Fatal("expected onComplete to fire for comp2")
+		panic("unreachable")
 	}
 	if got := ag.GetLastEventAt(); got.Sub(finishedAt).Abs() > time.Second {
 		t.Fatalf("LastEventAt = %s, want ~%s (log mtime, not reattach wall-clock)", got, finishedAt)
@@ -806,11 +837,13 @@ func TestReattachAll_BridgesDeadSessionForResume(t *testing.T) {
 	logPath := filepath.Join(logDir, "agents", "crash1.ndjson")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	// Assistant output but NO terminal result -> genuine crash mid-run.
 	partial := `{"type":"assistant","message":{"content":[{"type":"text","text":"half"}]}}` + "\n"
 	if err := os.WriteFile(logPath, []byte(partial), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
+		panic("unreachable")
 	}
 
 	var gotTask, gotAgent, gotSession atomic.Value
@@ -853,6 +886,7 @@ func waitForRegistryRecord(t *testing.T, m *Manager, agentID string) Record {
 		recs, err := m.reg.List()
 		if err != nil {
 			t.Fatalf("registry list: %v", err)
+			panic("unreachable")
 		}
 		for i := range recs {
 			rec := &recs[i]
@@ -875,6 +909,7 @@ func waitForRegistryEmpty(t *testing.T, m *Manager, timeout time.Duration) {
 		list, err := m.reg.List()
 		if err != nil {
 			t.Fatalf("registry list: %v", err)
+			panic("unreachable")
 		}
 		if len(list) == 0 {
 			return
@@ -891,6 +926,7 @@ func waitForAgentDone(t *testing.T, ag *Agent, timeout time.Duration) {
 	t.Helper()
 	if ag.done == nil {
 		t.Fatal("waitForAgentDone: agent has no done channel; reattach wiring incomplete")
+		panic("unreachable")
 	}
 	select {
 	case <-ag.done:
@@ -907,6 +943,7 @@ func TestReattachAll_RetainsRecordWhenBridgeFails(t *testing.T) {
 	logPath := filepath.Join(logDir, "agents", "crash2.ndjson")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(logPath, []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}`+"\n"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)

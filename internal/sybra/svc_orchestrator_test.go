@@ -45,6 +45,7 @@ func TestOrchestratorService_StartStopLifecycle(t *testing.T) {
 
 	if err := svc.StartOrchestrator(); err != nil {
 		t.Fatalf("StartOrchestrator: %v", err)
+		panic("unreachable")
 	}
 
 	id := svc.GetOrchestratorAgentID()
@@ -59,6 +60,7 @@ func TestOrchestratorService_StartStopLifecycle(t *testing.T) {
 	a, err := svc.agents.GetAgent(id)
 	if err != nil {
 		t.Fatalf("GetAgent: %v", err)
+		panic("unreachable")
 	}
 	if a.Name != orchestratorAgentName {
 		t.Errorf("agent name = %q, want %q", a.Name, orchestratorAgentName)
@@ -77,6 +79,7 @@ func TestOrchestratorService_StartStopLifecycle(t *testing.T) {
 
 	if err := svc.StopOrchestrator(); err != nil {
 		t.Fatalf("StopOrchestrator: %v", err)
+		panic("unreachable")
 	}
 	if svc.GetOrchestratorAgentID() != "" {
 		t.Error("agent id should be empty after stop")
@@ -124,6 +127,7 @@ func TestOrchestratorService_ReplacesWedgedBrain(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("seed wedged agent: %v", err)
+		panic("unreachable")
 	}
 	// The seed agent's process comes up asynchronously, so poll rather than
 	// assume. The ceiling is generous for loaded CI; the loop exits as soon
@@ -155,6 +159,7 @@ func TestOrchestratorService_ReplacesWedgedBrain(t *testing.T) {
 	// StartOrchestrator must reap the wedged brain and swap in a fresh one.
 	if err := svc.StartOrchestrator(); err != nil {
 		t.Fatalf("StartOrchestrator over a wedged brain should succeed: %v", err)
+		panic("unreachable")
 	}
 	if got := svc.GetOrchestratorAgentID(); got == "" || got == wedged.ID {
 		t.Errorf("expected a fresh orchestrator id, got %q (wedged was %q)", got, wedged.ID)
@@ -180,11 +185,13 @@ func TestOrchestratorService_IgnoreConcurrencyLimit(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("start blocker: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = mgr.StopAgent(blocker.ID) })
 
 	// Orchestrator must still start despite the saturated limit.
 	if err := svc.StartOrchestrator(); err != nil {
 		t.Fatalf("StartOrchestrator under saturated limit: %v", err)
+		panic("unreachable")
 	}
 }

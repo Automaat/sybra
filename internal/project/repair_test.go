@@ -15,9 +15,11 @@ func plantBadRef(t *testing.T, bare, ref string) {
 	path := filepath.Join(bare, filepath.FromSlash(ref))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(path, []byte(strings.Repeat("f", 40)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -26,25 +28,30 @@ func TestFetchOrigin_RepairsPoisonedSiblingRef(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone bare: %v", err)
+		panic("unreachable")
 	}
 	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
+		panic("unreachable")
 	}
 
 	plantBadRef(t, bare, "refs/heads/dead-sibling")
 
 	if err := FetchOrigin(context.Background(), bare); err != nil {
 		t.Fatalf("FetchOrigin should repair the poisoned sibling ref and succeed, got: %v", err)
+		panic("unreachable")
 	}
 
 	trackingRef := "refs/remotes/origin/" + branch
 	if _, err := outputBare(context.Background(), bare, "rev-parse", "--verify", trackingRef); err != nil {
 		t.Fatalf("good branch %s should still be fetchable after repair: %v", trackingRef, err)
+		panic("unreachable")
 	}
 
 	if _, err := outputBare(context.Background(), bare, "rev-parse", "--verify", "refs/heads/dead-sibling"); err == nil {
 		t.Fatal("dead-sibling ref should have been removed by the repair pass")
+		panic("unreachable")
 	}
 }
 
@@ -53,17 +60,21 @@ func TestFetchOrigin_RepairsPoisonedRemoteRef(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone bare: %v", err)
+		panic("unreachable")
 	}
 	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
+		panic("unreachable")
 	}
 	plantBadRef(t, bare, "refs/remotes/origin/"+branch)
 	if err := FetchOrigin(context.Background(), bare); err != nil {
 		t.Fatalf("FetchOrigin should repair poisoned remote ref: %v", err)
+		panic("unreachable")
 	}
 	if _, err := outputBare(context.Background(), bare, "rev-parse", "--verify", "refs/remotes/origin/"+branch); err != nil {
 		t.Fatalf("refetched remote ref is missing: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -72,17 +83,21 @@ func TestFetchOrigin_IgnoresPoisonedTagOutsideCheckoutScope(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone bare: %v", err)
+		panic("unreachable")
 	}
 
 	plantBadRef(t, bare, "refs/tags/unrelated-bad-tag")
 	if err := FetchOrigin(context.Background(), bare); err != nil {
 		t.Fatalf("FetchOrigin should ignore a poisoned tag outside checkout scope, got: %v", err)
+		panic("unreachable")
 	}
 	if err := CheckBareCloneHealth(context.Background(), bare); err != nil {
 		t.Fatalf("checkout-relevant clone health should ignore poisoned tag: %v", err)
+		panic("unreachable")
 	}
 	if _, err := outputBare(context.Background(), bare, "rev-parse", "--verify", "refs/tags/unrelated-bad-tag"); err == nil {
 		t.Fatal("poisoned tag should be quarantined so fetch can proceed")
+		panic("unreachable")
 	}
 }
 
@@ -91,6 +106,7 @@ func TestRepairBareClone_QuarantinesRefsAndWorktreeHead(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone bare: %v", err)
+		panic("unreachable")
 	}
 
 	origDir := QuarantineDir
@@ -104,6 +120,7 @@ func TestRepairBareClone_QuarantinesRefsAndWorktreeHead(t *testing.T) {
 	report, err := RepairBareClone(context.Background(), bare, "")
 	if err != nil {
 		t.Fatalf("RepairBareClone: %v", err)
+		panic("unreachable")
 	}
 
 	if len(report.QuarantinedRefs) != 2 {
@@ -116,10 +133,12 @@ func TestRepairBareClone_QuarantinesRefsAndWorktreeHead(t *testing.T) {
 	entries, err := os.ReadDir(quarantineDir)
 	if err != nil || len(entries) == 0 {
 		t.Fatalf("expected a quarantine log file, got entries=%v err=%v", entries, err)
+		panic("unreachable")
 	}
 	logBytes, err := os.ReadFile(filepath.Join(quarantineDir, entries[0].Name()))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	log := string(logBytes)
 	if !strings.Contains(log, "refs/heads/dead-sibling") {
@@ -135,11 +154,13 @@ func TestRepairBareClone_NoOpOnCleanClone(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone bare: %v", err)
+		panic("unreachable")
 	}
 
 	report, err := RepairBareClone(context.Background(), bare, "")
 	if err != nil {
 		t.Fatalf("RepairBareClone: %v", err)
+		panic("unreachable")
 	}
 	if len(report.QuarantinedRefs) != 0 {
 		t.Fatalf("QuarantinedRefs = %v, want none on a clean clone", report.QuarantinedRefs)
@@ -154,22 +175,26 @@ func TestEnsureBareCloneHealthy_RepairsBeforeFetch(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone bare: %v", err)
+		panic("unreachable")
 	}
 
 	plantBadRef(t, bare, "refs/heads/dead-sibling")
 	if err := CheckBareCloneHealth(context.Background(), bare); err == nil {
 		t.Fatal("CheckBareCloneHealth succeeded on a clone with a poisoned ref")
+		panic("unreachable")
 	}
 
 	report, err := EnsureBareCloneHealthy(context.Background(), bare, "")
 	if err != nil {
 		t.Fatalf("EnsureBareCloneHealthy: %v", err)
+		panic("unreachable")
 	}
 	if len(report.QuarantinedRefs) == 0 {
 		t.Fatalf("QuarantinedRefs = %v, want the poisoned ref recorded", report.QuarantinedRefs)
 	}
 	if err := CheckBareCloneHealth(context.Background(), bare); err != nil {
 		t.Fatalf("clone is still unhealthy after repair: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -182,17 +207,21 @@ func TestFetchOrigin_ChecksHealthBeforeFreshTTLSkip(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone bare: %v", err)
+		panic("unreachable")
 	}
 	if err := FetchOrigin(context.Background(), bare); err != nil {
 		t.Fatalf("initial FetchOrigin: %v", err)
+		panic("unreachable")
 	}
 	plantBadRef(t, bare, "refs/heads/dead-after-fetch")
 
 	if err := FetchOrigin(context.Background(), bare); err != nil {
 		t.Fatalf("FetchOrigin should repair even while fetch TTL is fresh: %v", err)
+		panic("unreachable")
 	}
 	if _, err := outputBare(context.Background(), bare, "rev-parse", "--verify", "refs/heads/dead-after-fetch"); err == nil {
 		t.Fatal("dead-after-fetch ref should have been removed despite fresh fetch TTL")
+		panic("unreachable")
 	}
 }
 
@@ -201,22 +230,27 @@ func TestEnsureBareCloneHealthy_RebuildsCorruptWorktreeIndex(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone bare: %v", err)
+		panic("unreachable")
 	}
 	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
+		panic("unreachable")
 	}
 	if err := FetchOrigin(context.Background(), bare); err != nil {
 		t.Fatalf("fetch origin: %v", err)
+		panic("unreachable")
 	}
 
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	if err := CreateWorktree(context.Background(), bare, wtPath, "index-task", "origin/"+branch); err != nil {
 		t.Fatalf("create worktree: %v", err)
+		panic("unreachable")
 	}
 	indexOut, err := exec.Command("git", "-C", wtPath, "rev-parse", "--git-path", "index").Output()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	indexPath := strings.TrimSpace(string(indexOut))
 	if !filepath.IsAbs(indexPath) {
@@ -224,29 +258,35 @@ func TestEnsureBareCloneHealthy_RebuildsCorruptWorktreeIndex(t *testing.T) {
 	}
 	if err := os.WriteFile(indexPath, []byte("not a git index"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// An unreadable worktree index is CheckWorktreeIndexes' business, not the
 	// object-database gate's: a broken index makes one worktree unusable, it
 	// does not make the clone unusable for every other task.
 	if err := CheckWorktreeIndexes(context.Background(), bare); err == nil {
 		t.Fatal("CheckWorktreeIndexes succeeded with a corrupt worktree index")
+		panic("unreachable")
 	}
 	if err := CheckBareCloneHealth(context.Background(), bare); err != nil {
 		t.Fatalf("one worktree's broken index failed the clone-wide health gate: %v", err)
+		panic("unreachable")
 	}
 
 	report, err := EnsureBareCloneHealthy(context.Background(), bare, "")
 	if err != nil {
 		t.Fatalf("EnsureBareCloneHealthy: %v", err)
+		panic("unreachable")
 	}
 	if len(report.RebuiltWorktreeIndexes) == 0 {
 		t.Fatalf("RebuiltWorktreeIndexes = %v, want the corrupt index recorded", report.RebuiltWorktreeIndexes)
 	}
 	if err := CheckBareCloneHealth(context.Background(), bare); err != nil {
 		t.Fatalf("clone is still unhealthy after index rebuild: %v", err)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", wtPath, "status", "--porcelain").CombinedOutput(); err != nil {
 		t.Fatalf("worktree still cannot read rebuilt index: %v: %s", err, out)
+		panic("unreachable")
 	}
 }
 
@@ -255,24 +295,29 @@ func TestRepairBareClone_DeletesRefStillCheckedOutByDeadWorktree(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone bare: %v", err)
+		panic("unreachable")
 	}
 	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
+		panic("unreachable")
 	}
 	if err := FetchOrigin(context.Background(), bare); err != nil {
 		t.Fatalf("fetch origin: %v", err)
+		panic("unreachable")
 	}
 
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	if err := CreateWorktree(context.Background(), bare, wtPath, "task-branch", "origin/"+branch); err != nil {
 		t.Fatalf("create worktree: %v", err)
+		panic("unreachable")
 	}
 	origWorktreesDir := WorktreesDir
 	WorktreesDir = filepath.Dir(wtPath)
 	t.Cleanup(func() { WorktreesDir = origWorktreesDir })
 	if err := os.WriteFile(filepath.Join(wtPath, "extra.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"-C", wtPath, "config", "user.email", "test@test.com"},
@@ -282,16 +327,19 @@ func TestRepairBareClone_DeletesRefStillCheckedOutByDeadWorktree(t *testing.T) {
 	} {
 		if out, cmdErr := exec.Command("git", args...).CombinedOutput(); cmdErr != nil {
 			t.Fatalf("git %v: %v: %s", args, cmdErr, out)
+			panic("unreachable")
 		}
 	}
 	headOut, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	headSHA := strings.TrimSpace(string(headOut))
 	objPath := filepath.Join(bare, "objects", headSHA[:2], headSHA[2:])
 	if err := os.Remove(objPath); err != nil {
 		t.Fatalf("corrupt commit object: %v", err)
+		panic("unreachable")
 	}
 
 	origDir := QuarantineDir
@@ -300,10 +348,12 @@ func TestRepairBareClone_DeletesRefStillCheckedOutByDeadWorktree(t *testing.T) {
 
 	if _, err := RepairBareClone(context.Background(), bare, ""); err != nil {
 		t.Fatalf("RepairBareClone: %v", err)
+		panic("unreachable")
 	}
 
 	if _, err := outputBare(context.Background(), bare, "rev-parse", "--verify", "refs/heads/task-branch"); err == nil {
 		t.Fatal("dead task-branch ref should have been deleted, but a live worktree HEAD still pinned it")
+		panic("unreachable")
 	}
 	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
 		t.Fatalf("corrupt worktree still active after repair: stat err=%v", err)
@@ -311,6 +361,7 @@ func TestRepairBareClone_DeletesRefStillCheckedOutByDeadWorktree(t *testing.T) {
 	archives, err := os.ReadDir(filepath.Join(QuarantineDir, "worktrees"))
 	if err != nil {
 		t.Fatalf("read archived worktrees: %v", err)
+		panic("unreachable")
 	}
 	if len(archives) != 1 {
 		t.Fatalf("archived worktrees = %v, want one", archives)
@@ -318,6 +369,7 @@ func TestRepairBareClone_DeletesRefStillCheckedOutByDeadWorktree(t *testing.T) {
 	archivedFile := filepath.Join(QuarantineDir, "worktrees", archives[0].Name(), "extra.txt")
 	if got, err := os.ReadFile(archivedFile); err != nil || string(got) != "x" {
 		t.Fatalf("archived worktree did not preserve extra.txt: got %q err=%v", got, err)
+		panic("unreachable")
 	}
 }
 
@@ -326,18 +378,22 @@ func TestRegisteredWorktreeCheckoutPath_RejectsPoisonedAdminGitdir(t *testing.T)
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone bare: %v", err)
+		panic("unreachable")
 	}
 	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
+		panic("unreachable")
 	}
 	if err := FetchOrigin(context.Background(), bare); err != nil {
 		t.Fatalf("fetch origin: %v", err)
+		panic("unreachable")
 	}
 
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	if err := CreateWorktree(context.Background(), bare, wtPath, "task-branch", "origin/"+branch); err != nil {
 		t.Fatalf("create worktree: %v", err)
+		panic("unreachable")
 	}
 	origWorktreesDir := WorktreesDir
 	WorktreesDir = filepath.Dir(wtPath)
@@ -345,6 +401,7 @@ func TestRegisteredWorktreeCheckoutPath_RejectsPoisonedAdminGitdir(t *testing.T)
 	adminDirBytes, err := os.ReadFile(filepath.Join(wtPath, ".git"))
 	if err != nil {
 		t.Fatalf("read worktree .git: %v", err)
+		panic("unreachable")
 	}
 	gitdir, ok := strings.CutPrefix(strings.TrimSpace(string(adminDirBytes)), "gitdir: ")
 	if !ok {
@@ -355,15 +412,19 @@ func TestRegisteredWorktreeCheckoutPath_RejectsPoisonedAdminGitdir(t *testing.T)
 	victim := t.TempDir()
 	if err := os.WriteFile(filepath.Join(victim, ".git"), []byte("not a worktree"), 0o644); err != nil {
 		t.Fatalf("write victim git file: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(victim, "keep.txt"), []byte("keep"), 0o644); err != nil {
 		t.Fatalf("write victim file: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(adminDir, "gitdir"), []byte(filepath.Join(victim, ".git")+"\n"), 0o644); err != nil {
 		t.Fatalf("poison admin gitdir: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(adminDir, "HEAD"), []byte("ref: refs/heads/missing\n"), 0o644); err != nil {
 		t.Fatalf("poison admin HEAD: %v", err)
+		panic("unreachable")
 	}
 
 	if got := registeredWorktreeCheckoutPath(adminDir); got != "" {
@@ -371,12 +432,15 @@ func TestRegisteredWorktreeCheckoutPath_RejectsPoisonedAdminGitdir(t *testing.T)
 	}
 	if got, err := os.ReadFile(filepath.Join(victim, "keep.txt")); err != nil || string(got) != "keep" {
 		t.Fatalf("victim contents changed: got %q err=%v", got, err)
+		panic("unreachable")
 	}
 	if _, err := RepairBareClone(context.Background(), bare, ""); err != nil {
 		t.Fatalf("repair poisoned worktree metadata: %v", err)
+		panic("unreachable")
 	}
 	if got, err := os.ReadFile(filepath.Join(victim, "keep.txt")); err != nil || string(got) != "keep" {
 		t.Fatalf("repair moved victim contents: got %q err=%v", got, err)
+		panic("unreachable")
 	}
 }
 
@@ -385,36 +449,44 @@ func TestRepairBareClone_PreservesWorktreeWhenArchiveUnavailable(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone bare: %v", err)
+		panic("unreachable")
 	}
 	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
+		panic("unreachable")
 	}
 	if err := FetchOrigin(context.Background(), bare); err != nil {
 		t.Fatalf("fetch origin: %v", err)
+		panic("unreachable")
 	}
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	if err := CreateWorktree(context.Background(), bare, wtPath, "task-branch", "origin/"+branch); err != nil {
 		t.Fatalf("create worktree: %v", err)
+		panic("unreachable")
 	}
 	origWorktreesDir := WorktreesDir
 	WorktreesDir = filepath.Dir(wtPath)
 	t.Cleanup(func() { WorktreesDir = origWorktreesDir })
 	if err := os.WriteFile(filepath.Join(wtPath, "keep.txt"), []byte("keep"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{{"-C", wtPath, "config", "user.email", "test@test.com"}, {"-C", wtPath, "config", "user.name", "Test"}, {"-C", wtPath, "add", "."}, {"-C", wtPath, "commit", "-m", "keep"}} {
 		if out, cmdErr := exec.Command("git", args...).CombinedOutput(); cmdErr != nil {
 			t.Fatalf("git %v: %v: %s", args, cmdErr, out)
+			panic("unreachable")
 		}
 	}
 	headOut, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	headSHA := strings.TrimSpace(string(headOut))
 	if err := os.Remove(filepath.Join(bare, "objects", headSHA[:2], headSHA[2:])); err != nil {
 		t.Fatalf("corrupt commit object: %v", err)
+		panic("unreachable")
 	}
 	origQuarantineDir := QuarantineDir
 	QuarantineDir = ""
@@ -422,9 +494,11 @@ func TestRepairBareClone_PreservesWorktreeWhenArchiveUnavailable(t *testing.T) {
 
 	if _, err := RepairBareClone(context.Background(), bare, ""); err != nil {
 		t.Fatalf("repair with unavailable archive: %v", err)
+		panic("unreachable")
 	}
 	if got, err := os.ReadFile(filepath.Join(wtPath, "keep.txt")); err != nil || string(got) != "keep" {
 		t.Fatalf("worktree lost after archive failure: got %q err=%v", got, err)
+		panic("unreachable")
 	}
 }
 
@@ -462,17 +536,21 @@ func TestCheckBareCloneHealth_IgnoresStaleWorktreeReflog(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone bare: %v", err)
+		panic("unreachable")
 	}
 	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
+		panic("unreachable")
 	}
 	if err := FetchOrigin(context.Background(), bare); err != nil {
 		t.Fatalf("fetch origin: %v", err)
+		panic("unreachable")
 	}
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	if err := CreateWorktree(context.Background(), bare, wtPath, "reflog-task", "origin/"+branch); err != nil {
 		t.Fatalf("create worktree: %v", err)
+		panic("unreachable")
 	}
 
 	// Commit in the worktree so its HEAD reflog names the new commit, then
@@ -480,6 +558,7 @@ func TestCheckBareCloneHealth_IgnoresStaleWorktreeReflog(t *testing.T) {
 	// exactly the state a pruned bare clone leaves behind.
 	if err := os.WriteFile(filepath.Join(wtPath, "scratch.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"git", "-C", wtPath, "config", "user.email", "test@test.com"},
@@ -489,15 +568,18 @@ func TestCheckBareCloneHealth_IgnoresStaleWorktreeReflog(t *testing.T) {
 	} {
 		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
 			t.Fatalf("%v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	shaOut, err := exec.Command("git", "-C", wtPath, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	sha := strings.TrimSpace(string(shaOut))
 	if out, err := exec.Command("git", "-C", wtPath, "reset", "--hard", "HEAD~1").CombinedOutput(); err != nil {
 		t.Fatalf("reset: %v: %s", err, out)
+		panic("unreachable")
 	}
 	loose := filepath.Join(bare, "objects", sha[:2], sha[2:])
 	if _, statErr := os.Stat(loose); statErr != nil {
@@ -505,13 +587,16 @@ func TestCheckBareCloneHealth_IgnoresStaleWorktreeReflog(t *testing.T) {
 	}
 	if err := os.Remove(loose); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := runBare(context.Background(), bare, "fsck", "--no-dangling"); err == nil {
 		t.Fatal("unscoped fsck passed; this test no longer reproduces the wedge it pins")
+		panic("unreachable")
 	}
 	if err := CheckBareCloneHealth(context.Background(), bare); err != nil {
 		t.Fatalf("stale worktree reflog failed the health gate: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -522,14 +607,17 @@ func TestCheckBareCloneHealth_StillDetectsMissingReachableObject(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone bare: %v", err)
+		panic("unreachable")
 	}
 	if err := CheckBareCloneHealth(context.Background(), bare); err != nil {
 		t.Fatalf("freshly cloned bare repo is unhealthy: %v", err)
+		panic("unreachable")
 	}
 
 	headSHA, err := outputBare(context.Background(), bare, "rev-parse", "HEAD")
 	if err != nil {
 		t.Fatalf("rev-parse HEAD: %v", err)
+		panic("unreachable")
 	}
 	sha := strings.TrimSpace(headSHA)
 	loose := filepath.Join(bare, "objects", sha[:2], sha[2:])
@@ -538,10 +626,12 @@ func TestCheckBareCloneHealth_StillDetectsMissingReachableObject(t *testing.T) {
 	}
 	if err := os.Remove(loose); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := CheckBareCloneHealth(context.Background(), bare); err == nil {
 		t.Fatal("health gate passed with the HEAD commit object deleted")
+		panic("unreachable")
 	}
 }
 
@@ -554,28 +644,35 @@ func TestCheckWorktreeIndexes_DetectsIndexNamingMissingObject(t *testing.T) {
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("clone bare: %v", err)
+		panic("unreachable")
 	}
 	branch, err := DefaultBranch(context.Background(), bare)
 	if err != nil {
 		t.Fatalf("default branch: %v", err)
+		panic("unreachable")
 	}
 	if err := FetchOrigin(context.Background(), bare); err != nil {
 		t.Fatalf("fetch origin: %v", err)
+		panic("unreachable")
 	}
 	wtPath := filepath.Join(t.TempDir(), "wt")
 	if err := CreateWorktree(context.Background(), bare, wtPath, "obj-task", "origin/"+branch); err != nil {
 		t.Fatalf("create worktree: %v", err)
+		panic("unreachable")
 	}
 
 	if err := os.WriteFile(filepath.Join(wtPath, "staged.txt"), []byte("staged\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-C", wtPath, "add", "staged.txt").CombinedOutput(); err != nil {
 		t.Fatalf("git add: %v: %s", err, out)
+		panic("unreachable")
 	}
 	shaOut, err := exec.Command("git", "-C", wtPath, "rev-parse", ":staged.txt").Output()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	sha := strings.TrimSpace(string(shaOut))
 	loose := filepath.Join(bare, "objects", sha[:2], sha[2:])
@@ -584,14 +681,17 @@ func TestCheckWorktreeIndexes_DetectsIndexNamingMissingObject(t *testing.T) {
 	}
 	if err := os.Remove(loose); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Guard: if ls-files started failing here, this test would pass for the
 	// wrong reason and stop covering the write-tree probe.
 	if err := runQuietGit(context.Background(), wtPath, "ls-files"); err != nil {
 		t.Fatalf("ls-files already fails, so this no longer isolates the write-tree probe: %v", err)
+		panic("unreachable")
 	}
 	if err := CheckWorktreeIndexes(context.Background(), bare); err == nil {
 		t.Fatal("index naming a missing object reported healthy")
+		panic("unreachable")
 	}
 }

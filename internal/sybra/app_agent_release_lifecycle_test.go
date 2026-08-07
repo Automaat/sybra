@@ -28,17 +28,20 @@ func newFakeSteerableClaudeApp(t *testing.T) *App {
 	// from #2290.
 	if err := os.WriteFile(fakeClaude, []byte("#!/usr/bin/env bash\nexec cat >/dev/null\n"), 0o755); err != nil {
 		t.Fatalf("write fake claude: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", fakebin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	dir, err := os.MkdirTemp("", "sybra-test-tasks-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 
@@ -87,6 +90,7 @@ func startIdleSteerableAgent(t *testing.T, a *App, taskID string) (ag *agent.Age
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 
 	deadline := time.Now().Add(3 * time.Second)
@@ -102,6 +106,7 @@ func startIdleSteerableAgent(t *testing.T, a *App, taskID string) (ag *agent.Age
 	}
 	if err := syscall.Kill(pid, 0); err != nil {
 		t.Fatalf("fake claude process not alive right after start: %v", err)
+		panic("unreachable")
 	}
 	// Detached agents are exempt from Manager.Shutdown's own cleanup by
 	// design (restart survival), so a failed assertion before the release
@@ -136,6 +141,7 @@ func TestApp_TaskTerminal_AsksLiveSteerableAgentToExit(t *testing.T) {
 			created, err := a.tasks.Create("steerable session outlives task", "", "headless")
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			_, pid := startIdleSteerableAgent(t, a, created.ID)
 
@@ -165,6 +171,7 @@ func TestApp_ReleaseTaskAgents_TerminalReapsEvenNewerAgent(t *testing.T) {
 	created, err := a.tasks.Create("terminal reap", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := a.tasks.Apply(task.TransitionIntent{
 		TaskID: created.ID, ToStatus: task.StatusDone, Actor: "test", OperatorOverride: true,

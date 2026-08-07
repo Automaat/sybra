@@ -18,6 +18,7 @@ func TestGitUsesWorkingDirectoryAndDisablesPrompts(t *testing.T) {
 	fakeGit := filepath.Join(binDir, "git")
 	if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\nprintf '%s\\n%s\\n' \"$PWD\" \"$GIT_TERMINAL_PROMPT\"\n"), 0o755); err != nil {
 		t.Fatalf("write fake git: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", binDir)
 
@@ -25,6 +26,7 @@ func TestGitUsesWorkingDirectoryAndDisablesPrompts(t *testing.T) {
 	out, err := git(t.Context(), repoDir, "status", "--short")
 	if err != nil {
 		t.Fatalf("git: %v", err)
+		panic("unreachable")
 	}
 	lines := strings.Split(out, "\n")
 	if len(lines) != 2 || lines[1] != "0" {
@@ -33,10 +35,12 @@ func TestGitUsesWorkingDirectoryAndDisablesPrompts(t *testing.T) {
 	actualInfo, err := os.Stat(lines[0])
 	if err != nil {
 		t.Fatalf("stat actual working directory: %v", err)
+		panic("unreachable")
 	}
 	wantInfo, err := os.Stat(repoDir)
 	if err != nil {
 		t.Fatalf("stat expected working directory: %v", err)
+		panic("unreachable")
 	}
 	if !os.SameFile(actualInfo, wantInfo) {
 		t.Fatalf("working directory = %q, want %q", lines[0], repoDir)
@@ -65,12 +69,14 @@ func TestCheckAndApplyAutoModeFastForwards(t *testing.T) {
 	res, err := r.CheckAndApply(ctx)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res.Status != "applied" {
 		t.Fatalf("status = %q, want applied (reason=%q)", res.Status, res.Reason)
 	}
 	if _, err := os.Stat(filepath.Join(work, "feature.txt")); err != nil {
 		t.Fatalf("feature.txt missing after auto mode: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -111,6 +117,7 @@ func TestRunRequestsRestartWhenPostApplyStateSaveFails(t *testing.T) {
 	hook := filepath.Join(work, ".git", "hooks", "post-merge")
 	if err := os.WriteFile(hook, []byte("#!/bin/sh\nchmod 000 .git/autoupdate-state.json\n"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		_ = os.Chmod(stateFile, 0o644)
@@ -138,6 +145,7 @@ func TestRunRequestsRestartWhenPostApplyStateSaveFails(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(work, "feature.txt")); err != nil {
 		t.Fatalf("feature.txt missing after auto mode: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -185,6 +193,7 @@ func TestRunTriggerCheckAppliesImmediately(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(work, "feature.txt")); err != nil {
 		t.Fatalf("feature.txt missing after triggered auto update: %v", err)
+		panic("unreachable")
 	}
 
 	cancel()
@@ -200,9 +209,11 @@ func TestWriteRestartMarkerCreatesMarker(t *testing.T) {
 
 	if err := WriteRestartMarker(homeDir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(RestartMarkerPath(homeDir)); err != nil {
 		t.Fatalf("restart marker missing: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -213,16 +224,19 @@ func TestSaveStateAtomicReplace(t *testing.T) {
 	initial := persistedState{CandidateSHA: "old", CandidateState: "pending"}
 	if err := saveState(path, initial); err != nil {
 		t.Fatalf("saveState(initial): %v", err)
+		panic("unreachable")
 	}
 
 	next := persistedState{CandidateSHA: "new", CandidateState: "approved"}
 	if err := saveState(path, next); err != nil {
 		t.Fatalf("saveState(next): %v", err)
+		panic("unreachable")
 	}
 
 	got, err := loadState(path)
 	if err != nil {
 		t.Fatalf("loadState(): %v", err)
+		panic("unreachable")
 	}
 	if got.CandidateSHA != next.CandidateSHA || got.CandidateState != next.CandidateState {
 		t.Fatalf("state = %+v, want %+v", got, next)
@@ -231,6 +245,7 @@ func TestSaveStateAtomicReplace(t *testing.T) {
 	tmpFiles, err := filepath.Glob(path + ".tmp-*")
 	if err != nil {
 		t.Fatalf("Glob(): %v", err)
+		panic("unreachable")
 	}
 	if len(tmpFiles) != 0 {
 		t.Fatalf("temp files left behind: %v", tmpFiles)
@@ -245,6 +260,7 @@ func TestCheckAndApplyBlocksDirtyWorktree(t *testing.T) {
 	res, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res.Status != "blocked" {
 		t.Fatalf("status = %q, want blocked", res.Status)
@@ -263,6 +279,7 @@ func TestCheckAndApplyBlocksUnwritableGitObjectDatabase(t *testing.T) {
 	objectsDir := filepath.Join(work, objectsRel)
 	if err := os.Chmod(objectsDir, 0o555); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		_ = os.Chmod(objectsDir, 0o755)
@@ -272,6 +289,7 @@ func TestCheckAndApplyBlocksUnwritableGitObjectDatabase(t *testing.T) {
 	res, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res.Status != "blocked" {
 		t.Fatalf("status = %q, want blocked", res.Status)
@@ -292,6 +310,7 @@ func TestCheckAndApplyBlocksUnwritableGitObjectFanoutDir(t *testing.T) {
 	entries, err := os.ReadDir(objectsDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, entry := range entries {
 		if entry.IsDir() && len(entry.Name()) == 2 {
@@ -304,6 +323,7 @@ func TestCheckAndApplyBlocksUnwritableGitObjectFanoutDir(t *testing.T) {
 	}
 	if err := os.Chmod(fanoutDir, 0o555); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		_ = os.Chmod(fanoutDir, 0o755)
@@ -313,6 +333,7 @@ func TestCheckAndApplyBlocksUnwritableGitObjectFanoutDir(t *testing.T) {
 	res, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res.Status != "blocked" {
 		t.Fatalf("status = %q, want blocked", res.Status)
@@ -331,9 +352,11 @@ func TestCheckAndApplyBlocksUnwritableGitObjectPackDir(t *testing.T) {
 	packDir := filepath.Join(work, objectsRel, "pack")
 	if err := os.MkdirAll(packDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(packDir, 0o555); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		_ = os.Chmod(packDir, 0o755)
@@ -343,6 +366,7 @@ func TestCheckAndApplyBlocksUnwritableGitObjectPackDir(t *testing.T) {
 	res, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res.Status != "blocked" {
 		t.Fatalf("status = %q, want blocked", res.Status)
@@ -373,6 +397,7 @@ func TestCheckAndApplyNotifyDoesNotMerge(t *testing.T) {
 	res, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res.Status != "approved" {
 		t.Fatalf("status = %q, want approved", res.Status)
@@ -401,6 +426,7 @@ func TestCheckAndApplyDefaultModeDoesNotMerge(t *testing.T) {
 	res, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res.Status != "approved" {
 		t.Fatalf("status = %q, want approved (reason=%q)", res.Status, res.Reason)
@@ -430,6 +456,7 @@ func TestCheckAndApplyRejectsAutoModeWithoutRequiredChecks(t *testing.T) {
 	res, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res.Status != "rejected" || res.Reason != "required checks are empty" {
 		t.Fatalf("result = %+v, want rejected/required checks are empty", res)
@@ -458,6 +485,7 @@ func TestCheckAndApplyWaitsForPendingChecks(t *testing.T) {
 	res, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res.Status != "waiting" || res.Reason != "pending required checks: test" {
 		t.Fatalf("result = %+v, want waiting/pending required checks: test", res)
@@ -501,6 +529,7 @@ func TestCheckAndApplyRejectsFailedChecks(t *testing.T) {
 	res, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res.Status != "rejected" || res.Reason != "failed required checks: test" {
 		t.Fatalf("result = %+v, want rejected/failed required checks: test", res)
@@ -518,6 +547,7 @@ func TestCheckAndApplyOverrideBypassesGateOnce(t *testing.T) {
 	override := filepath.Join(t.TempDir(), "autoupdate-override")
 	if err := os.WriteFile(override, []byte("override\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r := New(Config{
 		Enabled:        true,
@@ -534,6 +564,7 @@ func TestCheckAndApplyOverrideBypassesGateOnce(t *testing.T) {
 	res, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res.Status != "applied" {
 		t.Fatalf("status = %q, want applied (reason=%q)", res.Status, res.Reason)
@@ -554,6 +585,7 @@ func TestCheckAndApplyNotifyOverrideIsConsumed(t *testing.T) {
 	override := filepath.Join(t.TempDir(), "autoupdate-override")
 	if err := os.WriteFile(override, []byte("override\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	r := New(Config{
 		Enabled:        true,
@@ -570,6 +602,7 @@ func TestCheckAndApplyNotifyOverrideIsConsumed(t *testing.T) {
 	res, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res.Status != "approved" || res.Reason != "manual override" {
 		t.Fatalf("result = %+v, want approved/manual override", res)
@@ -594,9 +627,11 @@ func TestCheckAndApplyDoesNotMergeWhenOverrideCannotBeConsumed(t *testing.T) {
 	override := filepath.Join(overrideDir, "autoupdate-override")
 	if err := os.WriteFile(override, []byte("override\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(overrideDir, 0o555); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		_ = os.Chmod(overrideDir, 0o755)
@@ -616,12 +651,14 @@ func TestCheckAndApplyDoesNotMergeWhenOverrideCannotBeConsumed(t *testing.T) {
 
 	if _, err := r.CheckAndApply(t.Context()); err == nil {
 		t.Fatal("CheckAndApply() err = nil, want override clear failure")
+		panic("unreachable")
 	}
 	if _, err := os.Stat(filepath.Join(work, "feature.txt")); !os.IsNotExist(err) {
 		t.Fatalf("feature.txt exists after failed override consumption: %v", err)
 	}
 	if _, err := os.Stat(override); err != nil {
 		t.Fatalf("override file missing after failed consumption: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -648,6 +685,7 @@ func TestCheckAndApplyPersistsApprovedStateBeforeAutoApply(t *testing.T) {
 			remoteMoved = true
 			if err := os.Rename(upstream, upstream+"-moved"); err != nil {
 				t.Fatalf("rename upstream: %v", err)
+				panic("unreachable")
 			}
 			return greenGate(ctx, repo, sha, required)
 		},
@@ -655,6 +693,7 @@ func TestCheckAndApplyPersistsApprovedStateBeforeAutoApply(t *testing.T) {
 
 	if _, err := r.CheckAndApply(t.Context()); err == nil {
 		t.Fatal("CheckAndApply() err = nil, want re-resolve failure")
+		panic("unreachable")
 	}
 	if !remoteMoved {
 		t.Fatal("gate hook did not run")
@@ -662,6 +701,7 @@ func TestCheckAndApplyPersistsApprovedStateBeforeAutoApply(t *testing.T) {
 	state, err := loadState(stateFile)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if state.CandidateState != "approved" {
 		t.Fatalf("CandidateState = %q, want approved", state.CandidateState)
@@ -702,6 +742,7 @@ func TestCheckAndApplyWaitsWhenCandidateIsSuperseded(t *testing.T) {
 	res, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res.Status != "waiting" || res.Reason != "candidate changed before apply" {
 		t.Fatalf("result = %+v, want waiting/candidate changed before apply", res)
@@ -774,6 +815,7 @@ func TestCheckAndApplyAuditsTransitions(t *testing.T) {
 			res, err := r.CheckAndApply(t.Context())
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if !slices.Equal(transitions, tt.want) {
 				t.Fatalf("transitions = %v, want %v (result=%+v)", transitions, tt.want, res)
@@ -823,6 +865,7 @@ func TestCheckAndApplyCoalescesRestartsWithinInterval(t *testing.T) {
 	res2, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res2.Status != "coalesced" || res2.CoalescedCount != 1 {
 		t.Fatalf("res2 = %+v, want coalesced/CoalescedCount=1", res2)
@@ -842,6 +885,7 @@ func TestCheckAndApplyCoalescesRestartsWithinInterval(t *testing.T) {
 	res3, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res3.Status != "coalesced" || res3.CoalescedCount != 2 {
 		t.Fatalf("res3 = %+v, want coalesced/CoalescedCount=2", res3)
@@ -860,10 +904,12 @@ func TestCheckAndApplyCoalescesRestartsWithinInterval(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(work, "feature-3.txt")); err != nil {
 		t.Fatalf("feature-3.txt missing after coalesced apply: %v", err)
+		panic("unreachable")
 	}
 	state, err := loadState(stateFile)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if state.CoalescedCount != 0 {
 		t.Fatalf("CoalescedCount after apply = %d, want reset to 0", state.CoalescedCount)
@@ -900,6 +946,7 @@ func TestCheckAndApplyCoalesceThrottlePersistsAcrossRunnerRecreation(t *testing.
 	res1, err := newRunner().CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res1.Status != "applied" {
 		t.Fatalf("res1 = %+v, want applied", res1)
@@ -916,6 +963,7 @@ func TestCheckAndApplyCoalesceThrottlePersistsAcrossRunnerRecreation(t *testing.
 	res2, err := newRunner().CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res2.Status != "coalesced" {
 		t.Fatalf("res2 = %+v, want coalesced (throttle must survive runner recreation)", res2)
@@ -952,6 +1000,7 @@ func TestCheckAndApplyOverrideBypassesCoalesceGate(t *testing.T) {
 	res1, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res1.Status != "applied" {
 		t.Fatalf("res1 = %+v, want applied", res1)
@@ -965,11 +1014,13 @@ func TestCheckAndApplyOverrideBypassesCoalesceGate(t *testing.T) {
 	gitTest(t, upstream, "commit", "-m", "add feature-2")
 	if err := os.WriteFile(overrideFile, []byte("override\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	res2, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res2.Status != "applied" || res2.RestartReason != "manual override" {
 		t.Fatalf("res2 = %+v, want applied/manual override", res2)
@@ -980,6 +1031,7 @@ func TestCheckAndApplyOverrideBypassesCoalesceGate(t *testing.T) {
 	state, err := loadState(stateFile)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if state.CoalescedCount != 0 {
 		t.Fatalf("CoalescedCount after override apply = %d, want reset to 0", state.CoalescedCount)
@@ -996,6 +1048,7 @@ func TestCheckAndApplyOverrideBypassesCoalesceGate(t *testing.T) {
 	res3, err := r.CheckAndApply(t.Context())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if res3.Status != "coalesced" || res3.CoalescedCount != 1 {
 		t.Fatalf("res3 = %+v, want coalesced/CoalescedCount=1", res3)
@@ -1006,6 +1059,7 @@ func writeFile(t *testing.T, dir, name, body string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -1022,6 +1076,7 @@ func gitTest(t *testing.T, dir string, args ...string) {
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
+		panic("unreachable")
 	}
 }
 
@@ -1039,6 +1094,7 @@ func gitTestOutput(t *testing.T, dir string, args ...string) string {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
+		panic("unreachable")
 	}
 	return strings.TrimSpace(string(out))
 }
@@ -1050,6 +1106,7 @@ func seedRepos(t *testing.T) (upstream, work string) {
 	work = filepath.Join(root, "work")
 	if err := os.Mkdir(upstream, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	gitTest(t, upstream, "init", "-b", "main")
 	writeFile(t, upstream, "README.md", "hello\n")

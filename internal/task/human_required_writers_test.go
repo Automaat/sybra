@@ -82,6 +82,7 @@ func TestProductionHumanRequiredWriters(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	slices.Sort(got)
 	slices.Sort(want)
@@ -130,6 +131,7 @@ func TestDynamicHumanRequiredBoundariesAreTyped(t *testing.T) {
 		data, err := os.ReadFile(filepath.Join(root, name))
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		for _, marker := range required {
 			if !strings.Contains(string(data), marker) {

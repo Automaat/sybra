@@ -47,6 +47,7 @@ steps:
 			tasks.Put(TaskInfo{ID: "t1", Status: "planning", AgentMode: "headless"})
 			if err := engine.StartWorkflowFromStepWithVars("t1", "simple-task-plan", "plan", nil); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			for range 2 {
 				agents.SimulateComplete("t1")
@@ -66,6 +67,7 @@ steps:
 			data, err := yaml.Marshal(map[string]string{"status_reason": ti.StatusReason})
 			if err != nil {
 				t.Fatalf("yaml.Marshal: %v", err)
+				panic("unreachable")
 			}
 			if strings.Contains(string(data), "!!binary") {
 				t.Fatalf("status_reason marshalled as a binary block:\n%s", data)
@@ -101,6 +103,7 @@ steps:
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflowFromStepWithVars("t1", "test-simple", "triage", nil); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	agents.SimulateComplete("t1")
 	if err := engine.AdvanceStep("t1", StepOutput{
@@ -114,6 +117,7 @@ steps:
 	ti, _ := tasks.GetTask("t1")
 	if ti.Workflow == nil {
 		t.Fatal("workflow missing after advance")
+		panic("unreachable")
 	}
 	got := ti.Workflow.Variables["step.triage.output"]
 	if got == "" {

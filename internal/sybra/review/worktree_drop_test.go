@@ -54,6 +54,7 @@ func TestDropTerminalWorktreeFailure(t *testing.T) {
 			tk, err := tasks.Create("terminal wt", "", task.AgentModeHeadless)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 				t.Fatal(err)
@@ -61,6 +62,7 @@ func TestDropTerminalWorktreeFailure(t *testing.T) {
 			if tt.deleteTask {
 				if err := tasks.Delete(tk.ID); err != nil {
 					t.Fatal(err)
+					panic("unreachable")
 				}
 			}
 
@@ -72,6 +74,7 @@ func TestDropTerminalWorktreeFailure(t *testing.T) {
 				got, err := tasks.Get(tk.ID)
 				if err != nil {
 					t.Fatal(err)
+					panic("unreachable")
 				}
 				if got.Status != task.StatusBlocked {
 					t.Fatalf("status = %q, want blocked", got.Status)
@@ -98,6 +101,7 @@ func TestTransientWorktreeFailureBoundedByCircuitBreaker(t *testing.T) {
 	tk, err := tasks.Create("transient wt", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 		t.Fatal(err)
@@ -114,6 +118,7 @@ func TestTransientWorktreeFailureBoundedByCircuitBreaker(t *testing.T) {
 		got, err := tasks.Get(tk.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.Status == task.StatusHumanRequired {
 			t.Fatalf("attempt %d: escalated before the circuit limit", i)
@@ -127,6 +132,7 @@ func TestTransientWorktreeFailureBoundedByCircuitBreaker(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want blocked after the circuit trips", got.Status)

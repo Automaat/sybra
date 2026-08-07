@@ -51,9 +51,11 @@ func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
 	wfStore, err := workflow.NewStore(wfDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wfDir, "test-status-hook.yaml"), []byte(waitForStatusWorkflowYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	engine := workflow.NewTestEngine(
 		wfStore,
@@ -82,12 +84,14 @@ func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
 	w := watcher.New(app.tasksDir, emit, app.logger)
 	if err := w.Start(ctx); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	<-w.Ready()
 
 	created, err := app.tasks.Create("watcher status hook task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{
@@ -114,14 +118,17 @@ func TestApp_WatcherStatusHook_AdvancesWorkflow(t *testing.T) {
 	current, err := app.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	current.Status = task.StatusPlanReview
 	data, err := task.Marshal(current)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := fsutil.AtomicWrite(current.FilePath, data); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// The watcher should fire, the emit callback should detect the
@@ -158,6 +165,7 @@ func TestApp_StatusHook_RecoversMissingLivePRBlockerBeforeAgentStop(t *testing.T
 	wfStore, err := workflow.NewStore(wfDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wfDir, "pr-recovery.yaml"), []byte(`
 id: pr-recovery
@@ -200,6 +208,7 @@ steps:
 	wtPath := newDispatchTestWorktree(t, "feat/live-proof")
 	if err := project.PushSync(t.Context(), wtPath, "feat/live-proof"); err != nil {
 		t.Fatalf("PushSync: %v", err)
+		panic("unreachable")
 	}
 	engine.SetWorktreeGetter(fixedWorktreeGetter{path: wtPath})
 	engine.SetPRFinder(fixedStatusHookPRFinder{number: 42, found: true})
@@ -209,6 +218,7 @@ steps:
 	created, err := a.tasks.Create("recover missing live pr blocker", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wfExec := &workflow.Execution{
 		WorkflowID:  "pr-recovery",
@@ -238,6 +248,7 @@ steps:
 	got, err := a.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Fatalf("status = %q, want in-review", got.Status)
@@ -250,6 +261,7 @@ steps:
 	}
 	if got.Workflow == nil || got.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("workflow = %+v, want completed", got.Workflow)
+		panic("unreachable")
 	}
 }
 
@@ -283,12 +295,14 @@ func TestApp_WatcherStatusHook_ReleasesTaskAgentsOnExternalHandoffAndTerminal(t 
 			w := watcher.New(a.tasksDir, emit, a.logger)
 			if err := w.Start(ctx); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			<-w.Ready()
 
 			created, err := a.tasks.Create("external release task agents", "", "headless")
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if _, err := a.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
 				t.Fatal(err)
@@ -297,14 +311,17 @@ func TestApp_WatcherStatusHook_ReleasesTaskAgentsOnExternalHandoffAndTerminal(t 
 			current, err := a.tasks.Get(created.ID)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			current.Status = target
 			data, err := task.Marshal(current)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if err := fsutil.AtomicWrite(current.FilePath, data); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			deadline := time.After(5 * time.Second)
@@ -340,6 +357,7 @@ func TestApp_StatusHook_ReleasesTaskAgentsOnHandoffAndTerminal(t *testing.T) {
 			created, err := a.tasks.Create("release task agents", "", "headless")
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if _, err := a.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusInProgress)}); err != nil {
 				t.Fatal(err)
@@ -352,6 +370,7 @@ func TestApp_StatusHook_ReleasesTaskAgentsOnHandoffAndTerminal(t *testing.T) {
 			}
 			if _, err := a.tasks.Update(created.ID, update); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			if len(released) != 1 || released[0] != created.ID {
@@ -376,6 +395,7 @@ func TestApp_StatusHook_ReadyReview_DispatchesReviewWorkflow(t *testing.T) {
 	wfStore, err := workflow.NewStore(wfDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	const testReviewWF = `id: simple-task-review
 name: Test Review
@@ -396,6 +416,7 @@ steps:
 `
 	if err := os.WriteFile(filepath.Join(wfDir, "simple-task-review.yaml"), []byte(testReviewWF), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ta := &taskAdapter{tasks: a.tasks}
@@ -406,6 +427,7 @@ steps:
 	created, err := a.tasks.Create("ready-review dispatch", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Act — move to ready-review, mirroring a manual sybra-cli update.
@@ -421,9 +443,11 @@ steps:
 	tk, err := a.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if tk.Workflow == nil {
 		t.Fatal("no workflow attached — initStatusHook did not dispatch simple-task-review on ready-review")
+		panic("unreachable")
 	}
 	if tk.Workflow.WorkflowID != "simple-task-review" {
 		t.Errorf("workflow.id = %q, want simple-task-review", tk.Workflow.WorkflowID)
@@ -450,6 +474,7 @@ func TestApp_StatusHook_Testing_DispatchesTestingWorkflow(t *testing.T) {
 	wfStore, err := workflow.NewStore(wfDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	const testTestingWF = `id: testing-task
 name: Test Testing
@@ -470,6 +495,7 @@ steps:
 `
 	if err := os.WriteFile(filepath.Join(wfDir, "testing-task.yaml"), []byte(testTestingWF), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ta := &taskAdapter{tasks: a.tasks}
@@ -480,6 +506,7 @@ steps:
 	created, err := a.tasks.Create("testing dispatch", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Act — move to testing, mirroring a manual sybra-cli/UI recovery.
@@ -495,9 +522,11 @@ steps:
 	tk, err := a.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if tk.Workflow == nil {
 		t.Fatal("no workflow attached — initStatusHook did not dispatch testing-task on testing")
+		panic("unreachable")
 	}
 	if tk.Workflow.WorkflowID != "testing-task" {
 		t.Errorf("workflow.id = %q, want testing-task", tk.Workflow.WorkflowID)
@@ -526,6 +555,7 @@ func TestApp_StatusHook_ReadyPR_DispatchesPRWorkflow(t *testing.T) {
 	wfStore, err := workflow.NewStore(wfDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	const testPRWF = `id: simple-task-pr
 name: Test Open PR
@@ -546,6 +576,7 @@ steps:
 `
 	if err := os.WriteFile(filepath.Join(wfDir, "simple-task-pr.yaml"), []byte(testPRWF), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ta := &taskAdapter{tasks: a.tasks}
@@ -556,6 +587,7 @@ steps:
 	created, err := a.tasks.Create("ready-pr dispatch", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Act — move to ready-pr, mirroring a manual sybra-cli/UI recovery.
@@ -571,9 +603,11 @@ steps:
 	tk, err := a.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if tk.Workflow == nil {
 		t.Fatal("no workflow attached — initStatusHook did not dispatch simple-task-pr on ready-pr")
+		panic("unreachable")
 	}
 	if tk.Workflow.WorkflowID != "simple-task-pr" {
 		t.Errorf("workflow.id = %q, want simple-task-pr", tk.Workflow.WorkflowID)
@@ -604,6 +638,7 @@ func TestApp_StatusHook_InProgress_SkipsUmbrellaTracker(t *testing.T) {
 	wfStore, err := workflow.NewStore(wfDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	const testImplementWF = `id: simple-task-implement
 name: Test Implement
@@ -624,6 +659,7 @@ steps:
 `
 	if err := os.WriteFile(filepath.Join(wfDir, "simple-task-implement.yaml"), []byte(testImplementWF), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ta := &taskAdapter{tasks: a.tasks}
@@ -634,6 +670,7 @@ steps:
 	created, err := a.tasks.Create("umbrella tracker", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	umbrellaType := task.TaskTypeUmbrella
 	if _, err := a.tasks.UpdateMap(created.ID, map[string]any{
@@ -653,6 +690,7 @@ steps:
 	tk, err := a.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if tk.Workflow != nil {
 		t.Errorf("workflow attached to umbrella tracker = %+v, want nil — initStatusHook must not dispatch onto umbrella tasks", tk.Workflow)

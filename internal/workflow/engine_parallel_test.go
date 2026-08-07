@@ -121,6 +121,7 @@ func TestParallelValidation_Rejects(t *testing.T) {
 			err := tc.def.Validate()
 			if err == nil {
 				t.Fatalf("expected validation error containing %q, got nil", tc.errSub)
+				panic("unreachable")
 			}
 			if !strings.Contains(err.Error(), tc.errSub) {
 				t.Errorf("err = %v\nwant substring %q", err, tc.errSub)
@@ -152,6 +153,7 @@ func TestParallelValidation_AcceptsValid(t *testing.T) {
 	}
 	if err := def.Validate(); err != nil {
 		t.Fatalf("expected valid, got %v", err)
+		panic("unreachable")
 	}
 	// StepByID must reach into Parallel children.
 	if got := def.StepByID("a"); got == nil || got.Config.Provider != "claude" {
@@ -182,6 +184,7 @@ func TestParallel_DispatchesAllChildren(t *testing.T) {
 
 	if err := engine.StartWorkflow("t1", "test-parallel"); err != nil {
 		t.Fatalf("StartWorkflow: %v", err)
+		panic("unreachable")
 	}
 
 	// Two children should have been spawned; converge should NOT have run yet.
@@ -200,6 +203,7 @@ func TestParallel_DispatchesAllChildren(t *testing.T) {
 	}
 	if rec := wf.ParallelInflight["plan"]; rec == nil {
 		t.Fatalf("expected ParallelInflight[plan] populated")
+		panic("unreachable")
 	} else {
 		if len(rec.Children) != 2 {
 			t.Errorf("Children count = %d, want 2", len(rec.Children))
@@ -239,6 +243,7 @@ func TestParallel_AppliesABAssignmentToAuthorChildren(t *testing.T) {
 	}
 	if err := store.Save(def); err != nil {
 		t.Fatalf("save workflow: %v", err)
+		panic("unreachable")
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -254,6 +259,7 @@ func TestParallel_AppliesABAssignmentToAuthorChildren(t *testing.T) {
 
 	if err := engine.StartWorkflow("t1", "ab-parallel"); err != nil {
 		t.Fatalf("StartWorkflow: %v", err)
+		panic("unreachable")
 	}
 	if got := agents.CallCount(); got != 2 {
 		t.Fatalf("StartAgent calls = %d, want 2", got)
@@ -285,6 +291,7 @@ func TestParallel_AppliesPromptAndSkillVariantPayloads(t *testing.T) {
 	}
 	if err := store.Save(def); err != nil {
 		t.Fatalf("save workflow: %v", err)
+		panic("unreachable")
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -305,6 +312,7 @@ func TestParallel_AppliesPromptAndSkillVariantPayloads(t *testing.T) {
 
 	if err := engine.StartWorkflow("t1", "ab-parallel-payload"); err != nil {
 		t.Fatalf("StartWorkflow: %v", err)
+		panic("unreachable")
 	}
 	if got := agents.CallCount(); got != 2 {
 		t.Fatalf("StartAgent calls = %d, want 2", got)
@@ -316,6 +324,7 @@ func TestParallel_AppliesPromptAndSkillVariantPayloads(t *testing.T) {
 		}
 		if c.Assignment.PromptTransform == nil || c.Assignment.SkillAliases["sybra-test"] != "sybra-test-v2" {
 			t.Fatalf("parallel assignment missing payload: %+v", c.Assignment)
+			panic("unreachable")
 		}
 	}
 }
@@ -332,6 +341,7 @@ func TestParallel_AllCompleteAdvancesParent(t *testing.T) {
 
 	if err := engine.StartWorkflow("t1", "test-parallel"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Complete plan_a first, then plan_b. After plan_b the parent should
@@ -342,6 +352,7 @@ func TestParallel_AllCompleteAdvancesParent(t *testing.T) {
 	wf := mustWorkflow(t, tasks, "t1")
 	if rec := wf.ParallelInflight["plan"]; rec == nil {
 		t.Fatal("ParallelInflight[plan] cleared too early")
+		panic("unreachable")
 	}
 	if got := agents.CallCount(); got != 2 {
 		t.Errorf("converge spawned before all children done: agent calls=%d", got)
@@ -382,6 +393,7 @@ func TestParallel_ChildFailRetryThenSucceed(t *testing.T) {
 
 	if err := engine.StartWorkflow("t1", "test-parallel"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	startCalls := agents.CallCount()
 
@@ -435,6 +447,7 @@ func TestParallel_ChildFailExhaustedFailsParent(t *testing.T) {
 
 	if err := engine.StartWorkflow("t1", "test-parallel"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// plan_b: fail (retry), fail (exhausted).
@@ -474,6 +487,7 @@ func TestParallel_AllSpawnsFail_AdvancesParent(t *testing.T) {
 
 	if err := engine.StartWorkflow("t1", "test-parallel-terminal"); err != nil {
 		t.Fatalf("StartWorkflow returned err = %v; engine must surface a failed parent record instead of bubbling the spawn error", err)
+		panic("unreachable")
 	}
 
 	wf := mustWorkflow(t, tasks, "t1")
@@ -521,6 +535,7 @@ func TestParallel_ShutdownCancellationDuringSpawnDoesNotFailParent(t *testing.T)
 
 	if err := engine.StartWorkflow("t1", "test-parallel-terminal"); err != nil {
 		t.Fatalf("StartWorkflow returned err = %v", err)
+		panic("unreachable")
 	}
 
 	ti := mustTaskInfo(t, tasks, "t1")
@@ -549,6 +564,7 @@ func TestParallel_PlanDraftSidecarKeyedByStepID(t *testing.T) {
 
 	if err := engine.StartWorkflow("t1", "test-parallel"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Set up sidecar files for both children. importSidecarIfConfigured
@@ -560,6 +576,7 @@ func TestParallel_PlanDraftSidecarKeyedByStepID(t *testing.T) {
 		path := "/tmp/sybra-plan-draft-" + child + "-t1.md"
 		if err := writeFile(path, "draft for "+child); err != nil {
 			t.Fatalf("write fixture %s: %v", path, err)
+			panic("unreachable")
 		}
 		t.Cleanup(func() { _ = removeFile(path) })
 	}
@@ -572,6 +589,7 @@ func TestParallel_PlanDraftSidecarKeyedByStepID(t *testing.T) {
 	ti, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := ti.PlanDrafts["plan_a"]; got != "draft for plan_a" {
 		t.Errorf("plan_a draft not stored under plan_draft.plan_a: got %q", got)
@@ -611,19 +629,23 @@ func TestParallel_CompletionRoutesViaPendingAgentStepAfterPersistFailure(t *test
 	def, err := store.Get("test-parallel")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	parent := def.StepByID("plan")
 	child := def.StepByID("plan_a")
 	if parent == nil || child == nil {
 		t.Fatal("test-parallel definition missing expected steps")
+		panic("unreachable")
 	}
 	rec := wfExec.ParallelInflight["plan"]
 	if rec == nil {
 		t.Fatal("parallel inflight record missing")
+		panic("unreachable")
 	}
 	status := rec.Children["plan_a"]
 	if status == nil {
 		t.Fatal("parallel child status missing")
+		panic("unreachable")
 	}
 	ctx := TemplateContext{Task: TaskInfo{ID: "t1", Status: "todo", Workflow: wfExec}, Step: *parent, Vars: wfExec.Variables, Workflow: wfExec}
 
@@ -642,6 +664,7 @@ func TestParallel_CompletionRoutesViaPendingAgentStepAfterPersistFailure(t *test
 	rec = got.ParallelInflight["plan"]
 	if rec == nil || rec.Children["plan_a"] == nil {
 		t.Fatal("parallel inflight child missing after completion")
+		panic("unreachable")
 	}
 	if rec.Children["plan_a"].Status != "completed" {
 		t.Fatalf("plan_a status = %q, want completed", rec.Children["plan_a"].Status)
@@ -658,9 +681,11 @@ func mustWorkflow(t *testing.T, tasks *memTasks, id string) *Execution {
 	ti, err := tasks.GetTask(id)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if ti.Workflow == nil {
 		t.Fatalf("task %s has no workflow", id)
+		panic("unreachable")
 	}
 	return ti.Workflow
 }

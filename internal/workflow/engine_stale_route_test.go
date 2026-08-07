@@ -59,10 +59,12 @@ func implementStep(t *testing.T, engine *Engine) *Step {
 	def, err := engine.store.Get("test-simple")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	step := def.StepByID("implement")
 	if step == nil {
 		t.Fatal("implement step missing from test-simple")
+		panic("unreachable")
 	}
 	return step
 }
@@ -166,6 +168,7 @@ func TestTryMarkResumeDispatching_StaleRoute(t *testing.T) {
 			got, err := tasks.GetTask("t1")
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if n := len(got.Workflow.AgentRoutes); n != tc.wantRoutesLeft {
 				t.Fatalf("routes left = %d (%v), want %d", n, got.Workflow.AgentRoutes, tc.wantRoutesLeft)
@@ -271,6 +274,7 @@ func TestResumeStalled_StaleRoutePrunerSparesMidAdvanceCompletion(t *testing.T) 
 	got, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, ok := got.Workflow.AgentRoute("agent-1"); !ok {
 		t.Fatal("route for the completing agent was pruned mid-advance")
@@ -282,6 +286,7 @@ func TestResumeStalled_StaleRoutePrunerSparesMidAdvanceCompletion(t *testing.T) 
 	after, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if after.Workflow.CurrentStep == "implement" {
 		t.Fatalf("workflow did not advance past implement after completion: %+v", after.Workflow)

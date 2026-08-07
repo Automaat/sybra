@@ -39,6 +39,7 @@ func TestRewindRetry_FingerprintNotChargedWithoutCommits(t *testing.T) {
 		armed, _, err := engine.rewindRetry("t1", wfExec, ti, policy(ti))
 		if err != nil {
 			t.Fatalf("first arm: %v", err)
+			panic("unreachable")
 		}
 		if !armed {
 			t.Fatal("first arm should be allowed")
@@ -46,6 +47,7 @@ func TestRewindRetry_FingerprintNotChargedWithoutCommits(t *testing.T) {
 		armed, _, err = engine.rewindRetry("t1", wfExec, ti, policy(ti))
 		if err != nil {
 			t.Fatalf("second arm: %v", err)
+			panic("unreachable")
 		}
 		if armed {
 			t.Error("a committed attempt must spend the same-fingerprint budget")
@@ -60,6 +62,7 @@ func TestRewindRetry_FingerprintNotChargedWithoutCommits(t *testing.T) {
 		armed, _, err := engine.rewindRetry("t1", wfExec, ti, policy(ti))
 		if err != nil {
 			t.Fatalf("first arm: %v", err)
+			panic("unreachable")
 		}
 		if !armed {
 			t.Fatal("first arm should be allowed")
@@ -67,6 +70,7 @@ func TestRewindRetry_FingerprintNotChargedWithoutCommits(t *testing.T) {
 		armed, _, err = engine.rewindRetry("t1", wfExec, ti, policy(ti))
 		if err != nil {
 			t.Fatalf("second arm: %v", err)
+			panic("unreachable")
 		}
 		if !armed {
 			t.Error("a run that never committed did not attempt the fix; it must not spend the budget")
@@ -87,6 +91,7 @@ func TestRewindRetry_FingerprintNotChargedWithoutCommits(t *testing.T) {
 			armed, _, err := engine.rewindRetry("t1", wfExec, ti, p)
 			if err != nil {
 				t.Fatalf("rewindRetry: %v", err)
+				panic("unreachable")
 			}
 			if armed {
 				armedCount++

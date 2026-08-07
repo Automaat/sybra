@@ -72,6 +72,7 @@ func setupRemoteMirrorFixture(t *testing.T) remoteMirrorFixture {
 	roster, err := clusterlead.NewRoster(cfg, nil)
 	if err != nil {
 		t.Fatalf("NewRoster: %v", err)
+		panic("unreachable")
 	}
 	app.cfg = cfg
 	app.assigner = clusterlead.NewAssigner(cfg, app.tasks, roster, func(string) bool { return false }, nil, app.logger)
@@ -81,10 +82,12 @@ func setupRemoteMirrorFixture(t *testing.T) remoteMirrorFixture {
 		data, err := task.Marshal(tk)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		p := filepath.Join(app.tasksDir, tk.ID+".md")
 		if err := fsutil.AtomicWrite(p, data); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		app.tasks.OnExternalUpdate(p)
 		return p
@@ -123,10 +126,12 @@ func TestApp_MaybeStartWorkflowForExternalTask(t *testing.T) {
 		data, err := task.Marshal(tk)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		p := filepath.Join(app.tasksDir, id+".md")
 		if err := fsutil.AtomicWrite(p, data); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		app.tasks.OnExternalUpdate(p)
 		return p
@@ -139,9 +144,11 @@ func TestApp_MaybeStartWorkflowForExternalTask(t *testing.T) {
 	tk, err := app.tasks.Get("ext-todo")
 	if err != nil {
 		t.Fatalf("get ext-todo: %v", err)
+		panic("unreachable")
 	}
 	if tk.Workflow == nil || tk.Workflow.WorkflowID != "simple-task-plan" {
 		t.Fatalf("fresh todo task: expected simple-task-plan workflow attached, got %+v", tk.Workflow)
+		panic("unreachable")
 	}
 
 	// Prompt Lab proposal tasks may be todo, but they are reviewed and
@@ -152,9 +159,11 @@ func TestApp_MaybeStartWorkflowForExternalTask(t *testing.T) {
 	pl, err := app.tasks.Get("ext-promptlab")
 	if err != nil {
 		t.Fatalf("get ext-promptlab: %v", err)
+		panic("unreachable")
 	}
 	if pl.Workflow != nil {
 		t.Fatalf("prompt-lab proposal: expected no workflow, got %+v", pl.Workflow)
+		panic("unreachable")
 	}
 
 	// Idempotency: re-firing onto a task that already owns an active workflow
@@ -177,6 +186,7 @@ func TestApp_MaybeStartWorkflowForExternalTask(t *testing.T) {
 	ak, err := app.tasks.Get("ext-active")
 	if err != nil {
 		t.Fatalf("get ext-active: %v", err)
+		panic("unreachable")
 	}
 	if ak.Workflow == nil || ak.Workflow.CurrentStep != "triage" {
 		t.Errorf("re-fire onto active workflow should be a no-op, got %+v", ak.Workflow)
@@ -191,6 +201,7 @@ func TestApp_MaybeStartWorkflowForExternalTask(t *testing.T) {
 	dk, err := app.tasks.Get("ext-done")
 	if err != nil {
 		t.Fatalf("get ext-done: %v", err)
+		panic("unreachable")
 	}
 	if dk.Workflow != nil {
 		t.Errorf("done task: expected no workflow, got %+v", dk.Workflow)
@@ -217,6 +228,7 @@ func TestApp_MaybeStartWorkflowForExternalTask(t *testing.T) {
 	pk, err := app.tasks.Get("ext-prfix")
 	if err != nil {
 		t.Fatalf("get ext-prfix: %v", err)
+		panic("unreachable")
 	}
 	if pk.Workflow != nil {
 		t.Errorf("pr-fix task: expected no task.created workflow, got %+v", pk.Workflow)
@@ -253,9 +265,11 @@ func TestApp_StatusHookRestartsTodoAndPlanningExternalUpdates(t *testing.T) {
 				data, err := task.Marshal(in)
 				if err != nil {
 					t.Fatal(err)
+					panic("unreachable")
 				}
 				if err := fsutil.AtomicWrite(path, data); err != nil {
 					t.Fatal(err)
+					panic("unreachable")
 				}
 				app.tasks.OnExternalUpdate(path)
 			}
@@ -269,9 +283,11 @@ func TestApp_StatusHookRestartsTodoAndPlanningExternalUpdates(t *testing.T) {
 			got, err := app.tasks.Get(tk.ID)
 			if err != nil {
 				t.Fatalf("Get: %v", err)
+				panic("unreachable")
 			}
 			if got.Workflow == nil || got.Workflow.WorkflowID != "simple-task-plan" {
 				t.Fatalf("external %s update did not restart planning workflow, got %+v", target, got.Workflow)
+				panic("unreachable")
 			}
 			if got.Workflow.State == workflow.ExecFailed {
 				t.Fatalf("external %s update kept stale failed workflow: %+v", target, got.Workflow)
@@ -279,6 +295,7 @@ func TestApp_StatusHookRestartsTodoAndPlanningExternalUpdates(t *testing.T) {
 			if target == task.StatusPlanning {
 				if got.Workflow.RecordForStep("triage") != nil {
 					t.Fatalf("external planning update re-entered triage: %+v", got.Workflow.RecordForStep("triage"))
+					panic("unreachable")
 				}
 				if got.Status == task.StatusInProgress {
 					t.Fatalf("external planning update flipped to %q, want planning-side status", got.Status)
@@ -316,9 +333,11 @@ func TestApp_MaybeStartWorkflowForExternalTask_RemoteMirrorDoesNotReroute(t *tes
 	got, err := fixture.app.tasks.Get("ext-remote")
 	if err != nil {
 		t.Fatalf("Get ext-remote: %v", err)
+		panic("unreachable")
 	}
 	if got.Workflow != nil {
 		t.Fatalf("remote mirror must not start a local workflow, got %+v", got.Workflow)
+		panic("unreachable")
 	}
 	if got := fixture.assignedTasks(); len(got) != 0 {
 		t.Fatalf("remote mirror re-routed %d times, want 0", len(got))
@@ -382,9 +401,11 @@ func TestApp_MaybeStartWorkflowForExternalTask_RemoteMirrorBatchStaysIdle(t *tes
 		got, err := fixture.app.tasks.Get(fmt.Sprintf("ext-remote-%02d", i))
 		if err != nil {
 			t.Fatalf("Get ext-remote-%02d: %v", i, err)
+			panic("unreachable")
 		}
 		if got.Workflow != nil {
 			t.Fatalf("remote mirror %02d started a local workflow: %+v", i, got.Workflow)
+			panic("unreachable")
 		}
 	}
 	if got := fixture.assignedTasks(); len(got) != 0 {

@@ -22,6 +22,7 @@ func TestParseDockerSystemDF(t *testing.T) {
 		got, err := parseDockerSystemDF(raw)
 		if err != nil {
 			t.Fatalf("parseDockerSystemDF: %v", err)
+			panic("unreachable")
 		}
 		if !got.Available {
 			t.Fatal("Available = false, want true")
@@ -43,6 +44,7 @@ func TestParseDockerSystemDF(t *testing.T) {
 		got, err := parseDockerSystemDF(raw)
 		if err != nil {
 			t.Fatalf("parseDockerSystemDF: %v", err)
+			panic("unreachable")
 		}
 		wantReclaimable := int64(1_000_000_000 + 512*(1<<20))
 		if got.ReclaimableBytes != wantReclaimable {
@@ -57,6 +59,7 @@ func TestParseDockerSystemDFReclaimablePercent(t *testing.T) {
 	got, err := parseDockerSystemDF([]byte(`{"Size":"12.3GB","Reclaimable":"12.3GB (45%)"}`))
 	if err != nil {
 		t.Fatalf("parseDockerSystemDF: %v", err)
+		panic("unreachable")
 	}
 	if got.ReclaimableBytes != 12_300_000_000 {
 		t.Fatalf("ReclaimableBytes = %d, want %d", got.ReclaimableBytes, int64(12_300_000_000))
@@ -82,6 +85,7 @@ func TestParseDockerSizeDecimalAndBinary(t *testing.T) {
 			got, err := parseDockerSize(tt.raw)
 			if err != nil {
 				t.Fatalf("parseDockerSize: %v", err)
+				panic("unreachable")
 			}
 			if got != tt.want {
 				t.Fatalf("parseDockerSize(%q) = %d, want %d", tt.raw, got, tt.want)

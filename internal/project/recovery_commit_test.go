@@ -15,6 +15,7 @@ func isolateGitSigning(t *testing.T) {
 	empty := filepath.Join(t.TempDir(), "gitconfig")
 	if err := os.WriteFile(empty, nil, 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", empty)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -52,9 +53,11 @@ func TestAutoCommitUncommitted_FallbackIdentityWhenNoneConfigured(t *testing.T) 
 	dir := t.TempDir()
 	if out, err := exec.Command("git", "-C", dir, "init").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(dir, "work.txt"), []byte("recovered\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if !AutoCommitUncommitted(context.Background(), dir, "wip: recovered work") {
@@ -64,6 +67,7 @@ func TestAutoCommitUncommitted_FallbackIdentityWhenNoneConfigured(t *testing.T) 
 	out, err := exec.Command("git", "-C", dir, "log", "-1", "--format=%an <%ae>%n%(trailers:key=Signed-off-by,valueonly)").Output()
 	if err != nil {
 		t.Fatalf("git log: %v", err)
+		panic("unreachable")
 	}
 	got := string(out)
 	if !strings.Contains(got, "Sybra <sybra@localhost>") {

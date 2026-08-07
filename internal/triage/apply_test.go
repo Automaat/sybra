@@ -18,6 +18,7 @@ func newTestManager(t *testing.T) *task.Manager {
 	s, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	return task.NewManager(s, nil)
 }
@@ -27,6 +28,7 @@ func TestApplyRewritesTitleAndPreservesOriginal(t *testing.T) {
 	created, err := mgr.Create("i often write random stuff as task name", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	v := Verdict{
 		Title:         "feat(triage): rewrite freeform titles into structured form",
@@ -39,6 +41,7 @@ func TestApplyRewritesTitleAndPreservesOriginal(t *testing.T) {
 	updated, err := Apply(mgr, created, v, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if updated.Title != v.Title {
 		t.Errorf("title not updated: got %q", updated.Title)
@@ -65,6 +68,7 @@ func TestApplyPreservesEscapeHatchTags(t *testing.T) {
 	created, err := mgr.Create("trivial typo fix", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	// A human/orchestrator set noplan on the task before triage runs.
 	created.Tags = []string{"noplan"}
@@ -80,6 +84,7 @@ func TestApplyPreservesEscapeHatchTags(t *testing.T) {
 	updated, err := Apply(mgr, created, v, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(updated.Tags, "noplan") {
 		t.Errorf("noplan escape-hatch tag dropped by triage; got %v", updated.Tags)
@@ -91,6 +96,7 @@ func TestApplyPreservesSybraBugRoutingTags(t *testing.T) {
 	created, err := mgr.Create("fix(workflow): local tracker", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	created.Tags = []string{"sybra-bug", "scrubbed"}
 
@@ -104,6 +110,7 @@ func TestApplyPreservesSybraBugRoutingTags(t *testing.T) {
 	updated, err := Apply(mgr, created, v, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	for _, want := range []string{"sybra-bug", "scrubbed"} {
 		if !slices.Contains(updated.Tags, want) {
@@ -117,6 +124,7 @@ func TestApplyPreservesHumanSetTrivialTag(t *testing.T) {
 	created, err := mgr.Create("trivial typo fix", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	// A human/orchestrator set trivial on the task before triage runs.
 	created.Tags = []string{"trivial"}
@@ -132,6 +140,7 @@ func TestApplyPreservesHumanSetTrivialTag(t *testing.T) {
 	updated, err := Apply(mgr, created, v, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(updated.Tags, "trivial") {
 		t.Errorf("trivial escape-hatch tag dropped by triage; got %v", updated.Tags)
@@ -143,6 +152,7 @@ func TestApplyPreservesHumanSetSkipTestingTag(t *testing.T) {
 	created, err := mgr.Create("remove obsolete flag", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	// A human/orchestrator wants review to run but adversarial testing skipped.
 	created.Tags = []string{"skip-testing"}
@@ -158,6 +168,7 @@ func TestApplyPreservesHumanSetSkipTestingTag(t *testing.T) {
 	updated, err := Apply(mgr, created, v, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(updated.Tags, "skip-testing") {
 		t.Errorf("skip-testing escape-hatch tag dropped by triage; got %v", updated.Tags)
@@ -169,6 +180,7 @@ func TestApplyPreservesUmbrellaGatedTag(t *testing.T) {
 	created, err := mgr.Create("gated child task", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	// The umbrella expander sets the gate marker before triage runs.
 	created.Tags = []string{umbrella.GatedTag}
@@ -184,6 +196,7 @@ func TestApplyPreservesUmbrellaGatedTag(t *testing.T) {
 	updated, err := Apply(mgr, created, v, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(updated.Tags, umbrella.GatedTag) {
 		t.Errorf("umbrella-gated tag dropped by triage; got %v", updated.Tags)
@@ -195,6 +208,7 @@ func TestApplyPreservesEnrichPendingTag(t *testing.T) {
 	created, err := mgr.Create("https://github.com/Automaat/sybra/issues/2774", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	created.Tags = []string{enrichment.PendingTag}
 
@@ -211,6 +225,7 @@ func TestApplyPreservesEnrichPendingTag(t *testing.T) {
 	updated, err := Apply(mgr, created, v, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(updated.Tags, enrichment.PendingTag) {
 		t.Errorf("enrich-pending tag dropped by triage; got %v", updated.Tags)
@@ -222,6 +237,7 @@ func TestApplyPreservesPromptLabProposalTagsAndStatus(t *testing.T) {
 	created, err := mgr.Create("Prompt Lab: tighten instructions for role review", "proposal body", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	// PromptLabService.fileScrubbedProposals sets these before any triage
 	// pass runs. Proposals may be todo or human-required, but their routing
@@ -232,6 +248,7 @@ func TestApplyPreservesPromptLabProposalTagsAndStatus(t *testing.T) {
 	created, err = mgr.Update(created.ID, task.Update{Status: &todo, ProjectID: &projectID, Tags: &tags})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
+		panic("unreachable")
 	}
 
 	// A reclassify pass (e.g. an ungated `sybra-cli triage classify <id>`)
@@ -252,6 +269,7 @@ func TestApplyPreservesPromptLabProposalTagsAndStatus(t *testing.T) {
 	updated, err := Apply(mgr, created, v, projects)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Equal(updated.Tags, created.Tags) {
 		t.Errorf("tags: got %v, want unchanged %v", updated.Tags, created.Tags)
@@ -281,6 +299,7 @@ func TestApplyGuardsUmbrellaTitledTaskWithNormalType(t *testing.T) {
 	created, err := mgr.Create("☂️ refactor(orchestrator): converge implement→test loop under retry cap", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if created.TaskType != "" {
 		t.Fatalf("precondition: want no task_type, got %s", created.TaskType)
@@ -295,6 +314,7 @@ func TestApplyGuardsUmbrellaTitledTaskWithNormalType(t *testing.T) {
 	updated, err := Apply(mgr, created, v, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if updated.Status != task.StatusHumanRequired {
 		t.Errorf("status: got %s, want human-required", updated.Status)
@@ -309,6 +329,7 @@ func TestApplyDoesNotGuardUmbrellaTypedTask(t *testing.T) {
 	created, err := mgr.Create("☂️ tracker for expanded work", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := mgr.UpdateMap(created.ID, map[string]any{"task_type": string(task.TaskTypeUmbrella)}); err != nil {
 		t.Fatalf("UpdateMap task_type: %v", err)
@@ -316,6 +337,7 @@ func TestApplyDoesNotGuardUmbrellaTypedTask(t *testing.T) {
 	created, err = mgr.Get(created.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	v := Verdict{
 		Title: created.Title,
@@ -327,6 +349,7 @@ func TestApplyDoesNotGuardUmbrellaTypedTask(t *testing.T) {
 	updated, err := Apply(mgr, created, v, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if updated.Status == task.StatusHumanRequired {
 		t.Errorf("status: task already umbrella-typed should not be guarded into human-required")
@@ -338,6 +361,7 @@ func TestApplyDoesNotGuardUmbrellaTitledTaskWithOptOutTag(t *testing.T) {
 	created, err := mgr.Create("☂️ deliberately-normal task with umbrella-shaped title", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	if _, err := mgr.UpdateMap(created.ID, map[string]any{"tags": []string{umbrellaGuardOptOutTag}}); err != nil {
 		t.Fatalf("UpdateMap tags: %v", err)
@@ -345,6 +369,7 @@ func TestApplyDoesNotGuardUmbrellaTitledTaskWithOptOutTag(t *testing.T) {
 	created, err = mgr.Get(created.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	v := Verdict{
 		Title: created.Title,
@@ -356,6 +381,7 @@ func TestApplyDoesNotGuardUmbrellaTitledTaskWithOptOutTag(t *testing.T) {
 	updated, err := Apply(mgr, created, v, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if updated.Status == task.StatusHumanRequired {
 		t.Errorf("status: opt-out tag should exempt the task from the umbrella guard, got %s", updated.Status)
@@ -373,6 +399,7 @@ func TestApplyDoesNotGuardPRFixWithUmbrellaTitle(t *testing.T) {
 	created, err := mgr.Create("☂️ Fix CI for upstream tracker", "https://github.com/example-org/example-repo/pull/42", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	created.RunRole = "pr-fix"
 
@@ -386,6 +413,7 @@ func TestApplyDoesNotGuardPRFixWithUmbrellaTitle(t *testing.T) {
 	updated, err := Apply(mgr, created, v, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if updated.Status != task.StatusTodo {
 		t.Errorf("status: got %s, want todo (pr-fix floor)", updated.Status)
@@ -400,6 +428,7 @@ func TestApplyDoesNotGuardPRNumberWithUmbrellaTitle(t *testing.T) {
 	created, err := mgr.Create("☂️ Fix CI for upstream tracker", "https://github.com/example-org/example-repo/pull/42", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	created.PRNumber = 42
 
@@ -413,6 +442,7 @@ func TestApplyDoesNotGuardPRNumberWithUmbrellaTitle(t *testing.T) {
 	updated, err := Apply(mgr, created, v, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if updated.Status != task.StatusTodo {
 		t.Errorf("status: got %s, want todo (pr_number floor)", updated.Status)
@@ -427,6 +457,7 @@ func TestApplyKeepsClassifierEmittedNoplanOnWorkProject(t *testing.T) {
 	created, err := mgr.Create("bump dep on work repo", "https://github.com/example-org/example-repo/pull/9", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	projects := []project.Project{
 		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo", Type: project.ProjectTypeWork},
@@ -446,10 +477,12 @@ func TestApplyKeepsClassifierEmittedNoplanOnWorkProject(t *testing.T) {
 	}
 	if err := ValidateVerdict(&v); err != nil {
 		t.Fatalf("ValidateVerdict: %v", err)
+		panic("unreachable")
 	}
 	updated, err := Apply(mgr, created, v, projects)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(updated.Tags, "noplan") {
 		t.Errorf("classifier-emitted noplan tag not persisted; got %v", updated.Tags)
@@ -464,6 +497,7 @@ func TestApplyMediumFeatureGoesToPlanning(t *testing.T) {
 	created, err := mgr.Create("add auth middleware", "some body", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	v := Verdict{
 		Title: "feat(auth): add JWT middleware",
@@ -475,6 +509,7 @@ func TestApplyMediumFeatureGoesToPlanning(t *testing.T) {
 	updated, err := Apply(mgr, created, v, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if updated.Status != task.StatusPlanning {
 		t.Errorf("status: got %s, want planning", updated.Status)
@@ -486,6 +521,7 @@ func TestApplyWorkProjectPlanningKeepsMode(t *testing.T) {
 	created, err := mgr.Create("refactor ingestion", "https://github.com/example-org/example-repo/issues/1", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	projects := []project.Project{
 		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo", Type: project.ProjectTypeWork},
@@ -500,6 +536,7 @@ func TestApplyWorkProjectPlanningKeepsMode(t *testing.T) {
 	updated, err := Apply(mgr, created, v, projects)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	// Work projects no longer force interactive; the classifier's pick stands.
 	if updated.AgentMode != task.AgentModeHeadless {
@@ -518,10 +555,12 @@ func TestApplyUsesExistingProjectWhenTaskHasNoRepoURL(t *testing.T) {
 	created, err := mgr.Create("debug workflow completion race", "no repository URL here", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	created, err = mgr.Update(created.ID, task.Update{ProjectID: task.Ptr("example-org/example-repo")})
 	if err != nil {
 		t.Fatalf("Update project: %v", err)
+		panic("unreachable")
 	}
 	projects := []project.Project{
 		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo", Type: project.ProjectTypeWork},
@@ -536,6 +575,7 @@ func TestApplyUsesExistingProjectWhenTaskHasNoRepoURL(t *testing.T) {
 	updated, err := Apply(mgr, created, v, projects)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if updated.ProjectID != "example-org/example-repo" {
 		t.Errorf("project_id: got %q, want example-org/example-repo", updated.ProjectID)
@@ -553,10 +593,12 @@ func TestApplyExistingProjectIDNotOverriddenByClassifierGuess(t *testing.T) {
 	created, err := mgr.Create("debug workflow completion race", "shares vocabulary with another project", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	created, err = mgr.Update(created.ID, task.Update{ProjectID: task.Ptr("correct-org/correct-repo")})
 	if err != nil {
 		t.Fatalf("Update project: %v", err)
+		panic("unreachable")
 	}
 	projects := []project.Project{
 		{ID: "correct-org/correct-repo", Owner: "correct-org", Repo: "correct-repo"},
@@ -575,6 +617,7 @@ func TestApplyExistingProjectIDNotOverriddenByClassifierGuess(t *testing.T) {
 	updated, err := Apply(mgr, created, v, projects)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if updated.ProjectID != "correct-org/correct-repo" {
 		t.Errorf("project_id: got %q, want correct-org/correct-repo (existing project_id must be sticky)", updated.ProjectID)
@@ -586,10 +629,12 @@ func TestApplyIssueURLOutranksClassifierGuess(t *testing.T) {
 	created, err := mgr.Create("debug workflow completion race", "shares vocabulary with another project", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	created, err = mgr.Update(created.ID, task.Update{Issue: task.Ptr("https://github.com/correct-org/correct-repo/issues/9")})
 	if err != nil {
 		t.Fatalf("Update issue: %v", err)
+		panic("unreachable")
 	}
 	projects := []project.Project{
 		{ID: "correct-org/correct-repo", Owner: "correct-org", Repo: "correct-repo"},
@@ -606,6 +651,7 @@ func TestApplyIssueURLOutranksClassifierGuess(t *testing.T) {
 	updated, err := Apply(mgr, created, v, projects)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if updated.ProjectID != "correct-org/correct-repo" {
 		t.Errorf("project_id: got %q, want correct-org/correct-repo (issue URL must outrank classifier guess)", updated.ProjectID)
@@ -617,6 +663,7 @@ func TestApplyStaleProjectIDReResolvesFromIssueURL(t *testing.T) {
 	created, err := mgr.Create("refactor ingestion", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	// A project_id set under a prior name that is no longer registered (renamed
 	// or deleted). It must not lock the task to an empty project type.
@@ -626,6 +673,7 @@ func TestApplyStaleProjectIDReResolvesFromIssueURL(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
+		panic("unreachable")
 	}
 	projects := []project.Project{
 		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo", Type: project.ProjectTypeWork},
@@ -640,6 +688,7 @@ func TestApplyStaleProjectIDReResolvesFromIssueURL(t *testing.T) {
 	updated, err := Apply(mgr, created, v, projects)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if updated.ProjectID != "example-org/example-repo" {
 		t.Errorf("project_id: got %q, want example-org/example-repo (stale ID must re-resolve)", updated.ProjectID)
@@ -659,6 +708,7 @@ func TestApplyRejectsUnregisteredClassifierGuess(t *testing.T) {
 	created, err := mgr.Create("investigate flaky retry loop", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	projects := []project.Project{
 		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo"},
@@ -675,6 +725,7 @@ func TestApplyRejectsUnregisteredClassifierGuess(t *testing.T) {
 	updated, err := Apply(mgr, created, v, projects)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if updated.ProjectID != "" {
 		t.Errorf("project_id: got %q, want empty (unregistered classifier guess must not be persisted)", updated.ProjectID)
@@ -690,6 +741,7 @@ func TestApplySybraBugTaskDefaultsToSybraProjectBeforeBodyMatch(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	created.Tags = []string{"sybra-bug", "scrubbed"}
 	projects := []project.Project{
@@ -706,6 +758,7 @@ func TestApplySybraBugTaskDefaultsToSybraProjectBeforeBodyMatch(t *testing.T) {
 	updated, err := Apply(mgr, created, v, projects)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if updated.ProjectID != "Automaat/sybra" {
 		t.Fatalf("project_id = %q, want Automaat/sybra", updated.ProjectID)
@@ -724,6 +777,7 @@ func TestApplySybraBugTaskUsesConfiguredProjectBeforeBodyMatch(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	created.Tags = []string{"sybra-bug", "scrubbed"}
 	projects := []project.Project{
@@ -741,6 +795,7 @@ func TestApplySybraBugTaskUsesConfiguredProjectBeforeBodyMatch(t *testing.T) {
 	updated, err := ApplyWithOptions(mgr, created, v, projects, ApplyOptions{SybraBugProjectID: "fork/sybra"})
 	if err != nil {
 		t.Fatalf("ApplyWithOptions: %v", err)
+		panic("unreachable")
 	}
 	if updated.ProjectID != "fork/sybra" {
 		t.Fatalf("project_id = %q, want fork/sybra", updated.ProjectID)
@@ -752,12 +807,14 @@ func TestApplyClearsStaleProjectIDWhenReResolutionFails(t *testing.T) {
 	created, err := mgr.Create("refactor ingestion", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	// project_id from a project that has since been renamed/deleted, with no
 	// Issue URL and no classifier/title-body match available to re-resolve it.
 	created, err = mgr.Update(created.ID, task.Update{ProjectID: task.Ptr("old-org/renamed-repo")})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
+		panic("unreachable")
 	}
 	projects := []project.Project{
 		{ID: "example-org/example-repo", Owner: "example-org", Repo: "example-repo", Type: project.ProjectTypeWork},
@@ -772,6 +829,7 @@ func TestApplyClearsStaleProjectIDWhenReResolutionFails(t *testing.T) {
 	updated, err := Apply(mgr, created, v, projects)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if updated.ProjectID != "" {
 		t.Errorf("project_id: got %q, want empty (stale id must be cleared, not left dangling)", updated.ProjectID)
@@ -784,6 +842,7 @@ func TestApplyPRFixRunRoleNeverPlanning(t *testing.T) {
 	created, err := mgr.Create("Fix CI: bump lodash", "https://github.com/example-org/example-repo/pull/42", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	// Pre-set RunRole as FixRenovateCI would via CreateFull.
 	created.RunRole = "pr-fix"
@@ -802,6 +861,7 @@ func TestApplyPRFixRunRoleNeverPlanning(t *testing.T) {
 	updated, err := Apply(mgr, created, v, projects)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	// pr-fix floor must override both work-project → planning and large-feature → planning.
 	if updated.Status != task.StatusTodo {
@@ -814,6 +874,7 @@ func TestApplyPRNumberNeverPlanning(t *testing.T) {
 	created, err := mgr.Create("Fix some CI", "https://github.com/example-org/example-repo/pull/7", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	created.PRNumber = 7
 
@@ -830,6 +891,7 @@ func TestApplyPRNumberNeverPlanning(t *testing.T) {
 	updated, err := Apply(mgr, created, v, projects)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if updated.Status != task.StatusTodo {
 		t.Errorf("status: got %s, want todo (pr_number floor)", updated.Status)
@@ -841,6 +903,7 @@ func TestApplyEmptyBodyFillsDescription(t *testing.T) {
 	created, err := mgr.Create("https://example.com/thing", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	v := Verdict{
 		Title:       "docs(thing): update API reference",
@@ -853,6 +916,7 @@ func TestApplyEmptyBodyFillsDescription(t *testing.T) {
 	updated, err := Apply(mgr, created, v, nil)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(updated.Body, "example.com thing") {
 		t.Errorf("body missing description: %q", updated.Body)

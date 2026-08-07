@@ -20,6 +20,7 @@ func TestToolSignature(t *testing.T) {
 	t.Run("empty for no tools", func(t *testing.T) {
 		if got := toolSignature(nil); got != "" {
 			t.Fatalf("toolSignature(nil) = %q, want empty", got)
+			panic("unreachable")
 		}
 	})
 

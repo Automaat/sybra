@@ -46,12 +46,14 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	agentsDir := filepath.Join(logsDir, "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("mkdir agents: %v", err)
+		panic("unreachable")
 	}
 
 	tasksDir := filepath.Join(home, "tasks")
 	rawStore, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatalf("task store: %v", err)
+		panic("unreachable")
 	}
 	tm := task.NewManager(rawStore, nil)
 
@@ -59,6 +61,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	ledger, err := Open(ledgerPath)
 	if err != nil {
 		t.Fatalf("open ledger: %v", err)
+		panic("unreachable")
 	}
 
 	env := &e2eEnv{
@@ -84,9 +87,11 @@ func (e *e2eEnv) writeHealthReport(t *testing.T, rep health.Report) {
 	data, err := json.Marshal(rep)
 	if err != nil {
 		t.Fatalf("marshal health report: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(e.healthPath, data, 0o644); err != nil {
 		t.Fatalf("write health report: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -97,6 +102,7 @@ func (e *e2eEnv) writeAgentLog(t *testing.T, agentID string, lines []string) str
 	path := filepath.Join(e.agentsDir, agentID+"-2026-04-14T10-00-00.ndjson")
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatalf("write agent log: %v", err)
+		panic("unreachable")
 	}
 	return path
 }
@@ -190,10 +196,12 @@ func TestE2EPipelineDistillsFindingFromRealFiles(t *testing.T) {
 	persisted, err := os.ReadFile(env.reportPath)
 	if err != nil {
 		t.Fatalf("report not persisted: %v", err)
+		panic("unreachable")
 	}
 	var back Report
 	if err := json.Unmarshal(persisted, &back); err != nil {
 		t.Fatalf("persisted report unparseable: %v", err)
+		panic("unreachable")
 	}
 	if back.HealthScore != health.ScoreWarning {
 		t.Errorf("persisted HealthScore = %q, want warning", back.HealthScore)
@@ -245,6 +253,7 @@ func TestE2ELogFileResolutionOrder(t *testing.T) {
 				created, err := env.tasks.Create("task with run", "", "headless")
 				if err != nil {
 					t.Fatalf("create task: %v", err)
+					panic("unreachable")
 				}
 				if err := env.tasks.AddRun(created.ID, task.AgentRun{
 					AgentID: "agent-run",
@@ -310,6 +319,7 @@ func TestE2ELogFileResolutionOrder(t *testing.T) {
 			r, err := svc.Scan(context.Background())
 			if err != nil {
 				t.Fatalf("Scan: %v", err)
+				panic("unreachable")
 			}
 			if len(r.Findings) != 1 {
 				t.Fatalf("Findings = %d, want 1", len(r.Findings))
@@ -353,6 +363,7 @@ func TestE2EAutoSuppressionAcrossRestarts(t *testing.T) {
 	coldLedger, err := Open(env.ledgerPath)
 	if err != nil {
 		t.Fatalf("reopen ledger: %v", err)
+		panic("unreachable")
 	}
 	if coldLedger.Len() != 3 {
 		t.Fatalf("cold ledger Len = %d, want 3", coldLedger.Len())
@@ -383,6 +394,7 @@ func TestE2EAutoSuppressionAcrossRestarts(t *testing.T) {
 	r, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 	if len(r.Findings) != 0 {
 		t.Errorf("suppressed finding leaked across restart: %+v", r.Findings)
@@ -415,6 +427,7 @@ func TestE2ESuppressionActivatesMidRun(t *testing.T) {
 	r1, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan 1: %v", err)
+		panic("unreachable")
 	}
 	if len(r1.Findings) != 1 {
 		t.Fatalf("tick 1: Findings = %d, want 1", len(r1.Findings))
@@ -439,6 +452,7 @@ func TestE2ESuppressionActivatesMidRun(t *testing.T) {
 	r2, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan 2: %v", err)
+		panic("unreachable")
 	}
 	if len(r2.Findings) != 0 {
 		t.Errorf("tick 2: suppressed finding leaked: %+v", r2.Findings)
@@ -458,6 +472,7 @@ func TestE2EProjectTypeFilter(t *testing.T) {
 	allowed, err := env.tasks.Create("allowed", "", "headless")
 	if err != nil {
 		t.Fatalf("create allowed: %v", err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.UpdateMap(allowed.ID, map[string]any{
 		"project_id": "owner/allowed",
@@ -468,6 +483,7 @@ func TestE2EProjectTypeFilter(t *testing.T) {
 	rejected, err := env.tasks.Create("rejected", "", "headless")
 	if err != nil {
 		t.Fatalf("create rejected: %v", err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.UpdateMap(rejected.ID, map[string]any{
 		"project_id": "owner/rejected",
@@ -478,6 +494,7 @@ func TestE2EProjectTypeFilter(t *testing.T) {
 	noProj, err := env.tasks.Create("no project", "", "headless")
 	if err != nil {
 		t.Fatalf("create noproj: %v", err)
+		panic("unreachable")
 	}
 
 	env.writeHealthReport(t, health.Report{
@@ -507,6 +524,7 @@ func TestE2EProjectTypeFilter(t *testing.T) {
 	r, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 	if len(r.Findings) != 2 {
 		t.Errorf("Findings = %d, want 2 (allowed + noProj)", len(r.Findings))
@@ -546,10 +564,12 @@ func TestE2EPersistedReportRoundTrip(t *testing.T) {
 	data, err := os.ReadFile(env.reportPath)
 	if err != nil {
 		t.Fatalf("report missing: %v", err)
+		panic("unreachable")
 	}
 	var rep Report
 	if err := json.Unmarshal(data, &rep); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 	if rep.SchemaVersion != ReportSchemaVersion {
 		t.Errorf("SchemaVersion = %d, want %d", rep.SchemaVersion, ReportSchemaVersion)
@@ -577,6 +597,7 @@ func TestE2EMissingHealthReportIsSoft(t *testing.T) {
 	r, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 	if len(r.Findings) != 0 {
 		t.Errorf("Findings = %d, want 0", len(r.Findings))
@@ -612,6 +633,7 @@ func TestE2EHealthToSelfMonitorHandoff(t *testing.T) {
 	r, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 	if len(r.Findings) != 1 {
 		t.Fatalf("Findings = %d, want 1", len(r.Findings))

@@ -30,6 +30,7 @@ func TestNormalizeHeadlessPermissionMode(t *testing.T) {
 			got, err := NormalizeHeadlessPermissionMode(tc.input)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, wantErr = %v", err, tc.wantErr)
+				panic("unreachable")
 			}
 			if !tc.wantErr && got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)

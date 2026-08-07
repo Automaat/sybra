@@ -9,6 +9,7 @@ func TestParseMCPServers_EmptyAndInvalid(t *testing.T) {
 	got, err := parseMCPServers("")
 	if err != nil || len(got) != 0 {
 		t.Fatalf("empty input: got %v err %v, want empty/nil", got, err)
+		panic("unreachable")
 	}
 	if _, err := parseMCPServers("{not json"); err == nil {
 		t.Fatal("malformed JSON should error")
@@ -18,11 +19,13 @@ func TestParseMCPServers_EmptyAndInvalid(t *testing.T) {
 func TestRenderCopilotMCPConfig(t *testing.T) {
 	if out, err := renderCopilotMCPConfig(""); err != nil || out != "" {
 		t.Fatalf("empty input: got %q err %v", out, err)
+		panic("unreachable")
 	}
 	in := `{"mcpServers":{"playwright":{"command":"npx","args":["-y","@playwright/mcp@latest"]}}}`
 	out, err := renderCopilotMCPConfig(in)
 	if err != nil {
 		t.Fatalf("render: %v", err)
+		panic("unreachable")
 	}
 	for _, want := range []string{`"mcpServers"`, `"type":"local"`, `"tools":["*"]`, `"command":"npx"`, `"@playwright/mcp@latest"`} {
 		if !strings.Contains(out, want) {
@@ -35,6 +38,7 @@ func TestRenderCopilotMCPConfig_OmitsNullArgs(t *testing.T) {
 	out, err := renderCopilotMCPConfig(`{"mcpServers":{"noargs":{"command":"foo"}}}`)
 	if err != nil {
 		t.Fatalf("render: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(out, "null") {
 		t.Fatalf("copilot config must not emit null args; got %s", out)
@@ -47,11 +51,13 @@ func TestRenderCopilotMCPConfig_OmitsNullArgs(t *testing.T) {
 func TestRenderCodexMCPArgs(t *testing.T) {
 	if out, err := renderCodexMCPArgs(""); err != nil || out != nil {
 		t.Fatalf("empty input: got %v err %v", out, err)
+		panic("unreachable")
 	}
 	in := `{"mcpServers":{"playwright":{"command":"npx","args":["-y","x"]}}}`
 	out, err := renderCodexMCPArgs(in)
 	if err != nil {
 		t.Fatalf("render: %v", err)
+		panic("unreachable")
 	}
 	want := []string{"-c", `mcp_servers.playwright.command="npx"`, "-c", `mcp_servers.playwright.args=["-y","x"]`}
 	if len(out) != len(want) {
@@ -69,6 +75,7 @@ func TestRenderCodexMCPArgs_DeterministicOrder(t *testing.T) {
 	out, err := renderCodexMCPArgs(in)
 	if err != nil {
 		t.Fatalf("render: %v", err)
+		panic("unreachable")
 	}
 	if len(out) < 4 || out[1] != `mcp_servers.alpha.command="a"` || out[3] != `mcp_servers.bravo.command="b"` {
 		t.Fatalf("servers not rendered in sorted order: %v", out)

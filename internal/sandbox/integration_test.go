@@ -27,9 +27,11 @@ func TestDockerSandbox_StartStop(t *testing.T) {
 	inst, err := m.Start(ctx, "task-start-stop", "", cfg)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
+		panic("unreachable")
 	}
 	if inst == nil {
 		t.Fatal("expected non-nil instance")
+		panic("unreachable")
 	}
 	assertHTTP200(t, inst.URL, 10*time.Second)
 
@@ -51,6 +53,7 @@ func TestDockerSandbox_ComposeFileMode(t *testing.T) {
 `
 	if err := os.WriteFile(filepath.Join(worktree, "docker-compose.yml"), []byte(composeContent), 0o644); err != nil {
 		t.Fatalf("write compose: %v", err)
+		panic("unreachable")
 	}
 
 	cfg := &project.SandboxConfig{
@@ -61,6 +64,7 @@ func TestDockerSandbox_ComposeFileMode(t *testing.T) {
 	inst, err := m.Start(ctx, "task-compose-file", worktree, cfg)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
+		panic("unreachable")
 	}
 	defer m.Stop("task-compose-file")
 	assertHTTP200(t, inst.URL, 10*time.Second)
@@ -78,6 +82,7 @@ func TestDockerSandbox_WithPostgres(t *testing.T) {
 	inst, err := m.Start(ctx, "task-postgres", "", cfg)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
+		panic("unreachable")
 	}
 	defer m.Stop("task-postgres")
 
@@ -100,6 +105,7 @@ func TestDockerSandbox_EnvFile(t *testing.T) {
 	envFile := filepath.Join(t.TempDir(), ".env")
 	if err := os.WriteFile(envFile, []byte("TEST_SECRET=hunter2\n"), 0o600); err != nil {
 		t.Fatalf("write env file: %v", err)
+		panic("unreachable")
 	}
 
 	cfg := &project.SandboxConfig{
@@ -110,6 +116,7 @@ func TestDockerSandbox_EnvFile(t *testing.T) {
 	inst, err := m.Start(ctx, "task-envfile", "", cfg)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
+		panic("unreachable")
 	}
 	defer m.Stop("task-envfile")
 	assertHTTP200(t, inst.URL, 10*time.Second)
@@ -124,12 +131,14 @@ func TestDockerSandbox_Idempotent(t *testing.T) {
 	inst1, err := m.Start(ctx, "task-idempotent", "", cfg)
 	if err != nil {
 		t.Fatalf("first Start: %v", err)
+		panic("unreachable")
 	}
 	defer m.Stop("task-idempotent")
 
 	inst2, err := m.Start(ctx, "task-idempotent", "", cfg)
 	if err != nil {
 		t.Fatalf("second Start: %v", err)
+		panic("unreachable")
 	}
 	if inst1 != inst2 {
 		t.Error("second Start should return the same instance pointer")
@@ -241,6 +250,7 @@ func TestDockerSandbox_Cleanup_OnStop(t *testing.T) {
 	inst, err := m.Start(ctx, "task-cleanup", "", cfg)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
+		panic("unreachable")
 	}
 	entryFile := inst.entryFile
 
@@ -269,6 +279,7 @@ func TestDockerSandbox_EnvFile_Missing(t *testing.T) {
 	inst, err := m.Start(ctx, "task-envfile-missing", "", cfg)
 	if err != nil {
 		t.Fatalf("Start should succeed even with missing env_file, got: %v", err)
+		panic("unreachable")
 	}
 	defer m.Stop("task-envfile-missing")
 	assertHTTP200(t, inst.URL, 10*time.Second)
@@ -283,12 +294,14 @@ func TestDockerSandbox_BuildMode(t *testing.T) {
 	dockerfile := "FROM nginx:alpine\n"
 	if err := os.WriteFile(filepath.Join(worktree, "Dockerfile"), []byte(dockerfile), 0o644); err != nil {
 		t.Fatalf("write Dockerfile: %v", err)
+		panic("unreachable")
 	}
 
 	cfg := &project.SandboxConfig{Build: ".", Port: 80}
 	inst, err := m.Start(ctx, "task-build-mode", worktree, cfg)
 	if err != nil {
 		t.Fatalf("Start with build mode: %v", err)
+		panic("unreachable")
 	}
 	defer m.Stop("task-build-mode")
 	assertHTTP200(t, inst.URL, 30*time.Second)
@@ -304,6 +317,7 @@ func assertHTTP200(t *testing.T, rawURL string, timeout time.Duration) {
 		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, rawURL, nil)
 		if err != nil {
 			t.Fatalf("build request: %v", err)
+			panic("unreachable")
 		}
 		resp, err := client.Do(req)
 		if err == nil {

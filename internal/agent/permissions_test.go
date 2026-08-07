@@ -97,6 +97,7 @@ func TestNoteAndGetPermissionDenials(t *testing.T) {
 
 	if got := a.GetPermissionDenials(); got != nil {
 		t.Fatalf("expected nil before any denials, got %v", got)
+		panic("unreachable")
 	}
 
 	a.NotePermissionDenial("tool-1", "denied because rm -rf")

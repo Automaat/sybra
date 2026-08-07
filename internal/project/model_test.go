@@ -20,6 +20,7 @@ func TestProject_WorkBlocklist(t *testing.T) {
 	pet := Project{ID: "me/pet", Owner: "me", Repo: "pet", URL: "https://github.com/me/pet", Type: ProjectTypePet}
 	if got := pet.WorkBlocklist(); got != nil {
 		t.Fatalf("pet blocklist = %v, want nil", got)
+		panic("unreachable")
 	}
 }
 

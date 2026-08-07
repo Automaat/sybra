@@ -30,6 +30,7 @@ func mustUnmarshal(t *testing.T, data string, v any) {
 	t.Helper()
 	if err := json.Unmarshal([]byte(data), v); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -99,6 +100,7 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, string(out))
+		panic("unreachable")
 	}
 	return string(out)
 }
@@ -157,6 +159,7 @@ func TestGithubAppTokenPlainAndJSONOutput(t *testing.T) {
 	var payload map[string]string
 	if err := json.Unmarshal([]byte(rawJSON), &payload); err != nil {
 		t.Fatalf("unmarshal json output %q: %v", rawJSON, err)
+		panic("unreachable")
 	}
 	if payload["token"] != "installation-token" {
 		t.Fatalf("json token = %q", payload["token"])
@@ -172,6 +175,7 @@ func TestListEmpty(t *testing.T) {
 	var tasks []task.Task
 	if err := json.Unmarshal([]byte(out), &tasks); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 	if len(tasks) != 0 {
 		t.Fatalf("expected 0 tasks, got %d", len(tasks))
@@ -189,6 +193,7 @@ func TestCreateAndGet(t *testing.T) {
 	var created task.Task
 	if err := json.Unmarshal([]byte(out), &created); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 	if created.Title != "test task" {
 		t.Errorf("title = %q", created.Title)
@@ -207,6 +212,7 @@ func TestCreateAndGet(t *testing.T) {
 	var got task.Task
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
+		panic("unreachable")
 	}
 	if got.ID != created.ID {
 		t.Errorf("get returned id %q, want %q", got.ID, created.ID)
@@ -290,20 +296,25 @@ func TestGetPrintsSidecarHeadingsOnce(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(dir, "tasks"))
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	manager := task.NewManager(store, nil)
 	created, err := manager.Create("sidecar task", "body", "headless")
 	if err != nil {
 		t.Fatalf("seed task: %v", err)
+		panic("unreachable")
 	}
 	if err := store.CurrentTestFailures().Write(created.ID, "## Test Failures\n\nfailing assertion"); err != nil {
 		t.Fatalf("write current test failures: %v", err)
+		panic("unreachable")
 	}
 	if err := store.AcceptanceLedgers().Write(created.ID, "## Acceptance Ledger\n\nledger entry"); err != nil {
 		t.Fatalf("write acceptance ledger: %v", err)
+		panic("unreachable")
 	}
 	if err := store.SpecDecisions().Write(created.ID, "## Spec Decision Needed\n\nneeds a call"); err != nil {
 		t.Fatalf("write spec decision: %v", err)
+		panic("unreachable")
 	}
 
 	code, out := runCLI(t, "get", created.ID)
@@ -370,6 +381,7 @@ func TestUpdateRetryableLockTimeoutExitsTempFail(t *testing.T) {
 	unlock, err := fsutil.LockFile(created.FilePath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer func() { _ = unlock() }()
 
@@ -398,16 +410,19 @@ func TestCLIWorksWithV2ObservabilityConfig(t *testing.T) {
 	}, "\n")
 	if err := os.WriteFile(config.ConfigPath(), []byte(cfg), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
+		panic("unreachable")
 	}
 
 	store, err := task.NewStore(filepath.Join(dir, "tasks"))
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	manager := task.NewManager(store, nil)
 	created, err := manager.Create("observability task", "body", "headless")
 	if err != nil {
 		t.Fatalf("seed task: %v", err)
+		panic("unreachable")
 	}
 
 	code, out := runCLI(t, "--json", "get", "--compact", created.ID)
@@ -438,16 +453,19 @@ func TestCLIGetAndUpdateFallbackWhenConfigLoadFails(t *testing.T) {
 	// server is up and its write path is denied to the agents that hit it.
 	if err := os.WriteFile(config.ConfigPath(), []byte("::not yaml at all\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
+		panic("unreachable")
 	}
 
 	store, err := task.NewStore(filepath.Join(dir, "tasks"))
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	manager := task.NewManager(store, nil)
 	created, err := manager.Create("fallback task", "body", "headless")
 	if err != nil {
 		t.Fatalf("seed task: %v", err)
+		panic("unreachable")
 	}
 
 	code, stdout, stderr := runCLIWithStderr(t, "--json", "get", "--compact", created.ID)
@@ -486,15 +504,18 @@ func TestCLIFallbackSupportsBroadenedTaskStoreCommands(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(dir, "tasks"))
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	manager := task.NewManager(store, nil)
 	seeded, err := manager.Create("seed task", "body", "headless")
 	if err != nil {
 		t.Fatalf("seed task: %v", err)
+		panic("unreachable")
 	}
 	toDelete, err := manager.Create("delete me", "body", "headless")
 	if err != nil {
 		t.Fatalf("seed delete task: %v", err)
+		panic("unreachable")
 	}
 
 	// Unparseable, not merely unknown: a schema error deliberately no longer
@@ -502,6 +523,7 @@ func TestCLIFallbackSupportsBroadenedTaskStoreCommands(t *testing.T) {
 	// server is up and its write path is denied to the agents that hit it.
 	if err := os.WriteFile(config.ConfigPath(), []byte("::not yaml at all\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
+		panic("unreachable")
 	}
 
 	assertFallback := func(t *testing.T, stderr string) {
@@ -555,6 +577,7 @@ func TestCLIFallbackSupportsBroadenedTaskStoreCommands(t *testing.T) {
 	reopened, err := store.Get(seeded.ID)
 	if err != nil {
 		t.Fatalf("get after reopen: %v", err)
+		panic("unreachable")
 	}
 	if reopened.Status != task.StatusTodo {
 		t.Fatalf("status after reopen = %q, want %q", reopened.Status, task.StatusTodo)
@@ -580,6 +603,7 @@ func TestCLIFallbackSupportsBroadenedTaskStoreCommands(t *testing.T) {
 	assertFallback(t, stderr)
 	if _, err := store.Get(toDelete.ID); err == nil {
 		t.Fatalf("task %s still present after delete", toDelete.ID)
+		panic("unreachable")
 	}
 
 	code, stdout, stderr = runCLIWithStderr(t, "--json", "trash", "list")
@@ -665,6 +689,7 @@ func TestHealthPrintsProcessesAndJSON(t *testing.T) {
 }`
 	if err := os.WriteFile(filepath.Join(config.HomeDir(), "health-report.json"), []byte(report), 0o644); err != nil {
 		t.Fatalf("write health report: %v", err)
+		panic("unreachable")
 	}
 
 	code, out := runCLI(t, "health")
@@ -732,6 +757,7 @@ func TestHealthPrintsDockerWithoutProcesses(t *testing.T) {
 }`
 	if err := os.WriteFile(filepath.Join(config.HomeDir(), "health-report.json"), []byte(report), 0o644); err != nil {
 		t.Fatalf("write health report: %v", err)
+		panic("unreachable")
 	}
 
 	code, out := runCLI(t, "health", "--category", "cost_drift")
@@ -764,9 +790,11 @@ func TestHealthPrintsDockerWithoutProcesses(t *testing.T) {
 	}
 	if got.Docker == nil || got.Docker.ReclaimableBytes != 20*(1<<30) {
 		t.Fatalf("json health docker = %+v", got.Docker)
+		panic("unreachable")
 	}
 	if got.Processes != nil {
 		t.Fatalf("json health processes = %v, want nil", got.Processes)
+		panic("unreachable")
 	}
 }
 
@@ -845,6 +873,7 @@ func TestTrashRestoreRefusesLiveCollision(t *testing.T) {
 	livePath := filepath.Join(tasksDir, created.ID+".md")
 	if err := os.WriteFile(livePath, []byte("---\nid: "+created.ID+"\n---\nlive again"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	code, _ = runCLI(t, "--json", "trash", "restore", created.ID)
@@ -1269,9 +1298,11 @@ func TestConfigDoctorJSONReportsConfigPermissionWarnings(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(cfgPath, []byte("logging:\n  level: debug\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg := config.DefaultConfig()
@@ -1298,9 +1329,11 @@ func TestConfigDoctorJSONAcceptsStricterConfigPermissions(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(cfgPath, []byte("logging:\n  level: debug\n"), 0o400); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer os.Chmod(dir, 0o700)
 
@@ -1552,9 +1585,11 @@ func writeEvaluationReport(t *testing.T, home string, rep evaluation.Report) {
 	data, err := json.Marshal(rep)
 	if err != nil {
 		t.Fatalf("marshal evaluation report: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(home, "evaluation-report.json"), data, 0o600); err != nil {
 		t.Fatalf("write evaluation report: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -1591,6 +1626,7 @@ func TestConfigExplainRedactsTaggedSecrets(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(cfgPath, []byte("server:\n  auth_token: file-secret\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	code, out := runCLI(t, "--json", "--home", dir, "config", "explain", "server.auth_token")
@@ -1619,9 +1655,11 @@ func TestRunConfigDumpDoesNotMutateSparseConfig(t *testing.T) {
 	before := []byte("schema_version: 2\n# top comment\nagent:\n  # keep me\n  provider: codex\n")
 	if err := os.WriteFile(cfgPath, before, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(config.AuthTokenPath(), []byte("persisted-token\n"), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	code, out := runCLI(t, "--home", dir, "config", "dump")
@@ -1638,6 +1676,7 @@ func TestRunConfigDumpDoesNotMutateSparseConfig(t *testing.T) {
 	after, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(after, before) {
 		t.Fatalf("config dump rewrote sparse config.yaml:\nbefore:\n%s\nafter:\n%s", before, after)
@@ -1673,6 +1712,7 @@ func TestRunConfigMigrateDryRunAndApply(t *testing.T) {
 	}, "\n"))
 	if err := os.WriteFile(cfgPath, before, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	code, out := runCLI(t, "--json", "--home", dir, "config", "migrate", "--to", "2", "--dry-run")
@@ -1702,6 +1742,7 @@ func TestRunConfigMigrateDryRunAndApply(t *testing.T) {
 	afterDryRun, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(afterDryRun, before) {
 		t.Fatalf("dry-run mutated config:\nbefore:\n%s\nafter:\n%s", before, afterDryRun)
@@ -1719,6 +1760,7 @@ func TestRunConfigMigrateDryRunAndApply(t *testing.T) {
 	backup, err := os.ReadFile(applied.BackupPath)
 	if err != nil {
 		t.Fatalf("read backup: %v", err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(backup, before) {
 		t.Fatalf("backup mismatch:\nwant:\n%s\ngot:\n%s", before, backup)
@@ -1726,6 +1768,7 @@ func TestRunConfigMigrateDryRunAndApply(t *testing.T) {
 	migrated, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	text := string(migrated)
 	for _, want := range []string{
@@ -1774,6 +1817,7 @@ func TestRunConfigMigrateDryRunNoOpForCanonicalGitHubReviewHoldConfig(t *testing
 	}, "\n"))
 	if err := os.WriteFile(cfgPath, raw, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	code, out := runCLI(t, "--json", "--home", dir, "config", "migrate", "--to", "2", "--dry-run")
@@ -1789,6 +1833,7 @@ func TestRunConfigMigrateDryRunNoOpForCanonicalGitHubReviewHoldConfig(t *testing
 	after, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(after, raw) {
 		t.Fatalf("dry-run mutated canonical config:\nbefore:\n%s\nafter:\n%s", raw, after)
@@ -2182,17 +2227,21 @@ func TestHandoffPersistsSourceProviderAtomically(t *testing.T) {
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
+		panic("unreachable")
 	}
 	ps, err := project.NewStore(cfg.ProjectsDir, cfg.ClonesDir)
 	if err != nil {
 		t.Fatalf("project.NewStore: %v", err)
+		panic("unreachable")
 	}
 	proj, err := ps.CreateMeta("https://github.com/acme/repo.git", project.ProjectTypePet)
 	if err != nil {
 		t.Fatalf("CreateMeta: %v", err)
+		panic("unreachable")
 	}
 	if err := os.MkdirAll(filepath.Dir(proj.ClonePath), 0o755); err != nil {
 		t.Fatalf("mkdir clone parent: %v", err)
+		panic("unreachable")
 	}
 	runGit(t, "", "init", "--bare", proj.ClonePath)
 	runGit(t, "", "--git-dir="+proj.ClonePath, "symbolic-ref", "HEAD", "refs/heads/main")
@@ -2243,17 +2292,21 @@ func TestHandoffReadyPRLinksExistingPRAsInternalTask(t *testing.T) {
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
+		panic("unreachable")
 	}
 	ps, err := project.NewStore(cfg.ProjectsDir, cfg.ClonesDir)
 	if err != nil {
 		t.Fatalf("project.NewStore: %v", err)
+		panic("unreachable")
 	}
 	proj, err := ps.CreateMeta("https://github.com/acme/repo.git", project.ProjectTypePet)
 	if err != nil {
 		t.Fatalf("CreateMeta: %v", err)
+		panic("unreachable")
 	}
 	if err := os.MkdirAll(filepath.Dir(proj.ClonePath), 0o755); err != nil {
 		t.Fatalf("mkdir clone parent: %v", err)
+		panic("unreachable")
 	}
 	runGit(t, "", "init", "--bare", proj.ClonePath)
 	runGit(t, "", "--git-dir="+proj.ClonePath, "symbolic-ref", "HEAD", "refs/heads/main")
@@ -2660,14 +2713,17 @@ func TestArtifactListAndGet(t *testing.T) {
 	taskDir := filepath.Join(dir, "artifacts", "task-cli1")
 	if err := os.MkdirAll(taskDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	blob := []byte("# Plan content")
 	if err := os.WriteFile(filepath.Join(taskDir, "plan.md"), blob, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	meta := `{"name":"plan.md","kind":"plan","taskId":"task-cli1","createdAt":"2026-01-01T00:00:00Z","size":14}`
 	if err := os.WriteFile(filepath.Join(taskDir, "plan.md.meta.json"), []byte(meta), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	code, out := runCLI(t, "--json", "artifact", "list", "task-cli1")
@@ -2717,17 +2773,21 @@ func TestArtifactReindex(t *testing.T) {
 	taskDir := filepath.Join(dir, "artifacts", "task-ri1")
 	if err := os.MkdirAll(taskDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(taskDir, "plan.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	meta := `{"name":"plan.md","kind":"plan","taskId":"task-ri1","createdAt":"2026-01-01T00:00:00Z","size":1}`
 	if err := os.WriteFile(filepath.Join(taskDir, "plan.md.meta.json"), []byte(meta), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Corrupt the index to confirm reindex repairs it.
 	if err := os.WriteFile(filepath.Join(taskDir, "index.json"), []byte("!!!"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	code, out := runCLI(t, "--json", "artifact", "reindex", "task-ri1")
@@ -3030,6 +3090,7 @@ func TestTasksHistory_HumanAndJSONOutput(t *testing.T) {
 	tasksDir := filepath.Join(home, "tasks")
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
 		t.Fatalf("mkdir tasks dir: %v", err)
+		panic("unreachable")
 	}
 
 	snap := tasksnapshot.New(config.TaskSnapshotGitDir(), tasksDir, 0, nil)
@@ -3039,10 +3100,12 @@ func TestTasksHistory_HumanAndJSONOutput(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(tasksDir, "task-1.md"), []byte("hello"), 0o644); err != nil {
 		t.Fatalf("write task file: %v", err)
+		panic("unreachable")
 	}
 	committed, err := snap.Commit(ctx)
 	if err != nil || !committed {
 		t.Fatalf("baseline commit: committed=%v err=%v", committed, err)
+		panic("unreachable")
 	}
 
 	code, out := runCLI(t, "tasks-history")
@@ -3076,6 +3139,7 @@ func TestTasksHistory_EmptyRepoIsNotAnError(t *testing.T) {
 	tasksDir := filepath.Join(home, "tasks")
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
 		t.Fatalf("mkdir tasks dir: %v", err)
+		panic("unreachable")
 	}
 
 	snap := tasksnapshot.New(config.TaskSnapshotGitDir(), tasksDir, 0, nil)
@@ -3104,6 +3168,7 @@ func TestTasksHistory_LimitFlag(t *testing.T) {
 	tasksDir := filepath.Join(home, "tasks")
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
 		t.Fatalf("mkdir tasks dir: %v", err)
+		panic("unreachable")
 	}
 
 	snap := tasksnapshot.New(config.TaskSnapshotGitDir(), tasksDir, 0, nil)
@@ -3114,9 +3179,11 @@ func TestTasksHistory_LimitFlag(t *testing.T) {
 	for i := range 3 {
 		if err := os.WriteFile(filepath.Join(tasksDir, fmt.Sprintf("task-%d.md", i)), []byte("x"), 0o644); err != nil {
 			t.Fatalf("write task file: %v", err)
+			panic("unreachable")
 		}
 		if committed, err := snap.Commit(ctx); err != nil || !committed {
 			t.Fatalf("commit %d: committed=%v err=%v", i, committed, err)
+			panic("unreachable")
 		}
 	}
 
@@ -3140,6 +3207,7 @@ func TestHookCmd_FailsOpenOnBadConfig(t *testing.T) {
 	// An unclosed flow sequence makes yaml.Unmarshal (and thus config.Load) error.
 	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("agent: [unclosed"), 0o644); err != nil {
 		t.Fatalf("write bad config: %v", err)
+		panic("unreachable")
 	}
 	code, out := runHookWithStdin(t, `{"hook_event_name":"SessionStart","session_id":"s","model":"m"}`,
 		"hook", "SessionStart", "--task", "task-abc")
@@ -3164,6 +3232,7 @@ func TestRunCheckConfig(t *testing.T) {
 		t.Setenv("SYBRA_HOME", home)
 		if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if code := runCheckConfig(); code != 0 {
 			t.Fatalf("runCheckConfig() = %d, want 0 for a valid config", code)
@@ -3176,6 +3245,7 @@ func TestRunCheckConfig(t *testing.T) {
 		configPath := filepath.Join(home, "config.yaml")
 		if err := os.WriteFile(configPath, []byte("this_key_does_not_exist: true\n"), 0o600); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if code := runCheckConfig(); code != 1 {
 			t.Fatalf("runCheckConfig() = %d, want 1 for an unknown config key", code)
@@ -3185,6 +3255,7 @@ func TestRunCheckConfig(t *testing.T) {
 		data, err := os.ReadFile(configPath)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if string(data) != "this_key_does_not_exist: true\n" {
 			t.Fatalf("runCheckConfig must not rewrite an invalid config.yaml, got %q", data)
@@ -3199,6 +3270,7 @@ func TestRunCheckConfig(t *testing.T) {
 		t.Setenv("SYBRA_HOME", home)
 		if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		for _, flag := range []string{"-check-config", "--check-config"} {
 			if code := run([]string{flag}); code != 0 {
@@ -3216,6 +3288,7 @@ func TestRunCheckConfig(t *testing.T) {
 		t.Setenv("SYBRA_HOME", home)
 		if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if code := run([]string{"--json", "-check-config"}); code != 0 {
 			t.Errorf("run(--json -check-config) = %d, want 0", code)
@@ -3229,9 +3302,11 @@ func TestRunCheckConfig(t *testing.T) {
 		t.Setenv("SYBRA_HOME", good)
 		if err := os.WriteFile(filepath.Join(good, "config.yaml"), []byte("schema_version: 2\n"), 0o600); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if err := os.WriteFile(filepath.Join(bad, "config.yaml"), []byte("this_key_does_not_exist: true\n"), 0o600); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if code := run([]string{"--home", bad, "-check-config"}); code != 1 {
 			t.Errorf("run(--home <invalid> -check-config) = %d, want 1 — the override was ignored", code)
@@ -3352,6 +3427,7 @@ func TestConfigDoctorReportsCapacity(t *testing.T) {
 	mustUnmarshal(t, out, &report)
 	if report.Capacity == nil {
 		t.Fatal("doctor report carries no capacity section")
+		panic("unreachable")
 	}
 	if !slices.Equal(report.Capacity.Enabled, []string{"claude"}) {
 		t.Errorf("capacity.enabled = %v, want [claude]", report.Capacity.Enabled)

@@ -170,10 +170,12 @@ func TestResumeStalled_MissingSnapshotEscalatesOnce(t *testing.T) {
 	def, err := store.Get("test-simple")
 	if err != nil {
 		t.Fatalf("Get workflow: %v", err)
+		panic("unreachable")
 	}
 	hash, err := store.SaveSnapshot(def)
 	if err != nil {
 		t.Fatalf("SaveSnapshot: %v", err)
+		panic("unreachable")
 	}
 	if err := store.Save(Definition{
 		ID:   "test-simple",
@@ -190,9 +192,11 @@ func TestResumeStalled_MissingSnapshotEscalatesOnce(t *testing.T) {
 	snapshotPath, err := store.snapshotPath("test-simple", hash)
 	if err != nil {
 		t.Fatalf("snapshotPath: %v", err)
+		panic("unreachable")
 	}
 	if err := os.Remove(snapshotPath); err != nil {
 		t.Fatalf("Remove snapshot: %v", err)
+		panic("unreachable")
 	}
 
 	tasks := newMemTasks()
@@ -210,6 +214,7 @@ func TestResumeStalled_MissingSnapshotEscalatesOnce(t *testing.T) {
 	engine, err := NewEngine(store, tasks, newMockAgents(), discardLogger(), completeDependencies())
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
+		panic("unreachable")
 	}
 	engine.ResumeStalled()
 

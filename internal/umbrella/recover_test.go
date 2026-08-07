@@ -28,6 +28,7 @@ func mkTracker(t *testing.T, tasks *task.Manager, umb github.Issue, maxParallel 
 	})
 	if err != nil {
 		t.Fatalf("create tracker: %v", err)
+		panic("unreachable")
 	}
 	return tk
 }
@@ -50,6 +51,7 @@ func mkGatedChild(t *testing.T, tasks *task.Manager, umb github.Issue, issue str
 	tk, err := tasks.CreateFull("child "+issue, "", task.AgentModeHeadless, init)
 	if err != nil {
 		t.Fatalf("create gated child: %v", err)
+		panic("unreachable")
 	}
 	return tk
 }
@@ -66,6 +68,7 @@ func mkActiveChild(t *testing.T, tasks *task.Manager, umb github.Issue, issue st
 	})
 	if err != nil {
 		t.Fatalf("create active child: %v", err)
+		panic("unreachable")
 	}
 	return tk
 }
@@ -88,6 +91,7 @@ func planJSON(t *testing.T, maxParallel int, refs ...string) string {
 	b, err := json.Marshal(map[string]any{"children": children, "maxParallel": maxParallel})
 	if err != nil {
 		t.Fatalf("marshal plan json: %v", err)
+		panic("unreachable")
 	}
 	return string(b)
 }
@@ -129,6 +133,7 @@ func TestRecoverDegraded_Success(t *testing.T) {
 	res, err := RecoverDegraded(context.Background(), tasks, run, umb.URL)
 	if err != nil {
 		t.Fatalf("RecoverDegraded: %v", err)
+		panic("unreachable")
 	}
 	if res.Outcome != RecoveryRecovered {
 		t.Fatalf("Outcome = %q, want %q (reason=%q)", res.Outcome, RecoveryRecovered, res.Reason)
@@ -174,6 +179,7 @@ func TestRecoverDegraded_MissingChildIsCreated(t *testing.T) {
 	res, err := RecoverDegraded(context.Background(), tasks, run, umb.URL)
 	if err != nil {
 		t.Fatalf("RecoverDegraded: %v", err)
+		panic("unreachable")
 	}
 	if res.Outcome != RecoveryRecovered {
 		t.Fatalf("Outcome = %q, want %q (reason=%q)", res.Outcome, RecoveryRecovered, res.Reason)
@@ -202,6 +208,7 @@ func TestRecoverDegraded_PlannerErrorRecordsFailure(t *testing.T) {
 	res, err := RecoverDegraded(context.Background(), tasks, run, umb.URL)
 	if err != nil {
 		t.Fatalf("RecoverDegraded: %v", err)
+		panic("unreachable")
 	}
 	if res.Outcome != RecoveryFailed || res.FailCount != 1 || res.Exhausted {
 		t.Fatalf("res = %+v, want Failed/FailCount=1/Exhausted=false", res)
@@ -252,6 +259,7 @@ func TestRecoverDegraded_ConcurrentOperatorReasonNotClobberedOnFailure(t *testin
 	res, err := RecoverDegraded(context.Background(), tasks, run, umb.URL)
 	if err != nil {
 		t.Fatalf("RecoverDegraded: %v", err)
+		panic("unreachable")
 	}
 	if res.Outcome != RecoveryFailed {
 		t.Fatalf("res = %+v, want Failed", res)
@@ -281,6 +289,7 @@ func TestRecoverDegraded_PlannerErrorReasonIsSafeAndUTF8(t *testing.T) {
 	res, err := RecoverDegraded(context.Background(), tasks, run, umb.URL)
 	if err != nil {
 		t.Fatalf("RecoverDegraded: %v", err)
+		panic("unreachable")
 	}
 	if !utf8.ValidString(res.Reason) || len(res.Reason) > 160 {
 		t.Fatalf("RecoveryResult.Reason invalid or too long: len=%d valid=%v %q", len(res.Reason), utf8.ValidString(res.Reason), res.Reason)
@@ -320,6 +329,7 @@ func TestRecoverDegraded_FallbackPlanIsRefused(t *testing.T) {
 	res, err := RecoverDegraded(context.Background(), tasks, invalidRunner(), umb.URL)
 	if err != nil {
 		t.Fatalf("RecoverDegraded: %v", err)
+		panic("unreachable")
 	}
 	if res.Outcome != RecoveryFailed {
 		t.Fatalf("Outcome = %q, want %q (reason=%q)", res.Outcome, RecoveryFailed, res.Reason)
@@ -351,6 +361,7 @@ func TestRecoverDegraded_CooldownSkipsPlanner(t *testing.T) {
 	res, err := RecoverDegraded(context.Background(), tasks, run, umb.URL)
 	if err != nil {
 		t.Fatalf("RecoverDegraded: %v", err)
+		panic("unreachable")
 	}
 	if res.Outcome != RecoverySkipped {
 		t.Fatalf("Outcome = %q, want %q", res.Outcome, RecoverySkipped)
@@ -372,6 +383,7 @@ func TestRecoverDegraded_ExhaustedSkipsPlanner(t *testing.T) {
 	res, err := RecoverDegraded(context.Background(), tasks, run, umb.URL)
 	if err != nil {
 		t.Fatalf("RecoverDegraded: %v", err)
+		panic("unreachable")
 	}
 	if res.Outcome != RecoverySkipped {
 		t.Fatalf("Outcome = %q, want %q", res.Outcome, RecoverySkipped)
@@ -399,6 +411,7 @@ func TestRecoverDegraded_DuplicateChildRefsRefused(t *testing.T) {
 	res, err := RecoverDegraded(context.Background(), tasks, run, umb.URL)
 	if err != nil {
 		t.Fatalf("RecoverDegraded: %v", err)
+		panic("unreachable")
 	}
 	if res.Outcome != RecoverySafetyRefused {
 		t.Fatalf("Outcome = %q, want %q (reason=%q)", res.Outcome, RecoverySafetyRefused, res.Reason)
@@ -430,6 +443,7 @@ func TestRecoverDegraded_ActiveChildDependenciesUntouched(t *testing.T) {
 	res, err := RecoverDegraded(context.Background(), tasks, run, umb.URL)
 	if err != nil {
 		t.Fatalf("RecoverDegraded: %v", err)
+		panic("unreachable")
 	}
 	if res.Outcome != RecoveryRecovered {
 		t.Fatalf("Outcome = %q, want %q (reason=%q)", res.Outcome, RecoveryRecovered, res.Reason)
@@ -468,6 +482,7 @@ func TestRecoverDegraded_RechecksTrackerStatusBeforeMutating(t *testing.T) {
 	res, err := RecoverDegraded(context.Background(), tasks, run, umb.URL)
 	if err != nil {
 		t.Fatalf("RecoverDegraded: %v", err)
+		panic("unreachable")
 	}
 	if res.Outcome != RecoverySkipped {
 		t.Fatalf("Outcome = %q, want %q (reason=%q)", res.Outcome, RecoverySkipped, res.Reason)
@@ -499,6 +514,7 @@ func TestRecoverDegraded_MalformedRecoveryTagsReplacedCanonically(t *testing.T) 
 	res, err := RecoverDegraded(context.Background(), tasks, run, umb.URL)
 	if err != nil {
 		t.Fatalf("RecoverDegraded: %v", err)
+		panic("unreachable")
 	}
 	if res.FailCount != 1 {
 		t.Fatalf("FailCount = %d, want 1 (malformed tag parses as 0)", res.FailCount)
@@ -537,6 +553,7 @@ func TestRecoverDegraded_DuplicateMaxParallelTagsCollapsed(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create tracker: %v", err)
+		panic("unreachable")
 	}
 	mkGatedChild(t, tasks, umb, subs[0].URL, nil, task.StatusTodo)
 	run, _ := newCountingRunner(planJSON(t, 3, subs[0].URL))
@@ -544,6 +561,7 @@ func TestRecoverDegraded_DuplicateMaxParallelTagsCollapsed(t *testing.T) {
 	res, err := RecoverDegraded(context.Background(), tasks, run, umb.URL)
 	if err != nil {
 		t.Fatalf("RecoverDegraded: %v", err)
+		panic("unreachable")
 	}
 	if res.Outcome != RecoveryRecovered {
 		t.Fatalf("Outcome = %q, want %q (reason=%q)", res.Outcome, RecoveryRecovered, res.Reason)
@@ -584,6 +602,7 @@ func TestRecoverDegraded_PartialWriteReruns(t *testing.T) {
 			recoveryFailAfter = ""
 			if err != nil {
 				t.Fatalf("first (injected-failure) run: %v", err)
+				panic("unreachable")
 			}
 			if res1.Outcome != RecoveryFailed {
 				t.Fatalf("first run outcome = %q, want %q (injected at %s)", res1.Outcome, RecoveryFailed, cp)
@@ -592,6 +611,7 @@ func TestRecoverDegraded_PartialWriteReruns(t *testing.T) {
 			res2, err := RecoverDegraded(context.Background(), tasks, run, umb.URL)
 			if err != nil {
 				t.Fatalf("rerun: %v", err)
+				panic("unreachable")
 			}
 			if res2.Outcome != RecoveryRecovered && res2.Outcome != RecoverySkipped {
 				t.Fatalf("rerun outcome = %q, want %q or %q (safely backed off)", res2.Outcome, RecoveryRecovered, RecoverySkipped)
@@ -606,6 +626,7 @@ func assertNoDuplicateChildrenOrTags(t *testing.T, tasks *task.Manager, umbURL s
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	umbKey := NormalizeIssueRef(umbURL)
 	seenChild := map[string]int{}
@@ -626,6 +647,7 @@ func assertNoDuplicateChildrenOrTags(t *testing.T, tasks *task.Manager, umbURL s
 	}
 	if tracker == nil {
 		t.Fatal("tracker task missing after rerun")
+		panic("unreachable")
 	}
 	maxParallelCount, recoverFailCount, recoverAfterCount, fallbackCount, exhaustedCount := 0, 0, 0, 0, 0
 	for _, tag := range tracker.Tags {
@@ -652,6 +674,7 @@ func mustGetByIssue(t *testing.T, tasks *task.Manager, issue string, taskType ta
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	for i := range all {
 		if NormalizeIssueRef(all[i].Issue) == NormalizeIssueRef(issue) && (taskType == "" || all[i].TaskType == taskType) {
@@ -667,6 +690,7 @@ func mustTaskByID(t *testing.T, tasks *task.Manager, id string) task.Task {
 	tk, err := tasks.Get(id)
 	if err != nil {
 		t.Fatalf("Get(%s): %v", id, err)
+		panic("unreachable")
 	}
 	return tk
 }

@@ -29,6 +29,7 @@ func TestSandboxEnforce_DarwinCommitSurvivesSandboxReset(t *testing.T) {
 	sharedObjects, err := canonicalizeRoot(filepath.Join(bare, "objects"))
 	if err != nil {
 		t.Fatalf("canonicalize shared object store: %v", err)
+		panic("unreachable")
 	}
 	prepare := func() RunConfig {
 		cfg, _, err := m.prepareRunConfig(RunConfig{
@@ -39,6 +40,7 @@ func TestSandboxEnforce_DarwinCommitSurvivesSandboxReset(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("prepareRunConfig: %v", err)
+			panic("unreachable")
 		}
 		if got, want := darwinEnvValue(cfg.ExtraEnv, "GIT_OBJECT_DIRECTORY"), sharedObjects; got != want {
 			t.Fatalf("GIT_OBJECT_DIRECTORY = %q, want trusted shared store %q", got, want)
@@ -55,6 +57,7 @@ func TestSandboxEnforce_DarwinCommitSurvivesSandboxReset(t *testing.T) {
 	cmd.Env = append(os.Environ(), cfg.ExtraEnv...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("sandboxed commit: %v: %s", err, out)
+		panic("unreachable")
 	}
 	headCmd := exec.Command("git", "rev-parse", "HEAD")
 	headCmd.Dir = wt
@@ -62,17 +65,21 @@ func TestSandboxEnforce_DarwinCommitSurvivesSandboxReset(t *testing.T) {
 	headOut, err := headCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("resolve committed HEAD: %v: %s", err, headOut)
+		panic("unreachable")
 	}
 	head := strings.TrimSpace(string(headOut))
 
 	if err := os.RemoveAll(ambientObjects); err != nil {
 		t.Fatalf("remove ambient object store: %v", err)
+		panic("unreachable")
 	}
 	if err := os.RemoveAll(sandboxHome); err != nil {
 		t.Fatalf("remove sandbox home: %v", err)
+		panic("unreachable")
 	}
 	if err := os.MkdirAll(sandboxHome, 0o755); err != nil {
 		t.Fatalf("recreate sandbox home: %v", err)
+		panic("unreachable")
 	}
 	_ = prepare()
 
@@ -81,6 +88,7 @@ func TestSandboxEnforce_DarwinCommitSurvivesSandboxReset(t *testing.T) {
 	verify.Env = gitSandboxDiscoveryEnv()
 	if out, err := verify.CombinedOutput(); err != nil {
 		t.Fatalf("commit disappeared after sandbox reset: %v: %s", err, out)
+		panic("unreachable")
 	}
 }
 
@@ -99,17 +107,21 @@ func TestPrepareGitSandboxOverlay_DarwinRejectsInvalidLegacyObjects(t *testing.T
 	legacy := filepath.Join(sandboxHome, ".sybra-git-overlay", "objects", "ab", "cdef")
 	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(legacy, []byte("legacy"), 0o444); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	_, err := prepareGitSandboxOverlay(context.Background(), t.TempDir(), sandboxHome, gitSandboxRoots{objectDir: t.TempDir()})
 	if err == nil || !strings.Contains(err.Error(), "unsupported legacy Git object payload") {
 		t.Fatalf("prepareGitSandboxOverlay error = %v, want invalid legacy-object failure", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(legacy); err != nil {
 		t.Fatalf("legacy object was not preserved: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -118,17 +130,21 @@ func TestPrepareGitSandboxOverlay_DarwinPreservesCorruptCanonicalLegacyObject(t 
 	legacy := filepath.Join(sandboxHome, ".sybra-git-overlay", "objects", "ab", strings.Repeat("0", 38))
 	if err := os.MkdirAll(filepath.Dir(legacy), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(legacy, []byte("not a zlib Git object"), 0o444); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	_, err := prepareGitSandboxOverlay(context.Background(), t.TempDir(), sandboxHome, gitSandboxRoots{objectDir: t.TempDir()})
 	if err == nil || !strings.Contains(err.Error(), "verify legacy object") {
 		t.Fatalf("prepareGitSandboxOverlay error = %v, want corrupt legacy-object failure", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(legacy); err != nil {
 		t.Fatalf("corrupt legacy object was not preserved: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -137,26 +153,32 @@ func TestVerifyLooseObject_RejectsOversizedObjectBeforeReadingBody(t *testing.T)
 	file, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	zw := zlib.NewWriter(file)
 	if _, err := fmt.Fprintf(zw, "blob %d\x00", int64(maxLegacyLooseObjectSize)+1); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := zw.Close(); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	file, err = os.Open(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer func() { _ = file.Close() }()
 
 	err = verifyLooseObject(file, strings.Repeat("0", 40))
 	if err == nil || !strings.Contains(err.Error(), "exceeds migration limit") {
 		t.Fatalf("verifyLooseObject error = %v, want migration-size limit", err)
+		panic("unreachable")
 	}
 }
 
@@ -166,11 +188,13 @@ func TestPrepareGitSandboxOverlay_DarwinMigratesLegacyObjectsBeforeReset(t *test
 	legacyObjects := filepath.Join(sandboxHome, ".sybra-git-overlay", "objects")
 	if err := os.MkdirAll(legacyObjects, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	sharedObjects := filepath.Join(bare, "objects")
 
 	if err := os.WriteFile(filepath.Join(wt, "legacy.txt"), []byte("preserved\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	runGitOrFatal(t, wt, "add", "legacy.txt")
 	commit := exec.Command("git", "commit", "-q", "-m", "legacy overlay commit")
@@ -181,6 +205,7 @@ func TestPrepareGitSandboxOverlay_DarwinMigratesLegacyObjectsBeforeReset(t *test
 	)
 	if out, err := commit.CombinedOutput(); err != nil {
 		t.Fatalf("create legacy-overlay commit: %v: %s", err, out)
+		panic("unreachable")
 	}
 	head := strings.TrimSpace(runGitOutput(t, wt, "rev-parse", "HEAD"))
 	if _, err := os.Stat(filepath.Join(sharedObjects, head[:2], head[2:])); !os.IsNotExist(err) {
@@ -190,12 +215,15 @@ func TestPrepareGitSandboxOverlay_DarwinMigratesLegacyObjectsBeforeReset(t *test
 	roots, err := resolveGitSandboxRoots(context.Background(), wt)
 	if err != nil {
 		t.Fatalf("resolveGitSandboxRoots: %v", err)
+		panic("unreachable")
 	}
 	if _, err := prepareGitSandboxOverlay(context.Background(), wt, sandboxHome, roots); err != nil {
 		t.Fatalf("prepareGitSandboxOverlay: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(filepath.Join(sharedObjects, head[:2], head[2:])); err != nil {
 		t.Fatalf("migrated commit missing from shared store: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(legacyObjects); !os.IsNotExist(err) {
 		t.Fatalf("verified legacy object overlay was not reset: %v", err)
@@ -205,6 +233,7 @@ func TestPrepareGitSandboxOverlay_DarwinMigratesLegacyObjectsBeforeReset(t *test
 	verify.Env = gitSandboxDiscoveryEnv()
 	if out, err := verify.CombinedOutput(); err != nil {
 		t.Fatalf("migrated commit not independently readable: %v: %s", err, out)
+		panic("unreachable")
 	}
 }
 
@@ -214,6 +243,7 @@ func TestPrepareGitSandboxOverlay_DarwinRemovesEmptyLegacyObjectDirs(t *testing.
 	for _, dir := range []string{legacyObjects, filepath.Join(legacyObjects, "info"), filepath.Join(legacyObjects, "pack")} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 	for _, metadata := range []string{
@@ -224,15 +254,18 @@ func TestPrepareGitSandboxOverlay_DarwinRemovesEmptyLegacyObjectDirs(t *testing.
 		path := filepath.Join(legacyObjects, metadata)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if err := os.WriteFile(path, []byte("derived"), 0o444); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
 	_, err := prepareGitSandboxOverlay(context.Background(), t.TempDir(), sandboxHome, gitSandboxRoots{objectDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("prepareGitSandboxOverlay: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(legacyObjects); !os.IsNotExist(err) {
 		t.Fatalf("metadata-only legacy object dirs were not reset: %v", err)
@@ -244,17 +277,21 @@ func TestPrepareGitSandboxOverlay_DarwinPreservesLegacyPack(t *testing.T) {
 	legacyPack := filepath.Join(sandboxHome, ".sybra-git-overlay", "objects", "pack", "pack-deadbeef.pack")
 	if err := os.MkdirAll(filepath.Dir(legacyPack), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(legacyPack, []byte("legacy"), 0o444); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	_, err := prepareGitSandboxOverlay(context.Background(), t.TempDir(), sandboxHome, gitSandboxRoots{objectDir: t.TempDir()})
 	if err == nil || !strings.Contains(err.Error(), "unsupported legacy Git object payload") {
 		t.Fatalf("prepareGitSandboxOverlay error = %v, want preserved legacy-pack failure", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(legacyPack); err != nil {
 		t.Fatalf("legacy pack was not preserved: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -263,17 +300,21 @@ func TestPrepareGitSandboxOverlay_DarwinPreservesLegacyAlternates(t *testing.T) 
 	legacyAlternates := filepath.Join(sandboxHome, ".sybra-git-overlay", "objects", "info", "alternates")
 	if err := os.MkdirAll(filepath.Dir(legacyAlternates), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(legacyAlternates, []byte("/objects/elsewhere\n"), 0o444); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	_, err := prepareGitSandboxOverlay(context.Background(), t.TempDir(), sandboxHome, gitSandboxRoots{objectDir: t.TempDir()})
 	if err == nil || !strings.Contains(err.Error(), "unsupported legacy Git object payload") {
 		t.Fatalf("prepareGitSandboxOverlay error = %v, want preserved legacy-alternates failure", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(legacyAlternates); err != nil {
 		t.Fatalf("legacy alternates file was not preserved: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -285,6 +326,7 @@ func runGitOutput(t *testing.T, dir string, args ...string) string {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v (dir=%s): %v: %s", args, dir, err, out)
+		panic("unreachable")
 	}
 	return string(out)
 }
@@ -296,6 +338,7 @@ func runGitOrFatal(t *testing.T, dir string, args ...string) {
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v (dir=%s): %v: %s", args, dir, err, out)
+		panic("unreachable")
 	}
 }
 
@@ -336,17 +379,21 @@ func buildEnforceCfg(t *testing.T, worktree string) *RunConfig {
 	profilePath, err := materializeSandboxProfile()
 	if err != nil {
 		t.Fatalf("materializeSandboxProfile: %v", err)
+		panic("unreachable")
 	}
 	wtCanon, err := canonicalizeRoot(worktree)
 	if err != nil {
 		t.Fatalf("canonicalizeRoot(worktree): %v", err)
+		panic("unreachable")
 	}
 	gitRoots, err := resolveGitSandboxRoots(context.Background(), wtCanon)
 	if err != nil {
 		t.Fatalf("resolveGitSandboxRoots: %v", err)
+		panic("unreachable")
 	}
 	if err := prepareGitLooseObjectDirs(gitRoots.objectDir); err != nil {
 		t.Fatalf("prepare loose object dirs: %v", err)
+		panic("unreachable")
 	}
 	spec := enforceSpec(wtCanon, nil, wtCanon, wtCanon, "", wtCanon, profilePath, "", gitRoots, gitSandboxOverlay{})
 	cfg := &RunConfig{sandbox: spec}
@@ -390,6 +437,7 @@ func TestSandboxEnforce_FullGitWorkflowSucceeds(t *testing.T) {
 
 	if err != nil {
 		t.Fatalf("fetch+merge+add+commit failed under sandbox (err=%v): %s", err, got)
+		panic("unreachable")
 	}
 	if !strings.Contains(got, "WORKFLOW_OK") {
 		t.Errorf("workflow did not reach its final step: %s", got)
@@ -416,6 +464,7 @@ func TestSandboxEnforce_SignedCommitSucceeds(t *testing.T) {
 	cmd := newDarwinSandboxCmd(cfg, "sh", "-c", "cd "+wt+" && echo signed > signed.txt && git add signed.txt && git commit -q -S -m signed")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("sandboxed signed commit: %v: %s", err, out)
+		panic("unreachable")
 	}
 }
 
@@ -429,15 +478,18 @@ func TestSandboxEnforce_LargeFetchUnpacksLooseObjects(t *testing.T) {
 	remoteOut, err := remoteCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("resolve test remote: %v: %s", err, remoteOut)
+		panic("unreachable")
 	}
 	remote := strings.TrimSpace(string(remoteOut))
 	for i := range 160 {
 		name := filepath.Join(remote, "bulk", fmt.Sprintf("file-%03d.txt", i))
 		if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
 			t.Fatalf("mkdir bulk fixture: %v", err)
+			panic("unreachable")
 		}
 		if err := os.WriteFile(name, fmt.Appendf(nil, "payload-%03d\n", i), 0o644); err != nil {
 			t.Fatalf("write bulk fixture: %v", err)
+			panic("unreachable")
 		}
 	}
 	runGitOrFatal(t, remote, "add", "bulk")
@@ -450,6 +502,7 @@ func TestSandboxEnforce_LargeFetchUnpacksLooseObjects(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("large sandboxed fetch: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if after := gitRepoWideMaintenanceState(t, bare); after != before {
 		t.Fatalf("large fetch wrote shared pack/info state instead of loose objects\nbefore: %s\nafter: %s", before, after)
@@ -474,6 +527,7 @@ func TestSandboxEnforce_TmpAliasAllowsHelpersButKeepsOtherTempRootsReadOnly(t *t
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	if got := cfg.sandbox.tmpAlias; got != `^/private/tmp/claude-[^/]+-cwd(/.*)?$` {
 		t.Fatalf("sandbox tmpAlias = %q, want narrow Claude cwd pattern", got)
@@ -489,6 +543,7 @@ func TestSandboxEnforce_TmpAliasAllowsHelpersButKeepsOtherTempRootsReadOnly(t *t
 	}
 	if err := os.MkdirAll(aliasDir, 0o700); err != nil {
 		t.Fatalf("create provider-owned alias dir: %v", err)
+		panic("unreachable")
 	}
 
 	script := fmt.Sprintf(
@@ -501,6 +556,7 @@ func TestSandboxEnforce_TmpAliasAllowsHelpersButKeepsOtherTempRootsReadOnly(t *t
 	got := string(out)
 	if err != nil {
 		t.Fatalf("tmp alias probe failed: %v: %s", err, got)
+		panic("unreachable")
 	}
 	if strings.Contains(got, "LEAK") || !strings.Contains(got, "DENIED") {
 		t.Fatalf("unexpected tmp alias probe output: %q", got)
@@ -508,6 +564,7 @@ func TestSandboxEnforce_TmpAliasAllowsHelpersButKeepsOtherTempRootsReadOnly(t *t
 	for _, path := range []string{canonFile, aliasFile} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected writable temp path %q missing: %v", path, err)
+			panic("unreachable")
 		}
 	}
 	if _, err := os.Stat(deniedFile); !os.IsNotExist(err) {
@@ -548,6 +605,7 @@ func TestSandboxEnforce_BlocksSharedCloneMaintenance(t *testing.T) {
 			out, err := cmd.CombinedOutput()
 			if err == nil && tc.requireNonzeroExit {
 				t.Fatalf("git %s unexpectedly succeeded: %s", tc.args, out)
+				panic("unreachable")
 			}
 			if after := gitMaintenanceState(t, bare); after != before {
 				t.Fatalf("git %s partially mutated shared maintenance state\nbefore: %s\nafter:  %s\noutput: %s", tc.args, before, after, out)
@@ -565,6 +623,7 @@ func TestSandboxEnforce_BlocksNestedObjectDirectoryBypass(t *testing.T) {
 	for _, dir := range []string{nested, filepath.Join(nested, "pack"), filepath.Join(nested, "info")} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir nested object fixture: %v", err)
+			panic("unreachable")
 		}
 	}
 	cfg := buildEnforceCfg(t, wt)
@@ -572,10 +631,12 @@ func TestSandboxEnforce_BlocksNestedObjectDirectoryBypass(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("nested-object repack unexpectedly succeeded: %s", out)
+		panic("unreachable")
 	}
 	entries, readErr := os.ReadDir(filepath.Join(nested, "pack"))
 	if readErr != nil {
 		t.Fatalf("read nested pack dir: %v", readErr)
+		panic("unreachable")
 	}
 	if len(entries) != 0 {
 		t.Fatalf("nested-object repack left shared artifacts: %v", entries)
@@ -602,6 +663,7 @@ func gitMaintenanceState(t *testing.T, bare string) string {
 		})
 		if err != nil {
 			t.Fatalf("snapshot %s: %v", root, err)
+			panic("unreachable")
 		}
 	}
 	for _, name := range []string{"packed-refs", "packed-refs.new", "packed-refs.lock", "gc.pid", "gc.pid.lock"} {
@@ -637,6 +699,7 @@ func gitRepoWideMaintenanceState(t *testing.T, bare string) string {
 		})
 		if err != nil {
 			t.Fatalf("snapshot %s: %v", root, err)
+			panic("unreachable")
 		}
 	}
 	for _, name := range []string{"packed-refs", "packed-refs.new", "packed-refs.lock", "gc.pid", "gc.pid.lock"} {
@@ -659,10 +722,12 @@ func seedPackedLooseObject(t *testing.T, bare, wt string) {
 	out, err := rev.CombinedOutput()
 	if err != nil {
 		t.Fatalf("resolve loose object fixture: %v: %s", err, out)
+		panic("unreachable")
 	}
 	oid := strings.TrimSpace(string(out))
 	if _, err := os.Stat(filepath.Join(bare, "objects", oid[:2], oid[2:])); err != nil {
 		t.Fatalf("loose object fixture missing: %v", err)
+		panic("unreachable")
 	}
 	pack := exec.Command("git", "pack-objects", filepath.Join(bare, "objects", "pack", "maintenance"))
 	pack.Dir = bare
@@ -670,6 +735,7 @@ func seedPackedLooseObject(t *testing.T, bare, wt string) {
 	packOut, err := pack.CombinedOutput()
 	if err != nil {
 		t.Fatalf("pack loose object fixture: %v: %s", err, packOut)
+		panic("unreachable")
 	}
 }
 

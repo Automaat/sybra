@@ -117,6 +117,7 @@ func newManager(t *testing.T) *task.Manager {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return task.NewManager(store, task.EmitterFunc(func(string, any) {}))
 }
@@ -128,6 +129,7 @@ func TestAssignerRoutesRemoteAndStamps(t *testing.T) {
 	roster, err := NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 	mgr := newManager(t)
 	assigner := NewAssigner(cfg, mgr, roster, func(string) bool { return false }, nil, nil)
@@ -140,6 +142,7 @@ func TestAssignerRoutesRemoteAndStamps(t *testing.T) {
 	routed, err := assigner.Route(context.Background(), cur)
 	if err != nil || !routed {
 		t.Fatalf("Route remote: routed=%v err=%v", routed, err)
+		panic("unreachable")
 	}
 	got, ok := stub.lastAssigned()
 	if !ok || got.ID != "task-pet" || got.AssignedNode != "pet-box" {
@@ -158,6 +161,7 @@ func TestAssignerRouteIsIdempotentOnceStamped(t *testing.T) {
 	roster, err := NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 	mgr := newManager(t)
 	assigner := NewAssigner(cfg, mgr, roster, func(string) bool { return false }, nil, nil)
@@ -168,11 +172,13 @@ func TestAssignerRouteIsIdempotentOnceStamped(t *testing.T) {
 	cur, _ := mgr.Get("task-pet")
 	if routed, err := assigner.Route(context.Background(), cur); err != nil || !routed {
 		t.Fatalf("first Route: routed=%v err=%v", routed, err)
+		panic("unreachable")
 	}
 
 	stamped, _ := mgr.Get("task-pet")
 	if routed, err := assigner.Route(context.Background(), stamped); err != nil {
 		t.Fatalf("second Route: %v", err)
+		panic("unreachable")
 	} else if routed {
 		t.Fatal("second Route should no-op once AssignedNode already matches home")
 	}
@@ -191,6 +197,7 @@ func TestAssignerPushUpdateReSyncsAlreadyStampedTask(t *testing.T) {
 	roster, err := NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 	mgr := newManager(t)
 	assigner := NewAssigner(cfg, mgr, roster, func(string) bool { return false }, nil, nil)
@@ -201,6 +208,7 @@ func TestAssignerPushUpdateReSyncsAlreadyStampedTask(t *testing.T) {
 	cur, _ := mgr.Get("task-pet")
 	if routed, err := assigner.Route(context.Background(), cur); err != nil || !routed {
 		t.Fatalf("first Route: routed=%v err=%v", routed, err)
+		panic("unreachable")
 	}
 
 	// Simulate a leader-side edit after the initial push (e.g. the umbrella
@@ -211,11 +219,13 @@ func TestAssignerPushUpdateReSyncsAlreadyStampedTask(t *testing.T) {
 	edited, _, err := mgr.Put(stamped)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	pushed, err := assigner.PushUpdate(context.Background(), edited)
 	if err != nil || !pushed {
 		t.Fatalf("PushUpdate: pushed=%v err=%v", pushed, err)
+		panic("unreachable")
 	}
 
 	stub.mu.Lock()
@@ -240,6 +250,7 @@ func TestAssignerLeavesLocalTaskAlone(t *testing.T) {
 	routed, err := assigner.Route(context.Background(), local)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if routed {
 		t.Error("a locally-homed task must not be routed to a follower")
@@ -282,9 +293,11 @@ func TestAssignerTickDoesNotRouteDegradedTask(t *testing.T) {
 	created, _, err := mgr.Put(task.Task{ID: "broken-pet", Title: "t", Status: task.StatusTodo, ProjectID: "owner/pet"})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(created.FilePath, []byte("not valid frontmatter"), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	assigner.Tick(context.Background())
@@ -396,6 +409,7 @@ func TestMirrorMirrorsPlanningSidecars(t *testing.T) {
 	got, err := mgr.Get("task-pet")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Plan != follower.Plan ||
 		got.PlanContract != follower.PlanContract ||
@@ -420,6 +434,7 @@ func TestMirrorMirrorsPlanningSidecars(t *testing.T) {
 	got, err = mgr.Get("task-pet")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Plan != "" ||
 		got.PlanContract != "" ||
@@ -448,6 +463,7 @@ func TestMirrorDetectsAndRepairsTagsAndDependsOnDrift(t *testing.T) {
 	roster, err := NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 	mgr := newManager(t)
 	mirror := NewMirror(cfg, mgr, roster, nil, time.Second)
@@ -463,6 +479,7 @@ func TestMirrorDetectsAndRepairsTagsAndDependsOnDrift(t *testing.T) {
 	}
 	if _, _, err := mgr.Put(canonical); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// The follower reports real progress (a status advance the leader hasn't
@@ -522,6 +539,7 @@ func TestMirrorDetectsAndRepairsDependsOnConditionsDrift(t *testing.T) {
 	roster, err := NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 	mgr := newManager(t)
 	mirror := NewMirror(cfg, mgr, roster, nil, time.Second)
@@ -538,6 +556,7 @@ func TestMirrorDetectsAndRepairsDependsOnConditionsDrift(t *testing.T) {
 	}
 	if _, _, err := mgr.Put(canonical); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// The follower reports real progress but still carries no conditions —
@@ -585,6 +604,7 @@ func TestMirrorDriftRepairUsesLiveFollowerStateNotStaleSnapshot(t *testing.T) {
 	roster, err := NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 	mgr := newManager(t)
 	mirror := NewMirror(cfg, mgr, roster, nil, time.Second)
@@ -599,6 +619,7 @@ func TestMirrorDriftRepairUsesLiveFollowerStateNotStaleSnapshot(t *testing.T) {
 	}
 	if _, _, err := mgr.Put(canonical); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	snapshot := task.Task{
@@ -649,6 +670,7 @@ func TestMirrorNoRepairOnOrdinaryStatusDisagreement(t *testing.T) {
 	roster, err := NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 	mgr := newManager(t)
 	mirror := NewMirror(cfg, mgr, roster, nil, time.Second)
@@ -713,6 +735,7 @@ func TestMirrorAdoptsUnknownFollowerTask(t *testing.T) {
 	got, err := mgr.Get("self-originated")
 	if err != nil {
 		t.Fatalf("adopted task not found in canonical store: %v", err)
+		panic("unreachable")
 	}
 	if got.AssignedNode != "pet-box" {
 		t.Errorf("AssignedNode = %q, want pet-box", got.AssignedNode)
@@ -739,6 +762,7 @@ func TestMirrorApplyLogsGenuineLocalStoreFailure(t *testing.T) {
 	corrupt := filepath.Join(mgr.Store().Dir(), "broken.md")
 	if err := os.WriteFile(corrupt, []byte("---\nstatus: [not, a, string]\n---\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	var buf syncBuffer
@@ -790,6 +814,7 @@ func TestMirrorRunPollsOnlyNeverSubscribes(t *testing.T) {
 	roster, err := NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 	mgr := newManager(t)
 	if _, _, err := mgr.Put(task.Task{
@@ -807,6 +832,7 @@ func TestMirrorRunPollsOnlyNeverSubscribes(t *testing.T) {
 	got, err := mgr.Get("task-pet")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusDone {
 		t.Fatalf("status = %q, want done — reconcile polling should have applied the follower's state", got.Status)
@@ -836,6 +862,7 @@ func TestMirrorReconcileEscalatesLogLevelOnRepeatedFailure(t *testing.T) {
 	roster, err := NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 	mgr := newManager(t)
 
@@ -881,6 +908,7 @@ func TestMirrorReconcileMissingTrashesConfirmedGoneTask(t *testing.T) {
 	roster, err := NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 	mgr := newManager(t)
 	if _, _, err := mgr.Put(task.Task{
@@ -896,12 +924,14 @@ func TestMirrorReconcileMissingTrashesConfirmedGoneTask(t *testing.T) {
 		mirror.reconcileNode(context.Background(), "pet-box", &consecutiveFailures)
 		if _, err := mgr.Get("ghost-dup"); err != nil {
 			t.Fatalf("trashed after only %d confirmation(s), before missingConfirmThreshold (%d)", i, missingConfirmThreshold)
+			panic("unreachable")
 		}
 	}
 	mirror.reconcileNode(context.Background(), "pet-box", &consecutiveFailures)
 
 	if _, err := mgr.Get("ghost-dup"); err == nil {
 		t.Fatalf("expected the leader's stale copy to be trashed after %d confirmed-404 ticks", missingConfirmThreshold)
+		panic("unreachable")
 	}
 }
 
@@ -922,6 +952,7 @@ func TestMirrorReconcileMissingSurvivesReassignRace(t *testing.T) {
 	roster, err := NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 	mgr := newManager(t)
 	if _, _, err := mgr.Put(task.Task{
@@ -938,6 +969,7 @@ func TestMirrorReconcileMissingSurvivesReassignRace(t *testing.T) {
 	}
 	if _, err := mgr.Get("just-reassigned"); err != nil {
 		t.Fatalf("canonical copy trashed before the push had a chance to land: %v", err)
+		panic("unreachable")
 	}
 
 	stub.mu.Lock()
@@ -950,6 +982,7 @@ func TestMirrorReconcileMissingSurvivesReassignRace(t *testing.T) {
 
 	if _, err := mgr.Get("just-reassigned"); err != nil {
 		t.Fatalf("canonical copy must survive once the follower catches up: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -967,6 +1000,7 @@ func TestMirrorReconcileMissingResetsStreakOnDirectHit(t *testing.T) {
 	roster, err := NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 	mgr := newManager(t)
 	if _, _, err := mgr.Put(task.Task{
@@ -997,6 +1031,7 @@ func TestMirrorReconcileMissingResetsStreakOnDirectHit(t *testing.T) {
 
 	if _, err := mgr.Get("flaky-listing"); err != nil {
 		t.Fatalf("canonical copy trashed on a stale pre-reset streak: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -1029,6 +1064,7 @@ func TestMirrorReconcileMissingLeavesCanonicalOnTransientError(t *testing.T) {
 	roster, err := NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 	mgr := newManager(t)
 	if _, _, err := mgr.Put(task.Task{
@@ -1045,6 +1081,7 @@ func TestMirrorReconcileMissingLeavesCanonicalOnTransientError(t *testing.T) {
 	got, err := mgr.Get("maybe-still-there")
 	if err != nil {
 		t.Fatalf("canonical copy must survive a transient GetTask error: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusTodo {
 		t.Errorf("status changed on a transient error: %v", got.Status)

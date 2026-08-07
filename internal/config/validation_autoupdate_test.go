@@ -13,6 +13,7 @@ func TestValidateResolvedConfig_AutoUpdateAutoRequiresChecks(t *testing.T) {
 	err := ValidateResolvedConfig(cfg)
 	if err == nil {
 		t.Fatal("ValidateResolvedConfig() err = nil, want error")
+		panic("unreachable")
 	}
 	msgs := ValidationMessages(err)
 	if len(msgs) != 1 || msgs[0] != "auto_update.required_checks must be non-empty when auto_update.mode=auto" {

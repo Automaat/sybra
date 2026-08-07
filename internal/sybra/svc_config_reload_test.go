@@ -46,14 +46,17 @@ func setupConfigSvc(t *testing.T) (svc *ConfigService, cfgPath string) {
 	rawSeed, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatalf("read seed config: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(config.LastKnownGoodConfigPath(), rawSeed, 0o600); err != nil {
 		t.Fatalf("write last-known-good seed: %v", err)
+		panic("unreachable")
 	}
 
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
+		panic("unreachable")
 	}
 
 	logLevel := new(slog.LevelVar)
@@ -92,12 +95,15 @@ func writeConfigYAML(t *testing.T, path string, cfg *config.Config) {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -121,9 +127,11 @@ func TestCloneConfigPreservesABTestingWeightVersion(t *testing.T) {
 	got := cloneConfig(src)
 	if got.ABTesting.WeightsVersion == nil || *got.ABTesting.WeightsVersion != weightsVersion {
 		t.Fatalf("WeightsVersion = %v, want %d", got.ABTesting.WeightsVersion, weightsVersion)
+		panic("unreachable")
 	}
 	if got.ABTesting.BuiltinVersion == nil || *got.ABTesting.BuiltinVersion != builtinVersion {
 		t.Fatalf("BuiltinVersion = %v, want %d", got.ABTesting.BuiltinVersion, builtinVersion)
+		panic("unreachable")
 	}
 
 	weightsVersion = 99
@@ -147,6 +155,7 @@ func TestReloadFromDisk_MaxConcurrent(t *testing.T) {
 	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(result.Applied, "agent") {
 		t.Errorf("expected agent in applied, got %+v", result)
@@ -174,6 +183,7 @@ func TestReloadFromDisk_Guardrails(t *testing.T) {
 	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(result.Applied, "agent") {
 		t.Errorf("expected agent in applied, got %+v", result)
@@ -207,6 +217,7 @@ func TestReloadFromDisk_WorkflowReviewGuardrails(t *testing.T) {
 	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(result.Applied, "agent") {
 		t.Errorf("expected agent in applied, got %+v", result)
@@ -259,6 +270,7 @@ func TestReloadFromDisk_Provider(t *testing.T) {
 	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(result.Applied, "agent") {
 		t.Errorf("expected agent in applied, got %+v", result)
@@ -278,6 +290,7 @@ func TestReloadFromDisk_LogLevel(t *testing.T) {
 	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(result.Applied, "logging.level") {
 		t.Errorf("expected logging.level in applied, got %+v", result)
@@ -292,6 +305,7 @@ func TestReloadFromDisk_InvalidYAML(t *testing.T) {
 	before, err := os.ReadFile(config.LastKnownGoodConfigPath())
 	if err != nil {
 		t.Fatalf("read last-known-good: %v", err)
+		panic("unreachable")
 	}
 
 	if err := os.WriteFile(cfgPath, []byte(":::invalid yaml{{{\n"), 0o644); err != nil {
@@ -302,9 +316,11 @@ func TestReloadFromDisk_InvalidYAML(t *testing.T) {
 	result, err := svc.ReloadFromDisk()
 	if err == nil {
 		t.Fatal("expected error for invalid YAML, got nil")
+		panic("unreachable")
 	}
 	if result.Recovery == nil || !result.Recovery.RestoredLastKnownGood {
 		t.Fatalf("expected last-known-good recovery on invalid YAML, got %+v", result.Recovery)
+		panic("unreachable")
 	}
 	if svc.cfg.Agent.MaxConcurrent != origMax {
 		t.Errorf("cfg mutated on error: got %d, want %d", svc.cfg.Agent.MaxConcurrent, origMax)
@@ -312,6 +328,7 @@ func TestReloadFromDisk_InvalidYAML(t *testing.T) {
 	after, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatalf("read restored config: %v", err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(after, before) {
 		t.Fatalf("config.yaml not restored after invalid YAML\nbefore:\n%s\nafter:\n%s", before, after)
@@ -323,6 +340,7 @@ func TestReloadFromDisk_ValidationError(t *testing.T) {
 	before, err := os.ReadFile(config.LastKnownGoodConfigPath())
 	if err != nil {
 		t.Fatalf("read last-known-good: %v", err)
+		panic("unreachable")
 	}
 
 	next := *svc.cfg
@@ -333,9 +351,11 @@ func TestReloadFromDisk_ValidationError(t *testing.T) {
 	result, err := svc.ReloadFromDisk()
 	if err == nil {
 		t.Fatal("expected validation error, got nil")
+		panic("unreachable")
 	}
 	if result.Recovery == nil || !result.Recovery.RestoredLastKnownGood {
 		t.Fatalf("expected last-known-good recovery on validation error, got %+v", result.Recovery)
+		panic("unreachable")
 	}
 	if svc.cfg.Logging.Level != origLevel {
 		t.Errorf("cfg.Logging.Level mutated on validation error")
@@ -343,6 +363,7 @@ func TestReloadFromDisk_ValidationError(t *testing.T) {
 	after, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatalf("read restored config: %v", err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(after, before) {
 		t.Fatalf("config.yaml not restored after validation error\nbefore:\n%s\nafter:\n%s", before, after)
@@ -354,24 +375,29 @@ func TestReloadFromDisk_UnknownLegacyKeyRestoresLastKnownGood(t *testing.T) {
 	before, err := os.ReadFile(config.LastKnownGoodConfigPath())
 	if err != nil {
 		t.Fatalf("read last-known-good: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(cfgPath, append(before, []byte("\ntodoist:\n  enabled: true\n")...), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	result, err := svc.ReloadFromDisk()
 	if err == nil {
 		t.Fatal("expected unknown key error, got nil")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "todoist") {
 		t.Fatalf("error = %v, want todoist unknown-key context", err)
 	}
 	if result.Recovery == nil || !result.Recovery.RestoredLastKnownGood {
 		t.Fatalf("expected last-known-good recovery on unknown key, got %+v", result.Recovery)
+		panic("unreachable")
 	}
 	after, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatalf("read restored config: %v", err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(after, before) {
 		t.Fatalf("config.yaml not restored after unknown legacy key\nbefore:\n%s\nafter:\n%s", before, after)
@@ -395,6 +421,7 @@ func TestReloadFromDisk_RestartRequiredWarned(t *testing.T) {
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
+		panic("unreachable")
 	}
 
 	// Capture log records
@@ -432,6 +459,7 @@ func TestReloadFromDisk_RestartRequiredWarned(t *testing.T) {
 	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
+		panic("unreachable")
 	}
 	if len(result.Applied) != 0 {
 		t.Errorf("expected no applied keys, got %+v", result)
@@ -462,6 +490,7 @@ func TestReloadFromDisk_RestartRequiredWarned(t *testing.T) {
 	result2, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("second ReloadFromDisk: %v", err)
+		panic("unreachable")
 	}
 	if len(result2.Applied) != 0 || len(result2.RestartRequired) != 0 {
 		t.Errorf("second reload: expected no further changes, got %+v", result2)
@@ -488,6 +517,7 @@ func TestReloadFromDisk_BrowserRestartRequiredWarned(t *testing.T) {
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
+		panic("unreachable")
 	}
 
 	records := make([]slog.Record, 0)
@@ -524,6 +554,7 @@ func TestReloadFromDisk_BrowserRestartRequiredWarned(t *testing.T) {
 	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
+		panic("unreachable")
 	}
 	if len(result.Applied) != 0 {
 		t.Errorf("expected no applied keys, got %+v", result)
@@ -568,6 +599,7 @@ func TestReloadFromDisk_ServerRestartRequiredWarnedAndSynced(t *testing.T) {
 	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
+		panic("unreachable")
 	}
 	if len(result.Applied) != 0 {
 		t.Errorf("expected no applied keys, got %+v", result)
@@ -577,6 +609,7 @@ func TestReloadFromDisk_ServerRestartRequiredWarnedAndSynced(t *testing.T) {
 	}
 	if svc.persisted == nil || svc.persisted.Server.AuthToken != "new-token" {
 		t.Fatalf("persisted server auth token = %q, want new-token", svc.persisted.Server.AuthToken)
+		panic("unreachable")
 	}
 }
 
@@ -585,6 +618,7 @@ func TestReloadFromDisk_RefreshesLimitPolicyForProviderChanges(t *testing.T) {
 	limitStore, err := limits.NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	svc.limits = limitStore
 	svc.policy = func() limits.Policy {
@@ -599,6 +633,7 @@ func TestReloadFromDisk_RefreshesLimitPolicyForProviderChanges(t *testing.T) {
 	}
 	if err := svc.refreshAgentRuntimeConfig(*svc.cfg); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !svc.agents.LimitPolicy().ProviderEnabled[limits.ProviderCodex] {
 		t.Fatal("initial manager limit policy did not enable codex")
@@ -610,6 +645,7 @@ func TestReloadFromDisk_RefreshesLimitPolicyForProviderChanges(t *testing.T) {
 
 	if _, err := svc.ReloadFromDisk(); err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
+		panic("unreachable")
 	}
 	if svc.agents.LimitPolicy().ProviderEnabled[limits.ProviderCodex] {
 		t.Fatal("manager limit policy stayed stale after provider reload")
@@ -633,6 +669,7 @@ func TestReloadFromDisk_RefreshesProviderHealthRuntimeFlags(t *testing.T) {
 
 	if _, err := svc.ReloadFromDisk(); err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
+		panic("unreachable")
 	}
 	if svc.providerHealth.AutoFailover() {
 		t.Fatal("provider health auto-failover flag stayed stale after provider reload")
@@ -658,6 +695,7 @@ func TestReloadFromDisk_EvidenceStaysPendingUntilRestart(t *testing.T) {
 	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(result.RestartRequired, "agent.evidence") {
 		t.Errorf("expected agent.evidence in restartRequired, got %+v", result)
@@ -692,12 +730,14 @@ func TestReloadFromDisk_NoFeedbackLoop(t *testing.T) {
 	settings.Agent.MaxConcurrent = 3 // ensure valid
 	if _, err := svc.UpdateSettings(settings); err != nil {
 		t.Fatalf("UpdateSettings: %v", err)
+		panic("unreachable")
 	}
 
 	// Simulate watcher-triggered reload — disk now matches in-memory
 	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
+		panic("unreachable")
 	}
 	if len(result.Applied) != 0 || len(result.RestartRequired) != 0 {
 		t.Errorf("feedback loop: expected empty diff after UpdateSettings+Reload, got %+v", result)
@@ -716,6 +756,7 @@ func TestReloadFromDisk_ResultListsAppliedRestartAndUnchanged(t *testing.T) {
 	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(result.Applied, "logging.level") {
 		t.Fatalf("expected logging.level in applied, got %+v", result)
@@ -761,6 +802,7 @@ func TestReloadFromDisk_ReadersSeeWholePersistedSnapshots(t *testing.T) {
 	writeConfigYAML(t, cfgPath, &next)
 	if _, err := svc.ReloadFromDisk(); err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
+		panic("unreachable")
 	}
 	close(done)
 
@@ -804,6 +846,7 @@ func TestMutateLocked_PublishesImmutableAppSnapshot(t *testing.T) {
 	readers.Wait()
 	if err != nil {
 		t.Fatalf("mutateLocked: %v", err)
+		panic("unreachable")
 	}
 	if got := app.currentConfig(); got != svc.cfg {
 		t.Fatal("App did not receive the published config snapshot")
@@ -819,11 +862,13 @@ func TestSaveRawConfig_RestoresLastKnownGoodOnHotApplyFailure(t *testing.T) {
 	before, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	raw, err := svc.GetRawConfig()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	edited := strings.Replace(raw, "provider: claude", "provider: codex", 1)
 	svc.applyRuntime = func(config.Config) error { return errors.New("boom") }
@@ -831,14 +876,17 @@ func TestSaveRawConfig_RestoresLastKnownGoodOnHotApplyFailure(t *testing.T) {
 	err = svc.SaveRawConfig(edited)
 	if err == nil {
 		t.Fatal("expected hot apply failure, got nil")
+		panic("unreachable")
 	}
 	var mutErr *configMutationError
 	if !errors.As(err, &mutErr) || mutErr.result.Recovery == nil || !mutErr.result.Recovery.RestoredLastKnownGood {
 		t.Fatalf("expected recovery result on hot apply failure, got %v", err)
+		panic("unreachable")
 	}
 	after, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(after, before) {
 		t.Fatalf("config.yaml not restored after hot apply failure\nbefore:\n%s\nafter:\n%s", before, after)
@@ -876,6 +924,7 @@ func TestReloadFromDisk_ABTestingPreservesRoutingOverlay(t *testing.T) {
 	store, err := routing.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("routing.NewStore: %v", err)
+		panic("unreachable")
 	}
 	if err := store.Save(routing.Overlay{
 		Version: 3,
@@ -905,6 +954,7 @@ func TestReloadFromDisk_ABTestingPreservesRoutingOverlay(t *testing.T) {
 	result, err := svc.ReloadFromDisk()
 	if err != nil {
 		t.Fatalf("ReloadFromDisk: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(result.Applied, "ab_testing") {
 		t.Fatalf("expected ab_testing in applied, got %+v", result.Applied)
@@ -916,6 +966,7 @@ func TestReloadFromDisk_ABTestingPreservesRoutingOverlay(t *testing.T) {
 	}
 	if got.WeightsVersion == nil || *got.WeightsVersion != 3 {
 		t.Fatalf("WeightsVersion = %v, want 3 (overlay re-merged)", got.WeightsVersion)
+		panic("unreachable")
 	}
 	// Locate the operator's experiment by ID — config.Load reconciles builtin
 	// experiments into ab_testing, so it is not the only entry.
@@ -928,6 +979,7 @@ func TestReloadFromDisk_ABTestingPreservesRoutingOverlay(t *testing.T) {
 	}
 	if exp == nil || len(exp.Variants) != 2 {
 		t.Fatalf("exp experiment missing/malformed after reload: %+v", got.Experiments)
+		panic("unreachable")
 	}
 	if w := exp.Variants[0].Weight; w != 8 {
 		t.Errorf("v1 weight = %d, want 8 (overlay preserved, not base 1)", w)

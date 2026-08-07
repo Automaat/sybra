@@ -89,6 +89,7 @@ func TestReconcileRunnableBoardTasks_ConvergedInboundReviewIsNoOp(t *testing.T) 
 	tk, err := a.tasks.Create("Review: converged PR", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	completedAt := time.Now().Add(-time.Minute)
 	got, err := a.tasks.UpdateMap(tk.ID, map[string]any{
@@ -107,6 +108,7 @@ func TestReconcileRunnableBoardTasks_ConvergedInboundReviewIsNoOp(t *testing.T) 
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if !got.StatusChangedAt.After(completedAt) {
@@ -118,12 +120,14 @@ func TestReconcileRunnableBoardTasks_ConvergedInboundReviewIsNoOp(t *testing.T) 
 	afterFirst, err := a.tasks.Get(got.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if launcher.startCalls != 0 {
 		t.Fatalf("first maintenance tick started %d agents; want 0", launcher.startCalls)
 	}
 	if afterFirst.Workflow == nil || afterFirst.Workflow.WorkflowID != "pr-review" || afterFirst.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("first maintenance tick mutated converged workflow: %+v", afterFirst.Workflow)
+		panic("unreachable")
 	}
 	if afterFirst.Status != task.StatusInReview {
 		t.Fatalf("first maintenance tick status = %q, want %q", afterFirst.Status, task.StatusInReview)
@@ -134,12 +138,14 @@ func TestReconcileRunnableBoardTasks_ConvergedInboundReviewIsNoOp(t *testing.T) 
 	afterSecond, err := a.tasks.Get(got.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if launcher.startCalls != 0 {
 		t.Fatalf("second maintenance tick started %d agents; want still 0", launcher.startCalls)
 	}
 	if afterSecond.Workflow == nil || afterSecond.Workflow.WorkflowID != "pr-review" || afterSecond.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("second maintenance tick mutated converged workflow: %+v", afterSecond.Workflow)
+		panic("unreachable")
 	}
 	if afterSecond.Status != task.StatusInReview {
 		t.Fatalf("second maintenance tick status = %q, want %q", afterSecond.Status, task.StatusInReview)

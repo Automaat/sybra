@@ -63,5 +63,6 @@ func mustWriteProjectYAML(t *testing.T, dir, id string, ptype project.ProjectTyp
 	content := "id: " + id + "\ntype: " + string(ptype) + "\nowner: stub\nrepo: stub\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write project YAML: %v", err)
+		panic("unreachable")
 	}
 }

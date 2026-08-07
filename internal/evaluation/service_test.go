@@ -45,6 +45,7 @@ func TestServiceScanBuildsVariantParentsWithRoleBreakdowns(t *testing.T) {
 	got, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
+		panic("unreachable")
 	}
 	modelKind := mustExperimentKind(t, got.ByExperimentKind, "model")
 	modelGroup := mustExperimentGroup(t, modelKind.Groups, "exp")
@@ -60,6 +61,7 @@ func TestServiceScanBuildsVariantParentsWithRoleBreakdowns(t *testing.T) {
 	}
 	if got.ByAgentModel[0].RoleBreakdowns != nil {
 		t.Fatalf("ByAgentModel should remain flat, got nested rows: %+v", got.ByAgentModel[0])
+		panic("unreachable")
 	}
 }
 
@@ -82,6 +84,7 @@ func TestServiceScanHandlesRecordsWithoutExperimentMetadata(t *testing.T) {
 	got, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
+		panic("unreachable")
 	}
 	if len(got.ByExperimentKind) != 0 {
 		t.Fatalf("ByExperimentKind = %+v, want empty for records with no experiment metadata", got.ByExperimentKind)
@@ -121,12 +124,14 @@ func TestServiceScanPopulatesByCostTierAndBaseline(t *testing.T) {
 	got, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
+		panic("unreachable")
 	}
 	if len(got.ByCostTier) != 1 || got.ByCostTier[0].Key != "claude:implementation:cheap" {
 		t.Fatalf("ByCostTier = %+v, want one claude:implementation:cheap row", got.ByCostTier)
 	}
 	if got.CostPerMergedBaseline == nil {
 		t.Fatal("CostPerMergedBaseline = nil, want populated (prior window has minMergedForSignal merges)")
+		panic("unreachable")
 	}
 	if got.CostPerMergedBaseline.MergedPRs != minMergedForSignal || got.CostPerMergedBaseline.CostPerMergedUSD != 1.0 {
 		t.Fatalf("CostPerMergedBaseline = %+v, want mergedPRs=%d costPerMerged=1.0", got.CostPerMergedBaseline, minMergedForSignal)
@@ -152,9 +157,11 @@ func TestServiceScanBaselineNilWhenPriorWindowThin(t *testing.T) {
 	got, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
+		panic("unreachable")
 	}
 	if got.CostPerMergedBaseline != nil {
 		t.Fatalf("CostPerMergedBaseline = %+v, want nil (no prior-window data)", got.CostPerMergedBaseline)
+		panic("unreachable")
 	}
 }
 
@@ -191,14 +198,17 @@ func TestService_SetABTesting_UpdatesNextScan(t *testing.T) {
 	before, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
+		panic("unreachable")
 	}
 	// Run records still carry the exp/a attribution, but with no matching
 	// abtest.Config experiment it classifies as "unknown", not "model".
 	if kind := findExperimentKind(before.ByExperimentKind, "model"); kind != nil {
 		t.Fatalf("ByExperimentKind[model] before SetABTesting = %+v, want none (no experiment configured)", kind)
+		panic("unreachable")
 	}
 	if kind := findExperimentKind(before.ByExperimentKind, "unknown"); kind == nil {
 		t.Fatalf("ByExperimentKind before SetABTesting = %+v, want an unknown-kind group", before.ByExperimentKind)
+		panic("unreachable")
 	}
 
 	svc.SetABTesting(abtest.Config{Experiments: []abtest.Experiment{
@@ -208,6 +218,7 @@ func TestService_SetABTesting_UpdatesNextScan(t *testing.T) {
 	after, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
+		panic("unreachable")
 	}
 	modelKind := mustExperimentKind(t, after.ByExperimentKind, "model")
 	group := mustExperimentGroup(t, modelKind.Groups, "exp")
@@ -233,6 +244,7 @@ func TestServiceScanGroupsSkillExecutionMode(t *testing.T) {
 	got, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
+		panic("unreachable")
 	}
 	if len(got.BySkillExecutionMode) != 3 {
 		t.Fatalf("BySkillExecutionMode len = %d, want 3: %+v", len(got.BySkillExecutionMode), got.BySkillExecutionMode)
@@ -268,6 +280,7 @@ func TestServiceScanSplitsDirectReviewFromConformantStaffReview(t *testing.T) {
 	got, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan returned error: %v", err)
+		panic("unreachable")
 	}
 	if len(got.ByAgentModel) != 2 {
 		t.Fatalf("ByAgentModel = %+v, want 2 rows (direct review, conformant staff review)", got.ByAgentModel)

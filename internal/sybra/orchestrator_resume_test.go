@@ -64,6 +64,7 @@ func TestOrchestrator_StartAgent_DoesNotResumeStaleSessionFromPriorWorkflow(t *t
 	home, err := os.MkdirTemp("", "sybra-orch-resume-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
 	t.Setenv("SYBRA_HOME", home)
@@ -71,10 +72,12 @@ func TestOrchestrator_StartAgent_DoesNotResumeStaleSessionFromPriorWorkflow(t *t
 	tasksDir := filepath.Join(home, "tasks")
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskStore, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(taskStore, nil)
 
@@ -84,15 +87,18 @@ func TestOrchestrator_StartAgent_DoesNotResumeStaleSessionFromPriorWorkflow(t *t
 	)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	src := initSourceRepo(t)
 	barePath := filepath.Join(home, "clones", "testowner", "testrepo.git")
 	if err := os.MkdirAll(filepath.Dir(barePath), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := project.CloneBare(context.Background(), src, barePath); err != nil {
 		t.Fatalf("clone bare: %v", err)
+		panic("unreachable")
 	}
 
 	projYAML := `id: testowner/testrepo
@@ -107,6 +113,7 @@ updated_at: 2025-01-01T00:00:00Z
 `
 	if err := os.WriteFile(filepath.Join(home, "projects", "testowner--testrepo.yaml"), []byte(projYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	logger := slog.New(slog.DiscardHandler)
@@ -132,6 +139,7 @@ updated_at: 2025-01-01T00:00:00Z
 	created, err := taskMgr.Create("stale-resume guard", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := taskMgr.Update(created.ID, task.Update{
 		ProjectID: task.Ptr("testowner/testrepo"),
@@ -172,6 +180,7 @@ updated_at: 2025-01-01T00:00:00Z
 
 	if _, err := orch.StartAgent(created.ID, "headless", "Implement the feature.", false, true); err != nil {
 		t.Fatalf("orchestrator StartAgent: %v", err)
+		panic("unreachable")
 	}
 
 	deadline := time.Now().Add(15 * time.Second)
@@ -188,6 +197,7 @@ updated_at: 2025-01-01T00:00:00Z
 	data, err := os.ReadFile(argsLog)
 	if err != nil {
 		t.Fatalf("read args log: %v", err)
+		panic("unreachable")
 	}
 	args := string(data)
 	if !strings.Contains(args, "--input-format") {

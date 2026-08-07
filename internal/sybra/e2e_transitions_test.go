@@ -23,6 +23,7 @@ func TestE2E_TransitionTable_RejectsBackwardsMoves(t *testing.T) {
 		created, err := env.tasks.Create("done task", "", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusDone)}); err != nil {
 			t.Fatal(err)
@@ -44,6 +45,7 @@ func TestE2E_TransitionTable_RejectsBackwardsMoves(t *testing.T) {
 		after, err := env.tasks.Get(created.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if after.Status != task.StatusDone {
 			t.Fatalf("status after rejected transition = %q, want unchanged %q", after.Status, task.StatusDone)
@@ -54,6 +56,7 @@ func TestE2E_TransitionTable_RejectsBackwardsMoves(t *testing.T) {
 		created, err := env.tasks.Create("in-review task", "", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusInReview)}); err != nil {
 			t.Fatal(err)
@@ -71,6 +74,7 @@ func TestE2E_TransitionTable_RejectsBackwardsMoves(t *testing.T) {
 		after, err := env.tasks.Get(created.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if after.Status != task.StatusInReview {
 			t.Fatalf("status after rejected transition = %q, want unchanged %q", after.Status, task.StatusInReview)
@@ -81,6 +85,7 @@ func TestE2E_TransitionTable_RejectsBackwardsMoves(t *testing.T) {
 		created, err := env.tasks.Create("legal move task", "", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		result, err := env.tasks.Apply(task.TransitionIntent{
@@ -90,6 +95,7 @@ func TestE2E_TransitionTable_RejectsBackwardsMoves(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("Apply legal move: %v", err)
+			panic("unreachable")
 		}
 		if result.Task.Status != task.StatusInProgress {
 			t.Fatalf("status = %q, want %q", result.Task.Status, task.StatusInProgress)
@@ -100,6 +106,7 @@ func TestE2E_TransitionTable_RejectsBackwardsMoves(t *testing.T) {
 		created, err := env.tasks.Create("reopen task", "", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusCancelled)}); err != nil {
 			t.Fatal(err)
@@ -113,6 +120,7 @@ func TestE2E_TransitionTable_RejectsBackwardsMoves(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("Apply with OperatorOverride: %v", err)
+			panic("unreachable")
 		}
 		if result.Task.Status != task.StatusTodo {
 			t.Fatalf("status = %q, want %q", result.Task.Status, task.StatusTodo)

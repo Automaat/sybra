@@ -18,9 +18,11 @@ func mustClient(t *testing.T, node Node) *Client {
 	c, err := NewClient(node, nil)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
+		panic("unreachable")
 	}
 	if c == nil {
 		t.Fatal("NewClient returned nil client")
+		panic("unreachable")
 	}
 	return c
 }
@@ -90,6 +92,7 @@ func TestClientListTasks(t *testing.T) {
 	got, err := client.ListTasks(context.Background())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 2 || got[0].ID != "a" || got[1].ID != "b" {
 		t.Fatalf("ListTasks = %+v", got)
@@ -125,6 +128,7 @@ func TestClientListTasksFallsBackToLegacyWhenNodeFilteredEndpointMissing(t *test
 	got, err := client.ListTasks(context.Background())
 	if err != nil {
 		t.Fatalf("ListTasks did not fall back to the legacy endpoint: %v", err)
+		panic("unreachable")
 	}
 	if len(got) != 1 || got[0].ID != "legacy" {
 		t.Fatalf("ListTasks = %+v, want the legacy endpoint's result", got)
@@ -147,6 +151,7 @@ func TestClientOversizedResponseErrorsInsteadOfTruncating(t *testing.T) {
 	_, err := client.ListTasks(context.Background())
 	if err == nil {
 		t.Fatal("ListTasks succeeded on an oversized response, want a truncation error")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "exceeds") || !strings.Contains(err.Error(), "cap") {
 		t.Fatalf("err = %q, want a named truncation error rather than a generic JSON parse failure", err.Error())
@@ -164,6 +169,7 @@ func TestClientResponseUnderCapSucceeds(t *testing.T) {
 	got, err := client.ListTasks(context.Background())
 	if err != nil {
 		t.Fatalf("ListTasks under the cap should succeed, got: %v", err)
+		panic("unreachable")
 	}
 	if len(got) != 1 || got[0].ID != "a" {
 		t.Fatalf("ListTasks = %+v", got)
@@ -179,6 +185,7 @@ func TestClientAssignTaskEncodesArgs(t *testing.T) {
 	}
 	if stub.assigned == nil || stub.assigned.ID != "z" || stub.assigned.Title != "hi" {
 		t.Fatalf("assigned = %+v", stub.assigned)
+		panic("unreachable")
 	}
 	if !strings.HasPrefix(string(stub.gotBody), "[") {
 		t.Errorf("body must be a JSON array, got %s", stub.gotBody)
@@ -211,6 +218,7 @@ func TestClientEndpointFailover(t *testing.T) {
 	got, err := client.ListTasks(context.Background())
 	if err != nil {
 		t.Fatalf("failover did not reach the live endpoint: %v", err)
+		panic("unreachable")
 	}
 	if len(got) != 1 || got[0].ID != "ok" {
 		t.Fatalf("ListTasks after failover = %+v", got)
@@ -232,6 +240,7 @@ func TestClientAllEndpointsUnreachable(t *testing.T) {
 	_, err := client.ListTasks(context.Background())
 	if err == nil {
 		t.Fatal("want error when all endpoints are unreachable")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "all 2 endpoints failed") {
 		t.Errorf("err = %v, want 'all 2 endpoints failed'", err)
@@ -242,5 +251,6 @@ func TestClientNoEndpoints(t *testing.T) {
 	client := mustClient(t, Node{Name: "empty", Endpoints: []string{"", "  "}})
 	if _, err := client.ListTasks(context.Background()); err == nil {
 		t.Fatal("want error for a node with no usable endpoints")
+		panic("unreachable")
 	}
 }

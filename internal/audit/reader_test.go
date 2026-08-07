@@ -11,6 +11,7 @@ func TestReadFiltersEvents(t *testing.T) {
 	l, err := NewLogger(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ts := time.Date(2026, 4, 3, 10, 0, 0, 0, time.UTC)
@@ -22,6 +23,7 @@ func TestReadFiltersEvents(t *testing.T) {
 	for _, e := range events {
 		if err := l.Log(e); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 	_ = l.Close()
@@ -44,6 +46,7 @@ func TestReadFiltersEvents(t *testing.T) {
 			got, err := Read(dir, tt.query)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if len(got) != tt.want {
 				t.Errorf("got %d events, want %d", len(got), tt.want)
@@ -60,6 +63,7 @@ func TestReadEmptyDir(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(events) != 0 {
 		t.Errorf("expected 0 events, got %d", len(events))

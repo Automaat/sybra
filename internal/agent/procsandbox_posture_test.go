@@ -17,6 +17,7 @@ func TestInjectProcessSandbox_UnsetModeInheritsConfiguredPosture(t *testing.T) {
 	err := m.injectProcessSandbox(cfg)
 	if err != nil && !strings.Contains(err.Error(), "enforce sandbox mode requires") {
 		t.Fatalf("injectProcessSandbox: %v", err)
+		panic("unreachable")
 	}
 
 	if cfg.SandboxMode != "enforce" {
@@ -37,6 +38,7 @@ func TestReplaceRuntimeConfigUpdatesDefaultSandboxPosture(t *testing.T) {
 	err := m.injectProcessSandbox(cfg)
 	if err != nil && !strings.Contains(err.Error(), "enforce sandbox mode requires") {
 		t.Fatalf("injectProcessSandbox: %v", err)
+		panic("unreachable")
 	}
 	if cfg.SandboxMode != "enforce" {
 		t.Fatalf("SandboxMode = %q, want enforce after live config reload", cfg.SandboxMode)
@@ -49,6 +51,7 @@ func TestInjectProcessSandbox_ExplicitModeWinsOverDefault(t *testing.T) {
 	cfg := &RunConfig{SandboxMode: "off"}
 	if err := m.injectProcessSandbox(cfg); err != nil {
 		t.Fatalf("injectProcessSandbox: %v", err)
+		panic("unreachable")
 	}
 
 	if cfg.SandboxMode != "off" {

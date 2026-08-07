@@ -19,10 +19,12 @@ func TestMaterializeSandboxProfile(t *testing.T) {
 	path, err := materializeSandboxProfile()
 	if err != nil {
 		t.Fatalf("materializeSandboxProfile: %v", err)
+		panic("unreachable")
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read materialized profile: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(data), `(param "WORKTREE")`) {
 		t.Fatalf("materialized profile missing WORKTREE param: %s", data)
@@ -33,6 +35,7 @@ func TestMaterializeSandboxProfile(t *testing.T) {
 	path2, err := materializeSandboxProfile()
 	if err != nil {
 		t.Fatalf("materializeSandboxProfile (2nd): %v", err)
+		panic("unreachable")
 	}
 	if path != path2 {
 		t.Fatalf("materializeSandboxProfile returned different paths across calls: %q vs %q", path, path2)
@@ -47,6 +50,7 @@ func TestCanonicalizeRoot_ResolvesTmpSymlink(t *testing.T) {
 	got, err := canonicalizeRoot("/tmp")
 	if err != nil {
 		t.Fatalf("canonicalizeRoot(/tmp): %v", err)
+		panic("unreachable")
 	}
 	if got != "/private/tmp" {
 		t.Fatalf("canonicalizeRoot(/tmp) = %q, want /private/tmp", got)
@@ -58,14 +62,17 @@ func TestCanonicalizeRoot_ResolvesDotDot(t *testing.T) {
 	sub := filepath.Join(base, "a", "b")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	got, err := canonicalizeRoot(filepath.Join(sub, "..", ".."))
 	if err != nil {
 		t.Fatalf("canonicalizeRoot: %v", err)
+		panic("unreachable")
 	}
 	want, err := canonicalizeRoot(base)
 	if err != nil {
 		t.Fatalf("canonicalizeRoot(base): %v", err)
+		panic("unreachable")
 	}
 	if got != want {
 		t.Fatalf("canonicalizeRoot(%q) = %q, want %q", sub+"/../..", got, want)
@@ -75,15 +82,18 @@ func TestCanonicalizeRoot_ResolvesDotDot(t *testing.T) {
 func TestCanonicalizeRoot_EmptyFails(t *testing.T) {
 	if _, err := canonicalizeRoot(""); err == nil {
 		t.Fatal("expected error for empty root")
+		panic("unreachable")
 	}
 	if _, err := canonicalizeRoot("   "); err == nil {
 		t.Fatal("expected error for whitespace-only root")
+		panic("unreachable")
 	}
 }
 
 func TestCanonicalizeRoot_NonexistentFails(t *testing.T) {
 	if _, err := canonicalizeRoot(filepath.Join(t.TempDir(), "does-not-exist")); err == nil {
 		t.Fatal("expected error for a nonexistent root (EvalSymlinks cannot resolve it)")
+		panic("unreachable")
 	}
 }
 
@@ -109,6 +119,7 @@ func TestWrapInvocation_EnforceModeWraps(t *testing.T) {
 	profile, err := materializeSandboxProfile()
 	if err != nil {
 		t.Fatalf("materializeSandboxProfile: %v", err)
+		panic("unreachable")
 	}
 	cfg := &RunConfig{sandbox: sandboxSpec{
 		mode:        "enforce",

@@ -7,6 +7,7 @@ func TestParsePRCompare(t *testing.T) {
 	got, err := parsePRCompare([]byte(resp))
 	if err != nil {
 		t.Fatalf("err: %v", err)
+		panic("unreachable")
 	}
 	if got.Commits != 2 {
 		t.Errorf("Commits = %d, want 2", got.Commits)
@@ -23,6 +24,7 @@ func TestParsePRCompare_NoEdits(t *testing.T) {
 	got, err := parsePRCompare([]byte(`{"total_commits":0,"files":[]}`))
 	if err != nil {
 		t.Fatalf("err: %v", err)
+		panic("unreachable")
 	}
 	if got.Commits != 0 || got.Additions != 0 {
 		t.Errorf("want zero churn, got %+v", got)
@@ -32,5 +34,6 @@ func TestParsePRCompare_NoEdits(t *testing.T) {
 func TestParsePRCompare_BadJSON(t *testing.T) {
 	if _, err := parsePRCompare([]byte("not json")); err == nil {
 		t.Fatal("want parse error")
+		panic("unreachable")
 	}
 }

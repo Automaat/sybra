@@ -73,6 +73,7 @@ func TestRehydrateFromLog_RebuildsForegroundBashState(t *testing.T) {
 		}, "\n") + "\n"
 		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 			t.Fatalf("write log: %v", err)
+			panic("unreachable")
 		}
 
 		a := &Agent{Provider: "claude"}
@@ -94,6 +95,7 @@ func TestRehydrateFromLog_RebuildsForegroundBashState(t *testing.T) {
 			`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu-1","content":"ok"}]}}` + "\n"
 		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 			t.Fatalf("write log: %v", err)
+			panic("unreachable")
 		}
 
 		a := &Agent{Provider: "claude"}

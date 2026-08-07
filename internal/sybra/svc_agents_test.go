@@ -28,6 +28,7 @@ func TestGetAgentRunConvoLog_ReplaysFromDisk(t *testing.T) {
 	agentsLogDir := filepath.Join(logsDir, "agents")
 	if err := os.MkdirAll(agentsLogDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Write a minimal Claude stream-json log covering the three content
@@ -44,6 +45,7 @@ func TestGetAgentRunConvoLog_ReplaysFromDisk(t *testing.T) {
 	}, "\n") + "\n"
 	if err := os.WriteFile(logPath, []byte(ndjson), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Task file with a single stopped interactive agent run that points at
@@ -53,12 +55,14 @@ func TestGetAgentRunConvoLog_ReplaysFromDisk(t *testing.T) {
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 
 	tk, err := store.Create("history replay", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	run := task.AgentRun{
 		AgentID: agentID,
@@ -69,6 +73,7 @@ func TestGetAgentRunConvoLog_ReplaysFromDisk(t *testing.T) {
 	}
 	if err := store.AddRun(tk.ID, run); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg := &config.Config{}
@@ -82,6 +87,7 @@ func TestGetAgentRunConvoLog_ReplaysFromDisk(t *testing.T) {
 	events, err := svc.GetAgentRunConvoLog(tk.ID, agentID)
 	if err != nil {
 		t.Fatalf("GetAgentRunConvoLog: %v", err)
+		panic("unreachable")
 	}
 
 	if len(events) != 5 {
@@ -116,11 +122,13 @@ func TestGetAgentRunConvoLog_MissingFile(t *testing.T) {
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 	tk, err := store.Create("no log task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	svc := &AgentService{
@@ -133,6 +141,7 @@ func TestGetAgentRunConvoLog_MissingFile(t *testing.T) {
 	_, err = svc.GetAgentRunConvoLog(tk.ID, "not-exist")
 	if err == nil {
 		t.Fatal("expected error for missing log file")
+		panic("unreachable")
 	}
 }
 
@@ -148,6 +157,7 @@ func TestGetAgentRunConvoLog_UsesTaskLogFile(t *testing.T) {
 	customLogPath := filepath.Join(home, "custom", "my-log.ndjson")
 	if err := os.MkdirAll(filepath.Dir(customLogPath), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(customLogPath, []byte(
 		`{"type":"assistant","message":{"content":[{"type":"text","text":"custom path works"}]}}`+"\n",
@@ -158,11 +168,13 @@ func TestGetAgentRunConvoLog_UsesTaskLogFile(t *testing.T) {
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 	tk, err := store.Create("custom log task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	run := task.AgentRun{
 		AgentID: "custom-agent",
@@ -172,6 +184,7 @@ func TestGetAgentRunConvoLog_UsesTaskLogFile(t *testing.T) {
 	}
 	if err := store.AddRun(tk.ID, run); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	svc := &AgentService{
@@ -184,6 +197,7 @@ func TestGetAgentRunConvoLog_UsesTaskLogFile(t *testing.T) {
 	events, err := svc.GetAgentRunConvoLog(tk.ID, "custom-agent")
 	if err != nil {
 		t.Fatalf("GetAgentRunConvoLog: %v", err)
+		panic("unreachable")
 	}
 	if len(events) != 1 || events[0].Text != "custom path works" {
 		t.Errorf("events = %+v, want single event with custom text", events)
@@ -205,6 +219,7 @@ func TestGetAgentRunLog_ReplaysHeadlessFromDisk(t *testing.T) {
 	agentsLogDir := filepath.Join(logsDir, "agents")
 	if err := os.MkdirAll(agentsLogDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	agentID := "headless-replay-1"
@@ -219,17 +234,20 @@ func TestGetAgentRunLog_ReplaysHeadlessFromDisk(t *testing.T) {
 	}, "\n") + "\n"
 	if err := os.WriteFile(logPath, []byte(ndjson), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 
 	tk, err := store.Create("headless replay", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	run := task.AgentRun{
 		AgentID: agentID,
@@ -239,6 +257,7 @@ func TestGetAgentRunLog_ReplaysHeadlessFromDisk(t *testing.T) {
 	}
 	if err := store.AddRun(tk.ID, run); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	svc := &AgentService{
@@ -251,6 +270,7 @@ func TestGetAgentRunLog_ReplaysHeadlessFromDisk(t *testing.T) {
 	events, err := svc.GetAgentRunLog(tk.ID, agentID)
 	if err != nil {
 		t.Fatalf("GetAgentRunLog: %v", err)
+		panic("unreachable")
 	}
 
 	if len(events) != 5 {

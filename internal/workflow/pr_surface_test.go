@@ -18,6 +18,7 @@ func TestSetPRSurfaceNamesEveryMissingMember(t *testing.T) {
 	err := e.setPRSurfaceForTest(PRSurface{})
 	if err == nil {
 		t.Fatal("setPRSurfaceForTest accepted an entirely empty surface")
+		panic("unreachable")
 	}
 	for _, want := range []string{
 		"Linker", "ReviewRequester", "StateFetcher", "HeadFetcher", "Creator",
@@ -40,6 +41,7 @@ func TestSetPRSurfaceRejectsAPartialWiring(t *testing.T) {
 	err := (&Engine{}).setPRSurfaceForTest(partial)
 	if err == nil {
 		t.Fatal("setPRSurfaceForTest accepted a surface missing Finder")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "Finder") {
 		t.Errorf("error %q does not name Finder", err)
@@ -54,6 +56,7 @@ func TestSetPRSurfaceWiresEveryField(t *testing.T) {
 	e := &Engine{}
 	if err := e.setPRSurfaceForTest(completePRSurface()); err != nil {
 		t.Fatalf("setPRSurfaceForTest(complete) = %v", err)
+		panic("unreachable")
 	}
 	for name, got := range map[string]any{
 		"prLinker":         e.pr.Linker,

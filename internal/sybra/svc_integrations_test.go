@@ -20,12 +20,14 @@ func TestFixRenovateCI_WorktreePrepareFailureEscalates(t *testing.T) {
 	taskStore, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 
 	projectStore, err := project.NewStore(t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatalf("project.NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	logger := slog.New(slog.DiscardHandler)
@@ -50,11 +52,13 @@ func TestFixRenovateCI_WorktreePrepareFailureEscalates(t *testing.T) {
 	err = svc.FixRenovateCI("owner/does-not-exist", 42, "some-branch", "bump a dependency")
 	if err == nil {
 		t.Fatal("expected FixRenovateCI to return an error when worktree prepare fails")
+		panic("unreachable")
 	}
 
 	tasksList, err := tasks.List()
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
+		panic("unreachable")
 	}
 	if len(tasksList) != 1 {
 		t.Fatalf("expected exactly 1 task created, got %d", len(tasksList))

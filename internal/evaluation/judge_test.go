@@ -86,6 +86,7 @@ func TestParseQualityVerdict(t *testing.T) {
 	v, err := parseQualityVerdict(mustEnvelope(t, "prose before "+inner))
 	if err != nil {
 		t.Fatalf("err: %v", err)
+		panic("unreachable")
 	}
 	if got := v.Dimensions["correctness"].Score; got != 10 {
 		t.Errorf("clamp high: got %d, want 10", got)
@@ -108,6 +109,7 @@ func TestParseQualityVerdict_PreservesBlockerOverall(t *testing.T) {
 	v, err := parseQualityVerdict(mustEnvelope(t, inner))
 	if err != nil {
 		t.Fatalf("err: %v", err)
+		panic("unreachable")
 	}
 	if v.Overall != 2.5 {
 		t.Errorf("overall = %v, want 2.5 (blocker-driven, preserved)", v.Overall)
@@ -121,6 +123,7 @@ func TestParseQualityVerdict_OverallZero(t *testing.T) {
 	v, err := parseQualityVerdict(mustEnvelope(t, allZero))
 	if err != nil {
 		t.Fatalf("err: %v", err)
+		panic("unreachable")
 	}
 	if v.Overall != 0 {
 		t.Errorf("genuine overall=0 (mean 0) = %v, want 0 preserved", v.Overall)
@@ -132,6 +135,7 @@ func TestParseQualityVerdict_OverallZero(t *testing.T) {
 	v2, err := parseQualityVerdict(mustEnvelope(t, omitted))
 	if err != nil {
 		t.Fatalf("err: %v", err)
+		panic("unreachable")
 	}
 	if v2.Overall != 8 {
 		t.Errorf("omitted overall = %v, want 8 (recomputed mean)", v2.Overall)
@@ -180,6 +184,7 @@ func mustEnvelope(t *testing.T, result string) []byte {
 	}{Result: result})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return b
 }

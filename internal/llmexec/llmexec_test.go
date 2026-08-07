@@ -25,6 +25,7 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{
 	res, err := RunJSON(context.Background(), "classify", Options{})
 	if err != nil {
 		t.Fatalf("RunJSON: %v", err)
+		panic("unreachable")
 	}
 	if res.Provider != "codex" {
 		t.Fatalf("provider = %q, want codex", res.Provider)
@@ -57,6 +58,7 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{
 	res, err := RunJSON(context.Background(), "classify", Options{})
 	if err != nil {
 		t.Fatalf("RunJSON: %v", err)
+		panic("unreachable")
 	}
 	if res.Provider != "codex" {
 		t.Fatalf("provider = %q, want codex", res.Provider)
@@ -80,6 +82,7 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{
 	})
 	if err != nil {
 		t.Fatalf("RunJSON: %v", err)
+		panic("unreachable")
 	}
 	if res.Provider != "codex" {
 		t.Fatalf("provider = %q, want codex", res.Provider)
@@ -103,6 +106,7 @@ printf '%s\n' '{"type":"assistant.message","data":{"content":"{\"ok\":true}"}}'
 	})
 	if err != nil {
 		t.Fatalf("RunJSON: %v", err)
+		panic("unreachable")
 	}
 	if res.Provider != "copilot" {
 		t.Fatalf("provider = %q, want copilot", res.Provider)
@@ -126,6 +130,7 @@ printf '%s\n' '{"type":"assistant.message","data":{"content":"{\"ok\":true}"}}'
 	})
 	if err != nil {
 		t.Fatalf("RunJSON: %v", err)
+		panic("unreachable")
 	}
 	if res.Provider != "opencode" {
 		t.Fatalf("provider = %q, want opencode", res.Provider)
@@ -150,6 +155,7 @@ printf '%s\n' '{"type":"assistant.message","data":{"content":"{\"ok\":true}"}}'
 	res, err := RunJSON(context.Background(), "classify", Options{})
 	if err != nil {
 		t.Fatalf("RunJSON: %v", err)
+		panic("unreachable")
 	}
 	if res.Provider != "copilot" {
 		t.Fatalf("provider = %q, want copilot", res.Provider)
@@ -166,6 +172,7 @@ func TestParseCodexTextAllowsLargeStreamLine(t *testing.T) {
 	got, err := parseCodexText(raw)
 	if err != nil {
 		t.Fatalf("parseCodexText: %v", err)
+		panic("unreachable")
 	}
 	if got != text {
 		t.Fatalf("text length = %d, want %d", len(got), len(text))
@@ -179,6 +186,7 @@ func TestParseCopilotTextAllowsLargeStreamLine(t *testing.T) {
 	got, err := parseCopilotText(raw)
 	if err != nil {
 		t.Fatalf("parseCopilotText: %v", err)
+		panic("unreachable")
 	}
 	if got != text {
 		t.Fatalf("text length = %d, want %d", len(got), len(text))
@@ -192,6 +200,7 @@ func TestParseOpenCodeTextAllowsLargeStreamLine(t *testing.T) {
 	got, err := parseOpenCodeText(raw)
 	if err != nil {
 		t.Fatalf("parseOpenCodeText: %v", err)
+		panic("unreachable")
 	}
 	if got != text {
 		t.Fatalf("text length = %d, want %d", len(got), len(text))
@@ -218,6 +227,7 @@ printf '%%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"
 	res, err := RunJSON(context.Background(), "classify", Options{Provider: "codex", Schema: schema})
 	if err != nil {
 		t.Fatalf("RunJSON: %v", err)
+		panic("unreachable")
 	}
 	if res.Provider != "codex" {
 		t.Fatalf("provider = %q, want codex", res.Provider)
@@ -226,6 +236,7 @@ printf '%%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"
 	schemaPathRaw, err := os.ReadFile(filepath.Join(captureDir, "schema-arg.txt"))
 	if err != nil {
 		t.Fatalf("read captured schema arg: %v", err)
+		panic("unreachable")
 	}
 	if strings.TrimSpace(string(schemaPathRaw)) == "" {
 		t.Fatalf("--output-schema flag was not passed to codex")
@@ -234,6 +245,7 @@ printf '%%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"
 	gotSchema, err := os.ReadFile(filepath.Join(captureDir, "schema-path.txt"))
 	if err != nil {
 		t.Fatalf("read schema temp file: %v", err)
+		panic("unreachable")
 	}
 	if string(gotSchema) != schema {
 		t.Fatalf("schema temp file content = %q, want %q", gotSchema, schema)
@@ -259,6 +271,7 @@ printf '%s\n' '{"result":"{\"ok\":true}"}'
 	res, err := RunJSON(context.Background(), "classify", Options{Provider: "claude", Schema: schema})
 	if err != nil {
 		t.Fatalf("RunJSON: %v", err)
+		panic("unreachable")
 	}
 	if res.Provider != "claude" {
 		t.Fatalf("provider = %q, want claude", res.Provider)
@@ -279,6 +292,7 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"{
 	res, err := RunJSON(context.Background(), "classify", Options{Provider: "codex"})
 	if err != nil {
 		t.Fatalf("RunJSON: %v", err)
+		panic("unreachable")
 	}
 	if res.Provider != "codex" {
 		t.Fatalf("provider = %q, want codex", res.Provider)
@@ -303,6 +317,7 @@ printf '%s\n' '{"result":"{\"ok\":true}"}'
 	})
 	if err != nil {
 		t.Fatalf("RunJSON: %v", err)
+		panic("unreachable")
 	}
 	if res.Provider != "claude" {
 		t.Fatalf("provider = %q, want claude fallback after schema delivery failure", res.Provider)
@@ -326,6 +341,7 @@ printf '%s\n' '{"type":"assistant.message","data":{"content":"{\"ok\":true}"}}'
 	})
 	if err != nil {
 		t.Fatalf("RunJSON: %v", err)
+		panic("unreachable")
 	}
 	if res.Provider != "copilot" {
 		t.Fatalf("provider = %q, want copilot fallback after codex rejects --output-schema", res.Provider)
@@ -355,6 +371,7 @@ exit 1
 	res, err := RunJSON(context.Background(), "classify", Options{})
 	if err == nil {
 		t.Fatal("RunJSON: want error when every provider fails")
+		panic("unreachable")
 	}
 	if res.Provider != "opencode" {
 		t.Fatalf("provider = %q, want opencode (last candidate tried)", res.Provider)
@@ -365,6 +382,7 @@ func writeExe(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+		panic("unreachable")
 	}
 }
 
@@ -390,6 +408,7 @@ printf '%s\n' '{"type":"result","subtype":"success","result":"{\"ok\":true}","to
 	res, err := RunJSON(context.Background(), "hi", Options{Provider: "claude", Gate: gate})
 	if err != nil {
 		t.Fatalf("RunJSON with health checks disabled: %v", err)
+		panic("unreachable")
 	}
 	if res.Provider != "claude" {
 		t.Errorf("Provider = %q, want claude: an absent gate must block nothing", res.Provider)

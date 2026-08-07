@@ -23,14 +23,17 @@ func setupCrossProviderEnv(t *testing.T, defaultProvider string, claudeScenarios
 	claudeSF := filepath.Join(t.TempDir(), "claude-scenarios.txt")
 	if err := os.WriteFile(claudeSF, []byte(strings.Join(claudeScenarios, "\n")), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	codexSF := filepath.Join(t.TempDir(), "codex-scenarios.txt")
 	if err := os.WriteFile(codexSF, []byte(strings.Join(codexScenarios, "\n")), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	copilotSF := filepath.Join(t.TempDir(), "copilot-scenarios.txt")
 	if err := os.WriteFile(copilotSF, []byte(strings.Join(copilotScenarios, "\n")), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	env := setupE2EProvider(t, defaultProvider, "")
@@ -45,10 +48,12 @@ func setupCrossProviderEnv(t *testing.T, defaultProvider string, claudeScenarios
 	src, err := os.ReadFile("../../internal/workflow/testdata/test-review-fix.yaml")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	dst := filepath.Join(env.wfStore.Dir(), "test-review-fix.yaml")
 	if err := os.WriteFile(dst, src, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	return env
@@ -70,10 +75,12 @@ func TestE2E_CrossProvider_ReviewThenFix(t *testing.T) {
 	created, err := env.tasks.Create("cross-provider review test", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := env.startWorkflow(created.ID, "test-review-fix"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 30*time.Second, "workflow completes", func() bool {
@@ -88,6 +95,7 @@ func TestE2E_CrossProvider_ReviewThenFix(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if tk.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("workflow state = %q, want completed (step: %s)", tk.Workflow.State, tk.Workflow.CurrentStep)
@@ -135,10 +143,12 @@ func TestE2E_CrossProvider_ReviewSidecarPersisted(t *testing.T) {
 	created, err := env.tasks.Create("review sidecar persisted", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := env.startWorkflow(created.ID, "test-review-fix"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 30*time.Second, "workflow completes", func() bool {
@@ -153,6 +163,7 @@ func TestE2E_CrossProvider_ReviewSidecarPersisted(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if tk.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("workflow state = %q, want completed (step: %s)", tk.Workflow.State, tk.Workflow.CurrentStep)
@@ -187,6 +198,7 @@ func TestE2E_CrossProvider_NoreviewTagSkipsReview(t *testing.T) {
 	created, err := env.tasks.Create("noreview test", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tags := []string{"noreview"}
 	if _, err := env.tasks.Update(created.ID, task.Update{Tags: &tags}); err != nil {
@@ -195,6 +207,7 @@ func TestE2E_CrossProvider_NoreviewTagSkipsReview(t *testing.T) {
 
 	if err := env.startWorkflow(created.ID, "test-review-fix"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 30*time.Second, "workflow completes", func() bool {
@@ -209,6 +222,7 @@ func TestE2E_CrossProvider_NoreviewTagSkipsReview(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if tk.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("workflow state = %q, want completed (step: %s)", tk.Workflow.State, tk.Workflow.CurrentStep)
@@ -256,10 +270,12 @@ func TestE2E_CrossProvider_ReviewUsesOppositeProvider(t *testing.T) {
 	created, err := env.tasks.Create("provider verify test", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := env.startWorkflow(created.ID, "test-review-fix"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 30*time.Second, "workflow completes", func() bool {
@@ -274,6 +290,7 @@ func TestE2E_CrossProvider_ReviewUsesOppositeProvider(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if tk.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("workflow state = %q, want completed (step: %s)", tk.Workflow.State, tk.Workflow.CurrentStep)
@@ -282,10 +299,12 @@ func TestE2E_CrossProvider_ReviewUsesOppositeProvider(t *testing.T) {
 	// Codex fake must have been invoked (review step).
 	if _, err := os.Stat(codexArgsLog); err != nil {
 		t.Fatalf("codex args log not written — review step did not invoke codex: %v", err)
+		panic("unreachable")
 	}
 	codexArgs, err := os.ReadFile(codexArgsLog)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(codexArgs), "Review") {
 		t.Errorf("codex invocation should contain review prompt, got:\n%s", string(codexArgs))
@@ -310,10 +329,12 @@ func TestE2E_CrossProvider_ReviewUsesOppositeProvider_DefaultCodex(t *testing.T)
 	created, err := env.tasks.Create("provider verify inverse test", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := env.startWorkflow(created.ID, "test-review-fix"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 30*time.Second, "workflow completes", func() bool {
@@ -328,6 +349,7 @@ func TestE2E_CrossProvider_ReviewUsesOppositeProvider_DefaultCodex(t *testing.T)
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if tk.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("workflow state = %q, want completed (step: %s)", tk.Workflow.State, tk.Workflow.CurrentStep)
@@ -335,10 +357,12 @@ func TestE2E_CrossProvider_ReviewUsesOppositeProvider_DefaultCodex(t *testing.T)
 
 	if _, err := os.Stat(copilotArgsLog); err != nil {
 		t.Fatalf("copilot args log not written — review step did not invoke copilot: %v", err)
+		panic("unreachable")
 	}
 	copilotArgs, err := os.ReadFile(copilotArgsLog)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(copilotArgs), "Review") {
 		t.Errorf("copilot invocation should contain review prompt, got:\n%s", string(copilotArgs))
@@ -346,10 +370,12 @@ func TestE2E_CrossProvider_ReviewUsesOppositeProvider_DefaultCodex(t *testing.T)
 
 	if _, err := os.Stat(codexArgsLog); err != nil {
 		t.Fatalf("codex args log not written — default-provider steps did not invoke codex: %v", err)
+		panic("unreachable")
 	}
 	codexArgs, err := os.ReadFile(codexArgsLog)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(codexArgs), "Fix review comments") {
 		t.Errorf("codex invocation should contain fix-review prompt, got:\n%s", string(codexArgs))

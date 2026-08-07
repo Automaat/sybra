@@ -17,12 +17,14 @@ func writeAuditFile(t *testing.T, dir, filename string, evts []audit.Event) {
 		b, err := json.Marshal(e)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		lines = append(lines, b...)
 		lines = append(lines, '\n')
 	}
 	if err := os.WriteFile(filepath.Join(dir, filename), lines, 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -32,6 +34,7 @@ func newTestStore(t *testing.T) (store *Store, tmpDir string) {
 	s, err := NewStore(filepath.Join(tmpDir, "stats.json"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return s, tmpDir
 }
@@ -41,6 +44,7 @@ func newAuditDir(t *testing.T) string {
 	dir := t.TempDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return dir
 }
@@ -51,6 +55,7 @@ func TestBackfillEmptyDir(t *testing.T) {
 
 	if err := s.Backfill(auditDir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if s.Len() != 0 {
 		t.Errorf("expected 0 runs, got %d", s.Len())
@@ -93,6 +98,7 @@ func TestBackfillImportsCompletedAndFailed(t *testing.T) {
 
 	if err := s.Backfill(auditDir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if s.Len() != 2 {
@@ -125,6 +131,7 @@ func TestBackfillSkipsIfStoreHasRecords(t *testing.T) {
 
 	if err := s.Backfill(auditDir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if s.Len() != 1 {
@@ -146,6 +153,7 @@ func TestBackfillFiltersNonAgentEvents(t *testing.T) {
 
 	if err := s.Backfill(auditDir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if s.Len() != 1 {
@@ -163,10 +171,12 @@ func TestBackfillMalformedEntries(t *testing.T) {
 `)
 	if err := os.WriteFile(filepath.Join(auditDir, "2024-03-01.ndjson"), content, 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := s.Backfill(auditDir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if s.Len() != 2 {
@@ -208,6 +218,7 @@ func TestBackfillOutcomes(t *testing.T) {
 
 			if err := s.Backfill(auditDir); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			resp := s.Query()
@@ -245,6 +256,7 @@ func TestBackfillDedupesLegacyFailedCompatibilityEvent(t *testing.T) {
 
 	if err := s.Backfill(auditDir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	resp := s.Query()
@@ -281,6 +293,7 @@ func TestBackfillFieldExtraction(t *testing.T) {
 
 	if err := s.Backfill(auditDir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	resp := s.Query()
@@ -332,6 +345,7 @@ func TestBackfillReasoningTokens(t *testing.T) {
 
 	if err := s.Backfill(auditDir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	resp := s.Query()
@@ -367,6 +381,7 @@ func TestBackfillTokenBreakdown(t *testing.T) {
 
 	if err := s.Backfill(auditDir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	resp := s.Query()
@@ -397,6 +412,7 @@ func TestBackfillMultipleFiles(t *testing.T) {
 
 	if err := s.Backfill(auditDir); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if s.Len() != 3 {

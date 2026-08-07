@@ -17,6 +17,7 @@ func newRebaseBlockTestManager(t *testing.T) *task.Manager {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return task.NewManager(store, nil)
 }
@@ -44,6 +45,7 @@ func TestMarkRebaseBlocked_ReProbesResolvedRemotePR(t *testing.T) {
 	tk, err := tasks.Create("pr-fix task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projectID := "acme/widgets"
 	prNumber := 42
@@ -59,6 +61,7 @@ func TestMarkRebaseBlocked_ReProbesResolvedRemotePR(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusInReview)
@@ -79,6 +82,7 @@ func TestMarkRebaseBlocked_ParksHumanRequiredWhenNotResolved(t *testing.T) {
 	tk, err := tasks.Create("pr-fix task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projectID := "acme/widgets"
 	prNumber := 42
@@ -94,6 +98,7 @@ func TestMarkRebaseBlocked_ParksHumanRequiredWhenNotResolved(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
@@ -115,6 +120,7 @@ func TestMarkRebaseBlocked_RespectsRecoverConflictsOwnExhaustionReason(t *testin
 	tk, err := tasks.Create("exhausted recovery task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	const specificReason = "branch conflict recovery attempted 3 time(s) and failed: resolve conflicts or recreate the task branch"
@@ -138,6 +144,7 @@ func TestMarkRebaseBlocked_RespectsRecoverConflictsOwnExhaustionReason(t *testin
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusHumanRequired)
@@ -161,6 +168,7 @@ func TestMarkRebaseBlocked_ReProbesResolvedPRAfterRecoveryExhaustion(t *testing.
 	tk, err := tasks.Create("resolved after exhausted recovery task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projectID := "acme/widgets"
 	prNumber := 42
@@ -189,6 +197,7 @@ func TestMarkRebaseBlocked_ReProbesResolvedPRAfterRecoveryExhaustion(t *testing.
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Fatalf("status = %q, want %q after resolved PR re-probe", got.Status, task.StatusInReview)
@@ -213,6 +222,7 @@ func TestMarkRebaseBlocked_NoLinkedPRParksHumanRequired(t *testing.T) {
 	tk, err := tasks.Create("no pr task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	handled := MarkRebaseBlocked(tasks, tk.ID, worktree.ErrRebaseFailed, discardSlogLogger(), nil)
@@ -223,6 +233,7 @@ func TestMarkRebaseBlocked_NoLinkedPRParksHumanRequired(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
@@ -246,6 +257,7 @@ func TestMarkRebaseBlocked_DiskSpaceErrorSkipsRecoveryAndPRProbe(t *testing.T) {
 	tk, err := tasks.Create("disk space task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projectID := "acme/widgets"
 	prNumber := 42
@@ -269,6 +281,7 @@ func TestMarkRebaseBlocked_DiskSpaceErrorSkipsRecoveryAndPRProbe(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
@@ -283,6 +296,7 @@ func TestMarkRebaseBlocked_IgnoresTransientFetch(t *testing.T) {
 	tk, err := tasks.Create("transient fetch task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	called := false
@@ -300,6 +314,7 @@ func TestMarkRebaseBlocked_IgnoresTransientFetch(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusTodo {
 		t.Fatalf("status = %q, want unchanged %q", got.Status, task.StatusTodo)
@@ -325,6 +340,7 @@ func TestMarkRebaseBlockedWithRecoveryResult_HandledWithoutRecovery(t *testing.T
 	tk, err := tasks.Create("pr-fix task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projectID := "acme/widgets"
 	prNumber := 42
@@ -344,6 +360,7 @@ func TestMarkRebaseBlockedWithRecoveryResult_HandledWithoutRecovery(t *testing.T
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInReview {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusInReview)

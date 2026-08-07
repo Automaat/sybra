@@ -13,6 +13,7 @@ func TestStoreProjectScopingIdempotencyOrderingAndLimit(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	store.maxPerProject = 3
 
@@ -25,6 +26,7 @@ func TestStoreProjectScopingIdempotencyOrderingAndLimit(t *testing.T) {
 	} {
 		if err := store.Put("owner/repo", rec); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 	if err := store.Put("other/repo", Record{TaskID: "other", ProjectID: "other/repo", CreatedAt: base}); err != nil {
@@ -37,6 +39,7 @@ func TestStoreProjectScopingIdempotencyOrderingAndLimit(t *testing.T) {
 	got, err := store.Query("owner/repo", 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wantIDs := []string{"new", "tie-a", "tie-b"}
 	if len(got) != len(wantIDs) {
@@ -54,6 +57,7 @@ func TestStoreProjectScopingIdempotencyOrderingAndLimit(t *testing.T) {
 	other, err := store.Query("other/repo", 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(other) != 1 || other[0].TaskID != "other" {
 		t.Fatalf("other project Query = %+v, want only other", other)
@@ -64,6 +68,7 @@ func TestStoreLimitAndCorruptSkip(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	now := time.Now().UTC()
 	if err := store.Put("owner/repo", Record{TaskID: "a", CreatedAt: now}); err != nil {
@@ -72,16 +77,19 @@ func TestStoreLimitAndCorruptSkip(t *testing.T) {
 	projectDir, err := store.projectDir("owner/repo")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(projectDir, "bad.json"), []byte("{"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := store.Query("owner/repo", 0); err != nil || len(got) != 0 {
 		t.Fatalf("Query limit 0 = %+v, %v; want empty nil", got, err)
+		panic("unreachable")
 	}
 	got, err := store.Query("owner/repo", 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 1 || got[0].TaskID != "a" {
 		t.Fatalf("Query with corrupt file = %+v, want only valid record", got)
@@ -92,18 +100,22 @@ func TestStoreRejectsUnsafeIDsAndDelete(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, id := range []string{"", "../repo", "owner/../repo", "owner/repo/extra", "owner\\repo", "work-zzzz"} {
 		if _, err := fsutil.ProjectKeyDir(id); err == nil {
 			t.Fatalf("fsutil.ProjectKeyDir(%q) succeeded, want error", id)
+			panic("unreachable")
 		}
 	}
 	if got, err := fsutil.ProjectKeyDir("owner/repo"); err != nil || got != "gh-6f776e6572-7265706f" {
 		t.Fatalf("fsutil.ProjectKeyDir(owner/repo) = %q, %v; want encoded key", got, err)
+		panic("unreachable")
 	}
 	opaqueKey := "work-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	if got, err := fsutil.ProjectKeyDir(opaqueKey); err != nil || got != opaqueKey {
 		t.Fatalf("fsutil.ProjectKeyDir(opaque work key) = %q, %v; want same key", got, err)
+		panic("unreachable")
 	}
 	if err := store.Put("owner/repo", Record{TaskID: "task-1", CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
@@ -113,10 +125,12 @@ func TestStoreRejectsUnsafeIDsAndDelete(t *testing.T) {
 	}
 	if err := store.Delete("owner/repo"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	got, err := store.Query("owner/repo", 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(got) != 0 {
 		t.Fatalf("Query after Delete = %+v, want empty", got)
@@ -127,6 +141,7 @@ func TestStoreProjectIDEncodingDoesNotCollide(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, rec := range []struct {
 		projectID string
@@ -143,10 +158,12 @@ func TestStoreProjectIDEncodingDoesNotCollide(t *testing.T) {
 	first, err := store.Query("a--b/c", 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	second, err := store.Query("a/b--c", 10)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(first) != 1 || first[0].TaskID != "first" {
 		t.Fatalf("Query(a--b/c) = %+v, want only first", first)

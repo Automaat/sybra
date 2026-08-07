@@ -65,6 +65,7 @@ func TestFetchMyReviewState(t *testing.T) {
 			got, err := fetchMyReviewStateWith(fe, "o/r", 7)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
+				panic("unreachable")
 			}
 			if got != tt.want {
 				t.Errorf("got %+v, want %+v", got, tt.want)

@@ -531,6 +531,7 @@ func TestSurfaceStartFailure_RebaseFailedDeferredDeclineKeepsOriginalReason(t *t
 	taskInfo, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatalf("GetTask(t1): %v", err)
+		panic("unreachable")
 	}
 	engine.surfaceStartFailure("t1", "in-progress", wrapped, taskInfo.Workflow, "run_agent")
 
@@ -816,6 +817,7 @@ func TestHandleAgentComplete_CircuitBreakerAttributesNextStepNotCompletedStep(t 
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo", AgentMode: "headless"})
 	if err := engine.StartWorkflow("t1", "test-simple"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if agents.LastCall().Role != "triage" {
 		t.Fatalf("expected triage, got %q", agents.LastCall().Role)
@@ -831,6 +833,7 @@ func TestHandleAgentComplete_CircuitBreakerAttributesNextStepNotCompletedStep(t 
 	ti, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, tripped := ti.Workflow.Variables[circuitBreakerFailureKey("implement")]; !tripped {
 		t.Errorf("expected circuit breaker failure recorded against %q, vars=%v", "implement", ti.Workflow.Variables)

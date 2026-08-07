@@ -69,6 +69,7 @@ func TestExtractJudgeJSONToleratesBracesAndProse(t *testing.T) {
 			got, err := extractJudgeJSON(tt.output)
 			if err != nil {
 				t.Fatalf("extractJudgeJSON: %v", err)
+				panic("unreachable")
 			}
 			if got.WinnerAttemptID != tt.wantWinner {
 				t.Errorf("winner = %q, want %q", got.WinnerAttemptID, tt.wantWinner)

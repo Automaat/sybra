@@ -23,6 +23,7 @@ func TestDispatchPlanningWorkflow_RecoversEscalatedMissingStep(t *testing.T) {
 	created, err := app.tasks.Create("escalated off a deleted step", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := app.tasks.UpdateMap(created.ID, map[string]any{
 		"status": string(task.StatusPlanning),
@@ -40,9 +41,11 @@ func TestDispatchPlanningWorkflow_RecoversEscalatedMissingStep(t *testing.T) {
 	got, err := app.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Workflow == nil {
 		t.Fatal("workflow missing after dispatch")
+		panic("unreachable")
 	}
 	if got.Workflow.CurrentStep == "address_critique" {
 		t.Fatal("re-plan no-opped: the task is still parked on the deleted step, so the escalation's advice is a dead end")

@@ -35,6 +35,7 @@ func TestImportSidecar_WritesContentFromFile(t *testing.T) {
 	body := "# Review\n\nNo findings.\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	engine, tasks := importSidecarFixture(t, path)
@@ -128,6 +129,7 @@ func TestImportSidecar_EmptyDirVarRecoversViaWorktreeGetter(t *testing.T) {
 	body := `{"task_id":"t1"}`
 	if err := os.WriteFile(filepath.Join(worktree, "review.md"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{
@@ -154,6 +156,7 @@ func TestImportSidecar_EmptyDirVarRecoversViaWorktreeGetter(t *testing.T) {
 	}
 	if got.Workflow == nil {
 		t.Fatal("Workflow is nil, want persisted recovered worktree")
+		panic("unreachable")
 	}
 	if got.Workflow.Variables[WorkflowVarDir] != worktree {
 		t.Fatalf("%s = %q, want persisted recovered worktree", WorkflowVarDir, got.Workflow.Variables[WorkflowVarDir])
@@ -167,6 +170,7 @@ func TestImportSidecars_RecoveredDirMakesLaterMissingArtifactPlainMissing(t *tes
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	if err := store.Save(Definition{
 		ID:   "test-import-multiple-dir-sidecars",
@@ -200,6 +204,7 @@ func TestImportSidecars_RecoveredDirMakesLaterMissingArtifactPlainMissing(t *tes
 	research := "# Research\n"
 	if err := os.WriteFile(filepath.Join(worktree, "research.md"), []byte(research), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{
@@ -277,6 +282,7 @@ func TestImportSidecar_RecoversFromTaskWorktreeWhenDirVarEmpty(t *testing.T) {
 	body := "# Review\n\nNo findings.\n"
 	if err := os.WriteFile(filepath.Join(wt, "review.md"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{
@@ -404,6 +410,7 @@ func TestImportSidecar_UnknownKindLogsAndDoesNotWrite(t *testing.T) {
 	path := filepath.Join(dir, "review.md")
 	if err := os.WriteFile(path, []byte("body"), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := newMemTasks()
 	tasks.Put(TaskInfo{
@@ -433,6 +440,7 @@ func TestImportSidecars_WritesMultiplePlanningArtifacts(t *testing.T) {
 		path := filepath.Join(dir, name)
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		return path
 	}
@@ -497,6 +505,7 @@ func newImportSidecarsFixture(t *testing.T, files map[string]string) (*Engine, *
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 	tasks := newMemTasks()
@@ -525,6 +534,7 @@ func TestAdoptSidecarsFromFailedRun_AdoptsCompleteValidSet(t *testing.T) {
 	def, err := engine.store.Get("test-import-sidecars")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if ok := engine.adoptSidecarsFromFailedRun("t1", "plan", info, &def); !ok {
@@ -549,6 +559,7 @@ func TestAdoptSidecarsFromFailedRun_RefusesOnMissingArtifact(t *testing.T) {
 	def, err := engine.store.Get("test-import-sidecars")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if ok := engine.adoptSidecarsFromFailedRun("t1", "plan", info, &def); ok {
@@ -572,6 +583,7 @@ func TestAdoptSidecarsFromFailedRun_RefusesOnInvalidContract(t *testing.T) {
 	def, err := engine.store.Get("test-import-sidecars")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if ok := engine.adoptSidecarsFromFailedRun("t1", "plan", info, &def); ok {
@@ -595,6 +607,7 @@ func TestHandleAgentComplete_FailedRunAdoptsSidecarsInsteadOfConsumingRetry(t *t
 	info.Workflow.AgentRoutes = map[string]string{"a1": "plan"}
 	if err := tasks.SetWorkflow("t1", info.Workflow); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	engine.HandleAgentComplete("t1", AgentCompletion{
@@ -625,6 +638,7 @@ func TestHandleAgentComplete_FailedRunWithIncompleteArtifactsStillFails(t *testi
 	info.Workflow.AgentRoutes = map[string]string{"a1": "plan"}
 	if err := tasks.SetWorkflow("t1", info.Workflow); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	engine.HandleAgentComplete("t1", AgentCompletion{

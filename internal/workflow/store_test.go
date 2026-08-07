@@ -13,6 +13,7 @@ func mustNewStore(t *testing.T) *Store {
 	s, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	return s
 }
@@ -33,9 +34,11 @@ func TestNewStore(t *testing.T) {
 	s, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	if s == nil {
 		t.Fatal("expected non-nil store")
+		panic("unreachable")
 	}
 }
 
@@ -46,11 +49,13 @@ func TestStore_SaveAndGet(t *testing.T) {
 	def := newTestDef("my-workflow")
 	if err := s.Save(def); err != nil {
 		t.Fatalf("Save: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := s.Get("my-workflow")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if got.ID != "my-workflow" {
 		t.Errorf("got ID %q, want %q", got.ID, "my-workflow")
@@ -77,6 +82,7 @@ func TestStore_Save_Invalid(t *testing.T) {
 	}
 	if err := s.Save(def); err == nil {
 		t.Fatal("expected validation error for MaxRetries > 10")
+		panic("unreachable")
 	}
 }
 
@@ -87,12 +93,14 @@ func TestStore_List(t *testing.T) {
 	for _, id := range []string{"wf-a", "wf-b", "wf-c"} {
 		if err := s.Save(newTestDef(id)); err != nil {
 			t.Fatalf("Save %s: %v", id, err)
+			panic("unreachable")
 		}
 	}
 
 	defs, err := s.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(defs) != 3 {
 		t.Errorf("got %d defs, want 3", len(defs))
@@ -105,21 +113,25 @@ func TestStore_List_SkipsBadFiles(t *testing.T) {
 	s, err := NewStore(dir)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	if err := s.Save(newTestDef("good-wf")); err != nil {
 		t.Fatalf("Save: %v", err)
+		panic("unreachable")
 	}
 
 	// Write a malformed YAML file.
 	bad := filepath.Join(dir, "bad.yaml")
 	if err := os.WriteFile(bad, []byte(": : :"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
+		panic("unreachable")
 	}
 
 	defs, err := s.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(defs) != 1 {
 		t.Errorf("got %d defs, want 1 (bad file skipped)", len(defs))
@@ -132,12 +144,15 @@ func TestStore_Delete(t *testing.T) {
 
 	if err := s.Save(newTestDef("to-delete")); err != nil {
 		t.Fatalf("Save: %v", err)
+		panic("unreachable")
 	}
 	if err := s.Delete("to-delete"); err != nil {
 		t.Fatalf("Delete: %v", err)
+		panic("unreachable")
 	}
 	if _, err := s.Get("to-delete"); err == nil {
 		t.Fatal("expected error after delete")
+		panic("unreachable")
 	}
 }
 
@@ -146,6 +161,7 @@ func TestStore_Delete_NotFound(t *testing.T) {
 	s := mustNewStore(t)
 	if err := s.Delete("nonexistent"); err == nil {
 		t.Fatal("expected error for non-existent workflow")
+		panic("unreachable")
 	}
 }
 
@@ -177,6 +193,7 @@ func TestStore_SafePath_Valid(t *testing.T) {
 	// Expect "not found" error, not a path-traversal error.
 	if err == nil {
 		t.Fatal("expected error (file not found)")
+		panic("unreachable")
 	}
 	// Should not contain "invalid workflow ID".
 	if err.Error() == "invalid workflow ID \"valid-id\"" {
@@ -222,6 +239,7 @@ func TestStore_ParseFile_SkipsInvalidDefinitions(t *testing.T) {
 	s, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	// Write a workflow directly to disk (bypassing Save's validation) that
 	// references an unknown field — mimicking a hand-edited user file.
@@ -245,6 +263,7 @@ steps:
 	path := filepath.Join(s.Dir(), "hand-edited.yaml")
 	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
 		t.Fatalf("write hand-edited: %v", err)
+		panic("unreachable")
 	}
 
 	// List skips invalid definitions instead of letting them reach engine
@@ -252,12 +271,14 @@ steps:
 	defs, err := s.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(defs) != 0 {
 		t.Fatalf("List returned %d definitions, want invalid workflow skipped", len(defs))
 	}
 	if _, err := s.Get("hand-edited"); err == nil {
 		t.Fatal("Get should reject an invalid workflow definition")
+		panic("unreachable")
 	}
 }
 
@@ -282,14 +303,17 @@ steps:
 	path := filepath.Join(s.Dir(), "parallel-worktree.yaml")
 	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
 		t.Fatalf("write hand-edited workflow: %v", err)
+		panic("unreachable")
 	}
 
 	if _, err := s.Get("parallel-worktree"); err == nil {
 		t.Fatal("Get should reject a parallel child with needs_worktree")
+		panic("unreachable")
 	}
 	defs, err := s.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(defs) != 0 {
 		t.Fatalf("List returned %d definitions, want invalid workflow skipped", len(defs))
@@ -305,10 +329,12 @@ func TestStore_SaveSnapshotAndGetSnapshot(t *testing.T) {
 	hash, err := s.SaveSnapshot(def)
 	if err != nil {
 		t.Fatalf("SaveSnapshot: %v", err)
+		panic("unreachable")
 	}
 	got, err := s.GetSnapshot(def.ID, hash)
 	if err != nil {
 		t.Fatalf("GetSnapshot: %v", err)
+		panic("unreachable")
 	}
 	if got.ID != def.ID {
 		t.Fatalf("snapshot ID = %q, want %q", got.ID, def.ID)
@@ -323,22 +349,27 @@ func TestStore_SaveSnapshot_IsImmutable(t *testing.T) {
 	hash, err := s.SaveSnapshot(def)
 	if err != nil {
 		t.Fatalf("SaveSnapshot first: %v", err)
+		panic("unreachable")
 	}
 
 	path, err := s.snapshotPath(def.ID, hash)
 	if err != nil {
 		t.Fatalf("snapshotPath: %v", err)
+		panic("unreachable")
 	}
 	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile before: %v", err)
+		panic("unreachable")
 	}
 	if _, err := s.SaveSnapshot(def); err != nil {
 		t.Fatalf("SaveSnapshot second: %v", err)
+		panic("unreachable")
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile after: %v", err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(before, after) {
 		t.Fatal("snapshot bytes changed on second save")
@@ -351,6 +382,7 @@ func TestStore_GetSnapshot_RejectsInvalidHash(t *testing.T) {
 	s := mustNewStore(t)
 	if _, err := s.GetSnapshot("wf", "not-a-hash"); err == nil {
 		t.Fatal("expected invalid hash error")
+		panic("unreachable")
 	}
 }
 
@@ -360,5 +392,6 @@ func TestStore_SnapshotPath_TraversalRejected(t *testing.T) {
 	s := mustNewStore(t)
 	if _, err := s.snapshotPath("../wf", strings.Repeat("a", 64)); err == nil {
 		t.Fatal("expected invalid workflow ID error")
+		panic("unreachable")
 	}
 }

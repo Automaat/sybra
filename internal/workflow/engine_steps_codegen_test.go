@@ -29,6 +29,7 @@ func codegenGitOutput(t *testing.T, dir string, args ...string) string {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
+		panic("unreachable")
 	}
 	return strings.TrimSpace(string(out))
 }
@@ -41,6 +42,7 @@ func TestExecCodegenGate_DefaultGetterSkips(t *testing.T) {
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "skipped: no codegen commands configured" {
 		t.Fatalf("Output = %q, want no-commands skip", out.Output)
@@ -55,6 +57,7 @@ func TestExecCodegenGate_NoCommandsSkips(t *testing.T) {
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "skipped: no codegen commands configured" {
 		t.Fatalf("Output = %q, want no-command skip", out.Output)
@@ -69,6 +72,7 @@ func TestExecCodegenGate_NoWorktreeGetterSkips(t *testing.T) {
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "skipped: no worktree getter configured" {
 		t.Fatalf("Output = %q, want no-worktree-getter skip", out.Output)
@@ -84,6 +88,7 @@ func TestExecCodegenGate_NoWorktreeForTaskSkips(t *testing.T) {
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "skipped: no worktree for task" {
 		t.Fatalf("Output = %q, want no-worktree skip", out.Output)
@@ -101,6 +106,7 @@ func TestExecCodegenGate_CleanTreeNoOp(t *testing.T) {
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean", out.Output)
@@ -130,6 +136,7 @@ func TestExecCodegenGate_DriftCommits(t *testing.T) {
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "committed" {
 		t.Fatalf("Output = %q, want committed", out.Output)
@@ -162,6 +169,7 @@ func TestExecCodegenGate_LongOutputNotTruncated(t *testing.T) {
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean", out.Output)
@@ -186,6 +194,7 @@ func TestExecCodegenGate_UsesTaskScopedGoBuildCache(t *testing.T) {
 	out, err := engine.execCodegenGate("task-1", newCodegenGateStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "committed" {
 		t.Fatalf("Output = %q, want committed", out.Output)
@@ -194,6 +203,7 @@ func TestExecCodegenGate_UsesTaskScopedGoBuildCache(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(wt, "cache-env.txt"))
 	if err != nil {
 		t.Fatalf("read cache-env.txt: %v", err)
+		panic("unreachable")
 	}
 	parts := strings.Split(strings.TrimSpace(string(data)), "|")
 	if len(parts) != 2 {
@@ -216,6 +226,7 @@ func TestExecCodegenGate_MissingToolchainFlagsHumanRequired(t *testing.T) {
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged", out.Output)
@@ -238,6 +249,7 @@ func TestExecCodegenGate_HardFailureFlagsHumanRequired(t *testing.T) {
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged", out.Output)
@@ -261,6 +273,7 @@ func TestExecCodegenGate_TimeoutFlagsHumanRequired(t *testing.T) {
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged", out.Output)
@@ -294,6 +307,7 @@ func TestExecCodegenGate_ScaledTimeoutAbsorbsHostOversubscription(t *testing.T) 
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "clean" {
 		t.Fatalf("Output = %q, want clean (scaled timeout should cover host oversubscription)", out.Output)
@@ -308,6 +322,7 @@ func TestExecCodegenGate_CommitFailureFlagsHumanRequired(t *testing.T) {
 	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
 	if err := os.WriteFile(filepath.Join(wt, ".git", "index.lock"), []byte("locked\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	engine, tasks := newCodegenGateEngine(t, wt, []string{"printf 'generated\\n' > generated.txt"})
 	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
@@ -315,6 +330,7 @@ func TestExecCodegenGate_CommitFailureFlagsHumanRequired(t *testing.T) {
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "flagged" {
 		t.Fatalf("Output = %q, want flagged", out.Output)
@@ -341,6 +357,7 @@ func TestExecCodegenGate_ContextCanceledSkips(t *testing.T) {
 	out, err := engine.execCodegenGate("t1", newCodegenGateStep())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if out.Output != "skipped: context canceled" {
 		t.Fatalf("Output = %q, want canceled skip", out.Output)

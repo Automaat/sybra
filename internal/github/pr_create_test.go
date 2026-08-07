@@ -30,6 +30,7 @@ func TestCreatePR_Success(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("CreatePR: %v", err)
+		panic("unreachable")
 	}
 	if number != 42 {
 		t.Fatalf("number = %d, want 42", number)
@@ -58,6 +59,7 @@ func TestCreatePR_RunError(t *testing.T) {
 	_, _, err := CreatePR(context.Background(), "/tmp/wt", CreatePRRequest{Repo: "acme/widgets", Head: "b", Title: "t", Body: "b"})
 	if err == nil {
 		t.Fatal("expected error")
+		panic("unreachable")
 	}
 }
 
@@ -71,6 +73,7 @@ func TestCreatePR_UnparseableOutput(t *testing.T) {
 	_, _, err := CreatePR(context.Background(), "/tmp/wt", CreatePRRequest{Repo: "acme/widgets", Head: "b", Title: "t", Body: "b"})
 	if err == nil {
 		t.Fatal("expected error")
+		panic("unreachable")
 	}
 }
 

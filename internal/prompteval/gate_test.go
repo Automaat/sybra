@@ -27,11 +27,13 @@ func TestGateBlocksOnFail(t *testing.T) {
 	}
 	if err := store.Write(verdict); err != nil {
 		t.Fatalf("Write: %v", err)
+		panic("unreachable")
 	}
 	gate := NewGate(store, defaultTestOfflineConfig())
 	allow, _, err := gate.AllowEnrollment(verdict.VariantID, verdict.Digest)
 	if err != nil {
 		t.Fatalf("AllowEnrollment: %v", err)
+		panic("unreachable")
 	}
 	if allow {
 		t.Fatal("AllowEnrollment allowed a FAIL verdict")
@@ -47,11 +49,13 @@ func TestGateTriState(t *testing.T) {
 		v := VariantVerdict{VariantID: "v1", Digest: Digest([]byte("p")), Status: StatusPass}
 		if err := store.Write(v); err != nil {
 			t.Fatalf("Write: %v", err)
+			panic("unreachable")
 		}
 		gate := NewGate(store, defaultTestOfflineConfig())
 		allow, _, err := gate.AllowEnrollment(v.VariantID, v.Digest)
 		if err != nil || !allow {
 			t.Fatalf("allow=%v err=%v, want allow=true", allow, err)
+			panic("unreachable")
 		}
 	})
 
@@ -61,11 +65,13 @@ func TestGateTriState(t *testing.T) {
 		v := VariantVerdict{VariantID: "v1", Digest: Digest([]byte("p")), Status: StatusUnavailable}
 		if err := store.Write(v); err != nil {
 			t.Fatalf("Write: %v", err)
+			panic("unreachable")
 		}
 		gate := NewGate(store, defaultTestOfflineConfig())
 		allow, _, err := gate.AllowEnrollment(v.VariantID, v.Digest)
 		if err != nil || allow {
 			t.Fatalf("allow=%v err=%v, want allow=false (fail-closed default)", allow, err)
+			panic("unreachable")
 		}
 	})
 
@@ -75,6 +81,7 @@ func TestGateTriState(t *testing.T) {
 		v := VariantVerdict{VariantID: "v1", Digest: Digest([]byte("p")), Status: StatusUnavailable}
 		if err := store.Write(v); err != nil {
 			t.Fatalf("Write: %v", err)
+			panic("unreachable")
 		}
 		cfg := defaultTestOfflineConfig()
 		cfg.UnavailablePolicy = "pass"
@@ -82,6 +89,7 @@ func TestGateTriState(t *testing.T) {
 		allow, _, err := gate.AllowEnrollment(v.VariantID, v.Digest)
 		if err != nil || !allow {
 			t.Fatalf("allow=%v err=%v, want allow=true under pass policy", allow, err)
+			panic("unreachable")
 		}
 	})
 
@@ -92,6 +100,7 @@ func TestGateTriState(t *testing.T) {
 		allow, _, err := gate.AllowEnrollment("missing-variant", Digest([]byte("p")))
 		if err != nil || allow {
 			t.Fatalf("allow=%v err=%v, want allow=false for a missing verdict", allow, err)
+			panic("unreachable")
 		}
 	})
 }

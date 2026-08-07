@@ -131,6 +131,7 @@ func TestPopScenario_File(t *testing.T) {
 	f := filepath.Join(dir, "scenarios.txt")
 	if err := os.WriteFile(f, []byte("triage\nimplement\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
+		panic("unreachable")
 	}
 
 	t.Setenv("FAKE_CLAUDE_SCENARIO_FILE", f)
@@ -164,11 +165,13 @@ func TestWriteCaptureLog(t *testing.T) {
 
 	if err := writeCaptureLog(path, []byte("-p\nhello")); err != nil {
 		t.Fatalf("writeCaptureLog: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
+		panic("unreachable")
 	}
 	if string(got) != "-p\nhello" {
 		t.Fatalf("args log = %q, want %q", string(got), "-p\nhello")
@@ -214,6 +217,7 @@ func captureStdout(t *testing.T, fn func()) string {
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
+		panic("unreachable")
 	}
 	os.Stdout = w
 
@@ -243,6 +247,7 @@ func parseNDJSON(t *testing.T, out string) []map[string]any {
 		var ev map[string]any
 		if err := json.Unmarshal([]byte(line), &ev); err != nil {
 			t.Fatalf("decode %q: %v", line, err)
+			panic("unreachable")
 		}
 		events = append(events, ev)
 	}

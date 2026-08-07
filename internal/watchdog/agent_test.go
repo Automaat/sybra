@@ -247,6 +247,7 @@ func TestApplyVerdict_EscalateLeavesTaskRunning(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
@@ -278,6 +279,7 @@ func TestApplyVerdict_StopSetsReasonAndStopsAgent(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
@@ -323,6 +325,7 @@ func TestApplyVerdict_StopWithBufferedResultRoutesThroughCompletion(t *testing.T
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want %q unchanged (completion path owns the transition)", got.Status, task.StatusInProgress)
@@ -365,6 +368,7 @@ func TestApplyVerdict_StopWithErrorResultStillEscalates(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
@@ -393,6 +397,7 @@ func TestApplyVerdict_StallStopMarksRetryableHang(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
@@ -430,6 +435,7 @@ func TestApplyVerdict_LoopStopWithGenericStallMarksRetryableHang(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
@@ -466,6 +472,7 @@ func TestApplyVerdict_LoopStopWithRewardHackingEscalates(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
@@ -497,6 +504,7 @@ func TestApplyVerdict_LoopStopWithRewardHackingEmptyReasonPersistsKind(t *testin
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
@@ -544,6 +552,7 @@ func TestApplyVerdict_RewardHackingFixReviewWithFindingRetries(t *testing.T) {
 			got, err := tasks.Get(tk.ID)
 			if err != nil {
 				t.Fatalf("get task: %v", err)
+				panic("unreachable")
 			}
 			if got.Status != task.StatusInProgress {
 				t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
@@ -586,6 +595,7 @@ func TestApplyVerdict_RewardHackingFixReviewWithoutFindingEscalates(t *testing.T
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
@@ -620,6 +630,7 @@ func TestApplyVerdict_RewardHackingImplementationRetries(t *testing.T) {
 			got, err := tasks.Get(tk.ID)
 			if err != nil {
 				t.Fatalf("get task: %v", err)
+				panic("unreachable")
 			}
 			if got.Status != task.StatusInProgress {
 				t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
@@ -661,6 +672,7 @@ func TestApplyVerdict_RewardHackingPlanningWithArtifactsRetries(t *testing.T) {
 			got, err := tasks.Get(tk.ID)
 			if err != nil {
 				t.Fatalf("get task: %v", err)
+				panic("unreachable")
 			}
 			if got.Status != task.StatusPlanning {
 				t.Fatalf("status = %q, want %q", got.Status, task.StatusPlanning)
@@ -699,6 +711,7 @@ func TestApplyVerdict_RewardHackingPlanningWithoutArtifactsEscalates(t *testing.
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
@@ -787,6 +800,7 @@ func TestApplyVerdict_LoopStopWithEmptyReasonKindVerifiesFirst(t *testing.T) {
 			got, err := tasks.Get(tk.ID)
 			if err != nil {
 				t.Fatalf("get task: %v", err)
+				panic("unreachable")
 			}
 			if got.Status != tc.wantStatus {
 				t.Fatalf("status = %q, want %q", got.Status, tc.wantStatus)
@@ -827,6 +841,7 @@ func TestApplyVerdict_EmptyReasonKindWaitsForKillBeforeVerify(t *testing.T) {
 			got, err := tasks.Get(tk.ID)
 			if err != nil {
 				t.Fatalf("get task mid-kill: %v", err)
+				panic("unreachable")
 			}
 			if got.Status != task.StatusInProgress || !strings.Contains(got.StatusReason, "verifying before deciding") {
 				t.Errorf("status before kill returns = %q/%q, want an interim in-progress hang reason already written", got.Status, got.StatusReason)
@@ -889,6 +904,7 @@ func TestApplyVerdict_EmptyReasonKindSkipsVerifyWhenKillTimesOut(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
@@ -999,6 +1015,7 @@ func TestApplyVerdict_BudgetStopWithGenericStallMarksRetryableHang(t *testing.T)
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
@@ -1034,6 +1051,7 @@ func TestApplyVerdict_BudgetStopWithoutReasonKindEscalates(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusBlocked)
@@ -1070,6 +1088,7 @@ func TestApplyVerdict_BudgetRewardHackingImplementationRetries(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
@@ -1116,6 +1135,7 @@ func TestApplyVerdict_RateLimitStopReschedulesInsteadOfEscalating(t *testing.T) 
 			got, err := tasks.Get(tk.ID)
 			if err != nil {
 				t.Fatalf("get task: %v", err)
+				panic("unreachable")
 			}
 			if got.Status != task.StatusInProgress {
 				t.Fatalf("status = %q, want %q (rate limit is recoverable, not human-required)", got.Status, task.StatusInProgress)
@@ -1202,6 +1222,7 @@ func TestHandleZeroOutputStall_ReschedulesWithoutParkingProvider(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want %q (zero output at startup is recoverable, not human-required)", got.Status, task.StatusInProgress)
@@ -1297,6 +1318,7 @@ func TestInspectHeadless_ZeroOutputStallSkipsJudge(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
@@ -1615,6 +1637,7 @@ func TestReapTaskAgentForStatus_ReleasesAnyAgentOnTerminalStatus(t *testing.T) {
 	got, err := tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusDone)})
 	if err != nil {
 		t.Fatalf("set done: %v", err)
+		panic("unreachable")
 	}
 
 	stopped := ""
@@ -1825,6 +1848,7 @@ func TestHardStop_MarksRetryableHangAndStops(t *testing.T) {
 			got, err := tasks.Get(tk.ID)
 			if err != nil {
 				t.Fatalf("get task: %v", err)
+				panic("unreachable")
 			}
 			if got.Status != task.StatusInProgress {
 				t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
@@ -1861,6 +1885,7 @@ func TestApplyStatusEffectRequiresExpectedStatus(t *testing.T) {
 	err := w.applyStatusEffect(tk.ID, "watchdog.test", task.StatusInProgress, "", "missing precondition")
 	if err == nil {
 		t.Fatal("applyStatusEffect succeeded without expected status")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "expected status is required") {
 		t.Fatalf("error = %v, want expected-status validation", err)
@@ -1869,6 +1894,7 @@ func TestApplyStatusEffectRequiresExpectedStatus(t *testing.T) {
 	current, getErr := tasks.Get(tk.ID)
 	if getErr != nil {
 		t.Fatalf("Get: %v", getErr)
+		panic("unreachable")
 	}
 	if current.Status != tk.Status {
 		t.Fatalf("Status = %q after rejected update, want %q", current.Status, tk.Status)
@@ -1883,11 +1909,13 @@ func TestApplyStatusEffectAppliesWithExpectedStatus(t *testing.T) {
 	err := w.applyStatusEffect(tk.ID, "watchdog.test", task.StatusInProgress, tk.Status, "retry")
 	if err != nil {
 		t.Fatalf("applyStatusEffect: %v", err)
+		panic("unreachable")
 	}
 
 	current, getErr := tasks.Get(tk.ID)
 	if getErr != nil {
 		t.Fatalf("Get: %v", getErr)
+		panic("unreachable")
 	}
 	if current.Status != task.StatusInProgress {
 		t.Fatalf("Status = %q, want %q", current.Status, task.StatusInProgress)
@@ -1903,15 +1931,18 @@ func newTestTasks(t *testing.T) (*task.Manager, task.Task) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	tk, err := tasks.Create("watchdog test", "", "headless")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
+		panic("unreachable")
 	}
 	tk, err = tasks.Update(tk.ID, task.Update{Status: task.Ptr(task.StatusInProgress)})
 	if err != nil {
 		t.Fatalf("set in-progress: %v", err)
+		panic("unreachable")
 	}
 	return tasks, tk
 }

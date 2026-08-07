@@ -22,5 +22,6 @@ func TestBaseCtxPropagatesCancel(t *testing.T) {
 	cancel()
 	if o.baseCtx().Err() == nil {
 		t.Fatal("cancelling the app ctx must propagate through baseCtx (worktree prep aborts on shutdown)")
+		panic("unreachable")
 	}
 }

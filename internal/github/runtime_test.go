@@ -128,6 +128,7 @@ func TestFetchPRForMonitor_MergePathContinuesInReservedBand(t *testing.T) {
 	pr, open, err := fetchPRForMonitorWith(defaultExecer, "o/r", 7)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if !open {
 		t.Error("open = false, want true")
@@ -172,6 +173,7 @@ func TestGHRequestGateExecute_SuppressesCallsWhileAuthCircuitOpen(t *testing.T) 
 	}
 	if out != nil {
 		t.Fatalf("out = %q, want nil", out)
+		panic("unreachable")
 	}
 	if !IsAuthError(err) {
 		t.Fatalf("err = %v, want an auth-classified circuit-open error", err)

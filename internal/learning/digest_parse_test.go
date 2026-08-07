@@ -31,6 +31,7 @@ func TestParseDigestJSONResolvesTheRealObject(t *testing.T) {
 			got, err := parseDigestJSON(tt.text)
 			if err != nil {
 				t.Fatalf("parseDigestJSON: %v", err)
+				panic("unreachable")
 			}
 			if got.Since != "2026-01-01" || got.Until != "2026-01-07" {
 				t.Errorf("resolved the wrong object: %+v", got)

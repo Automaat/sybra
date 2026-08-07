@@ -29,6 +29,7 @@ func TestApplyMapFields_JSONDecodedArrays(t *testing.T) {
 			var m map[string]any
 			if err := json.Unmarshal([]byte(tt.body), &m); err != nil {
 				t.Fatalf("unmarshal fixture: %v", err)
+				panic("unreachable")
 			}
 
 			u, err := UpdateFromMap(m)
@@ -36,11 +37,13 @@ func TestApplyMapFields_JSONDecodedArrays(t *testing.T) {
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("UpdateFromMap(%s) = %+v, want error", tt.body, u)
+					panic("unreachable")
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("UpdateFromMap(%s): %v", tt.body, err)
+				panic("unreachable")
 			}
 			got := u.Tags
 			if tt.field == "depends_on" {
@@ -48,6 +51,7 @@ func TestApplyMapFields_JSONDecodedArrays(t *testing.T) {
 			}
 			if got == nil {
 				t.Fatalf("%s not set", tt.field)
+				panic("unreachable")
 			}
 			if len(*got) != len(tt.want) {
 				t.Fatalf("%s = %v, want %v", tt.field, *got, tt.want)

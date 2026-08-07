@@ -20,6 +20,7 @@ func TestFetchMentionedIssuesForReposWith_EmptyInputs(t *testing.T) {
 
 	if issues, err := fetchMentionedIssuesForReposWith(fe, nil, "@sybra"); err != nil || issues != nil {
 		t.Fatalf("no repos: issues=%v err=%v, want nil, nil", issues, err)
+		panic("unreachable")
 	}
 	if issues, err := fetchMentionedIssuesForReposWith(fe, []string{"o/a"}, ""); err != nil || issues != nil {
 		t.Fatalf("empty phrase: issues=%v err=%v, want nil, nil", issues, err)
@@ -37,6 +38,7 @@ func TestFetchMentionedIssuesForReposWith_ChunksAndDedupes(t *testing.T) {
 	issues, err := fetchMentionedIssuesForReposWith(me, repos, "@sybra")
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
+		panic("unreachable")
 	}
 	if len(me.queries) != 2 {
 		t.Fatalf("gh calls = %d, want 2 (chunked at 15)", len(me.queries))

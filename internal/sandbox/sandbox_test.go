@@ -55,10 +55,12 @@ func TestGenerateComposeYAML_ImageOnly(t *testing.T) {
 	data, _, err := generateComposeYAML("/some/worktree", cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	var parsed map[string]any
 	if err := yaml.Unmarshal(data, &parsed); err != nil {
 		t.Fatalf("invalid yaml: %v", err)
+		panic("unreachable")
 	}
 	services, ok := parsed["services"].(map[string]any)
 	if !ok {
@@ -89,10 +91,12 @@ func TestGenerateComposeYAML_BuildMode(t *testing.T) {
 	data, _, err := generateComposeYAML("/my/worktree", cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	var parsed map[string]any
 	if err := yaml.Unmarshal(data, &parsed); err != nil {
 		t.Fatalf("invalid yaml: %v", err)
+		panic("unreachable")
 	}
 	services := parsed["services"].(map[string]any)
 	app := services["app"].(map[string]any)
@@ -121,10 +125,12 @@ func TestGenerateComposeYAML_WithSidecars(t *testing.T) {
 	data, appEnv, err := generateComposeYAML("/worktree", cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	var parsed map[string]any
 	if err := yaml.Unmarshal(data, &parsed); err != nil {
 		t.Fatalf("invalid yaml: %v", err)
+		panic("unreachable")
 	}
 	services := parsed["services"].(map[string]any)
 	if _, ok := services["postgres"]; !ok {
@@ -157,11 +163,13 @@ func TestGenerateComposeYAML_EnvInterpolation(t *testing.T) {
 	data, appEnv, err := generateComposeYAML("/worktree", cfg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	// The ${} value must survive YAML round-trip unchanged.
 	var parsed map[string]any
 	if err := yaml.Unmarshal(data, &parsed); err != nil {
 		t.Fatalf("invalid yaml: %v", err)
+		panic("unreachable")
 	}
 	if appEnv["API_KEY"] != "${MY_API_KEY}" {
 		t.Errorf("API_KEY = %q, want ${MY_API_KEY}", appEnv["API_KEY"])
@@ -176,6 +184,7 @@ func TestLoadEnvFile_Happy(t *testing.T) {
 	entries, err := LoadEnvFile(f)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if len(entries) != 2 {
 		t.Fatalf("got %d entries, want 2: %v", len(entries), entries)
@@ -193,6 +202,7 @@ func TestLoadEnvFile_EmptyPath(t *testing.T) {
 	entries, err := LoadEnvFile("")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if entries != nil {
 		t.Errorf("expected nil, got %v", entries)
@@ -213,6 +223,7 @@ func TestLoadEnvFile_Malformed(t *testing.T) {
 	entries, err := LoadEnvFile(f)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	// "badline" skipped, two valid entries returned.
 	if len(entries) != 2 {
@@ -314,6 +325,7 @@ func TestManager_StartIdempotent(t *testing.T) {
 	inst, err := m.Start(context.TODO(), "task-1", "/worktree", &project.SandboxConfig{Image: "nginx", Port: 80})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if inst != fake {
 		t.Error("Start should return existing instance, not a new one")
@@ -326,6 +338,7 @@ func TestManager_StartNilConfig(t *testing.T) {
 	_, err := m.Start(context.TODO(), "task-1", "/worktree", nil)
 	if err == nil {
 		t.Fatal("expected error for nil config")
+		panic("unreachable")
 	}
 }
 
@@ -370,11 +383,13 @@ func TestManager_StartPanicCleansStartingAndWakesWaiters(t *testing.T) {
 	leaderErr := mustReceiveStartErr(t, leaderDone)
 	if leaderErr == nil || !strings.Contains(leaderErr.Error(), "sandbox start panic: boom") {
 		t.Fatalf("leader error = %v, want panic error", leaderErr)
+		panic("unreachable")
 	}
 
 	waiterErr := mustReceiveStartErr(t, waiterDone)
 	if waiterErr == nil || !strings.Contains(waiterErr.Error(), "sandbox start panic: boom") {
 		t.Fatalf("waiter error = %v, want panic error", waiterErr)
+		panic("unreachable")
 	}
 
 	m.mu.Lock()
@@ -386,6 +401,7 @@ func TestManager_StartPanicCleansStartingAndWakesWaiters(t *testing.T) {
 	}
 	if inst != nil {
 		t.Fatalf("panic registered an instance: %+v", inst)
+		panic("unreachable")
 	}
 }
 
@@ -396,9 +412,11 @@ func TestManager_SybraHomeDir(t *testing.T) {
 	dir, err := m.SybraHomeDir("task-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
 		t.Fatalf("SybraHomeDir did not create a directory at %q: %v", dir, statErr)
+		panic("unreachable")
 	}
 	if !strings.HasSuffix(dir, filepath.Join("task-1", "sybra-home")) {
 		t.Fatalf("unexpected dir layout: %q", dir)
@@ -407,6 +425,7 @@ func TestManager_SybraHomeDir(t *testing.T) {
 	dir2, err := m.SybraHomeDir("task-2")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if dir == dir2 {
 		t.Fatal("different tasks must not share a SYBRA_HOME")
@@ -417,6 +436,7 @@ func TestManager_SybraHomeDir(t *testing.T) {
 	dirAgain, err := m.SybraHomeDir("task-1")
 	if err != nil {
 		t.Fatalf("unexpected error on second call: %v", err)
+		panic("unreachable")
 	}
 	if dirAgain != dir {
 		t.Fatalf("expected stable path, got %q then %q", dir, dirAgain)
@@ -430,10 +450,12 @@ func TestManager_RemoveDeletesTaskDirWithoutRunningInstance(t *testing.T) {
 	dir, err := m.SybraHomeDir("task-remove")
 	if err != nil {
 		t.Fatalf("SybraHomeDir: %v", err)
+		panic("unreachable")
 	}
 	taskDir := filepath.Dir(dir)
 	if _, err := os.Stat(taskDir); err != nil {
 		t.Fatalf("task dir missing before Remove: %v", err)
+		panic("unreachable")
 	}
 
 	m.Remove("task-remove")
@@ -450,21 +472,26 @@ func TestManager_CleanupOrphaned(t *testing.T) {
 	keepDir, err := m.SybraHomeDir("task-active")
 	if err != nil {
 		t.Fatalf("SybraHomeDir(active): %v", err)
+		panic("unreachable")
 	}
 	doneDir, err := m.SybraHomeDir("task-done")
 	if err != nil {
 		t.Fatalf("SybraHomeDir(done): %v", err)
+		panic("unreachable")
 	}
 	liveDir, err := m.SybraHomeDir("task-live-terminal")
 	if err != nil {
 		t.Fatalf("SybraHomeDir(live): %v", err)
+		panic("unreachable")
 	}
 	missingRoot, err := m.taskDir("task-missing")
 	if err != nil {
 		t.Fatalf("taskDir(missing): %v", err)
+		panic("unreachable")
 	}
 	if err := os.MkdirAll(missingRoot, 0o755); err != nil {
 		t.Fatalf("mkdir missing task dir: %v", err)
+		panic("unreachable")
 	}
 
 	tasks := []task.Task{
@@ -478,12 +505,14 @@ func TestManager_CleanupOrphaned(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Dir(keepDir)); err != nil {
 		t.Fatalf("active task dir removed unexpectedly: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(filepath.Dir(doneDir)); !os.IsNotExist(err) {
 		t.Fatalf("terminal task dir still exists after cleanup: %v", err)
 	}
 	if _, err := os.Stat(filepath.Dir(liveDir)); err != nil {
 		t.Fatalf("live terminal task dir removed unexpectedly: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(missingRoot); !os.IsNotExist(err) {
 		t.Fatalf("missing-task dir still exists after cleanup: %v", err)
@@ -503,10 +532,12 @@ func TestManager_CleanupOrphaned_PreservesUnpushedCommits(t *testing.T) {
 	doneDir, err := m.SybraHomeDir("task-done-unpushed")
 	if err != nil {
 		t.Fatalf("SybraHomeDir(done-unpushed): %v", err)
+		panic("unreachable")
 	}
 	deletedDir, err := m.SybraHomeDir("task-deleted-unpushed")
 	if err != nil {
 		t.Fatalf("SybraHomeDir(deleted-unpushed): %v", err)
+		panic("unreachable")
 	}
 
 	tasks := []task.Task{
@@ -518,9 +549,11 @@ func TestManager_CleanupOrphaned_PreservesUnpushedCommits(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Dir(doneDir)); err != nil {
 		t.Fatalf("done task's sandbox removed despite unpushed commits: %v", err)
+		panic("unreachable")
 	}
 	if _, err := os.Stat(filepath.Dir(deletedDir)); err != nil {
 		t.Fatalf("deleted task's sandbox removed despite unpushed commits: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -534,22 +567,27 @@ func TestManager_CleanupOrphaned_Retention(t *testing.T) {
 	agedDoneDir, err := m.SybraHomeDir("task-aged-done")
 	if err != nil {
 		t.Fatalf("SybraHomeDir(aged-done): %v", err)
+		panic("unreachable")
 	}
 	agedCancelledDir, err := m.SybraHomeDir("task-aged-cancelled")
 	if err != nil {
 		t.Fatalf("SybraHomeDir(aged-cancelled): %v", err)
+		panic("unreachable")
 	}
 	agedBlockedDir, err := m.SybraHomeDir("task-aged-blocked")
 	if err != nil {
 		t.Fatalf("SybraHomeDir(aged-blocked): %v", err)
+		panic("unreachable")
 	}
 	recentBlockedDir, err := m.SybraHomeDir("task-recent-blocked")
 	if err != nil {
 		t.Fatalf("SybraHomeDir(recent-blocked): %v", err)
+		panic("unreachable")
 	}
 	inReviewDir, err := m.SybraHomeDir("task-in-review")
 	if err != nil {
 		t.Fatalf("SybraHomeDir(in-review): %v", err)
+		panic("unreachable")
 	}
 
 	tasks := []task.Task{
@@ -581,6 +619,7 @@ func TestManager_CleanupOrphaned_RetentionDisabled(t *testing.T) {
 	dir, err := m.SybraHomeDir("task-aged-done")
 	if err != nil {
 		t.Fatalf("SybraHomeDir: %v", err)
+		panic("unreachable")
 	}
 
 	tasks := []task.Task{
@@ -590,6 +629,7 @@ func TestManager_CleanupOrphaned_RetentionDisabled(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Dir(dir)); err != nil {
 		t.Fatalf("eligible dir removed despite disabled retention: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -603,6 +643,7 @@ func TestManager_RemoveContext_NormalOwnership(t *testing.T) {
 	dir, err := m.SybraHomeDir("task-normal")
 	if err != nil {
 		t.Fatalf("SybraHomeDir: %v", err)
+		panic("unreachable")
 	}
 	taskDir := filepath.Dir(dir)
 
@@ -641,6 +682,7 @@ func TestManager_RemoveContext_LegacyOwnerRecordNormalizesAfterPermissionFailure
 				t.Helper()
 				if err := os.WriteFile(filepath.Join(taskDir, ownerFileName), []byte("not json"), 0o600); err != nil {
 					t.Fatalf("write malformed owner record: %v", err)
+					panic("unreachable")
 				}
 			},
 		},
@@ -653,9 +695,11 @@ func TestManager_RemoveContext_LegacyOwnerRecordNormalizesAfterPermissionFailure
 			taskDir, err := m.taskDir(taskID)
 			if err != nil {
 				t.Fatalf("taskDir: %v", err)
+				panic("unreachable")
 			}
 			if err := os.MkdirAll(filepath.Join(taskDir, "sybra-home"), 0o755); err != nil {
 				t.Fatalf("mkdir legacy task dir: %v", err)
+				panic("unreachable")
 			}
 			tt.writeMetadata(t, taskDir)
 
@@ -710,6 +754,7 @@ func TestManager_RemoveContext_MixedOwnership(t *testing.T) {
 	dir, err := m.SybraHomeDir("task-mixed")
 	if err != nil {
 		t.Fatalf("SybraHomeDir: %v", err)
+		panic("unreachable")
 	}
 	taskDir := filepath.Dir(dir)
 
@@ -718,6 +763,7 @@ func TestManager_RemoveContext_MixedOwnership(t *testing.T) {
 	// another UID without root).
 	if err := writeOwnerRecord(taskDir); err != nil {
 		t.Fatalf("writeOwnerRecord: %v", err)
+		panic("unreachable")
 	}
 	rec, _ := readOwnerRecord(taskDir)
 	rec.UID += 999999
@@ -725,9 +771,11 @@ func TestManager_RemoveContext_MixedOwnership(t *testing.T) {
 	data, err := json.Marshal(rec)
 	if err != nil {
 		t.Fatalf("marshal fake owner record: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(taskDir, ownerFileName), data, 0o600); err != nil {
 		t.Fatalf("write fake owner record: %v", err)
+		panic("unreachable")
 	}
 
 	var normalizeCalls int
@@ -765,6 +813,7 @@ func TestManager_RemoveContext_RetriesTransientBusyThenSucceeds(t *testing.T) {
 
 	if _, err := m.SybraHomeDir("task-busy"); err != nil {
 		t.Fatalf("SybraHomeDir: %v", err)
+		panic("unreachable")
 	}
 
 	var calls int
@@ -797,10 +846,12 @@ func TestManager_RemoveContext_QuarantinesPersistentFailure(t *testing.T) {
 	dir, err := m.SybraHomeDir("task-stuck")
 	if err != nil {
 		t.Fatalf("SybraHomeDir: %v", err)
+		panic("unreachable")
 	}
 	taskDir := filepath.Dir(dir)
 	if err := os.WriteFile(filepath.Join(dir, "payload"), make([]byte, 128), 0o600); err != nil {
 		t.Fatalf("write payload: %v", err)
+		panic("unreachable")
 	}
 
 	m.removeAll = func(string) error {
@@ -849,6 +900,7 @@ func TestManager_CleanupOrphaned_SkipsAlreadyQuarantined(t *testing.T) {
 
 	if _, err := m.SybraHomeDir("task-q"); err != nil {
 		t.Fatalf("SybraHomeDir: %v", err)
+		panic("unreachable")
 	}
 
 	var calls int
@@ -894,6 +946,7 @@ func TestManager_CleanupOrphaned_PreservesOrphanedActiveAgent(t *testing.T) {
 	dir, err := m.SybraHomeDir("task-live-orphan")
 	if err != nil {
 		t.Fatalf("SybraHomeDir: %v", err)
+		panic("unreachable")
 	}
 	taskDir := filepath.Dir(dir)
 
@@ -903,6 +956,7 @@ func TestManager_CleanupOrphaned_PreservesOrphanedActiveAgent(t *testing.T) {
 
 	if _, err := os.Stat(taskDir); err != nil {
 		t.Fatalf("orphaned dir with live agent removed unexpectedly: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -916,6 +970,7 @@ func TestManager_RemoveContext_DeletedTaskRetriesPastQuarantine(t *testing.T) {
 	dir, err := m.SybraHomeDir("task-deleted")
 	if err != nil {
 		t.Fatalf("SybraHomeDir: %v", err)
+		panic("unreachable")
 	}
 	taskDir := filepath.Dir(dir)
 
@@ -953,6 +1008,7 @@ func TestRunCmd_ContextCancellationKillsProcess(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected error when context is cancelled mid-run")
+		panic("unreachable")
 	}
 	if dur > 3*time.Second {
 		t.Errorf("cancellation did not kill the subprocess quickly: took %s", dur)
@@ -983,6 +1039,7 @@ func writeTempEnvFile(t *testing.T, content string) string {
 	f := filepath.Join(t.TempDir(), ".env")
 	if err := os.WriteFile(f, []byte(content), 0o600); err != nil {
 		t.Fatalf("write temp env file: %v", err)
+		panic("unreachable")
 	}
 	return f
 }

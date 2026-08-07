@@ -18,11 +18,13 @@ func TestEnsureNotesFile_SeedsAndExcludes(t *testing.T) {
 
 	if err := ensureNotesFile(context.Background(), wt); err != nil {
 		t.Fatalf("ensureNotesFile: %v", err)
+		panic("unreachable")
 	}
 
 	content, err := os.ReadFile(filepath.Join(wt, notes.FileName))
 	if err != nil {
 		t.Fatalf("read scratchpad: %v", err)
+		panic("unreachable")
 	}
 	if string(content) != notes.SeedTemplate {
 		t.Errorf("scratchpad = %q, want seed template", content)
@@ -31,6 +33,7 @@ func TestEnsureNotesFile_SeedsAndExcludes(t *testing.T) {
 	out, err := exec.Command("git", "-C", wt, "status", "--porcelain").Output()
 	if err != nil {
 		t.Fatalf("git status: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(string(out), notes.FileName) {
 		t.Errorf("expected %s to be git-excluded, got status:\n%s", notes.FileName, out)
@@ -46,18 +49,21 @@ func TestEnsureNotesFile_PreservesExistingContent(t *testing.T) {
 	path := filepath.Join(wt, notes.FileName)
 	if err := os.WriteFile(path, []byte(accrued), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// A worktree re-prepare (resume/reuse) must not clobber it.
 	for range 3 {
 		if err := ensureNotesFile(context.Background(), wt); err != nil {
 			t.Fatalf("ensureNotesFile: %v", err)
+			panic("unreachable")
 		}
 	}
 
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if string(got) != accrued {
 		t.Errorf("ensureNotesFile clobbered agent memory: got %q, want %q", got, accrued)
@@ -67,6 +73,7 @@ func TestEnsureNotesFile_PreservesExistingContent(t *testing.T) {
 	excludeBytes, err := exec.Command("git", "-C", wt, "rev-parse", "--git-path", "info/exclude").Output()
 	if err != nil {
 		t.Fatalf("rev-parse: %v", err)
+		panic("unreachable")
 	}
 	excludePath := strings.TrimSpace(string(excludeBytes))
 	if !filepath.IsAbs(excludePath) {
@@ -75,6 +82,7 @@ func TestEnsureNotesFile_PreservesExistingContent(t *testing.T) {
 	data, err := os.ReadFile(excludePath)
 	if err != nil {
 		t.Fatalf("read exclude: %v", err)
+		panic("unreachable")
 	}
 	if n := strings.Count(string(data), "/"+notes.FileName); n != 1 {
 		t.Errorf("expected exactly 1 exclude entry, got %d. exclude:\n%s", n, data)
@@ -88,12 +96,14 @@ func TestAppendNote(t *testing.T) {
 	const section = "## Prior attempt 1\n\nmarker-free body"
 	if err := AppendNote(context.Background(), wt, "", section); err != nil {
 		t.Fatalf("AppendNote: %v", err)
+		panic("unreachable")
 	}
 
 	path := filepath.Join(wt, notes.FileName)
 	content, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read scratchpad: %v", err)
+		panic("unreachable")
 	}
 	got := string(content)
 	if !strings.HasPrefix(got, notes.SeedTemplate) {
@@ -109,6 +119,7 @@ func TestAppendNote(t *testing.T) {
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat scratchpad: %v", err)
+		panic("unreachable")
 	}
 	if perms := info.Mode().Perm(); perms != 0o600 {
 		t.Fatalf("scratchpad perms = %o, want 0600", perms)
@@ -117,6 +128,7 @@ func TestAppendNote(t *testing.T) {
 	out, err := exec.Command("git", "-C", wt, "status", "--porcelain").Output()
 	if err != nil {
 		t.Fatalf("git status: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(string(out), notes.FileName) {
 		t.Fatalf("expected %s to be git-excluded, got status:\n%s", notes.FileName, out)
@@ -129,11 +141,13 @@ func TestAppendNoteIdempotent(t *testing.T) {
 
 	if err := ensureNotesFile(context.Background(), wt); err != nil {
 		t.Fatalf("ensureNotesFile: %v", err)
+		panic("unreachable")
 	}
 	path := filepath.Join(wt, notes.FileName)
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat seeded scratchpad: %v", err)
+		panic("unreachable")
 	}
 	if perms := info.Mode().Perm(); perms != 0o600 {
 		t.Fatalf("seeded perms = %o, want 0600", perms)
@@ -144,12 +158,14 @@ func TestAppendNoteIdempotent(t *testing.T) {
 	for range 2 {
 		if err := AppendNote(context.Background(), wt, marker, section); err != nil {
 			t.Fatalf("AppendNote: %v", err)
+			panic("unreachable")
 		}
 	}
 
 	content, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read scratchpad: %v", err)
+		panic("unreachable")
 	}
 	got := string(content)
 	if strings.Count(got, marker) != 1 {
@@ -161,6 +177,7 @@ func TestAppendNoteIdempotent(t *testing.T) {
 	info, err = os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat scratchpad after append: %v", err)
+		panic("unreachable")
 	}
 	if perms := info.Mode().Perm(); perms != 0o600 {
 		t.Fatalf("scratchpad perms after append = %o, want 0600", perms)
@@ -178,11 +195,13 @@ func TestAppendSetupFailureNote_SeedsAndAppends(t *testing.T) {
 	setupErr := errors.New(`setup command "npm run build:desktop" failed: exit status 1`)
 	if err := appendSetupFailureNote(context.Background(), wt, setupErr); err != nil {
 		t.Fatalf("appendSetupFailureNote: %v", err)
+		panic("unreachable")
 	}
 
 	content, err := os.ReadFile(filepath.Join(wt, notes.FileName))
 	if err != nil {
 		t.Fatalf("read scratchpad: %v", err)
+		panic("unreachable")
 	}
 	got := string(content)
 	if !strings.HasPrefix(got, notes.SeedTemplate) {
@@ -195,6 +214,7 @@ func TestAppendSetupFailureNote_SeedsAndAppends(t *testing.T) {
 	out, err := exec.Command("git", "-C", wt, "status", "--porcelain").Output()
 	if err != nil {
 		t.Fatalf("git status: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(string(out), notes.FileName) {
 		t.Errorf("expected %s to be git-excluded, got status:\n%s", notes.FileName, out)
@@ -210,16 +230,19 @@ func TestAppendSetupFailureNote_PreservesExisting(t *testing.T) {
 	accrued := "# Working Notes\n\n## Decisions\n- picked the BK-tree approach\n"
 	if err := os.WriteFile(filepath.Join(wt, notes.FileName), []byte(accrued), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	setupErr := errors.New("exit status 1")
 	if err := appendSetupFailureNote(context.Background(), wt, setupErr); err != nil {
 		t.Fatalf("appendSetupFailureNote: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := os.ReadFile(filepath.Join(wt, notes.FileName))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !strings.HasPrefix(string(got), accrued) {
 		t.Errorf("appendSetupFailureNote clobbered accrued memory: %q", got)
@@ -236,11 +259,13 @@ func TestSetupFailureMarker_WriteReadClear(t *testing.T) {
 	setupErr := errors.New("exit status 1")
 	if err := writeSetupFailureMarker(context.Background(), wt, setupErr); err != nil {
 		t.Fatalf("writeSetupFailureMarker: %v", err)
+		panic("unreachable")
 	}
 
 	got, ok, err := ReadSetupFailureMarker(wt)
 	if err != nil {
 		t.Fatalf("ReadSetupFailureMarker: %v", err)
+		panic("unreachable")
 	}
 	if !ok {
 		t.Fatal("ReadSetupFailureMarker reported no marker")
@@ -251,10 +276,12 @@ func TestSetupFailureMarker_WriteReadClear(t *testing.T) {
 
 	if err := clearSetupFailureMarker(wt); err != nil {
 		t.Fatalf("clearSetupFailureMarker: %v", err)
+		panic("unreachable")
 	}
 	got, ok, err = ReadSetupFailureMarker(wt)
 	if err != nil {
 		t.Fatalf("ReadSetupFailureMarker after clear: %v", err)
+		panic("unreachable")
 	}
 	if ok || got != "" {
 		t.Fatalf("ReadSetupFailureMarker after clear = (%q, %v), want empty,false", got, ok)

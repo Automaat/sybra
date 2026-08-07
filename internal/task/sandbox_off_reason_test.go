@@ -17,12 +17,15 @@ func TestUpdateFromMapAcceptsSandboxOffReason(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("UpdateFromMap: %v", err)
+		panic("unreachable")
 	}
 	if u.Sandbox == nil || *u.Sandbox {
 		t.Fatalf("Sandbox = %v, want false", u.Sandbox)
+		panic("unreachable")
 	}
 	if u.SandboxOffReason == nil || *u.SandboxOffReason != reason {
 		t.Fatalf("SandboxOffReason = %v, want %q", u.SandboxOffReason, reason)
+		panic("unreachable")
 	}
 }
 
@@ -83,11 +86,13 @@ func TestSandboxEscapeHatchRequiresReason(t *testing.T) {
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("want error, got nil")
+					panic("unreachable")
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("want nil, got %v", err)
+				panic("unreachable")
 			}
 			if got.SandboxOffReason != tc.wantReason {
 				t.Errorf("SandboxOffReason = %q, want %q", got.SandboxOffReason, tc.wantReason)

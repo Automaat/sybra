@@ -65,6 +65,7 @@ func newTestTaskManager(t *testing.T) *task.Manager {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	return task.NewManager(store, task.EmitterFunc(func(string, any) {}))
 }
@@ -85,6 +86,7 @@ func TestExpandPlannerDeadlineFallsBackToLinearChain(t *testing.T) {
 	res, err := Expand(context.Background(), tasks, run, "https://github.com/o/r/issues/100")
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
+		panic("unreachable")
 	}
 	if !res.Degraded {
 		t.Fatalf("Degraded = false, want true after planner deadline fallback")
@@ -102,6 +104,7 @@ func TestExpandPlannerDeadlineFallsBackToLinearChain(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	var tracker *task.Task
 	children := map[string]task.Task{}
@@ -156,6 +159,7 @@ func TestExpand_ConcurrentCallsMaterializeSingleDAG(t *testing.T) {
 	for err := range errs {
 		if err != nil {
 			t.Fatalf("Expand: %v", err)
+			panic("unreachable")
 		}
 	}
 
@@ -199,6 +203,7 @@ func TestExpand_ResumeFromFetchedCheckpointRefetchesLiveTopology(t *testing.T) {
 	}, umb.URL)
 	if err != nil {
 		t.Fatalf("Expand resume: %v", err)
+		panic("unreachable")
 	}
 	if fetchCalls != 2 {
 		t.Fatalf("fetch calls = %d, want 2 so resume rechecks GitHub topology", fetchCalls)
@@ -243,6 +248,7 @@ func TestExpand_FetchedCheckpointTopologyDriftRefetchesAndReplans(t *testing.T) 
 	}, umb.URL)
 	if err != nil {
 		t.Fatalf("Expand resume after topology drift: %v", err)
+		panic("unreachable")
 	}
 	if fetchCalls != 2 {
 		t.Fatalf("fetch calls = %d, want 2 so the retry sees the added sub-issue", fetchCalls)
@@ -280,6 +286,7 @@ func TestExpand_RefetchesAfterSuccessfulCheckpointedExpansion(t *testing.T) {
 	res, err := Expand(context.Background(), tasks, run, umb.URL)
 	if err != nil {
 		t.Fatalf("Expand first run: %v", err)
+		panic("unreachable")
 	}
 	if res.Created != 3 {
 		t.Fatalf("first result = %+v, want Created=3", res)
@@ -289,6 +296,7 @@ func TestExpand_RefetchesAfterSuccessfulCheckpointedExpansion(t *testing.T) {
 	res, err = Expand(context.Background(), tasks, run, umb.URL)
 	if err != nil {
 		t.Fatalf("Expand second run: %v", err)
+		panic("unreachable")
 	}
 	if fetchCalls != 2 {
 		t.Fatalf("fetch calls = %d, want 2 so a completed checkpoint cannot stale-cache GitHub topology", fetchCalls)
@@ -336,6 +344,7 @@ func TestExpand_ResumeFromPlannedCheckpointWithoutReplanning(t *testing.T) {
 	res, err := Expand(context.Background(), tasks, run, umb.URL)
 	if err != nil {
 		t.Fatalf("Expand resume: %v", err)
+		panic("unreachable")
 	}
 	if runCalls != 1 {
 		t.Fatalf("planner calls = %d, want 1 across failed+resumed runs", runCalls)
@@ -382,6 +391,7 @@ func TestExpand_PlannedCheckpointTopologyDriftReplans(t *testing.T) {
 	res, err := Expand(context.Background(), tasks, run, umb.URL)
 	if err != nil {
 		t.Fatalf("Expand resume after topology drift: %v", err)
+		panic("unreachable")
 	}
 	if runCalls != 2 {
 		t.Fatalf("planner calls = %d, want 2 after topology drift invalidates planned checkpoint", runCalls)
@@ -443,6 +453,7 @@ func TestExpand_RechecksExistingStateBeforeMaterialize(t *testing.T) {
 	outcome := <-done
 	if outcome.err != nil {
 		t.Fatalf("Expand: %v", outcome.err)
+		panic("unreachable")
 	}
 	if outcome.res.Created != 0 {
 		t.Fatalf("Created = %d, want 0 once children appeared during planning", outcome.res.Created)
@@ -454,6 +465,7 @@ func TestExpand_RechecksExistingStateBeforeMaterialize(t *testing.T) {
 	gotTracker, err := tasks.Get(tracker.ID)
 	if err != nil {
 		t.Fatalf("Get tracker: %v", err)
+		panic("unreachable")
 	}
 	if HasActiveExpandPhase(gotTracker.Tags) {
 		t.Fatalf("tracker kept active expansion phase after all-materialized short-circuit: %v", gotTracker.Tags)
@@ -507,6 +519,7 @@ func TestMaterialize_DegradedFreshTrackerCarriesFallbackTag(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	var tracker *task.Task
 	for i := range all {
@@ -539,6 +552,7 @@ func TestMaterialize_DegradedExistingTrackerGetsFallbackTagIdempotently(t *testi
 	})
 	if err != nil {
 		t.Fatalf("create tracker: %v", err)
+		panic("unreachable")
 	}
 
 	specs := []ChildSpec{{Title: "c1", Issue: "o/r#1"}}
@@ -548,6 +562,7 @@ func TestMaterialize_DegradedExistingTrackerGetsFallbackTagIdempotently(t *testi
 	got, err := tasks.Get(tracker.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(got.Tags, FallbackTag) {
 		t.Fatalf("existing tracker tags = %v, want to contain %q after degraded re-expansion", got.Tags, FallbackTag)
@@ -564,6 +579,7 @@ func TestMaterialize_DegradedExistingTrackerGetsFallbackTagIdempotently(t *testi
 	got, err = tasks.Get(tracker.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	count := 0
 	for _, tag := range got.Tags {
@@ -592,6 +608,7 @@ func TestRecordExpandFailure_NoTrackerCreatesVisibleFailureTracker(t *testing.T)
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(all) != 1 {
 		t.Fatalf("len(tasks) = %d, want 1", len(all))
@@ -627,6 +644,7 @@ func TestRecordExpandFailure_EscalatesAtThreshold(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create tracker: %v", err)
+		panic("unreachable")
 	}
 
 	if err := recordExpandFailure(tasks, umb, existingTracker{exists: true, id: tracker.ID, tags: tracker.Tags}, errors.New("killed")); err != nil {
@@ -636,6 +654,7 @@ func TestRecordExpandFailure_EscalatesAtThreshold(t *testing.T) {
 	got, err := tasks.Get(tracker.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusBlocked {
 		t.Fatalf("status = %q, want blocked at ExpandFailThreshold=%d", got.Status, ExpandFailThreshold)
@@ -657,6 +676,7 @@ func TestRecordExpandFailure_RefreshesMissingTrackerSnapshot(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create tracker: %v", err)
+		panic("unreachable")
 	}
 
 	if err := recordExpandFailure(tasks, umb, existingTracker{}, errors.New("killed")); err != nil {
@@ -666,6 +686,7 @@ func TestRecordExpandFailure_RefreshesMissingTrackerSnapshot(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(all) != 1 {
 		t.Fatalf("len(tasks) = %d, want 1 existing tracker updated in place", len(all))
@@ -673,6 +694,7 @@ func TestRecordExpandFailure_RefreshesMissingTrackerSnapshot(t *testing.T) {
 	got, err := tasks.Get(tracker.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if ParseExpandFailCount(got.Tags) != 2 {
 		t.Fatalf("fail count = %d, want 2 after updating the existing tracker", ParseExpandFailCount(got.Tags))
@@ -691,16 +713,19 @@ func TestRecordExpandFailure_UsesLiveTagCount(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create tracker: %v", err)
+		panic("unreachable")
 	}
 
 	stale := existingTracker{exists: true, id: tracker.ID, tags: []string{"umbrella", ExpandFailTag(1)}}
 	if err := recordExpandFailure(tasks, umb, stale, errors.New("killed")); err != nil {
 		t.Fatalf("recordExpandFailure: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := tasks.Get(tracker.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if ParseExpandFailCount(got.Tags) != 3 {
 		t.Fatalf("fail count = %d, want 3 from the live tracker state, not stale input", ParseExpandFailCount(got.Tags))
@@ -730,15 +755,18 @@ func TestClearExpandFailure_StripsTagOnSuccess(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create tracker: %v", err)
+		panic("unreachable")
 	}
 
 	if err := clearExpandFailure(tasks, tracker.ID); err != nil {
 		t.Fatalf("clearExpandFailure: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := tasks.Get(tracker.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if ParseExpandFailCount(got.Tags) != 0 {
 		t.Fatalf("fail count = %d, want 0 after clear", ParseExpandFailCount(got.Tags))
@@ -756,6 +784,7 @@ func TestClearExpandFailure_StripsTagOnSuccess(t *testing.T) {
 	// Idempotent: clearing an already-clean tracker is a no-op, not an error.
 	if err := clearExpandFailure(tasks, tracker.ID); err != nil {
 		t.Fatalf("clearExpandFailure (idempotent): %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -777,6 +806,7 @@ func TestMaterialize_BackfillsMaxParallelOnPlaceholderTracker(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create placeholder tracker: %v", err)
+		panic("unreachable")
 	}
 	if HasMaxParallelTag(placeholder.Tags) {
 		t.Fatal("placeholder tracker unexpectedly already has a MaxParallelTag")
@@ -790,6 +820,7 @@ func TestMaterialize_BackfillsMaxParallelOnPlaceholderTracker(t *testing.T) {
 	got, err := tasks.Get(placeholder.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if !HasMaxParallelTag(got.Tags) || ParseMaxParallel(got.Tags) != 7 {
 		t.Fatalf("tracker tags = %v, want a MaxParallelTag backfilled to 7", got.Tags)
@@ -808,11 +839,13 @@ func TestScanExisting_ReturnsTrackerID(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create tracker: %v", err)
+		panic("unreachable")
 	}
 
 	_, got, err := scanExisting(tasks, umb)
 	if err != nil {
 		t.Fatalf("scanExisting: %v", err)
+		panic("unreachable")
 	}
 	if !got.exists {
 		t.Fatal("trackerExists = false, want true")
@@ -831,6 +864,7 @@ func TestExpandThreadsGrounder(t *testing.T) {
 		WithExpandGrounder(lister, 5)(&cfg)
 		if cfg.lister == nil {
 			t.Fatal("lister not set")
+			panic("unreachable")
 		}
 		if cfg.minSubs != 5 {
 			t.Fatalf("minSubs = %d, want 5", cfg.minSubs)
@@ -842,6 +876,7 @@ func TestExpandThreadsGrounder(t *testing.T) {
 		var cfg expandConfig
 		if cfg.lister != nil {
 			t.Fatal("lister should be nil without WithExpandGrounder")
+			panic("unreachable")
 		}
 	})
 }
@@ -878,6 +913,7 @@ func assertSingleDAG(t *testing.T, tasks *task.Manager, umbrellaURL string, want
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	umbKey := NormalizeIssueRef(umbrellaURL)
 	trackers := 0

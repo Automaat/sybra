@@ -26,25 +26,30 @@ func TestClassifyOneFailureMarksRetryableAndPreservesTaskFields(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 	created, err := mgr.Create("keep original title", "keep body", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	created, err = mgr.Update(created.ID, task.Update{Tags: task.Ptr([]string{"backend", "bug"})})
 	if err != nil {
 		t.Fatalf("Update tags: %v", err)
+		panic("unreachable")
 	}
 
 	_, err = classifyOne(failingTriageClassifier{}, mgr, nil, created, nil, time.Second)
 	if err == nil {
 		t.Fatal("classifyOne succeeded; want classifier error")
+		panic("unreachable")
 	}
 
 	got, err := mgr.Get(created.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if got.Title != created.Title {
 		t.Errorf("title = %q, want preserved %q", got.Title, created.Title)
@@ -74,11 +79,13 @@ func TestCmdTriageClassifyRefusesNonNewTask(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(dir, "tasks"))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mgr := task.NewManager(store, nil)
 	created, err := mgr.Create("pending human decision", "body", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
+		panic("unreachable")
 	}
 	humanRequired := task.StatusHumanRequired
 	tags := []string{promptlab.ProposalTag, "requires-human"}
@@ -90,11 +97,13 @@ func TestCmdTriageClassifyRefusesNonNewTask(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
+		panic("unreachable")
 	}
 
 	ps, err := project.NewStore(filepath.Join(dir, "projects"), filepath.Join(dir, "clones"))
 	if err != nil {
 		t.Fatalf("project.NewStore: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("SYBRA_HOME", dir)
 	cfg := config.DefaultConfig()
@@ -109,6 +118,7 @@ func TestCmdTriageClassifyRefusesNonNewTask(t *testing.T) {
 	got, err := mgr.Get(created.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Errorf("status = %s, want unchanged human-required", got.Status)

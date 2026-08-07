@@ -57,6 +57,7 @@ func TestFetchClaudeLiveSnapshot_RetriesAfterCredentialReread(t *testing.T) {
 	snapshot, ok, err := fetchClaudeLiveSnapshot(context.Background(), now)
 	if err != nil {
 		t.Fatalf("fetchClaudeLiveSnapshot error = %v", err)
+		panic("unreachable")
 	}
 	if !ok {
 		t.Fatal("fetchClaudeLiveSnapshot returned ok=false")
@@ -69,6 +70,7 @@ func TestFetchClaudeLiveSnapshot_RetriesAfterCredentialReread(t *testing.T) {
 	}
 	if snapshot.PlanType != "max" || snapshot.Primary == nil || snapshot.Primary.UsedPercent != 42 {
 		t.Fatalf("snapshot = %+v", snapshot)
+		panic("unreachable")
 	}
 }
 

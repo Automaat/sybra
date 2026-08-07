@@ -198,12 +198,14 @@ func TestMarkAgentDone_EvictsFromRegistry(t *testing.T) {
 	}
 	if _, err := m.GetAgent(a.ID); err != nil {
 		t.Fatalf("agent should be registered before completion: %v", err)
+		panic("unreachable")
 	}
 
 	m.markAgentDone(context.Background(), a)
 
 	if _, err := m.GetAgent(a.ID); err == nil {
 		t.Fatal("expected evicted agent to be absent from the registry")
+		panic("unreachable")
 	}
 	for _, la := range m.ListAgents() {
 		if la.ID == a.ID {
@@ -236,6 +238,7 @@ func TestMarkAgentDone_RetainsCompletedAgentUntilGracePeriod(t *testing.T) {
 
 	if _, err := m.GetAgent(a.ID); err != nil {
 		t.Fatalf("agent should still be readable inside the grace period: %v", err)
+		panic("unreachable")
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -271,6 +274,7 @@ func TestMarkAgentDone_DoesNotEvictReplacementAgent(t *testing.T) {
 	got, err := m.GetAgent(fresh.ID)
 	if err != nil {
 		t.Fatalf("fresh registration should survive stale markAgentDone: %v", err)
+		panic("unreachable")
 	}
 	if got != fresh {
 		t.Fatal("registry entry was replaced unexpectedly")
@@ -328,6 +332,7 @@ func TestJitterDispatch_DisabledIsNoop(t *testing.T) {
 	start := time.Now()
 	if err := m.jitterDispatch(); err != nil {
 		t.Fatalf("jitterDispatch: %v", err)
+		panic("unreachable")
 	}
 	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
 		t.Fatalf("expected no delay when dispatchJitterMs=0, took %s", elapsed)
@@ -345,6 +350,7 @@ func TestJitterDispatch_SleepsWithinBound(t *testing.T) {
 	start := time.Now()
 	if err := m.jitterDispatch(); err != nil {
 		t.Fatalf("jitterDispatch: %v", err)
+		panic("unreachable")
 	}
 	if elapsed := time.Since(start); elapsed > 300*time.Millisecond {
 		t.Fatalf("jitter slept too long: %s, want <= ~50ms bound", elapsed)
@@ -369,6 +375,7 @@ func TestJitterDispatch_AbortsOnContextCancel(t *testing.T) {
 	err := m.jitterDispatch()
 	if err == nil {
 		t.Fatal("expected context error when the manager shuts down mid-jitter")
+		panic("unreachable")
 	}
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Fatalf("jitterDispatch did not abort promptly on ctx cancel: %s", elapsed)
@@ -405,6 +412,7 @@ func TestResolveProviderDecision_ComputesRoutingReason(t *testing.T) {
 		got, reason, _, err := m.resolveProviderDecision(RunConfig{})
 		if err != nil {
 			t.Fatalf("resolveProviderDecision: %v", err)
+			panic("unreachable")
 		}
 		if got != "claude" {
 			t.Fatalf("provider = %q, want claude", got)
@@ -421,6 +429,7 @@ func TestResolveProviderDecision_ComputesRoutingReason(t *testing.T) {
 		got, reason, _, err := m.resolveProviderDecision(RunConfig{Provider: "codex"})
 		if err != nil {
 			t.Fatalf("resolveProviderDecision: %v", err)
+			panic("unreachable")
 		}
 		if got != "codex" {
 			t.Fatalf("provider = %q, want codex", got)
@@ -441,6 +450,7 @@ func TestResolveProviderDecision_ComputesRoutingReason(t *testing.T) {
 		got, reason, _, err := m.resolveProviderDecision(RunConfig{Provider: "claude"})
 		if err != nil {
 			t.Fatalf("resolveProviderDecision: %v", err)
+			panic("unreachable")
 		}
 		if got != "codex" {
 			t.Fatalf("provider = %q, want codex", got)
@@ -464,6 +474,7 @@ func TestResolveProviderDecision_ComputesRoutingReason(t *testing.T) {
 		got, reason, _, err := m.resolveProviderDecision(RunConfig{Provider: "claude"})
 		if err != nil {
 			t.Fatalf("resolveProviderDecision: %v", err)
+			panic("unreachable")
 		}
 		if got != "codex" {
 			t.Fatalf("provider = %q, want codex", got)
@@ -502,6 +513,7 @@ func TestRegisterRunningAgent_IgnoreConcurrencyLimitBypassesCap(t *testing.T) {
 	}
 	if _, err := m.GetAgent(control.ID); err != nil {
 		t.Fatalf("control-plane agent should be registered: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -602,6 +614,7 @@ func TestTryHoldCapacity(t *testing.T) {
 	reservation, ok := m.TryHoldCapacity()
 	if !ok || reservation == nil {
 		t.Fatal("expected reservation under the cap")
+		panic("unreachable")
 	}
 	if m.TryReserveSlot() {
 		t.Fatal("held reservation must consume visible capacity")
@@ -849,6 +862,7 @@ func TestRunWithCapacityReservation_ConsumesHeldSlot(t *testing.T) {
 	reservation, ok := m.TryHoldCapacity()
 	if !ok || reservation == nil {
 		t.Fatal("expected reservation under the cap")
+		panic("unreachable")
 	}
 
 	a := &Agent{ID: "held-slot", Provider: "claude", done: make(chan struct{})}

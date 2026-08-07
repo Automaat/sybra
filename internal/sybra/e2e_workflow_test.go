@@ -328,6 +328,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	taskDir, err := os.MkdirTemp("", "sybra-e2e-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(taskDir) })
 	t.Setenv("SYBRA_HOME", taskDir)
@@ -336,11 +337,13 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	tasksDir := filepath.Join(taskDir, "tasks")
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 	artifactStore := artifact.New(config.ArtifactsDir())
@@ -352,6 +355,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	logDir, err := os.MkdirTemp("", "sybra-e2e-logs-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { keepAgentLogsOnFailure(t, logDir) })
 
@@ -371,24 +375,29 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	wfDir, err := os.MkdirTemp("", "sybra-e2e-wf-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(wfDir) })
 	wfStore, err := workflow.NewStore(wfDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Copy test workflow.
 	src, err := os.ReadFile("../../internal/workflow/testdata/test-simple.yaml")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wfDir, "test-simple.yaml"), src, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wtDir, err := os.MkdirTemp("", "sybra-e2e-wt-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(wtDir) })
 	wm := worktree.New(worktree.Config{
@@ -411,6 +420,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	agentDir, err := os.MkdirTemp("", "sybra-e2e-agent-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(agentDir) })
 
@@ -486,6 +496,7 @@ func unsetGitFixtureEnv(t *testing.T) {
 		value, had := os.LookupEnv(key)
 		if err := os.Unsetenv(key); err != nil {
 			t.Fatalf("unset %s: %v", key, err)
+			panic("unreachable")
 		}
 		t.Cleanup(func() {
 			if !had {
@@ -671,10 +682,12 @@ func TestE2E_HeadlessAgent_Success(t *testing.T) {
 	created, err := env.tasks.Create("test task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Wait for triage agent to complete and engine to advance.
@@ -690,6 +703,7 @@ func TestE2E_HeadlessAgent_Success(t *testing.T) {
 	tk, _ := env.tasks.Get(created.ID)
 	if tk.Workflow == nil {
 		t.Fatal("expected workflow to be set")
+		panic("unreachable")
 	}
 }
 
@@ -704,9 +718,11 @@ func TestE2E_HeadlessAgent_TerminalResultFastCloseAdvancesWorkflow(t *testing.T)
 	created, err := env.tasks.Create("terminal result fast close", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 10*time.Second, "workflow advances past triage after a hanging post-result process", func() bool {
@@ -730,10 +746,12 @@ func TestE2E_AgentRunPromptPersisted(t *testing.T) {
 	created, err := env.tasks.Create("prompt persistence", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 10*time.Second, "triage agent run recorded with prompt", func() bool {
@@ -747,6 +765,7 @@ func TestE2E_AgentRunPromptPersisted(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	want := "Triage " + created.ID
 	if got := tk.AgentRuns[0].Prompt; got != want {
@@ -768,10 +787,12 @@ func TestE2E_HeadlessAgent_ArgsVerification(t *testing.T) {
 		created, err := env.tasks.Create("test task", "", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		waitFor(t, 10*time.Second, "args log written", func() bool {
@@ -782,6 +803,7 @@ func TestE2E_HeadlessAgent_ArgsVerification(t *testing.T) {
 		data, err := os.ReadFile(argsLog)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		args := string(data)
 
@@ -841,10 +863,12 @@ steps:
 		created, err := env.tasks.Create("test task", "", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		if err := env.startWorkflow(created.ID, "test-fail-exit"); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		waitFor(t, 30*time.Second, "workflow moves past failed triage", func() bool {
@@ -880,9 +904,11 @@ func TestE2E_HeadlessAgent_SignalKill_DoesNotAdvanceWorkflow(t *testing.T) {
 	created, err := env.tasks.Create("signal kill task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Wait for the signal-killed agent to finish and completion callback to return.
@@ -894,9 +920,11 @@ func TestE2E_HeadlessAgent_SignalKill_DoesNotAdvanceWorkflow(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if tk.Workflow == nil {
 		t.Fatal("no workflow on task")
+		panic("unreachable")
 	}
 	if tk.Workflow.CurrentStep != "triage" {
 		t.Errorf("workflow advanced to %q on signal kill; want to stay at triage", tk.Workflow.CurrentStep)
@@ -939,9 +967,11 @@ func TestE2E_HeadlessAgent_StopAgent_DoesNotAdvanceWorkflow(t *testing.T) {
 	created, err := env.tasks.Create("stop agent task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Wait for the triage agent to be live (running) so StopAgent has a
@@ -959,6 +989,7 @@ func TestE2E_HeadlessAgent_StopAgent_DoesNotAdvanceWorkflow(t *testing.T) {
 
 	if err := env.agents.StopAgent(triageAgentID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 10*time.Second, "stopped agent completion drains", func() bool {
@@ -968,9 +999,11 @@ func TestE2E_HeadlessAgent_StopAgent_DoesNotAdvanceWorkflow(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if tk.Workflow == nil {
 		t.Fatal("no workflow on task")
+		panic("unreachable")
 	}
 	if tk.Workflow.CurrentStep != "triage" {
 		t.Errorf("workflow advanced to %q after StopAgent (WasStopped=true); want stalled at triage", tk.Workflow.CurrentStep)
@@ -997,9 +1030,11 @@ func TestE2E_HeadlessAgent_CostHardStopRetriesBoundedPath(t *testing.T) {
 	created, err := env.tasks.Create("cost hard-stop task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 10*time.Second, "cost-stopped triage retries through failed-completion path", func() bool {
@@ -1032,9 +1067,11 @@ func TestE2E_HeadlessAgent_CostHardStopPreemptsMidStream(t *testing.T) {
 	created, err := env.tasks.Create("cost mid-stream pre-empt task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 10*time.Second, "mid-stream cost-preempted triage retries through failed-completion path", func() bool {
@@ -1055,6 +1092,7 @@ func TestE2E_HeadlessAgent_CostHardStopPreemptsMidStream(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	var costStopped bool
 	for _, run := range tk.AgentRuns {
@@ -1092,9 +1130,11 @@ func TestE2E_HeadlessAgent_StopCompletedAgent_AdvancesWorkflow(t *testing.T) {
 	created, err := env.tasks.Create("stop completed agent task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Wait for the triage agent to emit its terminal result and go idle
@@ -1111,6 +1151,7 @@ func TestE2E_HeadlessAgent_StopCompletedAgent_AdvancesWorkflow(t *testing.T) {
 
 	if err := env.agents.StopCompletedAgent(triageAgentID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 10*time.Second, "completed agent finalizes", func() bool {
@@ -1120,9 +1161,11 @@ func TestE2E_HeadlessAgent_StopCompletedAgent_AdvancesWorkflow(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if tk.Workflow == nil {
 		t.Fatal("no workflow on task")
+		panic("unreachable")
 	}
 	if tk.Workflow.CurrentStep == "triage" {
 		t.Errorf("workflow stalled at triage after StopCompletedAgent; want advanced past triage (already-completed work must finalize, not stall)")
@@ -1136,10 +1179,12 @@ func TestE2E_WorkflowWithSynapseCLI(t *testing.T) {
 		created, err := env.tasks.Create("implement auth", "", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		waitFor(t, 15*time.Second, "workflow advances past triage", func() bool {
@@ -1171,6 +1216,7 @@ func setupE2EMultiProvider(t *testing.T, provider string, scenarios []string) *e
 	sf := filepath.Join(t.TempDir(), "scenarios.txt")
 	if err := os.WriteFile(sf, []byte(strings.Join(scenarios, "\n")), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	env := setupE2EProvider(t, provider, "")
 	t.Setenv("FAKE_CLAUDE_SCENARIO_FILE", sf)
@@ -1227,9 +1273,11 @@ func TestE2E_MalformedToolCall_RecoversInSession(t *testing.T) {
 	created, err := env.tasks.Create("malformed tool recovers", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-malformed-tool"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 20*time.Second, "single-run malformed tool workflow completes", func() bool {
@@ -1240,6 +1288,7 @@ func TestE2E_MalformedToolCall_RecoversInSession(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(tk.AgentRuns) != 1 {
 		t.Fatalf("AgentRuns len = %d, want 1 (no restart after malformed tool call)", len(tk.AgentRuns))
@@ -1270,9 +1319,11 @@ func TestE2E_MalformedToolCall_RepeatedFailsOverProvider(t *testing.T) {
 	created, err := env.tasks.Create("malformed tool failover", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-malformed-tool"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 30*time.Second, "repeated malformed tool call fails over and completes", func() bool {
@@ -1283,6 +1334,7 @@ func TestE2E_MalformedToolCall_RepeatedFailsOverProvider(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(tk.AgentRuns) != 2 {
 		t.Fatalf("AgentRuns len = %d, want 2 (claude malformed run + codex fallback)", len(tk.AgentRuns))
@@ -1319,6 +1371,7 @@ steps:
 `
 	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), "human-review-recovery.yaml"), []byte(recoveryWorkflow), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg := &config.Config{}
@@ -1340,6 +1393,7 @@ steps:
 	created, err := env.tasks.Create("human review structured fallback", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.Update(created.ID, task.Update{
 		Status:          task.Ptr(task.StatusHumanRequired),
@@ -1373,6 +1427,7 @@ steps:
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if tk.Status != task.StatusReadyReview {
 		t.Fatalf("status = %q, want %q", tk.Status, task.StatusReadyReview)
@@ -1394,6 +1449,7 @@ steps:
 	}
 	if tk.Workflow == nil || tk.Workflow.WorkflowID != "human-review-recovery" {
 		t.Fatalf("workflow = %+v, want human-review-recovery", tk.Workflow)
+		panic("unreachable")
 	}
 }
 
@@ -1404,10 +1460,12 @@ func TestE2E_FullLifecycle_TriageThenImplement(t *testing.T) {
 		created, err := env.tasks.Create("full lifecycle task", "", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		waitFor(t, 30*time.Second, "workflow reaches terminal quarantine", func() bool {
@@ -1449,10 +1507,12 @@ func TestE2E_ProviderMatrix_FullLifecycleEvalQuarantines(t *testing.T) {
 		created, err := env.tasks.Create("eval lifecycle task", "", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		waitFor(t, 30*time.Second, "workflow reaches terminal quarantine", func() bool {
@@ -1488,6 +1548,7 @@ func TestE2E_ProviderMatrix_ModelAliasMapping(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		waitFor(t, 10*time.Second, "model args log written", func() bool {
@@ -1498,6 +1559,7 @@ func TestE2E_ProviderMatrix_ModelAliasMapping(t *testing.T) {
 		data, err := os.ReadFile(argsLog)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		args := string(data)
 
@@ -1533,6 +1595,7 @@ func TestE2E_Codex_HeadlessRetry_Overloaded(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// The first attempt exits 1 after emitting an overloaded error event.
@@ -1573,6 +1636,7 @@ func TestE2E_Codex_HeadlessRetry_OverloadedStructured(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 90*time.Second, "codex agent stops after structured retry", func() bool {
@@ -1599,10 +1663,12 @@ func TestE2E_ProviderMatrix_NoResult_DoesNotStall(t *testing.T) {
 		created, err := env.tasks.Create("no result task", "", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		waitFor(t, 30*time.Second, "workflow reaches terminal quarantine despite no result event", func() bool {
@@ -1635,6 +1701,7 @@ func TestE2E_ProviderMatrix_NoResult_DoesNotStall(t *testing.T) {
 		}
 		if implementRec == nil {
 			t.Fatal("missing implement step record")
+			panic("unreachable")
 		}
 		if implementRec.Output != "" {
 			t.Errorf("implement output = %q, want empty (provider emitted no result event)", implementRec.Output)
@@ -1654,18 +1721,22 @@ func createLegacyInteractiveTask(t *testing.T, tasks *task.Manager, title string
 	created, err := tasks.Create(title, "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	created.AgentMode = task.AgentModeInteractive
 	data, err := task.Marshal(created)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(created.FilePath, data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	reloaded, err := tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return reloaded
 }
@@ -1690,6 +1761,7 @@ func TestE2E_LegacyInteractiveTask_ImplementDispatchesHeadless(t *testing.T) {
 
 		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		waitFor(t, 30*time.Second, "workflow quarantines after legacy interactive implement", func() bool {
@@ -1733,10 +1805,12 @@ func TestE2E_RetryCount(t *testing.T) {
 		created, err := env.tasks.Create("retry task", "", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		waitFor(t, 30*time.Second, "workflow advances past triage", func() bool {
@@ -1767,10 +1841,12 @@ func TestE2E_AgentFailure_SetsCorrectStatus(t *testing.T) {
 		created, err := env.tasks.Create("failure status task", "", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		waitFor(t, 20*time.Second, "workflow advances past triage after retry", func() bool {
@@ -1800,6 +1876,7 @@ func TestE2E_ResumeStalled(t *testing.T) {
 	created, err := env.tasks.Create("stalled task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Manually set up workflow state as if it's stuck at "implement" with no agent.
@@ -1854,6 +1931,7 @@ func TestE2E_ResumeStalled_SkipsTaskWithRunningAgent(t *testing.T) {
 	created, err := env.tasks.Create("stalled but live agent task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wfExec := &workflow.Execution{
@@ -1880,6 +1958,7 @@ func TestE2E_ResumeStalled_SkipsTaskWithRunningAgent(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 10*time.Second, "agent becomes live", func() bool {
@@ -1910,10 +1989,12 @@ func TestE2E_PlanApproveReject(t *testing.T) {
 	created, err := env.tasks.Create("plan task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Wait for review_plan (wait_human) step with ExecWaiting state.
@@ -1965,6 +2046,7 @@ func TestE2E_PlanApproveReject(t *testing.T) {
 
 	if err := env.engine.HandleHumanAction(created.ID, "approve", nil); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Wait for the no-PR evaluation to terminate the workflow in quarantine.
@@ -1990,10 +2072,12 @@ func TestE2E_ConcurrentWorkflows(t *testing.T) {
 	t1, err := env.tasks.Create("concurrent task 1", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t2, err := env.tasks.Create("concurrent task 2", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Start both workflows concurrently.
@@ -2004,6 +2088,7 @@ func TestE2E_ConcurrentWorkflows(t *testing.T) {
 	for range 2 {
 		if err := <-errCh; err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
@@ -2099,12 +2184,14 @@ func TestE2E_RecoverStaleInteractive(t *testing.T) {
 	}
 	if implementRec == nil {
 		t.Fatal("expected 'implement' step record after recovery")
+		panic("unreachable")
 	}
 	if implementRec.Output != "" {
 		t.Errorf("implement output = %q, want empty (structured recovery, no sentinel string)", implementRec.Output)
 	}
 	if evaluateRec == nil {
 		t.Fatal("expected 'evaluate' step record — recovery should drive the next step")
+		panic("unreachable")
 	}
 }
 
@@ -2167,6 +2254,7 @@ func TestE2E_DispatchPREvent_FullRun(t *testing.T) {
 	created, err := env.tasks.Create("pr dispatch task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
 		"status": "in-review",
@@ -2184,6 +2272,7 @@ func TestE2E_DispatchPREvent_FullRun(t *testing.T) {
 		map[string]string{"prompt": "fix the CI", workflow.WorkflowVarDir: env.agentDir})
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
+		panic("unreachable")
 	}
 	if wfID != "test-pr-fix" {
 		t.Fatalf("wfID = %q, want test-pr-fix", wfID)
@@ -2295,10 +2384,12 @@ func TestE2E_EvalChain_PRURLInResultGoesInReview(t *testing.T) {
 	created, err := env.tasks.Create("eval chain happy", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := env.startWorkflow(created.ID, "test-eval-chain"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 20*time.Second, "eval chain workflow completes", func() bool {
@@ -2342,10 +2433,12 @@ func TestE2E_EvalChain_NoPRQuarantines(t *testing.T) {
 	created, err := env.tasks.Create("eval chain fallback", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := env.startWorkflow(created.ID, "test-eval-chain"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 20*time.Second, "eval chain workflow reaches terminal quarantine", func() bool {
@@ -2421,6 +2514,7 @@ func TestE2E_DispatchPREvent_ReadyToMerge(t *testing.T) {
 	created, err := env.tasks.Create("ready-to-merge task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
 		"status": "in-review",
@@ -2433,6 +2527,7 @@ func TestE2E_DispatchPREvent_ReadyToMerge(t *testing.T) {
 		nil)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
+		panic("unreachable")
 	}
 	if wfID != "test-auto-merge" {
 		t.Fatalf("wfID = %q, want test-auto-merge", wfID)
@@ -2610,6 +2705,7 @@ func TestE2E_TestingTaskWorkflow_HappyPath(t *testing.T) {
 	created, err := env.tasks.Create("manual test happy", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
 		t.Fatal(err)
@@ -2620,6 +2716,7 @@ func TestE2E_TestingTaskWorkflow_HappyPath(t *testing.T) {
 		map[string]string{workflow.WorkflowVarDir: env.agentDir})
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
+		panic("unreachable")
 	}
 	if wfID != "testing-task" {
 		t.Fatalf("dispatched workflow = %q, want testing-task", wfID)
@@ -2655,6 +2752,7 @@ func TestE2E_TestingTaskWorkflow_LongPassVerdictSurvivesTruncation(t *testing.T)
 	created, err := env.tasks.Create("manual test long pass", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
 		t.Fatal(err)
@@ -2686,9 +2784,11 @@ func TestE2E_WorkflowLargeToolResultIsBoundedAndArtifacted(t *testing.T) {
 	created, err := env.tasks.Create("large tool result", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 20*time.Second, "workflow reaches terminal quarantine", func() bool {
@@ -2717,6 +2817,7 @@ func TestE2E_WorkflowLargeToolResultIsBoundedAndArtifacted(t *testing.T) {
 	ag, err := env.agents.GetAgent(implRun.AgentID)
 	if err != nil {
 		t.Fatalf("GetAgent(%s): %v", implRun.AgentID, err)
+		panic("unreachable")
 	}
 	var toolSummary string
 	for _, ev := range ag.Output() {
@@ -2741,6 +2842,7 @@ func TestE2E_WorkflowLargeToolResultIsBoundedAndArtifacted(t *testing.T) {
 	metas, err := env.artifacts.List(created.ID)
 	if err != nil {
 		t.Fatalf("artifact list: %v", err)
+		panic("unreachable")
 	}
 	var toolMeta artifact.Meta
 	foundArtifact := false
@@ -2757,6 +2859,7 @@ func TestE2E_WorkflowLargeToolResultIsBoundedAndArtifacted(t *testing.T) {
 	raw, _, err := env.artifacts.Read(created.ID, toolMeta.Name)
 	if err != nil {
 		t.Fatalf("artifact read: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(raw), "undefined: missingDependency") {
 		t.Fatalf("artifact lost diagnostic:\n%s", string(raw))
@@ -2776,6 +2879,7 @@ func TestE2E_TestingTaskWorkflow_FailLoopsBackToImplement(t *testing.T) {
 	created, err := env.tasks.Create("manual test fail", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
@@ -2817,6 +2921,7 @@ func TestE2E_ImplementPromptBoundedAcrossFiveFailedAttempts(t *testing.T) {
 	created, err := env.tasks.Create("bounded prompt loop", initialBody, "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
 		"status": string(task.StatusInProgress),
@@ -2826,6 +2931,7 @@ func TestE2E_ImplementPromptBoundedAcrossFiveFailedAttempts(t *testing.T) {
 
 	if err := env.startWorkflow(created.ID, "test-implement-prompt-bounded"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 30*time.Second, "five failed loops complete at cap", func() bool {
@@ -2839,6 +2945,7 @@ func TestE2E_ImplementPromptBoundedAcrossFiveFailedAttempts(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	assertMachineQuarantine(t, tk, "workflow.untyped_escalation")
 	if tk.Body != initialBody {
@@ -2882,6 +2989,7 @@ func TestE2E_TestingTaskWorkflow_FailQuarantinesAtCap(t *testing.T) {
 	created, err := env.tasks.Create("manual test cap", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Pre-seed two prior test-runner attempts; this run is the third → cap hit.
 	for i := range 2 {
@@ -2926,6 +3034,7 @@ func TestE2E_TestingTaskWorkflow_InfraFailureOpensPRAtCap(t *testing.T) {
 	created, err := env.tasks.Create("manual test infra", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
 		t.Fatal(err)
@@ -2956,6 +3065,7 @@ func TestE2E_TestingTaskWorkflow_InfraFailureOpensPRAtCap(t *testing.T) {
 	}
 	if tk.Workflow == nil {
 		t.Fatal("workflow = nil, want completed simple-task-pr")
+		panic("unreachable")
 	}
 	if tk.Workflow.WorkflowID != "simple-task-pr" {
 		t.Fatalf("workflow id = %q, want simple-task-pr", tk.Workflow.WorkflowID)
@@ -2981,6 +3091,7 @@ func TestE2E_TestingTaskWorkflow_InfraFailureQuarantinesWhenOpenPRDisabled(t *te
 	created, err := env.tasks.Create("manual test infra legacy", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
@@ -3009,6 +3120,7 @@ func TestE2E_TestingTaskWorkflow_InfraFailureQuarantinesWhenOpenPRDisabled(t *te
 	assertMachineQuarantine(t, tk, "workflow.untyped_escalation")
 	if tk.Workflow == nil {
 		t.Fatal("workflow = nil, want completed testing-task")
+		panic("unreachable")
 	}
 	if tk.Workflow.WorkflowID != "testing-task" {
 		t.Fatalf("workflow id = %q, want testing-task", tk.Workflow.WorkflowID)
@@ -3067,6 +3179,7 @@ func testingTaskWithOutputSchemaPromptYAML(t *testing.T, prompt string) string {
 	data, err := yaml.Marshal(def)
 	if err != nil {
 		t.Fatalf("marshal testing-task fixture: %v", err)
+		panic("unreachable")
 	}
 	return string(data)
 }
@@ -3077,6 +3190,7 @@ func testingTaskOutputSchema(t *testing.T) string {
 	defs, err := workflow.BuiltinDefinitions()
 	if err != nil {
 		t.Fatalf("load builtin definitions: %v", err)
+		panic("unreachable")
 	}
 	for _, def := range defs {
 		if def.ID != "testing-task" {
@@ -3085,6 +3199,7 @@ func testingTaskOutputSchema(t *testing.T) string {
 		step := def.StepByID("run_test")
 		if step == nil {
 			t.Fatal("run_test step not found in testing-task")
+			panic("unreachable")
 		}
 		return step.Config.OutputSchema
 	}
@@ -3125,6 +3240,7 @@ func TestE2E_Codex_TestVerdict_Pass_JSON(t *testing.T) {
 	created, err := env.tasks.Create("codex json verdict pass", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
 		t.Fatal(err)
@@ -3168,6 +3284,7 @@ func TestE2E_Codex_TestVerdict_Pass_JSON_WithTrailingEmptyItem(t *testing.T) {
 	created, err := env.tasks.Create("codex json verdict pass with trailing item", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
 		t.Fatal(err)
@@ -3202,6 +3319,7 @@ func TestE2E_Codex_TestVerdict_Fail_JSON(t *testing.T) {
 	created, err := env.tasks.Create("codex json verdict fail", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
@@ -3235,6 +3353,7 @@ func TestE2E_Codex_TestVerdict_Fail_JSON_WithTrailingReasoningItem(t *testing.T)
 	created, err := env.tasks.Create("codex json verdict fail trailing reasoning item", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := env.engine.DispatchEvent(created.ID, "task.status_changed",
@@ -3268,6 +3387,7 @@ func TestE2E_Codex_TestVerdict_Pass_JSON_WithMandatorySkillReceiptPreamble(t *te
 	created, err := env.tasks.Create("codex json verdict pass with skill receipt", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.Update(created.ID, task.Update{Status: task.Ptr(task.StatusTesting)}); err != nil {
 		t.Fatal(err)
@@ -3290,6 +3410,7 @@ func TestE2E_Codex_TestVerdict_Pass_JSON_WithMandatorySkillReceiptPreamble(t *te
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if tk.Status != task.StatusReadyPR {
 		t.Fatalf("status after JSON PASS + receipt preamble = %q, want %q", tk.Status, task.StatusReadyPR)
@@ -3313,9 +3434,11 @@ func TestE2E_WaitHuman_InvalidActionRejected(t *testing.T) {
 	created, err := env.tasks.Create("invalid human action task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 20*time.Second, "workflow reaches review_plan", func() bool {
@@ -3349,6 +3472,7 @@ func TestE2E_WaitHuman_InvalidActionRejected(t *testing.T) {
 	err = env.engine.HandleHumanAction(created.ID, "bogus", nil)
 	if err == nil {
 		t.Fatal("expected invalid action error, got nil")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "invalid human action") {
 		t.Fatalf("err = %v, want invalid human action", err)
@@ -3383,6 +3507,7 @@ func TestE2E_TestingTaskWorkflow_RefusedWhenWorkflowActive(t *testing.T) {
 	created, err := env.tasks.Create("active workflow task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Attach a non-terminal workflow as if a simple-task run is mid-flight.
@@ -3409,6 +3534,7 @@ func TestE2E_TestingTaskWorkflow_RefusedWhenWorkflowActive(t *testing.T) {
 	_, err = svc.UpdateTask(created.ID, map[string]any{"status": string(task.StatusTesting)})
 	if err == nil {
 		t.Fatal("expected refusal error, got nil")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "cannot move to testing") {
 		t.Errorf("err = %v, want message containing 'cannot move to testing'", err)
@@ -3440,10 +3566,12 @@ func TestE2E_StaleAgentCompletionAfterWorkflowTerminal(t *testing.T) {
 	created, err := env.tasks.Create("stale completion task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Run the real workflow to its no-PR quarantine — all three agents finish
@@ -3534,10 +3662,12 @@ func TestE2E_StaleAgentCompletionAtWaitHuman(t *testing.T) {
 	created, err := env.tasks.Create("stale at wait_human", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := env.startWorkflow(created.ID, "test-simple"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 30*time.Second, "workflow reaches review_plan wait_human", func() bool {
@@ -3605,6 +3735,7 @@ func TestE2E_StaleAgentCompletionAtWaitHuman(t *testing.T) {
 	}
 	if reviewRec == nil {
 		t.Fatal("review_plan missing from step history after reject")
+		panic("unreachable")
 	}
 }
 
@@ -3621,6 +3752,7 @@ func TestE2E_RestartStaleSkipsTerminalWorkflow(t *testing.T) {
 	created, err := env.tasks.Create("stuck terminal workflow", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wfExec := &workflow.Execution{
 		WorkflowID:  "test-simple",
@@ -3640,6 +3772,7 @@ func TestE2E_RestartStaleSkipsTerminalWorkflow(t *testing.T) {
 	tk, _ := env.tasks.Get(created.ID)
 	if tk.Workflow == nil || tk.Workflow.State != workflow.ExecCompleted {
 		t.Fatalf("precondition: workflow state = %v, want completed", tk.Workflow)
+		panic("unreachable")
 	}
 
 	terminal := tk.Workflow.State == workflow.ExecCompleted || tk.Workflow.State == workflow.ExecFailed
@@ -3676,10 +3809,12 @@ func loadBuiltinWorkflow(t *testing.T, env *e2eEnv, name string) {
 	src, err := os.ReadFile(filepath.Join("..", "..", "internal", "workflow", "builtin", name+".yaml"))
 	if err != nil {
 		t.Fatalf("read builtin workflow %s: %v", name, err)
+		panic("unreachable")
 	}
 	dst := filepath.Join(env.wfStore.Dir(), name+".yaml")
 	if err := os.WriteFile(dst, src, 0o644); err != nil {
 		t.Fatalf("write workflow %s to store: %v", name, err)
+		panic("unreachable")
 	}
 }
 
@@ -3732,10 +3867,12 @@ func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 	created, err := env.tasks.Create("plan critic e2e", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 30*time.Second, "workflow reaches review_plan", func() bool {
@@ -3751,6 +3888,7 @@ func TestE2E_BuiltinSimpleTask_PlanCriticRunsBeforeReview(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	stepIDs := stepIDsFromHistory(tk.Workflow)
@@ -3818,10 +3956,12 @@ func TestE2E_BuiltinSimpleTask_MissingCritiqueSkipsToPlanReview(t *testing.T) {
 	created, err := env.tasks.Create("missing critique e2e", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 30*time.Second, "workflow reaches review_plan after missing critique soft skip", func() bool {
@@ -3838,6 +3978,7 @@ func TestE2E_BuiltinSimpleTask_MissingCritiqueSkipsToPlanReview(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	stepIDs := stepIDsFromHistory(tk.Workflow)
@@ -3888,10 +4029,12 @@ func TestE2E_BuiltinSimpleTask_NocriticTagSkipsCritique(t *testing.T) {
 	created, err := env.tasks.Create("nocritic e2e", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 30*time.Second, "workflow reaches review_plan", func() bool {
@@ -3907,6 +4050,7 @@ func TestE2E_BuiltinSimpleTask_NocriticTagSkipsCritique(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	stepIDs := stepIDsFromHistory(tk.Workflow)
@@ -3943,10 +4087,12 @@ func TestE2E_BuiltinSimpleTask_PlanPromptAvoidsOperatorSkillInvocations(t *testi
 		created, err := env.tasks.Create("plan prompt skill isolation", "", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		waitFor(t, 30*time.Second, "workflow reaches review_plan", func() bool {
@@ -3967,6 +4113,7 @@ func TestE2E_BuiltinSimpleTask_PlanPromptAvoidsOperatorSkillInvocations(t *testi
 		data, err := os.ReadFile(contentLog)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		content := string(data)
 		if !strings.Contains(content, "Plan task "+created.ID) {
@@ -3995,9 +4142,11 @@ func TestE2E_BuiltinSimpleTask_NoplanTagSkipsPlanning(t *testing.T) {
 	created, err := env.tasks.Create("noplan fast-path", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 30*time.Second, "simple-task-plan completes via the noplan fast-path", func() bool {
@@ -4008,6 +4157,7 @@ func TestE2E_BuiltinSimpleTask_NoplanTagSkipsPlanning(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	stepIDs := stepIDsFromHistory(tk.Workflow)
 	for _, banned := range []string{"plan", "critique_plan", "review_plan"} {
@@ -4045,9 +4195,11 @@ func TestE2E_BuiltinSimpleTask_TriageTerminalShortCircuits(t *testing.T) {
 		created, err := env.tasks.Create("terminal triage human_required", "", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		waitFor(t, 30*time.Second, "workflow quarantines after triage terminal short-circuit", func() bool {
@@ -4280,6 +4432,7 @@ func writeWorkflowFixture(t *testing.T, env *e2eEnv, name, yaml string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), name+".yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatalf("write %s.yaml: %v", name, err)
+		panic("unreachable")
 	}
 }
 
@@ -4288,10 +4441,12 @@ func writeSkillFixture(t *testing.T, home, agentDir, name string) {
 	dir := filepath.Join(home, agentDir, "skills", name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", dir, err)
+		panic("unreachable")
 	}
 	data := []byte("---\nname: " + name + "\ndescription: test\n---\n\n# " + name + "\n")
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), data, 0o644); err != nil {
 		t.Fatalf("write skill fixture: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -4308,9 +4463,11 @@ func TestE2E_WorkflowMandatorySkill_CodexNative(t *testing.T) {
 	created, err := env.tasks.Create("codex native mandatory skill", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-mandatory-skill"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 30*time.Second, "workflow completes", func() bool {
@@ -4321,6 +4478,7 @@ func TestE2E_WorkflowMandatorySkill_CodexNative(t *testing.T) {
 	args, err := os.ReadFile(argsLog)
 	if err != nil {
 		t.Fatalf("read codex args log: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(args), "Run $sybra-test now.") {
 		t.Fatalf("codex prompt missing native invocation rewrite:\n%s", args)
@@ -4329,6 +4487,7 @@ func TestE2E_WorkflowMandatorySkill_CodexNative(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(tk.AgentRuns) != 1 || tk.AgentRuns[0].SkillExecutionMode != "native" {
 		t.Fatalf("AgentRuns = %+v, want one native skill run", tk.AgentRuns)
@@ -4348,9 +4507,11 @@ func TestE2E_WorkflowMandatorySkill_CodexInjected(t *testing.T) {
 	created, err := env.tasks.Create("codex injected mandatory skill", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-mandatory-skill"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 30*time.Second, "workflow completes", func() bool {
@@ -4361,6 +4522,7 @@ func TestE2E_WorkflowMandatorySkill_CodexInjected(t *testing.T) {
 	args, err := os.ReadFile(argsLog)
 	if err != nil {
 		t.Fatalf("read codex args log: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(args), "BEGIN INJECTED SKILL: sybra-test") {
 		t.Fatalf("codex prompt missing injected skill block:\n%s", args)
@@ -4372,6 +4534,7 @@ func TestE2E_WorkflowMandatorySkill_CodexInjected(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(tk.AgentRuns) != 1 || tk.AgentRuns[0].SkillExecutionMode != "injected" {
 		t.Fatalf("AgentRuns = %+v, want one injected skill run", tk.AgentRuns)
@@ -4400,9 +4563,11 @@ func TestE2E_WorkflowMandatorySkill_MissingReceiptRetriesInjectedAndPreservesDia
 	created, err := env.tasks.Create("codex receipt recovery", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-mandatory-skill-sidecar"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 30*time.Second, "workflow settles after receipt recovery", func() bool {
@@ -4417,11 +4582,13 @@ func TestE2E_WorkflowMandatorySkill_MissingReceiptRetriesInjectedAndPreservesDia
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	args, err := os.ReadFile(argsLog)
 	if err != nil {
 		t.Fatalf("read codex args log: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(args), "BEGIN INJECTED SKILL: sybra-test") {
 		t.Fatalf("recovery retry prompt missing injected skill block:\n%s", args)
@@ -4452,6 +4619,7 @@ func TestE2E_WorkflowMandatorySkill_MissingReceiptRetriesInjectedAndPreservesDia
 	artifacts, err := env.artifacts.List(created.ID)
 	if err != nil {
 		t.Fatalf("list artifacts: %v", err)
+		panic("unreachable")
 	}
 	foundDiag := false
 	for _, meta := range artifacts {
@@ -4460,6 +4628,7 @@ func TestE2E_WorkflowMandatorySkill_MissingReceiptRetriesInjectedAndPreservesDia
 			data, _, readErr := env.artifacts.Read(created.ID, meta.Name)
 			if readErr != nil {
 				t.Fatalf("read diagnostic artifact: %v", readErr)
+				panic("unreachable")
 			}
 			if !strings.Contains(string(data), "# Execution Plan") {
 				t.Fatalf("diagnostic artifact content = %q, want preserved first-pass sidecar", string(data))
@@ -4483,9 +4652,11 @@ func TestE2E_WorkflowMandatorySkill_CodexUnavailable(t *testing.T) {
 	created, err := env.tasks.Create("codex unavailable mandatory skill", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-unavailable-skill"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 30*time.Second, "workflow completes", func() bool {
@@ -4496,6 +4667,7 @@ func TestE2E_WorkflowMandatorySkill_CodexUnavailable(t *testing.T) {
 	args, err := os.ReadFile(argsLog)
 	if err != nil {
 		t.Fatalf("read codex args log: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(args), "no SKILL.md or bundled fallback was found") {
 		t.Fatalf("codex prompt missing unavailable skill note:\n%s", args)
@@ -4507,6 +4679,7 @@ func TestE2E_WorkflowMandatorySkill_CodexUnavailable(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(tk.AgentRuns) != 1 || tk.AgentRuns[0].SkillExecutionMode != "unavailable" {
 		t.Fatalf("AgentRuns = %+v, want one unavailable skill run", tk.AgentRuns)
@@ -4529,9 +4702,11 @@ func TestE2E_WorkflowReviewSkills_DoNotRequireAllowedTools(t *testing.T) {
 			created, err := env.tasks.Create("codex "+name, "", "headless")
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if err := env.startWorkflow(created.ID, workflowID); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			waitFor(t, 30*time.Second, "workflow completes", func() bool {
@@ -4542,6 +4717,7 @@ func TestE2E_WorkflowReviewSkills_DoNotRequireAllowedTools(t *testing.T) {
 			args, err := os.ReadFile(argsLog)
 			if err != nil {
 				t.Fatalf("read codex args log: %v", err)
+				panic("unreachable")
 			}
 			if !strings.Contains(string(args), "BEGIN INJECTED SKILL: "+name) {
 				t.Fatalf("codex prompt missing injected %s block:\n%s", name, args)
@@ -4553,6 +4729,7 @@ func TestE2E_WorkflowReviewSkills_DoNotRequireAllowedTools(t *testing.T) {
 			tk, err := env.tasks.Get(created.ID)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if len(tk.AgentRuns) != 1 || tk.AgentRuns[0].SkillExecutionMode != "injected" {
 				t.Fatalf("AgentRuns = %+v, want one injected skill run", tk.AgentRuns)
@@ -4571,9 +4748,11 @@ func stageProviderPath(t *testing.T, include ...string) string {
 		data, err := os.ReadFile(src)
 		if err != nil {
 			t.Fatalf("read %s: %v", src, err)
+			panic("unreachable")
 		}
 		if err := os.WriteFile(dst, data, 0o755); err != nil {
 			t.Fatalf("write %s: %v", dst, err)
+			panic("unreachable")
 		}
 	}
 	return dstDir
@@ -4586,6 +4765,7 @@ func runCmd(t *testing.T, dir, name string, args ...string) {
 	scrubGitFixtureEnv(cmd)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%s %v failed: %v\n%s", name, args, err, string(out))
+		panic("unreachable")
 	}
 }
 
@@ -4597,6 +4777,7 @@ func readCommandOutput(t *testing.T, dir, name string, args ...string) string {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s %v failed: %v\n%s", name, args, err, string(out))
+		panic("unreachable")
 	}
 	return string(out)
 }
@@ -4643,6 +4824,7 @@ func initRepoWithOriginMain(t *testing.T, dir string) {
 	runCmd(t, dir, "git", "checkout", "-b", "main")
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("init\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	runCmd(t, dir, "git", "add", "README.md")
 	runCmd(t, dir, "git", "commit", "-m", "init")
@@ -4796,6 +4978,7 @@ func rebuildEngineFromEnv(t *testing.T, env *e2eEnv) *workflow.Engine {
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 
@@ -4805,6 +4988,7 @@ func rebuildEngineFromEnv(t *testing.T, env *e2eEnv) *workflow.Engine {
 	logDir, err := os.MkdirTemp("", "sybra-e2e-logs-*")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { keepAgentLogsOnFailure(t, logDir) })
 
@@ -4856,11 +5040,13 @@ func TestE2E_DispatchPREvent_ConcurrentSingleWinner(t *testing.T) {
 	env := setupE2EMulti(t, []string{"success"})
 	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), "test-pr-fix.yaml"), []byte(testPRFixWorkflowYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := env.tasks.Create("dispatch race task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{"status": "in-review"}); err != nil {
 		t.Fatal(err)
@@ -4914,11 +5100,13 @@ func TestE2E_DispatchPREvent_TerminalWorkflowCanBeReplaced(t *testing.T) {
 	env := setupE2E(t, "success")
 	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), "test-auto-merge.yaml"), []byte(testAutoMergeWorkflowYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := env.tasks.Create("dispatch terminal replace", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
 		"status": "in-review",
@@ -4936,6 +5124,7 @@ func TestE2E_DispatchPREvent_TerminalWorkflowCanBeReplaced(t *testing.T) {
 		map[string]string{"pr.issue_kind": string(synapsegithub.PRIssueReadyToMerge)}, nil)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
+		panic("unreachable")
 	}
 	if wfID != "test-auto-merge" {
 		t.Fatalf("wfID = %q, want test-auto-merge", wfID)
@@ -4949,9 +5138,11 @@ func TestE2E_WaitForStatus_MismatchDoesNotAdvance(t *testing.T) {
 	created, err := env.tasks.Create("wait status mismatch", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-wait-status"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 10*time.Second, "workflow waits on plan_wait", func() bool {
@@ -4967,6 +5158,7 @@ func TestE2E_WaitForStatus_MismatchDoesNotAdvance(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if tk.Workflow.CurrentStep != "plan_wait" || tk.Workflow.State != workflow.ExecWaiting {
 		t.Fatalf("workflow advanced on mismatched status: step=%q state=%q", tk.Workflow.CurrentStep, tk.Workflow.State)
@@ -4980,9 +5172,11 @@ func TestE2E_WaitForStatus_ExactAdvancesOnce(t *testing.T) {
 	created, err := env.tasks.Create("wait status exact", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-wait-status"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 10*time.Second, "workflow waits on plan_wait", func() bool {
@@ -4999,6 +5193,7 @@ func TestE2E_WaitForStatus_ExactAdvancesOnce(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	recordsBefore := len(tk.Workflow.StepHistory)
 	// The workflow is already terminal, so HandleStatusChange bails out
@@ -5017,9 +5212,11 @@ func TestE2E_ReuseAgent_FallbackStartsNewWhenDead(t *testing.T) {
 	created, err := env.tasks.Create("reuse agent dead fallback", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-reuse-agent"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 10*time.Second, "phase1 waiting", func() bool {
@@ -5030,6 +5227,7 @@ func TestE2E_ReuseAgent_FallbackStartsNewWhenDead(t *testing.T) {
 	firstAgentID := tk1.AgentRuns[0].AgentID
 	if err := env.agents.StopAgent(firstAgentID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "first agent stopped", func() bool {
 		ag, gErr := env.agents.GetAgent(firstAgentID)
@@ -5098,9 +5296,11 @@ steps:
 			created, err := env.tasks.Create("retry boundary "+tc.description, "", "headless")
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if err := env.startWorkflow(created.ID, "test-retry-boundary"); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			waitFor(t, 30*time.Second, "workflow completes", func() bool {
@@ -5123,9 +5323,11 @@ func TestE2E_ConditionTransitionFailure_FailsWorkflow(t *testing.T) {
 	created, err := env.tasks.Create("transition failure", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-transition-fail"); err == nil {
 		t.Fatal("expected transition resolution error, got nil")
+		panic("unreachable")
 	} else if !strings.Contains(err.Error(), "no matching transition found") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -5133,9 +5335,11 @@ func TestE2E_ConditionTransitionFailure_FailsWorkflow(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if tk.Workflow == nil || tk.Workflow.State != workflow.ExecFailed {
 		t.Fatalf("workflow state = %v, want failed", tk.Workflow)
+		panic("unreachable")
 	}
 }
 
@@ -5155,9 +5359,11 @@ func TestE2E_ProviderCrossUnavailable_FallsBackToDefault(t *testing.T) {
 	created, err := env.tasks.Create("provider fallback", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-provider-fallback"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 20*time.Second, "provider fallback workflow completes", func() bool {
@@ -5167,9 +5373,11 @@ func TestE2E_ProviderCrossUnavailable_FallsBackToDefault(t *testing.T) {
 
 	if _, err := os.Stat(codexArgsLog); err == nil {
 		t.Fatalf("codex args log exists; cross provider should have fallen back to default claude")
+		panic("unreachable")
 	}
 	if _, err := os.Stat(claudeArgsLog); err != nil {
 		t.Fatalf("claude args log missing: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -5190,19 +5398,23 @@ func TestE2E_VerifyCommits_BranchAtBaseQuarantines(t *testing.T) {
 	created, err := env.tasks.Create("verify commits branch at base", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	current, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	worktreePath := filepath.Join(env.worktreesDir, current.DirName())
 	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	initRepoWithOriginMain(t, worktreePath)
 
 	if err := env.startWorkflow(created.ID, "simple-task-plan"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Wait for AgentRoutes to drain, not just for the rearm to land.
@@ -5270,6 +5482,7 @@ func TestE2E_VerifyCommits_AdoptsEquivalentRemoteCommit(t *testing.T) {
 	created, err := env.tasks.Create("verify commits remote race", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	const branch = "feat/verify-commits-race"
 	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{"branch": branch}); err != nil {
@@ -5278,10 +5491,12 @@ func TestE2E_VerifyCommits_AdoptsEquivalentRemoteCommit(t *testing.T) {
 	current, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	worktreePath := filepath.Join(env.worktreesDir, current.DirName())
 	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	initRepoWithOriginMain(t, worktreePath)
 	runCmd(t, worktreePath, "git", "checkout", "-b", branch)
@@ -5314,6 +5529,7 @@ func TestE2E_VerifyCommits_AdoptsEquivalentRemoteCommit(t *testing.T) {
 	tk, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if tk.Status != task.StatusDone {
 		t.Fatalf("status = %q, want done", tk.Status)
@@ -5337,17 +5553,20 @@ func TestE2E_LinkPRAndReview_PrefersExistingTaskPRNumber(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"pr_created"})
 	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), "test-eval-chain.yaml"), []byte(testEvalChainWorkflowYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := env.tasks.Create("pr precedence", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{"pr_number": 7}); err != nil {
 		t.Fatal(err)
 	}
 	if err := env.startWorkflow(created.ID, "test-eval-chain"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 20*time.Second, "workflow completes in-review", func() bool {
@@ -5375,6 +5594,7 @@ func TestE2E_StaleCompletionAfterTaskDelete_NoRecreate(t *testing.T) {
 	created, err := env.tasks.Create("delete during run", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ag, err := env.agents.Run(agent.RunConfig{
@@ -5388,6 +5608,7 @@ func TestE2E_StaleCompletionAfterTaskDelete_NoRecreate(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "manual agent live", func() bool {
 		s := ag.GetState()
@@ -5396,6 +5617,7 @@ func TestE2E_StaleCompletionAfterTaskDelete_NoRecreate(t *testing.T) {
 
 	if err := env.tasks.Delete(created.ID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	env.engine.HandleAgentComplete(created.ID, workflow.AgentCompletion{
 		AgentID:  ag.ID,
@@ -5406,6 +5628,7 @@ func TestE2E_StaleCompletionAfterTaskDelete_NoRecreate(t *testing.T) {
 
 	if _, err := env.tasks.Get(created.ID); err == nil {
 		t.Fatal("task recreated unexpectedly after stale completion")
+		panic("unreachable")
 	}
 	_ = env.agents.StopAgent(ag.ID)
 }
@@ -5636,6 +5859,7 @@ func TestE2E_DispatchVsDirectStart_RaceStable(t *testing.T) {
 	created, err := env.tasks.Create("dispatch/start race", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{"status": "in-review"}); err != nil {
 		t.Fatal(err)
@@ -5667,9 +5891,11 @@ func TestE2E_DispatchVsDirectStart_RaceStable(t *testing.T) {
 
 	if dispatchErr != nil && !errors.Is(dispatchErr, workflow.ErrWorkflowAlreadyActive) {
 		t.Fatalf("dispatch err = %v", dispatchErr)
+		panic("unreachable")
 	}
 	if startErr != nil {
 		t.Fatalf("start err = %v", startErr)
+		panic("unreachable")
 	}
 
 	waitFor(t, 20*time.Second, "final workflow terminal", func() bool {
@@ -5695,9 +5921,11 @@ func TestE2E_StatusChangeAndAgentComplete_RaceSingleRecord(t *testing.T) {
 	created, err := env.tasks.Create("status/complete race", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-status-complete-race"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 10*time.Second, "plan_wait waiting", func() bool {
@@ -5741,9 +5969,11 @@ func TestE2E_StalePriorStepAdvance_DroppedWhileNewStepActive(t *testing.T) {
 	created, err := env.tasks.Create("stale prior", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-stale-prior"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 10*time.Second, "review_gate waiting", func() bool {
@@ -5777,9 +6007,11 @@ func TestE2E_CrossProvider_FlipsFromLatestMixedHistory(t *testing.T) {
 	created, err := env.tasks.Create("cross mixed history", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-cross-mixed"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 20*time.Second, "workflow completes", func() bool {
@@ -5820,6 +6052,7 @@ func TestE2E_CodexRetry_OverloadedThenAuthStopsRetry(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 120*time.Second, "agent stops after auth error", func() bool {
@@ -5855,9 +6088,11 @@ func TestE2E_WaitHuman_ConcurrentDoubleActionSingleWinner(t *testing.T) {
 	created, err := env.tasks.Create("double human action", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-wait-human-concurrent"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 10*time.Second, "gate waiting", func() bool {
@@ -5905,19 +6140,23 @@ func TestE2E_WorktreeDisappearsMidVerify_SkipsGracefully(t *testing.T) {
 	created, err := env.tasks.Create("worktree disappears", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	cur, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wtPath := filepath.Join(env.worktreesDir, cur.DirName())
 	if err := os.MkdirAll(wtPath, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	initRepoWithOriginMain(t, wtPath)
 
 	if err := env.startWorkflow(created.ID, "test-verify-after-status"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "prep waiting", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
@@ -5926,6 +6165,7 @@ func TestE2E_WorktreeDisappearsMidVerify_SkipsGracefully(t *testing.T) {
 
 	if err := os.RemoveAll(wtPath); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	env.engine.HandleStatusChange(created.ID, "go-verify")
 	waitFor(t, 10*time.Second, "workflow completes after missing worktree", func() bool {
@@ -5949,14 +6189,17 @@ func TestE2E_LinkPRAndReview_MalformedHugeOutput_NoFalsePositive(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"malformed_pr_output"})
 	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), "test-eval-chain.yaml"), []byte(testEvalChainWorkflowYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	created, err := env.tasks.Create("malformed pr output", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-eval-chain"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 20*time.Second, "workflow reaches terminal quarantine fallback", func() bool {
@@ -5980,9 +6223,11 @@ func TestE2E_DeletedTask_RaceCallbacks_NoRecreate(t *testing.T) {
 	created, err := env.tasks.Create("delete callback race", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.tasks.Delete(created.ID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	var wg sync.WaitGroup
@@ -6010,9 +6255,11 @@ func TestE2E_DeletedTask_RaceCallbacks_NoRecreate(t *testing.T) {
 
 	if dispatchErr == nil {
 		t.Fatal("expected dispatch error for deleted task, got nil")
+		panic("unreachable")
 	}
 	if _, err := env.tasks.Get(created.ID); err == nil {
 		t.Fatal("task recreated unexpectedly")
+		panic("unreachable")
 	}
 }
 
@@ -6021,6 +6268,7 @@ func TestE2E_ResumeStalled_TightLoopIdempotent(t *testing.T) {
 	created, err := env.tasks.Create("resume tight loop", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wfExec := &workflow.Execution{
 		WorkflowID:  "test-simple",
@@ -6060,9 +6308,11 @@ func TestE2E_WaitForStatus_RepeatedIdenticalEvents_AdvanceOnce(t *testing.T) {
 	created, err := env.tasks.Create("repeat same status", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-wait-status"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "plan_wait waiting", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
@@ -6094,9 +6344,11 @@ func TestE2E_ProviderBinaryFlap_SecondStepFallsBackDeterministically(t *testing.
 	created, err := env.tasks.Create("provider flap", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-provider-flap"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "first waiting", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
@@ -6117,6 +6369,7 @@ func TestE2E_ProviderBinaryFlap_SecondStepFallsBackDeterministically(t *testing.
 
 	if _, err := os.Stat(claudeArgsLog); err == nil {
 		t.Fatalf("claude args log exists; second step should have fallen back to codex")
+		panic("unreachable")
 	}
 	var data []byte
 	waitFor(t, 10*time.Second, "codex args include second-step prompt", func() bool {
@@ -6284,6 +6537,7 @@ func TestE2E_ProviderHealthFailoverAndRecovery(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if ag1.Provider != "codex" {
 		t.Fatalf("provider = %q, want codex failover", ag1.Provider)
@@ -6305,6 +6559,7 @@ func TestE2E_ProviderHealthFailoverAndRecovery(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if ag2.Provider != "claude" {
 		t.Fatalf("provider = %q, want claude after recovery", ag2.Provider)
@@ -6328,6 +6583,7 @@ func TestE2E_RateLimitCooldownWindowCorrectness(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if ag1.Provider != "codex" {
 		t.Fatalf("provider = %q, want codex during cooldown", ag1.Provider)
@@ -6345,6 +6601,7 @@ func TestE2E_RateLimitCooldownWindowCorrectness(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if ag2.Provider != "claude" {
 		t.Fatalf("provider = %q, want claude after cooldown", ag2.Provider)
@@ -6361,6 +6618,7 @@ func TestE2E_OutOfOrderCompletions_IsolatedPerTask(t *testing.T) {
 		created, err := env.tasks.Create(fmt.Sprintf("ooo-%d", i), "", "headless")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		wfExec := &workflow.Execution{
 			WorkflowID:  "test-no-retry-implement",
@@ -6390,6 +6648,7 @@ func TestE2E_OutOfOrderCompletions_IsolatedPerTask(t *testing.T) {
 		cur, err := env.tasks.Get(tk.ID)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if cur.StatusReason != want[tk.ID] {
 			t.Fatalf("task %s status_reason = %q, want %q", tk.ID, cur.StatusReason, want[tk.ID])
@@ -6426,9 +6685,11 @@ func TestE2E_StepHistoryCap_KeepsLatest50(t *testing.T) {
 	created, err := env.tasks.Create("history cap", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-history-cap"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "history gate waiting", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
@@ -6442,6 +6703,7 @@ func TestE2E_StepHistoryCap_KeepsLatest50(t *testing.T) {
 		}
 		if err := env.engine.HandleHumanAction(created.ID, action, nil); err != nil {
 			t.Fatalf("action %d failed: %v", i, err)
+			panic("unreachable")
 		}
 	}
 	tk, _ := env.tasks.Get(created.ID)
@@ -6457,9 +6719,11 @@ func TestE2E_WorkflowReload_PinnedExecutionKeepsOriginalDefinition(t *testing.T)
 	created, err := env.tasks.Create("reload live", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-reload-live"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "reload gate waiting", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
@@ -6469,6 +6733,7 @@ func TestE2E_WorkflowReload_PinnedExecutionKeepsOriginalDefinition(t *testing.T)
 	writeWorkflowFixture(t, env, "test-reload-live", testReloadWorkflowYAMLUpdated)
 	if err := env.engine.HandleHumanAction(created.ID, "approve", nil); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "reload workflow terminal", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
@@ -6487,9 +6752,11 @@ func TestE2E_StatusHookStorm_NoDuplicateAdvance(t *testing.T) {
 	created, err := env.tasks.Create("status storm", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-wait-status"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "storm waiting", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
@@ -6525,6 +6792,7 @@ func TestE2E_StartWorkflowWithMalformedVars_NoPanic(t *testing.T) {
 	created, err := env.tasks.Create("malformed vars", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	vars := map[string]string{
 		"odd:key": strings.Repeat("X", 4096),
@@ -6533,6 +6801,7 @@ func TestE2E_StartWorkflowWithMalformedVars_NoPanic(t *testing.T) {
 	}
 	if err := env.engine.StartWorkflowWithVars(created.ID, "test-vars", vars); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "vars workflow complete", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
@@ -6550,9 +6819,11 @@ func TestE2E_CrossDefaultEmptyProvider_ResolvesDeterministically(t *testing.T) {
 	created, err := env.tasks.Create("cross default empty", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-cross-default"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "cross default completed", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
@@ -6577,14 +6848,17 @@ func TestE2E_VerifyCommits_CanceledContext_SkipsWithGitError(t *testing.T) {
 	created, err := env.tasks.Create("verify canceled ctx", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	cur, err := env.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wtPath := filepath.Join(env.worktreesDir, cur.DirName())
 	if err := os.MkdirAll(wtPath, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	initRepoWithOriginMain(t, wtPath)
 
@@ -6594,6 +6868,7 @@ func TestE2E_VerifyCommits_CanceledContext_SkipsWithGitError(t *testing.T) {
 
 	if err := env.startWorkflow(created.ID, "test-verify-only"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tk, _ := env.tasks.Get(created.ID)
 	var out string
@@ -6611,6 +6886,7 @@ func TestE2E_LinkPRAndReview_GHAmbiguous_NoAutoLink(t *testing.T) {
 	env := setupE2EMultiProvider(t, "claude", []string{"success"})
 	if err := os.WriteFile(filepath.Join(env.wfStore.Dir(), "test-eval-chain.yaml"), []byte(testEvalChainWorkflowYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	bin := stageProviderPath(t, "claude", "sybra-cli")
@@ -6618,12 +6894,14 @@ func TestE2E_LinkPRAndReview_GHAmbiguous_NoAutoLink(t *testing.T) {
 	script := "#!/bin/sh\nprintf '[{\"number\":1},{\"number\":2}]'\n"
 	if err := os.WriteFile(gh, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 
 	created, err := env.tasks.Create("gh ambiguous", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	branch := "sybra/" + created.ID
 	projectID := "test-org/test-repo"
@@ -6635,6 +6913,7 @@ func TestE2E_LinkPRAndReview_GHAmbiguous_NoAutoLink(t *testing.T) {
 	}
 	if err := env.startWorkflow(created.ID, "test-eval-chain"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 20*time.Second, "gh ambiguous workflow reaches terminal quarantine", func() bool {
@@ -6675,6 +6954,7 @@ func TestE2E_InteractivePromptQueuePressure_NoDropOrCrash(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "agent live for pressure", func() bool {
 		s := ag.GetState()
@@ -6721,6 +7001,7 @@ func TestE2E_InteractivePromptQueuePressure_NoDropOrCrash(t *testing.T) {
 	}
 	if err := env.agents.StopAgent(ag.ID); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "pressure agent stopped", func() bool {
 		got, gErr := env.agents.GetAgent(ag.ID)
@@ -6733,6 +7014,7 @@ func TestE2E_RestartSimulation_PersistedWaitingResumesOnce(t *testing.T) {
 	created, err := env.tasks.Create("restart simulation", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wfExec := &workflow.Execution{
 		WorkflowID:  "test-simple",
@@ -6820,9 +7102,11 @@ func TestE2E_RestartSimulation_PinnedDefinitionUsesOriginalWhileNewTaskUsesLates
 	original, err := env.tasks.Create("restart drift original", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(original.ID, "test-restart-drift"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "original task waits at gate", func() bool {
 		tk, gErr := env.tasks.Get(original.ID)
@@ -6833,6 +7117,7 @@ func TestE2E_RestartSimulation_PinnedDefinitionUsesOriginalWhileNewTaskUsesLates
 	restored := rebuildEngineFromEnv(t, env)
 	if err := restored.HandleHumanAction(original.ID, "approve", nil); err != nil {
 		t.Fatalf("HandleHumanAction original: %v", err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "original task follows pinned v1", func() bool {
 		tk, gErr := env.tasks.Get(original.ID)
@@ -6846,6 +7131,7 @@ func TestE2E_RestartSimulation_PinnedDefinitionUsesOriginalWhileNewTaskUsesLates
 	latest, err := env.tasks.Create("restart drift latest", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := restored.StartWorkflowWithVars(latest.ID, "test-restart-drift", map[string]string{
 		workflow.WorkflowVarDir: env.agentDir,
@@ -6858,6 +7144,7 @@ func TestE2E_RestartSimulation_PinnedDefinitionUsesOriginalWhileNewTaskUsesLates
 	})
 	if err := restored.HandleHumanAction(latest.ID, "approve", nil); err != nil {
 		t.Fatalf("HandleHumanAction latest: %v", err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "latest task follows updated v2", func() bool {
 		tk, gErr := env.tasks.Get(latest.ID)
@@ -6887,6 +7174,7 @@ func TestE2E_ProviderUnhealthy_NoFailoverReturnsError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected unhealthy provider error, got nil")
+		panic("unreachable")
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "unhealthy") {
 		t.Fatalf("err = %v, want unhealthy error", err)
@@ -6900,9 +7188,11 @@ func TestE2E_WorkflowReload_CorruptFileKeepsWaitingState(t *testing.T) {
 	created, err := env.tasks.Create("reload corrupt", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-reload-live"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "reload gate waiting", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
@@ -6912,11 +7202,13 @@ func TestE2E_WorkflowReload_CorruptFileKeepsWaitingState(t *testing.T) {
 	corrupt := filepath.Join(env.wfStore.Dir(), "test-reload-live.yaml")
 	if err := os.WriteFile(corrupt, []byte("id: test-reload-live\nsteps:\n  - : bad"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	err = env.engine.HandleHumanAction(created.ID, "approve", nil)
 	if err == nil {
 		t.Fatal("expected parse error from corrupted workflow file")
+		panic("unreachable")
 	}
 
 	tk, _ := env.tasks.Get(created.ID)
@@ -6932,9 +7224,11 @@ func TestE2E_StatusChange_AfterTerminal_NoMutation(t *testing.T) {
 	created, err := env.tasks.Create("terminal status noop", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-wait-status"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	waitFor(t, 10*time.Second, "waiting on plan_wait", func() bool {
 		tk, gErr := env.tasks.Get(created.ID)
@@ -6975,6 +7269,7 @@ func TestE2E_EnsurePRClosesIssue_EditFailure_Quarantines(t *testing.T) {
 	created, err := env.tasks.Create("ensure pr edit fail", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
 		"project_id": "owner/repo",
@@ -6985,6 +7280,7 @@ func TestE2E_EnsurePRClosesIssue_EditFailure_Quarantines(t *testing.T) {
 	}
 	if err := env.startWorkflow(created.ID, "test-ensure-pr"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 10*time.Second, "ensure step reached terminal quarantine", func() bool {
@@ -7029,6 +7325,7 @@ func TestE2E_EnsurePRClosesIssue_AlreadyLinked_SkipsEdit(t *testing.T) {
 	created, err := env.tasks.Create("ensure pr already linked", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
 		"project_id": "owner/repo",
@@ -7040,6 +7337,7 @@ func TestE2E_EnsurePRClosesIssue_AlreadyLinked_SkipsEdit(t *testing.T) {
 	}
 	if err := env.startWorkflow(created.ID, "test-ensure-pr"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 10*time.Second, "ensure already-linked completed", func() bool {
@@ -7068,12 +7366,14 @@ func TestE2E_Evaluate_LateGHSinglePR_FlipsInReview(t *testing.T) {
 	script := "#!/bin/sh\nprintf '[{\"number\":321}]'\n"
 	if err := os.WriteFile(gh, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 
 	created, err := env.tasks.Create("evaluate late gh", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
 		"project_id": "owner/repo",
@@ -7083,6 +7383,7 @@ func TestE2E_Evaluate_LateGHSinglePR_FlipsInReview(t *testing.T) {
 	}
 	if err := env.startWorkflow(created.ID, "test-evaluate-late-pr"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 10*time.Second, "evaluate late-gh completed", func() bool {
@@ -7106,9 +7407,11 @@ func TestE2E_LinkPRAndReview_ShortRefFromHistory_FlipsInReview(t *testing.T) {
 	created, err := env.tasks.Create("link from short ref", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := env.startWorkflow(created.ID, "test-shell-link-pr"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 10*time.Second, "link short ref completed", func() bool {
@@ -7143,6 +7446,7 @@ func TestE2E_EnsurePRClosesIssue_CrossRepoIssue_SkipsEdit(t *testing.T) {
 	created, err := env.tasks.Create("ensure cross repo skip", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := env.tasks.UpdateMap(created.ID, map[string]any{
 		"project_id": "owner/repo",
@@ -7154,6 +7458,7 @@ func TestE2E_EnsurePRClosesIssue_CrossRepoIssue_SkipsEdit(t *testing.T) {
 	}
 	if err := env.startWorkflow(created.ID, "test-ensure-pr"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	waitFor(t, 10*time.Second, "ensure cross-repo completed", func() bool {

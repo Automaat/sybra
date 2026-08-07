@@ -62,6 +62,7 @@ func TestSearchQueriesFollowCursor(t *testing.T) {
 			got, err := tt.run(e)
 			if err != nil {
 				t.Fatalf("search: %v", err)
+				panic("unreachable")
 			}
 			if got != 2 || e.calls != 2 {
 				t.Fatalf("results/calls = %d/%d, want 2/2", got, e.calls)
@@ -78,6 +79,7 @@ func TestSearchQueriesRejectMissingNextCursor(t *testing.T) {
 	e := &fakeExecer{output: []byte(`{"data":{"search":{"pageInfo":{"hasNextPage":true,"endCursor":""},"nodes":[]}}}`)}
 	if _, err := searchIssuesWith(e, "is:issue"); err == nil || !strings.Contains(err.Error(), "without cursor") {
 		t.Fatalf("error = %v, want missing cursor refusal", err)
+		panic("unreachable")
 	}
 }
 

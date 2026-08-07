@@ -88,6 +88,7 @@ func TestFetchReviewsWith_success(t *testing.T) {
 	summary, err := fetchReviewsWith(fe)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if fe.calls != 3 {
 		t.Errorf("calls = %d, want 3", fe.calls)
@@ -122,6 +123,7 @@ func TestFetchReviewSplitFnsOnlyRunTheirOwnSearchLegs(t *testing.T) {
 		prs, err := fetchCreatedByMePRsWith(fe)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+			panic("unreachable")
 		}
 		if len(prs) != 0 {
 			t.Fatalf("created prs len = %d, want 0", len(prs))
@@ -137,6 +139,7 @@ func TestFetchReviewSplitFnsOnlyRunTheirOwnSearchLegs(t *testing.T) {
 		summary, err := fetchAssignedReviewSummaryWith(fe)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+			panic("unreachable")
 		}
 		if len(summary.ReviewRequested) != 0 || len(summary.ReviewedByMe) != 0 {
 			t.Fatalf("summary = %+v, want both assigned slices empty", summary)
@@ -194,6 +197,7 @@ func TestFetchReviewsWith_failedCheckRunConclusion(t *testing.T) {
 	summary, err := fetchReviewsWith(fe)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if got := summary.CreatedByMe[0].CIStatus; got != "FAILURE" {
 		t.Errorf("CIStatus = %q, want FAILURE", got)
@@ -248,6 +252,7 @@ func TestFetchReviewsWith_actionableReviewThreads(t *testing.T) {
 	summary, err := fetchReviewsWith(fe)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	pr := summary.CreatedByMe[0]
 	if pr.UnresolvedCount != 1 {
@@ -275,6 +280,7 @@ func TestFetchReviewSearchWith_queryRequestsActionableThreadSignalsAndRunAttempt
 
 	if _, err := fetchReviewSearchWith(fe, "is:pr is:open author:@me"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 
 	var query string
@@ -304,6 +310,7 @@ func TestFetchReviewsWith_graphqlError(t *testing.T) {
 	_, err := fetchReviewsWith(fe)
 	if err == nil {
 		t.Fatal("expected error")
+		panic("unreachable")
 	}
 }
 
@@ -316,6 +323,7 @@ func TestFetchReviewsWith_firstCallFails(t *testing.T) {
 	_, err := fetchReviewsWith(fe)
 	if err == nil {
 		t.Fatal("expected error")
+		panic("unreachable")
 	}
 }
 
@@ -325,6 +333,7 @@ func TestHasPendingReview_pending(t *testing.T) {
 	got, err := hasPendingReviewWith(fe, "owner/repo", 42)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if !got {
 		t.Error("expected pending review, got false")
@@ -337,6 +346,7 @@ func TestHasPendingReview_noPending(t *testing.T) {
 	got, err := hasPendingReviewWith(fe, "owner/repo", 42)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if got {
 		t.Error("expected no pending review, got true")
@@ -349,6 +359,7 @@ func TestHasPendingReview_empty(t *testing.T) {
 	got, err := hasPendingReviewWith(fe, "owner/repo", 42)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if got {
 		t.Error("expected no pending review, got true")
@@ -361,6 +372,7 @@ func TestHasPendingReview_error(t *testing.T) {
 	_, err := hasPendingReviewWith(fe, "owner/repo", 42)
 	if err == nil {
 		t.Fatal("expected error")
+		panic("unreachable")
 	}
 }
 
@@ -411,9 +423,11 @@ func TestFetchPRsForMonitorWith_batchesIntoOneCall(t *testing.T) {
 	}
 	if results[0].Err != nil || !results[0].Open || results[0].PR.Title != "one" {
 		t.Fatalf("results[0] = %+v", results[0])
+		panic("unreachable")
 	}
 	if results[1].Err != nil || results[1].Open {
 		t.Fatalf("results[1] = %+v, want closed PR with no error", results[1])
+		panic("unreachable")
 	}
 }
 
@@ -442,6 +456,7 @@ func TestFetchPRsForMonitorWith_queryRequestsRunAttempts(t *testing.T) {
 	results := fetchPRsForMonitorWith(fe, []PRRef{{Repo: "o/r", Number: 1}})
 	if len(results) != 1 || results[0].Err != nil {
 		t.Fatalf("results = %+v, want successful monitor fetch", results)
+		panic("unreachable")
 	}
 
 	var query string
@@ -513,6 +528,7 @@ func TestFetchPRsForMonitorWith_flakyRerunFromGraphQL(t *testing.T) {
 	results := fetchPRsForMonitorWith(fe, []PRRef{{Repo: "o/r", Number: 1}})
 	if len(results) != 1 || results[0].Err != nil || !results[0].Open {
 		t.Fatalf("results = %+v, want open PR with no fetch error", results)
+		panic("unreachable")
 	}
 	pr := results[0].PR
 	if pr.CIStatus != "FAILURE" {
@@ -552,6 +568,7 @@ func TestFetchPRsForMonitorWith_graphqlError(t *testing.T) {
 	results := fetchPRsForMonitorWith(fe, []PRRef{{Repo: "o/r", Number: 1}})
 	if len(results) != 1 || results[0].Err == nil {
 		t.Fatalf("results = %+v, want single error result", results)
+		panic("unreachable")
 	}
 }
 
@@ -564,6 +581,7 @@ func TestFetchPRsForMonitorWith_invalidRefSkipsQuery(t *testing.T) {
 	}
 	if len(results) != 1 || results[0].Err == nil {
 		t.Fatalf("results = %+v, want single error result", results)
+		panic("unreachable")
 	}
 }
 
@@ -607,9 +625,11 @@ func TestFetchPRBatchWith_partialError(t *testing.T) {
 	}
 	if results[0].Err != nil || !results[0].Open || results[0].PR.Title != "one" {
 		t.Fatalf("results[0] = %+v, want valid open PR unaffected by repo1's error", results[0])
+		panic("unreachable")
 	}
 	if results[1].Err == nil {
 		t.Fatalf("results[1] = %+v, want error for the aliased PR that GraphQL reported", results[1])
+		panic("unreachable")
 	}
 }
 
@@ -623,6 +643,7 @@ func TestFetchPRBatchWith_globalErrorFailsWholeBatch(t *testing.T) {
 	results := fetchPRsForMonitorWith(fe, refs)
 	if len(results) != 2 || results[0].Err == nil || results[1].Err == nil {
 		t.Fatalf("results = %+v, want both refs to error", results)
+		panic("unreachable")
 	}
 }
 
@@ -659,6 +680,7 @@ func TestFetchPRBatchWith_viewerErrorFailsWholeBatch(t *testing.T) {
 	}
 	if results[0].Err == nil {
 		t.Fatalf("results[0] = %+v, want an error for the viewer-scoped failure, not a silently reported open PR", results[0])
+		panic("unreachable")
 	}
 }
 

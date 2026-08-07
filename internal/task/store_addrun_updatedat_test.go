@@ -10,10 +10,12 @@ func TestAddRunBumpsUpdatedAtConsistently(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	created, err := store.Create("t", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	before := created.UpdatedAt
 
@@ -26,6 +28,7 @@ func TestAddRunBumpsUpdatedAtConsistently(t *testing.T) {
 	fromDisk, err := store.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !fromDisk.UpdatedAt.After(before) {
 		t.Errorf("AddRunWithStatus did not advance UpdatedAt on disk: before=%v after=%v", before, fromDisk.UpdatedAt)
@@ -37,6 +40,7 @@ func TestAddRunBumpsUpdatedAtConsistently(t *testing.T) {
 	listed, err := store.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	var cached Task
 	for i := range listed {
@@ -54,10 +58,12 @@ func TestUpdateRunBumpsUpdatedAt(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	created, err := store.Create("t", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := store.AddRun(created.ID, AgentRun{AgentID: "a1", State: "running", StartedAt: time.Now()}); err != nil {
 		t.Fatal(err)

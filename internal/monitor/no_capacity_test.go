@@ -77,6 +77,7 @@ func TestDetectNoProviderCapacity(t *testing.T) {
 			}
 			if (found != nil) != tc.want {
 				t.Fatalf("no_provider_capacity raised = %v, want %v", found != nil, tc.want)
+				panic("unreachable")
 			}
 			if found == nil {
 				return

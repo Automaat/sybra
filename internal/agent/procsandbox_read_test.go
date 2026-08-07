@@ -43,6 +43,7 @@ func TestResolveSandboxReadRoots_GrantsToolchainAndEveryWriteRoot(t *testing.T) 
 		canon, err := canonicalizeRoot(want)
 		if err != nil {
 			t.Fatalf("canonicalizeRoot(%q): %v", want, err)
+			panic("unreachable")
 		}
 		if !slices.Contains(roots, canon) {
 			t.Errorf("write root %q missing from read allowlist %v", canon, roots)
@@ -74,6 +75,7 @@ func TestResolveSandboxReadRoots_BoardOnlyForMonitor(t *testing.T) {
 	board, err := canonicalizeRoot(board)
 	if err != nil {
 		t.Fatalf("canonicalizeRoot: %v", err)
+		panic("unreachable")
 	}
 
 	m := newReadModeManager("enforce")
@@ -97,6 +99,7 @@ func TestResolveSandboxReadRoots_GrantsReadOnlyDir(t *testing.T) {
 	canon, err := canonicalizeRoot(spec.readOnlyDir)
 	if err != nil {
 		t.Fatalf("canonicalizeRoot: %v", err)
+		panic("unreachable")
 	}
 
 	roots := m.resolveSandboxReadRoots(&RunConfig{Role: RoleHumanReview, sandbox: spec})
@@ -136,6 +139,7 @@ func TestApplySandboxReadMode_PostureGatesRestriction(t *testing.T) {
 
 			if err := m.applySandboxReadMode(cfg); err != nil {
 				t.Fatalf("applySandboxReadMode: %v", err)
+				panic("unreachable")
 			}
 			if got := len(cfg.sandbox.readRoots) > 0; got != tc.wantRoots {
 				t.Fatalf("readRoots populated = %v, want %v (roots: %v)", got, tc.wantRoots, cfg.sandbox.readRoots)
@@ -150,6 +154,7 @@ func TestApplySandboxReadMode_RunConfigOverridesManagerDefault(t *testing.T) {
 
 	if err := m.applySandboxReadMode(cfg); err != nil {
 		t.Fatalf("applySandboxReadMode: %v", err)
+		panic("unreachable")
 	}
 	if len(cfg.sandbox.readRoots) == 0 {
 		t.Fatal("per-run enforce did not override the manager's off default")
@@ -181,10 +186,12 @@ func TestResolveSandboxReadRoots_KeepsSymlinkSpellingAndTarget(t *testing.T) {
 	target := filepath.Join(base, "target")
 	if err := os.MkdirAll(target, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
+		panic("unreachable")
 	}
 	link := filepath.Join(base, "link")
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatalf("symlink: %v", err)
+		panic("unreachable")
 	}
 
 	m := newReadModeManager("enforce")
@@ -195,6 +202,7 @@ func TestResolveSandboxReadRoots_KeepsSymlinkSpellingAndTarget(t *testing.T) {
 	canonLink, err := canonicalizeRoot(link)
 	if err != nil {
 		t.Fatalf("canonicalizeRoot: %v", err)
+		panic("unreachable")
 	}
 	// Granting only the resolved target leaves the link itself out of the mount namespace; on the deploy host /bin is such a link and every "#!/bin/sh" shebang then fails with ENOENT.
 	if !slices.Contains(roots, link) {

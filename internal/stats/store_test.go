@@ -19,6 +19,7 @@ func TestNewStoreEmpty(t *testing.T) {
 	s, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if s.Len() != 0 {
 		t.Fatalf("expected 0 runs, got %d", s.Len())
@@ -32,6 +33,7 @@ func TestRecordAndQuery(t *testing.T) {
 	s, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	now := time.Now()
@@ -62,6 +64,7 @@ func TestRecordAndQuery(t *testing.T) {
 	for _, r := range runs {
 		if err := s.Record(r); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 	}
 
@@ -143,6 +146,7 @@ func TestPersistence(t *testing.T) {
 	s, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	r := RunRecord{
@@ -152,17 +156,20 @@ func TestPersistence(t *testing.T) {
 	}
 	if err := s.Record(r); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Verify file exists
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal("stats file not created")
+		panic("unreachable")
 	}
 
 	// Reload from disk
 	s2, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if s2.Len() != 1 {
 		t.Fatalf("after reload: expected 1 run, got %d", s2.Len())
@@ -179,6 +186,7 @@ func TestRecord_PersistsAppendOnlyNDJSON(t *testing.T) {
 	s, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := s.Record(RunRecord{ID: "first", Timestamp: time.Now()}); err != nil {
 		t.Fatal(err)
@@ -186,6 +194,7 @@ func TestRecord_PersistsAppendOnlyNDJSON(t *testing.T) {
 	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := s.Record(RunRecord{ID: "second", Timestamp: time.Now()}); err != nil {
 		t.Fatal(err)
@@ -193,6 +202,7 @@ func TestRecord_PersistsAppendOnlyNDJSON(t *testing.T) {
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !bytes.HasPrefix(after, before) {
 		t.Fatal("second Record rewrote existing NDJSON history instead of appending")
@@ -204,6 +214,7 @@ func TestRecord_PersistsAppendOnlyNDJSON(t *testing.T) {
 	var second RunRecord
 	if err := json.Unmarshal(lines[1], &second); err != nil {
 		t.Fatalf("parse second NDJSON line: %v", err)
+		panic("unreachable")
 	}
 	if second.ID != "second" {
 		t.Fatalf("second NDJSON ID = %q, want second", second.ID)
@@ -215,13 +226,16 @@ func TestNewStore_MigratesLegacyJSONArray(t *testing.T) {
 	legacy, err := json.Marshal([]RunRecord{{ID: "legacy", Timestamp: time.Now()}})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(path, legacy, 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	s, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if s.Len() != 1 {
 		t.Fatalf("Len after legacy migration = %d, want 1", s.Len())
@@ -229,6 +243,7 @@ func TestNewStore_MigratesLegacyJSONArray(t *testing.T) {
 	migrated, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if bytes.HasPrefix(bytes.TrimSpace(migrated), []byte{'['}) {
 		t.Fatal("legacy JSON array was not migrated to NDJSON")
@@ -239,6 +254,7 @@ func TestNewStore_MigratesLegacyJSONArray(t *testing.T) {
 	reloaded, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if reloaded.Len() != 2 {
 		t.Fatalf("Len after legacy migration and append = %d, want 2", reloaded.Len())
@@ -258,10 +274,12 @@ func TestRecordCrossProcessSimulatesConcurrentWriters(t *testing.T) {
 	s1, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	s2, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := s1.Record(RunRecord{ID: "a1", TaskID: "t1", Timestamp: time.Now()}); err != nil {
@@ -277,6 +295,7 @@ func TestRecordCrossProcessSimulatesConcurrentWriters(t *testing.T) {
 	s3, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if s3.Len() != 2 {
 		t.Fatalf("Len() = %d, want 2 — a run was dropped by concurrent cross-process writes", s3.Len())
@@ -288,6 +307,7 @@ func TestNewStore_DiscardsIncompleteFinalNDJSONRecord(t *testing.T) {
 	valid, err := marshalNDJSON([]RunRecord{{ID: "valid", Timestamp: time.Now()}})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(path, append(valid, []byte(`{"id":"truncated"`)...), 0o600); err != nil {
 		t.Fatal(err)
@@ -295,6 +315,7 @@ func TestNewStore_DiscardsIncompleteFinalNDJSONRecord(t *testing.T) {
 	s, err := NewStore(path)
 	if err != nil {
 		t.Fatalf("NewStore with incomplete final record: %v", err)
+		panic("unreachable")
 	}
 	if s.Len() != 1 {
 		t.Fatalf("Len after incomplete-tail recovery = %d, want 1", s.Len())
@@ -302,6 +323,7 @@ func TestNewStore_DiscardsIncompleteFinalNDJSONRecord(t *testing.T) {
 	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(got, valid) {
 		t.Fatalf("recovered file = %q, want %q", got, valid)
@@ -315,6 +337,7 @@ func TestNewStore_RejectsMalformedCompleteNDJSONRecord(t *testing.T) {
 	}
 	if _, err := NewStore(path); err == nil {
 		t.Fatal("NewStore accepted a malformed newline-terminated record")
+		panic("unreachable")
 	}
 }
 
@@ -323,6 +346,7 @@ func TestStore_SyncReportsActualLineForMalformedAppend(t *testing.T) {
 	s, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := s.Record(RunRecord{ID: "valid", Timestamp: time.Now()}); err != nil {
 		t.Fatal(err)
@@ -330,22 +354,26 @@ func TestStore_SyncReportsActualLineForMalformedAppend(t *testing.T) {
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := f.WriteString("{not json}\n"); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	unlock, err := fsutil.LockFileWithin(path, storeLockTimeout)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer func() { _ = unlock() }()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.syncLocked(); err == nil || !strings.Contains(err.Error(), "line 2") {
 		t.Fatalf("syncLocked error = %v, want line 2", err)
+		panic("unreachable")
 	}
 }
 
@@ -356,6 +384,7 @@ func TestReasoningTokensPersistence(t *testing.T) {
 	s, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := s.Record(RunRecord{
@@ -369,6 +398,7 @@ func TestReasoningTokensPersistence(t *testing.T) {
 	s2, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	resp := s2.Query()
 	if len(resp.RecentRuns) != 1 {
@@ -389,6 +419,7 @@ func TestQueryEmptyStore(t *testing.T) {
 	s, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	resp := s.Query()

@@ -25,6 +25,7 @@ func TestApplyAgentGuardrails_ReappliesCommitSigning(t *testing.T) {
 	contents := "[user]\n\tname = Test\n\temail = t@example.invalid\n\tsigningkey = DEADBEEFDEADBEEF\n"
 	if err := os.WriteFile(cfgPath, []byte(contents), 0o600); err != nil {
 		t.Fatalf("write git config: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", cfgPath)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -56,6 +57,7 @@ func TestCommitSigningHook_DrivesBothSinks(t *testing.T) {
 	contents := "[user]\n\tname = Test\n\temail = t@example.invalid\n\tsigningkey = DEADBEEFDEADBEEF\n"
 	if err := os.WriteFile(cfgPath, []byte(contents), 0o600); err != nil {
 		t.Fatalf("write git config: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", cfgPath)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -71,6 +73,7 @@ func TestCommitSigningHook_DrivesBothSinks(t *testing.T) {
 	projStore, err := project.NewStore(t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatalf("new project store: %v", err)
+		panic("unreachable")
 	}
 	reviewer := &review.Handler{}
 	skillsDir := t.TempDir()
@@ -96,6 +99,7 @@ func TestCommitSigningHook_DrivesBothSinks(t *testing.T) {
 	baseline, err := os.ReadFile(skill)
 	if err != nil {
 		t.Fatalf("seed synced skill: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(baseline), "-s -S") {
 		t.Fatalf("precondition: seeded skill lacks -s -S, assertion would be vacuous:\n%s", skill)
@@ -120,6 +124,7 @@ func TestCommitSigningHook_DrivesBothSinks(t *testing.T) {
 	body, err := os.ReadFile(skill)
 	if err != nil {
 		t.Fatalf("read synced skill: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(string(body), "-s -S") {
 		t.Errorf("synced skill still instructs -S after reload to never:\n%s", skill)
@@ -133,6 +138,7 @@ func repoRootForTest(t *testing.T) string {
 	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
+		panic("unreachable")
 	}
 	for range 6 {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {

@@ -18,6 +18,7 @@ func createTaskForProgress(t *testing.T, title string) string {
 	var created task.Task
 	if err := json.Unmarshal([]byte(out), &created); err != nil {
 		t.Fatalf("unmarshal created: %v (%s)", err, out)
+		panic("unreachable")
 	}
 	return created.ID
 }
@@ -33,6 +34,7 @@ func TestProgressAddAndList(t *testing.T) {
 	var added artifact.ProgressEntry
 	if err := json.Unmarshal([]byte(out), &added); err != nil {
 		t.Fatalf("unmarshal added: %v (%s)", err, out)
+		panic("unreachable")
 	}
 	if added.Kind != "decision" || added.Message != "chose headless" || added.Ts.IsZero() {
 		t.Fatalf("added = %+v", added)
@@ -45,6 +47,7 @@ func TestProgressAddAndList(t *testing.T) {
 	var entries []artifact.ProgressEntry
 	if err := json.Unmarshal([]byte(out), &entries); err != nil {
 		t.Fatalf("unmarshal list: %v (%s)", err, out)
+		panic("unreachable")
 	}
 	if len(entries) != 1 || entries[0].Message != "chose headless" {
 		t.Fatalf("list = %+v", entries)
@@ -57,6 +60,7 @@ func TestProgressAddAndList(t *testing.T) {
 	var got task.Task
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("unmarshal get: %v (%s)", err, out)
+		panic("unreachable")
 	}
 	if strings.Contains(got.Body, "chose headless") {
 		t.Fatalf("progress leaked into task body: %q", got.Body)
@@ -105,6 +109,7 @@ func TestUpdateWritesDecisionProgressForHumanRequiredUnblock(t *testing.T) {
 	var entries []artifact.ProgressEntry
 	if err := json.Unmarshal([]byte(out), &entries); err != nil {
 		t.Fatalf("unmarshal list: %v (%s)", err, out)
+		panic("unreachable")
 	}
 	if len(entries) != 1 {
 		t.Fatalf("entries = %+v, want one decision entry", entries)
@@ -141,6 +146,7 @@ func TestReopenWritesDecisionProgressForHumanRequiredTask(t *testing.T) {
 	var entries []artifact.ProgressEntry
 	if err := json.Unmarshal([]byte(out), &entries); err != nil {
 		t.Fatalf("unmarshal list: %v (%s)", err, out)
+		panic("unreachable")
 	}
 	if len(entries) != 1 {
 		t.Fatalf("entries = %+v, want one decision entry", entries)

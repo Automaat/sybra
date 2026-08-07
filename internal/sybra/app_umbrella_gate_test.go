@@ -42,6 +42,7 @@ func mkTracker(t *testing.T, m *task.Manager, umb string, maxPar int) task.Task 
 	})
 	if err != nil {
 		t.Fatalf("create tracker: %v", err)
+		panic("unreachable")
 	}
 	return tk
 }
@@ -114,6 +115,7 @@ func TestReleaseUnblockedChildren_StuckChildDoesNotConsumeParallelSlot(t *testin
 	})
 	if err != nil {
 		t.Fatalf("create stuck child: %v", err)
+		panic("unreachable")
 	}
 	ready := mkChild(t, m, "ready", "Automaat/sybra#2", umb, nil, task.StatusTodo)
 
@@ -147,6 +149,7 @@ func TestReleaseUnblockedChildren_RetryableWatchdogStopKeepsTrackerInProgress(t 
 	})
 	if err != nil {
 		t.Fatalf("create stopped child: %v", err)
+		panic("unreachable")
 	}
 	ready := mkChild(t, m, "ready", "Automaat/sybra#2", umb, nil, task.StatusTodo)
 
@@ -184,6 +187,7 @@ func TestReleaseUnblockedChildren_NonGatedBlockedChildEscalates(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create blocked child: %v", err)
+		panic("unreachable")
 	}
 	dependent := mkChild(t, m, "dependent", "Automaat/sybra#2", umb, []string{"Automaat/sybra#1"}, task.StatusBlocked)
 
@@ -226,6 +230,7 @@ func TestReleaseUnblockedChildren_WatchdogExhaustedBlockedChildNotReleased(t *te
 	})
 	if err != nil {
 		t.Fatalf("create stalled child: %v", err)
+		panic("unreachable")
 	}
 	if _, err := m.Update(stalled.ID, task.Update{
 		Status:       task.Ptr(task.StatusBlocked),
@@ -575,6 +580,7 @@ func TestReleaseUnblockedChildren_ExpandFailingTrackerNeverAutoCloses(t *testing
 	})
 	if err != nil {
 		t.Fatalf("create failure tracker: %v", err)
+		panic("unreachable")
 	}
 
 	app.releaseUnblockedChildren(context.Background())
@@ -749,6 +755,7 @@ func newUmbrellaGateApp(t *testing.T) (*App, *task.Manager) {
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, task.EmitterFunc(func(string, any) {}))
 	app := &App{tasks: tasks, logger: slog.New(slog.DiscardHandler), umbrellaRecoveryInFlight: make(map[string]bool)}
@@ -773,6 +780,7 @@ func mkChild(t *testing.T, m *task.Manager, title, issue, umb string, deps []str
 	tk, err := m.CreateFull(title, "", task.AgentModeHeadless, init)
 	if err != nil {
 		t.Fatalf("CreateFull(%s): %v", title, err)
+		panic("unreachable")
 	}
 	return tk
 }
@@ -787,6 +795,7 @@ func mustTask(t *testing.T, m *task.Manager, id string) task.Task {
 	tk, err := m.Get(id)
 	if err != nil {
 		t.Fatalf("Get(%s): %v", id, err)
+		panic("unreachable")
 	}
 	return tk
 }
@@ -803,6 +812,7 @@ func TestReleaseUnblockedChildren_ReleasesRootWithNoDeps(t *testing.T) {
 	released, err := m.Get(root.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if released.Status != task.StatusTodo {
 		t.Fatalf("root status = %q, want %q", released.Status, task.StatusTodo)
@@ -835,6 +845,7 @@ func TestReleaseUnblockedChildren_HoldsOnCrossProgramBodyRef(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("CreateFull: %v", err)
+		panic("unreachable")
 	}
 
 	app.releaseUnblockedChildren(context.Background())
@@ -1194,6 +1205,7 @@ func TestReleaseUnblockedChildren_UnknownConditionKindFailsClosed(t *testing.T) 
 	child.DependsOnConditions = []task.DepCondition{{Ref: dep.Issue, Kind: "pr-merged", Value: "x"}}
 	if _, _, err := m.Put(child); err != nil {
 		t.Fatalf("Put: %v", err)
+		panic("unreachable")
 	}
 
 	app.releaseUnblockedChildren(context.Background())
@@ -1303,6 +1315,7 @@ func TestReleaseUnblockedChildren_PushesReleaseToRemoteHomeNode(t *testing.T) {
 	roster, err := clusterlead.NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 
 	app, m := newUmbrellaGateApp(t)
@@ -1323,6 +1336,7 @@ func TestReleaseUnblockedChildren_PushesReleaseToRemoteHomeNode(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Put: %v", err)
+		panic("unreachable")
 	}
 
 	app.releaseUnblockedChildren(context.Background())
@@ -1330,6 +1344,7 @@ func TestReleaseUnblockedChildren_PushesReleaseToRemoteHomeNode(t *testing.T) {
 	released, err := m.Get(child.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if slices.Contains(released.Tags, umbrellaGatedTag) {
 		t.Fatalf("gating tag not stripped locally: tags=%v", released.Tags)
@@ -1383,6 +1398,7 @@ func TestReleaseUnblockedChildren_RollsBackReleaseOnPushFailure(t *testing.T) {
 	roster, err := clusterlead.NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 
 	app, m := newUmbrellaGateApp(t)
@@ -1403,6 +1419,7 @@ func TestReleaseUnblockedChildren_RollsBackReleaseOnPushFailure(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Put: %v", err)
+		panic("unreachable")
 	}
 
 	app.releaseUnblockedChildren(context.Background())
@@ -1413,6 +1430,7 @@ func TestReleaseUnblockedChildren_RollsBackReleaseOnPushFailure(t *testing.T) {
 	afterFailedPush, err := m.Get(child.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if !slices.Contains(afterFailedPush.Tags, umbrellaGatedTag) {
 		t.Fatalf("gating tag stripped despite failed push: tags=%v", afterFailedPush.Tags)
@@ -1432,6 +1450,7 @@ func TestReleaseUnblockedChildren_RollsBackReleaseOnPushFailure(t *testing.T) {
 	afterRetry, err := m.Get(child.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
+		panic("unreachable")
 	}
 	if slices.Contains(afterRetry.Tags, umbrellaGatedTag) {
 		t.Fatalf("gating tag still present after a successful retry: tags=%v", afterRetry.Tags)
@@ -1474,6 +1493,7 @@ func TestReleaseUnblockedChildren_ConfidentialityDeclineDoesNotConsumeCap(t *tes
 	roster, err := clusterlead.NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 
 	app, m := newUmbrellaGateApp(t)
@@ -1501,6 +1521,7 @@ func TestReleaseUnblockedChildren_ConfidentialityDeclineDoesNotConsumeCap(t *tes
 	})
 	if err != nil {
 		t.Fatalf("Put(declined): %v", err)
+		panic("unreachable")
 	}
 	// Not in any follower's Homes list, so HomeNodeFor resolves it Local —
 	// genuinely releasable this tick if the cap isn't wrongly consumed above.
@@ -1515,6 +1536,7 @@ func TestReleaseUnblockedChildren_ConfidentialityDeclineDoesNotConsumeCap(t *tes
 	})
 	if err != nil {
 		t.Fatalf("Put(local): %v", err)
+		panic("unreachable")
 	}
 
 	app.releaseUnblockedChildren(context.Background())
@@ -1525,6 +1547,7 @@ func TestReleaseUnblockedChildren_ConfidentialityDeclineDoesNotConsumeCap(t *tes
 	gotDeclined, err := m.Get(declined.ID)
 	if err != nil {
 		t.Fatalf("Get(declined): %v", err)
+		panic("unreachable")
 	}
 	if gotDeclined.Status != task.StatusBlocked {
 		t.Fatalf("declined child status = %q, want %q (confidentiality-blocked, not released)", gotDeclined.Status, task.StatusBlocked)
@@ -1535,6 +1558,7 @@ func TestReleaseUnblockedChildren_ConfidentialityDeclineDoesNotConsumeCap(t *tes
 	gotLocal, err := m.Get(local.ID)
 	if err != nil {
 		t.Fatalf("Get(local): %v", err)
+		panic("unreachable")
 	}
 	if gotLocal.Status != task.StatusTodo || slices.Contains(gotLocal.Tags, umbrellaGatedTag) {
 		t.Fatalf("local child = status=%q tags=%v, want released — the confidentiality decline must not have consumed cap=1's only slot", gotLocal.Status, gotLocal.Tags)
@@ -1558,6 +1582,7 @@ func TestReleaseUnblockedChildren_SurvivesPostPushBookkeepingFailure(t *testing.
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, task.EmitterFunc(func(string, any) {}))
 	var logBuf bytes.Buffer
@@ -1594,6 +1619,7 @@ func TestReleaseUnblockedChildren_SurvivesPostPushBookkeepingFailure(t *testing.
 	roster, err := clusterlead.NewRoster(cfg, nil)
 	if err != nil || roster == nil {
 		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+		panic("unreachable")
 	}
 	app.cfg = cfg
 	app.ctx = context.Background()
@@ -1623,6 +1649,7 @@ func TestReleaseUnblockedChildren_SurvivesPostPushBookkeepingFailure(t *testing.
 	// fault actually fired before asserting on how releaseCapped handled it.
 	if _, err := os.Stat(filepath.Join(dir, childID+".md")); err == nil {
 		t.Fatalf("task file unexpectedly still present — fault injection did not fire as intended")
+		panic("unreachable")
 	}
 
 	logs := logBuf.String()
@@ -1659,6 +1686,7 @@ func TestReleaseUnblockedChildren_IgnoresSybraBugBlock(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create buggy: %v", err)
+		panic("unreachable")
 	}
 
 	app.releaseUnblockedChildren(context.Background())
@@ -1721,6 +1749,7 @@ func TestReleaseUnblockedChildren_CycleFlagsTracker(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create tracker: %v", err)
+		panic("unreachable")
 	}
 
 	// x <-> y mutual dependency.
@@ -1752,6 +1781,7 @@ func TestReleaseUnblockedChildren_NoUmbrellaNoOp(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create plain: %v", err)
+		panic("unreachable")
 	}
 
 	app.releaseUnblockedChildren(context.Background())
@@ -1771,6 +1801,7 @@ func mustWriteProjectYAMLWithClone(t *testing.T, dir, id, clonePath string) {
 	content := "id: " + id + "\ntype: pet\nowner: stub\nrepo: stub\nclone_path: " + clonePath + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write project YAML: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -1786,13 +1817,16 @@ func newBareRepoWithTrackedFile(t *testing.T) (barePath, branch string) {
 	} {
 		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
 			t.Fatalf("%v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	if err := os.MkdirAll(filepath.Join(src, "internal", "foo"), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(src, "internal", "foo", "bar.go"), []byte("package foo"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"git", "-C", src, "add", "."},
@@ -1800,17 +1834,20 @@ func newBareRepoWithTrackedFile(t *testing.T) (barePath, branch string) {
 	} {
 		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
 			t.Fatalf("%v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	branchOut, err := exec.Command("git", "-C", src, "branch", "--show-current").CombinedOutput()
 	if err != nil {
 		t.Fatalf("branch --show-current: %v: %s", err, branchOut)
+		panic("unreachable")
 	}
 	branch = strings.TrimSpace(string(branchOut))
 
 	bare := filepath.Join(t.TempDir(), "bare.git")
 	if err := project.CloneBare(context.Background(), src, bare); err != nil {
 		t.Fatalf("CloneBare: %v", err)
+		panic("unreachable")
 	}
 	return bare, branch
 }
@@ -1823,6 +1860,7 @@ func TestBuildGroundLister(t *testing.T) {
 	store, err := project.NewStore(dir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	mustWriteProjectYAMLWithClone(t, dir, "o/r", bare)
 
@@ -1833,6 +1871,7 @@ func TestBuildGroundLister(t *testing.T) {
 		files, err := lister(context.Background(), "o/r")
 		if err != nil {
 			t.Fatalf("lister: %v", err)
+			panic("unreachable")
 		}
 		if len(files) != 1 || files[0] != "internal/foo/bar.go" {
 			t.Fatalf("files = %v, want [internal/foo/bar.go]", files)
@@ -1843,6 +1882,7 @@ func TestBuildGroundLister(t *testing.T) {
 		t.Parallel()
 		if _, err := lister(context.Background(), "no/such-project"); err == nil {
 			t.Fatal("expected an error for an unregistered project")
+			panic("unreachable")
 		}
 	})
 }
@@ -1911,6 +1951,7 @@ func TestReleaseUnblockedChildren_AsyncRecoveryDoesNotBlockUnrelatedRelease(t *t
 	store, err := task.NewStore(dir)
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, task.EmitterFunc(func(string, any) {}))
 	fn, calls, release := countingRecoverFn()
@@ -1966,6 +2007,7 @@ func TestUmbrellaGroundingWired(t *testing.T) {
 	store, err := project.NewStore(dir, t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	cases := []struct {
@@ -2013,6 +2055,7 @@ func TestReleaseUnblockedChildren_ClearsStaleGateTagAfterHandoff(t *testing.T) {
 	got, err := m.Get(child.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if slices.Contains(got.Tags, umbrella.GatedTag) {
 		t.Fatal("child that already ran implementation still carries the gate tag; the normal dispatcher will keep refusing it")
@@ -2036,6 +2079,7 @@ func TestReleaseUnblockedChildren_KeepsGateTagBeforeHandoff(t *testing.T) {
 	got, err := m.Get(blocked.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !slices.Contains(got.Tags, umbrella.GatedTag) {
 		t.Fatal("child with an unmet dependency lost its gate tag; it would dispatch before its prerequisite")
@@ -2071,6 +2115,7 @@ func mustList(t *testing.T, m *task.Manager) []task.Task {
 	tasks, err := m.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return tasks
 }

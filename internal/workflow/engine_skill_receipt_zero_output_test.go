@@ -72,6 +72,7 @@ func TestHandleAgentComplete_ZeroOutputRunSparesConformanceBudget(t *testing.T) 
 	ti, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := ti.Workflow.Variables[skillReceiptRecoveryKey("run")]; got != "" {
 		t.Fatalf("conformance retry var = %q, want unset for a zero-output run", got)
@@ -103,6 +104,7 @@ func TestHandleAgentComplete_ZeroOutputRunsEscalateAfterOwnCeiling(t *testing.T)
 	ti, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if ti.Status != "blocked" {
 		t.Fatalf("Status = %q, want blocked quarantine once the zero-output ceiling is spent", ti.Status)

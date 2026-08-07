@@ -82,11 +82,13 @@ func TestFetchIssueLinkedPRsWith(t *testing.T) {
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+					panic("unreachable")
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("unexpected err: %v", err)
+				panic("unreachable")
 			}
 			if len(got) != len(tt.want) {
 				t.Fatalf("len = %d, want %d: %+v", len(got), len(tt.want), got)

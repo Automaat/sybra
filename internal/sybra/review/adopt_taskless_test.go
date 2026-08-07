@@ -16,6 +16,7 @@ func newTasklessAdoptHandler(t *testing.T) (*Handler, *task.Manager) {
 	store, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(store, nil)
 	return &Handler{
@@ -40,6 +41,7 @@ func TestAdoptTasklessPRs_ResurrectsSybraPROnly(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(all) != 1 {
 		t.Fatalf("created %d tasks, want 1 (only the non-draft Sybra-branch PR)", len(all))
@@ -78,6 +80,7 @@ func TestAdoptTasklessPRs_SkipsAlreadyTracked(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(all) != 0 {
 		t.Fatalf("created %d tasks, want 0 (both PRs already tracked)", len(all))
@@ -101,6 +104,7 @@ func TestAdoptTasklessPRs_SkipsOwnedBranchWithStaleProjectID(t *testing.T) {
 	all, err := tasks.List()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(all) != 0 {
 		t.Fatalf("created %d tasks, want 0 (branch already owned by task 696bc049 despite stale ProjectID)", len(all))

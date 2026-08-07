@@ -79,11 +79,13 @@ func TestFetchUmbrellaWith(t *testing.T) {
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+					panic("unreachable")
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("unexpected err: %v", err)
+				panic("unreachable")
 			}
 			if umb.Title != tt.wantTitle {
 				t.Fatalf("umbrella title = %q, want %q", umb.Title, tt.wantTitle)
@@ -128,6 +130,7 @@ func TestFetchUmbrellaWith_UsesContext(t *testing.T) {
 		fe := &ctxFakeExecer{output: []byte(valid)}
 		if _, _, err := fetchUmbrellaWith(context.Background(), fe, "o/r", 100); err != nil {
 			t.Fatalf("fetch: %v", err)
+			panic("unreachable")
 		}
 		if !fe.usedCtx {
 			t.Fatal("expected the context-aware runCtx path to be used")
@@ -141,6 +144,7 @@ func TestFetchUmbrellaWith_UsesContext(t *testing.T) {
 		fe := &ctxFakeExecer{output: []byte(valid)}
 		if _, _, err := fetchUmbrellaWith(ctx, fe, "o/r", 100); err == nil {
 			t.Fatal("expected an error from a cancelled context")
+			panic("unreachable")
 		}
 	})
 }

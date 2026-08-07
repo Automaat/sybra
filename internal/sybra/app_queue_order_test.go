@@ -55,12 +55,14 @@ func TestInitWorkflowEngine_QueueComparatorPrefersQueuedTask(t *testing.T) {
 	store, err := task.NewStore(filepath.Join(home, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(store, nil)
 
 	q, err := agentqueue.New(filepath.Join(home, "agentqueue"), agentqueue.Options{}, discardLogger())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	launcher := &recordingAgentLauncher{}
 
@@ -116,17 +118,21 @@ func mustWorkflowStoreWithTestSimple(t *testing.T, home string) *workflow.Store 
 	wfDir := filepath.Join(home, "workflows")
 	if err := os.MkdirAll(wfDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	store, err := workflow.NewStore(wfDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	src, err := os.ReadFile("../../internal/workflow/testdata/test-simple.yaml")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(wfDir, "test-simple.yaml"), src, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return store
 }
@@ -136,6 +142,7 @@ func queueOrderTask(t *testing.T, mgr *task.Manager, title string) task.Task {
 	created, err := mgr.Create(title, "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	updated, err := mgr.UpdateMap(created.ID, map[string]any{
 		"workflow": &workflow.Execution{
@@ -147,6 +154,7 @@ func queueOrderTask(t *testing.T, mgr *task.Manager, title string) task.Task {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return updated
 }

@@ -70,6 +70,7 @@ func stubProviderCLIs(t *testing.T) {
 		stub := "#!/bin/sh\necho 'provider CLI stubbed in tests' >&2\nexit 1\n"
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(stub), 0o755); err != nil {
 			t.Fatalf("write %s stub: %v", name, err)
+			panic("unreachable")
 		}
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -92,6 +93,7 @@ func startupLikeApp(t *testing.T, opts ...sybra.Option) *sybra.App {
 	home, err := os.MkdirTemp("", "sybra-server-test-*")
 	if err != nil {
 		t.Fatalf("create test home: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
 	t.Setenv("SYBRA_HOME", home)
@@ -103,6 +105,7 @@ func startupLikeApp(t *testing.T, opts ...sybra.Option) *sybra.App {
 	app := sybra.NewApp(logger, &slog.LevelVar{}, startupLikeServerTestConfig(home), opts...)
 	if err := app.Startup(context.Background()); err != nil {
 		t.Fatalf("Startup: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		app.Shutdown(context.Background())
@@ -232,6 +235,7 @@ func TestWebhookHandlerCreatesUnsignedTaskWithDefaultsAndMetadata(t *testing.T) 
 	var resp webhookTaskResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
+		panic("unreachable")
 	}
 	if resp.TaskID != "task-1" {
 		t.Fatalf("task_id = %q, want task-1", resp.TaskID)
@@ -250,12 +254,14 @@ func TestWebhookHandlerCreatesUnsignedTaskWithDefaultsAndMetadata(t *testing.T) 
 	}
 	if creator.gotInit.Tags == nil {
 		t.Fatal("init.Tags = nil, want webhook tags")
+		panic("unreachable")
 	}
 	if got := *creator.gotInit.Tags; len(got) != 2 || got[0] != "webhook" || got[1] != "ops" {
 		t.Fatalf("tags = %v, want [webhook ops]", got)
 	}
 	if creator.gotInit.ProjectID == nil || *creator.gotInit.ProjectID != "Automaat/sybra" {
 		t.Fatalf("project_id = %v, want Automaat/sybra", creator.gotInit.ProjectID)
+		panic("unreachable")
 	}
 }
 
@@ -394,6 +400,7 @@ func TestWebhookHandlerPersistsTaskAndEmitsCreatedEvent(t *testing.T) {
 	creator, err := resolveWebhookTaskCreator(app)
 	if err != nil {
 		t.Fatalf("resolveWebhookTaskCreator: %v", err)
+		panic("unreachable")
 	}
 	handler := newWebhookHandler(testLogger(), "", creator, nil)
 	body := []byte(`{"title":"from webhook","body":"hook body","tags":["webhook","ext"],"project_id":"Automaat/sybra"}`)
@@ -407,6 +414,7 @@ func TestWebhookHandlerPersistsTaskAndEmitsCreatedEvent(t *testing.T) {
 	var resp webhookTaskResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
+		panic("unreachable")
 	}
 
 	taskSvc, ok := sybra.ServiceRegistry(app)["TaskService"].Impl.(*sybra.TaskService)
@@ -416,6 +424,7 @@ func TestWebhookHandlerPersistsTaskAndEmitsCreatedEvent(t *testing.T) {
 	created, err := taskSvc.GetTask(resp.TaskID)
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
+		panic("unreachable")
 	}
 	if created.Title != "from webhook" {
 		t.Fatalf("title = %q, want from webhook", created.Title)
@@ -452,6 +461,7 @@ func TestWebhookHandlerRejectsTaskCreationDuringDrain(t *testing.T) {
 	creator, err := resolveWebhookTaskCreator(app)
 	if err != nil {
 		t.Fatalf("resolveWebhookTaskCreator: %v", err)
+		panic("unreachable")
 	}
 	handler := newWebhookHandler(testLogger(), "", creator, func() error {
 		return app.HTTPAdmission("TaskService", "CreateTask", httpapi.MethodMeta{})
@@ -468,6 +478,7 @@ func TestWebhookHandlerRejectsTaskCreationDuringDrain(t *testing.T) {
 	var resp webhookErrorEnvelope
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
+		panic("unreachable")
 	}
 	if resp.Code != string(httpapi.ErrCodeUnavailable) {
 		t.Fatalf("code = %q, want %q", resp.Code, httpapi.ErrCodeUnavailable)
@@ -480,6 +491,7 @@ func TestWebhookHandlerRejectsTaskCreationDuringDrain(t *testing.T) {
 	tasks, err := taskSvc.ListTasks()
 	if err != nil {
 		t.Fatalf("ListTasks: %v", err)
+		panic("unreachable")
 	}
 	if len(tasks) != 0 {
 		t.Fatalf("tasks created during drain = %d, want 0", len(tasks))
@@ -490,9 +502,11 @@ func TestStartWebhookServerDisabledNoop(t *testing.T) {
 	srv, errCh, err := startWebhookServerWithHandler(t.Context(), config.GitHubWebhookConfig{}, okHandler(), testLogger())
 	if err != nil {
 		t.Fatalf("startWebhookServerWithHandler: %v", err)
+		panic("unreachable")
 	}
 	if srv != nil || errCh != nil {
 		t.Fatalf("disabled webhook = (%v, %v), want nil,nil", srv, errCh)
+		panic("unreachable")
 	}
 }
 
@@ -500,6 +514,7 @@ func TestStartWebhookServerFailsOnBindError(t *testing.T) {
 	ln, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
+		panic("unreachable")
 	}
 	defer ln.Close()
 
@@ -513,6 +528,7 @@ func TestStartWebhookServerFailsOnBindError(t *testing.T) {
 	}
 	if srv != nil || errCh != nil {
 		t.Fatalf("error path returned (%v, %v), want nil,nil", srv, errCh)
+		panic("unreachable")
 	}
 }
 
@@ -664,6 +680,7 @@ func TestServerHandlerServesSPAWithoutToken(t *testing.T) {
 	staticDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Setenv("SYBRA_STATIC_DIR", staticDir)
 
@@ -718,10 +735,12 @@ func TestSPAHandlerFallsBackToIndexForUnknownRoute(t *testing.T) {
 	staticDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("index"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	sub, err := fs.Sub(os.DirFS(staticDir), ".")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	h := spaHandler{fs: http.FileServer(http.FS(sub)), staticDir: staticDir}
 
@@ -774,6 +793,7 @@ func TestRunCheckConfig(t *testing.T) {
 		configPath := filepath.Join(home, "config.yaml")
 		if err := os.WriteFile(configPath, []byte("this_key_does_not_exist: true\n"), 0o600); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 
 		if code := runCheckConfig(); code != 1 {
@@ -782,6 +802,7 @@ func TestRunCheckConfig(t *testing.T) {
 		data, err := os.ReadFile(configPath)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if string(data) != "this_key_does_not_exist: true\n" {
 			t.Fatalf("runCheckConfig must not rewrite an invalid config.yaml, got %q", data)

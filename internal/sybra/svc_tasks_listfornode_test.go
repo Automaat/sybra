@@ -23,6 +23,7 @@ func TestListTasksForNodeFiltersByAssignedNode(t *testing.T) {
 		t.Helper()
 		if _, _, err := a.tasks.Put(tk); err != nil {
 			t.Fatalf("Put(%s): %v", tk.ID, err)
+			panic("unreachable")
 		}
 	}
 
@@ -33,6 +34,7 @@ func TestListTasksForNodeFiltersByAssignedNode(t *testing.T) {
 	got, err := svc.ListTasksForNode("home-nas")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	ids := make(map[string]bool, len(got))
 	for _, tk := range got {
@@ -69,6 +71,7 @@ func TestListTasksForNodeDropsStaleTerminalTasks(t *testing.T) {
 		t.Helper()
 		if _, _, err := a.tasks.Put(tk); err != nil {
 			t.Fatalf("Put(%s): %v", tk.ID, err)
+			panic("unreachable")
 		}
 	}
 
@@ -88,6 +91,7 @@ func TestListTasksForNodeDropsStaleTerminalTasks(t *testing.T) {
 	got, err := svc.ListTasksForNode("home-nas")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	ids := make(map[string]bool, len(got))
 	for _, tk := range got {

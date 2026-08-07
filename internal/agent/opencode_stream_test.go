@@ -24,6 +24,7 @@ func TestOpenCodeBuildHeadlessInvocation(t *testing.T) {
 	inv, err := providerByName("opencode").BuildHeadlessInvocation(a, RunConfig{Prompt: "do it"})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if inv.name != "opencode" {
 		t.Fatalf("name = %q, want opencode", inv.name)
@@ -43,6 +44,7 @@ func TestParseOpenCodeLineAssistantAndTool(t *testing.T) {
 	assistant, err := ParseOpenCodeLine([]byte(`{"type":"assistant.message","sessionId":"sess-1","data":{"content":"hi","outputTokens":3,"toolRequests":[{"toolCallId":"call-1","name":"bash","arguments":{"command":"go test ./..."}}]}}`))
 	if err != nil {
 		t.Fatalf("assistant parse: %v", err)
+		panic("unreachable")
 	}
 	se := opencodeEventToStreamEvent(assistant)
 	if se.Type != "assistant" || se.Content != "hi" || se.SessionID != "sess-1" || se.OutputTokens != 3 || se.ToolCalls != 1 {
@@ -52,6 +54,7 @@ func TestParseOpenCodeLineAssistantAndTool(t *testing.T) {
 	toolResult, err := ParseOpenCodeLine([]byte(`{"type":"tool.execution_complete","data":{"toolCallId":"call-1","success":false,"result":"failed"}}`))
 	if err != nil {
 		t.Fatalf("tool parse: %v", err)
+		panic("unreachable")
 	}
 	se = opencodeEventToStreamEvent(toolResult)
 	if se.Type != "tool_result" || len(se.toolResults) != 1 || se.toolResults[0].ToolUseID != "call-1" || !se.toolResults[0].IsError {
@@ -63,6 +66,7 @@ func TestParseOpenCodeRunTextAndStepFinish(t *testing.T) {
 	text, err := ParseOpenCodeLine([]byte(`{"type":"text","sessionID":"sess-4","part":{"type":"text","text":"k8s-opencode-ok"}}`))
 	if err != nil {
 		t.Fatalf("text parse: %v", err)
+		panic("unreachable")
 	}
 	se := opencodeEventToStreamEvent(text)
 	if se.Type != "assistant" || se.SessionID != "sess-4" || se.Content != "k8s-opencode-ok" {
@@ -72,6 +76,7 @@ func TestParseOpenCodeRunTextAndStepFinish(t *testing.T) {
 	done, err := ParseOpenCodeLine([]byte(`{"type":"step_finish","sessionID":"sess-4","part":{"type":"step-finish","reason":"stop","tokens":{"total":7065,"input":1662,"output":8,"reasoning":15,"cache":{"write":0,"read":5380}},"cost":0.00258306}}`))
 	if err != nil {
 		t.Fatalf("step_finish parse: %v", err)
+		panic("unreachable")
 	}
 	se = opencodeEventToStreamEvent(done)
 	if se.Type != "result" || se.SessionID != "sess-4" || se.InputTokens != 1662 || se.OutputTokens != 8 || se.CacheReadInputTokens != 5380 || se.ReasoningTokens != 15 || se.CostUSD != 0.00258306 {
@@ -83,6 +88,7 @@ func TestParseOpenCodeLineResultUsageAndError(t *testing.T) {
 	result, err := ParseOpenCodeLine([]byte(`{"type":"result","sessionId":"sess-2","message":"done","usage":{"inputTokens":10,"outputTokens":4,"cacheReadInputTokens":6,"reasoningTokens":2,"costUSD":0.01}}`))
 	if err != nil {
 		t.Fatalf("result parse: %v", err)
+		panic("unreachable")
 	}
 	se := opencodeEventToStreamEvent(result)
 	if se.Type != "result" || se.SessionID != "sess-2" || se.Content != "done" || se.InputTokens != 10 || se.OutputTokens != 4 || se.CacheReadInputTokens != 6 || se.ReasoningTokens != 2 || se.CostUSD != 0.01 {
@@ -92,6 +98,7 @@ func TestParseOpenCodeLineResultUsageAndError(t *testing.T) {
 	failed, err := ParseOpenCodeLine([]byte(`{"type":"error","errorType":"rate_limit","code":429,"message":"too many requests"}`))
 	if err != nil {
 		t.Fatalf("error parse: %v", err)
+		panic("unreachable")
 	}
 	se = opencodeEventToStreamEvent(failed)
 	if se.Type != "result" || se.Subtype != "error" || se.ErrorType != "rate_limit" || se.ErrorStatus != 429 {
@@ -101,6 +108,7 @@ func TestParseOpenCodeLineResultUsageAndError(t *testing.T) {
 	failed, err = ParseOpenCodeLine([]byte(`{"type":"error","sessionID":"sess-3","error":{"name":"APIError","data":{"message":"User not found.","statusCode":401}}}`))
 	if err != nil {
 		t.Fatalf("object error parse: %v", err)
+		panic("unreachable")
 	}
 	se = opencodeEventToStreamEvent(failed)
 	if se.Type != "result" || se.Subtype != "error" || se.SessionID != "sess-3" || se.Content != "User not found." || se.ErrorType != "APIError" || se.ErrorStatus != 401 {

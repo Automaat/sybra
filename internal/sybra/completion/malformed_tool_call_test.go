@@ -15,6 +15,7 @@ func TestOnComplete_EmitsMalformedToolCallAuditEvents(t *testing.T) {
 	al, err := audit.NewLogger(auditDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = al.Close() })
 
@@ -22,6 +23,7 @@ func TestOnComplete_EmitsMalformedToolCallAuditEvents(t *testing.T) {
 	tk, err := taskMgr.Create("malformed tool task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := taskMgr.AddRun(tk.ID, task.AgentRun{
 		AgentID: "agent-malformed",
@@ -53,9 +55,11 @@ func TestOnComplete_EmitsMalformedToolCallAuditEvents(t *testing.T) {
 	}
 	if corrected == nil {
 		t.Fatal("missing corrected malformed-tool audit event")
+		panic("unreachable")
 	}
 	if unrecoverable == nil {
 		t.Fatal("missing unrecoverable malformed-tool audit event")
+		panic("unreachable")
 	}
 	if corrected.Data["provider"] != "claude" {
 		t.Fatalf("corrected provider = %v, want claude", corrected.Data["provider"])

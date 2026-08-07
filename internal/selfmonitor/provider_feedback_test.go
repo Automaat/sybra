@@ -50,10 +50,12 @@ func writeFixtureInAgentsDir(t *testing.T, logsDir, agentID string, lines []stri
 	agentsDir := filepath.Join(logsDir, "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("mkdir agents: %v", err)
+		panic("unreachable")
 	}
 	path := filepath.Join(agentsDir, agentID+"-2026-04-14T10-00-00.ndjson")
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
+		panic("unreachable")
 	}
 	return path
 }
@@ -81,6 +83,7 @@ func TestProviderFeedback_ReportsRateLimitForOverloadedError(t *testing.T) {
 	_, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 
 	if len(gate.calls) != 1 {
@@ -132,6 +135,7 @@ func TestProviderFeedback_UsesTaskRunProviderWhenAvailable(t *testing.T) {
 	_, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 
 	if len(gate.calls) != 1 {
@@ -172,6 +176,7 @@ func TestProviderFeedback_SkipsNonRetryLoopCategory(t *testing.T) {
 			_, err := svc.Scan(context.Background())
 			if err != nil {
 				t.Fatalf("Scan: %v", err)
+				panic("unreachable")
 			}
 
 			if len(gate.calls) != 0 {
@@ -203,6 +208,7 @@ func TestProviderFeedback_SkipsWhenNoMatchingErrorClass(t *testing.T) {
 	_, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 
 	if len(gate.calls) != 0 {
@@ -231,6 +237,7 @@ func TestProviderFeedback_SkipsWhenProviderGateNil(t *testing.T) {
 	_, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan with nil ProviderGate: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -253,6 +260,7 @@ func TestProviderFeedback_SkipsWhenLogSummaryNil(t *testing.T) {
 	_, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 
 	if len(gate.calls) != 0 {

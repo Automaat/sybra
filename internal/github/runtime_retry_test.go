@@ -24,6 +24,7 @@ func TestRunGHAPIWith_RetriesTransientThenSucceeds(t *testing.T) {
 	resp, err := runGHAPIWith(se, "", "graphql")
 	if err != nil {
 		t.Fatalf("want success after transient retries, got %v", err)
+		panic("unreachable")
 	}
 	if se.calls != 3 {
 		t.Errorf("calls = %d, want 3 (2 transient + 1 success)", se.calls)
@@ -44,6 +45,7 @@ func TestRunGHAPIWith_GivesUpAfterMaxRetries(t *testing.T) {
 
 	if _, err := runGHAPIWith(se, "", "graphql"); err == nil {
 		t.Fatal("want error after exhausting retries")
+		panic("unreachable")
 	}
 	if se.calls != ghMaxRetries+1 {
 		t.Errorf("calls = %d, want %d (initial + %d retries)", se.calls, ghMaxRetries+1, ghMaxRetries)
@@ -60,6 +62,7 @@ func TestRunGHAPIWith_NoRetryOnNonTransient(t *testing.T) {
 
 	if _, err := runGHAPIWith(se, "", "graphql"); err == nil {
 		t.Fatal("want error")
+		panic("unreachable")
 	}
 	if se.calls != 1 {
 		t.Errorf("calls = %d, want 1 (404 is not retried)", se.calls)
@@ -75,6 +78,7 @@ func TestRunGHAPIWith_RetriesBodyMentioningRateLimit(t *testing.T) {
 	}
 	if _, err := runGHAPIWith(se, "", "graphql"); err != nil {
 		t.Fatalf("want transient retry success, got %v", err)
+		panic("unreachable")
 	}
 	if se.calls != 2 {
 		t.Errorf("calls = %d, want 2 (body text must not suppress transient retry)", se.calls)
@@ -129,6 +133,7 @@ func TestRunGHAPIWith_NoRetryOnWrite(t *testing.T) {
 	// already have applied server-side.
 	if _, err := runGHAPIWith(se, "", "repos/o/r/pulls/1/requested_reviewers", "--method", "POST"); err == nil {
 		t.Fatal("want error")
+		panic("unreachable")
 	}
 	if se.calls != 1 {
 		t.Errorf("calls = %d, want 1 (writes are not retried)", se.calls)
@@ -145,6 +150,7 @@ func TestRunGHAPIWith_NoRetryOnSuccess(t *testing.T) {
 
 	if _, err := runGHAPIWith(se, "", "graphql"); err != nil {
 		t.Fatalf("unexpected err: %v", err)
+		panic("unreachable")
 	}
 	if se.calls != 1 {
 		t.Errorf("calls = %d, want 1 (no retry on first-try success)", se.calls)

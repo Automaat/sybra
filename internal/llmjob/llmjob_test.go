@@ -79,11 +79,13 @@ func TestRun(t *testing.T) {
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+					panic("unreachable")
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("Run: %v", err)
+				panic("unreachable")
 			}
 			if !out.OK {
 				t.Fatalf("out.OK = false")
@@ -125,6 +127,7 @@ func TestRunAttemptTimeoutGivesEachAttemptFreshBudget(t *testing.T) {
 	}, llmexec.Options{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 	if calls != 2 {
 		t.Fatalf("calls = %d, want 2 (attempt 2 must run after attempt 1's deadline expires)", calls)
@@ -154,6 +157,7 @@ func TestRunAttemptTimeoutFinalErrorNamesProvider(t *testing.T) {
 	}, llmexec.Options{})
 	if err == nil {
 		t.Fatal("Run: want error")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), `provider "claude"`) {
 		t.Fatalf("err = %v, want it to name provider %q", err, "claude")
@@ -176,6 +180,7 @@ func TestRunAvoidProviderExcludedFromOrder(t *testing.T) {
 		}
 		if opts.Gate == nil || opts.Gate.IsHealthy("claude") {
 			t.Fatalf("avoided provider was not marked unhealthy")
+			panic("unreachable")
 		}
 		return llmexec.Result{Provider: opts.Provider, Text: `{"ok":true}`}, nil
 	})
@@ -188,6 +193,7 @@ func TestRunAvoidProviderExcludedFromOrder(t *testing.T) {
 	}, llmexec.Options{})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 	if meta.Provider == "claude" {
 		t.Fatalf("provider = claude, want different provider")

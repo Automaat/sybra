@@ -100,6 +100,7 @@ func TestBoundedRetry_PolicyMatrix(t *testing.T) {
 		fresh, err := tasks.GetTask("t1")
 		if err != nil {
 			t.Fatalf("get task: %v", err)
+			panic("unreachable")
 		}
 		if fresh.Workflow.Variables["retry.count"] != "1" {
 			t.Fatalf("retry counter = %q, want %q", fresh.Workflow.Variables["retry.count"], "1")
@@ -140,6 +141,7 @@ func TestBoundedRetry_PolicyMatrix(t *testing.T) {
 		fresh, err := tasks.GetTask("t1")
 		if err != nil {
 			t.Fatalf("get task: %v", err)
+			panic("unreachable")
 		}
 		if fresh.Status != "human-required" {
 			t.Fatalf("status = %q, want human-required", fresh.Status)
@@ -168,6 +170,7 @@ func TestBoundedRetry_PolicyMatrix(t *testing.T) {
 		}
 		if gotErr == nil {
 			t.Fatal("onPersistError override was not invoked")
+			panic("unreachable")
 		}
 	})
 

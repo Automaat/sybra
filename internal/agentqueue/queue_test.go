@@ -21,6 +21,7 @@ func mustQueue(t *testing.T, opts Options) *Queue {
 	q, err := New(t.TempDir(), opts, discardLogger())
 	if err != nil {
 		t.Fatalf("New: %v", err)
+		panic("unreachable")
 	}
 	return q
 }

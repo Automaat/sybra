@@ -39,6 +39,7 @@ func TestAdversarialStorePutTOCTOU(t *testing.T) {
 		store, err := NewStore(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if _, err := store.Put(Task{
 			ID: "task-race", Title: "t", Status: StatusBlocked,
@@ -71,14 +72,17 @@ func TestAdversarialStorePutTOCTOU(t *testing.T) {
 		wg.Wait()
 		if staleErr != nil {
 			t.Fatalf("stale Put: %v", staleErr)
+			panic("unreachable")
 		}
 		if advancingErr != nil {
 			t.Fatalf("advancing Put: %v", advancingErr)
+			panic("unreachable")
 		}
 
 		got, err := store.Get("task-race")
 		if err != nil {
 			t.Fatalf("Get after race: %v", err)
+			panic("unreachable")
 		}
 		if got.Status != StatusInProgress || !got.UpdatedAt.Equal(t5) {
 			violations++
@@ -112,6 +116,7 @@ func TestAdversarialManagerPutSerializesSameID(t *testing.T) {
 		store, err := NewStore(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		mgr := NewManager(store, NoopEmitter())
 		if _, err := store.Put(Task{
@@ -145,14 +150,17 @@ func TestAdversarialManagerPutSerializesSameID(t *testing.T) {
 		wg.Wait()
 		if staleErr != nil {
 			t.Fatalf("stale Put: %v", staleErr)
+			panic("unreachable")
 		}
 		if advancingErr != nil {
 			t.Fatalf("advancing Put: %v", advancingErr)
+			panic("unreachable")
 		}
 
 		got, err := store.Get("task-race")
 		if err != nil {
 			t.Fatalf("Get after race: %v", err)
+			panic("unreachable")
 		}
 		if got.Status != StatusInProgress || !got.UpdatedAt.Equal(t5) {
 			violations++
@@ -173,6 +181,7 @@ func TestAdversarialPutFirstWritePassesThroughUntouched(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	ts := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
 	saved, err := store.Put(Task{
@@ -181,6 +190,7 @@ func TestAdversarialPutFirstWritePassesThroughUntouched(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("first Put: %v", err)
+		panic("unreachable")
 	}
 	if saved.Status != StatusInProgress {
 		t.Fatalf("status = %q, want in-progress (first write must not be guarded)", saved.Status)
@@ -200,6 +210,7 @@ func TestAdversarialPutZeroOnDiskUpdatedAt(t *testing.T) {
 	store, err := NewStore(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Hand-write a task with a zero UpdatedAt directly, bypassing Put's
 	// zero-defaulting, to simulate a corrupted/legacy on-disk record.
@@ -207,9 +218,11 @@ func TestAdversarialPutZeroOnDiskUpdatedAt(t *testing.T) {
 	data, err := marshalTask(raw, false)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(dir+"/task-zero.md", data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	newTS := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
@@ -219,6 +232,7 @@ func TestAdversarialPutZeroOnDiskUpdatedAt(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Put: %v", err)
+		panic("unreachable")
 	}
 	if saved.Status != StatusTodo {
 		t.Fatalf("status = %q, want todo — a non-zero UpdatedAt must count as advancing past a zero on-disk UpdatedAt", saved.Status)
@@ -236,6 +250,7 @@ func TestAdversarialFlappingMirrorConverges(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	base := time.Date(2026, 7, 14, 19, 3, 4, 0, time.UTC)
 	if _, err := store.Put(Task{ID: "task-flap", Title: "t", Status: StatusBlocked, CreatedAt: base, UpdatedAt: base}); err != nil {
@@ -263,6 +278,7 @@ func TestAdversarialFlappingMirrorConverges(t *testing.T) {
 		got, err := store.Get("task-flap")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.Status != curStatus || !got.UpdatedAt.Equal(advance) {
 			t.Fatalf("iter %d: status regressed to %q/%v from a stale re-push, want %q/%v", i, got.Status, got.UpdatedAt, curStatus, advance)
@@ -278,6 +294,7 @@ func TestAdversarialFlappingMirrorConverges(t *testing.T) {
 		got, err = store.Get("task-flap")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.Status != curStatus || !got.UpdatedAt.Equal(advance) {
 			t.Fatalf("iter %d: expected %q/%v after genuine advance, got %q/%v", i, curStatus, advance, got.Status, got.UpdatedAt)
@@ -292,6 +309,7 @@ func TestAdversarialFlappingMirrorConverges(t *testing.T) {
 		got, err = store.Get("task-flap")
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got.Status != curStatus || !got.UpdatedAt.Equal(advance) {
 			t.Fatalf("iter %d: stale re-flap corrupted state, got %q/%v want %q/%v", i, got.Status, got.UpdatedAt, curStatus, advance)

@@ -92,6 +92,7 @@ func TestOnComplete_ParkedAdoptionSuppressesWorkflowAdvance(t *testing.T) {
 			store, err := task.NewStore(dir)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			tasks := task.NewManager(store, nil)
 			logger := discardLogger()
@@ -106,6 +107,7 @@ func TestOnComplete_ParkedAdoptionSuppressesWorkflowAdvance(t *testing.T) {
 			created, err := tasks.CreateWithStatus("survivor task", "body", "headless", tc.liveStatus, init)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if err := tasks.AddRun(created.ID, task.AgentRun{AgentID: "ag-1", Role: "implementation", Mode: "headless"}); err != nil {
 				t.Fatal(err)
@@ -130,6 +132,7 @@ func TestOnComplete_ParkedAdoptionSuppressesWorkflowAdvance(t *testing.T) {
 			after, err := tasks.Get(created.ID)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if len(after.AgentRuns) != 1 {
 				t.Fatalf("agent runs = %d, want 1", len(after.AgentRuns))
@@ -177,6 +180,7 @@ func TestOnComplete_ParkedAdoptionSkipsFixReviewCompletion(t *testing.T) {
 			store, err := task.NewStore(dir)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			tasks := task.NewManager(store, nil)
 			logger := discardLogger()
@@ -190,6 +194,7 @@ func TestOnComplete_ParkedAdoptionSkipsFixReviewCompletion(t *testing.T) {
 			tk, err := tasks.CreateWithStatus("fix pr", "body", "headless", tc.liveStatus, task.Update{})
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if err := tasks.AddRun(tk.ID, task.AgentRun{
 				AgentID: "agent-1", Role: string(agent.RoleFixReview), Mode: "headless",
@@ -212,6 +217,7 @@ func TestOnComplete_ParkedAdoptionSkipsFixReviewCompletion(t *testing.T) {
 			after, err := tasks.Get(tk.ID)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if after.Status != tc.wantStatus {
 				t.Fatalf("status = %q, want %q", after.Status, tc.wantStatus)
@@ -254,6 +260,7 @@ func TestOnComplete_ParkedAdoptionSkipsReviewSideEffects(t *testing.T) {
 			store, err := task.NewStore(dir)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			tasks := task.NewManager(store, nil)
 			logger := discardLogger()
@@ -268,6 +275,7 @@ func TestOnComplete_ParkedAdoptionSkipsReviewSideEffects(t *testing.T) {
 			created, err := tasks.CreateWithStatus("review task", "body", "headless", tc.liveStatus, init)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if err := tasks.AddRun(created.ID, task.AgentRun{
 				AgentID: "ag-1", Role: string(agent.RoleReview), Mode: "headless",
@@ -285,6 +293,7 @@ func TestOnComplete_ParkedAdoptionSkipsReviewSideEffects(t *testing.T) {
 			after, err := tasks.Get(created.ID)
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if after.Reviewed != tc.wantReviewed {
 				t.Fatalf("Reviewed = %v, want %v", after.Reviewed, tc.wantReviewed)

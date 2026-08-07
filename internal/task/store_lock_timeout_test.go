@@ -18,15 +18,18 @@ func TestStoreUpdateMap_LockTimeoutIsBoundedAndTyped(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	created, err := store.Create("lock timeout", "", AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	unlock, err := fsutil.LockFile(created.FilePath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer unlock()
 
@@ -54,16 +57,19 @@ func TestStoreCreateFull_LockTimeoutIsTyped(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	store.newTaskID = func() string { return "contended" }
 
 	createLockPath := filepath.Join(filepath.Dir(store.dir), ".task-create-locks", "contended")
 	if err := os.MkdirAll(filepath.Dir(createLockPath), 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	unlock, err := fsutil.LockFile(createLockPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer unlock()
 

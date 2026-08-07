@@ -15,26 +15,32 @@ func TestGitMetadataRoots_LinkedWorktreeIncludesGitdirAndCommonDir(t *testing.T)
 
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.MkdirAll(gitDir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: "+gitDir+"\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(gitDir, "commondir"), []byte("../..\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	got, err := gitMetadataRoots(worktree)
 	if err != nil {
 		t.Fatalf("gitMetadataRoots: %v", err)
+		panic("unreachable")
 	}
 	want := []string{gitDir, commonDir}
 	for i, root := range want {
 		canon, err := canonicalizeRoot(root)
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		want[i] = canon
 	}
@@ -47,6 +53,7 @@ func TestGitMetadataRoots_NonGitWorktreeReturnsEmpty(t *testing.T) {
 	got, err := gitMetadataRoots(t.TempDir())
 	if err != nil {
 		t.Fatalf("gitMetadataRoots: %v", err)
+		panic("unreachable")
 	}
 	if len(got) != 0 {
 		t.Fatalf("gitMetadataRoots = %v, want empty", got)

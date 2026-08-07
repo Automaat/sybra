@@ -166,6 +166,7 @@ func newBestOfNTestEngine(t *testing.T, attempts int) (*Engine, *memTasks, *mock
 	def := bestOfNTestDef(attempts)
 	if err := store.Save(def); err != nil {
 		t.Fatalf("save workflow: %v", err)
+		panic("unreachable")
 	}
 	tasks := newMemTasks()
 	agents := newMockAgents()
@@ -204,9 +205,11 @@ func TestBestOfNValidation_AttemptsBounds(t *testing.T) {
 			err := def.Validate()
 			if tc.wantErr && err == nil {
 				t.Fatalf("attempts=%d: expected validation error, got nil", tc.attempts)
+				panic("unreachable")
 			}
 			if !tc.wantErr && err != nil {
 				t.Fatalf("attempts=%d: expected valid, got %v", tc.attempts, err)
+				panic("unreachable")
 			}
 		})
 	}
@@ -224,6 +227,7 @@ func TestBestOfNValidation_InvalidAttemptProvider(t *testing.T) {
 	err := def.Validate()
 	if err == nil || !strings.Contains(err.Error(), "invalid attempt provider") {
 		t.Fatalf("err = %v, want invalid attempt provider", err)
+		panic("unreachable")
 	}
 }
 
@@ -283,6 +287,7 @@ func TestPromoteBestOfNValidation_RequiresJudgeAndBestOfNStep(t *testing.T) {
 			err := def.Validate()
 			if err == nil || !strings.Contains(err.Error(), tc.errSub) {
 				t.Fatalf("err = %v, want substring %q", err, tc.errSub)
+				panic("unreachable")
 			}
 		})
 	}
@@ -295,6 +300,7 @@ func TestBestOfN_FanOutDispatchesEachAttemptIsolated(t *testing.T) {
 
 	if err := engine.StartWorkflow("t1", "bestofn-test"); err != nil {
 		t.Fatalf("StartWorkflow: %v", err)
+		panic("unreachable")
 	}
 
 	if got := agents.CallCount(); got != 3 {
@@ -328,6 +334,7 @@ func TestBestOfN_FanOutDispatchesEachAttemptIsolated(t *testing.T) {
 	rec := wf.BestOfNInflight["attempts"]
 	if rec == nil || len(rec.Attempts) != 3 {
 		t.Fatalf("BestOfNInflight[attempts] = %+v, want 3 attempt slots", rec)
+		panic("unreachable")
 	}
 }
 
@@ -337,6 +344,7 @@ func TestBestOfN_CostPreflightFailsClosedBeforeDispatch(t *testing.T) {
 
 	if err := engine.StartWorkflow("t1", "bestofn-test"); err != nil {
 		t.Fatalf("StartWorkflow: %v", err)
+		panic("unreachable")
 	}
 
 	if got := agents.CallCount(); got != 0 {
@@ -365,6 +373,7 @@ func TestBestOfN_CostPreflightBlocksJudgeAfterAttempts(t *testing.T) {
 
 	if err := engine.StartWorkflow("t1", "bestofn-test"); err != nil {
 		t.Fatalf("StartWorkflow: %v", err)
+		panic("unreachable")
 	}
 	if got := agents.CallCount(); got != 2 {
 		t.Fatalf("after fan-out StartAgent calls = %d, want 2 (both attempts)", got)
@@ -395,6 +404,7 @@ func TestBestOfN_AllAttemptsFail_HumanRequiredDistinctReason(t *testing.T) {
 	engine, tasks, _, attemptWt, _ := newBestOfNTestEngine(t, 2)
 	if err := engine.StartWorkflow("t1", "bestofn-test"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := engine.AdvanceStep("t1", StepOutput{StepID: "attempts::attempt_1", Status: "failed", AgentID: "agent-1"}); err != nil {
@@ -443,6 +453,7 @@ func TestBestOfN_ShutdownCancellationDuringSpawnDoesNotEscalate(t *testing.T) {
 
 	if err := engine.StartWorkflow("t1", "bestofn-test"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	ti := mustTaskInfo(t, tasks, "t1")
@@ -458,6 +469,7 @@ func TestBestOfN_ExactlyOneSuccess_HumanRequiredDistinctReason(t *testing.T) {
 	engine, tasks, _, attemptWt, _ := newBestOfNTestEngine(t, 2)
 	if err := engine.StartWorkflow("t1", "bestofn-test"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if err := engine.AdvanceStep("t1", StepOutput{StepID: "attempts::attempt_1", Status: "completed", AgentID: "agent-1"}); err != nil {
@@ -493,6 +505,7 @@ func setupTwoSuccessfulAttempts(t *testing.T, engine *Engine, tasks *memTasks) {
 	t.Helper()
 	if err := engine.StartWorkflow("t1", "bestofn-test"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := engine.AdvanceStep("t1", StepOutput{StepID: "attempts::attempt_1", Status: "completed", AgentID: "agent-1"}); err != nil {
 		t.Fatal(err)
@@ -652,6 +665,7 @@ func TestBestOfN_PromotionBusyPathDefersInsteadOfEscalating(t *testing.T) {
 	ti, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if ti.Status == taskstatus.HumanRequired {
 		t.Errorf("task escalated to human-required on a self-clearing refusal (reason %q)", ti.StatusReason)
@@ -664,6 +678,7 @@ func TestBestOfN_ResumeDoesNotDoubleDispatchTerminalAttempts(t *testing.T) {
 	engine, tasks, agents, attemptWt, _ := newBestOfNTestEngine(t, 3)
 	if err := engine.StartWorkflow("t1", "bestofn-test"); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	startCalls := agents.CallCount()
 	if startCalls != 3 {
@@ -677,28 +692,34 @@ func TestBestOfN_ResumeDoesNotDoubleDispatchTerminalAttempts(t *testing.T) {
 	def, err := engine.store.Get("bestofn-test")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	ti, err := tasks.GetTask("t1")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	wf := ti.Workflow
 	if wf == nil {
 		t.Fatal("task workflow = nil")
+		panic("unreachable")
 	}
 	rec := wf.BestOfNInflight["attempts"]
 	if rec == nil {
 		t.Fatal("best-of-n inflight record = nil")
+		panic("unreachable")
 	}
 	status := rec.Attempts["attempt_1"]
 	if status == nil {
 		t.Fatal("attempt_1 status = nil")
+		panic("unreachable")
 	}
 	status.Status = "completed"
 
 	step := def.StepByID("attempts")
 	if step == nil {
 		t.Fatal("attempts step = nil")
+		panic("unreachable")
 	}
 	ctx := TemplateContext{Task: ti, Step: *step, Vars: wf.Variables, Workflow: wf}
 	if _, err := engine.execBestOfN("t1", &def, step, wf, ctx); !errors.Is(err, errBestOfNParked) {
@@ -745,18 +766,22 @@ func TestBestOfN_CompletionRoutesViaPendingAttemptAfterPersistFailure(t *testing
 	def, err := engine.store.Get("bestofn-test")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	parent := def.StepByID("attempts")
 	if parent == nil {
 		t.Fatal("bestofn-test definition missing attempts step")
+		panic("unreachable")
 	}
 	rec := wfExec.BestOfNInflight["attempts"]
 	if rec == nil {
 		t.Fatal("best-of-n inflight record missing")
+		panic("unreachable")
 	}
 	status := rec.Attempts[bestOfNAttemptID(1)]
 	if status == nil {
 		t.Fatal("best-of-n attempt status missing")
+		panic("unreachable")
 	}
 	ctx := TemplateContext{Task: TaskInfo{ID: "t1", Status: "todo", Workflow: wfExec}, Step: *parent, Vars: wfExec.Variables, Workflow: wfExec}
 
@@ -776,10 +801,12 @@ func TestBestOfN_CompletionRoutesViaPendingAttemptAfterPersistFailure(t *testing
 	rec = got.BestOfNInflight["attempts"]
 	if rec == nil || rec.Attempts[bestOfNAttemptID(1)] == nil {
 		t.Fatal("best-of-n inflight attempt missing after completion")
+		panic("unreachable")
 	}
 	attempt := rec.Attempts[bestOfNAttemptID(1)]
 	if attempt == nil {
 		t.Fatal("best-of-n attempt missing after completion")
+		panic("unreachable")
 	}
 	if attempt.Status != "completed" {
 		t.Fatalf("attempt_1 status = %q, want completed", attempt.Status)
@@ -796,6 +823,7 @@ func mustTaskInfo(t *testing.T, tasks *memTasks, id string) TaskInfo {
 	ti, err := tasks.GetTask(id)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return ti
 }
@@ -828,6 +856,7 @@ func TestBestOfN_ArtifactsNeverRouteToGithub(t *testing.T) {
 	src, err := os.ReadFile("engine_steps_bestofn.go")
 	if err != nil {
 		t.Fatalf("read engine_steps_bestofn.go: %v", err)
+		panic("unreachable")
 	}
 	text := string(src)
 	if strings.Contains(text, `"github.com/Automaat/sybra/internal/github"`) {

@@ -14,9 +14,11 @@ func TestNewEngineRejectsIncompleteDependencies(t *testing.T) {
 	engine, err := NewEngine(nil, nil, nil, nil, Dependencies{})
 	if engine != nil {
 		t.Fatal("NewEngine returned an engine for incomplete dependencies")
+		panic("unreachable")
 	}
 	if err == nil {
 		t.Fatal("NewEngine accepted incomplete dependencies")
+		panic("unreachable")
 	}
 	for _, want := range []string{
 		"Store", "Tasks", "Agents", "Logger", "PR.Linker",
@@ -40,9 +42,11 @@ func TestNewEngineAcceptsCompleteDependencies(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("NewEngine(complete) = %v", err)
+		panic("unreachable")
 	}
 	if engine == nil {
 		t.Fatal("NewEngine(complete) returned nil")
+		panic("unreachable")
 	}
 }
 
@@ -56,6 +60,7 @@ func TestNewEngineRejectsTypedNilDependency(t *testing.T) {
 	engine, err := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger(), deps)
 	if engine != nil || err == nil {
 		t.Fatalf("NewEngine(typed nil classifier) = (%v, %v), want (nil, error)", engine, err)
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "Execution.Classifier") {
 		t.Fatalf("error %q does not name typed-nil classifier", err)

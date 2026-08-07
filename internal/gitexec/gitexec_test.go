@@ -46,6 +46,7 @@ printf '%s|%s|%s\n' "${GITEXEC_AMBIENT-unset}" "${GITEXEC_VALUE-unset}" "$GIT_TE
 			got, err := Output(context.Background(), tt.opts, "environment")
 			if err != nil {
 				t.Fatalf("Output: %v", err)
+				panic("unreachable")
 			}
 			if got != tt.want {
 				t.Fatalf("Output = %q, want %q", got, tt.want)
@@ -68,11 +69,13 @@ printf '  %s  \n' "$PWD"
 	resolvedDir, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		t.Fatalf("resolve temp dir: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := Output(context.Background(), Options{Dir: dir}, "pwd")
 	if err != nil {
 		t.Fatalf("Output: %v", err)
+		panic("unreachable")
 	}
 	if got != resolvedDir {
 		t.Fatalf("Output = %q, want %q", got, resolvedDir)
@@ -81,6 +84,7 @@ printf '  %s  \n' "$PWD"
 	raw, err := RawOutput(context.Background(), Options{Dir: dir}, "pwd")
 	if err != nil {
 		t.Fatalf("RawOutput: %v", err)
+		panic("unreachable")
 	}
 	if want := "  " + resolvedDir + "  \n"; string(raw) != want {
 		t.Fatalf("RawOutput = %q, want %q", raw, want)
@@ -89,6 +93,7 @@ printf '  %s  \n' "$PWD"
 	raw, err = RawOutput(context.Background(), Options{Stdin: strings.NewReader("patch\nbytes\n")}, "stdin")
 	if err != nil {
 		t.Fatalf("RawOutput with stdin: %v", err)
+		panic("unreachable")
 	}
 	if string(raw) != "patch\nbytes\n" {
 		t.Fatalf("stdin output = %q", raw)
@@ -107,6 +112,7 @@ exit 7
 	out, err := CombinedOutput(context.Background(), Options{}, "failing", "argument")
 	if err == nil {
 		t.Fatal("CombinedOutput unexpectedly succeeded")
+		panic("unreachable")
 	}
 	if got := string(out); !strings.Contains(got, "stdout detail") || !strings.Contains(got, "stderr detail") {
 		t.Fatalf("combined output = %q", got)
@@ -139,6 +145,7 @@ fi
 	err := RunQuiet(context.Background(), Options{}, "fail")
 	if err == nil {
 		t.Fatal("RunQuiet failure unexpectedly succeeded")
+		panic("unreachable")
 	}
 	if got := err.Error(); strings.Contains(got, "discarded stdout") || !strings.Contains(got, "useful stderr") {
 		t.Fatalf("RunQuiet error = %q, want stderr without stdout", got)
@@ -159,6 +166,7 @@ exit 3
 	_, err := Output(context.Background(), Options{}, "bad-output")
 	if err == nil || !strings.Contains(err.Error(), "specific stderr") {
 		t.Fatalf("Output error = %v, want captured stderr", err)
+		panic("unreachable")
 	}
 }
 
@@ -176,6 +184,7 @@ fi
 	stdout, stderr, err := OutputWithStderr(context.Background(), Options{}, "success")
 	if err != nil {
 		t.Fatalf("OutputWithStderr success: %v", err)
+		panic("unreachable")
 	}
 	if string(stdout) != "stdout bytes\n" || string(stderr) != "stderr advisory\n" {
 		t.Fatalf("OutputWithStderr = (%q, %q), want separate streams", stdout, stderr)
@@ -184,6 +193,7 @@ fi
 	stdout, stderr, err = OutputWithStderr(context.Background(), Options{}, "fail")
 	if err == nil {
 		t.Fatal("OutputWithStderr failure unexpectedly succeeded")
+		panic("unreachable")
 	}
 	if string(stdout) != "stdout bytes\n" || string(stderr) != "stderr advisory\n" {
 		t.Fatalf("failed OutputWithStderr = (%q, %q), want retained streams", stdout, stderr)
@@ -201,6 +211,7 @@ func TestExecutableResolutionSkipsDanglingShim(t *testing.T) {
 	goodBin := t.TempDir()
 	if err := os.Symlink(filepath.Join(badBin, "missing-git"), filepath.Join(badBin, "git")); err != nil {
 		t.Fatalf("create dangling git shim: %v", err)
+		panic("unreachable")
 	}
 	writeFakeGit(t, goodBin, `printf 'usable\n'`)
 	t.Setenv("PATH", badBin+string(os.PathListSeparator)+goodBin)
@@ -208,6 +219,7 @@ func TestExecutableResolutionSkipsDanglingShim(t *testing.T) {
 	got, err := Output(context.Background(), Options{}, "version")
 	if err != nil {
 		t.Fatalf("Output: %v", err)
+		panic("unreachable")
 	}
 	if got != "usable" {
 		t.Fatalf("Output = %q, want usable", got)
@@ -222,6 +234,7 @@ func TestExecutableResolutionSkipsInaccessibleFile(t *testing.T) {
 	goodBin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(badBin, "git"), []byte("not executable\n"), 0o010); err != nil {
 		t.Fatalf("write inaccessible git: %v", err)
+		panic("unreachable")
 	}
 	writeFakeGit(t, goodBin, `printf 'usable\n'`)
 	t.Setenv("PATH", badBin+string(os.PathListSeparator)+goodBin)
@@ -229,6 +242,7 @@ func TestExecutableResolutionSkipsInaccessibleFile(t *testing.T) {
 	got, err := Output(context.Background(), Options{}, "version")
 	if err != nil {
 		t.Fatalf("Output: %v", err)
+		panic("unreachable")
 	}
 	if got != "usable" {
 		t.Fatalf("Output = %q, want usable", got)
@@ -241,6 +255,7 @@ func TestExecutableResolutionMakesRelativePATHAbsoluteBeforeChangingDir(t *testi
 	relativeBin := "relative-bin"
 	if err := os.Mkdir(relativeBin, 0o755); err != nil {
 		t.Fatalf("create relative bin: %v", err)
+		panic("unreachable")
 	}
 	writeFakeGit(t, relativeBin, `printf 'relative-path-git\n'`)
 	t.Setenv("PATH", relativeBin)
@@ -248,6 +263,7 @@ func TestExecutableResolutionMakesRelativePATHAbsoluteBeforeChangingDir(t *testi
 	got, err := Output(context.Background(), Options{Dir: t.TempDir()}, "version")
 	if err != nil {
 		t.Fatalf("Output: %v", err)
+		panic("unreachable")
 	}
 	if got != "relative-path-git" {
 		t.Fatalf("Output = %q, want relative-path-git", got)
@@ -280,6 +296,7 @@ wait "$child"
 	case err := <-done:
 		if err == nil {
 			t.Fatal("Run unexpectedly succeeded after cancellation")
+			panic("unreachable")
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Git process did not stop after cancellation")
@@ -299,6 +316,7 @@ func writeFakeGit(t *testing.T, dir, body string) {
 	path := filepath.Join(dir, "git")
 	if err := os.WriteFile(path, []byte("#!/bin/sh\nset -eu\n"+body), 0o755); err != nil {
 		t.Fatalf("write fake git: %v", err)
+		panic("unreachable")
 	}
 }
 

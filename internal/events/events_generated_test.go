@@ -20,6 +20,7 @@ func TestEventsTSFile_InSyncWithGoSource(t *testing.T) {
 	existing, err := os.ReadFile(filepath.Join(root, "frontend", "src", "lib", "events.ts"))
 	if err != nil {
 		t.Fatalf("read events.ts: %v", err)
+		panic("unreachable")
 	}
 
 	// Run the generator in a temp dir so it writes to our temp frontend
@@ -40,12 +41,14 @@ func TestEventsTSFile_InSyncWithGoSource(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("go run ./cmd/gen-events: %v\n%s", err, out)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = os.WriteFile(filepath.Join(root, "frontend", "src", "lib", "events.ts"), prev, 0o644) })
 
 	regen, err := os.ReadFile(filepath.Join(root, "frontend", "src", "lib", "events.ts"))
 	if err != nil {
 		t.Fatalf("read regenerated events.ts: %v", err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(regen, prev) {
 		t.Errorf("events.ts is stale — run `go generate ./internal/events/...`\n"+

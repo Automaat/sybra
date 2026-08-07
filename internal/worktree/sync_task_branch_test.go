@@ -24,6 +24,7 @@ func assertWorktreeClean(t *testing.T, wtPath string) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git status: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if len(out) != 0 {
 		t.Errorf("worktree not clean after sync: %q", out)
@@ -34,6 +35,7 @@ func assertWorktreeClean(t *testing.T, wtPath string) {
 		resolved, err := gitPath.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git rev-parse --git-path %s: %v: %s", marker, err, resolved)
+			panic("unreachable")
 		}
 		if _, err := os.Stat(filepath.Clean(string(bytes.TrimSpace(resolved)))); err == nil {
 			t.Errorf("worktree left in mid-%s state after sync", marker)
@@ -47,6 +49,7 @@ func TestSyncTaskBranch_NoWorktreeSkipped(t *testing.T) {
 	tk, err := h.tasks.Store().Create("no worktree task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -54,11 +57,13 @@ func TestSyncTaskBranch_NoWorktreeSkipped(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	result, err := h.m.SyncTaskBranch(context.Background(), tk)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if result != SyncSkipped {
 		t.Errorf("result = %q, want %q", result, SyncSkipped)
@@ -79,6 +84,7 @@ func TestSyncTaskBranch_AdoptedWorktreeSkipped(t *testing.T) {
 	result, err := h.m.SyncTaskBranch(context.Background(), tk)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if result != SyncSkipped {
 		t.Errorf("result = %q, want %q", result, SyncSkipped)
@@ -94,6 +100,7 @@ func TestSyncTaskBranch_LiveAgentSkipped(t *testing.T) {
 	tk, err := h.tasks.Store().Create("live agent sync task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -101,15 +108,18 @@ func TestSyncTaskBranch_LiveAgentSkipped(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	mWithLiveAgent := New(Config{
@@ -124,6 +134,7 @@ func TestSyncTaskBranch_LiveAgentSkipped(t *testing.T) {
 	result, err := mWithLiveAgent.SyncTaskBranch(context.Background(), tk)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if result != SyncSkipped {
 		t.Errorf("result = %q, want %q", result, SyncSkipped)
@@ -137,6 +148,7 @@ func TestSyncTaskBranch_Noop(t *testing.T) {
 	tk, err := h.tasks.Store().Create("noop task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -144,20 +156,24 @@ func TestSyncTaskBranch_Noop(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	result, err := h.m.SyncTaskBranch(context.Background(), tk)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if result != SyncNoop {
 		t.Errorf("result = %q, want %q", result, SyncNoop)
@@ -174,6 +190,7 @@ func TestSyncTaskBranch_PushedBranchSkipsBaseMerge(t *testing.T) {
 	tk, err := h.tasks.Store().Create("synced task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -181,15 +198,18 @@ func TestSyncTaskBranch_PushedBranchSkipsBaseMerge(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	preHEAD := strings.TrimSpace(mustOutputInDir(t, wtPath, "git", "rev-parse", "HEAD"))
@@ -199,6 +219,7 @@ func TestSyncTaskBranch_PushedBranchSkipsBaseMerge(t *testing.T) {
 	// must not merge base just to refresh it.
 	if err := os.WriteFile(filepath.Join(h.src, "NEWFILE.md"), []byte("new\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, h.src, "git", "add", "NEWFILE.md")
 	mustRunInDir(t, h.src, "git", "commit", "-m", "add newfile")
@@ -206,6 +227,7 @@ func TestSyncTaskBranch_PushedBranchSkipsBaseMerge(t *testing.T) {
 	result, err := h.m.SyncTaskBranch(context.Background(), tk)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if result != SyncNoop {
 		t.Errorf("result = %q, want %q", result, SyncNoop)
@@ -228,6 +250,7 @@ func TestSyncTaskBranch_PushedBranchSkipsBaseConflict(t *testing.T) {
 	tk, err := h.tasks.Store().Create("conflicting task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -235,27 +258,32 @@ func TestSyncTaskBranch_PushedBranchSkipsBaseConflict(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	wtPath, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
 	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("branch edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, wtPath, "git", "add", "README.md")
 	mustRunInDir(t, wtPath, "git", "commit", "-m", "branch edit")
 
 	if err := os.WriteFile(filepath.Join(h.src, "README.md"), []byte("upstream edit\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, h.src, "git", "add", "README.md")
 	mustRunInDir(t, h.src, "git", "commit", "-m", "upstream edit")
@@ -264,6 +292,7 @@ func TestSyncTaskBranch_PushedBranchSkipsBaseConflict(t *testing.T) {
 	result, err := h.m.SyncTaskBranch(context.Background(), tk)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if result != SyncNoop {
 		t.Errorf("result = %q, want %q", result, SyncNoop)
@@ -283,6 +312,7 @@ func TestSyncTaskBranch_FailedGetProject(t *testing.T) {
 	tk, err := h.tasks.Store().Create("orphan task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -290,14 +320,17 @@ func TestSyncTaskBranch_FailedGetProject(t *testing.T) {
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := h.m.PrepareForTask(context.Background(), tk, nil); err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Point the task at a project that doesn't exist in the store — a
@@ -307,6 +340,7 @@ func TestSyncTaskBranch_FailedGetProject(t *testing.T) {
 	result, err := h.m.SyncTaskBranch(context.Background(), tk)
 	if err == nil {
 		t.Fatal("expected error resolving missing project")
+		panic("unreachable")
 	}
 	if result != SyncFailed {
 		t.Errorf("result = %q, want %q", result, SyncFailed)

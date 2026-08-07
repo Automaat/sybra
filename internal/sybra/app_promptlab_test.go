@@ -17,6 +17,7 @@ func setupPromptLabCoordinator(t *testing.T, cfg *config.Config, approve func(st
 	c := newPromptLabCoordinatorForTest(t, cfg, approve)
 	if _, err := c.projects.CreateMeta("https://github.com/Automaat/sybra.git", project.ProjectTypePet); err != nil {
 		t.Fatalf("CreateMeta: %v", err)
+		panic("unreachable")
 	}
 	return c
 }
@@ -26,10 +27,12 @@ func newPromptLabCoordinatorForTest(t *testing.T, cfg *config.Config, approve fu
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projects, err := project.NewStore(t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return newPromptLabCoordinator(
 		task.NewManager(store, nil),
@@ -90,6 +93,7 @@ func TestFileScrubbedProposals_NoOfflineScreenNoAutoApprove(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("fileScrubbedProposals: %v", err)
+		panic("unreachable")
 	}
 	if len(approved) != 0 {
 		t.Fatalf("approved = %v, want none: an unscreened variant must not reach production A/B", approved)
@@ -118,6 +122,7 @@ func TestFileScrubbedProposals_AutoApproveClosesTheLoop(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("fileScrubbedProposals: %v", err)
+		panic("unreachable")
 	}
 	if len(filed) != 1 {
 		t.Fatalf("filed %d proposals, want 1", len(filed))
@@ -141,6 +146,7 @@ func TestFileScrubbedProposals_AutoApproveDisabled(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("fileScrubbedProposals: %v", err)
+		panic("unreachable")
 	}
 	if len(approved) != 0 {
 		t.Fatalf("approved = %v, want none when auto_approve is off", approved)
@@ -169,6 +175,7 @@ func TestFileScrubbedProposals_NeverAutoApprovesFailedVerdict(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("fileScrubbedProposals: %v", err)
+		panic("unreachable")
 	}
 	if len(approved) != 0 {
 		t.Fatalf("approved = %v, want a failed verdict to stay with a human", approved)
@@ -195,6 +202,7 @@ func TestFileScrubbedProposals_AutoApproveFailureKeepsTicking(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("a failed auto-approve must not fail the tick: %v", err)
+		panic("unreachable")
 	}
 	if len(filed) != 1 {
 		t.Fatalf("filed %d proposals, want the proposal still filed", len(filed))
@@ -202,6 +210,7 @@ func TestFileScrubbedProposals_AutoApproveFailureKeepsTicking(t *testing.T) {
 	got, err := c.tasks.Get(filed[0].ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want human-required so a human can still approve", got.Status)
@@ -227,6 +236,7 @@ func TestFileScrubbedProposals_NoProjectSkipsAutoApprove(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("fileScrubbedProposals: %v", err)
+		panic("unreachable")
 	}
 	if len(approved) != 0 {
 		t.Fatalf("approved = %v, want no dispatch that is certain to fail", approved)
@@ -237,6 +247,7 @@ func TestFileScrubbedProposals_NoProjectSkipsAutoApprove(t *testing.T) {
 	got, err := c.tasks.Get(filed[0].ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want human-required", got.Status)
@@ -278,6 +289,7 @@ func TestFileScrubbedProposals_ShutdownStopsAutoApprove(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("fileScrubbedProposals: %v", err)
+		panic("unreachable")
 	}
 	if len(filed) != 2 {
 		t.Fatalf("filed %d proposals, want both persisted for the next tick", len(filed))
@@ -288,6 +300,7 @@ func TestFileScrubbedProposals_ShutdownStopsAutoApprove(t *testing.T) {
 	got, err := c.tasks.Get(filed[1].ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusHumanRequired {
 		t.Fatalf("status = %q, want the post-cancel proposal left for the next tick", got.Status)
@@ -313,6 +326,7 @@ func TestFileScrubbedProposals_SkipsAlreadyFiledTerminalProposal(t *testing.T) {
 	filed, err := c.fileScrubbedProposals(context.Background(), promptlab.RunResult{Proposals: []promptlab.Proposal{p}})
 	if err != nil {
 		t.Fatalf("fileScrubbedProposals: %v", err)
+		panic("unreachable")
 	}
 	if len(filed) != 0 {
 		t.Fatalf("filed %d proposals, want 0 — %s was already filed and completed", len(filed), p.ID)

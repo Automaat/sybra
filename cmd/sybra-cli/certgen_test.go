@@ -21,11 +21,13 @@ func TestGeneratedCertIsAcceptedByAPinnedLeader(t *testing.T) {
 	got, err := GenerateFollowerCert(dir, []string{"127.0.0.1"}, time.Now())
 	if err != nil {
 		t.Fatalf("GenerateFollowerCert: %v", err)
+		panic("unreachable")
 	}
 
 	keypair, err := tls.LoadX509KeyPair(got.CertFile, got.KeyFile)
 	if err != nil {
 		t.Fatalf("the generated keypair does not load: %v", err)
+		panic("unreachable")
 	}
 
 	mux := http.NewServeMux()
@@ -42,9 +44,11 @@ func TestGeneratedCertIsAcceptedByAPinnedLeader(t *testing.T) {
 	client, err := cluster.NewClient(node, nil)
 	if err != nil || client == nil {
 		t.Fatalf("NewClient with the printed pin: %v", err)
+		panic("unreachable")
 	}
 	if _, err := client.ListTasks(t.Context()); err != nil {
 		t.Fatalf("a leader pinning the printed fingerprint must reach the follower: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -52,10 +56,12 @@ func TestPinnedLeaderRejectsADifferentCert(t *testing.T) {
 	genuine, err := GenerateFollowerCert(t.TempDir(), []string{"127.0.0.1"}, time.Now())
 	if err != nil {
 		t.Fatalf("GenerateFollowerCert: %v", err)
+		panic("unreachable")
 	}
 	impostor, err := GenerateFollowerCert(t.TempDir(), []string{"127.0.0.1"}, time.Now())
 	if err != nil {
 		t.Fatalf("GenerateFollowerCert: %v", err)
+		panic("unreachable")
 	}
 	if genuine.Pin == impostor.Pin {
 		t.Fatal("two independently generated certs must not share a fingerprint")
@@ -64,6 +70,7 @@ func TestPinnedLeaderRejectsADifferentCert(t *testing.T) {
 	keypair, err := tls.LoadX509KeyPair(impostor.CertFile, impostor.KeyFile)
 	if err != nil {
 		t.Fatalf("load impostor keypair: %v", err)
+		panic("unreachable")
 	}
 	srv := httptest.NewUnstartedServer(http.NewServeMux())
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{keypair}, MinVersion: tls.VersionTLS12}
@@ -74,15 +81,18 @@ func TestPinnedLeaderRejectsADifferentCert(t *testing.T) {
 	client, err := cluster.NewClient(node, nil)
 	if err != nil || client == nil {
 		t.Fatalf("NewClient: %v", err)
+		panic("unreachable")
 	}
 	if _, err := client.ListTasks(t.Context()); err == nil {
 		t.Fatal("a node serving a certificate the leader did not pin must be refused")
+		panic("unreachable")
 	}
 }
 
 func TestGenerateFollowerCertRequiresAHost(t *testing.T) {
 	if _, err := GenerateFollowerCert(t.TempDir(), nil, time.Now()); err == nil {
 		t.Fatal("a cert with no host is unusable for a leader that dials by address")
+		panic("unreachable")
 	}
 }
 
@@ -91,14 +101,17 @@ func TestRegeneratingOverAWorldReadableKeyTightensIt(t *testing.T) {
 	stale := filepath.Join(dir, "follower.key")
 	if err := os.WriteFile(stale, []byte("old"), 0o644); err != nil {
 		t.Fatalf("seed stale key: %v", err)
+		panic("unreachable")
 	}
 	got, err := GenerateFollowerCert(dir, []string{"127.0.0.1"}, time.Now())
 	if err != nil {
 		t.Fatalf("GenerateFollowerCert: %v", err)
+		panic("unreachable")
 	}
 	info, err := os.Stat(got.KeyFile)
 	if err != nil {
 		t.Fatalf("stat key: %v", err)
+		panic("unreachable")
 	}
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("O_TRUNC keeps an existing file's mode, so a key restored at 0644 stays world-readable: got %04o", perm)
@@ -109,18 +122,22 @@ func TestGeneratedCertIsNotACA(t *testing.T) {
 	got, err := GenerateFollowerCert(t.TempDir(), []string{"127.0.0.1"}, time.Now())
 	if err != nil {
 		t.Fatalf("GenerateFollowerCert: %v", err)
+		panic("unreachable")
 	}
 	pemBytes, err := os.ReadFile(got.CertFile)
 	if err != nil {
 		t.Fatalf("read cert: %v", err)
+		panic("unreachable")
 	}
 	block, _ := pem.Decode(pemBytes)
 	if block == nil {
 		t.Fatal("cert is not PEM")
+		panic("unreachable")
 	}
 	parsed, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
 		t.Fatalf("parse cert: %v", err)
+		panic("unreachable")
 	}
 	if parsed.IsCA {
 		t.Fatal("the pinned path never builds a chain; a follower leaf must not be able to sign other certs")
@@ -135,10 +152,12 @@ func TestGeneratedKeyIsNotWorldReadable(t *testing.T) {
 	got, err := GenerateFollowerCert(dir, []string{"127.0.0.1"}, time.Now())
 	if err != nil {
 		t.Fatalf("GenerateFollowerCert: %v", err)
+		panic("unreachable")
 	}
 	info, err := os.Stat(got.KeyFile)
 	if err != nil {
 		t.Fatalf("stat key: %v", err)
+		panic("unreachable")
 	}
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("private key mode = %04o, want 0600", perm)
@@ -146,6 +165,7 @@ func TestGeneratedKeyIsNotWorldReadable(t *testing.T) {
 	encoded, err := os.ReadFile(got.CertFile)
 	if err != nil {
 		t.Fatalf("read cert: %v", err)
+		panic("unreachable")
 	}
 	if !strings.Contains(string(encoded), "BEGIN CERTIFICATE") {
 		t.Fatalf("cert file is not PEM: %s", filepath.Base(got.CertFile))

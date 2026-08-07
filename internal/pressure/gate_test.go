@@ -112,6 +112,7 @@ func TestAdmitFailsOpenOnSamplerError(t *testing.T) {
 	g := New(config.PressureConfig{Enabled: true, MaxLoadPerCPU: 8, SampleIntervalSeconds: 15}, "/tmp", nil)
 	if g == nil {
 		t.Fatal("New returned nil for enabled gate")
+		panic("unreachable")
 	}
 	g.sampleFn = func(string) (Sample, error) {
 		return Sample{}, assertError("probe failed")
@@ -125,6 +126,7 @@ func TestAdmitCachesSampleWithinTTL(t *testing.T) {
 	g := New(config.PressureConfig{Enabled: true, MaxLoadPerCPU: 8, SampleIntervalSeconds: 60}, "/tmp", nil)
 	if g == nil {
 		t.Fatal("New returned nil for enabled gate")
+		panic("unreachable")
 	}
 	calls := 0
 	g.sampleFn = func(string) (Sample, error) {
@@ -145,6 +147,7 @@ func TestNewCoercesNonPositiveSampleInterval(t *testing.T) {
 	g := New(config.PressureConfig{Enabled: true, MaxLoadPerCPU: 8, SampleIntervalSeconds: 0}, "/tmp", nil)
 	if g == nil {
 		t.Fatal("New returned nil for an enabled config")
+		panic("unreachable")
 	}
 	if g.interval != DefaultSampleIntervalSeconds*time.Second {
 		t.Fatalf("interval = %v, want %v", g.interval, DefaultSampleIntervalSeconds*time.Second)

@@ -23,10 +23,12 @@ func TestSelectDeterministic(t *testing.T) {
 	cfg := enabledDefaultConfig()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("DefaultConfig().Validate: %v", err)
+		panic("unreachable")
 	}
 	a, ok, err := Select(cfg, "task-1", "implementation", "implement")
 	if err != nil || !ok {
 		t.Fatalf("Select: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if a.Kind != "model" {
 		t.Fatalf("Kind = %q, want model", a.Kind)
@@ -35,6 +37,7 @@ func TestSelectDeterministic(t *testing.T) {
 		got, ok, err := Select(cfg, "task-1", "implementation", "implement")
 		if err != nil || !ok {
 			t.Fatalf("Select repeat: ok=%v err=%v", ok, err)
+			panic("unreachable")
 		}
 		if !reflect.DeepEqual(got, a) {
 			t.Fatalf("assignment changed: got %+v want %+v", got, a)
@@ -47,6 +50,7 @@ func TestSelectStampsDecisionVersionFromConfigWeightsVersion(t *testing.T) {
 	a, ok, err := Select(cfg, "task-1", "implementation", "implement")
 	if err != nil || !ok {
 		t.Fatalf("Select: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if a.DecisionVersion != 0 {
 		t.Fatalf("DecisionVersion = %d, want 0 for a config with no WeightsVersion", a.DecisionVersion)
@@ -57,6 +61,7 @@ func TestSelectStampsDecisionVersionFromConfigWeightsVersion(t *testing.T) {
 	a, ok, err = Select(cfg, "task-1", "implementation", "implement")
 	if err != nil || !ok {
 		t.Fatalf("Select: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if a.DecisionVersion != 42 {
 		t.Fatalf("DecisionVersion = %d, want 42", a.DecisionVersion)
@@ -77,6 +82,7 @@ func TestSelectStageUnitIncludesStep(t *testing.T) {
 	a, ok, err := Select(cfg, "task", "implementation", "one")
 	if err != nil || !ok {
 		t.Fatalf("Select one: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if a.AssignmentKey != "task|implementation|one" {
 		t.Fatalf("assignment key = %q", a.AssignmentKey)
@@ -99,6 +105,7 @@ func TestSelectWeightedDistribution(t *testing.T) {
 		a, ok, err := Select(cfg, fmt.Sprintf("task-%d", i), "implementation", "implement")
 		if err != nil || !ok {
 			t.Fatalf("Select %d: ok=%v err=%v", i, ok, err)
+			panic("unreachable")
 		}
 		counts[a.VariantID]++
 	}
@@ -111,6 +118,7 @@ func TestSelectSkipsNonMatchingRole(t *testing.T) {
 	cfg := DefaultConfig()
 	if _, ok, err := Select(cfg, "task-1", "deploy", "deploy"); err != nil || ok {
 		t.Fatalf("Select deploy ok=%v err=%v, want disabled", ok, err)
+		panic("unreachable")
 	}
 }
 
@@ -131,6 +139,7 @@ func TestDefaultConfigUsesCheapBracketForCodeAuthorRoles(t *testing.T) {
 				a, ok, err := Select(cfg, fmt.Sprintf("task-%d", i), tt.role, "step")
 				if err != nil || !ok {
 					t.Fatalf("Select ok=%v err=%v", ok, err)
+					panic("unreachable")
 				}
 				if a.ExperimentID != tt.experimentID {
 					t.Fatalf("ExperimentID = %q, want %s", a.ExperimentID, tt.experimentID)
@@ -171,6 +180,7 @@ func TestDefaultConfigUsesExpensiveBracketForFixReview(t *testing.T) {
 		a, ok, err := Select(cfg, fmt.Sprintf("task-%d", i), "fix-review", "step")
 		if err != nil || !ok {
 			t.Fatalf("Select ok=%v err=%v", ok, err)
+			panic("unreachable")
 		}
 		if a.ExperimentID != "fix-review-expensive" {
 			t.Fatalf("ExperimentID = %q, want fix-review-expensive", a.ExperimentID)
@@ -191,6 +201,7 @@ func TestDefaultConfigUsesExpensiveBracketForReviewRoles(t *testing.T) {
 				a, ok, err := Select(cfg, fmt.Sprintf("task-%d", i), role, "step")
 				if err != nil || !ok {
 					t.Fatalf("Select ok=%v err=%v", ok, err)
+					panic("unreachable")
 				}
 				wantExp := "review-expensive"
 				if role == "review" {
@@ -221,6 +232,7 @@ func TestDefaultConfigReviewTightenVariantIsDigestedPromptTransform(t *testing.T
 		}
 		if cfg.Experiments[i].Subject == nil || cfg.Experiments[i].Subject.Role != "review" {
 			t.Fatalf("Subject = %+v, want role review", cfg.Experiments[i].Subject)
+			panic("unreachable")
 		}
 		for j := range cfg.Experiments[i].Variants {
 			if cfg.Experiments[i].Variants[j].ID == "pl-a2d853b2c1d9-codex-gpt-5.5" {
@@ -230,12 +242,14 @@ func TestDefaultConfigReviewTightenVariantIsDigestedPromptTransform(t *testing.T
 	}
 	if found == nil {
 		t.Fatal("prompt-lab review variant not found")
+		panic("unreachable")
 	}
 	if found.Version != "pl-a2d853b2c1d9" {
 		t.Fatalf("Version = %q, want proposal id", found.Version)
 	}
 	if found.PromptTransform == nil || found.PromptTransform.Op != "append" || found.PromptTransform.Text != ReviewTightenInstructionsPLA2D853B2C1D9 {
 		t.Fatalf("PromptTransform = %+v, want append of reviewed text", found.PromptTransform)
+		panic("unreachable")
 	}
 	if want := digestString(ReviewTightenInstructionsPLA2D853B2C1D9); found.Digest != want {
 		t.Fatalf("Digest = %q, want %q", found.Digest, want)
@@ -244,6 +258,7 @@ func TestDefaultConfigReviewTightenVariantIsDigestedPromptTransform(t *testing.T
 	data, err := os.ReadFile("../prompteval/testdata/promptlab-review-tighten-codex-variants.json")
 	if err != nil {
 		t.Fatalf("read offline fixture: %v", err)
+		panic("unreachable")
 	}
 	var fixtures []struct {
 		ID     string `json:"id"`
@@ -252,6 +267,7 @@ func TestDefaultConfigReviewTightenVariantIsDigestedPromptTransform(t *testing.T
 	}
 	if err := json.Unmarshal(data, &fixtures); err != nil {
 		t.Fatalf("parse offline fixture: %v", err)
+		panic("unreachable")
 	}
 	if len(fixtures) != 1 {
 		t.Fatalf("offline fixture count = %d, want 1", len(fixtures))
@@ -274,6 +290,7 @@ func TestSelectValidatesAllPositiveWeightVariants(t *testing.T) {
 	}}}
 	if _, _, err := Select(cfg, "task-1", "implementation", "implement"); err == nil {
 		t.Fatal("Select should reject invalid positive-weight variant before hashing")
+		panic("unreachable")
 	}
 }
 
@@ -291,6 +308,7 @@ func TestSelectRejectsBracketTierMismatch(t *testing.T) {
 	}}}
 	if _, _, err := Select(cfg, "task-1", "implementation", "implement"); err == nil {
 		t.Fatal("Select should reject expensive variant in cheap bracket")
+		panic("unreachable")
 	}
 }
 
@@ -307,6 +325,7 @@ func TestSelectAllowsUnbracketedMixedTiers(t *testing.T) {
 	}}}
 	if _, ok, err := Select(cfg, "task-1", "implementation", "implement"); err != nil || !ok {
 		t.Fatalf("Select ok=%v err=%v, want unbracketed mixed tiers allowed", ok, err)
+		panic("unreachable")
 	}
 }
 
@@ -345,6 +364,7 @@ func TestSelectRejectsInvalidTierAndBracket(t *testing.T) {
 			cfg := Config{Enabled: &enabled, Experiments: []Experiment{tt.exp}}
 			if _, _, err := Select(cfg, "task-1", "implementation", "implement"); err == nil {
 				t.Fatal("Select should reject invalid tier/bracket config")
+				panic("unreachable")
 			}
 		})
 	}
@@ -366,6 +386,7 @@ func TestSelectEligibleSkipsUnavailableProvider(t *testing.T) {
 	})
 	if err != nil || !ok {
 		t.Fatalf("SelectEligible ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if a.VariantID != "available" {
 		t.Fatalf("VariantID = %q, want available", a.VariantID)
@@ -388,6 +409,7 @@ func TestSelectEligibleFallsBackWhenAllVariantsShareUnhealthyProvider(t *testing
 	})
 	if err != nil {
 		t.Fatalf("SelectEligible err = %v, want nil (should defer to normal provider failover)", err)
+		panic("unreachable")
 	}
 	if ok {
 		t.Fatalf("SelectEligible ok = true, want false so callers fall back to non-AB dispatch; got %+v", a)
@@ -410,6 +432,7 @@ func TestSelectEligibleStillErrorsWhenAllWeightsAreZero(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("SelectEligible err = nil, want config error for all-zero-weight experiment")
+		panic("unreachable")
 	}
 	if ok {
 		t.Fatalf("SelectEligible ok = true, want false")
@@ -435,9 +458,11 @@ func TestSelectPromptSkillPayload(t *testing.T) {
 	a, ok, err := Select(cfg, "task-1", "implementation", "implement")
 	if err != nil || !ok {
 		t.Fatalf("Select ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if a.PromptTransform == nil || a.PromptTransform.Op != "append" || a.PromptTransform.Text != "\nUse the variant." {
 		t.Fatalf("PromptTransform = %+v", a.PromptTransform)
+		panic("unreachable")
 	}
 	if got := a.SkillAliases["sybra-test"]; got != "sybra-test-v2" {
 		t.Fatalf("SkillAliases[sybra-test] = %q", got)
@@ -465,6 +490,7 @@ func TestValidateVariantPromptTransform(t *testing.T) {
 			err := validateVariant("exp", Variant{ID: "v", Provider: "claude", Model: "sonnet", PromptTransform: tt.pt})
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("validateVariant err = %v, wantErr %v", err, tt.wantErr)
+				panic("unreachable")
 			}
 		})
 	}
@@ -490,6 +516,7 @@ func TestValidateVariantSkillAliases(t *testing.T) {
 			err := validateVariant("exp", Variant{ID: "v", Provider: "claude", Model: "sonnet", SkillAliases: tt.aliases})
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("validateVariant err = %v, wantErr %v", err, tt.wantErr)
+				panic("unreachable")
 			}
 		})
 	}
@@ -507,6 +534,7 @@ func TestConfigValidateChecksDisabledExperiments(t *testing.T) {
 	}}}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate should reject disabled invalid experiment")
+		panic("unreachable")
 	}
 }
 
@@ -557,9 +585,11 @@ experiments:
 	var cfg Config
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
+		panic("unreachable")
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
+		panic("unreachable")
 	}
 	if got := cfg.Experiments[0].Subject.WorkflowID; got != "test-workflow" {
 		t.Fatalf("workflow_id = %q", got)
@@ -592,6 +622,7 @@ func TestConfigValidatePromptAndSkillAllowWorkflowOnlySubject(t *testing.T) {
 			}}}
 			if err := cfg.Validate(); err != nil {
 				t.Fatalf("Validate: %v", err)
+				panic("unreachable")
 			}
 		})
 	}
@@ -654,6 +685,7 @@ func TestConfigValidatePromptSkillRejectsProviderModelReasoningDrift(t *testing.
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatal("Validate should reject prompt/skill model attribution drift")
+				panic("unreachable")
 			}
 			msg := err.Error()
 			for _, want := range tt.wantFields {
@@ -678,6 +710,7 @@ func TestConfigValidatePromptSkillAllowsEmptyReasoningEffortAsDefault(t *testing
 	}}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -702,6 +735,7 @@ func TestConfigValidatePromptSkillRejectsRolelessMixedEffort(t *testing.T) {
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatal("Validate should reject a roleless mix of omitted and explicit reasoning_effort")
+				panic("unreachable")
 			}
 			if !strings.Contains(err.Error(), "reasoning_effort") {
 				t.Fatalf("error %q does not mention reasoning_effort", err)
@@ -725,6 +759,7 @@ func TestConfigValidatePromptSkillAllowsRolelessOmittedEffort(t *testing.T) {
 	}}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -770,6 +805,7 @@ func TestConfigValidatePromptSkillResolvesEmptyEffortAgainstRoleBaseline(t *test
 			if tt.wantReject {
 				if err == nil {
 					t.Fatal("Validate should reject a reasoning_effort mismatch")
+					panic("unreachable")
 				}
 				if !strings.Contains(err.Error(), "reasoning_effort") {
 					t.Fatalf("error %q does not mention reasoning_effort", err)
@@ -778,6 +814,7 @@ func TestConfigValidatePromptSkillResolvesEmptyEffortAgainstRoleBaseline(t *test
 			}
 			if err != nil {
 				t.Fatalf("Validate: %v", err)
+				panic("unreachable")
 			}
 		})
 	}
@@ -794,6 +831,7 @@ func TestConfigValidateCompoundAllowsProviderModelReasoningDrift(t *testing.T) {
 	}}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -854,6 +892,7 @@ func TestConfigValidateRejectsMissingPromptSkillSubject(t *testing.T) {
 			}}}
 			if err := cfg.Validate(); err == nil {
 				t.Fatal("Validate should reject missing prompt subject")
+				panic("unreachable")
 			}
 		})
 	}
@@ -871,6 +910,7 @@ func TestConfigValidateRejectsMissingSkillName(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("Validate should reject skill experiment without subject skill_name")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "skill_name") {
 		t.Fatalf("error %q does not contain %q", err.Error(), "skill_name")
@@ -896,6 +936,7 @@ func TestSelectIgnoresProviderDriftOnIneligibleVariant(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("SelectEligible should not fail homogeneity check when the drifting variant is ineligible: %v", err)
+		panic("unreachable")
 	}
 	if !ok {
 		t.Fatal("SelectEligible ok = false, want true")
@@ -920,6 +961,7 @@ func TestConfigValidateIgnoresZeroWeightPromptSkillDrift(t *testing.T) {
 			}}}
 			if err := cfg.Validate(); err != nil {
 				t.Fatalf("Validate: %v", err)
+				panic("unreachable")
 			}
 		})
 	}
@@ -935,11 +977,13 @@ func TestConfigValidateDuplicateVariantIDOnlyChecksPositiveWeight(t *testing.T) 
 	}}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
+		panic("unreachable")
 	}
 
 	cfg.Experiments[0].Variants[1].Weight = 1
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate should reject duplicate positive-weight variant ids")
+		panic("unreachable")
 	}
 }
 
@@ -961,6 +1005,7 @@ func TestSelectEligibleEvalPassedSeam(t *testing.T) {
 		a, ok, err := SelectEligibleWithEval(cfg, "task-1", "implementation", "implement", nil, evalPassed)
 		if err != nil || !ok {
 			t.Fatalf("SelectEligibleWithEval: ok=%v err=%v", ok, err)
+			panic("unreachable")
 		}
 		if a.VariantID != "passing" {
 			t.Fatalf("VariantID = %q, want passing (failing digest must be excluded)", a.VariantID)
@@ -972,14 +1017,17 @@ func TestSelectEligibleNilEvalPassedUnchanged(t *testing.T) {
 	cfg := enabledDefaultConfig()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("DefaultConfig().Validate: %v", err)
+		panic("unreachable")
 	}
 	want, ok, err := SelectEligible(cfg, "task-1", "implementation", "implement", nil)
 	if err != nil || !ok {
 		t.Fatalf("SelectEligible: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	got, ok, err := SelectEligibleWithEval(cfg, "task-1", "implementation", "implement", nil, nil)
 	if err != nil || !ok {
 		t.Fatalf("SelectEligibleWithEval(evalPassed=nil): ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("evalPassed=nil changed selection: got %+v want %+v", got, want)
@@ -1032,6 +1080,7 @@ func TestSelectCanary_InsufficientCohortForcesBaseline(t *testing.T) {
 		a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: taskID, Role: "implementation"}, nil, nil, cohortObserved)
 		if err != nil || !ok {
 			t.Fatalf("Select: ok=%v err=%v", ok, err)
+			panic("unreachable")
 		}
 		if a.VariantID != "baseline" || a.Provider != "claude" {
 			t.Fatalf("VariantID/Provider = %q/%q, want baseline/claude (insufficient cohort must force baseline)", a.VariantID, a.Provider)
@@ -1049,6 +1098,7 @@ func TestSelectCanary_StaleCohortForcesBaseline(t *testing.T) {
 	a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: "task-1", Role: "implementation"}, nil, nil, cohortObserved)
 	if err != nil || !ok {
 		t.Fatalf("Select: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if a.VariantID != "baseline" {
 		t.Fatalf("VariantID = %q, want baseline (stale cohort must force baseline even with data)", a.VariantID)
@@ -1061,6 +1111,7 @@ func TestSelectCanary_NilCohortObservedFailsClosedToBaseline(t *testing.T) {
 	a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: "task-1", Role: "implementation"}, nil, nil, nil)
 	if err != nil || !ok {
 		t.Fatalf("Select: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if a.VariantID != "baseline" {
 		t.Fatalf("VariantID = %q, want baseline (nil cohortObserved must fail closed)", a.VariantID)
@@ -1072,6 +1123,7 @@ func TestSelectCanary_NilCohortObservedFailsClosedToBaseline(t *testing.T) {
 	a2, ok2, err2 := SelectEligibleForContext(cfg, SelectionContext{TaskID: "task-1", Role: "implementation"}, nil, nil)
 	if err2 != nil || !ok2 || a2.VariantID != "baseline" {
 		t.Fatalf("SelectEligibleForContext: a=%+v ok=%v err=%v, want baseline/true/nil", a2, ok2, err2)
+		panic("unreachable")
 	}
 }
 
@@ -1087,6 +1139,7 @@ func TestSelectCanary_PercentBoundIsBoundedAndReproducible(t *testing.T) {
 		a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: taskID, Role: "implementation"}, nil, nil, cohortObserved)
 		if err != nil || !ok {
 			t.Fatalf("Select: ok=%v err=%v", ok, err)
+			panic("unreachable")
 		}
 		firstPass[taskID] = a.VariantID
 		if a.VariantID == "candidate" {
@@ -1107,6 +1160,7 @@ func TestSelectCanary_PercentBoundIsBoundedAndReproducible(t *testing.T) {
 		a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: taskID, Role: "implementation"}, nil, nil, cohortObserved)
 		if err != nil || !ok {
 			t.Fatalf("Select: ok=%v err=%v", ok, err)
+			panic("unreachable")
 		}
 		if a.VariantID != firstPass[taskID] {
 			t.Fatalf("task %s selected %q then %q, want reproducible/stable assignment", taskID, firstPass[taskID], a.VariantID)
@@ -1123,6 +1177,7 @@ func TestSelectCanary_ZeroPercentBoundAlwaysBaseline(t *testing.T) {
 		a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: taskID, Role: "implementation"}, nil, nil, cohortObserved)
 		if err != nil || !ok {
 			t.Fatalf("Select: ok=%v err=%v", ok, err)
+			panic("unreachable")
 		}
 		if a.VariantID != "baseline" {
 			t.Fatalf("task %s selected %q, want baseline (percent_bound=0 must forbid all canary traffic)", taskID, a.VariantID)
@@ -1137,6 +1192,7 @@ func TestSelectCanary_BaselineProviderIneligibleDefersToPlainSelection(t *testin
 	a, ok, err := SelectEligibleForContextWithCohort(cfg, SelectionContext{TaskID: "task-1", Role: "implementation"}, providerAllowed, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+		panic("unreachable")
 	}
 	if ok {
 		t.Fatalf("Select ok=true a=%+v, want ok=false (defer to plain provider selection/failover)", a)
@@ -1147,6 +1203,7 @@ func TestValidateExperiment_CanaryRequiresKnownBaselineVariant(t *testing.T) {
 	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "does-not-exist", PercentBound: 50, MinCohort: 0})
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() = nil, want error for unknown canary baseline_variant_id")
+		panic("unreachable")
 	}
 }
 
@@ -1155,6 +1212,7 @@ func TestValidateExperiment_CanaryRejectsZeroWeightBaseline(t *testing.T) {
 	cfg.Experiments[0].Variants[0].Weight = 0 // baseline retired via zero weight
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() = nil, want error: a zero-weight (disabled) variant must not be a canary baseline")
+		panic("unreachable")
 	}
 }
 
@@ -1162,6 +1220,7 @@ func TestValidateExperiment_CanaryPercentBoundOutOfRange(t *testing.T) {
 	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 101, MinCohort: 0})
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() = nil, want error for percent_bound > 100")
+		panic("unreachable")
 	}
 }
 
@@ -1169,6 +1228,7 @@ func TestValidateExperiment_CanaryNegativeMinCohort(t *testing.T) {
 	cfg := canaryConfig(CanaryPolicy{BaselineVariantID: "baseline", PercentBound: 50, MinCohort: -1})
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() = nil, want error for negative min_cohort")
+		panic("unreachable")
 	}
 }
 
@@ -1206,6 +1266,7 @@ func TestWithoutInvalidExperimentsKeepsDispatchAlive(t *testing.T) {
 	cfg := Config{Experiments: []Experiment{good, bad}}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("precondition: the bad experiment should fail validation")
+		panic("unreachable")
 	}
 
 	var dropped []string
@@ -1224,6 +1285,7 @@ func TestWithoutInvalidExperimentsKeepsDispatchAlive(t *testing.T) {
 	}
 	if err := got.Validate(); err != nil {
 		t.Fatalf("survivors must validate: %v", err)
+		panic("unreachable")
 	}
 	if len(cfg.Experiments) != 2 {
 		t.Fatalf("receiver mutated: len = %d, want 2", len(cfg.Experiments))
@@ -1234,5 +1296,6 @@ func TestWithoutInvalidExperimentsKeepsDispatchAlive(t *testing.T) {
 	got.Enabled = &enabled
 	if _, _, err := Select(got, "task-1", "review", "review"); err != nil {
 		t.Fatalf("Select after drop: %v", err)
+		panic("unreachable")
 	}
 }

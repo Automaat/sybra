@@ -22,6 +22,7 @@ func testAdversarialCheckCommandsIgnoreWorktreeRepoConfig(t *testing.T, which, w
 		full := append([]string{"-C", src}, args...)
 		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 
@@ -33,10 +34,12 @@ func testAdversarialCheckCommandsIgnoreWorktreeRepoConfig(t *testing.T, which, w
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("initial\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	repoCfg := "checks:\n" +
 		"  codegen:\n" +
@@ -51,6 +54,7 @@ func testAdversarialCheckCommandsIgnoreWorktreeRepoConfig(t *testing.T, which, w
 		"        - echo TRUSTED_FOCUSED\n"
 	if err := os.WriteFile(filepath.Join(src, ".sybra.yaml"), []byte(repoCfg), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	srcGit("add", ".")
 	srcGit("commit", "-m", "init")
@@ -58,17 +62,21 @@ func testAdversarialCheckCommandsIgnoreWorktreeRepoConfig(t *testing.T, which, w
 	bare := filepath.Join(tmp, "origin.git")
 	if out, err := exec.Command("git", "clone", "--bare", src, bare).CombinedOutput(); err != nil {
 		t.Fatalf("git clone --bare: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
 		t.Fatalf("git config: %v: %s", err, out)
+		panic("unreachable")
 	}
 	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", bare, "fetch", "origin", "+refs/heads/*:refs/remotes/origin/*").CombinedOutput(); err != nil {
 		t.Fatalf("git fetch: %v: %s", err, out)
+		panic("unreachable")
 	}
 
 	projects, err := project.NewStore(filepath.Join(tmp, "projects"), filepath.Join(tmp, "clones"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Project-level trusted config: not the checked-out worktree, and the
 	// trusted default-branch .sybra.yaml wins over both worktree edits and the
@@ -77,21 +85,25 @@ func testAdversarialCheckCommandsIgnoreWorktreeRepoConfig(t *testing.T, which, w
 		"\nclone_path: " + bare + "\ntype: pet\nchecks:\n  codegen:\n    - echo APP_CODEGEN\n  verify:\n    - echo APP_VERIFY\n  focused:\n    - name: app\n      paths:\n        - internal/project/**\n      commands:\n        - echo APP_FOCUSED\n"
 	if err := os.WriteFile(filepath.Join(tmp, "projects", "owner--repo.yaml"), []byte(projYAML), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	taskStore, err := task.NewStore(filepath.Join(tmp, "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	taskMgr := task.NewManager(taskStore, nil)
 	tk, err := taskMgr.Create("adversarial verify commands", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	projectID := "owner/repo"
 	tk, err = taskMgr.Update(tk.ID, task.Update{ProjectID: &projectID})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	logger := discardLogger()
@@ -105,12 +117,14 @@ func testAdversarialCheckCommandsIgnoreWorktreeRepoConfig(t *testing.T, which, w
 	wtPath, err := wm.PrepareForTask(t.Context(), tk, nil)
 	if err != nil {
 		t.Fatalf("PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 
 	// Attacker-controlled .sybra.yaml planted directly in the task's own
 	// worktree (e.g. by a compromised implementation agent).
 	if err := os.WriteFile(filepath.Join(wtPath, ".sybra.yaml"), []byte("checks:\n  codegen:\n    - echo UNTRUSTED_CODEGEN\n  verify:\n    - echo UNTRUSTED_VERIFY\n  focused:\n    - name: untrusted\n      paths:\n        - internal/workflow/**\n      commands:\n        - echo UNTRUSTED_FOCUSED\nsetup:\n  - echo UNTRUSTED_SETUP\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	adapter := &checkConfigGetterAdapter{

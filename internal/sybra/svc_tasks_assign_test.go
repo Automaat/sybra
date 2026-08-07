@@ -26,11 +26,13 @@ func TestAssignTaskPersistsVerbatim(t *testing.T) {
 	}
 	if err := svc.AssignTask(pushed); err != nil {
 		t.Fatalf("AssignTask: %v", err)
+		panic("unreachable")
 	}
 
 	got, err := svc.GetTask("leader-01")
 	if err != nil {
 		t.Fatalf("GetTask after assign: %v", err)
+		panic("unreachable")
 	}
 	if got.ID != "leader-01" || got.Title != "Implement the thing" {
 		t.Fatalf("mirror did not preserve identity: %+v", got)
@@ -48,14 +50,17 @@ func TestListTasksForNodeExcludesDegradedEntries(t *testing.T) {
 	created, err := app.tasks.Create("will break", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(created.FilePath, []byte("not valid frontmatter"), 0o600); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	all, err := svc.ListTasks()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(all) != 1 || !all[0].Degraded {
 		t.Fatalf("ListTasks = %+v, want one degraded entry", all)
@@ -63,6 +68,7 @@ func TestListTasksForNodeExcludesDegradedEntries(t *testing.T) {
 	follower, err := svc.ListTasksForNode("follower")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(follower) != 0 {
 		t.Fatalf("ListTasksForNode replicated degraded entry: %+v", follower)
@@ -104,6 +110,7 @@ func TestAssignTaskScrubsLeakedMirrorBookkeeping(t *testing.T) {
 	got, err := svc.GetTask("leader-mirror-leak")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("status = %q, want it to stay in-progress — a stale push carrying leaked mirror bookkeeping must not masquerade as mirror-authoritative", got.Status)
@@ -116,14 +123,17 @@ func TestAssignTaskUpsertsOnRepeatedPush(t *testing.T) {
 	base := task.Task{ID: "leader-02", Title: "t", Status: task.StatusTodo, AgentMode: task.AgentModeHeadless}
 	if err := svc.AssignTask(base); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	base.Status = task.StatusInProgress
 	if err := svc.AssignTask(base); err != nil {
 		t.Fatalf("second push (status update) should upsert: %v", err)
+		panic("unreachable")
 	}
 	got, err := svc.GetTask("leader-02")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got.Status != task.StatusInProgress {
 		t.Fatalf("upsert did not apply the new status: %s", got.Status)
@@ -132,6 +142,7 @@ func TestAssignTaskUpsertsOnRepeatedPush(t *testing.T) {
 	all, err := svc.ListTasks()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	count := 0
 	for _, tk := range all {
@@ -167,18 +178,22 @@ func TestAssignTaskSemanticallyIdenticalPushIsNoOp(t *testing.T) {
 	}
 	if err := svc.AssignTask(pushed); err != nil {
 		t.Fatalf("first AssignTask: %v", err)
+		panic("unreachable")
 	}
 	got, err := svc.GetTask("leader-noop")
 	if err != nil {
 		t.Fatalf("GetTask: %v", err)
+		panic("unreachable")
 	}
 	infoBefore, err := os.Stat(got.FilePath)
 	if err != nil {
 		t.Fatalf("Stat before second push: %v", err)
+		panic("unreachable")
 	}
 	bodyBefore, err := os.ReadFile(got.FilePath)
 	if err != nil {
 		t.Fatalf("ReadFile before second push: %v", err)
+		panic("unreachable")
 	}
 
 	mirrorUpdatedAt := time.Now().UTC().Add(2 * time.Minute)
@@ -190,14 +205,17 @@ func TestAssignTaskSemanticallyIdenticalPushIsNoOp(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	if err := svc.AssignTask(pushed); err != nil {
 		t.Fatalf("second semantically identical AssignTask: %v", err)
+		panic("unreachable")
 	}
 	infoAfter, err := os.Stat(got.FilePath)
 	if err != nil {
 		t.Fatalf("Stat after second push: %v", err)
+		panic("unreachable")
 	}
 	bodyAfter, err := os.ReadFile(got.FilePath)
 	if err != nil {
 		t.Fatalf("ReadFile after second push: %v", err)
+		panic("unreachable")
 	}
 
 	if !infoBefore.ModTime().Equal(infoAfter.ModTime()) {
@@ -232,6 +250,7 @@ func TestAssignTaskDispatchesStageStatus(t *testing.T) {
 	}
 	if err := svc.AssignTask(pushed); err != nil {
 		t.Fatalf("AssignTask: %v", err)
+		panic("unreachable")
 	}
 
 	mu.Lock()
@@ -264,6 +283,7 @@ func TestAssignTaskRejectsMalformed(t *testing.T) {
 			err := svc.AssignTask(c.in)
 			if err == nil {
 				t.Fatal("want validation error")
+				panic("unreachable")
 			}
 			var ce *clientError
 			if !errors.As(err, &ce) || ce.HTTPStatus() != 400 {
@@ -271,6 +291,7 @@ func TestAssignTaskRejectsMalformed(t *testing.T) {
 			}
 			if _, getErr := svc.GetTask("x"); getErr == nil {
 				t.Fatal("a rejected task must not have been written to the store")
+				panic("unreachable")
 			}
 		})
 	}

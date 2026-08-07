@@ -37,6 +37,7 @@ func TestBuiltinInternalWorkflowPromptsDoNotImplicitlySelectOperatorSkills(t *te
 			step := def.StepByID(tc.step)
 			if step == nil {
 				t.Fatalf("%s step %s not found", tc.workflow, tc.step)
+				panic("unreachable")
 			}
 			prompt := step.Config.Prompt
 			if prompt == "" {
@@ -63,11 +64,13 @@ func mustPromptSkillFrontmatter(t *testing.T, name string) skillPromptFrontmatte
 	data, err := skills.FS.ReadFile("data/" + name + ".md")
 	if err != nil {
 		t.Fatalf("read %s skill: %v", name, err)
+		panic("unreachable")
 	}
 	block := promptFrontmatterBlock(t, string(data))
 	var meta skillPromptFrontmatter
 	if err := yaml.Unmarshal([]byte(block), &meta); err != nil {
 		t.Fatalf("parse %s frontmatter: %v", name, err)
+		panic("unreachable")
 	}
 	return meta
 }

@@ -20,6 +20,7 @@ func TestStartFixReviewAgentSkipsWhenDispatchClaimHeld(t *testing.T) {
 	created, err := tasks.Create("Fix PR", "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	updated, err := tasks.Update(created.ID, task.Update{
 		ProjectID: task.Ptr("Automaat/sybra"),
@@ -27,6 +28,7 @@ func TestStartFixReviewAgentSkipsWhenDispatchClaimHeld(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	claim, ok := r.agents.TryClaimDispatch(updated.ID)
@@ -37,11 +39,13 @@ func TestStartFixReviewAgentSkipsWhenDispatchClaimHeld(t *testing.T) {
 
 	if err := r.StartFixReviewAgent(updated); err != nil {
 		t.Fatalf("StartFixReviewAgent() error = %v, want nil (skip)", err)
+		panic("unreachable")
 	}
 
 	fresh, err := tasks.Get(updated.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(fresh.AgentRuns) != 0 {
 		t.Fatalf("AgentRuns = %d, want 0: a fix-review agent must not start while another dispatch claim is held", len(fresh.AgentRuns))
@@ -63,6 +67,7 @@ func TestApplyReviewPhase_ManualParkExplainsItself(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
+		panic("unreachable")
 	}
 	if strings.TrimSpace(got.StatusReason) == "" {
 		t.Fatal("manual park left the board with a needs-you badge and no reason")
@@ -92,6 +97,7 @@ func TestApplyReviewPhase_ManualParkKeepsExistingReason(t *testing.T) {
 	seeded, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
+		panic("unreachable")
 	}
 	if seeded.StatusReason != existing {
 		t.Fatalf("seed did not persist: StatusReason = %q", seeded.StatusReason)
@@ -105,6 +111,7 @@ func TestApplyReviewPhase_ManualParkKeepsExistingReason(t *testing.T) {
 	got, err := tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
+		panic("unreachable")
 	}
 	if got.StatusReason != existing {
 		t.Fatalf("StatusReason = %q, want the pre-existing %q preserved", got.StatusReason, existing)
@@ -116,6 +123,7 @@ func mustReviewTask(t *testing.T, tasks *task.Manager, title string) task.Task {
 	created, err := tasks.Create(title, "", task.AgentModeHeadless)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	updated, err := tasks.Update(created.ID, task.Update{
 		ProjectID: task.Ptr("Automaat/sybra"),
@@ -124,6 +132,7 @@ func mustReviewTask(t *testing.T, tasks *task.Manager, title string) task.Task {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return updated
 }

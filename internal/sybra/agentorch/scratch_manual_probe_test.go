@@ -36,6 +36,7 @@ func TestManualProbe_NestedFixDispatchActuallyStarts(t *testing.T) {
 	projStore, err := project.NewStore(projDir, clonesDir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	proj := project.Project{
 		ID: "test/proj", Name: "proj", Owner: "test", Repo: "proj",
@@ -47,6 +48,7 @@ func TestManualProbe_NestedFixDispatchActuallyStarts(t *testing.T) {
 	taskStore, err := task.NewStore(filepath.Join(t.TempDir(), "tasks"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	tasks := task.NewManager(taskStore, nil)
 
@@ -58,6 +60,7 @@ func TestManualProbe_NestedFixDispatchActuallyStarts(t *testing.T) {
 	tk, err := tasks.Create("conflicting task", "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -67,12 +70,14 @@ func TestManualProbe_NestedFixDispatchActuallyStarts(t *testing.T) {
 	wtPath, err := wtMgr.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("initial PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	run := func(dir string, args ...string) {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	run(wtPath, "config", "user.email", "test@test.com")
@@ -100,6 +105,7 @@ func TestManualProbe_NestedFixDispatchActuallyStarts(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer agentMgr.KillAgentsForTask(tk.ID, 5*time.Second)
 
@@ -126,6 +132,7 @@ func TestManualProbe_NestedFixDispatchActuallyStarts(t *testing.T) {
 
 	if nestedErr != nil {
 		t.Fatalf("nested fix-step dispatch failed: %v (this is the bug: ErrDispatchInFlight means claim was still held)", nestedErr)
+		panic("unreachable")
 	}
 	if !nestedAgentStarted {
 		t.Fatal("nested fix-step dispatch did not start an agent")

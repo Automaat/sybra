@@ -52,6 +52,7 @@ func TestCheckerIncludesDockerReclaimableFinding(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
@@ -64,9 +65,11 @@ func TestCheckerIncludesDockerReclaimableFinding(t *testing.T) {
 	report := c.LatestReport()
 	if report == nil {
 		t.Fatal("LatestReport returned nil")
+		panic("unreachable")
 	}
 	if report.Docker == nil {
 		t.Fatal("Docker = nil, want sample")
+		panic("unreachable")
 	}
 	if report.Docker.ReclaimableBytes != dockerReclaimableThresholdBytes {
 		t.Fatalf("Docker.ReclaimableBytes = %d, want %d", report.Docker.ReclaimableBytes, dockerReclaimableThresholdBytes)
@@ -81,6 +84,7 @@ func TestCheckerIncludesDockerReclaimableFinding(t *testing.T) {
 	}
 	if dockerFinding == nil {
 		t.Fatalf("expected %q finding, got %v", CatDockerReclaimable, findingCategories(report.Findings))
+		panic("unreachable")
 	}
 	if dockerFinding.Fingerprint != string(CatDockerReclaimable) {
 		t.Fatalf("Fingerprint = %q, want %q", dockerFinding.Fingerprint, CatDockerReclaimable)
@@ -94,6 +98,7 @@ func TestCheckerSkipsSandboxCheckWhenUnwired(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
@@ -102,6 +107,7 @@ func TestCheckerSkipsSandboxCheckWhenUnwired(t *testing.T) {
 	report := c.LatestReport()
 	if report == nil {
 		t.Fatal("LatestReport returned nil")
+		panic("unreachable")
 	}
 	for _, f := range report.Findings {
 		if f.Category == CatSandboxCleanup {
@@ -117,6 +123,7 @@ func TestCheckerIncludesSandboxCleanupFinding(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
@@ -131,6 +138,7 @@ func TestCheckerIncludesSandboxCleanupFinding(t *testing.T) {
 	report := c.LatestReport()
 	if report == nil {
 		t.Fatal("LatestReport returned nil")
+		panic("unreachable")
 	}
 	var found *Finding
 	for i := range report.Findings {
@@ -141,6 +149,7 @@ func TestCheckerIncludesSandboxCleanupFinding(t *testing.T) {
 	}
 	if found == nil {
 		t.Fatalf("expected %q finding, got %v", CatSandboxCleanup, findingCategories(report.Findings))
+		panic("unreachable")
 	}
 	if found.TaskID != "task-quarantined" {
 		t.Errorf("TaskID = %q, want task-quarantined", found.TaskID)
@@ -161,9 +170,11 @@ func TestCheckerIncludesUnreadableTaskFinding(t *testing.T) {
 	store, err := task.NewStore(tasksDir)
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(tasksDir, "bad.md"), []byte("not valid frontmatter"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
@@ -172,6 +183,7 @@ func TestCheckerIncludesUnreadableTaskFinding(t *testing.T) {
 	report := c.LatestReport()
 	if report == nil {
 		t.Fatal("LatestReport returned nil")
+		panic("unreachable")
 	}
 	var found *Finding
 	for i := range report.Findings {
@@ -182,6 +194,7 @@ func TestCheckerIncludesUnreadableTaskFinding(t *testing.T) {
 	}
 	if found == nil {
 		t.Fatalf("expected %q finding, got %v", CatTaskUnreadable, findingCategories(report.Findings))
+		panic("unreachable")
 	}
 	if found.Evidence["file"] != "bad.md" {
 		t.Errorf("Evidence[file] = %v, want bad.md", found.Evidence["file"])
@@ -203,6 +216,7 @@ func TestCheckerSkipsGHAuthCheckWhenUnwired(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
@@ -211,6 +225,7 @@ func TestCheckerSkipsGHAuthCheckWhenUnwired(t *testing.T) {
 	report := c.LatestReport()
 	if report == nil {
 		t.Fatal("LatestReport returned nil")
+		panic("unreachable")
 	}
 	for _, f := range report.Findings {
 		if f.Category == CatGHAuthUnavailable {
@@ -226,6 +241,7 @@ func TestCheckerIncludesGHAuthUnavailableFinding(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
@@ -236,6 +252,7 @@ func TestCheckerIncludesGHAuthUnavailableFinding(t *testing.T) {
 	report := c.LatestReport()
 	if report == nil {
 		t.Fatal("LatestReport returned nil")
+		panic("unreachable")
 	}
 	var found *Finding
 	for i := range report.Findings {
@@ -246,6 +263,7 @@ func TestCheckerIncludesGHAuthUnavailableFinding(t *testing.T) {
 	}
 	if found == nil {
 		t.Fatalf("expected %q finding, got %v", CatGHAuthUnavailable, findingCategories(report.Findings))
+		panic("unreachable")
 	}
 	if found.Severity != SeverityCritical {
 		t.Errorf("Severity = %q, want critical", found.Severity)
@@ -259,6 +277,7 @@ func TestCheckerIncludesGHAuthUnavailableFinding_TransientIsWarning(t *testing.T
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
@@ -269,6 +288,7 @@ func TestCheckerIncludesGHAuthUnavailableFinding_TransientIsWarning(t *testing.T
 	report := c.LatestReport()
 	if report == nil {
 		t.Fatal("LatestReport returned nil")
+		panic("unreachable")
 	}
 	var found *Finding
 	for i := range report.Findings {
@@ -279,6 +299,7 @@ func TestCheckerIncludesGHAuthUnavailableFinding_TransientIsWarning(t *testing.T
 	}
 	if found == nil {
 		t.Fatalf("expected %q finding, got %v", CatGHAuthUnavailable, findingCategories(report.Findings))
+		panic("unreachable")
 	}
 	if found.Severity != SeverityWarning {
 		t.Errorf("Severity = %q, want warning — a transient auth failure self-heals via the circuit breaker and shouldn't page like a permanent misconfiguration", found.Severity)
@@ -292,6 +313,7 @@ func TestCheckerIncludesPressureTelemetry(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	ranAt := time.Date(2026, 7, 16, 20, 30, 0, 0, time.UTC)
@@ -317,15 +339,18 @@ func TestCheckerIncludesPressureTelemetry(t *testing.T) {
 	report := c.LatestReport()
 	if report == nil {
 		t.Fatal("LatestReport returned nil")
+		panic("unreachable")
 	}
 	if report.Pressure == nil {
 		t.Fatal("Pressure = nil, want telemetry")
+		panic("unreachable")
 	}
 	if report.Pressure.DiskFreePct != 12.5 || report.Pressure.WarningDiskFreePct != 15 || report.Pressure.CriticalDiskFreePct != 5 {
 		t.Fatalf("Pressure = %+v", *report.Pressure)
 	}
 	if report.Pressure.LastReclaim == nil {
 		t.Fatal("Pressure.LastReclaim = nil, want last reclaim outcome")
+		panic("unreachable")
 	}
 	if report.Pressure.LastReclaim.RanAt != ranAt {
 		t.Fatalf("LastReclaim.RanAt = %s, want %s", report.Pressure.LastReclaim.RanAt, ranAt)
@@ -350,6 +375,7 @@ func TestCheckerSanitizesUnreadablePressureSample(t *testing.T) {
 	store, err := task.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("task.NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
@@ -368,9 +394,11 @@ func TestCheckerSanitizesUnreadablePressureSample(t *testing.T) {
 	report := c.LatestReport()
 	if report == nil {
 		t.Fatal("LatestReport returned nil")
+		panic("unreachable")
 	}
 	if report.Pressure == nil {
 		t.Fatal("Pressure = nil, want sanitized telemetry")
+		panic("unreachable")
 	}
 	if report.Pressure.DiskFreePct != -1 {
 		t.Errorf("DiskFreePct = %v, want -1 (sanitized NaN)", report.Pressure.DiskFreePct)
@@ -387,6 +415,7 @@ func TestCheckerSanitizesUnreadablePressureSample(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(home, "health-report.json"))
 	if err != nil {
 		t.Fatalf("read persisted report: %v", err)
+		panic("unreachable")
 	}
 	var persisted struct {
 		Score    string `json:"score"`
@@ -398,12 +427,14 @@ func TestCheckerSanitizesUnreadablePressureSample(t *testing.T) {
 	}
 	if err := json.Unmarshal(data, &persisted); err != nil {
 		t.Fatalf("parse persisted report: %v", err)
+		panic("unreachable")
 	}
 	if persisted.Score == "" {
 		t.Error("persisted score is empty, want the report to have persisted at all")
 	}
 	if persisted.Pressure == nil {
 		t.Fatal("persisted pressure = nil, want sanitized telemetry")
+		panic("unreachable")
 	}
 	if persisted.Pressure.DiskFreePct != -1 || persisted.Pressure.LoadPerCPU != -1 {
 		t.Errorf("persisted pressure = %+v, want DiskFreePct/LoadPerCPU sanitized to -1", *persisted.Pressure)

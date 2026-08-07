@@ -23,12 +23,14 @@ func TestInspectorVerdictSchemaIsCodexStrict(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(inspectorVerdictSchema), &schema); err != nil {
 		t.Fatalf("unmarshal inspectorVerdictSchema: %v", err)
+		panic("unreachable")
 	}
 	if schema.Type != "object" {
 		t.Fatalf("type = %q, want object", schema.Type)
 	}
 	if schema.AdditionalProperties == nil || *schema.AdditionalProperties {
 		t.Fatalf("additionalProperties = %v, want false", schema.AdditionalProperties)
+		panic("unreachable")
 	}
 	required := make(map[string]bool, len(schema.Required))
 	for _, f := range schema.Required {
@@ -66,6 +68,7 @@ func TestValidateInspectorVerdict(t *testing.T) {
 			err := validateInspectorVerdict(&tc.v)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("validateInspectorVerdict(%+v) err = %v, wantErr %v", tc.v, err, tc.wantErr)
+				panic("unreachable")
 			}
 		})
 	}
@@ -131,11 +134,13 @@ func TestParseInspectorOutput(t *testing.T) {
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("want error, got nil (verdict=%+v)", got)
+					panic("unreachable")
 				}
 				return
 			}
 			if err != nil {
 				t.Fatalf("unexpected err: %v", err)
+				panic("unreachable")
 			}
 			if got != tc.want {
 				t.Fatalf("got %+v, want %+v", got, tc.want)
@@ -164,6 +169,7 @@ func TestParseInspectorOutputResolvesTheRealObject(t *testing.T) {
 			got, err := parseInspectorOutput([]byte(tc.raw))
 			if err != nil {
 				t.Fatalf("parseInspectorOutput: %v", err)
+				panic("unreachable")
 			}
 			if got.Recommendation != "continue" || got.Reason != "looks fine" {
 				t.Errorf("resolved the wrong object: %+v", got)
@@ -191,6 +197,7 @@ printf '%s\n' '{"result":"{\"stuck\":false,\"reason\":\"progress\",\"recommendat
 	})
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
+		panic("unreachable")
 	}
 	if got.Recommendation != "continue" {
 		t.Fatalf("Recommendation = %q, want continue", got.Recommendation)
@@ -201,5 +208,6 @@ func writeInspectorTestExe(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+		panic("unreachable")
 	}
 }

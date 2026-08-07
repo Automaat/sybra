@@ -67,6 +67,7 @@ func newTestService(t *testing.T, enabled bool, rep evaluation.Report, applied *
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	svc := NewService(Deps{
 		Cfg: config.RoutingConfig{
@@ -109,6 +110,7 @@ func TestService_Tick_Enabled_SavesAndApplies(t *testing.T) {
 	overlay, ok, err := store.Load()
 	if err != nil || !ok {
 		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if overlay.Version != 1 {
 		t.Fatalf("overlay.Version = %d, want 1", overlay.Version)
@@ -118,6 +120,7 @@ func TestService_Tick_Enabled_SavesAndApplies(t *testing.T) {
 	}
 	if applied[0].WeightsVersion == nil || *applied[0].WeightsVersion != 1 {
 		t.Fatalf("applied WeightsVersion = %+v, want 1", applied[0].WeightsVersion)
+		panic("unreachable")
 	}
 	if len(audited) != 1 || audited[0].Type != audit.EventRoutingReweighted {
 		t.Fatalf("audited = %+v, want one routing.reweighted event", audited)
@@ -161,6 +164,7 @@ func TestService_ShadowTicks_StayWithinMaxStepOfBase(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	const maxStep = 2
 	svc := NewService(Deps{
@@ -189,6 +193,7 @@ func TestService_ShadowTicks_StayWithinMaxStepOfBase(t *testing.T) {
 	overlay, ok, err := store.Load()
 	if err != nil || !ok {
 		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	w1, _ := overlay.WeightAt("exp", "v1")
 	// base v1 weight is 1; after any number of shadow ticks it must not exceed
@@ -202,6 +207,7 @@ func TestService_Tick_NoReportYet_BootstrapsEnabledOverlay(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	var applied []abtest.Config
 	var audited []audit.Event
@@ -223,10 +229,12 @@ func TestService_Tick_NoReportYet_BootstrapsEnabledOverlay(t *testing.T) {
 	}
 	if applied[0].WeightsVersion == nil || *applied[0].WeightsVersion != 1 {
 		t.Fatalf("applied WeightsVersion = %+v, want 1", applied[0].WeightsVersion)
+		panic("unreachable")
 	}
 	overlay, ok, err := store.Load()
 	if err != nil || !ok {
 		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if overlay.Version != 1 {
 		t.Fatalf("overlay.Version = %d, want 1", overlay.Version)
@@ -250,6 +258,7 @@ func TestService_PrimeThenTick_NoReport_NoBootstrapChurn(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	var applied []abtest.Config
 	var audited []audit.Event
@@ -276,6 +285,7 @@ func TestService_PrimeThenTick_NoReport_NoBootstrapChurn(t *testing.T) {
 	overlay, ok, err := store.Load()
 	if err != nil || !ok {
 		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if overlay.Version != 1 {
 		t.Fatalf("overlay.Version = %d, want 1 (no churn after bootstrap)", overlay.Version)
@@ -296,6 +306,7 @@ func TestService_Tick_NoReportYet_ShadowModeNoOp(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	var applied []abtest.Config
 	var audited []audit.Event
@@ -429,6 +440,7 @@ func TestService_Tick_NoOp_PrunesRemovedExperiment(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 
 	includeB := true
@@ -495,6 +507,7 @@ func TestService_Tick_NoOp_PrunesRemovedExperiment(t *testing.T) {
 	o, ok, err := store.Load()
 	if err != nil || !ok {
 		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if _, has := o.WeightAt("exp-b", "v1"); has {
 		t.Fatalf("exp-b survived the no-op tick, want pruned (removed from base)")
@@ -511,6 +524,7 @@ func TestService_Tick_IgnoresHistoricalRowsForRemovedCohorts(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	if err := store.Save(Overlay{
 		Version: 1,
@@ -588,6 +602,7 @@ func TestService_Tick_IgnoresHistoricalRowsForRemovedCohorts(t *testing.T) {
 	o, ok, err := store.Load()
 	if err != nil || !ok {
 		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if _, has := o.WeightAt("exp-gone", "v1"); has {
 		t.Fatalf("exp-gone/v1 was rebuilt from unknown historical rows, want absent")
@@ -604,6 +619,7 @@ func TestService_Tick_ZeroWeightVariantStaysDisabled(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	if err := store.Save(Overlay{
 		Version: 1,
@@ -674,6 +690,7 @@ func TestService_Tick_ZeroWeightVariantStaysDisabled(t *testing.T) {
 	o, ok, err := store.Load()
 	if err != nil || !ok {
 		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if _, has := o.WeightAt("exp", "v2"); has {
 		t.Fatalf("zero-weight v2 survived overlay, want pruned")
@@ -697,6 +714,7 @@ func TestService_VersionBumpsOnlyOnChange(t *testing.T) {
 	overlay, ok, err := store.Load()
 	if err != nil || !ok {
 		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if overlay.Version != 1 {
 		t.Fatalf("overlay.Version = %d after unchanged second tick, want 1", overlay.Version)
@@ -713,6 +731,7 @@ func TestService_ApplyPersistedOverlay_PushesPriorGeneration(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	seeded := Overlay{
 		Version: 5,
@@ -722,6 +741,7 @@ func TestService_ApplyPersistedOverlay_PushesPriorGeneration(t *testing.T) {
 	}
 	if err := store.Save(seeded); err != nil {
 		t.Fatalf("Save: %v", err)
+		panic("unreachable")
 	}
 
 	var applied []abtest.Config
@@ -744,6 +764,7 @@ func TestService_ApplyPersistedOverlay_PushesPriorGeneration(t *testing.T) {
 	}
 	if applied[0].WeightsVersion == nil || *applied[0].WeightsVersion != 5 {
 		t.Fatalf("applied WeightsVersion = %+v, want 5", applied[0].WeightsVersion)
+		panic("unreachable")
 	}
 	var gotV1, gotV2 int
 	for _, exp := range applied[0].Experiments {
@@ -765,6 +786,7 @@ func TestService_ApplyPersistedOverlay_ZeroWeightVariantStaysDisabled(t *testing
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	if err := store.Save(Overlay{
 		Version: 5,
@@ -813,6 +835,7 @@ func TestService_ApplyPersistedOverlay_DisabledIsNoOp(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	if err := store.Save(Overlay{Version: 1, Experiments: []OverlayExperiment{{ExperimentID: "exp", Variants: []OverlayVariant{{VariantID: "v1", Weight: 9}}}}}); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -839,6 +862,7 @@ func TestService_Tick_StaleEvaluation_RollsBackToBaseline(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	// Seed a prior generation that already shifted weight away from base
 	// (v1=1, v2=1) toward v1.
@@ -891,6 +915,7 @@ func TestService_Tick_StaleEvaluation_RollsBackToBaseline(t *testing.T) {
 	overlay, ok, err := store.Load()
 	if err != nil || !ok {
 		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if overlay.Version != 4 {
 		t.Fatalf("overlay.Version = %d, want 4 (bumped on rollback)", overlay.Version)
@@ -921,6 +946,7 @@ func TestService_Tick_NoReport_LearnedOverlay_RollsBackToBaseline(t *testing.T) 
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	// Seed a prior generation that shifted weight away from base (v1=1, v2=1).
 	if err := store.Save(Overlay{
@@ -958,6 +984,7 @@ func TestService_Tick_NoReport_LearnedOverlay_RollsBackToBaseline(t *testing.T) 
 	overlay, ok, err := store.Load()
 	if err != nil || !ok {
 		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if overlay.Version != 4 {
 		t.Fatalf("overlay.Version = %d, want 4 (bumped on rollback)", overlay.Version)
@@ -989,6 +1016,7 @@ func TestService_Tick_StaleEvaluation_AlreadyAtBaseline_NoOp(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	staleRep := testReport(0.9, 0.1)
@@ -1043,6 +1071,7 @@ func TestService_Tick_MismatchedSchemaVersion_RollsBackToBaseline(t *testing.T) 
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	if err := store.Save(Overlay{
 		Version: 1,
@@ -1085,6 +1114,7 @@ func TestService_Tick_MismatchedSchemaVersion_RollsBackToBaseline(t *testing.T) 
 	overlay, ok, err := store.Load()
 	if err != nil || !ok {
 		t.Fatalf("store.Load: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	w1, _ := overlay.WeightAt("exp", "v1")
 	w2, _ := overlay.WeightAt("exp", "v2")

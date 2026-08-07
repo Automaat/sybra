@@ -59,10 +59,12 @@ func TestRedactedCopy(t *testing.T) {
 	fileCfg, err := ParseFileConfig([]byte("server:\n  auth_token: file-secret\n"))
 	if err != nil {
 		t.Fatalf("ParseFileConfig: %v", err)
+		panic("unreachable")
 	}
 	explanation, err := ExplainPath("server.auth_token", fileCfg, Environment{}, cfg)
 	if err != nil {
 		t.Fatalf("ExplainPath: %v", err)
+		panic("unreachable")
 	}
 	if explanation.Intent.Value != RedactedPlaceholder {
 		t.Fatalf("intent value = %#v, want %q", explanation.Intent.Value, RedactedPlaceholder)

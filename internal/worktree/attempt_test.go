@@ -20,6 +20,7 @@ func commitFile(t *testing.T, wtPath, name, content, msg string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(wtPath, name), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustRunInDir(t, wtPath, "git", "config", "user.email", "test@test.com")
 	mustRunInDir(t, wtPath, "git", "config", "user.name", "Test")
@@ -39,10 +40,12 @@ func TestPrepareAttempt_IsolatedFromCanonicalAndSiblings(t *testing.T) {
 	dir1, branch1, err := h.m.PrepareAttempt(context.Background(), tk, "attempt_1")
 	if err != nil {
 		t.Fatalf("PrepareAttempt(attempt_1): %v", err)
+		panic("unreachable")
 	}
 	dir2, branch2, err := h.m.PrepareAttempt(context.Background(), tk, "attempt_2")
 	if err != nil {
 		t.Fatalf("PrepareAttempt(attempt_2): %v", err)
+		panic("unreachable")
 	}
 
 	if dir1 == dir2 {
@@ -57,6 +60,7 @@ func TestPrepareAttempt_IsolatedFromCanonicalAndSiblings(t *testing.T) {
 	for _, d := range []string{dir1, dir2} {
 		if _, statErr := os.Stat(d); statErr != nil {
 			t.Fatalf("attempt dir %q not created: %v", d, statErr)
+			panic("unreachable")
 		}
 	}
 
@@ -79,12 +83,14 @@ func TestPrepareAttempt_NeverPushes(t *testing.T) {
 	dir, branch, err := h.m.PrepareAttempt(context.Background(), tk, "attempt_1")
 	if err != nil {
 		t.Fatalf("PrepareAttempt: %v", err)
+		panic("unreachable")
 	}
 	commitFile(t, dir, "attempt.txt", "attempt work\n", "attempt commit")
 
 	out, err := exec.Command("git", "-C", h.src, "branch", "--list", branch).Output()
 	if err != nil {
 		t.Fatalf("git branch --list: %v", err)
+		panic("unreachable")
 	}
 	if strings.TrimSpace(string(out)) != "" {
 		t.Fatalf("attempt branch %q must not exist on the true upstream remote before promotion", branch)
@@ -102,18 +108,21 @@ func TestPromoteAttempt_OnlyWinnerCommitsLandOnCanonical(t *testing.T) {
 	dir1, _, err := h.m.PrepareAttempt(context.Background(), tk, "attempt_1")
 	if err != nil {
 		t.Fatalf("PrepareAttempt(attempt_1): %v", err)
+		panic("unreachable")
 	}
 	commitFile(t, dir1, "loser.txt", "loser content\n", "loser commit")
 
 	dir2, branch2, err := h.m.PrepareAttempt(context.Background(), tk, "attempt_2")
 	if err != nil {
 		t.Fatalf("PrepareAttempt(attempt_2): %v", err)
+		panic("unreachable")
 	}
 	commitFile(t, dir2, "winner.txt", "winner content\n", "winner commit")
 
 	canonicalDir, err := h.m.PromoteAttempt(context.Background(), tk, dir2, branch2)
 	if err != nil {
 		t.Fatalf("PromoteAttempt: %v", err)
+		panic("unreachable")
 	}
 
 	if _, statErr := os.Stat(filepath.Join(canonicalDir, "winner.txt")); statErr != nil {
@@ -129,6 +138,7 @@ func TestPromoteAttempt_OnlyWinnerCommitsLandOnCanonical(t *testing.T) {
 	out, err := exec.Command("git", "-C", canonicalDir, "log", "--name-only", "--format=").Output()
 	if err != nil {
 		t.Fatalf("git log: %v", err)
+		panic("unreachable")
 	}
 	if strings.Contains(string(out), "loser.txt") {
 		t.Errorf("loser.txt appears in canonical branch history:\n%s", out)
@@ -149,16 +159,19 @@ func TestPromoteAttempt_Idempotent(t *testing.T) {
 	dir, branch, err := h.m.PrepareAttempt(context.Background(), tk, "attempt_1")
 	if err != nil {
 		t.Fatalf("PrepareAttempt: %v", err)
+		panic("unreachable")
 	}
 	commitFile(t, dir, "winner.txt", "content\n", "winner commit")
 
 	first, err := h.m.PromoteAttempt(context.Background(), tk, dir, branch)
 	if err != nil {
 		t.Fatalf("first PromoteAttempt: %v", err)
+		panic("unreachable")
 	}
 	second, err := h.m.PromoteAttempt(context.Background(), tk, dir, branch)
 	if err != nil {
 		t.Fatalf("second (idempotent) PromoteAttempt: %v", err)
+		panic("unreachable")
 	}
 	if first != second {
 		t.Errorf("canonical dir changed across idempotent re-promotion: %q vs %q", first, second)
@@ -178,6 +191,7 @@ func TestPromoteAttempt_RefusesExistingPR(t *testing.T) {
 	dir, branch, err := h.m.PrepareAttempt(context.Background(), tk, "attempt_1")
 	if err != nil {
 		t.Fatalf("PrepareAttempt: %v", err)
+		panic("unreachable")
 	}
 	commitFile(t, dir, "winner.txt", "content\n", "winner commit")
 
@@ -196,10 +210,12 @@ func TestPromoteAttempt_RefusesDirtyWinner(t *testing.T) {
 	dir, branch, err := h.m.PrepareAttempt(context.Background(), tk, "attempt_1")
 	if err != nil {
 		t.Fatalf("PrepareAttempt: %v", err)
+		panic("unreachable")
 	}
 	commitFile(t, dir, "winner.txt", "content\n", "winner commit")
 	if err := os.WriteFile(filepath.Join(dir, "uncommitted.txt"), []byte("oops\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	_, err = h.m.PromoteAttempt(context.Background(), tk, dir, branch)
@@ -220,12 +236,14 @@ func TestPromoteAttempt_RefusesDivergedCanonicalBranch(t *testing.T) {
 	canonicalDir, err := h.m.PrepareForTask(context.Background(), tk, nil)
 	if err != nil {
 		t.Fatalf("PrepareForTask: %v", err)
+		panic("unreachable")
 	}
 	commitFile(t, canonicalDir, "preexisting.txt", "already here\n", "pre-existing canonical work")
 
 	dir, branch, err := h.m.PrepareAttempt(context.Background(), tk, "attempt_1")
 	if err != nil {
 		t.Fatalf("PrepareAttempt: %v", err)
+		panic("unreachable")
 	}
 	commitFile(t, dir, "winner.txt", "content\n", "winner commit")
 
@@ -245,10 +263,12 @@ func TestCleanupAttempts_RemovesDirsFromDisk(t *testing.T) {
 	dir1, _, err := h.m.PrepareAttempt(context.Background(), tk, "attempt_1")
 	if err != nil {
 		t.Fatalf("PrepareAttempt(attempt_1): %v", err)
+		panic("unreachable")
 	}
 	dir2, _, err := h.m.PrepareAttempt(context.Background(), tk, "attempt_2")
 	if err != nil {
 		t.Fatalf("PrepareAttempt(attempt_2): %v", err)
+		panic("unreachable")
 	}
 
 	h.m.CleanupAttempts(context.Background(), tk, []string{"attempt_1", "attempt_2"})
@@ -269,10 +289,12 @@ func TestCleanupAttempts_LeavesWinnerUntouched(t *testing.T) {
 	loserDir, _, err := h.m.PrepareAttempt(context.Background(), tk, "attempt_1")
 	if err != nil {
 		t.Fatalf("PrepareAttempt(attempt_1): %v", err)
+		panic("unreachable")
 	}
 	winnerDir, _, err := h.m.PrepareAttempt(context.Background(), tk, "attempt_2")
 	if err != nil {
 		t.Fatalf("PrepareAttempt(attempt_2): %v", err)
+		panic("unreachable")
 	}
 
 	h.m.CleanupAttempts(context.Background(), tk, []string{"attempt_1"})
@@ -297,6 +319,7 @@ func TestCleanupAttempts_DeletesBranchRef(t *testing.T) {
 	dir, branch, err := h.m.PrepareAttempt(context.Background(), tk, "attempt_1")
 	if err != nil {
 		t.Fatalf("PrepareAttempt: %v", err)
+		panic("unreachable")
 	}
 	commitFile(t, dir, "discarded.txt", "discarded work\n", "discarded attempt commit")
 
@@ -315,6 +338,7 @@ func TestCleanupAttempts_DeletesBranchRef(t *testing.T) {
 	dir2, _, err := h.m.PrepareAttempt(context.Background(), tk, "attempt_1")
 	if err != nil {
 		t.Fatalf("PrepareAttempt (second cycle): %v", err)
+		panic("unreachable")
 	}
 	if _, statErr := os.Stat(filepath.Join(dir2, "discarded.txt")); statErr == nil {
 		t.Errorf("re-prepared attempt inherited discarded.txt from stale branch — cleanup did not reset the ref")
@@ -326,6 +350,7 @@ func mustCreateAttemptTask(t *testing.T, h preparedHarness, title string) task.T
 	tk, err := h.tasks.Store().Create(title, "", "headless")
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := h.tasks.Update(tk.ID, task.Update{ProjectID: task.Ptr(h.proj.ID)}); err != nil {
 		t.Fatal(err)
@@ -333,6 +358,7 @@ func mustCreateAttemptTask(t *testing.T, h preparedHarness, title string) task.T
 	tk, err = h.tasks.Get(tk.ID)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	return tk
 }

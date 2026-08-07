@@ -27,6 +27,7 @@ func TestPutListGet(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
+		panic("unreachable")
 	}
 
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
@@ -36,15 +37,18 @@ func TestPutListGet(t *testing.T) {
 	stored, err := store.Put(d1)
 	if err != nil || !stored {
 		t.Fatalf("Put d1: stored=%v err=%v", stored, err)
+		panic("unreachable")
 	}
 	stored, err = store.Put(d2)
 	if err != nil || !stored {
 		t.Fatalf("Put d2: stored=%v err=%v", stored, err)
+		panic("unreachable")
 	}
 
 	list, err := store.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(list) != 2 {
 		t.Fatalf("expected 2 digests, got %d", len(list))
@@ -56,6 +60,7 @@ func TestPutListGet(t *testing.T) {
 	got, ok, err := store.Get(d1.Key())
 	if err != nil || !ok {
 		t.Fatalf("Get d1: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 	if got.ReportDigest != "digest-1" {
 		t.Errorf("Get returned wrong digest: %q", got.ReportDigest)
@@ -64,6 +69,7 @@ func TestPutListGet(t *testing.T) {
 	_, ok, err = store.Get(Key{Since: base, Until: base.AddDate(0, 0, 99), ReportDigest: "missing"})
 	if err != nil {
 		t.Fatalf("Get missing: unexpected err %v", err)
+		panic("unreachable")
 	}
 	if ok {
 		t.Error("Get missing: expected ok=false")
@@ -74,6 +80,7 @@ func TestDuplicateSuppression(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
+		panic("unreachable")
 	}
 
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
@@ -82,10 +89,12 @@ func TestDuplicateSuppression(t *testing.T) {
 	stored, err := store.Put(d)
 	if err != nil || !stored {
 		t.Fatalf("first Put: stored=%v err=%v", stored, err)
+		panic("unreachable")
 	}
 	stored, err = store.Put(d)
 	if err != nil {
 		t.Fatalf("second Put: unexpected err %v", err)
+		panic("unreachable")
 	}
 	if stored {
 		t.Error("second Put with same key should report stored=false")
@@ -94,6 +103,7 @@ func TestDuplicateSuppression(t *testing.T) {
 	list, err := store.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(list) != 1 {
 		t.Fatalf("expected exactly 1 persisted digest after duplicate Put, got %d", len(list))
@@ -104,6 +114,7 @@ func TestConcurrentDuplicatePut(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
+		panic("unreachable")
 	}
 
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
@@ -126,6 +137,7 @@ func TestConcurrentDuplicatePut(t *testing.T) {
 	for i, err := range errs {
 		if err != nil {
 			t.Fatalf("goroutine %d: unexpected err %v", i, err)
+			panic("unreachable")
 		}
 		if storedCount[i] {
 			trueCount++
@@ -138,6 +150,7 @@ func TestConcurrentDuplicatePut(t *testing.T) {
 	list, err := store.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(list) != 1 {
 		t.Fatalf("expected exactly 1 persisted file, got %d", len(list))
@@ -149,12 +162,14 @@ func TestMalformedRowsSkipped(t *testing.T) {
 	store, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
+		panic("unreachable")
 	}
 
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	d := mkDigest(t, base, base.AddDate(0, 0, 7), "digest-good")
 	if _, err := store.Put(d); err != nil {
 		t.Fatalf("Put: %v", err)
+		panic("unreachable")
 	}
 
 	if err := os.WriteFile(filepath.Join(dir, "corrupt.json"), []byte("{not valid json"), 0o644); err != nil {
@@ -164,6 +179,7 @@ func TestMalformedRowsSkipped(t *testing.T) {
 	list, err := store.List()
 	if err != nil {
 		t.Fatalf("List: unexpected err %v (malformed rows must be skipped, not fail the call)", err)
+		panic("unreachable")
 	}
 	if len(list) != 1 {
 		t.Fatalf("expected 1 valid digest (corrupt file skipped), got %d", len(list))
@@ -177,6 +193,7 @@ func TestRetentionCap(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
+		panic("unreachable")
 	}
 	store.max = 3
 
@@ -187,12 +204,14 @@ func TestRetentionCap(t *testing.T) {
 		d := mkDigest(t, since, until, fmt.Sprintf("digest-%d", i))
 		if _, err := store.Put(d); err != nil {
 			t.Fatalf("Put %d: %v", i, err)
+			panic("unreachable")
 		}
 	}
 
 	list, err := store.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(list) != 3 {
 		t.Fatalf("expected retention cap of 3, got %d", len(list))
@@ -210,6 +229,7 @@ func TestPutReportsFalseWhenRetentionEvictsInsertedDigest(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
+		panic("unreachable")
 	}
 	store.max = 1
 
@@ -217,23 +237,27 @@ func TestPutReportsFalseWhenRetentionEvictsInsertedDigest(t *testing.T) {
 	newer := mkDigest(t, base.AddDate(0, 0, 7), base.AddDate(0, 0, 14), "newer")
 	if stored, err := store.Put(newer); err != nil || !stored {
 		t.Fatalf("Put newer: stored=%v err=%v", stored, err)
+		panic("unreachable")
 	}
 
 	older := mkDigest(t, base, base.AddDate(0, 0, 7), "older")
 	stored, err := store.Put(older)
 	if err != nil {
 		t.Fatalf("Put older: %v", err)
+		panic("unreachable")
 	}
 	if stored {
 		t.Fatal("older digest evicted by retention should report stored=false")
 	}
 	if _, ok, err := store.Get(older.Key()); err != nil || ok {
 		t.Fatalf("older digest should not be persisted after retention: ok=%v err=%v", ok, err)
+		panic("unreachable")
 	}
 
 	stored, err = store.Put(older)
 	if err != nil {
 		t.Fatalf("repeat Put older: %v", err)
+		panic("unreachable")
 	}
 	if stored {
 		t.Fatal("repeat older digest evicted by retention should still report stored=false")
@@ -242,6 +266,7 @@ func TestPutReportsFalseWhenRetentionEvictsInsertedDigest(t *testing.T) {
 	list, err := store.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(list) != 1 || list[0].ReportDigest != "newer" {
 		t.Fatalf("retention should keep only newer digest, got %#v", list)
@@ -253,6 +278,7 @@ func TestLatestJSONDisposable(t *testing.T) {
 	store, err := New(dir)
 	if err != nil {
 		t.Fatalf("New: %v", err)
+		panic("unreachable")
 	}
 
 	base := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
@@ -260,18 +286,22 @@ func TestLatestJSONDisposable(t *testing.T) {
 	d2 := mkDigest(t, base.AddDate(0, 0, 7), base.AddDate(0, 0, 14), "digest-2")
 	if _, err := store.Put(d1); err != nil {
 		t.Fatalf("Put d1: %v", err)
+		panic("unreachable")
 	}
 	if _, err := store.Put(d2); err != nil {
 		t.Fatalf("Put d2: %v", err)
+		panic("unreachable")
 	}
 
 	if err := os.Remove(filepath.Join(dir, latestFileName)); err != nil {
 		t.Fatalf("remove latest.json: %v", err)
+		panic("unreachable")
 	}
 
 	list, err := store.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
+		panic("unreachable")
 	}
 	if len(list) != 2 {
 		t.Fatalf("List correctness must not depend on latest.json, got %d entries", len(list))
@@ -280,6 +310,7 @@ func TestLatestJSONDisposable(t *testing.T) {
 	latest, ok, err := store.Latest()
 	if err != nil {
 		t.Fatalf("Latest: %v", err)
+		panic("unreachable")
 	}
 	if !ok {
 		t.Fatal("Latest: expected ok=true after latest.json removal (fallback to List)")

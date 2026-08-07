@@ -54,10 +54,12 @@ func initCheckpointRepo(t *testing.T) string {
 	} {
 		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
 			t.Fatalf("%v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	for _, args := range [][]string{
 		{"git", "-C", dir, "add", "."},
@@ -65,6 +67,7 @@ func initCheckpointRepo(t *testing.T) string {
 	} {
 		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
 			t.Fatalf("%v: %v: %s", args, err, out)
+			panic("unreachable")
 		}
 	}
 	return dir
@@ -76,6 +79,7 @@ func TestParseCodexStreamEvent_AgentMessage(t *testing.T) {
 	parsed, err := ParseCodexLine(line)
 	if err != nil {
 		t.Fatalf("ParseCodexLine: %v", err)
+		panic("unreachable")
 	}
 	got := codexEventToStreamEvent(parsed)
 	if got.Type != "assistant" {
@@ -93,6 +97,7 @@ func TestParseCodexStreamEvent_CommandExecution(t *testing.T) {
 	startParsed, err := ParseCodexLine(started)
 	if err != nil {
 		t.Fatalf("ParseCodexLine started: %v", err)
+		panic("unreachable")
 	}
 	startEv := codexEventToStreamEvent(startParsed)
 	if startEv.Type != "tool_use" || startEv.Content != "pwd" {
@@ -102,6 +107,7 @@ func TestParseCodexStreamEvent_CommandExecution(t *testing.T) {
 	doneParsed, err := ParseCodexLine(completed)
 	if err != nil {
 		t.Fatalf("ParseCodexLine completed: %v", err)
+		panic("unreachable")
 	}
 	doneEv := codexEventToStreamEvent(doneParsed)
 	if doneEv.Type != "tool_result" || doneEv.Content != "/repo\n" {
@@ -115,6 +121,7 @@ func TestParseCodexStreamEvent_TurnCompleted(t *testing.T) {
 	parsed, err := ParseCodexLine(line)
 	if err != nil {
 		t.Fatalf("ParseCodexLine: %v", err)
+		panic("unreachable")
 	}
 	got := codexEventToStreamEvent(parsed)
 	if got.Type != "result" {
@@ -296,6 +303,7 @@ func TestParseCodexStreamEvent_Error_SubstringFallback(t *testing.T) {
 	parsed, err := ParseCodexLine(line)
 	if err != nil {
 		t.Fatalf("ParseCodexLine: %v", err)
+		panic("unreachable")
 	}
 	if parsed.Type != "result" || parsed.Subtype != "error" {
 		t.Fatalf("got type=%q subtype=%q, want result/error", parsed.Type, parsed.Subtype)
@@ -316,9 +324,11 @@ func TestParseCodexStreamEvent_Error_StructuredCode(t *testing.T) {
 	parsed, err := ParseCodexLine(line)
 	if err != nil {
 		t.Fatalf("ParseCodexLine: %v", err)
+		panic("unreachable")
 	}
 	if parsed.Result == nil {
 		t.Fatal("Result is nil")
+		panic("unreachable")
 	}
 	if parsed.Result.ErrorStatus != 529 {
 		t.Fatalf("ErrorStatus = %d, want 529", parsed.Result.ErrorStatus)
@@ -339,9 +349,11 @@ func TestParseCodexStreamEvent_Error_StructuredErrorType(t *testing.T) {
 	parsed, err := ParseCodexLine(line)
 	if err != nil {
 		t.Fatalf("ParseCodexLine: %v", err)
+		panic("unreachable")
 	}
 	if parsed.Result == nil {
 		t.Fatal("Result is nil")
+		panic("unreachable")
 	}
 	if parsed.Result.ErrorType != "overloaded_error" {
 		t.Fatalf("ErrorType = %q, want overloaded_error", parsed.Result.ErrorType)
@@ -365,6 +377,7 @@ func TestShouldRetry_ResultErrorWithoutSubtype(t *testing.T) {
 	}}
 	if !shouldRetry("", streamEvents, nil) {
 		t.Fatal("shouldRetry = false, want true for structured overloaded result without subtype")
+		panic("unreachable")
 	}
 }
 
@@ -376,12 +389,14 @@ func TestShouldRetry_ResultErrorDuringExecutionSubtype(t *testing.T) {
 	}}
 	if !shouldRetry("", streamEvents, nil) {
 		t.Fatal("shouldRetry = false, want true for 529 in error_during_execution result")
+		panic("unreachable")
 	}
 }
 
 func TestShouldRetry_Stderr529(t *testing.T) {
 	if !shouldRetry("error: 529 overloaded", nil, nil) {
 		t.Fatal("shouldRetry = false on stderr containing 529")
+		panic("unreachable")
 	}
 }
 
@@ -389,6 +404,7 @@ func TestShouldRetry_FatalError_NoRetry(t *testing.T) {
 	streamEvents := []StreamEvent{{Type: "result", Subtype: "error", Content: "permission denied"}}
 	if shouldRetry("", streamEvents, nil) {
 		t.Fatal("shouldRetry = true on non-transient error, want false")
+		panic("unreachable")
 	}
 }
 
@@ -473,6 +489,7 @@ func TestResultStreamError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("resultStreamError = nil, want error")
+		panic("unreachable")
 	}
 	if got := err.Error(); got != "provider result error rate_limit (429)" {
 		t.Fatalf("error = %q, want provider result error rate_limit (429)", got)
@@ -485,11 +502,13 @@ func TestResultStreamError(t *testing.T) {
 	err = resultStreamError([]StreamEvent{{Type: "result", Subtype: "error", Content: "You've hit your weekly limit"}})
 	if err == nil {
 		t.Fatal("resultStreamError(subtype error) = nil, want error")
+		panic("unreachable")
 	}
 
 	err = resultStreamError([]StreamEvent{{Type: "result", Subtype: "error_during_execution", Content: "No conversation found"}})
 	if err == nil {
 		t.Fatal("resultStreamError(error_during_execution) = nil, want error")
+		panic("unreachable")
 	}
 }
 
@@ -500,9 +519,11 @@ func TestParseClaudeLine_ResultTerminalReason(t *testing.T) {
 	ev, err := ParseClaudeLine(line)
 	if err != nil {
 		t.Fatalf("ParseClaudeLine: %v", err)
+		panic("unreachable")
 	}
 	if ev.Result == nil {
 		t.Fatal("Result = nil")
+		panic("unreachable")
 	}
 	if ev.Result.TerminalReason != "aborted_tools" {
 		t.Fatalf("TerminalReason = %q, want aborted_tools", ev.Result.TerminalReason)
@@ -643,6 +664,7 @@ func TestTerminalResultIdle(t *testing.T) {
 		parsed, err := ParseCodexLine([]byte(`{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":10}}`))
 		if err != nil {
 			t.Fatalf("ParseCodexLine: %v", err)
+			panic("unreachable")
 		}
 		a.AppendOutput(codexEventToStreamEvent(parsed))
 		a.mu.Lock()
@@ -710,6 +732,7 @@ func TestFinalizeFromResult_IgnoresKillSignalWaitErr(t *testing.T) {
 
 	if err := a.GetExitErr(); err != nil {
 		t.Fatalf("GetExitErr() = %v, want nil (finalized from clean result)", err)
+		panic("unreachable")
 	}
 }
 
@@ -1144,6 +1167,7 @@ func TestGuardrails_TurnsCheckpointEligibleAuthor(t *testing.T) {
 	repo := initCheckpointRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	a := &Agent{
 		ID:         "t",
@@ -1171,6 +1195,7 @@ func TestGuardrails_TurnsCheckpointEligibleAuthor(t *testing.T) {
 	out, err := exec.Command("git", "-C", repo, "log", "--format=%s", "-1").Output()
 	if err != nil {
 		t.Fatalf("git log: %v", err)
+		panic("unreachable")
 	}
 	if got := strings.TrimSpace(string(out)); !strings.HasPrefix(got, "chore(checkpoint):") {
 		t.Fatalf("last checkpoint subject = %q", got)
@@ -1189,6 +1214,7 @@ func TestGuardrails_TurnsCheckpointFailureMarksDiagnosticReason(t *testing.T) {
 	repo := initCheckpointRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	// Checkpoint commits intentionally pass --no-verify, so a failing pre-commit
@@ -1198,6 +1224,7 @@ func TestGuardrails_TurnsCheckpointFailureMarksDiagnosticReason(t *testing.T) {
 	lock := filepath.Join(repo, ".git", "index.lock")
 	if err := os.WriteFile(lock, nil, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	a := &Agent{
@@ -1233,6 +1260,7 @@ func TestGuardrails_TurnsVerifierStillEscalates(t *testing.T) {
 	repo := initCheckpointRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	a := &Agent{
 		ID:           "t",
@@ -1253,6 +1281,7 @@ func TestGuardrails_TurnsVerifierStillEscalates(t *testing.T) {
 	out, err := exec.Command("git", "-C", repo, "log", "--format=%s", "-1").Output()
 	if err != nil {
 		t.Fatalf("git log: %v", err)
+		panic("unreachable")
 	}
 	if got := strings.TrimSpace(string(out)); got != "init" {
 		t.Fatalf("verifier unexpectedly checkpointed: last subject %q", got)
@@ -1518,6 +1547,7 @@ func TestGuardrails_CostKillRaceSetsExitErr(t *testing.T) {
 		"sleep 10\n"
 	if err := os.WriteFile(fakeClaude, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake claude: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -1537,6 +1567,7 @@ func TestGuardrails_CostKillRaceSetsExitErr(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 	// The fake process ignores SIGINT/SIGTERM and finalizeRun's early return
 	// (the very race under test) closes ag.done before signalKill's SIGKILL
@@ -1560,6 +1591,7 @@ func TestGuardrails_CostKillRaceSetsExitErr(t *testing.T) {
 	}
 	if ag.GetExitErr() == nil {
 		t.Fatal("ExitErr = nil after a guardrail kill raced the reap — finalizeRun/OnComplete will misreport this killed run as a clean success")
+		panic("unreachable")
 	}
 }
 
@@ -1581,6 +1613,7 @@ func TestGuardrails_CostHardStop_CompletedTurnIsNotAFailure(t *testing.T) {
 		"printf '%s\\n' '{\"type\":\"result\",\"result\":\"done\",\"session_id\":\"sess-clean\",\"total_cost_usd\":11.0,\"total_input_tokens\":1,\"total_output_tokens\":1}'\n"
 	if err := os.WriteFile(fakeClaude, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake claude: %v", err)
+		panic("unreachable")
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -1600,6 +1633,7 @@ func TestGuardrails_CostHardStop_CompletedTurnIsNotAFailure(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		if cmd := ag.GetCmd(); cmd != nil && cmd.Process != nil {
@@ -1617,6 +1651,7 @@ func TestGuardrails_CostHardStop_CompletedTurnIsNotAFailure(t *testing.T) {
 	}
 	if got := ag.GetExitErr(); got != nil {
 		t.Fatalf("ExitErr = %v, want nil — the turn completed cleanly before the cost ceiling stopped the now-idle subprocess", got)
+		panic("unreachable")
 	}
 }
 
@@ -1712,6 +1747,7 @@ func TestMaybeEnforceLiveCostCeiling_SendsConvergeSteerBeforeHardStop(t *testing
 	stdinR, stdinW, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() {
 		_ = stdinR.Close()
@@ -1840,6 +1876,7 @@ func TestRespondEscalation_DoubleSendRejected(t *testing.T) {
 
 	if err := m.RespondEscalation(a.ID, true); err != nil {
 		t.Fatalf("first RespondEscalation: %v", err)
+		panic("unreachable")
 	}
 	// Second call must fail fast (channel full), not block.
 	done := make(chan error, 1)
@@ -1848,6 +1885,7 @@ func TestRespondEscalation_DoubleSendRejected(t *testing.T) {
 	case err := <-done:
 		if err == nil {
 			t.Fatal("second RespondEscalation returned nil; expected 'channel full' error")
+			panic("unreachable")
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("second RespondEscalation blocked instead of returning error — UI thread would hang")
@@ -1911,6 +1949,7 @@ func TestBuildHeadlessInvocation_RejectsShellInjection(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("safe invocation rejected: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -1998,6 +2037,7 @@ func TestBuildHeadlessInvocation_BashTimeout(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		if slices.Contains(args, "--bashTimeoutMs") {
 			t.Fatal("--bashTimeoutMs is not a real claude CLI flag and must not appear in args")
@@ -2021,6 +2061,7 @@ func TestBuildHeadlessInvocation_BashTimeout(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		for _, e := range env {
 			if strings.HasPrefix(e, "BASH_DEFAULT_TIMEOUT_MS=") || strings.HasPrefix(e, "BASH_MAX_TIMEOUT_MS=") {
@@ -2037,6 +2078,7 @@ func TestBuildHeadlessInvocation_BashTimeout(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation codex: %v", err)
+			panic("unreachable")
 		}
 		if slices.Contains(args, "--bashTimeoutMs") {
 			t.Fatal("--bashTimeoutMs must not be passed to codex")
@@ -2057,6 +2099,7 @@ func TestBuildHeadlessInvocation_CodexReasoningEffort(t *testing.T) {
 		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "hi"})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		found := false
 		for i := range len(args) - 1 {
@@ -2075,6 +2118,7 @@ func TestBuildHeadlessInvocation_CodexReasoningEffort(t *testing.T) {
 		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "hi"})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		for _, arg := range args {
 			if strings.Contains(arg, "model_reasoning_effort=") {
@@ -2088,6 +2132,7 @@ func TestBuildHeadlessInvocation_CodexReasoningEffort(t *testing.T) {
 		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "hi"})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		for _, arg := range args {
 			if strings.Contains(arg, "model_reasoning_effort=") {
@@ -2121,6 +2166,7 @@ func TestBuildHeadlessInvocation_EffortFlag(t *testing.T) {
 			_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "hi"})
 			if err != nil {
 				t.Fatalf("buildHeadlessInvocation: %v", err)
+				panic("unreachable")
 			}
 			if !hasEffort(args, "medium") {
 				t.Errorf("expected --effort medium in %s args; got %v", provider, args)
@@ -2131,6 +2177,7 @@ func TestBuildHeadlessInvocation_EffortFlag(t *testing.T) {
 			_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "hi"})
 			if err != nil {
 				t.Fatalf("buildHeadlessInvocation: %v", err)
+				panic("unreachable")
 			}
 			if hasEffortFlag(args) {
 				t.Errorf("--effort must be absent when empty; got %v", args)
@@ -2163,6 +2210,7 @@ func TestPrepareRunConfig_DefaultsReasoningEffortForAllProviders(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatalf("prepareRunConfig: %v", err)
+				panic("unreachable")
 			}
 			if cfg.ReasoningEffort != DefaultReasoningEffort {
 				t.Fatalf("ReasoningEffort = %q, want %q", cfg.ReasoningEffort, DefaultReasoningEffort)
@@ -2171,6 +2219,7 @@ func TestPrepareRunConfig_DefaultsReasoningEffortForAllProviders(t *testing.T) {
 			_, args, _, _, err := buildHeadlessInvocation(a, cfg)
 			if err != nil {
 				t.Fatalf("buildHeadlessInvocation: %v", err)
+				panic("unreachable")
 			}
 			if provider == "codex" {
 				if !hasPair(args, "-c", "model_reasoning_effort="+DefaultReasoningEffort) {
@@ -2207,6 +2256,7 @@ func TestNewRunningAgent_StampsPromptHashForEveryRun(t *testing.T) {
 				})
 				if err != nil {
 					t.Fatalf("prepareRunConfig: %v", err)
+					panic("unreachable")
 				}
 				a := newRunningAgent("a", cfg, prov, func() {})
 				want := skillattr.HashSourceID(cfg.Prompt)
@@ -2237,6 +2287,7 @@ func TestPrepareRunConfig_PreservesExplicitReasoningEffort(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatalf("prepareRunConfig: %v", err)
+				panic("unreachable")
 			}
 			if cfg.ReasoningEffort != "high" {
 				t.Fatalf("ReasoningEffort = %q, want high", cfg.ReasoningEffort)
@@ -2287,6 +2338,7 @@ func TestBuildHeadlessInvocation_CodexAlwaysBypassesSandbox(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatalf("buildHeadlessInvocation: %v", err)
+				panic("unreachable")
 			}
 
 			if tc.wantBypass {
@@ -2318,6 +2370,7 @@ func TestBuildHeadlessInvocation_RetryWatchdog(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		for _, arg := range args {
 			if strings.Contains(arg, "RETRY_WATCHDOG") || strings.Contains(arg, "retry_watchdog") {
@@ -2338,6 +2391,7 @@ func TestBuildHeadlessInvocation_RetryWatchdog(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		for _, e := range env {
 			if strings.HasPrefix(e, "CLAUDE_CODE_RETRY_WATCHDOG=") {
@@ -2354,6 +2408,7 @@ func TestBuildHeadlessInvocation_RetryWatchdog(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation codex: %v", err)
+			panic("unreachable")
 		}
 		for _, e := range env {
 			if strings.HasPrefix(e, "CLAUDE_CODE_RETRY_WATCHDOG=") {
@@ -2375,6 +2430,7 @@ func TestBuildHeadlessInvocation_FallbackModel(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		idx := slices.Index(args, "--fallback-model")
 		if idx < 0 {
@@ -2393,6 +2449,7 @@ func TestBuildHeadlessInvocation_FallbackModel(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		if slices.Contains(args, "--fallback-model") {
 			t.Fatalf("--fallback-model must be absent when FallbackModel is empty; got %v", args)
@@ -2407,6 +2464,7 @@ func TestBuildHeadlessInvocation_FallbackModel(t *testing.T) {
 		})
 		if err == nil {
 			t.Fatal("expected error for invalid fallback model, got nil")
+			panic("unreachable")
 		}
 	})
 
@@ -2418,6 +2476,7 @@ func TestBuildHeadlessInvocation_FallbackModel(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation codex: %v", err)
+			panic("unreachable")
 		}
 		if slices.Contains(args, "--fallback-model") {
 			t.Fatalf("--fallback-model must not appear in codex args; got %v", args)
@@ -2439,6 +2498,7 @@ func TestBuildHeadlessInvocation_OutputSchema(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		idx := slices.Index(args, "--output-schema")
 		if idx < 0 {
@@ -2459,6 +2519,7 @@ func TestBuildHeadlessInvocation_OutputSchema(t *testing.T) {
 		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "run tests"})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		if slices.Contains(args, "--output-schema") {
 			t.Fatalf("--output-schema must be absent when outputSchemaPath empty; got %v", args)
@@ -2473,6 +2534,7 @@ func TestBuildHeadlessInvocation_OutputSchema(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		if slices.Contains(args, "--output-schema") {
 			t.Fatalf("--output-schema must not appear for claude provider; got %v", args)
@@ -2488,6 +2550,7 @@ func TestBuildHeadlessInvocation_OutputSchema(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		idx := slices.Index(args, "--json-schema")
 		if idx < 0 {
@@ -2503,6 +2566,7 @@ func TestBuildHeadlessInvocation_OutputSchema(t *testing.T) {
 		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "diagnose"})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		if slices.Contains(args, "--json-schema") {
 			t.Fatalf("--json-schema must be absent when OutputSchema empty; got %v", args)
@@ -2520,6 +2584,7 @@ func TestBuildHeadlessInvocation_OutputSchema(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		if !slices.Contains(args, "--json-schema") {
 			t.Fatalf("--json-schema missing alongside --allowedTools; got %v", args)
@@ -2539,6 +2604,7 @@ func TestBuildHeadlessInvocation_OutputSchema(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		if slices.Contains(args, "--output-schema") {
 			t.Fatalf("--output-schema must not appear when only OutputSchema (not outputSchemaPath) is set; got %v", args)
@@ -2562,6 +2628,7 @@ func TestBuildHeadlessInvocation_PlaywrightMCP(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		idx := slices.Index(args, "--mcp-config")
 		if idx < 0 {
@@ -2598,6 +2665,7 @@ func TestBuildHeadlessInvocation_PlaywrightMCP(t *testing.T) {
 		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "test"})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		if !slices.Contains(args, "--strict-mcp-config") {
 			t.Fatalf("--strict-mcp-config must be present even with no per-run config; got %v", args)
@@ -2611,6 +2679,7 @@ func TestBuildHeadlessInvocation_PlaywrightMCP(t *testing.T) {
 		}
 		if err := json.Unmarshal([]byte(args[i+1]), &doc); err != nil {
 			t.Fatalf("mcp config is not valid JSON (%v): %s", err, args[i+1])
+			panic("unreachable")
 		}
 		if len(doc.MCPServers) != 0 {
 			t.Fatalf("declared %d servers, want none: %s", len(doc.MCPServers), args[i+1])
@@ -2623,6 +2692,7 @@ func TestBuildHeadlessInvocation_PlaywrightMCP(t *testing.T) {
 		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "test", MCPConfigJSON: mcpJSON})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		if slices.Contains(args, "--mcp-config") {
 			t.Fatalf("codex must not use claude's --mcp-config flag; got %v", args)
@@ -2640,6 +2710,7 @@ func TestBuildHeadlessInvocation_PlaywrightMCP(t *testing.T) {
 		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "test"})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		if slices.ContainsFunc(args, func(s string) bool { return strings.HasPrefix(s, "mcp_servers.") }) {
 			t.Fatalf("codex must not emit mcp_servers overrides when MCPConfigJSON empty; got %v", args)
@@ -2652,6 +2723,7 @@ func TestBuildHeadlessInvocation_PlaywrightMCP(t *testing.T) {
 		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "test", MCPConfigJSON: mcpJSON})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		idx := slices.Index(args, "--additional-mcp-config")
 		if idx < 0 || idx+1 >= len(args) {
@@ -2711,6 +2783,7 @@ func TestBuildHeadlessInvocation_CodexHooksPresent(t *testing.T) {
 	_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "do stuff"})
 	if err != nil {
 		t.Fatalf("buildHeadlessInvocation: %v", err)
+		panic("unreachable")
 	}
 
 	if !slices.Contains(args, "--dangerously-bypass-hook-trust") {
@@ -2739,6 +2812,7 @@ func TestBuildHeadlessInvocation_CodexHooksAbsentWithEmptyTaskID(t *testing.T) {
 	_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "do stuff"})
 	if err != nil {
 		t.Fatalf("buildHeadlessInvocation: %v", err)
+		panic("unreachable")
 	}
 
 	for _, arg := range args {
@@ -2758,6 +2832,7 @@ func TestBuildHeadlessInvocation_ClaudeKlaudiushHookPresent(t *testing.T) {
 	_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "do stuff"})
 	if err != nil {
 		t.Fatalf("buildHeadlessInvocation: %v", err)
+		panic("unreachable")
 	}
 	for i, arg := range args {
 		if arg == "--settings" && i+1 < len(args) && strings.Contains(args[i+1], "klaudiush --hook-type PreToolUse") {
@@ -2782,6 +2857,7 @@ func TestBuildHeadlessInvocation_ClaudeApprovalHookWiredWhenRequired(t *testing.
 	})
 	if err != nil {
 		t.Fatalf("buildHeadlessInvocation: %v", err)
+		panic("unreachable")
 	}
 	for i, arg := range args {
 		if arg == "--dangerously-skip-permissions" {
@@ -2808,6 +2884,7 @@ func TestBuildHeadlessInvocation_ClaudeApprovalHookAbsentWithoutRequirePerms(t *
 	})
 	if err != nil {
 		t.Fatalf("buildHeadlessInvocation: %v", err)
+		panic("unreachable")
 	}
 	for i, arg := range args {
 		if arg == "--settings" && i+1 < len(args) &&
@@ -2831,6 +2908,7 @@ func TestBuildHeadlessInvocation_ClaudeApprovalHookAbsentWhenAddrEmpty(t *testin
 	})
 	if err != nil {
 		t.Fatalf("buildHeadlessInvocation: %v", err)
+		panic("unreachable")
 	}
 	for i, arg := range args {
 		if arg == "--dangerously-skip-permissions" {
@@ -2856,6 +2934,7 @@ func TestPrepareRunConfig_RejectsRequirePermissionsWithoutApprovalServer(t *test
 	})
 	if err == nil {
 		t.Fatal("prepareRunConfig succeeded, want error")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "require_permissions requires a running approval server") {
 		t.Fatalf("prepareRunConfig error = %v, want approval-server requirement", err)
@@ -2876,6 +2955,7 @@ func TestPrepareRunConfig_AllowsRequirePermissionsWithoutApprovalServerWhenAutoM
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	if cfg.HeadlessPermissionMode != "auto" {
 		t.Fatalf("HeadlessPermissionMode = %q, want auto", cfg.HeadlessPermissionMode)
@@ -2896,6 +2976,7 @@ func TestPrepareRunConfig_AllowsRequirePermissionsWithoutApprovalServerWhenAllow
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	if len(cfg.AllowedTools) != 1 || cfg.AllowedTools[0] != "Read" {
 		t.Fatalf("AllowedTools = %v, want [Read]", cfg.AllowedTools)
@@ -2915,6 +2996,7 @@ func TestPrepareRunConfig_AllowsRequirePermissionsWithoutApprovalServerForHeadle
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	if cfg.Provider != "codex" {
 		t.Fatalf("Provider = %q, want codex", cfg.Provider)
@@ -2932,6 +3014,7 @@ func TestBuildHeadlessInvocation_NonCodex_NoCodexHookArgs(t *testing.T) {
 			_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "do stuff"})
 			if err != nil {
 				t.Fatalf("buildHeadlessInvocation: %v", err)
+				panic("unreachable")
 			}
 			for _, arg := range args {
 				if strings.Contains(arg, "hooks.") {
@@ -2956,6 +3039,7 @@ func TestHeadlessSteerableInvocation(t *testing.T) {
 		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "do stuff", HeadlessSteerable: true})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		if slices.Contains(args, "do stuff") {
 			t.Errorf("steerable invocation must not pass the prompt positionally; got %v", args)
@@ -2976,6 +3060,7 @@ func TestHeadlessSteerableInvocation(t *testing.T) {
 		_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "do stuff", HeadlessSteerable: false})
 		if err != nil {
 			t.Fatalf("buildHeadlessInvocation: %v", err)
+			panic("unreachable")
 		}
 		if slices.Contains(args, "do stuff") {
 			t.Errorf("unsteerable invocation must not pass the prompt positionally either (#2575); got %v", args)
@@ -2991,6 +3076,7 @@ func TestHeadlessSteerableInvocation(t *testing.T) {
 			_, args, _, _, err := buildHeadlessInvocation(a, RunConfig{Prompt: "do stuff", HeadlessSteerable: true})
 			if err != nil {
 				t.Fatalf("buildHeadlessInvocation: %v", err)
+				panic("unreachable")
 			}
 			if slices.Contains(args, "--input-format") {
 				t.Errorf("%s must ignore HeadlessSteerable; got %v", provider, args)
@@ -3009,6 +3095,7 @@ func TestHeadlessInitialPromptOverStdin(t *testing.T) {
 	r, w := io.Pipe()
 	if err := a.convo.installStdinPipe(w); err != nil {
 		t.Fatalf("installStdinPipe: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = r.Close() })
 
@@ -3021,6 +3108,7 @@ func TestHeadlessInitialPromptOverStdin(t *testing.T) {
 
 	if err := m.writeUserMessage(a, "steer me"); err != nil {
 		t.Fatalf("writeUserMessage: %v", err)
+		panic("unreachable")
 	}
 
 	select {
@@ -3086,6 +3174,7 @@ func TestWriteAndCloseHeadlessPrompt(t *testing.T) {
 	}
 	if readErr != nil {
 		t.Fatalf("ReadAll: %v", readErr)
+		panic("unreachable")
 	}
 	if string(got) != "do the thing" {
 		t.Errorf("stdin payload = %q, want raw prompt with no envelope", got)
@@ -3103,6 +3192,7 @@ func TestHeadlessDrainsOneAtResult(t *testing.T) {
 	r, w := io.Pipe()
 	if err := a.convo.installStdinPipe(w); err != nil {
 		t.Fatalf("installStdinPipe: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = r.Close() })
 	a.EnqueuePrompt("next turn please")
@@ -3119,6 +3209,7 @@ func TestHeadlessDrainsOneAtResult(t *testing.T) {
 	prov, err := lookupProvider("claude")
 	if err != nil {
 		t.Fatalf("lookupProvider: %v", err)
+		panic("unreachable")
 	}
 	stop := m.processHeadlessLine(context.Background(), a, resultLine, &lastEmit, prov)
 	if stop {
@@ -3153,6 +3244,7 @@ func TestHeadlessUnsteeredClosesAndCompletes(t *testing.T) {
 	r, w := io.Pipe()
 	if err := a.convo.installStdinPipe(w); err != nil {
 		t.Fatalf("installStdinPipe: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = r.Close() })
 
@@ -3161,6 +3253,7 @@ func TestHeadlessUnsteeredClosesAndCompletes(t *testing.T) {
 	prov, err := lookupProvider("claude")
 	if err != nil {
 		t.Fatalf("lookupProvider: %v", err)
+		panic("unreachable")
 	}
 	stop := m.processHeadlessLine(context.Background(), a, resultLine, &lastEmit, prov)
 	if stop {
@@ -3190,6 +3283,7 @@ func TestHeadlessErrorResultPreservesQueuedSteer(t *testing.T) {
 	r, w := io.Pipe()
 	if err := a.convo.installStdinPipe(w); err != nil {
 		t.Fatalf("installStdinPipe: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = r.Close() })
 	a.EnqueuePrompt("retry this instruction")
@@ -3249,10 +3343,12 @@ func TestSurviveFIFOChildO_RDWRDoesNotSeeParentCloseAsEOF(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "survive.stdin")
 	if err := makeFIFO(path); err != nil {
 		t.Fatalf("makeFIFO: %v", err)
+		panic("unreachable")
 	}
 	parent, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		t.Fatalf("open parent FIFO: %v", err)
+		panic("unreachable")
 	}
 	child, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
@@ -3262,6 +3358,7 @@ func TestSurviveFIFOChildO_RDWRDoesNotSeeParentCloseAsEOF(t *testing.T) {
 	t.Cleanup(func() { _ = child.Close() })
 	if err := parent.Close(); err != nil {
 		t.Fatalf("close parent FIFO: %v", err)
+		panic("unreachable")
 	}
 
 	read := make(chan error, 1)
@@ -3277,11 +3374,13 @@ func TestSurviveFIFOChildO_RDWRDoesNotSeeParentCloseAsEOF(t *testing.T) {
 	}
 	if _, err := child.WriteString("x"); err != nil {
 		t.Fatalf("write through surviving child FIFO: %v", err)
+		panic("unreachable")
 	}
 	select {
 	case err := <-read:
 		if err != nil {
 			t.Fatalf("child read after write: %v", err)
+			panic("unreachable")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("child FIFO read did not receive data")
@@ -3295,6 +3394,7 @@ func TestProcessHeadlessLine_ResultWaitsForBackgroundTasksThenStopsWhenCleared(t
 	r, w := io.Pipe()
 	if err := a.convo.installStdinPipe(w); err != nil {
 		t.Fatalf("installStdinPipe: %v", err)
+		panic("unreachable")
 	}
 	t.Cleanup(func() { _ = r.Close() })
 
@@ -3434,6 +3534,7 @@ func TestHeadlessSteerProducesFurtherTurn(t *testing.T) {
 	defer cancel()
 	if _, err := m.runHeadlessAttemptPipe(ctx, a, cfg, &outFile, inv); err != nil {
 		t.Fatalf("runHeadlessAttemptPipe: %v", err)
+		panic("unreachable")
 	}
 
 	var sawSecondTurn bool
@@ -3465,6 +3566,7 @@ done
 	path := filepath.Join(dir, "claude")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake claude binary: %v", err)
+		panic("unreachable")
 	}
 	return dir
 }
@@ -3484,6 +3586,7 @@ echo "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s-1\",\"tota
 	path := filepath.Join(dir, "claude")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake claude binary: %v", err)
+		panic("unreachable")
 	}
 	return dir
 }
@@ -3517,6 +3620,7 @@ func TestHeadlessNonSteerablePipeWritesPromptOverStdin(t *testing.T) {
 	defer cancel()
 	if _, err := m.runHeadlessAttemptPipe(ctx, a, cfg, &outFile, inv); err != nil {
 		t.Fatalf("runHeadlessAttemptPipe: %v", err)
+		panic("unreachable")
 	}
 
 	var sawPrompt bool

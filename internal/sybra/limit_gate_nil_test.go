@@ -18,6 +18,7 @@ func TestLimitGateOrNil_DegradedStoreYieldsGenuineNilInterface(t *testing.T) {
 
 	if gate := agent.LimitGateOrNil(store); gate != nil {
 		t.Fatal("agent.LimitGateOrNil(nil) must return a genuine nil LimitGate")
+		panic("unreachable")
 	}
 }
 
@@ -29,5 +30,6 @@ func TestAgentRuntimeConfig_DegradedLimitsHasNilGate(t *testing.T) {
 	rc := a.agentRuntimeConfig(&config.Config{})
 	if rc.LimitGate != nil {
 		t.Fatal("degraded limits store must yield a nil LimitGate so the manager guard fires")
+		panic("unreachable")
 	}
 }

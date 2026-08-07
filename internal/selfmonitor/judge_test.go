@@ -61,6 +61,7 @@ func TestJudge_FillsVerdictWhenLogSummaryAvailable(t *testing.T) {
 	r, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 	if len(r.Findings) != 1 {
 		t.Fatalf("Findings = %d, want 1", len(r.Findings))
@@ -95,6 +96,7 @@ func TestJudge_KeepsVerdictPendingOnError(t *testing.T) {
 	r, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 	if len(r.Findings) != 1 {
 		t.Fatalf("Findings = %d, want 1", len(r.Findings))
@@ -128,6 +130,7 @@ func TestJudge_SkippedWhenNoLogSummary(t *testing.T) {
 	r, err := svc.Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
+		panic("unreachable")
 	}
 	if called {
 		t.Error("Judge called when LogSummary is nil, want skipped")
@@ -191,6 +194,7 @@ func TestParseJudgeVerdict_ExtractsLastJSONObject(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("parseJudgeVerdict: %v", err)
+				panic("unreachable")
 			}
 			if v.Classification != tt.wantClass {
 				t.Errorf("Classification = %q, want %q", v.Classification, tt.wantClass)

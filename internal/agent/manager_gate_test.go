@@ -38,6 +38,7 @@ func TestGateProvider_HealthyPassesThrough(t *testing.T) {
 	got, err := m.gateProvider(RunConfig{Provider: "claude"})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
+		panic("unreachable")
 	}
 	if got != "claude" {
 		t.Errorf("got %q, want claude", got)
@@ -54,6 +55,7 @@ func TestGateProvider_UnhealthyWithFailover(t *testing.T) {
 	got, err := m.gateProvider(RunConfig{Provider: "claude"})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
+		panic("unreachable")
 	}
 	if got != "codex" {
 		t.Errorf("expected failover to codex, got %q", got)
@@ -83,6 +85,7 @@ func TestGateProvider_SkipsDisabledHealthFailoverTarget(t *testing.T) {
 	got, err := m.gateProvider(RunConfig{Provider: "claude"})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
+		panic("unreachable")
 	}
 	if got != "codex" {
 		t.Fatalf("provider = %q, want codex", got)
@@ -107,6 +110,7 @@ func TestGateProvider_ConfigDisabledRequestedProviderFailsOver(t *testing.T) {
 	got, err := m.gateProvider(RunConfig{Provider: "copilot"})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
+		panic("unreachable")
 	}
 	if got != "codex" {
 		t.Fatalf("provider = %q, want codex", got)
@@ -135,6 +139,7 @@ func TestPrepareRunConfig_InteractiveFailsOverLikeHeadless(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatalf("prepareRunConfig(%s): %v", mode, err)
+				panic("unreachable")
 			}
 			if prov.Name() != "codex" {
 				t.Errorf("mode %s: resolved provider = %q, want codex (failover)", mode, prov.Name())
@@ -161,6 +166,7 @@ func TestPrepareRunConfig_UsesRuntimeDefaultModelWhenRunModelEmpty(t *testing.T)
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	if prov.Name() != "opencode" {
 		t.Fatalf("provider = %q, want opencode", prov.Name())
@@ -186,6 +192,7 @@ func TestPrepareRunConfig_ExplicitModelOverridesRuntimeDefault(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	if cfg.Model != "openrouter/z-ai/glm-5.2" {
 		t.Fatalf("Model = %q, want explicit run model", cfg.Model)
@@ -208,6 +215,7 @@ func TestPrepareRunConfig_FailoverRemapsKnownConcreteModel(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	if prov.Name() != "copilot" {
 		t.Fatalf("provider = %q, want copilot", prov.Name())
@@ -251,6 +259,7 @@ func TestPrepareRunConfig_CodexRemapsClaudeModelLiteral(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	if prov.Name() != "codex" {
 		t.Fatalf("provider = %q, want codex", prov.Name())
@@ -281,6 +290,7 @@ func TestPrepareRunConfig_AppendsBackgroundTaskGuardrailForHeadlessCodeAuthor(t 
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	if cfg.Prompt == "implement the task" {
 		t.Fatal("expected background-task guardrail to be appended to a headless code-author prompt")
@@ -295,6 +305,7 @@ func TestPrepareRunConfig_AppendsBackgroundTaskGuardrailForHeadlessCodeAuthor(t 
 	})
 	if err != nil {
 		t.Fatalf("prepareRunConfig: %v", err)
+		panic("unreachable")
 	}
 	if cfg.Prompt != "review the diff" {
 		t.Errorf("verifier role (SeedWorkingMemory=false) should not get the guardrail, got: %q", cfg.Prompt)
@@ -340,6 +351,7 @@ func TestPrepareRunConfig_HeadlessSteerableGatedByRole(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatalf("prepareRunConfig: %v", err)
+				panic("unreachable")
 			}
 			if cfg.HeadlessSteerable != tt.want {
 				t.Errorf("Name=%q: HeadlessSteerable = %v, want %v", tt.name, cfg.HeadlessSteerable, tt.want)
@@ -357,6 +369,7 @@ func TestGateProvider_BothUnhealthyReturnsTypedError(t *testing.T) {
 	_, err := m.gateProvider(RunConfig{Provider: "claude"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
+		panic("unreachable")
 	}
 	if !errors.Is(err, provider.ErrProviderUnhealthy) {
 		t.Fatalf("error should match ErrProviderUnhealthy: %v", err)
@@ -376,6 +389,7 @@ func TestGateProvider_IgnoreHealthGateBypasses(t *testing.T) {
 	got, err := m.gateProvider(RunConfig{Provider: "claude", IgnoreHealthGate: true})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
+		panic("unreachable")
 	}
 	if got != "claude" {
 		t.Errorf("got %q, want claude", got)
@@ -452,6 +466,7 @@ func TestGateProvider_CapRedirectsEvenWhenPreferUnderusedFalse(t *testing.T) {
 	got, err := m.gateProvider(RunConfig{Provider: "claude"})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
+		panic("unreachable")
 	}
 	if got != "codex" {
 		t.Errorf("got %q, want codex (cap must redirect even with PreferUnderused=false)", got)
@@ -479,6 +494,7 @@ func TestGateProvider_CapWithNoHealthyAlternativeFallsBackToResolved(t *testing.
 	got, err := m.gateProvider(RunConfig{Provider: "claude"})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
+		panic("unreachable")
 	}
 	if got != "claude" {
 		t.Errorf("got %q, want claude (no healthy alt: soft cap must not block dispatch)", got)
@@ -505,6 +521,7 @@ func TestGateProvider_PreferUnderusedStillUsesChooseProviderUnderCap(t *testing.
 	got, err := m.gateProvider(RunConfig{Provider: "claude"})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
+		panic("unreachable")
 	}
 	if got != "codex" {
 		t.Errorf("got %q, want codex (PreferUnderused path must still route via ChooseProvider)", got)
@@ -530,6 +547,7 @@ func TestGateProvider_CapDisabledByDefaultNeverRedirects(t *testing.T) {
 	got, err := m.gateProvider(RunConfig{Provider: "claude"})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
+		panic("unreachable")
 	}
 	if got != "claude" {
 		t.Errorf("got %q, want claude (cap disabled, no redirect expected)", got)
@@ -555,10 +573,12 @@ func TestResolveProvider_MatchesGateProviderFailover(t *testing.T) {
 	predicted, err := m.ResolveProvider(cfg)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
+		panic("unreachable")
 	}
 	actual, err := m.gateProvider(cfg)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
+		panic("unreachable")
 	}
 	if predicted != actual {
 		t.Fatalf("ResolveProvider %q disagrees with gateProvider %q", predicted, actual)
@@ -651,6 +671,7 @@ func TestLimitGateOrNil_NilStoreYieldsNilInterface(t *testing.T) {
 	gate := LimitGateOrNil(store)
 	if gate != nil {
 		t.Fatalf("expected nil interface for nil *limits.Store, got %#v", gate)
+		panic("unreachable")
 	}
 }
 
@@ -658,10 +679,12 @@ func TestLimitGateOrNil_NonNilStorePassesThrough(t *testing.T) {
 	store, err := limits.NewStore(filepath.Join(t.TempDir(), "limits.json"))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
+		panic("unreachable")
 	}
 	gate := LimitGateOrNil(store)
 	if gate == nil {
 		t.Fatal("expected non-nil LimitGate for non-nil store")
+		panic("unreachable")
 	}
 }
 
@@ -684,6 +707,7 @@ func TestGateProvider_DegradedLimitsStoreNoPanic(t *testing.T) {
 	got, err := m.gateProvider(RunConfig{Provider: "claude"})
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
+		panic("unreachable")
 	}
 	if got != "claude" {
 		t.Errorf("got %q, want claude", got)
@@ -735,6 +759,7 @@ func TestGateProvider_SoftThresholdLastResortUsesRemainingBudget(t *testing.T) {
 			got, err := m.gateProvider(RunConfig{Provider: "claude"})
 			if err != nil {
 				t.Fatalf("soft threshold with no peer must not gate: %v", err)
+				panic("unreachable")
 			}
 			if got != "claude" {
 				t.Errorf("got %q, want claude (use remaining budget as last resort)", got)
@@ -762,6 +787,7 @@ func TestGateProvider_HardLimitStillGatesWithNoPeer(t *testing.T) {
 	_, err := m.gateProvider(RunConfig{Provider: "claude"})
 	if err == nil {
 		t.Fatal("hard limit with no peer must gate, got nil error")
+		panic("unreachable")
 	}
 	if !errors.Is(err, provider.ErrProviderUnhealthy) {
 		t.Fatalf("want ErrProviderUnhealthy, got %v", err)
@@ -793,6 +819,7 @@ func TestGateProvider_HardLimitFailsOverToSoftLimitedPeer(t *testing.T) {
 	got, err := m.gateProvider(RunConfig{Provider: "codex"})
 	if err != nil {
 		t.Fatalf("hard-limited provider with a soft-limited peer must fail over, got err: %v", err)
+		panic("unreachable")
 	}
 	if got != "claude" {
 		t.Errorf("got %q, want claude (soft-limited peer used as last-resort failover)", got)
@@ -823,6 +850,7 @@ func TestGateProvider_SoftThresholdDoesNotFailOverToSoftLimitedPeer(t *testing.T
 	got, err := m.gateProvider(RunConfig{Provider: "codex"})
 	if err != nil {
 		t.Fatalf("soft-threshold provider with only a soft-limited peer must keep remaining budget, got err: %v", err)
+		panic("unreachable")
 	}
 	if got != "codex" {
 		t.Errorf("got %q, want codex (soft-threshold last resort must not fail over)", got)
@@ -850,6 +878,7 @@ func TestGateProvider_HardLimitFailoverDisabledSkipsSoftLimitedPeer(t *testing.T
 	_, err := m.gateProvider(RunConfig{Provider: "codex", DisableProviderFailover: true})
 	if err == nil {
 		t.Fatal("DisableProviderFailover must not use the soft-limited peer, got nil error")
+		panic("unreachable")
 	}
 	if !errors.Is(err, provider.ErrProviderUnhealthy) {
 		t.Fatalf("want ErrProviderUnhealthy, got %v", err)

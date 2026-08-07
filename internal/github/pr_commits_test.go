@@ -34,6 +34,7 @@ func TestFetchCommitParentSHAsWith(t *testing.T) {
 	got, err := fetchCommitParentSHAsWith(context.Background(), fe, "o/r", sha)
 	if err != nil {
 		t.Fatalf("err: %v", err)
+		panic("unreachable")
 	}
 	if len(got) != 2 || got[0] != "parent1" || got[1] != "parent2" {
 		t.Fatalf("parents = %v, want [parent1 parent2]", got)
@@ -61,6 +62,7 @@ func TestFetchCommitParentSHAsWith_RejectsNonSHA(t *testing.T) {
 	_, err := fetchCommitParentSHAsWith(context.Background(), fe, "o/r", "main")
 	if err == nil || !strings.Contains(err.Error(), "invalid commit sha") {
 		t.Fatalf("err = %v, want invalid commit sha", err)
+		panic("unreachable")
 	}
 	if fe.calls != 0 {
 		t.Fatalf("calls = %d, want 0", fe.calls)
@@ -74,6 +76,7 @@ func TestFetchCommitParentSHAsWith_UsesContext(t *testing.T) {
 
 	if _, err := fetchCommitParentSHAsWith(context.Background(), fe, "o/r", sha); err != nil {
 		t.Fatalf("err: %v", err)
+		panic("unreachable")
 	}
 	if !fe.usedCtx {
 		t.Fatal("expected the context-aware runCtx path to be used")

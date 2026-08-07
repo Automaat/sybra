@@ -15,11 +15,13 @@ func TestIsWorkProjectFailsSafe(t *testing.T) {
 	store, err := project.NewStore(dir, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	mustWriteProjectYAML(t, dir, "owner/work", project.ProjectTypeWork)
 	mustWriteProjectYAML(t, dir, "owner/pet", project.ProjectTypePet)
 	if err := os.WriteFile(filepath.Join(dir, "owner--notype.yaml"), []byte("id: owner/notype\nowner: stub\nrepo: stub\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	a := &App{projects: store, logger: slog.Default()}

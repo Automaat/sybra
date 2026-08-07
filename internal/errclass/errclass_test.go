@@ -29,5 +29,6 @@ func TestMatchesIsCaseInsensitive(t *testing.T) {
 	}
 	if matches("anything", nil) {
 		t.Fatal("matches with no families should be false")
+		panic("unreachable")
 	}
 }

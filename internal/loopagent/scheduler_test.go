@@ -43,6 +43,7 @@ func newSched(t *testing.T) (*Scheduler, *Store, *fakeRunner) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("store: %v", err)
+		panic("unreachable")
 	}
 	runner := &fakeRunner{}
 	sched := NewScheduler(context.Background(), store, runner, nil, nil, t.TempDir())
@@ -56,6 +57,7 @@ func TestSchedulerSyncStartsAndStopsFetchers(t *testing.T) {
 	la, err := store.Create(LoopAgent{Name: "a", Prompt: "/a", IntervalSec: 60, Enabled: true})
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 
 	sched.Sync()
@@ -67,6 +69,7 @@ func TestSchedulerSyncStartsAndStopsFetchers(t *testing.T) {
 	la.Enabled = false
 	if _, err := store.Update(la); err != nil {
 		t.Fatalf("disable: %v", err)
+		panic("unreachable")
 	}
 	sched.Sync()
 	if got := sched.RunningIDs(); len(got) != 0 {
@@ -92,6 +95,7 @@ func TestSchedulerSyncRestartsOnConfigChange(t *testing.T) {
 	la.IntervalSec = 120
 	if _, err := store.Update(la); err != nil {
 		t.Fatalf("update: %v", err)
+		panic("unreachable")
 	}
 	sched.Sync()
 
@@ -120,6 +124,7 @@ func TestSchedulerFireUpdatesLastRunFields(t *testing.T) {
 	agentID, err := sched.fire(la)
 	if err != nil {
 		t.Fatalf("fire: %v", err)
+		panic("unreachable")
 	}
 	if agentID != "ag123abc" {
 		t.Fatalf("agent id mismatch: %s", agentID)
@@ -144,6 +149,7 @@ func TestSchedulerFireUpdatesLastRunFields(t *testing.T) {
 	stored, err := store.Get(la.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
+		panic("unreachable")
 	}
 	if stored.LastRunID != "ag123abc" {
 		t.Fatalf("LastRunID not persisted: %s", stored.LastRunID)
@@ -164,6 +170,7 @@ func TestSchedulerOnAgentCompleteUpdatesCost(t *testing.T) {
 	la, _ := store.Create(LoopAgent{Name: "self", Prompt: "/p", IntervalSec: 60, Enabled: true})
 	if _, err := sched.fire(la); err != nil {
 		t.Fatalf("fire: %v", err)
+		panic("unreachable")
 	}
 
 	ag := &agent.Agent{ID: "ag-cost", Name: "loop:self"}
@@ -201,6 +208,7 @@ func TestSchedulerRunNowFiresOutsideSchedule(t *testing.T) {
 	id, err := sched.RunNow(la.ID)
 	if err != nil {
 		t.Fatalf("RunNow: %v", err)
+		panic("unreachable")
 	}
 	if id != "ag-rn" {
 		t.Fatalf("agent id mismatch: %s", id)
@@ -241,6 +249,7 @@ func TestSchedulerStopPreventsLaterSyncFromStartingFetchers(t *testing.T) {
 	la, err := store.Create(LoopAgent{Name: "late", Prompt: "/late", IntervalSec: 60, Enabled: true})
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	sched.Stop()
 	sched.Sync()
@@ -255,10 +264,12 @@ func TestSchedulerStopPreventsRunNow(t *testing.T) {
 	la, err := store.Create(LoopAgent{Name: "late", Prompt: "/late", IntervalSec: 60, Enabled: true})
 	if err != nil {
 		t.Fatalf("create: %v", err)
+		panic("unreachable")
 	}
 	sched.Stop()
 	if _, err := sched.RunNow(la.ID); err == nil {
 		t.Fatal("RunNow after Stop succeeded")
+		panic("unreachable")
 	}
 	if got := runner.Calls(); len(got) != 0 {
 		t.Fatalf("RunNow after Stop started agent: %+v", got)

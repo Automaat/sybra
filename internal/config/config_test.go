@@ -64,6 +64,7 @@ func TestDefaultConfigMatchesEmptyFileResolution(t *testing.T) {
 	got, err := LoadNoPersist()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	want := DefaultConfig()
 	if diff := cmpConfigSubset(got, want); diff != "" {
@@ -75,6 +76,7 @@ func TestParseFileConfigRejectsUnknownKeyWithFullPathAndSuggestion(t *testing.T)
 	_, err := ParseFileConfig([]byte("monitor:\n  issue_reop: Automaat/sybra\n"))
 	if err == nil {
 		t.Fatal("expected unknown-key error, got nil")
+		panic("unreachable")
 	}
 	msg := err.Error()
 	if !strings.Contains(msg, `unknown config key "monitor.issue_reop"`) {
@@ -94,6 +96,7 @@ func TestParseFileConfigToleratesRemovedAgentModeKey(t *testing.T) {
 	_, err := ParseFileConfig([]byte("agent:\n  mode: ''\n  provider: claude\n"))
 	if err != nil {
 		t.Fatalf("ParseFileConfig with legacy agent.mode key: %v", err)
+		panic("unreachable")
 	}
 }
 
@@ -101,6 +104,7 @@ func TestParseFileConfigRejectsFutureSchemaVersion(t *testing.T) {
 	_, err := ParseFileConfig([]byte("schema_version: 99\n"))
 	if err == nil {
 		t.Fatal("expected future-version error, got nil")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "schema_version 99 is newer") {
 		t.Fatalf("error = %q, want upgrade-oriented schema_version message", err.Error())
@@ -116,11 +120,13 @@ func TestResolveAppliesV2DurationAliases(t *testing.T) {
 	))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := resolved.Config.Agent.BashTimeoutSeconds; got != 120 {
 		t.Fatalf("Agent.BashTimeoutSeconds = %d, want 120", got)
@@ -135,6 +141,7 @@ func TestResolveAppliesV2DurationAliases(t *testing.T) {
 	explanation, err := ExplainPath("execution.agent.bash_timeout", fileCfg, Environment{}, resolved.Config)
 	if err != nil {
 		t.Fatalf("ExplainPath: %v", err)
+		panic("unreachable")
 	}
 	if explanation.Descriptor.RuntimePath != "agent.bash_timeout_seconds" {
 		t.Fatalf("runtime path = %q, want agent.bash_timeout_seconds", explanation.Descriptor.RuntimePath)
@@ -154,6 +161,7 @@ func TestResolveRejectsNonIntegralDurationAliasForIntField(t *testing.T) {
 	_, err := ParseFileConfig([]byte("schema_version: 2\nsandbox:\n  retention: 90m\n"))
 	if err == nil {
 		t.Fatal("expected duration validation error, got nil")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "sandbox.retention") || !strings.Contains(err.Error(), "whole hour") {
 		t.Fatalf("error = %q, want whole-hour validation on sandbox.retention", err.Error())
@@ -181,11 +189,13 @@ func TestResolveAcceptsLegacyGitHubPollingDurationAliases(t *testing.T) {
 	}, "\n")))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if got := resolved.Config.GitHub.Polling.Issues.IntervalSeconds; got != 11*60 {
@@ -225,10 +235,12 @@ func TestResolveLoadsNamespacedV2Config(t *testing.T) {
 	}, "\n")))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := resolved.Config.Agent.Provider; got != "codex" {
 		t.Fatalf("Agent.Provider = %q, want codex", got)
@@ -259,6 +271,7 @@ func TestParseFileConfigRejectsMixedLegacyAndNamespacedV2Config(t *testing.T) {
 	}, "\n")))
 	if err == nil {
 		t.Fatal("expected ambiguous-key error, got nil")
+		panic("unreachable")
 	}
 	if !strings.Contains(err.Error(), "ambiguous") || !strings.Contains(err.Error(), "agent") {
 		t.Fatalf("error = %q, want ambiguous agent key error", err.Error())
@@ -281,6 +294,7 @@ func TestMigrateRawConfigToNamespacedV2IsIdempotent(t *testing.T) {
 	first, err := MigrateRawConfig(raw, CurrentSchemaVersion)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !first.Changed {
 		t.Fatal("first migration reported Changed=false")
@@ -319,6 +333,7 @@ func TestMigrateRawConfigToNamespacedV2IsIdempotent(t *testing.T) {
 	second, err := MigrateRawConfig(first.MigratedRaw, CurrentSchemaVersion)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if second.Changed {
 		t.Fatalf("second migration reported Changed=true:\n%s", second.MigratedRaw)
@@ -342,6 +357,7 @@ func TestMigrateRawConfigKeepsCanonicalGitHubReviewHoldConfig(t *testing.T) {
 	result, err := MigrateRawConfig(raw, CurrentSchemaVersion)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if result.Changed {
 		t.Fatalf("canonical v2 config should be a no-op migration:\n%s", result.MigratedRaw)
@@ -366,10 +382,12 @@ func TestResolveSLOTargetExplicitZeroSurvives(t *testing.T) {
 	}, "\n")))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := resolved.Config.Evaluation.SLO.MaxIdenticalRetryCap; got != 0 {
 		t.Fatalf("MaxIdenticalRetryCap = %d, want 0 (explicit zero must survive)", got)
@@ -389,10 +407,12 @@ func TestResolveSLOTargetUnsetGetsDefaults(t *testing.T) {
 	fileCfg, err := ParseFileConfig([]byte("{}\n"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	want := DefaultSLOTargets()
 	if got := resolved.Config.Evaluation.SLO.MaxIdenticalRetryCap; got != want.MaxIdenticalRetryCap {
@@ -417,10 +437,12 @@ func TestResolveLoadsHonestGuardrailKeys(t *testing.T) {
 	}, "\n")))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := resolved.Config.Agent.MaxCostUSD; got != 7.5 {
 		t.Fatalf("Agent.MaxCostUSD = %v, want 7.5", got)
@@ -453,6 +475,7 @@ func TestResolveV2GuardrailAliasesWarnAndKeepBoundedReviewLoop(t *testing.T) {
 	}, "\n")))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	warnings := strings.Join(fileCfg.Warnings(), "\n")
 	for _, want := range []string{
@@ -468,6 +491,7 @@ func TestResolveV2GuardrailAliasesWarnAndKeepBoundedReviewLoop(t *testing.T) {
 	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := resolved.Config.Agent.MaxCostUSD; got != 8 {
 		t.Fatalf("Agent.MaxCostUSD = %v, want 8", got)
@@ -497,10 +521,12 @@ func TestResolveLegacyReviewUntilCleanPreservesUnboundedLoop(t *testing.T) {
 	}, "\n")))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := resolved.Config.Agent.ReviewRoundsPerHourLimit(); got > 0 {
 		t.Fatalf("ReviewRoundsPerHourLimit() = %d, want disabled (<=0) for schema-v1 review_until_clean=true", got)
@@ -520,10 +546,12 @@ func TestParseFileConfig_AcceptsLegacyGitHubReviewRoundsPerHour(t *testing.T) {
 	}, "\n")))
 	if err != nil {
 		t.Fatalf("ParseFileConfig() error = %v, want the legacy key accepted as an alias", err)
+		panic("unreachable")
 	}
 	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := resolved.Config.Agent.ReviewRoundsPerHour; got != 5 {
 		t.Fatalf("Agent.ReviewRoundsPerHour = %d, want 5 from the legacy github key", got)
@@ -541,6 +569,7 @@ func TestResolve_ConflictingReviewRoundsPerHourKeysError(t *testing.T) {
 	}, "\n")))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if _, err := Resolve(fileCfg, Environment{}, ResolveOptions{}); err == nil {
 		t.Fatal("Resolve() error = nil, want a conflict error for mismatched agent/github values")
@@ -557,10 +586,12 @@ func TestResolveLegacyReviewUntilCleanKeepsExplicitGitHubReviewRoundsPerHour(t *
 	}, "\n")))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := resolved.Config.Agent.ReviewRoundsPerHour; got != 5 {
 		t.Fatalf("Agent.ReviewRoundsPerHour = %d, want the explicit legacy github value 5 preserved, not clobbered to -1", got)
@@ -579,6 +610,7 @@ func TestMigrateRawConfig_RelocatesLegacyGitHubReviewRoundsPerHour(t *testing.T)
 	result, err := MigrateRawConfig(raw, CurrentSchemaVersion)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	text := string(result.MigratedRaw)
 	if !strings.Contains(text, "review_rounds_per_hour: 5") {
@@ -591,10 +623,12 @@ func TestMigrateRawConfig_RelocatesLegacyGitHubReviewRoundsPerHour(t *testing.T)
 	fileCfg, err := ParseFileConfig(result.MigratedRaw)
 	if err != nil {
 		t.Fatalf("re-parse migrated output: %v", err)
+		panic("unreachable")
 	}
 	resolved, err := Resolve(fileCfg, Environment{}, ResolveOptions{})
 	if err != nil {
 		t.Fatalf("re-resolve migrated output: %v", err)
+		panic("unreachable")
 	}
 	if got := resolved.Config.Agent.ReviewRoundsPerHour; got != 5 {
 		t.Fatalf("Agent.ReviewRoundsPerHour = %d, want 5 preserved through migration", got)
@@ -613,6 +647,7 @@ func TestMigrateRawConfigMovesWebhookUnderGitHub(t *testing.T) {
 	result, err := MigrateRawConfig(raw, CurrentSchemaVersion)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	text := string(result.MigratedRaw)
 	for _, want := range []string{
@@ -661,6 +696,7 @@ func TestMigrateRawConfigRewritesGuardrailAliasesAndPreservesExplicitReviewLoop(
 	result, err := MigrateRawConfig(raw, CurrentSchemaVersion)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	text := string(result.MigratedRaw)
 	for _, want := range []string{
@@ -692,6 +728,7 @@ func TestMigrateRawConfigKeepsV2ReviewUntilCleanBounded(t *testing.T) {
 	result, err := MigrateRawConfig(raw, CurrentSchemaVersion)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	text := string(result.MigratedRaw)
 	if strings.Contains(text, "review_rounds_per_hour") {
@@ -706,9 +743,11 @@ func TestMigrateNodeToCanonicalPreservesNilAsYAMLNull(t *testing.T) {
 	got, err := migrateNodeToCanonical([]string{"agent", "model"}, nil)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got == nil {
 		t.Fatal("got nil node, want YAML null scalar")
+		panic("unreachable")
 	}
 	if got.Kind != yamlv3.ScalarNode || got.Tag != "!!null" || got.Value != "null" {
 		t.Fatalf("got node = %#v, want YAML null scalar", got)
@@ -754,11 +793,13 @@ func TestLoadFromYAML(t *testing.T) {
 	yaml := []byte("logging:\n  level: debug\n  max_size_mb: 10\n  max_files: 3\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.Logging.Level != "debug" {
 		t.Errorf("Level = %q, want %q", cfg.Logging.Level, "debug")
@@ -804,6 +845,7 @@ func TestLoadProviderDefaultAndPersistedValue(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.Agent.Provider != "claude" {
 		t.Fatalf("default provider = %q, want claude", cfg.Agent.Provider)
@@ -812,11 +854,13 @@ func TestLoadProviderDefaultAndPersistedValue(t *testing.T) {
 	cfg.Agent.Provider = "codex"
 	if err := cfg.Save(); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	reloaded, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if reloaded.Agent.Provider != "codex" {
 		t.Fatalf("reloaded provider = %q, want codex", reloaded.Agent.Provider)
@@ -831,6 +875,7 @@ func TestLoadFreshInstallDoesNotPersistBuiltinABExperiments(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.ABTesting.EnabledValue() {
 		t.Fatal("ABTesting.EnabledValue() = true, want false on a fresh install")
@@ -842,6 +887,7 @@ func TestLoadFreshInstallDoesNotPersistBuiltinABExperiments(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	text := string(raw)
 	if strings.Contains(text, "ab_testing:") {
@@ -859,11 +905,13 @@ func TestLoadABTestingOmittedEnabledStaysDisabled(t *testing.T) {
 	t.Setenv("SYBRA_HOME", dir)
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("ab_testing:\n  min_samples_per_variant: 11\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := LoadNoPersist()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.ABTesting.EnabledValue() {
 		t.Fatal("ABTesting.EnabledValue() = true, want false when enabled is omitted")
@@ -875,11 +923,13 @@ func TestLoadABTestingExplicitEnabledTrue(t *testing.T) {
 	t.Setenv("SYBRA_HOME", dir)
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("ab_testing:\n  enabled: true\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := LoadNoPersist()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !cfg.ABTesting.EnabledValue() {
 		t.Fatal("ABTesting.EnabledValue() = false, want true for explicit enabled: true")
@@ -898,11 +948,13 @@ func TestLoadV2ObservabilityABTestingExplicitEnabledTrue(t *testing.T) {
 	}, "\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := LoadNoPersist()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !cfg.ABTesting.EnabledValue() {
 		t.Fatal("ABTesting.EnabledValue() = false, want true for observability.ab_testing.enabled")
@@ -915,15 +967,18 @@ func TestWriteRawConfig_PreservesLastKnownGoodWithRestrictivePerms(t *testing.T)
 
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("logging:\n  level: info\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := WriteRawConfig([]byte("logging:\n  level: debug\n")); err != nil {
 		t.Fatalf("WriteRawConfig: %v", err)
+		panic("unreachable")
 	}
 
 	backupPath := LastKnownGoodConfigPath()
 	backup, err := os.ReadFile(backupPath)
 	if err != nil {
 		t.Fatalf("read last-known-good: %v", err)
+		panic("unreachable")
 	}
 	if string(backup) != "logging:\n  level: info\n" {
 		t.Fatalf("last-known-good = %q, want previous config", string(backup))
@@ -931,6 +986,7 @@ func TestWriteRawConfig_PreservesLastKnownGoodWithRestrictivePerms(t *testing.T)
 	info, err := os.Stat(backupPath)
 	if err != nil {
 		t.Fatalf("stat last-known-good: %v", err)
+		panic("unreachable")
 	}
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("last-known-good perm = %o, want 0600", perm)
@@ -964,11 +1020,13 @@ func TestLoadPreservesDispatchJitterAndInFlightCapOverrides(t *testing.T) {
 	yamlDoc := []byte("agent:\n  dispatch_jitter_ms: 250\nproviders:\n  limits:\n    max_in_flight_per_provider: 3\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yamlDoc, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.Agent.DispatchJitterMs != 250 {
 		t.Errorf("Agent.DispatchJitterMs = %d, want 250", cfg.Agent.DispatchJitterMs)
@@ -988,6 +1046,7 @@ func TestLoadExperienceDefaults(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.Experience.Enabled {
 		t.Fatal("experience.enabled = true, want false")
@@ -1012,6 +1071,7 @@ func TestLoadPressureDefaults(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	p := cfg.Orchestrator.Pressure
 	if !p.Enabled {
@@ -1041,10 +1101,12 @@ func TestLoadPressureExplicitZeroDisablesDimension(t *testing.T) {
 	yaml := []byte("orchestrator:\n  pressure:\n    min_disk_free_percent: 0\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	p := cfg.Orchestrator.Pressure
 	if p.MinDiskFreePercent != 0 {
@@ -1066,11 +1128,13 @@ func TestLoadAutoUpdateDefaults(t *testing.T) {
 	yaml := []byte("auto_update:\n  enabled: true\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !cfg.AutoUpdate.Enabled {
 		t.Fatal("auto_update.enabled = false, want true")
@@ -1107,6 +1171,7 @@ func TestLoadTriageModelDefaultsEmpty(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.Triage.Model != "" {
 		t.Fatalf("triage.model = %q, want empty (super-cheap tier)", cfg.Triage.Model)
@@ -1125,11 +1190,13 @@ func TestLoadTriageModelPreservesExplicitOverride(t *testing.T) {
 	yaml := []byte("triage:\n  model: sonnet\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.Triage.Model != "sonnet" {
 		t.Fatalf("triage.model = %q, want sonnet", cfg.Triage.Model)
@@ -1143,11 +1210,13 @@ func TestLoadMonitorDispatchLimitDefaultsToAgentLimit(t *testing.T) {
 	yaml := []byte("agent:\n  max_concurrent: 10\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.Monitor.DispatchLimit != 10 {
 		t.Fatalf("dispatch limit = %d, want 10", cfg.Monitor.DispatchLimit)
@@ -1161,11 +1230,13 @@ func TestLoadMonitorDispatchLimitPreservesOverride(t *testing.T) {
 	yaml := []byte("agent:\n  max_concurrent: 10\nmonitor:\n  dispatch_limit: 4\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.Monitor.DispatchLimit != 4 {
 		t.Fatalf("dispatch limit = %d, want 4", cfg.Monitor.DispatchLimit)
@@ -1178,11 +1249,13 @@ func TestLoadMonitorPRGapGraceDefaults(t *testing.T) {
 
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("monitor:\n  pr_gap_grace_minutes: 0\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.Monitor.PRGapGraceMinutes != 15 {
 		t.Fatalf("PRGapGraceMinutes = %d, want 15", cfg.Monitor.PRGapGraceMinutes)
@@ -1196,6 +1269,7 @@ func TestLoadHarnessEvolutionDefaults(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !cfg.HarnessEvolve.Enabled {
 		t.Fatal("harness evolution should default enabled")
@@ -1220,11 +1294,13 @@ func TestLoadHarnessEvolutionPreservesExplicitDisabled(t *testing.T) {
 	yaml := []byte("harness_evolution:\n  enabled: false\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.HarnessEvolve.Enabled {
 		t.Fatal("explicit harness_evolution.enabled=false was not preserved")
@@ -1238,6 +1314,7 @@ func TestLoadPromptLabDefaults(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// Unlike harness evolution, prompt lab must default disabled: a config
 	// predating this feature (or a fresh install) must not start filing
@@ -1268,11 +1345,13 @@ func TestLoadPromptLabPreservesExplicitEnabled(t *testing.T) {
 	yaml := []byte("prompt_lab:\n  enabled: true\n  min_samples: 10\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !cfg.PromptLab.Enabled {
 		t.Fatal("explicit prompt_lab.enabled=true was not preserved")
@@ -1302,16 +1381,19 @@ func TestHumanReviewSybraBugAction(t *testing.T) {
 			t.Setenv("SYBRA_HOME", dir)
 			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			cfg, err := Load()
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("Load() error = %v, want substring %q", err, tc.wantErr)
+					panic("unreachable")
 				}
 				return
 			}
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if got := cfg.HumanReviewSybraBugAction(); got != tc.want {
 				t.Fatalf("HumanReviewSybraBugAction() = %q, want %q", got, tc.want)
@@ -1335,10 +1417,12 @@ func TestHumanReviewModelDefault(t *testing.T) {
 			t.Setenv("SYBRA_HOME", dir)
 			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			cfg, err := Load()
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if got := cfg.HumanReviewModel(); got != tc.want {
 				t.Fatalf("HumanReviewModel() = %q, want %q", got, tc.want)
@@ -1362,10 +1446,12 @@ func TestMonitorModelDefault(t *testing.T) {
 			t.Setenv("SYBRA_HOME", dir)
 			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			cfg, err := Load()
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if got := cfg.Monitor.Model; got != tc.want {
 				t.Fatalf("Monitor.Model = %q, want %q", got, tc.want)
@@ -1423,16 +1509,19 @@ func TestReviewHoldDefaults(t *testing.T) {
 			t.Setenv("SYBRA_HOME", dir)
 			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			cfg, err := Load()
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("Load() error = %v, want substring %q", err, tc.wantErr)
+					panic("unreachable")
 				}
 				return
 			}
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if got := cfg.ReviewHoldEnabled(); got != tc.wantEnabled {
 				t.Errorf("ReviewHoldEnabled() = %v, want %v", got, tc.wantEnabled)
@@ -1483,10 +1572,12 @@ func TestLoadWatchdogDefaults(t *testing.T) {
 			t.Setenv("SYBRA_HOME", dir)
 			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			cfg, err := Load()
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if cfg.Watchdog.Enabled != tc.wantEnabled {
 				t.Errorf("Enabled = %v, want %v", cfg.Watchdog.Enabled, tc.wantEnabled)
@@ -1533,10 +1624,12 @@ func TestLoadWatchdogRunRateDefaults(t *testing.T) {
 			t.Setenv("SYBRA_HOME", dir)
 			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tc.yaml), 0o644); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			cfg, err := Load()
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if cfg.Watchdog.MaxRunsPerWindow != tc.wantMaxRuns {
 				t.Errorf("MaxRunsPerWindow = %d, want %d", cfg.Watchdog.MaxRunsPerWindow, tc.wantMaxRuns)
@@ -1557,6 +1650,7 @@ func TestLoadEnvOverride(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.Logging.Level != "error" {
 		t.Errorf("Level = %q, want %q", cfg.Logging.Level, "error")
@@ -1601,6 +1695,7 @@ func TestLoadMissingConfigCreatesDefault(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.Logging.Level != "info" {
 		t.Errorf("Level = %q, want %q", cfg.Logging.Level, "info")
@@ -1623,6 +1718,7 @@ func TestLoadInvalidYAML(t *testing.T) {
 	_, err := Load()
 	if err == nil {
 		t.Fatal("expected error for invalid YAML")
+		panic("unreachable")
 	}
 }
 
@@ -1632,11 +1728,13 @@ func TestLoadEmptyDirFallsBackToDefault(t *testing.T) {
 
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("logging:\n  dir: \"\"\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.Logging.Dir == "" {
 		t.Error("Dir should fall back to default, not be empty")
@@ -1698,6 +1796,7 @@ func TestLoadMissingConfigCreatesGitHubOptOut(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.GitHub.Enabled {
 		t.Fatal("GitHub.Enabled = true, want false for fresh install")
@@ -1705,10 +1804,12 @@ func TestLoadMissingConfigCreatesGitHubOptOut(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	var onDisk Config
 	if err := yamlv3.Unmarshal(data, &onDisk); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if onDisk.GitHub.Enabled {
 		t.Fatalf("fresh config persisted GitHub.Enabled = true, want explicit false:\n%s", data)
@@ -1717,6 +1818,7 @@ func TestLoadMissingConfigCreatesGitHubOptOut(t *testing.T) {
 	reloaded, err := LoadNoPersist()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if reloaded.GitHub.Enabled {
 		t.Fatal("GitHub.Enabled reloaded as true; fresh explicit opt-out must persist")
@@ -1731,6 +1833,7 @@ func TestLoadNoPersistMissingConfigDoesNotCreateConfigFile(t *testing.T) {
 	cfg, err := LoadNoPersist()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.GitHub.Enabled {
 		t.Fatal("GitHub.Enabled = true, want false for read-only default resolution")
@@ -1773,11 +1876,13 @@ func TestLoadLegacyConfigWithoutGitHubEnabledKeepsGitHubOn(t *testing.T) {
 			t.Setenv("SYBRA_HOME", dir)
 			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tt.yaml), 0o644); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			cfg, err := Load()
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if !cfg.GitHub.Enabled {
 				t.Fatal("GitHub.Enabled = false, want true for legacy config without explicit key")
@@ -1872,11 +1977,13 @@ func TestLoadGitHubSubToggleOverrides(t *testing.T) {
 
 			if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tt.yaml), 0o644); err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 
 			cfg, err := Load()
 			if err != nil {
 				t.Fatal(err)
+				panic("unreachable")
 			}
 			if cfg.GitHub.Polling.Issues.Enabled != tt.wantIssues {
 				t.Errorf("Polling.Issues.Enabled = %v, want %v", cfg.GitHub.Polling.Issues.Enabled, tt.wantIssues)
@@ -1999,11 +2106,13 @@ func TestLoadGitHubNativeAutoMerge(t *testing.T) {
 	yaml := []byte("github:\n  native_auto_merge: true\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !cfg.GitHub.NativeAutoMerge {
 		t.Error("NativeAutoMerge = false, want true after round-tripping through yaml")
@@ -2025,11 +2134,13 @@ func TestLoadGitHubAutoResolveCleanMerges(t *testing.T) {
 	yaml := []byte("github:\n  auto_resolve_clean_merges: true\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !cfg.GitHub.AutoResolveCleanMerges {
 		t.Error("AutoResolveCleanMerges = false, want true after round-tripping through yaml")
@@ -2054,11 +2165,13 @@ func TestLoadGitHubFlakyDetection(t *testing.T) {
 	yaml := []byte("github:\n  flaky_detection: true\n  flaky_success_threshold: 0.6\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !cfg.GitHub.FlakyDetection {
 		t.Error("FlakyDetection = false, want true after round-tripping through yaml")
@@ -2284,11 +2397,13 @@ func TestLoadMigratesStaleSkillsDir(t *testing.T) {
 	yaml := []byte("skills_dir: " + stale + "\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	want := filepath.Join(dir, ".claude", "skills")
 	if cfg.SkillsDir != want {
@@ -2304,11 +2419,13 @@ func TestLoadPreservesCustomSkillsDir(t *testing.T) {
 	yaml := []byte("skills_dir: " + custom + "\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.SkillsDir != custom {
 		t.Fatalf("SkillsDir = %q, want %q (only the stale default should be migrated)", cfg.SkillsDir, custom)
@@ -2370,11 +2487,13 @@ func TestLoadWritesRestrictivePermsOnFreshInstall(t *testing.T) {
 
 	if _, err := Load(); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	homeInfo, err := os.Stat(sybraHome)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if perm := homeInfo.Mode().Perm(); perm != 0o700 {
 		t.Errorf("home dir perm = %o, want 0700", perm)
@@ -2383,6 +2502,7 @@ func TestLoadWritesRestrictivePermsOnFreshInstall(t *testing.T) {
 	cfgInfo, err := os.Stat(filepath.Join(sybraHome, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if perm := cfgInfo.Mode().Perm(); perm != 0o600 {
 		t.Errorf("config.yaml perm = %o, want 0600", perm)
@@ -2396,18 +2516,22 @@ func TestLoadTightensPermsOnExistingInstall(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(cfgPath, []byte("logging:\n  level: debug\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := Load(); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	homeInfo, err := os.Stat(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if perm := homeInfo.Mode().Perm(); perm != 0o700 {
 		t.Errorf("home dir perm = %o, want 0700", perm)
@@ -2416,6 +2540,7 @@ func TestLoadTightensPermsOnExistingInstall(t *testing.T) {
 	cfgInfo, err := os.Stat(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if perm := cfgInfo.Mode().Perm(); perm != 0o600 {
 		t.Errorf("config.yaml perm = %o, want 0600", perm)
@@ -2429,19 +2554,23 @@ func TestLoadDoesNotBroadenStricterConfigPerms(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(cfgPath, []byte("logging:\n  level: debug\n"), 0o400); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	defer os.Chmod(dir, 0o700)
 
 	if _, err := Load(); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	homeInfo, err := os.Stat(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if perm := homeInfo.Mode().Perm(); perm != 0o500 {
 		t.Errorf("home dir perm = %o, want preserved 0500", perm)
@@ -2450,6 +2579,7 @@ func TestLoadDoesNotBroadenStricterConfigPerms(t *testing.T) {
 	cfgInfo, err := os.Stat(cfgPath)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if perm := cfgInfo.Mode().Perm(); perm != 0o400 {
 		t.Errorf("config.yaml perm = %o, want preserved 0400", perm)
@@ -2463,18 +2593,22 @@ func TestLoadDoesNotChmodSymlinkedConfigTarget(t *testing.T) {
 	target := filepath.Join(dir, "target-config.yaml")
 	if err := os.WriteFile(target, []byte("logging:\n  level: debug\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.Symlink(target, filepath.Join(dir, "config.yaml")); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := Load(); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	info, err := os.Stat(target)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if perm := info.Mode().Perm(); perm != 0o644 {
 		t.Errorf("symlink target perm = %o, want unchanged 0644", perm)
@@ -2677,9 +2811,11 @@ func writeOldShapeConfig(t *testing.T, dir string) {
 	data, err := yamlv3.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 }
 
@@ -2694,6 +2830,7 @@ func TestLoadReconcilesStaleBuiltinABExperiments(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := cfg.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
 		t.Fatalf("BuiltinVersion = %d, want %d", got, abtest.CurrentBuiltinVersion)
@@ -2743,12 +2880,14 @@ func TestLoadReconcileDoesNotRewriteConfigFile(t *testing.T) {
 	before, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	for i := range 2 {
 		cfg, err := Load()
 		if err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		if got := cfg.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
 			t.Fatalf("iteration %d: in-memory BuiltinVersion = %d, want %d", i, got, abtest.CurrentBuiltinVersion)
@@ -2767,6 +2906,7 @@ func TestLoadReconcileDoesNotRewriteConfigFile(t *testing.T) {
 	after, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(after, before) {
 		t.Fatal("Load rewrote an externally-managed config.yaml during ab_testing builtin reconcile")
@@ -2790,22 +2930,27 @@ func TestLoadReconcilePatchesOnlyABTestingConfig(t *testing.T) {
 	data, err := yamlv3.Marshal(minimal)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := Load(); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	after, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	var raw map[string]any
 	if err := yamlv3.Unmarshal(after, &raw); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if len(raw) != 1 {
 		t.Fatalf("config keys = %v, want only ab_testing", raw)
@@ -2839,23 +2984,28 @@ func TestLoadDoesNotReconcileUpToDateBuiltins(t *testing.T) {
 	data, err := yamlv3.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	before, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	if _, err := Load(); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	after, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(after, before) {
 		t.Fatal("Load rewrote a config.yaml already at the current builtin version")
@@ -2868,16 +3018,19 @@ func TestLoadNoPersistLeavesStaleConfigUntouched(t *testing.T) {
 	writeOldShapeConfig(t, dir)
 	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	before, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := LoadNoPersist()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if got := cfg.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
 		t.Fatalf("BuiltinVersion = %d, want %d", got, abtest.CurrentBuiltinVersion)
@@ -2886,6 +3039,7 @@ func TestLoadNoPersistLeavesStaleConfigUntouched(t *testing.T) {
 	after, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(after, before) {
 		t.Fatal("LoadNoPersist rewrote config.yaml")
@@ -2896,6 +3050,7 @@ func TestLoadNoPersistLeavesStaleConfigUntouched(t *testing.T) {
 	homeInfo, err := os.Stat(dir)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if perm := homeInfo.Mode().Perm(); perm != 0o755 {
 		t.Errorf("LoadNoPersist home dir perm = %o, want untouched 0755", perm)
@@ -2903,6 +3058,7 @@ func TestLoadNoPersistLeavesStaleConfigUntouched(t *testing.T) {
 	cfgInfo, err := os.Stat(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if perm := cfgInfo.Mode().Perm(); perm != 0o644 {
 		t.Errorf("LoadNoPersist config.yaml perm = %o, want untouched 0644", perm)
@@ -2925,6 +3081,7 @@ func TestLoadReconcileSurvivesExternalToolReRenderingStaleVersion(t *testing.T) 
 	rendered, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if regexp.MustCompile(`builtin_version:`).Match(rendered) {
 		t.Fatal("fixture config.yaml unexpectedly declares builtin_version (should be absent, simulating a pre-builtin_version persisted config)")
@@ -2935,10 +3092,12 @@ func TestLoadReconcileSurvivesExternalToolReRenderingStaleVersion(t *testing.T) 
 		// authored, every deploy, regardless of what Sybra did last restart.
 		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), rendered, 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		cfg, err := Load()
 		if err != nil {
 			t.Fatalf("deploy %d: %v", deploy, err)
+			panic("unreachable")
 		}
 		if got := cfg.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
 			t.Fatalf("deploy %d: in-memory BuiltinVersion = %d, want %d", deploy, got, abtest.CurrentBuiltinVersion)
@@ -2948,6 +3107,7 @@ func TestLoadReconcileSurvivesExternalToolReRenderingStaleVersion(t *testing.T) 
 	afterAllDeploys, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(afterAllDeploys, rendered) {
 		t.Fatal("config.yaml drifted from what the external tool rendered across repeated restarts")
@@ -2979,14 +3139,17 @@ func TestLoadPersistsTokenWithoutReconciledBuiltins(t *testing.T) {
 	data, err := yamlv3.Marshal(fixture)
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	// In memory, the reconcile still took effect.
 	if got := cfg.ABTesting.BuiltinVersionValue(); got != abtest.CurrentBuiltinVersion {
@@ -3000,6 +3163,7 @@ func TestLoadPersistsTokenWithoutReconciledBuiltins(t *testing.T) {
 	tokenFile, err := os.ReadFile(AuthTokenPath())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if strings.TrimSpace(string(tokenFile)) != cfg.Server.AuthToken {
 		t.Fatal("Load did not persist the generated server auth token to AuthTokenPath()")
@@ -3008,6 +3172,7 @@ func TestLoadPersistsTokenWithoutReconciledBuiltins(t *testing.T) {
 	persisted, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(persisted, data) {
 		t.Fatalf("Load rewrote config.yaml while only persisting a generated token; diff:\nbefore:\n%s\nafter:\n%s", data, persisted)
@@ -3027,11 +3192,13 @@ func TestLoadPersistsTokenWithoutExpandingUnrelatedDefaults(t *testing.T) {
 	minimal := []byte("ab_testing:\n  enabled: true\n  min_samples_per_variant: 20\n  experiments:\n    - id: my-custom-experiment\n      enabled: true\n      assignment_unit: stage\n      roles: [implementation]\n      variants:\n        - id: custom-v1\n          provider: claude\n          model: sonnet\n          weight: 1\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), minimal, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.Server.AuthToken == "" {
 		t.Fatal("Load did not generate a server auth token")
@@ -3040,6 +3207,7 @@ func TestLoadPersistsTokenWithoutExpandingUnrelatedDefaults(t *testing.T) {
 	persisted, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(persisted, minimal) {
 		t.Fatalf("Load rewrote an externally-rendered config.yaml while persisting a generated token; diff:\nbefore:\n%s\nafter:\n%s", minimal, persisted)
@@ -3048,6 +3216,7 @@ func TestLoadPersistsTokenWithoutExpandingUnrelatedDefaults(t *testing.T) {
 	tokenFile, err := os.ReadFile(AuthTokenPath())
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if strings.TrimSpace(string(tokenFile)) != cfg.Server.AuthToken {
 		t.Fatalf("persisted AuthTokenPath() missing the generated auth token:\n%s", tokenFile)
@@ -3073,10 +3242,12 @@ func TestLoadRerenderedConfigStaysByteStableAcrossRestarts(t *testing.T) {
 		// authored, every restart, unaware server.auth_token even exists.
 		if err := os.WriteFile(filepath.Join(dir, "config.yaml"), rendered, 0o644); err != nil {
 			t.Fatal(err)
+			panic("unreachable")
 		}
 		cfg, err := Load()
 		if err != nil {
 			t.Fatalf("restart %d: %v", restart, err)
+			panic("unreachable")
 		}
 		if cfg.Server.AuthToken == "" {
 			t.Fatalf("restart %d: no server auth token resolved", restart)
@@ -3091,6 +3262,7 @@ func TestLoadRerenderedConfigStaysByteStableAcrossRestarts(t *testing.T) {
 	afterAllRestarts, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !bytes.Equal(afterAllRestarts, rendered) {
 		t.Fatal("config.yaml drifted from what the external tool rendered across repeated restarts")

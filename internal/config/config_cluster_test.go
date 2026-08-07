@@ -199,11 +199,13 @@ func TestLoadClusterBlockRoundTrip(t *testing.T) {
 		"      tls_pin: abc123\n")
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if !cfg.IsLeader() {
 		t.Fatal("role leader did not load")
@@ -238,10 +240,12 @@ func TestLoadOmittedClusterDefaultsStandalone(t *testing.T) {
 	t.Setenv("SYBRA_HOME", dir)
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("logging:\n  level: info\n"), 0o644); err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
+		panic("unreachable")
 	}
 	if cfg.ClusterRole() != ClusterRoleStandalone {
 		t.Errorf("omitted cluster block must default standalone, got %q", cfg.ClusterRole())
