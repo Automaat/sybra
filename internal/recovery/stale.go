@@ -709,7 +709,7 @@ func latestTrackedCurrentStepRun(t *task.Task) *task.AgentRun {
 	if t == nil || t.Workflow == nil || t.Workflow.CurrentStep == "" {
 		return nil
 	}
-	for i := len(t.AgentRuns) - 1; i >= 0; i-- {
+	for i := range slices.Backward(t.AgentRuns) {
 		run := &t.AgentRuns[i]
 		if run.AgentID == "" {
 			continue

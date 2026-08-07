@@ -276,6 +276,21 @@ func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
 	}
 }
 
+func resolveRunAgentDir(step *Step, wfExec *Execution, ctx TemplateContext) (string, error) {
+	dir := wfExec.Variables[WorkflowVarDir]
+	if step.Config.Dir == "" {
+		return dir, nil
+	}
+	renderedDir, err := RenderTemplate(step.Config.Dir, ctx)
+	if err != nil {
+		return "", fmt.Errorf("render dir: %w", err)
+	}
+	if strings.TrimSpace(renderedDir) == "" {
+		return "", errors.New("render dir: resolved to empty path")
+	}
+	return renderedDir, nil
+}
+
 func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx TemplateContext, effectIDs ...EffectID) (runErr error) {
 	prepareTestVerdictAttemptVars(wfExec, step.ID, ctx.Task.Body)
 	// Seed the sidecar dir before anything renders a template. Setting it only
@@ -360,16 +375,9 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		}
 	}
 
-	dir := wfExec.Variables[WorkflowVarDir]
-	if step.Config.Dir != "" {
-		renderedDir, dErr := RenderTemplate(step.Config.Dir, ctx)
-		if dErr != nil {
-			return fmt.Errorf("render dir: %w", dErr)
-		}
-		if strings.TrimSpace(renderedDir) == "" {
-			return errors.New("render dir: resolved to empty path")
-		}
-		dir = renderedDir
+	dir, err := resolveRunAgentDir(step, wfExec, ctx)
+	if err != nil {
+		return err
 	}
 	cleanRetryKey := watchdogHangCleanRetryKey(step.ID)
 	cleanRetryRef := wfExec.Variables[cleanRetryKey]
