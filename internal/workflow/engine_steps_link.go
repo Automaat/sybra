@@ -276,7 +276,7 @@ func (e *Engine) maybeParkImplementGitHubRetry(taskID string, step *Step, wfExec
 	wfExec.State = ExecWaiting
 	wfExec.SetVar(implementPushAttemptsVar, strconv.Itoa(attempts+1))
 	wfExec.SetVar(workflowRetryAfterVar, e.now().Add(prCreateRetryBackoff).Format(time.RFC3339))
-	if err := e.tasks.SetStatusAndWorkflow(taskID, "in-progress", implementPushRetryStatusReason, wfExec); err != nil {
+	if err := e.tasks.SetStatusAndWorkflow(taskID, string(taskstatus.InProgress), implementPushRetryStatusReason, wfExec); err != nil {
 		return false, err
 	}
 	e.logger.Warn("workflow.implement-push-retry.parked",

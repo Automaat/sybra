@@ -16,7 +16,7 @@ func resumeSkipReasonForStatus(status taskstatus.Status) (reason string, skip bo
 	case taskstatus.HumanRequired:
 		return "human_required", true
 	case taskstatus.Blocked:
-		return "blocked", true
+		return string(taskstatus.Blocked), true
 	case taskstatus.Done, taskstatus.Cancelled:
 		return "terminal_status", true
 	default:
@@ -128,7 +128,7 @@ func (e *Engine) escalateMissingStep(taskID string, wf *Execution) {
 		" planning to re-plan against the current workflow."
 	failed := *wf
 	failed.State = ExecFailed
-	if err := e.tasks.SetStatusAndWorkflow(taskID, "human-required", reason, &failed); err != nil {
+	if err := e.tasks.SetStatusAndWorkflow(taskID, string(taskstatus.HumanRequired), reason, &failed); err != nil {
 		e.logger.Warn("workflow.resume-stalled.step-missing.escalate", "task_id", taskID, "err", err)
 		return
 	}
@@ -271,7 +271,7 @@ func (e *Engine) resumePreflightConsumesTick(t *TaskInfo, step *Step, logEvent s
 	retryableWorktreeRepair := e.canRetryWorktreeRepair(t, step)
 	if reason, skip := resumeSkipReasonForStatus(t.Status); skip &&
 		(reason != "human_required" || !retryableWatchdogStop) &&
-		(reason != "blocked" || !retryableWorktreeRepair) {
+		(reason != string(taskstatus.Blocked) || !retryableWorktreeRepair) {
 		e.resumeSkip.Log(e.logger, logEvent, t.ID,
 			reason+"|"+string(t.Status)+"|"+step.ID,
 			"task_id", t.ID, "reason", reason, "status", t.Status, "step", step.ID)

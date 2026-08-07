@@ -19,6 +19,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/taskstatus"
+	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/workflow/failureclassify"
 )
 
@@ -1505,10 +1506,10 @@ func (b *boundedTail) String() string {
 }
 
 // tailString returns the last n bytes of s, prefixed with an elision marker
-// when truncated. Debug output — not rune-aligned at the cut.
+// when truncated. The shared helper keeps the cut rune-aligned.
 func tailString(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return "…(truncated)…\n" + s[len(s)-n:]
+	return "…(truncated)…\n" + textutil.TailBytes(s, n)
 }

@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // Decision is the agent's structured verdict output.
@@ -139,13 +141,13 @@ func normalize(v Decision, src Source) (Decision, Source, error) {
 }
 
 var validRecoverableActions = map[string]bool{
-	"none":         true,
-	"in-progress":  true,
-	"ready-review": true,
-	"in-review":    true,
-	"testing":      true,
-	"ready-pr":     true,
-	"done":         true,
+	"none":                         true,
+	string(taskstatus.InProgress):  true,
+	string(taskstatus.ReadyReview): true,
+	string(taskstatus.InReview):    true,
+	string(taskstatus.Testing):     true,
+	string(taskstatus.ReadyPR):     true,
+	string(taskstatus.Done):        true,
 }
 
 var validConfidence = map[string]bool{

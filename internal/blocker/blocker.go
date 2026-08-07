@@ -3,6 +3,8 @@ package blocker
 import (
 	"fmt"
 	"time"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // Kind classifies why a task is parked or retrying.
@@ -76,7 +78,7 @@ func ValidateStatus(status string, state State) error {
 	if state.IsZero() {
 		return nil
 	}
-	if status == "human-required" && !AllowsHumanRequired(state.Kind) {
+	if status == string(taskstatus.HumanRequired) && !AllowsHumanRequired(state.Kind) {
 		return fmt.Errorf("blocker kind %q cannot transition to human-required", state.Kind)
 	}
 	return nil

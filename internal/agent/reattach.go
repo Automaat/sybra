@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/events"
 	providerpkg "github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // errReattachedGone marks a reattached agent whose process exited without
@@ -580,7 +581,8 @@ func (m *Manager) reattachDecide(r Record, now time.Time) reattachDecision {
 // set.
 func ParksLiveAgent(status string) bool {
 	switch status {
-	case "todo", "new", "human-required", "blocked", "done", "cancelled":
+	case string(taskstatus.Todo), string(taskstatus.New), string(taskstatus.HumanRequired),
+		string(taskstatus.Blocked), string(taskstatus.Done), string(taskstatus.Cancelled):
 		return true
 	default:
 		return false

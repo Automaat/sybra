@@ -15,6 +15,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/abtest"
 	"github.com/Automaat/sybra/internal/providerid"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"gopkg.in/yaml.v3"
 
 	"github.com/Automaat/sybra/internal/fsutil"
@@ -1831,14 +1832,14 @@ func applyMonitorDefaults(cfg *Config, file *FileConfig) {
 	if cfg.Monitor.BottleneckHours == nil {
 		cfg.Monitor.BottleneckHours = map[string]float64{}
 	}
-	if _, ok := cfg.Monitor.BottleneckHours["plan-review"]; !ok {
-		cfg.Monitor.BottleneckHours["plan-review"] = 4
+	if _, ok := cfg.Monitor.BottleneckHours[string(taskstatus.PlanReview)]; !ok {
+		cfg.Monitor.BottleneckHours[string(taskstatus.PlanReview)] = 4
 	}
-	if _, ok := cfg.Monitor.BottleneckHours["human-required"]; !ok {
-		cfg.Monitor.BottleneckHours["human-required"] = 8
+	if _, ok := cfg.Monitor.BottleneckHours[string(taskstatus.HumanRequired)]; !ok {
+		cfg.Monitor.BottleneckHours[string(taskstatus.HumanRequired)] = 8
 	}
-	if _, ok := cfg.Monitor.BottleneckHours["in-progress"]; !ok {
-		cfg.Monitor.BottleneckHours["in-progress"] = 6
+	if _, ok := cfg.Monitor.BottleneckHours[string(taskstatus.InProgress)]; !ok {
+		cfg.Monitor.BottleneckHours[string(taskstatus.InProgress)] = 6
 	}
 	if _, ok := cfg.Monitor.BottleneckHours["default"]; !ok {
 		cfg.Monitor.BottleneckHours["default"] = 12
