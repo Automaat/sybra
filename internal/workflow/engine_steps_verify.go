@@ -751,11 +751,6 @@ func (e *Engine) recoverVerifyCommitsRefs(taskID, wtPath string, t TaskInfo) boo
 		refspecs = append(refspecs, "+"+"refs/heads/"+baseBranch+":refs/remotes/origin/"+baseBranch)
 	}
 
-	_ = gitDo(ctx, wtPath, "update-ref", "-d", "refs/remotes/origin/"+branch)
-	if baseBranch, ok := strings.CutPrefix(baseRef, "origin/"); ok && baseBranch != "" && baseBranch != "HEAD" {
-		_ = gitDo(ctx, wtPath, "update-ref", "-d", "refs/remotes/origin/"+baseBranch)
-	}
-
 	args := []string{"fetch", "--no-tags", "--no-recurse-submodules"}
 	for _, tip := range negotiationTips {
 		args = append(args, "--negotiation-tip="+tip)

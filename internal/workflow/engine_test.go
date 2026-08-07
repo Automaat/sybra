@@ -9806,6 +9806,51 @@ func TestResolveOriginBase_UsesLinkedRepositoryDefaultBranch(t *testing.T) {
 	}
 }
 
+// TestRecoverVerifyCommitsRefs_FailedFetchPreservesDefaultBase verifies that
+// recovery treats remote-tracking refs as a cache: a failed refresh must leave
+// the real default branch available for the next commit-range comparison.
+func TestRecoverVerifyCommitsRefs_FailedFetchPreservesDefaultBase(t *testing.T) {
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGitAt(t, "", "init", "--bare", remote)
+	seed := filepath.Join(t.TempDir(), "seed")
+	if err := os.MkdirAll(seed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, seed, "init", "-b", "trunk")
+	runGitAt(t, seed, "config", "user.email", "test@test.com")
+	runGitAt(t, seed, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("init\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitAt(t, seed, "add", "README.md")
+	runGitAt(t, seed, "commit", "-m", "init")
+	runGitAt(t, seed, "remote", "add", "origin", remote)
+	runGitAt(t, seed, "push", "origin", "trunk")
+	runGitAt(t, "", "-C", remote, "symbolic-ref", "HEAD", "refs/heads/trunk")
+	runGitAt(t, "", "-C", remote, "update-ref", "refs/remotes/origin/trunk", "refs/heads/trunk")
+
+	wtPath := filepath.Join(t.TempDir(), "worktree")
+	runGitAt(t, "", "-C", remote, "worktree", "add", wtPath, "trunk")
+	withFakeGit(t, `#!/bin/sh
+if [ "$1" = "fetch" ]; then
+  echo "fatal: simulated unreachable origin" >&2
+  exit 128
+fi
+exec "{{REAL_GIT}}" "$@"
+`)
+
+	engine := NewEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	if recovered := engine.recoverVerifyCommitsRefs("t1", wtPath, TaskInfo{Branch: "fix/not-pushed"}); recovered {
+		t.Fatal("recoverVerifyCommitsRefs() = true, want false after failed fetch")
+	}
+	if got := resolveOriginBase(context.Background(), wtPath); got != "origin/trunk" {
+		t.Fatalf("resolveOriginBase() = %q, want origin/trunk after failed recovery", got)
+	}
+	if !gitOK(context.Background(), wtPath, "rev-parse", "--verify", "origin/trunk^{commit}") {
+		t.Fatal("origin/trunk was removed by failed ref recovery")
+	}
+}
+
 func runGitAt(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	out, err := gitCombinedAt(dir, args...)
