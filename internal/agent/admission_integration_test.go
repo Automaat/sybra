@@ -162,6 +162,7 @@ type fixedSurvivalRegistry struct {
 	mu      sync.Mutex
 	records []Record
 	saved   []Record
+	deleted []string
 }
 
 func (r *fixedSurvivalRegistry) Save(rec Record) error {
@@ -171,7 +172,12 @@ func (r *fixedSurvivalRegistry) Save(rec Record) error {
 	return nil
 }
 func (r *fixedSurvivalRegistry) List() ([]Record, error) { return r.records, nil }
-func (r *fixedSurvivalRegistry) Delete(string) error     { return nil }
+func (r *fixedSurvivalRegistry) Delete(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.deleted = append(r.deleted, id)
+	return nil
+}
 
 func TestReattachRequiresAdmissionAdoptionBeforeExposure(t *testing.T) {
 	m, _ := newTestManager(t)

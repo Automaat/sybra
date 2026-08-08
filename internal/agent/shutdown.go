@@ -164,8 +164,7 @@ func signalTargetAlive(target, pid int) bool {
 	if target >= 0 {
 		return processAlive(pid)
 	}
-	err := syscall.Kill(target, 0)
-	return err == nil || err == syscall.EPERM
+	return processGroupActive(-target)
 }
 
 func signalTarget(pid int) int {

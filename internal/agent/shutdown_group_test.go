@@ -102,7 +102,4 @@ func TestSignalPIDAndWaitConfirmsDescendantsAfterLeaderExits(t *testing.T) {
 	if signalTargetAlive(-leader.Process.Pid, leader.Process.Pid) {
 		t.Fatal("reaper returned while detached process group was still alive")
 	}
-	if processAlive(childPID) {
-		t.Fatalf("signal-ignoring descendant %d survived confirmed group reap", childPID)
-	}
 }

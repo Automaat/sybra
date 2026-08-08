@@ -176,7 +176,14 @@ func (m *Manager) reapUnsupportedSurvivor(ctx context.Context, r Record, reg sur
 	if r.Mode == "headless" {
 		return false
 	}
-	m.reapStaleSurvivor(ctx, r, reg, "legacy_mode_"+r.Mode)
+	reason := "legacy_mode_" + r.Mode
+	if !reattachAlive(r) { //nolint:contextcheck // liveness probe is context-free process inspection
+		if m.confirmDeadAttemptGroup(ctx, r) {
+			m.finalizeReapedSurvivor(ctx, r, reg, reason)
+		}
+		return true
+	}
+	m.reapStaleSurvivor(ctx, r, reg, reason)
 	return true
 }
 
@@ -655,6 +662,10 @@ func (m *Manager) reapStaleSurvivor(ctx context.Context, r Record, reg survivalR
 		m.logger.Error("agent.reattach.reap_unconfirmed", "id", r.ID, "pid", r.PID, "task", r.TaskID)
 		return
 	}
+	m.finalizeReapedSurvivor(ctx, r, reg, reason)
+}
+
+func (m *Manager) finalizeReapedSurvivor(ctx context.Context, r Record, reg survivalRegistry, reason string) {
 	m.completeAttempt(ctx, fromRecord(r), "reaped_"+reason)
 	if err := reg.Delete(r.ID); err != nil {
 		m.logger.Warn("agent.reattach.reap.delete", "id", r.ID, "err", err)
