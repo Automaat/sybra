@@ -117,6 +117,31 @@ func signalPID(pid int, grace time.Duration) {
 	}()
 }
 
+// signalPIDAndWait is the reconciliation variant of signalPID: it does not
+// return until the process is confirmed gone (or the post-SIGKILL deadline is
+// exhausted). Durable ownership must never be released while the old mutator
+// can still write during the graceful-shutdown window.
+func signalPIDAndWait(pid int, grace time.Duration) bool {
+	if pid <= 0 || !processAlive(pid) {
+		return true
+	}
+	target := signalTarget(pid)
+	_ = syscall.Kill(target, syscall.SIGINT)
+	deadline := time.Now().Add(max(grace, 0))
+	for processAlive(pid) && time.Now().Before(deadline) {
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !processAlive(pid) {
+		return true
+	}
+	_ = syscall.Kill(target, syscall.SIGKILL)
+	killDeadline := time.Now().Add(time.Second)
+	for processAlive(pid) && time.Now().Before(killDeadline) {
+		time.Sleep(25 * time.Millisecond)
+	}
+	return !processAlive(pid)
+}
+
 func signalTarget(pid int) int {
 	if pgid, err := syscall.Getpgid(pid); err == nil && pgid == pid {
 		return -pid

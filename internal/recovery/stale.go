@@ -35,13 +35,19 @@ const (
 // guarded by HasRunningAgentForTask + the recent-run debounce.
 func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
 	if r.Agents.NeedsAttemptReconciliation(ctx) {
-		if reaped := r.Agents.ReapOrphanProviderProcesses(ctx, r.OrphanRoots); reaped > 0 {
+		reaped, dedicatedConfirmed := r.Agents.ReapOrphanProviderProcessesConfirmed(ctx, r.OrphanRoots)
+		ownedReaped, ownedConfirmed := r.Agents.ReapOwnedOrphanProviderProcessesConfirmed(ctx, r.OwnedOrphanRoots)
+		if reaped += ownedReaped; reaped > 0 {
 			r.Logger.Info("recovery.orphan_reap", "count", reaped)
 		}
 		if r.Worktrees != nil {
 			r.Worktrees.RepairAll(ctx)
 		}
-		r.Agents.ReconcileAttemptLeases(ctx)
+		if dedicatedConfirmed && ownedConfirmed {
+			r.Agents.ReconcileAttemptLeases(ctx)
+		} else {
+			r.Logger.Error("recovery.attempt_reconcile.deferred", "reason", "orphan termination unconfirmed")
+		}
 	}
 	tasks, err := r.Tasks.List()
 	if err != nil {

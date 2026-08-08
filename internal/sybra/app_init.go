@@ -1750,12 +1750,6 @@ func (a *App) newRecovery() *recovery.Recovery {
 		LogMaxTotalBytes:   maxTotalBytes,
 		TrashRetentionDays: a.cfg.DefaultTrashRetentionDays(),
 		OrphanRoots: []string{
-			// Taskless loop/orchestrator runs use the Sybra data home itself;
-			// monitor and human-review fallbacks use the configured source repo.
-			// Include both so the acquire→spawn→registry crash window can reap
-			// every owned provider process before its lease is reconciled.
-			config.HomeDir(),
-			a.repoDir,
 			filepath.Join(config.HomeDir(), "sandboxes"),
 			filepath.Join(config.HomeDir(), "worktrees"),
 			// The /sybra-test skill's fake-provider harness spawns its
@@ -1765,6 +1759,12 @@ func (a *App) newRecovery() *recovery.Recovery {
 			// test run gets its own directory.
 			filepath.Join(os.TempDir(), "sybra-test-*"),
 			filepath.Join(os.TempDir(), "sybra-k8s-poc-*"),
+		},
+		OwnedOrphanRoots: []string{
+			// These roots can also contain operator-run provider processes, so
+			// recovery requires the explicit SYBRA_AGENT_OWNER marker here.
+			config.HomeDir(),
+			a.repoDir,
 		},
 		// Also gate on the instance role: RunStartupCleanup calls
 		// RestartStaleInProgress outside the (gated) maintenance pass, so an

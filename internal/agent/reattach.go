@@ -620,7 +620,10 @@ func ParksLiveAgent(status string) bool {
 
 func (m *Manager) reapStaleSurvivor(ctx context.Context, r Record, reg survivalRegistry, reason string) {
 	m.logger.Warn("agent.reattach.reap", "id", r.ID, "pid", r.PID, "task", r.TaskID, "reason", reason)
-	signalPID(r.PID, stopSIGINTGrace)
+	if !signalPIDAndWait(r.PID, stopSIGINTGrace) {
+		m.logger.Error("agent.reattach.reap_unconfirmed", "id", r.ID, "pid", r.PID, "task", r.TaskID)
+		return
+	}
 	m.completeAttempt(ctx, fromRecord(r), "reaped_"+reason)
 	if err := reg.Delete(r.ID); err != nil {
 		m.logger.Warn("agent.reattach.reap.delete", "id", r.ID, "err", err)
