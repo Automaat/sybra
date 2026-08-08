@@ -361,6 +361,10 @@ func TestDurableGHIssueSink_IncidentOutboxCoalescesLatestDesiredRevision(t *test
 	if got := d.Depth(); got != 1 {
 		t.Fatalf("latest desired incident state should replace the older one, depth=%d", got)
 	}
+	queued := d.store.load(slog.Default())
+	if len(queued) != 1 || queued[0].Title != IncidentTitle(in) {
+		t.Fatalf("queued incident title = %+v, want %q", queued, IncidentTitle(in))
+	}
 
 	inner.markHealthy()
 	d.ReplayPending(context.Background())

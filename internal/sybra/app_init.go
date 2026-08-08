@@ -1563,7 +1563,7 @@ func (a *App) configureAdmissionPolicy() {
 		if d.Outcome == string(taskstatus.Blocked) {
 			data["preflight_detectable"] = true
 			if a.stats != nil {
-				cost, tokens, runs, usageKnown := preflightUsage(a.stats.All(), t.ID, t.Generation)
+				cost, tokens, runs, usageKnown := preflightUsage(a.stats.AllForTask(t.ID), t.ID, t.Generation)
 				data["usage_known"], data["cost_usd"], data["tokens"], data["prior_runs"] = usageKnown, cost, tokens, runs
 			} else {
 				data["usage_known"], data["cost_usd"], data["tokens"], data["prior_runs"] = false, 0.0, 0, 0

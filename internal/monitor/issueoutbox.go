@@ -444,7 +444,7 @@ func (d *DurableGHIssueSink) persistIncident(operation string, in Incident, chan
 	}
 	copyIncident := in
 	it := outboxItem{
-		Fingerprint: fp, Operation: operation, Body: body, Incident: &copyIncident,
+		Fingerprint: fp, Operation: operation, Title: IncidentTitle(in), Body: body, Incident: &copyIncident,
 		IncidentChange: change, Duplicates: append([]int(nil), duplicates...), Coverage: coverage,
 		FirstFailedAt: now, LastAttemptAt: now, LastError: redactedErrorString(submitErr),
 	}
