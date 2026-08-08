@@ -723,7 +723,7 @@ func TestSPAHandlerFallsBackToIndexForUnknownRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := spaHandler{FS: http.FileServer(http.FS(sub)), Dir: staticDir}
+	h := spaHandler{FS: http.FileServer(http.FS(sub)), Root: sub}
 
 	// Representative deep links across the frontend's URL-backed routes,
 	// including one encoded dynamic segment (a project id containing '/').
