@@ -279,7 +279,7 @@ func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {
 func (a *App) logAutomationsSummary() {
 	loopAgentsEnabled := 0
 	if a.loopAgents != nil {
-		if las, err := a.loopAgents.List(); err == nil {
+		if las, err := a.loopAgents.List(a.ctx); err == nil {
 			for i := range las {
 				if las[i].Enabled {
 					loopAgentsEnabled++
@@ -1815,19 +1815,19 @@ func (a *App) closeDatabase() {
 
 func (a *App) initLoopScheduler(ctx context.Context, emit func(string, any)) {
 	a.loopSched = loopagent.NewScheduler(ctx, a.loopAgents, a.agents, a.logger, emit, config.HomeDir())
-	a.seedDefaultLoopAgents()
+	a.seedDefaultLoopAgents(ctx)
 	a.loopSched.SyncContext(ctx)
 }
 
-func (a *App) seedDefaultLoopAgents() {
+func (a *App) seedDefaultLoopAgents(ctx context.Context) {
 	if a.loopAgents == nil {
 		return
 	}
 	const name = "sybra-self-monitor"
-	if _, ok := a.loopAgents.FindByName(name); ok {
+	if _, ok := a.loopAgents.FindByName(ctx, name); ok {
 		return
 	}
-	created, err := a.loopAgents.Create(loopagent.LoopAgent{
+	created, err := a.loopAgents.Create(ctx, loopagent.LoopAgent{
 		Name:         name,
 		Prompt:       "/sybra-self-monitor",
 		IntervalSec:  21600, // 6 hours

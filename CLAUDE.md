@@ -130,6 +130,42 @@ The `App` struct and the 12 service structs (`internal/sybra/svc_*.go`) are regi
 
 Emit events via the App's `emit` closure (set up in `main.go` to wrap `app.Event.Emit`). The frontend subscribes via `EventsOn` from `$lib/api`, which adapts v3's `WailsEvent` to the variadic callback shape stores expect.
 
+### Durable Storage Backend
+
+`storage.database.backend` selects where durable state lives: `file` (the
+default — the per-domain filesystem stores Sybra has always used), `sqlite`
+(embedded single file, one machine alone), or `postgres` (shared server,
+several machines on one board). Omitting the block changes nothing, so no
+existing install needs migrating.
+
+`internal/db` opens the handle, applies the embedded per-dialect migrations in
+`internal/db/migrations/<dialect>/`, and is the only place that knows a dialect.
+The query layer is deliberately plain `database/sql` with hand-written SQL and
+`DB.Rebind` for placeholders — no ORM, no codegen. **Ask before changing that
+choice**; every store written after this one depends on it.
+
+Rules for a store that moves to the backend:
+
+- Write SQL with `?` placeholders and let `Rebind` translate. A `?` inside a
+  quoted literal is left alone and `??` escapes one literal `?` (postgres'
+  jsonb key-existence operator).
+- Cross the seam with integers, not engine types: `db.TimeValue`/`db.TimeFrom`
+  for timestamps, `db.BoolValue`/`db.BoolFrom` for booleans. Stamp in-memory
+  records with `db.StoredTime` — the wall clock is nanosecond-granular on
+  Linux and stored timestamps keep microseconds, so a record returned straight
+  from a write would never equal its own read-back.
+- Wrap a read-modify-write in `DB.InTx` **and** take the row's write lock on
+  the way in (`SELECT ... FOR UPDATE` on postgres; sqlite gets it from the
+  DSN's `_txlock=immediate`). A plain read inside a transaction does not
+  serialize: postgres loses the other writer's edit silently, sqlite fails with
+  `SQLITE_BUSY_SNAPSHOT`.
+- Never edit a migration that has shipped — the runner records a checksum and
+  refuses to start on a changed file, because the edit reaches a fresh database
+  and silently misses every existing one.
+- Add the store's behaviour suite to `internal/testutil/dbtest.Each`/`Engines`
+  so it runs on both engines, and to `scripts/test-db-engines.sh`'s package
+  list so `mise run test:db` and CI cover it.
+
 ### Task Format
 
 Tasks are YAML frontmatter + GFM markdown files in `tasks/`:
@@ -427,7 +463,7 @@ There is no Vite-backed hot reload — the frontend is built once per `mise run 
 
 ## Quality Gates
 
-**`mise run verify` is the pre-commit gate — it runs every deterministic, CI-aligned gate in `.github/workflows/ci.yml`** (frontend build:desktop + build:web, `go build ./...`, `go mod verify`, `go mod tidy` drift check, `go test -race ./...`, `go test -race -tags e2e ./internal/sybra/...`, golangci-lint, frontend check + test:coverage + oxlint + pin-strategy, api-shim sync, no-home-fallback gate, Wails bindings drift check, hadolint). "Deterministic" means the outcome depends only on repo state, not ambient CI infra — some steps (`npm ci`, Go module resolution) still need network access. It intentionally excludes the CI jobs that need external advisory DBs or a browser and so can't run as a reliable pre-commit loop — `lint-nilaway`, `security` (govulncheck + npm audit), and the Playwright `e2e` job; CI stays the source of truth for those three. Running only `go test ./...` skips the e2e suite entirely (it's gated behind `//go:build e2e`) and will ship green-local / red-CI.
+**`mise run verify` is the pre-commit gate — it runs every deterministic, CI-aligned gate in `.github/workflows/ci.yml`** (frontend build:desktop + build:web, `go build ./...`, `go mod verify`, `go mod tidy` drift check, `go test -race ./...`, `go test -race -tags e2e ./internal/sybra/...`, golangci-lint, frontend check + test:coverage + oxlint + pin-strategy, api-shim sync, no-home-fallback gate, Wails bindings drift check, hadolint). "Deterministic" means the outcome depends only on repo state, not ambient CI infra — some steps (`npm ci`, Go module resolution) still need network access. It intentionally excludes the CI jobs that need external advisory DBs, a browser, or a container runtime and so can't run as a reliable pre-commit loop — `lint-nilaway`, `security` (govulncheck + npm audit), the Playwright `e2e` job, and `test-go-db` (run `mise run test:db` by hand before touching SQL); CI stays the source of truth for those four. Running only `go test ./...` skips the e2e suite entirely (it's gated behind `//go:build e2e`) and will ship green-local / red-CI.
 
 ```bash
 mise run verify

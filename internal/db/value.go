@@ -23,6 +23,17 @@ func TimeFrom(us int64) time.Time {
 	return time.UnixMicro(us).UTC()
 }
 
+// StoredTime rounds t to the precision a stored timestamp keeps.
+//
+// A store must stamp its in-memory record with this, not with time.Now()
+// directly: the wall clock is nanosecond-granular on Linux, so a record
+// returned straight from a write would never compare equal to the same record
+// read back — a divergence invisible on darwin, where time.Now() is already
+// microsecond-granular.
+func StoredTime(t time.Time) time.Time {
+	return TimeFrom(TimeValue(t))
+}
+
 // BoolValue converts a bool to its stored form.
 func BoolValue(b bool) int64 {
 	if b {

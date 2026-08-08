@@ -3,6 +3,7 @@ package sybra
 import (
 	"bufio"
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 // methods. The scheduler owns the actual ticking goroutines; this service
 // is the persistence + GUI surface.
 type LoopAgentService struct {
+	ctx      context.Context //nolint:containedctx // bound methods take no context; see wireLoopAgentService
 	store    loopagent.Repository
 	sched    *loopagent.Scheduler
 	auditDir string
@@ -37,19 +39,28 @@ type LoopAgentRun struct {
 	DurationS  float64   `json:"durationS"`
 }
 
+// context returns the app context, falling back to Background for the
+// pre-startup service struct Wails binds before dependencies are wired.
+func (s *LoopAgentService) context() context.Context {
+	if s.ctx == nil {
+		return context.Background()
+	}
+	return s.ctx
+}
+
 // ListLoopAgents returns every persisted loop agent, sorted by name.
 func (s *LoopAgentService) ListLoopAgents() ([]loopagent.LoopAgent, error) {
-	return s.store.List()
+	return s.store.List(s.context())
 }
 
 // GetLoopAgent returns one loop agent by ID.
 func (s *LoopAgentService) GetLoopAgent(id string) (loopagent.LoopAgent, error) {
-	return s.store.Get(id)
+	return s.store.Get(s.context(), id)
 }
 
 // CreateLoopAgent persists a new loop agent and reconciles the scheduler.
 func (s *LoopAgentService) CreateLoopAgent(la loopagent.LoopAgent) (loopagent.LoopAgent, error) {
-	created, err := s.store.Create(la)
+	created, err := s.store.Create(s.context(), la)
 	if err != nil {
 		return loopagent.LoopAgent{}, err
 	}
@@ -61,7 +72,7 @@ func (s *LoopAgentService) CreateLoopAgent(la loopagent.LoopAgent) (loopagent.Lo
 // UpdateLoopAgent persists changes and reconciles the scheduler. Interval
 // changes take effect on the next Sync.
 func (s *LoopAgentService) UpdateLoopAgent(la loopagent.LoopAgent) (loopagent.LoopAgent, error) {
-	updated, err := s.store.Update(la)
+	updated, err := s.store.Update(s.context(), la)
 	if err != nil {
 		return loopagent.LoopAgent{}, err
 	}
@@ -72,7 +83,7 @@ func (s *LoopAgentService) UpdateLoopAgent(la loopagent.LoopAgent) (loopagent.Lo
 
 // DeleteLoopAgent removes the record and stops the running fetcher (if any).
 func (s *LoopAgentService) DeleteLoopAgent(id string) error {
-	if err := s.store.Delete(id); err != nil {
+	if err := s.store.Delete(s.context(), id); err != nil {
 		return err
 	}
 	s.logger.Info("loopagent.delete", "id", id)
@@ -99,7 +110,7 @@ func (s *LoopAgentService) ListLoopAgentRuns(id string, limit int) ([]LoopAgentR
 	if limit <= 0 {
 		limit = 50
 	}
-	la, err := s.store.Get(id)
+	la, err := s.store.Get(s.context(), id)
 	if err != nil {
 		return nil, err
 	}

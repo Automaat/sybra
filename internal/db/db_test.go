@@ -3,8 +3,10 @@ package db_test
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/db"
@@ -78,8 +80,8 @@ func TestMigrate_RefusesADatabaseFromANewerBuild(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
 		t.Helper()
 		_, err := d.ExecContext(t.Context(),
-			`INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)`,
-			999999, "from_the_future", 1)
+			`INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)`,
+			999999, "from_the_future", "deadbeef", 1)
 		if err != nil {
 			t.Fatalf("stamp a future migration: %v", err)
 		}
@@ -213,5 +215,113 @@ func TestPrepareSQLiteDSN_KeepsAnOperatorsOwnPragmas(t *testing.T) {
 	}
 	if foreignKeys != 0 {
 		t.Errorf("foreign_keys = %d, want the operator's 0", foreignKeys)
+	}
+}
+
+func TestMigrate_RefusesAnEditedMigration(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		// Editing a shipped migration instead of adding a new one reaches a
+		// fresh database and silently misses every existing one, so CI stays
+		// green while the operator's board lacks the column.
+		if _, err := d.ExecContext(t.Context(),
+			`UPDATE schema_migrations SET checksum = ? WHERE version = ?`, "tampered", 1); err != nil {
+			t.Fatalf("rewrite stored checksum: %v", err)
+		}
+		err := db.Migrate(t.Context(), d)
+		if !errors.Is(err, db.ErrMigrationChanged) {
+			t.Fatalf("expected ErrMigrationChanged, got %v", err)
+		}
+	})
+}
+
+func TestMigrate_ConcurrentStartsAgainstOneDatabase(t *testing.T) {
+	dbtest.Each(t, func(t *testing.T, e dbtest.Engine) {
+		t.Helper()
+		// Several instances sharing one board restart together after an
+		// auto-update. Without a migration lock they race on CREATE TABLE and
+		// the version INSERT, and all but one abort startup.
+		const starts = 6
+		errs := make(chan error, starts)
+		var wg sync.WaitGroup
+		for range starts {
+			wg.Go(func() {
+				defer func() {
+					if r := recover(); r != nil {
+						errs <- fmt.Errorf("panic: %v", r)
+					}
+				}()
+				e.Open(t)
+				errs <- nil
+			})
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Errorf("concurrent start failed: %v", err)
+			}
+		}
+	})
+}
+
+func TestRedactDSN_DoesNotLeakAPasswordQueryParameter(t *testing.T) {
+	// pgx accepts a password as a query parameter, so the userinfo check alone
+	// leaves it in the error text and the app log.
+	got := db.RedactDSN("postgres://sybra@db:5432/sybra?password=hunter2&sslmode=require")
+	if strings.Contains(got, "hunter2") {
+		t.Errorf("RedactDSN leaked the password: %q", got)
+	}
+	if !strings.Contains(got, "sslmode=require") {
+		t.Errorf("RedactDSN dropped an unrelated parameter: %q", got)
+	}
+}
+
+func TestRedactDSN_HandlesQuotedKeywordValues(t *testing.T) {
+	got := db.RedactDSN("host=db user=sybra password='hunter 2' dbname=sybra")
+	want := "host=db user=sybra password=redacted dbname=sybra"
+	if got != want {
+		t.Errorf("RedactDSN() = %q, want %q", got, want)
+	}
+}
+
+func TestRebind_LeavesLiteralsAndEscapesAlone(t *testing.T) {
+	tests := []struct {
+		name    string
+		dialect db.Dialect
+		query   string
+		want    string
+	}{
+		{
+			name:    "question mark inside a literal is not a placeholder",
+			dialect: db.Postgres,
+			query:   "SELECT a FROM t WHERE name LIKE '%?%' AND b = ?",
+			want:    "SELECT a FROM t WHERE name LIKE '%?%' AND b = $1",
+		},
+		{
+			name:    "doubled question mark is an escaped operator",
+			dialect: db.Postgres,
+			query:   "SELECT a FROM t WHERE data ?? 'key' AND b = ?",
+			want:    "SELECT a FROM t WHERE data ? 'key' AND b = $1",
+		},
+		{
+			name:    "sqlite unescapes the operator too",
+			dialect: db.SQLite,
+			query:   "SELECT a FROM t WHERE data ?? 'key' AND b = ?",
+			want:    "SELECT a FROM t WHERE data ? 'key' AND b = ?",
+		},
+		{
+			name:    "doubled quote inside a literal does not end it",
+			dialect: db.Postgres,
+			query:   "SELECT a FROM t WHERE name = 'it''s ?' AND b = ?",
+			want:    "SELECT a FROM t WHERE name = 'it''s ?' AND b = $1",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := db.New(nil, tt.dialect).Rebind(tt.query); got != tt.want {
+				t.Errorf("Rebind() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

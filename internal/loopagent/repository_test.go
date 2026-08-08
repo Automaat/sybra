@@ -2,6 +2,8 @@ package loopagent
 
 import (
 	"errors"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -65,7 +67,7 @@ func TestRepository_CreateAssignsIdentityAndDefaults(t *testing.T) {
 	backends(t, func(t *testing.T, b backend) {
 		t.Helper()
 		repo := b.open(t)
-		created, err := repo.Create(sampleAgent())
+		created, err := repo.Create(t.Context(), sampleAgent())
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -79,7 +81,7 @@ func TestRepository_CreateAssignsIdentityAndDefaults(t *testing.T) {
 			t.Error("Create did not stamp timestamps")
 		}
 
-		got, err := repo.Get(created.ID)
+		got, err := repo.Get(t.Context(), created.ID)
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
@@ -91,10 +93,10 @@ func TestRepository_CreateRejectsInvalidRecords(t *testing.T) {
 	backends(t, func(t *testing.T, b backend) {
 		t.Helper()
 		repo := b.open(t)
-		if _, err := repo.Create(LoopAgent{Prompt: "/x", IntervalSec: 60}); err == nil {
+		if _, err := repo.Create(t.Context(), LoopAgent{Prompt: "/x", IntervalSec: 60}); err == nil {
 			t.Fatal("expected a validation error for a nameless loop agent")
 		}
-		all, err := repo.List()
+		all, err := repo.List(t.Context())
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
@@ -111,11 +113,11 @@ func TestRepository_ListIsSortedByName(t *testing.T) {
 		for _, name := range []string{"zulu", "alpha", "mike"} {
 			la := sampleAgent()
 			la.Name = name
-			if _, err := repo.Create(la); err != nil {
+			if _, err := repo.Create(t.Context(), la); err != nil {
 				t.Fatalf("Create %s: %v", name, err)
 			}
 		}
-		all, err := repo.List()
+		all, err := repo.List(t.Context())
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
@@ -133,18 +135,18 @@ func TestRepository_FindByName(t *testing.T) {
 	backends(t, func(t *testing.T, b backend) {
 		t.Helper()
 		repo := b.open(t)
-		created, err := repo.Create(sampleAgent())
+		created, err := repo.Create(t.Context(), sampleAgent())
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		found, ok := repo.FindByName(created.Name)
+		found, ok := repo.FindByName(t.Context(), created.Name)
 		if !ok {
 			t.Fatal("FindByName did not find the record it just created")
 		}
 		if found.ID != created.ID {
 			t.Errorf("FindByName returned %s, want %s", found.ID, created.ID)
 		}
-		if _, ok := repo.FindByName("nothing-here"); ok {
+		if _, ok := repo.FindByName(t.Context(), "nothing-here"); ok {
 			t.Error("FindByName reported a match for an unknown name")
 		}
 	})
@@ -154,7 +156,7 @@ func TestRepository_UpdatePreservesCreatedAtAndBumpsUpdatedAt(t *testing.T) {
 	backends(t, func(t *testing.T, b backend) {
 		t.Helper()
 		repo := b.open(t)
-		created, err := repo.Create(sampleAgent())
+		created, err := repo.Create(t.Context(), sampleAgent())
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
@@ -164,7 +166,7 @@ func TestRepository_UpdatePreservesCreatedAtAndBumpsUpdatedAt(t *testing.T) {
 		edit.Enabled = false
 		edit.Provider = ""
 		edit.AllowedTools = []string{"Read"}
-		updated, err := repo.Update(edit)
+		updated, err := repo.Update(t.Context(), edit)
 		if err != nil {
 			t.Fatalf("Update: %v", err)
 		}
@@ -181,7 +183,7 @@ func TestRepository_UpdatePreservesCreatedAtAndBumpsUpdatedAt(t *testing.T) {
 			t.Error("Update did not persist Enabled=false")
 		}
 
-		got, err := repo.Get(created.ID)
+		got, err := repo.Get(t.Context(), created.ID)
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
@@ -193,12 +195,12 @@ func TestRepository_UpdateRunMetadataLeavesUpdatedAtAlone(t *testing.T) {
 	backends(t, func(t *testing.T, b backend) {
 		t.Helper()
 		repo := b.open(t)
-		created, err := repo.Create(sampleAgent())
+		created, err := repo.Create(t.Context(), sampleAgent())
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 		ran := time.Now().UTC().Truncate(time.Millisecond)
-		updated, err := repo.UpdateRunMetadata(created.ID, func(la *LoopAgent) {
+		updated, err := repo.UpdateRunMetadata(t.Context(), created.ID, func(la *LoopAgent) {
 			la.LastRunAt = ran
 			la.LastRunID = "agent-42"
 			la.LastRunCost = 1.25
@@ -209,7 +211,7 @@ func TestRepository_UpdateRunMetadataLeavesUpdatedAtAlone(t *testing.T) {
 		if !updated.UpdatedAt.Equal(created.UpdatedAt) {
 			t.Errorf("UpdatedAt = %v, want it untouched at %v", updated.UpdatedAt, created.UpdatedAt)
 		}
-		got, err := repo.Get(created.ID)
+		got, err := repo.Get(t.Context(), created.ID)
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
@@ -223,17 +225,17 @@ func TestRepository_Delete(t *testing.T) {
 	backends(t, func(t *testing.T, b backend) {
 		t.Helper()
 		repo := b.open(t)
-		created, err := repo.Create(sampleAgent())
+		created, err := repo.Create(t.Context(), sampleAgent())
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		if err := repo.Delete(created.ID); err != nil {
+		if err := repo.Delete(t.Context(), created.ID); err != nil {
 			t.Fatalf("Delete: %v", err)
 		}
-		if _, err := repo.Get(created.ID); err == nil {
+		if _, err := repo.Get(t.Context(), created.ID); err == nil {
 			t.Error("Get returned a deleted record")
 		}
-		if err := repo.Delete(created.ID); err != nil {
+		if err := repo.Delete(t.Context(), created.ID); err != nil {
 			t.Errorf("deleting a missing record should be a no-op, got %v", err)
 		}
 	})
@@ -242,11 +244,11 @@ func TestRepository_Delete(t *testing.T) {
 func TestRepository_DataSurvivesRestart(t *testing.T) {
 	backends(t, func(t *testing.T, b backend) {
 		t.Helper()
-		created, err := b.open(t).Create(sampleAgent())
+		created, err := b.open(t).Create(t.Context(), sampleAgent())
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		got, err := b.reopen(t).Get(created.ID)
+		got, err := b.reopen(t).Get(t.Context(), created.ID)
 		if err != nil {
 			t.Fatalf("Get after restart: %v", err)
 		}
@@ -254,32 +256,109 @@ func TestRepository_DataSurvivesRestart(t *testing.T) {
 	})
 }
 
-func TestRepository_ConcurrentUpdatesKeepCreatedAt(t *testing.T) {
+func TestRepository_ConcurrentUpdatesAllLand(t *testing.T) {
 	backends(t, func(t *testing.T, b backend) {
 		t.Helper()
 		repo := b.open(t)
-		created, err := repo.Create(sampleAgent())
+		created, err := repo.Create(t.Context(), sampleAgent())
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
+		// Assert every writer succeeded and that its edit is the one that
+		// survived, not merely that CreatedAt held — that stays true even when
+		// 7 of 8 writes vanish.
+		const writers = 8
+		errs := make([]error, writers)
+		models := make([]string, writers)
 		var wg sync.WaitGroup
-		for i := range 8 {
+		for i := range writers {
+			models[i] = "model-" + strconv.Itoa(i)
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
 				edit := created
 				edit.CreatedAt = time.Time{}
-				edit.Model = "model-" + string(rune('a'+i))
-				_, _ = repo.Update(edit)
+				edit.Model = models[i]
+				_, errs[i] = repo.Update(t.Context(), edit)
 			}(i)
 		}
 		wg.Wait()
-		got, err := repo.Get(created.ID)
+		for i, err := range errs {
+			if err != nil {
+				t.Errorf("writer %d: %v", i, err)
+			}
+		}
+
+		got, err := repo.Get(t.Context(), created.ID)
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
 		if !got.CreatedAt.Equal(created.CreatedAt) {
 			t.Errorf("CreatedAt = %v, want the original %v", got.CreatedAt, created.CreatedAt)
+		}
+		if !slices.Contains(models, got.Model) {
+			t.Errorf("Model = %q, want one of %v", got.Model, models)
+		}
+	})
+}
+
+func TestRepository_NilAllowedToolsReadsBackEmpty(t *testing.T) {
+	backends(t, func(t *testing.T, b backend) {
+		t.Helper()
+		repo := b.open(t)
+		la := sampleAgent()
+		la.AllowedTools = nil
+		created, err := repo.Create(t.Context(), la)
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		got, err := repo.Get(t.Context(), created.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		// A nil here serializes to allowedTools:null on one backend and [] on
+		// the other, so the API contract would vary by engine.
+		if got.AllowedTools == nil {
+			t.Error("AllowedTools read back nil, want an empty slice on every backend")
+		}
+		if len(got.AllowedTools) != 0 {
+			t.Errorf("AllowedTools = %v, want empty", got.AllowedTools)
+		}
+	})
+}
+
+func TestRepository_StampedTimestampsMatchWhatWasStored(t *testing.T) {
+	backends(t, func(t *testing.T, b backend) {
+		t.Helper()
+		repo := b.open(t)
+		created, err := repo.Create(t.Context(), sampleAgent())
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		// time.Now() is nanosecond-granular on Linux and the database keeps
+		// microseconds, so a returned record that was not rounded to the
+		// stored precision never compares equal to its own read-back.
+		got, err := repo.Get(t.Context(), created.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if !got.CreatedAt.Equal(created.CreatedAt) {
+			t.Errorf("CreatedAt read back as %v, want the returned %v", got.CreatedAt, created.CreatedAt)
+		}
+		if !got.UpdatedAt.Equal(created.UpdatedAt) {
+			t.Errorf("UpdatedAt read back as %v, want the returned %v", got.UpdatedAt, created.UpdatedAt)
+		}
+
+		updated, err := repo.Update(t.Context(), created)
+		if err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		reread, err := repo.Get(t.Context(), created.ID)
+		if err != nil {
+			t.Fatalf("Get after update: %v", err)
+		}
+		if !reread.UpdatedAt.Equal(updated.UpdatedAt) {
+			t.Errorf("UpdatedAt read back as %v, want the returned %v", reread.UpdatedAt, updated.UpdatedAt)
 		}
 	})
 }
@@ -291,7 +370,7 @@ func TestSQLStore_GetReportsMissingRecords(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewSQLStore: %v", err)
 		}
-		_, err = repo.Get("nope")
+		_, err = repo.Get(t.Context(), "nope")
 		if !errors.Is(err, ErrNotFound) {
 			t.Fatalf("Get(unknown) = %v, want ErrNotFound", err)
 		}
@@ -327,4 +406,50 @@ func assertSameAgent(t *testing.T, got, want LoopAgent) {
 	if !got.UpdatedAt.Equal(want.UpdatedAt) {
 		t.Errorf("UpdatedAt = %v, want %v", got.UpdatedAt, want.UpdatedAt)
 	}
+}
+
+func TestRepository_TwoProcessesDoNotLoseAnUpdate(t *testing.T) {
+	backends(t, func(t *testing.T, b backend) {
+		t.Helper()
+		// Two independent handles stand in for the desktop app and the CLI writing the same record. UpdateRunMetadata is a read-modify-write of one field, so a read that does not take the row's write lock loses increments: postgres kept the last committer's value with no error, and sqlite failed the second writer with SQLITE_BUSY_SNAPSHOT.
+		writer := b.open(t)
+		created, err := writer.Create(t.Context(), sampleAgent())
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		first, second := b.reopen(t), b.reopen(t)
+
+		const roundsPerHandle = 10
+		errs := make([]error, 2*roundsPerHandle)
+		var wg sync.WaitGroup
+		for i := range roundsPerHandle {
+			for h, repo := range []Repository{first, second} {
+				wg.Add(1)
+				go func(slot int, repo Repository) {
+					defer wg.Done()
+					_, errs[slot] = repo.UpdateRunMetadata(t.Context(), created.ID, func(la *LoopAgent) {
+						la.LastRunID = "run-" + strconv.Itoa(slot)
+						la.LastRunCost++
+					})
+				}(2*i+h, repo)
+			}
+		}
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Errorf("writer %d: %v", i, err)
+			}
+		}
+
+		got, err := writer.Get(t.Context(), created.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if !strings.HasPrefix(got.LastRunID, "run-") {
+			t.Errorf("LastRunID = %q, want a value written by one of the handles", got.LastRunID)
+		}
+		if got.LastRunCost != float64(2*roundsPerHandle) {
+			t.Errorf("LastRunCost = %v, want %d — every increment must land", got.LastRunCost, 2*roundsPerHandle)
+		}
+	})
 }

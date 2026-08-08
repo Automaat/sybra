@@ -74,7 +74,7 @@ func (s *Scheduler) Sync() {
 }
 
 func (s *Scheduler) SyncContext(ctx context.Context) {
-	all, err := s.store.List()
+	all, err := s.store.List(ctx)
 	if err != nil {
 		s.logger.Error("loopagent.sync.list", "err", err)
 		return
@@ -162,7 +162,7 @@ func (s *Scheduler) tick(ctx context.Context, loopID string) time.Duration {
 	if ctx.Err() != nil {
 		return 0
 	}
-	la, err := s.store.Get(loopID)
+	la, err := s.store.Get(ctx, loopID)
 	if err != nil {
 		s.logger.Error("loopagent.tick.get", "id", loopID, "err", err)
 		return time.Minute
@@ -171,7 +171,7 @@ func (s *Scheduler) tick(ctx context.Context, loopID string) time.Duration {
 		// Sync should have cancelled us already, but be defensive.
 		return time.Duration(la.IntervalSec) * time.Second
 	}
-	if _, err := s.fire(la); err != nil {
+	if _, err := s.fire(ctx, la); err != nil {
 		if errors.Is(err, provider.ErrProviderUnhealthy) {
 			s.logger.Info("loopagent.tick.skip", "id", loopID, "reason", "provider_unhealthy", "err", err)
 		} else {
@@ -183,7 +183,7 @@ func (s *Scheduler) tick(ctx context.Context, loopID string) time.Duration {
 
 // fire spawns one headless agent and records LastRun{At,ID}. The cost is
 // filled in later by OnAgentComplete when the agent finishes.
-func (s *Scheduler) fire(la LoopAgent) (string, error) {
+func (s *Scheduler) fire(ctx context.Context, la LoopAgent) (string, error) {
 	cfg := agent.RunConfig{
 		Name:         la.AgentName(),
 		Role:         agent.RoleLoop,
@@ -205,7 +205,7 @@ func (s *Scheduler) fire(la LoopAgent) (string, error) {
 
 	la.LastRunAt = time.Now().UTC()
 	la.LastRunID = ag.ID
-	if _, err := s.persistRun(la.ID, func(rec *LoopAgent) {
+	if _, err := s.persistRun(ctx, la.ID, func(rec *LoopAgent) {
 		rec.LastRunAt = la.LastRunAt
 		rec.LastRunID = la.LastRunID
 	}); err != nil {
@@ -231,11 +231,11 @@ func (s *Scheduler) RunNow(id string) (string, error) {
 	if stopped {
 		return "", errors.New("loop agent scheduler stopped")
 	}
-	la, err := s.store.Get(id)
+	la, err := s.store.Get(s.parent, id)
 	if err != nil {
 		return "", err
 	}
-	return s.fire(la)
+	return s.fire(s.parent, la)
 }
 
 // OnAgentComplete is invoked from the app's onAgentComplete hook for every
@@ -255,7 +255,7 @@ func (s *Scheduler) OnAgentComplete(ag *agent.Agent) {
 	}
 
 	cost := ag.GetCostUSD()
-	if _, err := s.persistRun(loopID, func(rec *LoopAgent) {
+	if _, err := s.persistRun(s.parent, loopID, func(rec *LoopAgent) {
 		rec.LastRunCost = cost
 	}); err != nil {
 		s.logger.Error("loopagent.complete.persist", "loop_id", loopID, "agent_id", ag.ID, "err", err)
@@ -268,9 +268,9 @@ func (s *Scheduler) OnAgentComplete(ag *agent.Agent) {
 
 // persistRun applies a mutator to a record and writes it back through the
 // store's locked run-metadata path, so it participates in the same
-// cross-process flock as Update instead of racing it.
-func (s *Scheduler) persistRun(id string, mutate func(*LoopAgent)) (LoopAgent, error) {
-	return s.store.UpdateRunMetadata(id, mutate)
+// cross-process serialization as Update instead of racing it.
+func (s *Scheduler) persistRun(ctx context.Context, id string, mutate func(*LoopAgent)) (LoopAgent, error) {
+	return s.store.UpdateRunMetadata(ctx, id, mutate)
 }
 
 // Stop cancels every running fetcher and waits for the goroutines to drain.

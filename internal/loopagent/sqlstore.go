@@ -18,9 +18,10 @@ var ErrNotFound = fmt.Errorf("loop agent not found: %w", sql.ErrNoRows)
 
 // SQLStore persists loop agents in the configured database backend.
 //
-// It needs no file locks: a read-modify-write runs inside one transaction, so
-// a concurrent writer in another process is serialized by the engine rather
-// than by an advisory lock that dies with the process holding it.
+// It needs no file locks. A read-modify-write runs inside one transaction that
+// takes the row's write lock on the way in — SELECT ... FOR UPDATE on postgres,
+// an immediate transaction on sqlite — so a second process is blocked until the
+// first commits rather than reading a value it is about to clobber.
 type SQLStore struct {
 	db *db.DB
 }
@@ -40,6 +41,9 @@ const selectLoopAgents = `SELECT ` + loopAgentColumns + ` FROM loop_agents ORDER
 
 const selectLoopAgent = `SELECT ` + loopAgentColumns + ` FROM loop_agents WHERE id = ?`
 
+// selectLoopAgentForUpdate is the postgres read inside a read-modify-write. Without FOR UPDATE, READ COMMITTED lets a concurrent writer commit between this read and the matching UPDATE, and its edit is lost with no error.
+const selectLoopAgentForUpdate = selectLoopAgent + ` FOR UPDATE`
+
 const insertLoopAgent = `INSERT INTO loop_agents (` + loopAgentColumns + `)
 	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
@@ -47,9 +51,10 @@ const updateLoopAgent = `UPDATE loop_agents SET name = ?, prompt = ?, interval_s
 	provider = ?, model = ?, enabled = ?, last_run_at = ?, last_run_id = ?, last_run_cost = ?, updated_at = ?
 	WHERE id = ?`
 
+const deleteLoopAgent = `DELETE FROM loop_agents WHERE id = ?`
+
 // List returns all loop agents sorted by Name for stable UI ordering.
-func (s *SQLStore) List() ([]LoopAgent, error) {
-	ctx := context.Background()
+func (s *SQLStore) List(ctx context.Context) ([]LoopAgent, error) {
 	rows, err := s.db.QueryContext(ctx, selectLoopAgents)
 	if err != nil {
 		return nil, fmt.Errorf("list loop agents: %w", err)
@@ -70,13 +75,13 @@ func (s *SQLStore) List() ([]LoopAgent, error) {
 }
 
 // Get returns the loop agent with the given ID.
-func (s *SQLStore) Get(id string) (LoopAgent, error) {
-	return s.get(context.Background(), s.db, id)
+func (s *SQLStore) Get(ctx context.Context, id string) (LoopAgent, error) {
+	return s.get(ctx, s.db, selectLoopAgent, id)
 }
 
 // FindByName returns the first loop agent whose Name matches. Used by the first-boot seed to stay idempotent.
-func (s *SQLStore) FindByName(name string) (LoopAgent, bool) {
-	all, err := s.List()
+func (s *SQLStore) FindByName(ctx context.Context, name string) (LoopAgent, bool) {
+	all, err := s.List(ctx)
 	if err != nil {
 		return LoopAgent{}, false
 	}
@@ -89,23 +94,24 @@ func (s *SQLStore) FindByName(name string) (LoopAgent, bool) {
 }
 
 // Create assigns an ID and timestamps, validates, and inserts the record.
-func (s *SQLStore) Create(la LoopAgent) (LoopAgent, error) {
+func (s *SQLStore) Create(ctx context.Context, la LoopAgent) (LoopAgent, error) {
 	if la.Provider == "" {
 		la.Provider = providerid.Claude
 	}
 	if err := la.Validate(); err != nil {
 		return LoopAgent{}, err
 	}
-	now := time.Now().UTC()
+	now := db.StoredTime(time.Now())
 	la.ID = newID()
 	la.CreatedAt = now
 	la.UpdatedAt = now
+	la.LastRunAt = db.StoredTime(la.LastRunAt)
 
 	tools, err := marshalTools(la.AllowedTools)
 	if err != nil {
 		return LoopAgent{}, err
 	}
-	_, err = s.db.ExecContext(context.Background(), insertLoopAgent,
+	_, err = s.db.ExecContext(ctx, insertLoopAgent,
 		la.ID, la.Name, la.Prompt, la.IntervalSec, tools, la.Provider, la.Model, db.BoolValue(la.Enabled),
 		db.TimeValue(la.LastRunAt), la.LastRunID, la.LastRunCost, db.TimeValue(la.CreatedAt), db.TimeValue(la.UpdatedAt))
 	if err != nil {
@@ -115,12 +121,12 @@ func (s *SQLStore) Create(la LoopAgent) (LoopAgent, error) {
 }
 
 // Update overwrites mutable fields on an existing record. ID and CreatedAt are preserved from the stored version regardless of caller input.
-func (s *SQLStore) Update(la LoopAgent) (LoopAgent, error) {
-	return s.mutate(la.ID, func(existing *LoopAgent) error {
-		created := existing.CreatedAt
+func (s *SQLStore) Update(ctx context.Context, la LoopAgent) (LoopAgent, error) {
+	return s.mutate(ctx, la.ID, func(existing *LoopAgent) error {
 		next := la
-		next.CreatedAt = created
-		next.UpdatedAt = time.Now().UTC()
+		next.CreatedAt = existing.CreatedAt
+		next.UpdatedAt = db.StoredTime(time.Now())
+		next.LastRunAt = db.StoredTime(next.LastRunAt)
 		if next.Provider == "" {
 			next.Provider = existing.Provider
 		}
@@ -133,27 +139,31 @@ func (s *SQLStore) Update(la LoopAgent) (LoopAgent, error) {
 }
 
 // UpdateRunMetadata applies mutate to the stored record without bumping UpdatedAt — that field tracks user config changes only, and bumping it here would trip Sync's change detection and restart the fetcher on every fire.
-func (s *SQLStore) UpdateRunMetadata(id string, mutate func(*LoopAgent)) (LoopAgent, error) {
-	return s.mutate(id, func(existing *LoopAgent) error {
+func (s *SQLStore) UpdateRunMetadata(ctx context.Context, id string, mutate func(*LoopAgent)) (LoopAgent, error) {
+	return s.mutate(ctx, id, func(existing *LoopAgent) error {
 		mutate(existing)
+		existing.LastRunAt = db.StoredTime(existing.LastRunAt)
 		return nil
 	})
 }
 
 // Delete removes the record. A missing record is not an error.
-func (s *SQLStore) Delete(id string) error {
-	if _, err := s.db.ExecContext(context.Background(), `DELETE FROM loop_agents WHERE id = ?`, id); err != nil {
+func (s *SQLStore) Delete(ctx context.Context, id string) error {
+	if _, err := s.db.ExecContext(ctx, deleteLoopAgent, id); err != nil {
 		return fmt.Errorf("delete loop agent: %w", err)
 	}
 	return nil
 }
 
-// mutate runs a read-modify-write inside one transaction so two concurrent updates cannot lose one of them.
-func (s *SQLStore) mutate(id string, apply func(*LoopAgent) error) (LoopAgent, error) {
-	ctx := context.Background()
+// mutate runs a read-modify-write inside one write transaction so two concurrent updates cannot lose one of them.
+func (s *SQLStore) mutate(ctx context.Context, id string, apply func(*LoopAgent) error) (LoopAgent, error) {
+	query := selectLoopAgent
+	if s.db.Dialect() == db.Postgres {
+		query = selectLoopAgentForUpdate
+	}
 	var out LoopAgent
 	err := s.db.InTx(ctx, func(tx *sql.Tx) error {
-		existing, err := s.get(ctx, txQuerier{tx: tx, rebind: s.db.Rebind}, id)
+		existing, err := s.get(ctx, txQuerier{tx: tx, rebind: s.db.Rebind}, query, id)
 		if err != nil {
 			return err
 		}
@@ -194,8 +204,8 @@ func (t txQuerier) QueryRowContext(ctx context.Context, query string, args ...an
 	return t.tx.QueryRowContext(ctx, t.rebind(query), args...)
 }
 
-func (s *SQLStore) get(ctx context.Context, q rowQuerier, id string) (LoopAgent, error) {
-	la, err := scanLoopAgent(q.QueryRowContext(ctx, selectLoopAgent, id))
+func (s *SQLStore) get(ctx context.Context, q rowQuerier, query, id string) (LoopAgent, error) {
+	la, err := scanLoopAgent(q.QueryRowContext(ctx, query, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return LoopAgent{}, fmt.Errorf("%w (id %s)", ErrNotFound, id)
 	}
@@ -224,6 +234,9 @@ func scanLoopAgent(sc scanner) (LoopAgent, error) {
 	if err := json.Unmarshal([]byte(tools), &la.AllowedTools); err != nil {
 		return LoopAgent{}, fmt.Errorf("parse allowed_tools for loop agent %s: %w", la.ID, err)
 	}
+	if la.AllowedTools == nil {
+		la.AllowedTools = []string{}
+	}
 	la.Enabled = db.BoolFrom(enabled)
 	la.LastRunAt = db.TimeFrom(lastRunAt)
 	la.CreatedAt = db.TimeFrom(createdAt)
@@ -234,8 +247,11 @@ func scanLoopAgent(sc scanner) (LoopAgent, error) {
 	return la, nil
 }
 
-// marshalTools keeps a nil AllowedTools distinct from an empty one, so a record round-trips through the database exactly as it round-tripped through YAML.
+// marshalTools normalizes a nil AllowedTools to an empty list, matching what the file store's YAML round-trip already does. Leaving the two backends to disagree would make the API's allowedTools field null on one engine and [] on the other.
 func marshalTools(tools []string) (string, error) {
+	if tools == nil {
+		tools = []string{}
+	}
 	data, err := json.Marshal(tools)
 	if err != nil {
 		return "", fmt.Errorf("encode allowed_tools: %w", err)

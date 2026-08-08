@@ -73,6 +73,10 @@ func Open(ctx context.Context, opts Options) (*DB, error) {
 	}
 
 	d := &DB{sqlDB: sqlDB, dialect: dialect}
+	if err := d.ensureSQLiteWAL(ctx); err != nil {
+		_ = sqlDB.Close()
+		return nil, err
+	}
 	if err := Migrate(ctx, d); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("migrate %s database %s: %w", dialect, RedactDSN(opts.DSN), err)
@@ -99,25 +103,57 @@ func (d *DB) Close() error {
 	return d.sqlDB.Close()
 }
 
-// Rebind converts a query written with '?' placeholders into the dialect's own form. Stores write '?' everywhere and call this once per statement.
+// Rebind converts a query written with '?' placeholders into the dialect's own
+// form. Stores write '?' everywhere and call this once per statement.
+//
+// A '?' inside a single- or double-quoted run is left alone, and '??' is an
+// escape for one literal '?'. Both matter on postgres, where '?' is also the
+// jsonb key-existence operator and a naive rewrite would turn it into a bind
+// parameter the caller never supplied.
 func (d *DB) Rebind(query string) string {
-	if d == nil || d.dialect != Postgres {
+	if d == nil {
 		return query
 	}
 	var b strings.Builder
 	b.Grow(len(query) + 8)
-	n := 0
-	for i := range len(query) {
+	placeholders := 0
+	quote := byte(0)
+	for i := 0; i < len(query); i++ {
 		c := query[i]
-		if c != '?' {
+		switch {
+		case quote != 0:
 			b.WriteByte(c)
-			continue
+			if c == quote {
+				if i+1 < len(query) && query[i+1] == quote {
+					b.WriteByte(quote)
+					i++
+					continue
+				}
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+			b.WriteByte(c)
+		case c == '?' && i+1 < len(query) && query[i+1] == '?':
+			b.WriteByte('?')
+			i++
+		case c == '?':
+			placeholders++
+			d.writePlaceholder(&b, placeholders)
+		default:
+			b.WriteByte(c)
 		}
-		n++
-		b.WriteByte('$')
-		b.WriteString(strconv.Itoa(n))
 	}
 	return b.String()
+}
+
+func (d *DB) writePlaceholder(b *strings.Builder, n int) {
+	if d.dialect != Postgres {
+		b.WriteByte('?')
+		return
+	}
+	b.WriteByte('$')
+	b.WriteString(strconv.Itoa(n))
 }
 
 // ExecContext runs a '?'-placeholder statement against the backend.
@@ -173,7 +209,7 @@ func resolveDriver(backend string) (Dialect, string, error) {
 // synchronous are per-connection settings, so a post-Open PRAGMA would apply
 // to whichever connection happened to serve it and silently miss the rest of
 // a pool sized above one.
-var sqlitePragmas = []string{"busy_timeout(5000)", "foreign_keys(1)", "journal_mode(WAL)", "synchronous(NORMAL)"}
+var sqlitePragmas = []string{"busy_timeout(5000)", "foreign_keys(1)", "synchronous(NORMAL)"}
 
 // prepareDSN normalizes a DSN and rejects the empty case per dialect.
 func prepareDSN(dialect Dialect, dsn string) (string, error) {
@@ -187,7 +223,13 @@ func prepareDSN(dialect Dialect, dsn string) (string, error) {
 	return prepareSQLiteDSN(dsn)
 }
 
-// prepareSQLiteDSN turns a plain path into a file: URL and adds the default pragmas. An operator who spelled their own _pragma keeps full control of the set.
+// prepareSQLiteDSN turns a plain path into a file: URL, adds the default
+// pragmas, and opens transactions as writers.
+//
+// _txlock=immediate is what makes a read-modify-write inside InTx safe: a
+// deferred transaction takes its read lock first and then fails the upgrade
+// with SQLITE_BUSY_SNAPSHOT, which busy_timeout does not retry. An operator
+// who spelled their own _pragma or _txlock keeps full control of that set.
 func prepareSQLiteDSN(dsn string) (string, error) {
 	if !strings.HasPrefix(dsn, "file:") {
 		dsn = "file:" + filepath.ToSlash(dsn)
@@ -197,11 +239,61 @@ func prepareSQLiteDSN(dsn string) (string, error) {
 		return "", fmt.Errorf("parse sqlite dsn %s: %w", RedactDSN(dsn), err)
 	}
 	query := u.Query()
+	changed := false
 	if len(query["_pragma"]) == 0 {
 		query["_pragma"] = sqlitePragmas
+		changed = true
+	}
+	if !query.Has("_txlock") {
+		query.Set("_txlock", "immediate")
+		changed = true
+	}
+	if changed {
 		u.RawQuery = query.Encode()
 	}
 	return u.String(), nil
+}
+
+// walSetupBudget bounds the retry on enabling the write-ahead log. Two
+// processes opening a brand-new file race, and a journal-mode change is one of
+// the few statements SQLite will not run under the busy handler, so it has to
+// be retried by hand.
+const walSetupBudget = 5 * time.Second
+
+// ensureSQLiteWAL switches the file to the write-ahead log once.
+//
+// The mode is a property of the file, not of a connection, so it is read first
+// and only written when it differs — that keeps every connection after the
+// first out of the contended path entirely. It is deliberately not one of the
+// DSN pragmas: applied per-connection it fails with SQLITE_BUSY whenever
+// another connection holds the file, which turns a concurrent open into a
+// startup abort.
+func (d *DB) ensureSQLiteWAL(ctx context.Context) error {
+	if d.dialect != SQLite {
+		return nil
+	}
+	deadline := time.Now().Add(walSetupBudget)
+	var lastErr error
+	for {
+		var mode string
+		if err := d.sqlDB.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&mode); err != nil {
+			lastErr = err
+		} else if strings.EqualFold(mode, "wal") {
+			return nil
+		} else if _, err := d.sqlDB.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
+			lastErr = err
+		} else {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("enable sqlite write-ahead log: %w", lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 }
 
 func applyPool(sqlDB *sql.DB, dialect Dialect, opts Options) {
@@ -229,18 +321,101 @@ func RedactDSN(dsn string) string {
 	if dsn == "" {
 		return "(empty)"
 	}
-	if u, err := url.Parse(dsn); err == nil && u.User != nil {
+	if strings.Contains(dsn, "://") {
+		return redactURLDSN(dsn)
+	}
+	return redactKeywordDSN(dsn)
+}
+
+const redactedValue = "redacted"
+
+// redactURLDSN covers both places a URL DSN can carry a secret: the userinfo
+// segment and a password query parameter, which pgx honours just as readily.
+func redactURLDSN(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return redactKeywordDSN(dsn)
+	}
+	changed := false
+	if u.User != nil {
 		if _, hasPassword := u.User.Password(); hasPassword {
-			u.User = url.UserPassword(u.User.Username(), "redacted")
-			return u.String()
+			u.User = url.UserPassword(u.User.Username(), redactedValue)
+			changed = true
 		}
+	}
+	if query := u.Query(); query.Has("password") {
+		query.Set("password", redactedValue)
+		u.RawQuery = query.Encode()
+		changed = true
+	}
+	if !changed {
 		return dsn
 	}
-	fields := strings.Fields(dsn)
-	for i, f := range fields {
-		if strings.HasPrefix(strings.ToLower(f), "password=") {
-			fields[i] = "password=redacted"
+	return u.String()
+}
+
+// redactKeywordDSN walks libpq keyword/value pairs. It cannot split on
+// whitespace: a quoted value may contain spaces, and splitting inside one
+// leaves the tail of the password in the output.
+func redactKeywordDSN(dsn string) string {
+	var b strings.Builder
+	b.Grow(len(dsn))
+	i := 0
+	for i < len(dsn) {
+		start := i
+		for i < len(dsn) && dsn[i] == ' ' {
+			i++
 		}
+		b.WriteString(dsn[start:i])
+		if i >= len(dsn) {
+			break
+		}
+		key, next := scanKeywordKey(dsn, i)
+		if next >= len(dsn) || dsn[next] != '=' {
+			b.WriteString(dsn[i:next])
+			i = next
+			continue
+		}
+		value, after := scanKeywordValue(dsn, next+1)
+		b.WriteString(key)
+		b.WriteByte('=')
+		if strings.EqualFold(key, "password") {
+			b.WriteString(redactedValue)
+		} else {
+			b.WriteString(value)
+		}
+		i = after
 	}
-	return strings.Join(fields, " ")
+	return b.String()
+}
+
+func scanKeywordKey(dsn string, i int) (key string, next int) {
+	start := i
+	for i < len(dsn) && dsn[i] != '=' && dsn[i] != ' ' {
+		i++
+	}
+	return dsn[start:i], i
+}
+
+func scanKeywordValue(dsn string, i int) (value string, next int) {
+	start := i
+	if i < len(dsn) && dsn[i] == '\'' {
+		i++
+		for i < len(dsn) {
+			if dsn[i] == '\\' && i+1 < len(dsn) {
+				i += 2
+				continue
+			}
+			if dsn[i] == '\'' {
+				i++
+				break
+			}
+			i++
+		}
+		return dsn[start:i], i
+	}
+	for i < len(dsn) && dsn[i] != ' ' {
+		i++
+	}
+	return dsn[start:i], i
 }
