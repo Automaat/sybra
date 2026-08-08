@@ -27,10 +27,10 @@ func cmdPR(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 // falling back to the local store. Mirrors updateTaskViaAPIOrFS: a Job that has
 // only the HTTP endpoint and no mounted tasks dir must still be able to read the
 // task it is opening a PR for.
-func getTaskViaAPIOrFS(s taskBoard, api *apiClient, id string) (task.Task, error) {
-	if got, handled, apiErr := viaAPI[task.Task](api, "TaskService", "GetTask", id); handled {
-		return got, apiErr
-	}
+// getTask reads through the board, which is server-backed whenever one
+// answers. Retrying the same request here on a transport error would just
+// re-send it to the same dead endpoint.
+func getTask(s taskBoard, id string) (task.Task, error) {
 	return s.Get(id)
 }
 
@@ -67,7 +67,7 @@ func cmdPRCreate(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 		return fatal(jsonOut, "--repo and --head are required")
 	}
 
-	t, err := getTaskViaAPIOrFS(s, api, id)
+	t, err := getTask(s, id)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -94,7 +94,7 @@ func cmdPRCreate(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 	// status: simple-task-pr's maybe_create_pr guard already routes to
 	// push_existing_pr once pr_number exists, then advances. Flipping status
 	// here would jump the task past the step that is still running.
-	updated, _, err := updateTaskViaAPIOrFS(s, api, id, map[string]any{"pr_number": float64(num)})
+	updated, _, err := updateTask(s, id, map[string]any{"pr_number": float64(num)})
 	if err != nil {
 		// The PR is already open; failing silently here would strand it
 		// unlinked and invisible to the monitor loop.

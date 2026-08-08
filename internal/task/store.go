@@ -1244,7 +1244,9 @@ func applyUpdateFields(t *Task, u Update) error {
 	if u.DueDate != nil {
 		t.DueDate = *u.DueDate
 	}
-	if u.Workflow != nil {
+	if u.ClearWorkflow != nil && *u.ClearWorkflow {
+		t.Workflow = nil
+	} else if u.Workflow != nil {
 		t.Workflow = *u.Workflow
 	}
 	if u.MaxTurns != nil {

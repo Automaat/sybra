@@ -14,6 +14,12 @@ import * as config$0 from "../config/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as monitor$0 from "../monitor/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as task$0 from "../task/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as triage$0 from "../triage/models.js";
 
 /**
  * AgentQueueSnapshot is the read-only queued-agent view exposed to the GUI.
@@ -919,6 +925,129 @@ export class TaskSetupLogDTO {
 }
 
 /**
+ * TrashPruneReportDTO is the wire form of task.TrashPruneReport. The domain
+ * type carries []error, which JSON renders as a list of empty objects, so the
+ * failures would reach the operator as `{}` without this.
+ */
+export class TrashPruneReportDTO {
+    "scanned": number;
+    "removed": number;
+    "entries": task$0.TrashEntry[];
+    "errors"?: string[];
+
+    /** Creates a new TrashPruneReportDTO instance. */
+    constructor($$source: Partial<TrashPruneReportDTO> = {}) {
+        if (!("scanned" in $$source)) {
+            this["scanned"] = 0;
+        }
+        if (!("removed" in $$source)) {
+            this["removed"] = 0;
+        }
+        if (!("entries" in $$source)) {
+            this["entries"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TrashPruneReportDTO instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TrashPruneReportDTO {
+        const $$createField2_0 = $$createType33;
+        const $$createField3_0 = $$createType20;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("entries" in $$parsedSource) {
+            $$parsedSource["entries"] = $$createField2_0($$parsedSource["entries"]);
+        }
+        if ("errors" in $$parsedSource) {
+            $$parsedSource["errors"] = $$createField3_0($$parsedSource["errors"]);
+        }
+        return new TrashPruneReportDTO($$parsedSource as Partial<TrashPruneReportDTO>);
+    }
+}
+
+/**
+ * TriageResultDTO pairs a classifier verdict with the task the verdict was applied to.
+ */
+export class TriageResultDTO {
+    "verdict": triage$0.Verdict;
+    "task": task$0.Task;
+
+    /** Creates a new TriageResultDTO instance. */
+    constructor($$source: Partial<TriageResultDTO> = {}) {
+        if (!("verdict" in $$source)) {
+            this["verdict"] = (new triage$0.Verdict());
+        }
+        if (!("task" in $$source)) {
+            this["task"] = (new task$0.Task());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TriageResultDTO instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TriageResultDTO {
+        const $$createField0_0 = $$createType34;
+        const $$createField1_0 = $$createType35;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("verdict" in $$parsedSource) {
+            $$parsedSource["verdict"] = $$createField0_0($$parsedSource["verdict"]);
+        }
+        if ("task" in $$parsedSource) {
+            $$parsedSource["task"] = $$createField1_0($$parsedSource["task"]);
+        }
+        return new TriageResultDTO($$parsedSource as Partial<TriageResultDTO>);
+    }
+}
+
+/**
+ * UmbrellaExpandDTO is the wire form of umbrella.Result.
+ */
+export class UmbrellaExpandDTO {
+    "umbrellaUrl": string;
+    "created": number;
+    "skipped": number;
+    "degraded": boolean;
+    "childCount": number;
+    "maxParallel": number;
+
+    /** Creates a new UmbrellaExpandDTO instance. */
+    constructor($$source: Partial<UmbrellaExpandDTO> = {}) {
+        if (!("umbrellaUrl" in $$source)) {
+            this["umbrellaUrl"] = "";
+        }
+        if (!("created" in $$source)) {
+            this["created"] = 0;
+        }
+        if (!("skipped" in $$source)) {
+            this["skipped"] = 0;
+        }
+        if (!("degraded" in $$source)) {
+            this["degraded"] = false;
+        }
+        if (!("childCount" in $$source)) {
+            this["childCount"] = 0;
+        }
+        if (!("maxParallel" in $$source)) {
+            this["maxParallel"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new UmbrellaExpandDTO instance from a string or object.
+     */
+    static createFrom($$source: any = {}): UmbrellaExpandDTO {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new UmbrellaExpandDTO($$parsedSource as Partial<UmbrellaExpandDTO>);
+    }
+}
+
+/**
  * VersionInfo holds version strings for the server and client.
  */
 export class VersionInfo {
@@ -997,3 +1126,7 @@ const $$createType28 = config$0.RoutingSummary.createFrom;
 const $$createType29 = TamperFindingDTO.createFrom;
 const $$createType30 = $Create.Array($$createType29);
 const $$createType31 = $Create.Map($Create.Any, $Create.Any);
+const $$createType32 = task$0.TrashEntry.createFrom;
+const $$createType33 = $Create.Array($$createType32);
+const $$createType34 = triage$0.Verdict.createFrom;
+const $$createType35 = task$0.Task.createFrom;

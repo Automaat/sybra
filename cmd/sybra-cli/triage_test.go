@@ -100,7 +100,7 @@ func TestCmdTriageClassifyRefusesNonNewTask(t *testing.T) {
 	cfg := config.DefaultConfig()
 
 	code, _ := captureStdout(t, func() int {
-		return cmdTriageClassify(cfg, nil, mgr, ps, []string{created.ID}, true)
+		return cmdTriageClassify(cfg, nil, mgr, mgr, ps, []string{created.ID}, true)
 	})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit classifying a non-new task")

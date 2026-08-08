@@ -58,5 +58,8 @@ export {
     TaskArtifactDTO,
     TaskAuditEventDTO,
     TaskSetupLogDTO,
+    TrashPruneReportDTO,
+    TriageResultDTO,
+    UmbrellaExpandDTO,
     VersionInfo
 } from "./models.js";

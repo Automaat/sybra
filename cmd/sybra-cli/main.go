@@ -423,7 +423,7 @@ func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Ma
 	case "health":
 		return cmdHealth(cfg, rest, jsonOut)
 	case "triage":
-		return cmdTriage(cfg, api, localTasks, localProjects, rest, jsonOut)
+		return cmdTriage(cfg, api, store, localTasks, localProjects, rest, jsonOut)
 	case "monitor":
 		return cmdMonitor(cfg, api, localTasks, rest, jsonOut)
 	case "selfmonitor":
@@ -445,7 +445,10 @@ func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Ma
 	case "config":
 		return cmdConfig(cfg, rest, jsonOut, allowHTTP, nil)
 	case "doctor":
-		return cmdDoctor(cfg, store, rest, jsonOut)
+		// Deliberately the local board: every path doctor cleanup deletes
+		// comes from this machine's home, so reading the protection set from
+		// a server would classify every live local worktree as an orphan.
+		return cmdDoctor(cfg, localTasks, rest, jsonOut)
 	case "trash":
 		return cmdTrash(store, rest, jsonOut)
 	case "tasks-history":
@@ -622,7 +625,7 @@ func cmdGet(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 		return fatal(jsonOut, "usage: get [--compact] <id>")
 	}
 
-	t, err := getTaskViaAPIOrFS(s, api, fs.Arg(0))
+	t, err := getTask(s, fs.Arg(0))
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -764,7 +767,7 @@ func cmdCreate(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 		}
 	}
 
-	t, err := createTaskViaAPIOrFS(s, api, *title, *body, *mode)
+	t, err := createTask(s, *title, *body, *mode)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -775,7 +778,7 @@ func cmdCreate(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 		updates["depends_on_conditions"] = depConds
 	}
 	if len(updates) > 0 {
-		t, _, err = updateTaskViaAPIOrFS(s, api, t.ID, updates)
+		t, _, err = updateTask(s, t.ID, updates)
 		if err != nil {
 			return fatal(jsonOut, "update after create: %v", err)
 		}
@@ -831,16 +834,20 @@ func buildCreateUpdateMap(tags, proj, branch string, pr int, issue,
 	return updates
 }
 
-func createTaskViaAPIOrFS(s taskBoard, api *apiClient, title, body, mode string) (task.Task, error) {
-	if created, handled, apiErr := viaAPI[task.Task](api, "TaskService", "CreateTask", title, body, mode); handled {
-		return created, apiErr
-	}
+// createTask goes through the board, which is already server-backed whenever
+// one answers. An extra viaAPI layer here would re-send the same request on a
+// transport error and duplicate the task.
+func createTask(s taskBoard, title, body, mode string) (task.Task, error) {
 	return s.Create(title, body, mode)
 }
 
-func updateTaskViaAPIOrFS(s taskBoard, api *apiClient, id string, updates map[string]any) (task.Task, bool, error) {
-	if updated, handled, apiErr := viaAPI[task.Task](api, "TaskService", "UpdateTask", id, updates); handled {
-		return updated, true, apiErr
+// updateTask applies a field edit through the board. viaHTTP reports whether
+// the board is server-backed, which callers use to decide whether the server
+// already logged the decision.
+func updateTask(s taskBoard, id string, updates map[string]any) (updated task.Task, viaHTTP bool, err error) {
+	if _, serverBacked := s.(*apiTaskBoard); serverBacked {
+		t, err := s.UpdateMap(id, updates)
+		return t, true, err
 	}
 	if statusText, hasStatus := updates["status"].(string); hasStatus {
 		localUpdates := make(map[string]any, len(updates)-1)
@@ -871,8 +878,8 @@ func updateTaskViaAPIOrFS(s taskBoard, api *apiClient, id string, updates map[st
 		})
 		return result.Task, false, err
 	}
-	updated, err := s.UpdateMap(id, updates)
-	return updated, false, err
+	t, err := s.UpdateMap(id, updates)
+	return t, false, err
 }
 
 func appendManualDecisionProgress(taskID, from, to, reason string) {
@@ -1405,12 +1412,12 @@ func cmdUpdate(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 		}
 	}
 
-	before, err := getTaskViaAPIOrFS(s, api, id)
+	before, err := getTask(s, id)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
 
-	t, handledByAPI, err := updateTaskViaAPIOrFS(s, api, id, updates)
+	t, handledByAPI, err := updateTask(s, id, updates)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -1783,10 +1790,10 @@ func cmdReopen(s taskBoard, args []string, jsonOut bool) int {
 			return fatal(jsonOut, "task %s landed (outcome=%s); pass --force to reopen anyway", id, t.Outcome)
 		}
 		extra := task.Update{
-			Workflow:     task.Ptr[*workflow.Execution](nil),
-			WorktreeDir:  task.Ptr(""),
-			StatusReason: task.Ptr(""),
-			Outcome:      task.Ptr(""),
+			ClearWorkflow: task.Ptr(true),
+			WorktreeDir:   task.Ptr(""),
+			StatusReason:  task.Ptr(""),
+			Outcome:       task.Ptr(""),
 		}
 		if *projectID != "" {
 			extra.ProjectID = task.Ptr(*projectID)
@@ -1828,7 +1835,7 @@ func cmdLinkPR(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 		return fatal(jsonOut, "pr-number must be a positive integer, got %q", args[1])
 	}
 
-	t, err := getTaskViaAPIOrFS(s, api, id)
+	t, err := getTask(s, id)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -1841,7 +1848,7 @@ func cmdLinkPR(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 	}
 
 	prev := t
-	t, handledByAPI, err := updateTaskViaAPIOrFS(s, api, id, updates)
+	t, handledByAPI, err := updateTask(s, id, updates)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -2539,7 +2546,7 @@ func cmdMonitorScan(cfg *config.Config, api *apiClient, store *task.Manager, jso
 	// A scan run here would report what a second reader of the same files
 	// sees, not what the running instance sees, so a reachable server scans.
 	if api != nil {
-		report, err := callAPI[monitor.Report](api, taskServiceName, "ScanMonitor")
+		report, err := callAPIWithin[monitor.Report](api, apiSlowCallTimeout, taskServiceName, "ScanMonitor")
 		if err != nil {
 			return fatal(jsonOut, "scan: %v", err)
 		}

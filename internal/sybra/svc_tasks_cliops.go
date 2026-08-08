@@ -61,6 +61,14 @@ func (s *TaskService) ClassifyTask(id, model string) (TriageResultDTO, error) {
 	if err != nil {
 		return TriageResultDTO{}, err
 	}
+	// The guard belongs here, not on the caller: a client that checked the
+	// status against its own board would be checking one board and mutating
+	// another. Reclassifying a task another subsystem owns rewrites gating
+	// tags it must not touch (see internal/triage/apply.go).
+	if t.Status != task.StatusNew {
+		return TriageResultDTO{}, fmt.Errorf("task %s has status %q, not %q — triage classify only reclassifies fresh tasks",
+			id, t.Status, task.StatusNew)
+	}
 	projects, err := s.projects.List()
 	if err != nil {
 		return TriageResultDTO{}, fmt.Errorf("list projects: %w", err)

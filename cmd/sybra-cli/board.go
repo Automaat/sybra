@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
@@ -178,11 +179,16 @@ func (b *apiProjectBoard) Delete(id string) error {
 
 // callAPI reports the server's own reason for a rejection rather than a generic failure, so an operator sees the same message the GUI would.
 func callAPI[T any](api *apiClient, service, method string, args ...any) (T, error) {
+	return callAPIWithin[T](api, apiCallTimeout, service, method, args...)
+}
+
+// callAPIWithin is callAPI with an explicit budget, for the endpoints that run a model on the server.
+func callAPIWithin[T any](api *apiClient, timeout time.Duration, service, method string, args ...any) (T, error) {
 	var out T
 	if api == nil {
 		return out, fmt.Errorf("no server target configured")
 	}
-	if err := api.call(context.Background(), service, method, &out, args...); err != nil {
+	if err := api.callWithin(context.Background(), timeout, service, method, &out, args...); err != nil {
 		return out, err
 	}
 	return out, nil

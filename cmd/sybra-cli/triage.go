@@ -29,6 +29,7 @@ type triageResult struct {
 func cmdTriage(
 	cfg *config.Config,
 	api *apiClient,
+	board taskBoard,
 	store *task.Manager,
 	projStore *project.Store,
 	args []string,
@@ -40,7 +41,7 @@ func cmdTriage(
 	sub, rest := args[0], args[1:]
 	switch sub {
 	case "classify":
-		return cmdTriageClassify(cfg, api, store, projStore, rest, jsonOut)
+		return cmdTriageClassify(cfg, api, board, store, projStore, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown triage command: %s", sub)
 	}
@@ -49,6 +50,7 @@ func cmdTriage(
 func cmdTriageClassify(
 	cfg *config.Config,
 	api *apiClient,
+	board taskBoard,
 	store *task.Manager,
 	projStore *project.Store,
 	args []string,
@@ -74,7 +76,7 @@ func cmdTriageClassify(
 	var targets []task.Task
 	switch {
 	case *all:
-		list, listErr := store.List()
+		list, listErr := board.List()
 		if listErr != nil {
 			return fatal(jsonOut, "list tasks: %v", listErr)
 		}
@@ -85,7 +87,7 @@ func cmdTriageClassify(
 		}
 	case len(fs.Args()) == 1:
 		id := fs.Args()[0]
-		t, getErr := store.Get(id)
+		t, getErr := board.Get(id)
 		if getErr != nil {
 			return fatal(jsonOut, "get %s: %v", id, getErr)
 		}
@@ -170,7 +172,7 @@ func classifyOne(
 	// Classification applies its verdict atomically; a reachable server runs
 	// the whole operation so the apply lands under the locks it holds.
 	if api != nil {
-		return callAPI[triageResult](api, taskServiceName, "ClassifyTask", t.ID, model)
+		return callAPIWithin[triageResult](api, max(timeout, apiCallTimeout), taskServiceName, "ClassifyTask", t.ID, model)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

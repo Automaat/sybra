@@ -18,7 +18,15 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 )
 
+// apiCallTimeout bounds an ordinary board call. It is deliberately short: a
+// CRUD call that has not answered in fifteen seconds is not going to.
 const apiCallTimeout = 15 * time.Second
+
+// apiSlowCallTimeout bounds the whole-operation endpoints. Umbrella expansion
+// and triage classification run a model on the server, so the ordinary ceiling
+// would expire on the client while the server completed the work — leaving the
+// operator to re-run and race a second expansion against the first.
+const apiSlowCallTimeout = 30 * time.Minute
 
 const maxAPIResponseBody = 32 << 20
 
@@ -87,7 +95,7 @@ func newAPIClient(cfg *config.Config) (client *apiClient, ok bool) {
 	return &apiClient{
 		baseURL: "http://" + net.JoinHostPort(host, port),
 		token:   token,
-		http:    &http.Client{Timeout: apiCallTimeout},
+		http:    &http.Client{},
 	}, true
 }
 
@@ -113,7 +121,7 @@ func newRemoteAPIClient() (client *apiClient, ok bool) {
 	return &apiClient{
 		baseURL: "https://" + u.Host,
 		token:   token,
-		http:    &http.Client{Timeout: apiCallTimeout},
+		http:    &http.Client{},
 	}, true
 }
 
@@ -171,11 +179,18 @@ func (c *apiClient) reachable(ctx context.Context) bool {
 }
 
 func (c *apiClient) call(ctx context.Context, service, method string, out any, args ...any) error {
+	return c.callWithin(ctx, apiCallTimeout, service, method, out, args...)
+}
+
+// callWithin bounds one request. The client's own http.Client carries no
+// Timeout, so the deadline is the context's alone and a slow endpoint is not
+// cut off by a ceiling meant for CRUD.
+func (c *apiClient) callWithin(ctx context.Context, timeout time.Duration, service, method string, out any, args ...any) error {
 	body, err := json.Marshal(args)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, apiCallTimeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/"+service+"/"+method, bytes.NewReader(body))
 	if err != nil {

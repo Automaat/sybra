@@ -16,15 +16,20 @@ import (
 // A nil pointer means "leave unchanged"; a non-nil pointer applies the new value.
 // For Workflow: nil = unchanged; non-nil = overwrite (even if pointed-to value is nil).
 type Update struct {
-	Title                 *string
-	Slug                  *string
-	Status                *Status
-	StatusReason          *string
-	ClearStatusReason     *bool
-	Escalation            *autonomy.EscalationReason
-	AutonomyOutcome       *autonomy.Outcome
-	Blocker               *blocker.State
-	ClearBlocker          *bool
+	Title             *string
+	Slug              *string
+	Status            *Status
+	StatusReason      *string
+	ClearStatusReason *bool
+	Escalation        *autonomy.EscalationReason
+	AutonomyOutcome   *autonomy.Outcome
+	Blocker           *blocker.State
+	ClearBlocker      *bool
+	// ClearWorkflow removes the task's workflow execution. Workflow is a
+	// **Execution, and a non-nil outer pointer holding a nil inner one does
+	// not survive JSON: it marshals to null, and unmarshal nils the outer
+	// pointer, so a clear sent over the API silently became a no-op.
+	ClearWorkflow         *bool
 	BlockedByIssue        *string
 	UmbrellaIssue         *string
 	DependsOn             *[]string

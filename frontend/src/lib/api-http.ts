@@ -2,11 +2,11 @@
 // Used by api.ts when VITE_MODE=web.
 
 import type { Agent, ConvoEvent, StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
-import type { ReviewComment, Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
+import type { ReviewComment, Task, TransitionIntent, TransitionResult, TrashEntry, Update } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
 import type { Project, Worktree } from '../../bindings/github.com/Automaat/sybra/internal/project/models.js'
 import type { Issue, RenovatePR, ReviewSummary } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 import type { LoopAgent } from '../../bindings/github.com/Automaat/sybra/internal/loopagent/models.js'
-import type { AppSettings, ClusterNodeDTO, CodexModel, ConfigPathExplanation, CopilotModel, LoopAgentRun, MonitorReportBinding, RuntimeInfo, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+import type { AppSettings, ClusterNodeDTO, TriageResultDTO, TrashPruneReportDTO, UmbrellaExpandDTO, CodexModel, ConfigPathExplanation, CopilotModel, LoopAgentRun, MonitorReportBinding, RuntimeInfo, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 import type { Notification } from '../../bindings/github.com/Automaat/sybra/internal/notification/models.js'
 import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
 import type { ProgressEntry } from '../../bindings/github.com/Automaat/sybra/internal/artifact/models.js'
@@ -164,6 +164,7 @@ export function ListWorktrees(arg1: string): Promise<Array<Worktree>> { return c
 export function OpenInEditor(_arg1: string): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
 export function OpenInTerminal(_arg1: string): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
 export function SetProjectWorktreeBaseRef(arg1: string, arg2: string): Promise<Project> { return call('ProjectService', 'SetProjectWorktreeBaseRef', arg1, arg2) }
+export function SetProjectSetupCommands(arg1: string, arg2: string[]): Promise<Project> { return call('ProjectService', 'SetProjectSetupCommands', arg1, arg2) }
 export function UpdateProject(arg1: string, arg2: string): Promise<Project> { return call('ProjectService', 'UpdateProject', arg1, arg2) }
 
 // ReviewService
@@ -187,6 +188,17 @@ export function GetLatestDigest(): Promise<[Digest, boolean]> { return call('Lea
 export function BlessTampering(arg1: string): Promise<Task> { return call('TaskService', 'BlessTampering', arg1) }
 export function CreateTask(arg1: string, arg2: string, arg3: string): Promise<Task> { return call('TaskService', 'CreateTask', arg1, arg2, arg3) }
 export function DeleteTask(arg1: string): Promise<void> { return call('TaskService', 'DeleteTask', arg1) }
+export function CreateTaskFull(arg1: string, arg2: string, arg3: string, arg4: string, arg5: Update): Promise<Task> { return call('TaskService', 'CreateTaskFull', arg1, arg2, arg3, arg4, arg5) }
+export function UpdateTaskFields(arg1: string, arg2: Update): Promise<Task> { return call('TaskService', 'UpdateTaskFields', arg1, arg2) }
+export function ApplyTransition(arg1: TransitionIntent): Promise<TransitionResult> { return call('TaskService', 'ApplyTransition', arg1) }
+export function TouchTask(arg1: string): Promise<Task> { return call('TaskService', 'TouchTask', arg1) }
+export function ListTrash(): Promise<Array<TrashEntry>> { return call('TaskService', 'ListTrash') }
+export function RestoreFromTrash(arg1: string): Promise<Task> { return call('TaskService', 'RestoreFromTrash', arg1) }
+export function DeleteTrashedGeneration(arg1: string): Promise<boolean> { return call('TaskService', 'DeleteTrashedGeneration', arg1) }
+export function PruneAllTrash(): Promise<TrashPruneReportDTO> { return call('TaskService', 'PruneAllTrash') }
+export function ExpandUmbrella(arg1: string): Promise<UmbrellaExpandDTO> { return call('TaskService', 'ExpandUmbrella', arg1) }
+export function ClassifyTask(arg1: string, arg2: string): Promise<TriageResultDTO> { return call('TaskService', 'ClassifyTask', arg1, arg2) }
+export function ScanMonitor(): Promise<MonitorReportBinding> { return call('TaskService', 'ScanMonitor') }
 export function DeleteAttachment(arg1: string, arg2: string): Promise<void> { return call('TaskService', 'DeleteAttachment', arg1, arg2) }
 export function DispatchFromHumanRequired(arg1: string, arg2: string, arg3: string): Promise<Task> { return call('TaskService', 'DispatchFromHumanRequired', arg1, arg2, arg3) }
 export function GetAttachmentURL(arg1: string, arg2: string): Promise<string> { return call('TaskService', 'GetAttachmentURL', arg1, arg2) }
