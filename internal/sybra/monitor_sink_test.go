@@ -239,6 +239,36 @@ func TestMonitorRoutingSink_ConfidentialIncidentResolvesAndReopensSameLocalTask(
 	}
 }
 
+func TestMonitorRoutingSink_ConfidentialRoutesFailClosedWithoutWorkScrubContext(t *testing.T) {
+	t.Parallel()
+	inner := &fakeInnerSink{closeNext: true}
+	sink := newMonitorRoutingSink(inner, nil, nil, "Automaat/sybra", nil, slog.New(slog.DiscardHandler))
+	a := monitor.Anomaly{
+		Kind:         monitor.KindLostAgent,
+		Fingerprint:  "incident:opaque",
+		Confidential: true,
+	}
+
+	if _, err := sink.Submit(context.Background(), a, "sensitive evidence"); err == nil {
+		t.Fatal("Submit error = nil, want fail-closed error")
+	}
+	incident := monitor.Incident{
+		Fingerprint:  a.Fingerprint,
+		FailureCode:  string(a.Kind),
+		ProjectScope: "work-opaque",
+		State:        monitor.IncidentActive,
+	}
+	if _, _, err := sink.ApplyIncident(context.Background(), incident, monitor.IncidentOpened, "sensitive evidence"); err == nil {
+		t.Fatal("ApplyIncident error = nil, want fail-closed error")
+	}
+	if _, err := sink.CloseIfOpen(context.Background(), a, "sensitive evidence"); err == nil {
+		t.Fatal("CloseIfOpen error = nil, want fail-closed error")
+	}
+	if inner.calls != 0 || inner.closeCalls != 0 {
+		t.Fatalf("confidential route reached public sink: submit=%d close=%d", inner.calls, inner.closeCalls)
+	}
+}
+
 func TestMonitorRoutingSink_WorkAnomaly_DedupsByFingerprintAfterRename(t *testing.T) {
 	t.Parallel()
 	sink, tasks, _ := newSinkTestEnv(t)

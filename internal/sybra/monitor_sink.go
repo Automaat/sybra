@@ -64,6 +64,9 @@ func (s *monitorRoutingSink) Submit(ctx context.Context, a monitor.Anomaly, body
 	wctx := s.lookupWorkContext(a.TaskID)
 	if wctx == nil && a.Confidential {
 		wctx = s.lookupAnyWorkContext()
+		if wctx == nil {
+			return false, fmt.Errorf("route confidential monitor artifact: work scrub context unavailable")
+		}
 	}
 	if wctx == nil {
 		return s.inner.Submit(ctx, a, body)
@@ -109,6 +112,9 @@ func (s *monitorRoutingSink) ApplyIncident(ctx context.Context, in monitor.Incid
 		Confidential: in.IsConfidential()}
 	if a.Confidential {
 		wctx := s.lookupAnyWorkContext()
+		if wctx == nil {
+			return false, monitor.IncidentArtifact{}, fmt.Errorf("route confidential incident: work scrub context unavailable")
+		}
 		title, _ := scrub.Scrub(monitor.IncidentTitle(in), wctx.Blocklist)
 		if in.State == monitor.IncidentActive {
 			if existing, ok := s.findMatching(title, a.Fingerprint, true); ok && task.IsTerminalStatus(existing.Status) {
@@ -165,6 +171,9 @@ func (s *monitorRoutingSink) CloseIfOpen(ctx context.Context, a monitor.Anomaly,
 	wctx := s.lookupWorkContext(a.TaskID)
 	if wctx == nil && a.Confidential {
 		wctx = s.lookupAnyWorkContext()
+		if wctx == nil {
+			return false, fmt.Errorf("close confidential monitor artifact: work scrub context unavailable")
+		}
 	}
 	if wctx != nil {
 		title, _ = scrub.Scrub(monitorArtifactTitle(a), wctx.Blocklist)
@@ -209,11 +218,12 @@ func monitorArtifactTitle(a monitor.Anomaly) string {
 // project happened to be chosen first.
 func (s *monitorRoutingSink) lookupAnyWorkContext() *WorkScrubContext {
 	if s.tasks == nil || s.workCtx == nil {
-		return &WorkScrubContext{}
+		return nil
 	}
 	all, err := s.tasks.List()
 	if err != nil {
-		return &WorkScrubContext{}
+		s.logger.Warn("monitor.routing.work_context.list", "err", err)
+		return nil
 	}
 	seen := map[string]bool{}
 	ctx := &WorkScrubContext{}
@@ -228,6 +238,9 @@ func (s *monitorRoutingSink) lookupAnyWorkContext() *WorkScrubContext {
 				seen[value] = true
 			}
 		}
+	}
+	if len(ctx.Blocklist) == 0 {
+		return nil
 	}
 	return ctx
 }
@@ -283,7 +296,7 @@ func appendRedetectedNote(existing, body string, now time.Time) string {
 // or non-work project all yield nil — anomaly should pass through to the
 // wrapped sink.
 func (s *monitorRoutingSink) lookupWorkContext(taskID string) *WorkScrubContext {
-	if s.workCtx == nil || taskID == "" {
+	if s.tasks == nil || s.workCtx == nil || taskID == "" {
 		return nil
 	}
 	t, err := s.tasks.Get(taskID)
