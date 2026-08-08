@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/confighot"
 	"github.com/Automaat/sybra/internal/evaluation"
+	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/health"
 	"github.com/Automaat/sybra/internal/learning"
@@ -205,6 +206,12 @@ func (lm *LifecycleManager) refreshAppToken(ctx context.Context) {
 	a := lm.app
 	if err := github.RefreshAppToken(ctx); err != nil {
 		a.logger.Warn("github.app.token.refresh", "err", err)
+	}
+	if err := github.RefreshVerifierAppToken(ctx); err != nil {
+		a.logger.Warn("github.app.verifier-token.refresh", "err", err)
+	}
+	if err := a.agents.SyncGHVerifierAppToken(); err != nil {
+		a.logger.Warn("github.app.verifier-token.publish", "err", err)
 	}
 }
 
@@ -691,6 +698,10 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 			}
 		})
 	}, a.logger)
+	incidentStore, incidentErr := monitor.NewIncidentStore(config.MonitorIncidentsDir())
+	if incidentErr != nil {
+		a.logger.Error("monitor.incident_store.init_failed", "err", incidentErr)
+	}
 	svc := monitor.NewService(monitor.Deps{
 		Cfg:          a.cfg.Monitor,
 		Tasks:        a.tasks,
@@ -701,6 +712,13 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 		Sink:         routingSink,
 		Emit:         emit,
 		Logger:       a.logger,
+		Incidents:    incidentStore,
+		AuditLog: func(event audit.Event) {
+			if a.audit != nil {
+				_ = a.audit.Log(event)
+			}
+		},
+		IncidentScope: a.monitorIncidentScope,
 		AllowsProject: func(projectID string) bool {
 			if projectID == "" {
 				return true
@@ -735,6 +753,27 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 	svc.SetProviderHealth(a.providerHealthSnapshot)
 	a.monitorSvc = svc
 	a.wg.Go(func() { svc.Run(ctx) })
+}
+
+func (a *App) monitorIncidentScope(t task.Task) (projectScope, safeTaskID string, confidential bool) {
+	if t.ProjectID == "" {
+		return "fleet", t.ID, false
+	}
+	if a.projects == nil {
+		// Missing classification infrastructure is not evidence that a scoped
+		// task is public. Keep the incident local and use only an opaque key.
+		return "work-unknown", experience.WorkRecordID(t.ID), true
+	}
+	p, err := a.projects.Get(t.ProjectID)
+	if err != nil {
+		// Unknown project classification is not evidence that publishing is
+		// safe. Keep the incident local and persist only an opaque task key.
+		return "work-unknown", experience.WorkRecordID(t.ID), true
+	}
+	if a.workScrubContextForTask(t.ProjectID) != nil {
+		return experience.ProjectKey(p), experience.WorkRecordID(t.ID), true
+	}
+	return p.ID, t.ID, false
 }
 
 // providerHealthSnapshot adapts the health checker for the monitor's

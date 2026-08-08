@@ -186,53 +186,23 @@ steps:
           operator: equals
           value: human-required
         goto: ""
-      - goto: focused_checks
+      - goto: parallel_gates
 
-  # Mechanical changed-surface gate (no LLM): run configured focused checks
-  # derived from the committed diff after codegen has handled deterministic
-  # mutation such as go mod tidy. Failures re-enter implementation with
-  # surface-linked context until the retry cap parks the task human-required;
-  # unmatched diffs skip this step and still run the downstream verify_checks
-  # gate.
-  - id: focused_checks
-    name: Focused Checks
-    type: focused_checks
-    next:
-      - when:
-          field: task.status
-          operator: equals
-          value: human-required
-        goto: ""
-      - goto: detect_tampering
-
-  # Mechanical check (no LLM): inspects the worktree diff for reward-hacking /
-  # test-tampering signals — deleted assertions, added skip/xfail markers,
-  # deleted test files, neutered CI config. A high-severity finding flips the
-  # task to human-required (with the offending rules in the reason) so it
-  # cannot reach done without an explicit human bless. Benign test changes are
-  # recorded in a tamper-report.json artifact but do not block. Skips
-  # gracefully when no worktree exists or no verification files changed.
-  - id: detect_tampering
-    name: Detect Test Tampering
-    type: detect_tampering
-    next:
-      - when:
-          field: task.status
-          operator: equals
-          value: human-required
-        goto: ""
-      - goto: verify_checks
-
-  # Mechanical check (no LLM): run the project's `checks.verify` suite on the
-  # agent's branch HEAD before review. A non-zero exit flips the task to
-  # human-required so an implementation that does not pass its own declared
-  # tests cannot reach a PR. Complements detect_tampering (which catches
-  # structural test tampering). Opt-in: a no-op unless the project defines
-  # checks.verify. No git mutation; add the `verify-blessed` tag to override a
-  # known-flaky suite.
-  - id: verify_checks
-    name: Verify Checks
-    type: verify_checks
+  # Mechanical gate (no LLM): runs the three deterministic post-implement
+  # gates — focused_checks (changed-surface checks derived from the
+  # committed diff), detect_tampering (worktree diff scan for reward-hacking
+  # / test-tampering signals), and verify_checks (the project's
+  # `checks.verify` suite) — concurrently instead of serially, then joins
+  # before routing. Each gate still records its own evidence/verdict and
+  # decides its own outcome exactly as when they ran as separate steps (see
+  # execParallelGates, engine_steps_parallel_gates.go); this only overlaps
+  # their wall-clock. A gate flagging human-required or verify_checks
+  # blocking take precedence over an auto-fixable failure, which re-enters
+  # implementation with either/both gates' context until the retry cap parks
+  # the task human-required.
+  - id: parallel_gates
+    name: Parallel Deterministic Gates
+    type: parallel_gates
     next:
       - when:
           field: task.status

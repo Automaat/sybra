@@ -136,10 +136,6 @@ func TestSchedulerFireUpdatesLastRunFields(t *testing.T) {
 	if got.Name != "loop:self" {
 		t.Fatalf("Name should be loop:self, got %q", got.Name)
 	}
-	if !got.IgnoreConcurrencyLimit {
-		t.Fatal("loop runs must bypass the concurrency limit")
-	}
-
 	// Persisted run fields.
 	stored, err := store.Get(la.ID)
 	if err != nil {

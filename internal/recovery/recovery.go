@@ -14,6 +14,7 @@ import (
 	"github.com/Automaat/sybra/internal/cleanup"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/reconcile"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -78,6 +79,8 @@ type Recovery struct {
 	Orchestrator      Orchestrator
 	Projects          ProjectGetter
 	PRs               PRResolver
+	Reconciler        reconcile.Runner
+	ConflictRecovery  func(taskID string) bool
 	Logger            *slog.Logger
 	Throttle          *logging.ErrorThrottle
 	WG                *sync.WaitGroup
@@ -92,6 +95,9 @@ type Recovery struct {
 	// 0 disables size-based enforcement.
 	LogMaxTotalBytes int64
 	OrphanRoots      []string
+	// OwnedOrphanRoots may be shared with operator-run provider processes.
+	// Recovery only reaps processes carrying Sybra's explicit owner marker.
+	OwnedOrphanRoots []string
 
 	DispatchGate func(task.Task) bool
 
@@ -116,10 +122,10 @@ type Recovery struct {
 	CommitBeforePrune func(context.Context)
 }
 
-// RunStartupCleanup sequences boot-time maintenance in the order that lets
-// each step see the output of the previous one: worktree repair first so
-// orphans show up to the subsequent sweep; stale run state next so
-// restart-stale sees a clean slate.
+// RunStartupCleanup reconciles terminal/stale runs before any destructive
+// worktree sweep. A completed-but-unpushed commit is still task work even when
+// the task file already looks terminal; cleanup may only see it after the
+// reconciler has preserved/adopted it or proved there is none.
 func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 	// Reattach to surviving agent subprocesses FIRST so the sweeps below —
 	// which all key off HasRunningAgentForTask — see them as live and do
@@ -127,15 +133,20 @@ func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 	if reattached := r.Agents.ReattachAllContext(ctx); len(reattached) > 0 {
 		r.Logger.Info("recovery.reattach", "count", len(reattached))
 	}
-	if reaped := r.Agents.ReapOrphanProviderProcesses(ctx, r.OrphanRoots); reaped > 0 {
+	reaped, dedicatedConfirmed := r.Agents.ReapOrphanProviderProcessesConfirmed(ctx, r.OrphanRoots)
+	ownedReaped, ownedConfirmed := r.Agents.ReapOwnedOrphanProviderProcessesConfirmed(ctx, r.OwnedOrphanRoots)
+	if reaped += ownedReaped; reaped > 0 {
 		r.Logger.Info("recovery.orphan_reap", "count", reaped)
 	}
 	r.Worktrees.RepairAll(ctx)
-	r.pruneTrash(ctx)
-	r.Worktrees.CleanupOrphaned(ctx)
-	r.cleanupOrphanedSandboxes(ctx)
+	// Only after unregistered owned processes are gone and their worktrees have
+	// been repaired is an expired ledger-only attempt safe to finalize.
+	if dedicatedConfirmed && ownedConfirmed {
+		r.Agents.ReconcileAttemptLeases(ctx)
+	} else {
+		r.Logger.Error("recovery.attempt_reconcile.deferred", "reason", "orphan termination unconfirmed")
+	}
 	r.cleanStaleRuns()
-	r.pruneAgentLogs()
 	if r.WorkflowEngine != nil {
 		// Ordered ahead of the replay: reattach above has established which
 		// steps are genuinely still running, and both replay paths below claim
@@ -144,6 +155,10 @@ func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 		r.WorkflowEngine.ReplayPersistedEffects()
 	}
 	r.RestartStaleInProgress(ctx)
+	r.pruneTrash(ctx)
+	r.Worktrees.CleanupOrphaned(ctx)
+	r.cleanupOrphanedSandboxes(ctx)
+	r.pruneAgentLogs()
 }
 
 // pruneAgentLogs enforces retention (age/empty deletion, gzip compression,

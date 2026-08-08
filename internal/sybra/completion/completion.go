@@ -27,6 +27,7 @@ import (
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/loopagent"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/reconcile"
 	"github.com/Automaat/sybra/internal/runoutcome"
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/skillattr"
@@ -73,6 +74,7 @@ type Config struct {
 	PRTracker      *github.IssueTracker
 	Cfg            *config.Config
 	Artifacts      *artifact.Store
+	Reconciler     reconcile.Runner
 	WorkScrub      func(projectID string) *WorkScrubContext
 
 	// HumanReviewComplete routes a completed human-review agent's verdict
@@ -115,7 +117,8 @@ type Handler struct {
 	// completed test-runner's Playwright MCP evidence (screenshots/console
 	// logs) before terminal worktree cleanup. Nil-safe: importTestRunnerEvidence
 	// no-ops when unset (degraded init / tests).
-	artifacts *artifact.Store
+	artifacts  *artifact.Store
+	reconciler reconcile.Runner
 	// workScrub resolves a project ID to a WorkScrubContext (App.workScrubContextForTask).
 	// Used by importTestRunnerEvidence to redact work-repo identifiers from
 	// captured evidence before it lands in the local artifact store. Nil-safe:
@@ -142,6 +145,7 @@ func New(cfg Config) *Handler {
 		prTracker:           cfg.PRTracker,
 		cfg:                 cfg.Cfg,
 		artifacts:           cfg.Artifacts,
+		reconciler:          cfg.Reconciler,
 		workScrub:           cfg.WorkScrub,
 		humanReviewComplete: cfg.HumanReviewComplete,
 		conflictRecovery:    cfg.ConflictRecovery,
@@ -304,6 +308,10 @@ func (h *Handler) afterRunPersisted(ag *agent.Agent, resultContent string, exitE
 	// status), which must not happen behind a human's or the monitor's
 	// deliberate parking.
 	parked, parkedAdoption := h.parkedAdoption(ag)
+	stall := classifyStall(ag, exitErr)
+	if !h.reconcileAuthorCompletion(ag, stall.Stalled) {
+		return
+	}
 
 	if !parkedAdoption {
 		h.salvageInterruptedReview(ag)
@@ -320,8 +328,6 @@ func (h *Handler) afterRunPersisted(ag *agent.Agent, resultContent string, exitE
 		}
 		return
 	}
-
-	stall := classifyStall(ag, exitErr)
 
 	if !parkedAdoption && ag.EffectiveRole() == agent.RoleFixReview && exitErr == nil && !stall.Stalled {
 		h.handleFixReviewCompletion(ag)
@@ -359,6 +365,83 @@ func (h *Handler) afterRunPersisted(ag *agent.Agent, resultContent string, exitE
 			go h.sandboxes.Remove(ag.TaskID)
 		}
 	}
+}
+
+func (h *Handler) reconcileAuthorCompletion(ag *agent.Agent, stalled bool) bool {
+	role := ag.EffectiveRole()
+	if h.reconciler == nil || !role.AuthorsCode() {
+		return true
+	}
+	intent := reconcile.IntentAuthorCompletion
+	switch role {
+	case agent.RoleFixReview:
+		intent = reconcile.IntentFixReview
+	case agent.RolePRFix, agent.RoleTestFix:
+		intent = reconcile.IntentPRFix
+	case agent.RoleHumanReview:
+		intent = reconcile.IntentHumanRecovery
+	default:
+		// The AuthorsCode guard above excludes every verifier/coordinator role;
+		// implementation and any future code-author role use the base intent.
+	}
+	plan, err := h.reconciler.Reconcile(context.Background(), reconcile.Request{TaskID: ag.TaskID, RunID: ag.ID, Intent: intent})
+	if err != nil {
+		h.logger.Error("post-run.reconcile", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
+		// A stalled attempt still has to reach the workflow's retry/reschedule
+		// handling. That path is non-destructive; cleanup remains independently
+		// fail-closed behind CanCleanup's fresh observation.
+		return stalled || role == agent.RoleHumanReview
+	}
+	// Human-review remains an out-of-band diagnosis. Reconciliation still
+	// checkpoints any authored work first, but its verdict handler owns the
+	// resulting task transition.
+	if role == agent.RoleHumanReview {
+		return true
+	}
+	switch plan.Action {
+	case reconcile.ActionAdvance, reconcile.ActionResumeMergeablePR:
+		return plan.DeliverRunOutcome
+	case reconcile.ActionWait:
+		h.logger.Info("post-run.reconcile.wait", "task_id", ag.TaskID, "agent_id", ag.ID, "reason", plan.Reason)
+		return stalled
+	case reconcile.ActionRepair:
+		if plan.DeliverRunOutcome {
+			return true
+		}
+		if h.conflictRecovery != nil && h.conflictRecovery(ag.TaskID) {
+			h.logger.Info("post-run.reconcile.repair-started", "task_id", ag.TaskID, "agent_id", ag.ID, "reason", plan.Reason)
+		} else {
+			h.logger.Warn("post-run.reconcile.repair-held", "task_id", ag.TaskID, "agent_id", ag.ID, "reason", plan.Reason)
+		}
+		return false
+	case reconcile.ActionQuarantine:
+		return h.parkReconciliation(ag.TaskID, plan, task.StatusBlocked)
+	case reconcile.ActionHumanDecision:
+		return h.parkReconciliation(ag.TaskID, plan, task.StatusHumanRequired)
+	default:
+		h.logger.Warn("post-run.reconcile.effect-incomplete", "task_id", ag.TaskID, "agent_id", ag.ID, "action", plan.Action, "reason", plan.Reason)
+		return false
+	}
+}
+
+func (h *Handler) parkReconciliation(taskID string, plan reconcile.Plan, status task.Status) bool {
+	extra := task.Update{StatusReason: task.Ptr("post-run reconciliation: " + plan.Reason)}
+	if status == task.StatusHumanRequired {
+		extra.Escalation = task.OperatorDecisionRequired("post_run.pr_closed", plan.Reason)
+		extra.AutonomyOutcome = task.HumanRequiredOutcome()
+	} else {
+		extra.Escalation = task.MachineFailure("post_run.git_unhealthy", plan.Reason)
+		extra.AutonomyOutcome = task.QuarantinedOutcome()
+	}
+	_, err := h.tasks.Apply(task.TransitionIntent{
+		TaskID: taskID, ToStatus: status, Actor: "post-run.reconciler", Extra: extra,
+		ExpectedGeneration: &plan.Preconditions.TaskGeneration,
+		IdempotencyKey:     "post-run:" + plan.Preconditions.RunID + ":" + string(plan.Action),
+	})
+	if err != nil {
+		h.logger.Error("post-run.reconcile.park", "task_id", taskID, "action", plan.Action, "err", err)
+	}
+	return false
 }
 
 // parkedAdoption reports whether ag is a survivor that reattach adopted over a
@@ -979,6 +1062,7 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, outcome strin
 	cacheRead := ag.GetCacheReadInputTokens()
 	reasoning := ag.GetReasoningTokens()
 	agCost := estimatedRunCost(ag, cost, ag.GetPremiumRequests())
+	taskGeneration, taskGenerationKnown := ag.GetAttemptTaskGeneration()
 	var projectID string
 	if ag.TaskID != "" {
 		if t, err := h.tasks.Get(ag.TaskID); err == nil {
@@ -988,6 +1072,8 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, outcome strin
 	_ = h.stats.Record(stats.RunRecord{
 		ID:                       ag.ID,
 		TaskID:                   ag.TaskID,
+		TaskGeneration:           taskGeneration,
+		TaskGenerationKnown:      taskGenerationKnown,
 		ProjectID:                projectID,
 		Mode:                     ag.Mode,
 		Role:                     string(role),

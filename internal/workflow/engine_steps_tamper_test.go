@@ -901,6 +901,13 @@ func TestParseNameStatus(t *testing.T) {
 
 func newTamperStep() *Step { return &Step{ID: "detect_tampering", Type: StepDetectTampering} }
 
+// TestBuiltinSimpleTaskImplement_DetectTamperingWiring pins detect_tampering's
+// place in simple-task-implement now that it runs concurrently with
+// focused_checks/verify_checks inside the parallel_gates coordinator (see
+// execParallelGates, engine_steps_parallel_gates.go) rather than as its own
+// serial step — a flagged detect_tampering result still ends the workflow at
+// human-required, and a clean one still lets the workflow proceed to
+// set_ready_review/set_ready_pr_existing.
 func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 	t.Parallel()
 	defs, err := BuiltinDefinitions()
@@ -918,18 +925,17 @@ func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 		t.Fatal("simple-task-implement builtin not found")
 	}
 
-	tamper := impl.StepByID("detect_tampering")
-	if tamper == nil {
-		t.Fatal("detect_tampering step missing from simple-task-implement")
+	gates := impl.StepByID("parallel_gates")
+	if gates == nil {
+		t.Fatal("parallel_gates step missing from simple-task-implement")
 		return
 	}
-	if tamper.Type != StepDetectTampering {
-		t.Errorf("detect_tampering type = %q, want %q", tamper.Type, StepDetectTampering)
+	if gates.Type != StepParallelGates {
+		t.Errorf("parallel_gates type = %q, want %q", gates.Type, StepParallelGates)
 	}
 
 	// verify_commits default (no status condition) must route to codegen_gate,
-	// then focused_checks, which hands off to detect_tampering once generated
-	// drift is fixed.
+	// which hands off to parallel_gates once generated drift is fixed.
 	vc := impl.StepByID("verify_commits")
 	if vc == nil {
 		t.Fatal("verify_commits step missing")
@@ -945,11 +951,12 @@ func TestBuiltinSimpleTaskImplement_DetectTamperingWiring(t *testing.T) {
 		want   string
 	}{
 		{"flagged_ends_workflow", "human-required", ""},
-		{"clean_flows_to_verify_checks", "ready-review", "verify_checks"},
+		{"blocked_ends_workflow", "blocked", ""},
+		{"clean_flows_to_ready_review", "ready-review", "set_ready_review"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := ResolveTransition(tamper.Next, map[string]string{"task.status": string(tc.status)})
+			got, err := ResolveTransition(gates.Next, map[string]string{"task.status": string(tc.status)})
 			if err != nil {
 				t.Fatalf("ResolveTransition: %v", err)
 			}

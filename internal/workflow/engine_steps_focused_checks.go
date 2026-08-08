@@ -8,6 +8,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/project"
@@ -37,24 +38,48 @@ type selectedFocusedCheck struct {
 }
 
 func (e *Engine) execFocusedChecks(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
+	v := e.computeFocusedChecksVerdict(taskID, step, t)
+	return e.applyFocusedChecksVerdict(taskID, step, wfExec, t, v)
+}
+
+// focusedChecksVerdict is the pure result of running focused_checks: it
+// touches nothing but the (thread-safe) artifact/report store — no task
+// status write, no wfExec mutation — so it is safe to compute concurrently
+// with the other post-implement gates from execParallelGates.
+type focusedChecksVerdict struct {
+	// skip is non-empty for every short-circuit that lets the chain proceed
+	// unchanged (nothing configured, no worktree, no changed files, no
+	// matching mapping, or a canceled context).
+	skip         string
+	err          error
+	selected     []selectedFocusedCheck
+	changedFiles []string
+	cmds         []string
+	failedCmd    string
+	output       string
+	runErr       error
+	timeout      time.Duration
+}
+
+func (e *Engine) computeFocusedChecksVerdict(taskID string, step *Step, _ TaskInfo) focusedChecksVerdict {
 	focused := e.execution.Checks.FocusedChecks(e.ctx, taskID)
 	if len(focused) == 0 {
-		return stepDone(step, "skipped: no focused checks configured")
+		return focusedChecksVerdict{skip: "skipped: no focused checks configured"}
 	}
 	if e.execution.Worktrees == nil {
-		return stepDone(step, "skipped: no worktree getter configured")
+		return focusedChecksVerdict{skip: "skipped: no worktree getter configured"}
 	}
 	wtPath, ok := e.execution.Worktrees.GetWorktreePath(taskID)
 	if !ok {
-		return stepDone(step, "skipped: no worktree for task")
+		return focusedChecksVerdict{skip: "skipped: no worktree for task"}
 	}
 
 	changedFiles, err := changedFilesSinceProjectBase(e.ctx, wtPath, e.focusedChecksBaseRef(taskID))
 	if err != nil {
-		return StepOutput{}, fmt.Errorf("focused-checks: discover changed files: %w", err)
+		return focusedChecksVerdict{err: fmt.Errorf("focused-checks: discover changed files: %w", err)}
 	}
 	if len(changedFiles) == 0 {
-		return stepDone(step, "skipped: no changed files")
+		return focusedChecksVerdict{skip: "skipped: no changed files"}
 	}
 
 	selected, cmds := selectFocusedChecks(focused, changedFiles)
@@ -68,7 +93,7 @@ func (e *Engine) execFocusedChecks(taskID string, step *Step, wfExec *Execution,
 		if err := e.recordFocusedChecksReport(taskID, step.ID, report); err != nil {
 			e.logger.Warn("workflow.focused-checks.artifact", "task_id", taskID, "err", err)
 		}
-		return stepDone(step, "skipped: no safe focused mapping matched changed files")
+		return focusedChecksVerdict{skip: "skipped: no safe focused mapping matched changed files"}
 	}
 
 	timeout := resolveWorkflowCheckTimeout(e.verifyTimeout)
@@ -91,24 +116,40 @@ func (e *Engine) execFocusedChecks(taskID string, step *Step, wfExec *Execution,
 		e.logger.Warn("workflow.focused-checks.artifact", "task_id", taskID, "err", err)
 	}
 
-	if runErr != nil {
-		if errors.Is(runErr, context.Canceled) && e.ctx.Err() != nil {
-			e.logger.Warn("workflow.focused-checks.canceled", "task_id", taskID, "err", runErr)
+	return focusedChecksVerdict{
+		selected: selected, changedFiles: changedFiles, cmds: cmds,
+		failedCmd: failedCmd, output: output, runErr: runErr, timeout: timeout,
+	}
+}
+
+// applyFocusedChecksVerdict persists a computeFocusedChecksVerdict result:
+// task status, evidence, and — on a command failure — the auto-fix rewind to
+// implement. Must run on the same goroutine that owns wfExec.
+func (e *Engine) applyFocusedChecksVerdict(taskID string, step *Step, wfExec *Execution, t TaskInfo, v focusedChecksVerdict) (StepOutput, error) {
+	if v.err != nil {
+		return StepOutput{}, v.err
+	}
+	if v.skip != "" {
+		return stepDone(step, v.skip)
+	}
+	if v.runErr != nil {
+		if errors.Is(v.runErr, context.Canceled) && e.ctx.Err() != nil {
+			e.logger.Warn("workflow.focused-checks.canceled", "task_id", taskID, "err", v.runErr)
 			return stepDone(step, "skipped: context canceled")
 		}
-		if errors.Is(runErr, context.DeadlineExceeded) {
-			reason := fmt.Sprintf("focused checks exceeded the time budget (%s) before the author loop stabilized", timeout)
+		if errors.Is(v.runErr, context.DeadlineExceeded) {
+			reason := fmt.Sprintf("focused checks exceeded the time budget (%s) before the author loop stabilized", v.timeout)
 			return e.flagFocusedChecks(taskID, step, reason, "timeout")
 		}
-		reason := "focused checks could not run cleanly: " + trimDiffLine(runErr.Error())
+		reason := "focused checks could not run cleanly: " + trimDiffLine(v.runErr.Error())
 		return e.flagFocusedChecks(taskID, step, reason, "setup")
 	}
-	if failedCmd == "" {
+	if v.failedCmd == "" {
 		e.recordEvidence(taskID, step.ID, evidenceCriterionFocusedChecks, evidence.ProofDeterministicCheck,
-			0, strings.Join(cmds, " && "), report.OutputTail)
+			0, strings.Join(v.cmds, " && "), v.output)
 		return stepDone(step, "clean")
 	}
-	return e.reaskFocusedChecks(taskID, step, wfExec, t, selected, changedFiles, failedCmd, output)
+	return e.reaskFocusedChecks(taskID, step, wfExec, t, v.selected, v.changedFiles, v.failedCmd, v.output)
 }
 
 type worktreeBaseRefGetter interface {

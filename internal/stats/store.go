@@ -215,6 +215,21 @@ func (s *Store) All() []RunRecord {
 	return slices.Clone(s.runs)
 }
 
+// AllForTask returns a copy of the runs attributed to taskID without cloning
+// the full, unbounded run history for a task-local calculation.
+func (s *Store) AllForTask(taskID string) []RunRecord {
+	s.syncForRead()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []RunRecord
+	for i := range s.runs {
+		if s.runs[i].TaskID == taskID {
+			out = append(out, s.runs[i])
+		}
+	}
+	return out
+}
+
 func (s *Store) Query() StatsResponse {
 	return s.QueryAt(time.Now())
 }

@@ -152,7 +152,10 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 	}
 	wrapped = append(wrapped, "--", name)
 	wrapped = append(wrapped, args...)
-	if cfg.sandbox.gitOverlayRefFile != "" && cfg.sandbox.gitBranchRef != "" && cfg.sandbox.worktree != "" {
+	// Detached verification clones have no branch ref to publish, but commits
+	// still write objects into the overlay while advancing their private HEAD.
+	// Always publish verified loose objects before the next command resets it.
+	if cfg.sandbox.gitOverlayObjectDir != "" && cfg.sandbox.worktree != "" {
 		return sandboxSyncShell(wrapped, cfg)
 	}
 	return bwrapPath, wrapped

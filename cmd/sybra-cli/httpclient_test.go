@@ -95,6 +95,7 @@ func isolateHTTPCLITestHome(t *testing.T, home string) {
 	t.Setenv("SYBRA_CONTROL_HOME", "")
 	t.Setenv("SYBRA_TASKS_DIR", "")
 	t.Setenv(serverTargetEnv, "")
+	t.Setenv("SYBRA_AUTH_TOKEN_FILE", "")
 }
 
 func useDefaultHTTPCLIHome(t *testing.T, home string) string {
@@ -104,7 +105,65 @@ func useDefaultHTTPCLIHome(t *testing.T, home string) string {
 	t.Setenv("SYBRA_CONTROL_HOME", "")
 	t.Setenv("SYBRA_TASKS_DIR", "")
 	t.Setenv(serverTargetEnv, "")
+	t.Setenv("SYBRA_AUTH_TOKEN_FILE", "")
 	return filepath.Join(config.HomeDir(), "tasks")
+}
+
+func TestGetUsesHTTPModeWhenTaskOnlyExistsOnServer(t *testing.T) {
+	home := t.TempDir()
+	_ = useDefaultHTTPCLIHome(t, home)
+
+	serverTasksDir := t.TempDir()
+	serverStore, err := task.NewStore(serverTasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := task.NewManager(serverStore, nil).Create("api-only get target", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := startFakeAPIServer(t, serverTasksDir)
+	t.Setenv(serverTargetEnv, "127.0.0.1:"+port)
+
+	code, out := runCLI(t, "--json", "get", created.ID)
+	if code != 0 {
+		t.Fatalf("get over HTTP mode exit %d: %s", code, out)
+	}
+	var got task.Task
+	mustUnmarshal(t, out, &got)
+	if got.ID != created.ID {
+		t.Fatalf("get task ID = %q, want %q", got.ID, created.ID)
+	}
+}
+
+func TestNewAPIClientPrefersVerifierTokenFile(t *testing.T) {
+	t.Setenv(serverTargetEnv, "127.0.0.1:12345")
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenPath, []byte("scoped-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SYBRA_AUTH_TOKEN_FILE", tokenPath)
+	cfg := &config.Config{}
+	cfg.Server.AuthToken = "full-server-token"
+	cfg.Cluster.TLS.CertFile = "/operator/server.crt"
+	cfg.Cluster.TLS.KeyFile = "/operator/server.key"
+	client, ok := newAPIClient(cfg)
+	if !ok || client.token != "scoped-token" {
+		t.Fatalf("client = %+v, ok=%v; want scoped file token", client, ok)
+	}
+}
+
+func TestNewAPIClientVerifierTokenRequiresLoopback(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenPath, []byte("scoped-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SYBRA_AUTH_TOKEN_FILE", tokenPath)
+	t.Setenv(serverTargetEnv, "192.0.2.10:12345")
+	cfg := &config.Config{}
+	if client, ok := newAPIClient(cfg); ok || client != nil {
+		t.Fatalf("scoped verifier credential accepted non-loopback target: %+v", client)
+	}
 }
 
 func TestUpdate_UsesHTTPModeWhenFilesystemIsReadOnly(t *testing.T) {

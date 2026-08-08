@@ -129,6 +129,21 @@ func TestControlHomeEnv_ForcesFilesystemModeEvenWithServerRunning(t *testing.T) 
 	}
 }
 
+func TestVerifierControlAPIOverridesSandboxHomeOnly(t *testing.T) {
+	t.Setenv("SYBRA_CONTROL_API_ONLY", "1")
+	home := homeResolution{effectiveHome: t.TempDir(), fromSybraHome: true}
+	if !allowHTTPForHome("", home) {
+		t.Fatal("verifier API-only mode should permit the authenticated control channel")
+	}
+	if allowHTTPForHome(t.TempDir(), home) {
+		t.Fatal("an explicit --home must still force filesystem mode")
+	}
+	home.fromControlHome = true
+	if allowHTTPForHome("", home) {
+		t.Fatal("SYBRA_CONTROL_HOME must retain filesystem precedence")
+	}
+}
+
 // TestHomeFlag_MalformedMissingValue_NonHookIsFatal pins that a dangling
 // --home with no value is a hard usage error for ordinary commands.
 func TestHomeFlag_MalformedMissingValue_NonHookIsFatal(t *testing.T) {

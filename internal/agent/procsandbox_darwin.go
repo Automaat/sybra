@@ -193,6 +193,22 @@ func buildReadProfile(base string, roots []string, dir string) (string, error) {
 	b.Write(agentSandboxProfile)
 	b.WriteString("\n;; Deny-by-default reads (#2781), generated per run.\n")
 	b.WriteString("(deny file-read*)\n(allow file-read*\n")
+	// Seatbelt checks metadata access on every ancestor while traversing to an
+	// allowed subpath. Grant the ancestors as exact literals only; without
+	// this, even /bin/sh aborts while trying to traverse "/", while using a
+	// subpath here would accidentally reopen the entire filesystem.
+	seenAncestors := make(map[string]struct{})
+	for _, r := range roots {
+		for ancestor := filepath.Dir(r); ; ancestor = filepath.Dir(ancestor) {
+			if _, ok := seenAncestors[ancestor]; !ok {
+				seenAncestors[ancestor] = struct{}{}
+				b.WriteString("  (literal " + sbplQuote(ancestor) + ")\n")
+			}
+			if ancestor == filepath.Dir(ancestor) {
+				break
+			}
+		}
+	}
 	for _, r := range roots {
 		// subpath covers directories; literal covers the plain files in the
 		// allowlist (~/.claude.json, ~/.gitconfig), which subpath does not

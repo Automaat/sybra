@@ -59,8 +59,11 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/sybra/completion"
+	"github.com/Automaat/sybra/internal/sybra/dispatch"
+	"github.com/Automaat/sybra/internal/sybra/reconciliation"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/sybra/runenv"
+	"github.com/Automaat/sybra/internal/sybra/verification"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/tasksnapshot"
 	"github.com/Automaat/sybra/internal/toolledger"
@@ -88,6 +91,7 @@ type App struct {
 	loopAgents        *loopagent.Store
 	loopSched         *loopagent.Scheduler
 	agents            *agent.Manager
+	attempts          *dispatch.Controller
 	watcher           *watcher.Watcher
 	configWatcher     *confighot.Watcher
 	notifier          *notification.Emitter
@@ -121,6 +125,8 @@ type App struct {
 	routingSvc        *routing.Service
 	agentOrch         *agentorch.Orchestrator
 	runenv            *runenv.Service
+	verification      *verification.Manager
+	postRunReconciler *reconciliation.Reconciler
 	reviewer          *review.Handler
 	assigner          *clusterlead.Assigner
 	mirror            *clusterlead.Mirror
@@ -438,6 +444,13 @@ func (a *App) startLifecycle(schedulerCtx, watcherCtx context.Context, emit func
 			<-a.recoveryStartGate
 		}
 		a.recovery.RunStartupCleanup(schedulerCtx)
+		if a.verification != nil && a.agents != nil {
+			active := make(map[string]struct{})
+			for _, ag := range a.agents.ListLiveAgents() {
+				active[ag.ID] = struct{}{}
+			}
+			a.verification.Reconcile(active)
+		}
 		// Startup cleanup reattaches surviving provider processes before replay
 		// can call the synchronous human-required dispatch path. Running this
 		// earlier sees an empty live-agent registry and can start a duplicate.
@@ -599,9 +612,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.agentOrch = agentorch.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.worktrees, a.cfg)
 	a.agentOrch.SetContext(appCtx)
 	a.initRunEnvironment()
-	a.reviewer = review.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg, a.experience)
-	a.reviewer.SetABTestingSource(a.abTestingConfig)
-	a.reviewer.SetInterventionStore(a.intervention)
+	a.initReviewer(emit)
 
 	a.initWorkflowEngine()
 
@@ -615,6 +626,13 @@ func (a *App) Startup(ctx context.Context) error {
 	a.logger.Info("app.started")
 	started = true
 	return nil
+}
+
+func (a *App) initReviewer(emit func(string, any)) {
+	a.reviewer = review.New(a.tasks, a.projects, a.agents, a.audit, a.logger, a.prTracker, emit, a.worktrees, a.renovatePRsForMonitor, a.cfg, a.experience)
+	a.reviewer.SetABTestingSource(a.abTestingConfig)
+	a.reviewer.SetInterventionStore(a.intervention)
+	a.reviewer.SetVerification(a.verification)
 }
 
 func (a *App) taskEventEmitter(store *task.Store) func(string, any) {

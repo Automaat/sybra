@@ -188,8 +188,8 @@ export class AgentDefaults {
      * ApprovalPort pins the localhost port of the PreToolUse approval
      * server. The hook URL is baked into a permission-gated agent's
      * --settings at spawn, so a fixed port lets a detached agent's approval
-     * requests still resolve after a restart. 0 (default) binds a random
-     * port (no cross-restart approval survival).
+     * requests still resolve after a restart. 0 (default) selects a random
+     * port once and persists it for subsequent starts.
      */
     "approvalPort": number;
 
@@ -220,7 +220,9 @@ export class AgentDefaults {
      * never the default rollout posture. "enforce" actually wraps the spawn
      * and blocks writes outside that allowlist, failing the spawn closed if
      * the wrapper is unavailable.
-     * Empty treated as "report".
+     * Empty treated as "report". Independent verifier roles always override
+     * this to "enforce" and fail closed because their evidence must not depend
+     * on the rollout posture selected for author agents.
      */
     "sandboxMode": string;
 
@@ -1310,6 +1312,18 @@ export class MonitorConfig {
      */
     "lostAgentAutoCloseAfterClears": number;
 
+    /**
+     * IncidentResolveGraceMinutes requires a successfully observed healthy
+     * detector result to remain stable before an incident is resolved.
+     */
+    "incidentResolveGraceMinutes": number;
+
+    /**
+     * IncidentReopenGraceMinutes suppresses noisy external updates immediately
+     * after resolution while retaining recurrence history in the same incident.
+     */
+    "incidentReopenGraceMinutes": number;
+
     /** Creates a new MonitorConfig instance. */
     constructor($$source: Partial<MonitorConfig> = {}) {
         if (!("enabled" in $$source)) {
@@ -1353,6 +1367,12 @@ export class MonitorConfig {
         }
         if (!("lostAgentAutoCloseAfterClears" in $$source)) {
             this["lostAgentAutoCloseAfterClears"] = 0;
+        }
+        if (!("incidentResolveGraceMinutes" in $$source)) {
+            this["incidentResolveGraceMinutes"] = 0;
+        }
+        if (!("incidentReopenGraceMinutes" in $$source)) {
+            this["incidentReopenGraceMinutes"] = 0;
         }
 
         Object.assign(this, $$source);
