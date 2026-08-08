@@ -326,7 +326,7 @@ func startTestBoard(t *testing.T, home string) *httptest.Server {
 	// is the point of the check.
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		payload, err := json.Marshal(map[string]string{
-			"status": "ok", "service": httpserve.ServiceMarker, "home": home,
+			"status": "ok", "service": httpserve.ServiceMarker, "home_id": httpserve.HomeID(home),
 		})
 		if err != nil {
 			t.Errorf("encode health: %v", err)

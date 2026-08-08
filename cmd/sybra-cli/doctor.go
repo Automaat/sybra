@@ -18,12 +18,12 @@ import (
 // what broke, but every path it would delete belongs to a live task, and only
 // the board knows which those are. Without one it reports and refuses to
 // delete, rather than treating every worktree as an orphan.
-func cmdDoctor(cfg *config.Config, store taskBoard, ownsHome bool, args []string, jsonOut bool) int {
+func cmdDoctor(cfg *config.Config, store taskBoard, ownsHome bool, cause string, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: doctor <cleanup>")
 	}
 	if store == nil || !ownsHome {
-		return cmdDoctorWithoutBoard(cfg, store, ownsHome, args, jsonOut)
+		return cmdDoctorWithoutBoard(cfg, store, ownsHome, cause, args, jsonOut)
 	}
 	switch sub, rest := args[0], args[1:]; sub {
 	case "cleanup":
@@ -360,7 +360,7 @@ func fatalUsage(jsonOut bool, format string, args ...any) int {
 // refuses the scan by name rather than running it against a task list that does
 // not describe this disk — which classifies every live worktree as an orphan
 // and offers to delete it.
-func cmdDoctorWithoutBoard(cfg *config.Config, store taskBoard, ownsHome bool, args []string, jsonOut bool) int {
+func cmdDoctorWithoutBoard(cfg *config.Config, store taskBoard, ownsHome bool, cause string, args []string, jsonOut bool) int {
 	if args[0] != "cleanup" {
 		return fatal(jsonOut, "unknown doctor command: %s", args[0])
 	}
@@ -374,6 +374,12 @@ func cmdDoctorWithoutBoard(cfg *config.Config, store taskBoard, ownsHome bool, a
 	// a mismatched target would tell an operator to unset something they never
 	// set.
 	if store == nil {
+		// cause names what actually stopped the board being usable — a
+		// certificate that does not match, a bind with no route — which is the
+		// whole reason an operator ran doctor.
+		if strings.TrimSpace(cause) != "" {
+			return fatal(jsonOut, "doctor cleanup needs the board to tell a live worktree from an orphan: %s", cause)
+		}
 		return fatal(jsonOut,
 			"doctor cleanup needs the board to tell a live worktree from an orphan, and no Sybra server is reachable; start one, or set %s",
 			serverTargetEnv)

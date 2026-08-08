@@ -354,14 +354,14 @@ func shortRevision(rev string) string {
 // dispatch routes a parsed subcommand (with its own args and the global
 // --json flag already extracted) to the matching cmdXxx handler.
 func dispatch(cmd string, rest []string, cfg *config.Config, jsonOut bool) int {
-	api, refusal := resolveBoardAPI(cmd, cfg)
+	api, refusal, cause := resolveBoardAPI(cmd, cfg)
 	if refusal != "" {
 		return fatal(jsonOut, "%s", refusal)
 	}
 	// api is nil only for the commands that inspect this machine, and those are
 	// dispatched separately so no board command can be handed a nil board.
 	if api == nil {
-		return dispatchWithoutBoard(cmd, rest, cfg, jsonOut)
+		return dispatchWithoutBoard(cmd, rest, cfg, cause, jsonOut)
 	}
 	store := newAPITaskBoard(api)
 	projStore := newAPIProjectBoard(api)
@@ -423,7 +423,7 @@ func dispatch(cmd string, rest []string, cfg *config.Config, jsonOut bool) int {
 		// this home, and a board on another machine holds none of these task
 		// ids — so it would report every live worktree as an orphan and offer
 		// to delete it, agents included.
-		return cmdDoctor(cfg, store, ownsThisHome(api), rest, jsonOut)
+		return cmdDoctor(cfg, store, ownsThisHome(api), "", rest, jsonOut)
 	case "trash":
 		return cmdTrash(store, rest, jsonOut)
 	case "tasks-history":
@@ -439,23 +439,24 @@ func dispatch(cmd string, rest []string, cfg *config.Config, jsonOut bool) int {
 // reach a board: opening its files behind the instance that owns them made the
 // CLI a silent concurrent writer, and a stale target turned an ordinary edit
 // into a change the owning instance later overwrote.
-func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal string) {
+func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal, cause string) {
 	if raw := strings.TrimSpace(os.Getenv(serverTargetEnv)); raw != "" {
 		c, err := newAPIClient(cfg)
 		if err != nil {
-			return nil, err.Error()
+			return nil, err.Error(), err.Error()
 		}
 		// A named target is the operator's choice, including a board serving
 		// another home, so answering the probe is enough. An older server that
 		// predates the service marker still works.
 		if c.reachable(context.Background()) {
-			return c, ""
+			return c, "", ""
 		}
-		if runsWithoutServer(cmd) {
-			return nil, ""
-		}
-		return nil, fmt.Sprintf("no Sybra server is reachable at %s (%s)%s; start it, or point %s elsewhere",
+		why := fmt.Sprintf("no Sybra server is reachable at %s (%s)%s; start it, or point %s elsewhere",
 			c.baseURL, serverTargetEnv, probeCause(c), serverTargetEnv)
+		if runsWithoutServer(cmd) {
+			return nil, "", why
+		}
+		return nil, why, why
 	}
 
 	// No target named, so every board this machine might be running is tried.
@@ -491,26 +492,30 @@ func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal st
 			foreign = append(foreign, c.baseURL)
 			continue
 		}
-		return c, ""
+		return c, "", ""
 	}
-	if len(foreign) > 0 {
-		// Reported even for the commands that run without a server: doctor
-		// otherwise says nothing answered while a board did, and sends the
-		// operator to start one that is already running.
-		return nil, fmt.Sprintf("the server at %s does not serve %s; start one for this home, or set %s to the board you meant",
+	// The cause is computed before the runs-without-server exit, so a command
+	// whose whole purpose is diagnosing an unreachable board can say why. A pin
+	// mismatch and an unreadable bind are both "a board answered, or would
+	// have" — reporting them as "nothing is listening" sends an operator to
+	// restart a server that is already running.
+	var why string
+	switch {
+	case len(foreign) > 0:
+		why = fmt.Sprintf("the server at %s does not serve %s; start one for this home, or set %s to the board you meant",
 			strings.Join(foreign, ", "), home, serverTargetEnv)
+	case len(tried) == 0 && len(unusable) > 0:
+		why = "this home's board cannot be addressed: " + strings.Join(unusable, "; ")
+	case len(tried) == 0:
+		why = fmt.Sprintf("no Sybra server could be located for this home; start one, or set %s", serverTargetEnv)
+	default:
+		why = fmt.Sprintf("no Sybra server is reachable (tried %s)%s; start one, or set %s",
+			strings.Join(tried, ", "), strings.Join(causes, ""), serverTargetEnv)
 	}
-	if runsWithoutServer(cmd) {
-		return nil, ""
+	if len(foreign) == 0 && runsWithoutServer(cmd) {
+		return nil, "", why
 	}
-	if len(tried) == 0 {
-		if len(unusable) > 0 {
-			return nil, fmt.Sprintf("this home's board cannot be addressed: %s", strings.Join(unusable, "; "))
-		}
-		return nil, fmt.Sprintf("no Sybra server could be located for this home; start one, or set %s", serverTargetEnv)
-	}
-	return nil, fmt.Sprintf("no Sybra server is reachable (tried %s)%s; start one, or set %s",
-		strings.Join(tried, ", "), strings.Join(causes, ""), serverTargetEnv)
+	return nil, why, why
 }
 
 // probeCause renders why a reachability probe failed, when the reason is
@@ -535,12 +540,12 @@ func ownsThisHome(api *apiClient) bool {
 
 // dispatchWithoutBoard routes the commands that reached here with no server.
 // Only runsWithoutServer names get this far, and none of them reads the board.
-func dispatchWithoutBoard(cmd string, rest []string, cfg *config.Config, jsonOut bool) int {
+func dispatchWithoutBoard(cmd string, rest []string, cfg *config.Config, cause string, jsonOut bool) int {
 	switch cmd {
 	case "config":
 		return cmdConfig(cfg, rest, jsonOut, false, nil)
 	case "doctor":
-		return cmdDoctor(cfg, nil, false, rest, jsonOut)
+		return cmdDoctor(cfg, nil, false, cause, rest, jsonOut)
 	case "health":
 		return cmdHealth(cfg, rest, jsonOut)
 	case "install-skills":

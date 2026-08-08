@@ -355,3 +355,51 @@ func TestAttachedBoardWithABrokerStillStarts(t *testing.T) {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 }
+
+// TestHealthDoesNotDiscloseTheHomePath keeps an unauthenticated endpoint from
+// handing out the operator's filesystem layout.
+//
+// The digest is what a client compares to decide whether a board owns this
+// disk. The path itself would tell anyone who can reach the port the operator's
+// username and data layout — and would let a local process that cannot read the
+// home echo it back to collect the bearer token.
+func TestHealthDoesNotDiscloseTheHomePath(t *testing.T) {
+	const home = "/Users/someone/.sybra"
+	srv := httptest.NewServer(httpserve.BuildMux(httpserve.Options{Logger: testLogger(), Home: home}))
+	t.Cleanup(srv.Close)
+
+	resp, err := srv.Client().Get(srv.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if strings.Contains(string(body), home) {
+		t.Fatalf("health disclosed the home path: %s", body)
+	}
+	if !strings.Contains(string(body), httpserve.HomeID(home)) {
+		t.Fatalf("health carries no home digest: %s", body)
+	}
+}
+
+// TestHomeIDResolvesSymlinks pins the comparison a client makes: a home reached
+// through /var and /private/var is one home, and must digest the same.
+func TestHomeIDResolvesSymlinks(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if httpserve.HomeID(real) != httpserve.HomeID(link) {
+		t.Fatal("a home reached through a symlink digests differently")
+	}
+	if httpserve.HomeID(real) == httpserve.HomeID(t.TempDir()) {
+		t.Fatal("two different homes digest the same")
+	}
+	if httpserve.HomeID("") != "" {
+		t.Fatal("an unset home produced a digest")
+	}
+}

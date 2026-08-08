@@ -9,7 +9,9 @@
 package httpserve
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -21,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -33,6 +36,29 @@ import (
 // ServiceMarker identifies a Sybra control plane in its health response, so a
 // client can tell one from whatever else happens to answer on a port.
 const ServiceMarker = "sybra"
+
+// HomeID digests the home a board serves, for a client deciding whether that
+// board owns the files on this disk.
+//
+// The digest rather than the path: /health carries no authentication, so the
+// path would hand the operator's username and data layout to anyone who can
+// reach the port — and to a local process that cannot read the home at all but
+// could then echo it back to collect the bearer token. A caller that already
+// knows the path can still compare; one that does not, learns nothing.
+//
+// Symlinks are resolved first so a home reached through /var and /private/var
+// digests the same.
+func HomeID(home string) string {
+	if strings.TrimSpace(home) == "" {
+		return ""
+	}
+	resolved, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		resolved = home
+	}
+	sum := sha256.Sum256([]byte(filepath.Clean(resolved)))
+	return hex.EncodeToString(sum[:])
+}
 
 // Options describes one instance's HTTP surface.
 type Options struct {
@@ -61,9 +87,10 @@ type Options struct {
 	// process served from any other page on the host. Empty disables the
 	// token disclosure entirely.
 	SelfOrigin string
-	// Home is the SYBRA_HOME this instance serves, reported in the health
-	// response. A client asking which board owns a directory on this machine
-	// cannot tell two instances apart by address alone: both are loopback.
+	// Home is the SYBRA_HOME this instance serves. Its digest, never the path
+	// itself, is reported in the health response: a client asking which board
+	// owns a directory on this machine cannot tell two instances apart by
+	// address alone, since both are loopback.
 	Home string
 	// Proxy forwards the API and event stream to a board on another machine.
 	//
@@ -95,7 +122,7 @@ func BuildMux(opts Options) *http.ServeMux {
 		payload, err := json.Marshal(map[string]string{
 			"status":  "ok",
 			"service": ServiceMarker,
-			"home":    opts.Home,
+			"home_id": HomeID(opts.Home),
 		})
 		if err != nil {
 			opts.Logger.Error("health.encode", "err", err)

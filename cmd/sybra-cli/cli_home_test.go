@@ -245,7 +245,7 @@ func TestInferredTargetRefusesAPeerServingAnotherHome(t *testing.T) {
 		if v := r.Header.Get("Authorization"); v != "" {
 			gotAuth = v
 		}
-		_, _ = w.Write([]byte(`{"status":"ok","service":"` + httpserve.ServiceMarker + `","home":"/somewhere/else"}`))
+		_, _ = w.Write([]byte(`{"status":"ok","service":"` + httpserve.ServiceMarker + `","home_id":"` + httpserve.HomeID("/somewhere/else") + `"}`))
 	}))
 	t.Cleanup(impostor.Close)
 

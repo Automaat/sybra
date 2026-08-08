@@ -66,9 +66,9 @@ type apiClient struct {
 	// identified records that the peer answered the health probe as a Sybra
 	// control plane rather than merely answering.
 	identified bool
-	// boardHome is the SYBRA_HOME the board reported serving, learned during
-	// the reachability probe. Empty until that probe has run.
-	boardHome string
+	// boardHomeID digests the SYBRA_HOME the board reported serving, learned
+	// during the reachability probe. Empty until that probe has run.
+	boardHomeID string
 	// remote records that the target is another machine's board. A loopback server shares this machine's home, so the filesystem stores are the same board and falling back to them is correct; a remote one is a different board, and falling back edits files its owner never reads.
 	remote bool
 }
@@ -103,7 +103,15 @@ func newAPIClient(cfg *config.Config) (*apiClient, error) {
 		return nil, fmt.Errorf("%s is set but no configuration is loaded", serverTargetEnv)
 	}
 	if strings.HasPrefix(raw, "https://") {
-		c, err := newTLSAPIClient(raw, source, "")
+		// This machine's own TLS board keeps its token in this machine's
+		// config, so requiring SYBRA_SERVER_TOKEN would dead-end the escape
+		// hatch every refusal recommends. Only a board elsewhere needs the
+		// environment to carry one.
+		localToken := ""
+		if cfg.ServesTLS() && targetIsLoopback(raw) {
+			localToken = strings.TrimSpace(cfg.Server.AuthToken)
+		}
+		c, err := newTLSAPIClient(raw, source, localToken)
 		if err != nil {
 			return nil, err
 		}
@@ -116,9 +124,6 @@ func newAPIClient(cfg *config.Config) (*apiClient, error) {
 				return nil, tlsErr
 			}
 			c.http = &http.Client{Transport: transport}
-			if c.token == "" {
-				c.token = strings.TrimSpace(cfg.Server.AuthToken)
-			}
 		}
 		return c, nil
 	}
@@ -360,12 +365,12 @@ func (c *apiClient) reachable(ctx context.Context) bool {
 	}
 	var health struct {
 		Service string `json:"service"`
-		Home    string `json:"home"`
+		HomeID  string `json:"home_id"`
 	}
 	if json.Unmarshal(body, &health) != nil {
 		return false
 	}
-	c.boardHome = health.Home
+	c.boardHomeID = health.HomeID
 	c.identified = health.Service == httpserve.ServiceMarker
 	return true
 }
@@ -387,24 +392,11 @@ func (c *apiClient) servesThisHome(home string) bool {
 // the one that answers may own a different home entirely. Anything that acts on
 // this machine's files has to ask which home the board actually serves.
 func (c *apiClient) ownsHome(home string) bool {
-	if c == nil || c.boardHome == "" || home == "" {
+	want := httpserve.HomeID(home)
+	if c == nil || c.boardHomeID == "" || want == "" {
 		return false
 	}
-	return sameDir(c.boardHome, home)
-}
-
-// sameDir compares two directory paths after resolving symlinks, so a home
-// reached through /var and /private/var is recognised as one home.
-func sameDir(a, b string) bool {
-	if a == b {
-		return true
-	}
-	ra, errA := filepath.EvalSymlinks(a)
-	rb, errB := filepath.EvalSymlinks(b)
-	if errA != nil || errB != nil {
-		return false
-	}
-	return ra == rb
+	return subtle.ConstantTimeCompare([]byte(c.boardHomeID), []byte(want)) == 1
 }
 
 func (c *apiClient) call(ctx context.Context, service, method string, out any, args ...any) error {
@@ -537,4 +529,17 @@ func pinnedTransport(certFile string) (*http.Transport, error) {
 		},
 	}
 	return tr, nil
+}
+
+// targetIsLoopback reports an https origin that names this machine.
+func targetIsLoopback(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	host, _, splitErr := net.SplitHostPort(u.Host)
+	if splitErr != nil {
+		host = u.Host
+	}
+	return isLoopbackHost(host)
 }
