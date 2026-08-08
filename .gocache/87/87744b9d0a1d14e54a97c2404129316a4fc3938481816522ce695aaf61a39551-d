@@ -1,0 +1,10 @@
+./compare.go
+./doc.go
+./helpers.go
+./merge.go
+./parser.go
+./reconcile_schema.go
+./remove.go
+./tofieldset.go
+./typed.go
+./validate.go

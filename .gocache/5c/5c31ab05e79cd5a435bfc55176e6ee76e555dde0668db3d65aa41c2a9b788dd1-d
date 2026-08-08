@@ -1,0 +1,3 @@
+./doc.go
+./fake_discovery_client.go
+./fake_endpointslice.go

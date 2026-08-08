@@ -1,0 +1,4 @@
+./imagereview.go
+./imagereviewcontainerspec.go
+./imagereviewspec.go
+./imagereviewstatus.go

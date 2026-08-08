@@ -1,0 +1,9 @@
+[k3d]
+short = "k3d"
+full = "aqua:k3d-io/k3d"
+explicit_backend = false
+
+[kubectl]
+short = "kubectl"
+full = "aqua:kubernetes/kubernetes/kubectl"
+explicit_backend = false

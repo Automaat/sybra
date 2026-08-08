@@ -1,0 +1,5 @@
+./coordination_client.go
+./doc.go
+./generated_expansion.go
+./lease.go
+./leasecandidate.go

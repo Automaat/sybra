@@ -1,0 +1,5 @@
+./buffers.go
+./decode.go
+./diagnostic.go
+./encode.go
+./transcoding.go

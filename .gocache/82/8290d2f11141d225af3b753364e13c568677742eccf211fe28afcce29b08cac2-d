@@ -1,0 +1,7 @@
+./endpoint.go
+./endpointconditions.go
+./endpointhints.go
+./endpointport.go
+./endpointslice.go
+./fornode.go
+./forzone.go

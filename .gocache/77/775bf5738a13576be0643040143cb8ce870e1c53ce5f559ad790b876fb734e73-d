@@ -1,0 +1,8 @@
+./aggregationrule.go
+./clusterrole.go
+./clusterrolebinding.go
+./policyrule.go
+./role.go
+./rolebinding.go
+./roleref.go
+./subject.go

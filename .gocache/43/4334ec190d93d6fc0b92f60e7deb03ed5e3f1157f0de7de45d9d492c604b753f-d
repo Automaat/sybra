@@ -1,0 +1,15 @@
+./cronjob.go
+./cronjobspec.go
+./cronjobstatus.go
+./job.go
+./jobcondition.go
+./jobspec.go
+./jobstatus.go
+./jobtemplatespec.go
+./podfailurepolicy.go
+./podfailurepolicyonexitcodesrequirement.go
+./podfailurepolicyonpodconditionspattern.go
+./podfailurepolicyrule.go
+./successpolicy.go
+./successpolicyrule.go
+./uncountedterminatedpods.go

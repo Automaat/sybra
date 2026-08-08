@@ -1,0 +1,4 @@
+./helpers.go
+./unstructured.go
+./unstructured_list.go
+./zz_generated.deepcopy.go

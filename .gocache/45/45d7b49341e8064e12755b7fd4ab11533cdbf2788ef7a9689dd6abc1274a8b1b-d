@@ -1,0 +1,17 @@
+./common.go
+./discriminator.go
+./doc.go
+./each.go
+./enum.go
+./equality.go
+./immutable.go
+./item.go
+./limits.go
+./options.go
+./required.go
+./strfmt.go
+./subfield.go
+./testing.go
+./union.go
+./update.go
+./zeroorone.go

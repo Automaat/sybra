@@ -1,0 +1,9 @@
+./devicetaint.go
+./devicetaintrule.go
+./devicetaintrulespec.go
+./devicetaintrulestatus.go
+./devicetaintselector.go
+./poolstatus.go
+./resourcepoolstatusrequest.go
+./resourcepoolstatusrequestspec.go
+./resourcepoolstatusrequeststatus.go
