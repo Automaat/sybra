@@ -28,10 +28,24 @@ func (a *App) wireTaskService() {
 	a.taskSvc.abTesting = a.abTestingConfig
 	a.taskSvc.assigner = a.assigner
 	a.taskSvc.monitorScan = func(ctx context.Context) (monitor.Report, error) {
-		if a.monitorSvc == nil {
-			return monitor.Report{}, errors.New("monitor is not running on this instance")
+		if a.monitorSvc != nil {
+			return a.monitorSvc.Scan(ctx)
 		}
-		return a.monitorSvc.Scan(ctx)
+		// monitor.enabled is a per-machine kill switch for the background
+		// loop, not for reading the board. An ad-hoc scan is read-only —
+		// no dispatcher, no sink — so it answers whether or not the loop
+		// runs here, the same way the filesystem-backed command does.
+		cfg := a.currentConfig()
+		if cfg == nil {
+			return monitor.Report{}, errors.New("monitor configuration unavailable")
+		}
+		return monitor.NewService(monitor.Deps{
+			Cfg:        cfg.Monitor,
+			Tasks:      a.tasks,
+			Audit:      monitor.AuditDirReader(a.auditDir),
+			Dispatcher: monitor.NoopDispatcher(),
+			Sink:       monitor.NoopSink(),
+		}).Scan(ctx)
 	}
 	a.taskSvc.recoverLostAgent = func(ctx context.Context, taskID string) error {
 		if a.recovery == nil {

@@ -38,8 +38,10 @@ func (s *SelfMonitorService) GetSelfMonitorReport() (selfmonitor.Report, error) 
 	data, err := os.ReadFile(config.SelfMonitorLastReportPath())
 	if err != nil {
 		if os.IsNotExist(err) {
-			return selfmonitor.Report{}, unavailableError(
-				"no selfmonitor report yet (run an investigate pass, or start sybra with self_monitor.enabled=true)")
+			// validation, not unavailable: the CLI maps 503 to exit 75 for a
+			// retryable condition, and a board with no report yet is not one.
+			return selfmonitor.Report{}, validationError(
+				"no selfmonitor report yet (run `sybra-cli selfmonitor investigate` for a one-shot pass, or start sybra with self_monitor.enabled=true)")
 		}
 		return selfmonitor.Report{}, err
 	}
@@ -94,9 +96,6 @@ func (s *SelfMonitorService) ListSelfMonitorLedger(fingerprint string, windowSec
 	slices.SortFunc(entries, func(a, b selfmonitor.LedgerEntry) int {
 		return a.CreatedAt.Compare(b.CreatedAt)
 	})
-	if entries == nil {
-		entries = []selfmonitor.LedgerEntry{}
-	}
 	return entries, nil
 }
 
@@ -137,7 +136,7 @@ func (s *SelfMonitorService) RunHarnessEvolution(lookbackSeconds int64, minClust
 	if err != nil {
 		return HarnessEvolutionRunDTO{}, err
 	}
-	out := HarnessEvolutionRunDTO{Result: result, Filed: []task.Task{}}
+	out := HarnessEvolutionRunDTO{Result: result}
 	if !fileTasks {
 		return out, nil
 	}
@@ -145,8 +144,6 @@ func (s *SelfMonitorService) RunHarnessEvolution(lookbackSeconds int64, minClust
 	if err != nil {
 		return out, err
 	}
-	if filed != nil {
-		out.Filed = filed
-	}
+	out.Filed = filed
 	return out, nil
 }

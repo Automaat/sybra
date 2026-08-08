@@ -30,7 +30,8 @@ func (s *ProjectService) ListProjects() ([]project.Project, error) {
 
 // GetProject returns a single project by ID.
 func (s *ProjectService) GetProject(id string) (project.Project, error) {
-	return s.projects.Get(id)
+	p, err := s.projects.Get(id)
+	return p, boardRejectionFor("project", id, err)
 }
 
 // GetProjectRawType returns a project's type exactly as recorded, without
@@ -43,7 +44,7 @@ func (s *ProjectService) GetProject(id string) (project.Project, error) {
 func (s *ProjectService) GetProjectRawType(id string) (string, error) {
 	raw, err := s.projects.RawType(id)
 	if err != nil {
-		return "", err
+		return "", boardRejectionFor("project", id, err)
 	}
 	return string(raw), nil
 }
@@ -131,7 +132,7 @@ func (s *ProjectService) UpdateProject(id, ptype string) (project.Project, error
 	p, err := s.projects.Update(id, project.ProjectType(ptype))
 	if err != nil {
 		s.logger.Error("project.update.failed", "id", id, "err", err)
-		return p, err
+		return p, boardRejectionFor("project", id, err)
 	}
 	return p, nil
 }
@@ -152,7 +153,7 @@ func (s *ProjectService) SetProjectSetupCommands(id string, cmds []string) (proj
 	p, err := s.projects.SetSetupCommands(id, cmds)
 	if err != nil {
 		s.logger.Error("project.set-setup-commands.failed", "id", id, "err", err)
-		return p, err
+		return p, boardRejectionFor("project", id, err)
 	}
 	return p, nil
 }
@@ -173,7 +174,7 @@ func (s *ProjectService) DeleteProject(id string) error {
 	s.logger.Info("project.delete", "id", id)
 	if err := s.projects.Delete(id); err != nil {
 		s.logger.Error("project.delete.failed", "id", id, "err", err)
-		return err
+		return boardRejectionFor("project", id, err)
 	}
 	return nil
 }

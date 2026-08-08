@@ -3160,9 +3160,24 @@ func cmdProgressList(api *apiClient, store *artifact.Store, args []string, jsonO
 
 func readProgress(api *apiClient, store *artifact.Store, taskID string) ([]artifact.ProgressEntry, error) {
 	if api != nil {
-		return callAPI[[]artifact.ProgressEntry](api, taskServiceName, "ListTaskProgress", taskID)
+		entries, err := callAPI[[]artifact.ProgressEntry](api, taskServiceName, "ListTaskProgress", taskID)
+		return nilIfEmpty(entries), err
 	}
 	return store.ReadProgress(taskID)
+}
+
+// nilIfEmpty restores the filesystem-backed form's JSON for an empty result.
+//
+// ListTaskProgress normalises to an empty slice because the GUI wants an array,
+// but the local read returns nil, which marshals to null. A script piping
+// `--json` through jq sees a different type depending on whether a server is
+// up, so the CLI undoes the normalisation rather than changing what those
+// scripts already parse.
+func nilIfEmpty[T any](values []T) []T {
+	if len(values) == 0 {
+		return nil
+	}
+	return values
 }
 
 // cmdTrash handles `sybra-cli trash list|restore <id>|delete <id>|empty` —

@@ -204,7 +204,7 @@ func (s *TaskService) ListTasksForNode(node string) ([]task.Task, error) {
 func (s *TaskService) GetTask(id string) (task.Task, error) {
 	t, err := s.tasks.Get(id)
 	if err != nil {
-		return t, err
+		return t, boardRejectionFor("task", id, err)
 	}
 	return s.withEstimatedAgentRunCosts(t), nil
 }
@@ -1020,11 +1020,11 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 		}
 		extra, parseErr := task.UpdateFromMap(localUpdates)
 		if parseErr != nil {
-			return t, parseErr
+			return t, validationError(parseErr.Error())
 		}
 		status, statusErr := task.ValidateStatus(statusText)
 		if statusErr != nil {
-			return t, statusErr
+			return t, validationError(statusErr.Error())
 		}
 		if status == task.StatusHumanRequired {
 			display := decisionReason
@@ -1043,7 +1043,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 		t, err = s.tasks.UpdateMap(id, updates)
 	}
 	if err != nil {
-		return t, translateTaskLockTimeout(err)
+		return t, boardRejectionFor("task", id, translateTaskLockTimeout(err))
 	}
 	s.appendManualHumanRequiredDecision(cur, t, decisionReason)
 	s.wg.Go(func() {

@@ -24,8 +24,5 @@ func (s *AuditService) QueryAuditEvents(q audit.Query) ([]audit.Event, error) {
 	if err != nil {
 		return nil, err
 	}
-	if events == nil {
-		events = []audit.Event{}
-	}
 	return events, nil
 }

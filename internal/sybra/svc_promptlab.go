@@ -294,7 +294,7 @@ func (s *PromptLabService) RunPromptLab(lookbackSeconds int64, minSamples int, f
 	if err != nil {
 		return PromptLabRunDTO{}, err
 	}
-	out := PromptLabRunDTO{Result: result, Filed: []task.Task{}}
+	out := PromptLabRunDTO{Result: result}
 	if !fileTasks {
 		return out, nil
 	}
@@ -303,9 +303,7 @@ func (s *PromptLabService) RunPromptLab(lookbackSeconds int64, minSamples int, f
 	if err != nil {
 		return out, err
 	}
-	if filed != nil {
-		out.Filed = filed
-	}
+	out.Filed = filed
 	return out, nil
 }
 

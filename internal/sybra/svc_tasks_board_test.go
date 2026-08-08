@@ -318,3 +318,72 @@ func TestUpdateTaskFields_ClearWorkflowSurvivesTheWire(t *testing.T) {
 		t.Errorf("Workflow = %+v after a clear sent over the wire, want nil", after.Workflow)
 	}
 }
+
+// TestBoardEndpoints_NotFoundNamesTheIdentifier covers what an operator does
+// most often with a bad argument: mistype an id. The stores answer a miss with
+// an error naming the absolute path they looked at, so the handler flattens it
+// to a bare "not found" — which leaves the operator unable to tell which
+// argument was wrong. The identifier has to survive; the path must not.
+func TestBoardEndpoints_NotFoundNamesTheIdentifier(t *testing.T) {
+	t.Parallel()
+	svc, a := setupTaskService(t)
+	svc.artifacts = artifact.New(t.TempDir())
+	a.taskSvc = svc
+	projects, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("project.NewStore: %v", err)
+	}
+	a.projectSvc = &ProjectService{projects: projects, logger: slog.New(slog.DiscardHandler)}
+
+	tests := []struct {
+		name    string
+		service string
+		method  string
+		args    []any
+		wantID  string
+	}{
+		{"get a missing task", "TaskService", "GetTask", []any{"zzzzzzzz"}, "zzzzzzzz"},
+		{"update a missing task", "TaskService", "UpdateTaskFields", []any{"zzzzzzzz", task.Update{Title: task.Ptr("x")}}, "zzzzzzzz"},
+		{"read a missing artifact", "TaskService", "ReadTaskArtifact", []any{"zzzzzzzz", "nope.txt"}, "nope.txt"},
+		{"get an unregistered project", "ProjectService", "GetProject", []any{"owner/nope"}, "owner/nope"},
+		{"raw type of an unregistered project", "ProjectService", "GetProjectRawType", []any{"owner/nope"}, "owner/nope"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, body := postAPI(t, a, tt.service, tt.method, tt.args...)
+			if status != http.StatusNotFound {
+				t.Errorf("status = %d, want %d (body %s)", status, http.StatusNotFound, body)
+			}
+			if !strings.Contains(body, tt.wantID) {
+				t.Errorf("body %s does not name %q", body, tt.wantID)
+			}
+			for _, leak := range []string{"/var/folders", "/tmp/", ".md", ".yaml"} {
+				if strings.Contains(body, leak) {
+					t.Errorf("body %s leaks the server's filesystem layout via %q", body, leak)
+				}
+			}
+		})
+	}
+}
+
+// TestUpdateTask_InvalidStatusCarriesTheValidSet keeps the most common
+// mistyped argument actionable. The filesystem-backed form lists every valid
+// status, and a bare "internal error" would send the operator to the source.
+func TestUpdateTask_InvalidStatusCarriesTheValidSet(t *testing.T) {
+	t.Parallel()
+	svc, a := setupTaskService(t)
+	a.taskSvc = svc
+
+	created, err := svc.tasks.Create("bad status target", "", "headless")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	status, body := postAPI(t, a, "TaskService", "UpdateTask", created.ID, map[string]any{"status": "bogus"})
+	if status != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d (body %s)", status, http.StatusBadRequest, body)
+	}
+	if !strings.Contains(body, "bogus") || !strings.Contains(body, "in-progress") {
+		t.Errorf("body %s does not name the rejected value and the valid set", body)
+	}
+}

@@ -121,15 +121,12 @@ func (s *TaskService) ListTaskArtifactMetas(taskID string) ([]artifact.Meta, err
 	}
 	metas, err := s.artifacts.List(taskID)
 	if err != nil {
-		return nil, err
+		return nil, boardRejectionFor("task", taskID, err)
 	}
 	for i := range metas {
 		// SourcePath is an absolute path on the server's disk and means
 		// nothing to a client, which is why the GUI's DTO clears it too.
 		metas[i].SourcePath = ""
-	}
-	if metas == nil {
-		metas = []artifact.Meta{}
 	}
 	return metas, nil
 }
@@ -142,7 +139,10 @@ func (s *TaskService) ReadTaskArtifact(taskID, name string) ([]byte, error) {
 		return nil, unavailableError("artifact store unavailable")
 	}
 	data, _, err := s.artifacts.Read(taskID, name)
-	return data, err
+	if err != nil {
+		return nil, boardRejectionFor("artifact "+name+" for task", taskID, err)
+	}
+	return data, nil
 }
 
 // ReindexTaskArtifacts rebuilds a task's artifact index from the files on disk.

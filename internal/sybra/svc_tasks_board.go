@@ -5,7 +5,10 @@ import (
 	"strings"
 	"time"
 
+	"os"
+
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/reject"
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/task"
@@ -38,6 +41,25 @@ func boardRejection(err error) error {
 	return err
 }
 
+// boardRejectionFor is boardRejection plus the missing-record case, which
+// needs the identifier the caller already holds.
+//
+// The stores answer a miss with an error naming the absolute path they looked
+// at, and the handler therefore flattens it to a bare "not found". That leaves
+// an operator who mistyped an id with no way to tell which of their arguments
+// was wrong, so the reason is rebuilt from the id instead of the path.
+func boardRejectionFor(kind, id string, err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, os.ErrNotExist),
+		errors.Is(err, artifact.ErrNotFound),
+		errors.Is(err, project.ErrProjectNotRegistered):
+		return notFoundError(kind, id)
+	}
+	return boardRejection(err)
+}
+
 // CreateTaskFull creates a task with initial field values, optionally landing it directly in a status other than the default. An empty status uses the default.
 func (s *TaskService) CreateTaskFull(title, body, mode, status string, init task.Update) (task.Task, error) {
 	if status == "" {
@@ -65,7 +87,7 @@ func (s *TaskService) UpdateTaskFields(id string, u task.Update) (task.Task, err
 		return task.Task{}, unavailableError("task store unavailable")
 	}
 	updated, err := s.tasks.Update(id, u)
-	return updated, boardRejection(err)
+	return updated, boardRejectionFor("task", id, err)
 }
 
 // ApplyTransition runs a status transition through the same gate the GUI and
@@ -85,7 +107,7 @@ func (s *TaskService) TouchTask(id string) (task.Task, error) {
 		return task.Task{}, unavailableError("task store unavailable")
 	}
 	touched, err := s.tasks.Touch(id)
-	return touched, boardRejection(err)
+	return touched, boardRejectionFor("task", id, err)
 }
 
 // AppendTaskProgress records one progress entry against a task and bumps its
@@ -141,7 +163,7 @@ func (s *TaskService) RestoreFromTrash(id string) (task.Task, error) {
 		return task.Task{}, unavailableError("task store unavailable")
 	}
 	restored, err := s.tasks.RestoreFromTrash(id)
-	return restored, boardRejection(err)
+	return restored, boardRejectionFor("trashed task", id, err)
 }
 
 // DeleteTrashedGeneration permanently removes one retained generation, reporting whether it existed.
@@ -150,7 +172,7 @@ func (s *TaskService) DeleteTrashedGeneration(id string) (bool, error) {
 		return false, unavailableError("task store unavailable")
 	}
 	removed, err := s.tasks.DeleteTrashedGeneration(id)
-	return removed, boardRejection(err)
+	return removed, boardRejectionFor("trashed task", id, err)
 }
 
 // TrashPruneReportDTO is the wire form of task.TrashPruneReport. The domain

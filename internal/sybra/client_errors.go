@@ -24,3 +24,10 @@ func conflictError(msg string) error {
 func unavailableError(msg string) error {
 	return &clientError{status: http.StatusServiceUnavailable, msg: msg}
 }
+
+// notFoundError names the record that was missing. The stores' own miss
+// errors embed the absolute path they looked at, which must not reach a
+// client, so the identifier stands in for it.
+func notFoundError(kind, id string) error {
+	return &clientError{status: http.StatusNotFound, msg: kind + " " + id + " not found"}
+}
