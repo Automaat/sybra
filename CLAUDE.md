@@ -553,7 +553,11 @@ Target resolution, all loopback so the token never crosses a network hop:
 2. else the port the desktop app recorded in `$SYBRA_HOME/desktop-port`
 3. else the configured server port
 
-`--home` / `SYBRA_CONTROL_HOME` / `SYBRA_HOME` select **which board's** config and recorded port to read — they no longer mean "edit files instead". `config`, `health`, and `install-skills` still run with no server. So does `doctor`, because it is what an operator reaches for when the server is what broke, but it refuses to delete: only the board can tell a live worktree from an orphan.
+`SYBRA_HOST`, `SYBRA_PORT`, and `SYBRA_BIND_ADDR` are deliberately **not** consulted. They name where a server should *listen*; letting one steer a client aims it — and the bearer token it sends next — at whatever answers there. Read `cfg.Cluster` directly, never `ListenAddrs`, which honours `SYBRA_BIND_ADDR` internally.
+
+`--home` / `SYBRA_CONTROL_HOME` / `SYBRA_HOME` select **which board's** config and recorded port to read — they no longer mean "edit files instead". `config`, `health`, `install-skills`, and `cluster` (its `gen-cert`/`nodes` halves touch no board; `reassign` refuses for itself) still run with no server. So does `doctor`, because it is what an operator reaches for when the server is what broke, but it refuses to delete.
+
+**A board is trusted with this disk only when it serves this home.** `GET /health` reports the `home` an instance serves, and the CLI compares it against `config.HomeDir()`. Loopback is not the question: two instances on one machine are both loopback and own different homes, and an address-only check let a cleanup delete a live sandbox belonging to the other one. Anything that acts on local files must ask `apiClient.ownsHome`, never `!remote`.
 
 A contended record comes back as `503` and the CLI exits **75**, which is what an agent retries on. Never map it to a plain failure — the agent then abandons work it only had to repeat.
 
