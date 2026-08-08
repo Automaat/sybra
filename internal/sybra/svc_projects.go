@@ -185,15 +185,15 @@ func (s *ProjectService) ListWorktrees(projectID string) ([]project.Worktree, er
 		return nil, unavailableError("worktrees unavailable")
 	}
 	// context.Background(): Wails-bound method with no ctx.
-	return s.worktrees.List(context.Background(), projectID)
+	list, err := s.worktrees.List(context.Background(), projectID)
+	// The project lookup fails first, so an unregistered id is a caller's
+	// mistake rather than a server fault.
+	return list, boardRejectionFor("project", projectID, err)
 }
 
 // OpenInTerminal opens a worktree path in a new Ghostty terminal tab.
 func (s *ProjectService) OpenInTerminal(path string) error {
-	if s.worktrees == nil {
-		return unavailableError("worktrees unavailable")
-	}
-	if err := s.worktrees.ValidatePath(path); err != nil {
+	if err := s.checkWorktreePath(path); err != nil {
 		return err
 	}
 	return openDirInGhostty(path)
@@ -201,11 +201,21 @@ func (s *ProjectService) OpenInTerminal(path string) error {
 
 // OpenInEditor opens a worktree path in Zed.
 func (s *ProjectService) OpenInEditor(path string) error {
+	if err := s.checkWorktreePath(path); err != nil {
+		return err
+	}
+	return exec.CommandContext(context.Background(), "zed", path).Start()
+}
+
+// checkWorktreePath rejects a path outside the worktrees directory as the
+// caller's own mistake. ValidatePath's plain error would otherwise reach the
+// HTTP mapper as a server fault and come back sanitized, hiding the reason.
+func (s *ProjectService) checkWorktreePath(path string) error {
 	if s.worktrees == nil {
 		return unavailableError("worktrees unavailable")
 	}
 	if err := s.worktrees.ValidatePath(path); err != nil {
-		return err
+		return validationError(err.Error())
 	}
-	return exec.CommandContext(context.Background(), "zed", path).Start()
+	return nil
 }

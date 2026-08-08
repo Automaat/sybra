@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/workflow"
+	"github.com/Automaat/sybra/internal/worktree"
 )
 
 // postAPI drives one call through the real handler, so what the test reads is
@@ -489,7 +490,16 @@ func TestHTTPSurface_NeverSanitizesACallerMistake(t *testing.T) {
 		t.Fatalf("project.NewStore: %v", err)
 	}
 	svc.projects = projects
-	a.projectSvc = &ProjectService{projects: projects, logger: slog.New(slog.DiscardHandler)}
+	// A real worktree manager, not nil: an unwired dependency answers every
+	// method with "unavailable" before its argument is ever inspected, which
+	// silently excuses the endpoint from the contract this test enforces.
+	worktrees := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Projects:     projects,
+		Tasks:        svc.tasks,
+		Logger:       slog.New(slog.DiscardHandler),
+	})
+	a.projectSvc = &ProjectService{projects: projects, worktrees: worktrees, logger: slog.New(slog.DiscardHandler)}
 
 	const traversal = "../../etc/passwd"
 	registry := ServiceRegistry(a)
