@@ -61,6 +61,7 @@ type Update struct {
 	CurrentTestFailures   *string
 	AcceptanceLedger      *string
 	SpecDecision          *string
+	CodeReviewVerdict     *string
 	MaxTurns              *int
 	ForkSubagent          *bool
 	Sandbox               *bool
@@ -110,7 +111,7 @@ func applyMapField(u *Update, k string, v any) error {
 	switch k {
 	case "title", "slug", "status_reason", "blocked_by_issue", "umbrella_issue", "body",
 		"project_id", "branch", "worktree_dir", "issue", "ref_issue", "run_role", "plan", "plan_critique",
-		"plan_contract", "plan_research", "plan_decisions", "plan_brief", "code_review",
+		"plan_contract", "plan_research", "plan_decisions", "plan_brief", "code_review", "code_review_verdict",
 		"current_test_failures", "acceptance_ledger", "spec_decision",
 		"review_phase", "reviewed_head_sha", "pr_phase", "outcome", "merge_commit", "supervisor_steer":
 		return applyPlainStringField(u, k, v)
@@ -321,6 +322,8 @@ func applyPlainStringField(u *Update, k string, v any) error {
 		u.AcceptanceLedger = &s
 	case "spec_decision":
 		u.SpecDecision = &s
+	case "code_review_verdict":
+		u.CodeReviewVerdict = &s
 	case "review_phase":
 		u.ReviewPhase = &s
 	case "reviewed_head_sha":

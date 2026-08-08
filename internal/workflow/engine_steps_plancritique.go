@@ -1,24 +1,50 @@
 package workflow
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
+
+const (
+	planCritiqueVerdictVar              = "plan_critique_verdict"
+	planCritiqueVerdictSourceStepVar    = "plan_critique_verdict_source_step"
+	planCritiqueVerdictApprove          = "APPROVE"
+	planCritiqueVerdictRefine           = "REFINE"
+	planCritiqueVerdictReject           = "REJECT"
+	planCritiqueVerdictAutoRetryCap     = 2
+	planCritiqueVerdictAutoRetryBackoff = 2 * time.Minute
+	planCritiqueReaskNoteVar            = "plan_critique_reask_note"
+	planCritiqueSourceStep              = "critique_plan"
+)
+
+var planCritiqueMalformedReask = "Your previous final message could not be parsed as a valid verdict. " +
+	"Keep the full markdown critique in the sidecar file, but your FINAL message of the turn " +
+	"must be ONLY this JSON object (no prose, no markdown fences, no extra keys): " +
+	`{"verdict":"APPROVE"}, {"verdict":"REFINE"}, or {"verdict":"REJECT"}.`
 
 // execFlagPlanCritique appends a prominent note to the task body when the
 // plan-critic's own verdict is REFINE or REJECT. It never blocks progression
 // itself — review_plan's wait_human step already requires an explicit human
 // action every time regardless of verdict — this only makes sure "the critic
 // asked for changes" is visible right where that decision gets made, instead
-// of requiring the human to open and read the full critique sidecar. An
-// empty or unrecognized verdict (including a critic that didn't follow the
-// skill's output contract) is treated the same as APPROVE: no note, no
-// change in behavior from before this step existed.
-func (e *Engine) execFlagPlanCritique(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
-	verdict := parsePlanCritiqueVerdict(t.PlanCritique)
-	if verdict != "REFINE" && verdict != "REJECT" {
+// of requiring the human to open and read the full critique sidecar.
+// A missing/malformed structured verdict never silently behaves like APPROVE:
+// it bounded-retries the critique step with targeted schema feedback, then
+// escalates to human-required once the retry budget is spent.
+func (e *Engine) execFlagPlanCritique(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
+	verdict := planCritiqueVerdict(t)
+	switch verdict {
+	case planCritiqueVerdictApprove, "":
+		if verdict == "" {
+			return e.retryOrEscalateMalformedPlanCritique(taskID, step, wfExec, t)
+		}
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "verdict: " + verdict}, nil
+	case planCritiqueVerdictRefine, planCritiqueVerdictReject:
+	default:
+		return e.retryOrEscalateMalformedPlanCritique(taskID, step, wfExec, t)
 	}
 	note := fmt.Sprintf(
 		"## ⚠️ Plan Critic Verdict: %s\n\nThe plan critic did not approve this plan as written — review the findings in the critique sidecar before approving.",
@@ -29,6 +55,79 @@ func (e *Engine) execFlagPlanCritique(taskID string, step *Step, t TaskInfo) (St
 		return StepOutput{}, err
 	}
 	return StepOutput{StepID: step.ID, Status: "completed", Output: "verdict: " + verdict + " — flagged"}, nil
+}
+
+func (e *Engine) retryOrEscalateMalformedPlanCritique(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
+	sourceStep := wfExec.Variables[planCritiqueVerdictSourceStepVar]
+	if sourceStep == "" {
+		sourceStep = planCritiqueSourceStep
+	}
+	armed, attempt, err := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
+		counterKey: "step." + sourceStep + ".plan_critique_verdict_retry",
+		max:        planCritiqueVerdictAutoRetryCap,
+		rewindStep: sourceStep,
+		backoff:    func(int) time.Duration { return planCritiqueVerdictAutoRetryBackoff },
+		onArm: func(wfExec *Execution, _ int) {
+			wfExec.SetVar(planCritiqueReaskNoteVar, planCritiqueMalformedReask)
+			delete(wfExec.Variables, planCritiqueVerdictVar)
+		},
+		reason: func(attempt int) string {
+			return fmt.Sprintf("re-running plan critique (attempt %d/%d): previous response did not return a schema-valid verdict",
+				attempt, planCritiqueVerdictAutoRetryCap)
+		},
+	})
+	if err != nil {
+		return StepOutput{}, err
+	}
+	if armed {
+		e.logger.Warn("workflow.plan-critique.malformed-verdict.retry", "task_id", taskID, "step", sourceStep, "attempt", attempt)
+		return StepOutput{}, errStepParked
+	}
+	reason := "plan critique did not return a schema-valid verdict after auto-retries — needs human inspection of the critique sidecar"
+	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+		return StepOutput{}, err
+	}
+	e.logger.Warn("workflow.plan-critique.malformed-verdict.escalate", "task_id", taskID, "step", sourceStep)
+	return StepOutput{StepID: step.ID, Status: "completed", Output: "malformed verdict — escalated"}, nil
+}
+
+func planCritiqueVerdict(t TaskInfo) string {
+	if t.Workflow != nil {
+		if verdict, ok := t.Workflow.Variables[planCritiqueVerdictVar]; ok {
+			return normalizePlanCritiqueVerdict(verdict)
+		}
+		if _, ok := t.Workflow.Variables[planCritiqueVerdictSourceStepVar]; ok {
+			return ""
+		}
+	}
+	return parsePlanCritiqueVerdict(t.PlanCritique)
+}
+
+func ExtractPlanCritiqueVerdict(output string) string {
+	s := strings.TrimSpace(strings.TrimPrefix(output, "\xef\xbb\xbf"))
+	if !strings.HasPrefix(s, "{") {
+		return ""
+	}
+	var v struct {
+		Verdict string `json:"verdict"`
+	}
+	if json.Unmarshal([]byte(s), &v) != nil {
+		return ""
+	}
+	return normalizePlanCritiqueVerdict(v.Verdict)
+}
+
+func normalizePlanCritiqueVerdict(verdict string) string {
+	switch canonicalVerdict(verdict) {
+	case planCritiqueVerdictApprove:
+		return planCritiqueVerdictApprove
+	case planCritiqueVerdictRefine:
+		return planCritiqueVerdictRefine
+	case planCritiqueVerdictReject:
+		return planCritiqueVerdictReject
+	default:
+		return ""
+	}
 }
 
 // verdictWordRe matches a whole word inflected from APPROVE/REFINE/REJECT

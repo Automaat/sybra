@@ -141,6 +141,16 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 			e.logger.Warn("workflow.mark-reviewed.failed", "task_id", taskID, "err", mErr)
 		}
 		e.recordEvidence(taskID, currentStep.ID, evidenceCriterionReview, evidence.ProofReviewFinding, 0, "", output.Output)
+		// Stash the structured verdict (see ExtractReviewVerdict) and which
+		// step produced it, so route_review_verdict can route on it without
+		// re-parsing the review sidecar markdown and can rewind to the
+		// right agent step on a malformed/missing verdict.
+		wfExec.SetVar(reviewVerdictVar, ExtractReviewVerdict(output.Output))
+		wfExec.SetVar(reviewVerdictSourceStepVar, output.StepID)
+	}
+	if currentStep.Config.Role == "plan-critic" && output.Status == "completed" {
+		wfExec.SetVar(planCritiqueVerdictVar, ExtractPlanCritiqueVerdict(output.Output))
+		wfExec.SetVar(planCritiqueVerdictSourceStepVar, output.StepID)
 	}
 
 	// Single-pass review posture (agent.review_until_clean: false) exits after a
@@ -957,6 +967,7 @@ func taskFields(t TaskInfo) map[string]string {
 		"task.reviewed":                strconv.FormatBool(t.Reviewed),
 		"task.plan_critique":           t.PlanCritique,
 		"task.code_review":             t.CodeReview,
+		"task.code_review_verdict":     t.CodeReviewVerdict,
 	}
 	if t.PRNumber > 0 {
 		fields["task.pr_number"] = strconv.Itoa(t.PRNumber)

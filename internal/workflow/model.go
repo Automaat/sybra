@@ -147,6 +147,15 @@ const (
 	// pass → ready-pr, fail → in-progress (re-implement) until the attempt
 	// cap is hit, then human-required.
 	StepRouteTestResult StepType = "route_test_result"
+	// StepRouteReviewVerdict reads the review-role step's structured verdict
+	// (output_schema-enforced JSON, see ExtractReviewVerdict), stashed by
+	// engine_advance into the review_verdict workflow var. A valid CLEAN/
+	// NEEDS_FIXES verdict is a no-op pass-through — the YAML's own `next.when`
+	// clauses route on vars.review_verdict. A missing/malformed verdict is
+	// never treated as either outcome: it bounded-retries the review agent
+	// with a schema-conformance reask note, then escalates to human-required
+	// once the retry budget is spent.
+	StepRouteReviewVerdict StepType = "route_review_verdict"
 	// StepParallel runs its `Parallel` children concurrently as run_agent
 	// steps. The parent step advances only after every child has terminated;
 	// parent-level Next is evaluated against the parent step record (with the
@@ -287,12 +296,13 @@ func init() {
 		StepValidatePlan:         {sync: bindSyncTaskInfoStep((*Engine).execValidatePlan), reducer: stepReducerDispatch},
 		StepValidatePlanContract: {sync: bindSyncTaskInfoStep((*Engine).execValidatePlanContract), reducer: stepReducerDispatch},
 		StepTriageReview:         {sync: bindSyncTaskInfoStep((*Engine).execTriageReview), reducer: stepReducerDispatch},
-		StepFlagPlanCritique:     {sync: bindSyncTaskInfoStep((*Engine).execFlagPlanCritique), reducer: stepReducerDispatch},
+		StepFlagPlanCritique:     {sync: bindSyncExecTaskInfoStep((*Engine).execFlagPlanCritique), reducer: stepReducerDispatch},
 		StepDetectTampering:      {sync: bindSyncTaskInfoStep((*Engine).execDetectTampering), reducer: stepReducerDispatch},
 		StepVerifyChecks:         {sync: bindSyncExecTaskInfoStep((*Engine).execVerifyChecks), reducer: stepReducerDispatch, resumable: true},
 		StepFocusedChecks:        {sync: bindSyncExecTaskInfoStep((*Engine).execFocusedChecks), reducer: stepReducerDispatch},
 		StepRoutePRFixResult:     {sync: bindSyncExecTaskInfoStep((*Engine).execRoutePRFixResult), reducer: stepReducerDispatch},
 		StepRouteTestResult:      {sync: bindSyncExecTaskInfoStep((*Engine).execRouteTestResult), reducer: stepReducerDispatch},
+		StepRouteReviewVerdict:   {sync: bindSyncExecTaskInfoStep((*Engine).execRouteReviewVerdict), reducer: stepReducerDispatch},
 		StepParallel:             {async: execAsyncParallelStep, reducer: stepReducerDispatch, boundary: stepBoundaryParallel, resumable: true},
 		StepSyncBranch:           {sync: bindSyncTaskStep((*Engine).execSyncBranch), reducer: stepReducerDispatch},
 		StepCodegenGate:          {sync: bindSyncTaskStep((*Engine).execCodegenGate), reducer: stepReducerDispatch},

@@ -920,7 +920,7 @@ func TestBuiltinSimpleTask_ReviewLoopsUntilClean(t *testing.T) {
 
 	// CLEAN is the only exit from the loop.
 	got, err = ResolveTransition(step("route_review_verdict").Next, map[string]string{
-		"task.code_review": "Review Verdict: CLEAN",
+		"vars.review_verdict": "CLEAN",
 	})
 	if err != nil {
 		t.Fatalf("ResolveTransition: %v", err)
@@ -930,7 +930,7 @@ func TestBuiltinSimpleTask_ReviewLoopsUntilClean(t *testing.T) {
 	}
 
 	got, err = ResolveTransition(step("route_review_verdict").Next, map[string]string{
-		"task.code_review": "Review Verdict: NEEDS_FIXES",
+		"vars.review_verdict": "NEEDS_FIXES",
 	})
 	if err != nil {
 		t.Fatalf("ResolveTransition: %v", err)

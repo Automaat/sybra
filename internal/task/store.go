@@ -1067,6 +1067,9 @@ func applyReviewFields(t *Task, u Update) {
 	if u.RunRole != nil {
 		t.RunRole = *u.RunRole
 	}
+	if u.CodeReviewVerdict != nil {
+		t.CodeReviewVerdict = *u.CodeReviewVerdict
+	}
 	if u.Outcome != nil {
 		t.Outcome = *u.Outcome
 	}

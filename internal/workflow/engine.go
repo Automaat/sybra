@@ -71,6 +71,7 @@ type TaskInfo struct {
 	CurrentTestFailures   string
 	AcceptanceLedger      string
 	SpecDecision          string
+	CodeReviewVerdict     string
 	Attachments           []AttachmentInfo
 	// PlanDrafts holds raw per-provider plans during dual-/N-provider planning.
 	// Keys are parallel child step IDs (e.g. "plan_claude", "plan_codex").
@@ -148,6 +149,10 @@ type TaskProvider interface {
 	UpdateTaskBlocker(id string, status taskstatus.Status, reason string, state blocker.State) error
 	UpdateTaskPR(id string, prNumber int) error
 	MarkTaskReviewed(id string) error
+	// SetCodeReviewVerdict persists the review-role step's structured verdict
+	// ("CLEAN"/"NEEDS_FIXES") separately from the CodeReview sidecar markdown,
+	// so a later re-triggered workflow can read it without re-parsing text.
+	SetCodeReviewVerdict(id, verdict string) error
 	MarkAgentRunProtocolViolation(taskID, agentID, violation string) error
 	MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint string) error
 	RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error
