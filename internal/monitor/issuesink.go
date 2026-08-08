@@ -135,14 +135,21 @@ func (s *GHIssueSink) findIncident(ctx context.Context, fp, revisionMarker strin
 		Body   string `json:"body"`
 	}
 	var rows []incidentRow
-	queries := [][]string{
-		{"--search", marker + " in:body", "--limit", "100"}, // historical canonical, via exact marker search
-		{"--limit", "1000"}, // immediately visible recent rows, for create-race convergence
+	queries := []struct {
+		args         []string
+		requireLabel bool
+	}{
+		{args: []string{"--search", marker + " in:body", "--limit", "100"}}, // historical canonical, via exact marker search
+		{args: []string{"--limit", "1000"}, requireLabel: true},             // immediately visible recent rows, for create-race convergence
 	}
 	seenRows := map[int]bool{}
 	for _, query := range queries {
-		args := append(s.repoArgs(), "issue", "list", "--state", "all", "--label", s.label, "--json", "number,url,state,body")
-		out, err := s.exec.run(ctx, append(args, query...)...)
+		args := append(s.repoArgs(), "issue", "list", "--state", "all")
+		if query.requireLabel {
+			args = append(args, "--label", s.label)
+		}
+		args = append(args, "--json", "number,url,state,body")
+		out, err := s.exec.run(ctx, append(args, query.args...)...)
 		if err != nil {
 			return ghIncident{}, classifyGHError("gh incident list", out, err)
 		}

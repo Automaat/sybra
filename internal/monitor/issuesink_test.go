@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -180,6 +181,25 @@ func TestGHIssueSink_IncidentFindsHistoricalCanonicalOutsideRecentPage(t *testin
 	}
 	if created || artifact.Number != 7 || len(fe.callsMatching("issue", "create")) != 0 {
 		t.Fatalf("historical canonical missed: created=%v artifact=%+v calls=%v", created, artifact, fe.calls)
+	}
+}
+
+func TestGHIssueSink_IncidentMarkerSearchDoesNotRequireMutableLabel(t *testing.T) {
+	fe := &fakeExecer{listResps: [][]byte{[]byte(`[]`), []byte(`[]`)}}
+	s := newTestSink(fe)
+	_, err := s.findIncident(context.Background(), "incident:abc", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lists := fe.callsMatching("issue", "list")
+	if len(lists) < 2 {
+		t.Fatalf("list calls = %v, want marker and recent-page searches", lists)
+	}
+	if slices.Contains(lists[0], "--label") {
+		t.Fatalf("marker lookup depends on mutable label: %v", lists[0])
+	}
+	if !slices.Contains(lists[1], "--label") {
+		t.Fatalf("recent-page convergence lost label bound: %v", lists[1])
 	}
 }
 
