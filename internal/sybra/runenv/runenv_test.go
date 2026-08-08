@@ -450,6 +450,30 @@ func TestFailedMachineCertificateCoalescesQuarantine(t *testing.T) {
 	}
 }
 
+func TestFailedCertificateRechecksAndRecovers(t *testing.T) {
+	var now = time.Now().UTC()
+	available := false
+	service := New(Deps{
+		Now: func() time.Time { return now },
+		TTL: time.Second,
+		ProbeTaskMutation: func(context.Context, string) (ProbeResult, error) {
+			if !available {
+				return ProbeResult{Code: "task_mutation_unavailable"}, errors.New("mutation transport unavailable")
+			}
+			return ProbeResult{Available: true}, nil
+		},
+	})
+	req := Request{TaskID: "task", Action: "dispatch", WorkDir: t.TempDir(), Requirements: []autonomy.CapabilityRequirement{{Capability: autonomy.CapabilityTaskMutation, Action: "dispatch", Scope: "task"}}}
+	if _, err := service.Certify(context.Background(), req); err == nil {
+		t.Fatal("first certification succeeded")
+	}
+	now = now.Add(failureTTL + time.Nanosecond)
+	available = true
+	if _, err := service.Certify(context.Background(), req); err != nil {
+		t.Fatalf("recheck did not recover after signer became available: %v", err)
+	}
+}
+
 func TestProjectFailureCoalescesQuarantineAcrossTasks(t *testing.T) {
 	var quarantines atomic.Int32
 	var probes atomic.Int32

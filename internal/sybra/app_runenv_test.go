@@ -7,7 +7,6 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/autonomy"
-	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/task"
@@ -71,7 +70,7 @@ func TestGitHubAuthProbeFailurePreservesTransientAndAuthorityOwnership(t *testin
 	}
 }
 
-func TestMisconfiguredGitHubAuthCertificationRequiresCredentialAuthority(t *testing.T) {
+func TestMisconfiguredGitHubAuthCertificationStaysRetryable(t *testing.T) {
 	service := runenv.New(runenv.Deps{ProbeNetwork: func(context.Context, string) (runenv.ProbeResult, error) {
 		return githubAuthProbeFailure(github.AuthSnapshot{State: github.AuthMisconfigured}), errors.New("GitHub auth circuit is open")
 	}})
@@ -83,12 +82,27 @@ func TestMisconfiguredGitHubAuthCertificationRequiresCredentialAuthority(t *test
 		t.Fatal("Certify succeeded with misconfigured GitHub auth")
 	}
 	failure := workflow.ClassifyAgentStartFailure(err)
-	if !failure.Permanent || failure.Blocker.Kind != blocker.KindCredentialRequired || !blocker.AllowsHumanRequired(failure.Blocker.Kind) {
+	if failure.Permanent || !failure.Blocker.IsZero() {
 		t.Fatalf("classification = %#v", failure)
+	}
+	if failure.Reason == "" {
+		t.Fatal("retryable environment failure must explain the deferred dispatch")
 	}
 }
 
-func TestQuarantineRunEnvironmentParksMachineOwnedTask(t *testing.T) {
+func TestSignerUnavailableCertificationStaysRetryable(t *testing.T) {
+	failure := workflow.ClassifyAgentStartFailure(runenv.CertificationError{
+		TaskID: "task", Code: "signer_unavailable", Capability: autonomy.CapabilitySigning,
+	})
+	if failure.Permanent || !failure.Blocker.IsZero() {
+		t.Fatalf("classification = %#v", failure)
+	}
+	if failure.Reason == "" {
+		t.Fatal("retryable signer failure must explain the deferred dispatch")
+	}
+}
+
+func TestQuarantineRunEnvironmentDoesNotMoveTask(t *testing.T) {
 	a := setupApp(t)
 	created, err := a.tasks.Create("quarantine me", "body", "headless")
 	if err != nil {
@@ -104,7 +118,7 @@ func TestQuarantineRunEnvironmentParksMachineOwnedTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusBlocked || got.AutonomyOutcome != autonomy.OutcomeQuarantined {
-		t.Fatalf("quarantined task status/outcome = %q/%q", got.Status, got.AutonomyOutcome)
+	if got.Status != task.StatusInProgress || got.AutonomyOutcome != "" {
+		t.Fatalf("environment admission changed task status/outcome = %q/%q", got.Status, got.AutonomyOutcome)
 	}
 }

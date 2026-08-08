@@ -92,7 +92,9 @@ type ProbeResult struct {
 	Owner     autonomy.FailureOwner
 }
 
-// CertificationError is the stable machine-owned reason passed to quarantine policy.
+// CertificationError is the stable reason returned when admission cannot certify
+// a run environment. It is deliberately retryable: certification is a dispatch
+// gate, not a task-state transition.
 type CertificationError struct {
 	TaskID     string
 	ProjectID  string
@@ -118,15 +120,19 @@ func (f CertificationError) Unwrap() error { return f.Cause }
 // import cycle.
 func (f CertificationError) MachineFailureCode() string { return f.Code }
 
-// MachineFailureTransient distinguishes external admission signals that are
-// expected to self-heal from machine-owned environment defects that require a
-// deterministic repair before dispatch can resume.
+// MachineFailureTransient keeps every admission failure in the workflow's
+// retry path. A later certification pass is authoritative: it either admits
+// the unchanged task or continues to defer it without starting an agent.
 func (f CertificationError) MachineFailureTransient() bool {
-	return f.Owner == autonomy.FailureOwnerExternalTransient
+	return true
 }
 
+// MachineFailureRequiresCredentials is intentionally false even when the
+// observation owner is operator authority. Missing credentials can be fixed
+// out of band, so parking a task would prevent the automatic recheck that
+// resumes it once they are available.
 func (f CertificationError) MachineFailureRequiresCredentials() bool {
-	return f.Owner == autonomy.FailureOwnerOperatorAuthority
+	return false
 }
 
 // Deps keeps state-changing authority outside this package.
