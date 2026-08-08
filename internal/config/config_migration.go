@@ -23,7 +23,7 @@ var v2NamespaceDocs = []V2NamespaceDoc{
 	{Name: "workflow", OwnershipRule: "Task-stage policy, planning/testing orchestration, and board-driven automation.", Paths: []string{"workflow.orchestrator", "workflow.testing", "workflow.triage", "workflow.umbrella", "workflow.admission"}},
 	{Name: "integrations", OwnershipRule: "External systems Sybra talks to on the operator's behalf.", Paths: []string{"integrations.notification", "integrations.github", "integrations.renovate", "integrations.browser"}},
 	{Name: "supervision", OwnershipRule: "Health checks, review escalation, and autonomous oversight loops.", Paths: []string{"supervision.human_review", "supervision.monitor", "supervision.watchdog", "supervision.self_monitor", "supervision.evaluation", "supervision.learning_digest", "supervision.harness_evolution", "supervision.prompt_lab"}},
-	{Name: "storage", OwnershipRule: "Filesystem-backed retention and path layout under SYBRA_HOME.", Paths: []string{"storage.attachments", "storage.trash", "storage.sandboxes", "storage.task_snapshot", "storage.paths"}},
+	{Name: "storage", OwnershipRule: "Durable-storage backend selection, retention, and path layout under SYBRA_HOME.", Paths: []string{"storage.database", "storage.attachments", "storage.trash", "storage.sandboxes", "storage.task_snapshot", "storage.paths"}},
 	{Name: "observability", OwnershipRule: "Logs, audit, metrics, experimentation, and operator evidence retention.", Paths: []string{"observability.logging", "observability.audit", "observability.metrics", "observability.experience", "observability.intervention", "observability.ab_testing"}},
 	{Name: "routing", OwnershipRule: "Adaptive provider-routing policy that tunes experiment weights from observed execution outcomes.", Paths: []string{"routing"}},
 	{Name: "server", OwnershipRule: "Local API/server exposure and auth for the running Sybra instance.", Paths: []string{"server"}},
@@ -51,6 +51,7 @@ type topLevelNamespaceRule struct {
 var topLevelNamespaceRules = []topLevelNamespaceRule{
 	{legacyKey: "logging", canonical: []string{"observability", "logging"}, deprecated: "observability.logging", namespace: "observability"},
 	{legacyKey: "audit", canonical: []string{"observability", "audit"}, deprecated: "observability.audit", namespace: "observability"},
+	{legacyKey: "database", canonical: []string{"storage", "database"}, deprecated: "storage.database", namespace: "storage"},
 	{legacyKey: "attachments", canonical: []string{"storage", "attachments"}, deprecated: "storage.attachments", namespace: "storage"},
 	{legacyKey: "trash", canonical: []string{"storage", "trash"}, deprecated: "storage.trash", namespace: "storage"},
 	{legacyKey: "sandbox", canonical: []string{"storage", "sandboxes"}, deprecated: "storage.sandboxes", namespace: "storage"},
@@ -746,6 +747,10 @@ func normalizeStorageNamespace(builder *flatConfigBuilder, node *yaml.Node, sink
 		key := node.Content[i].Value
 		value := node.Content[i+1]
 		switch key {
+		case "database":
+			if err := builder.setTopLevel("database", value, "storage.database"); err != nil {
+				return err
+			}
 		case "attachments":
 			if err := builder.setTopLevel("attachments", value, "storage.attachments"); err != nil {
 				return err

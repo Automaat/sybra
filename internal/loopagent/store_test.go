@@ -68,7 +68,7 @@ func TestStoreCRUD(t *testing.T) {
 	}
 
 	// Empty list
-	got, err := store.List()
+	got, err := store.List(t.Context())
 	if err != nil {
 		t.Fatalf("list empty: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestStoreCRUD(t *testing.T) {
 	}
 
 	// Create — provider defaults to claude when blank
-	created, err := store.Create(LoopAgent{Name: "self-monitor", Prompt: "/sybra-self-monitor", IntervalSec: 3600})
+	created, err := store.Create(t.Context(), LoopAgent{Name: "self-monitor", Prompt: "/sybra-self-monitor", IntervalSec: 3600})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestStoreCRUD(t *testing.T) {
 	}
 
 	// Get round-trip
-	fetched, err := store.Get(created.ID)
+	fetched, err := store.Get(t.Context(), created.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -101,22 +101,22 @@ func TestStoreCRUD(t *testing.T) {
 	}
 
 	// FindByName
-	if _, ok := store.FindByName("self-monitor"); !ok {
+	if _, ok := store.FindByName(t.Context(), "self-monitor"); !ok {
 		t.Fatal("FindByName failed")
 	}
-	if _, ok := store.FindByName("nope"); ok {
+	if _, ok := store.FindByName(t.Context(), "nope"); ok {
 		t.Fatal("FindByName found nonexistent")
 	}
 
 	// Create rejects invalid
-	if _, err := store.Create(LoopAgent{Name: "x", Prompt: "/y", IntervalSec: 10}); err == nil {
+	if _, err := store.Create(t.Context(), LoopAgent{Name: "x", Prompt: "/y", IntervalSec: 10}); err == nil {
 		t.Fatal("expected interval validation error")
 	}
 
 	// Update preserves CreatedAt and ID
 	created.IntervalSec = 7200
 	created.Enabled = true
-	updated, err := store.Update(created)
+	updated, err := store.Update(t.Context(), created)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -135,10 +135,10 @@ func TestStoreCRUD(t *testing.T) {
 	}
 
 	// List sorted by name
-	if _, err := store.Create(LoopAgent{Name: "alpha", Prompt: "/a", IntervalSec: 60}); err != nil {
+	if _, err := store.Create(t.Context(), LoopAgent{Name: "alpha", Prompt: "/a", IntervalSec: 60}); err != nil {
 		t.Fatalf("create alpha: %v", err)
 	}
-	listed, err := store.List()
+	listed, err := store.List(t.Context())
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -147,15 +147,15 @@ func TestStoreCRUD(t *testing.T) {
 	}
 
 	// Delete
-	if err := store.Delete(created.ID); err != nil {
+	if err := store.Delete(t.Context(), created.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, err := store.Get(created.ID); err == nil {
+	if _, err := store.Get(t.Context(), created.ID); err == nil {
 		t.Fatal("expected error after delete")
 	}
 
 	// Delete missing is not an error
-	if err := store.Delete("nonexistent"); err != nil {
+	if err := store.Delete(t.Context(), "nonexistent"); err != nil {
 		t.Fatalf("delete missing: %v", err)
 	}
 }
@@ -175,7 +175,7 @@ func TestStoreConcurrentUpdatePreservesCreatedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
-	created, err := store.Create(LoopAgent{Name: "race", Prompt: "/race", IntervalSec: 60})
+	created, err := store.Create(t.Context(), LoopAgent{Name: "race", Prompt: "/race", IntervalSec: 60})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestStoreConcurrentUpdatePreservesCreatedAt(t *testing.T) {
 		la := created
 		la.Enabled = i%2 == 0
 		wg.Go(func() {
-			if _, err := store.Update(la); err != nil {
+			if _, err := store.Update(t.Context(), la); err != nil {
 				errs <- err
 			}
 		})
@@ -198,7 +198,7 @@ func TestStoreConcurrentUpdatePreservesCreatedAt(t *testing.T) {
 		t.Errorf("concurrent update: %v", err)
 	}
 
-	got, err := store.Get(created.ID)
+	got, err := store.Get(t.Context(), created.ID)
 	if err != nil {
 		t.Fatalf("get after concurrent updates: %v", err)
 	}

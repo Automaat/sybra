@@ -61,6 +61,11 @@ var configRegistry = []configRegistryEntry{
 	{Path: "logging.max_files", Policy: configPolicyHot, Visibility: configVisibilityUI},
 	{Path: "logging.dir", Policy: configPolicyImmutable, Visibility: configVisibilityRaw},
 	{Path: "audit", Policy: configPolicyHot, Visibility: configVisibilityUI},
+	// restart, never hot: the backend handle and its migrated schema are opened
+	// once in Startup and handed to every store, so a live swap would leave the
+	// stores talking to the old engine while the UI reported the new one.
+	{Path: "database", Policy: configPolicyRestart, Visibility: configVisibilityRaw},
+	{Path: "database.dsn", Policy: configPolicyRestart, Visibility: configVisibilitySecret},
 	{Path: "attachments", Policy: configPolicyHot, Visibility: configVisibilityUI},
 	{Path: "trash", Policy: configPolicyHot, Visibility: configVisibilityRaw},
 	{Path: "sandbox", Policy: configPolicyHot, Visibility: configVisibilityRaw},

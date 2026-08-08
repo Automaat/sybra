@@ -95,6 +95,7 @@ func ValidateResolvedConfig(cfg *ResolvedConfig) error {
 	validateReviewHoldConfig(cfg, add)
 	validateEvaluationConfig(cfg, add)
 	validateMonitorConfig(cfg, add)
+	validateDatabaseConfig(cfg, add)
 	validateK8sSecretEnv(cfg, add)
 
 	if len(msgs) == 0 {
