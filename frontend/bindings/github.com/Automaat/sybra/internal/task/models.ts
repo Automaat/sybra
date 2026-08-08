@@ -811,9 +811,203 @@ export enum TaskType {
 };
 
 /**
+ * TransitionIntent is a request to move a task to ToStatus through the
+ * single sanctioned status-mutation entrypoint, Manager.Apply. It is the
+ * narrow command object every production status writer (workflow, review,
+ * monitor, watchdog, recovery, service code) should submit instead of
+ * calling Manager.Update/UpdateFn with a Status field directly — see #2726.
+ */
+export class TransitionIntent {
+    /**
+     * TaskID is the task to transition. Required.
+     */
+    "TaskID": string;
+
+    /**
+     * ToStatus is the target status. Required.
+     */
+    "ToStatus": Status;
+
+    /**
+     * Actor identifies the subsystem submitting the intent (e.g.
+     * "workflow.engine", "agentorch.gate") for audit and idempotency-key
+     * scoping. Required.
+     */
+    "Actor": string;
+
+    /**
+     * Extra carries additional field mutations applied atomically with the
+     * status change (StatusReason, Blocker, Tags, PRNumber, ...). Its Status
+     * field must be nil — set ToStatus instead; Apply rejects intents that
+     * set both to avoid two conflicting sources of truth for the same write.
+     */
+    "Extra": Update;
+
+    /**
+     * ExpectedGeneration, given, is an optimistic-concurrency precondition:
+     * Apply returns a *ConflictError instead of mutating the task if the
+     * task's current Generation does not match. Nil skips the check.
+     */
+    "ExpectedGeneration": number | null;
+
+    /**
+     * ExpectedStatus, given, is a precondition on the task's current Status,
+     * checked the same way as ExpectedGeneration. Nil skips the check.
+     */
+    "ExpectedStatus": Status | null;
+
+    /**
+     * IdempotencyKey, given, makes replaying the identical intent against a
+     * task that has not changed generation since it was applied a no-op
+     * instead of reapplying — the safe way to retry after a crash or a
+     * timeout between commit and the caller observing success. Empty means
+     * every call applies unconditionally (bare unconditional writes, e.g.
+     * funneling an existing scattered caller through Apply for the first
+     * time without changing its replay semantics).
+     */
+    "IdempotencyKey": string;
+
+    /**
+     * OperatorOverride bypasses the allowed-transition table (see
+     * transitions.go): set this only at a human-initiated entry point (a
+     * button click or CLI command a person invoked directly), never at an
+     * automated call site. It exists for the narrow set of moves that are
+     * legitimate only as a deliberate human action — e.g. reopening a
+     * terminal task — and must never happen automatically.
+     */
+    "OperatorOverride": boolean;
+
+    /** Creates a new TransitionIntent instance. */
+    constructor($$source: Partial<TransitionIntent> = {}) {
+        if (!("TaskID" in $$source)) {
+            this["TaskID"] = "";
+        }
+        if (!("ToStatus" in $$source)) {
+            this["ToStatus"] = taskstatus$0.Status.$zero;
+        }
+        if (!("Actor" in $$source)) {
+            this["Actor"] = "";
+        }
+        if (!("Extra" in $$source)) {
+            this["Extra"] = (new Update());
+        }
+        if (!("ExpectedGeneration" in $$source)) {
+            this["ExpectedGeneration"] = null;
+        }
+        if (!("ExpectedStatus" in $$source)) {
+            this["ExpectedStatus"] = null;
+        }
+        if (!("IdempotencyKey" in $$source)) {
+            this["IdempotencyKey"] = "";
+        }
+        if (!("OperatorOverride" in $$source)) {
+            this["OperatorOverride"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TransitionIntent instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TransitionIntent {
+        const $$createField3_0 = $$createType14;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("Extra" in $$parsedSource) {
+            $$parsedSource["Extra"] = $$createField3_0($$parsedSource["Extra"]);
+        }
+        return new TransitionIntent($$parsedSource as Partial<TransitionIntent>);
+    }
+}
+
+/**
+ * TransitionResult is the outcome of a successful Apply call.
+ */
+export class TransitionResult {
+    /**
+     * Task is the task as it stands after Apply returns — either freshly
+     * mutated, or (when Applied is false) the unchanged current task.
+     */
+    "Task": Task;
+
+    /**
+     * Applied is false when Apply short-circuited on an idempotent replay:
+     * a prior call already consumed this exact IdempotencyKey at the
+     * generation this call would have consumed it at, so no audit, dispatch,
+     * review, or notification effect fired a second time.
+     */
+    "Applied": boolean;
+
+    /** Creates a new TransitionResult instance. */
+    constructor($$source: Partial<TransitionResult> = {}) {
+        if (!("Task" in $$source)) {
+            this["Task"] = (new Task());
+        }
+        if (!("Applied" in $$source)) {
+            this["Applied"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TransitionResult instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TransitionResult {
+        const $$createField0_0 = $$createType15;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("Task" in $$parsedSource) {
+            $$parsedSource["Task"] = $$createField0_0($$parsedSource["Task"]);
+        }
+        return new TransitionResult($$parsedSource as Partial<TransitionResult>);
+    }
+}
+
+/**
+ * TrashEntry describes one soft-deleted task generation for ListTrash and
+ * PruneTrash callers (CLI table/JSON output, prune logging).
+ */
+export class TrashEntry {
+    "id": string;
+    "generation": string;
+    "deleted_date": string;
+    "deleted_at": string;
+    "title": string;
+
+    /** Creates a new TrashEntry instance. */
+    constructor($$source: Partial<TrashEntry> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("generation" in $$source)) {
+            this["generation"] = "";
+        }
+        if (!("deleted_date" in $$source)) {
+            this["deleted_date"] = "";
+        }
+        if (!("deleted_at" in $$source)) {
+            this["deleted_at"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("title" in $$source)) {
+            this["title"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TrashEntry instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TrashEntry {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TrashEntry($$parsedSource as Partial<TrashEntry>);
+    }
+}
+
+/**
  * Update carries optional field changes for Store.Update.
  * A nil pointer means "leave unchanged"; a non-nil pointer applies the new value.
- * For Workflow: nil = unchanged; non-nil = overwrite (even if pointed-to value is nil).
+ * For Workflow: nil = unchanged; non-nil = overwrite. A clear goes through ClearWorkflow instead: a non-nil Workflow holding a nil inner pointer works in-process but not over the API, so it is never the right encoding.
  */
 export class Update {
     "Title": string | null;
@@ -825,6 +1019,11 @@ export class Update {
     "AutonomyOutcome": autonomy$0.Outcome | null;
     "Blocker": blocker$0.State | null;
     "ClearBlocker": boolean | null;
+
+    /**
+     * ClearWorkflow removes the task's workflow execution, and is the only encoding of a clear that survives JSON. Workflow is a **Execution: a non-nil outer pointer holding a nil inner one marshals to null, and unmarshal then nils the outer pointer, so a clear sent over the API read back as "leave unchanged".
+     */
+    "ClearWorkflow": boolean | null;
     "BlockedByIssue": string | null;
     "UmbrellaIssue": string | null;
     "DependsOn": string[] | null;
@@ -901,6 +1100,9 @@ export class Update {
         }
         if (!("ClearBlocker" in $$source)) {
             this["ClearBlocker"] = null;
+        }
+        if (!("ClearWorkflow" in $$source)) {
+            this["ClearWorkflow"] = null;
         }
         if (!("BlockedByIssue" in $$source)) {
             this["BlockedByIssue"] = null;
@@ -1051,14 +1253,14 @@ export class Update {
      * Creates a new Update instance from a string or object.
      */
     static createFrom($$source: any = {}): Update {
-        const $$createField5_0 = $$createType14;
-        const $$createField7_0 = $$createType15;
-        const $$createField11_0 = $$createType16;
-        const $$createField12_0 = $$createType17;
-        const $$createField16_0 = $$createType16;
-        const $$createField34_0 = $$createType18;
-        const $$createField54_0 = $$createType19;
-        const $$createField55_0 = $$createType20;
+        const $$createField5_0 = $$createType16;
+        const $$createField7_0 = $$createType17;
+        const $$createField12_0 = $$createType18;
+        const $$createField13_0 = $$createType19;
+        const $$createField17_0 = $$createType18;
+        const $$createField35_0 = $$createType20;
+        const $$createField55_0 = $$createType21;
+        const $$createField56_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("Escalation" in $$parsedSource) {
             $$parsedSource["Escalation"] = $$createField5_0($$parsedSource["Escalation"]);
@@ -1067,22 +1269,22 @@ export class Update {
             $$parsedSource["Blocker"] = $$createField7_0($$parsedSource["Blocker"]);
         }
         if ("DependsOn" in $$parsedSource) {
-            $$parsedSource["DependsOn"] = $$createField11_0($$parsedSource["DependsOn"]);
+            $$parsedSource["DependsOn"] = $$createField12_0($$parsedSource["DependsOn"]);
         }
         if ("DependsOnConditions" in $$parsedSource) {
-            $$parsedSource["DependsOnConditions"] = $$createField12_0($$parsedSource["DependsOnConditions"]);
+            $$parsedSource["DependsOnConditions"] = $$createField13_0($$parsedSource["DependsOnConditions"]);
         }
         if ("Tags" in $$parsedSource) {
-            $$parsedSource["Tags"] = $$createField16_0($$parsedSource["Tags"]);
+            $$parsedSource["Tags"] = $$createField17_0($$parsedSource["Tags"]);
         }
         if ("Workflow" in $$parsedSource) {
-            $$parsedSource["Workflow"] = $$createField34_0($$parsedSource["Workflow"]);
+            $$parsedSource["Workflow"] = $$createField35_0($$parsedSource["Workflow"]);
         }
         if ("Attachments" in $$parsedSource) {
-            $$parsedSource["Attachments"] = $$createField54_0($$parsedSource["Attachments"]);
+            $$parsedSource["Attachments"] = $$createField55_0($$parsedSource["Attachments"]);
         }
         if ("EffectLog" in $$parsedSource) {
-            $$parsedSource["EffectLog"] = $$createField55_0($$parsedSource["EffectLog"]);
+            $$parsedSource["EffectLog"] = $$createField56_0($$parsedSource["EffectLog"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }
@@ -1103,10 +1305,12 @@ const $$createType10 = $Create.Array($$createType9);
 const $$createType11 = workflow$0.Execution.createFrom;
 const $$createType12 = $Create.Nullable($$createType11);
 const $$createType13 = $Create.Map($Create.Any, $Create.Any);
-const $$createType14 = $Create.Nullable($$createType1);
-const $$createType15 = $Create.Nullable($$createType2);
-const $$createType16 = $Create.Nullable($$createType0);
-const $$createType17 = $Create.Nullable($$createType4);
-const $$createType18 = $Create.Nullable($$createType12);
-const $$createType19 = $Create.Nullable($$createType6);
-const $$createType20 = $Create.Nullable($$createType10);
+const $$createType14 = Update.createFrom;
+const $$createType15 = Task.createFrom;
+const $$createType16 = $Create.Nullable($$createType1);
+const $$createType17 = $Create.Nullable($$createType2);
+const $$createType18 = $Create.Nullable($$createType0);
+const $$createType19 = $Create.Nullable($$createType4);
+const $$createType20 = $Create.Nullable($$createType12);
+const $$createType21 = $Create.Nullable($$createType6);
+const $$createType22 = $Create.Nullable($$createType10);

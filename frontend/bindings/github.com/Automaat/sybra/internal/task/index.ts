@@ -9,6 +9,9 @@ export {
     ReviewComment,
     Task,
     TaskType,
+    TransitionIntent,
+    TransitionResult,
+    TrashEntry,
     Update
 } from "./models.js";
 

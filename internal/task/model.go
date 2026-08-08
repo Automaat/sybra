@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Automaat/sybra/internal/reject"
+
 	"github.com/Automaat/sybra/internal/attachment"
 	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
@@ -126,7 +128,7 @@ func AllAgentModes() []string {
 // "interactive".
 func ValidateAgentMode(s string) (string, error) {
 	if !validAgentModes[s] {
-		return "", fmt.Errorf("invalid agent_mode %q (valid: %v)", s, AllAgentModes())
+		return "", reject.New("invalid agent_mode %q (valid: %v)", s, AllAgentModes())
 	}
 	return s, nil
 }
@@ -137,7 +139,7 @@ func ValidateAgentMode(s string) (string, error) {
 // "interactive" task now that the interactive runner is gone.
 func ValidateMintableAgentMode(s string) (string, error) {
 	if s != AgentModeHeadless {
-		return "", fmt.Errorf("invalid agent_mode %q (valid: %v)", s, []string{AgentModeHeadless})
+		return "", reject.New("invalid agent_mode %q (valid: %v)", s, []string{AgentModeHeadless})
 	}
 	return s, nil
 }

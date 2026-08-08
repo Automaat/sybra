@@ -212,6 +212,13 @@ linters:
           - gosec
         path: cmd/sybra-cli/httpclient\.go
         text: "G704"
+      # serverTokenEnv is the *name* of an environment variable
+      # ("SYBRA_SERVER_TOKEN"), not a token — G101's heuristic matches any
+      # const whose name and string literal both look credential-shaped.
+      - linters:
+          - gosec
+        path: cmd/sybra-cli/httpclient\.go
+        text: "G101"
       # KindCredentialRequired is a blocker-kind enum label ("credential_required"),
       # not a secret value — gosec's G101 heuristic flags any const/var whose
       # name and string literal both match its credential-name regex.

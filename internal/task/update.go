@@ -9,22 +9,25 @@ import (
 	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/issueref"
+	"github.com/Automaat/sybra/internal/reject"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // Update carries optional field changes for Store.Update.
 // A nil pointer means "leave unchanged"; a non-nil pointer applies the new value.
-// For Workflow: nil = unchanged; non-nil = overwrite (even if pointed-to value is nil).
+// For Workflow: nil = unchanged; non-nil = overwrite. A clear goes through ClearWorkflow instead: a non-nil Workflow holding a nil inner pointer works in-process but not over the API, so it is never the right encoding.
 type Update struct {
-	Title                 *string
-	Slug                  *string
-	Status                *Status
-	StatusReason          *string
-	ClearStatusReason     *bool
-	Escalation            *autonomy.EscalationReason
-	AutonomyOutcome       *autonomy.Outcome
-	Blocker               *blocker.State
-	ClearBlocker          *bool
+	Title             *string
+	Slug              *string
+	Status            *Status
+	StatusReason      *string
+	ClearStatusReason *bool
+	Escalation        *autonomy.EscalationReason
+	AutonomyOutcome   *autonomy.Outcome
+	Blocker           *blocker.State
+	ClearBlocker      *bool
+	// ClearWorkflow removes the task's workflow execution, and is the only encoding of a clear that survives JSON. Workflow is a **Execution: a non-nil outer pointer holding a nil inner one marshals to null, and unmarshal then nils the outer pointer, so a clear sent over the API read back as "leave unchanged".
+	ClearWorkflow         *bool
 	BlockedByIssue        *string
 	UmbrellaIssue         *string
 	DependsOn             *[]string
@@ -101,7 +104,9 @@ func UpdateFromMap(raw map[string]any) (Update, error) {
 	var u Update
 	for k, v := range raw {
 		if err := applyMapField(&u, k, v); err != nil {
-			return Update{}, err
+			// Every failure here is the caller's own key or value, so mark
+			// the whole boundary once rather than each field in turn.
+			return Update{}, reject.New("%w", err)
 		}
 	}
 	return u, nil

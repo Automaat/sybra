@@ -7,4 +7,9 @@ func (a *App) wireStatsService() {
 	a.statsSvc.tasks = a.tasks
 	a.statsSvc.auditDir = a.auditDir
 	a.statsSvc.policy = a.limitPolicy
+	a.statsSvc.currentConfig = a.currentConfig
+	a.auditSvc.auditDir = a.auditDir
+	a.selfMonSvc.tasks = a.tasks
+	a.selfMonSvc.logger = a.logger
+	a.selfMonSvc.currentConfig = a.currentConfig
 }

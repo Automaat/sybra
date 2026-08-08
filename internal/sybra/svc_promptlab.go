@@ -1,6 +1,7 @@
 package sybra
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -9,8 +10,10 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/promptlab"
+	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -52,6 +55,7 @@ type PromptLabService struct {
 	artifacts      *artifact.Store
 	projects       *project.Store
 	workflowEngine *workflow.Engine
+	currentConfig  func() *config.Config
 }
 
 // ApproveProposal greenlights a pending prompt-lab proposal: moves it to
@@ -248,4 +252,64 @@ func (s *PromptLabService) appendProgress(taskID, kind, message string) {
 	if err != nil {
 		slog.Warn("promptlab.progress.append_failed", "task_id", taskID, "kind", kind, "err", err)
 	}
+}
+
+// PromptLabRunDTO pairs a mining run with the tasks it filed.
+type PromptLabRunDTO struct {
+	Result promptlab.RunResult `json:"result"`
+	Filed  []task.Task         `json:"filed"`
+}
+
+// RunPromptLab mines the instance's own run history for prompt proposals, and
+// files the accepted ones when asked.
+//
+// Mining and filing are one call because both ends are this instance's: the
+// stats file the evidence comes from and the board the tasks land on. Split
+// across the wire, a client would derive proposals from its own run history
+// and file them against a board that never produced those runs.
+func (s *PromptLabService) RunPromptLab(lookbackSeconds int64, minSamples int, fileTasks bool) (PromptLabRunDTO, error) {
+	cfg := s.config()
+	if cfg == nil || s.tasks == nil {
+		return PromptLabRunDTO{}, unavailableError("prompt lab unavailable")
+	}
+	statsStore, err := stats.NewStore(config.StatsFile())
+	if err != nil {
+		return PromptLabRunDTO{}, err
+	}
+	lookback := time.Duration(lookbackSeconds) * time.Second
+	if lookback <= 0 {
+		lookback = time.Duration(cfg.PromptLab.LookbackHours * float64(time.Hour))
+	}
+	if minSamples <= 0 {
+		minSamples = cfg.PromptLab.MinSamples
+	}
+	result, err := promptlab.Run(context.Background(), promptlab.Options{
+		Records:       statsStore.All(),
+		OutputDir:     config.PromptLabDir(),
+		Lookback:      lookback,
+		MinSamples:    minSamples,
+		MinEffectSize: cfg.PromptLab.MinEffectSize,
+		MaxProposals:  cfg.PromptLab.MaxProposalsPerRun,
+	})
+	if err != nil {
+		return PromptLabRunDTO{}, err
+	}
+	out := PromptLabRunDTO{Result: result}
+	if !fileTasks {
+		return out, nil
+	}
+	cooldown := time.Duration(cfg.PromptLab.RefileCooldownDays * float64(24*time.Hour))
+	filed, err := promptlab.FileProposals(s.tasks, s.projects, result, cooldown, time.Now().UTC())
+	if err != nil {
+		return out, err
+	}
+	out.Filed = filed
+	return out, nil
+}
+
+func (s *PromptLabService) config() *config.Config {
+	if s.currentConfig == nil {
+		return nil
+	}
+	return s.currentConfig()
 }

@@ -3,5 +3,6 @@
 
 export {
     Kind,
+    Meta,
     ProgressEntry
 } from "./models.js";

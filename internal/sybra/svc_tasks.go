@@ -26,6 +26,7 @@ import (
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/intervention"
+	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/sandbox"
@@ -75,7 +76,14 @@ type TaskService struct {
 	// umbrellaExpand expands a detected ☂️ umbrella issue into a gated child
 	// DAG instead of a flat task. Wired in wireServices; gated at call time on
 	// cfg.Umbrella.Enabled. nil in tests that don't exercise umbrellas.
-	umbrellaExpand func(issueURL string) (umbrella.Result, error)
+	umbrellaExpand func(issueURL, model string) (umbrella.Result, error)
+	// monitorScan runs one anomaly-detector pass on the server's own monitor
+	// service, so sybra-cli's `monitor scan` reports what the running instance
+	// sees rather than what a second reader of the same files would. Wired
+	// unconditionally: monitor.enabled stops the background loop, not the
+	// ability to read the board, so the closure falls back to a read-only
+	// ad-hoc pass. nil only in tests that do not exercise a scan.
+	monitorScan func(context.Context) (monitor.Report, error)
 	// deleteTask allows tests to force DeleteTask failures on cleanup branches
 	// without mutating the real task store or broadening the public API.
 	deleteTask func(id string) error
@@ -198,7 +206,7 @@ func (s *TaskService) ListTasksForNode(node string) ([]task.Task, error) {
 func (s *TaskService) GetTask(id string) (task.Task, error) {
 	t, err := s.tasks.Get(id)
 	if err != nil {
-		return t, err
+		return t, boardRejectionFor("task", id, err)
 	}
 	return s.withEstimatedAgentRunCosts(t), nil
 }
@@ -229,7 +237,7 @@ func (s *TaskService) UploadAttachment(taskID, fileName string, data []byte) (ta
 func (s *TaskService) ListAttachments(taskID string) ([]task.Attachment, error) {
 	t, err := s.tasks.Get(taskID)
 	if err != nil {
-		return nil, err
+		return nil, boardRejectionFor("task", taskID, err)
 	}
 	if t.Attachments == nil {
 		return []task.Attachment{}, nil
@@ -266,7 +274,7 @@ func (s *TaskService) GetAttachmentURL(taskID, attachmentID string) (string, err
 	}
 	t, err := s.tasks.Get(taskID)
 	if err != nil {
-		return "", err
+		return "", boardRejectionFor("task", taskID, err)
 	}
 	idx := slices.IndexFunc(t.Attachments, func(att task.Attachment) bool { return att.ID == attachmentID })
 	if idx < 0 {
@@ -290,7 +298,7 @@ func (s *TaskService) ListTaskArtifacts(taskID string) ([]TaskArtifactDTO, error
 	}
 	metas, err := s.artifacts.List(taskID)
 	if err != nil {
-		return nil, err
+		return nil, boardRejectionFor("task", taskID, err)
 	}
 	out := make([]TaskArtifactDTO, 0, len(metas))
 	for i := range metas {
@@ -389,7 +397,7 @@ func (s *TaskService) GetTamperReport(taskID string) (TamperReportDTO, error) {
 		if isMissingArtifactError(err) {
 			return emptyTamperReport(taskID), nil
 		}
-		return TamperReportDTO{}, err
+		return TamperReportDTO{}, boardRejectionFor("task", taskID, err)
 	}
 	var report TamperReportDTO
 	if err := json.Unmarshal(data, &report); err != nil {
@@ -414,7 +422,7 @@ func (s *TaskService) ListTaskProgress(taskID string) ([]artifact.ProgressEntry,
 	}
 	entries, err := s.artifacts.ReadProgress(taskID)
 	if err != nil {
-		return nil, err
+		return nil, boardRejectionFor("task", taskID, err)
 	}
 	if entries == nil {
 		return []artifact.ProgressEntry{}, nil
@@ -453,7 +461,7 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 		defer s.followerStatusMu.Unlock()
 		current, err := s.tasks.Get(taskID)
 		if err != nil {
-			return task.Task{}, err
+			return task.Task{}, boardRejectionFor("task", taskID, err)
 		}
 		ctx, cancel := context.WithTimeout(s.recoveryCtx(), fieldPushTimeout)
 		defer cancel()
@@ -756,7 +764,13 @@ func (s *TaskService) RecoverLostAgent(taskID string) error {
 		return validationError("task id is required")
 	}
 	if s.recoverLostAgent == nil {
-		return errors.New("lost-agent recovery unavailable")
+		return unavailableError("lost-agent recovery unavailable")
+	}
+	// Resolve the task first. The writes below log and continue on failure,
+	// so without this an unusable id reached recovery as though it named a
+	// real task, and the caller's mistake came back as a server fault.
+	if _, err := s.tasks.Get(taskID); err != nil {
+		return boardRejectionFor("task", taskID, err)
 	}
 	reason := "monitor: agent lost; recovery will resume"
 	if _, err := s.tasks.Update(taskID, task.Update{StatusReason: &reason}); err != nil && s.logger != nil {
@@ -864,7 +878,7 @@ func (s *TaskService) CreateTaskWithInit(title, body, mode string, init task.Upd
 	}
 	t, err := s.tasks.CreateFull(title, body, mode, createInit)
 	if err != nil {
-		return t, translateTaskLockTimeout(err)
+		return t, boardRejection(translateTaskLockTimeout(err))
 	}
 
 	if prRepo != "" {
@@ -1014,11 +1028,11 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 		}
 		extra, parseErr := task.UpdateFromMap(localUpdates)
 		if parseErr != nil {
-			return t, parseErr
+			return t, validationError(parseErr.Error())
 		}
 		status, statusErr := task.ValidateStatus(statusText)
 		if statusErr != nil {
-			return t, statusErr
+			return t, validationError(statusErr.Error())
 		}
 		if status == task.StatusHumanRequired {
 			display := decisionReason
@@ -1037,7 +1051,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 		t, err = s.tasks.UpdateMap(id, updates)
 	}
 	if err != nil {
-		return t, translateTaskLockTimeout(err)
+		return t, boardRejectionFor("task", id, translateTaskLockTimeout(err))
 	}
 	s.appendManualHumanRequiredDecision(cur, t, decisionReason)
 	s.wg.Go(func() {
@@ -1285,7 +1299,7 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 		ClearBlocker: task.Ptr(true),
 	}
 	if spec.clearWorkflow {
-		extra.Workflow = task.Ptr[*workflow.Execution](nil)
+		extra.ClearWorkflow = task.Ptr(true)
 	}
 	if _, err := s.tasks.Apply(task.TransitionIntent{
 		TaskID:           id,
@@ -1426,11 +1440,11 @@ func (s *TaskService) DeleteTask(id string) error {
 	deleted, err := s.tasks.Get(id)
 	if err != nil {
 		s.logger.Error("task.delete.failed", "task_id", id, "err", err)
-		return err
+		return boardRejectionFor("task", id, err)
 	}
 	if err := s.tasks.Delete(id); err != nil {
 		s.logger.Error("task.delete.failed", "task_id", id, "err", err)
-		return translateTaskLockTimeout(err)
+		return boardRejectionFor("task", id, translateTaskLockTimeout(err))
 	}
 	s.agents.KillAgentsForTask(id, 10*time.Second)
 	if s.sandboxes != nil {
@@ -1715,7 +1729,7 @@ func (s *TaskService) umbrellaExpansionEnabled() bool {
 // (bad URL, GitHub fetch failure) has nothing else to defer to, so the stub
 // itself becomes the identifiable (but inert) record instead.
 func (s *TaskService) expandUmbrellaStub(taskID, repo string, issue github.Issue) {
-	res, err := s.umbrellaExpand(issue.URL)
+	res, err := s.umbrellaExpand(issue.URL, "")
 	if err != nil {
 		s.logger.Error("enrich-issue.umbrella-expand", "task_id", taskID, "issue", issue.URL, "err", err)
 		if s.umbrellaTrackerExistsElsewhere(taskID, issue.URL) {

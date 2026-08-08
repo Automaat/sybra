@@ -5,6 +5,8 @@
 // by `wails3 generate bindings ./cmd/sybra-v3/...`.
 
 import * as AgentSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/agentservice.js'
+import * as AuditSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/auditservice.js'
+import * as SelfMonitorSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/selfmonitorservice.js'
 import * as AppSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/app.js'
 import * as BrowserSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/browserservice.js'
 import * as ClusterSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/clusterservice.js'
@@ -120,6 +122,7 @@ export const SendPlanMessage = pick(PlanningSvc.SendPlanMessage, http.SendPlanMe
 export const TriageTask = pick(PlanningSvc.TriageTask, http.TriageTask)
 
 // PromptLabService
+export const RunPromptLab = pick(PromptLabSvc.RunPromptLab, http.RunPromptLab)
 export const ApproveProposal = pick(PromptLabSvc.ApproveProposal, http.ApproveProposal)
 export const RejectProposal = pick(PromptLabSvc.RejectProposal, http.RejectProposal)
 
@@ -132,6 +135,9 @@ export const ListWorktrees = pick(ProjectSvc.ListWorktrees, http.ListWorktrees)
 export const OpenInEditor = pick(ProjectSvc.OpenInEditor, http.OpenInEditor)
 export const OpenInTerminal = pick(ProjectSvc.OpenInTerminal, http.OpenInTerminal)
 export const SetProjectWorktreeBaseRef = pick(ProjectSvc.SetProjectWorktreeBaseRef, http.SetProjectWorktreeBaseRef)
+export const SetProjectSetupCommands = pick(ProjectSvc.SetProjectSetupCommands, http.SetProjectSetupCommands)
+export const GetProjectRawType = pick(ProjectSvc.GetProjectRawType, http.GetProjectRawType)
+export const CreateProjectAndClone = pick(ProjectSvc.CreateProjectAndClone, http.CreateProjectAndClone)
 export const UpdateProject = pick(ProjectSvc.UpdateProject, http.UpdateProject)
 
 // ReviewService
@@ -146,11 +152,38 @@ export const StartReview = pick(ReviewSvc.StartReview, http.StartReview)
 
 // StatsService
 export const GetStats = pick(StatsSvc.GetStats, http.GetStats)
+export const ScanEvaluation = pick(StatsSvc.ScanEvaluation, http.ScanEvaluation)
 
 // TaskService
 export const BlessTampering = pick(TaskSvc.BlessTampering, http.BlessTampering)
 export const CreateTask = pick(TaskSvc.CreateTask, http.CreateTask)
 export const DeleteTask = pick(TaskSvc.DeleteTask, http.DeleteTask)
+export const CreateTaskFull = pick(TaskSvc.CreateTaskFull, http.CreateTaskFull)
+export const UpdateTaskFields = pick(TaskSvc.UpdateTaskFields, http.UpdateTaskFields)
+export const ApplyTransition = pick(TaskSvc.ApplyTransition, http.ApplyTransition)
+export const TouchTask = pick(TaskSvc.TouchTask, http.TouchTask)
+export const ListTrash = pick(TaskSvc.ListTrash, http.ListTrash)
+export const RestoreFromTrash = pick(TaskSvc.RestoreFromTrash, http.RestoreFromTrash)
+export const DeleteTrashedGeneration = pick(TaskSvc.DeleteTrashedGeneration, http.DeleteTrashedGeneration)
+export const PruneAllTrash = pick(TaskSvc.PruneAllTrash, http.PruneAllTrash)
+export const ExpandUmbrella = pick(TaskSvc.ExpandUmbrella, http.ExpandUmbrella)
+export const ClassifyTask = pick(TaskSvc.ClassifyTask, http.ClassifyTask)
+export const AppendTaskProgress = pick(TaskSvc.AppendTaskProgress, http.AppendTaskProgress)
+export const ListTaskArtifactMetas = pick(TaskSvc.ListTaskArtifactMetas, http.ListTaskArtifactMetas)
+export const ReadTaskArtifact = pick(TaskSvc.ReadTaskArtifact, http.ReadTaskArtifact)
+export const ReindexTaskArtifacts = pick(TaskSvc.ReindexTaskArtifacts, http.ReindexTaskArtifacts)
+export const ListTaskSnapshotHistory = pick(TaskSvc.ListTaskSnapshotHistory, http.ListTaskSnapshotHistory)
+export const MapDuplicateIncidents = pick(TaskSvc.MapDuplicateIncidents, http.MapDuplicateIncidents)
+
+// AuditService
+export const QueryAuditEvents = pick(AuditSvc.QueryAuditEvents, http.QueryAuditEvents)
+
+// SelfMonitorService
+export const GetSelfMonitorReport = pick(SelfMonitorSvc.GetSelfMonitorReport, http.GetSelfMonitorReport)
+export const InvestigateSelfMonitor = pick(SelfMonitorSvc.InvestigateSelfMonitor, http.InvestigateSelfMonitor)
+export const ListSelfMonitorLedger = pick(SelfMonitorSvc.ListSelfMonitorLedger, http.ListSelfMonitorLedger)
+export const RunHarnessEvolution = pick(SelfMonitorSvc.RunHarnessEvolution, http.RunHarnessEvolution)
+export const ScanMonitor = pick(TaskSvc.ScanMonitor, http.ScanMonitor)
 export const DeleteAttachment = pick(TaskSvc.DeleteAttachment, http.DeleteAttachment)
 export const DispatchFromHumanRequired = pick(TaskSvc.DispatchFromHumanRequired, http.DispatchFromHumanRequired)
 export const GetAttachmentURL = pick(TaskSvc.GetAttachmentURL, http.GetAttachmentURL)

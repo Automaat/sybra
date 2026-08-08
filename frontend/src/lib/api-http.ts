@@ -2,14 +2,18 @@
 // Used by api.ts when VITE_MODE=web.
 
 import type { Agent, ConvoEvent, StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
-import type { ReviewComment, Task } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
+import type { ReviewComment, Task, TransitionIntent, TransitionResult, TrashEntry, Update } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
 import type { Project, Worktree } from '../../bindings/github.com/Automaat/sybra/internal/project/models.js'
 import type { Issue, RenovatePR, ReviewSummary } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 import type { LoopAgent } from '../../bindings/github.com/Automaat/sybra/internal/loopagent/models.js'
-import type { AppSettings, ClusterNodeDTO, CodexModel, ConfigPathExplanation, CopilotModel, LoopAgentRun, MonitorReportBinding, RuntimeInfo, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+import type { AppSettings, ClusterNodeDTO, TriageResultDTO, TrashPruneReportDTO, UmbrellaExpandDTO, TaskHistoryEntryDTO, MapDuplicateIncidentsDTO, HarnessEvolutionRunDTO, PromptLabRunDTO, CodexModel, ConfigPathExplanation, CopilotModel, LoopAgentRun, MonitorReportBinding, RuntimeInfo, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 import type { Notification } from '../../bindings/github.com/Automaat/sybra/internal/notification/models.js'
 import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
-import type { ProgressEntry } from '../../bindings/github.com/Automaat/sybra/internal/artifact/models.js'
+import type { Meta, ProgressEntry } from '../../bindings/github.com/Automaat/sybra/internal/artifact/models.js'
+import type { Event as AuditEvent, Query as AuditQuery } from '../../bindings/github.com/Automaat/sybra/internal/audit/models.js'
+import type { Report as MonitorReport } from '../../bindings/github.com/Automaat/sybra/internal/monitor/models.js'
+import type { Report as SelfMonitorReport, LedgerEntry } from '../../bindings/github.com/Automaat/sybra/internal/selfmonitor/models.js'
+import type { Report as EvaluationReport } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
 import type { Report as EvaluationReportData, PhaseReport as PhaseReportData, AutonomyTrend } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
 import type { Definition } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
 import type { Status } from '../../bindings/github.com/Automaat/sybra/internal/provider/models.js'
@@ -152,6 +156,7 @@ export function SendPlanMessage(arg1: string, arg2: string): Promise<void> { ret
 export function TriageTask(arg1: string): Promise<void> { return call('PlanningService', 'TriageTask', arg1) }
 
 // PromptLabService
+export function RunPromptLab(arg1: number, arg2: number, arg3: boolean): Promise<PromptLabRunDTO> { return call('PromptLabService', 'RunPromptLab', arg1, arg2, arg3) }
 export function ApproveProposal(arg1: string): Promise<Task> { return call('PromptLabService', 'ApproveProposal', arg1) }
 export function RejectProposal(arg1: string, arg2: string): Promise<Task> { return call('PromptLabService', 'RejectProposal', arg1, arg2) }
 
@@ -164,6 +169,9 @@ export function ListWorktrees(arg1: string): Promise<Array<Worktree>> { return c
 export function OpenInEditor(_arg1: string): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
 export function OpenInTerminal(_arg1: string): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
 export function SetProjectWorktreeBaseRef(arg1: string, arg2: string): Promise<Project> { return call('ProjectService', 'SetProjectWorktreeBaseRef', arg1, arg2) }
+export function SetProjectSetupCommands(arg1: string, arg2: string[]): Promise<Project> { return call('ProjectService', 'SetProjectSetupCommands', arg1, arg2) }
+export function GetProjectRawType(arg1: string): Promise<string> { return call('ProjectService', 'GetProjectRawType', arg1) }
+export function CreateProjectAndClone(arg1: string, arg2: string): Promise<Project> { return call('ProjectService', 'CreateProjectAndClone', arg1, arg2) }
 export function UpdateProject(arg1: string, arg2: string): Promise<Project> { return call('ProjectService', 'UpdateProject', arg1, arg2) }
 
 // ReviewService
@@ -178,6 +186,7 @@ export function StartReview(arg1: string): Promise<void> { return call('ReviewSe
 
 // StatsService
 export function GetStats(): Promise<StatsResponse> { return call('StatsService', 'GetStats') }
+export function ScanEvaluation(): Promise<EvaluationReport> { return call('StatsService', 'ScanEvaluation') }
 
 // LearningService
 export function ListDigests(): Promise<Array<Digest>> { return call('LearningService', 'ListDigests') }
@@ -187,6 +196,32 @@ export function GetLatestDigest(): Promise<[Digest, boolean]> { return call('Lea
 export function BlessTampering(arg1: string): Promise<Task> { return call('TaskService', 'BlessTampering', arg1) }
 export function CreateTask(arg1: string, arg2: string, arg3: string): Promise<Task> { return call('TaskService', 'CreateTask', arg1, arg2, arg3) }
 export function DeleteTask(arg1: string): Promise<void> { return call('TaskService', 'DeleteTask', arg1) }
+export function CreateTaskFull(arg1: string, arg2: string, arg3: string, arg4: string, arg5: Update): Promise<Task> { return call('TaskService', 'CreateTaskFull', arg1, arg2, arg3, arg4, arg5) }
+export function UpdateTaskFields(arg1: string, arg2: Update): Promise<Task> { return call('TaskService', 'UpdateTaskFields', arg1, arg2) }
+export function ApplyTransition(arg1: TransitionIntent): Promise<TransitionResult> { return call('TaskService', 'ApplyTransition', arg1) }
+export function TouchTask(arg1: string): Promise<Task> { return call('TaskService', 'TouchTask', arg1) }
+export function ListTrash(): Promise<Array<TrashEntry>> { return call('TaskService', 'ListTrash') }
+export function RestoreFromTrash(arg1: string): Promise<Task> { return call('TaskService', 'RestoreFromTrash', arg1) }
+export function DeleteTrashedGeneration(arg1: string): Promise<boolean> { return call('TaskService', 'DeleteTrashedGeneration', arg1) }
+export function PruneAllTrash(): Promise<TrashPruneReportDTO> { return call('TaskService', 'PruneAllTrash') }
+export function ExpandUmbrella(arg1: string, arg2: string): Promise<UmbrellaExpandDTO> { return call('TaskService', 'ExpandUmbrella', arg1, arg2) }
+export function ClassifyTask(arg1: string, arg2: string): Promise<TriageResultDTO> { return call('TaskService', 'ClassifyTask', arg1, arg2) }
+export function AppendTaskProgress(arg1: string, arg2: string, arg3: string, arg4: string): Promise<ProgressEntry> { return call('TaskService', 'AppendTaskProgress', arg1, arg2, arg3, arg4) }
+export function ListTaskArtifactMetas(arg1: string): Promise<Array<Meta>> { return call('TaskService', 'ListTaskArtifactMetas', arg1) }
+export function ReadTaskArtifact(arg1: string, arg2: string): Promise<string> { return call('TaskService', 'ReadTaskArtifact', arg1, arg2) }
+export function ReindexTaskArtifacts(arg1: string): Promise<void> { return call('TaskService', 'ReindexTaskArtifacts', arg1) }
+export function ListTaskSnapshotHistory(arg1: number): Promise<Array<TaskHistoryEntryDTO>> { return call('TaskService', 'ListTaskSnapshotHistory', arg1) }
+export function MapDuplicateIncidents(arg1: string, arg2: number[], arg3: string): Promise<MapDuplicateIncidentsDTO> { return call('TaskService', 'MapDuplicateIncidents', arg1, arg2, arg3) }
+
+// AuditService
+export function QueryAuditEvents(arg1: AuditQuery): Promise<Array<AuditEvent>> { return call('AuditService', 'QueryAuditEvents', arg1) }
+
+// SelfMonitorService
+export function GetSelfMonitorReport(): Promise<SelfMonitorReport> { return call('SelfMonitorService', 'GetSelfMonitorReport') }
+export function InvestigateSelfMonitor(): Promise<SelfMonitorReport> { return call('SelfMonitorService', 'InvestigateSelfMonitor') }
+export function ListSelfMonitorLedger(arg1: string, arg2: number): Promise<Array<LedgerEntry>> { return call('SelfMonitorService', 'ListSelfMonitorLedger', arg1, arg2) }
+export function RunHarnessEvolution(arg1: number, arg2: number, arg3: string, arg4: boolean): Promise<HarnessEvolutionRunDTO> { return call('SelfMonitorService', 'RunHarnessEvolution', arg1, arg2, arg3, arg4) }
+export function ScanMonitor(): Promise<MonitorReport> { return call('TaskService', 'ScanMonitor') }
 export function DeleteAttachment(arg1: string, arg2: string): Promise<void> { return call('TaskService', 'DeleteAttachment', arg1, arg2) }
 export function DispatchFromHumanRequired(arg1: string, arg2: string, arg3: string): Promise<Task> { return call('TaskService', 'DispatchFromHumanRequired', arg1, arg2, arg3) }
 export function GetAttachmentURL(arg1: string, arg2: string): Promise<string> { return call('TaskService', 'GetAttachmentURL', arg1, arg2) }

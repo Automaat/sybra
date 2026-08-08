@@ -15,6 +15,7 @@ import (
 	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/reject"
 	"github.com/google/uuid"
 )
 
@@ -564,11 +565,11 @@ func (s *Store) safePath(id string) (string, error) {
 		// Synthetic List-only entry for an unparseable file: it has no task
 		// file of its own, and resolving it would let an update/delete issued
 		// against the degraded board card land on some unrelated real task.
-		return "", fmt.Errorf("task ID %q is a synthetic unreadable-file entry and has no task file", id)
+		return "", reject.New("task ID %q is a synthetic unreadable-file entry and has no task file", id)
 	}
 	path := filepath.Clean(filepath.Join(s.dir, id+".md"))
 	if !strings.HasPrefix(path, filepath.Clean(s.dir)+string(filepath.Separator)) {
-		return "", fmt.Errorf("invalid task ID %q", id)
+		return "", reject.New("invalid task ID %q", id)
 	}
 	return path, nil
 }
@@ -787,10 +788,10 @@ func applyCreateInit(t *Task, init Update, now time.Time) {
 
 func validateExplicitClear(u Update) error {
 	if u.ClearStatusReason != nil && *u.ClearStatusReason && u.StatusReason != nil {
-		return errors.New("task update: status_reason and clear_status_reason cannot both be set")
+		return reject.New("task update: status_reason and clear_status_reason cannot both be set")
 	}
 	if u.ClearBlocker != nil && *u.ClearBlocker && u.Blocker != nil {
-		return errors.New("task update: blocker and clear_blocker cannot both be set")
+		return reject.New("task update: blocker and clear_blocker cannot both be set")
 	}
 	return nil
 }
@@ -1141,7 +1142,7 @@ func applyLinkFields(t *Task, u Update) {
 func normalizeSandboxEscapeHatch(t *Task) error {
 	if t.Sandbox != nil && !*t.Sandbox {
 		if strings.TrimSpace(t.SandboxOffReason) == "" {
-			return errors.New("sandbox: disabling the sandbox requires sandbox_off_reason explaining why")
+			return reject.New("sandbox: disabling the sandbox requires sandbox_off_reason explaining why")
 		}
 		t.SandboxOffReason = strings.TrimSpace(t.SandboxOffReason)
 		return nil
@@ -1196,10 +1197,10 @@ func applyUpdateFields(t *Task, u Update) error {
 	}
 	if u.Escalation != nil {
 		if err := u.Escalation.Validate(); err != nil {
-			return fmt.Errorf("typed escalation: %w", err)
+			return reject.New("typed escalation: %w", err)
 		}
 		if u.AutonomyOutcome == nil || !u.AutonomyOutcome.IsKnown() {
-			return errors.New("typed escalation requires a known autonomy outcome")
+			return reject.New("typed escalation requires a known autonomy outcome")
 		}
 		t.Escalation = *u.Escalation
 	}
@@ -1244,7 +1245,9 @@ func applyUpdateFields(t *Task, u Update) error {
 	if u.DueDate != nil {
 		t.DueDate = *u.DueDate
 	}
-	if u.Workflow != nil {
+	if u.ClearWorkflow != nil && *u.ClearWorkflow {
+		t.Workflow = nil
+	} else if u.Workflow != nil {
 		t.Workflow = *u.Workflow
 	}
 	if u.MaxTurns != nil {

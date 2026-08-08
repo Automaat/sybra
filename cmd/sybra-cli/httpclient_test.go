@@ -147,9 +147,9 @@ func TestNewAPIClientPrefersVerifierTokenFile(t *testing.T) {
 	cfg.Server.AuthToken = "full-server-token"
 	cfg.Cluster.TLS.CertFile = "/operator/server.crt"
 	cfg.Cluster.TLS.KeyFile = "/operator/server.key"
-	client, ok := newAPIClient(cfg)
-	if !ok || client.token != "scoped-token" {
-		t.Fatalf("client = %+v, ok=%v; want scoped file token", client, ok)
+	client, err := newAPIClient(cfg)
+	if err != nil || client.token != "scoped-token" {
+		t.Fatalf("client = %+v, err=%v; want scoped file token", client, err)
 	}
 }
 
@@ -161,8 +161,8 @@ func TestNewAPIClientVerifierTokenRequiresLoopback(t *testing.T) {
 	t.Setenv("SYBRA_AUTH_TOKEN_FILE", tokenPath)
 	t.Setenv(serverTargetEnv, "192.0.2.10:12345")
 	cfg := &config.Config{}
-	if client, ok := newAPIClient(cfg); ok || client != nil {
-		t.Fatalf("scoped verifier credential accepted non-loopback target: %+v", client)
+	if client, err := newAPIClient(cfg); err == nil || client != nil {
+		t.Fatalf("scoped verifier credential accepted non-loopback target: %+v (err=%v)", client, err)
 	}
 }
 
@@ -394,8 +394,9 @@ func TestNewAPIClient_RequiresExplicitServerTarget(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Server.AuthToken = "token"
 
-	if client, ok := newAPIClient(cfg); ok || client != nil {
-		t.Fatalf("newAPIClient() = %#v, %v, want no client without %s", client, ok, serverTargetEnv)
+	client, err := newAPIClient(cfg)
+	if client != nil || !errors.Is(err, errNoServerTarget) {
+		t.Fatalf("newAPIClient() = %#v, %v, want the unset sentinel without %s", client, err, serverTargetEnv)
 	}
 }
 
@@ -405,8 +406,9 @@ func TestNewAPIClient_IgnoresSYBRAPortWithoutDedicatedTarget(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Server.AuthToken = "token"
 
-	if client, ok := newAPIClient(cfg); ok || client != nil {
-		t.Fatalf("newAPIClient() = %#v, %v, want no client when only SYBRA_PORT is set", client, ok)
+	client, err := newAPIClient(cfg)
+	if client != nil || !errors.Is(err, errNoServerTarget) {
+		t.Fatalf("newAPIClient() = %#v, %v, want the unset sentinel when only SYBRA_PORT is set", client, err)
 	}
 }
 
@@ -415,9 +417,9 @@ func TestNewAPIClient_UsesDedicatedServerTargetEnv(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Server.AuthToken = "token"
 
-	client, ok := newAPIClient(cfg)
-	if !ok || client == nil {
-		t.Fatal("newAPIClient() did not build a client from a valid dedicated target")
+	client, err := newAPIClient(cfg)
+	if err != nil || client == nil {
+		t.Fatalf("newAPIClient() did not build a client from a valid dedicated target: %v", err)
 	}
 	if client.baseURL != "http://127.0.0.1:4123" {
 		t.Fatalf("baseURL = %q, want http://127.0.0.1:4123", client.baseURL)
@@ -435,16 +437,35 @@ func TestNewAPIClient_RejectsInvalidDedicatedServerTarget(t *testing.T) {
 		{name: "wildcard-host", raw: "0.0.0.0:8080"},
 		{name: "url-missing-port", raw: "http://127.0.0.1"},
 		{name: "url-with-path", raw: "http://127.0.0.1:8080/api"},
-		{name: "https-not-supported", raw: "https://127.0.0.1:8080"},
+		// A cleartext hop to another machine would put the bearer token on
+		// the wire, and https without its token used to read as "unset".
+		{name: "cleartext-to-another-machine", raw: "http://192.0.2.10:8080"},
+		{name: "cleartext-hostname-to-another-machine", raw: "board.example:8080"},
+		{name: "https-without-token", raw: "https://board.example:8443"},
+		{name: "https-with-path", raw: "https://board.example:8443/api"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(serverTargetEnv, tc.raw)
+			t.Setenv(serverTokenEnv, "")
 			cfg := config.DefaultConfig()
 			cfg.Server.AuthToken = "token"
 
-			if client, ok := newAPIClient(cfg); ok || client != nil {
-				t.Fatalf("newAPIClient() = %#v, %v, want invalid target %q to be rejected", client, ok, tc.raw)
+			client, err := newAPIClient(cfg)
+			if client != nil {
+				t.Fatalf("newAPIClient() built a client for %q: %#v", tc.raw, client)
+			}
+			// An empty target is genuinely unset; every other case here is a
+			// target the operator set and meant, so silence would send them
+			// to this machine's files believing they had reached a board.
+			if tc.raw == "" {
+				if !errors.Is(err, errNoServerTarget) {
+					t.Fatalf("unset target reported %v, want the unset sentinel", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("newAPIClient() silently ignored the configured target %q", tc.raw)
 			}
 		})
 	}

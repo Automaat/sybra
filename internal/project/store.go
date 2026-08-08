@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/reject"
 	"gopkg.in/yaml.v3"
 )
 
@@ -258,13 +259,13 @@ func (s *Store) Create(rawURL string, ptype ProjectType) (Project, error) {
 func (s *Store) CreateMeta(rawURL string, ptype ProjectType) (Project, error) {
 	owner, repo, err := ParseGitHubURL(rawURL)
 	if err != nil {
-		return Project{}, err
+		return Project{}, reject.New("%w", err)
 	}
 	if ptype == "" {
 		ptype = ProjectTypePet
 	}
 	if ptype != ProjectTypePet && ptype != ProjectTypeWork {
-		return Project{}, fmt.Errorf("invalid project type: %s (must be pet or work)", ptype)
+		return Project{}, reject.New("invalid project type: %s (must be pet or work)", ptype)
 	}
 	id := owner + "/" + repo
 	unlock, err := s.lock(id)
@@ -274,7 +275,7 @@ func (s *Store) CreateMeta(rawURL string, ptype ProjectType) (Project, error) {
 	defer unlock()
 
 	if _, err := s.Get(id); err == nil {
-		return Project{}, fmt.Errorf("project %s already exists", id)
+		return Project{}, reject.New("project %s already exists", id)
 	}
 	clonePath := filepath.Join(s.clonesDir, owner, repo+".git")
 	cloneGeneration, err := newCloneGeneration()
@@ -415,7 +416,7 @@ func (s *Store) MarkError(id string) error {
 // SetWorktreeBaseRef.
 func (s *Store) Update(id string, ptype ProjectType) (Project, error) {
 	if ptype != ProjectTypePet && ptype != ProjectTypeWork {
-		return Project{}, fmt.Errorf("invalid project type: %s (must be pet or work)", ptype)
+		return Project{}, reject.New("invalid project type: %s (must be pet or work)", ptype)
 	}
 	unlock, err := s.lock(id)
 	if err != nil {
@@ -470,7 +471,7 @@ func (s *Store) SetSetupCommands(id string, cmds []string) (Project, error) {
 // ref must be WorktreeBaseRefFresh or WorktreeBaseRefHead.
 func (s *Store) SetWorktreeBaseRef(id, ref string) (Project, error) {
 	if ref != WorktreeBaseRefFresh && ref != WorktreeBaseRefHead {
-		return Project{}, fmt.Errorf("invalid worktree_base_ref %q (must be %q or %q)", ref, WorktreeBaseRefFresh, WorktreeBaseRefHead)
+		return Project{}, reject.New("invalid worktree_base_ref %q (must be %q or %q)", ref, WorktreeBaseRefFresh, WorktreeBaseRefHead)
 	}
 	unlock, err := s.lock(id)
 	if err != nil {

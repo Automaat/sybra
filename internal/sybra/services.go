@@ -158,6 +158,24 @@ func (a *App) coreTaskHTTPServices() map[string]httpapi.Service {
 			"GetAttachmentURL",
 			"DispatchFromHumanRequired",
 			"ListTaskProgress",
+			// sybra-cli board surface; see svc_tasks_board.go.
+			"CreateTaskFull",
+			"UpdateTaskFields",
+			"ApplyTransition",
+			"TouchTask",
+			"ListTrash",
+			"RestoreFromTrash",
+			"DeleteTrashedGeneration",
+			"PruneAllTrash",
+			"ExpandUmbrella",
+			"ClassifyTask",
+			"ScanMonitor",
+			"AppendTaskProgress",
+			"ListTaskArtifactMetas",
+			"ReadTaskArtifact",
+			"ReindexTaskArtifacts",
+			"ListTaskSnapshotHistory",
+			"MapDuplicateIncidents",
 		).WithReadOnly(
 			"ListTasks",
 			"ListTasksForNode",
@@ -169,6 +187,11 @@ func (a *App) coreTaskHTTPServices() map[string]httpapi.Service {
 			"ListAttachments",
 			"GetAttachmentURL",
 			"ListTaskProgress",
+			"ListTrash",
+			"ScanMonitor",
+			"ListTaskArtifactMetas",
+			"ReadTaskArtifact",
+			"ListTaskSnapshotHistory",
 		),
 		"ClusterAttachmentService": httpapi.NewService(&ClusterAttachmentService{tasks: a.tasks, attachments: a.attachments, logger: a.logger},
 			"ExportAttachment",
@@ -176,7 +199,23 @@ func (a *App) coreTaskHTTPServices() map[string]httpapi.Service {
 		).WithReadOnly("ExportAttachment"),
 		"StatsService": httpapi.NewService(a.statsSvc,
 			"GetStats",
-		).WithReadOnly("GetStats"),
+			"ScanEvaluation",
+		).WithReadOnly("GetStats", "ScanEvaluation"),
+		"AuditService": httpapi.NewService(a.auditSvc,
+			"QueryAuditEvents",
+		).WithReadOnly("QueryAuditEvents"),
+		"SelfMonitorService": httpapi.NewService(a.selfMonSvc,
+			"GetSelfMonitorReport",
+			"InvestigateSelfMonitor",
+			"ListSelfMonitorLedger",
+			"RunHarnessEvolution",
+		).WithReadOnly(
+			"GetSelfMonitorReport",
+			// InvestigateSelfMonitor persists nothing and files nothing —
+			// it builds a judge-less, actor-less service for the preview.
+			"InvestigateSelfMonitor",
+			"ListSelfMonitorLedger",
+		),
 		"LearningService": httpapi.NewService(a.learningSvc,
 			"ListDigests",
 			"GetLatestDigest",
@@ -247,6 +286,7 @@ func (a *App) planningHTTPServices() map[string]httpapi.Service {
 			"HandleHumanAction",
 		).WithReadOnly("ListWorkflows", "GetWorkflow"),
 		"PromptLabService": httpapi.NewService(a.promptLabSvc,
+			"RunPromptLab",
 			"ApproveProposal",
 			"RejectProposal",
 		),
@@ -259,17 +299,27 @@ func (a *App) projectHTTPServices() map[string]httpapi.Service {
 			"ListProjects",
 			"GetProject",
 			"CreateProject",
+			// CreateProjectAndClone waits for the clone. A CLI caller exits
+			// as soon as the call returns, so the async variant would report
+			// success on a repo that never cloned.
+			"CreateProjectAndClone",
+			"GetProjectRawType",
 			"UpdateProject",
 			"SetProjectWorktreeBaseRef",
 			"DeleteProject",
 			"ListWorktrees",
-			// SetProjectSetupCommands excluded: persists shell commands executed
-			// via sh -c during worktree prep — Wails IPC only.
+			// SetProjectSetupCommands is reachable here so `sybra-cli project
+			// update --setup` works against a server rather than editing a
+			// project file the owning instance never reads. The commands it
+			// persists do run via sh -c during worktree prep, but a caller
+			// holding the server token can already dispatch an agent that runs
+			// anything, so withholding it bought no containment.
+			"SetProjectSetupCommands",
 			// SetProjectSandboxConfig excluded: cfg.Deploy is run via sh -c in
 			// k8s sandbox and Docker build/compose paths accept attacker-controlled
 			// filesystem paths — Wails IPC only.
 			// OpenInTerminal and OpenInEditor open local GUI apps.
-		).WithReadOnly("ListProjects", "GetProject", "ListWorktrees"),
+		).WithReadOnly("ListProjects", "GetProject", "GetProjectRawType", "ListWorktrees"),
 		"IntegrationService": httpapi.NewService(a.intgSvc,
 			"FetchRenovatePRs",
 			"MergeRenovatePR",

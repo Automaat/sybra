@@ -750,7 +750,7 @@ func TestTaskService_CreateTask_UmbrellaIssueExpandsAndDropsStub(t *testing.T) {
 	}
 
 	var expandedURL atomic.Value
-	svc.umbrellaExpand = func(issueURL string) (umbrella.Result, error) {
+	svc.umbrellaExpand = func(issueURL, _ string) (umbrella.Result, error) {
 		expandedURL.Store(issueURL)
 		return umbrella.Result{UmbrellaURL: issueURL, Created: 6}, nil
 	}
@@ -785,7 +785,7 @@ func TestTaskService_CreateTask_UmbrellaExpandFailureKeepsInertStub(t *testing.T
 			Labels:     []string{"umbrella", "backend"},
 		}, nil
 	}
-	svc.umbrellaExpand = func(string) (umbrella.Result, error) {
+	svc.umbrellaExpand = func(string, string) (umbrella.Result, error) {
 		return umbrella.Result{}, errors.New("planner boom")
 	}
 
@@ -857,7 +857,7 @@ func TestTaskService_CreateTask_UmbrellaExpandFailureWithExistingTrackerMarksDup
 	}); err != nil {
 		t.Fatalf("seed failure tracker: %v", err)
 	}
-	svc.umbrellaExpand = func(string) (umbrella.Result, error) {
+	svc.umbrellaExpand = func(string, string) (umbrella.Result, error) {
 		return umbrella.Result{}, errors.New("planner boom")
 	}
 
@@ -894,7 +894,7 @@ func TestTaskService_CreateTask_UmbrellaExpandDeleteFailureKeepsDuplicateNonTrac
 			Labels:     []string{"umbrella", "backend"},
 		}, nil
 	}
-	svc.umbrellaExpand = func(string) (umbrella.Result, error) {
+	svc.umbrellaExpand = func(string, string) (umbrella.Result, error) {
 		return umbrella.Result{UmbrellaURL: "https://github.com/owner/repo/issues/1151", Created: 6}, nil
 	}
 	svc.deleteTask = func(string) error {
@@ -949,7 +949,7 @@ func TestTaskService_CreateTask_UmbrellaDisabledFallsBackToFlat(t *testing.T) {
 	svc.fetchIssueLinkedPRs = func(string, int) ([]github.PullRequest, error) { return nil, nil }
 	svc.viewerLogin = func() string { return "me" }
 	var expanderCalled atomic.Bool
-	svc.umbrellaExpand = func(string) (umbrella.Result, error) {
+	svc.umbrellaExpand = func(string, string) (umbrella.Result, error) {
 		expanderCalled.Store(true)
 		return umbrella.Result{}, nil
 	}

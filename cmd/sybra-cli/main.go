@@ -375,78 +375,115 @@ func shortRevision(rev string) string {
 
 // dispatch routes a parsed subcommand (with its own args and the global
 // --json flag already extracted) to the matching cmdXxx handler.
-func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager, projStore *project.Store, allowHTTP, jsonOut bool) int {
-	var api *apiClient
-	switch cmd {
-	case "get", "create", "update", "link-pr", "delete", "pr":
-		if allowHTTP {
-			if c, ok := newAPIClient(cfg); ok && c.reachable(context.Background()) {
-				api = c
-			}
-		}
+func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Manager, localProjects *project.Store, allowHTTP, jsonOut bool) int {
+	api, refusal := resolveBoardAPI(cmd, cfg, allowHTTP)
+	if refusal != "" {
+		return fatal(jsonOut, "%s", refusal)
+	}
+	// Every board command runs against a reachable server. The filesystem
+	// stores stay behind the same seam so a command still works with no
+	// server running; #3238 removes that half.
+	var store taskBoard = localTasks
+	var projStore projectBoard = localProjects
+	if api != nil {
+		store = newAPITaskBoard(api)
+		projStore = newAPIProjectBoard(api)
 	}
 	switch cmd {
 	case "list":
 		return cmdList(store, rest, jsonOut)
 	case "get":
-		return cmdGet(store, api, rest, jsonOut)
+		return cmdGet(store, rest, jsonOut)
 	case "create":
-		return cmdCreate(store, api, rest, jsonOut)
+		return cmdCreate(store, rest, jsonOut)
 	case "handoff":
 		return cmdHandoff(store, projStore, rest, jsonOut)
 	case "umbrella":
-		return cmdUmbrella(cfg, store, projStore, rest, jsonOut)
+		return cmdUmbrella(cfg, api, localTasks, localProjects, rest, jsonOut)
 	case "update":
 		return cmdUpdate(store, api, rest, jsonOut)
 	case "link-pr":
 		return cmdLinkPR(store, api, rest, jsonOut)
 	case "pr":
-		return cmdPR(store, api, rest, jsonOut)
+		return cmdPR(store, rest, jsonOut)
 	case "delete":
-		return cmdDelete(store, api, rest, jsonOut)
+		return cmdDelete(store, rest, jsonOut)
 	case "reopen":
-		return cmdReopen(store, rest, jsonOut)
+		return cmdReopen(store, api, rest, jsonOut)
 	case "project":
 		return cmdProject(projStore, rest, jsonOut)
 	case "cluster":
-		return cmdCluster(cfg, store, projStore, rest, jsonOut)
+		return cmdCluster(cfg, api, localTasks, localProjects, rest, jsonOut)
 	case "audit":
-		return cmdAudit(cfg, rest, jsonOut)
+		return cmdAudit(cfg, api, rest, jsonOut)
 	case "board":
 		return cmdBoard(store, jsonOut)
 	case "health":
 		return cmdHealth(cfg, rest, jsonOut)
 	case "triage":
-		return cmdTriage(cfg, store, projStore, rest, jsonOut)
+		return cmdTriage(cfg, api, store, localTasks, localProjects, rest, jsonOut)
 	case "monitor":
-		return cmdMonitor(cfg, store, rest, jsonOut)
+		return cmdMonitor(cfg, api, localTasks, rest, jsonOut)
 	case "selfmonitor":
-		return cmdSelfmonitor(cfg, store, rest, jsonOut)
+		return cmdSelfmonitor(cfg, api, store, rest, jsonOut)
 	case "evaluation":
-		return cmdEvaluation(cfg, store, rest, jsonOut)
+		return cmdEvaluation(cfg, api, store, rest, jsonOut)
 	case "harness-evolution":
-		return cmdHarnessEvolution(cfg, store, rest, jsonOut)
+		return cmdHarnessEvolution(cfg, api, store, rest, jsonOut)
 	case "prompt-lab":
-		return cmdPromptLab(cfg, store, projStore, rest, jsonOut)
+		return cmdPromptLab(cfg, api, store, projStore, rest, jsonOut)
 	case "stats":
-		return cmdStats(cfg, rest, jsonOut)
+		return cmdStats(cfg, api, rest, jsonOut)
 	case "install-skills":
 		return cmdInstallSkills(cfg, jsonOut)
 	case "artifact":
-		return cmdArtifact(rest, jsonOut)
+		return cmdArtifact(api, rest, jsonOut)
 	case "progress":
-		return cmdProgress(store, projStore, rest, jsonOut)
+		return cmdProgress(store, projStore, api, rest, jsonOut)
 	case "config":
 		return cmdConfig(cfg, rest, jsonOut, allowHTTP, nil)
 	case "doctor":
-		return cmdDoctor(cfg, store, rest, jsonOut)
+		// Deliberately the local board: every path doctor cleanup deletes
+		// comes from this machine's home, so reading the protection set from
+		// a server would classify every live local worktree as an orphan.
+		return cmdDoctor(cfg, localTasks, rest, jsonOut)
 	case "trash":
 		return cmdTrash(store, rest, jsonOut)
 	case "tasks-history":
-		return cmdTasksHistory(cfg, rest, jsonOut)
+		return cmdTasksHistory(cfg, api, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}
+}
+
+// resolveBoardAPI picks the server a command runs against, and refuses to fall back when a board on another machine does not answer. A loopback target is not that case: that server shares this machine's home, so its files are the same board.
+func resolveBoardAPI(cmd string, cfg *config.Config, allowHTTP bool) (api *apiClient, refusal string) {
+	if !allowHTTP {
+		return nil, ""
+	}
+	c, err := newAPIClient(cfg)
+	if errors.Is(err, errNoServerTarget) {
+		return nil, ""
+	}
+	if err != nil {
+		return nil, err.Error()
+	}
+	if c.reachable(context.Background()) {
+		return c, ""
+	}
+	if c.remote && !runsWithoutServer(cmd) {
+		return nil, fmt.Sprintf("board at %s is unreachable; refusing to edit this machine's files instead", c.baseURL)
+	}
+	return nil, ""
+}
+
+// runsWithoutServer reports the commands that inspect or repair this machine alone. They stay usable when the board they would otherwise talk to is down, which is what makes them the ones an operator reaches for to find out why it is down.
+func runsWithoutServer(cmd string) bool {
+	switch cmd {
+	case "config", "doctor", "health", "install-skills":
+		return true
+	}
+	return false
 }
 
 func openStores(cfg *config.Config) (*task.Manager, *project.Store, error) {
@@ -522,15 +559,15 @@ func dispatchTaskStoreFallback(cmd string, rest []string, jsonOut bool, loadErr 
 	case "list":
 		return cmdList(store, rest, jsonOut), true
 	case "get":
-		return cmdGet(store, nil, rest, jsonOut), true
+		return cmdGet(store, rest, jsonOut), true
 	case "create":
-		return cmdCreate(store, nil, rest, jsonOut), true
+		return cmdCreate(store, rest, jsonOut), true
 	case "update":
 		return cmdUpdate(store, nil, rest, jsonOut), true
 	case "delete":
-		return cmdDelete(store, nil, rest, jsonOut), true
+		return cmdDelete(store, rest, jsonOut), true
 	case "reopen":
-		return cmdReopen(store, rest, jsonOut), true
+		return cmdReopen(store, nil, rest, jsonOut), true
 	case "link-pr":
 		return cmdLinkPR(store, nil, rest, jsonOut), true
 	case "board":
@@ -551,7 +588,7 @@ func supportsTaskStoreFallback(cmd string) bool {
 	}
 }
 
-func openFallbackTaskStore() (manager *task.Manager, tasksDir string, err error) {
+func openFallbackTaskStore() (manager taskBoard, tasksDir string, err error) {
 	tasksDir = strings.TrimSpace(os.Getenv("SYBRA_TASKS_DIR"))
 	if tasksDir == "" {
 		tasksDir = filepath.Join(config.HomeDir(), "tasks")
@@ -563,7 +600,7 @@ func openFallbackTaskStore() (manager *task.Manager, tasksDir string, err error)
 	return task.NewManager(rawStore, nil), tasksDir, nil
 }
 
-func cmdList(s *task.Manager, args []string, jsonOut bool) int {
+func cmdList(s taskBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	status := fs.String("status", "", "filter by status")
 	tag := fs.String("tag", "", "filter by tag")
@@ -606,7 +643,7 @@ func cmdList(s *task.Manager, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdGet(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
+func cmdGet(s taskBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("get", flag.ContinueOnError)
 	compact := fs.Bool("compact", false, "omit planning support sidecars for implementation agents")
 	if err := fs.Parse(args); err != nil {
@@ -616,7 +653,7 @@ func cmdGet(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
 		return fatal(jsonOut, "usage: get [--compact] <id>")
 	}
 
-	t, err := getTaskViaAPIOrFS(s, api, fs.Arg(0))
+	t, err := getTask(s, fs.Arg(0))
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -708,7 +745,7 @@ func stripPlanningSupport(t *task.Task) error {
 	return nil
 }
 
-func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
+func cmdCreate(s taskBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("create", flag.ContinueOnError)
 	title := fs.String("title", "", "task title (required)")
 	body := fs.String("body", "", "task body markdown")
@@ -758,7 +795,7 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		}
 	}
 
-	t, err := createTaskViaAPIOrFS(s, api, *title, *body, *mode)
+	t, err := createTask(s, *title, *body, *mode)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -769,7 +806,7 @@ func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		updates["depends_on_conditions"] = depConds
 	}
 	if len(updates) > 0 {
-		t, _, err = updateTaskViaAPIOrFS(s, api, t.ID, updates)
+		t, _, err = updateTask(s, t.ID, updates)
 		if err != nil {
 			return fatal(jsonOut, "update after create: %v", err)
 		}
@@ -825,16 +862,20 @@ func buildCreateUpdateMap(tags, proj, branch string, pr int, issue,
 	return updates
 }
 
-func createTaskViaAPIOrFS(s *task.Manager, api *apiClient, title, body, mode string) (task.Task, error) {
-	if created, handled, apiErr := viaAPI[task.Task](api, "TaskService", "CreateTask", title, body, mode); handled {
-		return created, apiErr
-	}
+// createTask goes through the board, which is already server-backed whenever
+// one answers. An extra viaAPI layer here would re-send the same request on a
+// transport error and duplicate the task.
+func createTask(s taskBoard, title, body, mode string) (task.Task, error) {
 	return s.Create(title, body, mode)
 }
 
-func updateTaskViaAPIOrFS(s *task.Manager, api *apiClient, id string, updates map[string]any) (task.Task, bool, error) {
-	if updated, handled, apiErr := viaAPI[task.Task](api, "TaskService", "UpdateTask", id, updates); handled {
-		return updated, true, apiErr
+// updateTask applies a field edit through the board. viaHTTP reports whether
+// the board is server-backed, which callers use to decide whether the server
+// already logged the decision.
+func updateTask(s taskBoard, id string, updates map[string]any) (updated task.Task, viaHTTP bool, err error) {
+	if _, serverBacked := s.(*apiTaskBoard); serverBacked {
+		t, err := s.UpdateMap(id, updates)
+		return t, true, err
 	}
 	if statusText, hasStatus := updates["status"].(string); hasStatus {
 		localUpdates := make(map[string]any, len(updates)-1)
@@ -865,19 +906,28 @@ func updateTaskViaAPIOrFS(s *task.Manager, api *apiClient, id string, updates ma
 		})
 		return result.Task, false, err
 	}
-	updated, err := s.UpdateMap(id, updates)
-	return updated, false, err
+	t, err := s.UpdateMap(id, updates)
+	return t, false, err
 }
 
-func appendManualDecisionProgress(taskID, from, to, reason string) {
+// appendManualDecisionProgress records the operator's status change beside the board that took it. A reachable server owns the artifact store for the task it just updated, so writing to this machine's disk instead would file the decision where the owning instance never reads it.
+func appendManualDecisionProgress(api *apiClient, taskID, from, to, reason string) {
 	if strings.TrimSpace(taskID) == "" || strings.TrimSpace(from) == "" || strings.TrimSpace(to) == "" {
 		return
 	}
-	store := artifact.New(config.ArtifactsDir())
-	if err := store.AppendProgress(taskID, artifact.ProgressEntry{
-		Kind:    artifact.ProgressKindDecision,
-		Message: artifact.ManualDecisionMessage(from, to, reason),
-	}); err != nil {
+	message := artifact.ManualDecisionMessage(from, to, reason)
+	var err error
+	if api != nil {
+		_, err = callAPI[artifact.ProgressEntry](api, taskServiceName, "AppendTaskProgress",
+			taskID, artifact.ProgressKindDecision, "", message)
+	} else {
+		store := artifact.New(config.ArtifactsDir())
+		err = store.AppendProgress(taskID, artifact.ProgressEntry{
+			Kind:    artifact.ProgressKindDecision,
+			Message: message,
+		})
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: progress decision log append failed for task %s: %v\n", taskID, err)
 	}
 }
@@ -885,7 +935,7 @@ func appendManualDecisionProgress(taskID, from, to, reason string) {
 // cmdHandoff creates a task pre-tagged for a Sybra workflow entry point. It
 // bypasses triage/planning and either starts the requested agentic stage in an
 // existing worktree or places the task in a raw status without workflow dispatch.
-func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool) int {
+func cmdHandoff(s taskBoard, ps projectBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("handoff", flag.ContinueOnError)
 	title := fs.String("title", "", "task title (required)")
 	body := fs.String("body", "", "task body / research context markdown")
@@ -1029,7 +1079,7 @@ func resolveHandoffPlan(plan, planFile string) (string, error) {
 	return string(data), nil
 }
 
-func resolveHandoffProject(ps *project.Store, dir, projectID string) (string, project.Project, error) {
+func resolveHandoffProject(ps projectBoard, dir, projectID string) (string, project.Project, error) {
 	if projectID == "" {
 		derived, err := deriveProjectID(dir)
 		if err != nil {
@@ -1353,7 +1403,7 @@ func isSybraRepo(dir string) bool {
 // Match requires all three fields to be non-empty and equal, so it cannot
 // collapse legitimate distinct subtasks of an umbrella issue (those have
 // different titles).
-func findActiveDuplicate(s *task.Manager, projectID, issue, title string) (task.Task, bool, error) {
+func findActiveDuplicate(s taskBoard, projectID, issue, title string) (task.Task, bool, error) {
 	if projectID == "" || issue == "" || title == "" {
 		return task.Task{}, false, nil
 	}
@@ -1372,7 +1422,7 @@ func findActiveDuplicate(s *task.Manager, projectID, issue, title string) (task.
 	return task.Task{}, false, nil
 }
 
-func cmdUpdate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
+func cmdUpdate(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: update <id> [flags]")
 	}
@@ -1399,17 +1449,17 @@ func cmdUpdate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		}
 	}
 
-	before, err := getTaskViaAPIOrFS(s, api, id)
+	before, err := getTask(s, id)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
 
-	t, handledByAPI, err := updateTaskViaAPIOrFS(s, api, id, updates)
+	t, handledByAPI, err := updateTask(s, id, updates)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
 	if !handledByAPI && before.Status == task.StatusHumanRequired && t.Status != task.StatusHumanRequired {
-		appendManualDecisionProgress(t.ID, string(before.Status), string(t.Status), t.StatusReason)
+		appendManualDecisionProgress(api, t.ID, string(before.Status), string(t.Status), t.StatusReason)
 	}
 
 	if jsonOut {
@@ -1518,7 +1568,7 @@ func newUpdateFlags(fs *flag.FlagSet) updateFlags {
 	return f
 }
 
-func buildUpdateMap(s *task.Manager, id string, fs *flag.FlagSet, f updateFlags) (map[string]any, error) {
+func buildUpdateMap(s taskBoard, id string, fs *flag.FlagSet, f updateFlags) (map[string]any, error) {
 	updates := map[string]any{}
 	applyBasicUpdateFlags(updates, f)
 	if err := applySidecarUpdateFlags(fs, updates, f); err != nil {
@@ -1539,7 +1589,7 @@ func buildUpdateMap(s *task.Manager, id string, fs *flag.FlagSet, f updateFlags)
 // the replacement from the task's current blocker state — an operator
 // running e.g. `--blocker-exhausted` alone must not blank out the kind/code
 // the workflow engine already recorded.
-func applyBlockerUpdateFlags(s *task.Manager, id string, fs *flag.FlagSet, updates map[string]any, f updateFlags) error {
+func applyBlockerUpdateFlags(s taskBoard, id string, fs *flag.FlagSet, updates map[string]any, f updateFlags) error {
 	if *f.blockerClear {
 		updates["blocker"] = map[string]any{}
 		return nil
@@ -1736,17 +1786,14 @@ func warnInertDepConditions(currentDependsOn []string, conds []any) {
 	}
 }
 
-func cmdDelete(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
+// cmdDelete dispatches once. A retry above a server-backed board would re-send a request the server had already committed, and report the 404 from the second attempt as a failure of the first.
+func cmdDelete(s taskBoard, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: delete <id>")
 	}
 
-	if _, handled, apiErr := viaAPI[struct{}](api, "TaskService", "DeleteTask", args[0]); handled {
-		if apiErr != nil {
-			return fatal(jsonOut, "%v", apiErr)
-		}
-	} else if fsErr := s.Delete(args[0]); fsErr != nil {
-		return fatal(jsonOut, "%v", fsErr)
+	if err := s.Delete(args[0]); err != nil {
+		return fatal(jsonOut, "%v", err)
 	}
 
 	if jsonOut {
@@ -1756,7 +1803,7 @@ func cmdDelete(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 	return 0
 }
 
-func cmdReopen(s *task.Manager, args []string, jsonOut bool) int {
+func cmdReopen(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("reopen", flag.ContinueOnError)
 	force := fs.Bool("force", false, "reopen even if the task landed (outcome merged)")
 	projectID := fs.String("project", "", "restore project_id (for tasks whose project link was lost)")
@@ -1777,10 +1824,10 @@ func cmdReopen(s *task.Manager, args []string, jsonOut bool) int {
 			return fatal(jsonOut, "task %s landed (outcome=%s); pass --force to reopen anyway", id, t.Outcome)
 		}
 		extra := task.Update{
-			Workflow:     task.Ptr[*workflow.Execution](nil),
-			WorktreeDir:  task.Ptr(""),
-			StatusReason: task.Ptr(""),
-			Outcome:      task.Ptr(""),
+			ClearWorkflow: task.Ptr(true),
+			WorktreeDir:   task.Ptr(""),
+			StatusReason:  task.Ptr(""),
+			Outcome:       task.Ptr(""),
 		}
 		if *projectID != "" {
 			extra.ProjectID = task.Ptr(*projectID)
@@ -1797,7 +1844,7 @@ func cmdReopen(s *task.Manager, args []string, jsonOut bool) int {
 		}
 		updated := result.Task
 		if t.Status == task.StatusHumanRequired && updated.Status != task.StatusHumanRequired {
-			appendManualDecisionProgress(updated.ID, string(t.Status), string(updated.Status), updated.StatusReason)
+			appendManualDecisionProgress(api, updated.ID, string(t.Status), string(updated.Status), updated.StatusReason)
 		}
 		reopened = append(reopened, id)
 	}
@@ -1812,7 +1859,7 @@ func cmdReopen(s *task.Manager, args []string, jsonOut bool) int {
 // to in-review so the PR monitor loop can take over (auto-merge / done on
 // merge). Use when a PR was opened outside of Sybra (manually or by an external
 // tool) and the task's pr_number is still 0.
-func cmdLinkPR(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
+func cmdLinkPR(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) < 2 {
 		return fatal(jsonOut, "usage: link-pr <task-id> <pr-number>")
 	}
@@ -1822,7 +1869,7 @@ func cmdLinkPR(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 		return fatal(jsonOut, "pr-number must be a positive integer, got %q", args[1])
 	}
 
-	t, err := getTaskViaAPIOrFS(s, api, id)
+	t, err := getTask(s, id)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
@@ -1835,12 +1882,12 @@ func cmdLinkPR(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 	}
 
 	prev := t
-	t, handledByAPI, err := updateTaskViaAPIOrFS(s, api, id, updates)
+	t, handledByAPI, err := updateTask(s, id, updates)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
 	if !handledByAPI && prev.Status == task.StatusHumanRequired && t.Status != task.StatusHumanRequired {
-		appendManualDecisionProgress(t.ID, string(prev.Status), string(t.Status), t.StatusReason)
+		appendManualDecisionProgress(api, t.ID, string(prev.Status), string(t.Status), t.StatusReason)
 	}
 
 	if jsonOut {
@@ -1987,7 +2034,7 @@ func filterProject(tasks []task.Task, projectID string) []task.Task {
 	return out
 }
 
-func cmdProject(ps *project.Store, args []string, jsonOut bool) int {
+func cmdProject(ps projectBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: project <list|get|create|update|delete> [flags]")
 	}
@@ -2008,7 +2055,7 @@ func cmdProject(ps *project.Store, args []string, jsonOut bool) int {
 	}
 }
 
-func cmdProjectList(ps *project.Store, jsonOut bool) int {
+func cmdProjectList(ps projectBoard, jsonOut bool) int {
 	projects, err := ps.List()
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
@@ -2028,7 +2075,7 @@ func cmdProjectList(ps *project.Store, jsonOut bool) int {
 	return 0
 }
 
-func cmdProjectGet(ps *project.Store, args []string, jsonOut bool) int {
+func cmdProjectGet(ps projectBoard, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: project get <id>")
 	}
@@ -2044,7 +2091,7 @@ func cmdProjectGet(ps *project.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdProjectCreate(ps *project.Store, args []string, jsonOut bool) int {
+func cmdProjectCreate(ps projectBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("project create", flag.ContinueOnError)
 	url := fs.String("url", "", "GitHub repository URL (required)")
 	ptype := fs.String("type", "pet", "project type: pet|work")
@@ -2065,7 +2112,7 @@ func cmdProjectCreate(ps *project.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdProjectUpdate(ps *project.Store, args []string, jsonOut bool) int {
+func cmdProjectUpdate(ps projectBoard, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: project update <id> [--type work|pet] [--setup-commands cmd1,cmd2]")
 	}
@@ -2104,7 +2151,7 @@ func cmdProjectUpdate(ps *project.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdProjectDelete(ps *project.Store, args []string, jsonOut bool) int {
+func cmdProjectDelete(ps projectBoard, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: project delete <id>")
 	}
@@ -2137,7 +2184,7 @@ type boardSummary struct {
 	Blocked       []boardTask    `json:"blocked"`
 }
 
-func cmdBoard(s *task.Manager, jsonOut bool) int {
+func cmdBoard(s taskBoard, jsonOut bool) int {
 	tasks, err := s.List()
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
@@ -2457,21 +2504,21 @@ func formatHealthNumber(v float64, digits int) string {
 	return fmt.Sprintf("%.*f", digits, v)
 }
 
-func cmdMonitor(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
+func cmdMonitor(cfg *config.Config, api *apiClient, store *task.Manager, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: monitor <scan|map-duplicates> [--json]")
 	}
 	switch args[0] {
 	case "scan":
-		return cmdMonitorScan(cfg, store, jsonOut)
+		return cmdMonitorScan(cfg, api, store, jsonOut)
 	case "map-duplicates":
-		return cmdMonitorMapDuplicates(cfg, args[1:], jsonOut)
+		return cmdMonitorMapDuplicates(cfg, api, args[1:], jsonOut)
 	default:
 		return fatal(jsonOut, "unknown monitor subcommand: %s", args[0])
 	}
 }
 
-func cmdMonitorMapDuplicates(cfg *config.Config, args []string, jsonOut bool) int {
+func cmdMonitorMapDuplicates(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	flags := flag.NewFlagSet("monitor map-duplicates", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	fingerprint := flags.String("fingerprint", "", "incident fingerprint")
@@ -2496,6 +2543,17 @@ func cmdMonitorMapDuplicates(cfg *config.Config, args []string, jsonOut bool) in
 	}
 	slices.Sort(duplicates)
 	duplicates = slices.Compact(duplicates)
+	// The ledger and the issue repo are both the owning instance's, so a
+	// reachable server runs the whole mapping rather than this process
+	// reading one machine's incident and editing another's issues.
+	if api != nil {
+		res, err := callAPI[monitorMapDuplicatesDTO](api, taskServiceName, "MapDuplicateIncidents", *fingerprint, duplicates, *coverage)
+		if err != nil {
+			return fatal(jsonOut, "monitor map-duplicates: %v", err)
+		}
+		return reportMapDuplicates(jsonOut, res.Fingerprint, res.Canonical, res.Duplicates)
+	}
+
 	ledger, err := monitor.NewIncidentStore(config.MonitorIncidentsDir())
 	if err != nil {
 		return fatal(jsonOut, "monitor map-duplicates: %v", err)
@@ -2521,15 +2579,34 @@ func cmdMonitorMapDuplicates(cfg *config.Config, args []string, jsonOut bool) in
 	if err := ledger.Link(in.Fingerprint, "", "", duplicates); err != nil {
 		return fatal(jsonOut, "monitor map-duplicates: persist mapping: %v", err)
 	}
-	result := map[string]any{"fingerprint": in.Fingerprint, "canonical": in.IssueURL, "duplicates": duplicates}
+	return reportMapDuplicates(jsonOut, in.Fingerprint, in.IssueURL, duplicates)
+}
+
+// monitorMapDuplicatesDTO mirrors the server's wire shape for a duplicate mapping.
+type monitorMapDuplicatesDTO struct {
+	Fingerprint string `json:"fingerprint"`
+	Canonical   string `json:"canonical"`
+	Duplicates  []int  `json:"duplicates"`
+}
+
+func reportMapDuplicates(jsonOut bool, fingerprint, canonical string, duplicates []int) int {
 	if jsonOut {
-		return printJSON(result)
+		return printJSON(map[string]any{"fingerprint": fingerprint, "canonical": canonical, "duplicates": duplicates})
 	}
-	fmt.Printf("monitor: mapped %d duplicate issue(s) to %s\n", len(duplicates), in.IssueURL)
+	fmt.Printf("monitor: mapped %d duplicate issue(s) to %s\n", len(duplicates), canonical)
 	return 0
 }
 
-func cmdMonitorScan(cfg *config.Config, store *task.Manager, jsonOut bool) int {
+func cmdMonitorScan(cfg *config.Config, api *apiClient, store *task.Manager, jsonOut bool) int {
+	// A scan run here would report what a second reader of the same files
+	// sees, not what the running instance sees, so a reachable server scans.
+	if api != nil {
+		report, err := callAPIWithin[monitor.Report](api, apiSlowCallTimeout, taskServiceName, "ScanMonitor")
+		if err != nil {
+			return fatal(jsonOut, "scan: %v", err)
+		}
+		return reportMonitorScan(jsonOut, report)
+	}
 	svc := monitor.NewService(monitor.Deps{
 		Cfg:        cfg.Monitor,
 		Tasks:      store,
@@ -2542,6 +2619,10 @@ func cmdMonitorScan(cfg *config.Config, store *task.Manager, jsonOut bool) int {
 	if err != nil {
 		return fatal(jsonOut, "scan: %v", err)
 	}
+	return reportMonitorScan(jsonOut, report)
+}
+
+func reportMonitorScan(jsonOut bool, report monitor.Report) int {
 	if jsonOut {
 		return printJSON(report)
 	}
@@ -2574,7 +2655,7 @@ func cmdMonitorScan(cfg *config.Config, store *task.Manager, jsonOut bool) int {
 	return 0
 }
 
-func cmdAudit(cfg *config.Config, args []string, jsonOut bool) int {
+func cmdAudit(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("audit", flag.ContinueOnError)
 	since := fs.String("since", "24h", "start of time window (duration like 24h/7d or date YYYY-MM-DD)")
 	until := fs.String("until", "", "end of time window (date YYYY-MM-DD, default: now)")
@@ -2601,7 +2682,7 @@ func cmdAudit(cfg *config.Config, args []string, jsonOut bool) int {
 		TaskID: *taskID,
 	}
 
-	events, err := audit.Read(cfg.AuditDir(), q)
+	events, err := readAuditEvents(cfg, api, q)
 	if err != nil {
 		return fatal(jsonOut, "read audit: %v", err)
 	}
@@ -2903,7 +2984,7 @@ func doctorUsageBlock() string {
            0 ok, 1 a delete failed, 2 bad flags/arguments.`
 }
 
-func cmdArtifact(args []string, jsonOut bool) int {
+func cmdArtifact(api *apiClient, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "artifact: subcommand required (list|get|reindex)")
 	}
@@ -2911,22 +2992,22 @@ func cmdArtifact(args []string, jsonOut bool) int {
 	store := artifact.New(config.ArtifactsDir())
 	switch sub {
 	case "list":
-		return cmdArtifactList(store, rest, jsonOut)
+		return cmdArtifactList(api, store, rest, jsonOut)
 	case "get":
-		return cmdArtifactGet(store, rest)
+		return cmdArtifactGet(api, store, rest)
 	case "reindex":
-		return cmdArtifactReindex(store, rest, jsonOut)
+		return cmdArtifactReindex(api, store, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "artifact: unknown subcommand %q", sub)
 	}
 }
 
-func cmdArtifactList(store *artifact.Store, args []string, jsonOut bool) int {
+func cmdArtifactList(api *apiClient, store *artifact.Store, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "artifact list: task-id required")
 	}
 	taskID := args[0]
-	metas, err := store.List(taskID)
+	metas, err := listArtifacts(api, store, taskID)
 	if err != nil {
 		return fatal(jsonOut, "artifact list: %v", err)
 	}
@@ -2947,13 +3028,13 @@ func cmdArtifactList(store *artifact.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdArtifactGet(store *artifact.Store, args []string) int {
+func cmdArtifactGet(api *apiClient, store *artifact.Store, args []string) int {
 	if len(args) < 2 {
 		fmt.Fprintln(os.Stderr, "artifact get: task-id and name required")
 		return 1
 	}
 	taskID, name := args[0], args[1]
-	data, _, err := store.Read(taskID, name)
+	data, err := readArtifact(api, store, taskID, name)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -2962,12 +3043,12 @@ func cmdArtifactGet(store *artifact.Store, args []string) int {
 	return 0
 }
 
-func cmdArtifactReindex(store *artifact.Store, args []string, jsonOut bool) int {
+func cmdArtifactReindex(api *apiClient, store *artifact.Store, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "artifact reindex: task-id required")
 	}
 	taskID := args[0]
-	if err := store.Reindex(taskID); err != nil {
+	if err := reindexArtifacts(api, store, taskID); err != nil {
 		return fatal(jsonOut, "artifact reindex: %v", err)
 	}
 	if jsonOut {
@@ -2977,7 +3058,8 @@ func cmdArtifactReindex(store *artifact.Store, args []string, jsonOut bool) int 
 	return 0
 }
 
-func cmdProgress(s *task.Manager, projStore *project.Store, args []string, jsonOut bool) int {
+// cmdProgress reads and writes the progress log through a reachable server. The artifact store sits beside the board it belongs to, so a client appending to its own disk while touching another machine's task would write the entry where the owning instance never reads it.
+func cmdProgress(s taskBoard, projStore projectBoard, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "progress: subcommand required (add|list)")
 	}
@@ -2985,15 +3067,15 @@ func cmdProgress(s *task.Manager, projStore *project.Store, args []string, jsonO
 	store := artifact.New(config.ArtifactsDir())
 	switch sub {
 	case "add":
-		return cmdProgressAdd(s, projStore, store, rest, jsonOut)
+		return cmdProgressAdd(s, projStore, api, store, rest, jsonOut)
 	case "list":
-		return cmdProgressList(store, rest, jsonOut)
+		return cmdProgressList(api, store, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "progress: unknown subcommand %q", sub)
 	}
 }
 
-func cmdProgressAdd(s *task.Manager, projStore *project.Store, store *artifact.Store, args []string, jsonOut bool) int {
+func cmdProgressAdd(s taskBoard, projStore projectBoard, api *apiClient, store *artifact.Store, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "progress add: task-id required")
 	}
@@ -3010,6 +3092,14 @@ func cmdProgressAdd(s *task.Manager, projStore *project.Store, store *artifact.S
 	}
 	if !artifact.ValidProgressKind(*kind) {
 		return fatal(jsonOut, "progress add: invalid --kind %q (want %s)", *kind, strings.Join(artifact.ProgressKinds(), "|"))
+	}
+
+	if api != nil {
+		entry, err := callAPI[artifact.ProgressEntry](api, taskServiceName, "AppendTaskProgress", taskID, *kind, *role, *message)
+		if err != nil {
+			return fatal(jsonOut, "progress add: %v", err)
+		}
+		return reportProgressAdd(jsonOut, taskID, entry)
 	}
 
 	t, err := s.Get(taskID)
@@ -3034,19 +3124,23 @@ func cmdProgressAdd(s *task.Manager, projStore *project.Store, store *artifact.S
 		slog.Warn("progress.add.touch", "task_id", taskID, "err", tErr)
 	}
 
+	return reportProgressAdd(jsonOut, taskID, entry)
+}
+
+func reportProgressAdd(jsonOut bool, taskID string, entry artifact.ProgressEntry) int {
 	if jsonOut {
 		return printJSON(entry)
 	}
-	fmt.Printf("Recorded %s on task %s\n", *kind, taskID)
+	fmt.Printf("Recorded %s on task %s\n", entry.Kind, taskID)
 	return 0
 }
 
-func cmdProgressList(store *artifact.Store, args []string, jsonOut bool) int {
+func cmdProgressList(api *apiClient, store *artifact.Store, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "progress list: task-id required")
 	}
 	taskID := args[0]
-	entries, err := store.ReadProgress(taskID)
+	entries, err := readProgress(api, store, taskID)
 	if err != nil {
 		return fatal(jsonOut, "progress list: %v", err)
 	}
@@ -3067,11 +3161,33 @@ func cmdProgressList(store *artifact.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
+func readProgress(api *apiClient, store *artifact.Store, taskID string) ([]artifact.ProgressEntry, error) {
+	if api != nil {
+		entries, err := callAPI[[]artifact.ProgressEntry](api, taskServiceName, "ListTaskProgress", taskID)
+		return nilIfEmpty(entries), err
+	}
+	return store.ReadProgress(taskID)
+}
+
+// nilIfEmpty restores the filesystem-backed form's JSON for an empty result.
+//
+// ListTaskProgress normalises to an empty slice because the GUI wants an array,
+// but the local read returns nil, which marshals to null. A script piping
+// `--json` through jq sees a different type depending on whether a server is
+// up, so the CLI undoes the normalisation rather than changing what those
+// scripts already parse.
+func nilIfEmpty[T any](values []T) []T {
+	if len(values) == 0 {
+		return nil
+	}
+	return values
+}
+
 // cmdTrash handles `sybra-cli trash list|restore <id>|delete <id>|empty` —
 // recovery and permanent-purge for tasks soft-deleted by Store.Delete (see
 // internal/task.Store's ListTrash/RestoreFromTrash/DeleteTrashedGeneration/
 // PruneAllTrash).
-func cmdTrash(s *task.Manager, args []string, jsonOut bool) int {
+func cmdTrash(s taskBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: trash <list|restore|delete|empty>")
 	}
@@ -3089,7 +3205,7 @@ func cmdTrash(s *task.Manager, args []string, jsonOut bool) int {
 	}
 }
 
-func cmdTrashList(s *task.Manager, jsonOut bool) int {
+func cmdTrashList(s taskBoard, jsonOut bool) int {
 	entries, err := s.ListTrash()
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
@@ -3109,7 +3225,7 @@ func cmdTrashList(s *task.Manager, jsonOut bool) int {
 	return 0
 }
 
-func cmdTrashRestore(s *task.Manager, args []string, jsonOut bool) int {
+func cmdTrashRestore(s taskBoard, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: trash restore <id>")
 	}
@@ -3157,7 +3273,7 @@ func trashDeleteMessage(id string, removed bool) string {
 // away, bypassing the retention window — for a compliance request or a
 // leaked credential that needs the content gone now, not after
 // RetentionDays.
-func cmdTrashDelete(s *task.Manager, args []string, jsonOut bool) int {
+func cmdTrashDelete(s taskBoard, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: trash delete <id>")
 	}
@@ -3174,7 +3290,7 @@ func cmdTrashDelete(s *task.Manager, args []string, jsonOut bool) int {
 
 // cmdTrashEmpty permanently purges every trashed generation, regardless of
 // age.
-func cmdTrashEmpty(s *task.Manager, jsonOut bool) int {
+func cmdTrashEmpty(s taskBoard, jsonOut bool) int {
 	rep, err := s.PruneAllTrash()
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
@@ -3198,7 +3314,7 @@ type taskHistoryEntry struct {
 // read-only convenience wrapper around `git log` against
 // config.TaskSnapshotGitDir(); plain git against that path suffices for
 // actual recovery (see docs/tasks-snapshots.md).
-func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
+func cmdTasksHistory(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("tasks-history", flag.ContinueOnError)
 	limit := fs.Int("limit", 20, "max number of commits to show")
 	fs.SetOutput(io.Discard)
@@ -3207,6 +3323,14 @@ func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
 	}
 	if *limit <= 0 {
 		*limit = 20
+	}
+
+	if api != nil {
+		entries, err := callAPI[[]taskHistoryEntry](api, taskServiceName, "ListTaskSnapshotHistory", *limit)
+		if err != nil {
+			return fatal(jsonOut, "%v", err)
+		}
+		return reportTaskHistory(jsonOut, entries)
 	}
 
 	ctx := context.Background()
@@ -3245,6 +3369,10 @@ func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
 		}
 	}
 
+	return reportTaskHistory(jsonOut, entries)
+}
+
+func reportTaskHistory(jsonOut bool, entries []taskHistoryEntry) int {
 	if jsonOut {
 		if entries == nil {
 			entries = []taskHistoryEntry{}
@@ -3553,7 +3681,7 @@ func addCapacityFindings(report *doctorCapacityReport, add func(severity, format
 func resolveCapacity(cfg *config.Config, allowHTTP bool) *doctorCapacityReport {
 	var api *apiClient
 	if allowHTTP {
-		if c, ok := newAPIClient(cfg); ok && c.reachable(context.Background()) {
+		if c, err := newAPIClient(cfg); err == nil && c.reachable(context.Background()) {
 			api = c
 		}
 	}
@@ -3870,4 +3998,38 @@ func addPathPermFinding(add func(severity, format string, a ...any), label, path
 	if perm := info.Mode().Perm(); perm&^target != 0 {
 		add("warning", "%s permissions are %04o, want no broader than %04o: %s", label, perm, target, path)
 	}
+}
+
+// readAuditEvents reads the audit log of whichever instance owns the board. The log is a directory of daily files under that instance's home, so reading this machine's copy would answer the question about the wrong machine.
+func readAuditEvents(cfg *config.Config, api *apiClient, q audit.Query) ([]audit.Event, error) {
+	if api != nil {
+		return callAPI[[]audit.Event](api, auditServiceName, "QueryAuditEvents", q)
+	}
+	return audit.Read(cfg.AuditDir(), q)
+}
+
+// The artifact store sits beside the board it belongs to, so these read the
+// instance that owns the task rather than this machine's copy.
+
+func listArtifacts(api *apiClient, store *artifact.Store, taskID string) ([]artifact.Meta, error) {
+	if api != nil {
+		return callAPI[[]artifact.Meta](api, taskServiceName, "ListTaskArtifactMetas", taskID)
+	}
+	return store.List(taskID)
+}
+
+func readArtifact(api *apiClient, store *artifact.Store, taskID, name string) ([]byte, error) {
+	if api != nil {
+		return callAPI[[]byte](api, taskServiceName, "ReadTaskArtifact", taskID, name)
+	}
+	data, _, err := store.Read(taskID, name)
+	return data, err
+}
+
+func reindexArtifacts(api *apiClient, store *artifact.Store, taskID string) error {
+	if api != nil {
+		_, err := callAPI[struct{}](api, taskServiceName, "ReindexTaskArtifacts", taskID)
+		return err
+	}
+	return store.Reindex(taskID)
 }

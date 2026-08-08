@@ -37,7 +37,7 @@ func TestClassifyOneFailureMarksRetryableAndPreservesTaskFields(t *testing.T) {
 		t.Fatalf("Update tags: %v", err)
 	}
 
-	_, err = classifyOne(failingTriageClassifier{}, mgr, nil, created, nil, time.Second)
+	_, err = classifyOne(nil, failingTriageClassifier{}, mgr, nil, created, nil, time.Second, "")
 	if err == nil {
 		t.Fatal("classifyOne succeeded; want classifier error")
 	}
@@ -55,8 +55,8 @@ func TestClassifyOneFailureMarksRetryableAndPreservesTaskFields(t *testing.T) {
 	if got.Status == task.StatusHumanRequired {
 		t.Fatalf("status = human-required; classifier failures must stay non-human")
 	}
-	if !strings.HasPrefix(got.StatusReason, triageRetryableStatusReasonPrefix) {
-		t.Fatalf("status_reason = %q, want retryable prefix %q", got.StatusReason, triageRetryableStatusReasonPrefix)
+	if !strings.HasPrefix(got.StatusReason, triage.RetryableStatusReasonPrefix) {
+		t.Fatalf("status_reason = %q, want retryable prefix %q", got.StatusReason, triage.RetryableStatusReasonPrefix)
 	}
 	if !strings.Contains(got.StatusReason, "provider subprocess exited") {
 		t.Errorf("status_reason = %q, want classifier detail", got.StatusReason)
@@ -100,7 +100,7 @@ func TestCmdTriageClassifyRefusesNonNewTask(t *testing.T) {
 	cfg := config.DefaultConfig()
 
 	code, _ := captureStdout(t, func() int {
-		return cmdTriageClassify(cfg, mgr, ps, []string{created.ID}, true)
+		return cmdTriageClassify(cfg, nil, mgr, mgr, ps, []string{created.ID}, true)
 	})
 	if code == 0 {
 		t.Fatalf("expected non-zero exit classifying a non-new task")

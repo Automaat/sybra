@@ -7,18 +7,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
-	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/triage"
 )
-
-const triageRetryableStatusReasonPrefix = "triage retryable: "
 
 // triageResult is the CLI's JSON output for a classify call.
 type triageResult struct {
@@ -28,6 +24,8 @@ type triageResult struct {
 
 func cmdTriage(
 	cfg *config.Config,
+	api *apiClient,
+	board taskBoard,
 	store *task.Manager,
 	projStore *project.Store,
 	args []string,
@@ -39,7 +37,7 @@ func cmdTriage(
 	sub, rest := args[0], args[1:]
 	switch sub {
 	case "classify":
-		return cmdTriageClassify(cfg, store, projStore, rest, jsonOut)
+		return cmdTriageClassify(cfg, api, board, store, projStore, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown triage command: %s", sub)
 	}
@@ -47,6 +45,8 @@ func cmdTriage(
 
 func cmdTriageClassify(
 	cfg *config.Config,
+	api *apiClient,
+	board taskBoard,
 	store *task.Manager,
 	projStore *project.Store,
 	args []string,
@@ -72,7 +72,7 @@ func cmdTriageClassify(
 	var targets []task.Task
 	switch {
 	case *all:
-		list, listErr := store.List()
+		list, listErr := board.List()
 		if listErr != nil {
 			return fatal(jsonOut, "list tasks: %v", listErr)
 		}
@@ -83,7 +83,7 @@ func cmdTriageClassify(
 		}
 	case len(fs.Args()) == 1:
 		id := fs.Args()[0]
-		t, getErr := store.Get(id)
+		t, getErr := board.Get(id)
 		if getErr != nil {
 			return fatal(jsonOut, "get %s: %v", id, getErr)
 		}
@@ -113,7 +113,7 @@ func cmdTriageClassify(
 	results := make([]triageResult, 0, len(targets))
 	var hadErr bool
 	for i := range targets {
-		result, classErr := classifyOne(classifier, store, al, targets[i], projects, *timeout)
+		result, classErr := classifyOne(api, classifier, store, al, targets[i], projects, *timeout, *model)
 		if classErr != nil {
 			hadErr = true
 			if jsonOut {
@@ -126,16 +126,16 @@ func cmdTriageClassify(
 		results = append(results, result)
 	}
 
-	if jsonOut {
-		switch {
-		case *all:
-			_ = printJSON(results)
-		case len(results) == 1:
-			_ = printJSON(results[0])
-		default:
-			_ = printJSON(results)
-		}
-	} else {
+	reportTriageResults(jsonOut, *all, results)
+
+	if hadErr {
+		return 1
+	}
+	return 0
+}
+
+func reportTriageResults(jsonOut, all bool, results []triageResult) {
+	if !jsonOut {
 		for i := range results {
 			fmt.Printf(
 				"Classified %s → %s (%s, %s, %s)\n",
@@ -146,22 +146,30 @@ func cmdTriageClassify(
 				results[i].Task.Status,
 			)
 		}
+		return
 	}
-
-	if hadErr {
-		return 1
+	if !all && len(results) == 1 {
+		_ = printJSON(results[0])
+		return
 	}
-	return 0
+	_ = printJSON(results)
 }
 
 func classifyOne(
+	api *apiClient,
 	classifier triage.Classifier,
 	store *task.Manager,
 	al *audit.Logger,
 	t task.Task,
 	projects []project.Project,
 	timeout time.Duration,
+	model string,
 ) (triageResult, error) {
+	// Classification applies its verdict atomically; a reachable server runs
+	// the whole operation so the apply lands under the locks it holds.
+	if api != nil {
+		return callAPIWithin[triageResult](api, max(timeout, apiCallTimeout), taskServiceName, "ClassifyTask", t.ID, model)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -179,18 +187,7 @@ func classifyOne(
 }
 
 func markTriageRetryable(store *task.Manager, t task.Task, err error) error {
-	reason := triageRetryableReason(err)
+	reason := triage.RetryableStatusReason(err)
 	_, updateErr := store.Update(t.ID, task.Update{StatusReason: &reason})
 	return updateErr
-}
-
-func triageRetryableReason(err error) string {
-	detail := strings.TrimSpace(err.Error())
-	if detail == "" {
-		detail = "unknown classifier failure"
-	}
-	detail = strings.Join(strings.Fields(detail), " ")
-	const maxDetailLen = 500
-	detail = textutil.TruncateBytes(detail, maxDetailLen, "...")
-	return triageRetryableStatusReasonPrefix + "classifier failed: " + detail
 }

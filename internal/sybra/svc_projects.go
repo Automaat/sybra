@@ -9,6 +9,7 @@ import (
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/notification"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/reject"
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
@@ -29,7 +30,46 @@ func (s *ProjectService) ListProjects() ([]project.Project, error) {
 
 // GetProject returns a single project by ID.
 func (s *ProjectService) GetProject(id string) (project.Project, error) {
-	return s.projects.Get(id)
+	p, err := s.projects.Get(id)
+	return p, boardRejectionFor("project", id, err)
+}
+
+// GetProjectRawType returns a project's type exactly as recorded, without
+// GetProject's missing-type→pet coercion.
+//
+// A client cannot derive this from GetProject: the confidentiality guard needs
+// "unset" to stay distinguishable from "pet" so a work project with an absent
+// type field is never routed to an untrusted follower, and GetProject has
+// already collapsed the two by the time the record reaches the wire.
+func (s *ProjectService) GetProjectRawType(id string) (string, error) {
+	raw, err := s.projects.RawType(id)
+	if err != nil {
+		return "", boardRejectionFor("project", id, err)
+	}
+	return string(raw), nil
+}
+
+// CreateProjectAndClone registers a repo and finishes its clone before
+// returning, reporting a clone failure to the caller.
+//
+// CreateProject's background clone suits the GUI, which watches the record
+// flip out of `cloning`. A CLI caller has nothing to watch: it exits, so an
+// async create would print success on a repo that never cloned and hand back
+// a record in `cloning` where the filesystem-backed command returned `ready`.
+func (s *ProjectService) CreateProjectAndClone(url, ptype string) (project.Project, error) {
+	s.logger.Info("project.create.sync", "url", url, "type", ptype)
+	p, err := s.projects.Create(url, project.ProjectType(ptype))
+	if err != nil {
+		s.logger.Error("project.create.sync.failed", "url", url, "err", err)
+		if reject.Is(err) {
+			return project.Project{}, validationError(err.Error())
+		}
+		// A clone failure wraps the git invocation, which carries the
+		// server's clone path. It stays in the log rather than going on
+		// the wire; the caller still gets a loud, non-generic failure.
+		return project.Project{}, unavailableError("clone failed; see the server log for the git error")
+	}
+	return p, nil
 }
 
 // CreateProject registers a GitHub repo and starts a bare clone in the
@@ -39,7 +79,7 @@ func (s *ProjectService) CreateProject(url, ptype string) (project.Project, erro
 	p, err := s.projects.CreateMeta(url, project.ProjectType(ptype))
 	if err != nil {
 		s.logger.Error("project.create.failed", "url", url, "err", err)
-		return p, err
+		return p, boardRejection(err)
 	}
 
 	opID := ""
@@ -92,7 +132,7 @@ func (s *ProjectService) UpdateProject(id, ptype string) (project.Project, error
 	p, err := s.projects.Update(id, project.ProjectType(ptype))
 	if err != nil {
 		s.logger.Error("project.update.failed", "id", id, "err", err)
-		return p, err
+		return p, boardRejectionFor("project", id, err)
 	}
 	return p, nil
 }
@@ -113,7 +153,7 @@ func (s *ProjectService) SetProjectSetupCommands(id string, cmds []string) (proj
 	p, err := s.projects.SetSetupCommands(id, cmds)
 	if err != nil {
 		s.logger.Error("project.set-setup-commands.failed", "id", id, "err", err)
-		return p, err
+		return p, boardRejectionFor("project", id, err)
 	}
 	return p, nil
 }
@@ -134,13 +174,16 @@ func (s *ProjectService) DeleteProject(id string) error {
 	s.logger.Info("project.delete", "id", id)
 	if err := s.projects.Delete(id); err != nil {
 		s.logger.Error("project.delete.failed", "id", id, "err", err)
-		return err
+		return boardRejectionFor("project", id, err)
 	}
 	return nil
 }
 
 // ListWorktrees returns all git worktrees for the given project's bare clone.
 func (s *ProjectService) ListWorktrees(projectID string) ([]project.Worktree, error) {
+	if s.worktrees == nil {
+		return nil, unavailableError("worktrees unavailable")
+	}
 	// context.Background(): Wails-bound method with no ctx.
 	return s.worktrees.List(context.Background(), projectID)
 }

@@ -96,14 +96,16 @@ func TestProductionHumanRequiredWriters(t *testing.T) {
 func TestDynamicHumanRequiredBoundariesAreTyped(t *testing.T) {
 	root := repositoryRoot(t)
 	markers := map[string][]string{
-		"cmd/sybra-cli/harness_evolution.go": {
+		// Proposal filing moved out of sybra-cli so the CLI and the server
+		// share one dedupe and one scrub rule; the boundary moved with it.
+		"internal/harnessevolution/filing.go": {
 			`update.Escalation = task.PolicyRequired("harness.proposal_approval_required"`,
 		},
 		"cmd/sybra-cli/main.go": {
 			`extra.Escalation = task.OperatorDecisionEvidence("operator.cli_status_change"`,
 			`init.Escalation = task.OperatorDecisionEvidence("operator.handoff_status"`,
 		},
-		"cmd/sybra-cli/prompt_lab.go": {
+		"internal/promptlab/filing.go": {
 			`update.Escalation = task.PolicyRequired("promptlab.approval_required"`,
 		},
 		"internal/sybra/app_promptlab.go": {
