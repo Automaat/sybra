@@ -322,6 +322,9 @@ func TestExecAdmissionPreflight_DisabledDecisionReasonDistinguishesSkip(t *testi
 	if len(decisions) != 1 || decisions[0].Outcome != "admitted" || decisions[0].Reason != "disabled" {
 		t.Fatalf("decisions = %+v, want single admitted/disabled decision", decisions)
 	}
+	if decisions[0].FailureCode != "admission.disabled" {
+		t.Fatalf("disabled failure code = %q, want stable typed code", decisions[0].FailureCode)
+	}
 }
 
 func TestExecAdmissionPreflight_RecordsAdmissionDecision(t *testing.T) {
@@ -346,6 +349,9 @@ func TestExecAdmissionPreflight_RecordsAdmissionDecision(t *testing.T) {
 	}
 	if decisions[0].Reason != "admitted" {
 		t.Fatalf("decision.Reason = %q, want %q — checks that actually ran must be distinguishable from a disabled no-op", decisions[0].Reason, "admitted")
+	}
+	if decisions[0].FailureCode != "admission.admitted" {
+		t.Fatalf("admitted failure code = %q, want stable typed code", decisions[0].FailureCode)
 	}
 
 	invalid := strings.Replace(validPlanContract("fa6919fc"),

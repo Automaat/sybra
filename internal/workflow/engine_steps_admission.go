@@ -183,6 +183,7 @@ func (e *Engine) admitTask(step *Step, t TaskInfo, output string) (StepOutput, e
 		Outcome:        "admitted",
 		RiskTier:       planContractRiskTier(t.PlanContract),
 		PermissionTier: planContractPermissionTier(t.PlanContract),
+		FailureCode:    "admission." + output,
 		Reason:         output,
 	})
 	return StepOutput{StepID: step.ID, Status: "completed", Output: output}, nil
