@@ -45,10 +45,14 @@ func TestControlPlaneAnomaliesConsumeTypedLeaseAndReconciliationResults(t *testi
 	got := controlPlaneAnomalies([]audit.Event{
 		{Timestamp: now, Type: audit.EventAttemptLeasesReconciled, Data: map[string]any{"count": 2}},
 		{Timestamp: now, Type: audit.EventReconciliationDecided, TaskID: "work-task-opaque", Data: map[string]any{"action": "repair", "project_scope": "work-opaque", "confidential": true}},
+		{Timestamp: now, Type: audit.EventReconciliationDecided, TaskID: "work-task-opaque", Data: map[string]any{"action": "quarantine", "project_scope": "work-opaque", "confidential": true}},
 		{Timestamp: now, Type: audit.EventReconciliationDecided, Data: map[string]any{"action": "advance"}},
 	})
-	if len(got) != 2 {
+	if len(got) != 3 {
 		t.Fatalf("typed control-plane anomalies = %+v", got)
+	}
+	if want := Fingerprint(KindLostAgent, "", map[string]any{"cause": "orphan_attempt_lease"}); got[0].Fingerprint != want {
+		t.Fatalf("lease fingerprint = %q, want %q", got[0].Fingerprint, want)
 	}
 	leaseCause := rootCauseFor(got[0], "fleet", "g")
 	if leaseCause.FailureCode != "orphan_attempt_lease" || leaseCause.Capability != "attempt-leases" {
@@ -56,6 +60,9 @@ func TestControlPlaneAnomaliesConsumeTypedLeaseAndReconciliationResults(t *testi
 	}
 	if !got[1].Confidential || got[1].IncidentScope != "work-opaque" || got[1].IncidentTaskID != "work-task-opaque" {
 		t.Fatalf("reconciliation confidentiality projection = %+v", got[1])
+	}
+	if got[1].Fingerprint == "" || got[2].Fingerprint == "" || got[1].Fingerprint == got[2].Fingerprint {
+		t.Fatalf("reconciliation action fingerprints are not distinct: repair=%q quarantine=%q", got[1].Fingerprint, got[2].Fingerprint)
 	}
 }
 

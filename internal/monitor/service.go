@@ -691,11 +691,13 @@ func controlPlaneAnomalies(auditEvents []audit.Event) []Anomaly {
 			if count <= 0 {
 				continue
 			}
-			out = append(out, Anomaly{Kind: KindLostAgent, DetectedAt: e.Timestamp, Evidence: map[string]any{
-				"root_cause_certified": true, "failure_code": "orphan_attempt_lease",
-				"component": "dispatch", "capability": "attempt-leases",
-				"certificate_id": "audit:attempt-leases", "evidence_fingerprint": "orphan-reconciled",
-			}})
+			out = append(out, Anomaly{Kind: KindLostAgent,
+				Fingerprint: Fingerprint(KindLostAgent, "", map[string]any{"cause": "orphan_attempt_lease"}),
+				DetectedAt:  e.Timestamp, Evidence: map[string]any{
+					"root_cause_certified": true, "failure_code": "orphan_attempt_lease",
+					"component": "dispatch", "capability": "attempt-leases",
+					"certificate_id": "audit:attempt-leases", "evidence_fingerprint": "orphan-reconciled",
+				}})
 		case audit.EventReconciliationDecided:
 			action, _ := e.Data["action"].(string)
 			if action != "repair" && action != "quarantine" && action != "human-decision" {
@@ -703,7 +705,9 @@ func controlPlaneAnomalies(auditEvents []audit.Event) []Anomaly {
 			}
 			scope, _ := e.Data["project_scope"].(string)
 			confidential, _ := e.Data["confidential"].(bool)
-			out = append(out, Anomaly{Kind: KindBottleneck, TaskID: e.TaskID, DetectedAt: e.Timestamp,
+			out = append(out, Anomaly{Kind: KindBottleneck, TaskID: e.TaskID,
+				Fingerprint:   Fingerprint(KindBottleneck, e.TaskID, map[string]any{"cause": action}),
+				DetectedAt:    e.Timestamp,
 				IncidentScope: scope, IncidentTaskID: e.TaskID, Confidential: confidential,
 				Evidence: map[string]any{
 					"root_cause_certified": true, "failure_code": "reconciliation." + action,
