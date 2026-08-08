@@ -72,6 +72,7 @@ type TaskInfo struct {
 	CurrentTestFailures   string
 	AcceptanceLedger      string
 	SpecDecision          string
+	CodeReviewVerdict     string
 	Attachments           []AttachmentInfo
 	// PlanDrafts holds raw per-provider plans during dual-/N-provider planning.
 	// Keys are parallel child step IDs (e.g. "plan_claude", "plan_codex").
@@ -149,6 +150,10 @@ type TaskProvider interface {
 	UpdateTaskBlocker(id string, status taskstatus.Status, reason string, state blocker.State) error
 	UpdateTaskPR(id string, prNumber int) error
 	MarkTaskReviewed(id string) error
+	// SetCodeReviewVerdict persists the review-role step's structured verdict
+	// ("CLEAN"/"NEEDS_FIXES") separately from the CodeReview sidecar markdown,
+	// so a later re-triggered workflow can read it without re-parsing text.
+	SetCodeReviewVerdict(id, verdict string) error
 	MarkAgentRunProtocolViolation(taskID, agentID, violation string) error
 	MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint string) error
 	RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error
@@ -486,6 +491,11 @@ type Engine struct {
 	resumeError      *logging.ErrorThrottle
 	demotionThrottle *logging.ErrorThrottle
 	resumeSkip       *logging.InfoThrottle
+	// shadowDivergence throttles workflow.reducer.shadow_* log lines (see
+	// shadow_reducer.go) — Reduce runs read-only alongside every AdvanceStep
+	// write and this keeps a persistently-diverging step type from flooding
+	// the log once per completion.
+	shadowDivergence *logging.ErrorThrottle
 	// These four are written by the config-reload goroutine via their Set*
 	// methods while dispatch reads them, so they are atomic rather than plain
 	// fields. A -race run under concurrent reloads caught reviewLoopDisabled
@@ -644,6 +654,7 @@ func newEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 		resumeError:      logging.NewErrorThrottle(),
 		demotionThrottle: logging.NewErrorThrottle(),
 		resumeSkip:       logging.NewInfoThrottle(),
+		shadowDivergence: logging.NewErrorThrottle(),
 	}
 	// atomic.Bool's zero value is false, so the documented default has to be
 	// stored explicitly rather than set in the literal.

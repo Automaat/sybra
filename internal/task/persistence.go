@@ -41,6 +41,7 @@ type taskFrontmatter struct {
 	DependsOn              []string                `yaml:"depends_on,omitempty"`
 	DependsOnConditions    []DepCondition          `yaml:"depends_on_conditions,omitempty"`
 	Reviewed               bool                    `yaml:"reviewed,omitempty"`
+	CodeReviewVerdict      string                  `yaml:"code_review_verdict,omitempty"`
 	RunRole                string                  `yaml:"run_role,omitempty"`
 	SupervisorSteer        string                  `yaml:"supervisor_steer,omitempty"`
 	ReviewPhase            string                  `yaml:"review_phase,omitempty"`
@@ -145,6 +146,7 @@ func taskFromFrontmatter(fm taskFrontmatter, body string) Task {
 		DependsOn:              fm.DependsOn,
 		DependsOnConditions:    fm.DependsOnConditions,
 		Reviewed:               fm.Reviewed,
+		CodeReviewVerdict:      fm.CodeReviewVerdict,
 		RunRole:                fm.RunRole,
 		SupervisorSteer:        fm.SupervisorSteer,
 		ReviewPhase:            fm.ReviewPhase,
@@ -233,6 +235,7 @@ func frontmatterFromTask(t Task) taskFrontmatter {
 		DependsOn:              t.DependsOn,
 		DependsOnConditions:    t.DependsOnConditions,
 		Reviewed:               t.Reviewed,
+		CodeReviewVerdict:      t.CodeReviewVerdict,
 		RunRole:                t.RunRole,
 		SupervisorSteer:        t.SupervisorSteer,
 		ReviewPhase:            t.ReviewPhase,
