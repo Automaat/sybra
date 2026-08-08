@@ -41,7 +41,7 @@ func TestAllForTaskReturnsOnlyMatchingRuns(t *testing.T) {
 		t.Fatalf("AllForTask = %+v, want target runs in storage order", got)
 	}
 	got[0].ID = "mutated"
-	if all := s.AllForTask("target"); all[0].ID != "one" {
+	if all := s.AllForTask("target"); len(all) != 2 || all[0].ID != "one" {
 		t.Fatalf("AllForTask returned aliased records: %+v", all)
 	}
 }
