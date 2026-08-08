@@ -415,7 +415,7 @@ func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Ma
 	case "cluster":
 		return cmdCluster(cfg, api, localTasks, localProjects, rest, jsonOut)
 	case "audit":
-		return cmdAudit(cfg, rest, jsonOut)
+		return cmdAudit(cfg, api, rest, jsonOut)
 	case "board":
 		return cmdBoard(store, jsonOut)
 	case "health":
@@ -433,11 +433,11 @@ func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Ma
 	case "prompt-lab":
 		return cmdPromptLab(cfg, store, projStore, rest, jsonOut)
 	case "stats":
-		return cmdStats(cfg, rest, jsonOut)
+		return cmdStats(cfg, api, rest, jsonOut)
 	case "install-skills":
 		return cmdInstallSkills(cfg, jsonOut)
 	case "artifact":
-		return cmdArtifact(rest, jsonOut)
+		return cmdArtifact(api, rest, jsonOut)
 	case "progress":
 		return cmdProgress(store, projStore, api, rest, jsonOut)
 	case "config":
@@ -450,7 +450,7 @@ func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Ma
 	case "trash":
 		return cmdTrash(store, rest, jsonOut)
 	case "tasks-history":
-		return cmdTasksHistory(cfg, rest, jsonOut)
+		return cmdTasksHistory(cfg, api, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}
@@ -479,16 +479,11 @@ func resolveBoardAPI(cmd string, rest []string, cfg *config.Config, allowHTTP bo
 	return nil, ""
 }
 
-// readsThisMachine names the commands whose corpus is this machine's own state rather than the board's: the audit log, the stats file, the artifact store, the self-monitor report, the incident map. Against a loopback board that state is the board's own, so they run normally. Against a board on another machine they would mine this machine's data and then print it, or file tasks from it, as that board's — the same wrong-machine confusion the rest of this surface exists to remove. Each becomes reachable remotely once its corpus moves into the database.
-func readsThisMachine(cmd string, rest []string) bool {
+// readsThisMachine names the commands whose corpus is still this machine's own state rather than the board's. Against a loopback board that state is the board's own, so they run normally. Against a board on another machine they would mine this machine's data and then print it, or file tasks from it, as that board's — the wrong-machine confusion the rest of this surface exists to remove.
+func readsThisMachine(cmd string, _ []string) bool {
 	switch cmd {
-	case "audit", "stats", "artifact", "tasks-history",
-		"selfmonitor", "evaluation", "harness-evolution", "prompt-lab":
+	case "selfmonitor", "evaluation", "harness-evolution", "prompt-lab":
 		return true
-	case "monitor":
-		// `monitor scan` is one server call; every other subcommand edits
-		// this machine's incident map.
-		return len(rest) == 0 || rest[0] != "scan"
 	}
 	return false
 }
@@ -2528,13 +2523,13 @@ func cmdMonitor(cfg *config.Config, api *apiClient, store *task.Manager, args []
 	case "scan":
 		return cmdMonitorScan(cfg, api, store, jsonOut)
 	case "map-duplicates":
-		return cmdMonitorMapDuplicates(cfg, args[1:], jsonOut)
+		return cmdMonitorMapDuplicates(cfg, api, args[1:], jsonOut)
 	default:
 		return fatal(jsonOut, "unknown monitor subcommand: %s", args[0])
 	}
 }
 
-func cmdMonitorMapDuplicates(cfg *config.Config, args []string, jsonOut bool) int {
+func cmdMonitorMapDuplicates(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	flags := flag.NewFlagSet("monitor map-duplicates", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	fingerprint := flags.String("fingerprint", "", "incident fingerprint")
@@ -2559,6 +2554,17 @@ func cmdMonitorMapDuplicates(cfg *config.Config, args []string, jsonOut bool) in
 	}
 	slices.Sort(duplicates)
 	duplicates = slices.Compact(duplicates)
+	// The ledger and the issue repo are both the owning instance's, so a
+	// reachable server runs the whole mapping rather than this process
+	// reading one machine's incident and editing another's issues.
+	if api != nil {
+		res, err := callAPI[monitorMapDuplicatesDTO](api, taskServiceName, "MapDuplicateIncidents", *fingerprint, duplicates, *coverage)
+		if err != nil {
+			return fatal(jsonOut, "monitor map-duplicates: %v", err)
+		}
+		return reportMapDuplicates(jsonOut, res.Fingerprint, res.Canonical, res.Duplicates)
+	}
+
 	ledger, err := monitor.NewIncidentStore(config.MonitorIncidentsDir())
 	if err != nil {
 		return fatal(jsonOut, "monitor map-duplicates: %v", err)
@@ -2584,11 +2590,21 @@ func cmdMonitorMapDuplicates(cfg *config.Config, args []string, jsonOut bool) in
 	if err := ledger.Link(in.Fingerprint, "", "", duplicates); err != nil {
 		return fatal(jsonOut, "monitor map-duplicates: persist mapping: %v", err)
 	}
-	result := map[string]any{"fingerprint": in.Fingerprint, "canonical": in.IssueURL, "duplicates": duplicates}
+	return reportMapDuplicates(jsonOut, in.Fingerprint, in.IssueURL, duplicates)
+}
+
+// monitorMapDuplicatesDTO mirrors the server's wire shape for a duplicate mapping.
+type monitorMapDuplicatesDTO struct {
+	Fingerprint string `json:"fingerprint"`
+	Canonical   string `json:"canonical"`
+	Duplicates  []int  `json:"duplicates"`
+}
+
+func reportMapDuplicates(jsonOut bool, fingerprint, canonical string, duplicates []int) int {
 	if jsonOut {
-		return printJSON(result)
+		return printJSON(map[string]any{"fingerprint": fingerprint, "canonical": canonical, "duplicates": duplicates})
 	}
-	fmt.Printf("monitor: mapped %d duplicate issue(s) to %s\n", len(duplicates), in.IssueURL)
+	fmt.Printf("monitor: mapped %d duplicate issue(s) to %s\n", len(duplicates), canonical)
 	return 0
 }
 
@@ -2650,7 +2666,7 @@ func reportMonitorScan(jsonOut bool, report monitor.Report) int {
 	return 0
 }
 
-func cmdAudit(cfg *config.Config, args []string, jsonOut bool) int {
+func cmdAudit(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("audit", flag.ContinueOnError)
 	since := fs.String("since", "24h", "start of time window (duration like 24h/7d or date YYYY-MM-DD)")
 	until := fs.String("until", "", "end of time window (date YYYY-MM-DD, default: now)")
@@ -2677,7 +2693,7 @@ func cmdAudit(cfg *config.Config, args []string, jsonOut bool) int {
 		TaskID: *taskID,
 	}
 
-	events, err := audit.Read(cfg.AuditDir(), q)
+	events, err := readAuditEvents(cfg, api, q)
 	if err != nil {
 		return fatal(jsonOut, "read audit: %v", err)
 	}
@@ -2979,7 +2995,7 @@ func doctorUsageBlock() string {
            0 ok, 1 a delete failed, 2 bad flags/arguments.`
 }
 
-func cmdArtifact(args []string, jsonOut bool) int {
+func cmdArtifact(api *apiClient, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "artifact: subcommand required (list|get|reindex)")
 	}
@@ -2987,22 +3003,22 @@ func cmdArtifact(args []string, jsonOut bool) int {
 	store := artifact.New(config.ArtifactsDir())
 	switch sub {
 	case "list":
-		return cmdArtifactList(store, rest, jsonOut)
+		return cmdArtifactList(api, store, rest, jsonOut)
 	case "get":
-		return cmdArtifactGet(store, rest)
+		return cmdArtifactGet(api, store, rest)
 	case "reindex":
-		return cmdArtifactReindex(store, rest, jsonOut)
+		return cmdArtifactReindex(api, store, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "artifact: unknown subcommand %q", sub)
 	}
 }
 
-func cmdArtifactList(store *artifact.Store, args []string, jsonOut bool) int {
+func cmdArtifactList(api *apiClient, store *artifact.Store, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "artifact list: task-id required")
 	}
 	taskID := args[0]
-	metas, err := store.List(taskID)
+	metas, err := listArtifacts(api, store, taskID)
 	if err != nil {
 		return fatal(jsonOut, "artifact list: %v", err)
 	}
@@ -3023,13 +3039,13 @@ func cmdArtifactList(store *artifact.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdArtifactGet(store *artifact.Store, args []string) int {
+func cmdArtifactGet(api *apiClient, store *artifact.Store, args []string) int {
 	if len(args) < 2 {
 		fmt.Fprintln(os.Stderr, "artifact get: task-id and name required")
 		return 1
 	}
 	taskID, name := args[0], args[1]
-	data, _, err := store.Read(taskID, name)
+	data, err := readArtifact(api, store, taskID, name)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -3038,12 +3054,12 @@ func cmdArtifactGet(store *artifact.Store, args []string) int {
 	return 0
 }
 
-func cmdArtifactReindex(store *artifact.Store, args []string, jsonOut bool) int {
+func cmdArtifactReindex(api *apiClient, store *artifact.Store, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "artifact reindex: task-id required")
 	}
 	taskID := args[0]
-	if err := store.Reindex(taskID); err != nil {
+	if err := reindexArtifacts(api, store, taskID); err != nil {
 		return fatal(jsonOut, "artifact reindex: %v", err)
 	}
 	if jsonOut {
@@ -3294,7 +3310,7 @@ type taskHistoryEntry struct {
 // read-only convenience wrapper around `git log` against
 // config.TaskSnapshotGitDir(); plain git against that path suffices for
 // actual recovery (see docs/tasks-snapshots.md).
-func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
+func cmdTasksHistory(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("tasks-history", flag.ContinueOnError)
 	limit := fs.Int("limit", 20, "max number of commits to show")
 	fs.SetOutput(io.Discard)
@@ -3303,6 +3319,14 @@ func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
 	}
 	if *limit <= 0 {
 		*limit = 20
+	}
+
+	if api != nil {
+		entries, err := callAPI[[]taskHistoryEntry](api, taskServiceName, "ListTaskSnapshotHistory", *limit)
+		if err != nil {
+			return fatal(jsonOut, "%v", err)
+		}
+		return reportTaskHistory(jsonOut, entries)
 	}
 
 	ctx := context.Background()
@@ -3341,6 +3365,10 @@ func cmdTasksHistory(cfg *config.Config, args []string, jsonOut bool) int {
 		}
 	}
 
+	return reportTaskHistory(jsonOut, entries)
+}
+
+func reportTaskHistory(jsonOut bool, entries []taskHistoryEntry) int {
 	if jsonOut {
 		if entries == nil {
 			entries = []taskHistoryEntry{}
@@ -3966,4 +3994,38 @@ func addPathPermFinding(add func(severity, format string, a ...any), label, path
 	if perm := info.Mode().Perm(); perm&^target != 0 {
 		add("warning", "%s permissions are %04o, want no broader than %04o: %s", label, perm, target, path)
 	}
+}
+
+// readAuditEvents reads the audit log of whichever instance owns the board. The log is a directory of daily files under that instance's home, so reading this machine's copy would answer the question about the wrong machine.
+func readAuditEvents(cfg *config.Config, api *apiClient, q audit.Query) ([]audit.Event, error) {
+	if api != nil {
+		return callAPI[[]audit.Event](api, auditServiceName, "QueryAuditEvents", q)
+	}
+	return audit.Read(cfg.AuditDir(), q)
+}
+
+// The artifact store sits beside the board it belongs to, so these read the
+// instance that owns the task rather than this machine's copy.
+
+func listArtifacts(api *apiClient, store *artifact.Store, taskID string) ([]artifact.Meta, error) {
+	if api != nil {
+		return callAPI[[]artifact.Meta](api, taskServiceName, "ListTaskArtifactMetas", taskID)
+	}
+	return store.List(taskID)
+}
+
+func readArtifact(api *apiClient, store *artifact.Store, taskID, name string) ([]byte, error) {
+	if api != nil {
+		return callAPI[[]byte](api, taskServiceName, "ReadTaskArtifact", taskID, name)
+	}
+	data, _, err := store.Read(taskID, name)
+	return data, err
+}
+
+func reindexArtifacts(api *apiClient, store *artifact.Store, taskID string) error {
+	if api != nil {
+		_, err := callAPI[struct{}](api, taskServiceName, "ReindexTaskArtifacts", taskID)
+		return err
+	}
+	return store.Reindex(taskID)
 }

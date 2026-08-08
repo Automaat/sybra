@@ -53,6 +53,8 @@ const taskServiceName = "TaskService"
 
 const projectServiceName = "ProjectService"
 
+const auditServiceName = "AuditService"
+
 // apiTaskBoard runs every board operation against a reachable server.
 type apiTaskBoard struct {
 	api *apiClient

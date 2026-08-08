@@ -6,10 +6,11 @@ import type { ReviewComment, Task, TransitionIntent, TransitionResult, TrashEntr
 import type { Project, Worktree } from '../../bindings/github.com/Automaat/sybra/internal/project/models.js'
 import type { Issue, RenovatePR, ReviewSummary } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 import type { LoopAgent } from '../../bindings/github.com/Automaat/sybra/internal/loopagent/models.js'
-import type { AppSettings, ClusterNodeDTO, TriageResultDTO, TrashPruneReportDTO, UmbrellaExpandDTO, CodexModel, ConfigPathExplanation, CopilotModel, LoopAgentRun, MonitorReportBinding, RuntimeInfo, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+import type { AppSettings, ClusterNodeDTO, TriageResultDTO, TrashPruneReportDTO, UmbrellaExpandDTO, TaskHistoryEntryDTO, MapDuplicateIncidentsDTO, CodexModel, ConfigPathExplanation, CopilotModel, LoopAgentRun, MonitorReportBinding, RuntimeInfo, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 import type { Notification } from '../../bindings/github.com/Automaat/sybra/internal/notification/models.js'
 import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
-import type { ProgressEntry } from '../../bindings/github.com/Automaat/sybra/internal/artifact/models.js'
+import type { Meta, ProgressEntry } from '../../bindings/github.com/Automaat/sybra/internal/artifact/models.js'
+import type { Event as AuditEvent, Query as AuditQuery } from '../../bindings/github.com/Automaat/sybra/internal/audit/models.js'
 import type { Report as EvaluationReportData, PhaseReport as PhaseReportData, AutonomyTrend } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
 import type { Definition } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
 import type { Status } from '../../bindings/github.com/Automaat/sybra/internal/provider/models.js'
@@ -201,6 +202,14 @@ export function PruneAllTrash(): Promise<TrashPruneReportDTO> { return call('Tas
 export function ExpandUmbrella(arg1: string, arg2: string): Promise<UmbrellaExpandDTO> { return call('TaskService', 'ExpandUmbrella', arg1, arg2) }
 export function ClassifyTask(arg1: string, arg2: string): Promise<TriageResultDTO> { return call('TaskService', 'ClassifyTask', arg1, arg2) }
 export function AppendTaskProgress(arg1: string, arg2: string, arg3: string, arg4: string): Promise<ProgressEntry> { return call('TaskService', 'AppendTaskProgress', arg1, arg2, arg3, arg4) }
+export function ListTaskArtifactMetas(arg1: string): Promise<Array<Meta>> { return call('TaskService', 'ListTaskArtifactMetas', arg1) }
+export function ReadTaskArtifact(arg1: string, arg2: string): Promise<number[]> { return call('TaskService', 'ReadTaskArtifact', arg1, arg2) }
+export function ReindexTaskArtifacts(arg1: string): Promise<void> { return call('TaskService', 'ReindexTaskArtifacts', arg1) }
+export function ListTaskSnapshotHistory(arg1: number): Promise<Array<TaskHistoryEntryDTO>> { return call('TaskService', 'ListTaskSnapshotHistory', arg1) }
+export function MapDuplicateIncidents(arg1: string, arg2: number[], arg3: string): Promise<MapDuplicateIncidentsDTO> { return call('TaskService', 'MapDuplicateIncidents', arg1, arg2, arg3) }
+
+// AuditService
+export function QueryAuditEvents(arg1: AuditQuery): Promise<Array<AuditEvent>> { return call('AuditService', 'QueryAuditEvents', arg1) }
 export function ScanMonitor(): Promise<MonitorReportBinding> { return call('TaskService', 'ScanMonitor') }
 export function DeleteAttachment(arg1: string, arg2: string): Promise<void> { return call('TaskService', 'DeleteAttachment', arg1, arg2) }
 export function DispatchFromHumanRequired(arg1: string, arg2: string, arg3: string): Promise<Task> { return call('TaskService', 'DispatchFromHumanRequired', arg1, arg2, arg3) }

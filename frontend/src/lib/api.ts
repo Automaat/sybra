@@ -5,6 +5,7 @@
 // by `wails3 generate bindings ./cmd/sybra-v3/...`.
 
 import * as AgentSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/agentservice.js'
+import * as AuditSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/auditservice.js'
 import * as AppSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/app.js'
 import * as BrowserSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/browserservice.js'
 import * as ClusterSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/clusterservice.js'
@@ -165,6 +166,14 @@ export const PruneAllTrash = pick(TaskSvc.PruneAllTrash, http.PruneAllTrash)
 export const ExpandUmbrella = pick(TaskSvc.ExpandUmbrella, http.ExpandUmbrella)
 export const ClassifyTask = pick(TaskSvc.ClassifyTask, http.ClassifyTask)
 export const AppendTaskProgress = pick(TaskSvc.AppendTaskProgress, http.AppendTaskProgress)
+export const ListTaskArtifactMetas = pick(TaskSvc.ListTaskArtifactMetas, http.ListTaskArtifactMetas)
+export const ReadTaskArtifact = pick(TaskSvc.ReadTaskArtifact, http.ReadTaskArtifact)
+export const ReindexTaskArtifacts = pick(TaskSvc.ReindexTaskArtifacts, http.ReindexTaskArtifacts)
+export const ListTaskSnapshotHistory = pick(TaskSvc.ListTaskSnapshotHistory, http.ListTaskSnapshotHistory)
+export const MapDuplicateIncidents = pick(TaskSvc.MapDuplicateIncidents, http.MapDuplicateIncidents)
+
+// AuditService
+export const QueryAuditEvents = pick(AuditSvc.QueryAuditEvents, http.QueryAuditEvents)
 export const ScanMonitor = pick(TaskSvc.ScanMonitor, http.ScanMonitor)
 export const DeleteAttachment = pick(TaskSvc.DeleteAttachment, http.DeleteAttachment)
 export const DispatchFromHumanRequired = pick(TaskSvc.DispatchFromHumanRequired, http.DispatchFromHumanRequired)

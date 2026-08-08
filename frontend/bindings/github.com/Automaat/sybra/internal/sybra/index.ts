@@ -3,6 +3,7 @@
 
 import * as AgentService from "./agentservice.js";
 import * as App from "./app.js";
+import * as AuditService from "./auditservice.js";
 import * as BrowserService from "./browserservice.js";
 import * as ClusterService from "./clusterservice.js";
 import * as ConfigService from "./configservice.js";
@@ -21,6 +22,7 @@ import * as WorkflowService from "./workflowservice.js";
 export {
     AgentService,
     App,
+    AuditService,
     BrowserService,
     ClusterService,
     ConfigService,
@@ -50,6 +52,7 @@ export {
     CopilotModel,
     LoggingSettings,
     LoopAgentRun,
+    MapDuplicateIncidentsDTO,
     MonitorReportBinding,
     ProviderRoutingSettings,
     RuntimeInfo,
@@ -57,6 +60,7 @@ export {
     TamperReportDTO,
     TaskArtifactDTO,
     TaskAuditEventDTO,
+    TaskHistoryEntryDTO,
     TaskSetupLogDTO,
     TrashPruneReportDTO,
     TriageResultDTO,

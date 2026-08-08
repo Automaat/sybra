@@ -5,9 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
+	"strings"
 
+	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/gitexec"
+	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/tasksnapshot"
 	"github.com/Automaat/sybra/internal/triage"
 	"github.com/Automaat/sybra/internal/umbrella"
 )
@@ -100,4 +107,148 @@ func (s *TaskService) ScanMonitor() (monitor.Report, error) {
 		return monitor.Report{}, unavailableError("monitor is not running on this instance")
 	}
 	return s.monitorScan(context.Background())
+}
+
+// ListTaskArtifactMetas returns the artifact index for a task, untruncated and
+// without content.
+//
+// ListTaskArtifacts serves the GUI's diagnostics panel and inlines a capped
+// copy of every file, which is the wrong shape for `sybra-cli artifact list`:
+// it renders sizes from the index and would report the cap instead.
+func (s *TaskService) ListTaskArtifactMetas(taskID string) ([]artifact.Meta, error) {
+	if s.artifacts == nil {
+		return nil, unavailableError("artifact store unavailable")
+	}
+	metas, err := s.artifacts.List(taskID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range metas {
+		// SourcePath is an absolute path on the server's disk and means
+		// nothing to a client, which is why the GUI's DTO clears it too.
+		metas[i].SourcePath = ""
+	}
+	if metas == nil {
+		metas = []artifact.Meta{}
+	}
+	return metas, nil
+}
+
+// ReadTaskArtifact returns one artifact whole. `artifact get` writes the bytes
+// to stdout for a pipeline to consume, so a truncated read would corrupt the
+// output rather than shorten it.
+func (s *TaskService) ReadTaskArtifact(taskID, name string) ([]byte, error) {
+	if s.artifacts == nil {
+		return nil, unavailableError("artifact store unavailable")
+	}
+	data, _, err := s.artifacts.Read(taskID, name)
+	return data, err
+}
+
+// ReindexTaskArtifacts rebuilds a task's artifact index from the files on disk.
+func (s *TaskService) ReindexTaskArtifacts(taskID string) error {
+	if s.artifacts == nil {
+		return unavailableError("artifact store unavailable")
+	}
+	return s.artifacts.Reindex(taskID)
+}
+
+// TaskHistoryEntryDTO is one commit in the task snapshot history.
+type TaskHistoryEntryDTO struct {
+	SHA     string `json:"sha"`
+	Date    string `json:"date"`
+	Subject string `json:"subject"`
+}
+
+// ListTaskSnapshotHistory returns the newest commits from the snapshot repo of
+// the tasks dir. The repo lives beside the board it snapshots, so a client
+// reading its own would report a different board's history.
+func (s *TaskService) ListTaskSnapshotHistory(limit int) ([]TaskHistoryEntryDTO, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	cfg := s.config()
+	if cfg == nil {
+		return nil, unavailableError("task snapshot history unavailable")
+	}
+	gitDir := config.TaskSnapshotGitDir()
+	opts := gitexec.Options{Env: tasksnapshot.BuildEnv(gitDir, cfg.TasksDir)}
+	ctx := s.recoveryCtx()
+	if err := gitexec.Run(ctx, opts, "rev-parse", "--git-dir"); err != nil {
+		return nil, unavailableError("task snapshot history unavailable — snapshotting is disabled or has not run yet")
+	}
+	// An empty repo is a valid empty history, detected by HEAD resolvability
+	// rather than a locale-dependent stderr string.
+	hasCommits := gitexec.RunQuiet(ctx, opts, "rev-parse", "--verify", "--quiet", "HEAD") == nil
+	if !hasCommits {
+		return []TaskHistoryEntryDTO{}, nil
+	}
+	const sep = "\x1f"
+	stdout, err := gitexec.RawOutput(ctx, opts, "log", "--date=iso-strict",
+		"--pretty=format:%h"+sep+"%ad"+sep+"%s", fmt.Sprintf("-n%d", limit))
+	if err != nil {
+		return nil, err
+	}
+	out := []TaskHistoryEntryDTO{}
+	for line := range strings.SplitSeq(strings.TrimRight(string(stdout), "\n"), "\n") {
+		parts := strings.SplitN(line, sep, 3)
+		if len(parts) != 3 {
+			continue
+		}
+		out = append(out, TaskHistoryEntryDTO{SHA: parts[0], Date: parts[1], Subject: parts[2]})
+	}
+	return out, nil
+}
+
+// MapDuplicateIncidentsDTO reports what a duplicate mapping resolved to.
+type MapDuplicateIncidentsDTO struct {
+	Fingerprint string `json:"fingerprint"`
+	Canonical   string `json:"canonical"`
+	Duplicates  []int  `json:"duplicates"`
+}
+
+// MapDuplicateIncidents points duplicate GitHub issues at an incident's
+// canonical one and records the mapping.
+//
+// The whole operation runs here because both ends are the server's: the
+// incident ledger it reads and writes, and the issue repo from its own monitor
+// config.
+func (s *TaskService) MapDuplicateIncidents(fingerprint string, duplicates []int, coverage string) (MapDuplicateIncidentsDTO, error) {
+	cfg := s.config()
+	if cfg == nil {
+		return MapDuplicateIncidentsDTO{}, unavailableError("monitor configuration unavailable")
+	}
+	if strings.TrimSpace(coverage) == "" || len(duplicates) == 0 {
+		return MapDuplicateIncidentsDTO{}, validationError("a fingerprint, at least one duplicate issue, and a coverage summary are required")
+	}
+	ledger, err := monitor.NewIncidentStore(config.MonitorIncidentsDir())
+	if err != nil {
+		return MapDuplicateIncidentsDTO{}, err
+	}
+	in, ok, err := ledger.Get(fingerprint)
+	if err != nil {
+		return MapDuplicateIncidentsDTO{}, err
+	}
+	if !ok {
+		return MapDuplicateIncidentsDTO{}, validationError("incident not found: " + fingerprint)
+	}
+	if in.IsConfidential() {
+		return MapDuplicateIncidentsDTO{}, validationError("confidential incidents cannot mutate public issues")
+	}
+	_, canonical := github.ParseIssueURL(in.IssueURL)
+	if canonical == 0 {
+		return MapDuplicateIncidentsDTO{}, validationError("incident has no canonical GitHub issue")
+	}
+	if slices.Contains(duplicates, canonical) {
+		return MapDuplicateIncidentsDTO{}, validationError(
+			fmt.Sprintf("canonical issue #%d cannot be mapped as its own duplicate", canonical))
+	}
+	sink := monitor.NewGHIssueSink(cfg.Monitor.IssueLabel, cfg.Monitor.IssueRepo)
+	if err := sink.MapDuplicateIncidents(s.recoveryCtx(), in, duplicates, coverage); err != nil {
+		return MapDuplicateIncidentsDTO{}, err
+	}
+	if err := ledger.Link(in.Fingerprint, "", "", duplicates); err != nil {
+		return MapDuplicateIncidentsDTO{}, fmt.Errorf("persist mapping: %w", err)
+	}
+	return MapDuplicateIncidentsDTO{Fingerprint: in.Fingerprint, Canonical: in.IssueURL, Duplicates: duplicates}, nil
 }

@@ -25,6 +25,7 @@ func (a *App) V3Services() []application.Service {
 		application.NewService(a.configSvc),
 		application.NewService(a.intgSvc),
 		application.NewService(a.statsSvc),
+		application.NewService(a.auditSvc),
 		application.NewService(a.reviewSvc),
 		application.NewService(a.workflowSvc),
 		application.NewService(a.infoSvc),

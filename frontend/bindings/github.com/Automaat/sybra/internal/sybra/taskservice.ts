@@ -200,15 +200,29 @@ export function ListAttachments(taskID: string): $CancellablePromise<task$0.Atta
     });
 }
 
+/**
+ * ListTaskArtifactMetas returns the artifact index for a task, untruncated and
+ * without content.
+ * 
+ * ListTaskArtifacts serves the GUI's diagnostics panel and inlines a capped
+ * copy of every file, which is the wrong shape for `sybra-cli artifact list`:
+ * it renders sizes from the index and would report the cap instead.
+ */
+export function ListTaskArtifactMetas(taskID: string): $CancellablePromise<artifact$0.Meta[]> {
+    return $Call.ByID(715793153, taskID).then(($result: any) => {
+        return $$createType10($result);
+    });
+}
+
 export function ListTaskArtifacts(taskID: string): $CancellablePromise<$models.TaskArtifactDTO[]> {
     return $Call.ByID(1612534482, taskID).then(($result: any) => {
-        return $$createType10($result);
+        return $$createType12($result);
     });
 }
 
 export function ListTaskAuditEvents(taskID: string, days: number): $CancellablePromise<$models.TaskAuditEventDTO[]> {
     return $Call.ByID(1451731527, taskID, days).then(($result: any) => {
-        return $$createType12($result);
+        return $$createType14($result);
     });
 }
 
@@ -218,7 +232,18 @@ export function ListTaskAuditEvents(taskID: string, days: number): $CancellableP
  */
 export function ListTaskProgress(taskID: string): $CancellablePromise<artifact$0.ProgressEntry[]> {
     return $Call.ByID(821819796, taskID).then(($result: any) => {
-        return $$createType13($result);
+        return $$createType15($result);
+    });
+}
+
+/**
+ * ListTaskSnapshotHistory returns the newest commits from the snapshot repo of
+ * the tasks dir. The repo lives beside the board it snapshots, so a client
+ * reading its own would report a different board's history.
+ */
+export function ListTaskSnapshotHistory(limit: number): $CancellablePromise<$models.TaskHistoryEntryDTO[]> {
+    return $Call.ByID(1492707365, limit).then(($result: any) => {
+        return $$createType17($result);
     });
 }
 
@@ -227,7 +252,7 @@ export function ListTaskProgress(taskID: string): $CancellablePromise<artifact$0
  */
 export function ListTasks(): $CancellablePromise<task$0.Task[]> {
     return $Call.ByID(3360976520).then(($result: any) => {
-        return $$createType14($result);
+        return $$createType18($result);
     });
 }
 
@@ -248,7 +273,7 @@ export function ListTasks(): $CancellablePromise<task$0.Task[]> {
  */
 export function ListTasksForNode(node: string): $CancellablePromise<task$0.Task[]> {
     return $Call.ByID(844621143, node).then(($result: any) => {
-        return $$createType14($result);
+        return $$createType18($result);
     });
 }
 
@@ -257,7 +282,21 @@ export function ListTasksForNode(node: string): $CancellablePromise<task$0.Task[
  */
 export function ListTrash(): $CancellablePromise<task$0.TrashEntry[]> {
     return $Call.ByID(3045208924).then(($result: any) => {
-        return $$createType16($result);
+        return $$createType20($result);
+    });
+}
+
+/**
+ * MapDuplicateIncidents points duplicate GitHub issues at an incident's
+ * canonical one and records the mapping.
+ * 
+ * The whole operation runs here because both ends are the server's: the
+ * incident ledger it reads and writes, and the issue repo from its own monitor
+ * config.
+ */
+export function MapDuplicateIncidents(fingerprint: string, duplicates: number[], coverage: string): $CancellablePromise<$models.MapDuplicateIncidentsDTO> {
+    return $Call.ByID(2852449980, fingerprint, duplicates, coverage).then(($result: any) => {
+        return $$createType21($result);
     });
 }
 
@@ -266,7 +305,18 @@ export function ListTrash(): $CancellablePromise<task$0.TrashEntry[]> {
  */
 export function PruneAllTrash(): $CancellablePromise<$models.TrashPruneReportDTO> {
     return $Call.ByID(1776862997).then(($result: any) => {
-        return $$createType17($result);
+        return $$createType22($result);
+    });
+}
+
+/**
+ * ReadTaskArtifact returns one artifact whole. `artifact get` writes the bytes
+ * to stdout for a pipeline to consume, so a truncated read would corrupt the
+ * output rather than shorten it.
+ */
+export function ReadTaskArtifact(taskID: string, name: string): $CancellablePromise<string> {
+    return $Call.ByID(4045928577, taskID, name).then(($result: any) => {
+        return $Create.ByteSlice($result);
     });
 }
 
@@ -299,6 +349,13 @@ export function RecoverLostAgent(taskID: string): $CancellablePromise<void> {
 }
 
 /**
+ * ReindexTaskArtifacts rebuilds a task's artifact index from the files on disk.
+ */
+export function ReindexTaskArtifacts(taskID: string): $CancellablePromise<void> {
+    return $Call.ByID(2541262407, taskID);
+}
+
+/**
  * RestoreFromTrash brings the newest retained generation of a deleted task back onto the board.
  */
 export function RestoreFromTrash(id: string): $CancellablePromise<task$0.Task> {
@@ -312,7 +369,7 @@ export function RestoreFromTrash(id: string): $CancellablePromise<task$0.Task> {
  */
 export function ScanMonitor(): $CancellablePromise<monitor$0.Report> {
     return $Call.ByID(4233564415).then(($result: any) => {
-        return $$createType18($result);
+        return $$createType23($result);
     });
 }
 
@@ -371,13 +428,18 @@ const $$createType5 = $models.TamperReportDTO.createFrom;
 const $$createType6 = $models.TaskSetupLogDTO.createFrom;
 const $$createType7 = attachment$0.Attachment.createFrom;
 const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = $models.TaskArtifactDTO.createFrom;
+const $$createType9 = artifact$0.Meta.createFrom;
 const $$createType10 = $Create.Array($$createType9);
-const $$createType11 = $models.TaskAuditEventDTO.createFrom;
+const $$createType11 = $models.TaskArtifactDTO.createFrom;
 const $$createType12 = $Create.Array($$createType11);
-const $$createType13 = $Create.Array($$createType0);
-const $$createType14 = $Create.Array($$createType2);
-const $$createType15 = task$0.TrashEntry.createFrom;
-const $$createType16 = $Create.Array($$createType15);
-const $$createType17 = $models.TrashPruneReportDTO.createFrom;
-const $$createType18 = monitor$0.Report.createFrom;
+const $$createType13 = $models.TaskAuditEventDTO.createFrom;
+const $$createType14 = $Create.Array($$createType13);
+const $$createType15 = $Create.Array($$createType0);
+const $$createType16 = $models.TaskHistoryEntryDTO.createFrom;
+const $$createType17 = $Create.Array($$createType16);
+const $$createType18 = $Create.Array($$createType2);
+const $$createType19 = task$0.TrashEntry.createFrom;
+const $$createType20 = $Create.Array($$createType19);
+const $$createType21 = $models.MapDuplicateIncidentsDTO.createFrom;
+const $$createType22 = $models.TrashPruneReportDTO.createFrom;
+const $$createType23 = monitor$0.Report.createFrom;

@@ -615,6 +615,42 @@ export class LoopAgentRun {
 }
 
 /**
+ * MapDuplicateIncidentsDTO reports what a duplicate mapping resolved to.
+ */
+export class MapDuplicateIncidentsDTO {
+    "fingerprint": string;
+    "canonical": string;
+    "duplicates": number[];
+
+    /** Creates a new MapDuplicateIncidentsDTO instance. */
+    constructor($$source: Partial<MapDuplicateIncidentsDTO> = {}) {
+        if (!("fingerprint" in $$source)) {
+            this["fingerprint"] = "";
+        }
+        if (!("canonical" in $$source)) {
+            this["canonical"] = "";
+        }
+        if (!("duplicates" in $$source)) {
+            this["duplicates"] = [];
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new MapDuplicateIncidentsDTO instance from a string or object.
+     */
+    static createFrom($$source: any = {}): MapDuplicateIncidentsDTO {
+        const $$createField2_0 = $$createType27;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("duplicates" in $$parsedSource) {
+            $$parsedSource["duplicates"] = $$createField2_0($$parsedSource["duplicates"]);
+        }
+        return new MapDuplicateIncidentsDTO($$parsedSource as Partial<MapDuplicateIncidentsDTO>);
+    }
+}
+
+/**
  * MonitorReportBinding is the Wails-friendly envelope for the latest
  * monitor report. Keeping the struct here (rather than in internal/monitor)
  * avoids the frontend bindings needing to handle a `monitor.Report | null`
@@ -644,7 +680,7 @@ export class MonitorReportBinding {
      * Creates a new MonitorReportBinding instance from a string or object.
      */
     static createFrom($$source: any = {}): MonitorReportBinding {
-        const $$createField2_0 = $$createType27;
+        const $$createField2_0 = $$createType28;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("report" in $$parsedSource) {
             $$parsedSource["report"] = $$createField2_0($$parsedSource["report"]);
@@ -677,7 +713,7 @@ export class ProviderRoutingSettings {
      * Creates a new ProviderRoutingSettings instance from a string or object.
      */
     static createFrom($$source: any = {}): ProviderRoutingSettings {
-        const $$createField2_0 = $$createType28;
+        const $$createField2_0 = $$createType29;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("summary" in $$parsedSource) {
             $$parsedSource["summary"] = $$createField2_0($$parsedSource["summary"]);
@@ -797,7 +833,7 @@ export class TamperReportDTO {
      */
     static createFrom($$source: any = {}): TamperReportDTO {
         const $$createField4_0 = $$createType20;
-        const $$createField5_0 = $$createType30;
+        const $$createField5_0 = $$createType31;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("files" in $$parsedSource) {
             $$parsedSource["files"] = $$createField4_0($$parsedSource["files"]);
@@ -887,12 +923,44 @@ export class TaskAuditEventDTO {
      * Creates a new TaskAuditEventDTO instance from a string or object.
      */
     static createFrom($$source: any = {}): TaskAuditEventDTO {
-        const $$createField4_0 = $$createType31;
+        const $$createField4_0 = $$createType32;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("data" in $$parsedSource) {
             $$parsedSource["data"] = $$createField4_0($$parsedSource["data"]);
         }
         return new TaskAuditEventDTO($$parsedSource as Partial<TaskAuditEventDTO>);
+    }
+}
+
+/**
+ * TaskHistoryEntryDTO is one commit in the task snapshot history.
+ */
+export class TaskHistoryEntryDTO {
+    "sha": string;
+    "date": string;
+    "subject": string;
+
+    /** Creates a new TaskHistoryEntryDTO instance. */
+    constructor($$source: Partial<TaskHistoryEntryDTO> = {}) {
+        if (!("sha" in $$source)) {
+            this["sha"] = "";
+        }
+        if (!("date" in $$source)) {
+            this["date"] = "";
+        }
+        if (!("subject" in $$source)) {
+            this["subject"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TaskHistoryEntryDTO instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TaskHistoryEntryDTO {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TaskHistoryEntryDTO($$parsedSource as Partial<TaskHistoryEntryDTO>);
     }
 }
 
@@ -954,7 +1022,7 @@ export class TrashPruneReportDTO {
      * Creates a new TrashPruneReportDTO instance from a string or object.
      */
     static createFrom($$source: any = {}): TrashPruneReportDTO {
-        const $$createField2_0 = $$createType33;
+        const $$createField2_0 = $$createType34;
         const $$createField3_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("entries" in $$parsedSource) {
@@ -990,8 +1058,8 @@ export class TriageResultDTO {
      * Creates a new TriageResultDTO instance from a string or object.
      */
     static createFrom($$source: any = {}): TriageResultDTO {
-        const $$createField0_0 = $$createType34;
-        const $$createField1_0 = $$createType35;
+        const $$createField0_0 = $$createType35;
+        const $$createField1_0 = $$createType36;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("verdict" in $$parsedSource) {
             $$parsedSource["verdict"] = $$createField0_0($$parsedSource["verdict"]);
@@ -1121,12 +1189,13 @@ const $$createType23 = $Create.Nullable($$createType22);
 const $$createType24 = config$0.PathDescriptor.createFrom;
 const $$createType25 = config$0.PathValue.createFrom;
 const $$createType26 = $Create.Nullable($$createType25);
-const $$createType27 = monitor$0.Report.createFrom;
-const $$createType28 = config$0.RoutingSummary.createFrom;
-const $$createType29 = TamperFindingDTO.createFrom;
-const $$createType30 = $Create.Array($$createType29);
-const $$createType31 = $Create.Map($Create.Any, $Create.Any);
-const $$createType32 = task$0.TrashEntry.createFrom;
-const $$createType33 = $Create.Array($$createType32);
-const $$createType34 = triage$0.Verdict.createFrom;
-const $$createType35 = task$0.Task.createFrom;
+const $$createType27 = $Create.Array($Create.Any);
+const $$createType28 = monitor$0.Report.createFrom;
+const $$createType29 = config$0.RoutingSummary.createFrom;
+const $$createType30 = TamperFindingDTO.createFrom;
+const $$createType31 = $Create.Array($$createType30);
+const $$createType32 = $Create.Map($Create.Any, $Create.Any);
+const $$createType33 = task$0.TrashEntry.createFrom;
+const $$createType34 = $Create.Array($$createType33);
+const $$createType35 = triage$0.Verdict.createFrom;
+const $$createType36 = task$0.Task.createFrom;

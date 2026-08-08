@@ -330,9 +330,7 @@ func TestDispatch_RefusesLocalDataCommandsAgainstARemoteBoard(t *testing.T) {
 	cfg := config.DefaultConfig()
 
 	for _, args := range [][]string{
-		{"audit"}, {"stats", "lifecycle"}, {"artifact", "list"}, {"tasks-history"},
-		{"selfmonitor", "scan"}, {"evaluation"}, {"harness-evolution", "run"},
-		{"prompt-lab", "run"}, {"monitor", "map-duplicates"},
+		{"selfmonitor", "scan"}, {"evaluation"}, {"harness-evolution", "run"}, {"prompt-lab", "run"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			code, _ := captureStdout(t, func() int {
@@ -345,19 +343,90 @@ func TestDispatch_RefusesLocalDataCommandsAgainstARemoteBoard(t *testing.T) {
 	}
 }
 
-// TestReadsThisMachine_LetsMonitorScanThrough keeps the one monitor subcommand
-// that is a single server call reachable; gating the whole command would take
-// it with the rest.
-func TestReadsThisMachine_LetsMonitorScanThrough(t *testing.T) {
-	if readsThisMachine("monitor", []string{"scan"}) {
-		t.Error("monitor scan is one server call and must stay reachable remotely")
+// TestReadsThisMachine_LeavesRoutedCommandsAlone pins the gate to the commands
+// that genuinely have nowhere else to read from. Every command with a server
+// endpoint must stay reachable, or routing it bought nothing.
+func TestReadsThisMachine_LeavesRoutedCommandsAlone(t *testing.T) {
+	routed := []string{
+		"list", "get", "update", "delete", "progress", "triage", "umbrella",
+		"audit", "stats", "artifact", "tasks-history", "monitor",
 	}
-	if !readsThisMachine("monitor", []string{"map-duplicates"}) {
-		t.Error("monitor map-duplicates edits this machine's incident map")
-	}
-	for _, cmd := range []string{"list", "get", "update", "delete", "progress", "triage", "umbrella"} {
+	for _, cmd := range routed {
 		if readsThisMachine(cmd, nil) {
-			t.Errorf("%s is a board command and must not be gated", cmd)
+			t.Errorf("%s reaches the server and must not be gated", cmd)
 		}
+	}
+}
+
+// TestOwnStateCommandsReachTheServer pins each command that used to read this
+// machine's own corpus to the endpoint that reads the board's instead. A
+// regression here is silent: the command still prints a plausible answer, just
+// about the wrong machine.
+func TestOwnStateCommandsReachTheServer(t *testing.T) {
+	tests := []struct {
+		name  string
+		reply any
+		call  func(api *apiClient) int
+		want  string
+	}{
+		{
+			name:  "audit",
+			reply: []map[string]any{},
+			call:  func(api *apiClient) int { return cmdAudit(config.DefaultConfig(), api, nil, true) },
+			want:  "/api/AuditService/QueryAuditEvents",
+		},
+		{
+			name:  "stats lifecycle",
+			reply: []map[string]any{},
+			call: func(api *apiClient) int {
+				return cmdStats(config.DefaultConfig(), api, []string{"lifecycle"}, true)
+			},
+			want: "/api/AuditService/QueryAuditEvents",
+		},
+		{
+			name:  "artifact list",
+			reply: []map[string]any{},
+			call:  func(api *apiClient) int { return cmdArtifact(api, []string{"list", "t1"}, true) },
+			want:  "/api/TaskService/ListTaskArtifactMetas",
+		},
+		{
+			name:  "artifact get",
+			reply: []byte("hello"),
+			call:  func(api *apiClient) int { return cmdArtifact(api, []string{"get", "t1", "log.txt"}, true) },
+			want:  "/api/TaskService/ReadTaskArtifact",
+		},
+		{
+			name:  "artifact reindex",
+			reply: map[string]any{},
+			call:  func(api *apiClient) int { return cmdArtifact(api, []string{"reindex", "t1"}, true) },
+			want:  "/api/TaskService/ReindexTaskArtifacts",
+		},
+		{
+			name:  "tasks-history",
+			reply: []map[string]any{},
+			call:  func(api *apiClient) int { return cmdTasksHistory(config.DefaultConfig(), api, nil, true) },
+			want:  "/api/TaskService/ListTaskSnapshotHistory",
+		},
+		{
+			name:  "monitor map-duplicates",
+			reply: map[string]any{"fingerprint": "incident:0123456789abcdef01234567", "canonical": "https://github.com/o/r/issues/9", "duplicates": []int{10}},
+			call: func(api *apiClient) int {
+				return cmdMonitorMapDuplicates(config.DefaultConfig(), api,
+					[]string{"--fingerprint", "incident:0123456789abcdef01234567", "--issues", "10", "--coverage", "reproduced"}, true)
+			},
+			want: "/api/TaskService/MapDuplicateIncidents",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := newRecordingServer(t, tt.reply)
+			code, _ := captureStdout(t, func() int { return tt.call(rec.client()) })
+			if code != 0 {
+				t.Fatalf("%s exit = %d, want 0", tt.name, code)
+			}
+			if len(rec.paths) != 1 || rec.paths[0] != tt.want {
+				t.Errorf("called %v, want a single %s", rec.paths, tt.want)
+			}
+		})
 	}
 }
