@@ -124,6 +124,7 @@ func TestCleanupProofFailsClosed(t *testing.T) {
 		func(s *Snapshot) { s.Git.RemoteSHA = "other" },
 		func(s *Snapshot) { s.Git.RemoteSHA = ""; s.Git.TaskWorkReachable = true },
 		func(s *Snapshot) { s.Git.Healthy = false },
+		func(s *Snapshot) { s.Git.HeadExists = false },
 	} {
 		s := baselineSnapshot()
 		mutate(&s)
