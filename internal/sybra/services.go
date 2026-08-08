@@ -158,6 +158,15 @@ func (a *App) coreTaskHTTPServices() map[string]httpapi.Service {
 			"GetAttachmentURL",
 			"DispatchFromHumanRequired",
 			"ListTaskProgress",
+			// sybra-cli board surface; see svc_tasks_board.go.
+			"CreateTaskFull",
+			"UpdateTaskFields",
+			"ApplyTransition",
+			"TouchTask",
+			"ListTrash",
+			"RestoreFromTrash",
+			"DeleteTrashedGeneration",
+			"PruneAllTrash",
 		).WithReadOnly(
 			"ListTasks",
 			"ListTasksForNode",
@@ -169,6 +178,7 @@ func (a *App) coreTaskHTTPServices() map[string]httpapi.Service {
 			"ListAttachments",
 			"GetAttachmentURL",
 			"ListTaskProgress",
+			"ListTrash",
 		),
 		"ClusterAttachmentService": httpapi.NewService(&ClusterAttachmentService{tasks: a.tasks, attachments: a.attachments, logger: a.logger},
 			"ExportAttachment",
@@ -263,8 +273,13 @@ func (a *App) projectHTTPServices() map[string]httpapi.Service {
 			"SetProjectWorktreeBaseRef",
 			"DeleteProject",
 			"ListWorktrees",
-			// SetProjectSetupCommands excluded: persists shell commands executed
-			// via sh -c during worktree prep — Wails IPC only.
+			// SetProjectSetupCommands is reachable here so `sybra-cli project
+			// update --setup` works against a server rather than editing a
+			// project file the owning instance never reads. The commands it
+			// persists do run via sh -c during worktree prep, but a caller
+			// holding the server token can already dispatch an agent that runs
+			// anything, so withholding it bought no containment.
+			"SetProjectSetupCommands",
 			// SetProjectSandboxConfig excluded: cfg.Deploy is run via sh -c in
 			// k8s sandbox and Docker build/compose paths accept attacker-controlled
 			// filesystem paths — Wails IPC only.
