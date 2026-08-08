@@ -3414,7 +3414,7 @@ func TestHeadlessSteerProducesFurtherTurn(t *testing.T) {
 	// like the real claude CLI is resolved in production.
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	m, _ := newTestManager(t)
-	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
+	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: providerid.Claude, State: StateRunning}
 
 	inv := headlessInvocation{
 		name:    "claude",
