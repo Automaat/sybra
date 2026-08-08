@@ -16,21 +16,7 @@ func (a *App) postRunReconciliation() *reconciliation.Reconciler {
 		a.postRunReconciler = reconciliation.New(reconciliation.Config{
 			Tasks: a.tasks, Projects: a.projects, Worktrees: a.worktrees, Logger: a.logger, Evidence: a.evidenceStore,
 			Audit: func(req reconcile.Request, plan reconcile.Plan) {
-				taskID := req.TaskID
-				projectScope, confidential := "fleet", false
-				if t, err := a.tasks.Get(req.TaskID); err == nil {
-					if p, projectErr := a.projects.Get(t.ProjectID); projectErr == nil {
-						projectScope = experience.ProjectKey(p)
-						confidential = a.workScrubContextForTask(t.ProjectID) != nil
-						if confidential {
-							taskID = experience.WorkRecordID(req.TaskID)
-						}
-					} else if t.ProjectID != "" {
-						projectScope, taskID, confidential = "work-unknown", experience.WorkRecordID(req.TaskID), true
-					}
-				} else if req.TaskID != "" {
-					projectScope, taskID, confidential = "work-unknown", experience.WorkRecordID(req.TaskID), true
-				}
+				taskID, projectScope, confidential := a.reconciliationAuditIdentity(req.TaskID)
 				a.logAudit(audit.EventReconciliationDecided, taskID, "", map[string]any{
 					"run_id": req.RunID, "intent": string(req.Intent), "action": string(plan.Action),
 					"decision_code": "reconcile." + string(plan.Action),
@@ -43,6 +29,35 @@ func (a *App) postRunReconciliation() *reconciliation.Reconciler {
 		}
 	}
 	return a.postRunReconciler
+}
+
+func (a *App) reconciliationAuditIdentity(taskID string) (safeTaskID, projectScope string, confidential bool) {
+	safeTaskID, projectScope = taskID, "fleet"
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		if taskID != "" {
+			return experience.WorkRecordID(taskID), "work-unknown", true
+		}
+		return safeTaskID, projectScope, false
+	}
+	if t.ProjectID == "" {
+		return safeTaskID, projectScope, false
+	}
+	// A missing project store is a degraded classification path. Fail closed:
+	// retain useful typed audit evidence without exposing the task identity.
+	if a.projects == nil {
+		return experience.WorkRecordID(taskID), "work-unknown", true
+	}
+	p, err := a.projects.Get(t.ProjectID)
+	if err != nil {
+		return experience.WorkRecordID(taskID), "work-unknown", true
+	}
+	projectScope = experience.ProjectKey(p)
+	confidential = a.workScrubContextForTask(t.ProjectID) != nil
+	if confidential {
+		safeTaskID = experience.WorkRecordID(taskID)
+	}
+	return safeTaskID, projectScope, confidential
 }
 
 // newAgentCompletionHandler constructs the handler with every dependency

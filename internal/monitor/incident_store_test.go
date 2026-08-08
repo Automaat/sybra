@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -383,5 +384,28 @@ func TestIncidentHealthyProofResolvesAllPendingRemediations(t *testing.T) {
 	}
 	if closed[0].FirstContainedAt == nil || !closed[0].FirstContainedAt.Equal(base.Add(2*time.Minute)) {
 		t.Fatalf("containment should begin after the last successful action: %v", closed[0].FirstContainedAt)
+	}
+}
+
+func TestIncidentBodyIncludesLatestRemediationEvidence(t *testing.T) {
+	t.Parallel()
+	attemptedAt := time.Date(2026, time.August, 8, 7, 0, 0, 123, time.UTC)
+	observedAt := attemptedAt.Add(time.Minute)
+	in := Incident{
+		Fingerprint: "incident:abc", FailureCode: "lost_agent", ProjectScope: "fleet",
+		RemediationAttempts: []RemediationAttempt{
+			{Kind: "restart", Result: "failed", AttemptedAt: attemptedAt.Add(-time.Minute)},
+			{Kind: "reset", Result: "observed_success", AttemptedAt: attemptedAt, ObservedAt: &observedAt},
+		},
+	}
+	body := incidentBody(in, IncidentExpanded)
+	for _, want := range []string{
+		"- Remediation attempts: 2",
+		"- Latest remediation: `reset` -> `observed_success` at 2026-08-08T07:00:00.000000123Z",
+		"- Latest remediation observed at: 2026-08-08T07:01:00.000000123Z",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("incident body missing %q:\n%s", want, body)
+		}
 	}
 }
