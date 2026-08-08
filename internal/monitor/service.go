@@ -538,6 +538,12 @@ func (s *Service) recordIncidentRemediations(anoms []Anomaly, result remediation
 }
 
 func mergeIncidentChange(current, next IncidentChange) IncidentChange {
+	if current == "" {
+		current = IncidentUnchanged
+	}
+	if next == "" {
+		next = IncidentUnchanged
+	}
 	priority := map[IncidentChange]int{IncidentUnchanged: 0, IncidentExpanded: 1, IncidentOpened: 2, IncidentReopened: 3}
 	if priority[next] > priority[current] {
 		return next

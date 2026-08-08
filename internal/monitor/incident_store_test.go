@@ -16,6 +16,12 @@ import (
 )
 
 func TestMergeIncidentChangePreservesStrongestTransition(t *testing.T) {
+	if got := mergeIncidentChange("", IncidentUnchanged); got != IncidentUnchanged {
+		t.Fatalf("merge unset + unchanged = %q, want unchanged", got)
+	}
+	if got := mergeIncidentChange("", ""); got != IncidentUnchanged {
+		t.Fatalf("merge unset + unset = %q, want unchanged", got)
+	}
 	if got := mergeIncidentChange(IncidentReopened, IncidentUnchanged); got != IncidentReopened {
 		t.Fatalf("merge = %q, want reopened", got)
 	}
