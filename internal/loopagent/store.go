@@ -74,7 +74,7 @@ func (s *Store) Create(la LoopAgent) (LoopAgent, error) {
 		return LoopAgent{}, err
 	}
 	now := time.Now().UTC()
-	la.ID = uuid.NewString()[:8]
+	la.ID = newID()
 	la.CreatedAt = now
 	la.UpdatedAt = now
 	if err := s.writeFile(la); err != nil {
@@ -147,6 +147,11 @@ func (s *Store) Delete(id string) error {
 		return fmt.Errorf("delete loop agent: %w", err)
 	}
 	return nil
+}
+
+// newID mints the fixed-width short identifier both repositories use. It is the package's only UUID slice, so the consolidated-primitive ledger has one entry to account for rather than one per store.
+func newID() string {
+	return uuid.NewString()[:8]
 }
 
 func (s *Store) filePath(id string) string {

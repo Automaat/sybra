@@ -19,7 +19,7 @@ import (
 // methods. The scheduler owns the actual ticking goroutines; this service
 // is the persistence + GUI surface.
 type LoopAgentService struct {
-	store    *loopagent.Store
+	store    loopagent.Repository
 	sched    *loopagent.Scheduler
 	auditDir string
 	logger   *slog.Logger

@@ -28,7 +28,7 @@ type EmitFunc func(event string, data any)
 // called from the service layer after every CRUD mutation and once at boot.
 type Scheduler struct {
 	parent  context.Context
-	store   *Store
+	store   Repository
 	runner  AgentRunner
 	logger  *slog.Logger
 	emit    EmitFunc
@@ -51,7 +51,7 @@ type runningFetcher struct {
 // NewScheduler builds a Scheduler. homeDir is the cwd handed to spawned
 // agents — must be a directory whose .claude/skills/ holds the slash
 // commands the loop prompts reference.
-func NewScheduler(parent context.Context, store *Store, runner AgentRunner, logger *slog.Logger, emit EmitFunc, homeDir string) *Scheduler {
+func NewScheduler(parent context.Context, store Repository, runner AgentRunner, logger *slog.Logger, emit EmitFunc, homeDir string) *Scheduler {
 	if logger == nil {
 		logger = slog.Default()
 	}
