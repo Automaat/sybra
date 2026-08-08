@@ -430,16 +430,16 @@ func (m *Manager) RepairAll(ctx context.Context) {
 func (m *Manager) refuseRecreateWithLocalWork(ctx context.Context, taskID, wtPath, reason string) error {
 	if project.HasUnpushedCommits(ctx, wtPath) {
 		m.logger.Error("worktree.recreate.unpushed-commits", "task_id", taskID, "path", wtPath, "reason", reason)
-		return fmt.Errorf("refusing to recreate %s worktree %s: it holds commits that never reached a remote", reason, wtPath)
+		return fmt.Errorf("%w: refusing to recreate %s worktree %s: it holds commits that never reached a remote", ErrLocalWorkPreserved, reason, wtPath)
 	}
 	dirty, err := project.IsWorktreeDirty(ctx, wtPath)
 	if err != nil {
 		m.logger.Error("worktree.recreate.inspect-local-work", "task_id", taskID, "path", wtPath, "reason", reason, "err", err)
-		return fmt.Errorf("refusing to recreate %s worktree %s: cannot verify that its local state is clean: %w", reason, wtPath, err)
+		return fmt.Errorf("%w: refusing to recreate %s worktree %s: cannot verify that its local state is clean: %w", ErrLocalWorkPreserved, reason, wtPath, err)
 	}
 	if dirty {
 		m.logger.Error("worktree.recreate.uncommitted-work", "task_id", taskID, "path", wtPath, "reason", reason)
-		return fmt.Errorf("refusing to recreate %s worktree %s: it holds uncommitted work", reason, wtPath)
+		return fmt.Errorf("%w: refusing to recreate %s worktree %s: it holds uncommitted work", ErrLocalWorkPreserved, reason, wtPath)
 	}
 	return nil
 }
