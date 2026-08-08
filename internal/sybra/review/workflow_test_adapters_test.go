@@ -147,6 +147,11 @@ func (a *taskAdapter) MarkTaskReviewed(id string) error {
 	return err
 }
 
+func (a *taskAdapter) SetCodeReviewVerdict(id, verdict string) error {
+	_, err := a.tasks.Update(id, task.Update{CodeReviewVerdict: &verdict})
+	return err
+}
+
 func (a *taskAdapter) MarkAgentRunProtocolViolation(taskID, agentID, violation string) error {
 	return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{ProtocolViolation: task.Ptr(violation)})
 }
@@ -481,6 +486,7 @@ func taskToInfo(t task.Task) workflow.TaskInfo {
 		CurrentTestFailures:   t.CurrentTestFailures,
 		AcceptanceLedger:      t.AcceptanceLedger,
 		SpecDecision:          t.SpecDecision,
+		CodeReviewVerdict:     t.CodeReviewVerdict,
 		PlanDrafts:            t.PlanDrafts,
 		Issue:                 t.Issue,
 		Reviewed:              t.Reviewed,

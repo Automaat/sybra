@@ -60,7 +60,8 @@ description = "Run all linters"
 # run reliably as a pre-commit loop: lint-nilaway (installs nilaway),
 # security (govulncheck + npm audit hit the advisory DBs), the e2e job
 # (Playwright + chromium + a live server), and smoke:k3d (Docker + a real k3d
-# cluster). CI remains the source of truth for those four.
+# cluster), and test-go-db (needs a postgres container; run `mise run test:db`
+# before touching SQL). CI remains the source of truth for those five.
 [tasks.verify]
 run = [
   "cd frontend && npm ci && npm run build:desktop",
@@ -95,6 +96,10 @@ run = [
   "hadolint Dockerfile",
 ]
 description = "Run every deterministic CI-aligned gate (go build+mod+tidy+tests+e2e, golangci-lint, frontend check+build:web+tests+oxlint+pins, api-shim sync, no-home-fallback, consolidated-primitive drift, Git/GitHub execution boundaries, no-direct-status-write, no-direct-workflow-write, autonomy SLO gate, bindings sync, hadolint). Run before committing. Excludes nilaway/security/playwright — CI owns those."
+
+[tasks."test:db"]
+run = "scripts/test-db-engines.sh"
+description = "Run the database-backed store suite against sqlite and a throwaway postgres container (mirrors CI's Go Database Engine Tests job). Needs docker."
 
 [tasks."build:frontend:desktop"]
 run = "cd frontend && npm run build:desktop"

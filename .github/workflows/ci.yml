@@ -75,6 +75,38 @@ jobs:
       - name: Run Go e2e tests
         run: go test -race -tags e2e -p 1 -timeout 20m ./internal/sybra/...
 
+  test-go-db:
+    name: Go Database Engine Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Every SQL-backed store's behaviour suite runs against both engines here.
+    # Without this job the postgres leg of internal/testutil/dbtest silently
+    # skips and sqlite-only SQL reaches an operator's postgres box unreviewed.
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+        env:
+          POSTGRES_USER: sybra
+          POSTGRES_PASSWORD: sybra
+          POSTGRES_DB: sybra
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sybra -d sybra"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+
+      - name: Run database-backed store tests on sqlite and postgres
+        run: go test -race -timeout 10m ./internal/db/... ./internal/loopagent/... ./internal/testutil/dbtest/...
+        env:
+          SYBRA_TEST_POSTGRES_DSN: postgres://sybra:sybra@127.0.0.1:5432/sybra?sslmode=disable
+          SYBRA_REQUIRE_POSTGRES_TESTS: "1"
+
   test-frontend:
     name: Frontend Tests
     runs-on: ubuntu-latest

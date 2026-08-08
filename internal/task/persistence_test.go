@@ -41,6 +41,7 @@ func TestTaskFrontmatterMappingRoundTrip(t *testing.T) {
 		DependsOn:              []string{"owner/repo#4"},
 		DependsOnConditions:    []DepCondition{{Ref: "owner/repo#4", Kind: DepConditionKindNote, Value: "confirm permutation coverage"}},
 		Reviewed:               true,
+		CodeReviewVerdict:      "NEEDS_FIXES",
 		RunRole:                "pr-fix",
 		SupervisorSteer:        "read the failure",
 		ReviewPhase:            "awaiting-author",
@@ -311,6 +312,8 @@ func setTaskFieldForPersistenceTest(t *testing.T, task *Task, name string) {
 		task.DependsOnConditions = []DepCondition{{Ref: "owner/repo#321", Kind: DepConditionKindLabel, Value: "scope-confirmed"}}
 	case "Reviewed":
 		task.Reviewed = true
+	case "CodeReviewVerdict":
+		task.CodeReviewVerdict = "NEEDS_FIXES"
 	case "RunRole":
 		task.RunRole = "pr-fix"
 	case "SupervisorSteer":

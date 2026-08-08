@@ -35,6 +35,7 @@ var KnownTriggerFields = map[string]bool{
 	"task.review_lifetime_exceeded": true,
 	"task.plan_critique":            true,
 	"task.code_review":              true,
+	"task.code_review_verdict":      true,
 	"task.replan_count":             true,
 	// Supplied as extras by DispatchEvent("pr.event", ...) callers in
 	// app_reviews.go and svc_integrations.go.

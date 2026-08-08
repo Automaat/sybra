@@ -32,6 +32,7 @@ import (
 	"github.com/Automaat/sybra/internal/cluster"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/confighot"
+	"github.com/Automaat/sybra/internal/db"
 	"github.com/Automaat/sybra/internal/diskreclaim"
 	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/events"
@@ -88,7 +89,8 @@ type App struct {
 	fetchPR           func(ctx context.Context, repo string, number int) (github.PullRequest, error)
 	tasks             *task.Manager
 	projects          *project.Store
-	loopAgents        *loopagent.Store
+	database          *db.DB
+	loopAgents        loopagent.Repository
 	loopSched         *loopagent.Scheduler
 	agents            *agent.Manager
 	attempts          *dispatch.Controller
@@ -484,6 +486,7 @@ func (a *App) cleanupFailedStartup() {
 		a.cancel()
 	}
 	a.stopFileWatcher()
+	a.closeDatabase()
 	if a.homeUnlock != nil {
 		if err := a.homeUnlock(); err != nil {
 			a.logger.Warn("app.home_unlock.failed", "err", err)
@@ -526,6 +529,10 @@ func (a *App) Startup(ctx context.Context) error {
 	a.initToolLedger()
 	a.initStats()
 
+	if err := a.initDatabase(appCtx); err != nil {
+		return err
+	}
+
 	store, err := task.NewStore(a.tasksDir)
 	if err != nil {
 		a.logger.Error("task.store.init", "err", err)
@@ -539,23 +546,8 @@ func (a *App) Startup(ctx context.Context) error {
 		a.logger.Warn("task.store.migrate", "err", err)
 	}
 
-	projStore, err := project.NewStore(
-		filepath.Join(config.HomeDir(), "projects"),
-		filepath.Join(config.HomeDir(), "clones"),
-	)
-	if err != nil {
-		a.logger.Error("project.store.init", "err", err)
-		return fmt.Errorf("project store: %w", err)
-	}
-	signingPolicy := project.NormalizeSigningPolicy(a.cfg.CommitSigning())
-	projStore.SetSigningPolicy(signingPolicy)
-	// Fallback for the workflows no dispatcher seeds; see
-	// workflow.SetDefaultCommitSignFlags.
-	workflow.SetDefaultCommitSignFlags(signingPolicy.CommitFlags(appCtx))
-	a.projects = projStore
-	// Retrofits maintenance.auto=false onto existing clones; see #2978.
-	if err := projStore.MigrateDisableAutoMaintenance(appCtx); err != nil {
-		a.logger.Warn("project.store.migrate_maintenance_auto", "err", err)
+	if err := a.initProjects(appCtx); err != nil {
+		return err
 	}
 
 	if err := a.initLoopAgents(); err != nil {
@@ -800,6 +792,7 @@ func (a *App) Shutdown(ctx context.Context) {
 	if a.toolLedger != nil {
 		_ = a.toolLedger.Close()
 	}
+	a.closeDatabase()
 	if a.homeUnlock != nil {
 		if err := a.homeUnlock(); err != nil {
 			a.logger.Warn("app.home_unlock.failed", "err", err)

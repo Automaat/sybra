@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/backoff"
 	"github.com/Automaat/sybra/internal/bgop"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/db"
 	"github.com/Automaat/sybra/internal/diskreclaim"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/evidence"
@@ -278,7 +279,7 @@ func (a *App) initIssuesFetcher(emit func(string, any)) *poll.IssuesFetcher {
 func (a *App) logAutomationsSummary() {
 	loopAgentsEnabled := 0
 	if a.loopAgents != nil {
-		if las, err := a.loopAgents.List(); err == nil {
+		if las, err := a.loopAgents.List(a.ctx); err == nil {
 			for i := range las {
 				if las[i].Enabled {
 					loopAgentsEnabled++
@@ -1731,6 +1732,15 @@ func (a *App) logAudit(eventType, taskID, agentID string, data map[string]any) {
 // configuration in the GUI before enabling. Idempotent: if a record with
 // the same Name already exists this is a no-op.
 func (a *App) initLoopAgents() error {
+	if a.database != nil {
+		store, err := loopagent.NewSQLStore(a.database)
+		if err != nil {
+			a.logger.Error("loopagent.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+			return err
+		}
+		a.loopAgents = store
+		return nil
+	}
 	store, err := loopagent.NewStore(a.cfg.LoopAgentsDir)
 	if err != nil {
 		a.logger.Error("loopagent.store.init", "err", err)
@@ -1740,21 +1750,81 @@ func (a *App) initLoopAgents() error {
 	return nil
 }
 
+// initProjects opens the project metadata store and applies the resolved
+// commit-signing policy to it and to the workflows no dispatcher seeds.
+func (a *App) initProjects(ctx context.Context) error {
+	projStore, err := project.NewStore(
+		filepath.Join(config.HomeDir(), "projects"),
+		filepath.Join(config.HomeDir(), "clones"),
+	)
+	if err != nil {
+		a.logger.Error("project.store.init", "err", err)
+		return fmt.Errorf("project store: %w", err)
+	}
+	signingPolicy := project.NormalizeSigningPolicy(a.cfg.CommitSigning())
+	projStore.SetSigningPolicy(signingPolicy)
+	workflow.SetDefaultCommitSignFlags(signingPolicy.CommitFlags(ctx))
+	a.projects = projStore
+	// Retrofits maintenance.auto=false onto existing clones; see #2978.
+	if err := projStore.MigrateDisableAutoMaintenance(ctx); err != nil {
+		a.logger.Warn("project.store.migrate_maintenance_auto", "err", err)
+	}
+	return nil
+}
+
+// initDatabase opens the configured backend and applies pending migrations.
+// A wrong or unreachable setting aborts startup here rather than surfacing as
+// a store failure later, so the operator sees which setting is at fault.
+func (a *App) initDatabase(ctx context.Context) error {
+	if !a.cfg.DatabaseEnabled() {
+		return nil
+	}
+	backend := a.cfg.DatabaseBackend()
+	dsn := a.cfg.DatabaseDSN()
+	database, err := db.Open(ctx, db.Options{
+		Backend:         backend,
+		DSN:             dsn,
+		MaxOpenConns:    a.cfg.Database.MaxOpenConns,
+		MaxIdleConns:    a.cfg.Database.MaxIdleConns,
+		ConnMaxLifetime: time.Duration(a.cfg.Database.ConnMaxLifetimeSeconds) * time.Second,
+	})
+	if err != nil {
+		a.logger.Error("db.open", "backend", backend, "dsn", db.RedactDSN(dsn), "err", err)
+		return fmt.Errorf("database: %w", err)
+	}
+	version, err := db.SchemaVersion(ctx, database)
+	if err != nil {
+		_ = database.Close()
+		a.logger.Error("db.schema_version", "backend", backend, "err", err)
+		return fmt.Errorf("database: %w", err)
+	}
+	a.database = database
+	a.logger.Info("db.ready", "backend", backend, "dsn", db.RedactDSN(dsn), "schema_version", version)
+	return nil
+}
+
+func (a *App) closeDatabase() {
+	if a.database == nil {
+		return
+	}
+	if err := a.database.Close(); err != nil {
+		a.logger.Warn("db.close", "err", err)
+	}
+	a.database = nil
+}
+
 func (a *App) initLoopScheduler(ctx context.Context, emit func(string, any)) {
 	a.loopSched = loopagent.NewScheduler(ctx, a.loopAgents, a.agents, a.logger, emit, config.HomeDir())
-	a.seedDefaultLoopAgents()
+	a.seedDefaultLoopAgents(ctx)
 	a.loopSched.SyncContext(ctx)
 }
 
-func (a *App) seedDefaultLoopAgents() {
+func (a *App) seedDefaultLoopAgents(ctx context.Context) {
 	if a.loopAgents == nil {
 		return
 	}
 	const name = "sybra-self-monitor"
-	if _, ok := a.loopAgents.FindByName(name); ok {
-		return
-	}
-	created, err := a.loopAgents.Create(loopagent.LoopAgent{
+	created, inserted, err := a.loopAgents.CreateIfAbsentByName(ctx, loopagent.LoopAgent{
 		Name:         name,
 		Prompt:       "/sybra-self-monitor",
 		IntervalSec:  21600, // 6 hours
@@ -1765,6 +1835,9 @@ func (a *App) seedDefaultLoopAgents() {
 	})
 	if err != nil {
 		a.logger.Warn("loopagent.seed.failed", "name", name, "err", err)
+		return
+	}
+	if !inserted {
 		return
 	}
 	a.logger.Info("loopagent.seed.created", "id", created.ID, "name", name)

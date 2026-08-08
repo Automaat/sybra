@@ -523,10 +523,17 @@ type Task struct {
 	// Planning sidecars. Plan is the human-readable compact plan; PlanContract
 	// is the machine-validated JSON contract consumed by implementation agents.
 	// The remaining sidecars hold review/evidence material.
-	PlanResearch        string `json:"planResearch,omitempty"`
-	PlanDecisions       string `json:"planDecisions,omitempty"`
-	PlanBrief           string `json:"planBrief,omitempty"`
-	CodeReview          string `json:"codeReview,omitempty"`
+	PlanResearch  string `json:"planResearch,omitempty"`
+	PlanDecisions string `json:"planDecisions,omitempty"`
+	PlanBrief     string `json:"planBrief,omitempty"`
+	CodeReview    string `json:"codeReview,omitempty"`
+	// CodeReviewVerdict is the last review-role step's structured verdict
+	// ("CLEAN"/"NEEDS_FIXES"), extracted from the agent's schema-enforced
+	// output rather than the CodeReview sidecar markdown (see
+	// workflow.ExtractReviewVerdict). Persisted so a re-triggered workflow run
+	// can tell a genuine NEEDS_FIXES review from Reviewed=true without
+	// re-parsing the sidecar for a literal-prefix marker.
+	CodeReviewVerdict   string `json:"codeReviewVerdict,omitempty"`
 	CurrentTestFailures string `json:"currentTestFailures,omitempty"`
 	AcceptanceLedger    string `json:"acceptanceLedger,omitempty"`
 	SpecDecision        string `json:"specDecision,omitempty"`

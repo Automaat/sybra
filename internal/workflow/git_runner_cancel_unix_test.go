@@ -59,28 +59,26 @@ esac
 		t.Fatal("workflow Git command did not stop after cancellation")
 	}
 
-	deadline := time.Now().Add(3 * time.Second)
-	for !gitOK(context.Background(), wtPath, "probe") && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !gitOK(context.Background(), wtPath, "probe") {
+	if !pollUntil(3*time.Second, 20*time.Millisecond, func() bool {
+		return gitOK(context.Background(), wtPath, "probe")
+	}) {
 		t.Fatal("Git helper survived cancellation and retained the worktree")
 	}
 }
 
 func waitForWorkflowGitHelperPID(t *testing.T, path string) int {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	var pid int
+	ok := pollUntil(3*time.Second, 10*time.Millisecond, func() bool {
 		data, err := os.ReadFile(path)
-		if err == nil {
-			var pid int
-			if _, scanErr := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &pid); scanErr == nil {
-				return pid
-			}
+		if err != nil {
+			return false
 		}
-		time.Sleep(10 * time.Millisecond)
+		_, scanErr := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &pid)
+		return scanErr == nil
+	})
+	if !ok {
+		t.Fatalf("timed out waiting for Git helper PID in %s", path)
 	}
-	t.Fatalf("timed out waiting for Git helper PID in %s", path)
-	return 0
+	return pid
 }

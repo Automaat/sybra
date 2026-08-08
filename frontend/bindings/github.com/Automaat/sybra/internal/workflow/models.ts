@@ -1023,6 +1023,18 @@ export enum StepType {
     StepRouteTestResult = "route_test_result",
 
     /**
+     * StepRouteReviewVerdict reads the review-role step's structured verdict
+     * (output_schema-enforced JSON, see ExtractReviewVerdict), stashed by
+     * engine_advance into the review_verdict workflow var. A valid CLEAN/
+     * NEEDS_FIXES verdict is a no-op pass-through — the YAML's own `next.when`
+     * clauses route on vars.review_verdict. A missing/malformed verdict is
+     * never treated as either outcome: it bounded-retries the review agent
+     * with a schema-conformance reask note, then escalates to human-required
+     * once the retry budget is spent.
+     */
+    StepRouteReviewVerdict = "route_review_verdict",
+
+    /**
      * StepParallel runs its `Parallel` children concurrently as run_agent
      * steps. The parent step advances only after every child has terminated;
      * parent-level Next is evaluated against the parent step record (with the

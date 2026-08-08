@@ -261,6 +261,9 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 	report.Anomalies = SortAnomalies(report.Anomalies)
 	s.applyDowngradeLLM(report.Anomalies)
 	incidentChanges := s.observeIncidents(tasks, report.Anomalies)
+	if events1hErr == nil {
+		s.recordControlPlaneRepairAttempts(events1h, tasks)
+	}
 
 	if !s.observerOnly {
 		rem := s.applyRemediations(ctx, report.Anomalies)
@@ -681,6 +684,82 @@ func (s *Service) logIncidentEvent(eventType string, in Incident, change Inciden
 		data["remediation_result"] = latest.Result
 	}
 	s.auditLog(audit.Event{Type: eventType, TaskID: taskID, Data: data})
+}
+
+// recordControlPlaneRepairAttempts links completion's post-run conflict
+// recovery callback (audited as EventReconciliationRepairAttempted — see
+// completion.Handler.reconcileAuthorCompletion) to the reconciliation.repair
+// incident it belongs to. applyRemediations deliberately skips control-plane
+// observations (isControlPlaneObservation): the actual repair attempt for a
+// reconciliation.repair anomaly runs synchronously inside agent completion,
+// not through the generic remediator, so without this hookup the incident's
+// RemediationAttempts — and the RecoverySuccess/RepeatRepair autonomy SLOs
+// derived from monitor.incident_remediation events — never see any
+// reconciliation.repair activity at all, no matter how many times conflict
+// recovery actually ran.
+//
+// The failure_code/component/capability/config-generation tuple alone
+// determines the incident fingerprint (RootCauseFingerprint excludes task
+// identity), so the fingerprint is rebuilt directly rather than re-running
+// the full anomaly-observation pipeline.
+func (s *Service) recordControlPlaneRepairAttempts(auditEvents []audit.Event, tasks []task.Task) {
+	if s.incidents == nil {
+		return
+	}
+	byID := make(map[string]task.Task, len(tasks))
+	for i := range tasks {
+		byID[tasks[i].ID] = tasks[i]
+	}
+	generation := monitorConfigGeneration(KindBottleneck, s.cfg)
+	for i := range auditEvents {
+		e := auditEvents[i]
+		if e.Type != audit.EventReconciliationRepairAttempted {
+			continue
+		}
+		result, _ := e.Data["result"].(string)
+		if result == "" {
+			continue
+		}
+		scope := "fleet"
+		if t, ok := byID[e.TaskID]; ok && s.incidentScope != nil {
+			if mapped, _, _ := s.incidentScope(t); mapped != "" {
+				scope = mapped
+			}
+		}
+		fp := RootCauseFingerprint(RootCause{
+			FailureCode: "reconciliation.repair", Component: "reconciliation", Capability: "post-run",
+			ProjectScope: scope, ConfigGeneration: generation,
+		})
+		in, ok, err := s.incidents.Get(fp)
+		if err != nil || !ok {
+			// No open incident to attach this attempt to (already resolved,
+			// or a config change rekeyed it) — nothing durable left to record.
+			continue
+		}
+		if hasRepairAttempt(in, e.Timestamp) {
+			continue // already recorded from a prior tick's overlapping 1h window
+		}
+		if err := s.incidents.RecordRemediation(fp, "reconciliation.repair", result, e.Timestamp); err != nil {
+			s.logger.Warn("monitor.incident.control_plane_remediation_failed", "fingerprint", fp, "err", err)
+			continue
+		}
+		if in, ok, _ := s.incidents.Get(fp); ok {
+			s.logIncidentEvent(audit.EventMonitorIncidentRemediation, in, IncidentUnchanged, "")
+		}
+	}
+}
+
+// hasRepairAttempt reports whether in already has a reconciliation.repair
+// remediation attempt recorded for the exact source event timestamp at,
+// which recordControlPlaneRepairAttempts uses as its dedup key across the
+// audit log's overlapping 1h read windows.
+func hasRepairAttempt(in Incident, at time.Time) bool {
+	for _, attempt := range in.RemediationAttempts {
+		if attempt.Kind == "reconciliation.repair" && attempt.AttemptedAt.Equal(at) {
+			return true
+		}
+	}
+	return false
 }
 
 // controlPlaneAnomalies projects durable lease/reconciliation outcomes into
