@@ -445,6 +445,9 @@ func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal st
 		if err != nil {
 			return nil, err.Error()
 		}
+		// A named target is the operator's choice, including a board serving
+		// another home, so answering the probe is enough. An older server that
+		// predates the service marker still works.
 		if c.reachable(context.Background()) {
 			return c, ""
 		}
@@ -458,9 +461,11 @@ func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal st
 	// No target named, so every board this machine might be running is tried.
 	// The desktop app's recorded port is kept across restarts, so a stale entry
 	// must not shadow a server that is up.
+	home := config.HomeDir()
 	candidates := localBoardCandidates(cfg)
 	tried := make([]string, 0, len(candidates))
 	unusable := make([]string, 0, len(candidates))
+	foreign := make([]string, 0, len(candidates))
 	for _, target := range candidates {
 		c, err := newLocalAPIClient(cfg, target)
 		if err != nil {
@@ -471,12 +476,25 @@ func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal st
 			continue
 		}
 		tried = append(tried, c.baseURL)
-		if c.reachable(context.Background()) {
-			return c, ""
+		if !c.reachable(context.Background()) {
+			continue
 		}
+		// Nobody named this target. With no bind configured every home infers
+		// the same default port, so a board that answers there may be serving a
+		// different home entirely — the operator's real one. It has to say it
+		// serves this one before the token goes anywhere near it.
+		if !c.servesThisHome(home) {
+			foreign = append(foreign, c.baseURL)
+			continue
+		}
+		return c, ""
 	}
 	if runsWithoutServer(cmd) {
 		return nil, ""
+	}
+	if len(foreign) > 0 {
+		return nil, fmt.Sprintf("the server at %s does not serve %s; start one for this home, or set %s to the board you meant",
+			strings.Join(foreign, ", "), home, serverTargetEnv)
 	}
 	if len(tried) == 0 {
 		if len(unusable) > 0 {

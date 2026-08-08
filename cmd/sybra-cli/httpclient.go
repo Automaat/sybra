@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,6 +58,9 @@ type apiClient struct {
 	baseURL string
 	token   string
 	http    *http.Client
+	// identified records that the peer answered the health probe as a Sybra
+	// control plane rather than merely answering.
+	identified bool
 	// boardHome is the SYBRA_HOME the board reported serving, learned during
 	// the reachability probe. Empty until that probe has run.
 	boardHome string
@@ -144,15 +149,27 @@ func configuredServerTarget(cfg *config.Config) string {
 	// cfg.Cluster directly, not ListenAddrs: that helper honours
 	// SYBRA_BIND_ADDR, and an env var naming a listen address must not steer a
 	// client — the bearer token goes wherever this points.
-	configured := ""
+	binds := make([]string, 0, len(cfg.Cluster.BindAddrs)+1)
 	for _, addr := range cfg.Cluster.BindAddrs {
 		if strings.TrimSpace(addr) != "" {
+			binds = append(binds, addr)
+		}
+	}
+	if addr := strings.TrimSpace(cfg.Cluster.BindAddr); addr != "" {
+		binds = append(binds, addr)
+	}
+	// Loopback first among several: the client always prefers a bind it can
+	// reach without putting the token on a network hop, and picking merely the
+	// first listed skipped a usable loopback bind behind a LAN one.
+	configured := ""
+	for _, addr := range binds {
+		if host, _, err := net.SplitHostPort(addr); err == nil && isLoopbackHost(host) {
 			configured = addr
 			break
 		}
 	}
-	if configured == "" {
-		configured = strings.TrimSpace(cfg.Cluster.BindAddr)
+	if configured == "" && len(binds) > 0 {
+		configured = binds[0]
 	}
 	if configured == "" {
 		return localOrigin(cfg, "127.0.0.1", config.DefaultServerPort)
@@ -315,11 +332,23 @@ func (c *apiClient) reachable(ctx context.Context) bool {
 		Service string `json:"service"`
 		Home    string `json:"home"`
 	}
-	if json.Unmarshal(body, &health) != nil || health.Service != httpserve.ServiceMarker {
+	if json.Unmarshal(body, &health) != nil {
 		return false
 	}
 	c.boardHome = health.Home
+	c.identified = health.Service == httpserve.ServiceMarker
 	return true
+}
+
+// servesThisHome reports a peer that both identifies as Sybra and says it
+// serves the given home.
+//
+// It is the bar for a target this client inferred rather than an operator
+// named: with no bind configured every home infers the same default port, so
+// without it an isolated SYBRA_HOME reaches whichever board happens to hold
+// that port — including the operator's real one.
+func (c *apiClient) servesThisHome(home string) bool {
+	return c.identified && c.ownsHome(home)
 }
 
 // ownsHome reports that this board serves the given SYBRA_HOME.
@@ -424,7 +453,32 @@ func newLocalAPIClient(cfg *config.Config, target string) (*apiClient, error) {
 		return nil, errNoServerTarget
 	}
 	if strings.HasPrefix(target, "https://") {
-		return newTLSAPIClient(target, "this machine's board", strings.TrimSpace(cfg.Server.AuthToken))
+		c, err := newTLSAPIClient(target, "this machine's board", strings.TrimSpace(cfg.Server.AuthToken))
+		if err != nil {
+			return nil, err
+		}
+		// The control plane's certificate is pinned by fingerprint, not issued
+		// by a CA, so the system roots reject it and every command against a
+		// TLS instance's own board would fail verification. Trust the exact
+		// certificate this instance was configured to serve, and nothing else.
+		pool, poolErr := certPoolFor(cfg.Cluster.TLS.CertFile)
+		if poolErr != nil {
+			return nil, poolErr
+		}
+		c.http = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}}
+		return c, nil
 	}
 	return newCleartextAPIClient(cfg, target, "this machine's board")
+}
+
+func certPoolFor(certFile string) (*x509.CertPool, error) {
+	pem, err := os.ReadFile(certFile)
+	if err != nil {
+		return nil, fmt.Errorf("read the control plane certificate %q: %w", certFile, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("the control plane certificate %q holds no usable certificate", certFile)
+	}
+	return pool, nil
 }

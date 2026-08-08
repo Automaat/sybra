@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/httpserve"
 )
 
 // TestHomeFlag_OverridesEverything pins --home as the top of the precedence
@@ -219,7 +221,54 @@ func TestInferredTargetRefusesAnUnidentifiedPeer(t *testing.T) {
 	if gotAuth != "" {
 		t.Fatalf("sent %q to an unidentified peer; the token must not leave until the board identifies itself", gotAuth)
 	}
-	if !strings.Contains(stderr, "no Sybra server is reachable") {
-		t.Errorf("stderr = %q, want the unreachable-server refusal", stderr)
+	if !strings.Contains(stderr, "does not serve") {
+		t.Errorf("stderr = %q, want it to say the peer does not serve this home", stderr)
+	}
+}
+
+// TestInferredTargetRefusesAPeerServingAnotherHome measures the case a bare
+// service marker cannot answer: the marker is a fixed public string, so a local
+// process can echo it. What it cannot do is claim this home without the
+// operator noticing, and an inferred target is trusted on that alone.
+//
+// The danger is concrete: with no bind configured every home infers the same
+// default port, so an isolated SYBRA_HOME would otherwise drive whichever board
+// holds it — including the operator's real one.
+func TestInferredTargetRefusesAPeerServingAnotherHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv(serverTargetEnv, "")
+
+	var gotAuth string
+	impostor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if v := r.Header.Get("Authorization"); v != "" {
+			gotAuth = v
+		}
+		_, _ = w.Write([]byte(`{"status":"ok","service":"` + httpserve.ServiceMarker + `","home":"/somewhere/else"}`))
+	}))
+	t.Cleanup(impostor.Close)
+
+	u, err := url.Parse(impostor.URL)
+	if err != nil {
+		t.Fatalf("parse impostor URL: %v", err)
+	}
+	_, port, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		t.Fatalf("split impostor host: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, desktopPortFile), []byte(port), 0o600); err != nil {
+		t.Fatalf("write desktop port: %v", err)
+	}
+
+	code, _, stderr := runCLIWithStderr(t, "--json", "list")
+	if code == 0 {
+		t.Fatal("list exit 0 against a board serving a different home")
+	}
+	if gotAuth != "" {
+		t.Fatalf("sent %q to a board serving another home", gotAuth)
+	}
+	if !strings.Contains(stderr, "does not serve") {
+		t.Errorf("stderr = %q, want it to say the peer does not serve this home", stderr)
 	}
 }

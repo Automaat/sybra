@@ -346,8 +346,10 @@ func TestDoctorCleanupRefusesABoardServingAnotherHome(t *testing.T) {
 	if code == 0 {
 		t.Fatal("doctor cleanup --apply exit 0 against a board serving another home")
 	}
-	if !strings.Contains(stderr, "different home") {
-		t.Errorf("stderr = %q, want it to name the mismatched home", stderr)
+	// A board that serves another home is refused before it is ever used, so
+	// the command reports having found none for this home.
+	if !strings.Contains(stderr, "no Sybra server is reachable") && !strings.Contains(stderr, "does not serve") {
+		t.Errorf("stderr = %q, want a refusal naming the missing board for this home", stderr)
 	}
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("live sandbox state was deleted: %v", err)

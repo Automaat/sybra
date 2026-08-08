@@ -102,12 +102,24 @@ SH
 chmod +x "$TMP/fakebin/claude" "$TMP/fakebin/codex" "$TMP/fakebin/copilot"
 ```
 
+Bind the harness server in its own config, not with `SYBRA_PORT` alone. The
+CLI ignores `SYBRA_HOST`/`SYBRA_PORT` when it looks for a board — they name
+where a server *listens*, and letting one steer a client aims it at whatever
+answers there — so a harness that only sets them leaves the CLI dialling the
+default port, which is where an operator's real Sybra listens:
+
+```bash
+cat >> "$TMP/home/config.yaml" <<YAML
+cluster:
+  bind_addrs: ["127.0.0.1:$PORT"]
+YAML
+```
+
 Start the server:
 
 ```bash
 PATH="$TMP/fakebin:$PATH" \
 SYBRA_HOME="$TMP/home" \
-SYBRA_PORT="$PORT" \
 go run ./cmd/sybra-server
 ```
 
