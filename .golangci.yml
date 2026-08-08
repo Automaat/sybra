@@ -202,6 +202,16 @@ linters:
           - gosec
         path: internal/cluster/tls\.go
         text: "G402"
+      # sybra-cli pins its own control plane the same way, and for the same
+      # reason: `cluster gen-cert` mints a self-signed leaf for the hosts an
+      # operator names, so no root accepts it and the client dials loopback,
+      # which is in no SAN. Identity is the certificate, not the address it
+      # answered on, and VerifyConnection checks that fingerprint in constant
+      # time on every handshake.
+      - linters:
+          - gosec
+        path: cmd/sybra-cli/httpclient\.go
+        text: "G402"
       # apiClient (cmd/sybra-cli/httpclient.go) always dials a hardcoded
       # 127.0.0.1 host with a numerically-validated port derived from the
       # operator's own resolved server config — never a remote/attacker-

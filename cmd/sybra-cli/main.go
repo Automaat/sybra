@@ -454,8 +454,8 @@ func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal st
 		if runsWithoutServer(cmd) {
 			return nil, ""
 		}
-		return nil, fmt.Sprintf("no Sybra server is reachable at %s (%s); start it, or point %s elsewhere",
-			c.baseURL, serverTargetEnv, serverTargetEnv)
+		return nil, fmt.Sprintf("no Sybra server is reachable at %s (%s)%s; start it, or point %s elsewhere",
+			c.baseURL, serverTargetEnv, probeCause(c), serverTargetEnv)
 	}
 
 	// No target named, so every board this machine might be running is tried.
@@ -466,6 +466,7 @@ func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal st
 	tried := make([]string, 0, len(candidates))
 	unusable := make([]string, 0, len(candidates))
 	foreign := make([]string, 0, len(candidates))
+	causes := make([]string, 0, len(candidates))
 	for _, target := range candidates {
 		c, err := newLocalAPIClient(cfg, target)
 		if err != nil {
@@ -477,6 +478,9 @@ func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal st
 		}
 		tried = append(tried, c.baseURL)
 		if !c.reachable(context.Background()) {
+			if cause := probeCause(c); cause != "" {
+				causes = append(causes, cause)
+			}
 			continue
 		}
 		// Nobody named this target. With no bind configured every home infers
@@ -489,12 +493,15 @@ func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal st
 		}
 		return c, ""
 	}
-	if runsWithoutServer(cmd) {
-		return nil, ""
-	}
 	if len(foreign) > 0 {
+		// Reported even for the commands that run without a server: doctor
+		// otherwise says nothing answered while a board did, and sends the
+		// operator to start one that is already running.
 		return nil, fmt.Sprintf("the server at %s does not serve %s; start one for this home, or set %s to the board you meant",
 			strings.Join(foreign, ", "), home, serverTargetEnv)
+	}
+	if runsWithoutServer(cmd) {
+		return nil, ""
 	}
 	if len(tried) == 0 {
 		if len(unusable) > 0 {
@@ -502,8 +509,18 @@ func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal st
 		}
 		return nil, fmt.Sprintf("no Sybra server could be located for this home; start one, or set %s", serverTargetEnv)
 	}
-	return nil, fmt.Sprintf("no Sybra server is reachable (tried %s); start one, or set %s",
-		strings.Join(tried, ", "), serverTargetEnv)
+	return nil, fmt.Sprintf("no Sybra server is reachable (tried %s)%s; start one, or set %s",
+		strings.Join(tried, ", "), strings.Join(causes, ""), serverTargetEnv)
+}
+
+// probeCause renders why a reachability probe failed, when the reason is
+// something other than nothing listening. A certificate mismatch reported as
+// "no server is reachable" sends an operator to restart a running one.
+func probeCause(c *apiClient) string {
+	if c == nil || c.probeErr == nil {
+		return ""
+	}
+	return ": " + c.probeErr.Error()
 }
 
 // ownsThisHome reports that the resolved board serves this SYBRA_HOME.

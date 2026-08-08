@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -58,6 +60,9 @@ type apiClient struct {
 	baseURL string
 	token   string
 	http    *http.Client
+	// probeErr is why the last reachability probe failed, when it failed for a
+	// reason worth telling an operator about.
+	probeErr error
 	// identified records that the peer answered the health probe as a Sybra
 	// control plane rather than merely answering.
 	identified bool
@@ -98,7 +103,24 @@ func newAPIClient(cfg *config.Config) (*apiClient, error) {
 		return nil, fmt.Errorf("%s is set but no configuration is loaded", serverTargetEnv)
 	}
 	if strings.HasPrefix(raw, "https://") {
-		return newTLSAPIClient(raw, source, "")
+		c, err := newTLSAPIClient(raw, source, "")
+		if err != nil {
+			return nil, err
+		}
+		// A named https target that is this machine's own TLS board still needs
+		// the pin: its certificate is self-signed, so the system roots reject
+		// it and the escape hatch every refusal recommends would dead-end.
+		if !c.remote && cfg.ServesTLS() {
+			transport, tlsErr := pinnedTransport(cfg.Cluster.TLS.CertFile)
+			if tlsErr != nil {
+				return nil, tlsErr
+			}
+			c.http = &http.Client{Transport: transport}
+			if c.token == "" {
+				c.token = strings.TrimSpace(cfg.Server.AuthToken)
+			}
+		}
+		return c, nil
 	}
 	return newCleartextAPIClient(cfg, raw, source)
 }
@@ -239,8 +261,13 @@ func newCleartextAPIClient(cfg *config.Config, raw, source string) (*apiClient, 
 		return nil, fmt.Errorf("%s=%q is not a valid host:port or http origin", source, raw)
 	}
 	if !isLoopbackHost(host) {
+		if source != serverTargetEnv {
+			// Inferred, so naming the env var would send an operator to unset
+			// something they never set. The cause is the configured bind.
+			return nil, fmt.Errorf("this home's only configured bind %q is neither loopback nor TLS, so there is no route to it that keeps the bearer token off the wire; add a loopback entry to cluster.bind_addrs, or configure cluster.tls", raw)
+		}
 		return nil, fmt.Errorf("%s=%q is not loopback; use https:// with %s rather than sending the token in cleartext",
-			serverTargetEnv, raw, serverTokenEnv)
+			source, raw, serverTokenEnv)
 	}
 	token := strings.TrimSpace(cfg.Server.AuthToken)
 	tokenPath := strings.TrimSpace(os.Getenv("SYBRA_AUTH_TOKEN_FILE"))
@@ -321,6 +348,9 @@ func (c *apiClient) reachable(ctx context.Context) bool {
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
+		// Kept so a refusal can say "certificate does not match" rather than
+		// reporting a running server as stopped.
+		c.probeErr = err
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -457,28 +487,54 @@ func newLocalAPIClient(cfg *config.Config, target string) (*apiClient, error) {
 		if err != nil {
 			return nil, err
 		}
-		// The control plane's certificate is pinned by fingerprint, not issued
-		// by a CA, so the system roots reject it and every command against a
-		// TLS instance's own board would fail verification. Trust the exact
-		// certificate this instance was configured to serve, and nothing else.
-		pool, poolErr := certPoolFor(cfg.Cluster.TLS.CertFile)
-		if poolErr != nil {
-			return nil, poolErr
+		transport, tlsErr := pinnedTransport(cfg.Cluster.TLS.CertFile)
+		if tlsErr != nil {
+			return nil, tlsErr
 		}
-		c.http = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}}
+		c.http = &http.Client{Transport: transport}
 		return c, nil
 	}
 	return newCleartextAPIClient(cfg, target, "this machine's board")
 }
 
-func certPoolFor(certFile string) (*x509.CertPool, error) {
-	pem, err := os.ReadFile(certFile)
+// pinnedTransport verifies the control plane by the fingerprint of the exact
+// certificate it was configured to serve, the way the leader verifies a
+// follower (internal/cluster/tls.go).
+//
+// Chain and hostname verification are both wrong here. The certificate is
+// self-signed, so no root accepts it; and `cluster gen-cert` mints it for the
+// hosts an operator names — a tailnet name and a LAN address — while the client
+// dials loopback, so the name would never match either. Identity is the key,
+// not the address it answered on.
+func pinnedTransport(certFile string) (*http.Transport, error) {
+	pemBytes, err := os.ReadFile(certFile)
 	if err != nil {
 		return nil, fmt.Errorf("read the control plane certificate %q: %w", certFile, err)
 	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(pem) {
-		return nil, fmt.Errorf("the control plane certificate %q holds no usable certificate", certFile)
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, fmt.Errorf("the control plane certificate %q holds no PEM block", certFile)
 	}
-	return pool, nil
+	want := sha256.Sum256(block.Bytes)
+
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, errors.New("http.DefaultTransport is not *http.Transport")
+	}
+	tr := base.Clone()
+	tr.TLSClientConfig = &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: true,
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return errors.New("the control plane presented no certificate")
+			}
+			got := sha256.Sum256(cs.PeerCertificates[0].Raw)
+			if subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
+				return fmt.Errorf("control plane certificate does not match %q", certFile)
+			}
+			return nil
+		},
+	}
+	return tr, nil
 }
