@@ -769,8 +769,11 @@ func (s *Service) dispatchLLMAnomalies(ctx context.Context, now time.Time, anoms
 	return out
 }
 
-// fileIssues files deterministic-body issues for anomalies that were neither
-// dispatched to an LLM nor fully handled in-process. Returns (opened, updated).
+// fileIssues files deterministic-body issues for anomalies that are not
+// handled exclusively in-process. Legacy mode skips LLM-dispatched anomalies;
+// incident mode publishes their canonical artifact alongside investigation.
+// Human-required dwell refreshes never publish an artifact in either mode.
+// Returns (opened, updated).
 //
 // lostAgentCauses carries the remediation failure message for lost_agent
 // anomalies whose remediation errored this tick (see applyRemediations); its
@@ -784,7 +787,7 @@ func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly
 		if s.incidents != nil && processedIncidents[a.Fingerprint] {
 			continue
 		}
-		if (a.RequiresLLM && s.incidents == nil) || (isHumanRequiredStuck(a) && s.incidents == nil) {
+		if (a.RequiresLLM && s.incidents == nil) || isHumanRequiredStuck(a) {
 			continue
 		}
 		var body string
