@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillattr"
 )
 
@@ -3077,7 +3078,9 @@ func TestWriteAndCloseHeadlessPrompt(t *testing.T) {
 		close(done)
 	}()
 
-	m.writeAndCloseHeadlessPrompt(a, w, "do the thing")
+	if err := m.writeAndCloseHeadlessPrompt(a, w, "do the thing"); err != nil {
+		t.Fatalf("writeAndCloseHeadlessPrompt: %v", err)
+	}
 
 	select {
 	case <-done:
@@ -3411,7 +3414,7 @@ func TestHeadlessSteerProducesFurtherTurn(t *testing.T) {
 	// like the real claude CLI is resolved in production.
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	m, _ := newTestManager(t)
-	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
+	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: providerid.Claude, State: StateRunning}
 
 	inv := headlessInvocation{
 		name:    "claude",
@@ -3527,6 +3530,31 @@ func TestHeadlessNonSteerablePipeWritesPromptOverStdin(t *testing.T) {
 	}
 	if !sawPrompt {
 		t.Fatalf("expected a result event echoing the stdin-delivered prompt; got %+v", a.Output())
+	}
+}
+
+func TestHeadlessPromptUndeliveredFallsBackToOneShotStdin(t *testing.T) {
+	dir := t.TempDir()
+	script := `#!/bin/bash
+case " $* " in
+  *" --input-format stream-json "*) sleep 1 ;;
+  *) prompt=$(cat); echo "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s-1\",\"total_cost_usd\":0.01,\"result\":\"$prompt\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}" ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, providerid.Claude), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
+	a.convo.writeTimeout = 10 * time.Millisecond
+	prompt := strings.Repeat("x", 1<<20)
+	var outFile *os.File
+	if _, err := m.runHeadlessAttempt(context.Background(), a, RunConfig{Prompt: prompt, HeadlessSteerable: true}, &outFile, new(int64)); err != nil {
+		t.Fatalf("runHeadlessAttempt: %v", err)
+	}
+	if a.GetExitErr() != nil {
+		t.Fatalf("fallback exit error: %v", a.GetExitErr())
 	}
 }
 
