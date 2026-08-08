@@ -281,7 +281,12 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 		report.IssuesClosed += s.reconcileHealthyIncidents(ctx, now, tasks, incidentChanges, events15Err == nil && events1hErr == nil)
 	}
 	if s.incidents != nil {
-		report.Incidents, _ = s.incidents.List()
+		incidents, err := s.incidents.List()
+		if err != nil {
+			s.logger.Warn("monitor.incident_store.list_failed", "err", err)
+		} else {
+			report.Incidents = incidents
+		}
 	}
 
 	s.state.recordReport(report, now)
