@@ -11,10 +11,21 @@ import { Create as $Create } from "@wailsio/runtime";
 export class MethodMeta {
     "ReadOnly": boolean;
 
+    /**
+     * LocalOnly restricts the method to callers on the loopback interface.
+     * These open a GUI application or run a CLI on the host the process sits
+     * on, so they are meaningful to a client sharing that host and are an
+     * arbitrary local action to anyone else.
+     */
+    "LocalOnly": boolean;
+
     /** Creates a new MethodMeta instance. */
     constructor($$source: Partial<MethodMeta> = {}) {
         if (!("ReadOnly" in $$source)) {
             this["ReadOnly"] = false;
+        }
+        if (!("LocalOnly" in $$source)) {
+            this["LocalOnly"] = false;
         }
 
         Object.assign(this, $$source);
