@@ -542,9 +542,22 @@ config   dump | doctor
 ```
 
 - `--json` for machine-parseable output (used by skills)
-- Reuses `internal/task.Store` + `internal/config.Load()` — same validation as GUI
 - `mise run dev` auto-installs latest CLI before launching the desktop app
 - `config dump` prints the resolved `~/.sybra/config.yaml` (env overrides applied, `server.auth_token` redacted); `config doctor` sanity-checks data dirs, `agent.provider`, `agent.headless_permission_mode`, and enabled integrations missing required credentials. See `docs/CONFIG.md` (generated from `internal/config` struct tags via `go generate ./internal/config/...`) for the full key reference.
+
+**The CLI is a client and nothing else.** It never opens the board's files — that made it a second writer behind whichever instance owned them, and a stale target turned an ordinary edit into a change the owner later overwrote. Every command that touches board state resolves a server and **refuses** when none answers, naming it.
+
+Target resolution, all loopback so the token never crosses a network hop:
+
+1. `SYBRA_SERVER_TARGET` (+ `SYBRA_SERVER_TOKEN` for a board on another machine)
+2. else the port the desktop app recorded in `$SYBRA_HOME/desktop-port`
+3. else the configured server port
+
+`--home` / `SYBRA_CONTROL_HOME` / `SYBRA_HOME` select **which board's** config and recorded port to read — they no longer mean "edit files instead". `config`, `health`, and `install-skills` still run with no server. So does `doctor`, because it is what an operator reaches for when the server is what broke, but it refuses to delete: only the board can tell a live worktree from an orphan.
+
+A contended record comes back as `503` and the CLI exits **75**, which is what an agent retries on. Never map it to a plain failure — the agent then abandons work it only had to repeat.
+
+Tests get a board, not a directory: `startTestBoard` (`cmd/sybra-cli/testboard_test.go`) mounts the real stores on the real dispatcher, so a test still asserts against files on disk and a missing task is still a 404. Add a service there when a command starts calling a new one.
 
 ### Skills
 
