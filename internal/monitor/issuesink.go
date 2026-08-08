@@ -1,10 +1,13 @@
 package monitor
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,6 +37,19 @@ type IssueSink interface {
 // skip closing when it's absent.
 type IssueCloser interface {
 	CloseIfOpen(ctx context.Context, a Anomaly, comment string) (closed bool, err error)
+}
+
+type IncidentArtifact struct {
+	Number int
+	URL    string
+}
+
+// IncidentSink applies a material incident revision to one canonical
+// artifact. Identity is the stable body marker, not a mutable title.
+type IncidentSink interface {
+	ApplyIncident(context.Context, Incident, IncidentChange, string) (created bool, artifact IncidentArtifact, err error)
+	ResolveIncident(context.Context, Incident, string) (closed bool, err error)
+	MapDuplicateIncidents(context.Context, Incident, []int, string) error
 }
 
 // ghExecer abstracts gh invocation for tests. The default impl routes through
@@ -69,6 +85,7 @@ type GHIssueSink struct {
 	label      string
 	repo       string
 	labelsOnce sync.Once
+	applyMu    sync.Mutex
 }
 
 // NewGHIssueSink returns a sink wired to the real gh CLI. label is the
@@ -89,6 +106,202 @@ func NewGHIssueSink(label, repo string) *GHIssueSink {
 func (s *GHIssueSink) Submit(ctx context.Context, a Anomaly, body string) (bool, error) {
 	created, _, err := s.SubmitIssue(ctx, IssueTitle(a.Kind, a.Fingerprint), body, []string{"bug"})
 	return created, err
+}
+
+func IncidentTitle(in Incident) string {
+	return "[monitor] incident " + in.FailureCode + ": " + strings.TrimPrefix(in.Fingerprint, "incident:")
+}
+
+func incidentMarker(fp string) string { return "<!-- sybra-incident:v1:" + fp + " -->" }
+
+type ghIncident struct {
+	Number      int
+	URL         string
+	State       string
+	HasRevision bool
+	Duplicates  []int
+}
+
+func incidentRevisionMarker(in Incident) string {
+	return fmt.Sprintf("<!-- sybra-incident-revision:v1:%s:%d:%s -->", in.Fingerprint, in.Revision, in.State)
+}
+
+func (s *GHIssueSink) findIncident(ctx context.Context, fp, revisionMarker string) (ghIncident, error) {
+	marker := incidentMarker(fp)
+	type incidentRow struct {
+		Number int    `json:"number"`
+		URL    string `json:"url"`
+		State  string `json:"state"`
+		Body   string `json:"body"`
+	}
+	var rows []incidentRow
+	queries := []struct {
+		args         []string
+		requireLabel bool
+	}{
+		{args: []string{"--search", marker + " in:body", "--limit", "100"}}, // historical canonical, via exact marker search
+		{args: []string{"--limit", "1000"}, requireLabel: true},             // immediately visible recent rows, for create-race convergence
+	}
+	seenRows := map[int]bool{}
+	for _, query := range queries {
+		args := append(s.repoArgs(), "issue", "list", "--state", "all")
+		if query.requireLabel {
+			args = append(args, "--label", s.label)
+		}
+		args = append(args, "--json", "number,url,state,body")
+		out, err := s.exec.run(ctx, append(args, query.args...)...)
+		if err != nil {
+			return ghIncident{}, classifyGHError("gh incident list", out, err)
+		}
+		var page []incidentRow
+		if err := json.Unmarshal(out, &page); err != nil {
+			return ghIncident{}, fmt.Errorf("decode gh incident list: %w", err)
+		}
+		for _, row := range page {
+			if !seenRows[row.Number] {
+				seenRows[row.Number] = true
+				rows = append(rows, row)
+			}
+		}
+	}
+	var matches []incidentRow
+	for _, row := range rows {
+		if strings.Contains(row.Body, marker) {
+			matches = append(matches, row)
+		}
+	}
+	if len(matches) == 0 {
+		return ghIncident{}, nil
+	}
+	slices.SortFunc(matches, func(a, b incidentRow) int { return cmp.Compare(a.Number, b.Number) })
+	canonical := matches[0]
+	found := ghIncident{Number: canonical.Number, URL: canonical.URL, State: strings.ToUpper(canonical.State)}
+	for _, duplicate := range matches[1:] {
+		if !strings.EqualFold(duplicate.State, "CLOSED") {
+			found.Duplicates = append(found.Duplicates, duplicate.Number)
+		}
+	}
+	found.HasRevision = revisionMarker != "" && strings.Contains(canonical.Body, revisionMarker)
+	if revisionMarker != "" && !found.HasRevision {
+		viewOut, viewErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "view", strconv.Itoa(canonical.Number), "--json", "comments")...)
+		if viewErr != nil {
+			return ghIncident{}, classifyGHError("gh incident view", viewOut, viewErr)
+		}
+		var viewed struct {
+			Comments []struct {
+				Body string `json:"body"`
+			} `json:"comments"`
+		}
+		if decodeErr := json.Unmarshal(viewOut, &viewed); decodeErr != nil {
+			return ghIncident{}, fmt.Errorf("decode gh incident comments: %w", decodeErr)
+		}
+		for _, comment := range viewed.Comments {
+			found.HasRevision = strings.Contains(comment.Body, revisionMarker)
+			if found.HasRevision {
+				break
+			}
+		}
+	}
+	return found, nil
+}
+
+func (s *GHIssueSink) ApplyIncident(ctx context.Context, in Incident, change IncidentChange, body string) (bool, IncidentArtifact, error) {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+	s.labelsOnce.Do(func() { s.ensureLabels(ctx) })
+	revisionMarker := incidentRevisionMarker(in)
+	found, err := s.findIncident(ctx, in.Fingerprint, revisionMarker)
+	if err != nil {
+		return false, IncidentArtifact{}, err
+	}
+	body = incidentMarker(in.Fingerprint) + "\n" + revisionMarker + "\n" + body
+	if len(found.Duplicates) > 0 {
+		canonical := in
+		canonical.IssueURL = found.URL
+		if mapErr := s.MapDuplicateIncidents(ctx, canonical, found.Duplicates, "same stable incident fingerprint marker"); mapErr != nil {
+			return false, IncidentArtifact{}, mapErr
+		}
+	}
+	if found.Number == 0 {
+		out, createErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "create", "--title", IncidentTitle(in), "--body", attribution.Append(body), "--label", s.label, "--label", "bug")...)
+		if createErr != nil {
+			return false, IncidentArtifact{}, classifyGHError("gh incident create", out, createErr)
+		}
+		createdURL := parseIssueCreateURL(out)
+		// A second process may have won the same list-then-create race. Re-query
+		// and converge all marker-identical artifacts on the oldest canonical.
+		canonical, reconcileErr := s.findIncident(ctx, in.Fingerprint, revisionMarker)
+		if reconcileErr != nil {
+			return false, IncidentArtifact{}, fmt.Errorf("reconcile created incident %s: %w", createdURL, reconcileErr)
+		}
+		if canonical.Number != 0 {
+			if len(canonical.Duplicates) > 0 {
+				linked := in
+				linked.IssueURL = canonical.URL
+				if mapErr := s.MapDuplicateIncidents(ctx, linked, canonical.Duplicates, "same stable incident fingerprint marker"); mapErr != nil {
+					return false, IncidentArtifact{}, mapErr
+				}
+			}
+			return true, IncidentArtifact{Number: canonical.Number, URL: canonical.URL}, nil
+		}
+		return true, IncidentArtifact{URL: createdURL}, nil
+	}
+	if found.State == "CLOSED" && in.State == IncidentActive {
+		out, reopenErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "reopen", strconv.Itoa(found.Number), "--comment", attribution.Append(body))...)
+		if reopenErr != nil {
+			return false, IncidentArtifact{}, classifyGHError("gh incident reopen", out, reopenErr)
+		}
+		return false, IncidentArtifact{Number: found.Number, URL: found.URL}, nil
+	}
+	if found.HasRevision {
+		return false, IncidentArtifact{Number: found.Number, URL: found.URL}, nil
+	}
+	if change != IncidentUnchanged {
+		out, commentErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "comment", strconv.Itoa(found.Number), "--body", attribution.Append(body))...)
+		if commentErr != nil {
+			return false, IncidentArtifact{}, classifyGHError("gh incident comment", out, commentErr)
+		}
+	}
+	return false, IncidentArtifact{Number: found.Number, URL: found.URL}, nil
+}
+
+func (s *GHIssueSink) ResolveIncident(ctx context.Context, in Incident, comment string) (bool, error) {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+	revisionMarker := incidentRevisionMarker(in)
+	found, err := s.findIncident(ctx, in.Fingerprint, revisionMarker)
+	if err != nil || found.Number == 0 {
+		return false, err
+	}
+	if len(found.Duplicates) > 0 {
+		canonical := in
+		canonical.IssueURL = found.URL
+		if mapErr := s.MapDuplicateIncidents(ctx, canonical, found.Duplicates, "same stable incident fingerprint marker"); mapErr != nil {
+			return false, mapErr
+		}
+	}
+	if found.State == "CLOSED" {
+		return false, nil
+	}
+	out, closeErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "close", strconv.Itoa(found.Number), "--reason", "completed", "--comment", attribution.Append(revisionMarker+"\n"+comment))...)
+	if closeErr != nil {
+		return false, classifyGHError("gh incident close", out, closeErr)
+	}
+	return true, nil
+}
+
+func (s *GHIssueSink) MapDuplicateIncidents(ctx context.Context, in Incident, duplicates []int, coverage string) error {
+	if strings.TrimSpace(coverage) == "" || in.IssueURL == "" {
+		return errors.New("incident duplicate mapping requires canonical URL and reproduction coverage")
+	}
+	for _, number := range duplicates {
+		body := fmt.Sprintf("Covered by canonical incident %s. Reproduction coverage: %s", in.IssueURL, coverage)
+		out, err := s.exec.run(ctx, append(s.repoArgs(), "issue", "close", strconv.Itoa(number), "--reason", "not planned", "--comment", attribution.Append(body))...)
+		if err != nil {
+			return classifyGHError("gh duplicate incident close", out, err)
+		}
+	}
+	return nil
 }
 
 // SubmitIssue is the generic, anomaly-agnostic dedup-and-file primitive used

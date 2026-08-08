@@ -480,7 +480,7 @@ func providerLimitTestPolicy(preferUnderused bool) limits.Policy {
 	return policy
 }
 
-func TestRegisterRunningAgent_IgnoreConcurrencyLimitBypassesCap(t *testing.T) {
+func TestRegisterRunningAgent_IgnoreConcurrencyLimitCannotBypassCap(t *testing.T) {
 	m, _ := newTestManager(t)
 	m.maxConcurrent = 2
 
@@ -497,11 +497,8 @@ func TestRegisterRunningAgent_IgnoreConcurrencyLimitBypassesCap(t *testing.T) {
 	}
 
 	control := &Agent{ID: "control-plane", Provider: "claude", done: make(chan struct{})}
-	if err := m.registerRunningAgent(control, RunConfig{IgnoreConcurrencyLimit: true}, func() {}); err != nil {
-		t.Fatalf("IgnoreConcurrencyLimit spawn at cap must succeed, got err = %v", err)
-	}
-	if _, err := m.GetAgent(control.ID); err != nil {
-		t.Fatalf("control-plane agent should be registered: %v", err)
+	if err := m.registerRunningAgent(control, RunConfig{IgnoreConcurrencyLimit: true}, func() {}); !errors.Is(err, ErrMaxConcurrentReached) {
+		t.Fatalf("IgnoreConcurrencyLimit spawn at cap: err = %v, want ErrMaxConcurrentReached", err)
 	}
 }
 

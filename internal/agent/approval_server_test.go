@@ -3,10 +3,14 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -41,6 +45,148 @@ func TestNewApprovalServer_PinnedPort(t *testing.T) {
 	t.Cleanup(func() { _ = rnd.Shutdown(context.Background()) })
 	if rnd.Addr() == "" {
 		t.Fatal("random-port server has empty addr")
+	}
+}
+
+func TestVerifierControlIsTaskScopedAndMethodScoped(t *testing.T) {
+	srv := newTestApprovalServer(t)
+	srv.SetVerifierControl(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	call := func(method, taskID, token string) int {
+		t.Helper()
+		body, _ := json.Marshal([]any{taskID, map[string]any{"title": "request author fix"}})
+		req, err := http.NewRequest(http.MethodPost, "http://"+srv.Addr()+"/api/TaskService/"+method, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	token := srv.VerifierToken("task-one", t.TempDir())
+	if got := call("UpdateTask", "task-one", token); got != http.StatusNoContent {
+		t.Fatalf("own-task update status = %d", got)
+	}
+	if got := call("UpdateTask", "task-two", token); got != http.StatusUnauthorized {
+		t.Fatalf("cross-task update status = %d, want 401", got)
+	}
+	if got := call("DeleteTask", "task-one", token); got != http.StatusNotFound {
+		t.Fatalf("non-allowlisted delete status = %d, want 404", got)
+	}
+}
+
+func TestVerifierTokenSurvivesServerRestart(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "control")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "token-hashes.json")
+	one := &ApprovalServer{verifierTokens: make(map[string]verifierTokenRecord), verifierTokenPath: path, logger: discardLogger()}
+	token := one.VerifierToken("task-restart", t.TempDir())
+	if token == "" {
+		t.Fatal("failed to create verifier token")
+	}
+	persisted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(persisted, []byte(token)) {
+		t.Fatal("persisted token store contains the bearer credential")
+	}
+	tokens, err := loadVerifierTokens(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
+	if got := tokens[digest]; got.TaskID != "task-restart" || !time.Now().Before(got.ExpiresAt) {
+		t.Fatalf("reloaded token record = %+v", got)
+	}
+}
+
+func TestVerifierTokenExpiresAndCanBeRevoked(t *testing.T) {
+	srv := newTestApprovalServer(t)
+	srv.SetVerifierControl(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	token := srv.VerifierToken("task-expiring", t.TempDir())
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
+
+	srv.mu.Lock()
+	record := srv.verifierTokens[digest]
+	record.ExpiresAt = time.Now().Add(-time.Minute)
+	srv.verifierTokens[digest] = record
+	srv.mu.Unlock()
+
+	body := strings.NewReader(`["task-expiring",{}]`)
+	req, err := http.NewRequest(http.MethodPost, "http://"+srv.Addr()+"/api/TaskService/UpdateTask", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expired token status = %d, want 401", resp.StatusCode)
+	}
+
+	token = srv.VerifierToken("task-revoked", t.TempDir())
+	srv.RevokeVerifierToken(token)
+	digest = fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
+	srv.mu.Lock()
+	_, exists := srv.verifierTokens[digest]
+	srv.mu.Unlock()
+	if exists {
+		t.Fatal("revoked token remains in token store")
+	}
+}
+
+func TestVerifierGrantRevocationUsesTrustedSandboxPath(t *testing.T) {
+	srv := newTestApprovalServer(t)
+	sandboxHome := t.TempDir()
+	token := srv.VerifierToken("task-owned", sandboxHome)
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
+
+	// Completion must not care whether a verifier deleted or replaced its own
+	// writable credential file; the durable issuance record is authoritative.
+	if err := srv.RevokeVerifierGrantForSandbox(sandboxHome); err != nil {
+		t.Fatal(err)
+	}
+	srv.mu.Lock()
+	_, exists := srv.verifierTokens[digest]
+	srv.mu.Unlock()
+	if exists {
+		t.Fatal("sandbox-scoped revocation left the original grant valid")
+	}
+}
+
+func TestLoadVerifierTokensInvalidatesUnownedLegacyHashStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token-hashes.json")
+	if err := os.WriteFile(path, []byte(`{"digest":"task-legacy"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tokens, err := loadVerifierTokens(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tokens) != 0 {
+		t.Fatalf("unowned legacy grants survived migration: %+v", tokens)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(raw)) != "{}" {
+		t.Fatalf("legacy store was not invalidated: %s", raw)
 	}
 }
 

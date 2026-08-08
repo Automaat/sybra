@@ -484,6 +484,16 @@ func (h *humanReviewHandler) spawnReview(ctx context.Context, t task.Task, prevS
 	ag, err := h.agents.Run(cfg)
 	h.drainMu.Unlock()
 	if err != nil {
+		if agent.IsCapacityError(err) || agent.IsAttemptConflict(err) {
+			h.releaseReservedSlot(taskID, now)
+			h.logger.Warn("human-review.spawn.parked", "task_id", taskID, "provider", cfg.Provider, "model", cfg.Model, "err", err)
+			h.logAudit(audit.EventHumanReviewSkipped, taskID, "", map[string]any{
+				"reason": "capacity_parked", "err": err.Error(),
+				"provider": cfg.Provider, "model": cfg.Model, "retry_reason": opts.RetryReason,
+			})
+			h.scheduleClaimRetry(ctx, taskID, prevStatus, opts)
+			return false
+		}
 		h.clearInflight(taskID)
 		h.logger.Error("human-review.spawn", "task_id", taskID, "provider", cfg.Provider, "model", cfg.Model, "err", err)
 		if errors.Is(err, agent.ErrProviderModelIncompatible) {
@@ -606,13 +616,12 @@ func (h *humanReviewHandler) spawnReviewConfig(t task.Task, taskID, prompt, dir 
 		// An effort the operator pinned on the task outranks the role
 		// baseline the Manager would otherwise resolve; empty stays empty so
 		// the Manager applies agent.role_effort and then the baseline.
-		ReasoningEffort:        t.ReasoningEffort,
-		ReadOnlyDir:            readOnlyDir,
-		RequirePermissions:     false,
-		OneShot:                true,
-		OutputSchema:           verdict.Schema,
-		IgnoreConcurrencyLimit: true,
-		SandboxMode:            agentorch.ResolveSandboxMode(t, h.cfg),
+		ReasoningEffort:    t.ReasoningEffort,
+		ReadOnlyDir:        readOnlyDir,
+		RequirePermissions: false,
+		OneShot:            true,
+		OutputSchema:       verdict.Schema,
+		SandboxMode:        agentorch.ResolveSandboxMode(t, h.cfg),
 	}
 	if opts.SkipABVariant {
 		return cfg

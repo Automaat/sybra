@@ -11,6 +11,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/metrics"
+	"github.com/Automaat/sybra/internal/reconcile"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 )
@@ -33,6 +34,21 @@ const (
 // Safe to call concurrently with the startup pass — each re-dispatch is
 // guarded by HasRunningAgentForTask + the recent-run debounce.
 func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
+	if r.Agents.NeedsAttemptReconciliation(ctx) {
+		reaped, dedicatedConfirmed := r.Agents.ReapOrphanProviderProcessesConfirmed(ctx, r.OrphanRoots)
+		ownedReaped, ownedConfirmed := r.Agents.ReapOwnedOrphanProviderProcessesConfirmed(ctx, r.OwnedOrphanRoots)
+		if reaped += ownedReaped; reaped > 0 {
+			r.Logger.Info("recovery.orphan_reap", "count", reaped)
+		}
+		if r.Worktrees != nil {
+			r.Worktrees.RepairAll(ctx)
+		}
+		if dedicatedConfirmed && ownedConfirmed {
+			r.Agents.ReconcileAttemptLeases(ctx)
+		} else {
+			r.Logger.Error("recovery.attempt_reconcile.deferred", "reason", "orphan termination unconfirmed")
+		}
+	}
 	tasks, err := r.Tasks.List()
 	if err != nil {
 		return
@@ -110,7 +126,7 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 			"task_id", t.ID, "reason", "provider_rate_limited", "provider", lr.Provider)
 		return
 	}
-	if r.recoverCompletedHeadlessRun(&t) {
+	if r.recoverCompletedHeadlessRun(ctx, &t) {
 		// recoverCompletedHeadlessRun handled this task (last headless run
 		// completed but workflow step was never recorded). Skip the generic
 		// stale-restart path only when it actually fired HandleAgentComplete;
@@ -168,7 +184,7 @@ func (r *Recovery) restartTaskIfStale(ctx context.Context, t task.Task) {
 	oneShot := false
 	if t.AgentMode != "headless" {
 		var handled bool
-		oneShot, handled = r.resolveInteractiveStaleRestart(&t)
+		oneShot, handled = r.resolveInteractiveStaleRestart(ctx, &t)
 		if handled {
 			return
 		}
@@ -532,7 +548,7 @@ func (r *Recovery) surfaceStartFailure(ctx context.Context, taskID string, curre
 // recoverStaleInteractive (handled=true, caller should skip re-dispatch), or
 // fallen through to the normal restart/escalation path below with the
 // resolved oneShot flag.
-func (r *Recovery) resolveInteractiveStaleRestart(t *task.Task) (oneShot, handled bool) {
+func (r *Recovery) resolveInteractiveStaleRestart(ctx context.Context, t *task.Task) (oneShot, handled bool) {
 	lr := lastAgentRun(t)
 	switch {
 	case lr == nil:
@@ -560,7 +576,7 @@ func (r *Recovery) resolveInteractiveStaleRestart(t *task.Task) (oneShot, handle
 			r.Logger.Info("restart-stale.no-workflow-fallthrough", "task_id", t.ID)
 			return false, false
 		}
-		r.recoverStaleInteractive(t)
+		r.recoverStaleInteractive(ctx, t)
 		return false, true
 	default:
 		r.Logger.Info("restart-stale.interactive-oneshot", "task_id", t.ID)
@@ -573,7 +589,7 @@ func (r *Recovery) resolveInteractiveStaleRestart(t *task.Task) (oneShot, handle
 // stopped (if still claiming running) and drives the workflow engine to
 // advance the current step using the stored result — mirroring the
 // normal onAgentComplete callback so evaluate/next steps fire.
-func (r *Recovery) recoverStaleInteractive(t *task.Task) {
+func (r *Recovery) recoverStaleInteractive(ctx context.Context, t *task.Task) {
 	lr := lastAgentRun(t)
 	if lr == nil {
 		r.Logger.Info("recover-stale.skip", "task_id", t.ID, "reason", "no_agent_runs")
@@ -596,6 +612,9 @@ func (r *Recovery) recoverStaleInteractive(t *task.Task) {
 	}
 	if r.WorkflowEngine == nil || t.Workflow == nil {
 		r.Logger.Info("recover-stale.no-workflow", "task_id", t.ID)
+		return
+	}
+	if !r.reconcileBeforeAdvance(ctx, t.ID, lr.AgentID, reconcile.IntentRestart) {
 		return
 	}
 	if t.Workflow.State == workflow.ExecCompleted || t.Workflow.State == workflow.ExecFailed {
@@ -647,7 +666,7 @@ func (r *Recovery) recoverStaleInteractive(t *task.Task) {
 // recoverCompletedHeadlessRun returns true when it fires HandleAgentComplete,
 // false when the task does not match the "completed but callback lost" shape.
 // Callers should only skip generic stale-restart logic on a true return.
-func (r *Recovery) recoverCompletedHeadlessRun(t *task.Task) bool {
+func (r *Recovery) recoverCompletedHeadlessRun(ctx context.Context, t *task.Task) bool {
 	lr := latestTrackedCurrentStepRun(t)
 	if lr == nil {
 		return false
@@ -681,6 +700,9 @@ func (r *Recovery) recoverCompletedHeadlessRun(t *task.Task) bool {
 	if r.Agents.HasRunningAgentForTask(t.ID) {
 		return false
 	}
+	if !r.reconcileBeforeAdvance(ctx, t.ID, lr.AgentID, reconcile.IntentStaleRun) {
+		return true
+	}
 	success := lr.Outcome == task.RunOutcomeSuccess
 	r.Logger.Info("recover-completed-headless-run",
 		"task_id", t.ID, "agent_id", lr.AgentID, "step", t.Workflow.CurrentStep,
@@ -706,6 +728,37 @@ func (r *Recovery) recoverCompletedHeadlessRun(t *task.Task) bool {
 		Result:   lr.Result,
 	})
 	return true
+}
+
+func (r *Recovery) reconcileBeforeAdvance(ctx context.Context, taskID, runID string, intent reconcile.Intent) bool {
+	if r.Reconciler == nil {
+		return true
+	}
+	plan, err := r.Reconciler.Reconcile(ctx, reconcile.Request{TaskID: taskID, RunID: runID, Intent: intent})
+	if err != nil {
+		r.Logger.Error("post-run.reconcile.recovery", "task_id", taskID, "run_id", runID, "err", err)
+		return false
+	}
+	switch plan.Action {
+	case reconcile.ActionAdvance, reconcile.ActionResumeMergeablePR:
+		return plan.DeliverRunOutcome
+	case reconcile.ActionRepair:
+		if plan.DeliverRunOutcome {
+			return true
+		}
+		if r.ConflictRecovery != nil && r.ConflictRecovery(taskID) {
+			r.Logger.Info("post-run.reconcile.recovery.repair-started", "task_id", taskID, "run_id", runID, "reason", plan.Reason)
+		} else {
+			r.Logger.Warn("post-run.reconcile.recovery.repair-held", "task_id", taskID, "run_id", runID, "reason", plan.Reason)
+		}
+		return false
+	case reconcile.ActionWait, reconcile.ActionQuarantine, reconcile.ActionHumanDecision:
+		r.Logger.Warn("post-run.reconcile.recovery.held", "task_id", taskID, "run_id", runID, "action", plan.Action, "reason", plan.Reason)
+		return false
+	default:
+		r.Logger.Warn("post-run.reconcile.recovery.effect-incomplete", "task_id", taskID, "run_id", runID, "action", plan.Action, "reason", plan.Reason)
+		return false
+	}
 }
 
 func lastAgentRun(t *task.Task) *task.AgentRun {

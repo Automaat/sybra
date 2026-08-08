@@ -89,7 +89,8 @@ func (m *Manager) RemoveTask(ctx context.Context, t task.Task) {
 	// per-task chokepoint fired on task completion (completion.OnComplete),
 	// manual terminal transitions (UpdateTask), and explicit deletes
 	// (DeleteTask); consistent with doctor cleanup, even those never bypass it.
-	if project.HasUnpushedCommits(ctx, wtPath) {
+	if (m.cleanupGate != nil && !m.cleanupGate(ctx, t, wtPath)) ||
+		(m.cleanupGate == nil && worktreeNeedsPreservation(ctx, wtPath)) {
 		m.logger.Warn("worktree.cleanup.unpushed-commits", "path", wtPath)
 		return
 	}
@@ -218,7 +219,8 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 // reapOrphanedWorktree removes one swept worktree directory. Caller holds the
 // path lock. A nil t is a directory whose task no longer exists.
 func (m *Manager) reapOrphanedWorktree(ctx context.Context, wtPath, name string, t *task.Task, observedProtected map[string]bool) {
-	if project.HasUnpushedCommits(ctx, wtPath) {
+	if (t != nil && m.cleanupGate != nil && !m.cleanupGate(ctx, *t, wtPath)) ||
+		((t == nil || m.cleanupGate == nil) && worktreeNeedsPreservation(ctx, wtPath)) {
 		m.observeProtectedWorktree(ctx, wtPath, taskIDFromWorktreeDir(name), observedProtected)
 		return
 	}
@@ -241,6 +243,14 @@ func (m *Manager) reapOrphanedWorktree(ctx context.Context, wtPath, name string,
 		}
 	}
 	m.logger.Info("worktree.orphan-cleaned", "path", wtPath)
+}
+
+func worktreeNeedsPreservation(ctx context.Context, path string) bool {
+	if project.HasUnpushedCommits(ctx, path) {
+		return true
+	}
+	dirty, err := project.IsWorktreeDirty(ctx, path)
+	return err != nil || dirty || project.WorktreeOperation(ctx, path) != ""
 }
 
 func (m *Manager) observeProtectedWorktree(ctx context.Context, path, taskID string, observed map[string]bool) {
@@ -420,16 +430,16 @@ func (m *Manager) RepairAll(ctx context.Context) {
 func (m *Manager) refuseRecreateWithLocalWork(ctx context.Context, taskID, wtPath, reason string) error {
 	if project.HasUnpushedCommits(ctx, wtPath) {
 		m.logger.Error("worktree.recreate.unpushed-commits", "task_id", taskID, "path", wtPath, "reason", reason)
-		return fmt.Errorf("refusing to recreate %s worktree %s: it holds commits that never reached a remote", reason, wtPath)
+		return fmt.Errorf("%w: refusing to recreate %s worktree %s: it holds commits that never reached a remote", ErrLocalWorkPreserved, reason, wtPath)
 	}
 	dirty, err := project.IsWorktreeDirty(ctx, wtPath)
 	if err != nil {
 		m.logger.Error("worktree.recreate.inspect-local-work", "task_id", taskID, "path", wtPath, "reason", reason, "err", err)
-		return fmt.Errorf("refusing to recreate %s worktree %s: cannot verify that its local state is clean: %w", reason, wtPath, err)
+		return fmt.Errorf("%w: refusing to recreate %s worktree %s: cannot verify that its local state is clean: %w", ErrLocalWorkPreserved, reason, wtPath, err)
 	}
 	if dirty {
 		m.logger.Error("worktree.recreate.uncommitted-work", "task_id", taskID, "path", wtPath, "reason", reason)
-		return fmt.Errorf("refusing to recreate %s worktree %s: it holds uncommitted work", reason, wtPath)
+		return fmt.Errorf("%w: refusing to recreate %s worktree %s: it holds uncommitted work", ErrLocalWorkPreserved, reason, wtPath)
 	}
 	return nil
 }

@@ -1,18 +1,27 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/toolledger"
 )
 
@@ -20,44 +29,106 @@ import (
 // from Claude CLI. When a tool needs approval, the hook POSTs to this server,
 // which emits a Wails event to the frontend and blocks until the user responds.
 type ApprovalServer struct {
-	mu       sync.Mutex
-	pending  map[string]chan ApprovalResponse // keyed by tool_use_id
-	emit     EmitFunc
-	logger   *slog.Logger
-	server   *http.Server
-	listener net.Listener
-	agents   *Manager
+	mu                sync.Mutex
+	pending           map[string]chan ApprovalResponse // keyed by tool_use_id
+	emit              EmitFunc
+	logger            *slog.Logger
+	server            *http.Server
+	listener          net.Listener
+	agents            *Manager
+	verifierTokens    map[string]verifierTokenRecord // sha256(token) -> scoped, expiring grant
+	verifierTokenPath string
+	verifierControl   http.Handler
+}
+
+const verifierTokenTTL = 24 * time.Hour
+
+const verifierGrantFile = ".sybra-control-grant"
+
+type verifierTokenRecord struct {
+	TaskID      string    `json:"taskId"`
+	SandboxHome string    `json:"sandboxHome,omitempty"`
+	ExpiresAt   time.Time `json:"expiresAt"`
+}
+
+// VerifierControlTokenPath is the lease-private credential file consumed by
+// sybra-cli. Keeping the bearer out of the process environment prevents
+// same-user process inspection from recovering another verifier's grant.
+func VerifierControlTokenPath(sandboxHome string) string {
+	return filepath.Join(sandboxHome, verifierGrantFile)
 }
 
 // NewApprovalServer creates and starts the approval HTTP server. port pins
 // the localhost port (so a detached agent's baked approval-hook URL still
-// resolves after a restart); 0 binds a random port. A pinned port that is
-// already taken falls back to a random port with a warning rather than
-// failing startup.
+// resolves after a restart); 0 binds a random port. Durable app wiring persists
+// that selection and fails closed when its pinned endpoint cannot be rebound.
 func NewApprovalServer(ctx context.Context, emit EmitFunc, logger *slog.Logger, port int) (*ApprovalServer, error) {
+	return newApprovalServer(ctx, emit, logger, port, "", "")
+}
+
+// NewDurableApprovalServer persists an automatically selected loopback port
+// before serving, so detached agents retain both their endpoint and verifier
+// credential across restarts.
+func NewDurableApprovalServer(ctx context.Context, emit EmitFunc, logger *slog.Logger, port int, portPath, tokenPath string) (*ApprovalServer, error) {
+	return newApprovalServer(ctx, emit, logger, port, portPath, tokenPath)
+}
+
+func newApprovalServer(ctx context.Context, emit EmitFunc, logger *slog.Logger, port int, portPath, tokenPath string) (*ApprovalServer, error) {
+	if port == 0 && portPath != "" {
+		if data, err := os.ReadFile(portPath); err == nil {
+			persisted, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+			if parseErr != nil || persisted < 1 || persisted > 65535 {
+				return nil, fmt.Errorf("invalid persisted approval port %q", strings.TrimSpace(string(data)))
+			}
+			port = persisted
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("read persisted approval port: %w", err)
+		}
+	}
 	addr := "127.0.0.1:0"
 	if port > 0 {
 		addr = fmt.Sprintf("127.0.0.1:%d", port)
 	}
 	var lc net.ListenConfig
 	listener, err := lc.Listen(ctx, "tcp", addr)
-	if err != nil && port > 0 {
-		logger.Warn("approval-server.port-taken", "port", port, "err", err, "fallback", "random")
-		listener, err = lc.Listen(ctx, "tcp", "127.0.0.1:0")
-	}
 	if err != nil {
 		return nil, fmt.Errorf("listen: %w", err)
 	}
+	if portPath != "" {
+		tcpAddr, ok := listener.Addr().(*net.TCPAddr)
+		if !ok {
+			_ = listener.Close()
+			return nil, fmt.Errorf("approval listener has unexpected address type %T", listener.Addr())
+		}
+		actualPort := tcpAddr.Port
+		if err := os.MkdirAll(filepath.Dir(portPath), 0o700); err != nil {
+			_ = listener.Close()
+			return nil, fmt.Errorf("create approval port state: %w", err)
+		}
+		if err := fsutil.AtomicWriteMode(portPath, []byte(strconv.Itoa(actualPort)+"\n"), 0o600); err != nil {
+			_ = listener.Close()
+			return nil, fmt.Errorf("persist approval port: %w", err)
+		}
+	}
+	tokens, err := loadVerifierTokens(tokenPath)
+	if err != nil {
+		_ = listener.Close()
+		return nil, fmt.Errorf("load verifier control tokens: %w", err)
+	}
 
 	s := &ApprovalServer{
-		pending:  make(map[string]chan ApprovalResponse),
-		emit:     emit,
-		logger:   logger,
-		listener: listener,
+		pending:           make(map[string]chan ApprovalResponse),
+		emit:              emit,
+		logger:            logger,
+		listener:          listener,
+		verifierTokens:    tokens,
+		verifierTokenPath: tokenPath,
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("/hooks/pre-tool-use", s.handlePreToolUse)
+	mux.HandleFunc("POST /api/TaskService/{method}", s.handleVerifierControl)
 
 	s.server = &http.Server{
 		Handler:           mux,
@@ -71,6 +142,187 @@ func NewApprovalServer(ctx context.Context, emit EmitFunc, logger *slog.Logger, 
 
 	logger.Info("approval-server.start", "addr", listener.Addr().String())
 	return s, nil
+}
+
+// VerifierToken creates a random task-scoped bearer credential. Only its hash
+// is persisted, so unrestricted read posture cannot reveal a master secret or
+// forge another task's credential.
+func (s *ApprovalServer) VerifierToken(taskID, sandboxHome string) string {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return ""
+	}
+	token := hex.EncodeToString(raw)
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
+	sandboxHome = strings.TrimSpace(sandboxHome)
+	if sandboxHome != "" {
+		sandboxHome = filepath.Clean(sandboxHome)
+	}
+	s.mu.Lock()
+	s.pruneVerifierTokensLocked(time.Now().UTC())
+	s.verifierTokens[digest] = verifierTokenRecord{TaskID: taskID, SandboxHome: sandboxHome, ExpiresAt: time.Now().UTC().Add(verifierTokenTTL)}
+	err := s.persistVerifierTokensLocked()
+	if err != nil {
+		delete(s.verifierTokens, digest)
+	}
+	s.mu.Unlock()
+	if err != nil {
+		s.logger.Error("approval-server.verifier-token", "task_id", taskID, "err", err)
+		return ""
+	}
+	return token
+}
+
+func loadVerifierTokens(path string) (map[string]verifierTokenRecord, error) {
+	tokens := make(map[string]verifierTokenRecord)
+	if path == "" {
+		return tokens, nil
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return tokens, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	migrated := false
+	if err := json.Unmarshal(data, &tokens); err != nil {
+		// The first hash-only store encoded digest -> task ID but carried no
+		// trusted sandbox identity. It cannot be safely revoked on completion,
+		// so invalidate it during upgrade rather than preserve an unowned grant.
+		var legacy map[string]string
+		if legacyErr := json.Unmarshal(data, &legacy); legacyErr != nil {
+			return nil, err
+		}
+		tokens = make(map[string]verifierTokenRecord)
+		migrated = true
+	}
+	if tokens == nil {
+		tokens = make(map[string]verifierTokenRecord)
+	}
+	now := time.Now().UTC()
+	pruned := false
+	for digest, record := range tokens {
+		if record.TaskID == "" || record.SandboxHome == "" || !now.Before(record.ExpiresAt) {
+			delete(tokens, digest)
+			pruned = true
+		}
+	}
+	if migrated || pruned {
+		normalized, marshalErr := json.Marshal(tokens)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		if writeErr := fsutil.AtomicWriteMode(path, normalized, 0o600); writeErr != nil {
+			return nil, writeErr
+		}
+	}
+	return tokens, nil
+}
+
+func (s *ApprovalServer) persistVerifierTokensLocked() error {
+	if s.verifierTokenPath == "" {
+		return nil
+	}
+	data, err := json.Marshal(s.verifierTokens)
+	if err != nil {
+		return err
+	}
+	return fsutil.AtomicWriteMode(s.verifierTokenPath, data, 0o600)
+}
+
+func (s *ApprovalServer) pruneVerifierTokensLocked(now time.Time) {
+	for digest, record := range s.verifierTokens {
+		if record.TaskID == "" || record.SandboxHome == "" || !now.Before(record.ExpiresAt) {
+			delete(s.verifierTokens, digest)
+		}
+	}
+}
+
+// RevokeVerifierToken invalidates one completed verifier's grant.
+func (s *ApprovalServer) RevokeVerifierToken(token string) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
+	s.mu.Lock()
+	delete(s.verifierTokens, digest)
+	if err := s.persistVerifierTokensLocked(); err != nil {
+		s.logger.Error("approval-server.verifier-token-revoke", "err", err)
+	}
+	s.mu.Unlock()
+}
+
+// RevokeVerifierGrantForSandbox invalidates grants using the trusted scratch
+// path persisted at issuance time. The verifier can mutate its credential
+// file, so completion must never rely on reading that file back.
+func (s *ApprovalServer) RevokeVerifierGrantForSandbox(sandboxHome string) error {
+	sandboxHome = filepath.Clean(strings.TrimSpace(sandboxHome))
+	if sandboxHome == "." || sandboxHome == "" {
+		return errors.New("verifier grant revocation requires a sandbox home")
+	}
+	s.mu.Lock()
+	for digest, record := range s.verifierTokens {
+		if record.SandboxHome == sandboxHome {
+			delete(s.verifierTokens, digest)
+		}
+	}
+	if err := s.persistVerifierTokensLocked(); err != nil {
+		s.logger.Error("approval-server.verifier-grant-revoke", "sandbox_home", sandboxHome, "err", err)
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+// SetVerifierControl installs the already-allowlisted TaskService dispatcher.
+func (s *ApprovalServer) SetVerifierControl(handler http.Handler) {
+	s.mu.Lock()
+	s.verifierControl = handler
+	s.mu.Unlock()
+}
+
+func (s *ApprovalServer) handleVerifierControl(w http.ResponseWriter, r *http.Request) {
+	method := r.PathValue("method")
+	if method != "GetTask" && method != "UpdateTask" {
+		http.NotFound(w, r)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20))
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	var args []json.RawMessage
+	if err := json.Unmarshal(body, &args); err != nil || len(args) == 0 {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	var taskID string
+	if err := json.Unmarshal(args[0], &taskID); err != nil || strings.TrimSpace(taskID) == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(bearer)))
+	s.mu.Lock()
+	record, tokenOK := s.verifierTokens[digest]
+	s.mu.Unlock()
+	if !ok || !tokenOK || record.TaskID != taskID || record.SandboxHome == "" || !time.Now().UTC().Before(record.ExpiresAt) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	s.mu.Lock()
+	handler := s.verifierControl
+	s.mu.Unlock()
+	if handler == nil {
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	handler.ServeHTTP(w, r)
 }
 
 // Addr returns the listener address (e.g., "127.0.0.1:54321").

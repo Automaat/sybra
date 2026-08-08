@@ -89,7 +89,7 @@ func (e *Engine) recordEvidence(taskID, stepID, criterion string, proofType evid
 // tree and commands can memo-hit via verifyChecksCacheHit instead of
 // re-executing the suite. A failing run keeps using plain recordEvidence
 // (unstamped), which is correct: failures are never memoized.
-func (e *Engine) recordVerifyChecksEvidence(taskID, stepID, command, result, treeSHA, checksHash string) {
+func (e *Engine) recordVerifyChecksEvidence(taskID, stepID, command, result, sourceRev, treeSHA, checksHash string) {
 	if e.evidenceRecorder == nil || e.execution.Worktrees == nil {
 		return
 	}
@@ -107,7 +107,7 @@ func (e *Engine) recordVerifyChecksEvidence(taskID, stepID, command, result, tre
 		ExitStatus:   0,
 		ResultDigest: evidence.Digest(result),
 		BaseRev:      resolveOriginBase(ctx, wtPath),
-		FinalRev:     revParseCommit(ctx, wtPath, "HEAD"),
+		FinalRev:     sourceRev,
 		Backend:      evidenceBackendIdentity(),
 		StepID:       stepID,
 		Timestamp:    time.Now().UTC(),

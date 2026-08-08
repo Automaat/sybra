@@ -21,6 +21,7 @@ import (
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/prompteval"
+	"github.com/Automaat/sybra/internal/reconcile"
 
 	"github.com/Automaat/sybra/internal/taskstatus"
 )
@@ -188,6 +189,9 @@ type TaskProvider interface {
 	// task still matches fence. It prevents a maintenance scan from overwriting
 	// a newer operator/automation workflow with a stale snapshot.
 	SetWorkflowIf(id string, fence WorkflowWriteFence, wf *Execution) (bool, error)
+	// SetStatusAndWorkflowIf atomically applies a reconciled workflow routing
+	// effect while the same workflow write fence still holds.
+	SetStatusAndWorkflowIf(id string, fence WorkflowWriteFence, status taskstatus.Status, reason string, wf *Execution) (bool, error)
 	ClaimWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
 	CompleteWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
 	ReleaseWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error)
@@ -568,6 +572,9 @@ type AdmissionDecision struct {
 	// false, no checks ran) on an "admitted" outcome — never empty, so
 	// consumers can distinguish a real pass from a skipped check.
 	Reason string
+	// FailureCode is a stable categorical code for every outcome; Reason
+	// remains display-only.
+	FailureCode string
 }
 
 // defaultTestAttempts is the generous absolute backstop for the testing →
@@ -777,15 +784,18 @@ type PRSurface struct {
 // ExecutionSurface groups the non-PR collaborators used to inspect and
 // mutate a task checkout and to run deterministic workflow steps.
 type ExecutionSurface struct {
-	Worktrees        WorktreeGetter
-	SidecarDir       SidecarDirResolver
-	AttemptNotes     AttemptNoteAppender
-	BranchSyncer     BranchSyncer
-	Checks           CheckConfigGetter
-	ManualTests      ManualTestConfigGetter
-	Classifier       TaskClassifier
-	CostBudget       CostBudgetChecker
-	AttemptWorktrees AttemptWorktreeManager
+	Worktrees            WorktreeGetter
+	SidecarDir           SidecarDirResolver
+	AttemptNotes         AttemptNoteAppender
+	BranchSyncer         BranchSyncer
+	Checks               CheckConfigGetter
+	ManualTests          ManualTestConfigGetter
+	Classifier           TaskClassifier
+	CostBudget           CostBudgetChecker
+	AttemptWorktrees     AttemptWorktreeManager
+	Verification         VerificationWorkspaceManager
+	VerificationCommands VerificationCommandRunner
+	PostRun              reconcile.Runner
 }
 
 func (d Dependencies) missing() []string {
@@ -800,6 +810,9 @@ func (d Dependencies) missing() []string {
 		namedDependency{"Execution.Classifier", d.Execution.Classifier},
 		namedDependency{"Execution.CostBudget", d.Execution.CostBudget},
 		namedDependency{"Execution.AttemptWorktrees", d.Execution.AttemptWorktrees},
+		namedDependency{"Execution.Verification", d.Execution.Verification},
+		namedDependency{"Execution.VerificationCommands", d.Execution.VerificationCommands},
+		namedDependency{"Execution.PostRun", d.Execution.PostRun},
 	)...)
 	return missing
 }

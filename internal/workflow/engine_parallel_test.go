@@ -40,7 +40,7 @@ func TestParallelValidation_Rejects(t *testing.T) {
 				Steps: []Step{{
 					ID: "p", Type: StepParallel,
 					Parallel: []Step{
-						{ID: "a", Type: StepRunAgent},
+						{ID: "a", Type: StepRunAgent, Config: StepConfig{Role: "plan"}},
 						{ID: "b", Type: StepSetStatus},
 					},
 				}},
@@ -54,7 +54,7 @@ func TestParallelValidation_Rejects(t *testing.T) {
 				Steps: []Step{{
 					ID: "p", Type: StepParallel,
 					Parallel: []Step{
-						{ID: "a", Type: StepRunAgent},
+						{ID: "a", Type: StepRunAgent, Config: StepConfig{Role: "plan"}},
 						{ID: "b", Type: StepRunAgent, Parallel: []Step{
 							{ID: "z", Type: StepRunAgent},
 						}},
@@ -78,13 +78,27 @@ func TestParallelValidation_Rejects(t *testing.T) {
 			errSub: "cannot set needs_worktree",
 		},
 		{
+			name: "writable child role",
+			def: Definition{
+				ID: "x",
+				Steps: []Step{{
+					ID: "p", Type: StepParallel,
+					Parallel: []Step{
+						{ID: "a", Type: StepRunAgent, Config: StepConfig{Role: "implementation"}},
+						{ID: "b", Type: StepRunAgent, Config: StepConfig{Role: "plan"}},
+					},
+				}},
+			},
+			errSub: "is not read-only",
+		},
+		{
 			name: "duplicate child id",
 			def: Definition{
 				ID: "x",
 				Steps: []Step{
 					{ID: "p", Type: StepParallel, Parallel: []Step{
-						{ID: "a", Type: StepRunAgent},
-						{ID: "a", Type: StepRunAgent},
+						{ID: "a", Type: StepRunAgent, Config: StepConfig{Role: "plan"}},
+						{ID: "a", Type: StepRunAgent, Config: StepConfig{Role: "plan"}},
 					}},
 				},
 			},
@@ -97,8 +111,8 @@ func TestParallelValidation_Rejects(t *testing.T) {
 				Steps: []Step{
 					{ID: "first", Type: StepRunAgent},
 					{ID: "p", Type: StepParallel, Parallel: []Step{
-						{ID: "first", Type: StepRunAgent},
-						{ID: "b", Type: StepRunAgent},
+						{ID: "first", Type: StepRunAgent, Config: StepConfig{Role: "plan"}},
+						{ID: "b", Type: StepRunAgent, Config: StepConfig{Role: "plan"}},
 					}},
 				},
 			},
@@ -219,7 +233,7 @@ func TestParallel_DispatchesAllChildren(t *testing.T) {
 	}
 }
 
-func TestParallel_AppliesABAssignmentToAuthorChildren(t *testing.T) {
+func TestParallel_AppliesABAssignmentToObserverChildren(t *testing.T) {
 	prev := providerAvailable
 	providerAvailable = func(string) bool { return true }
 	t.Cleanup(func() { providerAvailable = prev })
@@ -232,8 +246,8 @@ func TestParallel_AppliesABAssignmentToAuthorChildren(t *testing.T) {
 			ID:   "implement_both",
 			Type: StepParallel,
 			Parallel: []Step{
-				{ID: "impl_a", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Mode: "headless", Prompt: "a"}},
-				{ID: "impl_b", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Mode: "headless", Prompt: "b"}},
+				{ID: "impl_a", Type: StepRunAgent, Config: StepConfig{Role: "plan", Mode: "headless", Prompt: "a"}},
+				{ID: "impl_b", Type: StepRunAgent, Config: StepConfig{Role: "plan", Mode: "headless", Prompt: "b"}},
 			},
 		}},
 	}
@@ -247,7 +261,7 @@ func TestParallel_AppliesABAssignmentToAuthorChildren(t *testing.T) {
 	engine.SetABTestingConfig(abtest.Config{Enabled: &enabled, Experiments: []abtest.Experiment{{
 		ID:             "exp",
 		AssignmentUnit: "stage",
-		Roles:          []string{"implementation"},
+		Roles:          []string{"plan"},
 		Variants:       []abtest.Variant{{ID: "opus", Provider: "claude", Model: "opus", Weight: 1}},
 	}}})
 	tasks.Put(TaskInfo{ID: "t1", Status: "todo"})
@@ -278,8 +292,8 @@ func TestParallel_AppliesPromptAndSkillVariantPayloads(t *testing.T) {
 			ID:   "implement_both",
 			Type: StepParallel,
 			Parallel: []Step{
-				{ID: "impl_a", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Mode: "headless", Prompt: "control {{.Step.ID}} /sybra-test"}},
-				{ID: "impl_b", Type: StepRunAgent, Config: StepConfig{Role: "implementation", Mode: "headless", Prompt: "control {{.Step.ID}} /sybra-test"}},
+				{ID: "impl_a", Type: StepRunAgent, Config: StepConfig{Role: "plan", Mode: "headless", Prompt: "control {{.Step.ID}} /sybra-test"}},
+				{ID: "impl_b", Type: StepRunAgent, Config: StepConfig{Role: "plan", Mode: "headless", Prompt: "control {{.Step.ID}} /sybra-test"}},
 			},
 		}},
 	}
@@ -294,7 +308,7 @@ func TestParallel_AppliesPromptAndSkillVariantPayloads(t *testing.T) {
 		ID:             "payload-exp",
 		Kind:           "compound",
 		AssignmentUnit: "stage",
-		Roles:          []string{"implementation"},
+		Roles:          []string{"plan"},
 		Variants: []abtest.Variant{{
 			ID: "payload", Provider: "claude", Model: "sonnet", Weight: 1,
 			PromptTransform: &abtest.PromptTransform{Op: "prepend", Text: "variant {{.Step.ID}}: "},

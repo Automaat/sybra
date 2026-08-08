@@ -103,7 +103,7 @@ func (a *App) certifyPreparedRunEnvironment(ctx context.Context, environment age
 		if !strings.HasPrefix(environment.TaskID, "k8s-poc-") {
 			return err
 		}
-		_, err = a.runenv.Certify(ctx, runenv.Request{
+		cert, certErr := a.runenv.Certify(ctx, runenv.Request{
 			TaskID: environment.TaskID, Action: "implementation.dispatch", WorkDir: environment.Dir,
 			ScratchRoots: environment.ScratchRoots, Provider: environment.Provider, SandboxMode: environment.SandboxMode,
 			Requirements: []autonomy.CapabilityRequirement{
@@ -115,7 +115,10 @@ func (a *App) certifyPreparedRunEnvironment(ctx context.Context, environment age
 			},
 			ConfigVersion: environment.SandboxMode,
 		})
-		return err
+		if certErr == nil && a.verification != nil {
+			certErr = a.verification.SetCertificateForWorkspace(environment.Dir, cert.ID)
+		}
+		return certErr
 	}
 	cloneDir, cloneGeneration := "", ""
 	if t.ProjectID != "" {
@@ -130,6 +133,11 @@ func (a *App) certifyPreparedRunEnvironment(ctx context.Context, environment age
 		action = "implementation.dispatch"
 	}
 	requirements := environment.Role.CapabilityRequirements(action)
+	if environment.LocalCommand {
+		requirements = slices.DeleteFunc(requirements, func(requirement autonomy.CapabilityRequirement) bool {
+			return requirement.Capability == autonomy.CapabilityProviderCapacity
+		})
+	}
 	mutationIdentity := ""
 	if slices.ContainsFunc(requirements, func(requirement autonomy.CapabilityRequirement) bool {
 		return requirement.Capability == autonomy.CapabilityTaskMutation
@@ -139,7 +147,7 @@ func (a *App) certifyPreparedRunEnvironment(ctx context.Context, environment age
 			return err
 		}
 	}
-	_, err = a.runenv.Certify(ctx, runenv.Request{
+	cert, err := a.runenv.Certify(ctx, runenv.Request{
 		TaskID: t.ID, ProjectID: t.ProjectID, Action: action, WorkDir: environment.Dir,
 		ReadRoots: environment.ReadOnlyPaths, GitRoots: environment.ReadOnlyPaths,
 		ScratchRoots: environment.ScratchRoots, CloneDir: cloneDir, CloneGeneration: cloneGeneration, TaskBranch: t.Branch,
@@ -149,6 +157,9 @@ func (a *App) certifyPreparedRunEnvironment(ctx context.Context, environment age
 		Requirements:         requirements,
 		ConfigVersion:        fmt.Sprintf("%s|%s", environment.SandboxMode, a.cfg.CommitSigning()),
 	})
+	if err == nil && a.verification != nil {
+		err = a.verification.SetCertificateForWorkspace(environment.Dir, cert.ID)
+	}
 	return err
 }
 

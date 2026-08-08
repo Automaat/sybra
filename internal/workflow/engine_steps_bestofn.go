@@ -203,10 +203,12 @@ func (e *Engine) spawnBestOfNAttempt(taskID string, step *Step, wfExec *Executio
 	}
 
 	assignment := AgentAssignment{
-		VariantID:      attemptID,
-		AssignmentUnit: "bestofn-attempt",
-		Provider:       provider,
-		Model:          model,
+		IntentID:         taskID + ":" + wfExec.WorkflowID + ":bestofn:" + step.ID + ":" + attemptID,
+		AdmissionTaskKey: taskID + ":bestofn:" + attemptID,
+		VariantID:        attemptID,
+		AssignmentUnit:   "bestofn-attempt",
+		Provider:         provider,
+		Model:            model,
 	}
 
 	// Hold e.mu until the attempt route is durably persisted on the workflow.

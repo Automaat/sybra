@@ -969,6 +969,44 @@ func TestServiceTick_HumanRequiredStuck_RemediatesDirectly(t *testing.T) {
 	}
 }
 
+func TestServiceTick_HumanRequiredStuck_IncidentLedgerDoesNotPublishArtifact(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	tasks := &fakeTasks{tasks: []task.Task{
+		mkTask("hr-stuck", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{{Role: "human-review", State: "stopped", Verdict: "human"}}
+		}),
+	}}
+	sink := &fakeSink{createNext: true}
+	incidents, err := NewIncidentStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(Deps{
+		Cfg:        defaultCfg(),
+		Tasks:      tasks,
+		Audit:      fakeAudit{},
+		Agents:     nilAgentLister{},
+		Dispatcher: &fakeDispatcher{},
+		Sink:       sink,
+		Incidents:  incidents,
+		Logger:     slog.Default(),
+		Now:        func() time.Time { return now },
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.submissions) != 0 || report.IssuesOpened != 0 || report.IssuesUpdated != 0 {
+		t.Fatalf("human-required dwell published an artifact: submissions=%d opened=%d updated=%d", len(sink.submissions), report.IssuesOpened, report.IssuesUpdated)
+	}
+	if len(report.Incidents) != 1 {
+		t.Fatalf("incident ledger lost the in-process observation: %+v", report.Incidents)
+	}
+}
+
 // TestServiceTick_HumanRequiredStuck_FailedRunKeepsVerdict verifies that a
 // failed latest human-review run (e.g. 529 with no parsable result) does NOT
 // mask the "human" verdict from an earlier stopped run. The detector scans

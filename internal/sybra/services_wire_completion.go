@@ -1,6 +1,64 @@
 package sybra
 
-import "github.com/Automaat/sybra/internal/sybra/completion"
+import (
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/experience"
+	"github.com/Automaat/sybra/internal/reconcile"
+	"github.com/Automaat/sybra/internal/sybra/completion"
+	"github.com/Automaat/sybra/internal/sybra/reconciliation"
+)
+
+func (a *App) postRunReconciliation() *reconciliation.Reconciler {
+	if a == nil || a.tasks == nil {
+		return nil
+	}
+	if a.postRunReconciler == nil {
+		a.postRunReconciler = reconciliation.New(reconciliation.Config{
+			Tasks: a.tasks, Projects: a.projects, Worktrees: a.worktrees, Logger: a.logger, Evidence: a.evidenceStore,
+			Audit: func(req reconcile.Request, plan reconcile.Plan) {
+				taskID, projectScope, confidential := a.reconciliationAuditIdentity(req.TaskID)
+				a.logAudit(audit.EventReconciliationDecided, taskID, "", map[string]any{
+					"run_id": req.RunID, "intent": string(req.Intent), "action": string(plan.Action),
+					"decision_code": "reconcile." + string(plan.Action),
+					"project_scope": projectScope, "confidential": confidential,
+				})
+			},
+		})
+		if a.worktrees != nil {
+			a.worktrees.SetCleanupGate(a.postRunReconciler.CanCleanup)
+		}
+	}
+	return a.postRunReconciler
+}
+
+func (a *App) reconciliationAuditIdentity(taskID string) (safeTaskID, projectScope string, confidential bool) {
+	safeTaskID, projectScope = taskID, "fleet"
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		if taskID != "" {
+			return experience.WorkRecordID(taskID), "work-unknown", true
+		}
+		return safeTaskID, projectScope, false
+	}
+	if t.ProjectID == "" {
+		return safeTaskID, projectScope, false
+	}
+	// A missing project store is a degraded classification path. Fail closed:
+	// retain useful typed audit evidence without exposing the task identity.
+	if a.projects == nil {
+		return experience.WorkRecordID(taskID), "work-unknown", true
+	}
+	p, err := a.projects.Get(t.ProjectID)
+	if err != nil {
+		return experience.WorkRecordID(taskID), "work-unknown", true
+	}
+	projectScope = experience.ProjectKey(p)
+	confidential = a.workScrubContextForTask(t.ProjectID) != nil
+	if confidential {
+		safeTaskID = experience.WorkRecordID(taskID)
+	}
+	return safeTaskID, projectScope, confidential
+}
 
 // newAgentCompletionHandler constructs the handler with every dependency
 // the App holds. Called from wireServices once all subsystems are
@@ -9,18 +67,19 @@ import "github.com/Automaat/sybra/internal/sybra/completion"
 // handler's nil-checks at call time handle the latter.
 func (a *App) newAgentCompletionHandler(emit func(string, any)) *completion.Handler {
 	cfg := completion.Config{
-		Logger:    a.logger,
-		Audit:     a.audit,
-		Emit:      emit,
-		Tasks:     a.tasks,
-		Worktrees: a.worktrees,
-		Sandboxes: a.sandboxes,
-		Stats:     a.stats,
-		Limits:    a.limits,
-		LoopSched: a.loopSched,
-		PRTracker: a.prTracker,
-		Cfg:       a.cfg,
-		Artifacts: a.artifacts,
+		Logger:     a.logger,
+		Audit:      a.audit,
+		Emit:       emit,
+		Tasks:      a.tasks,
+		Worktrees:  a.worktrees,
+		Sandboxes:  a.sandboxes,
+		Stats:      a.stats,
+		Limits:     a.limits,
+		LoopSched:  a.loopSched,
+		PRTracker:  a.prTracker,
+		Cfg:        a.cfg,
+		Artifacts:  a.artifacts,
+		Reconciler: a.postRunReconciliation(),
 		WorkScrub: func(projectID string) *completion.WorkScrubContext {
 			ctx := a.workScrubContextForTask(projectID)
 			if ctx == nil {
