@@ -870,7 +870,7 @@ func (s *TaskService) CreateTaskWithInit(title, body, mode string, init task.Upd
 	}
 	t, err := s.tasks.CreateFull(title, body, mode, createInit)
 	if err != nil {
-		return t, translateTaskLockTimeout(err)
+		return t, boardRejection(translateTaskLockTimeout(err))
 	}
 
 	if prRepo != "" {
@@ -1432,11 +1432,11 @@ func (s *TaskService) DeleteTask(id string) error {
 	deleted, err := s.tasks.Get(id)
 	if err != nil {
 		s.logger.Error("task.delete.failed", "task_id", id, "err", err)
-		return err
+		return boardRejectionFor("task", id, err)
 	}
 	if err := s.tasks.Delete(id); err != nil {
 		s.logger.Error("task.delete.failed", "task_id", id, "err", err)
-		return translateTaskLockTimeout(err)
+		return boardRejectionFor("task", id, translateTaskLockTimeout(err))
 	}
 	s.agents.KillAgentsForTask(id, 10*time.Second)
 	if s.sandboxes != nil {

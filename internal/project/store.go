@@ -416,7 +416,7 @@ func (s *Store) MarkError(id string) error {
 // SetWorktreeBaseRef.
 func (s *Store) Update(id string, ptype ProjectType) (Project, error) {
 	if ptype != ProjectTypePet && ptype != ProjectTypeWork {
-		return Project{}, fmt.Errorf("invalid project type: %s (must be pet or work)", ptype)
+		return Project{}, reject.New("invalid project type: %s (must be pet or work)", ptype)
 	}
 	unlock, err := s.lock(id)
 	if err != nil {

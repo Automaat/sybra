@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/reject"
+
 	"github.com/Automaat/sybra/internal/fsutil"
 )
 
@@ -53,7 +55,7 @@ func (s *Store) Path(taskID, name string) (string, error) {
 		return "", fmt.Errorf("artifact: invalid task id %q", taskID)
 	}
 	if !validName.MatchString(name) {
-		return "", fmt.Errorf("artifact: invalid artifact name %q", name)
+		return "", reject.New("artifact: invalid artifact name %q", name)
 	}
 	dir, err := s.taskDir(taskID)
 	if err != nil {
@@ -79,7 +81,7 @@ func (s *Store) Put(taskID string, a Artifact) (Meta, error) {
 		name = a.Kind.defaultName()
 	}
 	if !validName.MatchString(name) {
-		return Meta{}, fmt.Errorf("artifact: invalid artifact name %q", name)
+		return Meta{}, reject.New("artifact: invalid artifact name %q", name)
 	}
 
 	dir, err := s.taskDir(taskID)
@@ -235,7 +237,7 @@ func (s *Store) Read(taskID, name string) ([]byte, Meta, error) {
 		return nil, Meta{}, fmt.Errorf("artifact: invalid task id %q", taskID)
 	}
 	if !validName.MatchString(name) {
-		return nil, Meta{}, fmt.Errorf("artifact: invalid artifact name %q", name)
+		return nil, Meta{}, reject.New("artifact: invalid artifact name %q", name)
 	}
 	dir, err := s.taskDir(taskID)
 	if err != nil {

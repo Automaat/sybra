@@ -343,6 +343,8 @@ func TestBoardEndpoints_NotFoundNamesTheIdentifier(t *testing.T) {
 		wantID  string
 	}{
 		{"get a missing task", "TaskService", "GetTask", []any{"zzzzzzzz"}, "zzzzzzzz"},
+		{"delete a missing task", "TaskService", "DeleteTask", []any{"zzzzzzzz"}, "zzzzzzzz"},
+		{"append progress to a missing task", "TaskService", "AppendTaskProgress", []any{"zzzzzzzz", "progress", "", "hi"}, "zzzzzzzz"},
 		{"update a missing task", "TaskService", "UpdateTaskFields", []any{"zzzzzzzz", task.Update{Title: task.Ptr("x")}}, "zzzzzzzz"},
 		{"read a missing artifact", "TaskService", "ReadTaskArtifact", []any{"zzzzzzzz", "nope.txt"}, "nope.txt"},
 		{"get an unregistered project", "ProjectService", "GetProject", []any{"owner/nope"}, "owner/nope"},
@@ -385,5 +387,60 @@ func TestUpdateTask_InvalidStatusCarriesTheValidSet(t *testing.T) {
 	}
 	if !strings.Contains(body, "bogus") || !strings.Contains(body, "in-progress") {
 		t.Errorf("body %s does not name the rejected value and the valid set", body)
+	}
+}
+
+// TestBoardEndpoints_InputRejectionsCarryTheirReason locks the whole class
+// rather than the handful of paths a tester happened to try.
+//
+// Two adversarial passes found this same defect at call sites the previous
+// fix had not enumerated, which is the argument for marking the validations
+// where they are raised instead of where they are returned. Every case below
+// is a value the caller supplied, so every one has to come back readable.
+func TestBoardEndpoints_InputRejectionsCarryTheirReason(t *testing.T) {
+	t.Parallel()
+	svc, a := setupTaskService(t)
+	svc.artifacts = artifact.New(t.TempDir())
+	a.taskSvc = svc
+	projects, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("project.NewStore: %v", err)
+	}
+	if _, err := projects.Create("https://github.com/acme/widget", project.ProjectTypePet); err != nil {
+		t.Skipf("project create needs git: %v", err)
+	}
+	a.projectSvc = &ProjectService{projects: projects, logger: slog.New(slog.DiscardHandler)}
+
+	created, err := svc.tasks.Create("rejection target", "", "headless")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		service    string
+		method     string
+		args       []any
+		wantReason string
+	}{
+		{"create with an unknown mode", "TaskService", "CreateTask", []any{"t", "", "bogusmode"}, "bogusmode"},
+		{"update to an unknown mode", "TaskService", "UpdateTask", []any{created.ID, map[string]any{"agent_mode": "bogus"}}, "bogus"},
+		{"update an unknown field", "TaskService", "UpdateTask", []any{created.ID, map[string]any{"nope": "x"}}, "nope"},
+		{"project type that is neither", "ProjectService", "UpdateProject", []any{"acme/widget", "bogus"}, "pet or work"},
+		{"artifact name escaping the store", "TaskService", "ReadTaskArtifact", []any{created.ID, "../../etc/passwd"}, "invalid artifact name"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, body := postAPI(t, a, tt.service, tt.method, tt.args...)
+			if status != http.StatusBadRequest {
+				t.Errorf("status = %d, want %d (body %s)", status, http.StatusBadRequest, body)
+			}
+			if strings.Contains(body, "internal error") {
+				t.Errorf("body %s sanitized the reason away", body)
+			}
+			if !strings.Contains(body, tt.wantReason) {
+				t.Errorf("body %s does not carry %q", body, tt.wantReason)
+			}
+		})
 	}
 }

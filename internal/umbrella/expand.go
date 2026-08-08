@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/reject"
+
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/llmexec"
@@ -174,7 +176,7 @@ type fetchedExpandState struct {
 func Expand(ctx context.Context, tasks *task.Manager, run Runner, issueURL string, opts ...ExpandOption) (Result, error) {
 	repo, number, ok := ParseRef(issueURL)
 	if !ok {
-		return Result{}, fmt.Errorf("not a GitHub issue URL: %s", issueURL)
+		return Result{}, reject.New("not a GitHub issue URL: %s", issueURL)
 	}
 	cfg := expandOptions(opts)
 	unlock, err := lockExpandIssue(tasks, issueURL)

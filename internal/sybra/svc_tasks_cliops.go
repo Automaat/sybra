@@ -38,7 +38,7 @@ func (s *TaskService) ExpandUmbrella(issueURL, model string) (UmbrellaExpandDTO,
 	}
 	res, err := s.umbrellaExpand(issueURL, model)
 	if err != nil {
-		return UmbrellaExpandDTO{}, err
+		return UmbrellaExpandDTO{}, boardRejection(err)
 	}
 	return umbrellaResultDTO(res), nil
 }
@@ -67,7 +67,7 @@ func (s *TaskService) ClassifyTask(id, model string) (TriageResultDTO, error) {
 	}
 	t, err := s.tasks.Get(id)
 	if err != nil {
-		return TriageResultDTO{}, err
+		return TriageResultDTO{}, boardRejectionFor("task", id, err)
 	}
 	// The guard belongs here, not on the caller: a client that checked the
 	// status against its own board would be checking one board and mutating

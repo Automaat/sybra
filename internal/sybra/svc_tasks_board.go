@@ -130,7 +130,7 @@ func (s *TaskService) AppendTaskProgress(taskID, kind, role, message string) (ar
 	}
 	t, err := s.tasks.Get(taskID)
 	if err != nil {
-		return artifact.ProgressEntry{}, err
+		return artifact.ProgressEntry{}, boardRejectionFor("task", taskID, err)
 	}
 	if t.ProjectID != "" && s.projects != nil {
 		if p, pErr := s.projects.Get(t.ProjectID); pErr == nil {

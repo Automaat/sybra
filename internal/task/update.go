@@ -9,6 +9,7 @@ import (
 	"github.com/Automaat/sybra/internal/autonomy"
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/issueref"
+	"github.com/Automaat/sybra/internal/reject"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -103,7 +104,9 @@ func UpdateFromMap(raw map[string]any) (Update, error) {
 	var u Update
 	for k, v := range raw {
 		if err := applyMapField(&u, k, v); err != nil {
-			return Update{}, err
+			// Every failure here is the caller's own key or value, so mark
+			// the whole boundary once rather than each field in turn.
+			return Update{}, reject.New("%w", err)
 		}
 	}
 	return u, nil
