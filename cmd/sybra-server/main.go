@@ -170,7 +170,7 @@ func run() (int, error) {
 	// (no wildcard). Order matters: CORS must sit outside auth so preflight
 	// OPTIONS requests (which never carry Authorization) are answered before
 	// reaching it.
-	handler := cspMiddleware("", corsMiddleware(cfg.Server.AllowedOrigins, authMiddleware(cfg.Server.AuthToken, logger, mux)))
+	handler := cspMiddleware(corsMiddleware(cfg.Server.AllowedOrigins, authMiddleware(cfg.Server.AuthToken, logger, mux)))
 
 	srv, errCh, err := serveAll(rootCtx, cfg, handler, logger)
 	if err != nil {

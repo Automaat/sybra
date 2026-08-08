@@ -68,6 +68,19 @@ if ! grep -qE "^export \* from './api-http\.js'" "${API_TS}"; then
   exit 1
 fi
 
+# The generated service bindings call Wails IPC, which nothing serves any more:
+# a component importing one posts to /wails/runtime and gets 405. Only the
+# models.* files (plain type/class declarations) may be imported from src.
+stray_bindings="$(grep -rn "bindings/" frontend/src \
+  --include='*.ts' --include='*.svelte' \
+  | grep -v '/models\.js' \
+  | grep -v '^frontend/src/lib/api\.ts:' || true)"
+if [[ -n "${stray_bindings}" ]]; then
+  echo "::error::frontend/src must reach the server through \$lib/api; these import a generated Wails call path, which nothing serves:" >&2
+  echo "${stray_bindings}" >&2
+  exit 1
+fi
+
 read_lines_into api_http_exports < <(grep -oE '^export (async )?function [A-Za-z0-9_]+' "${API_HTTP_TS}" | sed -E 's/^export (async )?function //' | sort -u)
 
 fail=0

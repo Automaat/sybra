@@ -323,9 +323,12 @@ func (a *App) projectHTTPServices() map[string]httpapi.Service {
 			// holding the server token can already dispatch an agent that runs
 			// anything, so withholding it bought no containment.
 			"SetProjectSetupCommands",
-			// SetProjectSandboxConfig excluded: cfg.Deploy is run via sh -c in
-			// k8s sandbox and Docker build/compose paths accept attacker-controlled
-			// filesystem paths — Wails IPC only.
+			// SetProjectSandboxConfig runs cfg.Deploy via sh -c during k8s and
+			// Docker sandbox setup, but withholding it only broke the Sandbox
+			// tab: a caller holding the server token can already dispatch an
+			// agent that runs anything, which is the same reasoning that put
+			// SetProjectSetupCommands here.
+			"SetProjectSandboxConfig",
 			"OpenInTerminal",
 			"OpenInEditor",
 		).WithReadOnly("ListProjects", "GetProject", "GetProjectRawType", "ListWorktrees").

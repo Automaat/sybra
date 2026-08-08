@@ -187,6 +187,7 @@ export function OpenInEditor(arg1: string): Promise<void> { return call('Project
 export function OpenInTerminal(arg1: string): Promise<void> { return call('ProjectService', 'OpenInTerminal', arg1) }
 export function SetProjectWorktreeBaseRef(arg1: string, arg2: string): Promise<Project> { return call('ProjectService', 'SetProjectWorktreeBaseRef', arg1, arg2) }
 export function SetProjectSetupCommands(arg1: string, arg2: string[]): Promise<Project> { return call('ProjectService', 'SetProjectSetupCommands', arg1, arg2) }
+export function SetProjectSandboxConfig(arg1: string, arg2: unknown): Promise<Project> { return call('ProjectService', 'SetProjectSandboxConfig', arg1, arg2) }
 export function GetProjectRawType(arg1: string): Promise<string> { return call('ProjectService', 'GetProjectRawType', arg1) }
 export function CreateProjectAndClone(arg1: string, arg2: string): Promise<Project> { return call('ProjectService', 'CreateProjectAndClone', arg1, arg2) }
 export function UpdateProject(arg1: string, arg2: string): Promise<Project> { return call('ProjectService', 'UpdateProject', arg1, arg2) }

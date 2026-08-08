@@ -80,10 +80,13 @@ func openDesktopBoard(ctx context.Context, cfg *config.Config, logger *slog.Logg
 
 // openAttachedBoard serves the UI for a board on another machine.
 //
-// Only the bundle and the runtime config come from here; every call and every
-// event goes to the other board. BrowserService stays local because opening a
-// window or a link is an action on the machine the operator is sitting at, and
-// the remote board refuses it anyway.
+// Calls and events are forwarded to that board from here rather than sent to it
+// by the page, so the window stays same-origin — the board's operator cannot
+// know in advance which loopback port this window will pick, and so cannot
+// grant it CORS — and that board's token never reaches the page.
+//
+// BrowserService stays local: opening a window or a link is an action on the
+// machine the operator is sitting at.
 func openAttachedBoard(ctx context.Context, cfg *config.Config, logger *slog.Logger, remote remoteTarget, openBrowser func(string)) (*desktopBoard, error) {
 	sub, err := desktopAssets()
 	if err != nil {
@@ -97,13 +100,13 @@ func openAttachedBoard(ctx context.Context, cfg *config.Config, logger *slog.Log
 	logger.Info("desktop.board.attached", "origin", remote.origin)
 
 	return serveDesktopBoard(ln, origin, logger, cfg, httpserve.Options{
-		Logger:        logger,
-		Services:      sybra.LocalBrowserServices(openBrowser),
-		StaticFS:      sub,
-		APIBase:       remote.origin + "/api",
-		Token:         remote.token,
-		SelfOrigin:    origin,
-		ConnectOrigin: remote.origin,
+		Logger:     logger,
+		Services:   sybra.LocalBrowserServices(openBrowser),
+		StaticFS:   sub,
+		APIBase:    origin + "/api",
+		Token:      cfg.Server.AuthToken,
+		SelfOrigin: origin,
+		Proxy:      &httpserve.ProxyTarget{Origin: remote.origin, Token: remote.token},
 	})
 }
 

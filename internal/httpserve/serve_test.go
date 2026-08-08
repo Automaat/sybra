@@ -9,6 +9,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/httpserve"
 )
 
@@ -149,30 +150,6 @@ func TestRuntimeConfigIsUnauthenticated(t *testing.T) {
 	}
 }
 
-// TestCSPWidensConnectSrcForAnAttachedBoard covers the UI attached elsewhere:
-// its own origin serves the bundle, so without the board's origin in the policy
-// every call it makes is blocked before it leaves the page.
-func TestCSPWidensConnectSrcForAnAttachedBoard(t *testing.T) {
-	tests := []struct {
-		name          string
-		connectOrigin string
-		want          string
-	}{
-		{name: "own board", want: "connect-src 'self' ws: wss:;"},
-		{name: "attached board", connectOrigin: "https://board.example", want: "connect-src 'self' ws: wss: https://board.example;"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			httpserve.CSPMiddleware(tc.connectOrigin, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).
-				ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", http.NoBody))
-			if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, tc.want) {
-				t.Fatalf("policy = %q, want it to contain %q", got, tc.want)
-			}
-		})
-	}
-}
-
 // TestHandlerAlwaysSetsTheContentPolicy pins the header as the only source of
 // the policy. index.html carried a meta copy whose connect-src 'self' silently
 // won over the header, blocking every call an attached window makes.
@@ -197,3 +174,95 @@ func TestHandlerAlwaysSetsTheContentPolicy(t *testing.T) {
 		t.Fatal("index.html carries a meta policy again; it overrides the header wherever it is stricter")
 	}
 }
+
+// TestAttachedBoardIsProxiedSameOrigin covers the UI attached to a board on
+// another machine. The page must stay same-origin with the instance that served
+// it: that board's operator cannot know which loopback port an attaching window
+// will pick, so they cannot grant it CORS, and every call would be blocked.
+func TestAttachedBoardIsProxiedSameOrigin(t *testing.T) {
+	var gotAuth, gotQuery, gotPath string
+	board := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotQuery = r.URL.RawQuery
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"version":"from-the-board"}`))
+	}))
+	t.Cleanup(board.Close)
+
+	opts := httpserve.Options{
+		Logger:   testLogger(),
+		Services: map[string]httpapi.Service{"BrowserService": httpapi.NewService(&stubBrowser{}, "OpenExternal")},
+		Proxy:    &httpserve.ProxyTarget{Origin: board.URL, Token: "board-secret"},
+		// The bundle too: an attached instance serves both, and registering
+		// the proxy without a method conflicts with the static route.
+		StaticFS: bundle(),
+	}
+	srv := httptest.NewServer(httpserve.BuildMux(opts))
+	t.Cleanup(srv.Close)
+
+	t.Run("board call is forwarded under the board's own token", func(t *testing.T) {
+		resp, err := srv.Client().Post(srv.URL+"/api/InfoService/GetVersion", "application/json", strings.NewReader(`[]`))
+		if err != nil {
+			t.Fatalf("POST GetVersion: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if !strings.Contains(string(body), "from-the-board") {
+			t.Fatalf("body = %s, want the board's answer", body)
+		}
+		if gotAuth != "Bearer board-secret" {
+			t.Fatalf("Authorization = %q, want the board's own token", gotAuth)
+		}
+		if gotPath != "/api/InfoService/GetVersion" {
+			t.Fatalf("path = %q", gotPath)
+		}
+	})
+
+	t.Run("event stream drops the page's query token", func(t *testing.T) {
+		resp, err := srv.Client().Get(srv.URL + "/events?token=local-secret")
+		if err != nil {
+			t.Fatalf("GET /events: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if strings.Contains(gotQuery, "local-secret") {
+			t.Fatalf("query = %q, want this instance's token stripped", gotQuery)
+		}
+		if gotAuth != "Bearer board-secret" {
+			t.Fatalf("Authorization = %q, want the board's own token", gotAuth)
+		}
+	})
+
+	t.Run("the bundle is still served alongside the proxy", func(t *testing.T) {
+		resp, err := srv.Client().Get(srv.URL + "/tasks/abc")
+		if err != nil {
+			t.Fatalf("GET deep link: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+	})
+
+	t.Run("a host-local service is answered here, not forwarded", func(t *testing.T) {
+		gotPath = ""
+		resp, err := srv.Client().Post(srv.URL+"/api/BrowserService/OpenExternal", "application/json", strings.NewReader(`["https://example.com"]`))
+		if err != nil {
+			t.Fatalf("POST OpenExternal: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if gotPath != "" {
+			t.Fatalf("reached the board at %q; a host-local action must stay here", gotPath)
+		}
+	})
+}
+
+type stubBrowser struct{}
+
+func (s *stubBrowser) OpenExternal(_ string) error { return nil }

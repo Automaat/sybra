@@ -16,7 +16,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/http/pprof"
+	"net/url"
 	"os"
 	"path"
 	"strings"
@@ -55,10 +57,19 @@ type Options struct {
 	// process served from any other page on the host. Empty disables the
 	// token disclosure entirely.
 	SelfOrigin string
-	// ConnectOrigin is an additional origin the delivered bundle may call,
-	// set when the UI talks to a board on another machine. It is added to the
-	// content policy, which would otherwise allow the page's own origin only.
-	ConnectOrigin string
+	// Proxy forwards the API and event stream to a board on another machine.
+	//
+	// The UI stays same-origin with the instance that served it, so no CORS
+	// grant is needed on that board — its operator cannot know in advance which
+	// loopback port an attaching window will pick — and its bearer token is
+	// added here rather than handed to the page.
+	Proxy *ProxyTarget
+}
+
+// ProxyTarget is the board an attached UI's calls are forwarded to.
+type ProxyTarget struct {
+	Origin string
+	Token  string
 }
 
 // BuildMux registers every route this instance serves.
@@ -99,8 +110,7 @@ func BuildMux(opts Options) *http.ServeMux {
 		mux.HandleFunc("GET /api/events/{eventName}", opts.Broker.ServeHTTP)
 	}
 
-	// API dispatch: POST /api/{service}/{method}
-	httpapi.Mount(mux, opts.Services, opts.Logger, opts.Admit)
+	mountAPI(mux, opts)
 
 	mux.HandleFunc("GET /runtime-config.js", runtimeConfig(opts))
 
@@ -109,6 +119,72 @@ func BuildMux(opts Options) *http.ServeMux {
 	}
 
 	return mux
+}
+
+// mountAPI routes API calls, either straight to this instance's services or,
+// for an attached UI, on to the board it belongs to.
+func mountAPI(mux *http.ServeMux, opts Options) {
+	if opts.Proxy == nil {
+		httpapi.Mount(mux, opts.Services, opts.Logger, opts.Admit)
+		return
+	}
+	proxy := newBoardProxy(opts)
+	local := http.NewServeMux()
+	httpapi.Mount(local, opts.Services, opts.Logger, opts.Admit)
+
+	// Services registered here act on this host and are answered here; every
+	// other name belongs to the attached board.
+	route := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := opts.Services[apiServiceName(r.URL.Path)]; ok {
+			local.ServeHTTP(w, r)
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	})
+	// Registered per method rather than as a bare "/api/": a pattern matching
+	// every method is treated as more general than "GET /", and the two
+	// conflict at registration time.
+	mux.Handle("POST /api/", route)
+	mux.Handle("GET /api/", route)
+	mux.Handle("GET /events", proxy)
+}
+
+// apiServiceName reports the service segment of /api/{service}/{method}.
+func apiServiceName(urlPath string) string {
+	rest := strings.TrimPrefix(urlPath, "/api/")
+	name, _, _ := strings.Cut(rest, "/")
+	return name
+}
+
+// newBoardProxy forwards to the attached board under its own credentials.
+func newBoardProxy(opts Options) *httputil.ReverseProxy {
+	target, err := url.Parse(opts.Proxy.Origin)
+	if err != nil {
+		opts.Logger.Error("board.proxy.target", "origin", opts.Proxy.Origin, "err", err)
+	}
+	token := opts.Proxy.Token
+	return &httputil.ReverseProxy{
+		// -1 flushes every write straight through, which the event stream
+		// needs: a buffered proxy holds events until the buffer fills.
+		FlushInterval: -1,
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.SetURL(target)
+			r.Out.Host = target.Host
+			// The page authenticated to this instance with this instance's
+			// token. Replace it wholesale so the board's own secret is the
+			// only one on this hop, and never travels to the page.
+			r.Out.Header.Set("Authorization", "Bearer "+token)
+			q := r.Out.URL.Query()
+			if q.Has("token") {
+				q.Del("token")
+				r.Out.URL.RawQuery = q.Encode()
+			}
+		},
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			opts.Logger.Warn("board.proxy.error", "origin", opts.Proxy.Origin, "err", err)
+			w.WriteHeader(http.StatusBadGateway)
+		},
+	}
 }
 
 // runtimeConfig tells the bundle which board it was served by, before it makes
@@ -252,16 +328,11 @@ func (h SPAHandler) exists(urlPath string) bool {
 	return err == nil
 }
 
-// CSPMiddleware sets the policy the SPA is served under. connectOrigin widens
-// connect-src to a board on another machine; empty keeps the page to its own
-// origin.
-func CSPMiddleware(connectOrigin string, next http.Handler) http.Handler {
-	connect := "'self' ws: wss:"
-	if connectOrigin != "" {
-		connect += " " + connectOrigin
-	}
-	policy := "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src " +
-		connect + "; font-src 'self'; manifest-src 'self'; frame-ancestors 'none'"
+// CSPMiddleware sets the policy the SPA is served under. The page only ever
+// calls the origin that served it, including when that origin forwards to a
+// board on another machine, so connect-src never needs widening.
+func CSPMiddleware(next http.Handler) http.Handler {
+	const policy = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self'; manifest-src 'self'; frame-ancestors 'none'"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", policy)
 		next.ServeHTTP(w, r)
@@ -369,5 +440,5 @@ func TokensEqual(a, b string) bool {
 // Order matters: CORS must sit outside auth so preflight OPTIONS requests
 // (which never carry Authorization) are answered before reaching it.
 func Handler(opts Options, token string, allowedOrigins []string) http.Handler {
-	return CSPMiddleware(opts.ConnectOrigin, CORSMiddleware(allowedOrigins, AuthMiddleware(token, opts.Logger, BuildMux(opts))))
+	return CSPMiddleware(CORSMiddleware(allowedOrigins, AuthMiddleware(token, opts.Logger, BuildMux(opts))))
 }
