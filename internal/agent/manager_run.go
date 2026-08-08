@@ -7,6 +7,7 @@ import (
 	"maps"
 	"math/rand/v2"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -24,6 +25,7 @@ import (
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/google/uuid"
 )
@@ -68,15 +70,39 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 	}
 
 	id := uuid.NewString()[:8]
+	intent := attemptIntentForRun(cfg, prov.Name())
+	lease, err := m.acquireAttempt(ctx, intent)
+	if err != nil {
+		return nil, err
+	}
+	if lease.Existing {
+		return nil, fmt.Errorf("%w: intent %s already admitted as lease %s", ErrAttemptConflict, intent.IntentID, lease.ID)
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	a := newRunningAgent(id, cfg, prov, cancel)
+	a.attemptIntent = intent
+	a.attemptTaskGenKnown = intent.TaskID != ""
+	a.attemptLease = lease
 	a.SetToolCallRecorder(m.recordToolCall)
+	if err := m.bindAttempt(ctx, a, ""); err != nil {
+		cancel()
+		m.completeAttempt(ctx, a, "bind_failed")
+		return nil, fmt.Errorf("agent.Run: bind attempt: %w", err)
+	}
+	if cfg.BeforeStart != nil {
+		if err := cfg.BeforeStart(id); err != nil {
+			cancel()
+			m.completeAttempt(ctx, a, "before_start_failed")
+			return nil, fmt.Errorf("agent.Run: before start: %w", err)
+		}
+	}
 	cfg = injectProcessOwnerEnv(cfg, processOwnerForAgent(a))
 	if m.survives() && willDetach(cfg) {
 		a.setDetached(true)
 	}
 
 	if err := m.registerRunningAgent(a, cfg, cancel); err != nil { //nolint:contextcheck // per-class metrics are process-global accounting, not tied to per-run ctx
+		m.completeAttempt(ctx, a, "registration_failed")
 		return nil, err
 	}
 
@@ -84,11 +110,264 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 	m.logger.Info("agent.start", "id", id, "taskID", cfg.TaskID, "mode", cfg.Mode, "provider", a.Provider, "model", a.Model)
 
 	if err := m.startAgentRunner(ctx, a, cfg, prov, cancel); err != nil {
+		m.completeAttempt(ctx, a, "start_failed")
+		m.markAgentDone(ctx, a)
 		return nil, err
 	}
+	m.startAttemptHeartbeat(ctx, a)
 
 	m.emit(events.AgentState(id), a)
 	return a, nil
+}
+
+func attemptIntentForRun(cfg RunConfig, providerName string) AttemptIntent {
+	access := cfg.AttemptAccess
+	if access == "" {
+		access = AttemptAccessMutate
+	}
+	if cfg.ReadOnlyDir {
+		access = AttemptAccessObserve
+	}
+	intentID := strings.TrimSpace(cfg.IntentID)
+	if intentID == "" {
+		// Only an explicit workflow/effect identity is replay-stable. A
+		// deterministic fallback would make recurring taskless monitor and loop
+		// runs replay a lease that already completed. The generated identity is
+		// persisted in the registry, so restart adoption remains stable.
+		intentID = "dispatch:" + uuid.NewString()
+	}
+	return AttemptIntent{
+		IntentID: intentID, TaskID: firstNonEmpty(cfg.AdmissionTaskKey, cfg.TaskID), TaskGeneration: cfg.TaskGeneration,
+		Worktree: cfg.Dir, WorktreeGeneration: cfg.WorktreeGeneration,
+		Access: access, Role: cfg.Role, Provider: providerName,
+		CapabilityCertified: true,
+	}
+}
+
+func (m *Manager) admissionService() AttemptAdmission {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.attemptAdmission
+}
+
+// NeedsAttemptReconciliation reports whether durable admission contains an
+// expired lease. Recovery uses this to avoid an expensive process/worktree
+// preservation pass on ordinary maintenance ticks.
+func (m *Manager) NeedsAttemptReconciliation(ctx context.Context) bool {
+	reconciler, ok := m.admissionService().(AttemptLedgerReconciler)
+	if !ok {
+		return false
+	}
+	needed, err := reconciler.NeedsReconciliation(ctx)
+	if err != nil {
+		m.logger.Warn("agent.attempt.reconcile-check", "err", err)
+		return false
+	}
+	return needed
+}
+
+// ReconcileAttemptLeases finalizes expired leases not represented by either
+// the survival registry or the live manager. Callers must first reap owned
+// unregistered processes and preserve worktrees.
+func (m *Manager) ReconcileAttemptLeases(ctx context.Context) int {
+	reconciler, ok := m.admissionService().(AttemptLedgerReconciler)
+	if !ok {
+		return 0
+	}
+	seen := make(map[string]AttemptLease)
+	if reg := m.registry(); reg != nil {
+		records, err := reg.List()
+		if err != nil {
+			m.logger.Warn("agent.attempt.reconcile-registry", "err", err)
+			return 0
+		}
+		for i := range records {
+			if records[i].AttemptLeaseID != "" {
+				seen[records[i].AttemptLeaseID] = AttemptLease{ID: records[i].AttemptLeaseID, Version: records[i].AttemptVersion}
+			}
+		}
+	}
+	m.mu.RLock()
+	for _, a := range m.agents {
+		a.mu.RLock()
+		lease := a.attemptLease
+		a.mu.RUnlock()
+		if lease.ID != "" && a.GetState() != StateStopped {
+			seen[lease.ID] = lease
+		}
+	}
+	m.mu.RUnlock()
+	observed := make([]AttemptLease, 0, len(seen))
+	for _, lease := range seen {
+		observed = append(observed, lease)
+	}
+	n, err := reconciler.ReconcileUnobserved(ctx, observed)
+	if err != nil {
+		m.logger.Warn("agent.attempt.reconcile", "err", err)
+		return 0
+	}
+	if n > 0 {
+		m.logger.Info("agent.attempt.reconciled", "count", n)
+		if m.controlEvent != nil {
+			m.controlEvent("attempt_leases.reconciled", map[string]any{"count": n, "outcome": "orphan_reconciled"})
+		}
+	}
+	return n
+}
+
+func (m *Manager) acquireAttempt(ctx context.Context, intent AttemptIntent) (AttemptLease, error) {
+	admission := m.admissionService()
+	if admission == nil {
+		return AttemptLease{}, nil
+	}
+	return admission.Acquire(ctx, intent)
+}
+
+func (m *Manager) bindAttempt(ctx context.Context, a *Agent, procStarted string) error {
+	if a == nil {
+		return nil
+	}
+	a.mu.RLock()
+	lease := a.attemptLease
+	binding := AttemptBinding{
+		AgentID: a.ID, PID: a.PID, ProcStarted: procStarted,
+		SessionID: a.SessionID, ObservedAt: time.Now().UTC(),
+	}
+	a.mu.RUnlock()
+	admission := m.admissionService()
+	if admission == nil || lease.ID == "" {
+		return nil
+	}
+	return admission.Bind(ctx, lease, binding)
+}
+
+func (m *Manager) bindAndHeartbeatAttempt(ctx context.Context, a *Agent, procStarted string) {
+	if err := m.bindAttempt(ctx, a, procStarted); err != nil {
+		m.logger.Warn("agent.attempt.bind", "id", a.ID, "err", err)
+		return
+	}
+	a.mu.RLock()
+	lease := a.attemptLease
+	a.mu.RUnlock()
+	admission := m.admissionService()
+	if admission == nil || lease.ID == "" {
+		return
+	}
+	if err := admission.Heartbeat(ctx, lease, time.Now().UTC()); err != nil {
+		m.logger.Warn("agent.attempt.heartbeat", "id", a.ID, "err", err)
+	}
+}
+
+const attemptHeartbeatInterval = 15 * time.Second
+
+func (m *Manager) startAttemptHeartbeat(ctx context.Context, a *Agent) {
+	if m.admissionService() == nil || a == nil {
+		return
+	}
+	a.mu.RLock()
+	hasLease := a.attemptLease.ID != ""
+	a.mu.RUnlock()
+	if !hasLease {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(attemptHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				a.mu.RLock()
+				lease := a.attemptLease
+				a.mu.RUnlock()
+				if admission := m.admissionService(); admission != nil {
+					if err := admission.Heartbeat(ctx, lease, time.Now().UTC()); err != nil {
+						m.logger.Warn("agent.attempt.heartbeat", "id", a.ID, "err", err)
+					}
+				}
+			case <-a.done:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+func (m *Manager) completeAttempt(ctx context.Context, a *Agent, outcome string) {
+	if a == nil {
+		return
+	}
+	a.attemptCompleteOnce.Do(func() {
+		a.mu.RLock()
+		lease := a.attemptLease
+		a.mu.RUnlock()
+		admission := m.admissionService()
+		if admission == nil || lease.ID == "" {
+			return
+		}
+		if ctx == nil {
+			ctx = context.Background()
+		} else {
+			ctx = context.WithoutCancel(ctx)
+		}
+		if err := admission.Complete(ctx, lease, outcome); err != nil {
+			m.logger.Warn("agent.attempt.complete", "id", a.ID, "outcome", outcome, "err", err)
+		}
+	})
+}
+
+func attemptTerminalOutcome(a *Agent) string {
+	if a.GetExitErr() != nil {
+		return "failed"
+	}
+	if a.WasStopped() {
+		return string(taskstatus.Cancelled)
+	}
+	return "completed"
+}
+
+func attemptIntentFromRecord(r Record) AttemptIntent {
+	access := r.AttemptAccess
+	if access == "" {
+		access = AttemptAccessMutate
+	}
+	intentID := r.AttemptIntentID
+	if intentID == "" {
+		intentID = "legacy-registry:" + r.ID
+	}
+	return AttemptIntent{
+		IntentID: intentID, TaskID: firstNonEmpty(r.AttemptTaskKey, r.TaskID),
+		TaskGeneration: r.AttemptTaskGen, Worktree: r.CWD,
+		WorktreeGeneration: r.AttemptWorkGen, Access: access,
+		Role: r.Role, Provider: r.Provider, CapabilityCertified: true,
+	}
+}
+
+func (m *Manager) adoptAttempt(ctx context.Context, r Record, intent AttemptIntent) (AttemptLease, error) {
+	admission := m.admissionService()
+	lease := AttemptLease{ID: r.AttemptLeaseID, Version: r.AttemptVersion}
+	if admission == nil {
+		return lease, nil
+	}
+	binding := AttemptBinding{
+		AgentID: r.ID, PID: r.PID, ProcStarted: r.ProcStartedAt,
+		SessionID: r.SessionID, ObservedAt: time.Now().UTC(),
+	}
+	if lease.ID == "" {
+		acquired, err := admission.Acquire(ctx, intent)
+		if err != nil {
+			return AttemptLease{}, err
+		}
+		if acquired.Existing {
+			return AttemptLease{}, fmt.Errorf("%w: legacy registry intent %s", ErrAttemptConflict, intent.IntentID)
+		}
+		if err := admission.Bind(ctx, acquired, binding); err != nil {
+			_ = admission.Complete(context.WithoutCancel(ctx), acquired, "legacy_bind_failed")
+			return AttemptLease{}, err
+		}
+		return acquired, nil
+	}
+	return admission.Adopt(ctx, intent, lease, binding)
 }
 
 func (m *Manager) certifyPreparedRun(ctx context.Context, cfg RunConfig, providerName string) error {
@@ -200,6 +479,9 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		return cfg, nil, roleErr
 	}
 	cfg.Role = role
+	if err := m.resolveAttemptGeneration(&cfg); err != nil {
+		return cfg, nil, err
+	}
 	m.mu.RLock()
 	if cfg.Model == "" {
 		cfg.Model = m.defaultModel
@@ -275,7 +557,9 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		return cfg, nil, err
 	}
 
-	m.injectGhShim(&cfg)
+	if err := m.injectGitAccess(&cfg); err != nil {
+		return cfg, nil, err
+	}
 
 	if err := m.injectGolangciCache(&cfg); err != nil {
 		return cfg, nil, err
@@ -285,15 +569,23 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		return cfg, nil, err
 	}
 
-	m.injectGitHubToken(&cfg)
-
+	// Independent verification is only trustworthy when project-controlled
+	// code is actually contained. Verifier roles therefore fail closed under
+	// enforce regardless of the rollout posture used for author agents.
+	cfg = enforceVerifierSandbox(cfg)
 	if err := m.injectProcessSandbox(&cfg); err != nil {
 		return cfg, nil, err
 	}
 
 	m.preparePlaywrightMCP(&cfg)
 
+	m.applyRuntimeDefaults(&cfg)
+	return cfg, prov, nil
+}
+
+func (m *Manager) applyRuntimeDefaults(cfg *RunConfig) {
 	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if cfg.BashTimeoutMs == 0 {
 		cfg.BashTimeoutMs = m.bashTimeoutMs
 	}
@@ -303,8 +595,91 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if cfg.FallbackModel == "" {
 		cfg.FallbackModel = m.fallbackModel
 	}
+}
+
+func (m *Manager) resolveAttemptGeneration(cfg *RunConfig) error {
+	if cfg == nil || cfg.TaskID == "" {
+		return nil
+	}
+	m.mu.RLock()
+	generation := m.taskGeneration
 	m.mu.RUnlock()
-	return cfg, prov, nil
+	if generation == nil {
+		return nil
+	}
+	value, ok := generation(cfg.TaskID)
+	if !ok || value <= 0 {
+		return nil
+	}
+	current := uint64(value)
+	if cfg.TaskGeneration != 0 && cfg.TaskGeneration != current {
+		return fmt.Errorf("%w: task %s generation %d is stale (current %d)", ErrAttemptConflict, cfg.TaskID, cfg.TaskGeneration, current)
+	}
+	cfg.TaskGeneration = current
+	if cfg.WorktreeGeneration == 0 {
+		cfg.WorktreeGeneration = current
+	}
+	return nil
+}
+
+func (m *Manager) injectGitAccess(cfg *RunConfig) error {
+	if cfg.Role.IsVerifier() {
+		if err := isolateVerifierGitCredentials(cfg); err != nil {
+			return err
+		}
+		if cfg.Role == RoleReview {
+			m.injectVerifierGhShim(cfg)
+			if err := m.injectVerifierGitHubToken(cfg); err != nil {
+				return err
+			}
+			m.grantVerifierGhReadPaths(cfg)
+		}
+		return nil
+	}
+	m.injectGhShim(cfg)
+	m.injectGitHubToken(cfg)
+	return nil
+}
+
+func (m *Manager) injectVerifierGitHubToken(cfg *RunConfig) error {
+	m.mu.RLock()
+	tokenFn := m.ghVerifierAppToken
+	m.mu.RUnlock()
+	if tokenFn == nil {
+		if cfg.TaskID != "" {
+			return errors.New("agent.Run: PR review requires a restricted GitHub App verifier token")
+		}
+		return nil
+	}
+	token := tokenFn()
+	if token == "" {
+		if cfg.TaskID != "" {
+			return errors.New("agent.Run: restricted GitHub App verifier token is unavailable")
+		}
+		return nil
+	}
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GH_TOKEN", "GITHUB_TOKEN")
+	cfg.ExtraEnv = append(cfg.ExtraEnv, "GH_TOKEN="+token, "GITHUB_TOKEN="+token)
+	return nil
+}
+
+func (m *Manager) grantVerifierGhReadPaths(cfg *RunConfig) {
+	if m.ghShimDir != "" {
+		cfg.ReadOnlyPaths = append(cfg.ReadOnlyPaths, filepath.Join(m.ghShimDir, "verifier"))
+	}
+	for _, name := range []string{"gh"} {
+		if path, err := exec.LookPath(name); err == nil {
+			cfg.ReadOnlyPaths = append(cfg.ReadOnlyPaths, path)
+		}
+	}
+}
+
+func enforceVerifierSandbox(cfg RunConfig) RunConfig {
+	if cfg.Role.IsVerifier() {
+		cfg.SandboxMode = "enforce"
+		cfg.SandboxReadMode = "enforce"
+	}
+	return cfg
 }
 
 // injectSandboxHome routes every task-scoped agent subprocess's default
@@ -315,10 +690,10 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 // source checkouts or sybra-cli invocations cannot rewrite the operator config.
 //
 // cfg.ExtraEnv is normalized before the trusted values are appended: any
-// existing SYBRA_HOME/SYBRA_CONTROL_HOME entries (caller-supplied or
-// otherwise) are stripped first, then the sandbox home and (if configured) the
-// control home are appended last, so they always win regardless of duplicate
-// env var resolution order in the target process.
+// existing control variables (caller-supplied or otherwise) are stripped
+// first. Ordinary roles receive the configured control home; verifiers receive
+// only the authenticated API target and token, so the operator store is never
+// one of their filesystem roots.
 func (m *Manager) injectSandboxHome(cfg *RunConfig) error {
 	sandboxKey := strings.TrimSpace(cfg.TaskID)
 	if sandboxKey == "" {
@@ -332,12 +707,18 @@ func (m *Manager) injectSandboxHome(cfg *RunConfig) error {
 	m.mu.RLock()
 	resolve := m.sandboxHome
 	controlHome := m.controlHome
+	controlTarget := m.controlTarget
+	controlToken := m.controlToken
 	m.mu.RUnlock()
-	if resolve == nil {
+	if resolve == nil && strings.TrimSpace(cfg.EphemeralSandboxHome) == "" {
 		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "sandbox_key", sandboxKey, "err", "no sandbox home resolver configured")
 		return fmt.Errorf("agent.Run: no sandbox home resolver configured for run %q", sandboxKey)
 	}
-	dir, err := resolve(sandboxKey)
+	dir := strings.TrimSpace(cfg.EphemeralSandboxHome)
+	var err error
+	if dir == "" {
+		dir, err = resolve(sandboxKey)
+	}
 	if err != nil {
 		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "sandbox_key", sandboxKey, "err", err)
 		return fmt.Errorf("agent.Run: resolve sandbox home for run %q: %w", sandboxKey, err)
@@ -354,9 +735,25 @@ func (m *Manager) injectSandboxHome(cfg *RunConfig) error {
 		return fmt.Errorf("agent.Run: sandbox home %q for run %q is not accessible: %w", dir, sandboxKey, statErr)
 	}
 
-	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "SYBRA_HOME", "SYBRA_CONTROL_HOME")
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "SYBRA_HOME", "SYBRA_CONTROL_HOME", "SYBRA_CONTROL_API_ONLY", "SYBRA_SERVER_TARGET", "SYBRA_AUTH_TOKEN", "SYBRA_AUTH_TOKEN_FILE")
 	cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_HOME="+dir)
-	if controlHome != "" {
+	if cfg.Role.IsVerifier() {
+		if !cfg.DisableVerifierControl && controlTarget != "" && controlToken != nil {
+			token := controlToken(cfg.TaskID, dir)
+			if token == "" {
+				return errors.New("agent.Run: verifier control token is unavailable")
+			}
+			tokenPath := VerifierControlTokenPath(dir)
+			if err := os.WriteFile(tokenPath, []byte(token), 0o600); err != nil {
+				return fmt.Errorf("agent.Run: write verifier control token: %w", err)
+			}
+			cfg.ExtraEnv = append(cfg.ExtraEnv,
+				"SYBRA_CONTROL_API_ONLY=1",
+				"SYBRA_SERVER_TARGET="+controlTarget,
+				"SYBRA_AUTH_TOKEN_FILE="+tokenPath,
+			)
+		}
+	} else if controlHome != "" {
 		cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_CONTROL_HOME="+controlHome)
 	}
 	cfg.resolvedSandboxHome = dir
@@ -416,6 +813,38 @@ func (m *Manager) injectGitHubToken(cfg *RunConfig) {
 	// cache. Override any ambient token to empty here; the PATH-level gh shim
 	// mints a fresh token for each short-lived gh child process instead.
 	cfg.ExtraEnv = append(cfg.ExtraEnv, "GH_TOKEN=", "GITHUB_TOKEN=")
+}
+
+// isolateVerifierGitCredentials keeps judge roles capable of exercising Git
+// inside their disposable clone without giving them any credential path that
+// could publish those private mutations. The process sandbox supplies the
+// stronger filesystem boundary; these overrides also prevent Git and gh from
+// consulting ambient operator configuration that would otherwise be readable
+// through a credential helper.
+func isolateVerifierGitCredentials(cfg *RunConfig) error {
+	isolationRoot := strings.TrimSpace(cfg.resolvedSandboxHome)
+	if isolationRoot == "" {
+		// Taskless verifier probes do not receive a separate sandbox home. Their
+		// run directory is already the enforce sandbox's writable root.
+		isolationRoot = cfg.Dir
+	}
+	isolatedConfig := filepath.Join(isolationRoot, ".config")
+	if err := os.MkdirAll(filepath.Join(isolatedConfig, "git"), 0o700); err != nil {
+		return fmt.Errorf("agent.Run: create verifier config home: %w", err)
+	}
+	cfg.ExtraEnv = stripEnvKeyPrefixes(cfg.ExtraEnv, "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv,
+		"XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
+		"GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_ASKPASS", "SSH_ASKPASS",
+	)
+	cfg.ExtraEnv = append(cfg.ExtraEnv,
+		"XDG_CONFIG_HOME="+isolatedConfig,
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_COUNT=0",
+		"GH_TOKEN=", "GITHUB_TOKEN=", "SSH_AUTH_SOCK=", "SSH_AGENT_PID=", "GIT_ASKPASS=", "SSH_ASKPASS=",
+	)
+	return nil
 }
 
 func (m *Manager) injectGolangciCache(cfg *RunConfig) error {
@@ -609,6 +1038,9 @@ func (m *Manager) buildEnforceSpec(cfg *RunConfig, gitCtx context.Context, workt
 		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
 	}
 	cfg.sandbox = enforceSpec(canonWorktree, gitMetadata, canonSandboxHome, canonTmp, sandboxTmpAlias(canonTmp), canonSharedCache, profilePath, "", gitRoots, gitOverlay)
+	if cfg.DisableVerifierControl {
+		clearProviderStateRoots(&cfg.sandbox)
+	}
 	if err := m.applySandboxReadMode(cfg); err != nil {
 		return err
 	}
@@ -624,6 +1056,17 @@ func (m *Manager) buildEnforceSpec(cfg *RunConfig, gitCtx context.Context, workt
 		"git_common", cfg.sandbox.gitCommonDir, "git_worktrees", cfg.sandbox.gitWorktrees,
 		"tool_cache", cfg.sandbox.toolCache, "profile", profilePath)
 	return nil
+}
+
+func clearProviderStateRoots(spec *sandboxSpec) {
+	spec.claudeState = ""
+	spec.codexState = ""
+	spec.copilotState = ""
+	spec.opencodeState = ""
+	spec.toolCache = ""
+	spec.appSupport = ""
+	spec.claudeScratch = ""
+	spec.stateDenied = nil
 }
 
 // injectReadOnlyProcessSandbox is injectProcessSandbox's variant for runs
@@ -1083,6 +1526,7 @@ func (m *Manager) applySandboxReadMode(cfg *RunConfig) error {
 // this restriction exists to close.
 var systemReadRoots = []string{
 	"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/var/lib", "/private/var/db",
+	"/System", "/Library", "/dev", "/private/var/select",
 }
 
 // toolchainReadSubdirs are home-relative roots that hold the language
@@ -1095,18 +1539,19 @@ var toolchainReadSubdirs = []string{
 	filepath.Join(".local", "bin"),
 	filepath.Join(".config", "mise"),
 	filepath.Join(".config", "go"),
-	filepath.Join(".config", "gh"),
+	filepath.Join("go", "bin"),
 }
+
+var githubReadSubdirs = []string{filepath.Join(".config", "gh")}
 
 // homeRootReadFiles sit directly in the operator home rather than under a
 // grantable directory, so granting only directories silently breaks them.
-// .claude.json holds the claude CLI's account state; without it the CLI
-// reports "Not logged in · Please run /login". .gitconfig carries the
-// credential helper that authenticates pushes.
-var homeRootReadFiles = []string{
-	".claude.json",
-	".gitconfig",
-}
+// .gitconfig carries the credential helper that authenticates pushes.
+var homeRootReadFiles = []string{".gitconfig"}
+
+// Provider agents need the account state in .claude.json; repository-owned
+// deterministic commands deliberately do not.
+var providerHomeRootReadFiles = []string{".claude.json"}
 
 // homeStateLinks are the provider state dirs as spelled in the home
 // directory. They are added *uncanonicalized*, in addition to their resolved
@@ -1164,11 +1609,21 @@ func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 		for _, sub := range toolchainReadSubdirs {
 			add(filepath.Join(home, sub))
 		}
-		for _, f := range homeRootReadFiles {
-			add(filepath.Join(home, f))
+		if !cfg.Role.IsVerifier() {
+			for _, sub := range githubReadSubdirs {
+				add(filepath.Join(home, sub))
+			}
+			for _, f := range homeRootReadFiles {
+				add(filepath.Join(home, f))
+			}
 		}
-		for _, l := range homeStateLinks {
-			add(filepath.Join(home, l))
+		if !cfg.DisableVerifierControl {
+			for _, f := range providerHomeRootReadFiles {
+				add(filepath.Join(home, f))
+			}
+			for _, l := range homeStateLinks {
+				add(filepath.Join(home, l))
+			}
 		}
 	}
 	add(cfg.sandbox.readOnlyDir)
@@ -1403,10 +1858,15 @@ func (m *Manager) registerRunningAgent(a *Agent, cfg RunConfig, cancel context.C
 	class := a.EffectiveRole().WorkloadClass()
 	m.mu.Lock()
 	reserved := false
-	if !cfg.IgnoreConcurrencyLimit && cfg.capacityReservation != nil && cfg.capacityReservation.manager == m {
+	if m.maxInFlightPerProvider > 0 && a.Provider != "" && m.liveByProvider[a.Provider] >= m.maxInFlightPerProvider {
+		m.mu.Unlock()
+		cancel()
+		return fmt.Errorf("%w: %s (%d)", ErrProviderCapacityReached, a.Provider, m.maxInFlightPerProvider)
+	}
+	if cfg.capacityReservation != nil && cfg.capacityReservation.manager == m {
 		reserved = cfg.capacityReservation.consumeLocked()
 	}
-	if !cfg.IgnoreConcurrencyLimit && !reserved && !admitClass(class, m.liveByClass, m.reservedByClass, m.classFloors, m.maxConcurrent) {
+	if !reserved && !admitClass(class, m.liveByClass, m.reservedByClass, m.classFloors, m.maxConcurrent) {
 		m.mu.Unlock()
 		cancel()
 		metrics.AgentClassRejected(string(class))
@@ -1422,13 +1882,7 @@ func (m *Manager) registerRunningAgent(a *Agent, cfg RunConfig, cancel context.C
 		m.liveByClass[class]++
 	}
 	m.mu.Unlock()
-	// Only count dispatches that actually passed through the capacity gate
-	// (!IgnoreConcurrencyLimit) and were capacity-tracked (a.done != nil, i.e.
-	// added to m.liveByClass). Interactive agents and gate-bypassing callers
-	// (monitor/loop/orchestrator/human-review set IgnoreConcurrencyLimit) never
-	// enter the class gauges, so folding them into "admitted"/"borrowed" would
-	// misreport class-isolation behavior for anyone debugging starvation.
-	if !cfg.IgnoreConcurrencyLimit && a.done != nil {
+	if a.done != nil {
 		metrics.AgentClassAdmitted(string(class))
 		if borrowed {
 			metrics.AgentClassBorrowed(string(class))
@@ -1461,6 +1915,7 @@ func (m *Manager) markAgentDone(ctx context.Context, a *Agent) {
 	}
 	a.doneOnce.Do(func() {
 		close(a.done)
+		m.completeAttempt(ctx, a, attemptTerminalOutcome(a))
 		if a.isDetached() {
 			reapProcessGroup(a.GetPID())
 		}

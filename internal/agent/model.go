@@ -105,7 +105,11 @@ type Agent struct {
 	AssignmentKey   string    `json:"assignmentKey,omitempty"`
 	// DecisionVersion is the routing-overlay generation (internal/routing)
 	// that set this run's variant weight, 0 when none applied.
-	DecisionVersion         int    `json:"decisionVersion,omitempty"`
+	DecisionVersion         int `json:"decisionVersion,omitempty"`
+	attemptIntent           AttemptIntent
+	attemptTaskGenKnown     bool
+	attemptLease            AttemptLease
+	attemptCompleteOnce     sync.Once
 	ReasoningEffort         string `json:"reasoningEffort,omitempty"`
 	RequestedSkill          string `json:"requestedSkill,omitempty"`
 	SkillExecutionMode      string `json:"skillExecutionMode,omitempty"`
@@ -502,6 +506,13 @@ func (a *Agent) toRecord() Record {
 		AssignmentUnit:          a.AssignmentUnit,
 		AssignmentKey:           a.AssignmentKey,
 		DecisionVersion:         a.DecisionVersion,
+		AttemptIntentID:         a.attemptIntent.IntentID,
+		AttemptTaskKey:          a.attemptIntent.TaskID,
+		AttemptTaskGen:          a.attemptIntent.TaskGeneration,
+		AttemptWorkGen:          a.attemptIntent.WorktreeGeneration,
+		AttemptAccess:           a.attemptIntent.Access,
+		AttemptLeaseID:          a.attemptLease.ID,
+		AttemptVersion:          a.attemptLease.Version,
 		PID:                     a.PID,
 		SessionID:               a.SessionID,
 		LogPath:                 a.LogPath,
@@ -540,20 +551,28 @@ func fromRecord(r Record) *Agent {
 		requestedModel = r.Model
 	}
 	a := &Agent{
-		ID:                      r.ID,
-		TaskID:                  r.TaskID,
-		Name:                    r.Name,
-		Role:                    r.Role,
-		Mode:                    r.Mode,
-		Provider:                r.Provider,
-		Model:                   r.Model,
-		RequestedModel:          requestedModel,
-		ExperimentID:            r.ExperimentID,
-		VariantID:               r.VariantID,
-		RoutingReason:           r.RoutingReason,
-		AssignmentUnit:          r.AssignmentUnit,
-		AssignmentKey:           r.AssignmentKey,
-		DecisionVersion:         r.DecisionVersion,
+		ID:              r.ID,
+		TaskID:          r.TaskID,
+		Name:            r.Name,
+		Role:            r.Role,
+		Mode:            r.Mode,
+		Provider:        r.Provider,
+		Model:           r.Model,
+		RequestedModel:  requestedModel,
+		ExperimentID:    r.ExperimentID,
+		VariantID:       r.VariantID,
+		RoutingReason:   r.RoutingReason,
+		AssignmentUnit:  r.AssignmentUnit,
+		AssignmentKey:   r.AssignmentKey,
+		DecisionVersion: r.DecisionVersion,
+		attemptIntent: AttemptIntent{
+			IntentID: r.AttemptIntentID, TaskID: firstNonEmpty(r.AttemptTaskKey, r.TaskID),
+			TaskGeneration: r.AttemptTaskGen, Worktree: r.CWD,
+			WorktreeGeneration: r.AttemptWorkGen, Access: r.AttemptAccess,
+			Role: r.Role, Provider: r.Provider, CapabilityCertified: true,
+		},
+		attemptTaskGenKnown:     r.AttemptTaskKey != "",
+		attemptLease:            AttemptLease{ID: r.AttemptLeaseID, Version: r.AttemptVersion},
 		PID:                     r.PID,
 		SessionID:               r.SessionID,
 		LogPath:                 r.LogPath,
@@ -623,6 +642,15 @@ func (a *Agent) EffectiveRole() Role {
 		return role
 	}
 	return RoleFromName(name)
+}
+
+// SandboxHomeDir returns the trusted sandbox home resolved before this agent
+// started. Completion uses it to revoke the corresponding verifier grant
+// without trusting any verifier-writable credential file.
+func (a *Agent) SandboxHomeDir() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.sandboxHomeDir
 }
 
 // MarkStopped records that the agent was stopped intentionally via StopAgent.
@@ -1152,6 +1180,18 @@ func (a *Agent) GetSubagentCallCount() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.SubagentCallCount
+}
+
+// GetAttemptTaskGeneration returns the generation fenced into this run's
+// durable admission intent. Every newly launched task run has known=true,
+// including the valid zero generation; legacy reattached records do not.
+func (a *Agent) GetAttemptTaskGeneration() (generation uint64, known bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if !a.attemptTaskGenKnown {
+		return 0, false
+	}
+	return a.attemptIntent.TaskGeneration, true
 }
 
 // NoteToolSignature feeds the next assistant event's tool-call signature into
@@ -1946,6 +1986,10 @@ type RunConfig struct {
 	Role   Role
 	Mode   string // "headless", "interactive", or "conversational"
 	Prompt string
+	// BeforeStart runs after the agent identity is allocated but before it is
+	// registered or any provider goroutine can emit completion. Lifecycle
+	// owners use it to durably bind resources to the exact agent ID.
+	BeforeStart func(agentID string) error
 	// AllowedTools is honoured only by providers whose HonorsAllowedTools()
 	// reports true — claude alone today. Elsewhere it is silently ignored, and
 	// warnUnenforceableAllowedTools says so at dispatch, since ab/cross choose
@@ -1953,6 +1997,16 @@ type RunConfig struct {
 	// only the OS-level sandbox binds a run on every provider.
 	AllowedTools []string
 	Dir          string
+	// IntentID makes a dispatch replay idempotent. TaskGeneration and
+	// WorktreeGeneration fence stale schedulers/recovery workers; zero is a
+	// valid legacy generation. AttemptAccess selects mutation or observation;
+	// ReadOnlyDir also forces observation so a sandbox-read-only run can never
+	// acquire mutation ownership.
+	IntentID           string
+	AdmissionTaskKey   string
+	AttemptAccess      AttemptAccess
+	TaskGeneration     uint64
+	WorktreeGeneration uint64
 	// ReadOnlyDir, when true, tells injectProcessSandbox to never add Dir (or
 	// its git metadata) to the sandbox's writable roots under enforce, and to
 	// additionally re-bind Dir read-only as the last bind in the sandbox
@@ -1981,9 +2035,11 @@ type RunConfig struct {
 	// agents sit in StatePaused forever and onComplete never fires, stranding
 	// any workflow that expects the agent to "finish". Ignored in headless mode.
 	OneShot bool
-	// IgnoreConcurrencyLimit lets an agent start even when MaxConcurrent is
-	// saturated. Reserved for operator-present interactive/chat sessions and
-	// system-level runs that must never sit behind the headless swarm queue.
+	// IgnoreConcurrencyLimit is retained only for decoding legacy callers.
+	// Admission intentionally ignores it: every provider attempt, including
+	// system work, participates in the same hard global/provider limits.
+	//
+	// Deprecated: no production caller may set this field.
 	IgnoreConcurrencyLimit bool
 	// IgnoreHealthGate lets an agent start even when the provider health gate
 	// marks the requested provider as unhealthy. Reserved for internal probes
@@ -2011,6 +2067,12 @@ type RunConfig struct {
 	// any caller-supplied entry for those two keys is stripped before the
 	// trusted values are appended, so it cannot override them.
 	ExtraEnv []string
+	// EphemeralSandboxHome overrides the ordinary per-task sandbox home for a
+	// disposable local verification command. The verification lease owns it.
+	EphemeralSandboxHome string
+	// DisableVerifierControl withholds the task mutation credential from local
+	// deterministic checks, whose admission certificate has no such capability.
+	DisableVerifierControl bool
 	// MaxTurns overrides the global guardrail for this specific agent run.
 	// Zero means "use the manager's global guardrail".
 	MaxTurns int

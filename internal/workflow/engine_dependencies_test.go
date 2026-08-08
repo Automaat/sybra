@@ -2,10 +2,12 @@ package workflow
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/reconcile"
 )
 
 func TestNewEngineRejectsIncompleteDependencies(t *testing.T) {
@@ -21,6 +23,8 @@ func TestNewEngineRejectsIncompleteDependencies(t *testing.T) {
 	for _, want := range []string{
 		"Store", "Tasks", "Agents", "Logger", "PR.Linker",
 		"Execution.Worktrees", "Execution.Classifier", "Execution.AttemptWorktrees",
+		"Execution.Verification", "Execution.VerificationCommands",
+		"Execution.PostRun",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name missing %s", err, want)
@@ -98,21 +102,40 @@ func (stubExecutionSurface) PromoteAttempt(string, string, string) (string, erro
 	return "", nil
 }
 func (stubExecutionSurface) CleanupAttempts(string, []string) {}
+func (stubExecutionSurface) PrepareVerification(context.Context, string, string, string) (VerificationWorkspace, error) {
+	return VerificationWorkspace{}, nil
+}
+func (stubExecutionSurface) FinalizeVerification(context.Context, VerificationWorkspace, []string, string) error {
+	return nil
+}
+func (stubExecutionSurface) ValidateVerification(context.Context, VerificationWorkspace) error {
+	return nil
+}
+func (stubExecutionSurface) ReleaseVerification(VerificationWorkspace) {}
+func (stubExecutionSurface) RunVerificationCommand(context.Context, string, string, string, []string, io.Writer) error {
+	return nil
+}
+func (stubExecutionSurface) Reconcile(context.Context, reconcile.Request) (reconcile.Plan, error) {
+	return reconcile.Plan{Action: reconcile.ActionAdvance, DeliverRunOutcome: true}, nil
+}
 
 func completeDependencies() Dependencies {
 	execution := stubExecutionSurface{}
 	return Dependencies{
 		PR: completePRSurface(),
 		Execution: ExecutionSurface{
-			Worktrees:        execution,
-			SidecarDir:       func(string) (string, error) { return "", nil },
-			AttemptNotes:     execution,
-			BranchSyncer:     execution,
-			Checks:           execution,
-			ManualTests:      execution,
-			Classifier:       execution,
-			CostBudget:       execution,
-			AttemptWorktrees: execution,
+			Worktrees:            execution,
+			SidecarDir:           func(string) (string, error) { return "", nil },
+			AttemptNotes:         execution,
+			BranchSyncer:         execution,
+			Checks:               execution,
+			ManualTests:          execution,
+			Classifier:           execution,
+			CostBudget:           execution,
+			AttemptWorktrees:     execution,
+			Verification:         execution,
+			VerificationCommands: execution,
+			PostRun:              execution,
 		},
 	}
 }

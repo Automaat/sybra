@@ -132,6 +132,21 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 	}
 }
 
+func TestWrapInvocation_Linux_DetachedHeadStillSyncsObjects(t *testing.T) {
+	cfg := &RunConfig{sandbox: sandboxSpec{
+		mode: "enforce", worktree: "/data/verification/source", sandboxHome: "/data/verification/scratch",
+		gitObjectDir: "/data/verification/source/.git/objects", gitOverlayObjectDir: "/data/verification/scratch/.sybra-git-overlay/objects",
+	}}
+	name, args := wrapInvocation("git", []string{"commit", "-m", "fixture"}, cfg)
+	if name != "/bin/sh" {
+		t.Fatalf("detached-head object sync wrapper = %q, want /bin/sh", name)
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "sync_git_objects") {
+		t.Fatalf("detached-head command does not publish overlay objects: %s", joined)
+	}
+}
+
 // TestInjectProcessSandbox_ReadOnlyDirNeverBindsDirWritable pins the
 // human-review fix: a run whose Dir is a diagnostic-only checkout (e.g. the
 // Sybra deploy/build source, not a task worktree) must never get that Dir

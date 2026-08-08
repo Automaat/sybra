@@ -207,14 +207,13 @@ func (s *OrchestratorService) StartOrchestratorContext(ctx context.Context) erro
 	}
 
 	a, err := s.agents.RunContext(ctx, s.agents.ApplyABVariant(agent.RunConfig{
-		Name:                   orchestratorAgentName,
-		Role:                   agent.RoleOrchestrator,
-		Mode:                   "headless",
-		Dir:                    config.HomeDir(),
-		ReadOnlyDir:            true,
-		Prompt:                 orchestratorKickoffPrompt,
-		IgnoreConcurrencyLimit: true,
-		IsolateHome:            true,
+		Name:        orchestratorAgentName,
+		Role:        agent.RoleOrchestrator,
+		Mode:        "headless",
+		Dir:         config.HomeDir(),
+		ReadOnlyDir: true,
+		Prompt:      orchestratorKickoffPrompt,
+		IsolateHome: true,
 	}, s.abTesting, orchestratorABKey(), orchestratorRole))
 	if err != nil {
 		return fmt.Errorf("start orchestrator agent: %w", err)

@@ -942,6 +942,26 @@ func (m *memTasks) SetWorkflowIf(id string, fence WorkflowWriteFence, wf *Execut
 	return true, nil
 }
 
+func (m *memTasks) SetStatusAndWorkflowIf(id string, fence WorkflowWriteFence, status taskstatus.Status, reason string, wf *Execution) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return false, fmt.Errorf("task %s not found", id)
+	}
+	if t.Generation != fence.Generation || t.Status != fence.Status ||
+		t.StatusReason != fence.StatusReason || t.Workflow == nil ||
+		t.Workflow.WorkflowID != fence.WorkflowID || t.Workflow.CurrentStep != fence.CurrentStep ||
+		t.Workflow.State != fence.State {
+		return false, nil
+	}
+	t.Status = status
+	t.StatusReason = reason
+	m.reasons[id] = reason
+	t.Workflow = wf.Clone()
+	return true, nil
+}
+
 func (m *memTasks) ClaimWorkflowEffect(id string, claim EffectClaim) (EffectClaimResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

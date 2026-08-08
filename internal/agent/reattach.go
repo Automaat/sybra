@@ -63,24 +63,36 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 	var out []*Agent
 	for i := range recs {
 		r := recs[i]
-		if r.Mode != "headless" {
+		if m.reapUnsupportedSurvivor(ctx, r, reg) {
 			// Legacy interactive/per-turn-convo records can only exist for an
 			// agent that was mid-flight when this steerable-headless-only binary
 			// was deployed. Their runner no longer exists, so the record can
 			// never be reattached — reap the orphaned process (which still holds
 			// the worktree lock/FIFO) and drop the record instead of skipping it
 			// silently and leaking it forever.
-			m.reapStaleSurvivor(r, reg, "legacy_mode_"+r.Mode)
 			continue
 		}
 		if !reattachAlive(r) { //nolint:contextcheck // liveness probe is context-free process inspection
+			// A detached leader may be gone while an inherited provider/tool
+			// child still occupies its process group. Confirm the entire original
+			// group is gone before terminal reconciliation releases ownership.
+			// If the PID was reused, the old process group cannot still reserve
+			// that numeric ID; do not signal the unrelated replacement process.
+			if !m.confirmDeadAttemptGroup(ctx, r) {
+				continue
+			}
 			// Process gone. If it finished its work before vanishing,
 			// finalize so the workflow advances instead of re-running it.
 			// Otherwise (a genuine crash), bridge its captured session id to
 			// the task so restart-stale recovery resumes instead of redoing.
 			// Retain the record (skip delete) when the bridge fails so a later
 			// startup retries it rather than losing the session permanently.
-			if m.finalizeIfCompleted(r) || m.persistDeadSession(r) {
+			completed := m.finalizeIfCompleted(r)
+			if completed || m.persistDeadSession(r) {
+				if !completed {
+					a := fromRecord(r)
+					m.completeAttempt(ctx, a, "lost")
+				}
 				_ = reg.Delete(r.ID)
 				m.logger.Info("agent.reattach.dead", "id", r.ID, "pid", r.PID, "task", r.TaskID)
 			} else {
@@ -91,8 +103,31 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 
 		decision := m.reattachDecide(r, time.Now().UTC())
 		if decision.reason != "" {
-			m.reapStaleSurvivor(r, reg, decision.reason)
+			m.reapStaleSurvivor(ctx, r, reg, decision.reason)
 			continue
+		}
+		intent := attemptIntentFromRecord(r)
+		adoptedLease, err := m.adoptAttempt(ctx, r, intent)
+		if err != nil {
+			m.logger.Warn("agent.reattach.admission", "id", r.ID, "task", r.TaskID, "err", err)
+			continue
+		}
+		if adoptedLease.ID != "" {
+			r.AttemptIntentID = intent.IntentID
+			r.AttemptTaskKey = intent.TaskID
+			r.AttemptTaskGen = intent.TaskGeneration
+			r.AttemptWorkGen = intent.WorktreeGeneration
+			r.AttemptAccess = intent.Access
+			r.AttemptLeaseID = adoptedLease.ID
+			r.AttemptVersion = adoptedLease.Version
+			if err := reg.Save(r); err != nil {
+				m.logger.Warn("agent.reattach.lease-save", "id", r.ID, "task", r.TaskID, "err", err)
+				// Fail closed: the observed process is still live, so releasing its
+				// newly adopted lease here would permit a duplicate mutator. Keep
+				// ownership occupied for reconciliation even though this instance
+				// cannot safely expose the run.
+				continue
+			}
 		}
 
 		a := fromRecord(r)
@@ -129,11 +164,43 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 		m.mu.Unlock()
 
 		m.logger.Info("agent.reattach", "id", a.ID, "pid", a.PID, "task", a.TaskID, "events", len(a.Output()))
+		m.startAttemptHeartbeat(ctx, a)
 		go m.reattachHeadless(ctx, a, startOffset, r.ProcStartedAt)
 		m.emit(events.AgentState(a.ID), a)
 		out = append(out, a)
 	}
 	return out
+}
+
+func (m *Manager) reapUnsupportedSurvivor(ctx context.Context, r Record, reg survivalRegistry) bool {
+	if r.Mode == "headless" {
+		return false
+	}
+	reason := "legacy_mode_" + r.Mode
+	if !reattachAlive(r) { //nolint:contextcheck // liveness probe is context-free process inspection
+		if m.confirmDeadAttemptGroup(ctx, r) {
+			m.finalizeReapedSurvivor(ctx, r, reg, reason)
+		}
+		return true
+	}
+	m.reapStaleSurvivor(ctx, r, reg, reason)
+	return true
+}
+
+func (m *Manager) confirmDeadAttemptGroup(ctx context.Context, r Record) bool {
+	if recordPIDReused(ctx, r) || signalProcessGroupAndWait(r.PID, stopSIGINTGrace) {
+		return true
+	}
+	m.logger.Error("agent.reattach.dead_group_unconfirmed", "id", r.ID, "pid", r.PID, "task", r.TaskID)
+	return false
+}
+
+func recordPIDReused(ctx context.Context, r Record) bool {
+	if r.PID <= 0 || r.ProcStartedAt == "" || !processAlive(r.PID) {
+		return false
+	}
+	current := processStartString(ctx, r.PID)
+	return current != "" && current != r.ProcStartedAt
 }
 
 // finalizeIfCompleted recovers a run whose process is gone but whose log
@@ -589,9 +656,17 @@ func ParksLiveAgent(status string) bool {
 	}
 }
 
-func (m *Manager) reapStaleSurvivor(r Record, reg survivalRegistry, reason string) {
+func (m *Manager) reapStaleSurvivor(ctx context.Context, r Record, reg survivalRegistry, reason string) {
 	m.logger.Warn("agent.reattach.reap", "id", r.ID, "pid", r.PID, "task", r.TaskID, "reason", reason)
-	signalPID(r.PID, stopSIGINTGrace)
+	if !signalPIDAndWait(r.PID, stopSIGINTGrace) {
+		m.logger.Error("agent.reattach.reap_unconfirmed", "id", r.ID, "pid", r.PID, "task", r.TaskID)
+		return
+	}
+	m.finalizeReapedSurvivor(ctx, r, reg, reason)
+}
+
+func (m *Manager) finalizeReapedSurvivor(ctx context.Context, r Record, reg survivalRegistry, reason string) {
+	m.completeAttempt(ctx, fromRecord(r), "reaped_"+reason)
 	if err := reg.Delete(r.ID); err != nil {
 		m.logger.Warn("agent.reattach.reap.delete", "id", r.ID, "err", err)
 	}
