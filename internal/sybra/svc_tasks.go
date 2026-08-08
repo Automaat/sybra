@@ -235,7 +235,7 @@ func (s *TaskService) UploadAttachment(taskID, fileName string, data []byte) (ta
 func (s *TaskService) ListAttachments(taskID string) ([]task.Attachment, error) {
 	t, err := s.tasks.Get(taskID)
 	if err != nil {
-		return nil, err
+		return nil, boardRejectionFor("task", taskID, err)
 	}
 	if t.Attachments == nil {
 		return []task.Attachment{}, nil
@@ -272,7 +272,7 @@ func (s *TaskService) GetAttachmentURL(taskID, attachmentID string) (string, err
 	}
 	t, err := s.tasks.Get(taskID)
 	if err != nil {
-		return "", err
+		return "", boardRejectionFor("task", taskID, err)
 	}
 	idx := slices.IndexFunc(t.Attachments, func(att task.Attachment) bool { return att.ID == attachmentID })
 	if idx < 0 {
@@ -296,7 +296,7 @@ func (s *TaskService) ListTaskArtifacts(taskID string) ([]TaskArtifactDTO, error
 	}
 	metas, err := s.artifacts.List(taskID)
 	if err != nil {
-		return nil, err
+		return nil, boardRejectionFor("task", taskID, err)
 	}
 	out := make([]TaskArtifactDTO, 0, len(metas))
 	for i := range metas {
@@ -395,7 +395,7 @@ func (s *TaskService) GetTamperReport(taskID string) (TamperReportDTO, error) {
 		if isMissingArtifactError(err) {
 			return emptyTamperReport(taskID), nil
 		}
-		return TamperReportDTO{}, err
+		return TamperReportDTO{}, boardRejectionFor("task", taskID, err)
 	}
 	var report TamperReportDTO
 	if err := json.Unmarshal(data, &report); err != nil {
@@ -420,7 +420,7 @@ func (s *TaskService) ListTaskProgress(taskID string) ([]artifact.ProgressEntry,
 	}
 	entries, err := s.artifacts.ReadProgress(taskID)
 	if err != nil {
-		return nil, err
+		return nil, boardRejectionFor("task", taskID, err)
 	}
 	if entries == nil {
 		return []artifact.ProgressEntry{}, nil
@@ -459,7 +459,7 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 		defer s.followerStatusMu.Unlock()
 		current, err := s.tasks.Get(taskID)
 		if err != nil {
-			return task.Task{}, err
+			return task.Task{}, boardRejectionFor("task", taskID, err)
 		}
 		ctx, cancel := context.WithTimeout(s.recoveryCtx(), fieldPushTimeout)
 		defer cancel()
@@ -762,7 +762,13 @@ func (s *TaskService) RecoverLostAgent(taskID string) error {
 		return validationError("task id is required")
 	}
 	if s.recoverLostAgent == nil {
-		return errors.New("lost-agent recovery unavailable")
+		return unavailableError("lost-agent recovery unavailable")
+	}
+	// Resolve the task first. The writes below log and continue on failure,
+	// so without this an unusable id reached recovery as though it named a
+	// real task, and the caller's mistake came back as a server fault.
+	if _, err := s.tasks.Get(taskID); err != nil {
+		return boardRejectionFor("task", taskID, err)
 	}
 	reason := "monitor: agent lost; recovery will resume"
 	if _, err := s.tasks.Update(taskID, task.Update{StatusReason: &reason}); err != nil && s.logger != nil {

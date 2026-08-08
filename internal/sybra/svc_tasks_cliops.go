@@ -150,7 +150,7 @@ func (s *TaskService) ReindexTaskArtifacts(taskID string) error {
 	if s.artifacts == nil {
 		return unavailableError("artifact store unavailable")
 	}
-	return s.artifacts.Reindex(taskID)
+	return boardRejectionFor("task", taskID, s.artifacts.Reindex(taskID))
 }
 
 // TaskHistoryEntryDTO is one commit in the task snapshot history.

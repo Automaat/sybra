@@ -9,7 +9,6 @@ import (
 
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/project"
-	"github.com/Automaat/sybra/internal/reject"
 	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -21,30 +20,22 @@ import (
 // never reads that file. Every board command therefore has to be expressible
 // as a server call; these are the ones the GUI never needed.
 
-// boardRejection re-labels a refusal so the operator reads its reason.
+// boardRejection re-labels the two transition sentinels as collisions.
 //
-// The HTTP handler sanitizes an unrecognized error to "internal error" on
-// purpose: the store's failures wrap an *fs.PathError or format an absolute
-// path into the message, and neither may reach a client. Only the errors the
-// store marks as a refusal of the request, plus the two transition sentinels,
-// are known to be path-free, so only those are relabelled. Anything else is
-// returned untouched and stays a 500.
+// Errors built by internal/reject need nothing here: they carry their own
+// HTTP status, so the handler surfaces them wherever they are returned. These
+// two are plain sentinels from the transition gate, and relabelling them is
+// the only case left that a service has to ask for.
 func boardRejection(err error) error {
-	switch {
-	case err == nil:
-		return nil
-	case reject.IsConflict(err):
-		return conflictError(err.Error())
-	case reject.Is(err):
-		return validationError(err.Error())
-	case errors.Is(err, task.ErrTransitionConflict), errors.Is(err, task.ErrIllegalTransition):
+	if errors.Is(err, task.ErrTransitionConflict) || errors.Is(err, task.ErrIllegalTransition) {
 		return conflictError(err.Error())
 	}
 	return err
 }
 
-// boardRejectionFor is boardRejection plus the missing-record case, which
-// needs the identifier the caller already holds.
+// boardRejectionFor is boardRejection plus the missing-record case, which is
+// the one mapping that cannot be automatic: it needs the identifier the caller
+// supplied.
 //
 // The stores answer a miss with an error naming the absolute path they looked
 // at, and the handler therefore flattens it to a bare "not found". That leaves

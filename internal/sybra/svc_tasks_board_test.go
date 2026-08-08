@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -465,4 +466,79 @@ func TestBoardEndpoints_EnvelopeCodeMatchesTheStatus(t *testing.T) {
 	if strings.Contains(body, "validation_error") {
 		t.Errorf("body %s reports a missing id as malformed input", body)
 	}
+}
+
+// TestHTTPSurface_NeverSanitizesACallerMistake walks the real allowlist rather
+// than a list written by hand.
+//
+// Four adversarial passes found the same defect — a caller's own bad argument
+// coming back as "internal error" — each time at an endpoint the previous fix
+// had not enumerated. Marking the validations at their source fixed the ones
+// that reached the mapper; these two did not reach it at all. Enumerating
+// endpoints is what kept failing, so this walks every allowlisted method whose
+// arguments are all strings, feeds each a path-traversal id, and holds the
+// whole surface to the contract at once. A new endpoint that forgets to map
+// its errors fails here rather than in an operator's terminal.
+func TestHTTPSurface_NeverSanitizesACallerMistake(t *testing.T) {
+	t.Parallel()
+	svc, a := setupTaskService(t)
+	svc.artifacts = artifact.New(t.TempDir())
+	a.taskSvc = svc
+	projects, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("project.NewStore: %v", err)
+	}
+	svc.projects = projects
+	a.projectSvc = &ProjectService{projects: projects, logger: slog.New(slog.DiscardHandler)}
+
+	const traversal = "../../etc/passwd"
+	registry := ServiceRegistry(a)
+	checked := 0
+	for _, serviceName := range []string{"TaskService", "ProjectService"} {
+		service, ok := registry[serviceName]
+		if !ok {
+			t.Fatalf("%s missing from the registry", serviceName)
+		}
+		impl := reflect.ValueOf(service.Impl)
+		for _, methodName := range service.Methods() {
+			method := impl.MethodByName(methodName)
+			if !method.IsValid() {
+				continue
+			}
+			args, ok := allStringArgs(method.Type(), traversal)
+			if !ok {
+				continue
+			}
+			checked++
+			t.Run(serviceName+"."+methodName, func(t *testing.T) {
+				status, body := postAPI(t, a, serviceName, methodName, args...)
+				if status == http.StatusInternalServerError {
+					t.Errorf("a path-traversal argument came back as a server fault: %s", body)
+				}
+				if strings.Contains(body, "internal error") {
+					t.Errorf("body %s sanitized the caller's own mistake", body)
+				}
+			})
+		}
+	}
+	if checked == 0 {
+		t.Fatal("walked no methods; the registry or the signature filter is wrong")
+	}
+}
+
+// allStringArgs reports the call arguments for a method taking only strings.
+// Anything else is skipped rather than guessed at, so the walk stays honest
+// about what it covered.
+func allStringArgs(sig reflect.Type, value string) ([]any, bool) {
+	if sig.NumIn() == 0 {
+		return nil, false
+	}
+	args := make([]any, 0, sig.NumIn())
+	for in := range sig.Ins() {
+		if in.Kind() != reflect.String {
+			return nil, false
+		}
+		args = append(args, value)
+	}
+	return args, true
 }

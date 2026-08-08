@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"sort"
 )
 
 // MaxRequestBody caps the size of a single API request body. Sybra service
@@ -50,6 +51,18 @@ func NewService(impl any, methods ...string) Service {
 		m[name] = MethodMeta{}
 	}
 	return Service{Impl: impl, methods: m}
+}
+
+// Methods returns the allowlisted method names. Exposed so a test can walk
+// the real HTTP surface instead of a hand-maintained copy of it, which is how
+// a newly added endpoint gets held to the same contract as its siblings.
+func (s Service) Methods() []string {
+	out := make([]string, 0, len(s.methods))
+	for name := range s.methods {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // WithReadOnly marks the named allowlisted methods as read-only.

@@ -471,7 +471,7 @@ func (s *Store) SetSetupCommands(id string, cmds []string) (Project, error) {
 // ref must be WorktreeBaseRefFresh or WorktreeBaseRefHead.
 func (s *Store) SetWorktreeBaseRef(id, ref string) (Project, error) {
 	if ref != WorktreeBaseRefFresh && ref != WorktreeBaseRefHead {
-		return Project{}, fmt.Errorf("invalid worktree_base_ref %q (must be %q or %q)", ref, WorktreeBaseRefFresh, WorktreeBaseRefHead)
+		return Project{}, reject.New("invalid worktree_base_ref %q (must be %q or %q)", ref, WorktreeBaseRefFresh, WorktreeBaseRefHead)
 	}
 	unlock, err := s.lock(id)
 	if err != nil {

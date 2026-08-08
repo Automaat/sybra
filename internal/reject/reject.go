@@ -11,6 +11,7 @@ package reject
 import (
 	"errors"
 	"fmt"
+	"net/http"
 )
 
 // Error is a refusal of the caller's request. Conflict distinguishes a
@@ -24,6 +25,22 @@ type Error struct {
 func (e *Error) Error() string { return e.err.Error() }
 
 func (e *Error) Unwrap() error { return e.err }
+
+// HTTPStatus satisfies the HTTP layer's client-error interface, which is what
+// makes this mapping a property of the boundary rather than of each endpoint.
+//
+// Every service method that returns, or wraps, a refusal surfaces its reason
+// with the right status without doing anything: no call to a mapper, no
+// knowledge of HTTP. That is deliberate. Four rounds of adversarial testing
+// found the same defect — a caller's own bad argument answered as "internal
+// error" — each time at an endpoint whose author had not known to route the
+// error, so the routing stopped being something an author can forget.
+func (e *Error) HTTPStatus() int {
+	if e.Conflict {
+		return http.StatusConflict
+	}
+	return http.StatusBadRequest
+}
 
 // New builds a refusal with the given message.
 func New(format string, a ...any) error {

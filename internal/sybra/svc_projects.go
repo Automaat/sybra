@@ -181,6 +181,9 @@ func (s *ProjectService) DeleteProject(id string) error {
 
 // ListWorktrees returns all git worktrees for the given project's bare clone.
 func (s *ProjectService) ListWorktrees(projectID string) ([]project.Worktree, error) {
+	if s.worktrees == nil {
+		return nil, unavailableError("worktrees unavailable")
+	}
 	// context.Background(): Wails-bound method with no ctx.
 	return s.worktrees.List(context.Background(), projectID)
 }
