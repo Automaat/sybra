@@ -50,6 +50,8 @@ import (
 // in sync without an import cycle.
 var hookTaskIDRe = regexp.MustCompile(`^[a-zA-Z0-9._/-]+$`)
 
+var incidentFingerprintRe = regexp.MustCompile(`^incident:[0-9a-f]{24}$`)
+
 var (
 	loadCLIConfig        = config.Load
 	loadCLIConfigLenient = config.LoadLenient
@@ -2480,6 +2482,9 @@ func cmdMonitorMapDuplicates(cfg *config.Config, args []string, jsonOut bool) in
 	}
 	if *fingerprint == "" || *issuesCSV == "" || strings.TrimSpace(*coverage) == "" {
 		return fatal(jsonOut, "usage: monitor map-duplicates --fingerprint ID --issues N[,N] --coverage TEXT")
+	}
+	if !incidentFingerprintRe.MatchString(*fingerprint) {
+		return fatal(jsonOut, "monitor map-duplicates: invalid incident fingerprint")
 	}
 	var duplicates []int
 	for raw := range strings.SplitSeq(*issuesCSV, ",") {

@@ -234,6 +234,21 @@ func TestMonitorMapDuplicatesRejectsCanonicalIssue(t *testing.T) {
 	}
 }
 
+func TestMonitorMapDuplicatesRejectsUnsafeFingerprint(t *testing.T) {
+	setupStore(t)
+	for _, fingerprint := range []string{
+		"../outside",
+		"incident:../../outside",
+		"incident:ABCDEF0123456789ABCDEF01",
+		"incident:abc",
+	} {
+		code, _ := runCLIStderr(t, "monitor", "map-duplicates", "--fingerprint", fingerprint, "--issues", "1", "--coverage", "covered")
+		if code == 0 {
+			t.Errorf("unsafe fingerprint %q was accepted", fingerprint)
+		}
+	}
+}
+
 // runCLIStderr mirrors runCLI but only the exit code matters for error
 // assertions; stderr is suppressed during the test run.
 func runCLIStderr(t *testing.T, args ...string) (exitCode int, stdout string) {
