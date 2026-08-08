@@ -1,6 +1,13 @@
 package workflow
 
-import "time"
+import (
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/taskstatus"
+)
 
 const (
 	watchdogHangRetryVarPrefix      = "watchdog.hang_retry."
@@ -53,10 +60,61 @@ const (
 	// freed space, or the branch may have moved) so ResumeStalled gets a
 	// bounded number of automatic re-attempts before the task is marked
 	// Exhausted and left for an operator, mirroring the watchdog-stop budget.
-	worktreeRepairRetryVarPrefix   = "worktree_repair.retry."
-	maxWorktreeRepairRetries       = 2
-	circuitBreakerFailureVarPrefix = "circuit_breaker.failures."
-	circuitBreakerFirstVarPrefix   = "circuit_breaker.first_failure."
-	maxCircuitBreakerFailures      = 3
-	circuitBreakerWindow           = 15 * time.Minute
+	worktreeRepairRetryVarPrefix          = "worktree_repair.retry."
+	maxWorktreeRepairRetries              = 2
+	circuitBreakerFailureVarPrefix        = "circuit_breaker.failures."
+	circuitBreakerFirstVarPrefix          = "circuit_breaker.first_failure."
+	maxCircuitBreakerFailures             = 3
+	circuitBreakerWindow                  = 15 * time.Minute
+	workflowDefinitionSnapshotMissingCode = "workflow_definition_snapshot_missing"
 )
+
+var errWorkflowDefinitionSnapshotUnavailable = errors.New("workflow definition snapshot unavailable")
+
+func (e *Engine) resolveExecutionDefinition(taskID string, t TaskInfo) (Definition, error) {
+	if t.Workflow == nil || t.Workflow.WorkflowID == "" {
+		return Definition{}, fmt.Errorf("task %s has no active workflow", taskID)
+	}
+	def, err := e.store.Get(t.Workflow.WorkflowID)
+	if err != nil {
+		return Definition{}, err
+	}
+	if t.Workflow.DefinitionHash == "" {
+		return def, nil
+	}
+	liveHash, err := def.SemanticHash()
+	if err != nil {
+		return Definition{}, err
+	}
+	if liveHash == t.Workflow.DefinitionHash {
+		return def, nil
+	}
+	snapshot, err := e.store.GetSnapshot(t.Workflow.WorkflowID, t.Workflow.DefinitionHash)
+	if err == nil {
+		return snapshot, nil
+	}
+	reason := "Workflow definition snapshot for " + t.Workflow.WorkflowID + " (" + t.Workflow.DefinitionHash +
+		") is missing or unreadable. Restore the snapshot or restart the task on the latest workflow definition."
+	if blockerErr := e.tasks.UpdateTaskBlocker(taskID, taskstatus.HumanRequired, reason, blocker.State{
+		Kind:       blocker.KindOperatorDecision,
+		Actor:      blocker.ActorWorkflow,
+		Code:       workflowDefinitionSnapshotMissingCode,
+		NextAction: "Restore the workflow snapshot or restart the task on the latest definition.",
+	}); blockerErr != nil {
+		return Definition{}, fmt.Errorf("set workflow definition blocker: %w", blockerErr)
+	}
+	failed := t.Workflow.Clone()
+	if failed == nil {
+		return Definition{}, fmt.Errorf("fail workflow after snapshot loss: task %s lost active workflow", taskID)
+	}
+	failed.State = ExecFailed
+	if setErr := e.tasks.SetWorkflow(taskID, failed); setErr != nil {
+		return Definition{}, fmt.Errorf("fail workflow after snapshot loss: %w", setErr)
+	}
+	e.logger.Warn("workflow.definition-snapshot.unavailable",
+		"task_id", taskID,
+		"workflow_id", t.Workflow.WorkflowID,
+		"definition_hash", t.Workflow.DefinitionHash,
+		"err", err)
+	return Definition{}, fmt.Errorf("%w: %s", errWorkflowDefinitionSnapshotUnavailable, reason)
+}

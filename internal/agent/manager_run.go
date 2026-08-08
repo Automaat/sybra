@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"math/rand/v2"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -62,11 +64,20 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 	if err != nil {
 		return nil, err
 	}
+	if err := m.certifyPreparedRun(ctx, cfg, prov.Name()); err != nil {
+		return nil, err
+	}
 
 	id := uuid.NewString()[:8]
 	ctx, cancel := context.WithCancel(ctx)
 	a := newRunningAgent(id, cfg, prov, cancel)
 	a.SetToolCallRecorder(m.recordToolCall)
+	if cfg.BeforeStart != nil {
+		if err := cfg.BeforeStart(id); err != nil {
+			cancel()
+			return nil, fmt.Errorf("agent.Run: before start: %w", err)
+		}
+	}
 	cfg = injectProcessOwnerEnv(cfg, processOwnerForAgent(a))
 	if m.survives() && willDetach(cfg) {
 		a.setDetached(true)
@@ -85,6 +96,52 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 
 	m.emit(events.AgentState(id), a)
 	return a, nil
+}
+
+func (m *Manager) certifyPreparedRun(ctx context.Context, cfg RunConfig, providerName string) error {
+	m.mu.RLock()
+	preflight := m.runEnvironmentPreflight
+	m.mu.RUnlock()
+	if preflight == nil {
+		return nil
+	}
+	return preflight(ctx, RunEnvironment{
+		TaskID: cfg.TaskID, Role: cfg.Role, Dir: cfg.Dir, ReadOnlyPaths: slices.Clone(cfg.ReadOnlyPaths), Provider: providerName,
+		SandboxMode:  cfg.SandboxMode,
+		ScratchRoots: preparedScratchRoots(cfg),
+	})
+}
+
+func preparedScratchRoots(cfg RunConfig) []string {
+	roots := []string{
+		cfg.resolvedSandboxHome,
+		os.TempDir(),
+		sharedBuildCacheDir(),
+		buildcache.TaskGoBuildDir(cfg.TaskID),
+		buildcache.SharedGoModDir(),
+		buildcache.SharedNPMDir(),
+	}
+	if cfg.resolvedSandboxHome != "" {
+		roots = append(roots, filepath.Join(cfg.resolvedSandboxHome, "golangci-lint-cache"))
+	}
+	return compactPaths(roots)
+}
+
+func compactPaths(paths []string) []string {
+	seen := make(map[string]struct{}, len(paths))
+	result := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		result = append(result, path)
+	}
+	return result
 }
 
 // jitterDispatch sleeps a uniform random [0, dispatchJitterMs] duration so a
@@ -225,7 +282,9 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		return cfg, nil, err
 	}
 
-	m.injectGhShim(&cfg)
+	if err := m.injectGitAccess(&cfg); err != nil {
+		return cfg, nil, err
+	}
 
 	if err := m.injectGolangciCache(&cfg); err != nil {
 		return cfg, nil, err
@@ -235,8 +294,10 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		return cfg, nil, err
 	}
 
-	m.injectGitHubToken(&cfg)
-
+	// Independent verification is only trustworthy when project-controlled
+	// code is actually contained. Verifier roles therefore fail closed under
+	// enforce regardless of the rollout posture used for author agents.
+	cfg = enforceVerifierSandbox(cfg)
 	if err := m.injectProcessSandbox(&cfg); err != nil {
 		return cfg, nil, err
 	}
@@ -257,6 +318,66 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	return cfg, prov, nil
 }
 
+func (m *Manager) injectGitAccess(cfg *RunConfig) error {
+	if cfg.Role.IsVerifier() {
+		if err := isolateVerifierGitCredentials(cfg); err != nil {
+			return err
+		}
+		if cfg.Role == RoleReview {
+			m.injectVerifierGhShim(cfg)
+			if err := m.injectVerifierGitHubToken(cfg); err != nil {
+				return err
+			}
+			m.grantVerifierGhReadPaths(cfg)
+		}
+		return nil
+	}
+	m.injectGhShim(cfg)
+	m.injectGitHubToken(cfg)
+	return nil
+}
+
+func (m *Manager) injectVerifierGitHubToken(cfg *RunConfig) error {
+	m.mu.RLock()
+	tokenFn := m.ghVerifierAppToken
+	m.mu.RUnlock()
+	if tokenFn == nil {
+		if cfg.TaskID != "" {
+			return errors.New("agent.Run: PR review requires a restricted GitHub App verifier token")
+		}
+		return nil
+	}
+	token := tokenFn()
+	if token == "" {
+		if cfg.TaskID != "" {
+			return errors.New("agent.Run: restricted GitHub App verifier token is unavailable")
+		}
+		return nil
+	}
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "GH_TOKEN", "GITHUB_TOKEN")
+	cfg.ExtraEnv = append(cfg.ExtraEnv, "GH_TOKEN="+token, "GITHUB_TOKEN="+token)
+	return nil
+}
+
+func (m *Manager) grantVerifierGhReadPaths(cfg *RunConfig) {
+	if m.ghShimDir != "" {
+		cfg.ReadOnlyPaths = append(cfg.ReadOnlyPaths, filepath.Join(m.ghShimDir, "verifier"))
+	}
+	for _, name := range []string{"gh"} {
+		if path, err := exec.LookPath(name); err == nil {
+			cfg.ReadOnlyPaths = append(cfg.ReadOnlyPaths, path)
+		}
+	}
+}
+
+func enforceVerifierSandbox(cfg RunConfig) RunConfig {
+	if cfg.Role.IsVerifier() {
+		cfg.SandboxMode = "enforce"
+		cfg.SandboxReadMode = "enforce"
+	}
+	return cfg
+}
+
 // injectSandboxHome routes every task-scoped agent subprocess's default
 // SYBRA_HOME through the per-task sandbox home, so no fresh agent (any
 // provider, any role) can resolve the operator's real ~/.sybra by default —
@@ -265,10 +386,10 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 // source checkouts or sybra-cli invocations cannot rewrite the operator config.
 //
 // cfg.ExtraEnv is normalized before the trusted values are appended: any
-// existing SYBRA_HOME/SYBRA_CONTROL_HOME entries (caller-supplied or
-// otherwise) are stripped first, then the sandbox home and (if configured) the
-// control home are appended last, so they always win regardless of duplicate
-// env var resolution order in the target process.
+// existing control variables (caller-supplied or otherwise) are stripped
+// first. Ordinary roles receive the configured control home; verifiers receive
+// only the authenticated API target and token, so the operator store is never
+// one of their filesystem roots.
 func (m *Manager) injectSandboxHome(cfg *RunConfig) error {
 	sandboxKey := strings.TrimSpace(cfg.TaskID)
 	if sandboxKey == "" {
@@ -282,12 +403,18 @@ func (m *Manager) injectSandboxHome(cfg *RunConfig) error {
 	m.mu.RLock()
 	resolve := m.sandboxHome
 	controlHome := m.controlHome
+	controlTarget := m.controlTarget
+	controlToken := m.controlToken
 	m.mu.RUnlock()
-	if resolve == nil {
+	if resolve == nil && strings.TrimSpace(cfg.EphemeralSandboxHome) == "" {
 		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "sandbox_key", sandboxKey, "err", "no sandbox home resolver configured")
 		return fmt.Errorf("agent.Run: no sandbox home resolver configured for run %q", sandboxKey)
 	}
-	dir, err := resolve(sandboxKey)
+	dir := strings.TrimSpace(cfg.EphemeralSandboxHome)
+	var err error
+	if dir == "" {
+		dir, err = resolve(sandboxKey)
+	}
 	if err != nil {
 		m.logger.Error("agent.sandbox_home.failed", "task_id", cfg.TaskID, "sandbox_key", sandboxKey, "err", err)
 		return fmt.Errorf("agent.Run: resolve sandbox home for run %q: %w", sandboxKey, err)
@@ -304,9 +431,25 @@ func (m *Manager) injectSandboxHome(cfg *RunConfig) error {
 		return fmt.Errorf("agent.Run: sandbox home %q for run %q is not accessible: %w", dir, sandboxKey, statErr)
 	}
 
-	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "SYBRA_HOME", "SYBRA_CONTROL_HOME")
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "SYBRA_HOME", "SYBRA_CONTROL_HOME", "SYBRA_CONTROL_API_ONLY", "SYBRA_SERVER_TARGET", "SYBRA_AUTH_TOKEN", "SYBRA_AUTH_TOKEN_FILE")
 	cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_HOME="+dir)
-	if controlHome != "" {
+	if cfg.Role.IsVerifier() {
+		if !cfg.DisableVerifierControl && controlTarget != "" && controlToken != nil {
+			token := controlToken(cfg.TaskID, dir)
+			if token == "" {
+				return errors.New("agent.Run: verifier control token is unavailable")
+			}
+			tokenPath := VerifierControlTokenPath(dir)
+			if err := os.WriteFile(tokenPath, []byte(token), 0o600); err != nil {
+				return fmt.Errorf("agent.Run: write verifier control token: %w", err)
+			}
+			cfg.ExtraEnv = append(cfg.ExtraEnv,
+				"SYBRA_CONTROL_API_ONLY=1",
+				"SYBRA_SERVER_TARGET="+controlTarget,
+				"SYBRA_AUTH_TOKEN_FILE="+tokenPath,
+			)
+		}
+	} else if controlHome != "" {
 		cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_CONTROL_HOME="+controlHome)
 	}
 	cfg.resolvedSandboxHome = dir
@@ -368,6 +511,38 @@ func (m *Manager) injectGitHubToken(cfg *RunConfig) {
 	cfg.ExtraEnv = append(cfg.ExtraEnv, "GH_TOKEN=", "GITHUB_TOKEN=")
 }
 
+// isolateVerifierGitCredentials keeps judge roles capable of exercising Git
+// inside their disposable clone without giving them any credential path that
+// could publish those private mutations. The process sandbox supplies the
+// stronger filesystem boundary; these overrides also prevent Git and gh from
+// consulting ambient operator configuration that would otherwise be readable
+// through a credential helper.
+func isolateVerifierGitCredentials(cfg *RunConfig) error {
+	isolationRoot := strings.TrimSpace(cfg.resolvedSandboxHome)
+	if isolationRoot == "" {
+		// Taskless verifier probes do not receive a separate sandbox home. Their
+		// run directory is already the enforce sandbox's writable root.
+		isolationRoot = cfg.Dir
+	}
+	isolatedConfig := filepath.Join(isolationRoot, ".config")
+	if err := os.MkdirAll(filepath.Join(isolatedConfig, "git"), 0o700); err != nil {
+		return fmt.Errorf("agent.Run: create verifier config home: %w", err)
+	}
+	cfg.ExtraEnv = stripEnvKeyPrefixes(cfg.ExtraEnv, "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv,
+		"XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
+		"GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_ASKPASS", "SSH_ASKPASS",
+	)
+	cfg.ExtraEnv = append(cfg.ExtraEnv,
+		"XDG_CONFIG_HOME="+isolatedConfig,
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_COUNT=0",
+		"GH_TOKEN=", "GITHUB_TOKEN=", "SSH_AUTH_SOCK=", "SSH_AGENT_PID=", "GIT_ASKPASS=", "SSH_ASKPASS=",
+	)
+	return nil
+}
+
 func (m *Manager) injectGolangciCache(cfg *RunConfig) error {
 	if cfg.resolvedSandboxHome == "" {
 		return nil
@@ -383,6 +558,46 @@ func (m *Manager) injectGolangciCache(cfg *RunConfig) error {
 
 func sharedBuildCacheDir() string {
 	return buildcache.SharedRoot()
+}
+
+// CertificationScratchRoots resolves and materializes the mutable roots that
+// prepareRunConfig will expose to a task-scoped provider process. Keeping this
+// projection on Manager prevents the run-environment gate from guessing at
+// private sandbox-home and build-cache policy.
+func (m *Manager) CertificationScratchRoots(taskID string) ([]string, error) {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return nil, errors.New("certification scratch roots require a task id")
+	}
+	m.mu.RLock()
+	resolve := m.sandboxHome
+	m.mu.RUnlock()
+	if resolve == nil {
+		return nil, errors.New("certification scratch roots require a sandbox home resolver")
+	}
+	sandboxHome, err := resolve(taskID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve sandbox home: %w", err)
+	}
+	if strings.TrimSpace(sandboxHome) == "" {
+		return nil, errors.New("sandbox home resolver returned an empty path")
+	}
+	sharedCache := sharedBuildCacheDir()
+	roots := compactPaths([]string{
+		sandboxHome,
+		os.TempDir(),
+		sharedCache,
+		buildcache.TaskGoBuildDir(taskID),
+		buildcache.SharedGoModDir(),
+		buildcache.SharedNPMDir(),
+		filepath.Join(sandboxHome, "golangci-lint-cache"),
+	})
+	for _, root := range roots {
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			return nil, fmt.Errorf("create certification scratch root %q: %w", root, err)
+		}
+	}
+	return roots, nil
 }
 
 func (m *Manager) injectSharedBuildCache(cfg *RunConfig) error {
@@ -519,6 +734,9 @@ func (m *Manager) buildEnforceSpec(cfg *RunConfig, gitCtx context.Context, workt
 		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
 	}
 	cfg.sandbox = enforceSpec(canonWorktree, gitMetadata, canonSandboxHome, canonTmp, sandboxTmpAlias(canonTmp), canonSharedCache, profilePath, "", gitRoots, gitOverlay)
+	if cfg.DisableVerifierControl {
+		clearProviderStateRoots(&cfg.sandbox)
+	}
 	if err := m.applySandboxReadMode(cfg); err != nil {
 		return err
 	}
@@ -534,6 +752,17 @@ func (m *Manager) buildEnforceSpec(cfg *RunConfig, gitCtx context.Context, workt
 		"git_common", cfg.sandbox.gitCommonDir, "git_worktrees", cfg.sandbox.gitWorktrees,
 		"tool_cache", cfg.sandbox.toolCache, "profile", profilePath)
 	return nil
+}
+
+func clearProviderStateRoots(spec *sandboxSpec) {
+	spec.claudeState = ""
+	spec.codexState = ""
+	spec.copilotState = ""
+	spec.opencodeState = ""
+	spec.toolCache = ""
+	spec.appSupport = ""
+	spec.claudeScratch = ""
+	spec.stateDenied = nil
 }
 
 // injectReadOnlyProcessSandbox is injectProcessSandbox's variant for runs
@@ -993,6 +1222,7 @@ func (m *Manager) applySandboxReadMode(cfg *RunConfig) error {
 // this restriction exists to close.
 var systemReadRoots = []string{
 	"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/var/lib", "/private/var/db",
+	"/System", "/Library", "/dev", "/private/var/select",
 }
 
 // toolchainReadSubdirs are home-relative roots that hold the language
@@ -1005,18 +1235,19 @@ var toolchainReadSubdirs = []string{
 	filepath.Join(".local", "bin"),
 	filepath.Join(".config", "mise"),
 	filepath.Join(".config", "go"),
-	filepath.Join(".config", "gh"),
+	filepath.Join("go", "bin"),
 }
+
+var githubReadSubdirs = []string{filepath.Join(".config", "gh")}
 
 // homeRootReadFiles sit directly in the operator home rather than under a
 // grantable directory, so granting only directories silently breaks them.
-// .claude.json holds the claude CLI's account state; without it the CLI
-// reports "Not logged in · Please run /login". .gitconfig carries the
-// credential helper that authenticates pushes.
-var homeRootReadFiles = []string{
-	".claude.json",
-	".gitconfig",
-}
+// .gitconfig carries the credential helper that authenticates pushes.
+var homeRootReadFiles = []string{".gitconfig"}
+
+// Provider agents need the account state in .claude.json; repository-owned
+// deterministic commands deliberately do not.
+var providerHomeRootReadFiles = []string{".claude.json"}
 
 // homeStateLinks are the provider state dirs as spelled in the home
 // directory. They are added *uncanonicalized*, in addition to their resolved
@@ -1074,11 +1305,21 @@ func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 		for _, sub := range toolchainReadSubdirs {
 			add(filepath.Join(home, sub))
 		}
-		for _, f := range homeRootReadFiles {
-			add(filepath.Join(home, f))
+		if !cfg.Role.IsVerifier() {
+			for _, sub := range githubReadSubdirs {
+				add(filepath.Join(home, sub))
+			}
+			for _, f := range homeRootReadFiles {
+				add(filepath.Join(home, f))
+			}
 		}
-		for _, l := range homeStateLinks {
-			add(filepath.Join(home, l))
+		if !cfg.DisableVerifierControl {
+			for _, f := range providerHomeRootReadFiles {
+				add(filepath.Join(home, f))
+			}
+			for _, l := range homeStateLinks {
+				add(filepath.Join(home, l))
+			}
 		}
 	}
 	add(cfg.sandbox.readOnlyDir)

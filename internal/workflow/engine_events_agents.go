@@ -289,7 +289,7 @@ func (c *completionDefinitionCache) get() (*Definition, bool) {
 	if c.task.Workflow == nil || c.task.Workflow.WorkflowID == "" {
 		return nil, false
 	}
-	def, err := c.engine.store.Get(c.task.Workflow.WorkflowID)
+	def, err := c.engine.resolveExecutionDefinition(c.task.ID, c.task)
 	if err != nil {
 		return nil, false
 	}
@@ -371,7 +371,7 @@ func (e *Engine) RescheduleInterruptedAgent(taskID, agentID string) {
 		}
 		return
 	}
-	def, err := e.store.Get(t.Workflow.WorkflowID)
+	def, err := e.resolveExecutionDefinition(taskID, t)
 	if err != nil {
 		e.clearAgentStep(taskID, agentID)
 		return
@@ -429,7 +429,7 @@ func (e *Engine) RescheduleRateLimitedAgent(taskID, agentID string) {
 		return
 	}
 
-	def, err := e.store.Get(t.Workflow.WorkflowID)
+	def, err := e.resolveExecutionDefinition(taskID, t)
 	if err != nil {
 		e.clearAgentStep(taskID, agentID)
 		return
@@ -525,7 +525,7 @@ func (e *Engine) RescheduleCheckpointedAgent(taskID, agentID string) {
 		return
 	}
 
-	def, err := e.store.Get(t.Workflow.WorkflowID)
+	def, err := e.resolveExecutionDefinition(taskID, t)
 	if err != nil {
 		e.clearAgentStep(taskID, agentID)
 		return
@@ -706,7 +706,7 @@ func (e *Engine) ReschedulePromptUndeliveredAgent(taskID, agentID string) {
 		e.clearAgentStep(taskID, agentID)
 		return
 	}
-	def, err := e.store.Get(t.Workflow.WorkflowID)
+	def, err := e.resolveExecutionDefinition(taskID, t)
 	if err != nil {
 		e.clearAgentStep(taskID, agentID)
 		return

@@ -75,7 +75,7 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 		return err
 	}
 	if t.Workflow != nil && t.Workflow.State == ExecWaiting && t.Workflow.CurrentStep != "" {
-		def, err := e.store.Get(t.Workflow.WorkflowID)
+		def, err := e.resolveExecutionDefinition(taskID, t)
 		if err != nil {
 			return err
 		}
@@ -89,7 +89,7 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 	if t.Workflow == nil || t.Workflow.State != ExecWaiting {
 		return conflictError(fmt.Sprintf("task %s is not waiting for human action", taskID))
 	}
-	def, err := e.store.Get(t.Workflow.WorkflowID)
+	def, err := e.resolveExecutionDefinition(taskID, t)
 	if err != nil {
 		return err
 	}
@@ -110,7 +110,7 @@ func (e *Engine) handleHumanAction(taskID, action string, data map[string]string
 			if t.Workflow == nil {
 				return conflictError(fmt.Sprintf("task %s is not waiting for human action", taskID))
 			}
-			def, err = e.store.Get(t.Workflow.WorkflowID)
+			def, err = e.resolveExecutionDefinition(taskID, t)
 			if err != nil {
 				return err
 			}
@@ -210,7 +210,7 @@ func (e *Engine) HandleStatusChange(taskID, newStatus string) {
 		return
 	}
 
-	def, err := e.store.Get(t.Workflow.WorkflowID)
+	def, err := e.resolveExecutionDefinition(taskID, t)
 	if err != nil {
 		return
 	}

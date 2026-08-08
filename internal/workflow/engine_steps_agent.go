@@ -30,7 +30,7 @@ func (e *Engine) importSidecarIfConfigured(taskID, stepID string, info TaskInfo)
 	if info.Workflow == nil {
 		return
 	}
-	def, err := e.store.Get(info.Workflow.WorkflowID)
+	def, err := e.resolveExecutionDefinition(taskID, info)
 	if err != nil {
 		return
 	}

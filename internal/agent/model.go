@@ -625,6 +625,15 @@ func (a *Agent) EffectiveRole() Role {
 	return RoleFromName(name)
 }
 
+// SandboxHomeDir returns the trusted sandbox home resolved before this agent
+// started. Completion uses it to revoke the corresponding verifier grant
+// without trusting any verifier-writable credential file.
+func (a *Agent) SandboxHomeDir() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.sandboxHomeDir
+}
+
 // MarkStopped records that the agent was stopped intentionally via StopAgent.
 func (a *Agent) MarkStopped() {
 	a.mu.Lock()
@@ -1946,6 +1955,10 @@ type RunConfig struct {
 	Role   Role
 	Mode   string // "headless", "interactive", or "conversational"
 	Prompt string
+	// BeforeStart runs after the agent identity is allocated but before it is
+	// registered or any provider goroutine can emit completion. Lifecycle
+	// owners use it to durably bind resources to the exact agent ID.
+	BeforeStart func(agentID string) error
 	// AllowedTools is honoured only by providers whose HonorsAllowedTools()
 	// reports true — claude alone today. Elsewhere it is silently ignored, and
 	// warnUnenforceableAllowedTools says so at dispatch, since ab/cross choose
@@ -2011,6 +2024,12 @@ type RunConfig struct {
 	// any caller-supplied entry for those two keys is stripped before the
 	// trusted values are appended, so it cannot override them.
 	ExtraEnv []string
+	// EphemeralSandboxHome overrides the ordinary per-task sandbox home for a
+	// disposable local verification command. The verification lease owns it.
+	EphemeralSandboxHome string
+	// DisableVerifierControl withholds the task mutation credential from local
+	// deterministic checks, whose admission certificate has no such capability.
+	DisableVerifierControl bool
 	// MaxTurns overrides the global guardrail for this specific agent run.
 	// Zero means "use the manager's global guardrail".
 	MaxTurns int

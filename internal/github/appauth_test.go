@@ -153,6 +153,42 @@ func TestRefreshAppToken_MintsAndInjectsEnv(t *testing.T) {
 	}
 }
 
+func TestRefreshVerifierAppTokenRequestsReadOnlyContents(t *testing.T) {
+	path, _ := writeTestKey(t, false)
+	t.Cleanup(DisableAppAuth)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Permissions map[string]string `json:"permissions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode permissions: %v", err)
+		}
+		if body.Permissions["contents"] != "read" || body.Permissions["pull_requests"] != "write" {
+			t.Fatalf("permissions = %v", body.Permissions)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"token":"ghs_verifier","expires_at":"` + time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + `"}`))
+	}))
+	defer srv.Close()
+	origBase := appAPIBaseURL
+	appAPIBaseURL = srv.URL
+	t.Cleanup(func() { appAPIBaseURL = origBase })
+
+	if err := EnableAppAuth(AppCredentials{AppID: 42, InstallationID: 7, PrivateKeyPath: path}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RefreshVerifierAppToken(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := CurrentVerifierAppToken(); got != "ghs_verifier" {
+		t.Fatalf("CurrentVerifierAppToken = %q", got)
+	}
+	if got := CurrentAppToken(); got != "" {
+		t.Fatalf("full-capability token unexpectedly populated: %q", got)
+	}
+}
+
 func TestForceRefreshAppToken_AlwaysRemintsEvenWhenFresh(t *testing.T) {
 	path, _ := writeTestKey(t, false)
 	t.Cleanup(DisableAppAuth)

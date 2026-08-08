@@ -43,6 +43,79 @@ func TestPrepareRunConfig_SandboxHome_Injected(t *testing.T) {
 	}
 }
 
+func TestPrepareRunConfig_VerifierUsesAuthenticatedControlChannel(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	sandboxDir := t.TempDir()
+	m, _ := newTestManager(t, ManagerConfig{
+		Runtime:       ManagerRuntimeConfig{SandboxMode: "report"},
+		SandboxHome:   func(string) (string, error) { return sandboxDir, nil },
+		ControlHome:   "/real/home",
+		ControlTarget: "127.0.0.1:8080",
+		ControlToken:  func(taskID, _ string) string { return "secret-for-" + taskID },
+	})
+	m.SetGHVerifierAppToken(func() string { return "contents-read-pr-write-token" })
+	cfg, _, err := m.prepareRunConfig(RunConfig{TaskID: "task-1", Role: RoleReview, Mode: "headless", Dir: t.TempDir(), SandboxMode: "report"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(cfg.ExtraEnv, "\n")
+	for _, want := range []string{"SYBRA_CONTROL_API_ONLY=1", "SYBRA_SERVER_TARGET=127.0.0.1:8080", "SYBRA_AUTH_TOKEN_FILE=" + VerifierControlTokenPath(sandboxDir)} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("verifier environment lacks %q: %v", want, cfg.ExtraEnv)
+		}
+	}
+	if strings.Contains(joined, "SYBRA_AUTH_TOKEN=") {
+		t.Fatalf("verifier bearer leaked into process environment: %v", cfg.ExtraEnv)
+	}
+	token, err := os.ReadFile(VerifierControlTokenPath(sandboxDir))
+	if err != nil || strings.TrimSpace(string(token)) != "secret-for-task-1" {
+		t.Fatalf("lease-private verifier credential = %q, err=%v", token, err)
+	}
+	if strings.Contains(joined, "SYBRA_CONTROL_HOME=") {
+		t.Fatalf("verifier received direct operator-store access: %v", cfg.ExtraEnv)
+	}
+}
+
+func TestInjectSandboxHome_DeterministicVerifierGetsNoControlCapability(t *testing.T) {
+	sandboxDir := t.TempDir()
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome:   func(string) (string, error) { return sandboxDir, nil },
+		ControlHome:   "/real/home",
+		ControlTarget: "127.0.0.1:8080",
+		ControlToken:  func(string, string) string { return "must-not-be-issued" },
+	})
+	cfg := RunConfig{TaskID: "task-local", Role: RoleTestRunner, DisableVerifierControl: true}
+	if err := m.injectSandboxHome(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(cfg.ExtraEnv, "\n")
+	for _, forbidden := range []string{"SYBRA_CONTROL_HOME=", "SYBRA_CONTROL_API_ONLY=", "SYBRA_SERVER_TARGET=", "SYBRA_AUTH_TOKEN=", "SYBRA_AUTH_TOKEN_FILE="} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("deterministic verifier received %q: %v", forbidden, cfg.ExtraEnv)
+		}
+	}
+}
+
+func TestPreparedScratchRootsIncludeConcreteCacheDirectories(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	sandboxDir := t.TempDir()
+	cfg := RunConfig{TaskID: "task-cache", resolvedSandboxHome: sandboxDir}
+
+	got := preparedScratchRoots(cfg)
+	base := sharedBuildCacheDir()
+	for _, want := range []string{
+		sandboxDir,
+		filepath.Join(sandboxDir, "golangci-lint-cache"),
+		filepath.Join(base, "go-build", "task-cache"),
+		filepath.Join(base, "go-mod"),
+		filepath.Join(base, "npm"),
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("scratch roots %v do not contain %q", got, want)
+		}
+	}
+}
+
 // TestPrepareRunConfig_SandboxHome_SystemRunSkipsInjection pins that only
 // runs with an empty TaskID (system/probe runs) are allowed to skip sandbox
 // injection — every task-scoped run must go through it.

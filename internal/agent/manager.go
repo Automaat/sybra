@@ -89,6 +89,10 @@ type Manager struct {
 	// built-in per-role reasoning-effort baseline, keyed by role name. Read by
 	// resolveReasoningEffort under mu.
 	roleEffort map[string]string
+	// runEnvironmentPreflight is the final application-owned admission gate
+	// after provider, sandbox home, cache roots, and sandbox policy have been
+	// resolved but before a provider process is registered or spawned.
+	runEnvironmentPreflight RunEnvironmentPreflight
 
 	defaultSandboxMode string
 	// defaultSandboxReadMode is the read-visibility posture layered on top of
@@ -169,13 +173,15 @@ type Manager struct {
 	// TaskID — see prepareRunConfig. nil is only valid when every caller is a
 	// system/probe run with an empty TaskID (tests, health checks).
 	sandboxHome func(taskID string) (string, error)
-	// controlHome, when non-empty, is exported as SYBRA_CONTROL_HOME into every
-	// task-scoped agent subprocess so `sybra-cli` task commands can reach the
-	// real operator store even though SYBRA_HOME points at the task's sandbox.
-	controlHome string
+	// controlHome is exported to ordinary task-scoped agents. Verifiers never
+	// receive it; they use the authenticated controlTarget/controlToken channel.
+	controlHome   string
+	controlTarget string
+	controlToken  func(taskID, sandboxHome string) string
 
-	ghAppToken func() string
-	artifacts  *artifact.Store
+	ghAppToken         func() string
+	ghVerifierAppToken func() string
+	artifacts          *artifact.Store
 
 	// deadAgentRetention bounds how long a completed agent stays in agents
 	// after markAgentDone before being evicted. <= 0 evicts synchronously
@@ -198,6 +204,33 @@ type Manager struct {
 	// each free a slot collapses into a single pending wake-up for whatever
 	// dispatch loop reads QueueNudge.
 	queueNudge chan struct{}
+}
+
+// RunEnvironment is the exact provider-facing identity available immediately
+// before a process starts. ScratchRoots are the mutable non-source roots that
+// prepareRunConfig selected for this run.
+type RunEnvironment struct {
+	TaskID        string
+	Role          Role
+	Dir           string
+	ReadOnlyPaths []string
+	Provider      string
+	SandboxMode   string
+	ScratchRoots  []string
+	// LocalCommand distinguishes deterministic shell checks from provider
+	// agents. These checks need containment, but never provider capacity.
+	LocalCommand bool
+}
+
+// RunEnvironmentPreflight certifies a prepared provider run before spawn.
+type RunEnvironmentPreflight func(context.Context, RunEnvironment) error
+
+// SetRunEnvironmentPreflight late-binds the application certification gate.
+// Nil disables it for focused Manager tests and standalone consumers.
+func (m *Manager) SetRunEnvironmentPreflight(preflight RunEnvironmentPreflight) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.runEnvironmentPreflight = preflight
 }
 
 type LimitGate interface {
@@ -237,10 +270,14 @@ type ManagerConfig struct {
 	// Manager.prepareRunConfig. May be nil only when the manager is used
 	// exclusively for system/probe runs with an empty TaskID.
 	SandboxHome func(taskID string) (string, error)
-	// ControlHome, when non-empty, is exported as SYBRA_CONTROL_HOME into
-	// every task-scoped agent subprocess so sybra-cli task commands reach the
-	// real operator store (typically config.HomeDir()).
+	// ControlHome is exported to non-verifier task-scoped agents so sybra-cli
+	// task commands reach the real operator store (typically config.HomeDir()).
 	ControlHome string
+	// ControlTarget and ControlToken route verifier CLI mutations through the
+	// authenticated service boundary instead of exposing the operator store as
+	// a writable filesystem path.
+	ControlTarget string
+	ControlToken  func(taskID, sandboxHome string) string
 	// GhShimDir holds the `gh` approval-guard shim. It must sit outside the
 	// agent's sandbox write roots (typically under config.HomeDir()) so a run
 	// cannot overwrite its own guard. Empty disables the shim.
@@ -332,6 +369,8 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		defaultSandboxReadMode: cfg.Runtime.SandboxReadMode,
 		sandboxHome:            cfg.SandboxHome,
 		controlHome:            cfg.ControlHome,
+		controlTarget:          cfg.ControlTarget,
+		controlToken:           cfg.ControlToken,
 		deadAgentRetention:     defaultDeadAgentRetention,
 		playwrightMCPEnabled:   cfg.Runtime.PlaywrightMCPEnabled,
 		playwrightMCPExtraArgs: cfg.Runtime.PlaywrightMCPExtraArgs,
@@ -752,6 +791,15 @@ func (m *Manager) SetGHAppToken(fn func() string) {
 	m.mu.Lock()
 	m.ghAppToken = fn
 	m.mu.Unlock()
+}
+
+func (m *Manager) SetGHVerifierAppToken(fn func() string) {
+	m.mu.Lock()
+	m.ghVerifierAppToken = fn
+	m.mu.Unlock()
+	if err := m.syncGHVerifierAppToken(); err != nil {
+		m.logger.Error("agent.gh-shim.verifier-token", "err", err)
+	}
 }
 
 func (m *Manager) LimitPolicy() limits.Policy {

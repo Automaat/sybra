@@ -772,15 +772,17 @@ type PRSurface struct {
 // ExecutionSurface groups the non-PR collaborators used to inspect and
 // mutate a task checkout and to run deterministic workflow steps.
 type ExecutionSurface struct {
-	Worktrees        WorktreeGetter
-	SidecarDir       SidecarDirResolver
-	AttemptNotes     AttemptNoteAppender
-	BranchSyncer     BranchSyncer
-	Checks           CheckConfigGetter
-	ManualTests      ManualTestConfigGetter
-	Classifier       TaskClassifier
-	CostBudget       CostBudgetChecker
-	AttemptWorktrees AttemptWorktreeManager
+	Worktrees            WorktreeGetter
+	SidecarDir           SidecarDirResolver
+	AttemptNotes         AttemptNoteAppender
+	BranchSyncer         BranchSyncer
+	Checks               CheckConfigGetter
+	ManualTests          ManualTestConfigGetter
+	Classifier           TaskClassifier
+	CostBudget           CostBudgetChecker
+	AttemptWorktrees     AttemptWorktreeManager
+	Verification         VerificationWorkspaceManager
+	VerificationCommands VerificationCommandRunner
 }
 
 func (d Dependencies) missing() []string {
@@ -795,6 +797,8 @@ func (d Dependencies) missing() []string {
 		namedDependency{"Execution.Classifier", d.Execution.Classifier},
 		namedDependency{"Execution.CostBudget", d.Execution.CostBudget},
 		namedDependency{"Execution.AttemptWorktrees", d.Execution.AttemptWorktrees},
+		namedDependency{"Execution.Verification", d.Execution.Verification},
+		namedDependency{"Execution.VerificationCommands", d.Execution.VerificationCommands},
 	)...)
 	return missing
 }

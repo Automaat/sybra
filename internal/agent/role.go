@@ -123,9 +123,15 @@ func (r Role) CapabilityRequirements(action string) []autonomy.CapabilityRequire
 	}
 	requirements := []autonomy.CapabilityRequirement{
 		{Capability: autonomy.CapabilitySourceRead, Action: action, Scope: "task", Repairable: true},
-		{Capability: autonomy.CapabilityObjectStore, Action: action, Scope: "project", Repairable: true},
+		{Capability: autonomy.CapabilityScratchWrite, Action: action, Scope: "task", Repairable: true},
 		{Capability: autonomy.CapabilitySandboxMechanism, Action: action, Scope: "host"},
 		{Capability: autonomy.CapabilityProviderCapacity, Action: action, Scope: "provider"},
+	}
+	if r.AuthorsCode() || r.JudgesWithoutWriting() || r == RoleTestRunner {
+		requirements = append(requirements,
+			autonomy.CapabilityRequirement{Capability: autonomy.CapabilityObjectStore, Action: action, Scope: "project", Repairable: true},
+			autonomy.CapabilityRequirement{Capability: autonomy.CapabilityCheckoutHealth, Action: action, Scope: "task", Repairable: true},
+		)
 	}
 	if r.AuthorsCode() {
 		requirements = append(requirements,
