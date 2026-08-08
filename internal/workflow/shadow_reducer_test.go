@@ -38,13 +38,13 @@ func TestPredictedRestingState(t *testing.T) {
 	t.Run("set task status effect is captured independently of workflow effect", func(t *testing.T) {
 		t.Parallel()
 		effects := []Effect{
-			{Kind: EffectSetTaskStatus, Status: string(taskstatus.HumanRequired), StatusReason: "blocked"},
+			{Kind: EffectSetTaskStatus, Status: string(taskstatus.HumanRequired), StatusReason: string(taskstatus.Blocked)},
 		}
 		got := predictedRestingState(before, effects)
 		if got.hasWorkflow {
 			t.Fatalf("hasWorkflow = true, want false: no workflow effect present")
 		}
-		if !got.hasStatus || got.status != string(taskstatus.HumanRequired) || got.statusReason != "blocked" {
+		if !got.hasStatus || got.status != string(taskstatus.HumanRequired) || got.statusReason != string(taskstatus.Blocked) {
 			t.Fatalf("got = %+v, want human-required/blocked", got)
 		}
 	})
