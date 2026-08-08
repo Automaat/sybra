@@ -3530,6 +3530,31 @@ func TestHeadlessNonSteerablePipeWritesPromptOverStdin(t *testing.T) {
 	}
 }
 
+func TestHeadlessPromptUndeliveredFallsBackToOneShotStdin(t *testing.T) {
+	dir := t.TempDir()
+	script := `#!/bin/bash
+case " $* " in
+  *" --input-format stream-json "*) sleep 1 ;;
+  *) prompt=$(cat); echo "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s-1\",\"total_cost_usd\":0.01,\"result\":\"$prompt\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}" ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	m, _ := newTestManager(t)
+	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: "claude", State: StateRunning}
+	a.convo.writeTimeout = 10 * time.Millisecond
+	prompt := strings.Repeat("x", 1<<20)
+	var outFile *os.File
+	if _, err := m.runHeadlessAttempt(context.Background(), a, RunConfig{Prompt: prompt, HeadlessSteerable: true}, &outFile, new(int64)); err != nil {
+		t.Fatalf("runHeadlessAttempt: %v", err)
+	}
+	if a.GetExitErr() != nil {
+		t.Fatalf("fallback exit error: %v", a.GetExitErr())
+	}
+}
+
 // A checkpoint handoff commits the run's work and sets escalation reason
 // "checkpoint"; internal/sybra/completion routes RescheduleCheckpointedAgent
 // off that exact value. The terminal result event lands after the checkpoint
