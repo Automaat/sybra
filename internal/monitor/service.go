@@ -634,6 +634,11 @@ func (s *Service) reconcileHealthyIncidents(ctx context.Context, now time.Time, 
 			s.logger.Warn("monitor.incident.close_failed", "fingerprint", in.Fingerprint, "err", closeErr)
 			continue
 		}
+		if !ok && in.IssueURL == "" {
+			// No canonical artifact exists yet. Leave PublishedRevision behind so
+			// a later tick retries publication instead of latching a false close.
+			continue
+		}
 		if linkErr := s.incidents.Link(in.Fingerprint, in.IssueURL, "", nil); linkErr != nil {
 			s.logger.Warn("monitor.incident.resolve_link_failed", "fingerprint", in.Fingerprint, "err", linkErr)
 			continue

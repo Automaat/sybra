@@ -1,7 +1,9 @@
 package monitor
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -176,6 +178,54 @@ func TestIncidentHealthyGraceRequiresCoverageAndProvesAttempt(t *testing.T) {
 	}
 	if closed[0].FirstContainedAt == nil || !closed[0].FirstContainedAt.Equal(base.Add(time.Minute)) {
 		t.Fatalf("certified containment time = %v", closed[0].FirstContainedAt)
+	}
+}
+
+type unresolvedIncidentSink struct {
+	resolveCalls int
+}
+
+func (*unresolvedIncidentSink) Submit(context.Context, Anomaly, string) (bool, error) {
+	return false, nil
+}
+
+func (*unresolvedIncidentSink) ApplyIncident(context.Context, Incident, IncidentChange, string) (bool, IncidentArtifact, error) {
+	return false, IncidentArtifact{}, nil
+}
+
+func (s *unresolvedIncidentSink) ResolveIncident(context.Context, Incident, string) (bool, error) {
+	s.resolveCalls++
+	return false, nil
+}
+
+func (*unresolvedIncidentSink) MapDuplicateIncidents(context.Context, Incident, []int, string) error {
+	return nil
+}
+
+func TestResolveUnpublishedIncidentRemainsRetryable(t *testing.T) {
+	t.Parallel()
+	store := newTestIncidentStore(t)
+	base := time.Date(2026, 8, 8, 1, 0, 0, 0, time.UTC)
+	cfg := config.MonitorConfig{}
+	cause := RootCause{FailureCode: string(KindLostAgent), Component: "agent", Capability: "process-lifecycle", ProjectScope: "fleet", ConfigGeneration: monitorConfigGeneration(KindLostAgent, cfg)}
+	in, _, err := store.Observe(Anomaly{Kind: KindLostAgent, DetectedAt: base}, cause, "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &unresolvedIncidentSink{}
+	svc := &Service{cfg: cfg, incidents: store, sink: sink, logger: slog.Default()}
+
+	svc.reconcileHealthyIncidents(context.Background(), base.Add(time.Minute), nil, nil, true)
+	svc.reconcileHealthyIncidents(context.Background(), base.Add(2*time.Minute), nil, nil, true)
+	got, ok, err := store.Get(in.Fingerprint)
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+	if sink.resolveCalls != 1 {
+		t.Fatalf("resolve calls = %d, want 1", sink.resolveCalls)
+	}
+	if got.PublishedRevision >= got.Revision {
+		t.Fatalf("unpublished resolution was latched: published=%d revision=%d", got.PublishedRevision, got.Revision)
 	}
 }
 

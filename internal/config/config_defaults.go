@@ -1829,10 +1829,10 @@ func applyMonitorDefaults(cfg *Config, file *FileConfig) {
 	if cfg.Monitor.LostAgentAutoCloseAfterClears <= 0 {
 		cfg.Monitor.LostAgentAutoCloseAfterClears = 3
 	}
-	if cfg.Monitor.IncidentResolveGraceMinutes <= 0 {
+	if (file == nil || !file.Has("monitor", "incident_resolve_grace_minutes")) && cfg.Monitor.IncidentResolveGraceMinutes <= 0 {
 		cfg.Monitor.IncidentResolveGraceMinutes = 15
 	}
-	if cfg.Monitor.IncidentReopenGraceMinutes <= 0 {
+	if (file == nil || !file.Has("monitor", "incident_reopen_grace_minutes")) && cfg.Monitor.IncidentReopenGraceMinutes <= 0 {
 		cfg.Monitor.IncidentReopenGraceMinutes = 30
 	}
 	if cfg.Monitor.BottleneckHours == nil {
