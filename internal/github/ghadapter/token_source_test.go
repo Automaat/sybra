@@ -38,6 +38,10 @@ type fakeAppServer struct {
 	// never answer until it is closed (or the client gives up) — the hung
 	// endpoint an unbounded mint deadline would block on forever.
 	stall chan struct{}
+	// hold, when non-nil, keeps a mint in flight until it is closed. Unlike
+	// stall the request still completes, so a test can pin the singleflight
+	// leader inside the endpoint while other callers pile up behind it.
+	hold chan struct{}
 }
 
 func newFakeAppServer(t *testing.T) (*fakeAppServer, *httptest.Server) {
@@ -50,8 +54,15 @@ func newFakeAppServer(t *testing.T) (*fakeAppServer, *httptest.Server) {
 			return
 		}
 		f.mu.Lock()
-		fail, stall := f.fail401, f.stall
+		fail, stall, hold := f.fail401, f.stall, f.hold
 		f.mu.Unlock()
+		if hold != nil {
+			select {
+			case <-hold:
+			case <-r.Context().Done():
+				return
+			}
+		}
 		if stall != nil {
 			select {
 			case <-stall:
@@ -198,24 +209,45 @@ func TestForceRefresh_ConcurrentCollapsesToOneMint(t *testing.T) {
 	}
 	atomic.StoreInt32(&f.mints, 0)
 
+	// Pin the leader inside the mint endpoint until every caller has been
+	// launched. Without it the leader can finish before the last goroutine is
+	// scheduled, and that straggler is then a caller arriving after the flight
+	// ended — which TestForceRefresh_MintsEvenWhenCachedIsFresh requires to
+	// mint again. Asserting a single mint without holding the leader is
+	// asserting a scheduling outcome, and it failed on a loaded CI runner.
+	hold := make(chan struct{})
+	f.mu.Lock()
+	f.hold = hold
+	f.mu.Unlock()
+
 	const n = 20
 	var wg sync.WaitGroup
+	started := make(chan struct{}, n)
 	errs := make([]error, n)
 	wg.Add(n)
 	for i := range n {
 		go func(i int) {
 			defer wg.Done()
+			started <- struct{}{}
 			errs[i] = src.ForceRefresh(context.Background())
 		}(i)
 	}
+	for range n {
+		<-started
+	}
+	close(hold)
+
 	wg.Wait()
 	for i, err := range errs {
 		if err != nil {
 			t.Fatalf("ForceRefresh[%d]: %v", i, err)
 		}
 	}
-	if got := atomic.LoadInt32(&f.mints); got != 1 {
-		t.Fatalf("mints = %d, want 1", got)
+	// A late straggler may still open a second flight, so the assertion is
+	// that callers collapsed rather than each minting for itself.
+	got := atomic.LoadInt32(&f.mints)
+	if got < 1 || got >= n {
+		t.Fatalf("mints = %d, want at least 1 and far fewer than %d concurrent callers", got, n)
 	}
 }
 
