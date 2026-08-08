@@ -101,8 +101,10 @@ func TestDynamicHumanRequiredBoundariesAreTyped(t *testing.T) {
 		"internal/harnessevolution/filing.go": {
 			`update.Escalation = task.PolicyRequired("harness.proposal_approval_required"`,
 		},
+		// The CLI no longer writes a status change itself: it calls the server,
+		// whose svc_tasks.go entry below attaches the evidence for the same
+		// transition. Handoff still mints a task here, so that marker stays.
 		"cmd/sybra-cli/main.go": {
-			`extra.Escalation = task.OperatorDecisionEvidence("operator.cli_status_change"`,
 			`init.Escalation = task.OperatorDecisionEvidence("operator.handoff_status"`,
 		},
 		"internal/promptlab/filing.go": {
