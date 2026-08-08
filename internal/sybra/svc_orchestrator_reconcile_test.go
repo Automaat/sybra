@@ -46,12 +46,12 @@ func TestReconcileOrchestratorsLocked_StableAfterTerminalTransition(t *testing.T
 
 	svc := &OrchestratorService{agents: mgr, logger: logger, emit: func(string, any) {}, agentID: a.ID}
 
-	before := len(records)
+	before := handler.Len()
 	var lastKeep string
 	for range 20 {
 		lastKeep = svc.reconcileOrchestratorsLocked()
 	}
-	after := len(records)
+	after := handler.Len()
 
 	if lastKeep != "" {
 		t.Errorf("reconcileOrchestratorsLocked() kept = %q, want empty (terminal agent must never be kept)", lastKeep)

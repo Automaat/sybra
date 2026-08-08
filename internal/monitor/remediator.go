@@ -70,16 +70,9 @@ func (r *remediator) resetLostAgent(ctx context.Context, a Anomaly) (string, err
 	if a.TaskID == "" {
 		return "", fmt.Errorf("lost_agent without task id")
 	}
-	// Best-effort: mark the last running agent run as stopped so the UI does
-	// not continue to display it as active after recovery takes over.
-	if t, err := r.tasks.Get(a.TaskID); err == nil {
-		for i := range slices.Backward(t.AgentRuns) {
-			if t.AgentRuns[i].State == "running" {
-				_ = r.tasks.UpdateRun(a.TaskID, t.AgentRuns[i].AgentID, task.RunPatch{State: task.Ptr("stopped")})
-				break
-			}
-		}
-	}
+	// Do not mark the run stopped here. The durable attempt controller must
+	// first re-observe the process/session and preserve workspace state; only
+	// its reconciled terminal path may release ownership or allow replacement.
 	upd := task.Update{
 		StatusReason: task.Ptr("monitor: agent lost; recovery will resume"),
 	}

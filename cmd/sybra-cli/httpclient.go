@@ -48,16 +48,37 @@ func (e *apiError) Error() string {
 }
 
 func newAPIClient(cfg *config.Config) (client *apiClient, ok bool) {
-	if cfg == nil || strings.TrimSpace(cfg.Server.AuthToken) == "" || cfg.ServesTLS() {
+	if cfg == nil {
+		return nil, false
+	}
+	token := strings.TrimSpace(cfg.Server.AuthToken)
+	tokenPath := strings.TrimSpace(os.Getenv("SYBRA_AUTH_TOKEN_FILE"))
+	if tokenPath != "" {
+		data, err := os.ReadFile(tokenPath)
+		if err != nil {
+			return nil, false
+		}
+		token = strings.TrimSpace(string(data))
+	}
+	if token == "" {
+		return nil, false
+	}
+	if tokenPath == "" && cfg.ServesTLS() {
 		return nil, false
 	}
 	host, port, ok := resolveDialTarget()
 	if !ok {
 		return nil, false
 	}
+	if tokenPath != "" {
+		ip := net.ParseIP(strings.Trim(host, "[]"))
+		if ip == nil || !ip.IsLoopback() {
+			return nil, false
+		}
+	}
 	return &apiClient{
 		baseURL: "http://" + net.JoinHostPort(host, port),
-		token:   cfg.Server.AuthToken,
+		token:   token,
 		http:    &http.Client{Timeout: apiCallTimeout},
 	}, true
 }

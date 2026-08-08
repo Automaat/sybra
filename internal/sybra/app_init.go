@@ -42,9 +42,12 @@ import (
 	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
+	"github.com/Automaat/sybra/internal/sybra/dispatch"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/sybra/runenv"
+	"github.com/Automaat/sybra/internal/sybra/verification"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/watcher"
@@ -373,6 +376,7 @@ func (a *App) initStats() {
 func (a *App) initLocalStores() {
 	a.initAttachments()
 	a.initArtifacts()
+	a.verification = verification.New(filepath.Join(config.HomeDir(), "verification"), a.artifacts, a.logger)
 	a.initExperience()
 	a.initIntervention()
 	a.initLearning()
@@ -478,13 +482,20 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 		SessionSink: func(taskID, agentID, sessionID string) error {
 			return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{SessionID: task.Ptr(sessionID)})
 		},
-		TaskExists:  a.taskExistsForAgent,
-		TaskStatus:  a.taskStatusForAgent,
+		TaskExists: a.taskExistsForAgent,
+		TaskStatus: a.taskStatusForAgent,
+		TaskGeneration: func(taskID string) (int64, bool) {
+			t, err := a.tasks.Get(taskID)
+			return t.Generation, err == nil
+		},
 		LimitSink:   a.recordLimitSnapshot,
 		Artifacts:   a.artifacts,
 		SandboxHome: a.sandboxes.SybraHomeDir,
 		ControlHome: config.HomeDir(),
 		GhShimDir:   filepath.Join(config.HomeDir(), "shims"),
+		ControlEvent: func(kind string, data map[string]any) {
+			a.logAudit(kind, "", "", data)
+		},
 	}
 	if a.cfg.SurviveRestartEnabled() {
 		cfg.SurviveRestartDir = config.AgentsDir()
@@ -493,9 +504,29 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 }
 
 func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) error {
+	providerLimits := make(map[string]int, len(providerid.All()))
+	for _, name := range providerid.All() {
+		providerLimits[name] = a.cfg.Providers.Limits.MaxInFlightPerProvider
+	}
+	var err error
+	a.attempts, err = dispatch.New(ctx, dispatch.Options{
+		Dir: config.AttemptLeasesDir(),
+		Limits: dispatch.Limits{
+			Global:     a.cfg.Agent.MaxConcurrent,
+			ByProvider: providerLimits,
+		},
+		TTL: time.Minute,
+	})
+	if err != nil {
+		return fmt.Errorf("dispatch admission: %w", err)
+	}
 	approvalServer, approvalAddr := a.startApprovalServer(ctx, emit)
 	agentCfg := a.agentManagerConfig(approvalAddr)
-	var err error
+	agentCfg.AttemptAdmission = a.attempts
+	if approvalServer != nil {
+		agentCfg.ControlTarget = approvalAddr
+		agentCfg.ControlToken = approvalServer.VerifierToken
+	}
 	a.agents, err = agent.NewManager(ctx, emit, a.logger, a.logDir, agentCfg)
 	if err != nil && agentCfg.SurviveRestartDir != "" && errors.Is(err, agent.ErrSurvivalRegistry) {
 		a.logger.Error("agent.survive-restart.init", "err", err)
@@ -518,6 +549,7 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 		return fmt.Errorf("agent manager: %w", err)
 	}
 	a.agents.SetGHAppToken(github.CurrentAppToken)
+	a.agents.SetGHVerifierAppToken(github.CurrentVerifierAppToken)
 	// initToolLedger runs before this function, when a.agents is still nil, so
 	// its own SetToolLedger call is skipped. Without re-binding here the
 	// manager's ledger stays nil and Logger.Log's nil guard drops every record
@@ -530,6 +562,9 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 	if approvalServer != nil {
 		approvalServer.SetManager(a.agents)
 		a.agentSvc.approval = approvalServer
+		if a.verification != nil {
+			a.verification.SetGrantRevoker(approvalServer.RevokeVerifierGrantForSandbox)
+		}
 	}
 	return nil
 }
@@ -594,6 +629,28 @@ func k8sJobRunnerConfigFromConfig(cfg config.K8sJobsConfig) agent.K8sJobRunnerCo
 }
 
 func (a *App) onAgentComplete(ag *agent.Agent) {
+	var lease verification.Lease
+	var disposable bool
+	if a.verification != nil {
+		lease, disposable = a.verification.LeaseForAgent(ag.ID)
+		if disposable {
+			if lease.WorkspaceDir != "" {
+				if err := a.verification.Finalize(context.Background(), lease, nil, agentOutputText(ag), lease.CertificateID); err != nil {
+					ag.SetExitErr(err)
+				}
+			}
+		}
+	}
+	revoked := true
+	if a.agentSvc != nil && a.agentSvc.approval != nil && ag.EffectiveRole().IsVerifier() {
+		if err := a.agentSvc.approval.RevokeVerifierGrantForSandbox(ag.SandboxHomeDir()); err != nil {
+			revoked = false
+			ag.SetExitErr(fmt.Errorf("revoke verifier control grant: %w", err))
+		}
+	}
+	if disposable && revoked {
+		a.verification.Release(lease)
+	}
 	if a.runenv != nil && agentRunEnvironmentFailed(ag) {
 		a.runenv.InvalidateTask(ag.TaskID)
 	}
@@ -602,6 +659,19 @@ func (a *App) onAgentComplete(ag *agent.Agent) {
 		return
 	}
 	a.agentCompletion.OnComplete(ag)
+}
+
+func agentOutputText(ag *agent.Agent) string {
+	var b strings.Builder
+	outputs := ag.Output()
+	for i := range outputs {
+		event := &outputs[i]
+		if event.Content != "" {
+			b.WriteString(event.Content)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
 }
 
 func agentRunEnvironmentFailed(ag *agent.Agent) bool {
@@ -1439,15 +1509,18 @@ func (a *App) workflowDependencies(agentLauncher *agentAdapter) workflow.Depende
 			ContentGenerator: workflowpr.ContentGeneratorAdapter{Gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}},
 		},
 		Execution: workflow.ExecutionSurface{
-			Worktrees:        &worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees},
-			SidecarDir:       a.sandboxes.SybraHomeDir,
-			AttemptNotes:     &attemptNoteAppenderAdapter{},
-			BranchSyncer:     &branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees},
-			Checks:           &checkConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees},
-			ManualTests:      &manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees},
-			Classifier:       a.newTaskClassifierAdapter(),
-			CostBudget:       agentLauncher,
-			AttemptWorktrees: &attemptWorktreeAdapter{tasks: a.tasks, mgr: a.worktrees},
+			Worktrees:            &worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees},
+			SidecarDir:           a.sandboxes.SybraHomeDir,
+			AttemptNotes:         &attemptNoteAppenderAdapter{},
+			BranchSyncer:         &branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees},
+			Checks:               &checkConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees},
+			ManualTests:          &manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees},
+			Classifier:           a.newTaskClassifierAdapter(),
+			CostBudget:           agentLauncher,
+			AttemptWorktrees:     &attemptWorktreeAdapter{tasks: a.tasks, mgr: a.worktrees},
+			Verification:         &verificationWorkspaceAdapter{mgr: a.verification},
+			VerificationCommands: agentLauncher,
+			PostRun:              a.postRunReconciliation(),
 		},
 	}
 }
@@ -1478,14 +1551,66 @@ func (a *App) configurePlanAutoApproval() {
 func (a *App) configureAdmissionPolicy() {
 	a.workflowEngine.SetAdmissionConfig(a.cfg.Admission)
 	a.workflowEngine.SetAdmissionDecisionHook(func(t workflow.TaskInfo, d workflow.AdmissionDecision) {
-		a.logAudit(audit.EventAdmissionDecided, t.ID, "", map[string]any{
+		data := map[string]any{
 			"outcome":         d.Outcome,
 			"risk_tier":       d.RiskTier,
 			"permission_tier": d.PermissionTier,
 			"blocker_kind":    d.BlockerKind,
 			"reason":          d.Reason,
-		})
+			"failure_code":    d.FailureCode,
+			"task_generation": t.Generation,
+		}
+		if d.Outcome == string(taskstatus.Blocked) {
+			data["preflight_detectable"] = true
+			if a.stats != nil {
+				cost, tokens, runs, usageKnown := preflightUsage(a.stats.AllForTask(t.ID), t.ID, t.Generation)
+				data["usage_known"], data["cost_usd"], data["tokens"], data["prior_runs"] = usageKnown, cost, tokens, runs
+			} else {
+				data["usage_known"], data["cost_usd"], data["tokens"], data["prior_runs"] = false, 0.0, 0, 0
+			}
+		}
+		a.logAudit(audit.EventAdmissionDecided, t.ID, "", data)
 	})
+}
+
+func preflightUsage(records []stats.RunRecord, taskID string, generation int64) (cost float64, tokens, runs int, known bool) {
+	legacyUnattributed := false
+	var cohort uint64
+	cohortKnown := false
+	for i := range records {
+		record := &records[i]
+		if record.TaskID != taskID {
+			continue
+		}
+		if !record.TaskGenerationKnown || generation < 0 {
+			legacyUnattributed = true
+			continue
+		}
+		// #nosec G115 -- the negative generation case is rejected above.
+		if record.TaskGeneration > uint64(generation) {
+			continue
+		}
+		if !cohortKnown || record.TaskGeneration > cohort {
+			cohort, cohortKnown = record.TaskGeneration, true
+		}
+	}
+	known = !legacyUnattributed
+	for i := range records {
+		record := &records[i]
+		if !cohortKnown || record.TaskID != taskID || !record.TaskGenerationKnown || record.TaskGeneration != cohort {
+			continue
+		}
+		runs++
+		cost += record.CostUSD
+		tokens += record.InputTokens + record.OutputTokens + record.CacheCreationInputTokens + record.CacheReadInputTokens + record.ReasoningTokens
+		if record.CostUSD == 0 && record.InputTokens == 0 && record.OutputTokens == 0 && record.CacheCreationInputTokens == 0 && record.CacheReadInputTokens == 0 && record.ReasoningTokens == 0 && record.PremiumRequests == 0 {
+			known = false
+		}
+	}
+	if runs == 0 {
+		known = !legacyUnattributed
+	}
+	return cost, tokens, runs, known
 }
 
 // configureEvidencePolicy wires the require_evidence step's config and its
@@ -1512,14 +1637,15 @@ func (a *App) newWorkflowAgentLauncher() *agentAdapter {
 		a.agentOrch.SetPressureGate(pressureGate)
 	}
 	return &agentAdapter{
-		agents:     a.agents,
-		agentOrch:  a.agentOrch,
-		tasks:      a.tasks,
-		projects:   a.projects,
-		sandboxes:  a.sandboxes,
-		experience: a.experience,
-		pressure:   pressureGate,
-		runenv:     a.runenv,
+		agents:       a.agents,
+		agentOrch:    a.agentOrch,
+		tasks:        a.tasks,
+		projects:     a.projects,
+		sandboxes:    a.sandboxes,
+		experience:   a.experience,
+		pressure:     pressureGate,
+		runenv:       a.runenv,
+		verification: a.verification,
 	}
 }
 
@@ -1576,7 +1702,9 @@ func (a *App) initAgentConfig() {
 }
 
 func (a *App) startApprovalServer(ctx context.Context, emit func(string, any)) (srv *agent.ApprovalServer, addr string) {
-	srv, err := agent.NewApprovalServer(ctx, emit, a.logger, a.cfg.Agent.ApprovalPort)
+	controlDir := filepath.Join(config.HomeDir(), "control")
+	srv, err := agent.NewDurableApprovalServer(ctx, emit, a.logger, a.cfg.Agent.ApprovalPort,
+		filepath.Join(controlDir, "approval-port"), filepath.Join(controlDir, "verifier-token-hashes.json"))
 	if err != nil {
 		a.logger.Error("approval-server.init", "err", err)
 		return nil, ""
@@ -1667,6 +1795,7 @@ func (a *App) newRecovery() *recovery.Recovery {
 		Orchestrator:       a.agentOrch,
 		Projects:           a.projects,
 		PRs:                newRecoveryPRResolver(),
+		Reconciler:         a.postRunReconciliation(),
 		Logger:             a.logger,
 		Throttle:           a.restartStaleErr,
 		WG:                 &a.wg,
@@ -1685,6 +1814,13 @@ func (a *App) newRecovery() *recovery.Recovery {
 			// (sybra#2210) — glob-expanded fresh on every sweep since each
 			// test run gets its own directory.
 			filepath.Join(os.TempDir(), "sybra-test-*"),
+			filepath.Join(os.TempDir(), "sybra-k8s-poc-*"),
+		},
+		OwnedOrphanRoots: []string{
+			// These roots can also contain operator-run provider processes, so
+			// recovery requires the explicit SYBRA_AGENT_OWNER marker here.
+			config.HomeDir(),
+			a.repoDir,
 		},
 		// Also gate on the instance role: RunStartupCleanup calls
 		// RestartStaleInProgress outside the (gated) maintenance pass, so an
@@ -1692,6 +1828,9 @@ func (a *App) newRecovery() *recovery.Recovery {
 		// on boot with no operator action. Evaluated per call, so it sees the
 		// role applyInstanceRole resolves at the top of startLifecycle.
 		DispatchGate: func(t task.Task) bool { return a.runsScheduler() && a.runsTaskLocally(t) },
+	}
+	if a.workflowEngine != nil {
+		r.ConflictRecovery = a.workflowEngine.TryConflictRecovery
 	}
 	// Gate on the config, not just a non-nil snapshotter: the snapshotter is
 	// always constructed, but when the feature is disabled its repo is never

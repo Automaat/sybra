@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/providerid"
 	"gopkg.in/yaml.v3"
 )
 
@@ -169,20 +170,27 @@ func recordMappingStartedAt() time.Time {
 
 func recordMappingAgent(started time.Time) *Agent {
 	return &Agent{
-		ID:                      "a-map",
-		TaskID:                  "task-map",
-		Name:                    "mapper",
-		Role:                    RoleMonitor,
-		Mode:                    "interactive",
-		Provider:                "codex",
-		Model:                   "gpt-5.3-codex",
-		RequestedModel:          "opus",
-		ExperimentID:            "exp-1",
-		VariantID:               "variant-a",
-		RoutingReason:           "ab",
-		AssignmentUnit:          "task",
-		AssignmentKey:           "task-map",
-		DecisionVersion:         3,
+		ID:              "a-map",
+		TaskID:          "task-map",
+		Name:            "mapper",
+		Role:            RoleMonitor,
+		Mode:            "interactive",
+		Provider:        "codex",
+		Model:           "gpt-5.3-codex",
+		RequestedModel:  "opus",
+		ExperimentID:    "exp-1",
+		VariantID:       "variant-a",
+		RoutingReason:   "ab",
+		AssignmentUnit:  "task",
+		AssignmentKey:   "task-map",
+		DecisionVersion: 3,
+		attemptIntent: AttemptIntent{
+			IntentID: "intent-map", TaskID: "task-map", TaskGeneration: 4,
+			Worktree: "/tmp/sybra/worktrees/task-map", WorktreeGeneration: 5,
+			Access: AttemptAccessObserve, Role: RoleMonitor, Provider: "codex",
+			CapabilityCertified: true,
+		},
+		attemptLease:            AttemptLease{ID: "lease-map", Version: 6},
 		PID:                     12345,
 		SessionID:               "sess-map",
 		LogPath:                 "/tmp/sybra/agents/a-map.ndjson",
@@ -213,7 +221,7 @@ func recordMappingRecord(started time.Time) Record {
 		Name:                    "mapper",
 		Role:                    RoleMonitor,
 		Mode:                    "interactive",
-		Provider:                "codex",
+		Provider:                providerid.Codex,
 		Model:                   "gpt-5.3-codex",
 		RequestedModel:          "opus",
 		ExperimentID:            "exp-1",
@@ -222,6 +230,13 @@ func recordMappingRecord(started time.Time) Record {
 		AssignmentUnit:          "task",
 		AssignmentKey:           "task-map",
 		DecisionVersion:         3,
+		AttemptIntentID:         "intent-map",
+		AttemptTaskKey:          "task-map",
+		AttemptTaskGen:          4,
+		AttemptWorkGen:          5,
+		AttemptAccess:           AttemptAccessObserve,
+		AttemptLeaseID:          "lease-map",
+		AttemptVersion:          6,
 		PID:                     12345,
 		SessionID:               "sess-map",
 		LogPath:                 "/tmp/sybra/agents/a-map.ndjson",

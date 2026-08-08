@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"testing"
@@ -8,7 +9,20 @@ import (
 
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/reconcile"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
+
+type scriptedPostRun struct {
+	plans []reconcile.Plan
+	calls int
+}
+
+func (s *scriptedPostRun) Reconcile(context.Context, reconcile.Request) (reconcile.Plan, error) {
+	plan := s.plans[min(s.calls, len(s.plans)-1)]
+	s.calls++
+	return plan, nil
+}
 
 type watchdogRecoveryAssertion func(*testing.T, *memTasks, *Execution)
 
@@ -447,6 +461,46 @@ func TestResumeStalled_WatchdogHangReadyPRSkipsRedispatch(t *testing.T) {
 	}
 	if got.Workflow.Variables["cancel_reason"] != "watchdog hang: implementation superseded by linked PR already open and green" {
 		t.Fatalf("cancel_reason = %q", got.Workflow.Variables["cancel_reason"])
+	}
+}
+
+func TestResumeStalled_WatchdogReadyPRRejectsChangedReconciliationPreconditions(t *testing.T) {
+	t.Parallel()
+	tasks := newMemTasks()
+	engine := NewTestEngine(newStoreWithBuiltin(t, "simple-task-implement"), tasks, newMockAgents(), discardLogger())
+	engine.setPRStateFetcherForTest(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "MERGEABLE"}})
+	first := reconcile.Plan{
+		Action:            reconcile.ActionResumeMergeablePR,
+		DeliverRunOutcome: true,
+		Preconditions: reconcile.Preconditions{
+			TaskGeneration:     7,
+			WorkflowGeneration: 7,
+			LeaseID:            "run-1",
+			PRHeadSHA:          "old-head",
+		},
+	}
+	second := first
+	second.Preconditions.PRHeadSHA = "new-head"
+	postRun := &scriptedPostRun{plans: []reconcile.Plan{first, second}}
+	engine.execution.PostRun = postRun
+	wf := &Execution{WorkflowID: "simple-task-implement", CurrentStep: "implement", State: ExecWaiting, Variables: map[string]string{}, StartedAt: time.Now().UTC()}
+	tasks.Put(TaskInfo{
+		ID: "t1", Generation: 7, Status: taskstatus.InProgress, StatusReason: "watchdog hang: no stream activity",
+		ProjectID: "owner/repo", PRNumber: 42, Workflow: wf,
+		AgentRuns: []AgentRunInfo{{AgentID: "run-1", Role: "implementation"}},
+	})
+
+	engine.ResumeStalled()
+
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != taskstatus.InProgress || got.Workflow.State != ExecWaiting || got.Workflow.CurrentStep != "implement" {
+		t.Fatalf("stale reconciliation plan mutated task: status=%q workflow=%#v", got.Status, got.Workflow)
+	}
+	if postRun.calls != 2 {
+		t.Fatalf("reconcile calls = %d, want immediate re-observation", postRun.calls)
 	}
 }
 

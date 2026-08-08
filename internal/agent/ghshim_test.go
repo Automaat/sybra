@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -129,6 +130,125 @@ func TestGhShim_MintsFreshAppTokenPerGhInvocation(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "GH_TOKEN=token-2 GITHUB_TOKEN=token-2") {
 		t.Fatalf("second call reused stale token or missed the helper: %q", stdout)
+	}
+}
+
+func TestGhShimPreservesPreScopedVerifierToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ghDir := t.TempDir()
+	realGh := filepath.Join(ghDir, "gh")
+	if err := os.WriteFile(realGh, []byte("#!/bin/sh\nprintf 'GH=%s GITHUB=%s\\n' \"$GH_TOKEN\" \"$GITHUB_TOKEN\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cliDir := t.TempDir()
+	marker := filepath.Join(cliDir, "minted")
+	fakeCLI := filepath.Join(cliDir, "sybra-cli")
+	if err := os.WriteFile(fakeCLI, []byte("#!/bin/sh\nprintf full-token\ntouch '"+marker+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GH_TOKEN", "contents-read-pr-write-token")
+	t.Setenv("GITHUB_TOKEN", "contents-read-pr-write-token")
+
+	stdout, stderr, code := runShim(t, filepath.Join(shimDir, "verifier"), "pr", "view", "1")
+	if code != 0 || !strings.Contains(stdout, "GH=contents-read-pr-write-token GITHUB=contents-read-pr-write-token") {
+		t.Fatalf("shim replaced scoped token: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("full-token mint helper ran despite pre-scoped token: %v", err)
+	}
+}
+
+func TestVerifierGhShimNeverMintsBroadToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ghDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ghDir, "gh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cliDir := t.TempDir()
+	marker := filepath.Join(cliDir, "minted")
+	if err := os.WriteFile(filepath.Join(cliDir, "sybra-cli"), []byte("#!/bin/sh\ntouch '"+marker+"'\nprintf full-token\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+cliDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	_, stderr, code := runShim(t, filepath.Join(shimDir, "verifier"), "pr", "view", "1")
+	if code == 0 || !strings.Contains(stderr, "restricted verifier GitHub token is unavailable") {
+		t.Fatalf("verifier shim fallback = exit %d stderr %q", code, stderr)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("verifier shim invoked broad-token helper: %v", err)
+	}
+}
+
+func TestVerifierGhShimUsesRotatedManagerToken(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ghDir := t.TempDir()
+	realGh := filepath.Join(ghDir, "gh")
+	if err := os.WriteFile(realGh, []byte("#!/bin/sh\nprintf 'GH=%s GITHUB=%s\\n' \"$GH_TOKEN\" \"$GITHUB_TOKEN\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{ghShimDir: shimDir, logger: slog.New(slog.DiscardHandler)}
+	token := "rotated-restricted-token"
+	m.SetGHVerifierAppToken(func() string { return token })
+	t.Setenv("GH_TOKEN", "stale-restricted-token")
+	t.Setenv("GITHUB_TOKEN", "stale-restricted-token")
+
+	stdout, stderr, code := runShim(t, filepath.Join(shimDir, "verifier"), "pr", "view", "1")
+	if code != 0 || !strings.Contains(stdout, "GH=rotated-restricted-token GITHUB=rotated-restricted-token") {
+		t.Fatalf("shim did not use rotated token: exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	token = ""
+	if err := m.SyncGHVerifierAppToken(); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, code = runShim(t, filepath.Join(shimDir, "verifier"), "pr", "view", "1")
+	if code == 0 || !strings.Contains(stderr, "restricted verifier GitHub token is unavailable") {
+		t.Fatalf("blank rotated token reused stale environment: exit=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestVerifierGhShimUsesRotatedManagerTokenWhenInvokedThroughPath(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ghDir := t.TempDir()
+	realGh := filepath.Join(ghDir, "gh")
+	if err := os.WriteFile(realGh, []byte("#!/bin/sh\nprintf 'GH=%s GITHUB=%s\\n' \"$GH_TOKEN\" \"$GITHUB_TOKEN\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", ghDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	shimDir, err := writeGhShim(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{ghShimDir: shimDir, logger: slog.New(slog.DiscardHandler)}
+	m.SetGHVerifierAppToken(func() string { return "rotated-restricted-token" })
+	t.Setenv("GH_TOKEN", "stale-restricted-token")
+	t.Setenv("GITHUB_TOKEN", "stale-restricted-token")
+	t.Setenv("PATH", filepath.Join(shimDir, "verifier")+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ghCommand := "gh"
+	cmd := exec.Command(ghCommand, "pr", "view", "1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run verifier gh through PATH: %v: %s", err, output)
+	}
+	if !strings.Contains(string(output), "GH=rotated-restricted-token GITHUB=rotated-restricted-token") {
+		t.Fatalf("PATH-invoked shim did not use rotated token: %q", output)
 	}
 }
 
@@ -511,13 +631,13 @@ func TestWriteGhShim_RewriteIsAtomicAndIdempotent(t *testing.T) {
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
-	wantNames := []string{"gh", "git-credential-sybra"}
+	wantNames := []string{"gh", "git-credential-sybra", "verifier"}
 	slices.Sort(names)
 	if !slices.Equal(names, wantNames) {
 		t.Fatalf("shim dir = %v, want exactly %v (no staging leftovers)", names, wantNames)
 	}
 
-	for _, name := range wantNames {
+	for _, name := range []string{"gh", "git-credential-sybra"} {
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil {
 			t.Fatal(err)
@@ -525,6 +645,20 @@ func TestWriteGhShim_RewriteIsAtomicAndIdempotent(t *testing.T) {
 		if info.Mode().Perm()&0o111 == 0 {
 			t.Fatalf("%s mode = %v, want executable", name, info.Mode().Perm())
 		}
+	}
+	verifierEntries, err := os.ReadDir(filepath.Join(dir, "verifier"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(verifierEntries) != 1 || verifierEntries[0].Name() != "gh" {
+		t.Fatalf("verifier shim dir = %v, want exactly [gh] (no staging leftovers)", verifierEntries)
+	}
+	verifierInfo, err := os.Stat(filepath.Join(dir, "verifier", "gh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verifierInfo.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("verifier gh mode = %v, want executable", verifierInfo.Mode().Perm())
 	}
 
 	_, _, code := runShim(t, dir, "pr", "review", "--approve", "1")

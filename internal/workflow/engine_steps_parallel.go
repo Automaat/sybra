@@ -108,6 +108,9 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 	if status == nil {
 		return fmt.Errorf("parallel child %q has no status", child.ID)
 	}
+	if !parallelObserverRole(child.Config.Role) {
+		return fmt.Errorf("parallel child %q role %q is not read-only", child.ID, child.Config.Role)
+	}
 	// Render the child prompt with a context that points at the child step
 	// so {{.Step.ID}} et al. resolve correctly inside the prompt template.
 	childCtx := parentCtx
@@ -124,6 +127,8 @@ func (e *Engine) spawnParallelChild(taskID string, parent, child *Step, wfExec *
 		return err
 	}
 	applySkillReceiptRecoveryAssignment(child.ID, wfExec, &assignment)
+	assignment.IntentID = taskID + ":" + wfExec.WorkflowID + ":parallel:" + parent.ID + ":" + child.ID
+	assignment.AdmissionObserve = true
 
 	prompt, err := e.renderAssignedPrompt(taskID, child, childCtx, assignment, "workflow.parallel.consume-steer")
 	if err != nil {

@@ -4,7 +4,11 @@
 export {
     Anomaly,
     AnomalyKind,
+    CertifiedEvidence,
     Counts,
+    Incident,
+    IncidentState,
+    RemediationAttempt,
     Report,
     Severity
 } from "./models.js";

@@ -28,4 +28,10 @@ type MonitorConfig struct {
 	// previously-filed lost_agent issue's task must stay clear (no longer
 	// detected as lost) before the issue is auto-closed.
 	LostAgentAutoCloseAfterClears int `yaml:"lost_agent_auto_close_after_clears" json:"lostAgentAutoCloseAfterClears"`
+	// IncidentResolveGraceMinutes requires a successfully observed healthy
+	// detector result to remain stable before an incident is resolved.
+	IncidentResolveGraceMinutes int `yaml:"incident_resolve_grace_minutes" json:"incidentResolveGraceMinutes"`
+	// IncidentReopenGraceMinutes suppresses noisy external updates immediately
+	// after resolution while retaining recurrence history in the same incident.
+	IncidentReopenGraceMinutes int `yaml:"incident_reopen_grace_minutes" json:"incidentReopenGraceMinutes"`
 }

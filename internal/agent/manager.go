@@ -93,6 +93,10 @@ type Manager struct {
 	// after provider, sandbox home, cache roots, and sandbox policy have been
 	// resolved but before a provider process is registered or spawned.
 	runEnvironmentPreflight RunEnvironmentPreflight
+	// attemptAdmission owns durable task/worktree leases and hard provider
+	// capacity. It is invoked only from RunContext's final launch chokepoint.
+	attemptAdmission AttemptAdmission
+	controlEvent     func(kind string, data map[string]any)
 
 	defaultSandboxMode string
 	// defaultSandboxReadMode is the read-visibility posture layered on top of
@@ -127,7 +131,9 @@ type Manager struct {
 	reservedByClass map[WorkloadClass]int
 	classFloors     map[WorkloadClass]int
 	// maxInFlightPerProvider caps concurrent in-flight agents per provider.
-	// 0 disables the cap (soft cap: never blocks dispatch, only redirects).
+	// Routing first tries a healthy peer; registerRunningAgent is the atomic
+	// hard backstop that prevents concurrent selectors from overshooting it.
+	// 0 disables the cap.
 	maxInFlightPerProvider int
 	// dispatchJitterMs bounds a uniform random delay applied before headless
 	// dispatch to de-correlate a wave of same-tick starts. 0 disables jitter.
@@ -163,7 +169,8 @@ type Manager struct {
 	// avoid recreating a zombie codex agent whose chat task was deleted.
 	taskExists func(taskID string) bool
 
-	taskStatus func(taskID string) (string, bool)
+	taskStatus     func(taskID string) (string, bool)
+	taskGeneration func(taskID string) (int64, bool)
 
 	// toolLedger records every tool call every agent makes, whatever the
 	// permission posture. Nil disables recording; Logger.Log tolerates it.
@@ -173,13 +180,15 @@ type Manager struct {
 	// TaskID — see prepareRunConfig. nil is only valid when every caller is a
 	// system/probe run with an empty TaskID (tests, health checks).
 	sandboxHome func(taskID string) (string, error)
-	// controlHome, when non-empty, is exported as SYBRA_CONTROL_HOME into every
-	// task-scoped agent subprocess so `sybra-cli` task commands can reach the
-	// real operator store even though SYBRA_HOME points at the task's sandbox.
-	controlHome string
+	// controlHome is exported to ordinary task-scoped agents. Verifiers never
+	// receive it; they use the authenticated controlTarget/controlToken channel.
+	controlHome   string
+	controlTarget string
+	controlToken  func(taskID, sandboxHome string) string
 
-	ghAppToken func() string
-	artifacts  *artifact.Store
+	ghAppToken         func() string
+	ghVerifierAppToken func() string
+	artifacts          *artifact.Store
 
 	// deadAgentRetention bounds how long a completed agent stays in agents
 	// after markAgentDone before being evicted. <= 0 evicts synchronously
@@ -215,6 +224,9 @@ type RunEnvironment struct {
 	Provider      string
 	SandboxMode   string
 	ScratchRoots  []string
+	// LocalCommand distinguishes deterministic shell checks from provider
+	// agents. These checks need containment, but never provider capacity.
+	LocalCommand bool
 }
 
 // RunEnvironmentPreflight certifies a prepared provider run before spawn.
@@ -256,8 +268,11 @@ type ManagerConfig struct {
 	SessionSink       func(taskID, agentID, sessionID string) error
 	TaskExists        func(taskID string) bool
 	TaskStatus        func(taskID string) (string, bool)
+	TaskGeneration    func(taskID string) (int64, bool)
 	LimitSink         func(limits.Snapshot)
 	Artifacts         *artifact.Store
+	AttemptAdmission  AttemptAdmission
+	ControlEvent      func(kind string, data map[string]any)
 
 	// SandboxHome resolves the per-task sandbox SYBRA_HOME directory for a
 	// task-scoped run. Required for every fresh agent subprocess so it never
@@ -265,10 +280,14 @@ type ManagerConfig struct {
 	// Manager.prepareRunConfig. May be nil only when the manager is used
 	// exclusively for system/probe runs with an empty TaskID.
 	SandboxHome func(taskID string) (string, error)
-	// ControlHome, when non-empty, is exported as SYBRA_CONTROL_HOME into
-	// every task-scoped agent subprocess so sybra-cli task commands reach the
-	// real operator store (typically config.HomeDir()).
+	// ControlHome is exported to non-verifier task-scoped agents so sybra-cli
+	// task commands reach the real operator store (typically config.HomeDir()).
 	ControlHome string
+	// ControlTarget and ControlToken route verifier CLI mutations through the
+	// authenticated service boundary instead of exposing the operator store as
+	// a writable filesystem path.
+	ControlTarget string
+	ControlToken  func(taskID, sandboxHome string) string
 	// GhShimDir holds the `gh` approval-guard shim. It must sit outside the
 	// agent's sandbox write roots (typically under config.HomeDir()) so a run
 	// cannot overwrite its own guard. Empty disables the shim.
@@ -349,9 +368,12 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		limitPolicy:            copyLimitPolicy(cfg.Runtime.LimitPolicy),
 		limitSink:              cfg.LimitSink,
 		artifacts:              cfg.Artifacts,
+		attemptAdmission:       cfg.AttemptAdmission,
+		controlEvent:           cfg.ControlEvent,
 		sessionSink:            cfg.SessionSink,
 		taskExists:             cfg.TaskExists,
 		taskStatus:             cfg.TaskStatus,
+		taskGeneration:         cfg.TaskGeneration,
 		maxInFlightPerProvider: cfg.Runtime.MaxInFlightPerProvider,
 		dispatchJitterMs:       cfg.Runtime.DispatchJitterMs,
 		headlessSteerable:      cfg.Runtime.HeadlessSteerable,
@@ -360,6 +382,8 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		defaultSandboxReadMode: cfg.Runtime.SandboxReadMode,
 		sandboxHome:            cfg.SandboxHome,
 		controlHome:            cfg.ControlHome,
+		controlTarget:          cfg.ControlTarget,
+		controlToken:           cfg.ControlToken,
 		deadAgentRetention:     defaultDeadAgentRetention,
 		playwrightMCPEnabled:   cfg.Runtime.PlaywrightMCPEnabled,
 		playwrightMCPExtraArgs: cfg.Runtime.PlaywrightMCPExtraArgs,
@@ -623,7 +647,11 @@ func (m *Manager) ReplaceRuntimeConfig(cfg ManagerRuntimeConfig) error {
 	} else {
 		m.k8sRunner = nil
 	}
+	admission := m.attemptAdmission
 	m.mu.Unlock()
+	if updater, ok := admission.(AttemptLimitUpdater); ok {
+		updater.ReplaceLimits(cfg.MaxConcurrent, cfg.MaxInFlightPerProvider)
+	}
 	m.warnInertCap(m.logger, cfg.MaxInFlightPerProvider, cfg.LimitGate)
 	return nil
 }
@@ -713,14 +741,21 @@ func (m *Manager) registryDir() string {
 	return m.surviveRestartDir
 }
 
-// saveRegistry snapshots the agent to disk. No-op when survival is off.
+// saveRegistry snapshots the agent to disk and refreshes its durable attempt
+// binding. Admission updates are intentionally independent of restart
+// survival: a deployment may disable process reattachment while still using
+// durable leases for dispatch ownership and capacity.
 func (m *Manager) saveRegistry(ctx context.Context, a *Agent) {
 	reg := m.registry()
-	if reg == nil || a == nil {
+	if a == nil {
 		return
 	}
 	rec := a.toRecord()
 	rec.ProcStartedAt = processStartString(ctx, rec.PID)
+	m.bindAndHeartbeatAttempt(ctx, a, rec.ProcStartedAt)
+	if reg == nil {
+		return
+	}
 	if err := reg.Save(rec); err != nil {
 		m.logger.Warn(
 			"agent.registry.save",
@@ -780,6 +815,15 @@ func (m *Manager) SetGHAppToken(fn func() string) {
 	m.mu.Lock()
 	m.ghAppToken = fn
 	m.mu.Unlock()
+}
+
+func (m *Manager) SetGHVerifierAppToken(fn func() string) {
+	m.mu.Lock()
+	m.ghVerifierAppToken = fn
+	m.mu.Unlock()
+	if err := m.syncGHVerifierAppToken(); err != nil {
+		m.logger.Error("agent.gh-shim.verifier-token", "err", err)
+	}
 }
 
 func (m *Manager) LimitPolicy() limits.Policy {
@@ -1081,6 +1125,10 @@ func (m *Manager) recordCompletion(ctx context.Context, a *Agent, ok bool) {
 // calling onComplete a second time and double-advancing the workflow.
 func (m *Manager) fireComplete(ctx context.Context, a *Agent, ok bool) {
 	a.completedOnce.Do(func() {
+		// Release/finalize durable ownership before the callback advances a
+		// workflow and synchronously admits its next mutating attempt on the
+		// same worktree.
+		m.completeAttempt(ctx, a, attemptTerminalOutcome(a))
 		m.recordCompletion(ctx, a, ok)
 		if m.onComplete != nil {
 			m.onComplete(a)

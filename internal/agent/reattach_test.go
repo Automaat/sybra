@@ -6,9 +6,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // invariantSnapshot atomically reads liveCount and sum(liveByProvider) under
@@ -28,6 +32,58 @@ func assertAccountingInvariant(t *testing.T, m *Manager) {
 	sum, liveCount := invariantSnapshot(m)
 	if sum != liveCount {
 		t.Fatalf("sum(liveByProvider)=%d != liveCount=%d", sum, liveCount)
+	}
+}
+
+func TestReattachUnsupportedDeadLeaderConfirmsGroupBeforeLeaseRelease(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	leader := exec.Command("bash", "-c", "(trap '' INT; exec sleep 60) & echo $! > "+pidFile+"; exit 0")
+	leader.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := leader.Start(); err != nil {
+		t.Fatal(err)
+	}
+	leaderPID := leader.Process.Pid
+	if err := leader.Wait(); err != nil {
+		t.Fatalf("leader wait: %v", err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-leaderPID, syscall.SIGKILL) })
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childPID, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || !processAlive(childPID) {
+		t.Fatalf("child pid = %d, %v; want live descendant", childPID, err)
+	}
+
+	prevGrace := stopSIGINTGrace
+	stopSIGINTGrace = 50 * time.Millisecond
+	t.Cleanup(func() { stopSIGINTGrace = prevGrace })
+	m, _ := newTestManager(t)
+	recorder := &recordingAttemptAdmission{}
+	m.attemptAdmission = recorder
+	registry := &fixedSurvivalRegistry{records: []Record{{
+		ID: "legacy-dead-leader", Mode: "interactive", Provider: providerid.Claude, PID: leaderPID,
+		AttemptLeaseID: "legacy-lease", AttemptVersion: 1,
+	}}}
+	m.reg = registry
+	m.surviveRestart = true
+
+	if got := m.ReattachAllContext(t.Context()); len(got) != 0 {
+		t.Fatalf("reattached unsupported records = %d", len(got))
+	}
+	if signalTargetAlive(-leaderPID, leaderPID) {
+		t.Fatal("legacy record released while descendant process group remained alive")
+	}
+	recorder.mu.Lock()
+	if len(recorder.completed) != 1 || recorder.completed[0] != "reaped_legacy_mode_interactive" {
+		t.Fatalf("lease outcomes = %v", recorder.completed)
+	}
+	recorder.mu.Unlock()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if len(registry.deleted) != 1 || registry.deleted[0] != "legacy-dead-leader" {
+		t.Fatalf("deleted records = %v", registry.deleted)
 	}
 }
 

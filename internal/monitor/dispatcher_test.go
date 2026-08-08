@@ -116,9 +116,6 @@ func TestDispatcher_BoardWideAnomalyRunsInRepoDir(t *testing.T) {
 	if cfg.Model != "sonnet" {
 		t.Errorf("model: want sonnet, got %q", cfg.Model)
 	}
-	if !cfg.IgnoreConcurrencyLimit {
-		t.Errorf("IgnoreConcurrencyLimit must be true for monitor dispatches")
-	}
 	if !equalStrings(cfg.AllowedTools, []string{"Bash", "Read"}) {
 		t.Errorf("allowed tools: want [Bash Read], got %v", cfg.AllowedTools)
 	}

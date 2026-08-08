@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"maps"
+	"net/http"
 
 	"github.com/Automaat/sybra/internal/httpapi"
 )
@@ -26,8 +27,20 @@ func (a *App) wireServices(emit func(string, any)) {
 	a.wireLearningService(emit)
 	a.wirePromptLabService()
 	a.wireQueueService()
+	a.wireVerifierControl()
 	// MUST be last: completion handlers read fully-wired service dependencies.
 	a.wireCompletionHandlers(emit)
+}
+
+func (a *App) wireVerifierControl() {
+	if a.agentSvc == nil || a.agentSvc.approval == nil {
+		return
+	}
+	mux := http.NewServeMux()
+	httpapi.Mount(mux, map[string]httpapi.Service{
+		"TaskService": httpapi.NewService(a.taskSvc, "GetTask", "UpdateTask").WithReadOnly("GetTask"),
+	}, a.logger, nil)
+	a.agentSvc.approval.SetVerifierControl(mux)
 }
 
 // ServiceRegistry returns the named service instances for HTTP dispatch.

@@ -1273,6 +1273,30 @@ func IsWorktreeDirty(ctx context.Context, worktreePath string) (bool, error) {
 	return worktreeDirty(ctx, worktreePath)
 }
 
+// WorktreeOperation reports the in-progress Git operation whose state would be
+// destroyed by reset/sanitize/remove. Empty means no recognized operation.
+func WorktreeOperation(ctx context.Context, worktreePath string) string {
+	gitDir, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "rev-parse", "--git-dir")
+	if err != nil {
+		return "unknown"
+	}
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(worktreePath, gitDir)
+	}
+	for _, candidate := range []struct{ name, marker string }{
+		{"merge", "MERGE_HEAD"},
+		{"rebase", "rebase-merge"},
+		{"rebase", "rebase-apply"},
+		{"cherry-pick", "CHERRY_PICK_HEAD"},
+		{"revert", "REVERT_HEAD"},
+	} {
+		if _, err := os.Stat(filepath.Join(gitDir, candidate.marker)); err == nil {
+			return candidate.name
+		}
+	}
+	return ""
+}
+
 // HasUnpushedCommits reports whether HEAD in worktreePath holds commits that
 // no remote-tracking ref locally knows about. Errs toward true: if the count
 // cannot be determined (not a git repo, missing dir, git failure), callers

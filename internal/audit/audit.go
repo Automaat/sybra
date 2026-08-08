@@ -232,6 +232,14 @@ const (
 	// failed preflight parks the task in human-required immediately, so this
 	// event fires on every occurrence, not just the first.
 	EventGHPushAuthFailed = "gh_push.auth_failed"
+	// Monitor incident events are scrub-safe typed projections. They never
+	// contain anomaly prose, raw work project identifiers, or task content.
+	EventMonitorIncidentObserved    = "monitor.incident_observed"
+	EventMonitorIncidentRemediation = "monitor.incident_remediation"
+	EventMonitorIncidentResolved    = "monitor.incident_resolved"
+	EventMonitorIncidentSuperseded  = "monitor.incident_superseded"
+	EventReconciliationDecided      = "reconciliation.decided"
+	EventAttemptLeasesReconciled    = "attempt_leases.reconciled"
 )
 
 type Event struct {

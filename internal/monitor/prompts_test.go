@@ -7,6 +7,14 @@ import (
 	"time"
 )
 
+func TestDispatchPromptUsesTypedIncidentFailureCode(t *testing.T) {
+	a := Anomaly{Kind: KindBottleneck, Fingerprint: "incident:one", IncidentScope: "fleet", Evidence: map[string]any{"failure_code": "reconciliation.repair"}}
+	prompt := dispatchPromptForAnomaly(a, "", "")
+	if !strings.Contains(prompt, "Typed failure code: reconciliation.repair") {
+		t.Fatalf("typed failure code missing from prompt: %s", prompt)
+	}
+}
+
 func TestDeterministicIssueBody_StuckHumanBlocked_HumanRequired(t *testing.T) {
 	a := Anomaly{
 		Kind:        KindStuckHumanBlocked,

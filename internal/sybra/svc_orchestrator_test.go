@@ -3,6 +3,7 @@
 package sybra
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"testing"
@@ -161,7 +162,7 @@ func TestOrchestratorService_ReplacesWedgedBrain(t *testing.T) {
 	}
 }
 
-func TestOrchestratorService_IgnoreConcurrencyLimit(t *testing.T) {
+func TestOrchestratorService_RespectsConcurrencyLimit(t *testing.T) {
 	binDir := buildTestBinaries(t)
 	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
 	t.Setenv("FAKE_CLAUDE_SCENARIO", "interactive_implement")
@@ -183,8 +184,8 @@ func TestOrchestratorService_IgnoreConcurrencyLimit(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = mgr.StopAgent(blocker.ID) })
 
-	// Orchestrator must still start despite the saturated limit.
-	if err := svc.StartOrchestrator(); err != nil {
-		t.Fatalf("StartOrchestrator under saturated limit: %v", err)
+	// Control-plane work uses the same hard admission ceiling as task work.
+	if err := svc.StartOrchestrator(); !errors.Is(err, agent.ErrMaxConcurrentReached) {
+		t.Fatalf("StartOrchestrator under saturated limit = %v, want ErrMaxConcurrentReached", err)
 	}
 }

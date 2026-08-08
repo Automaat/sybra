@@ -185,15 +185,14 @@ func (s *Scheduler) tick(ctx context.Context, loopID string) time.Duration {
 // filled in later by OnAgentComplete when the agent finishes.
 func (s *Scheduler) fire(la LoopAgent) (string, error) {
 	cfg := agent.RunConfig{
-		Name:                   la.AgentName(),
-		Role:                   agent.RoleLoop,
-		Mode:                   "headless",
-		Prompt:                 la.Prompt,
-		Dir:                    s.homeDir,
-		Provider:               la.Provider,
-		Model:                  la.Model,
-		AllowedTools:           la.AllowedTools,
-		IgnoreConcurrencyLimit: true,
+		Name:         la.AgentName(),
+		Role:         agent.RoleLoop,
+		Mode:         "headless",
+		Prompt:       la.Prompt,
+		Dir:          s.homeDir,
+		Provider:     la.Provider,
+		Model:        la.Model,
+		AllowedTools: la.AllowedTools,
 	}
 	ag, err := s.runner.Run(cfg)
 	if err != nil {

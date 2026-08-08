@@ -9,10 +9,10 @@ import (
 	"strings"
 )
 
-func listProviderProcessesUnderRoots(ctx context.Context, roots []string) []providerProcess {
+func listProviderProcessesUnderRoots(ctx context.Context, roots []string) ([]providerProcess, bool) {
 	out, err := exec.CommandContext(ctx, "ps", "-eww", "-axo", "pid=,command=").Output()
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	type candidate struct {
 		pid   int
@@ -39,10 +39,13 @@ func listProviderProcessesUnderRoots(ctx context.Context, roots []string) []prov
 		pids = append(pids, strconv.Itoa(pid))
 	}
 	if len(candidates) == 0 {
-		return nil
+		return nil, true
 	}
 
-	cwds := lsofCWDsByPID(ctx, pids)
+	cwds, ok := lsofCWDsByPID(ctx, pids)
+	if !ok {
+		return nil, false
+	}
 	procs := make([]providerProcess, 0, len(candidates))
 	for _, cand := range candidates {
 		cwd := cwds[cand.pid]
@@ -51,19 +54,19 @@ func listProviderProcessesUnderRoots(ctx context.Context, roots []string) []prov
 		}
 		procs = append(procs, providerProcess{PID: cand.pid, Command: cand.cmd, CWD: cwd, Owner: cand.owner})
 	}
-	return procs
+	return procs, true
 }
 
-func lsofCWDsByPID(ctx context.Context, pids []string) map[int]string {
+func lsofCWDsByPID(ctx context.Context, pids []string) (map[int]string, bool) {
 	out := make(map[int]string)
 	if len(pids) == 0 {
-		return out
+		return out, true
 	}
 	cwdOut, err := exec.CommandContext(ctx, "lsof", "-a", "-d", "cwd", "-Fpn", "-p", strings.Join(pids, ",")).Output()
-	if err != nil {
-		return out
+	if err != nil && len(cwdOut) == 0 {
+		return out, false
 	}
-	return parseLsofCWDs(string(cwdOut))
+	return parseLsofCWDs(string(cwdOut)), true
 }
 
 func parseLsofCWDs(output string) map[int]string {
