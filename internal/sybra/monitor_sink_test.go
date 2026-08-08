@@ -269,6 +269,51 @@ func TestMonitorRoutingSink_ConfidentialRoutesFailClosedWithoutWorkScrubContext(
 	}
 }
 
+func TestMonitorRoutingSink_WorkRoutesFailClosedWithEmptyTaskScrubContext(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, task.EmitterFunc(func(string, any) {}))
+	inner := &fakeInnerSink{closeNext: true}
+	sink := newMonitorRoutingSink(inner, tasks, func(string) *WorkScrubContext {
+		return &WorkScrubContext{ProjectID: "work-project", Blocklist: []string{""}}
+	}, "Automaat/sybra", nil, slog.New(slog.DiscardHandler))
+	src, err := tasks.Create("source", "source body", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := "work-project"
+	if _, err := tasks.Update(src.ID, task.Update{ProjectID: &pid}); err != nil {
+		t.Fatal(err)
+	}
+	a := monitor.Anomaly{
+		Kind:         monitor.KindLostAgent,
+		TaskID:       src.ID,
+		Fingerprint:  "lost_agent:" + src.ID,
+		Confidential: true,
+	}
+
+	if _, err := sink.Submit(context.Background(), a, "SECRET submit"); err == nil {
+		t.Fatal("Submit error = nil, want fail-closed error")
+	}
+	if _, err := sink.CloseIfOpen(context.Background(), a, "SECRET close"); err == nil {
+		t.Fatal("CloseIfOpen error = nil, want fail-closed error")
+	}
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].Body != "source body" || all[0].Status != task.StatusTodo {
+		t.Fatalf("confidential route mutated local tasks: %+v", all)
+	}
+	if inner.calls != 0 || inner.closeCalls != 0 {
+		t.Fatalf("confidential route reached public sink: submit=%d close=%d", inner.calls, inner.closeCalls)
+	}
+}
+
 func TestMonitorRoutingSink_WorkAnomaly_DedupsByFingerprintAfterRename(t *testing.T) {
 	t.Parallel()
 	sink, tasks, _ := newSinkTestEnv(t)

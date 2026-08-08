@@ -62,6 +62,9 @@ func newMonitorRoutingSink(
 // for work-typed anomalies, otherwise delegates to the wrapped GH sink.
 func (s *monitorRoutingSink) Submit(ctx context.Context, a monitor.Anomaly, body string) (bool, error) {
 	wctx := s.lookupWorkContext(a.TaskID)
+	if wctx != nil && !hasEffectiveBlocklist(wctx.Blocklist) {
+		return false, fmt.Errorf("route work monitor artifact: work scrub context unavailable")
+	}
 	if wctx == nil && a.Confidential {
 		wctx = s.lookupAnyWorkContext()
 		if wctx == nil {
@@ -169,6 +172,9 @@ func (s *monitorRoutingSink) MapDuplicateIncidents(ctx context.Context, in monit
 func (s *monitorRoutingSink) CloseIfOpen(ctx context.Context, a monitor.Anomaly, comment string) (bool, error) {
 	title := ""
 	wctx := s.lookupWorkContext(a.TaskID)
+	if wctx != nil && !hasEffectiveBlocklist(wctx.Blocklist) {
+		return false, fmt.Errorf("close work monitor artifact: work scrub context unavailable")
+	}
 	if wctx == nil && a.Confidential {
 		wctx = s.lookupAnyWorkContext()
 		if wctx == nil {
@@ -239,10 +245,19 @@ func (s *monitorRoutingSink) lookupAnyWorkContext() *WorkScrubContext {
 			}
 		}
 	}
-	if len(ctx.Blocklist) == 0 {
+	if !hasEffectiveBlocklist(ctx.Blocklist) {
 		return nil
 	}
 	return ctx
+}
+
+func hasEffectiveBlocklist(blocklist []string) bool {
+	for _, value := range blocklist {
+		if value != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *monitorRoutingSink) dispatchCreatedWorkflow(taskID string) {
