@@ -40,6 +40,11 @@ var ErrAgentRunning = worktreeerr.ErrAgentRunning
 // than guess at.
 var ErrTaskBranchMissing = errors.New("task branch does not exist locally or on origin")
 
+// ErrLocalWorkPreserved marks a deliberate refusal to recreate a worktree
+// containing local state. Callers must surface recovery guidance rather than
+// counting it as a transient preparation failure.
+var ErrLocalWorkPreserved = errors.New("local worktree state preserved")
+
 // SyncResult classifies the outcome of a proactive branch sync
 // (Manager.SyncTaskBranch). String values are stable — they are recorded as
 // workflow step output and generic artifacts, so renaming a constant changes
