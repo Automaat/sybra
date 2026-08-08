@@ -20,7 +20,7 @@ const DefaultSQLiteFileName = "sybra.db"
 type DatabaseConfig struct {
 	// Backend is "file" (filesystem stores), "sqlite" (embedded single file), or "postgres" (shared server). An unrecognized value fails validation instead of falling back, so a typo cannot silently keep writing files.
 	Backend string `yaml:"backend,omitempty" json:"backend"`
-	// DSN is a file path for sqlite (default ~/.sybra/sybra.db) and a required postgres:// URL or key=value string for postgres.
+	// DSN is a file path for sqlite (default ~/.sybra/sybra.db), optionally with driver query parameters after a "?", and a required postgres:// URL or key=value string for postgres.
 	DSN string `yaml:"dsn,omitempty" json:"dsn" secret:"true"`
 	// MaxOpenConns caps concurrent connections; 0 uses the per-engine default (1 for sqlite, 16 for postgres).
 	MaxOpenConns int `yaml:"max_open_conns,omitempty" json:"maxOpenConns"`
