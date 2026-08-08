@@ -242,6 +242,11 @@ func cmdDoctorCleanupFindings(store taskBoard, args []string, jsonOut bool) int 
 		if strings.TrimSpace(*taskID) == "" {
 			return fatalUsage(jsonOut, "--task is required")
 		}
+		// The only findings subcommand that reads a task, so it is the only one
+		// that needs a board. The rest answer from this machine's own file.
+		if store == nil {
+			return fatal(jsonOut, "reattach needs the board to confirm task %q exists, and no Sybra server is reachable", *taskID)
+		}
 		if _, err := store.Get(*taskID); err != nil {
 			return fatal(jsonOut, "reattach target task %q: %v", *taskID, err)
 		}
@@ -362,8 +367,8 @@ func cmdDoctorWithoutBoard(cfg *config.Config, store taskBoard, ownsHome bool, a
 	// The protected-findings record is this machine's own file, so reading it
 	// needs no board at all — and it is exactly what an operator asks for when
 	// the server is what broke and the disk is filling up.
-	if rest := args[1:]; len(rest) > 0 && rest[0] == "findings" && !needsBoard(rest[1:]) {
-		return cmdDoctorCleanupFindings(store, rest[1:], jsonOut)
+	if len(args) > 1 && args[1] == "findings" && !needsBoard(args, 2) {
+		return cmdDoctorCleanupFindings(store, args[2:], jsonOut)
 	}
 	if !ownsHome {
 		return fatal(jsonOut,
@@ -376,7 +381,8 @@ func cmdDoctorWithoutBoard(cfg *config.Config, store taskBoard, ownsHome bool, a
 }
 
 // needsBoard reports the findings subcommands that read a task, which is the
-// only part of that subtree a board is required for.
-func needsBoard(args []string) bool {
-	return len(args) > 0 && args[0] == "reattach"
+// only part of that subtree a board is required for. from is where the findings
+// subcommand starts in args.
+func needsBoard(args []string, from int) bool {
+	return len(args) > from && args[from] == "reattach"
 }

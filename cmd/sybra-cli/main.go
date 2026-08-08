@@ -358,15 +358,13 @@ func dispatch(cmd string, rest []string, cfg *config.Config, jsonOut bool) int {
 	if refusal != "" {
 		return fatal(jsonOut, "%s", refusal)
 	}
-	// Every board command runs against the server. api is nil only for the
-	// commands that inspect this machine and never read the board, so those
-	// handlers below must not touch store or projStore.
-	var store taskBoard
-	var projStore projectBoard
-	if api != nil {
-		store = newAPITaskBoard(api)
-		projStore = newAPIProjectBoard(api)
+	// api is nil only for the commands that inspect this machine, and those are
+	// dispatched separately so no board command can be handed a nil board.
+	if api == nil {
+		return dispatchWithoutBoard(cmd, rest, cfg, jsonOut)
 	}
+	store := newAPITaskBoard(api)
+	projStore := newAPIProjectBoard(api)
 	switch cmd {
 	case "list":
 		return cmdList(store, rest, jsonOut)
@@ -494,6 +492,23 @@ func ownsThisHome(api *apiClient) bool {
 		return true
 	}
 	return !api.remote
+}
+
+// dispatchWithoutBoard routes the commands that reached here with no server.
+// Only runsWithoutServer names get this far, and none of them reads the board.
+func dispatchWithoutBoard(cmd string, rest []string, cfg *config.Config, jsonOut bool) int {
+	switch cmd {
+	case "config":
+		return cmdConfig(cfg, rest, jsonOut, false, nil)
+	case "doctor":
+		return cmdDoctor(cfg, nil, false, rest, jsonOut)
+	case "health":
+		return cmdHealth(cfg, rest, jsonOut)
+	case "install-skills":
+		return cmdInstallSkills(cfg, jsonOut)
+	default:
+		return fatal(jsonOut, "%s needs a Sybra server and none is reachable", cmd)
+	}
 }
 
 // runsWithoutServer reports the commands that inspect or repair this machine alone. They stay usable when the board they would otherwise talk to is down, which is what makes them the ones an operator reaches for to find out why it is down.
