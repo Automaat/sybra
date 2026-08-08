@@ -229,6 +229,33 @@ func TestResolveUnpublishedIncidentRemainsRetryable(t *testing.T) {
 	}
 }
 
+func TestLegacySinkSubmissionDoesNotLatchIncidentPublication(t *testing.T) {
+	t.Parallel()
+	store := newTestIncidentStore(t)
+	now := time.Date(2026, 8, 8, 1, 0, 0, 0, time.UTC)
+	a := Anomaly{Kind: KindUntriaged, DetectedAt: now}
+	cause := RootCause{FailureCode: string(KindUntriaged), Component: "task", Capability: "triage", ProjectScope: "fleet", ConfigGeneration: "g"}
+	in, _, err := store.Observe(a, cause, "task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Fingerprint = in.Fingerprint
+	sink := &fakeSink{createNext: true}
+	svc := &Service{cfg: config.MonitorConfig{}, incidents: store, sink: sink, logger: slog.Default(), state: newRunState()}
+
+	opened, updated := svc.fileIssues(context.Background(), now, []Anomaly{a}, map[string]string{}, map[string]IncidentChange{in.Fingerprint: IncidentOpened})
+	if opened != 1 || updated != 0 || len(sink.submissions) != 1 {
+		t.Fatalf("legacy submission result: opened=%d updated=%d submissions=%d", opened, updated, len(sink.submissions))
+	}
+	got, ok, err := store.Get(in.Fingerprint)
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+	if got.IssueURL != "" || got.PublishedRevision >= got.Revision {
+		t.Fatalf("placeholder submission latched publication: url=%q published=%d revision=%d", got.IssueURL, got.PublishedRevision, got.Revision)
+	}
+}
+
 func TestIncidentObservationFailsPriorAttemptAndOnlyLaterRepairSucceeds(t *testing.T) {
 	store := newTestIncidentStore(t)
 	base := time.Date(2026, 8, 8, 2, 0, 0, 0, time.UTC)

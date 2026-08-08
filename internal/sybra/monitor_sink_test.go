@@ -239,6 +239,27 @@ func TestMonitorRoutingSink_ConfidentialIncidentResolvesAndReopensSameLocalTask(
 	}
 }
 
+func TestMonitorRoutingSink_LegacyInnerDoesNotInventIncidentURL(t *testing.T) {
+	t.Parallel()
+	sink, _, inner := newSinkTestEnv(t)
+	in := monitor.Incident{
+		Fingerprint:  "incident:opaque",
+		FailureCode:  string(monitor.KindLostAgent),
+		ProjectScope: "fleet",
+		State:        monitor.IncidentActive,
+	}
+	created, artifact, err := sink.ApplyIncident(context.Background(), in, monitor.IncidentOpened, "evidence")
+	if err != nil || !created {
+		t.Fatalf("ApplyIncident: created=%v err=%v", created, err)
+	}
+	if artifact.URL != "" {
+		t.Fatalf("legacy inner invented durable incident URL %q", artifact.URL)
+	}
+	if inner.calls != 1 {
+		t.Fatalf("legacy inner submissions = %d, want 1", inner.calls)
+	}
+}
+
 func TestMonitorRoutingSink_ConfidentialRoutesFailClosedWithoutWorkScrubContext(t *testing.T) {
 	t.Parallel()
 	inner := &fakeInnerSink{closeNext: true}

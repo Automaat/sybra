@@ -798,6 +798,7 @@ func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly
 	processedIncidents := map[string]bool{}
 	for i := range anoms {
 		a := anoms[i]
+		originalFingerprint := a.Fingerprint
 		if s.incidents != nil && processedIncidents[a.Fingerprint] {
 			continue
 		}
@@ -853,7 +854,6 @@ func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly
 				created, artifact, err = sink.ApplyIncident(ctx, in, incidentChanges[a.Fingerprint], body)
 			} else {
 				created, err = s.sink.Submit(ctx, a, body)
-				artifact.URL = "submitted"
 			}
 		} else {
 			created, err = s.sink.Submit(ctx, a, body)
@@ -867,9 +867,9 @@ func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly
 			continue
 		}
 		if a.Kind == KindLostAgent && s.incidents == nil {
-			s.state.lostAgentFiled(anoms[i].Fingerprint, a.Fingerprint)
+			s.state.lostAgentFiled(originalFingerprint, a.Fingerprint)
 		}
-		if s.incidents != nil {
+		if s.incidents != nil && artifact.URL != "" {
 			_ = s.incidents.Link(a.Fingerprint, artifact.URL, "", nil)
 		}
 		if created {

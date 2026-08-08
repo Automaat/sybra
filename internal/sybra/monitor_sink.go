@@ -140,7 +140,7 @@ func (s *monitorRoutingSink) ApplyIncident(ctx context.Context, in monitor.Incid
 		return sink.ApplyIncident(ctx, in, change, body)
 	}
 	created, err := s.inner.Submit(ctx, a, body)
-	return created, monitor.IncidentArtifact{URL: "submitted"}, err
+	return created, monitor.IncidentArtifact{}, err
 }
 
 func (s *monitorRoutingSink) ResolveIncident(ctx context.Context, in monitor.Incident, comment string) (bool, error) {
