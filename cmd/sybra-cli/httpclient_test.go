@@ -432,7 +432,8 @@ func TestNewAPIClient_RejectsInvalidDedicatedServerTarget(t *testing.T) {
 		name string
 		raw  string
 	}{
-		{name: "empty", raw: ""},
+		// "empty" is absent on purpose: an unset target resolves to this
+		// machine's board rather than being rejected.
 		{name: "missing-host", raw: "8080"},
 		{name: "blank-host", raw: ":8080"},
 		{name: "wildcard-host", raw: "0.0.0.0:8080"},

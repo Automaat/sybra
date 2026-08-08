@@ -166,18 +166,25 @@ func TestUnknownKeyDoesNotRedirectTaskWrites(t *testing.T) {
 // TestUnreachableConfigStillFallsBack keeps the fallback alive for what it was
 // built for: a config that cannot be read at all, where nothing is known about
 // the server and a local task store is the best available answer.
-func TestUnreachableConfigStillFallsBack(t *testing.T) {
+// TestUnparseableConfigFailsRatherThanEditingFiles replaces a test that
+// required an unparseable config to fall back to the task store. That fallback
+// is gone: a config the CLI cannot read says nothing about whether the board is
+// up, and opening its files was the silent second writer this issue removed.
+func TestUnparseableConfigFailsRatherThanEditingFiles(t *testing.T) {
 	home := setupStore(t)
 	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("::not yaml at all\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	code, _, stderr := runCLIWithStderr(t, "list")
-	if code != 0 {
-		t.Fatalf("`list` exited %d; the fallback must still cover an unparseable config: %q", code, stderr)
+	if code == 0 {
+		t.Fatal("`list` exited 0 with a config it cannot parse")
 	}
-	if !strings.Contains(stderr, "falling back to direct task store") {
-		t.Errorf("no fallback warning for an unparseable config: %q", stderr)
+	if !strings.Contains(stderr, "load config") {
+		t.Errorf("stderr = %q, want it to name the config failure", stderr)
+	}
+	if strings.Contains(stderr, "falling back") {
+		t.Errorf("stderr = %q; the CLI must not fall back to the board's files", stderr)
 	}
 }
 

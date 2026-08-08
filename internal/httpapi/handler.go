@@ -21,6 +21,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // MaxRequestBody caps the size of a single API request body. Sybra service
@@ -286,6 +288,13 @@ func stripErrorResult(out []reflect.Value, w http.ResponseWriter, logger *slog.L
 		// filesystem path, which must never reach an HTTP client.
 		logger.Info("httpapi.call.not_found", "service", svcName, "method", methodName, "err", callErr)
 		respondError(w, logger, http.StatusNotFound, ErrCodeNotFound, "not found")
+	case errors.Is(callErr, fsutil.ErrLockTimeout):
+		// A contended record is a wait, not a fault. The CLI turns 503 into
+		// exit 75 so an agent retries; as a 500 the same contention read as a
+		// hard failure and the agent gave up on work it only had to repeat.
+		// The raw error names a lock path and stays server-side.
+		logger.Info("httpapi.call.locked", "service", svcName, "method", methodName, "err", callErr)
+		respondError(w, logger, http.StatusServiceUnavailable, ErrCodeUnavailable, "resource is locked; retry")
 	default:
 		logger.Warn("httpapi.call.error", "service", svcName, "method", methodName, "err", callErr)
 		respondError(w, logger, http.StatusInternalServerError, ErrCodeInternal, "internal error")

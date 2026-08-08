@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -272,7 +271,9 @@ func TestNewAPIClient_TargetContract(t *testing.T) {
 		{name: "cleartext to another machine refused", target: "http://board.example:8080", token: "secret", wantErr: true},
 		{name: "https without its token refused", target: "https://board.example:8443", wantErr: true},
 		{name: "path refused", target: "https://board.example:8443/api", token: "secret", wantErr: true},
-		{name: "unset", target: "", token: "secret"},
+		// Unset is not in this table: it no longer means "no client", it means
+		// this machine's own board. TestNewAPIClient_FallsBackToThisMachinesBoard
+		// covers that resolution.
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -283,12 +284,6 @@ func TestNewAPIClient_TargetContract(t *testing.T) {
 			cfg.Server.AuthToken = "config-token"
 
 			client, err := newAPIClient(cfg)
-			if tt.target == "" {
-				if !errors.Is(err, errNoServerTarget) || client != nil {
-					t.Fatalf("unset target = %#v, %v; want the unset sentinel", client, err)
-				}
-				return
-			}
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("target %q was accepted or silently ignored: %#v", tt.target, client)

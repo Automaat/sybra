@@ -142,9 +142,3 @@ func reportTriageResults(jsonOut, all bool, results []triageResult) {
 func classifyOne(api *apiClient, t task.Task, timeout time.Duration, model string) (triageResult, error) {
 	return callAPIWithin[triageResult](api, max(timeout, apiCallTimeout), taskServiceName, "ClassifyTask", t.ID, model)
 }
-
-func markTriageRetryable(store *task.Manager, t task.Task, err error) error {
-	reason := triage.RetryableStatusReason(err)
-	_, updateErr := store.Update(t.ID, task.Update{StatusReason: &reason})
-	return updateErr
-}

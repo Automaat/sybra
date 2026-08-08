@@ -8,10 +8,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/config"
-	"github.com/Automaat/sybra/internal/project"
 )
-
-const clusterCmdTimeout = 60 * time.Second
 
 func cmdCluster(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) == 0 {
@@ -151,20 +148,4 @@ func reportReassign(jsonOut bool, taskID, node string) int {
 	}
 	fmt.Printf("reassigned %s to %s\n", taskID, node)
 	return 0
-}
-
-func isWorkProject(projects *project.Store) func(string) bool {
-	return func(projectID string) bool {
-		if projectID == "" {
-			return false
-		}
-		if projects == nil {
-			return true
-		}
-		rawType, err := projects.RawType(projectID)
-		if err != nil {
-			return true
-		}
-		return rawType != project.ProjectTypePet
-	}
 }

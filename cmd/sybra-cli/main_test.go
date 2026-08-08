@@ -379,8 +379,14 @@ func TestUpdateRetryableLockTimeoutExitsTempFail(t *testing.T) {
 	if code != 75 {
 		t.Fatalf("update exit = %d, want 75 (stderr: %s)", code, errOut)
 	}
-	if !strings.Contains(errOut, created.FilePath+".lock") {
-		t.Fatalf("stderr %q missing lock path %q", errOut, created.FilePath+".lock")
+	// The reason, not the path: the board's absolute lock path is the server's
+	// and stays there. What the caller needs is that this is worth retrying,
+	// which is what exit 75 above encodes.
+	if !strings.Contains(errOut, "locked") {
+		t.Fatalf("stderr %q does not say the record was locked", errOut)
+	}
+	if strings.Contains(errOut, created.FilePath) {
+		t.Fatalf("stderr %q leaks the board's filesystem path", errOut)
 	}
 }
 
@@ -432,175 +438,13 @@ func TestCLIWorksWithV2ObservabilityConfig(t *testing.T) {
 	}
 }
 
-func TestCLIGetAndUpdateFallbackWhenConfigLoadFails(t *testing.T) {
-	dir := setupStore(t)
-	t.Setenv("SYBRA_TASKS_DIR", "")
-	// Unparseable, not merely unknown: a schema error deliberately no longer
-	// reaches the fallback (#3133), since it says nothing about whether the
-	// server is up and its write path is denied to the agents that hit it.
-	if err := os.WriteFile(config.ConfigPath(), []byte("::not yaml at all\n"), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	store, err := task.NewStore(filepath.Join(dir, "tasks"))
-	if err != nil {
-		t.Fatalf("task.NewStore: %v", err)
-	}
-	manager := task.NewManager(store, nil)
-	created, err := manager.Create("fallback task", "body", "headless")
-	if err != nil {
-		t.Fatalf("seed task: %v", err)
-	}
-
-	code, stdout, stderr := runCLIWithStderr(t, "--json", "get", "--compact", created.ID)
-	if code != 0 {
-		t.Fatalf("get exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	if !strings.Contains(stderr, "falling back to direct task store") {
-		t.Fatalf("stderr missing fallback warning:\n%s", stderr)
-	}
-	var got task.Task
-	mustUnmarshal(t, stdout, &got)
-	if got.ID != created.ID {
-		t.Fatalf("get id = %q, want %q", got.ID, created.ID)
-	}
-
-	code, stdout, stderr = runCLIWithStderr(t, "--json", "update", created.ID, "--status", "in-progress", "--status-reason", "fallback path")
-	if code != 0 {
-		t.Fatalf("update exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	if !strings.Contains(stderr, "falling back to direct task store") {
-		t.Fatalf("stderr missing fallback warning on update:\n%s", stderr)
-	}
-	mustUnmarshal(t, stdout, &got)
-	if got.Status != task.StatusInProgress {
-		t.Fatalf("status = %q, want %q", got.Status, task.StatusInProgress)
-	}
-	if got.StatusReason != "fallback path" {
-		t.Fatalf("status reason = %q, want fallback path", got.StatusReason)
-	}
-}
-
-func TestCLIFallbackSupportsBroadenedTaskStoreCommands(t *testing.T) {
-	dir := setupStore(t)
-	t.Setenv("SYBRA_TASKS_DIR", "")
-
-	store, err := task.NewStore(filepath.Join(dir, "tasks"))
-	if err != nil {
-		t.Fatalf("task.NewStore: %v", err)
-	}
-	manager := task.NewManager(store, nil)
-	seeded, err := manager.Create("seed task", "body", "headless")
-	if err != nil {
-		t.Fatalf("seed task: %v", err)
-	}
-	toDelete, err := manager.Create("delete me", "body", "headless")
-	if err != nil {
-		t.Fatalf("seed delete task: %v", err)
-	}
-
-	// Unparseable, not merely unknown: a schema error deliberately no longer
-	// reaches the fallback (#3133), since it says nothing about whether the
-	// server is up and its write path is denied to the agents that hit it.
-	if err := os.WriteFile(config.ConfigPath(), []byte("::not yaml at all\n"), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	assertFallback := func(t *testing.T, stderr string) {
-		t.Helper()
-		if !strings.Contains(stderr, "falling back to direct task store") {
-			t.Fatalf("stderr missing fallback warning:\n%s", stderr)
-		}
-	}
-
-	code, stdout, stderr := runCLIWithStderr(t, "--json", "list")
-	if code != 0 {
-		t.Fatalf("list exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	assertFallback(t, stderr)
-	var listed []task.Task
-	mustUnmarshal(t, stdout, &listed)
-	if len(listed) != 2 {
-		t.Fatalf("list returned %d tasks, want 2", len(listed))
-	}
-
-	code, stdout, stderr = runCLIWithStderr(t, "--json", "create", "--title", "fallback created")
-	if code != 0 {
-		t.Fatalf("create exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	assertFallback(t, stderr)
-	var created task.Task
-	mustUnmarshal(t, stdout, &created)
-	if created.Title != "fallback created" {
-		t.Fatalf("created title = %q, want %q", created.Title, "fallback created")
-	}
-
-	code, stdout, stderr = runCLIWithStderr(t, "--json", "link-pr", seeded.ID, "42")
-	if code != 0 {
-		t.Fatalf("link-pr exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	assertFallback(t, stderr)
-	var linked task.Task
-	mustUnmarshal(t, stdout, &linked)
-	if linked.PRNumber != 42 {
-		t.Fatalf("pr number = %d, want 42", linked.PRNumber)
-	}
-	if linked.Status != task.StatusInReview {
-		t.Fatalf("status after link-pr = %q, want %q", linked.Status, task.StatusInReview)
-	}
-
-	code, stdout, stderr = runCLIWithStderr(t, "--json", "reopen", seeded.ID)
-	if code != 0 {
-		t.Fatalf("reopen exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	assertFallback(t, stderr)
-	reopened, err := store.Get(seeded.ID)
-	if err != nil {
-		t.Fatalf("get after reopen: %v", err)
-	}
-	if reopened.Status != task.StatusTodo {
-		t.Fatalf("status after reopen = %q, want %q", reopened.Status, task.StatusTodo)
-	}
-
-	code, stdout, stderr = runCLIWithStderr(t, "--json", "board")
-	if code != 0 {
-		t.Fatalf("board exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	assertFallback(t, stderr)
-	var board struct {
-		Counts map[string]int `json:"counts"`
-	}
-	mustUnmarshal(t, stdout, &board)
-	if board.Counts[string(task.StatusTodo)] < 1 {
-		t.Fatalf("board counts missing todo task: %+v", board.Counts)
-	}
-
-	code, stdout, stderr = runCLIWithStderr(t, "--json", "delete", toDelete.ID)
-	if code != 0 {
-		t.Fatalf("delete exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	assertFallback(t, stderr)
-	if _, err := store.Get(toDelete.ID); err == nil {
-		t.Fatalf("task %s still present after delete", toDelete.ID)
-	}
-
-	code, stdout, stderr = runCLIWithStderr(t, "--json", "trash", "list")
-	if code != 0 {
-		t.Fatalf("trash list exit %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	assertFallback(t, stderr)
-	var trashed []task.TrashEntry
-	mustUnmarshal(t, stdout, &trashed)
-	found := false
-	for _, entry := range trashed {
-		if entry.ID == toDelete.ID {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("trash list missing deleted task %s: %+v", toDelete.ID, trashed)
-	}
-}
+// The pair of tests that used to live here required an unparseable config to
+// fall back to the board's files for get/update and the broader task-store
+// commands. That path is gone — a config the CLI cannot read says nothing about
+// whether the board is up, and opening its files behind the owning instance is
+// the failure this issue removed. The replacement lives in
+// unknown_key_test.go's TestUnparseableConfigFailsRatherThanEditingFiles, which
+// pins the refusal and that no fallback warning is printed.
 
 func TestDelete(t *testing.T) {
 	setupStore(t)

@@ -189,7 +189,9 @@ func (s *testBoardTaskService) ListTaskSnapshotHistory(limit int) ([]taskHistory
 	if err := gitexec.Run(ctx, opts, "rev-parse", "--git-dir"); err != nil {
 		return nil, errors.New("task snapshot history unavailable — snapshotting is disabled or has not run yet")
 	}
-	if gitexec.RunQuiet(ctx, opts, "rev-parse", "--verify", "--quiet", "HEAD") != nil {
+	// An unresolvable HEAD is an empty history, not a failure — the same
+	// reading TaskService takes.
+	if hasCommits := gitexec.RunQuiet(ctx, opts, "rev-parse", "--verify", "--quiet", "HEAD") == nil; !hasCommits {
 		return []taskHistoryEntry{}, nil
 	}
 	const sep = "\x1f"
