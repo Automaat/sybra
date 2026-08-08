@@ -81,6 +81,7 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 	ctx, cancel := context.WithCancel(ctx)
 	a := newRunningAgent(id, cfg, prov, cancel)
 	a.attemptIntent = intent
+	a.attemptTaskGenKnown = intent.TaskID != ""
 	a.attemptLease = lease
 	a.SetToolCallRecorder(m.recordToolCall)
 	if err := m.bindAttempt(ctx, a, ""); err != nil {
@@ -207,6 +208,9 @@ func (m *Manager) ReconcileAttemptLeases(ctx context.Context) int {
 	}
 	if n > 0 {
 		m.logger.Info("agent.attempt.reconciled", "count", n)
+		if m.controlEvent != nil {
+			m.controlEvent("attempt_leases.reconciled", map[string]any{"count": n, "outcome": "orphan_reconciled"})
+		}
 	}
 	return n
 }

@@ -25,6 +25,27 @@ func TestNewStoreEmpty(t *testing.T) {
 	}
 }
 
+func TestAllForTaskReturnsOnlyMatchingRuns(t *testing.T) {
+	t.Parallel()
+	s, err := NewStore(filepath.Join(t.TempDir(), "stats.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range []RunRecord{{ID: "one", TaskID: "target"}, {ID: "other", TaskID: "other"}, {ID: "two", TaskID: "target"}} {
+		if err := s.Record(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := s.AllForTask("target")
+	if len(got) != 2 || got[0].ID != "one" || got[1].ID != "two" {
+		t.Fatalf("AllForTask = %+v, want target runs in storage order", got)
+	}
+	got[0].ID = "mutated"
+	if all := s.AllForTask("target"); len(all) != 2 || all[0].ID != "one" {
+		t.Fatalf("AllForTask returned aliased records: %+v", all)
+	}
+}
+
 func TestRecordAndQuery(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "stats.json")

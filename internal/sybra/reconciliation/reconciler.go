@@ -31,6 +31,7 @@ type Config struct {
 	Worktrees *worktree.Manager
 	Logger    *slog.Logger
 	Evidence  *evidence.Store
+	Audit     func(reconcile.Request, reconcile.Plan)
 
 	FetchPRState   func(string, int) (github.PRState, error)
 	FetchPRHeadSHA func(string, int) (string, error)
@@ -42,6 +43,7 @@ type Reconciler struct {
 	worktrees *worktree.Manager
 	logger    *slog.Logger
 	evidence  *evidence.Store
+	audit     func(reconcile.Request, reconcile.Plan)
 	prState   func(string, int) (github.PRState, error)
 	prHead    func(string, int) (string, error)
 }
@@ -55,7 +57,7 @@ func New(cfg Config) *Reconciler {
 	if head == nil {
 		head = github.FetchPRHeadSHA
 	}
-	return &Reconciler{tasks: cfg.Tasks, projects: cfg.Projects, worktrees: cfg.Worktrees, logger: cfg.Logger, evidence: cfg.Evidence, prState: state, prHead: head}
+	return &Reconciler{tasks: cfg.Tasks, projects: cfg.Projects, worktrees: cfg.Worktrees, logger: cfg.Logger, evidence: cfg.Evidence, audit: cfg.Audit, prState: state, prHead: head}
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Plan, error) {
@@ -328,5 +330,8 @@ func samePreconditions(a, b reconcile.Preconditions) bool { return a == b }
 func (r *Reconciler) log(req reconcile.Request, plan reconcile.Plan) {
 	if r.logger != nil {
 		r.logger.Info("post-run.reconciled", "task_id", req.TaskID, "run_id", req.RunID, "intent", req.Intent, "action", plan.Action, "reason", plan.Reason)
+	}
+	if r.audit != nil {
+		r.audit(req, plan)
 	}
 }

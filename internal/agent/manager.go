@@ -96,6 +96,7 @@ type Manager struct {
 	// attemptAdmission owns durable task/worktree leases and hard provider
 	// capacity. It is invoked only from RunContext's final launch chokepoint.
 	attemptAdmission AttemptAdmission
+	controlEvent     func(kind string, data map[string]any)
 
 	defaultSandboxMode string
 	// defaultSandboxReadMode is the read-visibility posture layered on top of
@@ -271,6 +272,7 @@ type ManagerConfig struct {
 	LimitSink         func(limits.Snapshot)
 	Artifacts         *artifact.Store
 	AttemptAdmission  AttemptAdmission
+	ControlEvent      func(kind string, data map[string]any)
 
 	// SandboxHome resolves the per-task sandbox SYBRA_HOME directory for a
 	// task-scoped run. Required for every fresh agent subprocess so it never
@@ -367,6 +369,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		limitSink:              cfg.LimitSink,
 		artifacts:              cfg.Artifacts,
 		attemptAdmission:       cfg.AttemptAdmission,
+		controlEvent:           cfg.ControlEvent,
 		sessionSink:            cfg.SessionSink,
 		taskExists:             cfg.TaskExists,
 		taskStatus:             cfg.TaskStatus,

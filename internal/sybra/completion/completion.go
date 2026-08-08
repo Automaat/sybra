@@ -1062,6 +1062,7 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, outcome strin
 	cacheRead := ag.GetCacheReadInputTokens()
 	reasoning := ag.GetReasoningTokens()
 	agCost := estimatedRunCost(ag, cost, ag.GetPremiumRequests())
+	taskGeneration, taskGenerationKnown := ag.GetAttemptTaskGeneration()
 	var projectID string
 	if ag.TaskID != "" {
 		if t, err := h.tasks.Get(ag.TaskID); err == nil {
@@ -1071,6 +1072,8 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, outcome strin
 	_ = h.stats.Record(stats.RunRecord{
 		ID:                       ag.ID,
 		TaskID:                   ag.TaskID,
+		TaskGeneration:           taskGeneration,
+		TaskGenerationKnown:      taskGenerationKnown,
 		ProjectID:                projectID,
 		Mode:                     ag.Mode,
 		Role:                     string(role),
