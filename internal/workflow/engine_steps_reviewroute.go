@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 const (
@@ -126,7 +128,7 @@ func (e *Engine) execRouteReviewVerdict(taskID string, step *Step, wfExec *Execu
 	}
 
 	reason := "code review did not return a schema-valid verdict after auto-retries — needs human inspection of the review sidecar"
-	if err := e.tasks.UpdateTaskStatus(taskID, "human-required", reason); err != nil {
+	if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); err != nil {
 		return StepOutput{}, err
 	}
 	e.logger.Warn("workflow.review.malformed-verdict.escalate", "task_id", taskID, "step", sourceStep)

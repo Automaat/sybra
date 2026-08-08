@@ -134,6 +134,39 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		return rErr
 	}
 
+	e.recordRoleCompletionSideEffects(taskID, currentStep, wfExec, output)
+
+	t, parked, comp, err := e.reloadTaskAndCheckImplementRetry(taskID, currentStep, wfExec, output, release)
+	if err != nil || parked {
+		return err
+	}
+	if e.finishRecoveredCompletion(comp, release) {
+		return nil
+	}
+
+	nextStep, comp, err := e.resolveNext(taskID, &def, currentStep, wfExec, t)
+	if err != nil {
+		return err
+	}
+	if nextStep == nil {
+		// Release the inflight lock before the completion callback so its
+		// cascade dispatch doesn't re-enter AdvanceStep against a held lock.
+		release()
+		e.fireComplete(comp)
+		return nil // workflow completed
+	}
+
+	e.logger.Info("workflow.advance", "task_id", taskID, "from", output.StepID, "to", nextStep.ID)
+	release()
+	return e.executeNextSteps(taskID, &def, nextStep, wfExec)
+}
+
+// recordRoleCompletionSideEffects applies the role-specific bookkeeping a
+// completed step needs before the engine resolves the next transition:
+// marking the task reviewed, stashing structured review/plan-critique
+// verdicts for the route_* steps, and refreshing stale review evidence for
+// the single-pass review posture.
+func (e *Engine) recordRoleCompletionSideEffects(taskID string, currentStep *Step, wfExec *Execution, output StepOutput) {
 	// Mark task reviewed after a review-role step succeeds.
 	// Persisted so a re-triggered workflow run skips code_review (idempotent).
 	if currentStep.Config.Role == "review" && output.Status == "completed" {
@@ -162,30 +195,6 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	if e.reviewLoopDisabled.Load() && currentStep.Config.Role == "fix-review" && output.Status == "completed" {
 		e.refreshReviewEvidenceFreshness(taskID)
 	}
-
-	t, parked, comp, err := e.reloadTaskAndCheckImplementRetry(taskID, currentStep, wfExec, output, release)
-	if err != nil || parked {
-		return err
-	}
-	if e.finishRecoveredCompletion(comp, release) {
-		return nil
-	}
-
-	nextStep, comp, err := e.resolveNext(taskID, &def, currentStep, wfExec, t)
-	if err != nil {
-		return err
-	}
-	if nextStep == nil {
-		// Release the inflight lock before the completion callback so its
-		// cascade dispatch doesn't re-enter AdvanceStep against a held lock.
-		release()
-		e.fireComplete(comp)
-		return nil // workflow completed
-	}
-
-	e.logger.Info("workflow.advance", "task_id", taskID, "from", output.StepID, "to", nextStep.ID)
-	release()
-	return e.executeNextSteps(taskID, &def, nextStep, wfExec)
 }
 
 // retryFailedStepIfConfigured re-dispatches a failed step when max_retries is
