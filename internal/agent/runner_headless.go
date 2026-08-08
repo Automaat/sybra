@@ -192,9 +192,21 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 
 	if m.survives() && a.Mode == "headless" {
 		inv := prepared.inv
-		return m.runHeadlessAttemptSurvive(ctx, a, prepared.cfg, outFile, tailOffset, inv.name, inv.args, inv.env, inv.command)
+		retry, err = m.runHeadlessAttemptSurvive(ctx, a, prepared.cfg, outFile, tailOffset, inv.name, inv.args, inv.env, inv.command)
+	} else {
+		retry, err = m.runHeadlessAttemptPipe(ctx, a, prepared.cfg, outFile, prepared.inv)
 	}
-	return m.runHeadlessAttemptPipe(ctx, a, prepared.cfg, outFile, prepared.inv)
+
+	if errors.Is(err, errPromptUndelivered) && prepared.cfg.HeadlessSteerable && prepared.inv.name == providerid.Claude {
+		m.logger.Warn("agent.headless.prompt-fallback", "id", a.ID, "provider", prepared.inv.name,
+			"transport", "stream-json", "payload_bytes", len(prepared.cfg.Prompt), "fallback", "one-shot-stdin")
+		a.SetError("", "")
+		a.SetExitErr(nil)
+		fallback := cfg
+		fallback.HeadlessSteerable = false
+		return m.runHeadlessAttempt(ctx, a, fallback, outFile, tailOffset)
+	}
+	return retry, err
 }
 
 func prepareHeadlessAttempt(a *Agent, cfg RunConfig) (preparedHeadlessAttempt, error) {

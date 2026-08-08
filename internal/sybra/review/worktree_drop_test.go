@@ -2,6 +2,7 @@ package review
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"testing"
 
@@ -16,8 +17,16 @@ func TestDropTerminalWorktreeFailure(t *testing.T) {
 		deleteTask   bool
 		wantTerminal bool
 		wantHumanReq bool
+		wantStatus   task.Status
 		wantSkipNext bool
 	}{
+		{
+			name:         "preserved local work is terminal with recovery guidance",
+			wtErr:        fmt.Errorf("prepare fix worktree: %w", worktree.ErrLocalWorkPreserved),
+			wantTerminal: true,
+			wantHumanReq: true,
+			wantStatus:   task.StatusHumanRequired,
+		},
 		{
 			name:         "missing task branch is terminal and escalates",
 			wtErr:        worktree.ErrTaskBranchMissing,
@@ -73,8 +82,12 @@ func TestDropTerminalWorktreeFailure(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if got.Status != task.StatusBlocked {
-					t.Fatalf("status = %q, want blocked", got.Status)
+				wantStatus := tt.wantStatus
+				if wantStatus == "" {
+					wantStatus = task.StatusBlocked
+				}
+				if got.Status != wantStatus {
+					t.Fatalf("status = %q, want %q", got.Status, wantStatus)
 				}
 				if n := r.wtFailures[tk.ID]; n != 0 {
 					t.Fatalf("wtFailures = %d, want 0 for a terminal failure", n)
