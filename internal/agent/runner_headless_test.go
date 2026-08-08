@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/provider"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillattr"
 )
 
@@ -3077,7 +3078,9 @@ func TestWriteAndCloseHeadlessPrompt(t *testing.T) {
 		close(done)
 	}()
 
-	m.writeAndCloseHeadlessPrompt(a, w, "do the thing")
+	if err := m.writeAndCloseHeadlessPrompt(a, w, "do the thing"); err != nil {
+		t.Fatalf("writeAndCloseHeadlessPrompt: %v", err)
+	}
 
 	select {
 	case <-done:
@@ -3538,7 +3541,7 @@ case " $* " in
   *) prompt=$(cat); echo "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s-1\",\"total_cost_usd\":0.01,\"result\":\"$prompt\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}" ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, providerid.Claude), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

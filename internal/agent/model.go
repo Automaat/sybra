@@ -2132,6 +2132,11 @@ type RunConfig struct {
 	// intra-package before buildHeadlessInvocation; cleared by defer after the
 	// subprocess exits. Never set by callers.
 	outputSchemaPath string
+	// promptFallback marks the one-shot retry after stream-json prompt
+	// delivery failed. Unlike ordinary one-shot runs, its prompt write must
+	// succeed: this is the recovery attempt's only way to deliver the task.
+	// It is runner-private and never set by callers.
+	promptFallback bool
 	// HeadlessSteerable, when true, launches a claude headless run with the
 	// stdin/stream-json shape (mirroring the conversational invocation)
 	// instead of the legacy one-shot `-p <prompt>` invocation, so the running

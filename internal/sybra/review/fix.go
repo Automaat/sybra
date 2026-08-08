@@ -1895,7 +1895,7 @@ func (r *Handler) dropTerminalWorktreeFailure(taskID string, wtErr error) bool {
 		escalation := task.MachineFailure("git.task_branch_missing", reason)
 		outcome := task.QuarantinedOutcome()
 		if errors.Is(wtErr, worktree.ErrLocalWorkPreserved) {
-			reason = fmt.Sprintf("local worktree state was preserved; resolve or abort the in-progress git operation before retrying (%s)", wtErr)
+			reason = fmt.Sprintf("local worktree state was preserved; inspect and resolve local changes or an in-progress git operation before retrying (%s)", wtErr)
 			toStatus = task.StatusHumanRequired
 			escalation = task.OperatorDecisionRequired("git.worktree_local_state_preserved", reason)
 			outcome = task.HumanRequiredOutcome()

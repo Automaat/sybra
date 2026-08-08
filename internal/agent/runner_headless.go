@@ -204,6 +204,7 @@ func (m *Manager) runHeadlessAttempt(ctx context.Context, a *Agent, cfg RunConfi
 		a.SetExitErr(nil)
 		fallback := cfg
 		fallback.HeadlessSteerable = false
+		fallback.promptFallback = true
 		return m.runHeadlessAttempt(ctx, a, fallback, outFile, tailOffset)
 	}
 	return retry, err
@@ -287,6 +288,28 @@ func (m *Manager) writeAndCloseHeadlessPrompt(a *Agent, stdin io.WriteCloser, pr
 	}
 }
 
+// handleOneShotPromptWrite preserves the legacy best-effort behavior for a
+// normal one-shot run: a CLI that exits immediately can close stdin after
+// having already produced its terminal result. The recovery fallback is
+// different: an undelivered prompt there must fail closed rather than leave a
+// task silently stranded.
+func (m *Manager) handleOneShotPromptWrite(a *Agent, cmd *exec.Cmd, writeErr error, required bool) error {
+	if writeErr == nil {
+		return nil
+	}
+	m.logger.Warn("agent.headless.initial-prompt", "id", a.ID, "err", writeErr, "required", required)
+	if !required {
+		return nil
+	}
+	a.SetError(ErrorKindPromptUndelivered, writeErr.Error())
+	a.SetExitErr(fmt.Errorf("%w: %w", errPromptUndelivered, writeErr))
+	if cmd.Process != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}
+	return fmt.Errorf("deliver initial prompt: %w: %w", errPromptUndelivered, writeErr)
+}
+
 func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, inv headlessInvocation) (retry bool, err error) {
 	cmd := newProviderCmd(ctx, &cfg, false, inv.name, inv.args...)
 	if a.sessionCWD != "" {
@@ -359,15 +382,8 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 			return false, fmt.Errorf("deliver initial prompt: %w: %w", errPromptUndelivered, writeErr)
 		}
 	} else if promptStdin != nil {
-		if writeErr := m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt); writeErr != nil {
-			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
-			a.SetError(ErrorKindPromptUndelivered, writeErr.Error())
-			a.SetExitErr(fmt.Errorf("%w: %w", errPromptUndelivered, writeErr))
-			if cmd.Process != nil {
-				_ = cmd.Process.Kill()
-			}
-			_ = cmd.Wait()
-			return false, fmt.Errorf("deliver initial prompt: %w: %w", errPromptUndelivered, writeErr)
+		if writeErr := m.handleOneShotPromptWrite(a, cmd, m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt), cfg.promptFallback); writeErr != nil {
+			return false, writeErr
 		}
 	}
 
@@ -564,15 +580,8 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 			return nil, fmt.Errorf("deliver initial prompt: %w: %w", errPromptUndelivered, writeErr)
 		}
 	} else if promptStdin != nil {
-		if writeErr := m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt); writeErr != nil {
-			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
-			a.SetError(ErrorKindPromptUndelivered, writeErr.Error())
-			a.SetExitErr(fmt.Errorf("%w: %w", errPromptUndelivered, writeErr))
-			if cmd.Process != nil {
-				_ = cmd.Process.Kill()
-				_ = cmd.Wait()
-			}
-			return nil, fmt.Errorf("deliver initial prompt: %w: %w", errPromptUndelivered, writeErr)
+		if writeErr := m.handleOneShotPromptWrite(a, cmd, m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt), cfg.promptFallback); writeErr != nil {
+			return nil, writeErr
 		}
 	}
 	return cmd, nil
