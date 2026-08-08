@@ -99,6 +99,12 @@ func openAttachedBoard(ctx context.Context, cfg *config.Config, logger *slog.Log
 	origin := "http://" + ln.Addr().String()
 	logger.Info("desktop.board.attached", "origin", remote.origin)
 
+	// Honour browser.in_app exactly as the non-attached path does: a nil
+	// opener leaves BrowserService.Open reporting itself unavailable, and the
+	// UI falls back to the host browser.
+	if !cfg.InAppBrowserEnabled() {
+		openBrowser = nil
+	}
 	return serveDesktopBoard(ln, origin, logger, cfg, httpserve.Options{
 		Logger:     logger,
 		Services:   sybra.LocalBrowserServices(openBrowser),

@@ -13,6 +13,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/httpserve"
+	"github.com/Automaat/sybra/internal/sse"
 )
 
 func testLogger() *slog.Logger {
@@ -321,5 +322,36 @@ func TestAttachedBoardRefusesAnUnusableOrigin(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadGateway)
+	}
+}
+
+// TestAttachedBoardWithABrokerStillStarts pins the one pattern that would panic
+// before serving a request: an attached instance takes its events from the
+// board it forwards to, so its own broker must not claim /events as well.
+func TestAttachedBoardWithABrokerStillStarts(t *testing.T) {
+	board := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(board.Close)
+
+	opts := httpserve.Options{
+		Logger:   testLogger(),
+		Broker:   sse.New(),
+		Services: map[string]httpapi.Service{},
+		Proxy:    &httpserve.ProxyTarget{Origin: board.URL, Token: "t"},
+		StaticFS: bundle(),
+	}
+	// BuildMux panics on a duplicate pattern, so reaching the request at all is
+	// the assertion.
+	srv := httptest.NewServer(httpserve.BuildMux(opts))
+	t.Cleanup(srv.Close)
+
+	resp, err := srv.Client().Get(srv.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 }

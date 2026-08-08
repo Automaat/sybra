@@ -102,7 +102,10 @@ func BuildMux(opts Options) *http.ServeMux {
 		opts.Logger.Info("pprof.listen", "path", "/debug/pprof/")
 	}
 
-	if opts.Broker != nil {
+	// An attached UI's events come from the board it is attached to, so
+	// mountAPI owns /events there. Registering both would panic on the
+	// duplicate pattern before the process ever served a request.
+	if opts.Broker != nil && opts.Proxy == nil {
 		// Multiplexed SSE stream: all events over a single connection.
 		mux.HandleFunc("GET /events", opts.Broker.ServeAll)
 
