@@ -1495,6 +1495,7 @@ func (a *App) workflowDependencies(agentLauncher *agentAdapter) workflow.Depende
 			AttemptWorktrees:     &attemptWorktreeAdapter{tasks: a.tasks, mgr: a.worktrees},
 			Verification:         &verificationWorkspaceAdapter{mgr: a.verification},
 			VerificationCommands: agentLauncher,
+			PostRun:              a.postRunReconciliation(),
 		},
 	}
 }
@@ -1717,6 +1718,7 @@ func (a *App) newRecovery() *recovery.Recovery {
 		Orchestrator:       a.agentOrch,
 		Projects:           a.projects,
 		PRs:                newRecoveryPRResolver(),
+		Reconciler:         a.postRunReconciliation(),
 		Logger:             a.logger,
 		Throttle:           a.restartStaleErr,
 		WG:                 &a.wg,
@@ -1742,6 +1744,9 @@ func (a *App) newRecovery() *recovery.Recovery {
 		// on boot with no operator action. Evaluated per call, so it sees the
 		// role applyInstanceRole resolves at the top of startLifecycle.
 		DispatchGate: func(t task.Task) bool { return a.runsScheduler() && a.runsTaskLocally(t) },
+	}
+	if a.workflowEngine != nil {
+		r.ConflictRecovery = a.workflowEngine.TryConflictRecovery
 	}
 	// Gate on the config, not just a non-nil snapshotter: the snapshotter is
 	// always constructed, but when the feature is disabled its repo is never

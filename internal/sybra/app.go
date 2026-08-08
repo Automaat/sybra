@@ -59,6 +59,7 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/sybra/completion"
+	"github.com/Automaat/sybra/internal/sybra/reconciliation"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/sybra/verification"
@@ -123,6 +124,7 @@ type App struct {
 	agentOrch         *agentorch.Orchestrator
 	runenv            *runenv.Service
 	verification      *verification.Manager
+	postRunReconciler *reconciliation.Reconciler
 	reviewer          *review.Handler
 	assigner          *clusterlead.Assigner
 	mirror            *clusterlead.Mirror
