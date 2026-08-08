@@ -168,3 +168,28 @@ func TestCSPWidensConnectSrcForAnAttachedBoard(t *testing.T) {
 		})
 	}
 }
+
+// TestHandlerAlwaysSetsTheContentPolicy pins the header as the only source of
+// the policy. index.html carried a meta copy whose connect-src 'self' silently
+// won over the header, blocking every call an attached window makes.
+func TestHandlerAlwaysSetsTheContentPolicy(t *testing.T) {
+	opts := httpserve.Options{Logger: testLogger(), StaticFS: bundle()}
+	srv := httptest.NewServer(httpserve.Handler(opts, "tok", nil))
+	t.Cleanup(srv.Close)
+
+	resp, err := srv.Client().Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if got := resp.Header.Get("Content-Security-Policy"); !strings.Contains(got, "default-src 'none'") {
+		t.Fatalf("Content-Security-Policy = %q", got)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if strings.Contains(string(body), "http-equiv=\"Content-Security-Policy\"") {
+		t.Fatal("index.html carries a meta policy again; it overrides the header wherever it is stricter")
+	}
+}

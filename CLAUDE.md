@@ -138,7 +138,9 @@ Emit via the App's `emit` closure, wired to `sse.Broker.Emit` in both binaries. 
 
 **Attaching to a board on another machine.** Set `SYBRA_SERVER_TARGET` (bare `host:port` or an `http(s)://` origin, same forms `sybra-cli` takes) plus `SYBRA_SERVER_TOKEN` before launching the desktop app. The bundle still comes from this process — only a page it served can be handed a bearer token — but every call and event goes to the named board, and **no local App starts**, so the laptop does not run a second orchestrator against its own home. An unresolvable target is a startup error, never a silent fall back to the local board. `BrowserService` stays local: opening a window or a link acts on the machine the operator is sitting at.
 
-The desktop listener reuses the port recorded in `$SYBRA_HOME/desktop-port`. Browser storage is partitioned by origin **including port**, so a fresh port each launch would silently empty `localStorage` — colour scheme, open workspace tabs, pane sizes — on every start and every auto-update restart.
+The desktop listener reuses the port recorded in `$SYBRA_HOME/desktop-port`. Browser storage is partitioned by origin **including port**, so a fresh port each launch would silently empty `localStorage` — colour scheme, open workspace tabs, pane sizes — on every start and every auto-update restart. That stable port is also what the attached board must list in its own `server.allowed_origins` (`http://127.0.0.1:<port>`), or its CORS check refuses every call the window makes.
+
+The content-security policy comes from the response header `internal/httpserve` sets, and from nowhere else — never add a `<meta http-equiv="Content-Security-Policy">` back to `frontend/index.html`. A meta copy is a second source of truth that wins wherever it is stricter, which is how its `connect-src 'self'` blocked every call an attached window made no matter what the header allowed.
 
 ### Durable Storage Backend
 
