@@ -623,6 +623,16 @@ export class Task {
     "planDecisions"?: string;
     "planBrief"?: string;
     "codeReview"?: string;
+
+    /**
+     * CodeReviewVerdict is the last review-role step's structured verdict
+     * ("CLEAN"/"NEEDS_FIXES"), extracted from the agent's schema-enforced
+     * output rather than the CodeReview sidecar markdown (see
+     * workflow.ExtractReviewVerdict). Persisted so a re-triggered workflow run
+     * can tell a genuine NEEDS_FIXES review from Reviewed=true without
+     * re-parsing the sidecar for a literal-prefix marker.
+     */
+    "codeReviewVerdict"?: string;
     "currentTestFailures"?: string;
     "acceptanceLedger"?: string;
     "specDecision"?: string;
@@ -744,7 +754,7 @@ export class Task {
         const $$createField45_0 = $$createType8;
         const $$createField46_0 = $$createType10;
         const $$createField47_0 = $$createType12;
-        const $$createField68_0 = $$createType13;
+        const $$createField69_0 = $$createType13;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField6_0($$parsedSource["allowedTools"]);
@@ -777,7 +787,7 @@ export class Task {
             $$parsedSource["workflow"] = $$createField47_0($$parsedSource["workflow"]);
         }
         if ("planDrafts" in $$parsedSource) {
-            $$parsedSource["planDrafts"] = $$createField68_0($$parsedSource["planDrafts"]);
+            $$parsedSource["planDrafts"] = $$createField69_0($$parsedSource["planDrafts"]);
         }
         return new Task($$parsedSource as Partial<Task>);
     }
@@ -851,6 +861,7 @@ export class Update {
     "CurrentTestFailures": string | null;
     "AcceptanceLedger": string | null;
     "SpecDecision": string | null;
+    "CodeReviewVerdict": string | null;
     "MaxTurns": number | null;
     "ForkSubagent": boolean | null;
     "Sandbox": boolean | null;
@@ -999,6 +1010,9 @@ export class Update {
         if (!("SpecDecision" in $$source)) {
             this["SpecDecision"] = null;
         }
+        if (!("CodeReviewVerdict" in $$source)) {
+            this["CodeReviewVerdict"] = null;
+        }
         if (!("MaxTurns" in $$source)) {
             this["MaxTurns"] = null;
         }
@@ -1043,8 +1057,8 @@ export class Update {
         const $$createField12_0 = $$createType17;
         const $$createField16_0 = $$createType16;
         const $$createField34_0 = $$createType18;
-        const $$createField53_0 = $$createType19;
-        const $$createField54_0 = $$createType20;
+        const $$createField54_0 = $$createType19;
+        const $$createField55_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("Escalation" in $$parsedSource) {
             $$parsedSource["Escalation"] = $$createField5_0($$parsedSource["Escalation"]);
@@ -1065,10 +1079,10 @@ export class Update {
             $$parsedSource["Workflow"] = $$createField34_0($$parsedSource["Workflow"]);
         }
         if ("Attachments" in $$parsedSource) {
-            $$parsedSource["Attachments"] = $$createField53_0($$parsedSource["Attachments"]);
+            $$parsedSource["Attachments"] = $$createField54_0($$parsedSource["Attachments"]);
         }
         if ("EffectLog" in $$parsedSource) {
-            $$parsedSource["EffectLog"] = $$createField54_0($$parsedSource["EffectLog"]);
+            $$parsedSource["EffectLog"] = $$createField55_0($$parsedSource["EffectLog"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }

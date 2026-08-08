@@ -980,7 +980,7 @@ func (e *Engine) shouldAutoApprovePlanReview(t TaskInfo) bool {
 	// doc comment says review_plan is supposed to require an explicit human
 	// look at, regardless of open decisions. Auto-approving through that flag
 	// silently discarded every REFINE finding straight into implementation.
-	if verdict := parsePlanCritiqueVerdict(t.PlanCritique); verdict == "REFINE" || verdict == "REJECT" {
+	if verdict := planCritiqueVerdict(t); verdict == planCritiqueVerdictRefine || verdict == planCritiqueVerdictReject {
 		return false
 	}
 	if strings.TrimSpace(t.PlanContract) == "" {

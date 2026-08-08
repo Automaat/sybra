@@ -716,10 +716,11 @@ func TestParsePlanCritiqueVerdict(t *testing.T) {
 
 func TestExecFlagPlanCritique_ApproveDoesNotAppendNote(t *testing.T) {
 	tasks := newMemTasks()
-	tasks.Put(TaskInfo{ID: "t1", Status: "planning", PlanCritique: "# Plan Review: APPROVE\n\nLooks good."})
+	wf := &Execution{Variables: map[string]string{planCritiqueVerdictVar: planCritiqueVerdictApprove}}
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning", PlanCritique: "# Plan Review: APPROVE\n\nLooks good.", Workflow: wf})
 	engine := newEngineForEval(t, tasks)
 
-	out, err := engine.execFlagPlanCritique("t1", newFlagPlanCritiqueStep(), TaskInfo{ID: "t1", PlanCritique: "# Plan Review: APPROVE\n\nLooks good."})
+	out, err := engine.execFlagPlanCritique("t1", newFlagPlanCritiqueStep(), wf, TaskInfo{ID: "t1", PlanCritique: "# Plan Review: APPROVE\n\nLooks good.", Workflow: wf})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -734,10 +735,11 @@ func TestExecFlagPlanCritique_ApproveDoesNotAppendNote(t *testing.T) {
 
 func TestExecFlagPlanCritique_RefineAppendsDistinguishableNote(t *testing.T) {
 	tasks := newMemTasks()
-	tasks.Put(TaskInfo{ID: "t1", Status: "planning", PlanCritique: "# Plan Review: REFINE\n\n## Findings\n\n- [high] missing file"})
+	wf := &Execution{Variables: map[string]string{planCritiqueVerdictVar: planCritiqueVerdictRefine}}
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning", PlanCritique: "# Plan Review: REFINE\n\n## Findings\n\n- [high] missing file", Workflow: wf})
 	engine := newEngineForEval(t, tasks)
 
-	out, err := engine.execFlagPlanCritique("t1", newFlagPlanCritiqueStep(), TaskInfo{ID: "t1", PlanCritique: "# Plan Review: REFINE\n\n## Findings\n\n- [high] missing file"})
+	out, err := engine.execFlagPlanCritique("t1", newFlagPlanCritiqueStep(), wf, TaskInfo{ID: "t1", PlanCritique: "# Plan Review: REFINE\n\n## Findings\n\n- [high] missing file", Workflow: wf})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -755,30 +757,16 @@ func TestExecFlagPlanCritique_RefineAppendsDistinguishableNote(t *testing.T) {
 
 func TestExecFlagPlanCritique_RejectAppendsDistinguishableNote(t *testing.T) {
 	tasks := newMemTasks()
-	tasks.Put(TaskInfo{ID: "t1", Status: "planning", PlanCritique: "# Plan Review: REJECT\n\nToo vague."})
+	wf := &Execution{Variables: map[string]string{planCritiqueVerdictVar: planCritiqueVerdictReject}}
+	tasks.Put(TaskInfo{ID: "t1", Status: "planning", PlanCritique: "# Plan Review: REJECT\n\nToo vague.", Workflow: wf})
 	engine := newEngineForEval(t, tasks)
 
-	_, err := engine.execFlagPlanCritique("t1", newFlagPlanCritiqueStep(), TaskInfo{ID: "t1", PlanCritique: "# Plan Review: REJECT\n\nToo vague."})
+	_, err := engine.execFlagPlanCritique("t1", newFlagPlanCritiqueStep(), wf, TaskInfo{ID: "t1", PlanCritique: "# Plan Review: REJECT\n\nToo vague.", Workflow: wf})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ti, _ := tasks.GetTask("t1")
 	if !strings.Contains(ti.Body, "Plan Critic Verdict: REJECT") {
 		t.Errorf("expected a distinguishable REJECT note in body; got:\n%s", ti.Body)
-	}
-}
-
-func TestExecFlagPlanCritique_UnparseableVerdictDoesNotAppendNote(t *testing.T) {
-	tasks := newMemTasks()
-	tasks.Put(TaskInfo{ID: "t1", Status: "planning", PlanCritique: "Some free-form text with no verdict marker."})
-	engine := newEngineForEval(t, tasks)
-
-	_, err := engine.execFlagPlanCritique("t1", newFlagPlanCritiqueStep(), TaskInfo{ID: "t1", PlanCritique: "Some free-form text with no verdict marker."})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ti, _ := tasks.GetTask("t1")
-	if strings.Contains(ti.Body, "Plan Critic Verdict") {
-		t.Errorf("an unparseable verdict should behave like APPROVE (no note); body = %q", ti.Body)
 	}
 }

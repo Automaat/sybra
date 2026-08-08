@@ -711,7 +711,11 @@ func runPlanCriticSuccess(taskID string) {
 	if taskID != "" {
 		runCLI("update", taskID, "--plan-critique", "# Plan Critique\n\n## Verdict: REFINE\n\n- Consider edge case X.\n")
 	}
-	emitResult("Critique saved.")
+	// The critique_plan step's output_schema forces the final message to be
+	// the bare JSON verdict object (see ExtractPlanCritiqueVerdict) — a plain
+	// prose result here reads as a malformed verdict and sends the workflow
+	// into its bounded retry/escalate path instead of review_plan.
+	emitResult(`{"verdict":"REFINE"}`)
 }
 
 func runPlanCriticNoSave() {

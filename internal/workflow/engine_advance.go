@@ -135,24 +135,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		return rErr
 	}
 
-	// Mark task reviewed after a review-role step succeeds.
-	// Persisted so a re-triggered workflow run skips code_review (idempotent).
-	if currentStep.Config.Role == "review" && output.Status == "completed" {
-		if mErr := e.tasks.MarkTaskReviewed(taskID); mErr != nil {
-			e.logger.Warn("workflow.mark-reviewed.failed", "task_id", taskID, "err", mErr)
-		}
-		e.recordEvidence(taskID, currentStep.ID, evidenceCriterionReview, evidence.ProofReviewFinding, 0, "", output.Output)
-	}
-
-	// Single-pass review posture (agent.review_until_clean: false) exits after a
-	// NEEDS_FIXES round's fix_review commit without a second review, leaving the
-	// review evidence stale against the post-fix HEAD. Re-stamp it here so the
-	// require_evidence gate does not block an otherwise-complete task. In the
-	// multi-pass posture the follow-up review re-records fresh evidence itself,
-	// so this refresh is scoped to the single-pass route only.
-	if e.reviewLoopDisabled.Load() && currentStep.Config.Role == "fix-review" && output.Status == "completed" {
-		e.refreshReviewEvidenceFreshness(taskID)
-	}
+	e.recordRoleCompletionSideEffects(taskID, currentStep, wfExec, output)
 
 	t, parked, comp, err := e.reloadTaskAndCheckImplementRetry(taskID, currentStep, wfExec, output, release)
 	if err != nil || parked {
@@ -177,6 +160,42 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 	e.logger.Info("workflow.advance", "task_id", taskID, "from", output.StepID, "to", nextStep.ID)
 	release()
 	return e.executeNextSteps(taskID, &def, nextStep, wfExec)
+}
+
+// recordRoleCompletionSideEffects applies the role-specific bookkeeping a
+// completed step needs before the engine resolves the next transition:
+// marking the task reviewed, stashing structured review/plan-critique
+// verdicts for the route_* steps, and refreshing stale review evidence for
+// the single-pass review posture.
+func (e *Engine) recordRoleCompletionSideEffects(taskID string, currentStep *Step, wfExec *Execution, output StepOutput) {
+	// Mark task reviewed after a review-role step succeeds.
+	// Persisted so a re-triggered workflow run skips code_review (idempotent).
+	if currentStep.Config.Role == "review" && output.Status == "completed" {
+		if mErr := e.tasks.MarkTaskReviewed(taskID); mErr != nil {
+			e.logger.Warn("workflow.mark-reviewed.failed", "task_id", taskID, "err", mErr)
+		}
+		e.recordEvidence(taskID, currentStep.ID, evidenceCriterionReview, evidence.ProofReviewFinding, 0, "", output.Output)
+		// Stash the structured verdict (see ExtractReviewVerdict) and which
+		// step produced it, so route_review_verdict can route on it without
+		// re-parsing the review sidecar markdown and can rewind to the
+		// right agent step on a malformed/missing verdict.
+		wfExec.SetVar(reviewVerdictVar, ExtractReviewVerdict(output.Output))
+		wfExec.SetVar(reviewVerdictSourceStepVar, output.StepID)
+	}
+	if currentStep.Config.Role == "plan-critic" && output.Status == "completed" {
+		wfExec.SetVar(planCritiqueVerdictVar, ExtractPlanCritiqueVerdict(output.Output))
+		wfExec.SetVar(planCritiqueVerdictSourceStepVar, output.StepID)
+	}
+
+	// Single-pass review posture (agent.review_until_clean: false) exits after a
+	// NEEDS_FIXES round's fix_review commit without a second review, leaving the
+	// review evidence stale against the post-fix HEAD. Re-stamp it here so the
+	// require_evidence gate does not block an otherwise-complete task. In the
+	// multi-pass posture the follow-up review re-records fresh evidence itself,
+	// so this refresh is scoped to the single-pass route only.
+	if e.reviewLoopDisabled.Load() && currentStep.Config.Role == "fix-review" && output.Status == "completed" {
+		e.refreshReviewEvidenceFreshness(taskID)
+	}
 }
 
 // retryFailedStepIfConfigured re-dispatches a failed step when max_retries is
@@ -958,6 +977,7 @@ func taskFields(t TaskInfo) map[string]string {
 		"task.reviewed":                strconv.FormatBool(t.Reviewed),
 		"task.plan_critique":           t.PlanCritique,
 		"task.code_review":             t.CodeReview,
+		"task.code_review_verdict":     t.CodeReviewVerdict,
 	}
 	if t.PRNumber > 0 {
 		fields["task.pr_number"] = strconv.Itoa(t.PRNumber)

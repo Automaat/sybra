@@ -730,6 +730,18 @@ func (m *memTasks) MarkTaskReviewed(id string) error {
 	return nil
 }
 
+func (m *memTasks) SetCodeReviewVerdict(id, verdict string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s not found", id)
+	}
+	t.CodeReviewVerdict = verdict
+	m.tasks[id] = t
+	return nil
+}
+
 func (m *memTasks) MarkAgentRunProtocolViolation(taskID, agentID, violation string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
