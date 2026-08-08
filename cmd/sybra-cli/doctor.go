@@ -10,11 +10,10 @@ import (
 
 	"github.com/Automaat/sybra/internal/cleanup"
 	"github.com/Automaat/sybra/internal/config"
-	"github.com/Automaat/sybra/internal/task"
 )
 
 // cmdDoctor dispatches `sybra-cli doctor <sub>`. Currently only `cleanup`.
-func cmdDoctor(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
+func cmdDoctor(cfg *config.Config, store taskBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: doctor <cleanup>")
 	}
@@ -84,7 +83,7 @@ type doctorCleanupFindingJSON struct {
 // (dry run printed, or apply finished with no delete errors); 1 = apply
 // finished but at least one path failed to delete; 2 = bad usage (unknown
 // flag value, invalid --older-than, unknown --only bucket).
-func cmdDoctorCleanup(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
+func cmdDoctorCleanup(cfg *config.Config, store taskBoard, args []string, jsonOut bool) int {
 	if len(args) > 0 && args[0] == "findings" {
 		return cmdDoctorCleanupFindings(store, args[1:], jsonOut)
 	}
@@ -178,7 +177,7 @@ func cmdDoctorCleanup(cfg *config.Config, store *task.Manager, args []string, js
 	return exitCode
 }
 
-func cmdDoctorCleanupFindings(store *task.Manager, args []string, jsonOut bool) int {
+func cmdDoctorCleanupFindings(store taskBoard, args []string, jsonOut bool) int {
 	protected := cleanup.DefaultProtectedStore()
 	sub := "list"
 	if len(args) > 0 {

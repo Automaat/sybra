@@ -15,7 +15,7 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
-func cmdHarnessEvolution(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
+func cmdHarnessEvolution(cfg *config.Config, store taskBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: harness-evolution <run> [flags]")
 	}
@@ -27,7 +27,7 @@ func cmdHarnessEvolution(cfg *config.Config, store *task.Manager, args []string,
 	}
 }
 
-func cmdHarnessEvolutionRun(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
+func cmdHarnessEvolutionRun(cfg *config.Config, store taskBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("harness-evolution run", flag.ContinueOnError)
 	defaultLookback := time.Duration(cfg.HarnessEvolve.LookbackHours * float64(time.Hour))
 	lookbackFlag := fs.String("lookback", defaultLookback.String(), "lookback window (e.g. 168h or 7d)")
@@ -72,7 +72,7 @@ func cmdHarnessEvolutionRun(cfg *config.Config, store *task.Manager, args []stri
 	return 0
 }
 
-func fileHarnessProposals(store *task.Manager, result harnessevolution.RunResult) ([]task.Task, error) {
+func fileHarnessProposals(store taskBoard, result harnessevolution.RunResult) ([]task.Task, error) {
 	var filed []task.Task
 	existing, err := store.List()
 	if err != nil {

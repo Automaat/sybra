@@ -375,15 +375,21 @@ func shortRevision(rev string) string {
 
 // dispatch routes a parsed subcommand (with its own args and the global
 // --json flag already extracted) to the matching cmdXxx handler.
-func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager, projStore *project.Store, allowHTTP, jsonOut bool) int {
+func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Manager, localProjects *project.Store, allowHTTP, jsonOut bool) int {
 	var api *apiClient
-	switch cmd {
-	case "get", "create", "update", "link-pr", "delete", "pr":
-		if allowHTTP {
-			if c, ok := newAPIClient(cfg); ok && c.reachable(context.Background()) {
-				api = c
-			}
+	if allowHTTP {
+		if c, ok := newAPIClient(cfg); ok && c.reachable(context.Background()) {
+			api = c
 		}
+	}
+	// Every board command runs against a reachable server. The filesystem
+	// stores stay behind the same seam so a command still works with no
+	// server running; #3238 removes that half.
+	var store taskBoard = localTasks
+	var projStore projectBoard = localProjects
+	if api != nil {
+		store = newAPITaskBoard(api)
+		projStore = newAPIProjectBoard(api)
 	}
 	switch cmd {
 	case "list":
@@ -395,7 +401,7 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 	case "handoff":
 		return cmdHandoff(store, projStore, rest, jsonOut)
 	case "umbrella":
-		return cmdUmbrella(cfg, store, projStore, rest, jsonOut)
+		return cmdUmbrella(cfg, api, localTasks, localProjects, rest, jsonOut)
 	case "update":
 		return cmdUpdate(store, api, rest, jsonOut)
 	case "link-pr":
@@ -409,7 +415,7 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 	case "project":
 		return cmdProject(projStore, rest, jsonOut)
 	case "cluster":
-		return cmdCluster(cfg, store, projStore, rest, jsonOut)
+		return cmdCluster(cfg, api, localTasks, localProjects, rest, jsonOut)
 	case "audit":
 		return cmdAudit(cfg, rest, jsonOut)
 	case "board":
@@ -417,9 +423,9 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 	case "health":
 		return cmdHealth(cfg, rest, jsonOut)
 	case "triage":
-		return cmdTriage(cfg, store, projStore, rest, jsonOut)
+		return cmdTriage(cfg, api, localTasks, localProjects, rest, jsonOut)
 	case "monitor":
-		return cmdMonitor(cfg, store, rest, jsonOut)
+		return cmdMonitor(cfg, api, localTasks, rest, jsonOut)
 	case "selfmonitor":
 		return cmdSelfmonitor(cfg, store, rest, jsonOut)
 	case "evaluation":
@@ -551,7 +557,7 @@ func supportsTaskStoreFallback(cmd string) bool {
 	}
 }
 
-func openFallbackTaskStore() (manager *task.Manager, tasksDir string, err error) {
+func openFallbackTaskStore() (manager taskBoard, tasksDir string, err error) {
 	tasksDir = strings.TrimSpace(os.Getenv("SYBRA_TASKS_DIR"))
 	if tasksDir == "" {
 		tasksDir = filepath.Join(config.HomeDir(), "tasks")
@@ -563,7 +569,7 @@ func openFallbackTaskStore() (manager *task.Manager, tasksDir string, err error)
 	return task.NewManager(rawStore, nil), tasksDir, nil
 }
 
-func cmdList(s *task.Manager, args []string, jsonOut bool) int {
+func cmdList(s taskBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	status := fs.String("status", "", "filter by status")
 	tag := fs.String("tag", "", "filter by tag")
@@ -606,7 +612,7 @@ func cmdList(s *task.Manager, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdGet(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
+func cmdGet(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("get", flag.ContinueOnError)
 	compact := fs.Bool("compact", false, "omit planning support sidecars for implementation agents")
 	if err := fs.Parse(args); err != nil {
@@ -708,7 +714,7 @@ func stripPlanningSupport(t *task.Task) error {
 	return nil
 }
 
-func cmdCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
+func cmdCreate(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("create", flag.ContinueOnError)
 	title := fs.String("title", "", "task title (required)")
 	body := fs.String("body", "", "task body markdown")
@@ -825,14 +831,14 @@ func buildCreateUpdateMap(tags, proj, branch string, pr int, issue,
 	return updates
 }
 
-func createTaskViaAPIOrFS(s *task.Manager, api *apiClient, title, body, mode string) (task.Task, error) {
+func createTaskViaAPIOrFS(s taskBoard, api *apiClient, title, body, mode string) (task.Task, error) {
 	if created, handled, apiErr := viaAPI[task.Task](api, "TaskService", "CreateTask", title, body, mode); handled {
 		return created, apiErr
 	}
 	return s.Create(title, body, mode)
 }
 
-func updateTaskViaAPIOrFS(s *task.Manager, api *apiClient, id string, updates map[string]any) (task.Task, bool, error) {
+func updateTaskViaAPIOrFS(s taskBoard, api *apiClient, id string, updates map[string]any) (task.Task, bool, error) {
 	if updated, handled, apiErr := viaAPI[task.Task](api, "TaskService", "UpdateTask", id, updates); handled {
 		return updated, true, apiErr
 	}
@@ -885,7 +891,7 @@ func appendManualDecisionProgress(taskID, from, to, reason string) {
 // cmdHandoff creates a task pre-tagged for a Sybra workflow entry point. It
 // bypasses triage/planning and either starts the requested agentic stage in an
 // existing worktree or places the task in a raw status without workflow dispatch.
-func cmdHandoff(s *task.Manager, ps *project.Store, args []string, jsonOut bool) int {
+func cmdHandoff(s taskBoard, ps projectBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("handoff", flag.ContinueOnError)
 	title := fs.String("title", "", "task title (required)")
 	body := fs.String("body", "", "task body / research context markdown")
@@ -1029,7 +1035,7 @@ func resolveHandoffPlan(plan, planFile string) (string, error) {
 	return string(data), nil
 }
 
-func resolveHandoffProject(ps *project.Store, dir, projectID string) (string, project.Project, error) {
+func resolveHandoffProject(ps projectBoard, dir, projectID string) (string, project.Project, error) {
 	if projectID == "" {
 		derived, err := deriveProjectID(dir)
 		if err != nil {
@@ -1353,7 +1359,7 @@ func isSybraRepo(dir string) bool {
 // Match requires all three fields to be non-empty and equal, so it cannot
 // collapse legitimate distinct subtasks of an umbrella issue (those have
 // different titles).
-func findActiveDuplicate(s *task.Manager, projectID, issue, title string) (task.Task, bool, error) {
+func findActiveDuplicate(s taskBoard, projectID, issue, title string) (task.Task, bool, error) {
 	if projectID == "" || issue == "" || title == "" {
 		return task.Task{}, false, nil
 	}
@@ -1372,7 +1378,7 @@ func findActiveDuplicate(s *task.Manager, projectID, issue, title string) (task.
 	return task.Task{}, false, nil
 }
 
-func cmdUpdate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
+func cmdUpdate(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: update <id> [flags]")
 	}
@@ -1518,7 +1524,7 @@ func newUpdateFlags(fs *flag.FlagSet) updateFlags {
 	return f
 }
 
-func buildUpdateMap(s *task.Manager, id string, fs *flag.FlagSet, f updateFlags) (map[string]any, error) {
+func buildUpdateMap(s taskBoard, id string, fs *flag.FlagSet, f updateFlags) (map[string]any, error) {
 	updates := map[string]any{}
 	applyBasicUpdateFlags(updates, f)
 	if err := applySidecarUpdateFlags(fs, updates, f); err != nil {
@@ -1539,7 +1545,7 @@ func buildUpdateMap(s *task.Manager, id string, fs *flag.FlagSet, f updateFlags)
 // the replacement from the task's current blocker state — an operator
 // running e.g. `--blocker-exhausted` alone must not blank out the kind/code
 // the workflow engine already recorded.
-func applyBlockerUpdateFlags(s *task.Manager, id string, fs *flag.FlagSet, updates map[string]any, f updateFlags) error {
+func applyBlockerUpdateFlags(s taskBoard, id string, fs *flag.FlagSet, updates map[string]any, f updateFlags) error {
 	if *f.blockerClear {
 		updates["blocker"] = map[string]any{}
 		return nil
@@ -1736,7 +1742,7 @@ func warnInertDepConditions(currentDependsOn []string, conds []any) {
 	}
 }
 
-func cmdDelete(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
+func cmdDelete(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: delete <id>")
 	}
@@ -1756,7 +1762,7 @@ func cmdDelete(s *task.Manager, api *apiClient, args []string, jsonOut bool) int
 	return 0
 }
 
-func cmdReopen(s *task.Manager, args []string, jsonOut bool) int {
+func cmdReopen(s taskBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("reopen", flag.ContinueOnError)
 	force := fs.Bool("force", false, "reopen even if the task landed (outcome merged)")
 	projectID := fs.String("project", "", "restore project_id (for tasks whose project link was lost)")
@@ -1812,7 +1818,7 @@ func cmdReopen(s *task.Manager, args []string, jsonOut bool) int {
 // to in-review so the PR monitor loop can take over (auto-merge / done on
 // merge). Use when a PR was opened outside of Sybra (manually or by an external
 // tool) and the task's pr_number is still 0.
-func cmdLinkPR(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
+func cmdLinkPR(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) < 2 {
 		return fatal(jsonOut, "usage: link-pr <task-id> <pr-number>")
 	}
@@ -1987,7 +1993,7 @@ func filterProject(tasks []task.Task, projectID string) []task.Task {
 	return out
 }
 
-func cmdProject(ps *project.Store, args []string, jsonOut bool) int {
+func cmdProject(ps projectBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: project <list|get|create|update|delete> [flags]")
 	}
@@ -2008,7 +2014,7 @@ func cmdProject(ps *project.Store, args []string, jsonOut bool) int {
 	}
 }
 
-func cmdProjectList(ps *project.Store, jsonOut bool) int {
+func cmdProjectList(ps projectBoard, jsonOut bool) int {
 	projects, err := ps.List()
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
@@ -2028,7 +2034,7 @@ func cmdProjectList(ps *project.Store, jsonOut bool) int {
 	return 0
 }
 
-func cmdProjectGet(ps *project.Store, args []string, jsonOut bool) int {
+func cmdProjectGet(ps projectBoard, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: project get <id>")
 	}
@@ -2044,7 +2050,7 @@ func cmdProjectGet(ps *project.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdProjectCreate(ps *project.Store, args []string, jsonOut bool) int {
+func cmdProjectCreate(ps projectBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("project create", flag.ContinueOnError)
 	url := fs.String("url", "", "GitHub repository URL (required)")
 	ptype := fs.String("type", "pet", "project type: pet|work")
@@ -2065,7 +2071,7 @@ func cmdProjectCreate(ps *project.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdProjectUpdate(ps *project.Store, args []string, jsonOut bool) int {
+func cmdProjectUpdate(ps projectBoard, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: project update <id> [--type work|pet] [--setup-commands cmd1,cmd2]")
 	}
@@ -2104,7 +2110,7 @@ func cmdProjectUpdate(ps *project.Store, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdProjectDelete(ps *project.Store, args []string, jsonOut bool) int {
+func cmdProjectDelete(ps projectBoard, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: project delete <id>")
 	}
@@ -2137,7 +2143,7 @@ type boardSummary struct {
 	Blocked       []boardTask    `json:"blocked"`
 }
 
-func cmdBoard(s *task.Manager, jsonOut bool) int {
+func cmdBoard(s taskBoard, jsonOut bool) int {
 	tasks, err := s.List()
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
@@ -2457,13 +2463,13 @@ func formatHealthNumber(v float64, digits int) string {
 	return fmt.Sprintf("%.*f", digits, v)
 }
 
-func cmdMonitor(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
+func cmdMonitor(cfg *config.Config, api *apiClient, store *task.Manager, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: monitor <scan|map-duplicates> [--json]")
 	}
 	switch args[0] {
 	case "scan":
-		return cmdMonitorScan(cfg, store, jsonOut)
+		return cmdMonitorScan(cfg, api, store, jsonOut)
 	case "map-duplicates":
 		return cmdMonitorMapDuplicates(cfg, args[1:], jsonOut)
 	default:
@@ -2529,7 +2535,16 @@ func cmdMonitorMapDuplicates(cfg *config.Config, args []string, jsonOut bool) in
 	return 0
 }
 
-func cmdMonitorScan(cfg *config.Config, store *task.Manager, jsonOut bool) int {
+func cmdMonitorScan(cfg *config.Config, api *apiClient, store *task.Manager, jsonOut bool) int {
+	// A scan run here would report what a second reader of the same files
+	// sees, not what the running instance sees, so a reachable server scans.
+	if api != nil {
+		report, err := callAPI[monitor.Report](api, taskServiceName, "ScanMonitor")
+		if err != nil {
+			return fatal(jsonOut, "scan: %v", err)
+		}
+		return reportMonitorScan(jsonOut, report)
+	}
 	svc := monitor.NewService(monitor.Deps{
 		Cfg:        cfg.Monitor,
 		Tasks:      store,
@@ -2542,6 +2557,10 @@ func cmdMonitorScan(cfg *config.Config, store *task.Manager, jsonOut bool) int {
 	if err != nil {
 		return fatal(jsonOut, "scan: %v", err)
 	}
+	return reportMonitorScan(jsonOut, report)
+}
+
+func reportMonitorScan(jsonOut bool, report monitor.Report) int {
 	if jsonOut {
 		return printJSON(report)
 	}
@@ -2977,7 +2996,7 @@ func cmdArtifactReindex(store *artifact.Store, args []string, jsonOut bool) int 
 	return 0
 }
 
-func cmdProgress(s *task.Manager, projStore *project.Store, args []string, jsonOut bool) int {
+func cmdProgress(s taskBoard, projStore projectBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "progress: subcommand required (add|list)")
 	}
@@ -2993,7 +3012,7 @@ func cmdProgress(s *task.Manager, projStore *project.Store, args []string, jsonO
 	}
 }
 
-func cmdProgressAdd(s *task.Manager, projStore *project.Store, store *artifact.Store, args []string, jsonOut bool) int {
+func cmdProgressAdd(s taskBoard, projStore projectBoard, store *artifact.Store, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "progress add: task-id required")
 	}
@@ -3071,7 +3090,7 @@ func cmdProgressList(store *artifact.Store, args []string, jsonOut bool) int {
 // recovery and permanent-purge for tasks soft-deleted by Store.Delete (see
 // internal/task.Store's ListTrash/RestoreFromTrash/DeleteTrashedGeneration/
 // PruneAllTrash).
-func cmdTrash(s *task.Manager, args []string, jsonOut bool) int {
+func cmdTrash(s taskBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: trash <list|restore|delete|empty>")
 	}
@@ -3089,7 +3108,7 @@ func cmdTrash(s *task.Manager, args []string, jsonOut bool) int {
 	}
 }
 
-func cmdTrashList(s *task.Manager, jsonOut bool) int {
+func cmdTrashList(s taskBoard, jsonOut bool) int {
 	entries, err := s.ListTrash()
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
@@ -3109,7 +3128,7 @@ func cmdTrashList(s *task.Manager, jsonOut bool) int {
 	return 0
 }
 
-func cmdTrashRestore(s *task.Manager, args []string, jsonOut bool) int {
+func cmdTrashRestore(s taskBoard, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: trash restore <id>")
 	}
@@ -3157,7 +3176,7 @@ func trashDeleteMessage(id string, removed bool) string {
 // away, bypassing the retention window — for a compliance request or a
 // leaked credential that needs the content gone now, not after
 // RetentionDays.
-func cmdTrashDelete(s *task.Manager, args []string, jsonOut bool) int {
+func cmdTrashDelete(s taskBoard, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: trash delete <id>")
 	}
@@ -3174,7 +3193,7 @@ func cmdTrashDelete(s *task.Manager, args []string, jsonOut bool) int {
 
 // cmdTrashEmpty permanently purges every trashed generation, regardless of
 // age.
-func cmdTrashEmpty(s *task.Manager, jsonOut bool) int {
+func cmdTrashEmpty(s taskBoard, jsonOut bool) int {
 	rep, err := s.PruneAllTrash()
 	if err != nil {
 		return fatal(jsonOut, "%v", err)

@@ -11,7 +11,7 @@ import (
 )
 
 // cmdPR routes the `pr` subcommands.
-func cmdPR(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
+func cmdPR(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: pr create <task-id> --repo owner/name --head branch [--title T] [--body B] [--dir D] [--draft]")
 	}
@@ -27,7 +27,7 @@ func cmdPR(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
 // falling back to the local store. Mirrors updateTaskViaAPIOrFS: a Job that has
 // only the HTTP endpoint and no mounted tasks dir must still be able to read the
 // task it is opening a PR for.
-func getTaskViaAPIOrFS(s *task.Manager, api *apiClient, id string) (task.Task, error) {
+func getTaskViaAPIOrFS(s taskBoard, api *apiClient, id string) (task.Task, error) {
 	if got, handled, apiErr := viaAPI[task.Task](api, "TaskService", "GetTask", id); handled {
 		return got, apiErr
 	}
@@ -44,7 +44,7 @@ func getTaskViaAPIOrFS(s *task.Manager, api *apiClient, id string) (task.Task, e
 // repo operation happens in the Job that already has the clone and the token.
 // The task update goes through the same API-or-filesystem path as link-pr, so a
 // Job that only has the HTTP endpoint (no shared task dir) still reports back.
-func cmdPRCreate(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
+func cmdPRCreate(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 	// Pull the task id off before parsing, matching cmdUpdate: flag.Parse stops
 	// at the first non-flag argument, so `pr create <id> --repo ...` would
 	// otherwise silently ignore every flag after the id.

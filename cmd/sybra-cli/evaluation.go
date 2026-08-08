@@ -17,7 +17,7 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
-func cmdEvaluation(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
+func cmdEvaluation(cfg *config.Config, store taskBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: evaluation <scan|judge|golden|offline> [args] [--json]")
 	}
@@ -411,7 +411,7 @@ func cmdEvaluationScan(cfg *config.Config, jsonOut bool) int {
 	return 0
 }
 
-func cmdEvaluationJudge(store *task.Manager, args []string, jsonOut bool) int {
+func cmdEvaluationJudge(store taskBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("judge", flag.ContinueOnError)
 	model := fs.String("model", "", "judge model (default claude-sonnet-4-6)")
 	seed := fs.Int64("seed", 0, "rubric shuffle seed (0 = stable order)")

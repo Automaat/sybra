@@ -16,7 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
-func cmdPromptLab(cfg *config.Config, store *task.Manager, projStore *project.Store, args []string, jsonOut bool) int {
+func cmdPromptLab(cfg *config.Config, store taskBoard, projStore projectBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: prompt-lab <run> [flags]")
 	}
@@ -28,7 +28,7 @@ func cmdPromptLab(cfg *config.Config, store *task.Manager, projStore *project.St
 	}
 }
 
-func cmdPromptLabRun(cfg *config.Config, store *task.Manager, projStore *project.Store, args []string, jsonOut bool) int {
+func cmdPromptLabRun(cfg *config.Config, store taskBoard, projStore projectBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("prompt-lab run", flag.ContinueOnError)
 	defaultLookback := time.Duration(cfg.PromptLab.LookbackHours * float64(time.Hour))
 	lookbackFlag := fs.String("lookback", defaultLookback.String(), "lookback window (e.g. 168h or 7d)")
@@ -82,7 +82,7 @@ const promptLabProjectID = "Automaat/sybra"
 // is EXPLICIT here, not inherited: fileHarnessProposals (harness_evolution.go)
 // does not scrub, so this filer builds and applies its own work-typed
 // blocklist per subject rather than assuming that precedent covers it too.
-func filePromptLabProposals(store *task.Manager, projStore *project.Store, result promptlab.RunResult, cooldown time.Duration) ([]task.Task, error) {
+func filePromptLabProposals(store taskBoard, projStore projectBoard, result promptlab.RunResult, cooldown time.Duration) ([]task.Task, error) {
 	existing, err := store.List()
 	if err != nil {
 		return nil, err
@@ -120,7 +120,7 @@ func filePromptLabProposals(store *task.Manager, projStore *project.Store, resul
 	return filed, nil
 }
 
-func promptLabTargetProjectID(projStore *project.Store) string {
+func promptLabTargetProjectID(projStore projectBoard) string {
 	if projStore == nil {
 		return ""
 	}
@@ -134,7 +134,7 @@ func promptLabTargetProjectID(projStore *project.Store) string {
 // project's blocklist among projectIDs. A project ID that fails to resolve
 // or is pet-typed contributes nothing — fail-open on unknown/non-work
 // projects mirrors App.workScrubContextForTask.
-func scrubProposalBody(projStore *project.Store, body string, projectIDs []string) string {
+func scrubProposalBody(projStore projectBoard, body string, projectIDs []string) string {
 	for _, id := range projectIDs {
 		p, err := projStore.Get(id)
 		if err != nil || p.Type != project.ProjectTypeWork {

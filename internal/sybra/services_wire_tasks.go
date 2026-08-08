@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 )
@@ -26,6 +27,12 @@ func (a *App) wireTaskService() {
 	a.taskSvc.intervention = a.intervention
 	a.taskSvc.abTesting = a.abTestingConfig
 	a.taskSvc.assigner = a.assigner
+	a.taskSvc.monitorScan = func(ctx context.Context) (monitor.Report, error) {
+		if a.monitorSvc == nil {
+			return monitor.Report{}, errors.New("monitor is not running on this instance")
+		}
+		return a.monitorSvc.Scan(ctx)
+	}
 	a.taskSvc.recoverLostAgent = func(ctx context.Context, taskID string) error {
 		if a.recovery == nil {
 			return nil

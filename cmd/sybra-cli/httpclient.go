@@ -22,11 +22,16 @@ const apiCallTimeout = 15 * time.Second
 
 const maxAPIResponseBody = 32 << 20
 
-// serverTargetEnv is the explicit control-plane target for local CLI API mode.
+// serverTargetEnv is the explicit control-plane target for CLI API mode.
 // Reusing SYBRA_PORT/SYBRA_HOST here is unsafe: they describe where the server
 // listens, and ambient unit-shell exports made the CLI hit unrelated localhost
 // servers during ordinary filesystem-backed commands.
 const serverTargetEnv = "SYBRA_SERVER_TARGET"
+
+// serverTokenEnv carries the bearer token for a board on another machine.
+// The local path reads the token from config or SYBRA_AUTH_TOKEN_FILE, but a
+// remote board's token is not in this machine's config by definition.
+const serverTokenEnv = "SYBRA_SERVER_TOKEN"
 
 type apiClient struct {
 	baseURL string
@@ -50,6 +55,9 @@ func (e *apiError) Error() string {
 func newAPIClient(cfg *config.Config) (client *apiClient, ok bool) {
 	if cfg == nil {
 		return nil, false
+	}
+	if remote, ok := newRemoteAPIClient(); ok {
+		return remote, true
 	}
 	token := strings.TrimSpace(cfg.Server.AuthToken)
 	tokenPath := strings.TrimSpace(os.Getenv("SYBRA_AUTH_TOKEN_FILE"))
@@ -78,6 +86,32 @@ func newAPIClient(cfg *config.Config) (client *apiClient, ok bool) {
 	}
 	return &apiClient{
 		baseURL: "http://" + net.JoinHostPort(host, port),
+		token:   token,
+		http:    &http.Client{Timeout: apiCallTimeout},
+	}, true
+}
+
+// newRemoteAPIClient targets a board hosted on another machine. It requires
+// both an https target and an explicit token: a remote board's token is not in
+// this machine's config, and a cleartext hop would put that token on the wire.
+func newRemoteAPIClient() (client *apiClient, ok bool) {
+	raw := strings.TrimSpace(os.Getenv(serverTargetEnv))
+	if !strings.HasPrefix(raw, "https://") {
+		return nil, false
+	}
+	token := strings.TrimSpace(os.Getenv(serverTokenEnv))
+	if token == "" {
+		return nil, false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+		return nil, false
+	}
+	if path := strings.TrimSpace(u.EscapedPath()); path != "" && path != "/" {
+		return nil, false
+	}
+	return &apiClient{
+		baseURL: "https://" + u.Host,
 		token:   token,
 		http:    &http.Client{Timeout: apiCallTimeout},
 	}, true

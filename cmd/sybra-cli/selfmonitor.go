@@ -12,10 +12,9 @@ import (
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/selfmonitor"
-	"github.com/Automaat/sybra/internal/task"
 )
 
-func cmdSelfmonitor(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
+func cmdSelfmonitor(cfg *config.Config, store taskBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: selfmonitor <scan|investigate|ledger> [flags]")
 	}
@@ -56,7 +55,7 @@ func cmdSelfmonitorScan(jsonOut bool) int {
 // cmdSelfmonitorInvestigate runs a one-shot Scan() using the current health
 // report and ledger, without persisting or filing issues. Useful for
 // operators wanting to preview a tick before enabling the background loop.
-func cmdSelfmonitorInvestigate(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
+func cmdSelfmonitorInvestigate(cfg *config.Config, store taskBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("investigate", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
 		return fatal(jsonOut, "%v", err)

@@ -167,6 +167,9 @@ func (a *App) coreTaskHTTPServices() map[string]httpapi.Service {
 			"RestoreFromTrash",
 			"DeleteTrashedGeneration",
 			"PruneAllTrash",
+			"ExpandUmbrella",
+			"ClassifyTask",
+			"ScanMonitor",
 		).WithReadOnly(
 			"ListTasks",
 			"ListTasksForNode",
@@ -179,6 +182,7 @@ func (a *App) coreTaskHTTPServices() map[string]httpapi.Service {
 			"GetAttachmentURL",
 			"ListTaskProgress",
 			"ListTrash",
+			"ScanMonitor",
 		),
 		"ClusterAttachmentService": httpapi.NewService(&ClusterAttachmentService{tasks: a.tasks, attachments: a.attachments, logger: a.logger},
 			"ExportAttachment",

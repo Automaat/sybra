@@ -16,7 +16,7 @@ import (
 // `umbrella` tracker task plus one `blocked` child per sub-issue, with
 // dependency edges extracted by an LLM planner. Re-running is idempotent —
 // only sub-issues without an existing task are materialized.
-func cmdUmbrella(cfg *config.Config, s *task.Manager, projStore *project.Store, args []string, jsonOut bool) int {
+func cmdUmbrella(cfg *config.Config, api *apiClient, s *task.Manager, projStore *project.Store, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("umbrella", flag.ContinueOnError)
 	urlFlag := fs.String("url", "", "umbrella issue URL (or pass as first argument)")
 	model := fs.String("model", "", "planner model (default: claude default)")
@@ -29,6 +29,16 @@ func cmdUmbrella(cfg *config.Config, s *task.Manager, projStore *project.Store, 
 	}
 	if issueURL == "" {
 		return fatal(jsonOut, "umbrella: an issue URL is required")
+	}
+
+	// Expansion writes many tasks under the server's locks, so a reachable
+	// server runs the whole operation rather than this process racing it.
+	if api != nil {
+		res, err := callAPI[umbrellaExpandDTO](api, taskServiceName, "ExpandUmbrella", issueURL)
+		if err != nil {
+			return fatal(jsonOut, "%v", err)
+		}
+		return reportUmbrella(jsonOut, res.UmbrellaURL, res.Created, res.Skipped, res.Degraded)
 	}
 
 	var opts []umbrella.ExpandOption
@@ -77,4 +87,14 @@ func reportUmbrella(jsonOut bool, umbrellaURL string, created, skipped int, degr
 		fmt.Println("WARNING: planner exhausted its retries — fell back to an independent-parallel plan (no derived ordering, degraded parallelism cap).")
 	}
 	return 0
+}
+
+// umbrellaExpandDTO mirrors the server's wire shape for an expansion result.
+type umbrellaExpandDTO struct {
+	UmbrellaURL string `json:"umbrellaUrl"`
+	Created     int    `json:"created"`
+	Skipped     int    `json:"skipped"`
+	Degraded    bool   `json:"degraded"`
+	ChildCount  int    `json:"childCount"`
+	MaxParallel int    `json:"maxParallel"`
 }

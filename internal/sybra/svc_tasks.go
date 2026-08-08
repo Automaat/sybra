@@ -26,6 +26,7 @@ import (
 	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/intervention"
+	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/sandbox"
@@ -76,6 +77,11 @@ type TaskService struct {
 	// DAG instead of a flat task. Wired in wireServices; gated at call time on
 	// cfg.Umbrella.Enabled. nil in tests that don't exercise umbrellas.
 	umbrellaExpand func(issueURL string) (umbrella.Result, error)
+	// monitorScan runs one anomaly-detector pass on the server's own monitor
+	// service, so sybra-cli's `monitor scan` reports what the running instance
+	// sees rather than what a second reader of the same files would. nil when
+	// the monitor is not running.
+	monitorScan func(context.Context) (monitor.Report, error)
 	// deleteTask allows tests to force DeleteTask failures on cleanup branches
 	// without mutating the real task store or broadening the public API.
 	deleteTask func(id string) error

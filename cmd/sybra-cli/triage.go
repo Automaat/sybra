@@ -28,6 +28,7 @@ type triageResult struct {
 
 func cmdTriage(
 	cfg *config.Config,
+	api *apiClient,
 	store *task.Manager,
 	projStore *project.Store,
 	args []string,
@@ -39,7 +40,7 @@ func cmdTriage(
 	sub, rest := args[0], args[1:]
 	switch sub {
 	case "classify":
-		return cmdTriageClassify(cfg, store, projStore, rest, jsonOut)
+		return cmdTriageClassify(cfg, api, store, projStore, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown triage command: %s", sub)
 	}
@@ -47,6 +48,7 @@ func cmdTriage(
 
 func cmdTriageClassify(
 	cfg *config.Config,
+	api *apiClient,
 	store *task.Manager,
 	projStore *project.Store,
 	args []string,
@@ -113,7 +115,7 @@ func cmdTriageClassify(
 	results := make([]triageResult, 0, len(targets))
 	var hadErr bool
 	for i := range targets {
-		result, classErr := classifyOne(classifier, store, al, targets[i], projects, *timeout)
+		result, classErr := classifyOne(api, classifier, store, al, targets[i], projects, *timeout, *model)
 		if classErr != nil {
 			hadErr = true
 			if jsonOut {
@@ -126,16 +128,16 @@ func cmdTriageClassify(
 		results = append(results, result)
 	}
 
-	if jsonOut {
-		switch {
-		case *all:
-			_ = printJSON(results)
-		case len(results) == 1:
-			_ = printJSON(results[0])
-		default:
-			_ = printJSON(results)
-		}
-	} else {
+	reportTriageResults(jsonOut, *all, results)
+
+	if hadErr {
+		return 1
+	}
+	return 0
+}
+
+func reportTriageResults(jsonOut, all bool, results []triageResult) {
+	if !jsonOut {
 		for i := range results {
 			fmt.Printf(
 				"Classified %s → %s (%s, %s, %s)\n",
@@ -146,22 +148,30 @@ func cmdTriageClassify(
 				results[i].Task.Status,
 			)
 		}
+		return
 	}
-
-	if hadErr {
-		return 1
+	if !all && len(results) == 1 {
+		_ = printJSON(results[0])
+		return
 	}
-	return 0
+	_ = printJSON(results)
 }
 
 func classifyOne(
+	api *apiClient,
 	classifier triage.Classifier,
 	store *task.Manager,
 	al *audit.Logger,
 	t task.Task,
 	projects []project.Project,
 	timeout time.Duration,
+	model string,
 ) (triageResult, error) {
+	// Classification applies its verdict atomically; a reachable server runs
+	// the whole operation so the apply lands under the locks it holds.
+	if api != nil {
+		return callAPI[triageResult](api, taskServiceName, "ClassifyTask", t.ID, model)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
