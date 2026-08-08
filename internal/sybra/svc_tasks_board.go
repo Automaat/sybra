@@ -33,6 +33,8 @@ func boardRejection(err error) error {
 	switch {
 	case err == nil:
 		return nil
+	case reject.IsConflict(err):
+		return conflictError(err.Error())
 	case reject.Is(err):
 		return validationError(err.Error())
 	case errors.Is(err, task.ErrTransitionConflict), errors.Is(err, task.ErrIllegalTransition):

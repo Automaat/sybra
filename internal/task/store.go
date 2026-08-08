@@ -565,11 +565,11 @@ func (s *Store) safePath(id string) (string, error) {
 		// Synthetic List-only entry for an unparseable file: it has no task
 		// file of its own, and resolving it would let an update/delete issued
 		// against the degraded board card land on some unrelated real task.
-		return "", fmt.Errorf("task ID %q is a synthetic unreadable-file entry and has no task file", id)
+		return "", reject.New("task ID %q is a synthetic unreadable-file entry and has no task file", id)
 	}
 	path := filepath.Clean(filepath.Join(s.dir, id+".md"))
 	if !strings.HasPrefix(path, filepath.Clean(s.dir)+string(filepath.Separator)) {
-		return "", fmt.Errorf("invalid task ID %q", id)
+		return "", reject.New("invalid task ID %q", id)
 	}
 	return path, nil
 }

@@ -85,7 +85,7 @@ func TestBoardEndpoints_RejectionCarriesItsReason(t *testing.T) {
 			service:    "TaskService",
 			method:     "RestoreFromTrash",
 			args:       []any{revived.ID},
-			wantStatus: http.StatusBadRequest,
+			wantStatus: http.StatusConflict,
 			wantReason: "refusing to overwrite with trashed copy",
 		},
 		{
@@ -428,6 +428,10 @@ func TestBoardEndpoints_InputRejectionsCarryTheirReason(t *testing.T) {
 		{"update an unknown field", "TaskService", "UpdateTask", []any{created.ID, map[string]any{"nope": "x"}}, "nope"},
 		{"project type that is neither", "ProjectService", "UpdateProject", []any{"acme/widget", "bogus"}, "pet or work"},
 		{"artifact name escaping the store", "TaskService", "ReadTaskArtifact", []any{created.ID, "../../etc/passwd"}, "invalid artifact name"},
+		{"task id escaping the store", "TaskService", "GetTask", []any{"../../etc/passwd"}, "invalid task ID"},
+		{"task id escaping the artifact store", "TaskService", "ListTaskArtifactMetas", []any{"../../etc/passwd"}, "invalid task id"},
+		{"delete a task id escaping the store", "TaskService", "DeleteTask", []any{"../../etc/passwd"}, "invalid task ID"},
+		{"progress against an escaping task id", "TaskService", "AppendTaskProgress", []any{"../../etc/passwd", "progress", "", "hi"}, "invalid task ID"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -442,5 +446,23 @@ func TestBoardEndpoints_InputRejectionsCarryTheirReason(t *testing.T) {
 				t.Errorf("body %s does not carry %q", body, tt.wantReason)
 			}
 		})
+	}
+}
+
+// TestBoardEndpoints_EnvelopeCodeMatchesTheStatus keeps the machine-readable
+// half of a rejection honest. A client branching on code rather than status
+// saw "validation_error" on a 404, which reads as "your input was malformed"
+// for a well-formed id that simply is not there.
+func TestBoardEndpoints_EnvelopeCodeMatchesTheStatus(t *testing.T) {
+	t.Parallel()
+	svc, a := setupTaskService(t)
+	a.taskSvc = svc
+
+	_, body := postAPI(t, a, "TaskService", "GetTask", "zzzzzzzz")
+	if !strings.Contains(body, `"code":"not_found"`) {
+		t.Errorf("body %s does not carry the not_found code", body)
+	}
+	if strings.Contains(body, "validation_error") {
+		t.Errorf("body %s reports a missing id as malformed input", body)
 	}
 }

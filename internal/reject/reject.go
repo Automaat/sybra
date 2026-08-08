@@ -13,8 +13,13 @@ import (
 	"fmt"
 )
 
-// Error is a refusal of the caller's request.
-type Error struct{ err error }
+// Error is a refusal of the caller's request. Conflict distinguishes a
+// request that is well-formed but collides with the current state, which a
+// server answers 409, from malformed input, which it answers 400.
+type Error struct {
+	err      error
+	Conflict bool
+}
 
 func (e *Error) Error() string { return e.err.Error() }
 
@@ -23,6 +28,18 @@ func (e *Error) Unwrap() error { return e.err }
 // New builds a refusal with the given message.
 func New(format string, a ...any) error {
 	return &Error{err: fmt.Errorf(format, a...)}
+}
+
+// Conflicting builds a refusal of a well-formed request that collides with
+// the current state.
+func Conflicting(format string, a ...any) error {
+	return &Error{err: fmt.Errorf(format, a...), Conflict: true}
+}
+
+// IsConflict reports whether err is, or wraps, a colliding refusal.
+func IsConflict(err error) bool {
+	var rejection *Error
+	return errors.As(err, &rejection) && rejection.Conflict
 }
 
 // Is reports whether err is, or wraps, a refusal.

@@ -249,6 +249,8 @@ func codeForStatus(status int) ErrorCode {
 		return ErrCodeConflict
 	case http.StatusServiceUnavailable:
 		return ErrCodeUnavailable
+	case http.StatusNotFound:
+		return ErrCodeNotFound
 	default:
 		return ErrCodeValidation
 	}

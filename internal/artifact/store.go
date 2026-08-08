@@ -38,7 +38,7 @@ func New(dir string) *Store {
 // path containment as defence in depth even after the regex passes.
 func (s *Store) taskDir(taskID string) (string, error) {
 	if !validTaskID.MatchString(taskID) {
-		return "", fmt.Errorf("artifact: invalid task id %q", taskID)
+		return "", reject.New("artifact: invalid task id %q", taskID)
 	}
 	dir := filepath.Join(s.root, taskID)
 	if !strings.HasPrefix(filepath.Clean(dir)+string(filepath.Separator),
@@ -52,7 +52,7 @@ func (s *Store) taskDir(taskID string) (string, error) {
 // task, without checking whether the artifact exists.
 func (s *Store) Path(taskID, name string) (string, error) {
 	if !validTaskID.MatchString(taskID) {
-		return "", fmt.Errorf("artifact: invalid task id %q", taskID)
+		return "", reject.New("artifact: invalid task id %q", taskID)
 	}
 	if !validName.MatchString(name) {
 		return "", reject.New("artifact: invalid artifact name %q", name)
@@ -74,7 +74,7 @@ func (s *Store) Path(taskID, name string) (string, error) {
 // missing bytes.
 func (s *Store) Put(taskID string, a Artifact) (Meta, error) {
 	if !validTaskID.MatchString(taskID) {
-		return Meta{}, fmt.Errorf("artifact: invalid task id %q", taskID)
+		return Meta{}, reject.New("artifact: invalid task id %q", taskID)
 	}
 	name := a.Name
 	if name == "" {
@@ -124,7 +124,7 @@ func (s *Store) Put(taskID string, a Artifact) (Meta, error) {
 // Creates the stream file and its .meta.json on first call.
 func (s *Store) Append(taskID string, kind Kind, event any) error {
 	if !validTaskID.MatchString(taskID) {
-		return fmt.Errorf("artifact: invalid task id %q", taskID)
+		return reject.New("artifact: invalid task id %q", taskID)
 	}
 	name := kind.defaultName()
 
@@ -184,7 +184,7 @@ func (s *Store) Append(taskID string, kind Kind, event any) error {
 // A missing task directory returns an empty slice, not an error.
 func (s *Store) List(taskID string) ([]Meta, error) {
 	if !validTaskID.MatchString(taskID) {
-		return nil, fmt.Errorf("artifact: invalid task id %q", taskID)
+		return nil, reject.New("artifact: invalid task id %q", taskID)
 	}
 	dir, err := s.taskDir(taskID)
 	if err != nil {
@@ -234,7 +234,7 @@ func (s *Store) scanMetaLocked(taskID, dir string) ([]Meta, error) {
 // Read returns the raw bytes and metadata for an artifact.
 func (s *Store) Read(taskID, name string) ([]byte, Meta, error) {
 	if !validTaskID.MatchString(taskID) {
-		return nil, Meta{}, fmt.Errorf("artifact: invalid task id %q", taskID)
+		return nil, Meta{}, reject.New("artifact: invalid task id %q", taskID)
 	}
 	if !validName.MatchString(name) {
 		return nil, Meta{}, reject.New("artifact: invalid artifact name %q", name)
@@ -284,7 +284,7 @@ func (s *Store) Delete(taskID string) error {
 // Public repair tool — never call while already holding the per-task lock.
 func (s *Store) Reindex(taskID string) error {
 	if !validTaskID.MatchString(taskID) {
-		return fmt.Errorf("artifact: invalid task id %q", taskID)
+		return reject.New("artifact: invalid task id %q", taskID)
 	}
 	dir, err := s.taskDir(taskID)
 	if err != nil {

@@ -278,7 +278,7 @@ func (s *Store) RestoreFromTrash(id string) (Task, error) {
 		return Task{}, err
 	}
 	if _, err := os.Stat(livePath); err == nil {
-		return Task{}, reject.New("task %s already exists, refusing to overwrite with trashed copy", id)
+		return Task{}, reject.Conflicting("task %s already exists, refusing to overwrite with trashed copy", id)
 	} else if !os.IsNotExist(err) {
 		return Task{}, fmt.Errorf("stat live task: %w", err)
 	}
