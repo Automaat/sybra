@@ -403,3 +403,36 @@ func TestHomeIDResolvesSymlinks(t *testing.T) {
 		t.Fatal("an unset home produced a digest")
 	}
 }
+
+// TestHomeIDDistinguishesRelativeHomes is a data-loss regression. A relative
+// SYBRA_HOME used to digest the bare string, so two processes started from
+// different directories agreed they served one home while owning different
+// disks — and a cleanup then deleted the other's live state.
+func TestHomeIDDistinguishesRelativeHomes(t *testing.T) {
+	base := t.TempDir()
+	for _, side := range []string{"relA", "relB"} {
+		if err := os.MkdirAll(filepath.Join(base, side, "myhome"), 0o755); err != nil {
+			t.Fatalf("seed %s: %v", side, err)
+		}
+	}
+
+	digest := func(dir string) string {
+		t.Helper()
+		t.Chdir(dir)
+		return httpserve.HomeID("myhome")
+	}
+	a := digest(filepath.Join(base, "relA"))
+	b := digest(filepath.Join(base, "relB"))
+
+	if a == "" || b == "" {
+		t.Fatal("a relative home produced no digest")
+	}
+	if a == b {
+		t.Fatal("two different directories reached by the same relative home digest the same")
+	}
+	// And the relative form still matches its own absolute form.
+	t.Chdir(filepath.Join(base, "relA"))
+	if httpserve.HomeID("myhome") != httpserve.HomeID(filepath.Join(base, "relA", "myhome")) {
+		t.Fatal("a relative home does not match the absolute path it names")
+	}
+}

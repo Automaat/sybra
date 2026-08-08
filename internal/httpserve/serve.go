@@ -46,15 +46,24 @@ const ServiceMarker = "sybra"
 // could then echo it back to collect the bearer token. A caller that already
 // knows the path can still compare; one that does not, learns nothing.
 //
-// Symlinks are resolved first so a home reached through /var and /private/var
+// The path is made absolute before anything else. A relative home digests the
+// bare string otherwise, so two processes started from different directories
+// with the same relative SYBRA_HOME agree they serve one home while owning
+// different disks — and a cleanup then deletes the other's live state.
+//
+// Symlinks are resolved next, so a home reached through /var and /private/var
 // digests the same.
 func HomeID(home string) string {
 	if strings.TrimSpace(home) == "" {
 		return ""
 	}
-	resolved, err := filepath.EvalSymlinks(home)
+	absolute, err := filepath.Abs(home)
 	if err != nil {
-		resolved = home
+		return ""
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		resolved = absolute
 	}
 	sum := sha256.Sum256([]byte(filepath.Clean(resolved)))
 	return hex.EncodeToString(sum[:])

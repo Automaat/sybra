@@ -512,7 +512,11 @@ func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal, c
 		why = fmt.Sprintf("no Sybra server is reachable (tried %s)%s; start one, or set %s",
 			strings.Join(tried, ", "), strings.Join(causes, ""), serverTargetEnv)
 	}
-	if len(foreign) == 0 && runsWithoutServer(cmd) {
+	// A command that never reads the board runs regardless of what answered:
+	// refusing gen-cert because some other home's server holds the port would
+	// mean needing a server before the node that serves one can exist. It still
+	// gets the cause, so doctor can name it.
+	if runsWithoutServer(cmd) {
 		return nil, "", why
 	}
 	return nil, why, why
