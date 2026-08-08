@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/httpserve"
 )
 
 // apiCallTimeout bounds an ordinary board call. It is deliberately short: a
@@ -83,16 +84,13 @@ func (e *apiError) Error() string {
 func newAPIClient(cfg *config.Config) (*apiClient, error) {
 	raw, source := strings.TrimSpace(os.Getenv(serverTargetEnv)), serverTargetEnv
 	if raw == "" {
-		raw, source = localBoardTarget(cfg), "this machine's board"
-	}
-	if raw == "" {
 		return nil, errNoServerTarget
 	}
 	if cfg == nil {
 		return nil, fmt.Errorf("%s is set but no configuration is loaded", serverTargetEnv)
 	}
 	if strings.HasPrefix(raw, "https://") {
-		return newTLSAPIClient(raw, source)
+		return newTLSAPIClient(raw, source, "")
 	}
 	return newCleartextAPIClient(cfg, raw, source)
 }
@@ -102,18 +100,23 @@ func newAPIClient(cfg *config.Config) (*apiClient, error) {
 // startup and appears in no configuration file.
 const desktopPortFile = "desktop-port"
 
-// localBoardTarget names the board running on this machine, so an operator who
-// set no target still reaches the instance that owns their home rather than
-// editing its files underneath it.
+// localBoardCandidates lists the boards this machine might be running, most
+// likely first, so an operator who named no target still reaches the instance
+// that owns their home rather than editing its files underneath it.
 //
-// The desktop app's recorded port wins over the configured bind: when both run
-// against one home the desktop is the process holding the board open, and the
-// configured port is what sybra-server would use if it were the one running.
-func localBoardTarget(cfg *config.Config) string {
+// It is a list rather than one answer because the desktop app's recorded port
+// outlives the process: the file is kept deliberately, so the port survives a
+// restart, which means a stale entry must not shadow a server that is actually
+// up. Every candidate is probed before any is used.
+func localBoardCandidates(cfg *config.Config) []string {
+	var out []string
 	if port := readDesktopPort(); port != "" {
-		return net.JoinHostPort("127.0.0.1", port)
+		out = append(out, localOrigin(cfg, "127.0.0.1", port))
 	}
-	return configuredServerTarget(cfg)
+	if target := configuredServerTarget(cfg); target != "" {
+		out = append(out, target)
+	}
+	return out
 }
 
 func readDesktopPort() string {
@@ -128,26 +131,44 @@ func readDesktopPort() string {
 	return port
 }
 
-// configuredServerTarget reports where sybra-server would listen on this
-// machine. A bind on every interface answers on loopback too, so the CLI always
-// dials loopback and never puts the token on a network hop.
+// configuredServerTarget reports where sybra-server listens on this machine.
+//
+// SYBRA_HOST/SYBRA_PORT are deliberately not consulted: they say where a server
+// should listen, and an ambient export from an unrelated unit shell would aim
+// the CLI — and the bearer token it sends next — at whatever answers there.
+// Only the configured bind counts.
 func configuredServerTarget(cfg *config.Config) string {
-	port := config.DefaultServerPort
-	if cfg != nil {
-		addrs, _ := cfg.ListenAddrs(os.Getenv("SYBRA_HOST"), os.Getenv("SYBRA_PORT"))
-		if len(addrs) > 0 {
-			if _, p, err := net.SplitHostPort(addrs[0]); err == nil && strings.TrimSpace(p) != "" {
-				port = p
-			}
-		}
+	addrs, _ := cfg.ListenAddrs("", "")
+	if len(addrs) == 0 {
+		return localOrigin(cfg, "127.0.0.1", config.DefaultServerPort)
 	}
-	return net.JoinHostPort("127.0.0.1", port)
+	host, port, err := net.SplitHostPort(addrs[0])
+	if err != nil || strings.TrimSpace(port) == "" {
+		return localOrigin(cfg, "127.0.0.1", config.DefaultServerPort)
+	}
+	// A wildcard or empty bind answers on loopback; a concrete one does not, so
+	// an operator who locked the control plane to one interface is dialled
+	// there rather than at a loopback address nothing is listening on.
+	if strings.TrimSpace(host) == "" || isWildcardHost(host) {
+		host = "127.0.0.1"
+	}
+	return localOrigin(cfg, host, port)
+}
+
+// localOrigin renders a candidate in the scheme this instance serves. A TLS
+// control plane refuses a cleartext hop, so inferring an http:// target for one
+// would make every command fail on a deployment that configured it.
+func localOrigin(cfg *config.Config, host, port string) string {
+	if cfg.ServesTLS() {
+		return "https://" + net.JoinHostPort(host, port)
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // newTLSAPIClient targets a board over TLS. The token has to come from the
 // environment: a board on another machine does not keep its token in this
 // machine's config, by definition.
-func newTLSAPIClient(raw, source string) (*apiClient, error) {
+func newTLSAPIClient(raw, source, localToken string) (*apiClient, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
 		return nil, fmt.Errorf("%s=%q is not a bare https origin", source, raw)
@@ -156,6 +177,11 @@ func newTLSAPIClient(raw, source string) (*apiClient, error) {
 		return nil, fmt.Errorf("%s=%q must carry no path", source, raw)
 	}
 	token := strings.TrimSpace(os.Getenv(serverTokenEnv))
+	if token == "" && localToken != "" {
+		// This machine's own TLS board keeps its token in this machine's
+		// config; only another machine's does not.
+		token = localToken
+	}
 	if token == "" {
 		return nil, fmt.Errorf("%s=%q requires %s", source, raw, serverTokenEnv)
 	}
@@ -248,6 +274,12 @@ func isLoopbackHost(h string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// reachable reports that a Sybra control plane answers, not merely that
+// something does.
+//
+// The identity check is what keeps the bearer token off an unrelated process:
+// the next request carries it, and a port this client inferred rather than an
+// operator named may belong to anything.
 func (c *apiClient) reachable(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -260,8 +292,14 @@ func (c *apiClient) reachable(ctx context.Context) bool {
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-	return resp.StatusCode == http.StatusOK
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return false
+	}
+	var health struct {
+		Service string `json:"service"`
+	}
+	return json.Unmarshal(body, &health) == nil && health.Service == httpserve.ServiceMarker
 }
 
 func (c *apiClient) call(ctx context.Context, service, method string, out any, args ...any) error {
@@ -328,4 +366,19 @@ func viaAPI[T any](api *apiClient, service, method string, args ...any) (result 
 		return result, true, callErr
 	}
 	return result, false, nil
+}
+
+// newLocalAPIClient builds a client for a board inferred for this machine.
+//
+// Its failures are not an operator's mistake — nobody named this target — so
+// the caller skips a candidate it cannot build rather than reporting it, and
+// the commands that run without a server keep running.
+func newLocalAPIClient(cfg *config.Config, target string) (*apiClient, error) {
+	if cfg == nil || strings.TrimSpace(target) == "" {
+		return nil, errNoServerTarget
+	}
+	if strings.HasPrefix(target, "https://") {
+		return newTLSAPIClient(target, "this machine's board", strings.TrimSpace(cfg.Server.AuthToken))
+	}
+	return newCleartextAPIClient(cfg, target, "this machine's board")
 }

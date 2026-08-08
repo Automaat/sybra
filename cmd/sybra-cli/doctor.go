@@ -18,12 +18,12 @@ import (
 // what broke, but every path it would delete belongs to a live task, and only
 // the board knows which those are. Without one it reports and refuses to
 // delete, rather than treating every worktree as an orphan.
-func cmdDoctor(cfg *config.Config, store taskBoard, args []string, jsonOut bool) int {
+func cmdDoctor(cfg *config.Config, store taskBoard, ownsHome bool, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: doctor <cleanup>")
 	}
-	if store == nil {
-		return cmdDoctorWithoutBoard(cfg, args, jsonOut)
+	if store == nil || !ownsHome {
+		return cmdDoctorWithoutBoard(cfg, store, ownsHome, args, jsonOut)
 	}
 	switch sub, rest := args[0], args[1:]; sub {
 	case "cleanup":
@@ -352,13 +352,31 @@ func fatalUsage(jsonOut bool, format string, args ...any) int {
 }
 
 // cmdDoctorWithoutBoard answers the doctor subcommands that need no board, and
-// refuses the rest by name rather than by scanning against an empty task list —
-// which would classify every live worktree as an orphan and offer to delete it.
-func cmdDoctorWithoutBoard(cfg *config.Config, args []string, jsonOut bool) int {
+// refuses the scan by name rather than running it against a task list that does
+// not describe this disk — which classifies every live worktree as an orphan
+// and offers to delete it.
+func cmdDoctorWithoutBoard(cfg *config.Config, store taskBoard, ownsHome bool, args []string, jsonOut bool) int {
 	if args[0] != "cleanup" {
 		return fatal(jsonOut, "unknown doctor command: %s", args[0])
+	}
+	// The protected-findings record is this machine's own file, so reading it
+	// needs no board at all — and it is exactly what an operator asks for when
+	// the server is what broke and the disk is filling up.
+	if rest := args[1:]; len(rest) > 0 && rest[0] == "findings" && !needsBoard(rest[1:]) {
+		return cmdDoctorCleanupFindings(store, rest[1:], jsonOut)
+	}
+	if !ownsHome {
+		return fatal(jsonOut,
+			"doctor cleanup deletes paths under this machine's home, and %s names a board on another machine, whose tasks do not describe them; unset it to use this machine's own board",
+			serverTargetEnv)
 	}
 	return fatal(jsonOut,
 		"doctor cleanup needs the board to tell a live worktree from an orphan, and no Sybra server is reachable; start one, or set %s",
 		serverTargetEnv)
+}
+
+// needsBoard reports the findings subcommands that read a task, which is the
+// only part of that subtree a board is required for.
+func needsBoard(args []string) bool {
+	return len(args) > 0 && args[0] == "reattach"
 }

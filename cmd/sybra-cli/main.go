@@ -421,7 +421,11 @@ func dispatch(cmd string, rest []string, cfg *config.Config, jsonOut bool) int {
 	case "config":
 		return cmdConfig(cfg, rest, jsonOut, api != nil, nil)
 	case "doctor":
-		return cmdDoctor(cfg, store, rest, jsonOut)
+		// ownsThisHome, not just "a board": every path cleanup deletes is under
+		// this home, and a board on another machine holds none of these task
+		// ids — so it would report every live worktree as an orphan and offer
+		// to delete it, agents included.
+		return cmdDoctor(cfg, store, ownsThisHome(api), rest, jsonOut)
 	case "trash":
 		return cmdTrash(store, rest, jsonOut)
 	case "tasks-history":
@@ -438,21 +442,58 @@ func dispatch(cmd string, rest []string, cfg *config.Config, jsonOut bool) int {
 // CLI a silent concurrent writer, and a stale target turned an ordinary edit
 // into a change the owning instance later overwrote.
 func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal string) {
-	c, err := newAPIClient(cfg)
-	if err != nil {
-		if errors.Is(err, errNoServerTarget) && runsWithoutServer(cmd) {
+	if raw := strings.TrimSpace(os.Getenv(serverTargetEnv)); raw != "" {
+		c, err := newAPIClient(cfg)
+		if err != nil {
+			return nil, err.Error()
+		}
+		if c.reachable(context.Background()) {
+			return c, ""
+		}
+		if runsWithoutServer(cmd) {
 			return nil, ""
 		}
-		return nil, err.Error()
+		return nil, fmt.Sprintf("no Sybra server is reachable at %s (%s); start it, or point %s elsewhere",
+			c.baseURL, serverTargetEnv, serverTargetEnv)
 	}
-	if c.reachable(context.Background()) {
-		return c, ""
+
+	// No target named, so every board this machine might be running is tried.
+	// The desktop app's recorded port is kept across restarts, so a stale entry
+	// must not shadow a server that is up.
+	candidates := localBoardCandidates(cfg)
+	tried := make([]string, 0, len(candidates))
+	for _, target := range candidates {
+		c, err := newLocalAPIClient(cfg, target)
+		if err != nil {
+			continue
+		}
+		tried = append(tried, c.baseURL)
+		if c.reachable(context.Background()) {
+			return c, ""
+		}
 	}
 	if runsWithoutServer(cmd) {
 		return nil, ""
 	}
-	return nil, fmt.Sprintf("no Sybra server is reachable at %s; start one, or set %s to the board you meant",
-		c.baseURL, serverTargetEnv)
+	if len(tried) == 0 {
+		return nil, fmt.Sprintf("no Sybra server could be located for this home; start one, or set %s", serverTargetEnv)
+	}
+	return nil, fmt.Sprintf("no Sybra server is reachable (tried %s); start one, or set %s",
+		strings.Join(tried, ", "), serverTargetEnv)
+}
+
+// ownsThisHome reports that the resolved board is the instance running against
+// this machine's home, which is the only board whose task list describes the
+// paths on this disk.
+func ownsThisHome(api *apiClient) bool {
+	if api == nil {
+		return false
+	}
+	if strings.TrimSpace(os.Getenv(serverTargetEnv)) == "" {
+		// Inferred targets are this home's by construction.
+		return true
+	}
+	return !api.remote
 }
 
 // runsWithoutServer reports the commands that inspect or repair this machine alone. They stay usable when the board they would otherwise talk to is down, which is what makes them the ones an operator reaches for to find out why it is down.
@@ -701,7 +742,7 @@ func cmdCreate(s taskBoard, args []string, jsonOut bool) int {
 		updates["depends_on_conditions"] = depConds
 	}
 	if len(updates) > 0 {
-		t, _, err = updateTask(s, t.ID, updates)
+		t, err = updateTask(s, t.ID, updates)
 		if err != nil {
 			return fatal(jsonOut, "update after create: %v", err)
 		}
@@ -764,45 +805,10 @@ func createTask(s taskBoard, title, body, mode string) (task.Task, error) {
 	return s.Create(title, body, mode)
 }
 
-// updateTask applies a field edit through the board. viaHTTP reports whether
-// the board is server-backed, which callers use to decide whether the server
-// already logged the decision.
-func updateTask(s taskBoard, id string, updates map[string]any) (updated task.Task, viaHTTP bool, err error) {
-	if _, serverBacked := s.(*apiTaskBoard); serverBacked {
-		t, err := s.UpdateMap(id, updates)
-		return t, true, err
-	}
-	if statusText, hasStatus := updates["status"].(string); hasStatus {
-		localUpdates := make(map[string]any, len(updates)-1)
-		for key, value := range updates {
-			if key != "status" {
-				localUpdates[key] = value
-			}
-		}
-		extra, err := task.UpdateFromMap(localUpdates)
-		if err != nil {
-			return task.Task{}, false, err
-		}
-		status, err := task.ValidateStatus(statusText)
-		if err != nil {
-			return task.Task{}, false, err
-		}
-		if status == task.StatusHumanRequired {
-			display := "operator moved task to human-required"
-			if extra.StatusReason != nil && strings.TrimSpace(*extra.StatusReason) != "" {
-				display = *extra.StatusReason
-			}
-			extra.Escalation = task.OperatorDecisionEvidence("operator.cli_status_change", display)
-			extra.AutonomyOutcome = task.HumanRequiredOutcome()
-		}
-		result, err := s.Apply(task.TransitionIntent{
-			TaskID: id, ToStatus: status, Actor: "sybra-cli.update",
-			Extra: extra, OperatorOverride: true,
-		})
-		return result.Task, false, err
-	}
-	t, err := s.UpdateMap(id, updates)
-	return t, false, err
+// updateTask sends the field map to the board. The board is the only writer:
+// there is no local path left, so no branch on which one is in play.
+func updateTask(s taskBoard, id string, updates map[string]any) (task.Task, error) {
+	return s.UpdateMap(id, updates)
 }
 
 // appendManualDecisionProgress records the operator's status change beside the board that took it. A reachable server owns the artifact store for the task it just updated, so writing to this machine's disk instead would file the decision where the owning instance never reads it.
@@ -1335,17 +1341,11 @@ func cmdUpdate(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 		}
 	}
 
-	before, err := getTask(s, id)
+	// No pre-read: the board owns the decision entry a human-required exit
+	// records, so the only thing this fetch bought was a second round trip.
+	t, err := updateTask(s, id, updates)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
-	}
-
-	t, handledByAPI, err := updateTask(s, id, updates)
-	if err != nil {
-		return fatal(jsonOut, "%v", err)
-	}
-	if !handledByAPI && before.Status == task.StatusHumanRequired && t.Status != task.StatusHumanRequired {
-		appendManualDecisionProgress(api, t.ID, string(before.Status), string(t.Status), t.StatusReason)
 	}
 
 	if jsonOut {
@@ -1767,13 +1767,9 @@ func cmdLinkPR(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 		updates["status_reason"] = ""
 	}
 
-	prev := t
-	t, handledByAPI, err := updateTask(s, id, updates)
+	t, err = updateTask(s, id, updates)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
-	}
-	if !handledByAPI && prev.Status == task.StatusHumanRequired && t.Status != task.StatusHumanRequired {
-		appendManualDecisionProgress(api, t.ID, string(prev.Status), string(t.Status), t.StatusReason)
 	}
 
 	if jsonOut {

@@ -20,6 +20,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/httpapi"
+	"github.com/Automaat/sybra/internal/httpserve"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/selfmonitor"
@@ -63,17 +64,10 @@ func (s *testBoardTaskService) CreateTaskFull(title, body, mode, status string, 
 	return s.tasks.CreateWithStatus(title, body, mode, st, init)
 }
 
+// UpdateTaskFields records no decision entry, matching TaskService: only the
+// map-form UpdateTask below does.
 func (s *testBoardTaskService) UpdateTaskFields(id string, u task.Update) (task.Task, error) {
-	before, err := s.tasks.Get(id)
-	if err != nil {
-		return task.Task{}, err
-	}
-	after, err := s.tasks.Update(id, u)
-	if err != nil {
-		return task.Task{}, err
-	}
-	s.recordManualDecision(before, after)
-	return after, nil
+	return s.tasks.Update(id, u)
 }
 
 func (s *testBoardTaskService) UpdateTask(id string, raw map[string]any) (task.Task, error) {
@@ -89,10 +83,11 @@ func (s *testBoardTaskService) UpdateTask(id string, raw map[string]any) (task.T
 	return after, nil
 }
 
-// recordManualDecision mirrors TaskService.appendManualHumanRequiredDecision.
-// The CLI stopped writing this entry itself once every update went through a
-// server, so a board that does not record it would let that removal look
-// harmless while the decision log silently stopped being written.
+// recordManualDecision mirrors TaskService.appendManualHumanRequiredDecision,
+// which the real server runs from the map-form UpdateTask only. The CLI stopped
+// writing this entry itself once every update went through a server, so a board
+// that does not record it would let that removal look harmless while the
+// decision log silently stopped being written.
 func (s *testBoardTaskService) recordManualDecision(before, after task.Task) {
 	if before.Status != task.StatusHumanRequired || after.Status == task.StatusHumanRequired {
 		return
@@ -326,9 +321,11 @@ func startTestBoard(t *testing.T, home string) *httptest.Server {
 	tasks := task.NewManager(rawStore, nil)
 
 	mux := http.NewServeMux()
-	// The reachability probe the CLI runs before it will use a target.
+	// The reachability probe, carrying the marker that identifies a Sybra
+	// control plane. Without it the CLI declines to send its token here, which
+	// is the point of the check.
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok","service":"` + httpserve.ServiceMarker + `"}`))
 	})
 	httpapi.Mount(mux, map[string]httpapi.Service{
 		"TaskService": httpapi.NewService(&testBoardTaskService{
@@ -389,4 +386,24 @@ func newTestBoardClient(t *testing.T, home string) *apiClient {
 		t.Fatalf("parse test board URL: %v", err)
 	}
 	return &apiClient{baseURL: "http://" + u.Host, token: "test-board-token", http: srv.Client()}
+}
+
+// writeClosedPortFile records a port nothing is listening on, so a test that
+// asserts "no server" does not instead reach whatever else holds the default.
+func writeClosedPortFile(t *testing.T, home string) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve a port: %v", err)
+	}
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split reserved port: %v", err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatalf("release reserved port: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, desktopPortFile), []byte(port), 0o600); err != nil {
+		t.Fatalf("write desktop port: %v", err)
+	}
 }

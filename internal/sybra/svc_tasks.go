@@ -447,7 +447,10 @@ func translateTaskLockTimeout(err error) error {
 	if err == nil || !errors.Is(err, fsutil.ErrLockTimeout) {
 		return err
 	}
-	return unavailableError(err.Error())
+	// The reason, not the lock path: this error names an absolute path under
+	// the server's home and a holder pid, and its caller is a client on another
+	// machine. What that client acts on is the 503, which it retries.
+	return unavailableError("resource is locked; retry")
 }
 
 // BlessTampering records a human bless for a tamper-flagged task and sends it

@@ -30,6 +30,10 @@ import (
 	"github.com/Automaat/sybra/internal/sse"
 )
 
+// ServiceMarker identifies a Sybra control plane in its health response, so a
+// client can tell one from whatever else happens to answer on a port.
+const ServiceMarker = "sybra"
+
 // Options describes one instance's HTTP surface.
 type Options struct {
 	Logger *slog.Logger
@@ -77,9 +81,14 @@ func BuildMux(opts Options) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	// Health check endpoint for container orchestration.
+	//
+	// The service marker is not decoration: a client dials a port it inferred
+	// rather than one an operator named, and it sends a bearer token on the
+	// next request. Without something identifying the peer, any local process
+	// answering 200 here collects that token.
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
+		_, _ = fmt.Fprint(w, `{"status":"ok","service":"`+ServiceMarker+`"}`)
 	})
 
 	// Prometheus scrape endpoint (opt-in via config.metrics.enabled). The

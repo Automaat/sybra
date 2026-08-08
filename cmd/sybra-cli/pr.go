@@ -88,7 +88,7 @@ func cmdPRCreate(s taskBoard, args []string, jsonOut bool) int {
 	// status: simple-task-pr's maybe_create_pr guard already routes to
 	// push_existing_pr once pr_number exists, then advances. Flipping status
 	// here would jump the task past the step that is still running.
-	updated, _, err := updateTask(s, id, map[string]any{"pr_number": float64(num)})
+	updated, err := updateTask(s, id, map[string]any{"pr_number": float64(num)})
 	if err != nil {
 		// The PR is already open; failing silently here would strand it
 		// unlinked and invisible to the monitor loop.

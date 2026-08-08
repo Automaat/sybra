@@ -285,3 +285,38 @@ func TestDoctorCleanupApplyPartialFailureExitsOne(t *testing.T) {
 		t.Fatalf("expected a recorded delete error, got %+v", report.Results)
 	}
 }
+
+// TestDoctorCleanupFindingsRunWithoutABoard covers the query an operator makes
+// precisely when the server is what broke: what did cleanup protect, and why is
+// the disk full. It reads this machine's own findings file and needs no board.
+func TestDoctorCleanupFindingsRunWithoutABoard(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv(serverTargetEnv, "")
+	writeClosedPortFile(t, home)
+
+	code, out := runCLI(t, "--json", "doctor", "cleanup", "findings", "list")
+	if code != 0 {
+		t.Fatalf("findings list exit %d with no server: %s", code, out)
+	}
+}
+
+// TestDoctorCleanupRefusesAnotherMachinesBoard is the guard on an irreversible
+// delete. Every path cleanup removes is under this home, and a board elsewhere
+// holds none of these task ids — so it would call every live worktree an orphan.
+func TestDoctorCleanupRefusesAnotherMachinesBoard(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv(serverTargetEnv, "https://board.example:8443")
+	t.Setenv(serverTokenEnv, "secret")
+
+	code, _, stderr := runCLIWithStderr(t, "--json", "doctor", "cleanup", "--apply", "--worktrees")
+	if code == 0 {
+		t.Fatal("doctor cleanup --apply exit 0 against a board on another machine")
+	}
+	if !strings.Contains(stderr, "another machine") {
+		t.Errorf("stderr = %q, want it to name the mismatched board", stderr)
+	}
+}

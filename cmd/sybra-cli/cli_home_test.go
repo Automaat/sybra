@@ -1,6 +1,10 @@
 package main
 
 import (
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -137,6 +141,10 @@ func TestBoardCommandRefusesWithNoServer(t *testing.T) {
 	t.Setenv("SYBRA_HOME", home)
 	t.Setenv("SYBRA_CONTROL_HOME", "")
 	t.Setenv(serverTargetEnv, "")
+	// A port proven closed, rather than the default: this repo's own dev:mock
+	// listens on 8080, so relying on the default made the test depend on what
+	// else the machine happens to be running.
+	writeClosedPortFile(t, home)
 
 	code, _, stderr := runCLIWithStderr(t, "--json", "list")
 	if code == 0 {
@@ -169,5 +177,49 @@ func TestHomeFlag_MalformedMissingValue_HookFailsOpen(t *testing.T) {
 	code, _ := runCLI(t, "hook", "--home")
 	if code != 0 {
 		t.Fatalf("hook exit = %d, want 0 (fail-open)", code)
+	}
+}
+
+// TestInferredTargetRefusesAnUnidentifiedPeer is the guard on the bearer token.
+//
+// A target the CLI inferred was never named by an operator, so the port may
+// belong to anything. Without an identity check the next request hands that
+// process the board's token.
+func TestInferredTargetRefusesAnUnidentifiedPeer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv(serverTargetEnv, "")
+
+	var gotAuth string
+	impostor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if v := r.Header.Get("Authorization"); v != "" {
+			gotAuth = v
+		}
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	t.Cleanup(impostor.Close)
+
+	u, err := url.Parse(impostor.URL)
+	if err != nil {
+		t.Fatalf("parse impostor URL: %v", err)
+	}
+	_, port, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		t.Fatalf("split impostor host: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, desktopPortFile), []byte(port), 0o600); err != nil {
+		t.Fatalf("write desktop port: %v", err)
+	}
+
+	code, _, stderr := runCLIWithStderr(t, "--json", "list")
+	if code == 0 {
+		t.Fatal("list exit 0 against a process that is not a Sybra board")
+	}
+	if gotAuth != "" {
+		t.Fatalf("sent %q to an unidentified peer; the token must not leave until the board identifies itself", gotAuth)
+	}
+	if !strings.Contains(stderr, "no Sybra server is reachable") {
+		t.Errorf("stderr = %q, want the unreachable-server refusal", stderr)
 	}
 }

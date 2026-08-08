@@ -7,11 +7,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/httpapi"
+	"github.com/Automaat/sybra/internal/httpserve"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -47,7 +49,7 @@ func startFakeAPIServer(t *testing.T, tasksDir string) string {
 		"TaskService": httpapi.NewService(svc, "GetTask", "UpdateTask", "CreateTask", "DeleteTask"),
 	}, slog.Default(), nil)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok","service":"` + httpserve.ServiceMarker + `"}`))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -74,7 +76,7 @@ func startFailingAPIServer(t *testing.T, tasksDir string) string {
 		"TaskService": httpapi.NewService(svc, "GetTask", "UpdateTask", "CreateTask", "DeleteTask"),
 	}, slog.Default(), nil)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok","service":"` + httpserve.ServiceMarker + `"}`))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -288,6 +290,8 @@ func TestUpdate_FailsClosedWithNoServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	writeClosedPortFile(t, home)
+
 	code, _, stderr := runCLIWithStderr(t, "--json", "update", "task-anything", "--status", "todo")
 	if code == 0 {
 		t.Fatal("update exit 0 with no server reachable")
@@ -367,48 +371,78 @@ func TestHomeFlag_SelectsTheBoardNotTheFiles(t *testing.T) {
 // asserted an unset target yields no client at all. That answer only made sense
 // while "no client" meant "edit the files instead"; with no filesystem path
 // left it would mean every command fails on a machine whose own board is up.
-func TestNewAPIClient_FallsBackToThisMachinesBoard(t *testing.T) {
+// TestLocalBoardCandidates_OrdersThisMachinesBoards replaces a pair of tests
+// asserting an unset target yields no client at all. That answer only made
+// sense while "no client" meant "edit the files instead".
+//
+// It is a list, not one answer: the desktop app's recorded port is kept across
+// restarts on purpose, so a stale entry must not shadow a server that is up.
+func TestLocalBoardCandidates_OrdersThisMachinesBoards(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("SYBRA_HOME", home)
 	t.Setenv(serverTargetEnv, "")
-	cfg := config.DefaultConfig()
-	cfg.Server.AuthToken = "token"
+	portFile := filepath.Join(home, desktopPortFile)
 
-	t.Run("desktop port when the desktop app recorded one", func(t *testing.T) {
-		if err := os.WriteFile(filepath.Join(home, desktopPortFile), []byte("51234\n"), 0o600); err != nil {
+	t.Run("recorded desktop port is tried before the configured one", func(t *testing.T) {
+		if err := os.WriteFile(portFile, []byte("51234\n"), 0o600); err != nil {
 			t.Fatalf("write desktop port: %v", err)
 		}
-		t.Cleanup(func() { _ = os.Remove(filepath.Join(home, desktopPortFile)) })
-		client, err := newAPIClient(cfg)
-		if err != nil || client == nil {
-			t.Fatalf("newAPIClient() = %v, want a client for the recorded desktop port", err)
-		}
-		if client.baseURL != "http://127.0.0.1:51234" {
-			t.Fatalf("baseURL = %q, want the recorded desktop port", client.baseURL)
+		t.Cleanup(func() { _ = os.Remove(portFile) })
+		got := localBoardCandidates(config.DefaultConfig())
+		want := []string{"127.0.0.1:51234", "127.0.0.1:" + config.DefaultServerPort}
+		if !slices.Equal(got, want) {
+			t.Fatalf("candidates = %v, want %v", got, want)
 		}
 	})
 
-	t.Run("configured server port otherwise", func(t *testing.T) {
-		client, err := newAPIClient(cfg)
-		if err != nil || client == nil {
-			t.Fatalf("newAPIClient() = %v, want a client for the configured port", err)
-		}
-		if client.baseURL != "http://127.0.0.1:"+config.DefaultServerPort {
-			t.Fatalf("baseURL = %q, want the default server port", client.baseURL)
+	t.Run("configured port alone when nothing was recorded", func(t *testing.T) {
+		got := localBoardCandidates(config.DefaultConfig())
+		want := []string{"127.0.0.1:" + config.DefaultServerPort}
+		if !slices.Equal(got, want) {
+			t.Fatalf("candidates = %v, want %v", got, want)
 		}
 	})
 
 	t.Run("a corrupt port file is ignored rather than dialled", func(t *testing.T) {
-		if err := os.WriteFile(filepath.Join(home, desktopPortFile), []byte("not-a-port"), 0o600); err != nil {
+		if err := os.WriteFile(portFile, []byte("not-a-port"), 0o600); err != nil {
 			t.Fatalf("write desktop port: %v", err)
 		}
-		t.Cleanup(func() { _ = os.Remove(filepath.Join(home, desktopPortFile)) })
-		client, err := newAPIClient(cfg)
-		if err != nil || client == nil {
-			t.Fatalf("newAPIClient() = %v, want the configured port", err)
+		t.Cleanup(func() { _ = os.Remove(portFile) })
+		got := localBoardCandidates(config.DefaultConfig())
+		want := []string{"127.0.0.1:" + config.DefaultServerPort}
+		if !slices.Equal(got, want) {
+			t.Fatalf("candidates = %v, want %v", got, want)
 		}
-		if client.baseURL != "http://127.0.0.1:"+config.DefaultServerPort {
-			t.Fatalf("baseURL = %q, want the default server port", client.baseURL)
+	})
+
+	t.Run("a bind locked to one interface is dialled there, not on loopback", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Cluster.BindAddrs = []string{"100.64.1.5:8080"}
+		got := localBoardCandidates(cfg)
+		if !slices.Equal(got, []string{"100.64.1.5:8080"}) {
+			t.Fatalf("candidates = %v, want the configured bind; nothing listens on loopback there", got)
+		}
+	})
+
+	t.Run("a TLS control plane is addressed over https", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Cluster.TLS.CertFile = "/tmp/cert.pem"
+		cfg.Cluster.TLS.KeyFile = "/tmp/key.pem"
+		got := localBoardCandidates(cfg)
+		if len(got) != 1 || !strings.HasPrefix(got[0], "https://") {
+			t.Fatalf("candidates = %v, want an https target; a TLS board refuses a cleartext hop", got)
+		}
+	})
+
+	t.Run("ambient SYBRA_HOST and SYBRA_PORT do not steer the dial", func(t *testing.T) {
+		// An unrelated unit shell exporting these must not aim the CLI — and
+		// the bearer token it sends next — at whatever answers there.
+		t.Setenv("SYBRA_HOST", "127.0.0.1")
+		t.Setenv("SYBRA_PORT", "9999")
+		got := localBoardCandidates(config.DefaultConfig())
+		want := []string{"127.0.0.1:" + config.DefaultServerPort}
+		if !slices.Equal(got, want) {
+			t.Fatalf("candidates = %v, want %v", got, want)
 		}
 	})
 }
