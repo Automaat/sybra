@@ -70,8 +70,10 @@ func (a *App) coreAppHTTPServices() map[string]httpapi.Service {
 			"GetLifecyclePhases",
 			"GetAutonomyTrend",
 			"GetLearningDigestStatus",
-			// RunLearningDigestNow excluded: it shells out to the claude CLI on
-			// every call — Wails/local-only, not exposed over HTTP.
+			// Both act on the host serving this board: one shells out to the
+			// claude CLI, the other grabs an OS-wide key. Loopback-only below.
+			"RunLearningDigestNow",
+			"RegisterSpotlightHotkey",
 			"StartAgent",
 			"StartK8sPocAgent",
 			"AgentQueueSnapshot",
@@ -87,8 +89,11 @@ func (a *App) coreAppHTTPServices() map[string]httpapi.Service {
 			"AgentQueueSnapshot",
 			"ListBackgroundOps",
 			"ListNotifications",
+		).WithLocalOnly(
+			"RunLearningDigestNow",
+			"RegisterSpotlightHotkey",
 		),
-		// OpenWorktree opens a local GUI app and stays off HTTP.
+		// OpenWorktree opens a GUI app on the host serving this board.
 		"AgentService": httpapi.NewService(a.agentSvc,
 			"StopAgent",
 			"ListAgents",
@@ -101,6 +106,7 @@ func (a *App) coreAppHTTPServices() map[string]httpapi.Service {
 			"GetAgentRunConvoLog",
 			"RespondEscalation",
 			"GetAgentDiff",
+			"OpenWorktree",
 		).WithReadOnly(
 			"ListAgents",
 			"GetAgentOutput",
@@ -108,7 +114,8 @@ func (a *App) coreAppHTTPServices() map[string]httpapi.Service {
 			"GetAgentRunLog",
 			"GetAgentRunConvoLog",
 			"GetAgentDiff",
-		),
+		).WithLocalOnly("OpenWorktree"),
+		"BrowserService": httpapi.NewService(a.browserSvc, "Open").WithLocalOnly("Open"),
 		"ConfigService": httpapi.NewService(a.configSvc,
 			"GetSettings",
 			"GetPathExplanations",
@@ -318,8 +325,10 @@ func (a *App) projectHTTPServices() map[string]httpapi.Service {
 			// SetProjectSandboxConfig excluded: cfg.Deploy is run via sh -c in
 			// k8s sandbox and Docker build/compose paths accept attacker-controlled
 			// filesystem paths — Wails IPC only.
-			// OpenInTerminal and OpenInEditor open local GUI apps.
-		).WithReadOnly("ListProjects", "GetProject", "GetProjectRawType", "ListWorktrees"),
+			"OpenInTerminal",
+			"OpenInEditor",
+		).WithReadOnly("ListProjects", "GetProject", "GetProjectRawType", "ListWorktrees").
+			WithLocalOnly("OpenInTerminal", "OpenInEditor"),
 		"IntegrationService": httpapi.NewService(a.intgSvc,
 			"FetchRenovatePRs",
 			"MergeRenovatePR",

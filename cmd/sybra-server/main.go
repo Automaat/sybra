@@ -19,22 +19,18 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"log"
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/pprof"
 	"os"
 	"os/signal"
-	"path"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -43,13 +39,13 @@ import (
 	"github.com/Automaat/sybra/internal/autoupdate"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/httpapi"
+	"github.com/Automaat/sybra/internal/httpserve"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/sse"
 	"github.com/Automaat/sybra/internal/sybra"
 	"github.com/Automaat/sybra/internal/task"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -265,187 +261,31 @@ func forceExitAfter(logger *slog.Logger, d time.Duration, restart *atomic.Bool) 
 // reflection-based /api/{service}/{method} dispatcher, and an optional SPA
 // static file server. Extracted from run() so run() stays under the 100-line
 // funlen cap without losing the explicit route declaration layout.
+// buildMux, the middleware chain, and the SPA handler live in
+// internal/httpserve so the desktop app serves the same surface. These aliases
+// keep the server's own call sites and tests pointed at one name.
 func buildMux(logger *slog.Logger, broker *sse.Broker, app *sybra.App) *http.ServeMux {
-	mux := http.NewServeMux()
-
-	// Health check endpoint for container orchestration.
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
-	})
-
-	// Prometheus scrape endpoint (opt-in via config.metrics.enabled). The
-	// OTel Prometheus exporter registers instruments into the default
-	// prometheus/client_golang registry, so promhttp.Handler serves them.
-	if metrics.Enabled() {
-		mux.Handle("GET /metrics", promhttp.Handler())
-		logger.Info("metrics.listen", "path", "/metrics")
-	}
-
-	// pprof scrape endpoints (opt-in via SYBRA_PPROF=1). Mounted on the main
-	// mux so perf tooling can pull heap / goroutine profiles over the same
-	// port without opening a second listener. Off by default to avoid leaking
-	// internals on shared deployments.
-	if v := os.Getenv("SYBRA_PPROF"); v == "1" || v == "true" {
-		mux.HandleFunc("GET /debug/pprof/", pprof.Index)
-		mux.HandleFunc("GET /debug/pprof/cmdline", pprof.Cmdline)
-		mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
-		mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
-		mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
-		logger.Info("pprof.listen", "path", "/debug/pprof/")
-	}
-
-	// Multiplexed SSE stream: all events over a single connection.
-	mux.HandleFunc("GET /events", broker.ServeAll)
-
-	// Per-event SSE endpoint (kept for debugging / backward compat).
-	mux.HandleFunc("GET /api/events/{eventName}", broker.ServeHTTP)
-
-	// API dispatch: POST /api/{service}/{method}
-	httpapi.Mount(mux, sybra.ServiceRegistry(app), logger, app.HTTPAdmission)
-
-	// Optional SPA static files.
-	if staticDir := os.Getenv("SYBRA_STATIC_DIR"); staticDir != "" {
-		sub, err := fs.Sub(os.DirFS(staticDir), ".")
-		if err != nil {
-			logger.Error("static.dir", "err", err)
-		} else {
-			fileServer := http.FileServer(http.FS(sub))
-			mux.Handle("GET /", spaHandler{fileServer, staticDir})
-		}
-	}
-
-	return mux
+	return httpserve.BuildMux(serveOptions(logger, broker, app))
 }
 
-// spaHandler serves static files and falls back to index.html for unknown paths
-// (supports client-side routing).
-type spaHandler struct {
-	fs        http.Handler
-	staticDir string
-}
-
-func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	urlPath := r.URL.Path
-	if urlPath == "" {
-		urlPath = "/"
-	}
-	if _, err := os.Stat(h.staticDir + urlPath); os.IsNotExist(err) {
-		// Paths with a file extension (e.g. /favicon.ico) are static asset
-		// requests, not SPA routes — return 404 so browsers don't treat an
-		// HTML index.html response as a broken asset.
-		if strings.Contains(path.Base(urlPath), ".") {
-			http.NotFound(w, r)
-			return
-		}
-		r2 := *r
-		r2.URL.Path = "/"
-		h.fs.ServeHTTP(w, &r2)
-		return
-	}
-	h.fs.ServeHTTP(w, r)
-}
-
-func cspMiddleware(next http.Handler) http.Handler {
-	const policy = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self'; manifest-src 'self'; frame-ancestors 'none'"
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", policy)
-		next.ServeHTTP(w, r)
-	})
-}
-
-// corsMiddleware echoes CORS headers back only for an Origin present in
-// allowedOrigins (exact match) — no wildcard. Requests without a matching
-// Origin still reach next (non-browser callers don't need CORS headers at
-// all), they just won't be readable cross-origin from an unlisted site.
-func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
-	allowed := make(map[string]struct{}, len(allowedOrigins))
-	for _, o := range allowedOrigins {
-		allowed[o] = struct{}{}
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if origin := r.Header.Get("Origin"); origin != "" {
-			if _, ok := allowed[origin]; ok {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-				w.Header().Add("Vary", "Origin")
-				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-			}
-		}
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-// authMiddleware gates only the HTTP control plane behind a shared-secret
-// bearer token: `/api/*`, `/events`, `/api/events/*`, `/metrics`, and
-// `/debug/pprof/*`. Browser EventSource cannot set request headers, so the
-// SSE endpoints additionally accept the token as a `?token=` query param.
-// Static SPA assets stay public so normal browser navigations can load the
-// app shell before JS starts issuing authenticated API calls. A blank token
-// fails every protected request closed rather than treating it as "auth
-// disabled" — config.Load always generates one, so an empty value here means
-// misconfiguration, not intent.
-func authMiddleware(token string, logger *slog.Logger, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !requestRequiresAuth(r) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		if !requestAuthorized(r, token) {
-			logger.Warn("server.auth.denied", "path", r.URL.Path, "remote", r.RemoteAddr)
-			w.Header().Set("WWW-Authenticate", `Bearer realm="sybra"`)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = fmt.Fprint(w, `{"error":"unauthorized","code":"unauthorized"}`)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func requestRequiresAuth(r *http.Request) bool {
-	switch {
-	case r.Method == http.MethodGet && r.URL.Path == "/health":
-		return false
-	case r.URL.Path == "/events":
-		return true
-	case r.URL.Path == "/metrics":
-		return true
-	case strings.HasPrefix(r.URL.Path, "/api/"):
-		return true
-	case strings.HasPrefix(r.URL.Path, "/debug/pprof/"):
-		return true
-	default:
-		return false
+func serveOptions(logger *slog.Logger, broker *sse.Broker, app *sybra.App) httpserve.Options {
+	return httpserve.Options{
+		Logger:      logger,
+		Broker:      broker,
+		Services:    sybra.ServiceRegistry(app),
+		Admit:       app.HTTPAdmission,
+		StaticDir:   os.Getenv("SYBRA_STATIC_DIR"),
+		EnablePprof: httpserve.PprofEnabled(),
 	}
 }
 
-func requestAuthorized(r *http.Request, token string) bool {
-	if token == "" {
-		return false
-	}
-	if bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok && tokensEqual(bearer, token) {
-		return true
-	}
-	if isSSEPath(r.URL.Path) {
-		if qt := r.URL.Query().Get("token"); qt != "" && tokensEqual(qt, token) {
-			return true
-		}
-	}
-	return false
-}
+type spaHandler = httpserve.SPAHandler
 
-func isSSEPath(p string) bool {
-	return p == "/events" || strings.HasPrefix(p, "/api/events/")
-}
-
-func tokensEqual(a, b string) bool {
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
-}
+var (
+	cspMiddleware  = httpserve.CSPMiddleware
+	corsMiddleware = httpserve.CORSMiddleware
+	authMiddleware = httpserve.AuthMiddleware
+)
 
 type slogWriter struct{ logger *slog.Logger }
 

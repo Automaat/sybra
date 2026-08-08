@@ -1,4 +1,4 @@
-import { GetVersion } from '$lib/api'
+import { GetVersion, OnConnectionChange, getConnectionState } from '$lib/api'
 
 // How often to probe the backend when the browser reports online.
 const POLL_MS = 15_000
@@ -12,18 +12,25 @@ class ConnectionStore {
   networkOnline = $state(typeof navigator !== 'undefined' ? navigator.onLine : true)
 
   private timer: ReturnType<typeof setInterval> | null = null
+  private reconnectHandlers = new Set<() => void>()
 
   get online(): boolean {
     return this.networkOnline && this.backendOnline
   }
 
+  /**
+   * onReconnect registers work to run once the live stream comes back after a
+   * loss. Events emitted while it was down were never delivered, so whatever
+   * they would have updated has to be refetched instead.
+   */
+  onReconnect(handler: () => void): () => void {
+    this.reconnectHandlers.add(handler)
+    return () => { this.reconnectHandlers.delete(handler) }
+  }
+
   private async probe() {
-    // Desktop (Wails IPC): backend is always local, only network matters.
-    // Web build: GetVersion is a lightweight health check.
-    if (import.meta.env.VITE_MODE !== 'web') {
-      this.backendOnline = true
-      return
-    }
+    // GetVersion is the lightest call the server answers, and every build
+    // reaches the server over HTTP now.
     try {
       await GetVersion()
       this.backendOnline = true
@@ -47,6 +54,16 @@ class ConnectionStore {
     window.addEventListener('online', onOnline)
     window.addEventListener('offline', onOffline)
 
+    // The event stream notices a server that went away long before the next
+    // poll would, so it drives the state and the poll stays as the backstop
+    // for a server that answers requests but never opened a stream.
+    if (getConnectionState() === 'lost') this.backendOnline = false
+    const stopStream = OnConnectionChange((state, reconnected) => {
+      this.backendOnline = state !== 'lost'
+      if (!reconnected) return
+      for (const handler of this.reconnectHandlers) handler()
+    })
+
     const schedule = () => {
       if (this.timer) clearInterval(this.timer)
       const interval = this.online ? POLL_MS : OFFLINE_POLL_MS
@@ -60,6 +77,7 @@ class ConnectionStore {
     return () => {
       window.removeEventListener('online', onOnline)
       window.removeEventListener('offline', onOffline)
+      stopStream()
       if (this.timer) {
         clearInterval(this.timer)
         this.timer = null

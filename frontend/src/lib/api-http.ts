@@ -1,5 +1,6 @@
-// HTTP fetch implementations of all Wails bound methods.
-// Used by api.ts when VITE_MODE=web.
+// HTTP implementations of every server method. This is the only transport:
+// the desktop window loads the SPA from the app's own loopback server, so it
+// reaches state the same way a browser pointed at sybra-server does.
 
 import type { Agent, ConvoEvent, StreamEvent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
 import type { ReviewComment, Task, TransitionIntent, TransitionResult, TrashEntry, Update } from '../../bindings/github.com/Automaat/sybra/internal/task/models.js'
@@ -19,15 +20,29 @@ import type { Definition } from '../../bindings/github.com/Automaat/sybra/intern
 import type { Status } from '../../bindings/github.com/Automaat/sybra/internal/provider/models.js'
 import type { Digest, Status as LearningDigestStatus } from '../../bindings/github.com/Automaat/sybra/internal/learning/models.js'
 
-const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? '/api'
+// Runtime config served by the host that delivered this bundle. The desktop
+// app writes it so its window authenticates without an operator prompt; a
+// browser build never receives it and keeps the localStorage flow below.
+type RuntimeConfig = { apiBase?: string; token?: string }
 
-// sybra-server gates every request (except GET /health) behind a shared
-// bearer token (see cmd/sybra-server authMiddleware). A build-time default
-// can be baked in via VITE_API_TOKEN; otherwise the token is entered once at
-// runtime and cached in localStorage so it survives reloads.
+function runtimeConfig(): RuntimeConfig {
+  if (typeof window === 'undefined') return {}
+  return (window as unknown as { __SYBRA_RUNTIME__?: RuntimeConfig }).__SYBRA_RUNTIME__ ?? {}
+}
+
+function apiBase(): string {
+  return runtimeConfig().apiBase || (import.meta.env.VITE_API_BASE as string | undefined) || '/api'
+}
+
+// The server gates every request (except GET /health) behind a shared bearer
+// token (see internal/httpserve AuthMiddleware). A build-time default can be
+// baked in via VITE_API_TOKEN; otherwise the token is entered once at runtime
+// and cached in localStorage so it survives reloads.
 const TOKEN_STORAGE_KEY = 'sybra.apiToken'
 
 export function getApiToken(): string {
+  const injected = runtimeConfig().token
+  if (injected) return injected
   if (typeof localStorage === 'undefined') return (import.meta.env.VITE_API_TOKEN as string | undefined) ?? ''
   return localStorage.getItem(TOKEN_STORAGE_KEY) || (import.meta.env.VITE_API_TOKEN as string | undefined) || ''
 }
@@ -41,6 +56,9 @@ export function setApiToken(token: string): void {
 // per session (retrieved via `cat ~/.sybra/config.yaml` on the server host,
 // key `server.auth_token`). Returns '' if the user cancels.
 function promptForApiToken(): string {
+  // An injected token came from the host that served this bundle; a 401 under
+  // it is a real failure, and prompting would only collect a worse answer.
+  if (runtimeConfig().token) return ''
   if (typeof window === 'undefined') return ''
   const entered = window.prompt('Sybra server auth token required (see server.auth_token in config.yaml):')
   if (!entered) return ''
@@ -49,7 +67,7 @@ function promptForApiToken(): string {
 }
 
 async function call<T>(service: string, method: string, ...args: unknown[]): Promise<T> {
-  const doFetch = () => fetch(`${API_BASE}/${service}/${method}`, {
+  const doFetch = () => fetch(`${apiBase()}/${service}/${method}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -64,7 +82,6 @@ async function call<T>(service: string, method: string, ...args: unknown[]): Pro
   }
   if (!res.ok) {
     const rawText = await res.text()
-    // web-mode only: desktop Wails IPC errors never reach this path
     let parsed: unknown = null
     try { parsed = JSON.parse(rawText) } catch { /* fall through to rawText */ }
     if (parsed && typeof parsed === 'object' && 'error' in parsed && typeof (parsed as Record<string, unknown>).error === 'string') {
@@ -89,7 +106,7 @@ export function RespondApproval(arg1: string, arg2: boolean): Promise<void> { re
 export function RespondEscalation(arg1: string, arg2: boolean): Promise<void> { return call('AgentService', 'RespondEscalation', arg1, arg2) }
 export function SendMessage(arg1: string, arg2: string): Promise<void> { return call('AgentService', 'SendMessage', arg1, arg2) }
 export function StopAgent(arg1: string): Promise<void> { return call('AgentService', 'StopAgent', arg1) }
-export function OpenWorktree(_arg1: string): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
+export function OpenWorktree(arg1: string): Promise<void> { return call('AgentService', 'OpenWorktree', arg1) }
 
 // App
 export function GetMonitorReport(): Promise<MonitorReportBinding> { return call('App', 'GetMonitorReport') }
@@ -97,10 +114,10 @@ export function GetEvaluationReport(): Promise<EvaluationReportData> { return ca
 export function GetLifecyclePhases(): Promise<PhaseReportData> { return call('App', 'GetLifecyclePhases') }
 export function GetAutonomyTrend(): Promise<AutonomyTrend> { return call('App', 'GetAutonomyTrend') }
 export function GetLearningDigestStatus(): Promise<LearningDigestStatus> { return call('App', 'GetLearningDigestStatus') }
-export function RunLearningDigestNow(): Promise<Digest> { return Promise.reject(new Error('not available in web mode')) }
+export function RunLearningDigestNow(): Promise<Digest> { return call('App', 'RunLearningDigestNow') }
 export function ListBackgroundOps(): Promise<Array<any>> { return call('App', 'ListBackgroundOps') }
 export function ListNotifications(): Promise<Array<Notification>> { return call('App', 'ListNotifications') }
-export function RegisterSpotlightHotkey(): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
+export function RegisterSpotlightHotkey(): Promise<void> { return call('App', 'RegisterSpotlightHotkey') }
 export function SetDesktopNotifications(arg1: boolean): Promise<void> { return call('App', 'SetDesktopNotifications', arg1) }
 export function StartAgent(arg1: string, arg2: string, arg3: string, arg4: boolean): Promise<Agent> { return call('App', 'StartAgent', arg1, arg2, arg3, arg4) }
 export function AgentQueueSnapshot(): Promise<AgentQueueSnapshotData> { return call('App', 'AgentQueueSnapshot') }
@@ -166,8 +183,8 @@ export function DeleteProject(arg1: string): Promise<void> { return call('Projec
 export function GetProject(arg1: string): Promise<Project> { return call('ProjectService', 'GetProject', arg1) }
 export function ListProjects(): Promise<Array<Project>> { return call('ProjectService', 'ListProjects') }
 export function ListWorktrees(arg1: string): Promise<Array<Worktree>> { return call('ProjectService', 'ListWorktrees', arg1) }
-export function OpenInEditor(_arg1: string): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
-export function OpenInTerminal(_arg1: string): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
+export function OpenInEditor(arg1: string): Promise<void> { return call('ProjectService', 'OpenInEditor', arg1) }
+export function OpenInTerminal(arg1: string): Promise<void> { return call('ProjectService', 'OpenInTerminal', arg1) }
 export function SetProjectWorktreeBaseRef(arg1: string, arg2: string): Promise<Project> { return call('ProjectService', 'SetProjectWorktreeBaseRef', arg1, arg2) }
 export function SetProjectSetupCommands(arg1: string, arg2: string[]): Promise<Project> { return call('ProjectService', 'SetProjectSetupCommands', arg1, arg2) }
 export function GetProjectRawType(arg1: string): Promise<string> { return call('ProjectService', 'GetProjectRawType', arg1) }
@@ -263,14 +280,42 @@ export function ReassignTask(arg1: string, arg2: string): Promise<void> { return
 // Shared EventSource for the multiplexed /events SSE stream.
 // All EventsOn subscriptions funnel through a single connection.
 // EventSource cannot set an Authorization header, so the token travels as a
-// query param instead — the server's authMiddleware accepts either form, but
-// only for SSE paths (see isSSEPath in cmd/sybra-server).
+// query param instead — AuthMiddleware accepts either form, but only for SSE
+// paths (see isSSEPath in internal/httpserve).
 function eventsURL(): string {
   // Strip /api suffix to get server root, then append /events.
-  const base = (import.meta.env.VITE_API_BASE as string | undefined) ?? '/api'
-  const url = base.replace(/\/api$/, '') + '/events'
+  const url = apiBase().replace(/\/api$/, '') + '/events'
   const token = getApiToken()
   return token ? `${url}?token=${encodeURIComponent(token)}` : url
+}
+
+// Connection state of the live event stream. The stream is the first thing to
+// notice a server that went away, so the UI reads its health from here rather
+// than waiting for the next user action to fail.
+export type ConnectionState = 'connecting' | 'open' | 'lost'
+
+type ConnectionListener = (state: ConnectionState, reconnected: boolean) => void
+
+let _connectionState: ConnectionState = 'connecting'
+let _wasOpen = false
+const _connectionListeners = new Set<ConnectionListener>()
+
+export function getConnectionState(): ConnectionState { return _connectionState }
+
+// OnConnectionChange reports every transition. `reconnected` is true on the
+// open that follows a loss, which is the signal for stores to refetch the
+// state they missed while the stream was down.
+export function OnConnectionChange(listener: ConnectionListener): () => void {
+  _connectionListeners.add(listener)
+  return () => { _connectionListeners.delete(listener) }
+}
+
+function setConnectionState(state: ConnectionState): void {
+  const reconnected = state === 'open' && _connectionState === 'lost' && _wasOpen
+  if (state === 'open') _wasOpen = true
+  if (state === _connectionState && !reconnected) return
+  _connectionState = state
+  for (const listener of _connectionListeners) listener(state, reconnected)
 }
 
 let _sharedES: EventSource | null = null
@@ -281,7 +326,13 @@ function getSharedES(): EventSource {
     if (!getApiToken() && !promptForApiToken()) {
       throw new Error('sybra server auth token required for live updates')
     }
-    _sharedES = new EventSource(eventsURL())
+    setConnectionState('connecting')
+    const es = new EventSource(eventsURL())
+    // EventSource reconnects on its own; these only report which side of that
+    // cycle the stream is on so the UI can say so and refetch on the way back.
+    es.onopen = () => setConnectionState('open')
+    es.onerror = () => setConnectionState(es.readyState === EventSource.CLOSED ? 'lost' : 'connecting')
+    _sharedES = es
   }
   return _sharedES
 }
@@ -304,6 +355,8 @@ export function EventsOn(eventName: string, callback: (...data: any[]) => void):
     if (_subCount === 0) {
       _sharedES?.close()
       _sharedES = null
+      _wasOpen = false
+      setConnectionState('connecting')
     }
   }
 }
@@ -311,4 +364,14 @@ export function EventsOn(eventName: string, callback: (...data: any[]) => void):
 // Runtime: BrowserOpenURL via window.open
 export function BrowserOpenURL(url: string): void {
   window.open(url, '_blank')
+}
+
+// Open hands the URL to an in-app window on the host serving this board. A
+// board on another machine refuses it, so the caller below falls back to a tab.
+export function Open(arg1: string): Promise<void> { return call('BrowserService', 'Open', arg1) }
+
+// OpenInAppBrowser keeps the desktop's in-app window and degrades to a new tab
+// anywhere that window does not exist.
+export function OpenInAppBrowser(url: string): void {
+  void Open(url).catch(() => BrowserOpenURL(url))
 }

@@ -9,15 +9,18 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"reflect"
 	"sort"
+	"strings"
 )
 
 // MaxRequestBody caps the size of a single API request body. Sybra service
@@ -38,6 +41,11 @@ type Service struct {
 // MethodMeta carries per-method HTTP metadata used by admission hooks.
 type MethodMeta struct {
 	ReadOnly bool
+	// LocalOnly restricts the method to callers on the loopback interface.
+	// These open a GUI application or run a CLI on the host the process sits
+	// on, so they are meaningful to a client sharing that host and are an
+	// arbitrary local action to anyone else.
+	LocalOnly bool
 }
 
 // AdmissionFunc decides whether a registered service method may run.
@@ -78,6 +86,22 @@ func (s Service) WithReadOnly(methods ...string) Service {
 	return s
 }
 
+// WithLocalOnly marks the named allowlisted methods as reachable only from the
+// loopback interface. The desktop UI reaches its own in-process server that
+// way, so a window attached to a board on another machine simply finds the
+// method refused rather than opening an editor on the board's host.
+func (s Service) WithLocalOnly(methods ...string) Service {
+	for _, name := range methods {
+		meta, ok := s.methods[name]
+		if !ok {
+			continue
+		}
+		meta.LocalOnly = true
+		s.methods[name] = meta
+	}
+	return s
+}
+
 // Mount registers POST /api/{service}/{method} handlers for every service in
 // the registry. Only methods listed in each Service's allowlist are reachable;
 // unknown services or non-allowlisted methods return 404.
@@ -91,7 +115,7 @@ func Mount(mux *http.ServeMux, services map[string]Service, logger *slog.Logger,
 		if !ok {
 			return
 		}
-		out, ok := invoke(call, rawArgs, w, logger, svcName, methodName)
+		out, ok := invoke(r.Context(), call, rawArgs, w, logger, svcName, methodName)
 		if !ok {
 			return
 		}
@@ -113,6 +137,12 @@ func admittedMethod(w http.ResponseWriter, logger *slog.Logger, r *http.Request,
 		respondError(w, logger, http.StatusNotFound, ErrCodeNotFound, fmt.Sprintf("unknown method: %s.%s", svcName, methodName))
 		return "", "", Service{}, MethodMeta{}, false
 	}
+	if meta.LocalOnly && !fromLoopback(r) {
+		logger.Warn("httpapi.local_only.denied", "service", svcName, "method", methodName, "remote", r.RemoteAddr)
+		respondError(w, logger, http.StatusForbidden, ErrCodeForbidden,
+			fmt.Sprintf("%s.%s runs on the host serving this board and is reachable only from it", svcName, methodName))
+		return "", "", Service{}, MethodMeta{}, false
+	}
 	if admit != nil {
 		if err := admit(svcName, methodName, meta); err != nil {
 			respondAdmissionError(w, logger, svcName, methodName, err)
@@ -120,6 +150,26 @@ func admittedMethod(w http.ResponseWriter, logger *slog.Logger, r *http.Request,
 		}
 	}
 	return svcName, methodName, svc, meta, true
+}
+
+// forwardedHeaders are the hops a reverse proxy adds. A proxy on the serving
+// host presents every request with a loopback RemoteAddr, so the address alone
+// would admit the whole LAN to a local-only method. Any of these present means
+// the request crossed a proxy and its origin is not this host.
+var forwardedHeaders = []string{"X-Forwarded-For", "X-Forwarded-Host", "X-Real-Ip", "Forwarded"}
+
+func fromLoopback(r *http.Request) bool {
+	for _, h := range forwardedHeaders {
+		if r.Header.Get(h) != "" {
+			return false
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }
 
 func respondAdmissionError(w http.ResponseWriter, logger *slog.Logger, svcName, methodName string, err error) {
@@ -168,8 +218,8 @@ func readArgs(w http.ResponseWriter, logger *slog.Logger, r *http.Request) ([]js
 	return rawArgs, true
 }
 
-func invoke(call reflect.Value, rawArgs []json.RawMessage, w http.ResponseWriter, logger *slog.Logger, svcName, methodName string) ([]reflect.Value, bool) {
-	args, ok := decodeInputs(call.Type(), rawArgs, w, logger, svcName, methodName)
+func invoke(ctx context.Context, call reflect.Value, rawArgs []json.RawMessage, w http.ResponseWriter, logger *slog.Logger, svcName, methodName string) ([]reflect.Value, bool) {
+	args, ok := decodeInputs(ctx, call.Type(), rawArgs, w, logger, svcName, methodName)
 	if !ok {
 		return nil, false
 	}
@@ -177,21 +227,32 @@ func invoke(call reflect.Value, rawArgs []json.RawMessage, w http.ResponseWriter
 	return stripErrorResult(out, w, logger, svcName, methodName)
 }
 
-func decodeInputs(mt reflect.Type, rawArgs []json.RawMessage, w http.ResponseWriter, logger *slog.Logger, svcName, methodName string) ([]reflect.Value, bool) {
-	numIn := mt.NumIn()
-	if len(rawArgs) != numIn {
-		respondError(w, logger, http.StatusBadRequest, ErrCodeValidation, fmt.Sprintf("%s.%s expects %d args, got %d", svcName, methodName, numIn, len(rawArgs)))
+// decodeInputs maps the JSON argument array onto the method signature. A
+// leading context.Context is supplied from the request rather than the body, so
+// a method already written against a context is callable over HTTP without a
+// wrapper — the same shape Wails binds in-process.
+func decodeInputs(ctx context.Context, mt reflect.Type, rawArgs []json.RawMessage, w http.ResponseWriter, logger *slog.Logger, svcName, methodName string) ([]reflect.Value, bool) {
+	offset := 0
+	if mt.NumIn() > 0 && mt.In(0) == contextType {
+		offset = 1
+	}
+	wantArgs := mt.NumIn() - offset
+	if len(rawArgs) != wantArgs {
+		respondError(w, logger, http.StatusBadRequest, ErrCodeValidation, fmt.Sprintf("%s.%s expects %d args, got %d", svcName, methodName, wantArgs, len(rawArgs)))
 		return nil, false
 	}
 
-	in := make([]reflect.Value, numIn)
-	for i := range numIn {
-		ptr := reflect.New(mt.In(i))
+	in := make([]reflect.Value, 0, mt.NumIn())
+	if offset == 1 {
+		in = append(in, reflect.ValueOf(ctx))
+	}
+	for i := range wantArgs {
+		ptr := reflect.New(mt.In(i + offset))
 		if err := json.Unmarshal(rawArgs[i], ptr.Interface()); err != nil {
 			respondError(w, logger, http.StatusBadRequest, ErrCodeValidation, fmt.Sprintf("arg %d: invalid argument type", i))
 			return nil, false
 		}
-		in[i] = ptr.Elem()
+		in = append(in, ptr.Elem())
 	}
 	return in, true
 }
@@ -253,6 +314,8 @@ func writeResponse(w http.ResponseWriter, logger *slog.Logger, svcName, methodNa
 }
 
 var errType = reflect.TypeFor[error]()
+
+var contextType = reflect.TypeFor[context.Context]()
 
 // codeForStatus maps an HTTP status returned by a ClientError to the
 // structured error code included in the JSON response envelope.

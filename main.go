@@ -31,8 +31,8 @@ import (
 	"github.com/Automaat/sybra/internal/autoupdate"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/logging"
-	"github.com/Automaat/sybra/internal/notification"
 	"github.com/Automaat/sybra/internal/skills"
+	"github.com/Automaat/sybra/internal/sse"
 	"github.com/Automaat/sybra/internal/sybra"
 )
 
@@ -74,7 +74,10 @@ func run() (int, error) {
 
 	logger.Info("browser.in_app", "enabled", cfg.InAppBrowserEnabled())
 
-	v3emit := func(string, any) {}
+	// The window is an HTTP client of this process, so events reach it over the
+	// same SSE stream the browser build subscribes to.
+	broker := sse.New()
+	v3emit := broker.Emit
 	v3openBrowser := func(string) {}
 	var restartRequested atomic.Bool
 	var v3app *application.App
@@ -95,27 +98,6 @@ func run() (int, error) {
 		},
 	})
 
-	desktopEvents := newDesktopEmitter(ctx, logger, func(event string, data any) {
-		v3app.Event.Emit(event, data)
-	})
-	// Surface a wedged UI thread via an OS-native notification (osascript),
-	// which does not depend on the frozen webview. Run async so the emit pump
-	// never blocks on the alert. The backend keeps running; only the window is
-	// frozen, so restart is the recovery — Wails main-thread APIs (Reload)
-	// route through the same blocked path and cannot self-heal.
-	desktopEvents.onStall = func(d time.Duration) {
-		go func() {
-			_ = notification.SendDesktop("Sybra UI stalled",
-				fmt.Sprintf("No UI updates for %s — the window is likely frozen. Restart Sybra to recover; the backend keeps running.", d.Round(time.Second)))
-		}()
-	}
-	desktopEvents.onRecovered = func(d time.Duration) {
-		go func() {
-			_ = notification.SendDesktop("Sybra UI recovered",
-				fmt.Sprintf("UI updates resumed after %s.", d.Round(time.Second)))
-		}()
-	}
-	v3emit = desktopEvents.Emit
 	v3openBrowser = func(url string) { openInAppBrowser(v3app, url) }
 
 	if err := sybraApp.Startup(ctx); err != nil {
@@ -127,8 +109,15 @@ func run() (int, error) {
 		return autoupdate.RestartExitCode, nil
 	}
 
+	board, err := openDesktopBoard(ctx, cfg, logger, broker, sybraApp, assets)
+	if err != nil {
+		return 1, err
+	}
+	defer board.shutdown(context.Background())
+
 	v3app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            "Sybra",
+		URL:              board.url,
 		Width:            1280,
 		Height:           800,
 		StartState:       application.WindowStateMaximised,
