@@ -470,7 +470,7 @@ func TestFailedCertificateRechecksAndRecovers(t *testing.T) {
 	now = now.Add(failureTTL + time.Nanosecond)
 	available = true
 	if _, err := service.Certify(context.Background(), req); err != nil {
-		t.Fatalf("recheck did not recover after signer became available: %v", err)
+		t.Fatalf("recheck did not recover after the mutation transport became available: %v", err)
 	}
 }
 
