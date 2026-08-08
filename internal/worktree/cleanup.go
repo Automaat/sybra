@@ -89,7 +89,8 @@ func (m *Manager) RemoveTask(ctx context.Context, t task.Task) {
 	// per-task chokepoint fired on task completion (completion.OnComplete),
 	// manual terminal transitions (UpdateTask), and explicit deletes
 	// (DeleteTask); consistent with doctor cleanup, even those never bypass it.
-	if project.HasUnpushedCommits(ctx, wtPath) {
+	if (m.cleanupGate != nil && !m.cleanupGate(ctx, t, wtPath)) ||
+		(m.cleanupGate == nil && worktreeNeedsPreservation(ctx, wtPath)) {
 		m.logger.Warn("worktree.cleanup.unpushed-commits", "path", wtPath)
 		return
 	}
@@ -218,7 +219,8 @@ func (m *Manager) CleanupOrphaned(ctx context.Context) {
 // reapOrphanedWorktree removes one swept worktree directory. Caller holds the
 // path lock. A nil t is a directory whose task no longer exists.
 func (m *Manager) reapOrphanedWorktree(ctx context.Context, wtPath, name string, t *task.Task, observedProtected map[string]bool) {
-	if project.HasUnpushedCommits(ctx, wtPath) {
+	if (t != nil && m.cleanupGate != nil && !m.cleanupGate(ctx, *t, wtPath)) ||
+		((t == nil || m.cleanupGate == nil) && worktreeNeedsPreservation(ctx, wtPath)) {
 		m.observeProtectedWorktree(ctx, wtPath, taskIDFromWorktreeDir(name), observedProtected)
 		return
 	}
@@ -241,6 +243,14 @@ func (m *Manager) reapOrphanedWorktree(ctx context.Context, wtPath, name string,
 		}
 	}
 	m.logger.Info("worktree.orphan-cleaned", "path", wtPath)
+}
+
+func worktreeNeedsPreservation(ctx context.Context, path string) bool {
+	if project.HasUnpushedCommits(ctx, path) {
+		return true
+	}
+	dirty, err := project.IsWorktreeDirty(ctx, path)
+	return err != nil || dirty || project.WorktreeOperation(ctx, path) != ""
 }
 
 func (m *Manager) observeProtectedWorktree(ctx context.Context, path, taskID string, observed map[string]bool) {

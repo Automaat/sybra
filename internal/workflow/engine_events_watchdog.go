@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/blocker"
+	"github.com/Automaat/sybra/internal/reconcile"
 	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/watchdogreason"
 )
@@ -76,19 +77,55 @@ func (e *Engine) handleWatchdogHangReadyPR(t *TaskInfo, step *Step) bool {
 	if !state.ReadyToMerge() {
 		return false
 	}
+	runID := ""
+	if n := len(t.AgentRuns); n > 0 {
+		runID = t.AgentRuns[n-1].AgentID
+	}
+	if e.execution.PostRun != nil {
+		plan, reconcileErr := e.execution.PostRun.Reconcile(e.ctx, reconcile.Request{TaskID: t.ID, RunID: runID, Intent: reconcile.IntentRestart})
+		if reconcileErr != nil {
+			e.logger.Warn("workflow.watchdog-hang.ready-pr.reconcile", "task_id", t.ID, "pr", t.PRNumber, "err", reconcileErr)
+			return true
+		}
+		if plan.Action != reconcile.ActionResumeMergeablePR || !plan.DeliverRunOutcome {
+			e.logger.Info("workflow.watchdog-hang.ready-pr.held", "task_id", t.ID, "pr", t.PRNumber, "action", plan.Action, "reason", plan.Reason)
+			return true
+		}
+		freshPlan, freshErr := e.execution.PostRun.Reconcile(e.ctx, reconcile.Request{TaskID: t.ID, RunID: runID, Intent: reconcile.IntentRestart})
+		if freshErr != nil || freshPlan.Action != plan.Action || freshPlan.Preconditions != plan.Preconditions ||
+			plan.Preconditions.TaskGeneration != t.Generation || plan.Preconditions.WorkflowGeneration != t.Generation ||
+			plan.Preconditions.LeaseID != runID {
+			e.logger.Info("workflow.watchdog-hang.ready-pr.stale", "task_id", t.ID, "pr", t.PRNumber, "err", freshErr)
+			return true
+		}
+	}
 
-	delete(t.Workflow.Variables, watchdogReaskNoteVar)
+	fence := WorkflowWriteFence{
+		Generation:   t.Generation,
+		Status:       t.Status,
+		StatusReason: t.StatusReason,
+		WorkflowID:   t.Workflow.WorkflowID,
+		CurrentStep:  t.Workflow.CurrentStep,
+		State:        t.Workflow.State,
+	}
+	nextWorkflow := t.Workflow.Clone()
+	if nextWorkflow == nil {
+		e.logger.Warn("workflow.watchdog-hang.ready-pr.clone", "task_id", t.ID, "pr", t.PRNumber)
+		return true
+	}
+	delete(nextWorkflow.Variables, watchdogReaskNoteVar)
 	now := time.Now().UTC()
-	t.Workflow.State = ExecCompleted
-	t.Workflow.CompletedAt = &now
-	t.Workflow.CurrentStep = ""
-	t.Workflow.SetVar("cancel_reason", "watchdog hang: implementation superseded by linked PR already open and green")
-	if err := e.tasks.SetWorkflow(t.ID, t.Workflow); err != nil {
+	nextWorkflow.State = ExecCompleted
+	nextWorkflow.CompletedAt = &now
+	nextWorkflow.CurrentStep = ""
+	nextWorkflow.SetVar("cancel_reason", "watchdog hang: implementation superseded by linked PR already open and green")
+	applied, err := e.tasks.SetStatusAndWorkflowIf(t.ID, fence, taskstatus.InReview, "", nextWorkflow)
+	if err != nil {
 		e.logger.Error("workflow.watchdog-hang.ready-pr.persist", "task_id", t.ID, "step", step.ID, "pr", t.PRNumber, "err", err)
 		return true
 	}
-	if err := e.tasks.UpdateTaskStatus(t.ID, taskstatus.InReview, ""); err != nil {
-		e.logger.Error("workflow.watchdog-hang.ready-pr.status", "task_id", t.ID, "step", step.ID, "pr", t.PRNumber, "err", err)
+	if !applied {
+		e.logger.Info("workflow.watchdog-hang.ready-pr.stale", "task_id", t.ID, "step", step.ID, "pr", t.PRNumber)
 		return true
 	}
 	e.logger.Info("workflow.watchdog-hang.ready-pr", "task_id", t.ID, "step", step.ID, "pr", t.PRNumber, "ci_status", state.CIStatus())

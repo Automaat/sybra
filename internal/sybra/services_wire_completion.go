@@ -1,6 +1,24 @@
 package sybra
 
-import "github.com/Automaat/sybra/internal/sybra/completion"
+import (
+	"github.com/Automaat/sybra/internal/sybra/completion"
+	"github.com/Automaat/sybra/internal/sybra/reconciliation"
+)
+
+func (a *App) postRunReconciliation() *reconciliation.Reconciler {
+	if a == nil || a.tasks == nil {
+		return nil
+	}
+	if a.postRunReconciler == nil {
+		a.postRunReconciler = reconciliation.New(reconciliation.Config{
+			Tasks: a.tasks, Projects: a.projects, Worktrees: a.worktrees, Logger: a.logger, Evidence: a.evidenceStore,
+		})
+		if a.worktrees != nil {
+			a.worktrees.SetCleanupGate(a.postRunReconciler.CanCleanup)
+		}
+	}
+	return a.postRunReconciler
+}
 
 // newAgentCompletionHandler constructs the handler with every dependency
 // the App holds. Called from wireServices once all subsystems are
@@ -9,18 +27,19 @@ import "github.com/Automaat/sybra/internal/sybra/completion"
 // handler's nil-checks at call time handle the latter.
 func (a *App) newAgentCompletionHandler(emit func(string, any)) *completion.Handler {
 	cfg := completion.Config{
-		Logger:    a.logger,
-		Audit:     a.audit,
-		Emit:      emit,
-		Tasks:     a.tasks,
-		Worktrees: a.worktrees,
-		Sandboxes: a.sandboxes,
-		Stats:     a.stats,
-		Limits:    a.limits,
-		LoopSched: a.loopSched,
-		PRTracker: a.prTracker,
-		Cfg:       a.cfg,
-		Artifacts: a.artifacts,
+		Logger:     a.logger,
+		Audit:      a.audit,
+		Emit:       emit,
+		Tasks:      a.tasks,
+		Worktrees:  a.worktrees,
+		Sandboxes:  a.sandboxes,
+		Stats:      a.stats,
+		Limits:     a.limits,
+		LoopSched:  a.loopSched,
+		PRTracker:  a.prTracker,
+		Cfg:        a.cfg,
+		Artifacts:  a.artifacts,
+		Reconciler: a.postRunReconciliation(),
 		WorkScrub: func(projectID string) *completion.WorkScrubContext {
 			ctx := a.workScrubContextForTask(projectID)
 			if ctx == nil {
