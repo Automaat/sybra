@@ -376,7 +376,7 @@ func shortRevision(rev string) string {
 // dispatch routes a parsed subcommand (with its own args and the global
 // --json flag already extracted) to the matching cmdXxx handler.
 func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Manager, localProjects *project.Store, allowHTTP, jsonOut bool) int {
-	api, refusal := resolveBoardAPI(cmd, rest, cfg, allowHTTP)
+	api, refusal := resolveBoardAPI(cmd, cfg, allowHTTP)
 	if refusal != "" {
 		return fatal(jsonOut, "%s", refusal)
 	}
@@ -425,13 +425,13 @@ func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Ma
 	case "monitor":
 		return cmdMonitor(cfg, api, localTasks, rest, jsonOut)
 	case "selfmonitor":
-		return cmdSelfmonitor(cfg, store, rest, jsonOut)
+		return cmdSelfmonitor(cfg, api, store, rest, jsonOut)
 	case "evaluation":
-		return cmdEvaluation(cfg, store, rest, jsonOut)
+		return cmdEvaluation(cfg, api, store, rest, jsonOut)
 	case "harness-evolution":
-		return cmdHarnessEvolution(cfg, store, rest, jsonOut)
+		return cmdHarnessEvolution(cfg, api, store, rest, jsonOut)
 	case "prompt-lab":
-		return cmdPromptLab(cfg, store, projStore, rest, jsonOut)
+		return cmdPromptLab(cfg, api, store, projStore, rest, jsonOut)
 	case "stats":
 		return cmdStats(cfg, api, rest, jsonOut)
 	case "install-skills":
@@ -456,19 +456,14 @@ func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Ma
 	}
 }
 
-// resolveBoardAPI picks the server a command runs against, and reports the situations where running locally instead would mislead rather than help. A loopback target is never one of them: that server shares this machine's home, so its files are the same board.
-func resolveBoardAPI(cmd string, rest []string, cfg *config.Config, allowHTTP bool) (api *apiClient, refusal string) {
+// resolveBoardAPI picks the server a command runs against, and refuses to fall back when a board on another machine does not answer. A loopback target is not that case: that server shares this machine's home, so its files are the same board.
+func resolveBoardAPI(cmd string, cfg *config.Config, allowHTTP bool) (api *apiClient, refusal string) {
 	if !allowHTTP {
 		return nil, ""
 	}
 	c, ok := newAPIClient(cfg)
 	if !ok {
 		return nil, ""
-	}
-	if c.remote && readsThisMachine(cmd, rest) {
-		return nil, fmt.Sprintf(
-			"%s reads this machine's own state, not the board at %s; run it on that machine, or unset %s to read this one",
-			cmd, c.baseURL, serverTargetEnv)
 	}
 	if c.reachable(context.Background()) {
 		return c, ""
@@ -477,15 +472,6 @@ func resolveBoardAPI(cmd string, rest []string, cfg *config.Config, allowHTTP bo
 		return nil, fmt.Sprintf("board at %s is unreachable; refusing to edit this machine's files instead", c.baseURL)
 	}
 	return nil, ""
-}
-
-// readsThisMachine names the commands whose corpus is still this machine's own state rather than the board's. Against a loopback board that state is the board's own, so they run normally. Against a board on another machine they would mine this machine's data and then print it, or file tasks from it, as that board's — the wrong-machine confusion the rest of this surface exists to remove.
-func readsThisMachine(cmd string, _ []string) bool {
-	switch cmd {
-	case "selfmonitor", "evaluation", "harness-evolution", "prompt-lab":
-		return true
-	}
-	return false
 }
 
 // runsWithoutServer reports the commands that inspect or repair this machine alone. They stay usable when the board they would otherwise talk to is down, which is what makes them the ones an operator reaches for to find out why it is down.

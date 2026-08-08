@@ -254,6 +254,7 @@ type App struct {
 	intgSvc      *IntegrationService
 	statsSvc     *StatsService
 	auditSvc     *AuditService
+	selfMonSvc   *SelfMonitorService
 	reviewSvc    *ReviewService
 	workflowSvc  *WorkflowService
 	infoSvc      *InfoService
@@ -350,6 +351,7 @@ func NewApp(logger *slog.Logger, logLevel *slog.LevelVar, cfg *config.Config, op
 	a.intgSvc = &IntegrationService{}
 	a.statsSvc = &StatsService{}
 	a.auditSvc = &AuditService{}
+	a.selfMonSvc = &SelfMonitorService{}
 	a.reviewSvc = &ReviewService{}
 	a.workflowSvc = &WorkflowService{}
 	a.infoSvc = &InfoService{}

@@ -16,6 +16,7 @@ import * as PlanningService from "./planningservice.js";
 import * as ProjectService from "./projectservice.js";
 import * as PromptLabService from "./promptlabservice.js";
 import * as ReviewService from "./reviewservice.js";
+import * as SelfMonitorService from "./selfmonitorservice.js";
 import * as StatsService from "./statsservice.js";
 import * as TaskService from "./taskservice.js";
 import * as WorkflowService from "./workflowservice.js";
@@ -35,6 +36,7 @@ export {
     ProjectService,
     PromptLabService,
     ReviewService,
+    SelfMonitorService,
     StatsService,
     TaskService,
     WorkflowService
@@ -50,10 +52,12 @@ export {
     ConfigPathExplanation,
     ConfigRecovery,
     CopilotModel,
+    HarnessEvolutionRunDTO,
     LoggingSettings,
     LoopAgentRun,
     MapDuplicateIncidentsDTO,
     MonitorReportBinding,
+    PromptLabRunDTO,
     ProviderRoutingSettings,
     RuntimeInfo,
     TamperFindingDTO,

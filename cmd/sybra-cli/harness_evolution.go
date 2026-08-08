@@ -5,8 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"slices"
-	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -15,19 +13,19 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
-func cmdHarnessEvolution(cfg *config.Config, store taskBoard, args []string, jsonOut bool) int {
+func cmdHarnessEvolution(cfg *config.Config, api *apiClient, store taskBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: harness-evolution <run> [flags]")
 	}
 	switch args[0] {
 	case "run":
-		return cmdHarnessEvolutionRun(cfg, store, args[1:], jsonOut)
+		return cmdHarnessEvolutionRun(cfg, api, store, args[1:], jsonOut)
 	default:
 		return fatal(jsonOut, "unknown harness-evolution subcommand: %s", args[0])
 	}
 }
 
-func cmdHarnessEvolutionRun(cfg *config.Config, store taskBoard, args []string, jsonOut bool) int {
+func cmdHarnessEvolutionRun(cfg *config.Config, api *apiClient, store taskBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("harness-evolution run", flag.ContinueOnError)
 	defaultLookback := time.Duration(cfg.HarnessEvolve.LookbackHours * float64(time.Hour))
 	lookbackFlag := fs.String("lookback", defaultLookback.String(), "lookback window (e.g. 168h or 7d)")
@@ -41,6 +39,18 @@ func cmdHarnessEvolutionRun(cfg *config.Config, store taskBoard, args []string, 
 	if err != nil {
 		return fatal(jsonOut, "parse --lookback: %v", err)
 	}
+	// Mining reads the instance's persisted self-monitor report and filing
+	// writes its board, so a reachable server runs both halves; splitting
+	// them would mine one machine's report and file on another's board.
+	if api != nil {
+		res, err := callAPIWithin[harnessEvolutionRunDTO](api, apiSlowCallTimeout, selfMonitorServiceName,
+			"RunHarnessEvolution", int64(lookback/time.Second), *minCluster, *corpusDir, *fileTasks)
+		if err != nil {
+			return fatal(jsonOut, "harness evolution: %v", err)
+		}
+		return reportHarnessEvolution(jsonOut, res.Result, res.Filed)
+	}
+
 	maxReportAge := time.Duration(cfg.HarnessEvolve.MaxReportAgeHours * float64(time.Hour))
 	result, err := harnessevolution.Run(context.Background(), harnessevolution.Options{
 		ReportPath:          config.SelfMonitorLastReportPath(),
@@ -57,76 +67,26 @@ func cmdHarnessEvolutionRun(cfg *config.Config, store taskBoard, args []string, 
 	}
 	var filed []task.Task
 	if *fileTasks {
-		// Degraded runs (disabled/stale/failed) never populate Proposals —
-		// see harnessevolution.finishDegraded — so this is a no-op for them,
-		// not a special case to guard against.
-		filed, err = fileHarnessProposals(store, result)
+		filed, err = harnessevolution.FileProposals(store, result)
 		if err != nil {
 			return fatal(jsonOut, "file proposals: %v", err)
 		}
 	}
+	return reportHarnessEvolution(jsonOut, result, filed)
+}
+
+// harnessEvolutionRunDTO mirrors the server's wire shape for a mining run.
+type harnessEvolutionRunDTO struct {
+	Result harnessevolution.RunResult `json:"result"`
+	Filed  []task.Task                `json:"filed"`
+}
+
+func reportHarnessEvolution(jsonOut bool, result harnessevolution.RunResult, filed []task.Task) int {
 	if jsonOut {
 		return printJSON(map[string]any{"result": result, "filed": filed})
 	}
 	printHarnessEvolutionResult(result, filed)
 	return 0
-}
-
-func fileHarnessProposals(store taskBoard, result harnessevolution.RunResult) ([]task.Task, error) {
-	var filed []task.Task
-	existing, err := store.List()
-	if err != nil {
-		return nil, err
-	}
-	for i := range result.Proposals {
-		p := result.Proposals[i]
-		if p.Evaluation.Recommendation == harnessevolution.RecommendationReject {
-			continue
-		}
-		if _, ok := findExistingHarnessProposal(existing, p.ID); ok {
-			continue
-		}
-		cluster := result.Clusters[i]
-		body := harnessevolution.RenderProposalBody(p, cluster)
-		tags := []string{"harness-proposal", string(p.Kind), string(p.Evaluation.Recommendation)}
-		status := task.StatusTodo
-		if p.RequiresHumanApproval || p.Evaluation.Recommendation == harnessevolution.RecommendationNeedsHumanReview {
-			tags = append(tags, "requires-human")
-			status = task.StatusHumanRequired
-		}
-		update := task.Update{Tags: &tags}
-		if status == task.StatusHumanRequired {
-			update.Escalation = task.PolicyRequired("harness.proposal_approval_required", "harness proposal requires approval")
-			update.AutonomyOutcome = task.HumanRequiredOutcome()
-		}
-		created, err := store.CreateWithStatus(p.Title, body, task.AgentModeHeadless, status, update)
-		if err != nil {
-			return filed, err
-		}
-		filed = append(filed, created)
-		existing = append(existing, created)
-	}
-	return filed, nil
-}
-
-func findExistingHarnessProposal(tasks []task.Task, proposalID string) (task.Task, bool) {
-	marker := "Proposal ID:** `" + proposalID + "`"
-	for i := range tasks {
-		if task.IsTerminalStatus(tasks[i].Status) {
-			continue
-		}
-		if !hasTag(tasks[i].Tags, "harness-proposal") {
-			continue
-		}
-		if strings.Contains(tasks[i].Body, marker) {
-			return tasks[i], true
-		}
-	}
-	return task.Task{}, false
-}
-
-func hasTag(tags []string, want string) bool {
-	return slices.Contains(tags, want)
 }
 
 func printHarnessEvolutionResult(result harnessevolution.RunResult, filed []task.Task) {

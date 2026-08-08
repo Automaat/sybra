@@ -320,44 +320,6 @@ func TestCmdProgressList_ReadsThroughTheServer(t *testing.T) {
 	}
 }
 
-// TestDispatch_RefusesLocalDataCommandsAgainstARemoteBoard covers the commands
-// whose corpus is this machine's own state. Left ungated they mine the laptop's
-// audit log, stats file, self-monitor report or artifact store and then present
-// the result — or file tasks from it — as the remote board's.
-func TestDispatch_RefusesLocalDataCommandsAgainstARemoteBoard(t *testing.T) {
-	t.Setenv(serverTargetEnv, "https://board.invalid:8443")
-	t.Setenv(serverTokenEnv, "secret")
-	cfg := config.DefaultConfig()
-
-	for _, args := range [][]string{
-		{"selfmonitor", "scan"}, {"evaluation"}, {"harness-evolution", "run"}, {"prompt-lab", "run"},
-	} {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			code, _ := captureStdout(t, func() int {
-				return dispatch(args[0], args[1:], cfg, nil, nil, true, true)
-			})
-			if code == 0 {
-				t.Errorf("%v reported success against a remote board using this machine's data", args)
-			}
-		})
-	}
-}
-
-// TestReadsThisMachine_LeavesRoutedCommandsAlone pins the gate to the commands
-// that genuinely have nowhere else to read from. Every command with a server
-// endpoint must stay reachable, or routing it bought nothing.
-func TestReadsThisMachine_LeavesRoutedCommandsAlone(t *testing.T) {
-	routed := []string{
-		"list", "get", "update", "delete", "progress", "triage", "umbrella",
-		"audit", "stats", "artifact", "tasks-history", "monitor",
-	}
-	for _, cmd := range routed {
-		if readsThisMachine(cmd, nil) {
-			t.Errorf("%s reaches the server and must not be gated", cmd)
-		}
-	}
-}
-
 // TestOwnStateCommandsReachTheServer pins each command that used to read this
 // machine's own corpus to the endpoint that reads the board's instead. A
 // regression here is silent: the command still prints a plausible answer, just
@@ -406,6 +368,54 @@ func TestOwnStateCommandsReachTheServer(t *testing.T) {
 			reply: []map[string]any{},
 			call:  func(api *apiClient) int { return cmdTasksHistory(config.DefaultConfig(), api, nil, true) },
 			want:  "/api/TaskService/ListTaskSnapshotHistory",
+		},
+		{
+			name:  "selfmonitor scan",
+			reply: map[string]any{},
+			call: func(api *apiClient) int {
+				return cmdSelfmonitor(config.DefaultConfig(), api, nil, []string{"scan"}, true)
+			},
+			want: "/api/SelfMonitorService/GetSelfMonitorReport",
+		},
+		{
+			name:  "selfmonitor investigate",
+			reply: map[string]any{},
+			call: func(api *apiClient) int {
+				return cmdSelfmonitor(config.DefaultConfig(), api, nil, []string{"investigate"}, true)
+			},
+			want: "/api/SelfMonitorService/InvestigateSelfMonitor",
+		},
+		{
+			name:  "selfmonitor ledger",
+			reply: []map[string]any{},
+			call: func(api *apiClient) int {
+				return cmdSelfmonitor(config.DefaultConfig(), api, nil, []string{"ledger"}, true)
+			},
+			want: "/api/SelfMonitorService/ListSelfMonitorLedger",
+		},
+		{
+			name:  "harness-evolution run",
+			reply: map[string]any{"result": map[string]any{}, "filed": []any{}},
+			call: func(api *apiClient) int {
+				return cmdHarnessEvolution(config.DefaultConfig(), api, nil, []string{"run"}, true)
+			},
+			want: "/api/SelfMonitorService/RunHarnessEvolution",
+		},
+		{
+			name:  "prompt-lab run",
+			reply: map[string]any{"result": map[string]any{}, "filed": []any{}},
+			call: func(api *apiClient) int {
+				return cmdPromptLab(config.DefaultConfig(), api, nil, nil, []string{"run"}, true)
+			},
+			want: "/api/PromptLabService/RunPromptLab",
+		},
+		{
+			name:  "evaluation scan",
+			reply: map[string]any{},
+			call: func(api *apiClient) int {
+				return cmdEvaluation(config.DefaultConfig(), api, nil, []string{"scan"}, true)
+			},
+			want: "/api/StatsService/ScanEvaluation",
 		},
 		{
 			name:  "monitor map-duplicates",

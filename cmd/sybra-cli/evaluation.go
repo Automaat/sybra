@@ -17,13 +17,13 @@ import (
 	"github.com/Automaat/sybra/internal/task"
 )
 
-func cmdEvaluation(cfg *config.Config, store taskBoard, args []string, jsonOut bool) int {
+func cmdEvaluation(cfg *config.Config, api *apiClient, store taskBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: evaluation <scan|judge|golden|offline> [args] [--json]")
 	}
 	switch args[0] {
 	case "scan":
-		return cmdEvaluationScan(cfg, jsonOut)
+		return cmdEvaluationScan(cfg, api, jsonOut)
 	case "judge":
 		return cmdEvaluationJudge(store, args[1:], jsonOut)
 	case "golden":
@@ -358,18 +358,8 @@ func cmdEvaluationGolden(args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdEvaluationScan(cfg *config.Config, jsonOut bool) int {
-	statsStore, err := stats.NewStore(config.StatsFile())
-	if err != nil {
-		return fatal(jsonOut, "open stats: %v", err)
-	}
-	svc := evaluation.NewService(evaluation.Deps{
-		Cfg:       cfg.Evaluation,
-		ABTesting: cfg.ABTesting,
-		Stats:     statsStore,
-		Audit:     evaluation.AuditDirReader(cfg.AuditDir()),
-	})
-	report, err := svc.Scan(context.Background())
+func cmdEvaluationScan(cfg *config.Config, api *apiClient, jsonOut bool) int {
+	report, err := scanEvaluation(cfg, api)
 	if err != nil {
 		return fatal(jsonOut, "scan: %v", err)
 	}
@@ -480,4 +470,22 @@ func trajectorySummary(t task.Task) string {
 		parts = append(parts, fmt.Sprintf("%s(%s $%.2f)", role, r.State, r.CostUSD))
 	}
 	return fmt.Sprintf("%d agent runs: %s", len(t.AgentRuns), strings.Join(parts, " → "))
+}
+
+// scanEvaluation scores the fleet that owns the board. The stats file and audit log it reduces both live beside that board, so scoring this machine's copies would report a different fleet.
+func scanEvaluation(cfg *config.Config, api *apiClient) (evaluation.Report, error) {
+	if api != nil {
+		return callAPIWithin[evaluation.Report](api, apiSlowCallTimeout, statsServiceName, "ScanEvaluation")
+	}
+	statsStore, err := stats.NewStore(config.StatsFile())
+	if err != nil {
+		return evaluation.Report{}, fmt.Errorf("open stats: %w", err)
+	}
+	svc := evaluation.NewService(evaluation.Deps{
+		Cfg:       cfg.Evaluation,
+		ABTesting: cfg.ABTesting,
+		Stats:     statsStore,
+		Audit:     evaluation.AuditDirReader(cfg.AuditDir()),
+	})
+	return svc.Scan(context.Background())
 }

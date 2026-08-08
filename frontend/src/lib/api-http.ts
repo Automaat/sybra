@@ -6,11 +6,13 @@ import type { ReviewComment, Task, TransitionIntent, TransitionResult, TrashEntr
 import type { Project, Worktree } from '../../bindings/github.com/Automaat/sybra/internal/project/models.js'
 import type { Issue, RenovatePR, ReviewSummary } from '../../bindings/github.com/Automaat/sybra/internal/github/models.js'
 import type { LoopAgent } from '../../bindings/github.com/Automaat/sybra/internal/loopagent/models.js'
-import type { AppSettings, ClusterNodeDTO, TriageResultDTO, TrashPruneReportDTO, UmbrellaExpandDTO, TaskHistoryEntryDTO, MapDuplicateIncidentsDTO, CodexModel, ConfigPathExplanation, CopilotModel, LoopAgentRun, MonitorReportBinding, RuntimeInfo, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
+import type { AppSettings, ClusterNodeDTO, TriageResultDTO, TrashPruneReportDTO, UmbrellaExpandDTO, TaskHistoryEntryDTO, MapDuplicateIncidentsDTO, HarnessEvolutionRunDTO, PromptLabRunDTO, CodexModel, ConfigPathExplanation, CopilotModel, LoopAgentRun, MonitorReportBinding, RuntimeInfo, TamperReportDTO, TaskArtifactDTO, TaskAuditEventDTO, TaskSetupLogDTO, VersionInfo, AgentQueueSnapshot as AgentQueueSnapshotData } from '../../bindings/github.com/Automaat/sybra/internal/sybra/models.js'
 import type { Notification } from '../../bindings/github.com/Automaat/sybra/internal/notification/models.js'
 import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
 import type { Meta, ProgressEntry } from '../../bindings/github.com/Automaat/sybra/internal/artifact/models.js'
 import type { Event as AuditEvent, Query as AuditQuery } from '../../bindings/github.com/Automaat/sybra/internal/audit/models.js'
+import type { Report as SelfMonitorReport, LedgerEntry } from '../../bindings/github.com/Automaat/sybra/internal/selfmonitor/models.js'
+import type { Report as EvaluationReport } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
 import type { Report as EvaluationReportData, PhaseReport as PhaseReportData, AutonomyTrend } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
 import type { Definition } from '../../bindings/github.com/Automaat/sybra/internal/workflow/models.js'
 import type { Status } from '../../bindings/github.com/Automaat/sybra/internal/provider/models.js'
@@ -153,6 +155,7 @@ export function SendPlanMessage(arg1: string, arg2: string): Promise<void> { ret
 export function TriageTask(arg1: string): Promise<void> { return call('PlanningService', 'TriageTask', arg1) }
 
 // PromptLabService
+export function RunPromptLab(arg1: number, arg2: number, arg3: boolean): Promise<PromptLabRunDTO> { return call('PromptLabService', 'RunPromptLab', arg1, arg2, arg3) }
 export function ApproveProposal(arg1: string): Promise<Task> { return call('PromptLabService', 'ApproveProposal', arg1) }
 export function RejectProposal(arg1: string, arg2: string): Promise<Task> { return call('PromptLabService', 'RejectProposal', arg1, arg2) }
 
@@ -182,6 +185,7 @@ export function StartReview(arg1: string): Promise<void> { return call('ReviewSe
 
 // StatsService
 export function GetStats(): Promise<StatsResponse> { return call('StatsService', 'GetStats') }
+export function ScanEvaluation(): Promise<EvaluationReport> { return call('StatsService', 'ScanEvaluation') }
 
 // LearningService
 export function ListDigests(): Promise<Array<Digest>> { return call('LearningService', 'ListDigests') }
@@ -210,6 +214,12 @@ export function MapDuplicateIncidents(arg1: string, arg2: number[], arg3: string
 
 // AuditService
 export function QueryAuditEvents(arg1: AuditQuery): Promise<Array<AuditEvent>> { return call('AuditService', 'QueryAuditEvents', arg1) }
+
+// SelfMonitorService
+export function GetSelfMonitorReport(): Promise<SelfMonitorReport> { return call('SelfMonitorService', 'GetSelfMonitorReport') }
+export function InvestigateSelfMonitor(): Promise<SelfMonitorReport> { return call('SelfMonitorService', 'InvestigateSelfMonitor') }
+export function ListSelfMonitorLedger(arg1: string, arg2: number): Promise<Array<LedgerEntry>> { return call('SelfMonitorService', 'ListSelfMonitorLedger', arg1, arg2) }
+export function RunHarnessEvolution(arg1: number, arg2: number, arg3: string, arg4: boolean): Promise<HarnessEvolutionRunDTO> { return call('SelfMonitorService', 'RunHarnessEvolution', arg1, arg2, arg3, arg4) }
 export function ScanMonitor(): Promise<MonitorReportBinding> { return call('TaskService', 'ScanMonitor') }
 export function DeleteAttachment(arg1: string, arg2: string): Promise<void> { return call('TaskService', 'DeleteAttachment', arg1, arg2) }
 export function DispatchFromHumanRequired(arg1: string, arg2: string, arg3: string): Promise<Task> { return call('TaskService', 'DispatchFromHumanRequired', arg1, arg2, arg3) }

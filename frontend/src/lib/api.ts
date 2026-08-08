@@ -6,6 +6,7 @@
 
 import * as AgentSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/agentservice.js'
 import * as AuditSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/auditservice.js'
+import * as SelfMonitorSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/selfmonitorservice.js'
 import * as AppSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/app.js'
 import * as BrowserSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/browserservice.js'
 import * as ClusterSvc from '../../bindings/github.com/Automaat/sybra/internal/sybra/clusterservice.js'
@@ -121,6 +122,7 @@ export const SendPlanMessage = pick(PlanningSvc.SendPlanMessage, http.SendPlanMe
 export const TriageTask = pick(PlanningSvc.TriageTask, http.TriageTask)
 
 // PromptLabService
+export const RunPromptLab = pick(PromptLabSvc.RunPromptLab, http.RunPromptLab)
 export const ApproveProposal = pick(PromptLabSvc.ApproveProposal, http.ApproveProposal)
 export const RejectProposal = pick(PromptLabSvc.RejectProposal, http.RejectProposal)
 
@@ -150,6 +152,7 @@ export const StartReview = pick(ReviewSvc.StartReview, http.StartReview)
 
 // StatsService
 export const GetStats = pick(StatsSvc.GetStats, http.GetStats)
+export const ScanEvaluation = pick(StatsSvc.ScanEvaluation, http.ScanEvaluation)
 
 // TaskService
 export const BlessTampering = pick(TaskSvc.BlessTampering, http.BlessTampering)
@@ -174,6 +177,12 @@ export const MapDuplicateIncidents = pick(TaskSvc.MapDuplicateIncidents, http.Ma
 
 // AuditService
 export const QueryAuditEvents = pick(AuditSvc.QueryAuditEvents, http.QueryAuditEvents)
+
+// SelfMonitorService
+export const GetSelfMonitorReport = pick(SelfMonitorSvc.GetSelfMonitorReport, http.GetSelfMonitorReport)
+export const InvestigateSelfMonitor = pick(SelfMonitorSvc.InvestigateSelfMonitor, http.InvestigateSelfMonitor)
+export const ListSelfMonitorLedger = pick(SelfMonitorSvc.ListSelfMonitorLedger, http.ListSelfMonitorLedger)
+export const RunHarnessEvolution = pick(SelfMonitorSvc.RunHarnessEvolution, http.RunHarnessEvolution)
 export const ScanMonitor = pick(TaskSvc.ScanMonitor, http.ScanMonitor)
 export const DeleteAttachment = pick(TaskSvc.DeleteAttachment, http.DeleteAttachment)
 export const DispatchFromHumanRequired = pick(TaskSvc.DispatchFromHumanRequired, http.DispatchFromHumanRequired)

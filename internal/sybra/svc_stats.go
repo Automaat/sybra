@@ -2,12 +2,15 @@ package sybra
 
 import (
 	"cmp"
+	"context"
 	"log/slog"
 	"maps"
 	"slices"
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/limits"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/stats"
@@ -22,6 +25,9 @@ type StatsService struct {
 	tasks    *task.Manager
 	auditDir string
 	policy   func() limits.Policy
+	// currentConfig reads one live snapshot, so a config reload reaches the
+	// evaluation scan without re-wiring the service.
+	currentConfig func() *config.Config
 }
 
 type doneTaskClosure struct {
@@ -252,4 +258,33 @@ func mergeOutcomeCounts(a, b map[string]int) map[string]int {
 		out[key] += count
 	}
 	return out
+}
+
+// ScanEvaluation computes the fleet scorecard from the instance's own stats
+// and audit log.
+//
+// It sits on StatsService because those two stores are already its
+// dependencies, and both live under the server's home: a client scanning its
+// own copies would score a different fleet. `evaluation judge`, `golden` and
+// `offline` stay client-side by contrast — they read a task through the board
+// and operator-supplied files, not this instance's corpus.
+func (s *StatsService) ScanEvaluation() (evaluation.Report, error) {
+	cfg := s.config()
+	if cfg == nil || s.stats == nil {
+		return evaluation.Report{}, unavailableError("evaluation unavailable")
+	}
+	svc := evaluation.NewService(evaluation.Deps{
+		Cfg:       cfg.Evaluation,
+		ABTesting: cfg.ABTesting,
+		Stats:     s.stats,
+		Audit:     evaluation.AuditDirReader(s.auditDir),
+	})
+	return svc.Scan(context.Background())
+}
+
+func (s *StatsService) config() *config.Config {
+	if s.currentConfig == nil {
+		return nil
+	}
+	return s.currentConfig()
 }
