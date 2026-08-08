@@ -190,6 +190,9 @@ func (s *ProjectService) ListWorktrees(projectID string) ([]project.Worktree, er
 
 // OpenInTerminal opens a worktree path in a new Ghostty terminal tab.
 func (s *ProjectService) OpenInTerminal(path string) error {
+	if s.worktrees == nil {
+		return unavailableError("worktrees unavailable")
+	}
 	if err := s.worktrees.ValidatePath(path); err != nil {
 		return err
 	}
@@ -198,6 +201,9 @@ func (s *ProjectService) OpenInTerminal(path string) error {
 
 // OpenInEditor opens a worktree path in Zed.
 func (s *ProjectService) OpenInEditor(path string) error {
+	if s.worktrees == nil {
+		return unavailableError("worktrees unavailable")
+	}
 	if err := s.worktrees.ValidatePath(path); err != nil {
 		return err
 	}
