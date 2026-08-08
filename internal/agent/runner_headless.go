@@ -283,6 +283,18 @@ func (m *Manager) writeAndCloseHeadlessPrompt(a *Agent, stdin io.WriteCloser, pr
 		}
 		return nil
 	case <-timer.C:
+		// If the write completed at the same instant as the timer, prefer its
+		// result. A select is allowed to choose either ready case, and treating
+		// a delivered prompt as a timeout would unnecessarily abort fallback.
+		select {
+		case err := <-done:
+			_ = stdin.Close()
+			if err != nil {
+				return fmt.Errorf("write stdin: %w", err)
+			}
+			return nil
+		default:
+		}
 		_ = stdin.Close()
 		return fmt.Errorf("write stdin: timed out after %s, pipe closed", stdinInitialWriteTimeout)
 	}

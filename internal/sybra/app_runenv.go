@@ -13,7 +13,6 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/sybra/runenv"
-	"github.com/Automaat/sybra/internal/task"
 )
 
 func (a *App) initRunEnvironment() {
@@ -183,46 +182,12 @@ func (a *App) certifyStartupRunEnvironment(ctx context.Context) {
 	}
 }
 
-// quarantineRunEnvironment applies one generic machine-owned reason to every
-// non-terminal task selected by the failure's task/project/host/provider
-// scope. The runenv service coalesces callbacks per scope and fingerprint so
-// one shared defect cannot generate a task-update storm.
+// quarantineRunEnvironment records a coalesced admission failure. Despite its
+// historical name and audit event, it must never mutate tasks: an unavailable
+// signer, sandbox, checkout, or similar environment dependency only prevents
+// agent dispatch. The workflow remains waiting and its next retry certifies
+// again, automatically continuing once the environment is healthy.
 func (a *App) quarantineRunEnvironment(_ context.Context, failure runenv.CertificationError) {
-	if a.tasks == nil {
-		return
-	}
-	tasks, err := a.tasks.List()
-	if err != nil {
-		a.logger.Error("runenv.quarantine.list", "err", err)
-		return
-	}
-	reasonText := fmt.Sprintf("execution environment quarantined: %s", failure.Code)
-	affected := 0
-	for i := range tasks {
-		current := &tasks[i]
-		if current.Status == task.StatusDone || current.Status == task.StatusCancelled {
-			continue
-		}
-		if failure.Scope == "task" && current.ID != failure.TaskID {
-			continue
-		}
-		if failure.Scope == "project" && current.ProjectID != failure.ProjectID {
-			continue
-		}
-		if failure.Scope != "host" && failure.Scope != "provider" && failure.Scope != "project" && current.ID != failure.TaskID {
-			continue
-		}
-		update := task.Update{StatusReason: task.Ptr(reasonText)}
-		if current.Status != task.StatusHumanRequired {
-			update.Status = task.Ptr(task.StatusBlocked)
-			update.Escalation = task.MachineFailure("runenv."+failure.Code, reasonText)
-			update.AutonomyOutcome = task.QuarantinedOutcome()
-		}
-		if _, updateErr := a.tasks.Update(current.ID, update); updateErr != nil {
-			a.logger.Error("runenv.quarantine.update", "task_id", current.ID, "err", updateErr)
-			continue
-		}
-		affected++
-	}
-	a.logAudit(audit.EventRunEnvironmentScopeQuarantined, failure.TaskID, "", map[string]any{"scope": failure.Scope, "reason_code": failure.Code, "affected_tasks": affected})
+	a.logger.Warn("runenv.admission.deferred", "task_id", failure.TaskID, "scope", failure.Scope, "reason_code", failure.Code)
+	a.logAudit(audit.EventRunEnvironmentScopeQuarantined, failure.TaskID, "", map[string]any{"scope": failure.Scope, "reason_code": failure.Code})
 }
