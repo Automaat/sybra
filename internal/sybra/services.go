@@ -115,7 +115,8 @@ func (a *App) coreAppHTTPServices() map[string]httpapi.Service {
 			"GetAgentRunConvoLog",
 			"GetAgentDiff",
 		).WithLocalOnly("OpenWorktree"),
-		"BrowserService": httpapi.NewService(a.browserSvc, "Open").WithLocalOnly("Open"),
+		"BrowserService": httpapi.NewService(a.browserSvc, "Open", "OpenExternal").
+			WithLocalOnly("Open", "OpenExternal"),
 		"ConfigService": httpapi.NewService(a.configSvc,
 			"GetSettings",
 			"GetPathExplanations",
@@ -355,5 +356,17 @@ func (a *App) projectHTTPServices() map[string]httpapi.Service {
 			"RunLoopAgentNow",
 			"ListLoopAgentRuns",
 		).WithReadOnly("ListLoopAgents", "GetLoopAgent", "ListLoopAgentRuns"),
+	}
+}
+
+// LocalBrowserServices is the registry a UI attached to a board on another
+// machine serves locally. Opening a window or a link acts on the machine the
+// operator is sitting at, so those calls stay here while every other call goes
+// to the board.
+func LocalBrowserServices(open func(string)) map[string]httpapi.Service {
+	svc := &BrowserService{open: open}
+	return map[string]httpapi.Service{
+		"BrowserService": httpapi.NewService(svc, "Open", "OpenExternal").
+			WithLocalOnly("Open", "OpenExternal"),
 	}
 }

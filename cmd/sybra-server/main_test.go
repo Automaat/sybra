@@ -671,7 +671,7 @@ func TestServerHandlerServesSPAWithoutToken(t *testing.T) {
 	cfg.Server.AuthToken = "secret"
 
 	app := sybra.NewApp(testLogger(), nil, cfg)
-	handler := cspMiddleware(corsMiddleware(nil, authMiddleware(cfg.Server.AuthToken, testLogger(), buildMux(testLogger(), sse.New(), app))))
+	handler := cspMiddleware("", corsMiddleware(nil, authMiddleware(cfg.Server.AuthToken, testLogger(), buildMux(testLogger(), sse.New(), app))))
 
 	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	rr := httptest.NewRecorder()
@@ -691,7 +691,7 @@ func TestSSEHandlerNeverSetsWildcardCORS(t *testing.T) {
 	cfg.Server.AllowedOrigins = []string{"https://allowed.example"}
 
 	app := sybra.NewApp(testLogger(), nil, cfg)
-	handler := cspMiddleware(corsMiddleware(cfg.Server.AllowedOrigins, authMiddleware(cfg.Server.AuthToken, testLogger(), buildMux(testLogger(), sse.New(), app))))
+	handler := cspMiddleware("", corsMiddleware(cfg.Server.AllowedOrigins, authMiddleware(cfg.Server.AuthToken, testLogger(), buildMux(testLogger(), sse.New(), app))))
 
 	for _, path := range []string{"/events?token=secret", "/api/events/task:updated?token=secret"} {
 		ctx, cancel := context.WithCancel(context.Background())

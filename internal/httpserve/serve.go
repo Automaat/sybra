@@ -47,10 +47,18 @@ type Options struct {
 	// APIBase is the origin the delivered bundle should call, reported in the
 	// runtime config. Empty leaves the bundle on its own origin.
 	APIBase string
-	// Token is disclosed to loopback callers of the runtime config, so a UI on
-	// this host need not ask an operator for a secret this process holds.
-	// Empty never discloses one.
+	// Token is disclosed to a same-origin loopback caller of the runtime
+	// config, so a UI on this host need not ask an operator for a secret this
+	// process holds. Empty never discloses one.
 	Token string
+	// SelfOrigin is this instance's own origin, used to tell the page this
+	// process served from any other page on the host. Empty disables the
+	// token disclosure entirely.
+	SelfOrigin string
+	// ConnectOrigin is an additional origin the delivered bundle may call,
+	// set when the UI talks to a board on another machine. It is added to the
+	// content policy, which would otherwise allow the page's own origin only.
+	ConnectOrigin string
 }
 
 // BuildMux registers every route this instance serves.
@@ -116,7 +124,7 @@ func runtimeConfig(opts Options) http.HandlerFunc {
 		if opts.APIBase != "" {
 			cfg["apiBase"] = opts.APIBase
 		}
-		if opts.Token != "" && loopbackRequest(r) {
+		if opts.Token != "" && loopbackRequest(r) && samePageAsSelf(r, opts.SelfOrigin) {
 			cfg["token"] = opts.Token
 		}
 		payload, err := json.Marshal(cfg)
@@ -129,6 +137,24 @@ func runtimeConfig(opts Options) http.HandlerFunc {
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = fmt.Fprintf(w, "window.__SYBRA_RUNTIME__ = %s;\n", payload)
 	}
+}
+
+// samePageAsSelf reports that the request came from a page this instance
+// served, rather than from any other page the host's browser happens to have
+// open.
+//
+// A classic script tag is exempt from same-origin policy, so without this any
+// local page could load this endpoint and read the token out of its own global
+// scope — the ephemeral port is no obstacle, a few hundred failed loads find it.
+func samePageAsSelf(r *http.Request, selfOrigin string) bool {
+	if selfOrigin == "" {
+		return false
+	}
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" {
+		return site == "same-origin"
+	}
+	referer := r.Header.Get("Referer")
+	return referer == selfOrigin || strings.HasPrefix(referer, selfOrigin+"/")
 }
 
 // loopbackRequest reports a caller on this host. A proxy on the serving host
@@ -217,9 +243,16 @@ func (h SPAHandler) exists(urlPath string) bool {
 	return err == nil
 }
 
-// CSPMiddleware sets the policy the SPA is served under.
-func CSPMiddleware(next http.Handler) http.Handler {
-	const policy = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self'; manifest-src 'self'; frame-ancestors 'none'"
+// CSPMiddleware sets the policy the SPA is served under. connectOrigin widens
+// connect-src to a board on another machine; empty keeps the page to its own
+// origin.
+func CSPMiddleware(connectOrigin string, next http.Handler) http.Handler {
+	connect := "'self' ws: wss:"
+	if connectOrigin != "" {
+		connect += " " + connectOrigin
+	}
+	policy := "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src " +
+		connect + "; font-src 'self'; manifest-src 'self'; frame-ancestors 'none'"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", policy)
 		next.ServeHTTP(w, r)
@@ -327,5 +360,5 @@ func TokensEqual(a, b string) bool {
 // Order matters: CORS must sit outside auth so preflight OPTIONS requests
 // (which never carry Authorization) are answered before reaching it.
 func Handler(opts Options, token string, allowedOrigins []string) http.Handler {
-	return CSPMiddleware(CORSMiddleware(allowedOrigins, AuthMiddleware(token, opts.Logger, BuildMux(opts))))
+	return CSPMiddleware(opts.ConnectOrigin, CORSMiddleware(allowedOrigins, AuthMiddleware(token, opts.Logger, BuildMux(opts))))
 }

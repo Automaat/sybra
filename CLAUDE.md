@@ -136,7 +136,9 @@ A method whose first parameter is a `context.Context` gets it from the request �
 
 Emit via the App's `emit` closure, wired to `sse.Broker.Emit` in both binaries. The frontend subscribes with `EventsOn` from `$lib/api`, which multiplexes every subscription onto one `EventSource` against `GET /events`. `OnConnectionChange` reports that stream's health; `connectionStore` drives the offline banner from it and refetches the board when it comes back.
 
-**Attaching to a board on another machine.** Set `SYBRA_SERVER_TARGET` to its origin before launching the desktop app: the window loads that board's own UI and the local listener never starts.
+**Attaching to a board on another machine.** Set `SYBRA_SERVER_TARGET` (bare `host:port` or an `http(s)://` origin, same forms `sybra-cli` takes) plus `SYBRA_SERVER_TOKEN` before launching the desktop app. The bundle still comes from this process — only a page it served can be handed a bearer token — but every call and event goes to the named board, and **no local App starts**, so the laptop does not run a second orchestrator against its own home. An unresolvable target is a startup error, never a silent fall back to the local board. `BrowserService` stays local: opening a window or a link acts on the machine the operator is sitting at.
+
+The desktop listener reuses the port recorded in `$SYBRA_HOME/desktop-port`. Browser storage is partitioned by origin **including port**, so a fresh port each launch would silently empty `localStorage` — colour scheme, open workspace tabs, pane sizes — on every start and every auto-update restart.
 
 ### Durable Storage Backend
 

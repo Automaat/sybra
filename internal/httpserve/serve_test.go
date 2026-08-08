@@ -72,10 +72,12 @@ func TestEmbeddedSPARouting(t *testing.T) {
 // response that carries the bearer token: the desktop window reads it over
 // loopback, and anything arriving through a proxy must get the origin alone.
 func TestRuntimeConfigDisclosesTokenToLoopbackOnly(t *testing.T) {
+	const self = "http://127.0.0.1:1234"
 	opts := httpserve.Options{
-		Logger:  testLogger(),
-		APIBase: "http://127.0.0.1:1234/api",
-		Token:   "s3cret",
+		Logger:     testLogger(),
+		APIBase:    self + "/api",
+		Token:      "s3cret",
+		SelfOrigin: self,
 	}
 	mux := httpserve.BuildMux(opts)
 
@@ -83,12 +85,17 @@ func TestRuntimeConfigDisclosesTokenToLoopbackOnly(t *testing.T) {
 		name      string
 		remote    string
 		forwarded string
+		fetchSite string
+		referer   string
 		wantToken bool
 	}{
-		{name: "loopback", remote: "127.0.0.1:5555", wantToken: true},
-		{name: "loopback v6", remote: "[::1]:5555", wantToken: true},
-		{name: "lan", remote: "192.168.20.5:5555"},
-		{name: "proxied through loopback", remote: "127.0.0.1:5555", forwarded: "203.0.113.9"},
+		{name: "same origin page", remote: "127.0.0.1:5555", fetchSite: "same-origin", wantToken: true},
+		{name: "same origin v6", remote: "[::1]:5555", fetchSite: "same-origin", wantToken: true},
+		{name: "referer fallback", remote: "127.0.0.1:5555", referer: self + "/tasks", wantToken: true},
+		{name: "another local page", remote: "127.0.0.1:5555", fetchSite: "cross-site", referer: "https://evil.example/"},
+		{name: "no provenance at all", remote: "127.0.0.1:5555"},
+		{name: "lan", remote: "192.168.20.5:5555", fetchSite: "same-origin"},
+		{name: "proxied through loopback", remote: "127.0.0.1:5555", forwarded: "203.0.113.9", fetchSite: "same-origin"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -97,6 +104,12 @@ func TestRuntimeConfigDisclosesTokenToLoopbackOnly(t *testing.T) {
 			if tc.forwarded != "" {
 				req.Header.Set("X-Forwarded-For", tc.forwarded)
 			}
+			if tc.fetchSite != "" {
+				req.Header.Set("Sec-Fetch-Site", tc.fetchSite)
+			}
+			if tc.referer != "" {
+				req.Header.Set("Referer", tc.referer)
+			}
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, req)
 
@@ -104,7 +117,7 @@ func TestRuntimeConfigDisclosesTokenToLoopbackOnly(t *testing.T) {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 			}
 			body := rec.Body.String()
-			if !strings.Contains(body, `"apiBase":"http://127.0.0.1:1234/api"`) {
+			if !strings.Contains(body, `"apiBase":"`+self+`/api"`) {
 				t.Fatalf("body missing apiBase: %s", body)
 			}
 			if got := strings.Contains(body, "s3cret"); got != tc.wantToken {
@@ -129,5 +142,29 @@ func TestRuntimeConfigIsUnauthenticated(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+// TestCSPWidensConnectSrcForAnAttachedBoard covers the UI attached elsewhere:
+// its own origin serves the bundle, so without the board's origin in the policy
+// every call it makes is blocked before it leaves the page.
+func TestCSPWidensConnectSrcForAnAttachedBoard(t *testing.T) {
+	tests := []struct {
+		name          string
+		connectOrigin string
+		want          string
+	}{
+		{name: "own board", want: "connect-src 'self' ws: wss:;"},
+		{name: "attached board", connectOrigin: "https://board.example", want: "connect-src 'self' ws: wss: https://board.example;"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			httpserve.CSPMiddleware(tc.connectOrigin, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).
+				ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", http.NoBody))
+			if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, tc.want) {
+				t.Fatalf("policy = %q, want it to contain %q", got, tc.want)
+			}
+		})
 	}
 }

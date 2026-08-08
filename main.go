@@ -74,6 +74,21 @@ func run() (int, error) {
 
 	logger.Info("browser.in_app", "enabled", cfg.InAppBrowserEnabled())
 
+	remote, attached, err := remoteBoard()
+	if err != nil {
+		return 1, err
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// A window attached to another machine's board must not start a second
+	// orchestrator against this machine's home: it would poll GitHub, reattach
+	// agents, and write the local board while the window shows none of it.
+	if attached {
+		return runAttached(ctx, cfg, logger, remote)
+	}
+
 	// The window is an HTTP client of this process, so events reach it over the
 	// same SSE stream the browser build subscribes to.
 	broker := sse.New()
@@ -84,9 +99,6 @@ func run() (int, error) {
 
 	opts := buildAppOptions(cfg, logger, &v3emit, &v3openBrowser, &restartRequested, &v3app)
 	sybraApp := sybra.NewApp(logger, levelVar, cfg, opts...)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	v3app = application.New(application.Options{
 		Name:        "Sybra",
@@ -109,20 +121,13 @@ func run() (int, error) {
 		return autoupdate.RestartExitCode, nil
 	}
 
-	board, err := openDesktopBoard(ctx, cfg, logger, broker, sybraApp, assets)
+	board, err := openDesktopBoard(ctx, cfg, logger, broker, sybraApp)
 	if err != nil {
 		return 1, err
 	}
-	defer board.shutdown(context.Background())
+	defer board.shutdown(ctx)
 
-	v3app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:            "Sybra",
-		URL:              board.url,
-		Width:            1280,
-		Height:           800,
-		StartState:       application.WindowStateMaximised,
-		BackgroundColour: application.RGBA{Red: 27, Green: 38, Blue: 54, Alpha: 1},
-	})
+	openMainWindow(v3app, board.url)
 
 	if err := v3app.Run(); err != nil {
 		return 1, err
@@ -131,6 +136,44 @@ func run() (int, error) {
 		return autoupdate.RestartExitCode, nil
 	}
 	return 0, nil
+}
+
+// runAttached serves the UI for a board on another machine.
+//
+// The bundle still comes from this process, because only a page it served can
+// be handed that board's bearer token. Nothing else of Sybra runs.
+func runAttached(ctx context.Context, cfg *config.Config, logger *slog.Logger, remote remoteTarget) (int, error) {
+	v3app := application.New(application.Options{
+		Name:        "Sybra",
+		Description: "Sybra orchestrator",
+		LogLevel:    slog.LevelInfo,
+		Assets: application.AssetOptions{
+			Handler: application.BundledAssetFileServer(assets),
+		},
+	})
+
+	board, err := openAttachedBoard(ctx, cfg, logger, remote, func(url string) { openInAppBrowser(v3app, url) })
+	if err != nil {
+		return 1, err
+	}
+	defer board.shutdown(ctx)
+
+	openMainWindow(v3app, board.url)
+	if err := v3app.Run(); err != nil {
+		return 1, err
+	}
+	return 0, nil
+}
+
+func openMainWindow(app *application.App, url string) {
+	app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Title:            "Sybra",
+		URL:              url,
+		Width:            1280,
+		Height:           800,
+		StartState:       application.WindowStateMaximised,
+		BackgroundColour: application.RGBA{Red: 27, Green: 38, Blue: 54, Alpha: 1},
+	})
 }
 
 // buildAppOptions assembles the sybra.Option set for the desktop app.

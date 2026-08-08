@@ -311,67 +311,129 @@ export function OnConnectionChange(listener: ConnectionListener): () => void {
 }
 
 function setConnectionState(state: ConnectionState): void {
-  const reconnected = state === 'open' && _connectionState === 'lost' && _wasOpen
+  // A drop after a successful open is a loss even while EventSource is already
+  // retrying. Waiting for readyState CLOSED would never fire: the spec puts the
+  // stream back to CONNECTING before the error event, so an ordinary server
+  // restart reads as open -> connecting -> open and the refetch never runs.
+  const reconnected = state === 'open' && _connectionState !== 'open' && _wasOpen
   if (state === 'open') _wasOpen = true
   if (state === _connectionState && !reconnected) return
   _connectionState = state
   for (const listener of _connectionListeners) listener(state, reconnected)
 }
 
-let _sharedES: EventSource | null = null
-let _subCount = 0
+// Retry delay after a fatal stream close. EventSource retries a transport
+// error itself but gives up for good on an HTTP error, so that case is
+// rebuilt here instead.
+const STREAM_REBUILD_MS = 5_000
 
-function getSharedES(): EventSource {
-  if (!_sharedES) {
-    if (!getApiToken() && !promptForApiToken()) {
-      throw new Error('sybra server auth token required for live updates')
-    }
-    setConnectionState('connecting')
-    const es = new EventSource(eventsURL())
-    // EventSource reconnects on its own; these only report which side of that
-    // cycle the stream is on so the UI can say so and refetch on the way back.
-    es.onopen = () => setConnectionState('open')
-    es.onerror = () => setConnectionState(es.readyState === EventSource.CLOSED ? 'lost' : 'connecting')
-    _sharedES = es
+let _sharedES: EventSource | null = null
+let _rebuildTimer: ReturnType<typeof setTimeout> | null = null
+// Every subscription, kept so a rebuilt stream carries them over. A caller
+// holds its unsubscribe for the life of the app and never re-subscribes.
+const _subscriptions = new Map<string, Set<(e: MessageEvent) => void>>()
+
+function subscriptionCount(): number {
+  let total = 0
+  for (const handlers of _subscriptions.values()) total += handlers.size
+  return total
+}
+
+function openStream(): EventSource | null {
+  if (_sharedES) return _sharedES
+  if (!getApiToken() && !promptForApiToken()) return null
+  setConnectionState(_wasOpen ? 'lost' : 'connecting')
+  const es = new EventSource(eventsURL())
+  es.onopen = () => setConnectionState('open')
+  es.onerror = () => {
+    setConnectionState(_wasOpen ? 'lost' : 'connecting')
+    if (es.readyState === EventSource.CLOSED) scheduleRebuild(es)
   }
-  return _sharedES
+  for (const [eventName, handlers] of _subscriptions) {
+    for (const handler of handlers) es.addEventListener(eventName, handler)
+  }
+  _sharedES = es
+  return es
+}
+
+// scheduleRebuild replaces a stream EventSource has abandoned. It stops
+// retrying after an HTTP error, so without this the UI stays dark until a
+// manual reload even once the server is back.
+function scheduleRebuild(dead: EventSource): void {
+  if (_sharedES !== dead || _rebuildTimer !== null) return
+  dead.close()
+  _sharedES = null
+  _rebuildTimer = setTimeout(() => {
+    _rebuildTimer = null
+    if (subscriptionCount() > 0) openStream()
+  }, STREAM_REBUILD_MS)
+}
+
+function closeStream(): void {
+  if (_rebuildTimer !== null) {
+    clearTimeout(_rebuildTimer)
+    _rebuildTimer = null
+  }
+  _sharedES?.close()
+  _sharedES = null
+  _wasOpen = false
+  setConnectionState('connecting')
 }
 
 // Runtime: EventsOn via multiplexed SSE stream (GET /events).
 // All subscriptions share a single EventSource connection.
 // The server uses SSE named-event format so each listener only fires for its event.
 export function EventsOn(eventName: string, callback: (...data: any[]) => void): () => void {
-  const es = getSharedES()
-  _subCount++
-
   const handler = (e: MessageEvent) => {
     try { callback(JSON.parse(e.data as string)) } catch { callback(e.data) }
+  }
+  let handlers = _subscriptions.get(eventName)
+  if (!handlers) {
+    handlers = new Set()
+    _subscriptions.set(eventName, handlers)
+  }
+  handlers.add(handler)
+
+  const es = openStream()
+  if (!es) {
+    handlers.delete(handler)
+    throw new Error('sybra server auth token required for live updates')
   }
   es.addEventListener(eventName, handler)
 
   return () => {
     _sharedES?.removeEventListener(eventName, handler)
-    _subCount--
-    if (_subCount === 0) {
-      _sharedES?.close()
-      _sharedES = null
-      _wasOpen = false
-      setConnectionState('connecting')
-    }
+    handlers.delete(handler)
+    if (handlers.size === 0) _subscriptions.delete(eventName)
+    if (subscriptionCount() === 0) closeStream()
   }
 }
 
-// Runtime: BrowserOpenURL via window.open
-export function BrowserOpenURL(url: string): void {
-  window.open(url, '_blank')
+// resetEventStreamForTest drops the module-level stream so one test's
+// EventSource never leaks into the next.
+export function resetEventStreamForTest(): void {
+  _subscriptions.clear()
+  closeStream()
 }
 
-// Open hands the URL to an in-app window on the host serving this board. A
-// board on another machine refuses it, so the caller below falls back to a tab.
+// BrowserOpenURL sends the URL to the browser on the host serving this board.
+//
+// window.open alone is not enough: the desktop window's webview implements no
+// window-opening delegate, so it is a silent no-op there and the link does
+// nothing at all. A board on another machine refuses the call, and a real
+// browser then handles the tab itself.
+export function BrowserOpenURL(url: string): void {
+  void OpenExternal(url).catch(() => { window.open(url, '_blank') })
+}
+
+// Open hands the URL to an in-app window on the host serving this board.
 export function Open(arg1: string): Promise<void> { return call('BrowserService', 'Open', arg1) }
 
-// OpenInAppBrowser keeps the desktop's in-app window and degrades to a new tab
-// anywhere that window does not exist.
+// OpenExternal hands the URL to that host's default browser.
+export function OpenExternal(arg1: string): Promise<void> { return call('BrowserService', 'OpenExternal', arg1) }
+
+// OpenInAppBrowser keeps the desktop's in-app window and degrades to the host
+// browser, then to a tab, anywhere that window does not exist.
 export function OpenInAppBrowser(url: string): void {
   void Open(url).catch(() => BrowserOpenURL(url))
 }
