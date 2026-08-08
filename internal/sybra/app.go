@@ -59,6 +59,7 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/sybra/completion"
+	"github.com/Automaat/sybra/internal/sybra/dispatch"
 	"github.com/Automaat/sybra/internal/sybra/reconciliation"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/sybra/runenv"
@@ -90,6 +91,7 @@ type App struct {
 	loopAgents        *loopagent.Store
 	loopSched         *loopagent.Scheduler
 	agents            *agent.Manager
+	attempts          *dispatch.Controller
 	watcher           *watcher.Watcher
 	configWatcher     *confighot.Watcher
 	notifier          *notification.Emitter

@@ -366,6 +366,9 @@ func (e *Engine) execRunAgent(taskID string, step *Step, wfExec *Execution, ctx 
 		return err
 	}
 	applySkillReceiptRecoveryAssignment(step.ID, wfExec, &assignment)
+	if !claimedEffectID.IsZero() {
+		assignment.IntentID = taskID + ":" + wfExec.WorkflowID + ":" + claimedEffectID.String()
+	}
 	if step.Config.Role == "review" && wfExec.Variables["bestofn.attempts.manifest"] != "" {
 		assignment.ReadOnlyPaths = bestOfNAttemptReadRoots(wfExec)
 	}

@@ -25,6 +25,7 @@ import (
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/skillattr"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/google/uuid"
 )
@@ -69,12 +70,28 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 	}
 
 	id := uuid.NewString()[:8]
+	intent := attemptIntentForRun(cfg, prov.Name())
+	lease, err := m.acquireAttempt(ctx, intent)
+	if err != nil {
+		return nil, err
+	}
+	if lease.Existing {
+		return nil, fmt.Errorf("%w: intent %s already admitted as lease %s", ErrAttemptConflict, intent.IntentID, lease.ID)
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	a := newRunningAgent(id, cfg, prov, cancel)
+	a.attemptIntent = intent
+	a.attemptLease = lease
 	a.SetToolCallRecorder(m.recordToolCall)
+	if err := m.bindAttempt(ctx, a, ""); err != nil {
+		cancel()
+		m.completeAttempt(ctx, a, "bind_failed")
+		return nil, fmt.Errorf("agent.Run: bind attempt: %w", err)
+	}
 	if cfg.BeforeStart != nil {
 		if err := cfg.BeforeStart(id); err != nil {
 			cancel()
+			m.completeAttempt(ctx, a, "before_start_failed")
 			return nil, fmt.Errorf("agent.Run: before start: %w", err)
 		}
 	}
@@ -84,6 +101,7 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 	}
 
 	if err := m.registerRunningAgent(a, cfg, cancel); err != nil { //nolint:contextcheck // per-class metrics are process-global accounting, not tied to per-run ctx
+		m.completeAttempt(ctx, a, "registration_failed")
 		return nil, err
 	}
 
@@ -91,11 +109,261 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 	m.logger.Info("agent.start", "id", id, "taskID", cfg.TaskID, "mode", cfg.Mode, "provider", a.Provider, "model", a.Model)
 
 	if err := m.startAgentRunner(ctx, a, cfg, prov, cancel); err != nil {
+		m.completeAttempt(ctx, a, "start_failed")
+		m.markAgentDone(ctx, a)
 		return nil, err
 	}
+	m.startAttemptHeartbeat(ctx, a)
 
 	m.emit(events.AgentState(id), a)
 	return a, nil
+}
+
+func attemptIntentForRun(cfg RunConfig, providerName string) AttemptIntent {
+	access := cfg.AttemptAccess
+	if access == "" {
+		access = AttemptAccessMutate
+	}
+	if cfg.ReadOnlyDir {
+		access = AttemptAccessObserve
+	}
+	intentID := strings.TrimSpace(cfg.IntentID)
+	if intentID == "" {
+		// Only an explicit workflow/effect identity is replay-stable. A
+		// deterministic fallback would make recurring taskless monitor and loop
+		// runs replay a lease that already completed. The generated identity is
+		// persisted in the registry, so restart adoption remains stable.
+		intentID = "dispatch:" + uuid.NewString()
+	}
+	return AttemptIntent{
+		IntentID: intentID, TaskID: firstNonEmpty(cfg.AdmissionTaskKey, cfg.TaskID), TaskGeneration: cfg.TaskGeneration,
+		Worktree: cfg.Dir, WorktreeGeneration: cfg.WorktreeGeneration,
+		Access: access, Role: cfg.Role, Provider: providerName,
+		CapabilityCertified: true,
+	}
+}
+
+func (m *Manager) admissionService() AttemptAdmission {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.attemptAdmission
+}
+
+// NeedsAttemptReconciliation reports whether durable admission contains an
+// expired lease. Recovery uses this to avoid an expensive process/worktree
+// preservation pass on ordinary maintenance ticks.
+func (m *Manager) NeedsAttemptReconciliation(ctx context.Context) bool {
+	reconciler, ok := m.admissionService().(AttemptLedgerReconciler)
+	if !ok {
+		return false
+	}
+	needed, err := reconciler.NeedsReconciliation(ctx)
+	if err != nil {
+		m.logger.Warn("agent.attempt.reconcile-check", "err", err)
+		return false
+	}
+	return needed
+}
+
+// ReconcileAttemptLeases finalizes expired leases not represented by either
+// the survival registry or the live manager. Callers must first reap owned
+// unregistered processes and preserve worktrees.
+func (m *Manager) ReconcileAttemptLeases(ctx context.Context) int {
+	reconciler, ok := m.admissionService().(AttemptLedgerReconciler)
+	if !ok {
+		return 0
+	}
+	seen := make(map[string]AttemptLease)
+	if reg := m.registry(); reg != nil {
+		records, err := reg.List()
+		if err != nil {
+			m.logger.Warn("agent.attempt.reconcile-registry", "err", err)
+			return 0
+		}
+		for i := range records {
+			if records[i].AttemptLeaseID != "" {
+				seen[records[i].AttemptLeaseID] = AttemptLease{ID: records[i].AttemptLeaseID, Version: records[i].AttemptVersion}
+			}
+		}
+	}
+	m.mu.RLock()
+	for _, a := range m.agents {
+		a.mu.RLock()
+		lease := a.attemptLease
+		a.mu.RUnlock()
+		if lease.ID != "" && a.GetState() != StateStopped {
+			seen[lease.ID] = lease
+		}
+	}
+	m.mu.RUnlock()
+	observed := make([]AttemptLease, 0, len(seen))
+	for _, lease := range seen {
+		observed = append(observed, lease)
+	}
+	n, err := reconciler.ReconcileUnobserved(ctx, observed)
+	if err != nil {
+		m.logger.Warn("agent.attempt.reconcile", "err", err)
+		return 0
+	}
+	if n > 0 {
+		m.logger.Info("agent.attempt.reconciled", "count", n)
+	}
+	return n
+}
+
+func (m *Manager) acquireAttempt(ctx context.Context, intent AttemptIntent) (AttemptLease, error) {
+	admission := m.admissionService()
+	if admission == nil {
+		return AttemptLease{}, nil
+	}
+	return admission.Acquire(ctx, intent)
+}
+
+func (m *Manager) bindAttempt(ctx context.Context, a *Agent, procStarted string) error {
+	if a == nil {
+		return nil
+	}
+	a.mu.RLock()
+	lease := a.attemptLease
+	binding := AttemptBinding{
+		AgentID: a.ID, PID: a.PID, ProcStarted: procStarted,
+		SessionID: a.SessionID, ObservedAt: time.Now().UTC(),
+	}
+	a.mu.RUnlock()
+	admission := m.admissionService()
+	if admission == nil || lease.ID == "" {
+		return nil
+	}
+	return admission.Bind(ctx, lease, binding)
+}
+
+func (m *Manager) bindAndHeartbeatAttempt(ctx context.Context, a *Agent, procStarted string) {
+	if err := m.bindAttempt(ctx, a, procStarted); err != nil {
+		m.logger.Warn("agent.attempt.bind", "id", a.ID, "err", err)
+		return
+	}
+	a.mu.RLock()
+	lease := a.attemptLease
+	a.mu.RUnlock()
+	admission := m.admissionService()
+	if admission == nil || lease.ID == "" {
+		return
+	}
+	if err := admission.Heartbeat(ctx, lease, time.Now().UTC()); err != nil {
+		m.logger.Warn("agent.attempt.heartbeat", "id", a.ID, "err", err)
+	}
+}
+
+const attemptHeartbeatInterval = 15 * time.Second
+
+func (m *Manager) startAttemptHeartbeat(ctx context.Context, a *Agent) {
+	if m.admissionService() == nil || a == nil {
+		return
+	}
+	a.mu.RLock()
+	hasLease := a.attemptLease.ID != ""
+	a.mu.RUnlock()
+	if !hasLease {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(attemptHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				a.mu.RLock()
+				lease := a.attemptLease
+				a.mu.RUnlock()
+				if admission := m.admissionService(); admission != nil {
+					if err := admission.Heartbeat(ctx, lease, time.Now().UTC()); err != nil {
+						m.logger.Warn("agent.attempt.heartbeat", "id", a.ID, "err", err)
+					}
+				}
+			case <-a.done:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+func (m *Manager) completeAttempt(ctx context.Context, a *Agent, outcome string) {
+	if a == nil {
+		return
+	}
+	a.attemptCompleteOnce.Do(func() {
+		a.mu.RLock()
+		lease := a.attemptLease
+		a.mu.RUnlock()
+		admission := m.admissionService()
+		if admission == nil || lease.ID == "" {
+			return
+		}
+		if ctx == nil {
+			ctx = context.Background()
+		} else {
+			ctx = context.WithoutCancel(ctx)
+		}
+		if err := admission.Complete(ctx, lease, outcome); err != nil {
+			m.logger.Warn("agent.attempt.complete", "id", a.ID, "outcome", outcome, "err", err)
+		}
+	})
+}
+
+func attemptTerminalOutcome(a *Agent) string {
+	if a.GetExitErr() != nil {
+		return "failed"
+	}
+	if a.WasStopped() {
+		return string(taskstatus.Cancelled)
+	}
+	return "completed"
+}
+
+func attemptIntentFromRecord(r Record) AttemptIntent {
+	access := r.AttemptAccess
+	if access == "" {
+		access = AttemptAccessMutate
+	}
+	intentID := r.AttemptIntentID
+	if intentID == "" {
+		intentID = "legacy-registry:" + r.ID
+	}
+	return AttemptIntent{
+		IntentID: intentID, TaskID: firstNonEmpty(r.AttemptTaskKey, r.TaskID),
+		TaskGeneration: r.AttemptTaskGen, Worktree: r.CWD,
+		WorktreeGeneration: r.AttemptWorkGen, Access: access,
+		Role: r.Role, Provider: r.Provider, CapabilityCertified: true,
+	}
+}
+
+func (m *Manager) adoptAttempt(ctx context.Context, r Record, intent AttemptIntent) (AttemptLease, error) {
+	admission := m.admissionService()
+	lease := AttemptLease{ID: r.AttemptLeaseID, Version: r.AttemptVersion}
+	if admission == nil {
+		return lease, nil
+	}
+	binding := AttemptBinding{
+		AgentID: r.ID, PID: r.PID, ProcStarted: r.ProcStartedAt,
+		SessionID: r.SessionID, ObservedAt: time.Now().UTC(),
+	}
+	if lease.ID == "" {
+		acquired, err := admission.Acquire(ctx, intent)
+		if err != nil {
+			return AttemptLease{}, err
+		}
+		if acquired.Existing {
+			return AttemptLease{}, fmt.Errorf("%w: legacy registry intent %s", ErrAttemptConflict, intent.IntentID)
+		}
+		if err := admission.Bind(ctx, acquired, binding); err != nil {
+			_ = admission.Complete(context.WithoutCancel(ctx), acquired, "legacy_bind_failed")
+			return AttemptLease{}, err
+		}
+		return acquired, nil
+	}
+	return admission.Adopt(ctx, intent, lease, binding)
 }
 
 func (m *Manager) certifyPreparedRun(ctx context.Context, cfg RunConfig, providerName string) error {
@@ -207,6 +475,9 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 		return cfg, nil, roleErr
 	}
 	cfg.Role = role
+	if err := m.resolveAttemptGeneration(&cfg); err != nil {
+		return cfg, nil, err
+	}
 	m.mu.RLock()
 	if cfg.Model == "" {
 		cfg.Model = m.defaultModel
@@ -304,7 +575,13 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 
 	m.preparePlaywrightMCP(&cfg)
 
+	m.applyRuntimeDefaults(&cfg)
+	return cfg, prov, nil
+}
+
+func (m *Manager) applyRuntimeDefaults(cfg *RunConfig) {
 	m.mu.RLock()
+	defer m.mu.RUnlock()
 	if cfg.BashTimeoutMs == 0 {
 		cfg.BashTimeoutMs = m.bashTimeoutMs
 	}
@@ -314,8 +591,31 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if cfg.FallbackModel == "" {
 		cfg.FallbackModel = m.fallbackModel
 	}
+}
+
+func (m *Manager) resolveAttemptGeneration(cfg *RunConfig) error {
+	if cfg == nil || cfg.TaskID == "" {
+		return nil
+	}
+	m.mu.RLock()
+	generation := m.taskGeneration
 	m.mu.RUnlock()
-	return cfg, prov, nil
+	if generation == nil {
+		return nil
+	}
+	value, ok := generation(cfg.TaskID)
+	if !ok || value <= 0 {
+		return nil
+	}
+	current := uint64(value)
+	if cfg.TaskGeneration != 0 && cfg.TaskGeneration != current {
+		return fmt.Errorf("%w: task %s generation %d is stale (current %d)", ErrAttemptConflict, cfg.TaskID, cfg.TaskGeneration, current)
+	}
+	cfg.TaskGeneration = current
+	if cfg.WorktreeGeneration == 0 {
+		cfg.WorktreeGeneration = current
+	}
+	return nil
 }
 
 func (m *Manager) injectGitAccess(cfg *RunConfig) error {
@@ -1554,10 +1854,15 @@ func (m *Manager) registerRunningAgent(a *Agent, cfg RunConfig, cancel context.C
 	class := a.EffectiveRole().WorkloadClass()
 	m.mu.Lock()
 	reserved := false
-	if !cfg.IgnoreConcurrencyLimit && cfg.capacityReservation != nil && cfg.capacityReservation.manager == m {
+	if m.maxInFlightPerProvider > 0 && a.Provider != "" && m.liveByProvider[a.Provider] >= m.maxInFlightPerProvider {
+		m.mu.Unlock()
+		cancel()
+		return fmt.Errorf("%w: %s (%d)", ErrProviderCapacityReached, a.Provider, m.maxInFlightPerProvider)
+	}
+	if cfg.capacityReservation != nil && cfg.capacityReservation.manager == m {
 		reserved = cfg.capacityReservation.consumeLocked()
 	}
-	if !cfg.IgnoreConcurrencyLimit && !reserved && !admitClass(class, m.liveByClass, m.reservedByClass, m.classFloors, m.maxConcurrent) {
+	if !reserved && !admitClass(class, m.liveByClass, m.reservedByClass, m.classFloors, m.maxConcurrent) {
 		m.mu.Unlock()
 		cancel()
 		metrics.AgentClassRejected(string(class))
@@ -1573,13 +1878,7 @@ func (m *Manager) registerRunningAgent(a *Agent, cfg RunConfig, cancel context.C
 		m.liveByClass[class]++
 	}
 	m.mu.Unlock()
-	// Only count dispatches that actually passed through the capacity gate
-	// (!IgnoreConcurrencyLimit) and were capacity-tracked (a.done != nil, i.e.
-	// added to m.liveByClass). Interactive agents and gate-bypassing callers
-	// (monitor/loop/orchestrator/human-review set IgnoreConcurrencyLimit) never
-	// enter the class gauges, so folding them into "admitted"/"borrowed" would
-	// misreport class-isolation behavior for anyone debugging starvation.
-	if !cfg.IgnoreConcurrencyLimit && a.done != nil {
+	if a.done != nil {
 		metrics.AgentClassAdmitted(string(class))
 		if borrowed {
 			metrics.AgentClassBorrowed(string(class))
@@ -1612,6 +1911,7 @@ func (m *Manager) markAgentDone(ctx context.Context, a *Agent) {
 	}
 	a.doneOnce.Do(func() {
 		close(a.done)
+		m.completeAttempt(ctx, a, attemptTerminalOutcome(a))
 		if a.isDetached() {
 			reapProcessGroup(a.GetPID())
 		}

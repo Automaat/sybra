@@ -604,9 +604,24 @@ func validateParallelStep(s *Step, seenIDs map[string]bool) error {
 		if seenIDs[c.ID] {
 			return fmt.Errorf("step %q: parallel child id %q already used elsewhere in workflow", s.ID, c.ID)
 		}
+		if !parallelObserverRole(c.Config.Role) {
+			return fmt.Errorf("step %q: parallel child %q role %q is not read-only", s.ID, c.ID, c.Config.Role)
+		}
 		seenIDs[c.ID] = true
 	}
 	return nil
+}
+
+// parallelObserverRole is deliberately narrower than the full role set.
+// Parallel children share one canonical worktree, so only roles whose source
+// and task access is enforced read-only may overlap under observer leases.
+func parallelObserverRole(role string) bool {
+	switch strings.TrimSpace(role) {
+	case "plan", "plan-critic", "review", "eval":
+		return true
+	default:
+		return false
+	}
 }
 
 // validAttemptProviders lists the providers a best_of_n step may pin an

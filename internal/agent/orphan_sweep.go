@@ -25,10 +25,28 @@ type trackedAgentSnapshot struct {
 	State State
 }
 
-func (m *Manager) ReapOrphanProviderProcesses(ctx context.Context, roots []string) int { //nolint:contextcheck // Nil is a legacy caller contract; normalize it before deriving the bounded sweep context.
+func (m *Manager) ReapOrphanProviderProcesses(ctx context.Context, roots []string) int {
+	reaped, _ := m.reapOrphanProviderProcesses(ctx, roots, false)
+	return reaped
+}
+
+// ReapOrphanProviderProcessesConfirmed is the recovery form: confirmed is
+// false if any selected orphan survived SIGINT+SIGKILL. Dedicated roots retain
+// the legacy ownerless-provider fallback.
+func (m *Manager) ReapOrphanProviderProcessesConfirmed(ctx context.Context, roots []string) (reaped int, confirmed bool) {
+	return m.reapOrphanProviderProcesses(ctx, roots, false)
+}
+
+// ReapOwnedOrphanProviderProcessesConfirmed scans broader shared roots but
+// only touches processes carrying Sybra's explicit owner environment marker.
+func (m *Manager) ReapOwnedOrphanProviderProcessesConfirmed(ctx context.Context, roots []string) (reaped int, confirmed bool) {
+	return m.reapOrphanProviderProcesses(ctx, roots, true)
+}
+
+func (m *Manager) reapOrphanProviderProcesses(ctx context.Context, roots []string, ownedOnly bool) (reaped int, confirmed bool) { //nolint:contextcheck // Nil is a legacy caller contract; normalize it before deriving the bounded sweep context.
 	roots = canonicalProcessRoots(expandRootGlobs(roots))
 	if len(roots) == 0 {
-		return 0
+		return 0, true
 	}
 	if ctx == nil {
 		ctx = orphanSweepDefaultContext
@@ -37,12 +55,16 @@ func (m *Manager) ReapOrphanProviderProcesses(ctx context.Context, roots []strin
 	ctx, cancel = context.WithTimeout(ctx, orphanSweepTimeout)
 	defer cancel()
 
-	procs := listProviderProcessesUnderRoots(ctx, roots)
+	procs, observed := listProviderProcessesUnderRoots(ctx, roots)
+	if !observed {
+		m.logger.Error("agent.orphan.scan_unconfirmed")
+		return 0, false
+	}
 	if len(procs) == 0 {
-		return 0
+		return 0, true
 	}
 	trackedPIDs, trackedAgents := m.trackedProcessOwners()
-	reaped := 0
+	confirmed = true
 	for _, proc := range procs {
 		if proc.PID <= 0 {
 			continue
@@ -50,20 +72,31 @@ func (m *Manager) ReapOrphanProviderProcesses(ctx context.Context, roots []strin
 		if _, ok := trackedPIDs[proc.PID]; ok {
 			continue
 		}
+		if ownedOnly && proc.Owner.AgentID == "" {
+			continue
+		}
 		if proc.Owner.AgentID != "" {
 			if !shouldReapOwnedProcess(proc, trackedAgents) {
 				continue
 			}
 			m.logger.Warn("agent.orphan.owned_reap", "pid", proc.PID, "cwd", proc.CWD, "command", proc.Command, "agent_id", proc.Owner.AgentID, "task_id", proc.Owner.TaskID, "mode", proc.Owner.Mode)
-			signalPID(proc.PID, stopSIGINTGrace)
-			reaped++
+			if signalPIDAndWait(proc.PID, stopSIGINTGrace) {
+				reaped++
+			} else {
+				confirmed = false
+				m.logger.Error("agent.orphan.owned_reap_unconfirmed", "pid", proc.PID, "agent_id", proc.Owner.AgentID)
+			}
 			continue
 		}
 		m.logger.Warn("agent.orphan.reap", "pid", proc.PID, "cwd", proc.CWD, "command", proc.Command)
-		signalPID(proc.PID, stopSIGINTGrace)
-		reaped++
+		if signalPIDAndWait(proc.PID, stopSIGINTGrace) {
+			reaped++
+		} else {
+			confirmed = false
+			m.logger.Error("agent.orphan.reap_unconfirmed", "pid", proc.PID, "cwd", proc.CWD)
+		}
 	}
-	return reaped
+	return reaped, confirmed
 }
 
 func shouldReapOwnedProcess(proc providerProcess, tracked map[string]trackedAgentSnapshot) bool {

@@ -582,8 +582,11 @@ func (o *Orchestrator) resolveDispatchDir(ctx context.Context, t task.Task, task
 // generic "agent start failed" branch and writes a scary, non-suppressed
 // status_reason for a condition that resolves itself once a pool slot frees.
 func translatePoolBusy(err error) error {
-	if errors.Is(err, agent.ErrMaxConcurrentReached) {
+	if agent.IsCapacityError(err) {
 		return fmt.Errorf("%w: %w", workflow.ErrAgentPoolBusy, err)
+	}
+	if agent.IsAttemptConflict(err) {
+		return fmt.Errorf("%w: %w", workflow.ErrDispatchInFlight, err)
 	}
 	return err
 }
@@ -762,6 +765,8 @@ func (o *Orchestrator) implementationRunConfig(p implementationRunParams) agent.
 		AllowedTools:            p.t.AllowedTools,
 		Dir:                     p.dir,
 		Provider:                p.assignment.Provider,
+		IntentID:                p.assignment.IntentID,
+		AdmissionTaskKey:        p.assignment.AdmissionTaskKey,
 		Model:                   p.model,
 		ExperimentID:            p.assignment.ExperimentID,
 		VariantID:               p.assignment.VariantID,
@@ -889,7 +894,7 @@ func (o *Orchestrator) handleCapacityRace(runErr error, t task.Task, taskID, mod
 	// check, so a concurrent dispatch can steal the last slot after startAgent's
 	// earlier preflight. Re-enqueue the same way as the normal saturation path
 	// when the queue exists.
-	if o.queue == nil || !errors.Is(runErr, agent.ErrMaxConcurrentReached) {
+	if o.queue == nil || !agent.IsCapacityError(runErr) {
 		return nil, "", nil, false
 	}
 	_, ag, baselineRef, err, handled := o.handleSaturatedDispatch(t, taskID, mode, prompt, includeTaskDescription, skipWT, opts)

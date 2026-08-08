@@ -1708,6 +1708,9 @@ func classifyAgentError(err error) string {
 	if errors.Is(err, errPromptUndelivered) {
 		return ErrorKindPromptUndelivered
 	}
+	if errors.Is(err, ErrProviderCapacityReached) {
+		return "provider_capacity"
+	}
 	msg := strings.ToLower(err.Error())
 	class := errclass.Classify(msg, errclass.AgentRecoveryBiased)
 	switch {

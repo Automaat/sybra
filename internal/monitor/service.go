@@ -434,6 +434,9 @@ func (s *Service) applyRemediations(ctx context.Context, anoms []Anomaly) remedi
 // always tagged with Until, so a zero Until would otherwise read as "not a
 // rate limit".
 func isTransientCapacityRefusal(err error) bool {
+	if agent.IsCapacityError(err) {
+		return true
+	}
 	var unhealthy *provider.UnhealthyError
 	if errors.As(err, &unhealthy) {
 		return unhealthy.RateLimited
