@@ -13,7 +13,6 @@ import (
 	"github.com/Automaat/sybra/internal/evaluation"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/prompteval"
-	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -474,18 +473,5 @@ func trajectorySummary(t task.Task) string {
 
 // scanEvaluation scores the fleet that owns the board. The stats file and audit log it reduces both live beside that board, so scoring this machine's copies would report a different fleet.
 func scanEvaluation(cfg *config.Config, api *apiClient) (evaluation.Report, error) {
-	if api != nil {
-		return callAPIWithin[evaluation.Report](api, apiSlowCallTimeout, statsServiceName, "ScanEvaluation")
-	}
-	statsStore, err := stats.NewStore(config.StatsFile())
-	if err != nil {
-		return evaluation.Report{}, fmt.Errorf("open stats: %w", err)
-	}
-	svc := evaluation.NewService(evaluation.Deps{
-		Cfg:       cfg.Evaluation,
-		ABTesting: cfg.ABTesting,
-		Stats:     statsStore,
-		Audit:     evaluation.AuditDirReader(cfg.AuditDir()),
-	})
-	return svc.Scan(context.Background())
+	return callAPIWithin[evaluation.Report](api, apiSlowCallTimeout, statsServiceName, "ScanEvaluation")
 }

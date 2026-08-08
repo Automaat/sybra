@@ -1,22 +1,18 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 
 	"github.com/Automaat/sybra/internal/config"
-	"github.com/Automaat/sybra/internal/project"
-	"github.com/Automaat/sybra/internal/task"
-	"github.com/Automaat/sybra/internal/umbrella"
 )
 
 // cmdUmbrella expands a GitHub umbrella issue into a gated task DAG: one
 // `umbrella` tracker task plus one `blocked` child per sub-issue, with
 // dependency edges extracted by an LLM planner. Re-running is idempotent —
 // only sub-issues without an existing task are materialized.
-func cmdUmbrella(cfg *config.Config, api *apiClient, s *task.Manager, projStore *project.Store, args []string, jsonOut bool) int {
+func cmdUmbrella(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("umbrella", flag.ContinueOnError)
 	urlFlag := fs.String("url", "", "umbrella issue URL (or pass as first argument)")
 	model := fs.String("model", "", "planner model (default: claude default)")
@@ -31,44 +27,13 @@ func cmdUmbrella(cfg *config.Config, api *apiClient, s *task.Manager, projStore 
 		return fatal(jsonOut, "umbrella: an issue URL is required")
 	}
 
-	// Expansion writes many tasks under the server's locks, so a reachable
-	// server runs the whole operation rather than this process racing it.
-	if api != nil {
-		res, err := callAPIWithin[umbrellaExpandDTO](api, apiSlowCallTimeout, taskServiceName, "ExpandUmbrella", issueURL, *model)
-		if err != nil {
-			return fatal(jsonOut, "%v", err)
-		}
-		return reportUmbrella(jsonOut, res.UmbrellaURL, res.Created, res.Skipped, res.Degraded)
-	}
-
-	var opts []umbrella.ExpandOption
-	if cfg.Umbrella.Ground {
-		opts = append(opts, umbrella.WithExpandGrounder(cliGroundLister(projStore), cfg.Umbrella.GroundMinSubIssues))
-	}
-
-	res, err := umbrella.Expand(context.Background(), s, umbrella.FallbackPlannerRunner(*model), issueURL, opts...)
+	// Expansion writes many tasks under the server's locks, so the server runs
+	// the whole operation rather than this process racing it.
+	res, err := callAPIWithin[umbrellaExpandDTO](api, apiSlowCallTimeout, taskServiceName, "ExpandUmbrella", issueURL, *model)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
 	return reportUmbrella(jsonOut, res.UmbrellaURL, res.Created, res.Skipped, res.Degraded)
-}
-
-// cliGroundLister mirrors the GUI/auto-expand buildGroundLister wiring
-// (internal/sybra): repo -> registered project -> clone's default branch ->
-// tracked files at that branch, no network fetch. Any resolution failure
-// propagates so grounding fails open rather than silently skipping.
-func cliGroundLister(projStore *project.Store) umbrella.TrackedFilesFunc {
-	return func(ctx context.Context, repo string) ([]string, error) {
-		p, err := projStore.Get(repo)
-		if err != nil {
-			return nil, fmt.Errorf("ground: project %s: %w", repo, err)
-		}
-		files, err := project.TrackedFilesAtDefaultBranch(ctx, p.ClonePath)
-		if err != nil {
-			return nil, fmt.Errorf("ground: tracked files for %s: %w", repo, err)
-		}
-		return files, nil
-	}
 }
 
 func reportUmbrella(jsonOut bool, umbrellaURL string, created, skipped int, degraded bool) int {

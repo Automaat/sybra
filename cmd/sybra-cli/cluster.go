@@ -1,23 +1,19 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
-	"log/slog"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
-	"github.com/Automaat/sybra/internal/sybra/clusterlead"
-	"github.com/Automaat/sybra/internal/task"
 )
 
 const clusterCmdTimeout = 60 * time.Second
 
-func cmdCluster(cfg *config.Config, api *apiClient, tasks *task.Manager, projects *project.Store, args []string, jsonOut bool) int {
+func cmdCluster(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: sybra-cli cluster <nodes|reassign|gen-cert> [flags]")
 	}
@@ -25,7 +21,7 @@ func cmdCluster(cfg *config.Config, api *apiClient, tasks *task.Manager, project
 	case "nodes":
 		return cmdClusterNodes(cfg, jsonOut)
 	case "reassign":
-		return cmdClusterReassign(cfg, api, tasks, projects, args[1:], jsonOut)
+		return cmdClusterReassign(cfg, api, args[1:], jsonOut)
 	case "gen-cert":
 		return cmdClusterGenCert(args[1:], jsonOut)
 	default:
@@ -118,7 +114,7 @@ func splitLeadingID(args []string) (id string, rest []string) {
 	return "", args
 }
 
-func cmdClusterReassign(cfg *config.Config, api *apiClient, tasks *task.Manager, projects *project.Store, args []string, jsonOut bool) int {
+func cmdClusterReassign(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("reassign", flag.ContinueOnError)
 	node := fs.String("node", "", `target node name, or "local" to bring the task back to the leader`)
 
@@ -141,25 +137,9 @@ func cmdClusterReassign(cfg *config.Config, api *apiClient, tasks *task.Manager,
 		return fatal(jsonOut, "this node is not a cluster leader")
 	}
 
-	// Reassignment mutates the task and pushes it to a follower, so a
-	// reachable server owns the whole operation.
-	if api != nil {
-		if _, err := callAPI[struct{}](api, "ClusterService", "ReassignTask", taskID, *node); err != nil {
-			return fatal(jsonOut, "%v", err)
-		}
-		return reportReassign(jsonOut, taskID, *node)
-	}
-
-	logger := slog.Default()
-	roster, err := clusterlead.NewRoster(cfg, logger)
-	if err != nil {
-		return fatal(jsonOut, "build roster: %v", err)
-	}
-	assigner := clusterlead.NewAssigner(cfg, tasks, roster, isWorkProject(projects), nil, logger)
-
-	ctx, cancel := context.WithTimeout(context.Background(), clusterCmdTimeout)
-	defer cancel()
-	if err := assigner.Reassign(ctx, taskID, *node); err != nil {
+	// Reassignment mutates the task and pushes it to a follower, so the server
+	// owns the whole operation.
+	if _, err := callAPI[struct{}](api, "ClusterService", "ReassignTask", taskID, *node); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
 	return reportReassign(jsonOut, taskID, *node)

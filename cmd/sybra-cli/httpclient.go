@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -80,7 +81,10 @@ func (e *apiError) Error() string {
 //
 // It returns errNoServerTarget only when no target is configured at all.
 func newAPIClient(cfg *config.Config) (*apiClient, error) {
-	raw := strings.TrimSpace(os.Getenv(serverTargetEnv))
+	raw, source := strings.TrimSpace(os.Getenv(serverTargetEnv)), serverTargetEnv
+	if raw == "" {
+		raw, source = localBoardTarget(cfg), "this machine's board"
+	}
 	if raw == "" {
 		return nil, errNoServerTarget
 	}
@@ -88,25 +92,72 @@ func newAPIClient(cfg *config.Config) (*apiClient, error) {
 		return nil, fmt.Errorf("%s is set but no configuration is loaded", serverTargetEnv)
 	}
 	if strings.HasPrefix(raw, "https://") {
-		return newTLSAPIClient(raw)
+		return newTLSAPIClient(raw, source)
 	}
-	return newCleartextAPIClient(cfg, raw)
+	return newCleartextAPIClient(cfg, raw, source)
+}
+
+// desktopPortFile is where the desktop app records the loopback port it serves
+// its board on. It is the only way to find that board: the port is chosen at
+// startup and appears in no configuration file.
+const desktopPortFile = "desktop-port"
+
+// localBoardTarget names the board running on this machine, so an operator who
+// set no target still reaches the instance that owns their home rather than
+// editing its files underneath it.
+//
+// The desktop app's recorded port wins over the configured bind: when both run
+// against one home the desktop is the process holding the board open, and the
+// configured port is what sybra-server would use if it were the one running.
+func localBoardTarget(cfg *config.Config) string {
+	if port := readDesktopPort(); port != "" {
+		return net.JoinHostPort("127.0.0.1", port)
+	}
+	return configuredServerTarget(cfg)
+}
+
+func readDesktopPort() string {
+	data, err := os.ReadFile(filepath.Join(config.HomeDir(), desktopPortFile))
+	if err != nil {
+		return ""
+	}
+	port := strings.TrimSpace(string(data))
+	if n, convErr := strconv.Atoi(port); convErr != nil || n < 1 || n > 65535 {
+		return ""
+	}
+	return port
+}
+
+// configuredServerTarget reports where sybra-server would listen on this
+// machine. A bind on every interface answers on loopback too, so the CLI always
+// dials loopback and never puts the token on a network hop.
+func configuredServerTarget(cfg *config.Config) string {
+	port := config.DefaultServerPort
+	if cfg != nil {
+		addrs, _ := cfg.ListenAddrs(os.Getenv("SYBRA_HOST"), os.Getenv("SYBRA_PORT"))
+		if len(addrs) > 0 {
+			if _, p, err := net.SplitHostPort(addrs[0]); err == nil && strings.TrimSpace(p) != "" {
+				port = p
+			}
+		}
+	}
+	return net.JoinHostPort("127.0.0.1", port)
 }
 
 // newTLSAPIClient targets a board over TLS. The token has to come from the
 // environment: a board on another machine does not keep its token in this
 // machine's config, by definition.
-func newTLSAPIClient(raw string) (*apiClient, error) {
+func newTLSAPIClient(raw, source string) (*apiClient, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
-		return nil, fmt.Errorf("%s=%q is not a bare https origin", serverTargetEnv, raw)
+		return nil, fmt.Errorf("%s=%q is not a bare https origin", source, raw)
 	}
 	if path := strings.TrimSpace(u.EscapedPath()); path != "" && path != "/" {
-		return nil, fmt.Errorf("%s=%q must carry no path", serverTargetEnv, raw)
+		return nil, fmt.Errorf("%s=%q must carry no path", source, raw)
 	}
 	token := strings.TrimSpace(os.Getenv(serverTokenEnv))
 	if token == "" {
-		return nil, fmt.Errorf("%s=%q requires %s", serverTargetEnv, raw, serverTokenEnv)
+		return nil, fmt.Errorf("%s=%q requires %s", source, raw, serverTokenEnv)
 	}
 	host, _, splitErr := net.SplitHostPort(u.Host)
 	if splitErr != nil {
@@ -124,10 +175,10 @@ func newTLSAPIClient(raw string) (*apiClient, error) {
 
 // newCleartextAPIClient targets a board over plain HTTP, which only a loopback
 // origin may be. Anything else would put the bearer token on the wire.
-func newCleartextAPIClient(cfg *config.Config, raw string) (*apiClient, error) {
+func newCleartextAPIClient(cfg *config.Config, raw, source string) (*apiClient, error) {
 	host, port, ok := parseServerTarget(raw)
 	if !ok {
-		return nil, fmt.Errorf("%s=%q is not a valid host:port or http origin", serverTargetEnv, raw)
+		return nil, fmt.Errorf("%s=%q is not a valid host:port or http origin", source, raw)
 	}
 	if !isLoopbackHost(host) {
 		return nil, fmt.Errorf("%s=%q is not loopback; use https:// with %s rather than sending the token in cleartext",
@@ -143,10 +194,10 @@ func newCleartextAPIClient(cfg *config.Config, raw string) (*apiClient, error) {
 		token = strings.TrimSpace(string(data))
 	}
 	if token == "" {
-		return nil, fmt.Errorf("%s=%q needs an auth token in config or SYBRA_AUTH_TOKEN_FILE", serverTargetEnv, raw)
+		return nil, fmt.Errorf("%s=%q needs an auth token in config or SYBRA_AUTH_TOKEN_FILE", source, raw)
 	}
 	if tokenPath == "" && cfg.ServesTLS() {
-		return nil, fmt.Errorf("%s=%q is cleartext but this instance serves TLS", serverTargetEnv, raw)
+		return nil, fmt.Errorf("%s=%q is cleartext but this instance serves TLS", source, raw)
 	}
 	return &apiClient{
 		baseURL: "http://" + net.JoinHostPort(host, port),

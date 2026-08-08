@@ -1,12 +1,9 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
-	"slices"
 	"text/tabwriter"
 	"time"
 
@@ -34,24 +31,9 @@ func cmdSelfmonitor(cfg *config.Config, api *apiClient, store taskBoard, args []
 // tick. Fast and side-effect-free — the normal "what did self-monitor find"
 // entry point. Errors with a helpful message if no report exists yet.
 func cmdSelfmonitorScan(api *apiClient, jsonOut bool) int {
-	if api != nil {
-		report, err := callAPI[selfmonitor.Report](api, selfMonitorServiceName, "GetSelfMonitorReport")
-		if err != nil {
-			return fatal(jsonOut, "%v", err)
-		}
-		return reportSelfmonitor(jsonOut, &report)
-	}
-
-	data, err := os.ReadFile(config.SelfMonitorLastReportPath())
+	report, err := callAPI[selfmonitor.Report](api, selfMonitorServiceName, "GetSelfMonitorReport")
 	if err != nil {
-		if os.IsNotExist(err) {
-			return fatal(jsonOut, "no selfmonitor report yet (run `sybra-cli selfmonitor investigate` for a one-shot pass, or start sybra with self_monitor.enabled=true)")
-		}
-		return fatal(jsonOut, "read selfmonitor report: %v", err)
-	}
-	var report selfmonitor.Report
-	if err := json.Unmarshal(data, &report); err != nil {
-		return fatal(jsonOut, "parse selfmonitor report: %v", err)
+		return fatal(jsonOut, "%v", err)
 	}
 	return reportSelfmonitor(jsonOut, &report)
 }
@@ -75,32 +57,7 @@ func cmdSelfmonitorInvestigate(cfg *config.Config, api *apiClient, store taskBoa
 
 	// The health report, the ledger and the logs the scan reads all belong to
 	// the instance that owns the board, so a reachable server runs the pass.
-	if api != nil {
-		report, err := callAPIWithin[selfmonitor.Report](api, apiSlowCallTimeout, selfMonitorServiceName, "InvestigateSelfMonitor")
-		if err != nil {
-			return fatal(jsonOut, "scan: %v", err)
-		}
-		return reportSelfmonitor(jsonOut, &report)
-	}
-
-	ledger, err := selfmonitor.Open(config.SelfMonitorLedgerPath())
-	if err != nil {
-		return fatal(jsonOut, "open ledger: %v", err)
-	}
-
-	// Force Enabled so Scan() works even when the operator hasn't flipped
-	// the config block on yet — investigate is meant to be a preview.
-	scfg := cfg.SelfMonitor
-	scfg.Enabled = true
-
-	svc := selfmonitor.NewService(selfmonitor.Deps{
-		Cfg:     scfg,
-		Tasks:   store,
-		Health:  selfmonitor.DiskHealthReader{Path: config.HealthReportPath()},
-		Ledger:  ledger,
-		LogsDir: cfg.Logging.Dir,
-	})
-	report, err := svc.Scan(context.Background())
+	report, err := callAPIWithin[selfmonitor.Report](api, apiSlowCallTimeout, selfMonitorServiceName, "InvestigateSelfMonitor")
 	if err != nil {
 		return fatal(jsonOut, "scan: %v", err)
 	}
@@ -199,22 +156,6 @@ func parseDurationFlag(s string) (time.Duration, error) {
 
 // readSelfmonitorLedger reads the ledger of whichever instance owns the board. It is an append-only file under that instance's home, so this machine's copy answers for a different board.
 func readSelfmonitorLedger(api *apiClient, fingerprint string, window time.Duration) ([]selfmonitor.LedgerEntry, error) {
-	if api != nil {
-		return callAPI[[]selfmonitor.LedgerEntry](api, selfMonitorServiceName, "ListSelfMonitorLedger",
-			fingerprint, int64(window/time.Second))
-	}
-	ledger, err := selfmonitor.Open(config.SelfMonitorLedgerPath())
-	if err != nil {
-		return nil, err
-	}
-	var entries []selfmonitor.LedgerEntry
-	if fingerprint != "" {
-		entries = ledger.History(fingerprint, window)
-	} else {
-		entries = ledger.Entries(window)
-	}
-	slices.SortFunc(entries, func(a, b selfmonitor.LedgerEntry) int {
-		return a.CreatedAt.Compare(b.CreatedAt)
-	})
-	return entries, nil
+	return callAPI[[]selfmonitor.LedgerEntry](api, selfMonitorServiceName, "ListSelfMonitorLedger",
+		fingerprint, int64(window/time.Second))
 }

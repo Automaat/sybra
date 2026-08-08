@@ -389,27 +389,54 @@ func TestUpdate_HomeFlagForcesFilesystemModeEvenWithServerRunning(t *testing.T) 
 	}
 }
 
-func TestNewAPIClient_RequiresExplicitServerTarget(t *testing.T) {
+// TestNewAPIClient_FallsBackToThisMachinesBoard replaces a pair of tests that
+// asserted an unset target yields no client at all. That answer only made sense
+// while "no client" meant "edit the files instead"; with no filesystem path
+// left it would mean every command fails on a machine whose own board is up.
+func TestNewAPIClient_FallsBackToThisMachinesBoard(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
 	t.Setenv(serverTargetEnv, "")
 	cfg := config.DefaultConfig()
 	cfg.Server.AuthToken = "token"
 
-	client, err := newAPIClient(cfg)
-	if client != nil || !errors.Is(err, errNoServerTarget) {
-		t.Fatalf("newAPIClient() = %#v, %v, want the unset sentinel without %s", client, err, serverTargetEnv)
-	}
-}
+	t.Run("desktop port when the desktop app recorded one", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(home, desktopPortFile), []byte("51234\n"), 0o600); err != nil {
+			t.Fatalf("write desktop port: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Remove(filepath.Join(home, desktopPortFile)) })
+		client, err := newAPIClient(cfg)
+		if err != nil || client == nil {
+			t.Fatalf("newAPIClient() = %v, want a client for the recorded desktop port", err)
+		}
+		if client.baseURL != "http://127.0.0.1:51234" {
+			t.Fatalf("baseURL = %q, want the recorded desktop port", client.baseURL)
+		}
+	})
 
-func TestNewAPIClient_IgnoresSYBRAPortWithoutDedicatedTarget(t *testing.T) {
-	t.Setenv(serverTargetEnv, "")
-	t.Setenv("SYBRA_PORT", "8080")
-	cfg := config.DefaultConfig()
-	cfg.Server.AuthToken = "token"
+	t.Run("configured server port otherwise", func(t *testing.T) {
+		client, err := newAPIClient(cfg)
+		if err != nil || client == nil {
+			t.Fatalf("newAPIClient() = %v, want a client for the configured port", err)
+		}
+		if client.baseURL != "http://127.0.0.1:"+config.DefaultServerPort {
+			t.Fatalf("baseURL = %q, want the default server port", client.baseURL)
+		}
+	})
 
-	client, err := newAPIClient(cfg)
-	if client != nil || !errors.Is(err, errNoServerTarget) {
-		t.Fatalf("newAPIClient() = %#v, %v, want the unset sentinel when only SYBRA_PORT is set", client, err)
-	}
+	t.Run("a corrupt port file is ignored rather than dialled", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(home, desktopPortFile), []byte("not-a-port"), 0o600); err != nil {
+			t.Fatalf("write desktop port: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Remove(filepath.Join(home, desktopPortFile)) })
+		client, err := newAPIClient(cfg)
+		if err != nil || client == nil {
+			t.Fatalf("newAPIClient() = %v, want the configured port", err)
+		}
+		if client.baseURL != "http://127.0.0.1:"+config.DefaultServerPort {
+			t.Fatalf("baseURL = %q, want the default server port", client.baseURL)
+		}
+	})
 }
 
 func TestNewAPIClient_UsesDedicatedServerTargetEnv(t *testing.T) {

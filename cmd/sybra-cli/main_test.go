@@ -33,13 +33,15 @@ func mustUnmarshal(t *testing.T, data string, v any) {
 	}
 }
 
+// setupStore gives a test an isolated home and the board server every command
+// now needs. The CLI has no filesystem path left, so a test without a server
+// would only ever assert that the command refuses to run.
 func setupStore(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)
 	t.Setenv("SYBRA_CONTROL_HOME", "")
-	t.Setenv("SYBRA_TASKS_DIR", filepath.Join(dir, "tasks"))
-	t.Setenv(serverTargetEnv, "")
+	startTestBoard(t, dir)
 	return dir
 }
 
@@ -167,7 +169,7 @@ func TestListEmpty(t *testing.T) {
 	setupStore(t)
 	code, out := runCLI(t, "--json", "list")
 	if code != 0 {
-		t.Fatalf("exit %d", code)
+		t.Fatalf("exit %d: %s", code, out)
 	}
 	var tasks []task.Task
 	if err := json.Unmarshal([]byte(out), &tasks); err != nil {

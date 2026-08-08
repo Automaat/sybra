@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/promptlab"
-	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -44,41 +42,12 @@ func cmdPromptLabRun(cfg *config.Config, api *apiClient, store taskBoard, projSt
 	// The run history the evidence comes from and the board the proposals
 	// land on both belong to the owning instance, so a reachable server runs
 	// the whole operation rather than mining one machine for another.
-	if api != nil {
-		res, err := callAPIWithin[promptLabRunDTO](api, apiSlowCallTimeout, promptLabServiceName,
-			"RunPromptLab", int64(lookback/time.Second), *minSamples, *fileTasks && !*dryRun)
-		if err != nil {
-			return fatal(jsonOut, "prompt lab: %v", err)
-		}
-		return reportPromptLab(jsonOut, res.Result, res.Filed)
-	}
-
-	statsStore, err := stats.NewStore(config.StatsFile())
-	if err != nil {
-		return fatal(jsonOut, "open stats: %v", err)
-	}
-
-	result, err := promptlab.Run(context.Background(), promptlab.Options{
-		Records:       statsStore.All(),
-		OutputDir:     config.PromptLabDir(),
-		Lookback:      lookback,
-		MinSamples:    *minSamples,
-		MinEffectSize: cfg.PromptLab.MinEffectSize,
-		MaxProposals:  cfg.PromptLab.MaxProposalsPerRun,
-	})
+	res, err := callAPIWithin[promptLabRunDTO](api, apiSlowCallTimeout, promptLabServiceName,
+		"RunPromptLab", int64(lookback/time.Second), *minSamples, *fileTasks && !*dryRun)
 	if err != nil {
 		return fatal(jsonOut, "prompt lab: %v", err)
 	}
-
-	var filed []task.Task
-	if *fileTasks && !*dryRun {
-		cooldown := time.Duration(cfg.PromptLab.RefileCooldownDays * float64(24*time.Hour))
-		filed, err = promptlab.FileProposals(store, projStore, result, cooldown, time.Now().UTC())
-		if err != nil {
-			return fatal(jsonOut, "file proposals: %v", err)
-		}
-	}
-	return reportPromptLab(jsonOut, result, filed)
+	return reportPromptLab(jsonOut, res.Result, res.Filed)
 }
 
 // promptLabRunDTO mirrors the server's wire shape for a mining run.

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -42,37 +41,12 @@ func cmdHarnessEvolutionRun(cfg *config.Config, api *apiClient, store taskBoard,
 	// Mining reads the instance's persisted self-monitor report and filing
 	// writes its board, so a reachable server runs both halves; splitting
 	// them would mine one machine's report and file on another's board.
-	if api != nil {
-		res, err := callAPIWithin[harnessEvolutionRunDTO](api, apiSlowCallTimeout, selfMonitorServiceName,
-			"RunHarnessEvolution", int64(lookback/time.Second), *minCluster, *corpusDir, *fileTasks)
-		if err != nil {
-			return fatal(jsonOut, "harness evolution: %v", err)
-		}
-		return reportHarnessEvolution(jsonOut, res.Result, res.Filed)
-	}
-
-	maxReportAge := time.Duration(cfg.HarnessEvolve.MaxReportAgeHours * float64(time.Hour))
-	result, err := harnessevolution.Run(context.Background(), harnessevolution.Options{
-		ReportPath:          config.SelfMonitorLastReportPath(),
-		CorpusDir:           *corpusDir,
-		OutputDir:           config.HarnessEvolveDir(),
-		Lookback:            lookback,
-		MinClusterSize:      *minCluster,
-		MaxReportAge:        maxReportAge,
-		SelfMonitorEnabled:  cfg.SelfMonitor.Enabled,
-		SelfMonitorInterval: time.Duration(cfg.SelfMonitor.IntervalHours * float64(time.Hour)),
-	})
+	res, err := callAPIWithin[harnessEvolutionRunDTO](api, apiSlowCallTimeout, selfMonitorServiceName,
+		"RunHarnessEvolution", int64(lookback/time.Second), *minCluster, *corpusDir, *fileTasks)
 	if err != nil {
 		return fatal(jsonOut, "harness evolution: %v", err)
 	}
-	var filed []task.Task
-	if *fileTasks {
-		filed, err = harnessevolution.FileProposals(store, result)
-		if err != nil {
-			return fatal(jsonOut, "file proposals: %v", err)
-		}
-	}
-	return reportHarnessEvolution(jsonOut, result, filed)
+	return reportHarnessEvolution(jsonOut, res.Result, res.Filed)
 }
 
 // harnessEvolutionRunDTO mirrors the server's wire shape for a mining run.

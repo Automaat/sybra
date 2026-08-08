@@ -12,10 +12,18 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 )
 
-// cmdDoctor dispatches `sybra-cli doctor <sub>`. Currently only `cleanup`.
+// cmdDoctor inspects and repairs this machine's own disk.
+//
+// It runs with no server so an operator can reach for it when the server is
+// what broke, but every path it would delete belongs to a live task, and only
+// the board knows which those are. Without one it reports and refuses to
+// delete, rather than treating every worktree as an orphan.
 func cmdDoctor(cfg *config.Config, store taskBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: doctor <cleanup>")
+	}
+	if store == nil {
+		return cmdDoctorWithoutBoard(cfg, args, jsonOut)
 	}
 	switch sub, rest := args[0], args[1:]; sub {
 	case "cleanup":
@@ -341,4 +349,16 @@ func fatalUsage(jsonOut bool, format string, args ...any) int {
 		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
 	}
 	return 2
+}
+
+// cmdDoctorWithoutBoard answers the doctor subcommands that need no board, and
+// refuses the rest by name rather than by scanning against an empty task list —
+// which would classify every live worktree as an orphan and offer to delete it.
+func cmdDoctorWithoutBoard(cfg *config.Config, args []string, jsonOut bool) int {
+	if args[0] != "cleanup" {
+		return fatal(jsonOut, "unknown doctor command: %s", args[0])
+	}
+	return fatal(jsonOut,
+		"doctor cleanup needs the board to tell a live worktree from an orphan, and no Sybra server is reachable; start one, or set %s",
+		serverTargetEnv)
 }
