@@ -216,7 +216,7 @@ func (s *GHIssueSink) ApplyIncident(ctx context.Context, in Incident, change Inc
 		}
 	}
 	if found.Number == 0 {
-		out, createErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "create", "--title", IncidentTitle(in), "--body", attribution.Append(body), "--label", s.label+",bug")...)
+		out, createErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "create", "--title", IncidentTitle(in), "--body", attribution.Append(body), "--label", s.label, "--label", "bug")...)
 		if createErr != nil {
 			return false, IncidentArtifact{}, classifyGHError("gh incident create", out, createErr)
 		}

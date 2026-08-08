@@ -233,6 +233,10 @@ func TestGHIssueSink_CreateDoesNotLatchWhenPostCreateReconcileFails(t *testing.T
 	if err == nil || created || artifact.URL != "" {
 		t.Fatalf("post-create failure was latched: created=%v artifact=%+v err=%v", created, artifact, err)
 	}
+	creates := fe.callsMatching("issue", "create")
+	if len(creates) != 1 || !containsLabelArgs(creates[0], "monitor", "bug") || containsPair(creates[0], "--label", "monitor,bug") {
+		t.Fatalf("incident create labels were not passed separately: %v", creates)
+	}
 }
 
 func (f *fakeExecer) callsMatching(prefix ...string) [][]string {
