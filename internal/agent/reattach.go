@@ -63,17 +63,24 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 	var out []*Agent
 	for i := range recs {
 		r := recs[i]
-		if r.Mode != "headless" {
+		if m.reapUnsupportedSurvivor(ctx, r, reg) {
 			// Legacy interactive/per-turn-convo records can only exist for an
 			// agent that was mid-flight when this steerable-headless-only binary
 			// was deployed. Their runner no longer exists, so the record can
 			// never be reattached — reap the orphaned process (which still holds
 			// the worktree lock/FIFO) and drop the record instead of skipping it
 			// silently and leaking it forever.
-			m.reapStaleSurvivor(ctx, r, reg, "legacy_mode_"+r.Mode)
 			continue
 		}
 		if !reattachAlive(r) { //nolint:contextcheck // liveness probe is context-free process inspection
+			// A detached leader may be gone while an inherited provider/tool
+			// child still occupies its process group. Confirm the entire original
+			// group is gone before terminal reconciliation releases ownership.
+			// If the PID was reused, the old process group cannot still reserve
+			// that numeric ID; do not signal the unrelated replacement process.
+			if !m.confirmDeadAttemptGroup(ctx, r) {
+				continue
+			}
 			// Process gone. If it finished its work before vanishing,
 			// finalize so the workflow advances instead of re-running it.
 			// Otherwise (a genuine crash), bridge its captured session id to
@@ -163,6 +170,30 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 		out = append(out, a)
 	}
 	return out
+}
+
+func (m *Manager) reapUnsupportedSurvivor(ctx context.Context, r Record, reg survivalRegistry) bool {
+	if r.Mode == "headless" {
+		return false
+	}
+	m.reapStaleSurvivor(ctx, r, reg, "legacy_mode_"+r.Mode)
+	return true
+}
+
+func (m *Manager) confirmDeadAttemptGroup(ctx context.Context, r Record) bool {
+	if recordPIDReused(ctx, r) || signalProcessGroupAndWait(r.PID, stopSIGINTGrace) {
+		return true
+	}
+	m.logger.Error("agent.reattach.dead_group_unconfirmed", "id", r.ID, "pid", r.PID, "task", r.TaskID)
+	return false
+}
+
+func recordPIDReused(ctx context.Context, r Record) bool {
+	if r.PID <= 0 || r.ProcStartedAt == "" || !processAlive(r.PID) {
+		return false
+	}
+	current := processStartString(ctx, r.PID)
+	return current != "" && current != r.ProcStartedAt
 }
 
 // finalizeIfCompleted recovers a run whose process is gone but whose log
