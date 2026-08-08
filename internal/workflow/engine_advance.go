@@ -50,6 +50,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		return err
 	}
 	wfExec, def, currentStep := ctx.WfExec, ctx.Def, ctx.Step
+	defer e.shadowCompareAdvance(e.snapshotForShadowAdvance(taskID, def, ctx.Task, wfExec, output)) // read-only, see shadow_reducer.go
 
 	// Parallel-child / best-of-N-attempt completion: route to the fan-out-
 	// aware path. The parent step's record + transitions are emitted only
