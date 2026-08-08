@@ -207,6 +207,8 @@ export class Incident {
     "firstContainedAt"?: string | null;
     "healthySince"?: string | null;
     "resolvedAt"?: string | null;
+    "supersededAt"?: string | null;
+    "supersededByConfig"?: string;
     "suppressedUntil"?: string | null;
     "reopenGraceUntil"?: string | null;
     "affectedTaskIds"?: string[];
@@ -274,22 +276,22 @@ export class Incident {
      * Creates a new Incident instance from a string or object.
      */
     static createFrom($$source: any = {}): Incident {
-        const $$createField18_0 = $$createType2;
-        const $$createField22_0 = $$createType3;
-        const $$createField23_0 = $$createType5;
-        const $$createField26_0 = $$createType6;
+        const $$createField20_0 = $$createType2;
+        const $$createField24_0 = $$createType3;
+        const $$createField25_0 = $$createType5;
+        const $$createField28_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("affectedTaskIds" in $$parsedSource) {
-            $$parsedSource["affectedTaskIds"] = $$createField18_0($$parsedSource["affectedTaskIds"]);
+            $$parsedSource["affectedTaskIds"] = $$createField20_0($$parsedSource["affectedTaskIds"]);
         }
         if ("latestEvidence" in $$parsedSource) {
-            $$parsedSource["latestEvidence"] = $$createField22_0($$parsedSource["latestEvidence"]);
+            $$parsedSource["latestEvidence"] = $$createField24_0($$parsedSource["latestEvidence"]);
         }
         if ("remediationAttempts" in $$parsedSource) {
-            $$parsedSource["remediationAttempts"] = $$createField23_0($$parsedSource["remediationAttempts"]);
+            $$parsedSource["remediationAttempts"] = $$createField25_0($$parsedSource["remediationAttempts"]);
         }
         if ("duplicateIssues" in $$parsedSource) {
-            $$parsedSource["duplicateIssues"] = $$createField26_0($$parsedSource["duplicateIssues"]);
+            $$parsedSource["duplicateIssues"] = $$createField28_0($$parsedSource["duplicateIssues"]);
         }
         return new Incident($$parsedSource as Partial<Incident>);
     }

@@ -106,7 +106,7 @@ func (s *monitorRoutingSink) Submit(ctx context.Context, a monitor.Anomaly, body
 
 func (s *monitorRoutingSink) ApplyIncident(ctx context.Context, in monitor.Incident, change monitor.IncidentChange, body string) (bool, monitor.IncidentArtifact, error) {
 	a := monitor.Anomaly{Kind: monitor.AnomalyKind(in.FailureCode), Fingerprint: in.Fingerprint, IncidentScope: in.ProjectScope,
-		Confidential: in.Confidential || strings.HasPrefix(in.ProjectScope, "work-")}
+		Confidential: in.IsConfidential()}
 	if a.Confidential {
 		wctx := s.lookupAnyWorkContext()
 		title, _ := scrub.Scrub(monitor.IssueTitle(a.Kind, a.Fingerprint), wctx.Blocklist)
@@ -136,7 +136,7 @@ func (s *monitorRoutingSink) ApplyIncident(ctx context.Context, in monitor.Incid
 
 func (s *monitorRoutingSink) ResolveIncident(ctx context.Context, in monitor.Incident, comment string) (bool, error) {
 	a := monitor.Anomaly{Kind: monitor.AnomalyKind(in.FailureCode), Fingerprint: in.Fingerprint, IncidentScope: in.ProjectScope,
-		Confidential: in.Confidential || strings.HasPrefix(in.ProjectScope, "work-")}
+		Confidential: in.IsConfidential()}
 	if a.Confidential {
 		return s.CloseIfOpen(ctx, a, comment)
 	}
@@ -147,7 +147,7 @@ func (s *monitorRoutingSink) ResolveIncident(ctx context.Context, in monitor.Inc
 }
 
 func (s *monitorRoutingSink) MapDuplicateIncidents(ctx context.Context, in monitor.Incident, duplicates []int, coverage string) error {
-	if in.Confidential || strings.HasPrefix(in.ProjectScope, "work-") {
+	if in.IsConfidential() {
 		return nil
 	}
 	if sink, ok := s.inner.(monitor.IncidentSink); ok {

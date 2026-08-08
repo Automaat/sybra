@@ -26,3 +26,14 @@ func TestPreflightUsageLeavesLegacyOnlyCohortUnknown(t *testing.T) {
 		t.Fatalf("legacy usage was guessed: runs=%d known=%v", runs, known)
 	}
 }
+
+func TestPreflightUsageMarksMixedLegacyEvidenceUnknown(t *testing.T) {
+	records := []stats.RunRecord{
+		{TaskID: "t", CostUSD: 9, InputTokens: 90},
+		{TaskID: "t", TaskGeneration: 4, TaskGenerationKnown: true, CostUSD: 2, InputTokens: 20},
+	}
+	cost, tokens, runs, known := preflightUsage(records, "t", 5)
+	if known || cost != 2 || tokens != 20 || runs != 1 {
+		t.Fatalf("mixed legacy usage was guessed: cost=%v tokens=%d runs=%d known=%v", cost, tokens, runs, known)
+	}
+}

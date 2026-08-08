@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,6 +94,8 @@ type Incident struct {
 	FirstContainedAt     *time.Time           `yaml:"first_contained_at,omitempty" json:"firstContainedAt,omitempty"`
 	HealthySince         *time.Time           `yaml:"healthy_since,omitempty" json:"healthySince,omitempty"`
 	ResolvedAt           *time.Time           `yaml:"resolved_at,omitempty" json:"resolvedAt,omitempty"`
+	SupersededAt         *time.Time           `yaml:"superseded_at,omitempty" json:"supersededAt,omitempty"`
+	SupersededByConfig   string               `yaml:"superseded_by_config,omitempty" json:"supersededByConfig,omitempty"`
 	SuppressedUntil      *time.Time           `yaml:"suppressed_until,omitempty" json:"suppressedUntil,omitempty"`
 	ReopenGraceUntil     *time.Time           `yaml:"reopen_grace_until,omitempty" json:"reopenGraceUntil,omitempty"`
 	AffectedTaskIDs      []string             `yaml:"affected_task_ids,omitempty" json:"affectedTaskIds,omitempty"`
@@ -104,6 +107,12 @@ type Incident struct {
 	IssueURL             string               `yaml:"issue_url,omitempty" json:"issueUrl,omitempty"`
 	PRURL                string               `yaml:"pr_url,omitempty" json:"prUrl,omitempty"`
 	DuplicateIssues      []int                `yaml:"duplicate_issues,omitempty" json:"duplicateIssues,omitempty"`
+}
+
+// IsConfidential fails closed for explicitly classified incidents and for
+// the legacy conservative work-* scopes written before the flag existed.
+func (in Incident) IsConfidential() bool {
+	return in.Confidential || strings.HasPrefix(in.ProjectScope, "work-")
 }
 
 // IncidentChange describes whether an observation warrants an external state
@@ -227,7 +236,11 @@ func addAffectedTask(in *Incident, taskID string) bool {
 }
 
 func incidentBody(in Incident, change IncidentChange) string {
-	return fmt.Sprintf("## Incident\n\n- Fingerprint: `%s`\n- Failure code: `%s`\n- Component: `%s`\n- Capability: `%s`\n- Project scope: `%s`\n- Configuration generation: `%s`\n- State change: `%s`\n- Affected tasks: %d\n- Recurrences: %d\n",
+	affected := strconv.Itoa(in.AffectedTaskCount)
+	if in.AffectedTaskOverflow {
+		affected = "at least " + affected + " (exact fan-out unknown)"
+	}
+	return fmt.Sprintf("## Incident\n\n- Fingerprint: `%s`\n- Failure code: `%s`\n- Component: `%s`\n- Capability: `%s`\n- Project scope: `%s`\n- Configuration generation: `%s`\n- State change: `%s`\n- Affected tasks: %s\n- Recurrences: %d\n",
 		in.Fingerprint, in.FailureCode, in.Component, in.Capability, in.ProjectScope,
-		in.ConfigGeneration, change, in.AffectedTaskCount, in.RecurrenceCount)
+		in.ConfigGeneration, change, affected, in.RecurrenceCount)
 }

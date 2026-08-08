@@ -2499,8 +2499,15 @@ func cmdMonitorMapDuplicates(cfg *config.Config, args []string, jsonOut bool) in
 	if err != nil || !ok {
 		return fatal(jsonOut, "monitor map-duplicates: incident not found: %v", err)
 	}
-	if in.Confidential {
+	if in.IsConfidential() {
 		return fatal(jsonOut, "monitor map-duplicates: confidential incidents cannot mutate public issues")
+	}
+	_, canonicalNumber := github.ParseIssueURL(in.IssueURL)
+	if canonicalNumber == 0 {
+		return fatal(jsonOut, "monitor map-duplicates: incident has no canonical GitHub issue")
+	}
+	if slices.Contains(duplicates, canonicalNumber) {
+		return fatal(jsonOut, "monitor map-duplicates: canonical issue #%d cannot be mapped as its own duplicate", canonicalNumber)
 	}
 	sink := monitor.NewGHIssueSink(cfg.Monitor.IssueLabel, cfg.Monitor.IssueRepo)
 	if err := sink.MapDuplicateIncidents(context.Background(), in, duplicates, *coverage); err != nil {

@@ -237,6 +237,7 @@ const (
 	EventMonitorIncidentObserved    = "monitor.incident_observed"
 	EventMonitorIncidentRemediation = "monitor.incident_remediation"
 	EventMonitorIncidentResolved    = "monitor.incident_resolved"
+	EventMonitorIncidentSuperseded  = "monitor.incident_superseded"
 	EventReconciliationDecided      = "reconciliation.decided"
 	EventAttemptLeasesReconciled    = "attempt_leases.reconciled"
 )

@@ -205,9 +205,32 @@ func TestMonitorMapDuplicatesRejectsConfidentialIncidentBeforeGitHub(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := ledger.Link(in.Fingerprint, "https://github.com/example/repo/issues/9", "", nil); err != nil {
+		t.Fatal(err)
+	}
 	code, _ := runCLIStderr(t, "monitor", "map-duplicates", "--fingerprint", in.Fingerprint, "--issues", "1", "--coverage", "covered")
 	if code == 0 {
 		t.Fatal("confidential mapping was not rejected")
+	}
+}
+
+func TestMonitorMapDuplicatesRejectsCanonicalIssue(t *testing.T) {
+	setupStore(t)
+	ledger, err := monitor.NewIncidentStore(config.MonitorIncidentsDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cause := monitor.RootCause{FailureCode: "lost_agent", ProjectScope: "public/repo", ConfigGeneration: "g"}
+	in, _, err := ledger.Observe(monitor.Anomaly{Kind: monitor.KindLostAgent, DetectedAt: time.Now().UTC()}, cause, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Link(in.Fingerprint, "https://github.com/example/repo/issues/9", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	code, _ := runCLIStderr(t, "monitor", "map-duplicates", "--fingerprint", in.Fingerprint, "--issues", "9", "--coverage", "covered")
+	if code == 0 {
+		t.Fatal("canonical issue was accepted as its own duplicate")
 	}
 }
 

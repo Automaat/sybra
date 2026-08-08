@@ -590,7 +590,11 @@ func (s *Service) reconcileHealthyIncidents(ctx context.Context, now time.Time, 
 	for i := range closed {
 		in := closed[i]
 		toPublish[in.Fingerprint] = in
-		s.logIncidentEvent(audit.EventMonitorIncidentResolved, in, IncidentClosed, "")
+		if in.SupersededAt != nil {
+			s.logIncidentEvent(audit.EventMonitorIncidentSuperseded, in, IncidentClosed, "")
+		} else {
+			s.logIncidentEvent(audit.EventMonitorIncidentResolved, in, IncidentClosed, "")
+		}
 	}
 	all, listErr := s.incidents.List()
 	if listErr != nil {
@@ -610,7 +614,11 @@ func (s *Service) reconcileHealthyIncidents(ctx context.Context, now time.Time, 
 		if incidentSink == nil {
 			continue
 		}
-		ok, closeErr := incidentSink.ResolveIncident(ctx, in, "Resolved after a certified healthy monitor observation remained stable through the configured grace period.")
+		comment := "Resolved after a certified healthy monitor observation remained stable through the configured grace period."
+		if in.SupersededAt != nil {
+			comment = "Superseded by a newer detector configuration generation; this transition is not counted as observed recovery."
+		}
+		ok, closeErr := incidentSink.ResolveIncident(ctx, in, comment)
 		if closeErr != nil {
 			s.logger.Warn("monitor.incident.close_failed", "fingerprint", in.Fingerprint, "err", closeErr)
 			continue

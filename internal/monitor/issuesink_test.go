@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -25,9 +26,43 @@ type fakeExecer struct {
 	createErr   error
 	commentResp []byte
 	commentErr  error
+	viewResp    []byte
+	viewErr     error
 	labelErr    error
 	closeResp   []byte
 	closeErr    error
+}
+
+type convergingIncidentExecer struct {
+	mu      sync.Mutex
+	created int
+	body    string
+}
+
+func (f *convergingIncidentExecer) run(_ context.Context, args ...string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(args) < 2 || args[0] != "issue" {
+		return nil, nil
+	}
+	switch args[1] {
+	case "list":
+		if f.created == 0 {
+			return []byte(`[]`), nil
+		}
+		return []byte(`[{"number":1,"url":"https://github.com/example/repo/issues/1","state":"OPEN","body":` + strconv.Quote(f.body) + `}]`), nil
+	case "create":
+		f.created++
+		for i := range args {
+			if args[i] == "--body" && i+1 < len(args) {
+				f.body = args[i+1]
+			}
+		}
+		return []byte("https://github.com/example/repo/issues/1\n"), nil
+	case "view":
+		return []byte(`{"comments":[]}`), nil
+	}
+	return nil, nil
 }
 
 func (f *fakeExecer) run(_ context.Context, args ...string) ([]byte, error) {
@@ -51,6 +86,8 @@ func (f *fakeExecer) run(_ context.Context, args ...string) ([]byte, error) {
 			return f.commentResp, f.commentErr
 		case "create":
 			return f.createResp, f.createErr
+		case "view":
+			return f.viewResp, f.viewErr
 		case "close":
 			return f.closeResp, f.closeErr
 		case "reopen":
@@ -81,7 +118,10 @@ func TestGHIssueSink_IncidentFindsRenamedClosedIssueByMarkerAndReopens(t *testin
 func TestGHIssueSink_IncidentRevisionMarkerPreventsDuplicateComment(t *testing.T) {
 	in := Incident{Fingerprint: "incident:abc", FailureCode: "lost_agent", Revision: 4, State: IncidentActive}
 	marker := incidentRevisionMarker(in)
-	fe := &fakeExecer{listResp: []byte(`[{"number":87,"url":"https://github.com/Automaat/sybra/issues/87","state":"OPEN","body":"<!-- sybra-incident:v1:incident:abc -->","comments":[{"body":"` + marker + `"}]}]`)}
+	fe := &fakeExecer{
+		listResp: []byte(`[{"number":87,"url":"https://github.com/Automaat/sybra/issues/87","state":"OPEN","body":"<!-- sybra-incident:v1:incident:abc -->"}]`),
+		viewResp: []byte(`{"comments":[{"body":"` + marker + `"}]}`),
+	}
 	s := newTestSink(fe)
 
 	_, _, err := s.ApplyIncident(context.Background(), in, IncidentExpanded, "same revision")
@@ -90,6 +130,48 @@ func TestGHIssueSink_IncidentRevisionMarkerPreventsDuplicateComment(t *testing.T
 	}
 	if got := len(fe.callsMatching("issue", "comment")); got != 0 {
 		t.Fatalf("same revision produced %d comments", got)
+	}
+}
+
+func TestGHIssueSink_IncidentConvergesMarkerDuplicatesOnOldestCanonical(t *testing.T) {
+	in := Incident{Fingerprint: "incident:abc", FailureCode: "lost_agent", Revision: 4, State: IncidentActive}
+	marker := incidentRevisionMarker(in)
+	fe := &fakeExecer{listResp: []byte(`[
+		{"number":88,"url":"https://github.com/example/repo/issues/88","state":"OPEN","body":"<!-- sybra-incident:v1:incident:abc -->"},
+		{"number":87,"url":"https://github.com/example/repo/issues/87","state":"OPEN","body":"<!-- sybra-incident:v1:incident:abc -->\n` + marker + `"}
+	]`)}
+	s := newTestSink(fe)
+	_, artifact, err := s.ApplyIncident(context.Background(), in, IncidentExpanded, "same root cause")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Number != 87 {
+		t.Fatalf("canonical = %+v, want oldest #87", artifact)
+	}
+	closes := fe.callsMatching("issue", "close")
+	if len(closes) != 1 || closes[0][2] != "88" {
+		t.Fatalf("duplicate convergence calls = %v", closes)
+	}
+}
+
+func TestGHIssueSink_IncidentSerializesConcurrentLocalUpserts(t *testing.T) {
+	fe := &convergingIncidentExecer{}
+	s := &GHIssueSink{exec: fe, label: "monitor"}
+	in := Incident{Fingerprint: "incident:concurrent", FailureCode: "lost_agent", Revision: 1, State: IncidentActive}
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() {
+			if _, _, err := s.ApplyIncident(context.Background(), in, IncidentOpened, "body"); err != nil {
+				t.Errorf("ApplyIncident: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	fe.mu.Lock()
+	created := fe.created
+	fe.mu.Unlock()
+	if created != 1 {
+		t.Fatalf("created %d canonical issues, want 1", created)
 	}
 }
 

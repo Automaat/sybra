@@ -219,9 +219,8 @@ func TestIncidentStoreConfigRekeyLetsPriorGenerationResolve(t *testing.T) {
 	cause := RootCause{FailureCode: "lost_agent", Component: "agent", Capability: "lifecycle", ProjectScope: "p", ConfigGeneration: "old"}
 	in, _, _ := store.Observe(Anomaly{Kind: KindLostAgent, DetectedAt: base}, cause, "t")
 	coverage := map[string]bool{"lost_agent": true}
-	_, _ = store.ReconcileHealthy(nil, map[string]bool{"p": true}, coverage, map[string]string{"lost_agent": "new"}, base.Add(time.Minute), time.Minute, 0)
-	closed, err := store.ReconcileHealthy(nil, map[string]bool{"p": true}, coverage, map[string]string{"lost_agent": "new"}, base.Add(2*time.Minute), time.Minute, 0)
-	if err != nil || len(closed) != 1 || closed[0].Fingerprint != in.Fingerprint {
+	closed, err := store.ReconcileHealthy(nil, map[string]bool{"p": true}, coverage, map[string]string{"lost_agent": "new"}, base.Add(time.Minute), time.Minute, 0)
+	if err != nil || len(closed) != 1 || closed[0].Fingerprint != in.Fingerprint || closed[0].SupersededAt == nil || closed[0].ResolvedAt != nil {
 		t.Fatalf("old generation was stranded: closed=%+v err=%v", closed, err)
 	}
 }
@@ -248,7 +247,7 @@ func TestIncidentStoreFanoutBecomesBoundedUnknownWithoutInflation(t *testing.T) 
 	base := time.Now().UTC()
 	cause := RootCause{FailureCode: "lost_agent", ProjectScope: "p", ConfigGeneration: "g"}
 	var fp string
-	for i := 0; i <= maxAffectedTasks; i++ {
+	for i := range maxAffectedTasks {
 		in, _, err := store.Observe(Anomaly{Kind: KindLostAgent, DetectedAt: base.Add(time.Duration(i) * time.Second)}, cause, fmt.Sprintf("t-%d", i))
 		if err != nil {
 			t.Fatal(err)
@@ -256,9 +255,38 @@ func TestIncidentStoreFanoutBecomesBoundedUnknownWithoutInflation(t *testing.T) 
 		fp = in.Fingerprint
 	}
 	before, _, _ := store.Get(fp)
-	_, change, _ := store.Observe(Anomaly{Kind: KindLostAgent, DetectedAt: base.Add(time.Hour)}, cause, "t-999")
+	_, change, _ := store.Observe(Anomaly{Kind: KindLostAgent, DetectedAt: base.Add(time.Hour)}, cause, "t-overflow")
 	after, _, _ := store.Get(fp)
-	if !after.AffectedTaskOverflow || after.AffectedTaskCount != maxAffectedTasks || after.Revision != before.Revision || change != IncidentUnchanged {
+	if !after.AffectedTaskOverflow || after.AffectedTaskCount != maxAffectedTasks || after.Revision != before.Revision+1 || change != IncidentExpanded {
 		t.Fatalf("bounded fanout drifted: before=%+v after=%+v change=%s", before, after, change)
+	}
+	_, repeatChange, _ := store.Observe(Anomaly{Kind: KindLostAgent, DetectedAt: base.Add(2 * time.Hour)}, cause, "t-overflow")
+	repeated, _, _ := store.Get(fp)
+	if repeatChange != IncidentUnchanged || repeated.Revision != after.Revision {
+		t.Fatalf("unknown fanout kept producing revisions: change=%s revision=%d want=%d", repeatChange, repeated.Revision, after.Revision)
+	}
+}
+
+func TestIncidentHealthyProofResolvesAllPendingRemediations(t *testing.T) {
+	store := newTestIncidentStore(t)
+	base := time.Now().UTC()
+	cause := RootCause{FailureCode: "lost_agent", ProjectScope: "p", ConfigGeneration: "g"}
+	in, _, _ := store.Observe(Anomaly{Kind: KindLostAgent, DetectedAt: base}, cause, "t")
+	_ = store.RecordRemediation(in.Fingerprint, "reset", "attempted", base.Add(time.Minute))
+	_ = store.RecordRemediation(in.Fingerprint, "reset", "attempted", base.Add(2*time.Minute))
+	coverage := map[string]bool{"lost_agent": true}
+	generation := map[string]string{"lost_agent": "g"}
+	_, _ = store.ReconcileHealthy(nil, map[string]bool{"p": true}, coverage, generation, base.Add(3*time.Minute), time.Minute, 0)
+	closed, err := store.ReconcileHealthy(nil, map[string]bool{"p": true}, coverage, generation, base.Add(4*time.Minute), time.Minute, 0)
+	if err != nil || len(closed) != 1 {
+		t.Fatalf("reconcile: closed=%v err=%v", closed, err)
+	}
+	for _, attempt := range closed[0].RemediationAttempts {
+		if attempt.Result != "observed_success" || attempt.ObservedAt == nil {
+			t.Fatalf("pending attempt not resolved: %+v", attempt)
+		}
+	}
+	if closed[0].FirstContainedAt == nil || !closed[0].FirstContainedAt.Equal(base.Add(2*time.Minute)) {
+		t.Fatalf("containment should begin after the last successful action: %v", closed[0].FirstContainedAt)
 	}
 }

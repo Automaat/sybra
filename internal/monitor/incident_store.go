@@ -60,6 +60,8 @@ func (s *IncidentStore) Observe(a Anomaly, cause RootCause, safeTaskID string) (
 		case in.State == IncidentResolved:
 			in.State = IncidentActive
 			in.ResolvedAt = nil
+			in.SupersededAt = nil
+			in.SupersededByConfig = ""
 			in.HealthySince = nil
 			in.RecurrenceCount++
 			if in.ReopenGraceUntil != nil && a.DetectedAt.Before(*in.ReopenGraceUntil) {
@@ -95,7 +97,11 @@ func (s *IncidentStore) Observe(a Anomaly, cause RootCause, safeTaskID string) (
 			}
 		}
 	}
+	overflowBefore := in.AffectedTaskOverflow
 	if addAffectedTask(&in, safeTaskID) && change == IncidentUnchanged && !suppressedObservation {
+		change = IncidentExpanded
+	}
+	if in.AffectedTaskOverflow != overflowBefore && change == IncidentUnchanged && !suppressedObservation {
 		change = IncidentExpanded
 	}
 	if len(in.AffectedTaskIDs) > maxAffectedTasks {
@@ -132,7 +138,7 @@ func (s *IncidentStore) RecordRemediation(fp, kind, result string, at time.Time)
 	return s.save(in)
 }
 
-func (s *IncidentStore) ReconcileHealthy(seen, observableScopes, coveredFailureCodes map[string]bool, _ map[string]string, now time.Time, grace, reopenGrace time.Duration) ([]Incident, error) {
+func (s *IncidentStore) ReconcileHealthy(seen, observableScopes, coveredFailureCodes map[string]bool, configGenerations map[string]string, now time.Time, grace, reopenGrace time.Duration) ([]Incident, error) {
 	unlock, err := fsutil.LockFileWithin(filepath.Join(s.dir, "ledger"), incidentStoreLockTimeout)
 	if err != nil {
 		return nil, err
@@ -149,6 +155,18 @@ func (s *IncidentStore) ReconcileHealthy(seen, observableScopes, coveredFailureC
 		in := all[i]
 		if in.State != IncidentActive || seen[in.Fingerprint] || !observableScopes[in.ProjectScope] ||
 			!coveredFailureCodes[in.FailureCode] {
+			continue
+		}
+		if current := configGenerations[in.FailureCode]; current != "" && current != in.ConfigGeneration {
+			in.State = IncidentResolved
+			in.Revision++
+			superseded := now
+			in.SupersededAt = &superseded
+			in.SupersededByConfig = current
+			if err := s.save(in); err != nil {
+				return nil, err
+			}
+			closed = append(closed, in)
 			continue
 		}
 		if in.HealthySince == nil {
@@ -168,16 +186,19 @@ func (s *IncidentStore) ReconcileHealthy(seen, observableScopes, coveredFailureC
 		in.ResolvedAt = &resolved
 		reopenAt := now.Add(reopenGrace)
 		in.ReopenGraceUntil = &reopenAt
-		for j := range slices.Backward(in.RemediationAttempts) {
+		var containedAt *time.Time
+		for j := range in.RemediationAttempts {
 			if in.RemediationAttempts[j].ObservedAt == nil && in.RemediationAttempts[j].Result == "attempted" {
 				in.RemediationAttempts[j].Result = "observed_success"
 				in.RemediationAttempts[j].ObservedAt = &resolved
-				if in.FirstContainedAt == nil {
+				if containedAt == nil || in.RemediationAttempts[j].AttemptedAt.After(*containedAt) {
 					contained := in.RemediationAttempts[j].AttemptedAt
-					in.FirstContainedAt = &contained
+					containedAt = &contained
 				}
-				break
 			}
+		}
+		if in.FirstContainedAt == nil && containedAt != nil {
+			in.FirstContainedAt = containedAt
 		}
 		if err := s.save(in); err != nil {
 			return nil, err

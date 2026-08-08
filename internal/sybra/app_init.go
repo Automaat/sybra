@@ -1594,7 +1594,7 @@ func preflightUsage(records []stats.RunRecord, taskID string, generation int64) 
 			cohort, cohortKnown = record.TaskGeneration, true
 		}
 	}
-	known = true
+	known = !legacyUnattributed
 	for i := range records {
 		record := &records[i]
 		if !cohortKnown || record.TaskID != taskID || !record.TaskGenerationKnown || record.TaskGeneration != cohort {

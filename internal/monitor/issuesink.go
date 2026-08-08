@@ -1,11 +1,13 @@
 package monitor
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -83,6 +85,7 @@ type GHIssueSink struct {
 	label      string
 	repo       string
 	labelsOnce sync.Once
+	applyMu    sync.Mutex
 }
 
 // NewGHIssueSink returns a sink wired to the real gh CLI. label is the
@@ -116,6 +119,7 @@ type ghIncident struct {
 	URL         string
 	State       string
 	HasRevision bool
+	Duplicates  []int
 }
 
 func incidentRevisionMarker(in Incident) string {
@@ -125,35 +129,64 @@ func incidentRevisionMarker(in Incident) string {
 func (s *GHIssueSink) findIncident(ctx context.Context, fp, revisionMarker string) (ghIncident, error) {
 	marker := incidentMarker(fp)
 	out, err := s.exec.run(ctx, append(s.repoArgs(), "issue", "list", "--state", "all", "--label", s.label,
-		"--search", marker+" in:body", "--json", "number,url,state,body,comments", "--limit", "100")...)
+		"--json", "number,url,state,body", "--limit", "1000")...)
 	if err != nil {
 		return ghIncident{}, classifyGHError("gh incident list", out, err)
 	}
-	var rows []struct {
-		Number   int    `json:"number"`
-		URL      string `json:"url"`
-		State    string `json:"state"`
-		Body     string `json:"body"`
-		Comments []struct {
-			Body string `json:"body"`
-		} `json:"comments"`
+	type incidentRow struct {
+		Number int    `json:"number"`
+		URL    string `json:"url"`
+		State  string `json:"state"`
+		Body   string `json:"body"`
 	}
+	var rows []incidentRow
 	if err := json.Unmarshal(out, &rows); err != nil {
 		return ghIncident{}, fmt.Errorf("decode gh incident list: %w", err)
 	}
+	var matches []incidentRow
 	for _, row := range rows {
 		if strings.Contains(row.Body, marker) {
-			hasRevision := revisionMarker != "" && strings.Contains(row.Body, revisionMarker)
-			for _, comment := range row.Comments {
-				hasRevision = hasRevision || revisionMarker != "" && strings.Contains(comment.Body, revisionMarker)
-			}
-			return ghIncident{Number: row.Number, URL: row.URL, State: strings.ToUpper(row.State), HasRevision: hasRevision}, nil
+			matches = append(matches, row)
 		}
 	}
-	return ghIncident{}, nil
+	if len(matches) == 0 {
+		return ghIncident{}, nil
+	}
+	slices.SortFunc(matches, func(a, b incidentRow) int { return cmp.Compare(a.Number, b.Number) })
+	canonical := matches[0]
+	found := ghIncident{Number: canonical.Number, URL: canonical.URL, State: strings.ToUpper(canonical.State)}
+	for _, duplicate := range matches[1:] {
+		if !strings.EqualFold(duplicate.State, "CLOSED") {
+			found.Duplicates = append(found.Duplicates, duplicate.Number)
+		}
+	}
+	found.HasRevision = revisionMarker != "" && strings.Contains(canonical.Body, revisionMarker)
+	if revisionMarker != "" && !found.HasRevision {
+		viewOut, viewErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "view", strconv.Itoa(canonical.Number), "--json", "comments")...)
+		if viewErr != nil {
+			return ghIncident{}, classifyGHError("gh incident view", viewOut, viewErr)
+		}
+		var viewed struct {
+			Comments []struct {
+				Body string `json:"body"`
+			} `json:"comments"`
+		}
+		if decodeErr := json.Unmarshal(viewOut, &viewed); decodeErr != nil {
+			return ghIncident{}, fmt.Errorf("decode gh incident comments: %w", decodeErr)
+		}
+		for _, comment := range viewed.Comments {
+			found.HasRevision = strings.Contains(comment.Body, revisionMarker)
+			if found.HasRevision {
+				break
+			}
+		}
+	}
+	return found, nil
 }
 
 func (s *GHIssueSink) ApplyIncident(ctx context.Context, in Incident, change IncidentChange, body string) (bool, IncidentArtifact, error) {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
 	s.labelsOnce.Do(func() { s.ensureLabels(ctx) })
 	revisionMarker := incidentRevisionMarker(in)
 	found, err := s.findIncident(ctx, in.Fingerprint, revisionMarker)
@@ -161,12 +194,33 @@ func (s *GHIssueSink) ApplyIncident(ctx context.Context, in Incident, change Inc
 		return false, IncidentArtifact{}, err
 	}
 	body = incidentMarker(in.Fingerprint) + "\n" + revisionMarker + "\n" + body
+	if len(found.Duplicates) > 0 {
+		canonical := in
+		canonical.IssueURL = found.URL
+		if mapErr := s.MapDuplicateIncidents(ctx, canonical, found.Duplicates, "same stable incident fingerprint marker"); mapErr != nil {
+			return false, IncidentArtifact{}, mapErr
+		}
+	}
 	if found.Number == 0 {
 		out, createErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "create", "--title", IncidentTitle(in), "--body", attribution.Append(body), "--label", s.label+",bug")...)
 		if createErr != nil {
 			return false, IncidentArtifact{}, classifyGHError("gh incident create", out, createErr)
 		}
-		return true, IncidentArtifact{URL: parseIssueCreateURL(out)}, nil
+		createdURL := parseIssueCreateURL(out)
+		// A second process may have won the same list-then-create race. Re-query
+		// and converge all marker-identical artifacts on the oldest canonical.
+		canonical, reconcileErr := s.findIncident(ctx, in.Fingerprint, revisionMarker)
+		if reconcileErr == nil && canonical.Number != 0 {
+			if len(canonical.Duplicates) > 0 {
+				linked := in
+				linked.IssueURL = canonical.URL
+				if mapErr := s.MapDuplicateIncidents(ctx, linked, canonical.Duplicates, "same stable incident fingerprint marker"); mapErr != nil {
+					return false, IncidentArtifact{}, mapErr
+				}
+			}
+			return true, IncidentArtifact{Number: canonical.Number, URL: canonical.URL}, nil
+		}
+		return true, IncidentArtifact{URL: createdURL}, nil
 	}
 	if found.State == "CLOSED" && in.State == IncidentActive {
 		out, reopenErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "reopen", strconv.Itoa(found.Number), "--comment", attribution.Append(body))...)
