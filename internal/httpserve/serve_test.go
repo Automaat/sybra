@@ -388,15 +388,15 @@ func TestHealthDoesNotDiscloseTheHomePath(t *testing.T) {
 // TestHomeIDResolvesSymlinks pins the comparison a client makes: a home reached
 // through /var and /private/var is one home, and must digest the same.
 func TestHomeIDResolvesSymlinks(t *testing.T) {
-	real := t.TempDir()
+	actual := t.TempDir()
 	link := filepath.Join(t.TempDir(), "alias")
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink(actual, link); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
-	if httpserve.HomeID(real) != httpserve.HomeID(link) {
+	if httpserve.HomeID(actual) != httpserve.HomeID(link) {
 		t.Fatal("a home reached through a symlink digests differently")
 	}
-	if httpserve.HomeID(real) == httpserve.HomeID(t.TempDir()) {
+	if httpserve.HomeID(actual) == httpserve.HomeID(t.TempDir()) {
 		t.Fatal("two different homes digest the same")
 	}
 	if httpserve.HomeID("") != "" {
