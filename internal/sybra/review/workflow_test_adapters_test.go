@@ -272,14 +272,44 @@ func testTypedBlockerEscalation(status task.Status, state blocker.State, reason 
 	return task.ControlPlaneFailure(code, owner, reason), task.QuarantinedOutcome()
 }
 func (a *taskAdapter) SetWorkflowIf(id string, fence workflow.WorkflowWriteFence, wf *workflow.Execution) (bool, error) {
-	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+	_, err := a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
 		if cur.Generation != fence.Generation || cur.Status != fence.Status ||
 			cur.StatusReason != fence.StatusReason || cur.Workflow == nil ||
 			cur.Workflow.WorkflowID != fence.WorkflowID || cur.Workflow.CurrentStep != fence.CurrentStep ||
 			cur.Workflow.State != fence.State {
-			return task.Update{}, errWorkflowWriteFenceMismatch
+			return task.TransitionIntent{}, errWorkflowWriteFenceMismatch
 		}
-		return task.Update{Workflow: &wf}, nil
+		expectedStatus := cur.Status
+		return task.TransitionIntent{
+			TaskID: id, ToStatus: cur.Status, Actor: "workflow.engine.set_workflow_if",
+			ExpectedGeneration: &fence.Generation, ExpectedStatus: &expectedStatus,
+			Extra: task.Update{Workflow: &wf},
+		}, nil
+	})
+	if errors.Is(err, errWorkflowWriteFenceMismatch) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (a *taskAdapter) SetStatusAndWorkflowIf(id string, fence workflow.WorkflowWriteFence, status taskstatus.Status, reason string, wf *workflow.Execution) (bool, error) {
+	st, err := task.ValidateStatus(string(status))
+	if err != nil {
+		return false, err
+	}
+	_, err = a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		if cur.Generation != fence.Generation || cur.Status != fence.Status ||
+			cur.StatusReason != fence.StatusReason || cur.Workflow == nil ||
+			cur.Workflow.WorkflowID != fence.WorkflowID || cur.Workflow.CurrentStep != fence.CurrentStep ||
+			cur.Workflow.State != fence.State {
+			return task.TransitionIntent{}, errWorkflowWriteFenceMismatch
+		}
+		expectedStatus := cur.Status
+		return task.TransitionIntent{
+			TaskID: id, ToStatus: st, Actor: "workflow.engine.set_status_and_workflow_if",
+			ExpectedGeneration: &fence.Generation, ExpectedStatus: &expectedStatus,
+			Extra: task.Update{StatusReason: task.Ptr(reason), Workflow: &wf},
+		}, nil
 	})
 	if errors.Is(err, errWorkflowWriteFenceMismatch) {
 		return false, nil

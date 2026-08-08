@@ -24,6 +24,10 @@ type PRBranchResolver func(repo string, prNumber int) (string, error)
 // Injected to avoid importing internal/agent.
 type AgentChecker func(taskID string) bool
 
+// CleanupGate proves that a fresh observed task/worktree snapshot contains no
+// local-only work before a destructive removal. false fails closed.
+type CleanupGate func(context.Context, task.Task, string) bool
+
 // defaultSetupTimeout caps the entire SetupCommands batch per worktree.
 // Accommodates cold `mise install` / `npm ci` runs on first use of a project
 // but prevents stuck commands from blocking worktree creation forever.
@@ -68,12 +72,17 @@ type Manager struct {
 	hasLiveAgentOnly AgentChecker
 	misePath         string
 	protected        *cleanup.ProtectedStore
+	cleanupGate      CleanupGate
 	// paths serializes mutating operations per worktree directory. Not a
 	// Config field: it is process-internal state, and every Manager must have
 	// its own (a shared one would let two Managers over different worktree
 	// roots contend on identical relative paths).
 	paths pathLocks
 }
+
+// SetCleanupGate late-binds the post-run reconciler after both the worktree
+// manager and task/project stores exist.
+func (m *Manager) SetCleanupGate(gate CleanupGate) { m.cleanupGate = gate }
 
 func New(cfg Config) *Manager {
 	timeout := cfg.SetupTimeout
