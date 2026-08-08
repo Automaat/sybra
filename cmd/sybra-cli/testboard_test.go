@@ -18,10 +18,13 @@ import (
 
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/httpapi"
+	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/selfmonitor"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/tasksnapshot"
 )
 
 // The CLI has no second way to reach a board, so a test that exercises a board
@@ -37,6 +40,7 @@ import (
 type testBoardTaskService struct {
 	tasks     *task.Manager
 	artifacts *artifact.Store
+	home      string
 }
 
 func (s *testBoardTaskService) ListTasks() ([]task.Task, error) { return s.tasks.List() }
@@ -173,6 +177,57 @@ func (s *testBoardTaskService) ReindexTaskArtifacts(taskID string) error {
 	return s.artifacts.Reindex(taskID)
 }
 
+// ListTaskSnapshotHistory mirrors TaskService's read of the snapshot repo, down
+// to treating an unresolvable HEAD as a valid empty history rather than a fault.
+func (s *testBoardTaskService) ListTaskSnapshotHistory(limit int) ([]taskHistoryEntry, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	gitDir := filepath.Join(s.home, "tasks-snapshots.git")
+	opts := gitexec.Options{Env: tasksnapshot.BuildEnv(gitDir, filepath.Join(s.home, "tasks"))}
+	ctx := context.Background()
+	if err := gitexec.Run(ctx, opts, "rev-parse", "--git-dir"); err != nil {
+		return nil, errors.New("task snapshot history unavailable — snapshotting is disabled or has not run yet")
+	}
+	if gitexec.RunQuiet(ctx, opts, "rev-parse", "--verify", "--quiet", "HEAD") != nil {
+		return []taskHistoryEntry{}, nil
+	}
+	const sep = "\x1f"
+	stdout, err := gitexec.RawOutput(ctx, opts, "log", "--date=iso-strict",
+		"--pretty=format:%h"+sep+"%ad"+sep+"%s", fmt.Sprintf("-n%d", limit))
+	if err != nil {
+		return nil, err
+	}
+	out := []taskHistoryEntry{}
+	for line := range strings.SplitSeq(strings.TrimRight(string(stdout), "\n"), "\n") {
+		parts := strings.SplitN(line, sep, 3)
+		if len(parts) != 3 {
+			continue
+		}
+		out = append(out, taskHistoryEntry{SHA: parts[0], Date: parts[1], Subject: parts[2]})
+	}
+	return out, nil
+}
+
+// ScanMonitor runs the detector pass over this board, as the owning instance
+// does — the CLI used to run it against its own copy of the files.
+func (s *testBoardTaskService) ScanMonitor() (monitor.Report, error) {
+	// The instance's own resolved config, not defaults: the dispatch ceiling
+	// the detector compares against comes from it.
+	cfg, err := config.LoadNoPersist()
+	if err != nil {
+		return monitor.Report{}, err
+	}
+	svc := monitor.NewService(monitor.Deps{
+		Cfg:        cfg.Monitor,
+		Tasks:      s.tasks,
+		Audit:      monitor.AuditDirReader(filepath.Join(s.home, "audit")),
+		Dispatcher: monitor.NoopDispatcher(),
+		Sink:       monitor.NoopSink(),
+	})
+	return svc.Scan(context.Background())
+}
+
 // testBoardSelfMonitorService serves the persisted report and ledger from the
 // board's own home, which is what the CLI used to read directly.
 type testBoardSelfMonitorService struct {
@@ -277,12 +332,14 @@ func startTestBoard(t *testing.T, home string) *httptest.Server {
 		"TaskService": httpapi.NewService(&testBoardTaskService{
 			tasks:     tasks,
 			artifacts: artifact.New(filepath.Join(home, "artifacts")),
+			home:      home,
 		},
 			"ListTasks", "GetTask", "CreateTask", "CreateTaskFull", "UpdateTaskFields",
 			"UpdateTask", "ApplyTransition", "TouchTask", "DeleteTask", "ListTrash",
 			"RestoreFromTrash", "DeleteTrashedGeneration", "PruneAllTrash",
 			"AppendTaskProgress", "ListTaskProgress", "ListTaskArtifactMetas",
 			"ReadTaskArtifact", "ReindexTaskArtifacts",
+			"ListTaskSnapshotHistory", "ScanMonitor",
 		),
 		"SelfMonitorService": httpapi.NewService(&testBoardSelfMonitorService{home: home, tasks: tasks},
 			"GetSelfMonitorReport", "InvestigateSelfMonitor", "ListSelfMonitorLedger",
