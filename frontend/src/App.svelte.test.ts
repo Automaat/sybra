@@ -13,6 +13,9 @@ vi.mock('$lib/api', () => ({
   GetSettings: vi.fn().mockResolvedValue({ browser: { inApp: false } }),
   GetProviderHealth: vi.fn().mockResolvedValue([]),
   ProviderHealthEnabled: vi.fn().mockResolvedValue(false),
+  GetVersion: vi.fn().mockResolvedValue({ version: 'test' }),
+  getConnectionState: () => 'open',
+  OnConnectionChange: () => () => {},
 }))
 
 vi.mock('./stores/tasks.svelte.js', () => ({

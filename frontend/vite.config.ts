@@ -52,6 +52,8 @@ export default defineConfig(({ mode }) => {
         '/api': { target: proxyTarget, changeOrigin: true },
         // SSE: disable proxy buffering so events flush to the browser live.
         '/events': { target: proxyTarget, changeOrigin: true },
+        // Names the board and, on a loopback hop, carries its token.
+        '/runtime-config.js': { target: proxyTarget, changeOrigin: true },
       },
     },
     plugins: [

@@ -113,22 +113,34 @@ construction (see `agentorch.Orchestrator`'s `SetSandboxes`/`SetBgops`/
 caller genuinely needs the underlying dependency itself (e.g. `Cfg()`,
 `Worktrees()`) — never export the field directly.
 
-### Wails v3 Binding Convention
+### One UI Transport
 
-The `App` struct and the 12 service structs (`internal/sybra/svc_*.go`) are registered via `App.V3Services()` and exposed to the frontend through `wails3 generate bindings`. Bindings live under `frontend/bindings/` keyed by Go package path (e.g. `frontend/bindings/github.com/Automaat/sybra/internal/sybra/taskservice.ts`).
+Both builds reach the backend over HTTP. `internal/httpserve` assembles the handler — API dispatch, the SSE stream, health/metrics/pprof, and the SPA — and both binaries serve it: `cmd/sybra-server` on its configured bind, and the desktop app on `127.0.0.1:0`, with the Wails window opened at that origin rather than the `wails://` asset server. The desktop binary is therefore a server too; there is no in-process IPC path left.
+
+`frontend/src/lib/api-http.ts` is the only implementation, and `frontend/src/lib/api.ts` re-exports it wholesale — never add a hand-written export list there, or a method has two places to be registered again.
 
 **Adding a new bound method:**
-1. Add method to a service struct in `internal/sybra/svc_*.go` (or `App` itself).
-2. Regenerate bindings: `wails3 generate bindings -ts -clean -d frontend/bindings ./...`.
-3. Re-export from `frontend/src/lib/api.ts` so the rest of the frontend hits the shim, not the binding directly.
-4. CI's `Wails Bindings Sync` job runs the same generate command and fails on drift.
+1. Add the method to a service struct in `internal/sybra/svc_*.go` (or `App` itself).
+2. Add it to the allowlist in `internal/sybra/services.go` (`ServiceRegistry`) — unlisted methods 404.
+3. Add a `call(...)` wrapper in `frontend/src/lib/api-http.ts`. `scripts/check-api-shim-sync.sh` fails on a registry method with no wrapper.
+4. Regenerate bindings: `wails3 generate bindings -ts -clean -d frontend/bindings ./...`. The frontend imports **types** from `frontend/bindings/`, never call paths; CI's `Wails Bindings Sync` job fails on drift.
 
-**Wails events (Go → Frontend):**
+A method whose first parameter is a `context.Context` gets it from the request — the JSON argument array carries only the remaining parameters.
+
+**Local-only methods.** A method that acts on the host serving the board (open an editor or terminal, open a worktree, grab an OS hotkey, shell out to the claude CLI) is registered with `.WithLocalOnly(...)`. `httpapi` then serves it to loopback callers carrying no forwarding header, so the desktop window reaches it through its own server while a window attached to a board on another machine is refused.
+
+**Events (Go → Frontend):**
 - `agent:state:<id>` — agent state change
 - `agent:output:<id>` — new StreamEvent from headless agent
 - `task:updated` / `task:created` / `task:deleted` — file system changes
 
-Emit events via the App's `emit` closure (set up in `main.go` to wrap `app.Event.Emit`). The frontend subscribes via `EventsOn` from `$lib/api`, which adapts v3's `WailsEvent` to the variadic callback shape stores expect.
+Emit via the App's `emit` closure, wired to `sse.Broker.Emit` in both binaries. The frontend subscribes with `EventsOn` from `$lib/api`, which multiplexes every subscription onto one `EventSource` against `GET /events`. `OnConnectionChange` reports that stream's health; `connectionStore` drives the offline banner from it and refetches the board when it comes back.
+
+**Attaching to a board on another machine.** Set `SYBRA_SERVER_TARGET` (bare `host:port` or an `http(s)://` origin, same forms `sybra-cli` takes) plus `SYBRA_SERVER_TOKEN` before launching the desktop app. The bundle still comes from this process — only a page it served can be handed a bearer token — but every call and event goes to the named board, and **no local App starts**, so the laptop does not run a second orchestrator against its own home. An unresolvable target is a startup error, never a silent fall back to the local board. `BrowserService` stays local: opening a window or a link acts on the machine the operator is sitting at.
+
+The desktop listener reuses the port recorded in `$SYBRA_HOME/desktop-port`. Browser storage is partitioned by origin **including port**, so a fresh port each launch would silently empty `localStorage` — colour scheme, open workspace tabs, pane sizes — on every start and every auto-update restart. That stable port is also what the attached board must list in its own `server.allowed_origins` (`http://127.0.0.1:<port>`), or its CORS check refuses every call the window makes.
+
+The content-security policy comes from the response header `internal/httpserve` sets, and from nowhere else — never add a `<meta http-equiv="Content-Security-Policy">` back to `frontend/index.html`. A meta copy is a second source of truth that wins wherever it is stricter, which is how its `connect-src 'self'` blocked every call an attached window made no matter what the header allowed.
 
 ### Durable Storage Backend
 
@@ -433,9 +445,7 @@ There is no Vite-backed hot reload — the frontend is built once per `mise run 
 ### Adding a Backend Feature
 
 1. Add/modify Go types in `internal/<package>/`.
-2. If exposing to frontend: add a method to a service struct in `internal/sybra/svc_*.go` (or to `App`).
-3. Regenerate bindings: `wails3 generate bindings -ts -clean -d frontend/bindings ./...`.
-4. Re-export from `frontend/src/lib/api.ts` so the rest of the frontend hits the shim.
+2. If exposing to frontend: add a method to a service struct in `internal/sybra/svc_*.go` (or to `App`), then follow **One UI Transport** above — allowlist it in `internal/sybra/services.go`, add its `call(...)` wrapper in `frontend/src/lib/api-http.ts`, and regenerate bindings for the types.
 
 ### Adding a Frontend Feature
 
@@ -564,8 +574,9 @@ Frontend must build before Go compilation due to `//go:embed all:frontend/dist`:
 - ❌ Running `go build .` without building the frontend first — `//go:embed` fails if `frontend/dist/` is missing
 - ❌ Forgetting to regenerate v3 bindings after adding/changing service methods (run `wails3 generate bindings -ts -clean -d frontend/bindings ./...`); CI's `Wails Bindings Sync` job catches drift
 - ❌ Editing files in `frontend/bindings/` — these are auto-generated and get overwritten
-- ❌ Importing directly from `frontend/bindings/` in components/stores — go through `$lib/api` so the desktop ↔ web shim handles transport
-- ❌ Using WebSocket/HTTP for Go↔Frontend IPC on desktop — Wails v3 events + bound services handle this
+- ❌ Calling into `frontend/bindings/` from components/stores — those are generated Wails call paths the UI no longer uses; import calls from `$lib/api` and take only **types** from `frontend/bindings/`
+- ❌ Adding a hand-written export to `frontend/src/lib/api.ts` — it re-exports `api-http.ts` wholesale so a method is registered in one place; `scripts/check-api-shim-sync.sh` fails on a list there
+- ❌ Exposing a method that opens a GUI app, grabs an OS hotkey, or shells out on the serving host without `.WithLocalOnly(...)` — a board reached from another machine would run it on the host serving it
 - ❌ Storing agent state in files — agents are in-memory only, tasks are file-backed
 - ❌ Using `allowed_tools: []` without understanding the fallback is governed by `agent.require_permissions`/`agent.headless_permission_mode`, not always `--dangerously-skip-permissions` — see the permission-flag precedence under Agent Execution Modes
 - ❌ Adding a new auto-task source without (a) an `Enabled bool` toggle in its config block and (b) `cfg.AllowsProjectType(...)` filtering if the source is project-scoped — both are required so users running Sybra on multiple machines can route work without duplication

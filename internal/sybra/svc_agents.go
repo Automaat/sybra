@@ -231,14 +231,14 @@ func (s *AgentService) GetAgentDiff(taskID string) (string, error) {
 // Returns an error if the worktree does not exist or the OS command fails.
 func (s *AgentService) OpenWorktree(taskID string) error {
 	if s.worktrees == nil {
-		return errors.New("worktree manager not available")
+		return unavailableError("worktrees unavailable")
 	}
 	t, err := s.tasks.Get(taskID)
 	if err != nil {
-		return fmt.Errorf("task %s: %w", taskID, err)
+		return boardRejectionFor("task", taskID, err)
 	}
 	if !s.worktrees.Exists(t) {
-		return fmt.Errorf("no worktree for task %s", taskID)
+		return notFoundError("worktree", taskID)
 	}
 	return sysopen.Dir(context.Background(), s.worktrees.PathFor(t))
 }

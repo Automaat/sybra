@@ -107,6 +107,17 @@ export function startAppLifecycle(hooks: AppLifecycleHooks): () => void {
   // ever opened. The GitHub page owns the live polling.
   reviewStore.load()
 
+  // A dropped stream delivers no events, so the board silently freezes at
+  // whatever it held when the server went away. Refetch on the way back.
+  const stopReconnect = connectionStore.onReconnect(() => {
+    taskStore.load()
+    agentStore.load()
+    projectStore.load()
+    clusterStore.load()
+    notificationStore.load()
+    bgopStore.load()
+  })
+
   // Patch only the affected task per event instead of reloading the whole list.
   const onTaskEvent = makeTaskEventCoalescer()
   const unsubTaskCreated = EventsOn(ev.TaskCreated, (p: unknown) => onTaskEvent(String(p ?? ''), 'change'))
@@ -141,6 +152,7 @@ export function startAppLifecycle(hooks: AppLifecycleHooks): () => void {
 
   return () => {
     stopConnection()
+    stopReconnect()
     unsubTasks()
     unsubNotif()
     unsubBgops()

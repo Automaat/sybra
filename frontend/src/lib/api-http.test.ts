@@ -1,49 +1,145 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-class MockEventSource {
-  static instances: MockEventSource[] = []
+// A fake EventSource driven by hand, so the tests exercise the real state
+// machine rather than a stub of it. jsdom has no EventSource at all.
+class FakeEventSource {
+  static readonly CONNECTING = 0
+  static readonly OPEN = 1
+  static readonly CLOSED = 2
+  static instances: FakeEventSource[] = []
 
-  url: string
-  addEventListener = vi.fn()
-  removeEventListener = vi.fn()
-  close = vi.fn()
+  readyState = FakeEventSource.CONNECTING
+  onopen: (() => void) | null = null
+  onerror: (() => void) | null = null
+  listeners = new Map<string, Set<(e: MessageEvent) => void>>()
+  closed = false
 
-  constructor(url: string) {
-    this.url = url
-    MockEventSource.instances.push(this)
+  constructor(public url: string) {
+    FakeEventSource.instances.push(this)
+  }
+
+  addEventListener(name: string, handler: (e: MessageEvent) => void): void {
+    let set = this.listeners.get(name)
+    if (!set) {
+      set = new Set()
+      this.listeners.set(name, set)
+    }
+    set.add(handler)
+  }
+
+  removeEventListener(name: string, handler: (e: MessageEvent) => void): void {
+    this.listeners.get(name)?.delete(handler)
+  }
+
+  close(): void {
+    this.closed = true
+    this.readyState = FakeEventSource.CLOSED
+  }
+
+  open(): void {
+    this.readyState = FakeEventSource.OPEN
+    this.onopen?.()
+  }
+
+  /** A transport drop: the spec puts the stream back to CONNECTING first. */
+  drop(): void {
+    this.readyState = FakeEventSource.CONNECTING
+    this.onerror?.()
+  }
+
+  /** A fatal error (e.g. 401): EventSource gives up and never retries. */
+  fail(): void {
+    this.readyState = FakeEventSource.CLOSED
+    this.onerror?.()
+  }
+
+  emit(name: string, data: unknown): void {
+    for (const handler of this.listeners.get(name) ?? []) {
+      handler({ data: JSON.stringify(data) } as MessageEvent)
+    }
   }
 }
 
-describe('api-http live updates auth', () => {
-  beforeEach(() => {
-    localStorage.clear()
-    MockEventSource.instances = []
-    vi.restoreAllMocks()
-    vi.stubGlobal('EventSource', MockEventSource)
-    vi.resetModules()
+let api: typeof import('./api-http.js')
+
+beforeEach(async () => {
+  FakeEventSource.instances = []
+  vi.stubGlobal('EventSource', FakeEventSource)
+  vi.stubGlobal('localStorage', {
+    getItem: () => 'test-token',
+    setItem: () => {},
+  })
+  vi.resetModules()
+  api = await import('./api-http.js')
+})
+
+afterEach(() => {
+  api.resetEventStreamForTest()
+  vi.unstubAllGlobals()
+  vi.useRealTimers()
+})
+
+describe('event stream connection state', () => {
+  it('reports a drop after a successful open and a reconnect on the way back', () => {
+    const seen: Array<[string, boolean]> = []
+    api.OnConnectionChange((state, reconnected) => seen.push([state, reconnected]))
+    api.EventsOn('task:updated', () => {})
+    const es = FakeEventSource.instances[0]!
+
+    es.open()
+    // The spec reconnects on its own, so readyState is CONNECTING — not CLOSED
+    // — when the error fires. Requiring CLOSED here is what made the reconnect
+    // signal unreachable for an ordinary server restart.
+    es.drop()
+    es.open()
+
+    expect(seen).toEqual([['open', false], ['lost', false], ['open', true]])
+    expect(api.getConnectionState()).toBe('open')
   })
 
-  it('prompts for a token before opening the first SSE connection', async () => {
-    vi.spyOn(window, 'prompt').mockReturnValue('secret')
-    const { EventsOn } = await import('./api-http')
+  it('does not claim a reconnect on the first open', () => {
+    const seen: Array<[string, boolean]> = []
+    api.OnConnectionChange((state, reconnected) => seen.push([state, reconnected]))
+    api.EventsOn('task:updated', () => {})
 
-    const off = EventsOn('task:updated', vi.fn())
+    FakeEventSource.instances[0]!.open()
 
-    expect(window.prompt).toHaveBeenCalledTimes(1)
-    expect(MockEventSource.instances).toHaveLength(1)
-    expect(MockEventSource.instances[0]?.url).toBe('/events?token=secret')
-    expect(localStorage.getItem('sybra.apiToken')).toBe('secret')
-
-    off()
+    expect(seen).toEqual([['open', false]])
   })
 
-  it('fails closed when the token prompt is canceled', async () => {
-    vi.spyOn(window, 'prompt').mockReturnValue('')
-    const { EventsOn } = await import('./api-http')
+  it('rebuilds a stream EventSource abandoned, carrying subscriptions over', () => {
+    vi.useFakeTimers()
+    const received: unknown[] = []
+    api.EventsOn('task:updated', (payload) => received.push(payload))
+    const first = FakeEventSource.instances[0]!
 
-    expect(() => EventsOn('task:updated', vi.fn())).toThrow(
-      'sybra server auth token required for live updates',
-    )
-    expect(MockEventSource.instances).toHaveLength(0)
+    first.open()
+    // A fatal error leaves the stream CLOSED for good; without a rebuild the UI
+    // stays dark until a manual reload even once the server is back.
+    first.fail()
+    expect(api.getConnectionState()).toBe('lost')
+
+    vi.advanceTimersByTime(5_000)
+    expect(FakeEventSource.instances).toHaveLength(2)
+    const second = FakeEventSource.instances[1]!
+    expect(first.closed).toBe(true)
+
+    second.open()
+    second.emit('task:updated', 'task-abc')
+    expect(received).toEqual(['task-abc'])
+    expect(api.getConnectionState()).toBe('open')
+  })
+
+  it('stops rebuilding once the last subscriber is gone', () => {
+    vi.useFakeTimers()
+    const stop = api.EventsOn('task:updated', () => {})
+    const first = FakeEventSource.instances[0]!
+
+    first.open()
+    stop()
+    expect(first.closed).toBe(true)
+
+    vi.advanceTimersByTime(30_000)
+    expect(FakeEventSource.instances).toHaveLength(1)
   })
 })
