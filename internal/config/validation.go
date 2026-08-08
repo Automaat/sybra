@@ -297,6 +297,12 @@ func validateMonitorConfig(cfg *ResolvedConfig, add func(format string, a ...any
 	if cfg.Monitor.DispatchLimit < 0 {
 		add("monitor.dispatch_limit must be 0 or greater, got %d", cfg.Monitor.DispatchLimit)
 	}
+	if cfg.Monitor.IncidentResolveGraceMinutes < 0 {
+		add("monitor.incident_resolve_grace_minutes must be 0 or greater, got %d", cfg.Monitor.IncidentResolveGraceMinutes)
+	}
+	if cfg.Monitor.IncidentReopenGraceMinutes < 0 {
+		add("monitor.incident_reopen_grace_minutes must be 0 or greater, got %d", cfg.Monitor.IncidentReopenGraceMinutes)
+	}
 }
 
 func validateK8sSecretEnv(cfg *ResolvedConfig, add func(format string, a ...any)) {

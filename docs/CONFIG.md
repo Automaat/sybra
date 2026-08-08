@@ -512,6 +512,8 @@ focused headless agent for anomalies that need LLM judgment.
 | `supervision.monitor.issue_repo` | `string` | `"Automaat/sybra"` |  |  | `monitor.issue_repo` | `false` | `restart` |  |  |
 | `supervision.monitor.lost_agent_issue_after_occurrences` | `int` | `2` |  |  | `monitor.lost_agent_issue_after_occurrences` | `false` | `restart` |  | LostAgentIssueAfterOccurrences is how many consecutive ticks a lost_agent anomaly must be detected for the same task before an issue is filed. The deterministic remediation (resetLostAgent) runs every tick regardless; a single recurrence just means recovery hasn't taken effect yet, not that it failed. |
 | `supervision.monitor.lost_agent_auto_close_after_clears` | `int` | `3` |  |  | `monitor.lost_agent_auto_close_after_clears` | `false` | `restart` |  | LostAgentAutoCloseAfterClears is how many consecutive ticks a previously-filed lost_agent issue's task must stay clear (no longer detected as lost) before the issue is auto-closed. |
+| `supervision.monitor.incident_resolve_grace_minutes` | `int` | `15` |  |  | `monitor.incident_resolve_grace_minutes` | `false` | `restart` |  | IncidentResolveGraceMinutes requires a successfully observed healthy detector result to remain stable before an incident is resolved. |
+| `supervision.monitor.incident_reopen_grace_minutes` | `int` | `30` |  |  | `monitor.incident_reopen_grace_minutes` | `false` | `restart` |  | IncidentReopenGraceMinutes suppresses noisy external updates immediately after resolution while retaining recurrence history in the same incident. |
 
 ### WatchdogConfig (`supervision.watchdog`)
 

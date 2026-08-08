@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -34,6 +35,19 @@ type IssueSink interface {
 // skip closing when it's absent.
 type IssueCloser interface {
 	CloseIfOpen(ctx context.Context, a Anomaly, comment string) (closed bool, err error)
+}
+
+type IncidentArtifact struct {
+	Number int
+	URL    string
+}
+
+// IncidentSink applies a material incident revision to one canonical
+// artifact. Identity is the stable body marker, not a mutable title.
+type IncidentSink interface {
+	ApplyIncident(context.Context, Incident, IncidentChange, string) (created bool, artifact IncidentArtifact, err error)
+	ResolveIncident(context.Context, Incident, string) (closed bool, err error)
+	MapDuplicateIncidents(context.Context, Incident, []int, string) error
 }
 
 // ghExecer abstracts gh invocation for tests. The default impl routes through
@@ -89,6 +103,115 @@ func NewGHIssueSink(label, repo string) *GHIssueSink {
 func (s *GHIssueSink) Submit(ctx context.Context, a Anomaly, body string) (bool, error) {
 	created, _, err := s.SubmitIssue(ctx, IssueTitle(a.Kind, a.Fingerprint), body, []string{"bug"})
 	return created, err
+}
+
+func IncidentTitle(in Incident) string {
+	return "[monitor] incident " + in.FailureCode + ": " + strings.TrimPrefix(in.Fingerprint, "incident:")
+}
+
+func incidentMarker(fp string) string { return "<!-- sybra-incident:v1:" + fp + " -->" }
+
+type ghIncident struct {
+	Number      int
+	URL         string
+	State       string
+	HasRevision bool
+}
+
+func incidentRevisionMarker(in Incident) string {
+	return fmt.Sprintf("<!-- sybra-incident-revision:v1:%s:%d:%s -->", in.Fingerprint, in.Revision, in.State)
+}
+
+func (s *GHIssueSink) findIncident(ctx context.Context, fp, revisionMarker string) (ghIncident, error) {
+	marker := incidentMarker(fp)
+	out, err := s.exec.run(ctx, append(s.repoArgs(), "issue", "list", "--state", "all", "--label", s.label,
+		"--search", marker+" in:body", "--json", "number,url,state,body,comments", "--limit", "100")...)
+	if err != nil {
+		return ghIncident{}, classifyGHError("gh incident list", out, err)
+	}
+	var rows []struct {
+		Number   int    `json:"number"`
+		URL      string `json:"url"`
+		State    string `json:"state"`
+		Body     string `json:"body"`
+		Comments []struct {
+			Body string `json:"body"`
+		} `json:"comments"`
+	}
+	if err := json.Unmarshal(out, &rows); err != nil {
+		return ghIncident{}, fmt.Errorf("decode gh incident list: %w", err)
+	}
+	for _, row := range rows {
+		if strings.Contains(row.Body, marker) {
+			hasRevision := revisionMarker != "" && strings.Contains(row.Body, revisionMarker)
+			for _, comment := range row.Comments {
+				hasRevision = hasRevision || revisionMarker != "" && strings.Contains(comment.Body, revisionMarker)
+			}
+			return ghIncident{Number: row.Number, URL: row.URL, State: strings.ToUpper(row.State), HasRevision: hasRevision}, nil
+		}
+	}
+	return ghIncident{}, nil
+}
+
+func (s *GHIssueSink) ApplyIncident(ctx context.Context, in Incident, change IncidentChange, body string) (bool, IncidentArtifact, error) {
+	s.labelsOnce.Do(func() { s.ensureLabels(ctx) })
+	revisionMarker := incidentRevisionMarker(in)
+	found, err := s.findIncident(ctx, in.Fingerprint, revisionMarker)
+	if err != nil {
+		return false, IncidentArtifact{}, err
+	}
+	body = incidentMarker(in.Fingerprint) + "\n" + revisionMarker + "\n" + body
+	if found.Number == 0 {
+		out, createErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "create", "--title", IncidentTitle(in), "--body", attribution.Append(body), "--label", s.label+",bug")...)
+		if createErr != nil {
+			return false, IncidentArtifact{}, classifyGHError("gh incident create", out, createErr)
+		}
+		return true, IncidentArtifact{URL: parseIssueCreateURL(out)}, nil
+	}
+	if found.HasRevision {
+		return false, IncidentArtifact{Number: found.Number, URL: found.URL}, nil
+	}
+	if found.State == "CLOSED" && change == IncidentReopened {
+		out, reopenErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "reopen", strconv.Itoa(found.Number), "--comment", attribution.Append(body))...)
+		if reopenErr != nil {
+			return false, IncidentArtifact{}, classifyGHError("gh incident reopen", out, reopenErr)
+		}
+		return false, IncidentArtifact{Number: found.Number, URL: found.URL}, nil
+	}
+	if change != IncidentUnchanged {
+		out, commentErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "comment", strconv.Itoa(found.Number), "--body", attribution.Append(body))...)
+		if commentErr != nil {
+			return false, IncidentArtifact{}, classifyGHError("gh incident comment", out, commentErr)
+		}
+	}
+	return false, IncidentArtifact{Number: found.Number, URL: found.URL}, nil
+}
+
+func (s *GHIssueSink) ResolveIncident(ctx context.Context, in Incident, comment string) (bool, error) {
+	revisionMarker := incidentRevisionMarker(in)
+	found, err := s.findIncident(ctx, in.Fingerprint, revisionMarker)
+	if err != nil || found.Number == 0 || found.State == "CLOSED" {
+		return false, err
+	}
+	out, closeErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "close", strconv.Itoa(found.Number), "--reason", "completed", "--comment", attribution.Append(revisionMarker+"\n"+comment))...)
+	if closeErr != nil {
+		return false, classifyGHError("gh incident close", out, closeErr)
+	}
+	return true, nil
+}
+
+func (s *GHIssueSink) MapDuplicateIncidents(ctx context.Context, in Incident, duplicates []int, coverage string) error {
+	if strings.TrimSpace(coverage) == "" || in.IssueURL == "" {
+		return errors.New("incident duplicate mapping requires canonical URL and reproduction coverage")
+	}
+	for _, number := range duplicates {
+		body := fmt.Sprintf("Covered by canonical incident %s. Reproduction coverage: %s", in.IssueURL, coverage)
+		out, err := s.exec.run(ctx, append(s.repoArgs(), "issue", "close", strconv.Itoa(number), "--reason", "not planned", "--comment", attribution.Append(body))...)
+		if err != nil {
+			return classifyGHError("gh duplicate incident close", out, err)
+		}
+	}
+	return nil
 }
 
 // SubmitIssue is the generic, anomaly-agnostic dedup-and-file primitive used

@@ -2484,7 +2484,8 @@ func cmdMonitorScan(cfg *config.Config, store *task.Manager, jsonOut bool) int {
 		return printJSON(report)
 	}
 	kinds := ""
-	for _, a := range report.Anomalies {
+	for i := range report.Anomalies {
+		a := &report.Anomalies[i]
 		if kinds != "" {
 			kinds += " "
 		}

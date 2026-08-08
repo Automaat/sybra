@@ -65,6 +65,24 @@ func DispatchPrompt(a Anomaly, issueRepo, pushRemote string) string {
 	}
 }
 
+func dispatchPromptForAnomaly(a Anomaly, issueRepo, pushRemote string) string {
+	if a.IncidentScope == "" || a.Kind == KindPRGap {
+		return DispatchPrompt(a, issueRepo, pushRemote)
+	}
+	return fmt.Sprintf(`You are a read-only Sybra incident investigator.
+
+Incident fingerprint: %s
+Typed failure code: %s
+Scope: %s
+
+Investigate the local Sybra state and return one final JSON object with
+categorical fields: {"component":"...","capability":"...","finding_code":"...","remediation":"..."}.
+Do not create, comment, close, or reopen GitHub issues. The host owns the
+canonical incident lifecycle. Never include task prose, repository URLs,
+branch names, commit hashes, customer names, or other work-derived content.`,
+		a.Fingerprint, a.Kind, a.IncidentScope)
+}
+
 func prGapPrompt(a Anomaly, pushRemote string) string {
 	taskID, _ := a.Evidence["task_id"].(string)
 	title, _ := a.Evidence["title"].(string)

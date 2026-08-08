@@ -53,9 +53,44 @@ func (f *fakeExecer) run(_ context.Context, args ...string) ([]byte, error) {
 			return f.createResp, f.createErr
 		case "close":
 			return f.closeResp, f.closeErr
+		case "reopen":
+			return f.commentResp, f.commentErr
 		}
 	}
 	return nil, nil
+}
+
+func TestGHIssueSink_IncidentFindsRenamedClosedIssueByMarkerAndReopens(t *testing.T) {
+	in := Incident{Fingerprint: "incident:abc", FailureCode: "lost_agent", Revision: 4, State: IncidentActive}
+	fe := &fakeExecer{listResp: []byte(`[{"number":87,"url":"https://github.com/Automaat/sybra/issues/87","state":"CLOSED","body":"renamed\n<!-- sybra-incident:v1:incident:abc -->","comments":[]}]`)}
+	s := newTestSink(fe)
+
+	created, artifact, err := s.ApplyIncident(context.Background(), in, IncidentReopened, "recurrence")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created || artifact.Number != 87 {
+		t.Fatalf("unexpected artifact: created=%v %+v", created, artifact)
+	}
+	reopens := fe.callsMatching("issue", "reopen")
+	if len(reopens) != 1 || reopens[0][2] != "87" {
+		t.Fatalf("wanted one reopen of marker-matched issue 87, got %v", reopens)
+	}
+}
+
+func TestGHIssueSink_IncidentRevisionMarkerPreventsDuplicateComment(t *testing.T) {
+	in := Incident{Fingerprint: "incident:abc", FailureCode: "lost_agent", Revision: 4, State: IncidentActive}
+	marker := incidentRevisionMarker(in)
+	fe := &fakeExecer{listResp: []byte(`[{"number":87,"url":"https://github.com/Automaat/sybra/issues/87","state":"OPEN","body":"<!-- sybra-incident:v1:incident:abc -->","comments":[{"body":"` + marker + `"}]}]`)}
+	s := newTestSink(fe)
+
+	_, _, err := s.ApplyIncident(context.Background(), in, IncidentExpanded, "same revision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(fe.callsMatching("issue", "comment")); got != 0 {
+		t.Fatalf("same revision produced %d comments", got)
+	}
 }
 
 func (f *fakeExecer) callsMatching(prefix ...string) [][]string {

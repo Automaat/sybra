@@ -362,4 +362,7 @@ func TestExecAdmissionPreflight_RecordsAdmissionDecision(t *testing.T) {
 	if decisions[1].Outcome != "blocked" || decisions[1].BlockerKind != string(blocker.KindOperatorDecision) {
 		t.Fatalf("decision = %+v, want blocked/operator_decision", decisions[1])
 	}
+	if decisions[1].FailureCode != "admission.operator_decision" {
+		t.Fatalf("decision failure code = %q, want stable typed code", decisions[1].FailureCode)
+	}
 }

@@ -1,6 +1,9 @@
 package sybra
 
 import (
+	"github.com/Automaat/sybra/internal/audit"
+	"github.com/Automaat/sybra/internal/experience"
+	"github.com/Automaat/sybra/internal/reconcile"
 	"github.com/Automaat/sybra/internal/sybra/completion"
 	"github.com/Automaat/sybra/internal/sybra/reconciliation"
 )
@@ -12,6 +15,28 @@ func (a *App) postRunReconciliation() *reconciliation.Reconciler {
 	if a.postRunReconciler == nil {
 		a.postRunReconciler = reconciliation.New(reconciliation.Config{
 			Tasks: a.tasks, Projects: a.projects, Worktrees: a.worktrees, Logger: a.logger, Evidence: a.evidenceStore,
+			Audit: func(req reconcile.Request, plan reconcile.Plan) {
+				taskID := req.TaskID
+				projectScope, confidential := "fleet", false
+				if t, err := a.tasks.Get(req.TaskID); err == nil {
+					if p, projectErr := a.projects.Get(t.ProjectID); projectErr == nil {
+						projectScope = experience.ProjectKey(p)
+						confidential = a.workScrubContextForTask(t.ProjectID) != nil
+						if confidential {
+							taskID = experience.WorkRecordID(req.TaskID)
+						}
+					} else if t.ProjectID != "" {
+						projectScope, taskID, confidential = "work-unknown", experience.WorkRecordID(req.TaskID), true
+					}
+				} else if req.TaskID != "" {
+					projectScope, taskID, confidential = "work-unknown", experience.WorkRecordID(req.TaskID), true
+				}
+				a.logAudit(audit.EventReconciliationDecided, taskID, "", map[string]any{
+					"run_id": req.RunID, "intent": string(req.Intent), "action": string(plan.Action),
+					"decision_code": "reconcile." + string(plan.Action),
+					"project_scope": projectScope, "confidential": confidential,
+				})
+			},
 		})
 		if a.worktrees != nil {
 			a.worktrees.SetCleanupGate(a.postRunReconciler.CanCleanup)

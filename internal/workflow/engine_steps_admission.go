@@ -165,6 +165,7 @@ func (e *Engine) blockAdmission(taskID string, step *Step, t TaskInfo, kind bloc
 		RiskTier:       planContractRiskTier(t.PlanContract),
 		PermissionTier: planContractPermissionTier(t.PlanContract),
 		BlockerKind:    string(kind),
+		FailureCode:    "admission." + string(kind),
 		Reason:         full,
 	})
 	e.logger.Warn("workflow.admission-preflight.blocked",

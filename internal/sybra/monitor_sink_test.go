@@ -196,6 +196,49 @@ func TestMonitorRoutingSink_WorkAnomaly_DedupsByTitle(t *testing.T) {
 	}
 }
 
+func TestMonitorRoutingSink_ConfidentialIncidentResolvesAndReopensSameLocalTask(t *testing.T) {
+	t.Parallel()
+	sink, tasks, inner := newSinkTestEnv(t)
+	src, err := tasks.Create("source", "src body", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := sink.workCtx("fixture").Blocklist[0]
+	if _, err := tasks.Update(src.ID, task.Update{ProjectID: &pid}); err != nil {
+		t.Fatal(err)
+	}
+	in := monitor.Incident{Fingerprint: "incident:opaque", FailureCode: string(monitor.KindLostAgent), ProjectScope: "work-opaque", Revision: 1, State: monitor.IncidentActive}
+	if created, _, err := sink.ApplyIncident(context.Background(), in, monitor.IncidentOpened, "- Fingerprint: `"+in.Fingerprint+"`\n"+pid+" evidence"); err != nil || !created {
+		t.Fatalf("open: created=%v err=%v", created, err)
+	}
+	if closed, err := sink.ResolveIncident(context.Background(), monitor.Incident{Fingerprint: in.Fingerprint, FailureCode: in.FailureCode, ProjectScope: in.ProjectScope, Revision: 2, State: monitor.IncidentResolved}, "resolved"); err != nil || !closed {
+		t.Fatalf("resolve: closed=%v err=%v", closed, err)
+	}
+	in.Revision = 3
+	if created, _, err := sink.ApplyIncident(context.Background(), in, monitor.IncidentReopened, pid+" recurred"); err != nil || created {
+		t.Fatalf("reopen: created=%v err=%v", created, err)
+	}
+	all, err := tasks.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var incidentTasks []task.Task
+	for _, candidate := range all {
+		if strings.Contains(candidate.Body, in.Fingerprint) {
+			incidentTasks = append(incidentTasks, candidate)
+		}
+	}
+	if len(incidentTasks) != 1 || incidentTasks[0].Status != task.StatusTodo {
+		t.Fatalf("incident history was not reopened in place: %+v", incidentTasks)
+	}
+	if strings.Contains(incidentTasks[0].Body, pid) {
+		t.Fatalf("local incident body was not scrubbed: %q", incidentTasks[0].Body)
+	}
+	if inner.calls != 0 || inner.closeCalls != 0 {
+		t.Fatalf("confidential incident reached public sink: submit=%d close=%d", inner.calls, inner.closeCalls)
+	}
+}
+
 func TestMonitorRoutingSink_WorkAnomaly_DedupsByFingerprintAfterRename(t *testing.T) {
 	t.Parallel()
 	sink, tasks, _ := newSinkTestEnv(t)
