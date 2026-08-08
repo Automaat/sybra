@@ -21,6 +21,9 @@ type fakeExecer struct {
 	mu          sync.Mutex
 	calls       [][]string
 	listResp    []byte
+	listResps   [][]byte
+	listErrs    []error
+	listCalls   int
 	listErr     error
 	createResp  []byte
 	createErr   error
@@ -81,6 +84,15 @@ func (f *fakeExecer) run(_ context.Context, args ...string) ([]byte, error) {
 		}
 		switch args[1] {
 		case "list":
+			if f.listCalls < len(f.listResps) {
+				idx := f.listCalls
+				out := f.listResps[idx]
+				f.listCalls++
+				if idx < len(f.listErrs) {
+					return out, f.listErrs[idx]
+				}
+				return out, f.listErr
+			}
 			return f.listResp, f.listErr
 		case "comment":
 			return f.commentResp, f.commentErr
@@ -154,6 +166,23 @@ func TestGHIssueSink_IncidentConvergesMarkerDuplicatesOnOldestCanonical(t *testi
 	}
 }
 
+func TestGHIssueSink_IncidentFindsHistoricalCanonicalOutsideRecentPage(t *testing.T) {
+	in := Incident{Fingerprint: "incident:old", FailureCode: "lost_agent", Revision: 2, State: IncidentActive}
+	marker := incidentRevisionMarker(in)
+	fe := &fakeExecer{listResps: [][]byte{
+		[]byte(`[{"number":7,"url":"https://github.com/example/repo/issues/7","state":"OPEN","body":"<!-- sybra-incident:v1:incident:old -->\n` + marker + `"}]`),
+		[]byte(`[]`),
+	}}
+	s := newTestSink(fe)
+	created, artifact, err := s.ApplyIncident(context.Background(), in, IncidentExpanded, "old recurrence")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created || artifact.Number != 7 || len(fe.callsMatching("issue", "create")) != 0 {
+		t.Fatalf("historical canonical missed: created=%v artifact=%+v calls=%v", created, artifact, fe.calls)
+	}
+}
+
 func TestGHIssueSink_IncidentSerializesConcurrentLocalUpserts(t *testing.T) {
 	fe := &convergingIncidentExecer{}
 	s := &GHIssueSink{exec: fe, label: "monitor"}
@@ -172,6 +201,37 @@ func TestGHIssueSink_IncidentSerializesConcurrentLocalUpserts(t *testing.T) {
 	fe.mu.Unlock()
 	if created != 1 {
 		t.Fatalf("created %d canonical issues, want 1", created)
+	}
+}
+
+func TestGHIssueSink_ResolveConvergesMarkerDuplicates(t *testing.T) {
+	in := Incident{Fingerprint: "incident:abc", FailureCode: "lost_agent", Revision: 5, State: IncidentResolved}
+	fe := &fakeExecer{listResp: []byte(`[
+		{"number":88,"url":"https://github.com/example/repo/issues/88","state":"OPEN","body":"<!-- sybra-incident:v1:incident:abc -->"},
+		{"number":87,"url":"https://github.com/example/repo/issues/87","state":"OPEN","body":"<!-- sybra-incident:v1:incident:abc -->"}
+	]`), viewResp: []byte(`{"comments":[]}`)}
+	s := newTestSink(fe)
+	closed, err := s.ResolveIncident(context.Background(), in, "healthy")
+	if err != nil || !closed {
+		t.Fatalf("ResolveIncident: closed=%v err=%v", closed, err)
+	}
+	closes := fe.callsMatching("issue", "close")
+	if len(closes) != 2 || closes[0][2] != "88" || closes[1][2] != "87" {
+		t.Fatalf("resolve did not converge duplicate then canonical: %v", closes)
+	}
+}
+
+func TestGHIssueSink_CreateDoesNotLatchWhenPostCreateReconcileFails(t *testing.T) {
+	in := Incident{Fingerprint: "incident:retry", FailureCode: "lost_agent", Revision: 1, State: IncidentActive}
+	fe := &fakeExecer{
+		listResps:  [][]byte{[]byte(`[]`), []byte(`[]`), nil},
+		listErrs:   []error{nil, nil, errors.New("temporary list failure")},
+		createResp: []byte("https://github.com/example/repo/issues/1\n"),
+	}
+	s := newTestSink(fe)
+	created, artifact, err := s.ApplyIncident(context.Background(), in, IncidentOpened, "body")
+	if err == nil || created || artifact.URL != "" {
+		t.Fatalf("post-create failure was latched: created=%v artifact=%+v err=%v", created, artifact, err)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
@@ -17,6 +18,16 @@ func TestMergeIncidentChangePreservesStrongestTransition(t *testing.T) {
 	}
 	if got := mergeIncidentChange(IncidentExpanded, IncidentOpened); got != IncidentOpened {
 		t.Fatalf("merge = %q, want opened", got)
+	}
+}
+
+func TestObserveIncidentsPreservesFleetScopeForUnscopedTask(t *testing.T) {
+	store := newTestIncidentStore(t)
+	svc := &Service{incidents: store}
+	anoms := []Anomaly{{Kind: KindUntriaged, TaskID: "t", DetectedAt: time.Now().UTC()}}
+	svc.observeIncidents([]task.Task{{ID: "t"}}, anoms)
+	if anoms[0].IncidentScope != "fleet" {
+		t.Fatalf("unscoped task incident scope = %q, want fleet", anoms[0].IncidentScope)
 	}
 }
 
@@ -219,7 +230,7 @@ func TestIncidentStoreConfigRekeyLetsPriorGenerationResolve(t *testing.T) {
 	cause := RootCause{FailureCode: "lost_agent", Component: "agent", Capability: "lifecycle", ProjectScope: "p", ConfigGeneration: "old"}
 	in, _, _ := store.Observe(Anomaly{Kind: KindLostAgent, DetectedAt: base}, cause, "t")
 	coverage := map[string]bool{"lost_agent": true}
-	closed, err := store.ReconcileHealthy(nil, map[string]bool{"p": true}, coverage, map[string]string{"lost_agent": "new"}, base.Add(time.Minute), time.Minute, 0)
+	closed, err := store.ReconcileHealthy(nil, map[string]bool{"p": true}, coverage, map[string]string{"lost_agent": "generation-next"}, base.Add(time.Minute), time.Minute, 0)
 	if err != nil || len(closed) != 1 || closed[0].Fingerprint != in.Fingerprint || closed[0].SupersededAt == nil || closed[0].ResolvedAt != nil {
 		t.Fatalf("old generation was stranded: closed=%+v err=%v", closed, err)
 	}

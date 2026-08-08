@@ -68,7 +68,7 @@ func (s *monitorRoutingSink) Submit(ctx context.Context, a monitor.Anomaly, body
 	if wctx == nil {
 		return s.inner.Submit(ctx, a, body)
 	}
-	title, _ := scrub.Scrub(monitor.IssueTitle(a.Kind, a.Fingerprint), wctx.Blocklist)
+	title, _ := scrub.Scrub(monitorArtifactTitle(a), wctx.Blocklist)
 	scrubbedBody, redactions := scrub.Scrub(body, wctx.Blocklist)
 
 	if existing, ok := s.findOpen(title, a.Fingerprint); ok {
@@ -109,7 +109,7 @@ func (s *monitorRoutingSink) ApplyIncident(ctx context.Context, in monitor.Incid
 		Confidential: in.IsConfidential()}
 	if a.Confidential {
 		wctx := s.lookupAnyWorkContext()
-		title, _ := scrub.Scrub(monitor.IssueTitle(a.Kind, a.Fingerprint), wctx.Blocklist)
+		title, _ := scrub.Scrub(monitor.IncidentTitle(in), wctx.Blocklist)
 		if in.State == monitor.IncidentActive {
 			if existing, ok := s.findMatching(title, a.Fingerprint, true); ok && task.IsTerminalStatus(existing.Status) {
 				scrubbed, _ := scrub.Scrub(body, wctx.Blocklist)
@@ -167,7 +167,7 @@ func (s *monitorRoutingSink) CloseIfOpen(ctx context.Context, a monitor.Anomaly,
 		wctx = s.lookupAnyWorkContext()
 	}
 	if wctx != nil {
-		title, _ = scrub.Scrub(monitor.IssueTitle(a.Kind, a.Fingerprint), wctx.Blocklist)
+		title, _ = scrub.Scrub(monitorArtifactTitle(a), wctx.Blocklist)
 	}
 	if existing, ok := s.findOpen(title, a.Fingerprint); ok {
 		scrubbedComment := comment
@@ -194,6 +194,13 @@ func (s *monitorRoutingSink) CloseIfOpen(ctx context.Context, a monitor.Anomaly,
 		return false, nil
 	}
 	return closer.CloseIfOpen(ctx, a, comment)
+}
+
+func monitorArtifactTitle(a monitor.Anomaly) string {
+	if strings.HasPrefix(a.Fingerprint, "incident:") {
+		return monitor.IncidentTitle(monitor.Incident{FailureCode: string(a.Kind), Fingerprint: a.Fingerprint})
+	}
+	return monitor.IssueTitle(a.Kind, a.Fingerprint)
 }
 
 // lookupAnyWorkContext combines every current work-project blocklist. It is

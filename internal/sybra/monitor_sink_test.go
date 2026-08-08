@@ -513,3 +513,11 @@ func TestMonitorRoutingSink_NonWorkPassesThrough(t *testing.T) {
 		t.Fatalf("inner.calls = %d, want 1", inner.calls)
 	}
 }
+
+func TestMonitorArtifactTitleKeepsIncidentIdentity(t *testing.T) {
+	one := monitorArtifactTitle(monitor.Anomaly{Kind: monitor.KindLostAgent, Fingerprint: "incident:one"})
+	two := monitorArtifactTitle(monitor.Anomaly{Kind: monitor.KindLostAgent, Fingerprint: "incident:two"})
+	if one == two || !strings.Contains(one, "one") || !strings.Contains(two, "two") {
+		t.Fatalf("incident titles collapsed: %q %q", one, two)
+	}
+}

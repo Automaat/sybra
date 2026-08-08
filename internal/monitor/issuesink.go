@@ -128,11 +128,6 @@ func incidentRevisionMarker(in Incident) string {
 
 func (s *GHIssueSink) findIncident(ctx context.Context, fp, revisionMarker string) (ghIncident, error) {
 	marker := incidentMarker(fp)
-	out, err := s.exec.run(ctx, append(s.repoArgs(), "issue", "list", "--state", "all", "--label", s.label,
-		"--json", "number,url,state,body", "--limit", "1000")...)
-	if err != nil {
-		return ghIncident{}, classifyGHError("gh incident list", out, err)
-	}
 	type incidentRow struct {
 		Number int    `json:"number"`
 		URL    string `json:"url"`
@@ -140,8 +135,27 @@ func (s *GHIssueSink) findIncident(ctx context.Context, fp, revisionMarker strin
 		Body   string `json:"body"`
 	}
 	var rows []incidentRow
-	if err := json.Unmarshal(out, &rows); err != nil {
-		return ghIncident{}, fmt.Errorf("decode gh incident list: %w", err)
+	queries := [][]string{
+		{"--search", marker + " in:body", "--limit", "100"}, // historical canonical, via exact marker search
+		{"--limit", "1000"}, // immediately visible recent rows, for create-race convergence
+	}
+	seenRows := map[int]bool{}
+	for _, query := range queries {
+		args := append(s.repoArgs(), "issue", "list", "--state", "all", "--label", s.label, "--json", "number,url,state,body")
+		out, err := s.exec.run(ctx, append(args, query...)...)
+		if err != nil {
+			return ghIncident{}, classifyGHError("gh incident list", out, err)
+		}
+		var page []incidentRow
+		if err := json.Unmarshal(out, &page); err != nil {
+			return ghIncident{}, fmt.Errorf("decode gh incident list: %w", err)
+		}
+		for _, row := range page {
+			if !seenRows[row.Number] {
+				seenRows[row.Number] = true
+				rows = append(rows, row)
+			}
+		}
 	}
 	var matches []incidentRow
 	for _, row := range rows {
@@ -210,7 +224,10 @@ func (s *GHIssueSink) ApplyIncident(ctx context.Context, in Incident, change Inc
 		// A second process may have won the same list-then-create race. Re-query
 		// and converge all marker-identical artifacts on the oldest canonical.
 		canonical, reconcileErr := s.findIncident(ctx, in.Fingerprint, revisionMarker)
-		if reconcileErr == nil && canonical.Number != 0 {
+		if reconcileErr != nil {
+			return false, IncidentArtifact{}, fmt.Errorf("reconcile created incident %s: %w", createdURL, reconcileErr)
+		}
+		if canonical.Number != 0 {
 			if len(canonical.Duplicates) > 0 {
 				linked := in
 				linked.IssueURL = canonical.URL
@@ -242,10 +259,22 @@ func (s *GHIssueSink) ApplyIncident(ctx context.Context, in Incident, change Inc
 }
 
 func (s *GHIssueSink) ResolveIncident(ctx context.Context, in Incident, comment string) (bool, error) {
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
 	revisionMarker := incidentRevisionMarker(in)
 	found, err := s.findIncident(ctx, in.Fingerprint, revisionMarker)
-	if err != nil || found.Number == 0 || found.State == "CLOSED" {
+	if err != nil || found.Number == 0 {
 		return false, err
+	}
+	if len(found.Duplicates) > 0 {
+		canonical := in
+		canonical.IssueURL = found.URL
+		if mapErr := s.MapDuplicateIncidents(ctx, canonical, found.Duplicates, "same stable incident fingerprint marker"); mapErr != nil {
+			return false, mapErr
+		}
+	}
+	if found.State == "CLOSED" {
+		return false, nil
 	}
 	out, closeErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "close", strconv.Itoa(found.Number), "--reason", "completed", "--comment", attribution.Append(revisionMarker+"\n"+comment))...)
 	if closeErr != nil {

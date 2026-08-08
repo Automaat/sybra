@@ -480,9 +480,15 @@ func (s *Service) observeIncidents(tasks []task.Task, anoms []Anomaly) map[strin
 			scope, safeTaskID, confidential = a.IncidentScope, a.IncidentTaskID, a.Confidential
 		}
 		if t, ok := byID[a.TaskID]; ok {
-			scope = t.ProjectID
+			if t.ProjectID != "" {
+				scope = t.ProjectID
+			}
 			if s.incidentScope != nil {
-				scope, safeTaskID, confidential = s.incidentScope(t)
+				mappedScope, mappedTaskID, mappedConfidential := s.incidentScope(t)
+				if mappedScope != "" {
+					scope = mappedScope
+				}
+				safeTaskID, confidential = mappedTaskID, mappedConfidential
 			}
 		} else if a.TaskID == "" && s.incidentScope != nil {
 			// Board-wide anomalies fail closed when any contributing task is
