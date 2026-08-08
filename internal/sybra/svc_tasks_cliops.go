@@ -13,6 +13,7 @@ import (
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/monitor"
+	"github.com/Automaat/sybra/internal/reject"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/tasksnapshot"
 	"github.com/Automaat/sybra/internal/triage"
@@ -38,7 +39,17 @@ func (s *TaskService) ExpandUmbrella(issueURL, model string) (UmbrellaExpandDTO,
 	}
 	res, err := s.umbrellaExpand(issueURL, model)
 	if err != nil {
-		return UmbrellaExpandDTO{}, boardRejection(err)
+		if reject.Is(err) {
+			return UmbrellaExpandDTO{}, err
+		}
+		// The reason comes from the `gh` invocation, whose stderr can carry
+		// the server's own config paths on an auth or setup failure. It is
+		// logged whole and reported by pointer, the same way a failed clone
+		// is, rather than forwarded verbatim.
+		if s.logger != nil {
+			s.logger.Error("umbrella.expand.failed", "issue", issueURL, "err", err)
+		}
+		return UmbrellaExpandDTO{}, validationError("expanding the umbrella issue failed; see the server log for the provider's reason")
 	}
 	return umbrellaResultDTO(res), nil
 }
@@ -153,6 +164,9 @@ func (s *TaskService) ReindexTaskArtifacts(taskID string) error {
 	return boardRejectionFor("task", taskID, s.artifacts.Reindex(taskID))
 }
 
+// maxSnapshotHistoryLimit bounds a caller-supplied commit count.
+const maxSnapshotHistoryLimit = 10000
+
 // TaskHistoryEntryDTO is one commit in the task snapshot history.
 type TaskHistoryEntryDTO struct {
 	SHA     string `json:"sha"`
@@ -166,6 +180,12 @@ type TaskHistoryEntryDTO struct {
 func (s *TaskService) ListTaskSnapshotHistory(limit int) ([]TaskHistoryEntryDTO, error) {
 	if limit <= 0 {
 		limit = 20
+	}
+	// git rejects a limit it cannot parse as an integer, which reaches the
+	// caller as a server fault for a number they chose. Bound it here so the
+	// refusal names the argument instead.
+	if limit > maxSnapshotHistoryLimit {
+		return nil, validationError(fmt.Sprintf("limit must be at most %d", maxSnapshotHistoryLimit))
 	}
 	cfg := s.config()
 	if cfg == nil {

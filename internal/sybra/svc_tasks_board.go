@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"os"
+	"syscall"
 
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/project"
@@ -49,6 +50,12 @@ func boardRejectionFor(kind, id string, err error) error {
 		errors.Is(err, artifact.ErrNotFound),
 		errors.Is(err, project.ErrProjectNotRegistered):
 		return notFoundError(kind, id)
+	case errors.Is(err, syscall.ENAMETOOLONG):
+		// The store reports this as a failure to open a path it built, so it
+		// arrives wrapped in one. The cause is the identifier the caller
+		// typed, and saying so costs them a paste-length mistake rather than
+		// a support question.
+		return validationError(kind + " identifier is too long")
 	}
 	return boardRejection(err)
 }

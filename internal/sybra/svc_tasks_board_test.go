@@ -542,3 +542,36 @@ func allStringArgs(sig reflect.Type, value string) ([]any, bool) {
 	}
 	return args, true
 }
+
+// TestBoardEndpoints_ExternalToolFailuresStayActionable covers the last class
+// adversarial testing found: a failure raised by the OS or an external tool
+// for an argument the caller chose.
+//
+// These carry no server path of their own, but the tools that raise them can,
+// so the reason is bounded here rather than forwarded. What the caller gets
+// back names their own argument.
+func TestBoardEndpoints_ExternalToolFailuresStayActionable(t *testing.T) {
+	t.Parallel()
+	svc, a := setupTaskService(t)
+	a.taskSvc = svc
+
+	t.Run("an id too long for a filename", func(t *testing.T) {
+		status, body := postAPI(t, a, "TaskService", "GetTask", strings.Repeat("x", 300))
+		if status != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d (body %s)", status, http.StatusBadRequest, body)
+		}
+		if !strings.Contains(body, "too long") {
+			t.Errorf("body %s does not name the length as the problem", body)
+		}
+	})
+
+	t.Run("a snapshot limit git cannot parse", func(t *testing.T) {
+		status, body := postAPI(t, a, "TaskService", "ListTaskSnapshotHistory", 9007199254740992)
+		if status != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d (body %s)", status, http.StatusBadRequest, body)
+		}
+		if !strings.Contains(body, "at most") {
+			t.Errorf("body %s does not name the bound", body)
+		}
+	})
+}
