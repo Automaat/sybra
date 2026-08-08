@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -248,38 +249,69 @@ func TestCallAPI_WithoutATargetFailsLoudly(t *testing.T) {
 	}
 }
 
-func TestNewRemoteAPIClient(t *testing.T) {
+// TestNewAPIClient_TargetContract pins what a configured target resolves to.
+//
+// The dangerous outcome is not a rejected target but an ignored one: an
+// operator who set a board and got no client edits this machine's files
+// believing they reached the other one. Every unusable target here therefore
+// has to come back as an error, never as "unset".
+func TestNewAPIClient_TargetContract(t *testing.T) {
 	tests := []struct {
-		name   string
-		target string
-		token  string
-		want   string
+		name       string
+		target     string
+		token      string
+		wantURL    string
+		wantRemote bool
+		wantErr    bool
 	}{
-		{"https target with token", "https://board.example:8443", "secret", "https://board.example:8443"},
-		{"cleartext target refused", "http://board.example:8080", "secret", ""},
-		{"https target without token refused", "https://board.example:8443", "", ""},
-		{"path refused", "https://board.example:8443/api", "secret", ""},
-		{"unset", "", "secret", ""},
+		{name: "https board with its token", target: "https://board.example:8443", token: "secret",
+			wantURL: "https://board.example:8443", wantRemote: true},
+		{name: "https loopback is this machine's board", target: "https://127.0.0.1:8443", token: "secret",
+			wantURL: "https://127.0.0.1:8443", wantRemote: false},
+		{name: "cleartext loopback", target: "127.0.0.1:8443", wantURL: "http://127.0.0.1:8443", wantRemote: false},
+		{name: "cleartext to another machine refused", target: "http://board.example:8080", token: "secret", wantErr: true},
+		{name: "https without its token refused", target: "https://board.example:8443", wantErr: true},
+		{name: "path refused", target: "https://board.example:8443/api", token: "secret", wantErr: true},
+		{name: "unset", target: "", token: "secret"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(serverTargetEnv, tt.target)
 			t.Setenv(serverTokenEnv, tt.token)
-			client, ok := newRemoteAPIClient()
-			if tt.want == "" {
-				if ok {
-					t.Fatalf("expected no remote client, got %s", client.baseURL)
+			t.Setenv("SYBRA_AUTH_TOKEN_FILE", "")
+			cfg := config.DefaultConfig()
+			cfg.Server.AuthToken = "config-token"
+
+			client, err := newAPIClient(cfg)
+			if tt.target == "" {
+				if !errors.Is(err, errNoServerTarget) || client != nil {
+					t.Fatalf("unset target = %#v, %v; want the unset sentinel", client, err)
 				}
 				return
 			}
-			if !ok {
-				t.Fatal("expected a remote client")
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("target %q was accepted or silently ignored: %#v", tt.target, client)
+				}
+				if client != nil {
+					t.Errorf("client = %#v, want none alongside an error", client)
+				}
+				return
 			}
-			if client.baseURL != tt.want {
-				t.Errorf("baseURL = %q, want %q", client.baseURL, tt.want)
+			if err != nil {
+				t.Fatalf("newAPIClient() = %v, want a client", err)
 			}
-			if client.token != tt.token {
-				t.Errorf("token = %q, want %q", client.token, tt.token)
+			if tt.wantURL == "" {
+				if client != nil {
+					t.Errorf("client = %#v, want none for an unset target", client)
+				}
+				return
+			}
+			if client.baseURL != tt.wantURL {
+				t.Errorf("baseURL = %q, want %q", client.baseURL, tt.wantURL)
+			}
+			if client.remote != tt.wantRemote {
+				t.Errorf("remote = %v, want %v — a loopback board's files are the same board", client.remote, tt.wantRemote)
 			}
 		})
 	}

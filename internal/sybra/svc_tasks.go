@@ -79,8 +79,10 @@ type TaskService struct {
 	umbrellaExpand func(issueURL, model string) (umbrella.Result, error)
 	// monitorScan runs one anomaly-detector pass on the server's own monitor
 	// service, so sybra-cli's `monitor scan` reports what the running instance
-	// sees rather than what a second reader of the same files would. nil when
-	// the monitor is not running.
+	// sees rather than what a second reader of the same files would. Wired
+	// unconditionally: monitor.enabled stops the background loop, not the
+	// ability to read the board, so the closure falls back to a read-only
+	// ad-hoc pass. nil only in tests that do not exercise a scan.
 	monitorScan func(context.Context) (monitor.Report, error)
 	// deleteTask allows tests to force DeleteTask failures on cleanup branches
 	// without mutating the real task store or broadening the public API.

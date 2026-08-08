@@ -35,6 +35,10 @@ const apiCloneTimeout = 12 * time.Minute
 
 const maxAPIResponseBody = 32 << 20
 
+// errNoServerTarget reports that no board was configured, which is the one
+// case a command may answer from this machine's files without saying so.
+var errNoServerTarget = errors.New("no server target configured")
+
 // serverTargetEnv is the explicit control-plane target for CLI API mode.
 // Reusing SYBRA_PORT/SYBRA_HOST here is unsafe: they describe where the server
 // listens, and ambient unit-shell exports made the CLI hit unrelated localhost
@@ -67,75 +71,88 @@ func (e *apiError) Error() string {
 	return fmt.Sprintf("server returned %d: %s", e.Status, e.Message)
 }
 
-func newAPIClient(cfg *config.Config) (client *apiClient, ok bool) {
-	if cfg == nil {
-		return nil, false
+// newAPIClient resolves SYBRA_SERVER_TARGET into a client.
+//
+// A target that is set but unusable is a configuration error, never a silent
+// "no server". Treating it as unset is what let an operator point the CLI at a
+// board, get no client, and edit this machine's files believing they had
+// reached the other one — the failure this whole surface exists to remove.
+//
+// It returns errNoServerTarget only when no target is configured at all.
+func newAPIClient(cfg *config.Config) (*apiClient, error) {
+	raw := strings.TrimSpace(os.Getenv(serverTargetEnv))
+	if raw == "" {
+		return nil, errNoServerTarget
 	}
-	if remote, ok := newRemoteAPIClient(); ok {
-		return remote, true
+	if cfg == nil {
+		return nil, fmt.Errorf("%s is set but no configuration is loaded", serverTargetEnv)
+	}
+	if strings.HasPrefix(raw, "https://") {
+		return newTLSAPIClient(raw)
+	}
+	return newCleartextAPIClient(cfg, raw)
+}
+
+// newTLSAPIClient targets a board over TLS. The token has to come from the
+// environment: a board on another machine does not keep its token in this
+// machine's config, by definition.
+func newTLSAPIClient(raw string) (*apiClient, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+		return nil, fmt.Errorf("%s=%q is not a bare https origin", serverTargetEnv, raw)
+	}
+	if path := strings.TrimSpace(u.EscapedPath()); path != "" && path != "/" {
+		return nil, fmt.Errorf("%s=%q must carry no path", serverTargetEnv, raw)
+	}
+	token := strings.TrimSpace(os.Getenv(serverTokenEnv))
+	if token == "" {
+		return nil, fmt.Errorf("%s=%q requires %s", serverTargetEnv, raw, serverTokenEnv)
+	}
+	host, _, splitErr := net.SplitHostPort(u.Host)
+	if splitErr != nil {
+		host = u.Host
+	}
+	return &apiClient{
+		baseURL: "https://" + u.Host,
+		token:   token,
+		http:    &http.Client{},
+		// A TLS board on this machine is still this machine's board, so the
+		// filesystem stores remain a correct fallback for it.
+		remote: !isLoopbackHost(host),
+	}, nil
+}
+
+// newCleartextAPIClient targets a board over plain HTTP, which only a loopback
+// origin may be. Anything else would put the bearer token on the wire.
+func newCleartextAPIClient(cfg *config.Config, raw string) (*apiClient, error) {
+	host, port, ok := parseServerTarget(raw)
+	if !ok {
+		return nil, fmt.Errorf("%s=%q is not a valid host:port or http origin", serverTargetEnv, raw)
+	}
+	if !isLoopbackHost(host) {
+		return nil, fmt.Errorf("%s=%q is not loopback; use https:// with %s rather than sending the token in cleartext",
+			serverTargetEnv, raw, serverTokenEnv)
 	}
 	token := strings.TrimSpace(cfg.Server.AuthToken)
 	tokenPath := strings.TrimSpace(os.Getenv("SYBRA_AUTH_TOKEN_FILE"))
 	if tokenPath != "" {
 		data, err := os.ReadFile(tokenPath)
 		if err != nil {
-			return nil, false
+			return nil, fmt.Errorf("read %s: %w", "SYBRA_AUTH_TOKEN_FILE", err)
 		}
 		token = strings.TrimSpace(string(data))
 	}
 	if token == "" {
-		return nil, false
+		return nil, fmt.Errorf("%s=%q needs an auth token in config or SYBRA_AUTH_TOKEN_FILE", serverTargetEnv, raw)
 	}
 	if tokenPath == "" && cfg.ServesTLS() {
-		return nil, false
-	}
-	host, port, ok := resolveDialTarget()
-	if !ok {
-		return nil, false
-	}
-	if tokenPath != "" {
-		ip := net.ParseIP(strings.Trim(host, "[]"))
-		if ip == nil || !ip.IsLoopback() {
-			return nil, false
-		}
+		return nil, fmt.Errorf("%s=%q is cleartext but this instance serves TLS", serverTargetEnv, raw)
 	}
 	return &apiClient{
 		baseURL: "http://" + net.JoinHostPort(host, port),
 		token:   token,
 		http:    &http.Client{},
-		remote:  !isLoopbackHost(host),
-	}, true
-}
-
-// newRemoteAPIClient targets a board hosted on another machine. It requires
-// both an https target and an explicit token: a remote board's token is not in
-// this machine's config, and a cleartext hop would put that token on the wire.
-func newRemoteAPIClient() (client *apiClient, ok bool) {
-	raw := strings.TrimSpace(os.Getenv(serverTargetEnv))
-	if !strings.HasPrefix(raw, "https://") {
-		return nil, false
-	}
-	token := strings.TrimSpace(os.Getenv(serverTokenEnv))
-	if token == "" {
-		return nil, false
-	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
-		return nil, false
-	}
-	if path := strings.TrimSpace(u.EscapedPath()); path != "" && path != "/" {
-		return nil, false
-	}
-	return &apiClient{
-		baseURL: "https://" + u.Host,
-		token:   token,
-		http:    &http.Client{},
-		remote:  true,
-	}, true
-}
-
-func resolveDialTarget() (host, port string, ok bool) {
-	return parseServerTarget(os.Getenv(serverTargetEnv))
+	}, nil
 }
 
 func parseServerTarget(raw string) (host, port string, ok bool) {

@@ -11,6 +11,7 @@ import type { Notification } from '../../bindings/github.com/Automaat/sybra/inte
 import type { StatsResponse } from '../../bindings/github.com/Automaat/sybra/internal/stats/models.js'
 import type { Meta, ProgressEntry } from '../../bindings/github.com/Automaat/sybra/internal/artifact/models.js'
 import type { Event as AuditEvent, Query as AuditQuery } from '../../bindings/github.com/Automaat/sybra/internal/audit/models.js'
+import type { Report as MonitorReport } from '../../bindings/github.com/Automaat/sybra/internal/monitor/models.js'
 import type { Report as SelfMonitorReport, LedgerEntry } from '../../bindings/github.com/Automaat/sybra/internal/selfmonitor/models.js'
 import type { Report as EvaluationReport } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
 import type { Report as EvaluationReportData, PhaseReport as PhaseReportData, AutonomyTrend } from '../../bindings/github.com/Automaat/sybra/internal/evaluation/models.js'
@@ -207,7 +208,7 @@ export function ExpandUmbrella(arg1: string, arg2: string): Promise<UmbrellaExpa
 export function ClassifyTask(arg1: string, arg2: string): Promise<TriageResultDTO> { return call('TaskService', 'ClassifyTask', arg1, arg2) }
 export function AppendTaskProgress(arg1: string, arg2: string, arg3: string, arg4: string): Promise<ProgressEntry> { return call('TaskService', 'AppendTaskProgress', arg1, arg2, arg3, arg4) }
 export function ListTaskArtifactMetas(arg1: string): Promise<Array<Meta>> { return call('TaskService', 'ListTaskArtifactMetas', arg1) }
-export function ReadTaskArtifact(arg1: string, arg2: string): Promise<number[]> { return call('TaskService', 'ReadTaskArtifact', arg1, arg2) }
+export function ReadTaskArtifact(arg1: string, arg2: string): Promise<string> { return call('TaskService', 'ReadTaskArtifact', arg1, arg2) }
 export function ReindexTaskArtifacts(arg1: string): Promise<void> { return call('TaskService', 'ReindexTaskArtifacts', arg1) }
 export function ListTaskSnapshotHistory(arg1: number): Promise<Array<TaskHistoryEntryDTO>> { return call('TaskService', 'ListTaskSnapshotHistory', arg1) }
 export function MapDuplicateIncidents(arg1: string, arg2: number[], arg3: string): Promise<MapDuplicateIncidentsDTO> { return call('TaskService', 'MapDuplicateIncidents', arg1, arg2, arg3) }
@@ -220,7 +221,7 @@ export function GetSelfMonitorReport(): Promise<SelfMonitorReport> { return call
 export function InvestigateSelfMonitor(): Promise<SelfMonitorReport> { return call('SelfMonitorService', 'InvestigateSelfMonitor') }
 export function ListSelfMonitorLedger(arg1: string, arg2: number): Promise<Array<LedgerEntry>> { return call('SelfMonitorService', 'ListSelfMonitorLedger', arg1, arg2) }
 export function RunHarnessEvolution(arg1: number, arg2: number, arg3: string, arg4: boolean): Promise<HarnessEvolutionRunDTO> { return call('SelfMonitorService', 'RunHarnessEvolution', arg1, arg2, arg3, arg4) }
-export function ScanMonitor(): Promise<MonitorReportBinding> { return call('TaskService', 'ScanMonitor') }
+export function ScanMonitor(): Promise<MonitorReport> { return call('TaskService', 'ScanMonitor') }
 export function DeleteAttachment(arg1: string, arg2: string): Promise<void> { return call('TaskService', 'DeleteAttachment', arg1, arg2) }
 export function DispatchFromHumanRequired(arg1: string, arg2: string, arg3: string): Promise<Task> { return call('TaskService', 'DispatchFromHumanRequired', arg1, arg2, arg3) }
 export function GetAttachmentURL(arg1: string, arg2: string): Promise<string> { return call('TaskService', 'GetAttachmentURL', arg1, arg2) }

@@ -461,9 +461,12 @@ func resolveBoardAPI(cmd string, cfg *config.Config, allowHTTP bool) (api *apiCl
 	if !allowHTTP {
 		return nil, ""
 	}
-	c, ok := newAPIClient(cfg)
-	if !ok {
+	c, err := newAPIClient(cfg)
+	if errors.Is(err, errNoServerTarget) {
 		return nil, ""
+	}
+	if err != nil {
+		return nil, err.Error()
 	}
 	if c.reachable(context.Background()) {
 		return c, ""
@@ -3678,7 +3681,7 @@ func addCapacityFindings(report *doctorCapacityReport, add func(severity, format
 func resolveCapacity(cfg *config.Config, allowHTTP bool) *doctorCapacityReport {
 	var api *apiClient
 	if allowHTTP {
-		if c, ok := newAPIClient(cfg); ok && c.reachable(context.Background()) {
+		if c, err := newAPIClient(cfg); err == nil && c.reachable(context.Background()) {
 			api = c
 		}
 	}

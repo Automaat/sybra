@@ -37,7 +37,7 @@ func (a *App) wireTaskService() {
 		// runs here, the same way the filesystem-backed command does.
 		cfg := a.currentConfig()
 		if cfg == nil {
-			return monitor.Report{}, errors.New("monitor configuration unavailable")
+			return monitor.Report{}, unavailableError("monitor configuration unavailable")
 		}
 		return monitor.NewService(monitor.Deps{
 			Cfg:        cfg.Monitor,
