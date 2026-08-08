@@ -386,7 +386,7 @@ func TestUpdateTask_InvalidStatusCarriesTheValidSet(t *testing.T) {
 	if status != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d (body %s)", status, http.StatusBadRequest, body)
 	}
-	if !strings.Contains(body, "bogus") || !strings.Contains(body, "in-progress") {
+	if !strings.Contains(body, "bogus") || !strings.Contains(body, string(task.StatusInProgress)) {
 		t.Errorf("body %s does not name the rejected value and the valid set", body)
 	}
 }
