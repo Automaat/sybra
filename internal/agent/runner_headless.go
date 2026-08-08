@@ -264,14 +264,27 @@ func stdinPromptHeadlessInvocation(steerable bool, providerName string) bool {
 
 // writeAndCloseHeadlessPrompt sends the one-shot stdin prompt then closes the
 // pipe so the child (default --input-format text) sees EOF immediately,
-// matching a plain `claude -p <text>` run's stdin behavior. Never returns an
-// error to the caller: a write failure here should not abort an otherwise
-// healthy attempt, only be logged for diagnosis.
-func (m *Manager) writeAndCloseHeadlessPrompt(a *Agent, stdin io.WriteCloser, prompt string) {
-	if _, err := io.WriteString(stdin, prompt); err != nil {
-		m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", err)
+// matching a plain `claude -p <text>` run's stdin behavior. The delivery is
+// bounded: a child that does not consume stdin must not strand the runner.
+func (m *Manager) writeAndCloseHeadlessPrompt(a *Agent, stdin io.WriteCloser, prompt string) error {
+	done := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(stdin, prompt)
+		done <- err
+	}()
+	timer := time.NewTimer(stdinInitialWriteTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		_ = stdin.Close()
+		if err != nil {
+			return fmt.Errorf("write stdin: %w", err)
+		}
+		return nil
+	case <-timer.C:
+		_ = stdin.Close()
+		return fmt.Errorf("write stdin: timed out after %s, pipe closed", stdinInitialWriteTimeout)
 	}
-	_ = stdin.Close()
 }
 
 func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunConfig, outFile **os.File, inv headlessInvocation) (retry bool, err error) {
@@ -346,7 +359,16 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 			return false, fmt.Errorf("deliver initial prompt: %w: %w", errPromptUndelivered, writeErr)
 		}
 	} else if promptStdin != nil {
-		m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt)
+		if writeErr := m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt); writeErr != nil {
+			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
+			a.SetError(ErrorKindPromptUndelivered, writeErr.Error())
+			a.SetExitErr(fmt.Errorf("%w: %w", errPromptUndelivered, writeErr))
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			_ = cmd.Wait()
+			return false, fmt.Errorf("deliver initial prompt: %w: %w", errPromptUndelivered, writeErr)
+		}
 	}
 
 	// Open log file on first successful start; subsequent retries append to same file.
@@ -542,7 +564,16 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 			return nil, fmt.Errorf("deliver initial prompt: %w: %w", errPromptUndelivered, writeErr)
 		}
 	} else if promptStdin != nil {
-		m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt)
+		if writeErr := m.writeAndCloseHeadlessPrompt(a, promptStdin, cfg.Prompt); writeErr != nil {
+			m.logger.Error("agent.headless.initial-prompt", "id", a.ID, "err", writeErr)
+			a.SetError(ErrorKindPromptUndelivered, writeErr.Error())
+			a.SetExitErr(fmt.Errorf("%w: %w", errPromptUndelivered, writeErr))
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+			}
+			return nil, fmt.Errorf("deliver initial prompt: %w: %w", errPromptUndelivered, writeErr)
+		}
 	}
 	return cmd, nil
 }
