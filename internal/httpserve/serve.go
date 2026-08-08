@@ -145,7 +145,13 @@ func runtimeConfig(opts Options) http.HandlerFunc {
 //
 // A classic script tag is exempt from same-origin policy, so without this any
 // local page could load this endpoint and read the token out of its own global
-// scope — the ephemeral port is no obstacle, a few hundred failed loads find it.
+// scope — the port is no obstacle once it is stable, and a few hundred failed
+// loads find an unstable one.
+//
+// Sec-Fetch-Site is checked first because a page cannot suppress or forge it,
+// while it can drop Referer with referrerpolicy. A caller sending neither is
+// not a browser, so it is not the drive-by this guards against, and it already
+// had to reach loopback to get here.
 func samePageAsSelf(r *http.Request, selfOrigin string) bool {
 	if selfOrigin == "" {
 		return false
@@ -154,6 +160,9 @@ func samePageAsSelf(r *http.Request, selfOrigin string) bool {
 		return site == "same-origin"
 	}
 	referer := r.Header.Get("Referer")
+	if referer == "" {
+		return true
+	}
 	return referer == selfOrigin || strings.HasPrefix(referer, selfOrigin+"/")
 }
 

@@ -93,7 +93,11 @@ func TestRuntimeConfigDisclosesTokenToLoopbackOnly(t *testing.T) {
 		{name: "same origin v6", remote: "[::1]:5555", fetchSite: "same-origin", wantToken: true},
 		{name: "referer fallback", remote: "127.0.0.1:5555", referer: self + "/tasks", wantToken: true},
 		{name: "another local page", remote: "127.0.0.1:5555", fetchSite: "cross-site", referer: "https://evil.example/"},
-		{name: "no provenance at all", remote: "127.0.0.1:5555"},
+		{name: "another local page hiding its referer", remote: "127.0.0.1:5555", fetchSite: "cross-site"},
+		{name: "another local page by referer alone", remote: "127.0.0.1:5555", referer: "http://127.0.0.1:9999/"},
+		// Neither header means a non-browser caller, which already had to reach
+		// loopback and can read the token file anyway.
+		{name: "no provenance at all", remote: "127.0.0.1:5555", wantToken: true},
 		{name: "lan", remote: "192.168.20.5:5555", fetchSite: "same-origin"},
 		{name: "proxied through loopback", remote: "127.0.0.1:5555", forwarded: "203.0.113.9", fetchSite: "same-origin"},
 	}
