@@ -239,7 +239,7 @@ func (s *monitorRoutingSink) lookupAnyWorkContext() *WorkScrubContext {
 			continue
 		}
 		for _, value := range wctx.Blocklist {
-			if value != "" && !seen[value] {
+			if strings.TrimSpace(value) != "" && !seen[value] {
 				ctx.Blocklist = append(ctx.Blocklist, value)
 				seen[value] = true
 			}
@@ -253,7 +253,7 @@ func (s *monitorRoutingSink) lookupAnyWorkContext() *WorkScrubContext {
 
 func hasEffectiveBlocklist(blocklist []string) bool {
 	for _, value := range blocklist {
-		if value != "" {
+		if strings.TrimSpace(value) != "" {
 			return true
 		}
 	}

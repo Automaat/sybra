@@ -269,7 +269,7 @@ func TestMonitorRoutingSink_ConfidentialRoutesFailClosedWithoutWorkScrubContext(
 	}
 }
 
-func TestMonitorRoutingSink_WorkRoutesFailClosedWithEmptyTaskScrubContext(t *testing.T) {
+func TestMonitorRoutingSink_WorkRoutesFailClosedWithIneffectiveScrubContext(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	store, err := task.NewStore(dir)
@@ -279,7 +279,7 @@ func TestMonitorRoutingSink_WorkRoutesFailClosedWithEmptyTaskScrubContext(t *tes
 	tasks := task.NewManager(store, task.EmitterFunc(func(string, any) {}))
 	inner := &fakeInnerSink{closeNext: true}
 	sink := newMonitorRoutingSink(inner, tasks, func(string) *WorkScrubContext {
-		return &WorkScrubContext{ProjectID: "work-project", Blocklist: []string{""}}
+		return &WorkScrubContext{ProjectID: "work-project", Blocklist: []string{"", " \t "}}
 	}, "Automaat/sybra", nil, slog.New(slog.DiscardHandler))
 	src, err := tasks.Create("source", "source body", task.AgentModeHeadless)
 	if err != nil {
@@ -301,6 +301,15 @@ func TestMonitorRoutingSink_WorkRoutesFailClosedWithEmptyTaskScrubContext(t *tes
 	}
 	if _, err := sink.CloseIfOpen(context.Background(), a, "SECRET close"); err == nil {
 		t.Fatal("CloseIfOpen error = nil, want fail-closed error")
+	}
+	incident := monitor.Incident{
+		Fingerprint:  "incident:opaque",
+		FailureCode:  string(a.Kind),
+		ProjectScope: "work-opaque",
+		State:        monitor.IncidentActive,
+	}
+	if _, _, err := sink.ApplyIncident(context.Background(), incident, monitor.IncidentOpened, "SECRET incident"); err == nil {
+		t.Fatal("ApplyIncident error = nil, want fail-closed error")
 	}
 	all, err := tasks.List()
 	if err != nil {
