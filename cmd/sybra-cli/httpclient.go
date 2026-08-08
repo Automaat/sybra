@@ -28,6 +28,11 @@ const apiCallTimeout = 15 * time.Second
 // operator to re-run and race a second expansion against the first.
 const apiSlowCallTimeout = 30 * time.Minute
 
+// apiCloneTimeout bounds a synchronous project create. It sits above the
+// store's own ten-minute ceiling on the clone it waits for, so the server's
+// timeout is the one that fires and its reason is the one reported.
+const apiCloneTimeout = 12 * time.Minute
+
 const maxAPIResponseBody = 32 << 20
 
 // serverTargetEnv is the explicit control-plane target for CLI API mode.
@@ -45,6 +50,8 @@ type apiClient struct {
 	baseURL string
 	token   string
 	http    *http.Client
+	// remote records that the target is another machine's board. A loopback server shares this machine's home, so the filesystem stores are the same board and falling back to them is correct; a remote one is a different board, and falling back edits files its owner never reads.
+	remote bool
 }
 
 type apiError struct {
@@ -96,6 +103,7 @@ func newAPIClient(cfg *config.Config) (client *apiClient, ok bool) {
 		baseURL: "http://" + net.JoinHostPort(host, port),
 		token:   token,
 		http:    &http.Client{},
+		remote:  !isLoopbackHost(host),
 	}, true
 }
 
@@ -122,6 +130,7 @@ func newRemoteAPIClient() (client *apiClient, ok bool) {
 		baseURL: "https://" + u.Host,
 		token:   token,
 		http:    &http.Client{},
+		remote:  true,
 	}, true
 }
 
@@ -160,6 +169,15 @@ func parseServerTarget(raw string) (host, port string, ok bool) {
 
 func isWildcardHost(h string) bool {
 	return h == "0.0.0.0" || h == "::"
+}
+
+func isLoopbackHost(h string) bool {
+	h = strings.Trim(strings.TrimSpace(h), "[]")
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (c *apiClient) reachable(ctx context.Context) bool {

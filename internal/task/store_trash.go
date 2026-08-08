@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/Automaat/sybra/internal/reject"
 )
 
 // TrashDir returns the directory soft-deleted tasks are moved into by
@@ -276,7 +278,7 @@ func (s *Store) RestoreFromTrash(id string) (Task, error) {
 		return Task{}, err
 	}
 	if _, err := os.Stat(livePath); err == nil {
-		return Task{}, fmt.Errorf("task %s already exists, refusing to overwrite with trashed copy", id)
+		return Task{}, reject.New("task %s already exists, refusing to overwrite with trashed copy", id)
 	} else if !os.IsNotExist(err) {
 		return Task{}, fmt.Errorf("stat live task: %w", err)
 	}

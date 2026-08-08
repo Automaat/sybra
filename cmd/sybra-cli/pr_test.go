@@ -116,7 +116,7 @@ func TestCmdPR_GuardsBeforeReachingGH(t *testing.T) {
 			}
 
 			var rc int
-			out := captureStderr(t, func() { rc = cmdPR(mgr, nil, args, true) })
+			out := captureStderr(t, func() { rc = cmdPR(mgr, args, true) })
 
 			if rc != tt.wantRC {
 				t.Errorf("cmdPR(%v) = %d, want %d — %s", args, rc, tt.wantRC, tt.explain)

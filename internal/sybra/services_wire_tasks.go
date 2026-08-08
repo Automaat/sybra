@@ -46,13 +46,19 @@ func (a *App) wireTaskService() {
 	// Read one current snapshot inside the closure so config reloads update the
 	// planner model without mixing settings from different snapshots.
 	// Mirrors initIssuesFetcher's poll-loop expander (same Expand entry point).
-	a.taskSvc.umbrellaExpand = func(issueURL string) (umbrella.Result, error) {
+	// An empty model means the caller expressed no preference; `sybra-cli
+	// umbrella --model` passes one, and dropping it would expand with the
+	// server's default and report success as if the flag had applied.
+	a.taskSvc.umbrellaExpand = func(issueURL, model string) (umbrella.Result, error) {
 		cfg := a.currentConfig()
 		var opts []umbrella.ExpandOption
 		if cfg.Umbrella.Ground {
 			opts = append(opts, umbrella.WithExpandGrounder(buildGroundLister(a.projects), cfg.Umbrella.GroundMinSubIssues))
 		}
-		return umbrella.Expand(a.ctx, a.tasks, umbrella.FallbackPlannerRunner(cfg.Umbrella.Model, a.providerHealth), issueURL, opts...)
+		if model == "" {
+			model = cfg.Umbrella.Model
+		}
+		return umbrella.Expand(a.ctx, a.tasks, umbrella.FallbackPlannerRunner(model, a.providerHealth), issueURL, opts...)
 	}
 	if a.humanReview != nil {
 		a.humanReview.dispatchFromHumanRequired = func(id, target, reason, completingAgentID string) (task.Task, error) {

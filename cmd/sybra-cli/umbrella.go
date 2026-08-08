@@ -34,7 +34,7 @@ func cmdUmbrella(cfg *config.Config, api *apiClient, s *task.Manager, projStore 
 	// Expansion writes many tasks under the server's locks, so a reachable
 	// server runs the whole operation rather than this process racing it.
 	if api != nil {
-		res, err := callAPIWithin[umbrellaExpandDTO](api, apiSlowCallTimeout, taskServiceName, "ExpandUmbrella", issueURL)
+		res, err := callAPIWithin[umbrellaExpandDTO](api, apiSlowCallTimeout, taskServiceName, "ExpandUmbrella", issueURL, *model)
 		if err != nil {
 			return fatal(jsonOut, "%v", err)
 		}

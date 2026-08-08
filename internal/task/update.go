@@ -14,7 +14,7 @@ import (
 
 // Update carries optional field changes for Store.Update.
 // A nil pointer means "leave unchanged"; a non-nil pointer applies the new value.
-// For Workflow: nil = unchanged; non-nil = overwrite (even if pointed-to value is nil).
+// For Workflow: nil = unchanged; non-nil = overwrite. A clear goes through ClearWorkflow instead: a non-nil Workflow holding a nil inner pointer works in-process but not over the API, so it is never the right encoding.
 type Update struct {
 	Title             *string
 	Slug              *string
@@ -25,10 +25,7 @@ type Update struct {
 	AutonomyOutcome   *autonomy.Outcome
 	Blocker           *blocker.State
 	ClearBlocker      *bool
-	// ClearWorkflow removes the task's workflow execution. Workflow is a
-	// **Execution, and a non-nil outer pointer holding a nil inner one does
-	// not survive JSON: it marshals to null, and unmarshal nils the outer
-	// pointer, so a clear sent over the API silently became a no-op.
+	// ClearWorkflow removes the task's workflow execution, and is the only encoding of a clear that survives JSON. Workflow is a **Execution: a non-nil outer pointer holding a nil inner one marshals to null, and unmarshal then nils the outer pointer, so a clear sent over the API read back as "leave unchanged".
 	ClearWorkflow         *bool
 	BlockedByIssue        *string
 	UmbrellaIssue         *string

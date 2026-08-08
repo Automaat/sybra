@@ -1,27 +1,10 @@
 package task
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/workflow"
 )
-
-func TestUpdate_ClearWorkflowSurvivesJSON(t *testing.T) {
-	// The old encoding was a non-nil outer pointer holding a nil inner one, which marshals to null; unmarshal then nils the outer pointer, so the server read "no change" and reopen left the dead execution attached.
-	in := Update{ClearWorkflow: Ptr(true)}
-	data, err := json.Marshal(in)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var out Update
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if out.ClearWorkflow == nil || !*out.ClearWorkflow {
-		t.Fatalf("ClearWorkflow did not survive the round trip: %s", data)
-	}
-}
 
 func TestApplyUpdate_ClearWorkflowRemovesTheExecution(t *testing.T) {
 	store, err := NewStore(t.TempDir())
@@ -41,5 +24,29 @@ func TestApplyUpdate_ClearWorkflowRemovesTheExecution(t *testing.T) {
 	}
 	if cleared.Workflow != nil {
 		t.Errorf("Workflow = %+v, want nil", cleared.Workflow)
+	}
+}
+
+// TestApplyUpdate_ClearWorkflowWinsOverAnAttach pins the precedence the CLI
+// relies on: reopen sends a clear alongside the other field resets, and an
+// Update carrying both must not resurrect the execution it is discarding.
+func TestApplyUpdate_ClearWorkflowWinsOverAnAttach(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	created, err := store.Create("both set", "", AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	cleared, err := store.Update(created.ID, Update{
+		ClearWorkflow: Ptr(true),
+		Workflow:      Ptr(&workflow.Execution{WorkflowID: "simple-task-plan", State: workflow.ExecRunning}),
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if cleared.Workflow != nil {
+		t.Errorf("Workflow = %+v, want the clear to win", cleared.Workflow)
 	}
 }

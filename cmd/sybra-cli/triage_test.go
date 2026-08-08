@@ -55,8 +55,8 @@ func TestClassifyOneFailureMarksRetryableAndPreservesTaskFields(t *testing.T) {
 	if got.Status == task.StatusHumanRequired {
 		t.Fatalf("status = human-required; classifier failures must stay non-human")
 	}
-	if !strings.HasPrefix(got.StatusReason, triageRetryableStatusReasonPrefix) {
-		t.Fatalf("status_reason = %q, want retryable prefix %q", got.StatusReason, triageRetryableStatusReasonPrefix)
+	if !strings.HasPrefix(got.StatusReason, triage.RetryableStatusReasonPrefix) {
+		t.Fatalf("status_reason = %q, want retryable prefix %q", got.StatusReason, triage.RetryableStatusReasonPrefix)
 	}
 	if !strings.Contains(got.StatusReason, "provider subprocess exited") {
 		t.Errorf("status_reason = %q, want classifier detail", got.StatusReason)

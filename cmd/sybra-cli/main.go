@@ -376,11 +376,9 @@ func shortRevision(rev string) string {
 // dispatch routes a parsed subcommand (with its own args and the global
 // --json flag already extracted) to the matching cmdXxx handler.
 func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Manager, localProjects *project.Store, allowHTTP, jsonOut bool) int {
-	var api *apiClient
-	if allowHTTP {
-		if c, ok := newAPIClient(cfg); ok && c.reachable(context.Background()) {
-			api = c
-		}
+	api, unreachable := resolveBoardAPI(cmd, cfg, allowHTTP)
+	if unreachable != "" {
+		return fatal(jsonOut, "board at %s is unreachable; refusing to edit this machine's files instead", unreachable)
 	}
 	// Every board command runs against a reachable server. The filesystem
 	// stores stay behind the same seam so a command still works with no
@@ -395,9 +393,9 @@ func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Ma
 	case "list":
 		return cmdList(store, rest, jsonOut)
 	case "get":
-		return cmdGet(store, api, rest, jsonOut)
+		return cmdGet(store, rest, jsonOut)
 	case "create":
-		return cmdCreate(store, api, rest, jsonOut)
+		return cmdCreate(store, rest, jsonOut)
 	case "handoff":
 		return cmdHandoff(store, projStore, rest, jsonOut)
 	case "umbrella":
@@ -407,11 +405,11 @@ func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Ma
 	case "link-pr":
 		return cmdLinkPR(store, api, rest, jsonOut)
 	case "pr":
-		return cmdPR(store, api, rest, jsonOut)
+		return cmdPR(store, rest, jsonOut)
 	case "delete":
-		return cmdDelete(store, api, rest, jsonOut)
+		return cmdDelete(store, rest, jsonOut)
 	case "reopen":
-		return cmdReopen(store, rest, jsonOut)
+		return cmdReopen(store, api, rest, jsonOut)
 	case "project":
 		return cmdProject(projStore, rest, jsonOut)
 	case "cluster":
@@ -441,7 +439,7 @@ func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Ma
 	case "artifact":
 		return cmdArtifact(rest, jsonOut)
 	case "progress":
-		return cmdProgress(store, projStore, rest, jsonOut)
+		return cmdProgress(store, projStore, api, rest, jsonOut)
 	case "config":
 		return cmdConfig(cfg, rest, jsonOut, allowHTTP, nil)
 	case "doctor":
@@ -456,6 +454,33 @@ func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Ma
 	default:
 		return fatal(jsonOut, "unknown command: %s", cmd)
 	}
+}
+
+// resolveBoardAPI picks the server a command runs against. A non-empty second result is a configured remote board that did not answer: falling back there would edit this machine's stale copy of another machine's board and report success, which is the failure this command surface exists to remove. A loopback target is not that case — those files are the same board — so it falls back silently.
+func resolveBoardAPI(cmd string, cfg *config.Config, allowHTTP bool) (api *apiClient, unreachable string) {
+	if !allowHTTP {
+		return nil, ""
+	}
+	c, ok := newAPIClient(cfg)
+	if !ok {
+		return nil, ""
+	}
+	if c.reachable(context.Background()) {
+		return c, ""
+	}
+	if c.remote && !runsWithoutServer(cmd) {
+		return nil, c.baseURL
+	}
+	return nil, ""
+}
+
+// runsWithoutServer reports the commands that read or repair this machine alone. They stay usable when the board they would otherwise talk to is down, which is what makes them the ones an operator reaches for to find out why it is down.
+func runsWithoutServer(cmd string) bool {
+	switch cmd {
+	case "config", "doctor", "health", "audit", "stats", "artifact", "tasks-history", "install-skills":
+		return true
+	}
+	return false
 }
 
 func openStores(cfg *config.Config) (*task.Manager, *project.Store, error) {
@@ -531,15 +556,15 @@ func dispatchTaskStoreFallback(cmd string, rest []string, jsonOut bool, loadErr 
 	case "list":
 		return cmdList(store, rest, jsonOut), true
 	case "get":
-		return cmdGet(store, nil, rest, jsonOut), true
+		return cmdGet(store, rest, jsonOut), true
 	case "create":
-		return cmdCreate(store, nil, rest, jsonOut), true
+		return cmdCreate(store, rest, jsonOut), true
 	case "update":
 		return cmdUpdate(store, nil, rest, jsonOut), true
 	case "delete":
-		return cmdDelete(store, nil, rest, jsonOut), true
+		return cmdDelete(store, rest, jsonOut), true
 	case "reopen":
-		return cmdReopen(store, rest, jsonOut), true
+		return cmdReopen(store, nil, rest, jsonOut), true
 	case "link-pr":
 		return cmdLinkPR(store, nil, rest, jsonOut), true
 	case "board":
@@ -615,7 +640,7 @@ func cmdList(s taskBoard, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdGet(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
+func cmdGet(s taskBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("get", flag.ContinueOnError)
 	compact := fs.Bool("compact", false, "omit planning support sidecars for implementation agents")
 	if err := fs.Parse(args); err != nil {
@@ -717,7 +742,7 @@ func stripPlanningSupport(t *task.Task) error {
 	return nil
 }
 
-func cmdCreate(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
+func cmdCreate(s taskBoard, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("create", flag.ContinueOnError)
 	title := fs.String("title", "", "task title (required)")
 	body := fs.String("body", "", "task body markdown")
@@ -882,15 +907,24 @@ func updateTask(s taskBoard, id string, updates map[string]any) (updated task.Ta
 	return t, false, err
 }
 
-func appendManualDecisionProgress(taskID, from, to, reason string) {
+// appendManualDecisionProgress records the operator's status change beside the board that took it. A reachable server owns the artifact store for the task it just updated, so writing to this machine's disk instead would file the decision where the owning instance never reads it.
+func appendManualDecisionProgress(api *apiClient, taskID, from, to, reason string) {
 	if strings.TrimSpace(taskID) == "" || strings.TrimSpace(from) == "" || strings.TrimSpace(to) == "" {
 		return
 	}
-	store := artifact.New(config.ArtifactsDir())
-	if err := store.AppendProgress(taskID, artifact.ProgressEntry{
-		Kind:    artifact.ProgressKindDecision,
-		Message: artifact.ManualDecisionMessage(from, to, reason),
-	}); err != nil {
+	message := artifact.ManualDecisionMessage(from, to, reason)
+	var err error
+	if api != nil {
+		_, err = callAPI[artifact.ProgressEntry](api, taskServiceName, "AppendTaskProgress",
+			taskID, artifact.ProgressKindDecision, "", message)
+	} else {
+		store := artifact.New(config.ArtifactsDir())
+		err = store.AppendProgress(taskID, artifact.ProgressEntry{
+			Kind:    artifact.ProgressKindDecision,
+			Message: message,
+		})
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: progress decision log append failed for task %s: %v\n", taskID, err)
 	}
 }
@@ -1422,7 +1456,7 @@ func cmdUpdate(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 		return fatal(jsonOut, "%v", err)
 	}
 	if !handledByAPI && before.Status == task.StatusHumanRequired && t.Status != task.StatusHumanRequired {
-		appendManualDecisionProgress(t.ID, string(before.Status), string(t.Status), t.StatusReason)
+		appendManualDecisionProgress(api, t.ID, string(before.Status), string(t.Status), t.StatusReason)
 	}
 
 	if jsonOut {
@@ -1749,17 +1783,14 @@ func warnInertDepConditions(currentDependsOn []string, conds []any) {
 	}
 }
 
-func cmdDelete(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
+// cmdDelete dispatches once. A retry above a server-backed board would re-send a request the server had already committed, and report the 404 from the second attempt as a failure of the first.
+func cmdDelete(s taskBoard, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "usage: delete <id>")
 	}
 
-	if _, handled, apiErr := viaAPI[struct{}](api, "TaskService", "DeleteTask", args[0]); handled {
-		if apiErr != nil {
-			return fatal(jsonOut, "%v", apiErr)
-		}
-	} else if fsErr := s.Delete(args[0]); fsErr != nil {
-		return fatal(jsonOut, "%v", fsErr)
+	if err := s.Delete(args[0]); err != nil {
+		return fatal(jsonOut, "%v", err)
 	}
 
 	if jsonOut {
@@ -1769,7 +1800,7 @@ func cmdDelete(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdReopen(s taskBoard, args []string, jsonOut bool) int {
+func cmdReopen(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("reopen", flag.ContinueOnError)
 	force := fs.Bool("force", false, "reopen even if the task landed (outcome merged)")
 	projectID := fs.String("project", "", "restore project_id (for tasks whose project link was lost)")
@@ -1810,7 +1841,7 @@ func cmdReopen(s taskBoard, args []string, jsonOut bool) int {
 		}
 		updated := result.Task
 		if t.Status == task.StatusHumanRequired && updated.Status != task.StatusHumanRequired {
-			appendManualDecisionProgress(updated.ID, string(t.Status), string(updated.Status), updated.StatusReason)
+			appendManualDecisionProgress(api, updated.ID, string(t.Status), string(updated.Status), updated.StatusReason)
 		}
 		reopened = append(reopened, id)
 	}
@@ -1853,7 +1884,7 @@ func cmdLinkPR(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 		return fatal(jsonOut, "%v", err)
 	}
 	if !handledByAPI && prev.Status == task.StatusHumanRequired && t.Status != task.StatusHumanRequired {
-		appendManualDecisionProgress(t.ID, string(prev.Status), string(t.Status), t.StatusReason)
+		appendManualDecisionProgress(api, t.ID, string(prev.Status), string(t.Status), t.StatusReason)
 	}
 
 	if jsonOut {
@@ -3003,7 +3034,8 @@ func cmdArtifactReindex(store *artifact.Store, args []string, jsonOut bool) int 
 	return 0
 }
 
-func cmdProgress(s taskBoard, projStore projectBoard, args []string, jsonOut bool) int {
+// cmdProgress reads and writes the progress log through a reachable server. The artifact store sits beside the board it belongs to, so a client appending to its own disk while touching another machine's task would write the entry where the owning instance never reads it.
+func cmdProgress(s taskBoard, projStore projectBoard, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "progress: subcommand required (add|list)")
 	}
@@ -3011,15 +3043,15 @@ func cmdProgress(s taskBoard, projStore projectBoard, args []string, jsonOut boo
 	store := artifact.New(config.ArtifactsDir())
 	switch sub {
 	case "add":
-		return cmdProgressAdd(s, projStore, store, rest, jsonOut)
+		return cmdProgressAdd(s, projStore, api, store, rest, jsonOut)
 	case "list":
-		return cmdProgressList(store, rest, jsonOut)
+		return cmdProgressList(api, store, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "progress: unknown subcommand %q", sub)
 	}
 }
 
-func cmdProgressAdd(s taskBoard, projStore projectBoard, store *artifact.Store, args []string, jsonOut bool) int {
+func cmdProgressAdd(s taskBoard, projStore projectBoard, api *apiClient, store *artifact.Store, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "progress add: task-id required")
 	}
@@ -3036,6 +3068,14 @@ func cmdProgressAdd(s taskBoard, projStore projectBoard, store *artifact.Store, 
 	}
 	if !artifact.ValidProgressKind(*kind) {
 		return fatal(jsonOut, "progress add: invalid --kind %q (want %s)", *kind, strings.Join(artifact.ProgressKinds(), "|"))
+	}
+
+	if api != nil {
+		entry, err := callAPI[artifact.ProgressEntry](api, taskServiceName, "AppendTaskProgress", taskID, *kind, *role, *message)
+		if err != nil {
+			return fatal(jsonOut, "progress add: %v", err)
+		}
+		return reportProgressAdd(jsonOut, taskID, entry)
 	}
 
 	t, err := s.Get(taskID)
@@ -3060,19 +3100,23 @@ func cmdProgressAdd(s taskBoard, projStore projectBoard, store *artifact.Store, 
 		slog.Warn("progress.add.touch", "task_id", taskID, "err", tErr)
 	}
 
+	return reportProgressAdd(jsonOut, taskID, entry)
+}
+
+func reportProgressAdd(jsonOut bool, taskID string, entry artifact.ProgressEntry) int {
 	if jsonOut {
 		return printJSON(entry)
 	}
-	fmt.Printf("Recorded %s on task %s\n", *kind, taskID)
+	fmt.Printf("Recorded %s on task %s\n", entry.Kind, taskID)
 	return 0
 }
 
-func cmdProgressList(store *artifact.Store, args []string, jsonOut bool) int {
+func cmdProgressList(api *apiClient, store *artifact.Store, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "progress list: task-id required")
 	}
 	taskID := args[0]
-	entries, err := store.ReadProgress(taskID)
+	entries, err := readProgress(api, store, taskID)
 	if err != nil {
 		return fatal(jsonOut, "progress list: %v", err)
 	}
@@ -3091,6 +3135,13 @@ func cmdProgressList(store *artifact.Store, args []string, jsonOut bool) int {
 	}
 	_ = w.Flush()
 	return 0
+}
+
+func readProgress(api *apiClient, store *artifact.Store, taskID string) ([]artifact.ProgressEntry, error) {
+	if api != nil {
+		return callAPI[[]artifact.ProgressEntry](api, taskServiceName, "ListTaskProgress", taskID)
+	}
+	return store.ReadProgress(taskID)
 }
 
 // cmdTrash handles `sybra-cli trash list|restore <id>|delete <id>|empty` —

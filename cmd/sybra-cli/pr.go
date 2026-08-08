@@ -11,25 +11,19 @@ import (
 )
 
 // cmdPR routes the `pr` subcommands.
-func cmdPR(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
+func cmdPR(s taskBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: pr create <task-id> --repo owner/name --head branch [--title T] [--body B] [--dir D] [--draft]")
 	}
 	switch args[0] {
 	case "create":
-		return cmdPRCreate(s, api, args[1:], jsonOut)
+		return cmdPRCreate(s, args[1:], jsonOut)
 	default:
 		return fatal(jsonOut, "unknown pr subcommand %q (valid: create)", args[0])
 	}
 }
 
-// getTaskViaAPIOrFS reads a task through the server when the API is reachable,
-// falling back to the local store. Mirrors updateTaskViaAPIOrFS: a Job that has
-// only the HTTP endpoint and no mounted tasks dir must still be able to read the
-// task it is opening a PR for.
-// getTask reads through the board, which is server-backed whenever one
-// answers. Retrying the same request here on a transport error would just
-// re-send it to the same dead endpoint.
+// getTask reads through the board, which is server-backed whenever one answers. Retrying here on a transport error would only re-send the request to the same dead endpoint, and a Job holding the HTTP endpoint with no mounted tasks dir reads the task it is opening a PR for through that same board.
 func getTask(s taskBoard, id string) (task.Task, error) {
 	return s.Get(id)
 }
@@ -44,7 +38,7 @@ func getTask(s taskBoard, id string) (task.Task, error) {
 // repo operation happens in the Job that already has the clone and the token.
 // The task update goes through the same API-or-filesystem path as link-pr, so a
 // Job that only has the HTTP endpoint (no shared task dir) still reports back.
-func cmdPRCreate(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
+func cmdPRCreate(s taskBoard, args []string, jsonOut bool) int {
 	// Pull the task id off before parsing, matching cmdUpdate: flag.Parse stops
 	// at the first non-flag argument, so `pr create <id> --repo ...` would
 	// otherwise silently ignore every flag after the id.

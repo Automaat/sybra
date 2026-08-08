@@ -133,6 +133,8 @@ export const OpenInEditor = pick(ProjectSvc.OpenInEditor, http.OpenInEditor)
 export const OpenInTerminal = pick(ProjectSvc.OpenInTerminal, http.OpenInTerminal)
 export const SetProjectWorktreeBaseRef = pick(ProjectSvc.SetProjectWorktreeBaseRef, http.SetProjectWorktreeBaseRef)
 export const SetProjectSetupCommands = pick(ProjectSvc.SetProjectSetupCommands, http.SetProjectSetupCommands)
+export const GetProjectRawType = pick(ProjectSvc.GetProjectRawType, http.GetProjectRawType)
+export const CreateProjectAndClone = pick(ProjectSvc.CreateProjectAndClone, http.CreateProjectAndClone)
 export const UpdateProject = pick(ProjectSvc.UpdateProject, http.UpdateProject)
 
 // ReviewService
@@ -162,6 +164,7 @@ export const DeleteTrashedGeneration = pick(TaskSvc.DeleteTrashedGeneration, htt
 export const PruneAllTrash = pick(TaskSvc.PruneAllTrash, http.PruneAllTrash)
 export const ExpandUmbrella = pick(TaskSvc.ExpandUmbrella, http.ExpandUmbrella)
 export const ClassifyTask = pick(TaskSvc.ClassifyTask, http.ClassifyTask)
+export const AppendTaskProgress = pick(TaskSvc.AppendTaskProgress, http.AppendTaskProgress)
 export const ScanMonitor = pick(TaskSvc.ScanMonitor, http.ScanMonitor)
 export const DeleteAttachment = pick(TaskSvc.DeleteAttachment, http.DeleteAttachment)
 export const DispatchFromHumanRequired = pick(TaskSvc.DispatchFromHumanRequired, http.DispatchFromHumanRequired)

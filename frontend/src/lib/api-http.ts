@@ -165,6 +165,8 @@ export function OpenInEditor(_arg1: string): Promise<void> { return Promise.reje
 export function OpenInTerminal(_arg1: string): Promise<void> { return Promise.reject(new Error('not available in web mode')) }
 export function SetProjectWorktreeBaseRef(arg1: string, arg2: string): Promise<Project> { return call('ProjectService', 'SetProjectWorktreeBaseRef', arg1, arg2) }
 export function SetProjectSetupCommands(arg1: string, arg2: string[]): Promise<Project> { return call('ProjectService', 'SetProjectSetupCommands', arg1, arg2) }
+export function GetProjectRawType(arg1: string): Promise<string> { return call('ProjectService', 'GetProjectRawType', arg1) }
+export function CreateProjectAndClone(arg1: string, arg2: string): Promise<Project> { return call('ProjectService', 'CreateProjectAndClone', arg1, arg2) }
 export function UpdateProject(arg1: string, arg2: string): Promise<Project> { return call('ProjectService', 'UpdateProject', arg1, arg2) }
 
 // ReviewService
@@ -196,8 +198,9 @@ export function ListTrash(): Promise<Array<TrashEntry>> { return call('TaskServi
 export function RestoreFromTrash(arg1: string): Promise<Task> { return call('TaskService', 'RestoreFromTrash', arg1) }
 export function DeleteTrashedGeneration(arg1: string): Promise<boolean> { return call('TaskService', 'DeleteTrashedGeneration', arg1) }
 export function PruneAllTrash(): Promise<TrashPruneReportDTO> { return call('TaskService', 'PruneAllTrash') }
-export function ExpandUmbrella(arg1: string): Promise<UmbrellaExpandDTO> { return call('TaskService', 'ExpandUmbrella', arg1) }
+export function ExpandUmbrella(arg1: string, arg2: string): Promise<UmbrellaExpandDTO> { return call('TaskService', 'ExpandUmbrella', arg1, arg2) }
 export function ClassifyTask(arg1: string, arg2: string): Promise<TriageResultDTO> { return call('TaskService', 'ClassifyTask', arg1, arg2) }
+export function AppendTaskProgress(arg1: string, arg2: string, arg3: string, arg4: string): Promise<ProgressEntry> { return call('TaskService', 'AppendTaskProgress', arg1, arg2, arg3, arg4) }
 export function ScanMonitor(): Promise<MonitorReportBinding> { return call('TaskService', 'ScanMonitor') }
 export function DeleteAttachment(arg1: string, arg2: string): Promise<void> { return call('TaskService', 'DeleteAttachment', arg1, arg2) }
 export function DispatchFromHumanRequired(arg1: string, arg2: string, arg3: string): Promise<Task> { return call('TaskService', 'DispatchFromHumanRequired', arg1, arg2, arg3) }

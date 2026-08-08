@@ -7,18 +7,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
-	"github.com/Automaat/sybra/internal/textutil"
 	"github.com/Automaat/sybra/internal/triage"
 )
-
-const triageRetryableStatusReasonPrefix = "triage retryable: "
 
 // triageResult is the CLI's JSON output for a classify call.
 type triageResult struct {
@@ -191,18 +187,7 @@ func classifyOne(
 }
 
 func markTriageRetryable(store *task.Manager, t task.Task, err error) error {
-	reason := triageRetryableReason(err)
+	reason := triage.RetryableStatusReason(err)
 	_, updateErr := store.Update(t.ID, task.Update{StatusReason: &reason})
 	return updateErr
-}
-
-func triageRetryableReason(err error) string {
-	detail := strings.TrimSpace(err.Error())
-	if detail == "" {
-		detail = "unknown classifier failure"
-	}
-	detail = strings.Join(strings.Fields(detail), " ")
-	const maxDetailLen = 500
-	detail = textutil.TruncateBytes(detail, maxDetailLen, "...")
-	return triageRetryableStatusReasonPrefix + "classifier failed: " + detail
 }

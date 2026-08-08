@@ -149,19 +149,24 @@ func (b *apiProjectBoard) Get(id string) (project.Project, error) {
 }
 
 // RawType reads the stored type without the store's normalization, so a
-// caller can tell "unset" from "pet". The server has no separate endpoint for
-// it: GetProject returns the same record, and its Type field is the stored
-// value.
+// caller can tell "unset" from "pet". It needs its own endpoint: GetProject
+// coerces an absent type to pet on the way out, which would make a work
+// project with no type field read as pet and route it to an untrusted
+// follower.
 func (b *apiProjectBoard) RawType(id string) (project.ProjectType, error) {
-	p, err := b.Get(id)
+	raw, err := callAPI[string](b.api, projectServiceName, "GetProjectRawType", id)
 	if err != nil {
 		return "", err
 	}
-	return p.Type, nil
+	return project.ProjectType(raw), nil
 }
 
+// Create waits for the clone. CreateProject returns as soon as the record is
+// registered, which suits the GUI but would have the CLI exit 0 on a repo that
+// never cloned, printing a record in `cloning` where the filesystem-backed
+// command printed `ready`.
 func (b *apiProjectBoard) Create(rawURL string, ptype project.ProjectType) (project.Project, error) {
-	return callAPI[project.Project](b.api, projectServiceName, "CreateProject", rawURL, string(ptype))
+	return callAPIWithin[project.Project](b.api, apiCloneTimeout, projectServiceName, "CreateProjectAndClone", rawURL, string(ptype))
 }
 
 func (b *apiProjectBoard) Update(id string, ptype project.ProjectType) (project.Project, error) {

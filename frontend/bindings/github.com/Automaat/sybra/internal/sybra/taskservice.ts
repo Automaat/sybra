@@ -28,13 +28,29 @@ import * as task$0 from "../task/models.js";
 import * as $models from "./models.js";
 
 /**
+ * AppendTaskProgress records one progress entry against a task and bumps its
+ * updated-at.
+ * 
+ * sybra-cli cannot do this half locally: the artifact store lives beside the
+ * board it belongs to, so a client appending to its own disk while touching
+ * another machine's task writes the entry where the owning instance will never
+ * read it. Scrubbing happens here for the same reason — the work blocklist
+ * comes from the project record on this side of the wire.
+ */
+export function AppendTaskProgress(taskID: string, kind: string, role: string, message: string): $CancellablePromise<artifact$0.ProgressEntry> {
+    return $Call.ByID(643455980, taskID, kind, role, message).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
  * ApplyTransition runs a status transition through the same gate the GUI and
  * the workflow engine use, so a CLI status change is admitted, audited, and
  * dispatched identically wherever it was typed.
  */
 export function ApplyTransition(intent: task$0.TransitionIntent): $CancellablePromise<task$0.TransitionResult> {
     return $Call.ByID(2200551777, intent).then(($result: any) => {
-        return $$createType0($result);
+        return $$createType1($result);
     });
 }
 
@@ -57,7 +73,7 @@ export function AssignTask(t: task$0.Task): $CancellablePromise<void> {
  */
 export function BlessTampering(taskID: string): $CancellablePromise<task$0.Task> {
     return $Call.ByID(2730384212, taskID).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -66,7 +82,7 @@ export function BlessTampering(taskID: string): $CancellablePromise<task$0.Task>
  */
 export function ClassifyTask(id: string, model: string): $CancellablePromise<$models.TriageResultDTO> {
     return $Call.ByID(4082697257, id, model).then(($result: any) => {
-        return $$createType2($result);
+        return $$createType3($result);
     });
 }
 
@@ -76,7 +92,7 @@ export function ClassifyTask(id: string, model: string): $CancellablePromise<$mo
  */
 export function CreateTask(title: string, body: string, mode: string): $CancellablePromise<task$0.Task> {
     return $Call.ByID(1715598451, title, body, mode).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -85,7 +101,7 @@ export function CreateTask(title: string, body: string, mode: string): $Cancella
  */
 export function CreateTaskFull(title: string, body: string, mode: string, status: string, init: task$0.Update): $CancellablePromise<task$0.Task> {
     return $Call.ByID(3337703166, title, body, mode, status, init).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -99,7 +115,7 @@ export function CreateTaskFull(title: string, body: string, mode: string, status
  */
 export function CreateTaskWithInit(title: string, body: string, mode: string, init: task$0.Update): $CancellablePromise<task$0.Task> {
     return $Call.ByID(1219464293, title, body, mode, init).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -137,16 +153,16 @@ export function DeleteTrashedGeneration(id: string): $CancellablePromise<boolean
  */
 export function DispatchFromHumanRequired(id: string, target: string, reason: string): $CancellablePromise<task$0.Task> {
     return $Call.ByID(3753750864, id, target, reason).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
 /**
- * ExpandUmbrella expands a ☂️ umbrella issue into a gated child DAG.
+ * ExpandUmbrella expands a ☂️ umbrella issue into a gated child DAG. An empty model uses the instance's configured planner.
  */
-export function ExpandUmbrella(issueURL: string): $CancellablePromise<$models.UmbrellaExpandDTO> {
-    return $Call.ByID(2988873146, issueURL).then(($result: any) => {
-        return $$createType3($result);
+export function ExpandUmbrella(issueURL: string, model: string): $CancellablePromise<$models.UmbrellaExpandDTO> {
+    return $Call.ByID(2988873146, issueURL, model).then(($result: any) => {
+        return $$createType4($result);
     });
 }
 
@@ -159,7 +175,7 @@ export function GetAttachmentURL(taskID: string, attachmentID: string): $Cancell
  */
 export function GetTamperReport(taskID: string): $CancellablePromise<$models.TamperReportDTO> {
     return $Call.ByID(929982993, taskID).then(($result: any) => {
-        return $$createType4($result);
+        return $$createType5($result);
     });
 }
 
@@ -168,31 +184,31 @@ export function GetTamperReport(taskID: string): $CancellablePromise<$models.Tam
  */
 export function GetTask(id: string): $CancellablePromise<task$0.Task> {
     return $Call.ByID(2262172043, id).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
 export function GetTaskSetupLog(taskID: string): $CancellablePromise<$models.TaskSetupLogDTO> {
     return $Call.ByID(3273454814, taskID).then(($result: any) => {
-        return $$createType5($result);
+        return $$createType6($result);
     });
 }
 
 export function ListAttachments(taskID: string): $CancellablePromise<task$0.Attachment[]> {
     return $Call.ByID(1026482144, taskID).then(($result: any) => {
-        return $$createType7($result);
+        return $$createType8($result);
     });
 }
 
 export function ListTaskArtifacts(taskID: string): $CancellablePromise<$models.TaskArtifactDTO[]> {
     return $Call.ByID(1612534482, taskID).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType10($result);
     });
 }
 
 export function ListTaskAuditEvents(taskID: string, days: number): $CancellablePromise<$models.TaskAuditEventDTO[]> {
     return $Call.ByID(1451731527, taskID, days).then(($result: any) => {
-        return $$createType11($result);
+        return $$createType12($result);
     });
 }
 
@@ -287,7 +303,7 @@ export function RecoverLostAgent(taskID: string): $CancellablePromise<void> {
  */
 export function RestoreFromTrash(id: string): $CancellablePromise<task$0.Task> {
     return $Call.ByID(566591386, id).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -305,7 +321,7 @@ export function ScanMonitor(): $CancellablePromise<monitor$0.Report> {
  */
 export function TouchTask(id: string): $CancellablePromise<task$0.Task> {
     return $Call.ByID(3403397652, id).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -323,7 +339,7 @@ export function TouchTask(id: string): $CancellablePromise<task$0.Task> {
  */
 export function UpdateTask(id: string, updates: { [_ in string]?: any }): $CancellablePromise<task$0.Task> {
     return $Call.ByID(3948756754, id, updates).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -335,32 +351,32 @@ export function UpdateTask(id: string, updates: { [_ in string]?: any }): $Cance
  */
 export function UpdateTaskFields(id: string, u: task$0.Update): $CancellablePromise<task$0.Task> {
     return $Call.ByID(2254192575, id, u).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
 export function UploadAttachment(taskID: string, fileName: string, data: string): $CancellablePromise<task$0.Attachment> {
     return $Call.ByID(1704419594, taskID, fileName, data).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType7($result);
     });
 }
 
 // Private type creation functions
-const $$createType0 = task$0.TransitionResult.createFrom;
-const $$createType1 = task$0.Task.createFrom;
-const $$createType2 = $models.TriageResultDTO.createFrom;
-const $$createType3 = $models.UmbrellaExpandDTO.createFrom;
-const $$createType4 = $models.TamperReportDTO.createFrom;
-const $$createType5 = $models.TaskSetupLogDTO.createFrom;
-const $$createType6 = attachment$0.Attachment.createFrom;
-const $$createType7 = $Create.Array($$createType6);
-const $$createType8 = $models.TaskArtifactDTO.createFrom;
-const $$createType9 = $Create.Array($$createType8);
-const $$createType10 = $models.TaskAuditEventDTO.createFrom;
-const $$createType11 = $Create.Array($$createType10);
-const $$createType12 = artifact$0.ProgressEntry.createFrom;
-const $$createType13 = $Create.Array($$createType12);
-const $$createType14 = $Create.Array($$createType1);
+const $$createType0 = artifact$0.ProgressEntry.createFrom;
+const $$createType1 = task$0.TransitionResult.createFrom;
+const $$createType2 = task$0.Task.createFrom;
+const $$createType3 = $models.TriageResultDTO.createFrom;
+const $$createType4 = $models.UmbrellaExpandDTO.createFrom;
+const $$createType5 = $models.TamperReportDTO.createFrom;
+const $$createType6 = $models.TaskSetupLogDTO.createFrom;
+const $$createType7 = attachment$0.Attachment.createFrom;
+const $$createType8 = $Create.Array($$createType7);
+const $$createType9 = $models.TaskArtifactDTO.createFrom;
+const $$createType10 = $Create.Array($$createType9);
+const $$createType11 = $models.TaskAuditEventDTO.createFrom;
+const $$createType12 = $Create.Array($$createType11);
+const $$createType13 = $Create.Array($$createType0);
+const $$createType14 = $Create.Array($$createType2);
 const $$createType15 = task$0.TrashEntry.createFrom;
 const $$createType16 = $Create.Array($$createType15);
 const $$createType17 = $models.TrashPruneReportDTO.createFrom;

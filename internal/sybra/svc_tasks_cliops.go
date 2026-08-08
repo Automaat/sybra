@@ -2,6 +2,7 @@ package sybra
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -23,12 +24,12 @@ type UmbrellaExpandDTO struct {
 	MaxParallel int    `json:"maxParallel"`
 }
 
-// ExpandUmbrella expands a ☂️ umbrella issue into a gated child DAG.
-func (s *TaskService) ExpandUmbrella(issueURL string) (UmbrellaExpandDTO, error) {
+// ExpandUmbrella expands a ☂️ umbrella issue into a gated child DAG. An empty model uses the instance's configured planner.
+func (s *TaskService) ExpandUmbrella(issueURL, model string) (UmbrellaExpandDTO, error) {
 	if s.umbrellaExpand == nil {
-		return UmbrellaExpandDTO{}, fmt.Errorf("umbrella expansion is not enabled on this instance")
+		return UmbrellaExpandDTO{}, unavailableError("umbrella expansion is not enabled on this instance")
 	}
-	res, err := s.umbrellaExpand(issueURL)
+	res, err := s.umbrellaExpand(issueURL, model)
 	if err != nil {
 		return UmbrellaExpandDTO{}, err
 	}
@@ -55,7 +56,7 @@ type TriageResultDTO struct {
 // ClassifyTask runs the triage classifier over one task and applies its verdict atomically.
 func (s *TaskService) ClassifyTask(id, model string) (TriageResultDTO, error) {
 	if s.tasks == nil || s.projects == nil {
-		return TriageResultDTO{}, fmt.Errorf("task store unavailable")
+		return TriageResultDTO{}, unavailableError("task store unavailable")
 	}
 	t, err := s.tasks.Get(id)
 	if err != nil {
@@ -66,8 +67,9 @@ func (s *TaskService) ClassifyTask(id, model string) (TriageResultDTO, error) {
 	// another. Reclassifying a task another subsystem owns rewrites gating
 	// tags it must not touch (see internal/triage/apply.go).
 	if t.Status != task.StatusNew {
-		return TriageResultDTO{}, fmt.Errorf("task %s has status %q, not %q — triage classify only reclassifies fresh tasks",
-			id, t.Status, task.StatusNew)
+		return TriageResultDTO{}, conflictError(fmt.Sprintf(
+			"task %s has status %q, not %q — triage classify only reclassifies fresh tasks",
+			id, t.Status, task.StatusNew))
 	}
 	projects, err := s.projects.List()
 	if err != nil {
@@ -80,6 +82,13 @@ func (s *TaskService) ClassifyTask(id, model string) (TriageResultDTO, error) {
 	classifier := &triage.FallbackClassifier{Model: model, Logger: slog.New(slog.DiscardHandler)}
 	verdict, updated, err := triage.ClassifyAndApply(s.recoveryCtx(), classifier, s.tasks, s.audit, t, projects)
 	if err != nil {
+		// The stamp has to land on the board that owns the task. A client
+		// stamping its own copy would leave the owning instance's task with
+		// no retryable marker, and the workflow engine parks it.
+		reason := triage.RetryableStatusReason(err)
+		if _, markErr := s.tasks.Update(id, task.Update{StatusReason: &reason}); markErr != nil {
+			return TriageResultDTO{}, errors.Join(err, fmt.Errorf("mark retryable triage failure: %w", markErr))
+		}
 		return TriageResultDTO{}, err
 	}
 	return TriageResultDTO{Verdict: verdict, Task: updated}, nil
@@ -88,7 +97,7 @@ func (s *TaskService) ClassifyTask(id, model string) (TriageResultDTO, error) {
 // ScanMonitor runs one anomaly-detector pass and returns its report.
 func (s *TaskService) ScanMonitor() (monitor.Report, error) {
 	if s.monitorScan == nil {
-		return monitor.Report{}, fmt.Errorf("monitor is not running on this instance")
+		return monitor.Report{}, unavailableError("monitor is not running on this instance")
 	}
 	return s.monitorScan(context.Background())
 }

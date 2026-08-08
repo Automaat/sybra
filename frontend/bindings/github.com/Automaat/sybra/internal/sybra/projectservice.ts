@@ -25,6 +25,21 @@ export function CreateProject(url: string, ptype: string): $CancellablePromise<p
 }
 
 /**
+ * CreateProjectAndClone registers a repo and finishes its clone before
+ * returning, reporting a clone failure to the caller.
+ * 
+ * CreateProject's background clone suits the GUI, which watches the record
+ * flip out of `cloning`. A CLI caller has nothing to watch: it exits, so an
+ * async create would print success on a repo that never cloned and hand back
+ * a record in `cloning` where the filesystem-backed command returned `ready`.
+ */
+export function CreateProjectAndClone(url: string, ptype: string): $CancellablePromise<project$0.Project> {
+    return $Call.ByID(3920748429, url, ptype).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
  * DeleteProject removes a project and its bare clone from disk.
  */
 export function DeleteProject(id: string): $CancellablePromise<void> {
@@ -38,6 +53,19 @@ export function GetProject(id: string): $CancellablePromise<project$0.Project> {
     return $Call.ByID(2035355087, id).then(($result: any) => {
         return $$createType0($result);
     });
+}
+
+/**
+ * GetProjectRawType returns a project's type exactly as recorded, without
+ * GetProject's missing-type→pet coercion.
+ * 
+ * A client cannot derive this from GetProject: the confidentiality guard needs
+ * "unset" to stay distinguishable from "pet" so a work project with an absent
+ * type field is never routed to an untrusted follower, and GetProject has
+ * already collapsed the two by the time the record reaches the wire.
+ */
+export function GetProjectRawType(id: string): $CancellablePromise<string> {
+    return $Call.ByID(3061473543, id);
 }
 
 /**

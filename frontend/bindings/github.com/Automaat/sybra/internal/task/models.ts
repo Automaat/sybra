@@ -1007,7 +1007,7 @@ export class TrashEntry {
 /**
  * Update carries optional field changes for Store.Update.
  * A nil pointer means "leave unchanged"; a non-nil pointer applies the new value.
- * For Workflow: nil = unchanged; non-nil = overwrite (even if pointed-to value is nil).
+ * For Workflow: nil = unchanged; non-nil = overwrite. A clear goes through ClearWorkflow instead: a non-nil Workflow holding a nil inner pointer works in-process but not over the API, so it is never the right encoding.
  */
 export class Update {
     "Title": string | null;
@@ -1019,6 +1019,11 @@ export class Update {
     "AutonomyOutcome": autonomy$0.Outcome | null;
     "Blocker": blocker$0.State | null;
     "ClearBlocker": boolean | null;
+
+    /**
+     * ClearWorkflow removes the task's workflow execution, and is the only encoding of a clear that survives JSON. Workflow is a **Execution: a non-nil outer pointer holding a nil inner one marshals to null, and unmarshal then nils the outer pointer, so a clear sent over the API read back as "leave unchanged".
+     */
+    "ClearWorkflow": boolean | null;
     "BlockedByIssue": string | null;
     "UmbrellaIssue": string | null;
     "DependsOn": string[] | null;
@@ -1095,6 +1100,9 @@ export class Update {
         }
         if (!("ClearBlocker" in $$source)) {
             this["ClearBlocker"] = null;
+        }
+        if (!("ClearWorkflow" in $$source)) {
+            this["ClearWorkflow"] = null;
         }
         if (!("BlockedByIssue" in $$source)) {
             this["BlockedByIssue"] = null;
@@ -1247,12 +1255,12 @@ export class Update {
     static createFrom($$source: any = {}): Update {
         const $$createField5_0 = $$createType16;
         const $$createField7_0 = $$createType17;
-        const $$createField11_0 = $$createType18;
-        const $$createField12_0 = $$createType19;
-        const $$createField16_0 = $$createType18;
-        const $$createField34_0 = $$createType20;
-        const $$createField54_0 = $$createType21;
-        const $$createField55_0 = $$createType22;
+        const $$createField12_0 = $$createType18;
+        const $$createField13_0 = $$createType19;
+        const $$createField17_0 = $$createType18;
+        const $$createField35_0 = $$createType20;
+        const $$createField55_0 = $$createType21;
+        const $$createField56_0 = $$createType22;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("Escalation" in $$parsedSource) {
             $$parsedSource["Escalation"] = $$createField5_0($$parsedSource["Escalation"]);
@@ -1261,22 +1269,22 @@ export class Update {
             $$parsedSource["Blocker"] = $$createField7_0($$parsedSource["Blocker"]);
         }
         if ("DependsOn" in $$parsedSource) {
-            $$parsedSource["DependsOn"] = $$createField11_0($$parsedSource["DependsOn"]);
+            $$parsedSource["DependsOn"] = $$createField12_0($$parsedSource["DependsOn"]);
         }
         if ("DependsOnConditions" in $$parsedSource) {
-            $$parsedSource["DependsOnConditions"] = $$createField12_0($$parsedSource["DependsOnConditions"]);
+            $$parsedSource["DependsOnConditions"] = $$createField13_0($$parsedSource["DependsOnConditions"]);
         }
         if ("Tags" in $$parsedSource) {
-            $$parsedSource["Tags"] = $$createField16_0($$parsedSource["Tags"]);
+            $$parsedSource["Tags"] = $$createField17_0($$parsedSource["Tags"]);
         }
         if ("Workflow" in $$parsedSource) {
-            $$parsedSource["Workflow"] = $$createField34_0($$parsedSource["Workflow"]);
+            $$parsedSource["Workflow"] = $$createField35_0($$parsedSource["Workflow"]);
         }
         if ("Attachments" in $$parsedSource) {
-            $$parsedSource["Attachments"] = $$createField54_0($$parsedSource["Attachments"]);
+            $$parsedSource["Attachments"] = $$createField55_0($$parsedSource["Attachments"]);
         }
         if ("EffectLog" in $$parsedSource) {
-            $$parsedSource["EffectLog"] = $$createField55_0($$parsedSource["EffectLog"]);
+            $$parsedSource["EffectLog"] = $$createField56_0($$parsedSource["EffectLog"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }

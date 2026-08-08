@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -93,7 +94,12 @@ func TestAPITaskBoard_SendsEveryOperationToTheServer(t *testing.T) {
 	}
 }
 
-func TestAPITaskBoard_ReportsTheServersOwnReason(t *testing.T) {
+// TestAPITaskBoard_ParsesTheServersErrorEnvelope covers the client half only.
+// That the server actually emits a reason instead of a sanitized 500 is a
+// property of the endpoints, verified end-to-end through the real handler in
+// internal/sybra (TestBoardEndpoints_RejectionCarriesItsReason) — a stubbed
+// reply here cannot observe it.
+func TestAPITaskBoard_ParsesTheServersErrorEnvelope(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
@@ -116,14 +122,122 @@ func TestAPITaskBoard_ReportsTheServersOwnReason(t *testing.T) {
 	}
 }
 
-func TestAPIProjectBoard_RawTypeReadsTheStoredValue(t *testing.T) {
-	rec := newRecordingServer(t, map[string]any{"id": "owner/repo", "type": "work"})
+// TestAPIProjectBoard_RawTypeUsesItsOwnEndpoint pins the call, not the value.
+// Reading the raw type off GetProject would pass an equality assertion on a
+// record that carries a type, and still fail open on the record that matters:
+// GetProject coerces an absent type to pet, which is what the confidentiality
+// guard must never see. internal/sybra's
+// TestGetProjectRawType_KeepsUnsetDistinctFromPet covers the server half.
+func TestAPIProjectBoard_RawTypeUsesItsOwnEndpoint(t *testing.T) {
+	rec := newRecordingServer(t, "work")
 	got, err := newAPIProjectBoard(rec.client()).RawType("owner/repo")
 	if err != nil {
 		t.Fatalf("RawType: %v", err)
 	}
 	if string(got) != "work" {
 		t.Errorf("RawType = %q, want %q", got, "work")
+	}
+	want := "/api/ProjectService/GetProjectRawType"
+	if len(rec.paths) != 1 || rec.paths[0] != want {
+		t.Errorf("called %v, want a single %s", rec.paths, want)
+	}
+}
+
+// TestAPIProjectBoard_CreateWaitsForTheClone guards the CLI's exit contract:
+// CreateProject returns while the clone is still running, so a caller that
+// exits immediately would print success on a repo that never cloned.
+func TestAPIProjectBoard_CreateWaitsForTheClone(t *testing.T) {
+	rec := newRecordingServer(t, map[string]any{"id": "owner/repo", "status": "ready"})
+	if _, err := newAPIProjectBoard(rec.client()).Create("https://github.com/owner/repo", "pet"); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	want := "/api/ProjectService/CreateProjectAndClone"
+	if len(rec.paths) != 1 || rec.paths[0] != want {
+		t.Errorf("called %v, want a single %s", rec.paths, want)
+	}
+}
+
+// TestCmdDelete_DispatchesOnce guards against a retry above a server-backed
+// board: the server commits the delete, the retry gets a 404 for a task that
+// is already gone, and the command reports a failure that did not happen.
+func TestCmdDelete_DispatchesOnce(t *testing.T) {
+	rec := newRecordingServer(t, map[string]any{})
+	board := newAPITaskBoard(rec.client())
+
+	code, _ := captureStdout(t, func() int { return cmdDelete(board, []string{"t1"}, true) })
+	if code != 0 {
+		t.Fatalf("cmdDelete exit = %d, want 0", code)
+	}
+	if len(rec.paths) != 1 || rec.paths[0] != "/api/TaskService/DeleteTask" {
+		t.Errorf("called %v, want exactly one DeleteTask", rec.paths)
+	}
+}
+
+// TestDispatch_RefusesToFallBackToLocalFilesForARemoteBoard is the whole point
+// of the issue: editing this machine's stale copy of another machine's board
+// and reporting success is the silent no-op being removed. A loopback target
+// is a different case — those files are the same board — and still falls back.
+func TestDispatch_RefusesToFallBackToLocalFilesForARemoteBoard(t *testing.T) {
+	t.Setenv(serverTargetEnv, "https://board.invalid:8443")
+	t.Setenv(serverTokenEnv, "secret")
+
+	cfg := config.DefaultConfig()
+	rawStore, err := task.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("task.NewStore: %v", err)
+	}
+	mgr := task.NewManager(rawStore, nil)
+	created, err := mgr.Create("local copy", "", "headless")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	code, _ := captureStdout(t, func() int {
+		return dispatch("update", []string{created.ID, "--title", "edited"}, cfg, mgr, nil, true, true)
+	})
+	if code == 0 {
+		t.Fatal("dispatch reported success against an unreachable remote board")
+	}
+	after, err := mgr.Get(created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if after.Title != "local copy" {
+		t.Errorf("title = %q; the local file was edited instead of the remote board", after.Title)
+	}
+}
+
+// TestDispatch_ConfigStillRunsWithAnUnreachableRemoteBoard keeps the commands
+// an operator reaches for when the board is down usable while it is down.
+func TestDispatch_ConfigStillRunsWithAnUnreachableRemoteBoard(t *testing.T) {
+	t.Setenv(serverTargetEnv, "https://board.invalid:8443")
+	t.Setenv(serverTokenEnv, "secret")
+
+	cfg := config.DefaultConfig()
+	code, _ := captureStdout(t, func() int {
+		return dispatch("config", []string{"dump"}, cfg, nil, nil, true, true)
+	})
+	if code != 0 {
+		t.Errorf("config dump exit = %d, want 0 with the board down", code)
+	}
+}
+
+func TestIsLoopbackHost(t *testing.T) {
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"127.0.0.1", true},
+		{"localhost", true},
+		{"::1", true},
+		{"[::1]", true},
+		{"192.168.20.219", false},
+		{"board.example", false},
+	}
+	for _, tt := range tests {
+		if got := isLoopbackHost(tt.host); got != tt.want {
+			t.Errorf("isLoopbackHost(%q) = %v, want %v", tt.host, got, tt.want)
+		}
 	}
 }
 
@@ -168,5 +282,40 @@ func TestNewRemoteAPIClient(t *testing.T) {
 				t.Errorf("token = %q, want %q", client.token, tt.token)
 			}
 		})
+	}
+}
+
+// TestCmdProgressAdd_WritesThroughTheServer covers a split the local artifact
+// store cannot see: the entry would land in this machine's artifacts dir while
+// the task it describes lives on the board that just got touched.
+func TestCmdProgressAdd_WritesThroughTheServer(t *testing.T) {
+	rec := newRecordingServer(t, map[string]any{"kind": "decision", "message": "chose headless"})
+	board := newAPITaskBoard(rec.client())
+
+	code, _ := captureStdout(t, func() int {
+		return cmdProgressAdd(board, nil, rec.client(), nil,
+			[]string{"t1", "--kind", "decision", "--message", "chose headless"}, true)
+	})
+	if code != 0 {
+		t.Fatalf("progress add exit = %d, want 0", code)
+	}
+	if len(rec.paths) != 1 || rec.paths[0] != "/api/TaskService/AppendTaskProgress" {
+		t.Errorf("called %v, want a single AppendTaskProgress", rec.paths)
+	}
+}
+
+// TestCmdProgressList_ReadsThroughTheServer mirrors the append: a local read
+// would report an empty log for a task whose entries live on the board.
+func TestCmdProgressList_ReadsThroughTheServer(t *testing.T) {
+	rec := newRecordingServer(t, []map[string]any{{"kind": "progress", "message": "started"}})
+
+	code, _ := captureStdout(t, func() int {
+		return cmdProgressList(rec.client(), nil, []string{"t1"}, true)
+	})
+	if code != 0 {
+		t.Fatalf("progress list exit = %d, want 0", code)
+	}
+	if len(rec.paths) != 1 || rec.paths[0] != "/api/TaskService/ListTaskProgress" {
+		t.Errorf("called %v, want a single ListTaskProgress", rec.paths)
 	}
 }

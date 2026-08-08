@@ -170,6 +170,7 @@ func (a *App) coreTaskHTTPServices() map[string]httpapi.Service {
 			"ExpandUmbrella",
 			"ClassifyTask",
 			"ScanMonitor",
+			"AppendTaskProgress",
 		).WithReadOnly(
 			"ListTasks",
 			"ListTasksForNode",
@@ -273,6 +274,11 @@ func (a *App) projectHTTPServices() map[string]httpapi.Service {
 			"ListProjects",
 			"GetProject",
 			"CreateProject",
+			// CreateProjectAndClone waits for the clone. A CLI caller exits
+			// as soon as the call returns, so the async variant would report
+			// success on a repo that never cloned.
+			"CreateProjectAndClone",
+			"GetProjectRawType",
 			"UpdateProject",
 			"SetProjectWorktreeBaseRef",
 			"DeleteProject",
@@ -288,7 +294,7 @@ func (a *App) projectHTTPServices() map[string]httpapi.Service {
 			// k8s sandbox and Docker build/compose paths accept attacker-controlled
 			// filesystem paths — Wails IPC only.
 			// OpenInTerminal and OpenInEditor open local GUI apps.
-		).WithReadOnly("ListProjects", "GetProject", "ListWorktrees"),
+		).WithReadOnly("ListProjects", "GetProject", "GetProjectRawType", "ListWorktrees"),
 		"IntegrationService": httpapi.NewService(a.intgSvc,
 			"FetchRenovatePRs",
 			"MergeRenovatePR",

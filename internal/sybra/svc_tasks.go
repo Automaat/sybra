@@ -76,7 +76,7 @@ type TaskService struct {
 	// umbrellaExpand expands a detected ☂️ umbrella issue into a gated child
 	// DAG instead of a flat task. Wired in wireServices; gated at call time on
 	// cfg.Umbrella.Enabled. nil in tests that don't exercise umbrellas.
-	umbrellaExpand func(issueURL string) (umbrella.Result, error)
+	umbrellaExpand func(issueURL, model string) (umbrella.Result, error)
 	// monitorScan runs one anomaly-detector pass on the server's own monitor
 	// service, so sybra-cli's `monitor scan` reports what the running instance
 	// sees rather than what a second reader of the same files would. nil when
@@ -1291,7 +1291,7 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 		ClearBlocker: task.Ptr(true),
 	}
 	if spec.clearWorkflow {
-		extra.Workflow = task.Ptr[*workflow.Execution](nil)
+		extra.ClearWorkflow = task.Ptr(true)
 	}
 	if _, err := s.tasks.Apply(task.TransitionIntent{
 		TaskID:           id,
@@ -1721,7 +1721,7 @@ func (s *TaskService) umbrellaExpansionEnabled() bool {
 // (bad URL, GitHub fetch failure) has nothing else to defer to, so the stub
 // itself becomes the identifiable (but inert) record instead.
 func (s *TaskService) expandUmbrellaStub(taskID, repo string, issue github.Issue) {
-	res, err := s.umbrellaExpand(issue.URL)
+	res, err := s.umbrellaExpand(issue.URL, "")
 	if err != nil {
 		s.logger.Error("enrich-issue.umbrella-expand", "task_id", taskID, "issue", issue.URL, "err", err)
 		if s.umbrellaTrackerExistsElsewhere(taskID, issue.URL) {
