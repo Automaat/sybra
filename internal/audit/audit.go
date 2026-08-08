@@ -240,6 +240,16 @@ const (
 	EventMonitorIncidentSuperseded  = "monitor.incident_superseded"
 	EventReconciliationDecided      = "reconciliation.decided"
 	EventAttemptLeasesReconciled    = "attempt_leases.reconciled"
+	// EventReconciliationRepairAttempted records the outcome of the
+	// conflict-recovery callback post-run reconciliation invokes when
+	// reconcile.Decide returns ActionRepair (see completion.Handler's
+	// reconcileAuthorCompletion). Without this, a reconciliation.repair
+	// incident's RemediationAttempts stays permanently empty — the decision
+	// is audited via EventReconciliationDecided, but the actual repair
+	// attempt that follows it never was. Data carries "result": "started"
+	// (conflict recovery launched) or "held" (no recovery hook available, or
+	// it declined).
+	EventReconciliationRepairAttempted = "reconciliation.repair_attempted"
 )
 
 type Event struct {
