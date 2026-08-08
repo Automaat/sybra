@@ -7,6 +7,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/autonomy"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/task"
@@ -70,7 +71,11 @@ func TestGitHubAuthProbeFailurePreservesTransientAndAuthorityOwnership(t *testin
 	}
 }
 
-func TestMisconfiguredGitHubAuthCertificationStaysRetryable(t *testing.T) {
+func TestMisconfiguredGitHubAuthCertificationRequiresCredentialAuthority(t *testing.T) {
+	// Misconfigured (as opposed to merely unavailable/rate-limited) GitHub auth
+	// is operator-authority owned: it does not self-heal, so it must escalate
+	// instead of retrying forever with no human-visible signal — the
+	// board_stalled failure mode this test guards against.
 	service := runenv.New(runenv.Deps{ProbeNetwork: func(context.Context, string) (runenv.ProbeResult, error) {
 		return githubAuthProbeFailure(github.AuthSnapshot{State: github.AuthMisconfigured}), errors.New("GitHub auth circuit is open")
 	}})
@@ -82,23 +87,26 @@ func TestMisconfiguredGitHubAuthCertificationStaysRetryable(t *testing.T) {
 		t.Fatal("Certify succeeded with misconfigured GitHub auth")
 	}
 	failure := workflow.ClassifyAgentStartFailure(err)
-	if failure.Permanent || !failure.Blocker.IsZero() {
+	if !failure.Permanent || failure.Blocker.Kind != blocker.KindCredentialRequired || !blocker.AllowsHumanRequired(failure.Blocker.Kind) {
 		t.Fatalf("classification = %#v", failure)
-	}
-	if failure.Reason == "" {
-		t.Fatal("retryable environment failure must explain the deferred dispatch")
 	}
 }
 
-func TestSignerUnavailableCertificationStaysRetryable(t *testing.T) {
+func TestSignerUnavailableCertificationRequiresRepair(t *testing.T) {
+	// The signing probe never sets an Owner (see runenv.go's
+	// autonomy.CapabilitySigning case), so this is neither external-transient
+	// nor operator-authority — it falls to the generic machine-owned branch,
+	// same as checkout/object-store/sandbox/task-mutation failures. A
+	// misconfigured or missing signer does not self-heal, so it must escalate
+	// instead of retrying forever with no human-visible signal.
 	failure := workflow.ClassifyAgentStartFailure(runenv.CertificationError{
 		TaskID: "task", Code: "signer_unavailable", Capability: autonomy.CapabilitySigning,
 	})
-	if failure.Permanent || !failure.Blocker.IsZero() {
+	if !failure.Permanent || failure.Blocker.Kind != blocker.KindRunEnvironment || blocker.AllowsHumanRequired(failure.Blocker.Kind) {
 		t.Fatalf("classification = %#v", failure)
 	}
-	if failure.Reason == "" {
-		t.Fatal("retryable signer failure must explain the deferred dispatch")
+	if failure.Blocker.Code != "signer_unavailable" {
+		t.Fatalf("blocker code = %q", failure.Blocker.Code)
 	}
 }
 
