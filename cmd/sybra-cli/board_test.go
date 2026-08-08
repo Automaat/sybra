@@ -319,3 +319,45 @@ func TestCmdProgressList_ReadsThroughTheServer(t *testing.T) {
 		t.Errorf("called %v, want a single ListTaskProgress", rec.paths)
 	}
 }
+
+// TestDispatch_RefusesLocalDataCommandsAgainstARemoteBoard covers the commands
+// whose corpus is this machine's own state. Left ungated they mine the laptop's
+// audit log, stats file, self-monitor report or artifact store and then present
+// the result — or file tasks from it — as the remote board's.
+func TestDispatch_RefusesLocalDataCommandsAgainstARemoteBoard(t *testing.T) {
+	t.Setenv(serverTargetEnv, "https://board.invalid:8443")
+	t.Setenv(serverTokenEnv, "secret")
+	cfg := config.DefaultConfig()
+
+	for _, args := range [][]string{
+		{"audit"}, {"stats", "lifecycle"}, {"artifact", "list"}, {"tasks-history"},
+		{"selfmonitor", "scan"}, {"evaluation"}, {"harness-evolution", "run"},
+		{"prompt-lab", "run"}, {"monitor", "map-duplicates"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			code, _ := captureStdout(t, func() int {
+				return dispatch(args[0], args[1:], cfg, nil, nil, true, true)
+			})
+			if code == 0 {
+				t.Errorf("%v reported success against a remote board using this machine's data", args)
+			}
+		})
+	}
+}
+
+// TestReadsThisMachine_LetsMonitorScanThrough keeps the one monitor subcommand
+// that is a single server call reachable; gating the whole command would take
+// it with the rest.
+func TestReadsThisMachine_LetsMonitorScanThrough(t *testing.T) {
+	if readsThisMachine("monitor", []string{"scan"}) {
+		t.Error("monitor scan is one server call and must stay reachable remotely")
+	}
+	if !readsThisMachine("monitor", []string{"map-duplicates"}) {
+		t.Error("monitor map-duplicates edits this machine's incident map")
+	}
+	for _, cmd := range []string{"list", "get", "update", "delete", "progress", "triage", "umbrella"} {
+		if readsThisMachine(cmd, nil) {
+			t.Errorf("%s is a board command and must not be gated", cmd)
+		}
+	}
+}

@@ -376,9 +376,9 @@ func shortRevision(rev string) string {
 // dispatch routes a parsed subcommand (with its own args and the global
 // --json flag already extracted) to the matching cmdXxx handler.
 func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Manager, localProjects *project.Store, allowHTTP, jsonOut bool) int {
-	api, unreachable := resolveBoardAPI(cmd, cfg, allowHTTP)
-	if unreachable != "" {
-		return fatal(jsonOut, "board at %s is unreachable; refusing to edit this machine's files instead", unreachable)
+	api, refusal := resolveBoardAPI(cmd, rest, cfg, allowHTTP)
+	if refusal != "" {
+		return fatal(jsonOut, "%s", refusal)
 	}
 	// Every board command runs against a reachable server. The filesystem
 	// stores stay behind the same seam so a command still works with no
@@ -456,8 +456,8 @@ func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Ma
 	}
 }
 
-// resolveBoardAPI picks the server a command runs against. A non-empty second result is a configured remote board that did not answer: falling back there would edit this machine's stale copy of another machine's board and report success, which is the failure this command surface exists to remove. A loopback target is not that case — those files are the same board — so it falls back silently.
-func resolveBoardAPI(cmd string, cfg *config.Config, allowHTTP bool) (api *apiClient, unreachable string) {
+// resolveBoardAPI picks the server a command runs against, and reports the situations where running locally instead would mislead rather than help. A loopback target is never one of them: that server shares this machine's home, so its files are the same board.
+func resolveBoardAPI(cmd string, rest []string, cfg *config.Config, allowHTTP bool) (api *apiClient, refusal string) {
 	if !allowHTTP {
 		return nil, ""
 	}
@@ -465,19 +465,38 @@ func resolveBoardAPI(cmd string, cfg *config.Config, allowHTTP bool) (api *apiCl
 	if !ok {
 		return nil, ""
 	}
+	if c.remote && readsThisMachine(cmd, rest) {
+		return nil, fmt.Sprintf(
+			"%s reads this machine's own state, not the board at %s; run it on that machine, or unset %s to read this one",
+			cmd, c.baseURL, serverTargetEnv)
+	}
 	if c.reachable(context.Background()) {
 		return c, ""
 	}
 	if c.remote && !runsWithoutServer(cmd) {
-		return nil, c.baseURL
+		return nil, fmt.Sprintf("board at %s is unreachable; refusing to edit this machine's files instead", c.baseURL)
 	}
 	return nil, ""
 }
 
-// runsWithoutServer reports the commands that read or repair this machine alone. They stay usable when the board they would otherwise talk to is down, which is what makes them the ones an operator reaches for to find out why it is down.
+// readsThisMachine names the commands whose corpus is this machine's own state rather than the board's: the audit log, the stats file, the artifact store, the self-monitor report, the incident map. Against a loopback board that state is the board's own, so they run normally. Against a board on another machine they would mine this machine's data and then print it, or file tasks from it, as that board's — the same wrong-machine confusion the rest of this surface exists to remove. Each becomes reachable remotely once its corpus moves into the database.
+func readsThisMachine(cmd string, rest []string) bool {
+	switch cmd {
+	case "audit", "stats", "artifact", "tasks-history",
+		"selfmonitor", "evaluation", "harness-evolution", "prompt-lab":
+		return true
+	case "monitor":
+		// `monitor scan` is one server call; every other subcommand edits
+		// this machine's incident map.
+		return len(rest) == 0 || rest[0] != "scan"
+	}
+	return false
+}
+
+// runsWithoutServer reports the commands that inspect or repair this machine alone. They stay usable when the board they would otherwise talk to is down, which is what makes them the ones an operator reaches for to find out why it is down.
 func runsWithoutServer(cmd string) bool {
 	switch cmd {
-	case "config", "doctor", "health", "audit", "stats", "artifact", "tasks-history", "install-skills":
+	case "config", "doctor", "health", "install-skills":
 		return true
 	}
 	return false
