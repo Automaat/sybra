@@ -454,7 +454,7 @@ func (s *Service) applyRemediations(ctx context.Context, anoms []Anomaly) remedi
 			res.attempts = append(res.attempts, remediationOutcome{a.Fingerprint, string(a.Kind), "failed"})
 			s.logger.Warn("monitor.remediate.failed", "kind", a.Kind, "task_id", a.TaskID, "err", err)
 			if a.Kind == KindLostAgent {
-				res.lostAgentCauses[a.Fingerprint] = err.Error()
+				res.lostAgentCauses[Fingerprint(a.Kind, a.TaskID, nil)] = err.Error()
 			}
 			continue
 		}
@@ -776,6 +776,9 @@ func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly
 		var body string
 		if a.Kind == KindLostAgent && !isControlPlaneObservation(a) {
 			incidentFP := a.Fingerprint
+			if s.incidents != nil {
+				a.Fingerprint = Fingerprint(a.Kind, a.TaskID, nil)
+			}
 			var ok bool
 			if a, body, ok = s.gateLostAgentIssue(a, lostAgentCauses); !ok {
 				continue
@@ -832,7 +835,7 @@ func (s *Service) fileIssues(ctx context.Context, now time.Time, anoms []Anomaly
 			s.logger.Warn("monitor.issue.failed", "kind", a.Kind, "fingerprint", a.Fingerprint, "err", err)
 			continue
 		}
-		if a.Kind == KindLostAgent {
+		if a.Kind == KindLostAgent && s.incidents == nil {
 			s.state.lostAgentFiled(anoms[i].Fingerprint, a.Fingerprint)
 		}
 		if s.incidents != nil {
