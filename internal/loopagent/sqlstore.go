@@ -41,6 +41,8 @@ const selectLoopAgents = `SELECT ` + loopAgentColumns + ` FROM loop_agents ORDER
 
 const selectLoopAgent = `SELECT ` + loopAgentColumns + ` FROM loop_agents WHERE id = ?`
 
+const selectLoopAgentByName = `SELECT ` + loopAgentColumns + ` FROM loop_agents WHERE name = ? ORDER BY id LIMIT 1`
+
 // selectLoopAgentForUpdate is the postgres read inside a read-modify-write. Without FOR UPDATE, READ COMMITTED lets a concurrent writer commit between this read and the matching UPDATE, and its edit is lost with no error.
 const selectLoopAgentForUpdate = selectLoopAgent + ` FOR UPDATE`
 
@@ -95,6 +97,22 @@ func (s *SQLStore) FindByName(ctx context.Context, name string) (LoopAgent, bool
 
 // Create assigns an ID and timestamps, validates, and inserts the record.
 func (s *SQLStore) Create(ctx context.Context, la LoopAgent) (LoopAgent, error) {
+	prepared, err := prepareForInsert(la)
+	if err != nil {
+		return LoopAgent{}, err
+	}
+	tools, err := marshalTools(prepared.AllowedTools)
+	if err != nil {
+		return LoopAgent{}, err
+	}
+	if _, err := s.db.ExecContext(ctx, insertLoopAgent, insertArgs(prepared, tools)...); err != nil {
+		return LoopAgent{}, fmt.Errorf("create loop agent: %w", err)
+	}
+	return prepared, nil
+}
+
+// prepareForInsert applies the defaults and stamps a new record carries, and rejects it if it is not valid.
+func prepareForInsert(la LoopAgent) (LoopAgent, error) {
 	if la.Provider == "" {
 		la.Provider = providerid.Claude
 	}
@@ -106,18 +124,49 @@ func (s *SQLStore) Create(ctx context.Context, la LoopAgent) (LoopAgent, error) 
 	la.CreatedAt = now
 	la.UpdatedAt = now
 	la.LastRunAt = db.StoredTime(la.LastRunAt)
-
-	tools, err := marshalTools(la.AllowedTools)
-	if err != nil {
-		return LoopAgent{}, err
-	}
-	_, err = s.db.ExecContext(ctx, insertLoopAgent,
-		la.ID, la.Name, la.Prompt, la.IntervalSec, tools, la.Provider, la.Model, db.BoolValue(la.Enabled),
-		db.TimeValue(la.LastRunAt), la.LastRunID, la.LastRunCost, db.TimeValue(la.CreatedAt), db.TimeValue(la.UpdatedAt))
-	if err != nil {
-		return LoopAgent{}, fmt.Errorf("create loop agent: %w", err)
-	}
 	return la, nil
+}
+
+func insertArgs(la LoopAgent, tools string) []any {
+	return []any{
+		la.ID, la.Name, la.Prompt, la.IntervalSec, tools, la.Provider, la.Model, db.BoolValue(la.Enabled),
+		db.TimeValue(la.LastRunAt), la.LastRunID, la.LastRunCost, db.TimeValue(la.CreatedAt), db.TimeValue(la.UpdatedAt),
+	}
+}
+
+// CreateIfAbsentByName inserts la only when no record carries its Name, reporting whether it did. The first-boot seed uses it so instances sharing one board cannot each add their own copy.
+func (s *SQLStore) CreateIfAbsentByName(ctx context.Context, la LoopAgent) (LoopAgent, bool, error) {
+	var (
+		out      LoopAgent
+		inserted bool
+	)
+	err := s.db.InTxLocked(ctx, db.LockSeedByName, func(tx *sql.Tx) error {
+		existing, err := scanLoopAgent(tx.QueryRowContext(ctx, s.db.Rebind(selectLoopAgentByName), la.Name))
+		switch {
+		case err == nil:
+			out = existing
+			return nil
+		case !errors.Is(err, sql.ErrNoRows):
+			return fmt.Errorf("look up loop agent by name: %w", err)
+		}
+		prepared, err := prepareForInsert(la)
+		if err != nil {
+			return err
+		}
+		tools, err := marshalTools(prepared.AllowedTools)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(insertLoopAgent), insertArgs(prepared, tools)...); err != nil {
+			return fmt.Errorf("create loop agent: %w", err)
+		}
+		out, inserted = prepared, true
+		return nil
+	})
+	if err != nil {
+		return LoopAgent{}, false, err
+	}
+	return out, inserted, nil
 }
 
 // Update overwrites mutable fields on an existing record. ID and CreatedAt are preserved from the stored version regardless of caller input.

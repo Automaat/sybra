@@ -29,13 +29,6 @@ var ErrSchemaAhead = errors.New("database schema is newer than this build")
 // ErrMigrationChanged reports a migration file edited after it was applied somewhere. The edit reaches a fresh database and silently misses every existing one, so it must be a new migration instead.
 var ErrMigrationChanged = errors.New("applied migration no longer matches the shipped file")
 
-// migrationLockKey is the postgres advisory-lock key held for the whole of
-// Migrate. Several instances share one board by design, and they restart
-// together after an auto-update, so without it concurrent CREATE TABLE and
-// version INSERT collide and abort startup with a catalog error that names no
-// setting the operator can act on.
-const migrationLockKey int64 = 6_215_034_129_001
-
 type migration struct {
 	version  int
 	name     string
@@ -93,11 +86,11 @@ func (d *DB) withMigrationLock(ctx context.Context, fn func() error) error {
 		return fmt.Errorf("acquire migration connection: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
-	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", migrationLockKey); err != nil {
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", int64(LockMigrations)); err != nil {
 		return fmt.Errorf("acquire migration lock: %w", err)
 	}
 	defer func() {
-		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", migrationLockKey)
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", int64(LockMigrations))
 	}()
 	return fn()
 }

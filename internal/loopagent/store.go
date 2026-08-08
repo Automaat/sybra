@@ -84,6 +84,24 @@ func (s *Store) Create(_ context.Context, la LoopAgent) (LoopAgent, error) {
 	return la, nil
 }
 
+// CreateIfAbsentByName writes la only when no record carries its Name, reporting whether it did. The dir-wide flock is what keeps the first-boot seed idempotent when two processes start together.
+func (s *Store) CreateIfAbsentByName(ctx context.Context, la LoopAgent) (LoopAgent, bool, error) {
+	unlock, err := fsutil.LockFile(filepath.Join(s.dir, ".create-by-name.lock"))
+	if err != nil {
+		return LoopAgent{}, false, fmt.Errorf("lock loop agents dir: %w", err)
+	}
+	defer func() { _ = unlock() }()
+
+	if existing, ok := s.FindByName(ctx, la.Name); ok {
+		return existing, false, nil
+	}
+	created, err := s.Create(ctx, la)
+	if err != nil {
+		return LoopAgent{}, false, err
+	}
+	return created, true, nil
+}
+
 // Update overwrites mutable fields on an existing record. ID and CreatedAt
 // are preserved from the on-disk version regardless of caller input.
 //

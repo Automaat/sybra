@@ -171,6 +171,33 @@ func (d *DB) QueryRowContext(ctx context.Context, query string, args ...any) *sq
 	return d.sqlDB.QueryRowContext(ctx, d.Rebind(query), args...)
 }
 
+// LockKey names a cross-process advisory lock. Keys are constants so two
+// callers cannot collide by accident.
+type LockKey int64
+
+// Advisory locks in use. Keep new keys distinct from these.
+const (
+	LockMigrations LockKey = 6_215_034_129_001
+	LockSeedByName LockKey = 6_215_034_129_002
+)
+
+// InTxLocked runs fn in a transaction holding a cross-process advisory lock.
+//
+// It is what makes a check-then-insert atomic. A plain transaction is not
+// enough: under READ COMMITTED, two concurrent "insert if absent" bodies both
+// see no row and both insert. SQLite needs no extra lock — its immediate
+// transaction already excludes every other writer.
+func (d *DB) InTxLocked(ctx context.Context, key LockKey, fn func(*sql.Tx) error) error {
+	return d.InTx(ctx, func(tx *sql.Tx) error {
+		if d.dialect == Postgres {
+			if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", int64(key)); err != nil {
+				return fmt.Errorf("acquire advisory lock %d: %w", key, err)
+			}
+		}
+		return fn(tx)
+	})
+}
+
 // InTx runs fn inside a transaction, rolling back on error or panic. Stores use it for any write that must land whole.
 func (d *DB) InTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	tx, err := d.sqlDB.BeginTx(ctx, nil)

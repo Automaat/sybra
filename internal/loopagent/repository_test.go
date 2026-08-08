@@ -453,3 +453,60 @@ func TestRepository_TwoProcessesDoNotLoseAnUpdate(t *testing.T) {
 		}
 	})
 }
+
+func TestRepository_CreateIfAbsentByNameIsIdempotentUnderConcurrentStarts(t *testing.T) {
+	backends(t, func(t *testing.T, b backend) {
+		t.Helper()
+		// Instances sharing one board cold-start together after an auto-update, and each one seeds the built-in loop. A check-then-insert that is not atomic leaves the board with one copy per instance.
+		const starters = 6
+		repos := make([]Repository, starters)
+		for i := range repos {
+			repos[i] = b.reopen(t)
+		}
+		inserted := make([]bool, starters)
+		errs := make([]error, starters)
+		var wg sync.WaitGroup
+		for i := range starters {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				seed := sampleAgent()
+				seed.Name = "sybra-self-monitor"
+				_, inserted[i], errs[i] = repos[i].CreateIfAbsentByName(t.Context(), seed)
+			}(i)
+		}
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("starter %d: %v", i, err)
+			}
+		}
+		insertions := 0
+		for _, did := range inserted {
+			if did {
+				insertions++
+			}
+		}
+		if insertions != 1 {
+			t.Errorf("%d starters reported an insert, want exactly 1", insertions)
+		}
+		all, err := repo(t, b).List(t.Context())
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		seeded := 0
+		for _, la := range all {
+			if la.Name == "sybra-self-monitor" {
+				seeded++
+			}
+		}
+		if seeded != 1 {
+			t.Errorf("board holds %d copies of the seeded loop, want 1", seeded)
+		}
+	})
+}
+
+func repo(t *testing.T, b backend) Repository {
+	t.Helper()
+	return b.open(t)
+}

@@ -14,6 +14,7 @@ type Repository interface {
 	Get(ctx context.Context, id string) (LoopAgent, error)
 	FindByName(ctx context.Context, name string) (LoopAgent, bool)
 	Create(ctx context.Context, la LoopAgent) (LoopAgent, error)
+	CreateIfAbsentByName(ctx context.Context, la LoopAgent) (LoopAgent, bool, error)
 	Update(ctx context.Context, la LoopAgent) (LoopAgent, error)
 	UpdateRunMetadata(ctx context.Context, id string, mutate func(*LoopAgent)) (LoopAgent, error)
 	Delete(ctx context.Context, id string) error

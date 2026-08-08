@@ -1824,10 +1824,7 @@ func (a *App) seedDefaultLoopAgents(ctx context.Context) {
 		return
 	}
 	const name = "sybra-self-monitor"
-	if _, ok := a.loopAgents.FindByName(ctx, name); ok {
-		return
-	}
-	created, err := a.loopAgents.Create(ctx, loopagent.LoopAgent{
+	created, inserted, err := a.loopAgents.CreateIfAbsentByName(ctx, loopagent.LoopAgent{
 		Name:         name,
 		Prompt:       "/sybra-self-monitor",
 		IntervalSec:  21600, // 6 hours
@@ -1838,6 +1835,9 @@ func (a *App) seedDefaultLoopAgents(ctx context.Context) {
 	})
 	if err != nil {
 		a.logger.Warn("loopagent.seed.failed", "name", name, "err", err)
+		return
+	}
+	if !inserted {
 		return
 	}
 	a.logger.Info("loopagent.seed.created", "id", created.ID, "name", name)
