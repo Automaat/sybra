@@ -110,6 +110,13 @@ export class ReviewRoundsStat {
 export class RunRecord {
     "id": string;
     "taskId": string;
+    "taskGeneration"?: number;
+
+    /**
+     * TaskGenerationKnown distinguishes a new generation-0 record from a
+     * legacy record written before exact attempt attribution was available.
+     */
+    "taskGenerationKnown"?: boolean;
     "projectId"?: string;
     "mode": string;
     "role": string;

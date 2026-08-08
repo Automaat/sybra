@@ -201,6 +201,7 @@ func (s *Service) Scan(_ context.Context) (Report, error) {
 		sloTargets = DefaultSLOTargets()
 	}
 	rep.SLO = EvaluateSLOs(rep.Overall, ComputeSLOSignals(evts, since, now), sloTargets)
+	rep.AutonomySLOs = ComputeAutonomySLOs(rep.Overall, evts, since, now)
 	rep.Weaknesses = Weaknesses(rep, sloTargets)
 	return rep, nil
 }

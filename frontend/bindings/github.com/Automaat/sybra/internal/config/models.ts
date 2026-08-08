@@ -1312,6 +1312,18 @@ export class MonitorConfig {
      */
     "lostAgentAutoCloseAfterClears": number;
 
+    /**
+     * IncidentResolveGraceMinutes requires a successfully observed healthy
+     * detector result to remain stable before an incident is resolved.
+     */
+    "incidentResolveGraceMinutes": number;
+
+    /**
+     * IncidentReopenGraceMinutes suppresses noisy external updates immediately
+     * after resolution while retaining recurrence history in the same incident.
+     */
+    "incidentReopenGraceMinutes": number;
+
     /** Creates a new MonitorConfig instance. */
     constructor($$source: Partial<MonitorConfig> = {}) {
         if (!("enabled" in $$source)) {
@@ -1355,6 +1367,12 @@ export class MonitorConfig {
         }
         if (!("lostAgentAutoCloseAfterClears" in $$source)) {
             this["lostAgentAutoCloseAfterClears"] = 0;
+        }
+        if (!("incidentResolveGraceMinutes" in $$source)) {
+            this["incidentResolveGraceMinutes"] = 0;
+        }
+        if (!("incidentReopenGraceMinutes" in $$source)) {
+            this["incidentReopenGraceMinutes"] = 0;
         }
 
         Object.assign(this, $$source);

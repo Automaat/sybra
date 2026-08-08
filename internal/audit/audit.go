@@ -232,6 +232,24 @@ const (
 	// failed preflight parks the task in human-required immediately, so this
 	// event fires on every occurrence, not just the first.
 	EventGHPushAuthFailed = "gh_push.auth_failed"
+	// Monitor incident events are scrub-safe typed projections. They never
+	// contain anomaly prose, raw work project identifiers, or task content.
+	EventMonitorIncidentObserved    = "monitor.incident_observed"
+	EventMonitorIncidentRemediation = "monitor.incident_remediation"
+	EventMonitorIncidentResolved    = "monitor.incident_resolved"
+	EventMonitorIncidentSuperseded  = "monitor.incident_superseded"
+	EventReconciliationDecided      = "reconciliation.decided"
+	EventAttemptLeasesReconciled    = "attempt_leases.reconciled"
+	// EventReconciliationRepairAttempted records the outcome of the
+	// conflict-recovery callback post-run reconciliation invokes when
+	// reconcile.Decide returns ActionRepair (see completion.Handler's
+	// reconcileAuthorCompletion). Without this, a reconciliation.repair
+	// incident's RemediationAttempts stays permanently empty — the decision
+	// is audited via EventReconciliationDecided, but the actual repair
+	// attempt that follows it never was. Data carries "result": "started"
+	// (conflict recovery launched) or "held" (no recovery hook available, or
+	// it declined).
+	EventReconciliationRepairAttempted = "reconciliation.repair_attempted"
 )
 
 type Event struct {

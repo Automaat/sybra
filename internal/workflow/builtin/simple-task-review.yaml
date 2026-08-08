@@ -34,9 +34,9 @@ steps:
         value: noreview
     next:
       - when:
-          field: task.code_review
-          operator: starts_with
-          value: 'Review Verdict: NEEDS_FIXES'
+          field: task.code_review_verdict
+          operator: equals
+          value: NEEDS_FIXES
         goto: triage_review
       - when:
           field: task.reviewed
@@ -135,9 +135,16 @@ steps:
       provider: cross
       needs_worktree: true
       max_retries: 2
+      output_schema: >-
+        {"type":"object","properties":{"verdict":{"type":"string","enum":["CLEAN","NEEDS_FIXES"]}},"required":["verdict"],"additionalProperties":false}
       prompt: >-
         Review the changes on the current branch vs origin/main.
         The PR has not been created yet — review the local diff.
+        {{- if getvar .Vars "review_reask_note"}}
+
+        RETRY GUIDANCE — your previous final message was invalid:
+        {{getvar .Vars "review_reask_note"}}
+        {{- end}}
 
         Steps:
           1. git diff origin/main..HEAD > {{sidecardir .Vars}}/.sybra-diff-{{.Task.ID}}.patch
@@ -159,6 +166,10 @@ steps:
         after you exit — you do not need to call sybra-cli yourself.
         The review file is git-excluded and remains for the next step (fix_review) to
         read directly.
+
+        Your FINAL message of the turn must be ONLY the schema-valid JSON
+        verdict object: `{"verdict":"CLEAN"}` or
+        `{"verdict":"NEEDS_FIXES"}`.
       import_sidecar:
         kind: code_review
         from: '{{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md'
@@ -187,9 +198,16 @@ steps:
       provider: ab
       needs_worktree: true
       max_retries: 2
+      output_schema: >-
+        {"type":"object","properties":{"verdict":{"type":"string","enum":["CLEAN","NEEDS_FIXES"]}},"required":["verdict"],"additionalProperties":false}
       prompt: >-
         Review the changes on the current branch vs origin/main.
         The PR has not been created yet — review the local diff.
+        {{- if getvar .Vars "review_reask_note"}}
+
+        RETRY GUIDANCE — your previous final message was invalid:
+        {{getvar .Vars "review_reask_note"}}
+        {{- end}}
 
         Steps:
           1. git diff origin/main..HEAD > {{sidecardir .Vars}}/.sybra-diff-{{.Task.ID}}.patch
@@ -211,6 +229,10 @@ steps:
         after you exit — you do not need to call sybra-cli yourself.
         The review file is git-excluded and remains for the next step (fix_review) to
         read directly.
+
+        Your FINAL message of the turn must be ONLY the schema-valid JSON
+        verdict object: `{"verdict":"CLEAN"}` or
+        `{"verdict":"NEEDS_FIXES"}`.
       import_sidecar:
         kind: code_review
         from: '{{sidecardir .Vars}}/.sybra-review-{{.Task.ID}}.md'
@@ -239,24 +261,17 @@ steps:
   # entirely, saving ~1 wasted agent run per clean-review task — which is
   # nearly every landing.
   #
-  # Unlike the plan-side verdict gate this replaced (deleted: it tested for a
-  # literal the critic never emitted, so it never fired), the reviewer's
-  # verdict format is mandated by this workflow's own review prompt. Keep the
-  # prompt and this check in sync — an unenforced format is how the plan-side
-  # gate silently rotted.
+  # The review agent's final message is output_schema-enforced JSON. This
+  # step's own type handles malformed/missing verdicts via bounded retry and
+  # escalation; the YAML only routes the already-extracted wf var.
   - id: route_review_verdict
     name: Route on Review Verdict
-    type: condition
-    config:
-      check:
-        field: task.code_review
-        operator: starts_with
-        value: 'Review Verdict: CLEAN'
+    type: route_review_verdict
     next:
       - when:
-          field: task.code_review
-          operator: starts_with
-          value: 'Review Verdict: CLEAN'
+          field: vars.review_verdict
+          operator: equals
+          value: CLEAN
         goto: done_review
       - goto: fix_review
 

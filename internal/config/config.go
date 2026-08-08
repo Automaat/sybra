@@ -41,6 +41,7 @@ type Config struct {
 	Routing        RoutingConfig        `yaml:"routing" json:"routing"`
 	Providers      ProvidersConfig      `yaml:"providers" json:"providers"`
 	Metrics        MetricsConfig        `yaml:"metrics" json:"metrics"`
+	Database       DatabaseConfig       `yaml:"database" json:"database"`
 	Server         ServerConfig         `yaml:"server" json:"server"`
 	Cluster        ClusterConfig        `yaml:"cluster" json:"cluster"`
 	AutoUpdate     AutoUpdateConfig     `yaml:"auto_update" json:"autoUpdate"`

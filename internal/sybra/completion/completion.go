@@ -410,8 +410,10 @@ func (h *Handler) reconcileAuthorCompletion(ag *agent.Agent, stalled bool) bool 
 		}
 		if h.conflictRecovery != nil && h.conflictRecovery(ag.TaskID) {
 			h.logger.Info("post-run.reconcile.repair-started", "task_id", ag.TaskID, "agent_id", ag.ID, "reason", plan.Reason)
+			h.logAudit(audit.EventReconciliationRepairAttempted, ag.TaskID, ag.ID, map[string]any{"result": "started", "reason": plan.Reason})
 		} else {
 			h.logger.Warn("post-run.reconcile.repair-held", "task_id", ag.TaskID, "agent_id", ag.ID, "reason", plan.Reason)
+			h.logAudit(audit.EventReconciliationRepairAttempted, ag.TaskID, ag.ID, map[string]any{"result": "held", "reason": plan.Reason})
 		}
 		return false
 	case reconcile.ActionQuarantine:
@@ -1062,6 +1064,7 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, outcome strin
 	cacheRead := ag.GetCacheReadInputTokens()
 	reasoning := ag.GetReasoningTokens()
 	agCost := estimatedRunCost(ag, cost, ag.GetPremiumRequests())
+	taskGeneration, taskGenerationKnown := ag.GetAttemptTaskGeneration()
 	var projectID string
 	if ag.TaskID != "" {
 		if t, err := h.tasks.Get(ag.TaskID); err == nil {
@@ -1071,6 +1074,8 @@ func (h *Handler) recordRunStats(ag *agent.Agent, role agent.Role, outcome strin
 	_ = h.stats.Record(stats.RunRecord{
 		ID:                       ag.ID,
 		TaskID:                   ag.TaskID,
+		TaskGeneration:           taskGeneration,
+		TaskGenerationKnown:      taskGenerationKnown,
 		ProjectID:                projectID,
 		Mode:                     ag.Mode,
 		Role:                     string(role),

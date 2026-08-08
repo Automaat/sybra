@@ -439,11 +439,18 @@ steps:
       provider: cross
       needs_worktree: true
       max_retries: 2
+      output_schema: >-
+        {"type":"object","properties":{"verdict":{"type":"string","enum":["APPROVE","REFINE","REJECT"]}},"required":["verdict"],"additionalProperties":false}
       prompt: >-
         Critique the execution contract for task {{.Task.ID}} using the
         /plan-critic skill. Use the planning research, decisions, and brief as
         context, but judge whether the compact execution contract is safe to
         implement.
+        {{- if getvar .Vars "plan_critique_reask_note"}}
+
+        RETRY GUIDANCE — your previous final message was invalid:
+        {{getvar .Vars "plan_critique_reask_note"}}
+        {{- end}}
         {{- if getvar .Vars "watchdog_reask_note"}}
 
         {{getvar .Vars "watchdog_reask_note"}}
@@ -470,6 +477,10 @@ steps:
         will ingest {{sidecardir .Vars}}/.sybra-critique-{{.Task.ID}}.md as the task's
         plan_critique sidecar after you exit — you do not need to call
         sybra-cli yourself.
+
+        Your FINAL message of the turn must be ONLY the schema-valid JSON
+        verdict object: `{"verdict":"APPROVE"}`,
+        `{"verdict":"REFINE"}`, or `{"verdict":"REJECT"}`.
       allowed_tools:
         - Bash
         - Read

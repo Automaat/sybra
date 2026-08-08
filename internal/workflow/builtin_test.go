@@ -288,6 +288,14 @@ func TestBuiltinSimpleTask_PresentCritiqueRoutesThroughFlagStep(t *testing.T) {
 	if got != "review_plan" {
 		t.Fatalf("flag_plan_critique_verdict next = %q, want review_plan", got)
 	}
+
+	critique := simple.StepByID("critique_plan")
+	if critique == nil {
+		t.Fatal("critique_plan step not found in simple-task-plan")
+	}
+	if !strings.Contains(critique.Config.OutputSchema, `"enum":["APPROVE","REFINE","REJECT"]`) {
+		t.Fatalf("critique_plan output_schema = %q, want APPROVE/REFINE/REJECT enum", critique.Config.OutputSchema)
+	}
 }
 
 // TestBuiltinSimpleTask_ReplanCapEscalatesAfterThreeRejects locks the replan
@@ -809,9 +817,9 @@ func TestBuiltinSimpleTaskReview_MaybeReviewTrivialRouting(t *testing.T) {
 		{
 			name: "needs_fixes_review_overrides_reviewed_flag",
 			fields: map[string]string{
-				"task.reviewed":    "true",
-				"task.tags":        "backend,feature",
-				"task.code_review": "Review Verdict: NEEDS_FIXES\n\nfoo.go:12: nil deref risk.\n",
+				"task.reviewed":            "true",
+				"task.tags":                "backend,feature",
+				"task.code_review_verdict": "NEEDS_FIXES",
 			},
 			want: "triage_review",
 		},
@@ -843,33 +851,26 @@ func TestBuiltinSimpleTaskReview_RouteReviewVerdictSkipsFixReviewOnClean(t *test
 	}
 
 	cases := []struct {
-		name       string
-		codeReview string
-		want       string
+		name    string
+		verdict string
+		want    string
 	}{
 		{
-			name:       "clean_skips_fix_review",
-			codeReview: "Review Verdict: CLEAN\n\nNo actionable findings.\n",
-			want:       "done_review",
+			name:    "clean_skips_fix_review",
+			verdict: "CLEAN",
+			want:    "done_review",
 		},
 		{
-			name:       "needs_fixes_routes_to_fix_review",
-			codeReview: "Review Verdict: NEEDS_FIXES\n\nfoo.go:12: nil deref risk.\n",
-			want:       "fix_review",
-		},
-		{
-			name: "needs_fixes_echoing_clean_marker_routes_to_fix_review",
-			codeReview: "Review Verdict: NEEDS_FIXES\n\n" +
-				"This is not a Review Verdict: CLEAN pass; see the finding below.\n\n" +
-				"foo.go:12: nil deref risk.\n",
-			want: "fix_review",
+			name:    "needs_fixes_routes_to_fix_review",
+			verdict: "NEEDS_FIXES",
+			want:    "fix_review",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := ResolveTransition(step.Next, map[string]string{
-				"task.code_review": tc.codeReview,
+				"vars.review_verdict": tc.verdict,
 			})
 			if err != nil {
 				t.Fatalf("ResolveTransition: %v", err)
@@ -878,6 +879,16 @@ func TestBuiltinSimpleTaskReview_RouteReviewVerdictSkipsFixReviewOnClean(t *test
 				t.Errorf("goto = %q, want %q", got, tc.want)
 			}
 		})
+	}
+
+	for _, id := range []string{"code_review_simple", "code_review_staff"} {
+		run := review.StepByID(id)
+		if run == nil {
+			t.Fatalf("%s step not found in simple-task-review", id)
+		}
+		if !strings.Contains(run.Config.OutputSchema, `"enum":["CLEAN","NEEDS_FIXES"]`) {
+			t.Fatalf("%s output_schema = %q, want CLEAN/NEEDS_FIXES enum", id, run.Config.OutputSchema)
+		}
 	}
 }
 
@@ -913,6 +924,25 @@ func TestBuiltinDefinitions_Valid(t *testing.T) {
 				t.Errorf("Validate() error for %q: %v", d.ID, err)
 			}
 		})
+	}
+}
+
+func TestBuiltinReviewVerdictRouting_NoLiteralPrefixParsing(t *testing.T) {
+	t.Parallel()
+
+	raw, err := os.ReadFile(filepath.Join("builtin", "simple-task-review.yaml"))
+	if err != nil {
+		t.Fatalf("ReadFile(simple-task-review.yaml): %v", err)
+	}
+	text := string(raw)
+	for _, forbidden := range []string{
+		"field: task.code_review\n          operator: starts_with\n          value: 'Review Verdict: CLEAN'",
+		"field: task.code_review\n          operator: starts_with\n          value: 'Review Verdict: NEEDS_FIXES'",
+		"type: condition\n    config:\n      check:\n        field: task.code_review",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("simple-task-review.yaml still contains literal-prefix verdict parsing:\n%s", forbidden)
+		}
 	}
 }
 

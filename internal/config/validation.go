@@ -95,6 +95,7 @@ func ValidateResolvedConfig(cfg *ResolvedConfig) error {
 	validateReviewHoldConfig(cfg, add)
 	validateEvaluationConfig(cfg, add)
 	validateMonitorConfig(cfg, add)
+	validateDatabaseConfig(cfg, add)
 	validateK8sSecretEnv(cfg, add)
 
 	if len(msgs) == 0 {
@@ -296,6 +297,12 @@ func validateSLOTargets(slo *SLOTargets, add func(format string, a ...any)) {
 func validateMonitorConfig(cfg *ResolvedConfig, add func(format string, a ...any)) {
 	if cfg.Monitor.DispatchLimit < 0 {
 		add("monitor.dispatch_limit must be 0 or greater, got %d", cfg.Monitor.DispatchLimit)
+	}
+	if cfg.Monitor.IncidentResolveGraceMinutes < 0 {
+		add("monitor.incident_resolve_grace_minutes must be 0 or greater, got %d", cfg.Monitor.IncidentResolveGraceMinutes)
+	}
+	if cfg.Monitor.IncidentReopenGraceMinutes < 0 {
+		add("monitor.incident_reopen_grace_minutes must be 0 or greater, got %d", cfg.Monitor.IncidentReopenGraceMinutes)
 	}
 }
 

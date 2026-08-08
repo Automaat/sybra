@@ -15,7 +15,7 @@ Regenerate with `go generate ./internal/config/...` after changing a struct tag 
 | `workflow` | Task-stage policy, planning/testing orchestration, and board-driven automation. | `workflow.orchestrator`, `workflow.testing`, `workflow.triage`, `workflow.umbrella`, `workflow.admission` |
 | `integrations` | External systems Sybra talks to on the operator's behalf. | `integrations.notification`, `integrations.github`, `integrations.renovate`, `integrations.browser` |
 | `supervision` | Health checks, review escalation, and autonomous oversight loops. | `supervision.human_review`, `supervision.monitor`, `supervision.watchdog`, `supervision.self_monitor`, `supervision.evaluation`, `supervision.learning_digest`, `supervision.harness_evolution`, `supervision.prompt_lab` |
-| `storage` | Filesystem-backed retention and path layout under SYBRA_HOME. | `storage.attachments`, `storage.trash`, `storage.sandboxes`, `storage.task_snapshot`, `storage.paths` |
+| `storage` | Durable-storage backend selection, retention, and path layout under SYBRA_HOME. | `storage.database`, `storage.attachments`, `storage.trash`, `storage.sandboxes`, `storage.task_snapshot`, `storage.paths` |
 | `observability` | Logs, audit, metrics, experimentation, and operator evidence retention. | `observability.logging`, `observability.audit`, `observability.metrics`, `observability.experience`, `observability.intervention`, `observability.ab_testing` |
 | `routing` | Adaptive provider-routing policy that tunes experiment weights from observed execution outcomes. | `routing` |
 | `server` | Local API/server exposure and auth for the running Sybra instance. | `server` |
@@ -512,6 +512,8 @@ focused headless agent for anomalies that need LLM judgment.
 | `supervision.monitor.issue_repo` | `string` | `"Automaat/sybra"` |  |  | `monitor.issue_repo` | `false` | `restart` |  |  |
 | `supervision.monitor.lost_agent_issue_after_occurrences` | `int` | `2` |  |  | `monitor.lost_agent_issue_after_occurrences` | `false` | `restart` |  | LostAgentIssueAfterOccurrences is how many consecutive ticks a lost_agent anomaly must be detected for the same task before an issue is filed. The deterministic remediation (resetLostAgent) runs every tick regardless; a single recurrence just means recovery hasn't taken effect yet, not that it failed. |
 | `supervision.monitor.lost_agent_auto_close_after_clears` | `int` | `3` |  |  | `monitor.lost_agent_auto_close_after_clears` | `false` | `restart` |  | LostAgentAutoCloseAfterClears is how many consecutive ticks a previously-filed lost_agent issue's task must stay clear (no longer detected as lost) before the issue is auto-closed. |
+| `supervision.monitor.incident_resolve_grace_minutes` | `int` | `15` |  |  | `monitor.incident_resolve_grace_minutes` | `false` | `restart` |  | IncidentResolveGraceMinutes requires a successfully observed healthy detector result to remain stable before an incident is resolved. |
+| `supervision.monitor.incident_reopen_grace_minutes` | `int` | `30` |  |  | `monitor.incident_reopen_grace_minutes` | `false` | `restart` |  | IncidentReopenGraceMinutes suppresses noisy external updates immediately after resolution while retaining recurrence history in the same incident. |
 
 ### WatchdogConfig (`supervision.watchdog`)
 
@@ -679,7 +681,7 @@ while never suppressing re-files the same ID every tick. Defaults to 30.
 
 ## Storage
 
-Filesystem-backed retention and path layout under SYBRA_HOME.
+Durable-storage backend selection, retention, and path layout under SYBRA_HOME.
 
 ### Storage Root (`storage`)
 
@@ -733,6 +735,18 @@ couldn't catch).
 |---|---|---|---|---|---|---|---|---|---|
 | `storage.task_snapshot.enabled` | `*bool` | _(nil)_ |  |  | `task_snapshot.enabled` | `false` | `restart` |  | Enabled toggles the background snapshotter. nil means not configured (defaults to true — safe default, matches RequirePermissions' nil-means-on convention). Set to false to disable entirely. |
 | `storage.task_snapshot.interval` | `int` | `0` | `seconds` |  | `task_snapshot.interval_seconds`, `task_snapshot.interval` | `false` | `restart` |  | IntervalSeconds is the fixed interval between commit attempts. 0 or negative falls back to DefaultTaskSnapshotInterval (30s). |
+
+### DatabaseConfig (`storage.database`)
+
+DatabaseConfig selects the durable-storage backend and its connection settings. Omitting the block keeps every store on the filesystem.
+
+| YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
+|---|---|---|---|---|---|---|---|---|---|
+| `storage.database.backend` | `string` | `""` |  |  | `database.backend` | `false` | `restart` |  | Backend is "file" (filesystem stores), "sqlite" (embedded single file), or "postgres" (shared server). An unrecognized value fails validation instead of falling back, so a typo cannot silently keep writing files. |
+| `storage.database.dsn` | `string` | `[redacted]` |  |  | `database.dsn` | `true` | `restart` |  | DSN is a file path for sqlite (default ~/.sybra/sybra.db), optionally with driver query parameters after a "?", and a required postgres:// URL or key=value string for postgres. |
+| `storage.database.max_open_conns` | `int` | `0` |  |  | `database.max_open_conns` | `false` | `restart` |  | MaxOpenConns caps concurrent connections; 0 uses the per-engine default (1 for sqlite, 16 for postgres). |
+| `storage.database.max_idle_conns` | `int` | `0` |  |  | `database.max_idle_conns` | `false` | `restart` |  | MaxIdleConns caps pooled idle connections; 0 uses the per-engine default. |
+| `storage.database.conn_max_lifetime_seconds` | `int` | `0` |  |  | `database.conn_max_lifetime_seconds` | `false` | `restart` |  | ConnMaxLifetimeSeconds retires a pooled connection after this age; 0 keeps it until the driver drops it. |
 
 ## Observability
 

@@ -969,6 +969,105 @@ func TestServiceTick_HumanRequiredStuck_RemediatesDirectly(t *testing.T) {
 	}
 }
 
+func TestServiceTick_HumanRequiredStuck_IncidentLedgerDoesNotPublishArtifact(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	tasks := &fakeTasks{tasks: []task.Task{
+		mkTask("hr-stuck", task.StatusHumanRequired, func(t *task.Task) {
+			t.UpdatedAt = now.Add(-9 * time.Hour)
+			t.AgentRuns = []task.AgentRun{{Role: "human-review", State: "stopped", Verdict: "human"}}
+		}),
+	}}
+	sink := &fakeSink{createNext: true}
+	incidents, err := NewIncidentStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(Deps{
+		Cfg:        defaultCfg(),
+		Tasks:      tasks,
+		Audit:      fakeAudit{},
+		Agents:     nilAgentLister{},
+		Dispatcher: &fakeDispatcher{},
+		Sink:       sink,
+		Incidents:  incidents,
+		Logger:     slog.Default(),
+		Now:        func() time.Time { return now },
+	})
+
+	report, err := svc.tick(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.submissions) != 0 || report.IssuesOpened != 0 || report.IssuesUpdated != 0 {
+		t.Fatalf("human-required dwell published an artifact: submissions=%d opened=%d updated=%d", len(sink.submissions), report.IssuesOpened, report.IssuesUpdated)
+	}
+	if len(report.Incidents) != 1 {
+		t.Fatalf("incident ledger lost the in-process observation: %+v", report.Incidents)
+	}
+}
+
+// TestServiceTick_ReconciliationRepairAttempt_RecordsAndDedupsRemediation
+// covers the completion.Handler -> monitor hookup this task added: an
+// ActionRepair decision (EventReconciliationDecided) opens a
+// reconciliation.repair incident, and the conflict-recovery outcome that
+// follows it (EventReconciliationRepairAttempted) must land as that
+// incident's remediation attempt — not stay permanently empty, which is
+// what happened before recordControlPlaneRepairAttempts existed. A second
+// tick reading the same audit event (the 1h read window legitimately
+// overlaps between ticks) must not double-record it.
+func TestServiceTick_ReconciliationRepairAttempt_RecordsAndDedupsRemediation(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	attemptedAt := now.Add(-time.Minute)
+	events := []audit.Event{
+		{Timestamp: attemptedAt, Type: audit.EventReconciliationDecided, TaskID: "t1",
+			Data: map[string]any{"action": "repair", "project_scope": "fleet"}},
+		{Timestamp: attemptedAt, Type: audit.EventReconciliationRepairAttempted, TaskID: "t1",
+			Data: map[string]any{"result": "started"}},
+	}
+	incidents, err := NewIncidentStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	newSvc := func() *Service {
+		return NewService(Deps{
+			Cfg:        defaultCfg(),
+			Tasks:      &fakeTasks{},
+			Audit:      fakeAudit{events: events},
+			Agents:     nilAgentLister{},
+			Dispatcher: &fakeDispatcher{},
+			Sink:       &fakeSink{createNext: true},
+			Incidents:  incidents,
+			Logger:     slog.Default(),
+			Now:        func() time.Time { return now },
+		})
+	}
+
+	report, err := newSvc().tick(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Incidents) != 1 {
+		t.Fatalf("want 1 incident, got %+v", report.Incidents)
+	}
+	in := report.Incidents[0]
+	if len(in.RemediationAttempts) != 1 || in.RemediationAttempts[0].Result != "started" {
+		t.Fatalf("want 1 recorded 'started' remediation attempt, got %+v", in.RemediationAttempts)
+	}
+
+	// Re-tick with the identical (still-in-window) events — a fresh Service
+	// instance stands in for the next scheduled tick, since nothing here
+	// depends on in-memory state carried between ticks.
+	report2, err := newSvc().tick(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report2.Incidents) != 1 || len(report2.Incidents[0].RemediationAttempts) != 1 {
+		t.Fatalf("overlapping read window double-recorded the remediation attempt: %+v", report2.Incidents)
+	}
+}
+
 // TestServiceTick_HumanRequiredStuck_FailedRunKeepsVerdict verifies that a
 // failed latest human-review run (e.g. 529 with no parsable result) does NOT
 // mask the "human" verdict from an earlier stopped run. The detector scans
