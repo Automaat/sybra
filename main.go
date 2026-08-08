@@ -45,7 +45,10 @@ var browserChromeJS string
 func main() {
 	code, err := run()
 	if err != nil {
-		log.Print(err)
+		// Stderr, not log: run redirects the standard logger into slog at
+		// DEBUG, below the shipped level, so a startup failure would exit
+		// non-zero having printed the operator nothing at all.
+		fmt.Fprintln(os.Stderr, err)
 		if code == 0 {
 			code = 1
 		}
