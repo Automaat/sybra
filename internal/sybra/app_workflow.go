@@ -1087,10 +1087,20 @@ func (a *agentAdapter) RunVerificationCommand(ctx context.Context, taskID, dir, 
 }
 
 func translatePoolBusy(err error) error {
-	if errors.Is(err, agent.ErrMaxConcurrentReached) {
+	if agent.IsCapacityError(err) {
 		return fmt.Errorf("%w: %w", workflow.ErrAgentPoolBusy, err)
 	}
+	if agent.IsAttemptConflict(err) {
+		return fmt.Errorf("%w: %w", workflow.ErrDispatchInFlight, err)
+	}
 	return err
+}
+
+func assignmentAttemptAccess(assignment workflow.AgentAssignment) agent.AttemptAccess {
+	if assignment.AdmissionObserve {
+		return agent.AttemptAccessObserve
+	}
+	return ""
 }
 
 func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema, cleanRetryRef string, assignment workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
@@ -1166,6 +1176,9 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		AllowedTools:            allowedTools,
 		Model:                   model,
 		Provider:                provider,
+		IntentID:                assignment.IntentID,
+		AdmissionTaskKey:        assignment.AdmissionTaskKey,
+		AttemptAccess:           assignmentAttemptAccess(assignment),
 		ExperimentID:            assignment.ExperimentID,
 		VariantID:               assignment.VariantID,
 		RoutingReason:           assignment.RoutingReason,

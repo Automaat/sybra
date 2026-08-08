@@ -80,7 +80,12 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 			// the task so restart-stale recovery resumes instead of redoing.
 			// Retain the record (skip delete) when the bridge fails so a later
 			// startup retries it rather than losing the session permanently.
-			if m.finalizeIfCompleted(r) || m.persistDeadSession(r) {
+			completed := m.finalizeIfCompleted(r)
+			if completed || m.persistDeadSession(r) {
+				if !completed {
+					a := fromRecord(r)
+					m.completeAttempt(ctx, a, "lost")
+				}
 				_ = reg.Delete(r.ID)
 				m.logger.Info("agent.reattach.dead", "id", r.ID, "pid", r.PID, "task", r.TaskID)
 			} else {
@@ -93,6 +98,23 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 		if decision.reason != "" {
 			m.reapStaleSurvivor(r, reg, decision.reason)
 			continue
+		}
+		adoptedLease, err := m.adoptAttempt(ctx, r)
+		if err != nil {
+			m.logger.Warn("agent.reattach.admission", "id", r.ID, "task", r.TaskID, "err", err)
+			continue
+		}
+		if adoptedLease.ID != "" {
+			r.AttemptLeaseID = adoptedLease.ID
+			r.AttemptVersion = adoptedLease.Version
+			if err := reg.Save(r); err != nil {
+				m.logger.Warn("agent.reattach.lease-save", "id", r.ID, "task", r.TaskID, "err", err)
+				// Fail closed: the observed process is still live, so releasing its
+				// newly adopted lease here would permit a duplicate mutator. Keep
+				// ownership occupied for reconciliation even though this instance
+				// cannot safely expose the run.
+				continue
+			}
 		}
 
 		a := fromRecord(r)
@@ -129,6 +151,7 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 		m.mu.Unlock()
 
 		m.logger.Info("agent.reattach", "id", a.ID, "pid", a.PID, "task", a.TaskID, "events", len(a.Output()))
+		m.startAttemptHeartbeat(ctx, a)
 		go m.reattachHeadless(ctx, a, startOffset, r.ProcStartedAt)
 		m.emit(events.AgentState(a.ID), a)
 		out = append(out, a)

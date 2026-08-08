@@ -42,6 +42,7 @@ import (
 	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
+	"github.com/Automaat/sybra/internal/sybra/dispatch"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/sybra/verification"
@@ -480,8 +481,12 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 		SessionSink: func(taskID, agentID, sessionID string) error {
 			return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{SessionID: task.Ptr(sessionID)})
 		},
-		TaskExists:  a.taskExistsForAgent,
-		TaskStatus:  a.taskStatusForAgent,
+		TaskExists: a.taskExistsForAgent,
+		TaskStatus: a.taskStatusForAgent,
+		TaskGeneration: func(taskID string) (int64, bool) {
+			t, err := a.tasks.Get(taskID)
+			return t.Generation, err == nil
+		},
 		LimitSink:   a.recordLimitSnapshot,
 		Artifacts:   a.artifacts,
 		SandboxHome: a.sandboxes.SybraHomeDir,
@@ -495,13 +500,29 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 }
 
 func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) error {
+	providerLimits := make(map[string]int, len(providerid.All()))
+	for _, name := range providerid.All() {
+		providerLimits[name] = a.cfg.Providers.Limits.MaxInFlightPerProvider
+	}
+	var err error
+	a.attempts, err = dispatch.New(ctx, dispatch.Options{
+		Dir: config.AttemptLeasesDir(),
+		Limits: dispatch.Limits{
+			Global:     a.cfg.Agent.MaxConcurrent,
+			ByProvider: providerLimits,
+		},
+		TTL: time.Minute,
+	})
+	if err != nil {
+		return fmt.Errorf("dispatch admission: %w", err)
+	}
 	approvalServer, approvalAddr := a.startApprovalServer(ctx, emit)
 	agentCfg := a.agentManagerConfig(approvalAddr)
+	agentCfg.AttemptAdmission = a.attempts
 	if approvalServer != nil {
 		agentCfg.ControlTarget = approvalAddr
 		agentCfg.ControlToken = approvalServer.VerifierToken
 	}
-	var err error
 	a.agents, err = agent.NewManager(ctx, emit, a.logger, a.logDir, agentCfg)
 	if err != nil && agentCfg.SurviveRestartDir != "" && errors.Is(err, agent.ErrSurvivalRegistry) {
 		a.logger.Error("agent.survive-restart.init", "err", err)

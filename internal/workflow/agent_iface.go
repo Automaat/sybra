@@ -126,17 +126,22 @@ type DispatchClaim interface {
 
 // AgentAssignment carries A/B experiment attribution selected before dispatch.
 type AgentAssignment struct {
-	ExperimentID    string
-	Kind            string
-	VariantID       string
-	RoutingReason   string
-	Provider        string
-	Model           string
-	AssignmentUnit  string
-	AssignmentKey   string
-	ReasoningEffort string
-	PromptTransform *PromptTransform
-	SkillAliases    map[string]string
+	// IntentID is the durable workflow-effect identity used by admission to
+	// make a replay return the original attempt instead of spawning another.
+	IntentID         string
+	AdmissionTaskKey string
+	AdmissionObserve bool
+	ExperimentID     string
+	Kind             string
+	VariantID        string
+	RoutingReason    string
+	Provider         string
+	Model            string
+	AssignmentUnit   string
+	AssignmentKey    string
+	ReasoningEffort  string
+	PromptTransform  *PromptTransform
+	SkillAliases     map[string]string
 	// ReadOnlyPaths are additional paths a diagnostic agent may inspect under
 	// the deny-by-default sandbox read posture. They never grant write access.
 	ReadOnlyPaths []string

@@ -606,13 +606,12 @@ func (h *humanReviewHandler) spawnReviewConfig(t task.Task, taskID, prompt, dir 
 		// An effort the operator pinned on the task outranks the role
 		// baseline the Manager would otherwise resolve; empty stays empty so
 		// the Manager applies agent.role_effort and then the baseline.
-		ReasoningEffort:        t.ReasoningEffort,
-		ReadOnlyDir:            readOnlyDir,
-		RequirePermissions:     false,
-		OneShot:                true,
-		OutputSchema:           verdict.Schema,
-		IgnoreConcurrencyLimit: true,
-		SandboxMode:            agentorch.ResolveSandboxMode(t, h.cfg),
+		ReasoningEffort:    t.ReasoningEffort,
+		ReadOnlyDir:        readOnlyDir,
+		RequirePermissions: false,
+		OneShot:            true,
+		OutputSchema:       verdict.Schema,
+		SandboxMode:        agentorch.ResolveSandboxMode(t, h.cfg),
 	}
 	if opts.SkipABVariant {
 		return cfg
