@@ -2457,14 +2457,64 @@ func formatHealthNumber(v float64, digits int) string {
 
 func cmdMonitor(cfg *config.Config, store *task.Manager, args []string, jsonOut bool) int {
 	if len(args) == 0 {
-		return fatal(jsonOut, "usage: monitor <scan> [--json]")
+		return fatal(jsonOut, "usage: monitor <scan|map-duplicates> [--json]")
 	}
 	switch args[0] {
 	case "scan":
 		return cmdMonitorScan(cfg, store, jsonOut)
+	case "map-duplicates":
+		return cmdMonitorMapDuplicates(cfg, args[1:], jsonOut)
 	default:
 		return fatal(jsonOut, "unknown monitor subcommand: %s", args[0])
 	}
+}
+
+func cmdMonitorMapDuplicates(cfg *config.Config, args []string, jsonOut bool) int {
+	flags := flag.NewFlagSet("monitor map-duplicates", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	fingerprint := flags.String("fingerprint", "", "incident fingerprint")
+	issuesCSV := flags.String("issues", "", "comma-separated duplicate issue numbers")
+	coverage := flags.String("coverage", "", "reproduction coverage summary")
+	if err := flags.Parse(args); err != nil {
+		return fatal(jsonOut, "monitor map-duplicates: %v", err)
+	}
+	if *fingerprint == "" || *issuesCSV == "" || strings.TrimSpace(*coverage) == "" {
+		return fatal(jsonOut, "usage: monitor map-duplicates --fingerprint ID --issues N[,N] --coverage TEXT")
+	}
+	var duplicates []int
+	for raw := range strings.SplitSeq(*issuesCSV, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil || n <= 0 {
+			return fatal(jsonOut, "monitor map-duplicates: invalid issue number %q", raw)
+		}
+		duplicates = append(duplicates, n)
+	}
+	slices.Sort(duplicates)
+	duplicates = slices.Compact(duplicates)
+	ledger, err := monitor.NewIncidentStore(config.MonitorIncidentsDir())
+	if err != nil {
+		return fatal(jsonOut, "monitor map-duplicates: %v", err)
+	}
+	in, ok, err := ledger.Get(*fingerprint)
+	if err != nil || !ok {
+		return fatal(jsonOut, "monitor map-duplicates: incident not found: %v", err)
+	}
+	if in.Confidential {
+		return fatal(jsonOut, "monitor map-duplicates: confidential incidents cannot mutate public issues")
+	}
+	sink := monitor.NewGHIssueSink(cfg.Monitor.IssueLabel, cfg.Monitor.IssueRepo)
+	if err := sink.MapDuplicateIncidents(context.Background(), in, duplicates, *coverage); err != nil {
+		return fatal(jsonOut, "monitor map-duplicates: %v", err)
+	}
+	if err := ledger.Link(in.Fingerprint, "", "", duplicates); err != nil {
+		return fatal(jsonOut, "monitor map-duplicates: persist mapping: %v", err)
+	}
+	result := map[string]any{"fingerprint": in.Fingerprint, "canonical": in.IssueURL, "duplicates": duplicates}
+	if jsonOut {
+		return printJSON(result)
+	}
+	fmt.Printf("monitor: mapped %d duplicate issue(s) to %s\n", len(duplicates), in.IssueURL)
+	return 0
 }
 
 func cmdMonitorScan(cfg *config.Config, store *task.Manager, jsonOut bool) int {
@@ -2782,6 +2832,8 @@ func usageProjectAndOps() {
   audit    [--since DURATION|DATE] [--until DATE] [--type TYPE] [--task ID] [--summary]
   board    (status counts + in-progress/plan-review/human-required task lists)
   monitor  scan [--json]    one-shot read-only detector pass (no remediation)
+           map-duplicates --fingerprint ID --issues N[,N] --coverage TEXT
+                              close covered duplicate issues against a canonical incident
   evaluation scan [--json]  fleet scorecard (autonomy, throughput, efficiency)
   harness-evolution run [--lookback 168h] [--min-cluster-size 2] [--file] [--json]
            Cluster selfmonitor failures into governed harness-change proposals.

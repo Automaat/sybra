@@ -199,6 +199,7 @@ export class Incident {
     "component": string;
     "capability": string;
     "projectScope": string;
+    "confidential"?: boolean;
     "configGeneration": string;
     "state": IncidentState;
     "firstSeen": string;
@@ -210,6 +211,7 @@ export class Incident {
     "reopenGraceUntil"?: string | null;
     "affectedTaskIds"?: string[];
     "affectedTaskCount": number;
+    "affectedTaskOverflow"?: boolean;
     "recurrenceCount": number;
     "latestEvidence": CertifiedEvidence;
     "remediationAttempts"?: RemediationAttempt[];
@@ -272,22 +274,22 @@ export class Incident {
      * Creates a new Incident instance from a string or object.
      */
     static createFrom($$source: any = {}): Incident {
-        const $$createField17_0 = $$createType2;
-        const $$createField20_0 = $$createType3;
-        const $$createField21_0 = $$createType5;
-        const $$createField24_0 = $$createType6;
+        const $$createField18_0 = $$createType2;
+        const $$createField22_0 = $$createType3;
+        const $$createField23_0 = $$createType5;
+        const $$createField26_0 = $$createType6;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("affectedTaskIds" in $$parsedSource) {
-            $$parsedSource["affectedTaskIds"] = $$createField17_0($$parsedSource["affectedTaskIds"]);
+            $$parsedSource["affectedTaskIds"] = $$createField18_0($$parsedSource["affectedTaskIds"]);
         }
         if ("latestEvidence" in $$parsedSource) {
-            $$parsedSource["latestEvidence"] = $$createField20_0($$parsedSource["latestEvidence"]);
+            $$parsedSource["latestEvidence"] = $$createField22_0($$parsedSource["latestEvidence"]);
         }
         if ("remediationAttempts" in $$parsedSource) {
-            $$parsedSource["remediationAttempts"] = $$createField21_0($$parsedSource["remediationAttempts"]);
+            $$parsedSource["remediationAttempts"] = $$createField23_0($$parsedSource["remediationAttempts"]);
         }
         if ("duplicateIssues" in $$parsedSource) {
-            $$parsedSource["duplicateIssues"] = $$createField24_0($$parsedSource["duplicateIssues"]);
+            $$parsedSource["duplicateIssues"] = $$createField26_0($$parsedSource["duplicateIssues"]);
         }
         return new Incident($$parsedSource as Partial<Incident>);
     }

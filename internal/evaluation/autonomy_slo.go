@@ -34,11 +34,12 @@ type DurationEvidence struct {
 }
 
 type IncidentFanout struct {
-	State EvidenceState `json:"state"`
-	Count int           `json:"count"`
-	Mean  float64       `json:"mean"`
-	P90   float64       `json:"p90"`
-	Max   int           `json:"max"`
+	State   EvidenceState `json:"state"`
+	Count   int           `json:"count"`
+	Unknown int           `json:"unknown"`
+	Mean    float64       `json:"mean"`
+	P90     float64       `json:"p90"`
+	Max     int           `json:"max"`
 }
 
 type PreflightWaste struct {
@@ -69,6 +70,7 @@ func ComputeAutonomySLOs(sc Scorecard, events []audit.Event, since, until time.T
 	out.AutonomousCompletion = rateEvidence(sc.AutonomousLandings, sc.AutonomousLandings+sc.HumanTouchedLandings, sc.AutonomyUnknownLandings)
 
 	incidents := map[string]int{}
+	unknownFanout := map[string]bool{}
 	var containment, recovery []float64
 	repairs := map[string]int{}
 	resolvedWithRepair := map[string]bool{}
@@ -87,20 +89,16 @@ func ComputeAutonomySLOs(sc Scorecard, events []audit.Event, since, until time.T
 			case owner.AllowsHumanRequired():
 				out.ValidHumanEscalation.Success++
 				out.ValidHumanEscalation.Known++
-			case owner == autonomy.FailureOwnerMachine || owner == autonomy.FailureOwnerExternalTransient:
+			case owner == autonomy.FailureOwnerMachine:
 				out.ValidHumanEscalation.Known++
 				out.MachineHumanRequired++
+			case owner == autonomy.FailureOwnerExternalTransient:
+				out.ValidHumanEscalation.Known++
 			default:
 				out.ValidHumanEscalation.Unknown++
 			}
 		case audit.EventMonitorIncidentObserved:
-			fp := strVal(e.Data, "fingerprint")
-			if fp == "" {
-				continue
-			}
-			if n := intVal(e.Data, "affected_task_count"); n > incidents[fp] {
-				incidents[fp] = n
-			}
+			recordIncidentFanout(e.Data, incidents, unknownFanout)
 		case audit.EventMonitorIncidentRemediation:
 			if fp := strVal(e.Data, "fingerprint"); fp != "" {
 				repairs[fp]++
@@ -112,9 +110,13 @@ func ComputeAutonomySLOs(sc Scorecard, events []audit.Event, since, until time.T
 			}
 			if v, ok := floatVal(e.Data, "containment_s"); ok {
 				containment = append(containment, v)
+			} else {
+				out.TimeToContainment.Unknown++
 			}
 			if v, ok := floatVal(e.Data, "recovery_s"); ok {
 				recovery = append(recovery, v)
+			} else {
+				out.TimeToRecovery.Unknown++
 			}
 		case audit.EventAdmissionDecided:
 			if !boolVal(e.Data, "preflight_detectable") {
@@ -148,14 +150,44 @@ func ComputeAutonomySLOs(sc Scorecard, events []audit.Event, since, until time.T
 	out.RecoverySuccess = rateEvidence(successful, matured, len(repairs)-matured)
 	out.RepeatRepair = rateEvidence(repeated, matured, len(repairs)-matured)
 	out.IncidentFanout = fanoutEvidence(incidents)
-	out.TimeToContainment = durationEvidence(containment)
-	out.TimeToRecovery = durationEvidence(recovery)
-	if out.PreflightDetectableWaste.Failures > 0 && out.PreflightDetectableWaste.UnknownUsage < out.PreflightDetectableWaste.Failures {
-		out.PreflightDetectableWaste.State = EvidenceKnown
-	} else {
-		out.PreflightDetectableWaste.State = EvidenceUnknown
-	}
+	out.IncidentFanout.Unknown = len(unknownFanout)
+	out.TimeToContainment, out.TimeToRecovery = incidentDurations(containment, recovery, out.TimeToContainment.Unknown, out.TimeToRecovery.Unknown)
+	finishPreflightWaste(&out.PreflightDetectableWaste)
 	return out
+}
+
+func incidentDurations(containment, recovery []float64, containmentUnknown, recoveryUnknown int) (contained, recovered DurationEvidence) {
+	contained = durationEvidence(containment)
+	contained.Unknown = containmentUnknown
+	recovered = durationEvidence(recovery)
+	recovered.Unknown = recoveryUnknown
+	return contained, recovered
+}
+
+func finishPreflightWaste(waste *PreflightWaste) {
+	if waste.Failures > 0 && waste.UnknownUsage < waste.Failures {
+		waste.State = EvidenceKnown
+	} else {
+		waste.State = EvidenceUnknown
+	}
+}
+
+func recordIncidentFanout(data map[string]any, incidents map[string]int, unknown map[string]bool) {
+	fp := strVal(data, "fingerprint")
+	if fp == "" {
+		return
+	}
+	if known, present := data["affected_task_count_known"].(bool); present && !known {
+		delete(incidents, fp)
+		unknown[fp] = true
+		return
+	}
+	if unknown[fp] {
+		return
+	}
+	if n := intVal(data, "affected_task_count"); n >= incidents[fp] {
+		incidents[fp] = n
+	}
 }
 
 func rateEvidence(success, known, unknown int) RateEvidence {

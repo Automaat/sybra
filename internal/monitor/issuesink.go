@@ -168,14 +168,14 @@ func (s *GHIssueSink) ApplyIncident(ctx context.Context, in Incident, change Inc
 		}
 		return true, IncidentArtifact{URL: parseIssueCreateURL(out)}, nil
 	}
-	if found.HasRevision {
-		return false, IncidentArtifact{Number: found.Number, URL: found.URL}, nil
-	}
-	if found.State == "CLOSED" && change == IncidentReopened {
+	if found.State == "CLOSED" && in.State == IncidentActive {
 		out, reopenErr := s.exec.run(ctx, append(s.repoArgs(), "issue", "reopen", strconv.Itoa(found.Number), "--comment", attribution.Append(body))...)
 		if reopenErr != nil {
 			return false, IncidentArtifact{}, classifyGHError("gh incident reopen", out, reopenErr)
 		}
+		return false, IncidentArtifact{Number: found.Number, URL: found.URL}, nil
+	}
+	if found.HasRevision {
 		return false, IncidentArtifact{Number: found.Number, URL: found.URL}, nil
 	}
 	if change != IncidentUnchanged {

@@ -113,7 +113,7 @@ type remediationResult struct {
 	labels []string
 	// attempts records a typed outcome for the incident ledger. "attempted"
 	// remains pending until a later healthy detector observation proves it.
-	attempts map[string]string
+	attempts []remediationOutcome
 	// lostAgentCauses maps a lost_agent anomaly's base fingerprint to the
 	// remediation error message, for anomalies whose remediation this tick
 	// returned an error. fileIssues uses presence in this map to file
@@ -121,6 +121,12 @@ type remediationResult struct {
 	// the occurrence-streak gate a merely-recurring-but-"successful"
 	// remediation goes through.
 	lostAgentCauses map[string]string
+}
+
+type remediationOutcome struct {
+	fingerprint string
+	kind        string
+	result      string
 }
 
 // NewService validates dependencies and returns a Service ready for Run.
@@ -266,8 +272,12 @@ func (s *Service) tick(ctx context.Context) (Report, error) {
 		opened, updated := s.fileIssues(ctx, now, report.Anomalies, rem.lostAgentCauses, incidentChanges)
 		report.IssuesOpened = opened
 		report.IssuesUpdated = updated
-		report.IssuesClosed = s.closeRecoveredLostAgents(ctx, report.Anomalies)
-		report.IssuesClosed += s.closeRecoveredUntriaged(ctx, tasks, now)
+		// The durable incident ledger owns recovery once enabled. Running the
+		// legacy streak closers as well would bypass the certified-health grace.
+		if s.incidents == nil {
+			report.IssuesClosed = s.closeRecoveredLostAgents(ctx, report.Anomalies)
+			report.IssuesClosed += s.closeRecoveredUntriaged(ctx, tasks, now)
+		}
 		report.IssuesClosed += s.reconcileHealthyIncidents(ctx, now, tasks, incidentChanges, events15Err == nil && events1hErr == nil)
 	}
 	if s.incidents != nil {
@@ -430,7 +440,7 @@ func (s *Service) applyDowngradeLLM(anoms []Anomaly) {
 }
 
 func (s *Service) applyRemediations(ctx context.Context, anoms []Anomaly) remediationResult {
-	res := remediationResult{lostAgentCauses: map[string]string{}, attempts: map[string]string{}}
+	res := remediationResult{lostAgentCauses: map[string]string{}}
 	for i := range anoms {
 		a := anoms[i]
 		if a.RequiresLLM || isControlPlaneObservation(a) {
@@ -441,14 +451,14 @@ func (s *Service) applyRemediations(ctx context.Context, anoms []Anomaly) remedi
 		}
 		label, err := s.rem.Apply(ctx, a)
 		if err != nil {
-			res.attempts[a.Fingerprint] = "failed"
+			res.attempts = append(res.attempts, remediationOutcome{a.Fingerprint, string(a.Kind), "failed"})
 			s.logger.Warn("monitor.remediate.failed", "kind", a.Kind, "task_id", a.TaskID, "err", err)
 			if a.Kind == KindLostAgent {
 				res.lostAgentCauses[a.Fingerprint] = err.Error()
 			}
 			continue
 		}
-		res.attempts[a.Fingerprint] = "attempted"
+		res.attempts = append(res.attempts, remediationOutcome{a.Fingerprint, string(a.Kind), "attempted"})
 		res.labels = append(res.labels, label)
 	}
 	return res
@@ -493,7 +503,7 @@ func (s *Service) observeIncidents(tasks []task.Task, anoms []Anomaly) map[strin
 			s.logger.Warn("monitor.incident.observe_failed", "fingerprint", a.Fingerprint, "err", err)
 			continue
 		}
-		changes[a.Fingerprint] = change
+		changes[a.Fingerprint] = mergeIncidentChange(changes[a.Fingerprint], change)
 		if change != IncidentUnchanged {
 			s.logIncidentEvent(audit.EventMonitorIncidentObserved, in, change, a.IncidentTaskID)
 		}
@@ -505,20 +515,23 @@ func (s *Service) recordIncidentRemediations(anoms []Anomaly, result remediation
 	if s.incidents == nil {
 		return
 	}
-	byFP := make(map[string]Anomaly, len(anoms))
-	for i := range anoms {
-		byFP[anoms[i].Fingerprint] = anoms[i]
-	}
-	for fp, outcome := range result.attempts {
-		a := byFP[fp]
-		if err := s.incidents.RecordRemediation(fp, string(a.Kind), outcome, now); err != nil {
-			s.logger.Warn("monitor.incident.remediation_record_failed", "fingerprint", fp, "err", err)
+	for _, attempt := range result.attempts {
+		if err := s.incidents.RecordRemediation(attempt.fingerprint, attempt.kind, attempt.result, now); err != nil {
+			s.logger.Warn("monitor.incident.remediation_record_failed", "fingerprint", attempt.fingerprint, "err", err)
 			continue
 		}
-		if in, ok, _ := s.incidents.Get(fp); ok {
-			s.logIncidentEvent(audit.EventMonitorIncidentRemediation, in, IncidentUnchanged, a.IncidentTaskID)
+		if in, ok, _ := s.incidents.Get(attempt.fingerprint); ok {
+			s.logIncidentEvent(audit.EventMonitorIncidentRemediation, in, IncidentUnchanged, "")
 		}
 	}
+}
+
+func mergeIncidentChange(current, next IncidentChange) IncidentChange {
+	priority := map[IncidentChange]int{IncidentUnchanged: 0, IncidentExpanded: 1, IncidentOpened: 2, IncidentReopened: 3}
+	if priority[next] > priority[current] {
+		return next
+	}
+	return current
 }
 
 func (s *Service) reconcileHealthyIncidents(ctx context.Context, now time.Time, tasks []task.Task, seen map[string]IncidentChange, auditObserved bool) int {
@@ -573,17 +586,37 @@ func (s *Service) reconcileHealthyIncidents(ctx context.Context, now time.Time, 
 		s.logger.Warn("monitor.incident.reconcile_failed", "err", err)
 		return 0
 	}
-	count := 0
-	incidentSink, _ := s.sink.(IncidentSink)
+	toPublish := make(map[string]Incident, len(closed))
 	for i := range closed {
 		in := closed[i]
+		toPublish[in.Fingerprint] = in
 		s.logIncidentEvent(audit.EventMonitorIncidentResolved, in, IncidentClosed, "")
-		if incidentSink == nil || in.IssueURL == "" || in.IssueURL == "submitted" {
+	}
+	all, listErr := s.incidents.List()
+	if listErr != nil {
+		s.logger.Warn("monitor.incident.list_failed", "err", listErr)
+	} else {
+		for i := range all {
+			in := all[i]
+			if in.State == IncidentResolved && in.PublishedRevision < in.Revision {
+				toPublish[in.Fingerprint] = in
+			}
+		}
+	}
+	count := 0
+	incidentSink, _ := s.sink.(IncidentSink)
+	for fp := range toPublish {
+		in := toPublish[fp]
+		if incidentSink == nil {
 			continue
 		}
 		ok, closeErr := incidentSink.ResolveIncident(ctx, in, "Resolved after a certified healthy monitor observation remained stable through the configured grace period.")
 		if closeErr != nil {
 			s.logger.Warn("monitor.incident.close_failed", "fingerprint", in.Fingerprint, "err", closeErr)
+			continue
+		}
+		if linkErr := s.incidents.Link(in.Fingerprint, in.IssueURL, "", nil); linkErr != nil {
+			s.logger.Warn("monitor.incident.resolve_link_failed", "fingerprint", in.Fingerprint, "err", linkErr)
 			continue
 		}
 		if ok {
@@ -602,7 +635,8 @@ func (s *Service) logIncidentEvent(eventType string, in Incident, change Inciden
 		"component": in.Component, "capability": in.Capability,
 		"project_scope": in.ProjectScope, "config_generation": in.ConfigGeneration,
 		"change": string(change), "affected_task_count": in.AffectedTaskCount,
-		"recurrence_count": in.RecurrenceCount, "revision": in.Revision,
+		"affected_task_count_known": !in.AffectedTaskOverflow,
+		"recurrence_count":          in.RecurrenceCount, "revision": in.Revision,
 		"first_seen": in.FirstSeen.UTC().Format(time.RFC3339Nano),
 	}
 	if in.FirstContainedAt != nil {

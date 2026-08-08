@@ -414,6 +414,19 @@ func (d *DurableGHIssueSink) persist(title, body string, extraLabels []string, s
 	}
 }
 
+func incidentOperationRank(operation string) int {
+	switch operation {
+	case "resolve_incident":
+		return 3
+	case "map_duplicate_incidents":
+		return 2
+	case "apply_incident":
+		return 1
+	default:
+		return 0
+	}
+}
+
 // persistIncident replaces any older desired state for this incident. A later
 // revision subsumes an earlier create/comment/close operation, so auth recovery
 // converges on the newest durable state instead of replaying stale transitions.
@@ -423,6 +436,12 @@ func (d *DurableGHIssueSink) persistIncident(operation string, in Incident, chan
 	fp := fingerprintTitle("incident:" + in.Fingerprint)
 	now := time.Now().UTC()
 	existing, hadExisting := d.lookup(fp)
+	if hadExisting && existing.Incident != nil {
+		oldRevision := existing.Incident.Revision
+		if oldRevision > in.Revision || (oldRevision == in.Revision && incidentOperationRank(existing.Operation) > incidentOperationRank(operation)) {
+			return
+		}
+	}
 	copyIncident := in
 	it := outboxItem{
 		Fingerprint: fp, Operation: operation, Body: body, Incident: &copyIncident,

@@ -52,7 +52,7 @@ func (s *IncidentStore) Observe(a Anomaly, cause RootCause, safeTaskID string) (
 	if !exists {
 		in = Incident{Version: incidentVersion, Revision: 1, Fingerprint: fp, FailureCode: cause.FailureCode,
 			Component: cause.Component, Capability: cause.Capability, ProjectScope: cause.ProjectScope,
-			ConfigGeneration: cause.ConfigGeneration, State: IncidentActive, FirstSeen: a.DetectedAt,
+			ConfigGeneration: cause.ConfigGeneration, Confidential: a.Confidential, State: IncidentActive, FirstSeen: a.DetectedAt,
 			LastSeen: a.DetectedAt, LatestEvidence: certifiedEvidence(a)}
 		change = IncidentOpened
 	} else {
@@ -124,11 +124,7 @@ func (s *IncidentStore) RecordRemediation(fp, kind, result string, at time.Time)
 	if err != nil || !ok {
 		return err
 	}
-	in.RemediationAttempts = append(in.RemediationAttempts, RemediationAttempt{ID: remediationAttemptID(fp, kind, at), AttemptedAt: at, Kind: kind, Result: result})
-	if in.FirstContainedAt == nil && result == "attempted" {
-		contained := at
-		in.FirstContainedAt = &contained
-	}
+	in.RemediationAttempts = append(in.RemediationAttempts, RemediationAttempt{ID: remediationAttemptID(fp, kind, at, len(in.RemediationAttempts)), AttemptedAt: at, Kind: kind, Result: result})
 	in.Revision++
 	if len(in.RemediationAttempts) > maxRemediationAttempts {
 		in.RemediationAttempts = slices.Delete(in.RemediationAttempts, 0, len(in.RemediationAttempts)-maxRemediationAttempts)
@@ -136,7 +132,7 @@ func (s *IncidentStore) RecordRemediation(fp, kind, result string, at time.Time)
 	return s.save(in)
 }
 
-func (s *IncidentStore) ReconcileHealthy(seen, observableScopes, coveredFailureCodes map[string]bool, configGenerations map[string]string, now time.Time, grace, reopenGrace time.Duration) ([]Incident, error) {
+func (s *IncidentStore) ReconcileHealthy(seen, observableScopes, coveredFailureCodes map[string]bool, _ map[string]string, now time.Time, grace, reopenGrace time.Duration) ([]Incident, error) {
 	unlock, err := fsutil.LockFileWithin(filepath.Join(s.dir, "ledger"), incidentStoreLockTimeout)
 	if err != nil {
 		return nil, err
@@ -152,7 +148,7 @@ func (s *IncidentStore) ReconcileHealthy(seen, observableScopes, coveredFailureC
 	for i := range all {
 		in := all[i]
 		if in.State != IncidentActive || seen[in.Fingerprint] || !observableScopes[in.ProjectScope] ||
-			!coveredFailureCodes[in.FailureCode] || in.ConfigGeneration != configGenerations[in.FailureCode] {
+			!coveredFailureCodes[in.FailureCode] {
 			continue
 		}
 		if in.HealthySince == nil {
@@ -176,6 +172,10 @@ func (s *IncidentStore) ReconcileHealthy(seen, observableScopes, coveredFailureC
 			if in.RemediationAttempts[j].ObservedAt == nil && in.RemediationAttempts[j].Result == "attempted" {
 				in.RemediationAttempts[j].Result = "observed_success"
 				in.RemediationAttempts[j].ObservedAt = &resolved
+				if in.FirstContainedAt == nil {
+					contained := in.RemediationAttempts[j].AttemptedAt
+					in.FirstContainedAt = &contained
+				}
 				break
 			}
 		}
@@ -202,10 +202,17 @@ func (s *IncidentStore) Link(fp, issueURL, prURL string, duplicates []int) error
 	if !ok {
 		return fs.ErrNotExist
 	}
-	in.IssueURL, in.PRURL = issueURL, prURL
+	if issueURL != "" {
+		in.IssueURL = issueURL
+	}
+	if prURL != "" {
+		in.PRURL = prURL
+	}
 	in.PublishedRevision = in.Revision
-	in.DuplicateIssues = append([]int(nil), duplicates...)
-	slicesSortInts(in.DuplicateIssues)
+	if duplicates != nil {
+		in.DuplicateIssues = append([]int(nil), duplicates...)
+		slicesSortInts(in.DuplicateIssues)
+	}
 	return s.save(in)
 }
 

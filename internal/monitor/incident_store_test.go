@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -9,6 +10,24 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/taskstatus"
 )
+
+func TestMergeIncidentChangePreservesStrongestTransition(t *testing.T) {
+	if got := mergeIncidentChange(IncidentReopened, IncidentUnchanged); got != IncidentReopened {
+		t.Fatalf("merge = %q, want reopened", got)
+	}
+	if got := mergeIncidentChange(IncidentExpanded, IncidentOpened); got != IncidentOpened {
+		t.Fatalf("merge = %q, want opened", got)
+	}
+}
+
+func newTestIncidentStore(t *testing.T) *IncidentStore {
+	t.Helper()
+	store, err := NewIncidentStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
 
 func TestControlPlaneAnomaliesConsumeTypedLeaseAndReconciliationResults(t *testing.T) {
 	now := time.Now().UTC()
@@ -110,6 +129,10 @@ func TestIncidentHealthyGraceRequiresCoverageAndProvesAttempt(t *testing.T) {
 	if err := store.RecordRemediation(in.Fingerprint, "reset", "attempted", base.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	pending, _, _ := store.Get(in.Fingerprint)
+	if pending.FirstContainedAt != nil {
+		t.Fatal("unproven remediation was counted as containment")
+	}
 
 	// Unknown/uncovered is not a healthy observation and cannot start grace.
 	closed, err := store.ReconcileHealthy(nil, map[string]bool{"p": true}, map[string]bool{}, map[string]string{"lost_agent": "g"}, base.Add(2*time.Minute), time.Minute, time.Minute)
@@ -133,10 +156,13 @@ func TestIncidentHealthyGraceRequiresCoverageAndProvesAttempt(t *testing.T) {
 	if closed[0].RemediationAttempts[0].Result != "observed_success" || closed[0].RemediationAttempts[0].ObservedAt == nil {
 		t.Fatalf("attempt was not proven by later health: %+v", closed[0].RemediationAttempts)
 	}
+	if closed[0].FirstContainedAt == nil || !closed[0].FirstContainedAt.Equal(base.Add(time.Minute)) {
+		t.Fatalf("certified containment time = %v", closed[0].FirstContainedAt)
+	}
 }
 
 func TestIncidentObservationFailsPriorAttemptAndOnlyLaterRepairSucceeds(t *testing.T) {
-	store, _ := NewIncidentStore(t.TempDir())
+	store := newTestIncidentStore(t)
 	base := time.Date(2026, 8, 8, 2, 0, 0, 0, time.UTC)
 	cause := RootCause{FailureCode: "lost_agent", Component: "agent", Capability: "process-lifecycle", ProjectScope: "p", ConfigGeneration: "g"}
 	in, _, _ := store.Observe(Anomaly{Kind: KindLostAgent, DetectedAt: base}, cause, "t")
@@ -169,7 +195,7 @@ func TestIncidentObservationFailsPriorAttemptAndOnlyLaterRepairSucceeds(t *testi
 }
 
 func TestIncidentRecurrenceReopensSameHistoryAfterGrace(t *testing.T) {
-	store, _ := NewIncidentStore(t.TempDir())
+	store := newTestIncidentStore(t)
 	base := time.Date(2026, 8, 8, 1, 0, 0, 0, time.UTC)
 	cause := RootCause{FailureCode: "untriaged", Component: "triage", Capability: "classification", ProjectScope: "p", ConfigGeneration: "g"}
 	in, _, _ := store.Observe(Anomaly{Kind: KindUntriaged, DetectedAt: base}, cause, "t1")
@@ -184,5 +210,55 @@ func TestIncidentRecurrenceReopensSameHistoryAfterGrace(t *testing.T) {
 	reopened, change, _ := store.Observe(Anomaly{Kind: KindUntriaged, DetectedAt: base.Add(5 * time.Minute)}, cause, "t2")
 	if change != IncidentReopened || reopened.Fingerprint != in.Fingerprint || reopened.RecurrenceCount != 1 || reopened.FirstSeen != in.FirstSeen {
 		t.Fatalf("reopened incident lost identity/history: change=%q %+v", change, reopened)
+	}
+}
+
+func TestIncidentStoreConfigRekeyLetsPriorGenerationResolve(t *testing.T) {
+	store := newTestIncidentStore(t)
+	base := time.Date(2026, 8, 8, 3, 0, 0, 0, time.UTC)
+	cause := RootCause{FailureCode: "lost_agent", Component: "agent", Capability: "lifecycle", ProjectScope: "p", ConfigGeneration: "old"}
+	in, _, _ := store.Observe(Anomaly{Kind: KindLostAgent, DetectedAt: base}, cause, "t")
+	coverage := map[string]bool{"lost_agent": true}
+	_, _ = store.ReconcileHealthy(nil, map[string]bool{"p": true}, coverage, map[string]string{"lost_agent": "new"}, base.Add(time.Minute), time.Minute, 0)
+	closed, err := store.ReconcileHealthy(nil, map[string]bool{"p": true}, coverage, map[string]string{"lost_agent": "new"}, base.Add(2*time.Minute), time.Minute, 0)
+	if err != nil || len(closed) != 1 || closed[0].Fingerprint != in.Fingerprint {
+		t.Fatalf("old generation was stranded: closed=%+v err=%v", closed, err)
+	}
+}
+
+func TestIncidentStoreLinkPreservesUnspecifiedHistory(t *testing.T) {
+	store := newTestIncidentStore(t)
+	base := time.Now().UTC()
+	cause := RootCause{FailureCode: "lost_agent", ProjectScope: "p", ConfigGeneration: "g"}
+	in, _, _ := store.Observe(Anomaly{Kind: KindLostAgent, DetectedAt: base}, cause, "t")
+	if err := store.Link(in.Fingerprint, "issue", "pr", []int{3, 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Link(in.Fingerprint, "issue-new", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := store.Get(in.Fingerprint)
+	if got.IssueURL != "issue-new" || got.PRURL != "pr" || fmt.Sprint(got.DuplicateIssues) != "[2 3]" {
+		t.Fatalf("link history erased: %+v", got)
+	}
+}
+
+func TestIncidentStoreFanoutBecomesBoundedUnknownWithoutInflation(t *testing.T) {
+	store := newTestIncidentStore(t)
+	base := time.Now().UTC()
+	cause := RootCause{FailureCode: "lost_agent", ProjectScope: "p", ConfigGeneration: "g"}
+	var fp string
+	for i := 0; i <= maxAffectedTasks; i++ {
+		in, _, err := store.Observe(Anomaly{Kind: KindLostAgent, DetectedAt: base.Add(time.Duration(i) * time.Second)}, cause, fmt.Sprintf("t-%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fp = in.Fingerprint
+	}
+	before, _, _ := store.Get(fp)
+	_, change, _ := store.Observe(Anomaly{Kind: KindLostAgent, DetectedAt: base.Add(time.Hour)}, cause, "t-999")
+	after, _, _ := store.Get(fp)
+	if !after.AffectedTaskOverflow || after.AffectedTaskCount != maxAffectedTasks || after.Revision != before.Revision || change != IncidentUnchanged {
+		t.Fatalf("bounded fanout drifted: before=%+v after=%+v change=%s", before, after, change)
 	}
 }

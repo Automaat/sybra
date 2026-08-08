@@ -815,6 +815,7 @@ export class ExperimentSampleStatus {
 export class IncidentFanout {
     "state": EvidenceState;
     "count": number;
+    "unknown": number;
     "mean": number;
     "p90": number;
     "max": number;
@@ -826,6 +827,9 @@ export class IncidentFanout {
         }
         if (!("count" in $$source)) {
             this["count"] = 0;
+        }
+        if (!("unknown" in $$source)) {
+            this["unknown"] = 0;
         }
         if (!("mean" in $$source)) {
             this["mean"] = 0;

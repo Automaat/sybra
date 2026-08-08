@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -190,6 +191,23 @@ func TestMonitorScanNoArgsFails(t *testing.T) {
 	code, _ := runCLIStderr(t, "monitor")
 	if code == 0 {
 		t.Fatal("expected non-zero exit with no subcommand")
+	}
+}
+
+func TestMonitorMapDuplicatesRejectsConfidentialIncidentBeforeGitHub(t *testing.T) {
+	setupStore(t)
+	ledger, err := monitor.NewIncidentStore(config.MonitorIncidentsDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cause := monitor.RootCause{FailureCode: "lost_agent", ProjectScope: "work-opaque", ConfigGeneration: "g"}
+	in, _, err := ledger.Observe(monitor.Anomaly{Kind: monitor.KindLostAgent, Confidential: true, DetectedAt: time.Now().UTC()}, cause, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _ := runCLIStderr(t, "monitor", "map-duplicates", "--fingerprint", in.Fingerprint, "--issues", "1", "--coverage", "covered")
+	if code == 0 {
+		t.Fatal("confidential mapping was not rejected")
 	}
 }
 

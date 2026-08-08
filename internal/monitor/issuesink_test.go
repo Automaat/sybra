@@ -62,10 +62,10 @@ func (f *fakeExecer) run(_ context.Context, args ...string) ([]byte, error) {
 
 func TestGHIssueSink_IncidentFindsRenamedClosedIssueByMarkerAndReopens(t *testing.T) {
 	in := Incident{Fingerprint: "incident:abc", FailureCode: "lost_agent", Revision: 4, State: IncidentActive}
-	fe := &fakeExecer{listResp: []byte(`[{"number":87,"url":"https://github.com/Automaat/sybra/issues/87","state":"CLOSED","body":"renamed\n<!-- sybra-incident:v1:incident:abc -->","comments":[]}]`)}
+	fe := &fakeExecer{listResp: []byte(`[{"number":87,"url":"https://github.com/Automaat/sybra/issues/87","state":"CLOSED","body":"renamed\n<!-- sybra-incident:v1:incident:abc -->\n<!-- sybra-incident-revision:v1:incident:abc:4:active -->","comments":[]}]`)}
 	s := newTestSink(fe)
 
-	created, artifact, err := s.ApplyIncident(context.Background(), in, IncidentReopened, "recurrence")
+	created, artifact, err := s.ApplyIncident(context.Background(), in, IncidentOpened, "active desired state from a fresh ledger")
 	if err != nil {
 		t.Fatal(err)
 	}

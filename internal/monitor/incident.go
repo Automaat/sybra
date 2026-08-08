@@ -31,8 +31,8 @@ type RemediationAttempt struct {
 	ObservedAt  *time.Time `yaml:"observed_at,omitempty" json:"observedAt,omitempty"`
 }
 
-func remediationAttemptID(fp, kind string, at time.Time) string {
-	digest := sha256.Sum256([]byte(fp + "\x00" + kind + "\x00" + at.UTC().Format(time.RFC3339Nano)))
+func remediationAttemptID(fp, kind string, at time.Time, ordinal int) string {
+	digest := sha256.Sum256(fmt.Appendf(nil, "%s\x00%s\x00%s\x00%d", fp, kind, at.UTC().Format(time.RFC3339Nano), ordinal))
 	return "repair:" + textutil.TruncateBytes(hex.EncodeToString(digest[:]), 24, "")
 }
 
@@ -77,31 +77,33 @@ type CertifiedEvidence struct {
 
 // Incident coalesces every affected task for one typed root cause.
 type Incident struct {
-	Version             int                  `yaml:"version" json:"version"`
-	Revision            int                  `yaml:"revision" json:"revision"`
-	PublishedRevision   int                  `yaml:"published_revision" json:"publishedRevision"`
-	Fingerprint         string               `yaml:"fingerprint" json:"fingerprint"`
-	FailureCode         string               `yaml:"failure_code" json:"failureCode"`
-	Component           string               `yaml:"component" json:"component"`
-	Capability          string               `yaml:"capability" json:"capability"`
-	ProjectScope        string               `yaml:"project_scope" json:"projectScope"`
-	ConfigGeneration    string               `yaml:"config_generation" json:"configGeneration"`
-	State               IncidentState        `yaml:"state" json:"state"`
-	FirstSeen           time.Time            `yaml:"first_seen" json:"firstSeen"`
-	LastSeen            time.Time            `yaml:"last_seen" json:"lastSeen"`
-	FirstContainedAt    *time.Time           `yaml:"first_contained_at,omitempty" json:"firstContainedAt,omitempty"`
-	HealthySince        *time.Time           `yaml:"healthy_since,omitempty" json:"healthySince,omitempty"`
-	ResolvedAt          *time.Time           `yaml:"resolved_at,omitempty" json:"resolvedAt,omitempty"`
-	SuppressedUntil     *time.Time           `yaml:"suppressed_until,omitempty" json:"suppressedUntil,omitempty"`
-	ReopenGraceUntil    *time.Time           `yaml:"reopen_grace_until,omitempty" json:"reopenGraceUntil,omitempty"`
-	AffectedTaskIDs     []string             `yaml:"affected_task_ids,omitempty" json:"affectedTaskIds,omitempty"`
-	AffectedTaskCount   int                  `yaml:"affected_task_count" json:"affectedTaskCount"`
-	RecurrenceCount     int                  `yaml:"recurrence_count" json:"recurrenceCount"`
-	LatestEvidence      CertifiedEvidence    `yaml:"latest_evidence" json:"latestEvidence"`
-	RemediationAttempts []RemediationAttempt `yaml:"remediation_attempts,omitempty" json:"remediationAttempts,omitempty"`
-	IssueURL            string               `yaml:"issue_url,omitempty" json:"issueUrl,omitempty"`
-	PRURL               string               `yaml:"pr_url,omitempty" json:"prUrl,omitempty"`
-	DuplicateIssues     []int                `yaml:"duplicate_issues,omitempty" json:"duplicateIssues,omitempty"`
+	Version              int                  `yaml:"version" json:"version"`
+	Revision             int                  `yaml:"revision" json:"revision"`
+	PublishedRevision    int                  `yaml:"published_revision" json:"publishedRevision"`
+	Fingerprint          string               `yaml:"fingerprint" json:"fingerprint"`
+	FailureCode          string               `yaml:"failure_code" json:"failureCode"`
+	Component            string               `yaml:"component" json:"component"`
+	Capability           string               `yaml:"capability" json:"capability"`
+	ProjectScope         string               `yaml:"project_scope" json:"projectScope"`
+	Confidential         bool                 `yaml:"confidential,omitempty" json:"confidential,omitempty"`
+	ConfigGeneration     string               `yaml:"config_generation" json:"configGeneration"`
+	State                IncidentState        `yaml:"state" json:"state"`
+	FirstSeen            time.Time            `yaml:"first_seen" json:"firstSeen"`
+	LastSeen             time.Time            `yaml:"last_seen" json:"lastSeen"`
+	FirstContainedAt     *time.Time           `yaml:"first_contained_at,omitempty" json:"firstContainedAt,omitempty"`
+	HealthySince         *time.Time           `yaml:"healthy_since,omitempty" json:"healthySince,omitempty"`
+	ResolvedAt           *time.Time           `yaml:"resolved_at,omitempty" json:"resolvedAt,omitempty"`
+	SuppressedUntil      *time.Time           `yaml:"suppressed_until,omitempty" json:"suppressedUntil,omitempty"`
+	ReopenGraceUntil     *time.Time           `yaml:"reopen_grace_until,omitempty" json:"reopenGraceUntil,omitempty"`
+	AffectedTaskIDs      []string             `yaml:"affected_task_ids,omitempty" json:"affectedTaskIds,omitempty"`
+	AffectedTaskCount    int                  `yaml:"affected_task_count" json:"affectedTaskCount"`
+	AffectedTaskOverflow bool                 `yaml:"affected_task_overflow,omitempty" json:"affectedTaskOverflow,omitempty"`
+	RecurrenceCount      int                  `yaml:"recurrence_count" json:"recurrenceCount"`
+	LatestEvidence       CertifiedEvidence    `yaml:"latest_evidence" json:"latestEvidence"`
+	RemediationAttempts  []RemediationAttempt `yaml:"remediation_attempts,omitempty" json:"remediationAttempts,omitempty"`
+	IssueURL             string               `yaml:"issue_url,omitempty" json:"issueUrl,omitempty"`
+	PRURL                string               `yaml:"pr_url,omitempty" json:"prUrl,omitempty"`
+	DuplicateIssues      []int                `yaml:"duplicate_issues,omitempty" json:"duplicateIssues,omitempty"`
 }
 
 // IncidentChange describes whether an observation warrants an external state
@@ -208,6 +210,14 @@ func certifiedEvidence(a Anomaly) CertifiedEvidence {
 
 func addAffectedTask(in *Incident, taskID string) bool {
 	if taskID == "" || slices.Contains(in.AffectedTaskIDs, taskID) {
+		return false
+	}
+	// Cardinality is deliberately bounded. Once the retained set is full we
+	// cannot distinguish a new task from a previously evicted one without an
+	// unbounded identity set, so report a stable lower bound instead of
+	// inventing growth and material revisions on every scan.
+	if len(in.AffectedTaskIDs) >= maxAffectedTasks {
+		in.AffectedTaskOverflow = true
 		return false
 	}
 	in.AffectedTaskIDs = append(in.AffectedTaskIDs, taskID)

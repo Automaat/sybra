@@ -1562,44 +1562,55 @@ func (a *App) configureAdmissionPolicy() {
 		}
 		if d.Outcome == string(taskstatus.Blocked) {
 			data["preflight_detectable"] = true
-			cost, tokens, runs, usageKnown := 0.0, 0, 0, true
-			legacyUnattributed := false
 			if a.stats != nil {
-				records := a.stats.All()
-				for i := range records {
-					record := &records[i]
-					if record.TaskID != t.ID {
-						continue
-					}
-					if !record.TaskGenerationKnown {
-						legacyUnattributed = true
-						continue
-					}
-					if t.Generation < 0 {
-						legacyUnattributed = true
-						continue
-					}
-					// #nosec G115 -- the non-negative range check above makes the conversion exact.
-					if record.TaskGeneration != uint64(t.Generation) {
-						continue
-					}
-					runs++
-					cost += record.CostUSD
-					tokens += record.InputTokens + record.OutputTokens + record.CacheCreationInputTokens + record.CacheReadInputTokens + record.ReasoningTokens
-					if record.CostUSD == 0 && record.InputTokens == 0 && record.OutputTokens == 0 && record.CacheCreationInputTokens == 0 && record.CacheReadInputTokens == 0 && record.ReasoningTokens == 0 && record.PremiumRequests == 0 {
-						usageKnown = false
-					}
-				}
+				cost, tokens, runs, usageKnown := preflightUsage(a.stats.All(), t.ID, t.Generation)
+				data["usage_known"], data["cost_usd"], data["tokens"], data["prior_runs"] = usageKnown, cost, tokens, runs
 			} else {
-				usageKnown = false
+				data["usage_known"], data["cost_usd"], data["tokens"], data["prior_runs"] = false, 0.0, 0, 0
 			}
-			if runs == 0 {
-				usageKnown = !legacyUnattributed
-			}
-			data["usage_known"], data["cost_usd"], data["tokens"], data["prior_runs"] = usageKnown, cost, tokens, runs
 		}
 		a.logAudit(audit.EventAdmissionDecided, t.ID, "", data)
 	})
+}
+
+func preflightUsage(records []stats.RunRecord, taskID string, generation int64) (cost float64, tokens, runs int, known bool) {
+	legacyUnattributed := false
+	var cohort uint64
+	cohortKnown := false
+	for i := range records {
+		record := &records[i]
+		if record.TaskID != taskID {
+			continue
+		}
+		if !record.TaskGenerationKnown || generation < 0 {
+			legacyUnattributed = true
+			continue
+		}
+		// #nosec G115 -- the negative generation case is rejected above.
+		if record.TaskGeneration > uint64(generation) {
+			continue
+		}
+		if !cohortKnown || record.TaskGeneration > cohort {
+			cohort, cohortKnown = record.TaskGeneration, true
+		}
+	}
+	known = true
+	for i := range records {
+		record := &records[i]
+		if !cohortKnown || record.TaskID != taskID || !record.TaskGenerationKnown || record.TaskGeneration != cohort {
+			continue
+		}
+		runs++
+		cost += record.CostUSD
+		tokens += record.InputTokens + record.OutputTokens + record.CacheCreationInputTokens + record.CacheReadInputTokens + record.ReasoningTokens
+		if record.CostUSD == 0 && record.InputTokens == 0 && record.OutputTokens == 0 && record.CacheCreationInputTokens == 0 && record.CacheReadInputTokens == 0 && record.ReasoningTokens == 0 && record.PremiumRequests == 0 {
+			known = false
+		}
+	}
+	if runs == 0 {
+		known = !legacyUnattributed
+	}
+	return cost, tokens, runs, known
 }
 
 // configureEvidencePolicy wires the require_evidence step's config and its

@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"sync"
@@ -108,6 +109,24 @@ func TestDurableGHIssueSink_AuthFailurePersistsAndLaterRetrySucceeds(t *testing.
 	}
 	if d.store.depth() != 0 {
 		t.Fatalf("want 0 pending outbox items after recovery flush, got %d", d.store.depth())
+	}
+}
+
+func TestDurableGHIssueSink_StaleIncidentCannotOverwriteNewerDesiredState(t *testing.T) {
+	inner := &fakeIncidentSubmitter{fakeSubmitter: fakeSubmitter{err: errAuthFailed}}
+	d, _ := newTestDurableSink(t, inner)
+	newer := Incident{Fingerprint: "incident:one", Revision: 2, State: IncidentResolved}
+	older := Incident{Fingerprint: newer.Fingerprint, Revision: 1, State: IncidentActive}
+	if _, err := d.ResolveIncident(context.Background(), newer, "resolved"); err == nil {
+		t.Fatal("expected auth failure")
+	}
+	if _, _, err := d.ApplyIncident(context.Background(), older, IncidentOpened, "stale"); err == nil {
+		t.Fatal("expected auth failure")
+	}
+	inner.markHealthy()
+	d.ReplayPending(context.Background())
+	if fmt.Sprint(inner.incidentRevisions) != "[2]" {
+		t.Fatalf("replayed revisions = %v, want [2]", inner.incidentRevisions)
 	}
 }
 
