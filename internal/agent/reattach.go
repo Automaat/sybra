@@ -70,7 +70,7 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 			// never be reattached — reap the orphaned process (which still holds
 			// the worktree lock/FIFO) and drop the record instead of skipping it
 			// silently and leaking it forever.
-			m.reapStaleSurvivor(r, reg, "legacy_mode_"+r.Mode)
+			m.reapStaleSurvivor(ctx, r, reg, "legacy_mode_"+r.Mode)
 			continue
 		}
 		if !reattachAlive(r) { //nolint:contextcheck // liveness probe is context-free process inspection
@@ -96,15 +96,21 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 
 		decision := m.reattachDecide(r, time.Now().UTC())
 		if decision.reason != "" {
-			m.reapStaleSurvivor(r, reg, decision.reason)
+			m.reapStaleSurvivor(ctx, r, reg, decision.reason)
 			continue
 		}
-		adoptedLease, err := m.adoptAttempt(ctx, r)
+		intent := attemptIntentFromRecord(r)
+		adoptedLease, err := m.adoptAttempt(ctx, r, intent)
 		if err != nil {
 			m.logger.Warn("agent.reattach.admission", "id", r.ID, "task", r.TaskID, "err", err)
 			continue
 		}
 		if adoptedLease.ID != "" {
+			r.AttemptIntentID = intent.IntentID
+			r.AttemptTaskKey = intent.TaskID
+			r.AttemptTaskGen = intent.TaskGeneration
+			r.AttemptWorkGen = intent.WorktreeGeneration
+			r.AttemptAccess = intent.Access
 			r.AttemptLeaseID = adoptedLease.ID
 			r.AttemptVersion = adoptedLease.Version
 			if err := reg.Save(r); err != nil {
@@ -612,9 +618,10 @@ func ParksLiveAgent(status string) bool {
 	}
 }
 
-func (m *Manager) reapStaleSurvivor(r Record, reg survivalRegistry, reason string) {
+func (m *Manager) reapStaleSurvivor(ctx context.Context, r Record, reg survivalRegistry, reason string) {
 	m.logger.Warn("agent.reattach.reap", "id", r.ID, "pid", r.PID, "task", r.TaskID, "reason", reason)
 	signalPID(r.PID, stopSIGINTGrace)
+	m.completeAttempt(ctx, fromRecord(r), "reaped_"+reason)
 	if err := reg.Delete(r.ID); err != nil {
 		m.logger.Warn("agent.reattach.reap.delete", "id", r.ID, "err", err)
 	}

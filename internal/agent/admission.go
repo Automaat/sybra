@@ -81,3 +81,11 @@ type AttemptAdmission interface {
 type AttemptLimitUpdater interface {
 	ReplaceLimits(global, perProvider int)
 }
+
+// AttemptLedgerReconciler is the optional restart/maintenance extension used
+// after owned orphan processes have been reaped and worktrees have been
+// preserved. Only expired, unobserved leases may be finalized by this path.
+type AttemptLedgerReconciler interface {
+	NeedsReconciliation(context.Context) (bool, error)
+	ReconcileUnobserved(context.Context, []AttemptLease) (int, error)
+}

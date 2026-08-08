@@ -109,8 +109,8 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 	m.logger.Info("agent.start", "id", id, "taskID", cfg.TaskID, "mode", cfg.Mode, "provider", a.Provider, "model", a.Model)
 
 	if err := m.startAgentRunner(ctx, a, cfg, prov, cancel); err != nil {
-		m.markAgentDone(ctx, a)
 		m.completeAttempt(ctx, a, "start_failed")
+		m.markAgentDone(ctx, a)
 		return nil, err
 	}
 	m.startAttemptHeartbeat(ctx, a)
@@ -147,6 +147,68 @@ func (m *Manager) admissionService() AttemptAdmission {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.attemptAdmission
+}
+
+// NeedsAttemptReconciliation reports whether durable admission contains an
+// expired lease. Recovery uses this to avoid an expensive process/worktree
+// preservation pass on ordinary maintenance ticks.
+func (m *Manager) NeedsAttemptReconciliation(ctx context.Context) bool {
+	reconciler, ok := m.admissionService().(AttemptLedgerReconciler)
+	if !ok {
+		return false
+	}
+	needed, err := reconciler.NeedsReconciliation(ctx)
+	if err != nil {
+		m.logger.Warn("agent.attempt.reconcile-check", "err", err)
+		return false
+	}
+	return needed
+}
+
+// ReconcileAttemptLeases finalizes expired leases not represented by either
+// the survival registry or the live manager. Callers must first reap owned
+// unregistered processes and preserve worktrees.
+func (m *Manager) ReconcileAttemptLeases(ctx context.Context) int {
+	reconciler, ok := m.admissionService().(AttemptLedgerReconciler)
+	if !ok {
+		return 0
+	}
+	seen := make(map[string]AttemptLease)
+	if reg := m.registry(); reg != nil {
+		records, err := reg.List()
+		if err != nil {
+			m.logger.Warn("agent.attempt.reconcile-registry", "err", err)
+			return 0
+		}
+		for i := range records {
+			if records[i].AttemptLeaseID != "" {
+				seen[records[i].AttemptLeaseID] = AttemptLease{ID: records[i].AttemptLeaseID, Version: records[i].AttemptVersion}
+			}
+		}
+	}
+	m.mu.RLock()
+	for _, a := range m.agents {
+		a.mu.RLock()
+		lease := a.attemptLease
+		a.mu.RUnlock()
+		if lease.ID != "" && a.GetState() != StateStopped {
+			seen[lease.ID] = lease
+		}
+	}
+	m.mu.RUnlock()
+	observed := make([]AttemptLease, 0, len(seen))
+	for _, lease := range seen {
+		observed = append(observed, lease)
+	}
+	n, err := reconciler.ReconcileUnobserved(ctx, observed)
+	if err != nil {
+		m.logger.Warn("agent.attempt.reconcile", "err", err)
+		return 0
+	}
+	if n > 0 {
+		m.logger.Info("agent.attempt.reconciled", "count", n)
+	}
+	return n
 }
 
 func (m *Manager) acquireAttempt(ctx context.Context, intent AttemptIntent) (AttemptLease, error) {
@@ -260,26 +322,48 @@ func attemptTerminalOutcome(a *Agent) string {
 	return "completed"
 }
 
-func (m *Manager) adoptAttempt(ctx context.Context, r Record) (AttemptLease, error) {
-	admission := m.admissionService()
-	lease := AttemptLease{ID: r.AttemptLeaseID, Version: r.AttemptVersion}
-	if admission == nil || lease.ID == "" {
-		return lease, nil
-	}
+func attemptIntentFromRecord(r Record) AttemptIntent {
 	access := r.AttemptAccess
 	if access == "" {
 		access = AttemptAccessMutate
 	}
-	intent := AttemptIntent{
-		IntentID: r.AttemptIntentID, TaskID: firstNonEmpty(r.AttemptTaskKey, r.TaskID),
+	intentID := r.AttemptIntentID
+	if intentID == "" {
+		intentID = "legacy-registry:" + r.ID
+	}
+	return AttemptIntent{
+		IntentID: intentID, TaskID: firstNonEmpty(r.AttemptTaskKey, r.TaskID),
 		TaskGeneration: r.AttemptTaskGen, Worktree: r.CWD,
 		WorktreeGeneration: r.AttemptWorkGen, Access: access,
 		Role: r.Role, Provider: r.Provider, CapabilityCertified: true,
 	}
-	return admission.Adopt(ctx, intent, lease, AttemptBinding{
+}
+
+func (m *Manager) adoptAttempt(ctx context.Context, r Record, intent AttemptIntent) (AttemptLease, error) {
+	admission := m.admissionService()
+	lease := AttemptLease{ID: r.AttemptLeaseID, Version: r.AttemptVersion}
+	if admission == nil {
+		return lease, nil
+	}
+	binding := AttemptBinding{
 		AgentID: r.ID, PID: r.PID, ProcStarted: r.ProcStartedAt,
 		SessionID: r.SessionID, ObservedAt: time.Now().UTC(),
-	})
+	}
+	if lease.ID == "" {
+		acquired, err := admission.Acquire(ctx, intent)
+		if err != nil {
+			return AttemptLease{}, err
+		}
+		if acquired.Existing {
+			return AttemptLease{}, fmt.Errorf("%w: legacy registry intent %s", ErrAttemptConflict, intent.IntentID)
+		}
+		if err := admission.Bind(ctx, acquired, binding); err != nil {
+			_ = admission.Complete(context.WithoutCancel(ctx), acquired, "legacy_bind_failed")
+			return AttemptLease{}, err
+		}
+		return acquired, nil
+	}
+	return admission.Adopt(ctx, intent, lease, binding)
 }
 
 func (m *Manager) certifyPreparedRun(ctx context.Context, cfg RunConfig, providerName string) error {

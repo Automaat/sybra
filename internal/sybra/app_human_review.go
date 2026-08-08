@@ -484,6 +484,16 @@ func (h *humanReviewHandler) spawnReview(ctx context.Context, t task.Task, prevS
 	ag, err := h.agents.Run(cfg)
 	h.drainMu.Unlock()
 	if err != nil {
+		if agent.IsCapacityError(err) || agent.IsAttemptConflict(err) {
+			h.releaseReservedSlot(taskID, now)
+			h.logger.Warn("human-review.spawn.parked", "task_id", taskID, "provider", cfg.Provider, "model", cfg.Model, "err", err)
+			h.logAudit(audit.EventHumanReviewSkipped, taskID, "", map[string]any{
+				"reason": "capacity_parked", "err": err.Error(),
+				"provider": cfg.Provider, "model": cfg.Model, "retry_reason": opts.RetryReason,
+			})
+			h.scheduleClaimRetry(ctx, taskID, prevStatus, opts)
+			return false
+		}
 		h.clearInflight(taskID)
 		h.logger.Error("human-review.spawn", "task_id", taskID, "provider", cfg.Provider, "model", cfg.Model, "err", err)
 		if errors.Is(err, agent.ErrProviderModelIncompatible) {

@@ -83,6 +83,7 @@ type Controller struct {
 }
 
 var _ agent.AttemptAdmission = (*Controller)(nil)
+var _ agent.AttemptLedgerReconciler = (*Controller)(nil)
 
 func New(ctx context.Context, opts Options) (*Controller, error) {
 	if strings.TrimSpace(opts.Dir) == "" {
@@ -294,6 +295,59 @@ func (c *Controller) Records(ctx context.Context) ([]Record, error) {
 		return changed, nil
 	})
 	return out, err
+}
+
+// NeedsReconciliation reports whether expiry has produced ledger state that
+// must be compared with the survival registry. The caller uses this cheap
+// gate before the more expensive orphan-process and worktree-preservation
+// passes.
+func (c *Controller) NeedsReconciliation(ctx context.Context) (bool, error) {
+	needed := false
+	err := c.update(ctx, func(s *diskState, now time.Time) (bool, error) {
+		changed := expireLeases(s, now)
+		for i := range s.Leases {
+			if s.Leases[i].Status == StatusReconciling {
+				needed = true
+				break
+			}
+		}
+		return changed, nil
+	})
+	return needed, err
+}
+
+// ReconcileUnobserved finalizes expired leases absent from the survival
+// registry and live manager state. It must only be called after the caller has
+// reaped unregistered owned provider processes and preserved their worktrees;
+// expiry alone is deliberately insufficient evidence that an attempt is dead.
+func (c *Controller) ReconcileUnobserved(ctx context.Context, observed []agent.AttemptLease) (int, error) {
+	seen := make(map[string]struct{}, len(observed))
+	for i := range observed {
+		if observed[i].ID != "" {
+			seen[observed[i].ID] = struct{}{}
+		}
+	}
+	reconciled := 0
+	err := c.update(ctx, func(s *diskState, now time.Time) (bool, error) {
+		changed := expireLeases(s, now)
+		for i := range s.Leases {
+			rec := &s.Leases[i]
+			if rec.Status != StatusReconciling {
+				continue
+			}
+			if _, ok := seen[rec.ID]; ok {
+				continue
+			}
+			rec.Status = StatusCompleted
+			rec.Outcome = "orphan_reconciled"
+			rec.CompletedAt = now
+			rec.ExpiresAt = time.Time{}
+			reconciled++
+			changed = true
+		}
+		return changed, nil
+	})
+	return reconciled, err
 }
 
 func (c *Controller) mutateOwned(ctx context.Context, lease agent.AttemptLease, allowReconciling bool, mutate func(*Record, time.Time) error) error {

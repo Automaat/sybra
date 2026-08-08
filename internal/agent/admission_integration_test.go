@@ -227,3 +227,56 @@ func TestReattachPersistsTransferredLeaseBeforeExposure(t *testing.T) {
 		t.Fatalf("exposed lease version = %d, want 3", got[0].attemptLease.Version)
 	}
 }
+
+func TestReattachBootstrapsLeaseForLegacyLiveRecord(t *testing.T) {
+	m, _ := newTestManager(t)
+	recorder := &recordingAttemptAdmission{}
+	m.attemptAdmission = recorder
+	registry := &fixedSurvivalRegistry{records: []Record{{
+		ID: "legacy-live", TaskID: "task-1", Mode: "headless", Provider: providerid.Claude,
+		PID: os.Getpid(), ProcStartedAt: processStartString(context.Background(), os.Getpid()),
+		CWD: t.TempDir(),
+	}}}
+	m.reg = registry
+	m.surviveRestart = true
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got := m.ReattachAllContext(ctx)
+	if len(got) != 1 {
+		t.Fatalf("reattached = %d, want legacy process fenced and exposed", len(got))
+	}
+	recorder.mu.Lock()
+	if len(recorder.acquired) != 1 || len(recorder.bound) != 1 || recorder.adopted != 0 {
+		t.Fatalf("legacy lifecycle acquired=%d bound=%d adopted=%d, want 1/1/0", len(recorder.acquired), len(recorder.bound), recorder.adopted)
+	}
+	if recorder.acquired[0].IntentID != "legacy-registry:legacy-live" || recorder.acquired[0].Access != AttemptAccessMutate {
+		t.Fatalf("legacy intent = %+v", recorder.acquired[0])
+	}
+	recorder.mu.Unlock()
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if len(registry.saved) != 1 || registry.saved[0].AttemptLeaseID == "" || registry.saved[0].AttemptIntentID == "" {
+		t.Fatalf("saved legacy record = %+v, want durable attempt identity", registry.saved)
+	}
+}
+
+func TestExplicitStartFailureOutcomeWinsTerminalBackstop(t *testing.T) {
+	m, _ := newTestManager(t)
+	recorder := &recordingAttemptAdmission{}
+	m.attemptAdmission = recorder
+	a := &Agent{
+		ID: "start-failure", Provider: providerid.Claude, State: StateRunning,
+		done: make(chan struct{}), attemptLease: AttemptLease{ID: "lease", Version: 1},
+	}
+	if err := m.registerRunningAgent(a, RunConfig{}, func() {}); err != nil {
+		t.Fatal(err)
+	}
+	m.completeAttempt(t.Context(), a, "start_failed")
+	m.markAgentDone(t.Context(), a)
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if len(recorder.completed) != 1 || recorder.completed[0] != "start_failed" {
+		t.Fatalf("completed outcomes = %v, want [start_failed]", recorder.completed)
+	}
+}

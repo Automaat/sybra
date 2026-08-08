@@ -127,7 +127,8 @@ type DispatchClaim interface {
 // AgentAssignment carries A/B experiment attribution selected before dispatch.
 type AgentAssignment struct {
 	// IntentID is the durable workflow-effect identity used by admission to
-	// make a replay return the original attempt instead of spawning another.
+	// reject a replay while the original attempt is still owned, preventing a
+	// second provider process from being spawned for the same effect.
 	IntentID         string
 	AdmissionTaskKey string
 	AdmissionObserve bool

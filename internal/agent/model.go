@@ -1985,8 +1985,9 @@ type RunConfig struct {
 	Dir          string
 	// IntentID makes a dispatch replay idempotent. TaskGeneration and
 	// WorktreeGeneration fence stale schedulers/recovery workers; zero is a
-	// valid legacy generation. ReadOnlyDir selects an explicit observer lease,
-	// otherwise the run owns the task/worktree for mutation.
+	// valid legacy generation. AttemptAccess selects mutation or observation;
+	// ReadOnlyDir also forces observation so a sandbox-read-only run can never
+	// acquire mutation ownership.
 	IntentID           string
 	AdmissionTaskKey   string
 	AttemptAccess      AttemptAccess

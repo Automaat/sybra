@@ -34,6 +34,15 @@ const (
 // Safe to call concurrently with the startup pass — each re-dispatch is
 // guarded by HasRunningAgentForTask + the recent-run debounce.
 func (r *Recovery) RestartStaleInProgress(ctx context.Context) {
+	if r.Agents.NeedsAttemptReconciliation(ctx) {
+		if reaped := r.Agents.ReapOrphanProviderProcesses(ctx, r.OrphanRoots); reaped > 0 {
+			r.Logger.Info("recovery.orphan_reap", "count", reaped)
+		}
+		if r.Worktrees != nil {
+			r.Worktrees.RepairAll(ctx)
+		}
+		r.Agents.ReconcileAttemptLeases(ctx)
+	}
 	tasks, err := r.Tasks.List()
 	if err != nil {
 		return

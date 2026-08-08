@@ -322,3 +322,31 @@ func TestRestartEpochCanCompleteObservedDeadUnexpiredLease(t *testing.T) {
 		t.Fatalf("replacement after terminal reconciliation: %v", err)
 	}
 }
+
+func TestReconcileUnobservedRequiresExpiryAndExplicitObservation(t *testing.T) {
+	clock := &fakeClock{t: time.Now().UTC()}
+	c := newTestController(t, clock, "epoch", Limits{})
+	lease, err := c.Acquire(t.Context(), intent("orphan", "task", "", providerid.Claude, agent.AttemptAccessMutate))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if needed, err := c.NeedsReconciliation(t.Context()); err != nil || needed {
+		t.Fatalf("fresh lease reconciliation = %v, %v; want false", needed, err)
+	}
+	clock.add(2 * time.Minute)
+	if needed, err := c.NeedsReconciliation(t.Context()); err != nil || !needed {
+		t.Fatalf("expired lease reconciliation = %v, %v; want true", needed, err)
+	}
+	if n, err := c.ReconcileUnobserved(t.Context(), []agent.AttemptLease{lease}); err != nil || n != 0 {
+		t.Fatalf("observed reconciliation = %d, %v; want 0", n, err)
+	}
+	if _, err := c.Acquire(t.Context(), intent("replacement-before-reconcile", "task", "", providerid.Claude, agent.AttemptAccessMutate)); !errors.Is(err, agent.ErrAttemptNeedsReconciliation) {
+		t.Fatalf("observed expired lease admitted replacement: %v", err)
+	}
+	if n, err := c.ReconcileUnobserved(t.Context(), nil); err != nil || n != 1 {
+		t.Fatalf("unobserved reconciliation = %d, %v; want 1", n, err)
+	}
+	if _, err := c.Acquire(t.Context(), intent("replacement", "task", "", providerid.Claude, agent.AttemptAccessMutate)); err != nil {
+		t.Fatalf("replacement after explicit reconciliation: %v", err)
+	}
+}

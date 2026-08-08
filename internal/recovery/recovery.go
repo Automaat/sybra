@@ -134,6 +134,9 @@ func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 		r.Logger.Info("recovery.orphan_reap", "count", reaped)
 	}
 	r.Worktrees.RepairAll(ctx)
+	// Only after unregistered owned processes are gone and their worktrees have
+	// been repaired is an expired ledger-only attempt safe to finalize.
+	r.Agents.ReconcileAttemptLeases(ctx)
 	r.cleanStaleRuns()
 	if r.WorkflowEngine != nil {
 		// Ordered ahead of the replay: reattach above has established which

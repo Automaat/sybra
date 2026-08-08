@@ -359,6 +359,42 @@ func TestHumanReviewSpawn_ClaimConflictRetriesAfterRelease(t *testing.T) {
 	}
 }
 
+func TestHumanReviewSpawn_CapacityRefusalReleasesQuotaAndSchedulesRetry(t *testing.T) {
+	h, tasks, cleanup := newReviewTestEnv(t)
+	defer cleanup()
+	tk, err := tasks.Create("capacity parked", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id": "Automaat/sybra",
+		"status":     string(task.StatusHumanRequired),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.prepareTaskWorktree = func(task.Task) (string, error) { return t.TempDir(), nil }
+	h.agents = &fakeHumanReviewAgentRunner{run: func(agent.RunConfig) (*agent.Agent, error) {
+		return nil, agent.ErrProviderCapacityReached
+	}}
+	var scheduled func()
+	h.schedule = func(_ time.Duration, fn func()) { scheduled = fn }
+
+	if h.maybeSpawn(context.Background(), tk.ID, string(task.StatusInReview)) {
+		t.Fatal("capacity-refused human review reported a spawn")
+	}
+	if scheduled == nil {
+		t.Fatal("capacity refusal did not schedule a retry")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.recent) != 0 || len(h.perTask[tk.ID]) != 0 {
+		t.Fatalf("capacity refusal consumed quota: recent=%v perTask=%v", h.recent, h.perTask[tk.ID])
+	}
+	if _, ok := h.inflight[tk.ID]; ok {
+		t.Fatal("capacity refusal retained inflight reservation")
+	}
+}
+
 func TestLifecycleSchedule_CancelSuppressesRetry(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
