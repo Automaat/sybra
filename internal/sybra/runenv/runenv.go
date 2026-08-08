@@ -120,19 +120,28 @@ func (f CertificationError) Unwrap() error { return f.Cause }
 // import cycle.
 func (f CertificationError) MachineFailureCode() string { return f.Code }
 
-// MachineFailureTransient keeps every admission failure in the workflow's
-// retry path. A later certification pass is authoritative: it either admits
-// the unchanged task or continues to defer it without starting an agent.
+// MachineFailureTransient is true only for observations owned by an external,
+// self-healing condition (provider capacity, GitHub outage): those retry
+// forever quietly because nothing but time fixes them. Every other owner
+// (unset/machine capability, operator authority) falls through to
+// ClassifyAgentStartFailure's generic machine-failure branch, which escalates
+// to human-required so a genuinely broken environment (bad signer, unhealthy
+// checkout, misconfigured sandbox) gets a repair signal instead of retrying
+// forever with nothing visible on the board. Returning true unconditionally
+// here (as this used to) removes that escalation path entirely and produces
+// a board that fills up with todo work and never dispatches — observed as
+// incident board_stalled/dispatch on 2026-08-08.
 func (f CertificationError) MachineFailureTransient() bool {
-	return true
+	return f.Owner == autonomy.FailureOwnerExternalTransient
 }
 
-// MachineFailureRequiresCredentials is intentionally false even when the
-// observation owner is operator authority. Missing credentials can be fixed
-// out of band, so parking a task would prevent the automatic recheck that
-// resumes it once they are available.
+// MachineFailureRequiresCredentials is true when the observation owner is
+// operator authority (e.g. misconfigured GitHub auth): that class of failure
+// does not self-heal without a human refreshing credentials, so it escalates
+// immediately instead of retrying forever with no visible signal — matching
+// how provider.ErrProviderUnhealthy is classified below in start_error.go.
 func (f CertificationError) MachineFailureRequiresCredentials() bool {
-	return false
+	return f.Owner == autonomy.FailureOwnerOperatorAuthority
 }
 
 // Deps keeps state-changing authority outside this package.
