@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -302,21 +304,52 @@ func TestDoctorCleanupFindingsRunWithoutABoard(t *testing.T) {
 	}
 }
 
-// TestDoctorCleanupRefusesAnotherMachinesBoard is the guard on an irreversible
-// delete. Every path cleanup removes is under this home, and a board elsewhere
-// holds none of these task ids — so it would call every live worktree an orphan.
-func TestDoctorCleanupRefusesAnotherMachinesBoard(t *testing.T) {
+// TestDoctorCleanupRefusesABoardServingAnotherHome is the guard on an
+// irreversible delete, and it is not hypothetical: two instances on one machine
+// are both loopback, so an address check passed and a cleanup deleted a live
+// sandbox belonging to the other one.
+//
+// Every path cleanup removes is under this home, and only the board serving
+// this home holds the tasks that describe them.
+func TestDoctorCleanupRefusesABoardServingAnotherHome(t *testing.T) {
 	home := t.TempDir()
+	otherHome := t.TempDir()
 	t.Setenv("SYBRA_HOME", home)
 	t.Setenv("SYBRA_CONTROL_HOME", "")
-	t.Setenv(serverTargetEnv, "https://board.example:8443")
-	t.Setenv(serverTokenEnv, "secret")
+	t.Setenv(serverTargetEnv, "")
 
-	code, _, stderr := runCLIWithStderr(t, "--json", "doctor", "cleanup", "--apply", "--worktrees")
-	if code == 0 {
-		t.Fatal("doctor cleanup --apply exit 0 against a board on another machine")
+	// A board that answers on loopback but serves a different home.
+	srv := startTestBoard(t, otherHome)
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse board URL: %v", err)
 	}
-	if !strings.Contains(stderr, "another machine") {
-		t.Errorf("stderr = %q, want it to name the mismatched board", stderr)
+	_, port, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		t.Fatalf("split board host: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, desktopPortFile), []byte(port), 0o600); err != nil {
+		t.Fatalf("write desktop port: %v", err)
+	}
+
+	// State the cleanup would delete if it believed this board owned the home.
+	sandbox := filepath.Join(home, "sandboxes", "live-task")
+	if err := os.MkdirAll(sandbox, 0o755); err != nil {
+		t.Fatalf("seed sandbox: %v", err)
+	}
+	marker := filepath.Join(sandbox, "state.json")
+	if err := os.WriteFile(marker, []byte("live agent state"), 0o600); err != nil {
+		t.Fatalf("seed sandbox state: %v", err)
+	}
+
+	code, _, stderr := runCLIWithStderr(t, "--json", "doctor", "cleanup", "--apply")
+	if code == 0 {
+		t.Fatal("doctor cleanup --apply exit 0 against a board serving another home")
+	}
+	if !strings.Contains(stderr, "different home") {
+		t.Errorf("stderr = %q, want it to name the mismatched home", stderr)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("live sandbox state was deleted: %v", err)
 	}
 }

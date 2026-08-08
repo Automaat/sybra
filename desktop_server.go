@@ -72,6 +72,7 @@ func openDesktopBoard(ctx context.Context, cfg *config.Config, logger *slog.Logg
 		Admit:       app.HTTPAdmission,
 		StaticFS:    sub,
 		EnablePprof: httpserve.PprofEnabled(),
+		Home:        config.HomeDir(),
 		APIBase:     origin + "/api",
 		Token:       cfg.Server.AuthToken,
 		SelfOrigin:  origin,

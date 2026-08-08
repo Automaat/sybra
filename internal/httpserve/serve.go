@@ -61,6 +61,10 @@ type Options struct {
 	// process served from any other page on the host. Empty disables the
 	// token disclosure entirely.
 	SelfOrigin string
+	// Home is the SYBRA_HOME this instance serves, reported in the health
+	// response. A client asking which board owns a directory on this machine
+	// cannot tell two instances apart by address alone: both are loopback.
+	Home string
 	// Proxy forwards the API and event stream to a board on another machine.
 	//
 	// The UI stays same-origin with the instance that served it, so no CORS
@@ -88,7 +92,17 @@ func BuildMux(opts Options) *http.ServeMux {
 	// answering 200 here collects that token.
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"status":"ok","service":"`+ServiceMarker+`"}`)
+		payload, err := json.Marshal(map[string]string{
+			"status":  "ok",
+			"service": ServiceMarker,
+			"home":    opts.Home,
+		})
+		if err != nil {
+			opts.Logger.Error("health.encode", "err", err)
+			http.Error(w, "", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(payload)
 	})
 
 	// Prometheus scrape endpoint (opt-in via config.metrics.enabled). The

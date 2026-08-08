@@ -370,14 +370,17 @@ func cmdDoctorWithoutBoard(cfg *config.Config, store taskBoard, ownsHome bool, a
 	if len(args) > 1 && args[1] == "findings" && !needsBoard(args, 2) {
 		return cmdDoctorCleanupFindings(store, args[2:], jsonOut)
 	}
-	if !ownsHome {
+	// Order matters: with no board at all, ownsHome is false too, and reporting
+	// a mismatched target would tell an operator to unset something they never
+	// set.
+	if store == nil {
 		return fatal(jsonOut,
-			"doctor cleanup deletes paths under this machine's home, and %s names a board on another machine, whose tasks do not describe them; unset it to use this machine's own board",
+			"doctor cleanup needs the board to tell a live worktree from an orphan, and no Sybra server is reachable; start one, or set %s",
 			serverTargetEnv)
 	}
 	return fatal(jsonOut,
-		"doctor cleanup needs the board to tell a live worktree from an orphan, and no Sybra server is reachable; start one, or set %s",
-		serverTargetEnv)
+		"doctor cleanup deletes paths under %s, and the board that answered serves a different home, whose tasks do not describe them; point the CLI at this home's own board",
+		config.HomeDir())
 }
 
 // needsBoard reports the findings subcommands that read a task, which is the

@@ -325,7 +325,14 @@ func startTestBoard(t *testing.T, home string) *httptest.Server {
 	// control plane. Without it the CLI declines to send its token here, which
 	// is the point of the check.
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"status":"ok","service":"` + httpserve.ServiceMarker + `"}`))
+		payload, err := json.Marshal(map[string]string{
+			"status": "ok", "service": httpserve.ServiceMarker, "home": home,
+		})
+		if err != nil {
+			t.Errorf("encode health: %v", err)
+			return
+		}
+		_, _ = w.Write(payload)
 	})
 	httpapi.Mount(mux, map[string]httpapi.Service{
 		"TaskService": httpapi.NewService(&testBoardTaskService{

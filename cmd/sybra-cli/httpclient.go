@@ -56,6 +56,9 @@ type apiClient struct {
 	baseURL string
 	token   string
 	http    *http.Client
+	// boardHome is the SYBRA_HOME the board reported serving, learned during
+	// the reachability probe. Empty until that probe has run.
+	boardHome string
 	// remote records that the target is another machine's board. A loopback server shares this machine's home, so the filesystem stores are the same board and falling back to them is correct; a remote one is a different board, and falling back edits files its owner never reads.
 	remote bool
 }
@@ -138,11 +141,23 @@ func readDesktopPort() string {
 // the CLI — and the bearer token it sends next — at whatever answers there.
 // Only the configured bind counts.
 func configuredServerTarget(cfg *config.Config) string {
-	addrs, _ := cfg.ListenAddrs("", "")
-	if len(addrs) == 0 {
+	// cfg.Cluster directly, not ListenAddrs: that helper honours
+	// SYBRA_BIND_ADDR, and an env var naming a listen address must not steer a
+	// client — the bearer token goes wherever this points.
+	configured := ""
+	for _, addr := range cfg.Cluster.BindAddrs {
+		if strings.TrimSpace(addr) != "" {
+			configured = addr
+			break
+		}
+	}
+	if configured == "" {
+		configured = strings.TrimSpace(cfg.Cluster.BindAddr)
+	}
+	if configured == "" {
 		return localOrigin(cfg, "127.0.0.1", config.DefaultServerPort)
 	}
-	host, port, err := net.SplitHostPort(addrs[0])
+	host, port, err := net.SplitHostPort(configured)
 	if err != nil || strings.TrimSpace(port) == "" {
 		return localOrigin(cfg, "127.0.0.1", config.DefaultServerPort)
 	}
@@ -298,8 +313,39 @@ func (c *apiClient) reachable(ctx context.Context) bool {
 	}
 	var health struct {
 		Service string `json:"service"`
+		Home    string `json:"home"`
 	}
-	return json.Unmarshal(body, &health) == nil && health.Service == httpserve.ServiceMarker
+	if json.Unmarshal(body, &health) != nil || health.Service != httpserve.ServiceMarker {
+		return false
+	}
+	c.boardHome = health.Home
+	return true
+}
+
+// ownsHome reports that this board serves the given SYBRA_HOME.
+//
+// Address is not enough: two instances on one machine are both loopback, and
+// the one that answers may own a different home entirely. Anything that acts on
+// this machine's files has to ask which home the board actually serves.
+func (c *apiClient) ownsHome(home string) bool {
+	if c == nil || c.boardHome == "" || home == "" {
+		return false
+	}
+	return sameDir(c.boardHome, home)
+}
+
+// sameDir compares two directory paths after resolving symlinks, so a home
+// reached through /var and /private/var is recognised as one home.
+func sameDir(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return ra == rb
 }
 
 func (c *apiClient) call(ctx context.Context, service, method string, out any, args ...any) error {

@@ -135,7 +135,11 @@ func cmdClusterReassign(cfg *config.Config, api *apiClient, args []string, jsonO
 	}
 
 	// Reassignment mutates the task and pushes it to a follower, so the server
-	// owns the whole operation.
+	// owns the whole operation. gen-cert and nodes reach this file with no
+	// board at all, so this is the one subcommand that has to ask for one.
+	if api == nil {
+		return fatal(jsonOut, "cluster reassign needs a Sybra server and none is reachable; start one, or set %s", serverTargetEnv)
+	}
 	if _, err := callAPI[struct{}](api, "ClusterService", "ReassignTask", taskID, *node); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}

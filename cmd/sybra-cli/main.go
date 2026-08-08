@@ -460,9 +460,14 @@ func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal st
 	// must not shadow a server that is up.
 	candidates := localBoardCandidates(cfg)
 	tried := make([]string, 0, len(candidates))
+	unusable := make([]string, 0, len(candidates))
 	for _, target := range candidates {
 		c, err := newLocalAPIClient(cfg, target)
 		if err != nil {
+			// Kept rather than dropped: a bind this client cannot address is
+			// the whole reason nothing was reachable, and swallowing it left
+			// the operator with a refusal naming no cause at all.
+			unusable = append(unusable, err.Error())
 			continue
 		}
 		tried = append(tried, c.baseURL)
@@ -474,24 +479,23 @@ func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal st
 		return nil, ""
 	}
 	if len(tried) == 0 {
+		if len(unusable) > 0 {
+			return nil, fmt.Sprintf("this home's board cannot be addressed: %s", strings.Join(unusable, "; "))
+		}
 		return nil, fmt.Sprintf("no Sybra server could be located for this home; start one, or set %s", serverTargetEnv)
 	}
 	return nil, fmt.Sprintf("no Sybra server is reachable (tried %s); start one, or set %s",
 		strings.Join(tried, ", "), serverTargetEnv)
 }
 
-// ownsThisHome reports that the resolved board is the instance running against
-// this machine's home, which is the only board whose task list describes the
-// paths on this disk.
+// ownsThisHome reports that the resolved board serves this SYBRA_HOME.
+//
+// Loopback is not the question. Two instances on one machine are both loopback
+// and own different homes, so a board that answers here may hold none of the
+// tasks describing this disk — which is how a cleanup deleted a live sandbox
+// belonging to the other one.
 func ownsThisHome(api *apiClient) bool {
-	if api == nil {
-		return false
-	}
-	if strings.TrimSpace(os.Getenv(serverTargetEnv)) == "" {
-		// Inferred targets are this home's by construction.
-		return true
-	}
-	return !api.remote
+	return api.ownsHome(config.HomeDir())
 }
 
 // dispatchWithoutBoard routes the commands that reached here with no server.
@@ -506,6 +510,12 @@ func dispatchWithoutBoard(cmd string, rest []string, cfg *config.Config, jsonOut
 		return cmdHealth(cfg, rest, jsonOut)
 	case "install-skills":
 		return cmdInstallSkills(cfg, jsonOut)
+	case "cluster":
+		// gen-cert writes a keypair and nodes reads config; only reassign needs
+		// a board, and it refuses for itself. gen-cert in particular is the
+		// prerequisite for standing up a TLS follower, so requiring a server
+		// would mean needing one before the node that serves it can exist.
+		return cmdCluster(cfg, nil, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "%s needs a Sybra server and none is reachable", cmd)
 	}
@@ -514,7 +524,7 @@ func dispatchWithoutBoard(cmd string, rest []string, cfg *config.Config, jsonOut
 // runsWithoutServer reports the commands that inspect or repair this machine alone. They stay usable when the board they would otherwise talk to is down, which is what makes them the ones an operator reaches for to find out why it is down.
 func runsWithoutServer(cmd string) bool {
 	switch cmd {
-	case "config", "doctor", "health", "install-skills":
+	case "config", "doctor", "health", "install-skills", "cluster":
 		return true
 	}
 	return false
