@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,8 +17,10 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/selfmonitor"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -169,6 +173,56 @@ func (s *testBoardTaskService) ReindexTaskArtifacts(taskID string) error {
 	return s.artifacts.Reindex(taskID)
 }
 
+// testBoardSelfMonitorService serves the persisted report and ledger from the
+// board's own home, which is what the CLI used to read directly.
+type testBoardSelfMonitorService struct {
+	home  string
+	tasks *task.Manager
+}
+
+func (s *testBoardSelfMonitorService) GetSelfMonitorReport() (selfmonitor.Report, error) {
+	data, err := os.ReadFile(filepath.Join(s.home, "selfmonitor", "last-report.json"))
+	if err != nil {
+		return selfmonitor.Report{}, err
+	}
+	var report selfmonitor.Report
+	if err := json.Unmarshal(data, &report); err != nil {
+		return selfmonitor.Report{}, err
+	}
+	return report, nil
+}
+
+// InvestigateSelfMonitor mirrors the server's one-shot pass, wired to the same
+// on-disk inputs it reads.
+func (s *testBoardSelfMonitorService) InvestigateSelfMonitor() (selfmonitor.Report, error) {
+	ledger, err := selfmonitor.Open(filepath.Join(s.home, "selfmonitor", "ledger.jsonl"))
+	if err != nil {
+		return selfmonitor.Report{}, err
+	}
+	cfg := config.DefaultConfig().SelfMonitor
+	cfg.Enabled = true
+	svc := selfmonitor.NewService(selfmonitor.Deps{
+		Cfg:     cfg,
+		Tasks:   s.tasks,
+		Health:  selfmonitor.DiskHealthReader{Path: filepath.Join(s.home, "health-report.json")},
+		Ledger:  ledger,
+		LogsDir: filepath.Join(s.home, "logs"),
+	})
+	return svc.Scan(context.Background())
+}
+
+func (s *testBoardSelfMonitorService) ListSelfMonitorLedger(fingerprint string, windowSeconds int64) ([]selfmonitor.LedgerEntry, error) {
+	ledger, err := selfmonitor.Open(filepath.Join(s.home, "selfmonitor", "ledger.jsonl"))
+	if err != nil {
+		return nil, err
+	}
+	window := time.Duration(windowSeconds) * time.Second
+	if fingerprint != "" {
+		return ledger.History(fingerprint, window), nil
+	}
+	return ledger.Entries(window), nil
+}
+
 // testBoardProjectService adapts project.Store to ProjectService's wire names.
 type testBoardProjectService struct{ projects *project.Store }
 
@@ -212,6 +266,8 @@ func startTestBoard(t *testing.T, home string) *httptest.Server {
 		t.Fatalf("project.NewStore: %v", err)
 	}
 
+	tasks := task.NewManager(rawStore, nil)
+
 	mux := http.NewServeMux()
 	// The reachability probe the CLI runs before it will use a target.
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
@@ -219,7 +275,7 @@ func startTestBoard(t *testing.T, home string) *httptest.Server {
 	})
 	httpapi.Mount(mux, map[string]httpapi.Service{
 		"TaskService": httpapi.NewService(&testBoardTaskService{
-			tasks:     task.NewManager(rawStore, nil),
+			tasks:     tasks,
 			artifacts: artifact.New(filepath.Join(home, "artifacts")),
 		},
 			"ListTasks", "GetTask", "CreateTask", "CreateTaskFull", "UpdateTaskFields",
@@ -227,6 +283,9 @@ func startTestBoard(t *testing.T, home string) *httptest.Server {
 			"RestoreFromTrash", "DeleteTrashedGeneration", "PruneAllTrash",
 			"AppendTaskProgress", "ListTaskProgress", "ListTaskArtifactMetas",
 			"ReadTaskArtifact", "ReindexTaskArtifacts",
+		),
+		"SelfMonitorService": httpapi.NewService(&testBoardSelfMonitorService{home: home, tasks: tasks},
+			"GetSelfMonitorReport", "InvestigateSelfMonitor", "ListSelfMonitorLedger",
 		),
 		"ProjectService": httpapi.NewService(&testBoardProjectService{projects: projects},
 			"ListProjects", "GetProject", "GetProjectRawType", "CreateProjectAndClone",

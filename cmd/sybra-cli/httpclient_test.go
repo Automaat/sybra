@@ -166,61 +166,57 @@ func TestNewAPIClientVerifierTokenRequiresLoopback(t *testing.T) {
 	}
 }
 
-func TestUpdate_UsesHTTPModeWhenFilesystemIsReadOnly(t *testing.T) {
+// TestCLI_NeverTouchesTheBoardsFiles replaces a test that proved HTTP mode
+// still worked when the local task dir was read-only. With no filesystem path
+// left the interesting claim is stronger: a full create/update/list cycle works
+// against a board while this machine's own task directory stays unwritable, so
+// nothing in the CLI is reaching for it.
+func TestCLI_NeverTouchesTheBoardsFiles(t *testing.T) {
 	home := t.TempDir()
 	tasksDir := useDefaultHTTPCLIHome(t, home)
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 
-	code, out := runCLI(t, "--json", "create", "--title", "http mode target")
-	if code != 0 {
-		t.Fatalf("create exit %d: %s", code, out)
-	}
-
-	tasks, err := task.NewStore(tasksDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	list, err := tasks.List()
-	if err != nil || len(list) != 1 {
-		t.Fatalf("expected exactly one seeded task, got %v (err=%v)", list, err)
-	}
-	id := list[0].ID
-
 	serverTasksDir := t.TempDir()
-	taskFile := id + ".md"
-	seeded, err := os.ReadFile(filepath.Join(tasksDir, taskFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(serverTasksDir, taskFile), seeded, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
 	port := startFakeAPIServer(t, serverTasksDir)
 	t.Setenv(serverTargetEnv, "127.0.0.1:"+port)
 
 	lockdownDir(t, tasksDir)
 
-	code, out = runCLI(t, "--json", "update", id, "--status", "todo", "--status-reason", "via http")
+	code, out := runCLI(t, "--json", "create", "--title", "board only")
 	if code != 0 {
-		t.Fatalf("update over HTTP mode should succeed against a read-only task dir, got exit %d: %s", code, out)
+		t.Fatalf("create exit %d: %s", code, out)
 	}
-	if !strings.Contains(out, "via http") {
-		t.Fatalf("update output = %q, want it to reflect the applied status_reason", out)
-	}
-
 	served, err := task.NewStore(serverTasksDir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	list, err := served.List()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("board holds %v (err=%v), want the created task", list, err)
+	}
+	id := list[0].ID
+
+	code, out = runCLI(t, "--json", "update", id, "--status", "todo", "--status-reason", "via the board")
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
 	}
 	got, err := served.Get(id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusTodo || got.StatusReason != "via http" {
-		t.Fatalf("server-side task = %+v, want the update to have landed via HTTP", got)
+	if got.Status != task.StatusTodo || got.StatusReason != "via the board" {
+		t.Fatalf("board task = %+v, want the update to have landed there", got)
+	}
+
+	// The unwritable local directory is still empty: nothing wrote beside it.
+	entries, err := os.ReadDir(tasksDir)
+	if err != nil {
+		t.Fatalf("read local task dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("local task dir holds %d entries; the CLI wrote board files", len(entries))
 	}
 }
 
@@ -282,36 +278,35 @@ func TestLinkPR_UsesHTTPModeWhenTaskOnlyExistsOnServer(t *testing.T) {
 	}
 }
 
-func TestUpdate_FailsClosedWhenNoServerAndFilesystemReadOnly(t *testing.T) {
+// TestUpdate_FailsClosedWithNoServer keeps the refusal on the write path
+// specifically: a read is obviously impossible without a board, but an update
+// used to be the case that silently landed in this machine's files.
+func TestUpdate_FailsClosedWithNoServer(t *testing.T) {
 	home := t.TempDir()
 	tasksDir := useDefaultHTTPCLIHome(t, home)
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 
-	code, out := runCLI(t, "--json", "create", "--title", "no server target")
-	if code != 0 {
-		t.Fatalf("create exit %d: %s", code, out)
-	}
-
-	tasks, err := task.NewStore(tasksDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	list, err := tasks.List()
-	if err != nil || len(list) != 1 {
-		t.Fatalf("expected exactly one seeded task, got %v (err=%v)", list, err)
-	}
-	id := list[0].ID
-
-	lockdownDir(t, tasksDir)
-
-	code, _ = runCLI(t, "--json", "update", id, "--status", "todo")
+	code, _, stderr := runCLIWithStderr(t, "--json", "update", "task-anything", "--status", "todo")
 	if code == 0 {
-		t.Fatal("update against a read-only task dir with no server reachable should fail, not silently succeed")
+		t.Fatal("update exit 0 with no server reachable")
+	}
+	if !strings.Contains(stderr, "no Sybra server is reachable") {
+		t.Errorf("stderr = %q, want it to name the unreachable server", stderr)
+	}
+	entries, err := os.ReadDir(tasksDir)
+	if err != nil {
+		t.Fatalf("read local task dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("local task dir holds %d entries; the refused update wrote files", len(entries))
 	}
 }
 
+// TestUpdate_ServerErrorNeverFallsBackToFilesystem keeps a 5xx a failure. The
+// dangerous outcome is not the error but a silent local write behind it, which
+// leaves this machine's files disagreeing with the board that refused.
 func TestUpdate_ServerErrorNeverFallsBackToFilesystem(t *testing.T) {
 	home := t.TempDir()
 	tasksDir := useDefaultHTTPCLIHome(t, home)
@@ -319,43 +314,28 @@ func TestUpdate_ServerErrorNeverFallsBackToFilesystem(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, out := runCLI(t, "--json", "create", "--title", "server error target")
-	if code != 0 {
-		t.Fatalf("create exit %d: %s", code, out)
-	}
-
-	tasks, err := task.NewStore(tasksDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	list, err := tasks.List()
-	if err != nil || len(list) != 1 {
-		t.Fatalf("expected exactly one seeded task, got %v (err=%v)", list, err)
-	}
-	id := list[0].ID
-	before, err := tasks.Get(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	port := startFailingAPIServer(t, t.TempDir())
 	t.Setenv(serverTargetEnv, "127.0.0.1:"+port)
 
-	code, out = runCLI(t, "--json", "update", id, "--status", "todo")
+	code, out := runCLI(t, "--json", "update", "task-anything", "--status", "todo")
 	if code == 0 {
 		t.Fatalf("update must surface a real server error, not silently fall back to filesystem: exit 0, out=%s", out)
 	}
 
-	after, err := tasks.Get(id)
+	entries, err := os.ReadDir(tasksDir)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read local task dir: %v", err)
 	}
-	if after.Status != before.Status {
-		t.Fatalf("filesystem task status changed to %q despite the server call failing — HTTP 5xx must not fall back to a direct write", after.Status)
+	if len(entries) != 0 {
+		t.Fatalf("local task dir holds %d entries; a server error fell back to a direct write", len(entries))
 	}
 }
 
-func TestUpdate_HomeFlagForcesFilesystemModeEvenWithServerRunning(t *testing.T) {
+// TestHomeFlag_SelectsTheBoardNotTheFiles replaces a test asserting --home
+// forced filesystem mode. A home now names which board's config and recorded
+// port to read, so an explicit target still wins over it — the operator said
+// where to go.
+func TestHomeFlag_SelectsTheBoardNotTheFiles(t *testing.T) {
 	home := t.TempDir()
 	tasksDir := filepath.Join(home, "tasks")
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
@@ -363,29 +343,23 @@ func TestUpdate_HomeFlagForcesFilesystemModeEvenWithServerRunning(t *testing.T) 
 	}
 	isolateHTTPCLITestHome(t, home)
 
-	code, out := runCLI(t, "--json", "--home", home, "create", "--title", "home flag target")
-	if code != 0 {
-		t.Fatalf("create exit %d: %s", code, out)
-	}
-
-	tasks, err := task.NewStore(tasksDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	list, err := tasks.List()
-	if err != nil || len(list) != 1 {
-		t.Fatalf("expected exactly one seeded task, got %v (err=%v)", list, err)
-	}
-	id := list[0].ID
-
-	port := startFakeAPIServer(t, tasksDir)
+	serverTasksDir := t.TempDir()
+	port := startFakeAPIServer(t, serverTasksDir)
 	t.Setenv(serverTargetEnv, "127.0.0.1:"+port)
 
 	lockdownDir(t, tasksDir)
 
-	code, _ = runCLI(t, "--json", "--home", home, "update", id, "--status", "todo")
-	if code == 0 {
-		t.Fatal("--home must force filesystem mode even when a server is reachable; update against a read-only dir should fail")
+	code, out := runCLI(t, "--json", "--home", home, "create", "--title", "home flag target")
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, out)
+	}
+	served, err := task.NewStore(serverTasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := served.List()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("board holds %v (err=%v), want the created task", list, err)
 	}
 }
 
