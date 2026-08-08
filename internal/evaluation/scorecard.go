@@ -358,6 +358,9 @@ type Report struct {
 	// by hand (e.g. in weakness_test.go fixtures) leaves this as the zero
 	// value, which is not a meaningful verdict either way.
 	SLO SLOReport `json:"slo"`
+	// AutonomySLOs are evidence-aware typed operational metrics. Unknown
+	// legacy/unprovable cohorts are explicit rather than guessed.
+	AutonomySLOs AutonomySLOs `json:"autonomySlos"`
 	// CostPerMergedBaseline is the prior equal-length window's cost/merged
 	// figures, used to detect a cost regression (see Weaknesses'
 	// cost_per_merge check) — nil when the prior window landed too few merges

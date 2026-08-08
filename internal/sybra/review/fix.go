@@ -1861,7 +1861,7 @@ func worktreeFailureTerminal(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, worktree.ErrTaskBranchMissing) {
+	if errors.Is(err, worktree.ErrTaskBranchMissing) || errors.Is(err, worktree.ErrLocalWorkPreserved) {
 		return true
 	}
 	return strings.Contains(err.Error(), "invalid reference")
@@ -1891,14 +1891,23 @@ func (r *Handler) dropTerminalWorktreeFailure(taskID string, wtErr error) bool {
 	r.clearWorktreeFailure(taskID)
 	if got.Status != task.StatusHumanRequired && got.Status != task.StatusBlocked {
 		reason := fmt.Sprintf("branch deleted: fix worktree cannot be created (%s)", wtErr)
+		toStatus := task.StatusBlocked
+		escalation := task.MachineFailure("git.task_branch_missing", reason)
+		outcome := task.QuarantinedOutcome()
+		if errors.Is(wtErr, worktree.ErrLocalWorkPreserved) {
+			reason = fmt.Sprintf("local worktree state was preserved; inspect and resolve local changes or an in-progress git operation before retrying (%s)", wtErr)
+			toStatus = task.StatusHumanRequired
+			escalation = task.OperatorDecisionRequired("git.worktree_local_state_preserved", reason)
+			outcome = task.HumanRequiredOutcome()
+		}
 		if _, uerr := r.tasks.Apply(task.TransitionIntent{
 			TaskID:   taskID,
-			ToStatus: task.StatusBlocked,
+			ToStatus: toStatus,
 			Actor:    "review.pr-monitor.worktree.terminal-escalate",
 			Extra: task.Update{
 				StatusReason:    task.Ptr(reason),
-				Escalation:      task.MachineFailure("git.task_branch_missing", reason),
-				AutonomyOutcome: task.QuarantinedOutcome(),
+				Escalation:      escalation,
+				AutonomyOutcome: outcome,
 			},
 		}); uerr != nil {
 			r.logger.Error("pr-monitor.worktree.terminal-escalate", "task_id", taskID, "err", uerr)

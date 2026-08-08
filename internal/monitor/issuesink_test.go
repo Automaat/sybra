@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -20,14 +22,51 @@ type fakeExecer struct {
 	mu          sync.Mutex
 	calls       [][]string
 	listResp    []byte
+	listResps   [][]byte
+	listErrs    []error
+	listCalls   int
 	listErr     error
 	createResp  []byte
 	createErr   error
 	commentResp []byte
 	commentErr  error
+	viewResp    []byte
+	viewErr     error
 	labelErr    error
 	closeResp   []byte
 	closeErr    error
+}
+
+type convergingIncidentExecer struct {
+	mu      sync.Mutex
+	created int
+	body    string
+}
+
+func (f *convergingIncidentExecer) run(_ context.Context, args ...string) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(args) < 2 || args[0] != "issue" {
+		return nil, nil
+	}
+	switch args[1] {
+	case "list":
+		if f.created == 0 {
+			return []byte(`[]`), nil
+		}
+		return []byte(`[{"number":1,"url":"https://github.com/example/repo/issues/1","state":"OPEN","body":` + strconv.Quote(f.body) + `}]`), nil
+	case "create":
+		f.created++
+		for i := range args {
+			if args[i] == "--body" && i+1 < len(args) {
+				f.body = args[i+1]
+			}
+		}
+		return []byte("https://github.com/example/repo/issues/1\n"), nil
+	case "view":
+		return []byte(`{"comments":[]}`), nil
+	}
+	return nil, nil
 }
 
 func (f *fakeExecer) run(_ context.Context, args ...string) ([]byte, error) {
@@ -46,16 +85,178 @@ func (f *fakeExecer) run(_ context.Context, args ...string) ([]byte, error) {
 		}
 		switch args[1] {
 		case "list":
+			if f.listCalls < len(f.listResps) {
+				idx := f.listCalls
+				out := f.listResps[idx]
+				f.listCalls++
+				if idx < len(f.listErrs) {
+					return out, f.listErrs[idx]
+				}
+				return out, f.listErr
+			}
 			return f.listResp, f.listErr
 		case "comment":
 			return f.commentResp, f.commentErr
 		case "create":
 			return f.createResp, f.createErr
+		case "view":
+			return f.viewResp, f.viewErr
 		case "close":
 			return f.closeResp, f.closeErr
+		case "reopen":
+			return f.commentResp, f.commentErr
 		}
 	}
 	return nil, nil
+}
+
+func TestGHIssueSink_IncidentFindsRenamedClosedIssueByMarkerAndReopens(t *testing.T) {
+	in := Incident{Fingerprint: "incident:abc", FailureCode: "lost_agent", Revision: 4, State: IncidentActive}
+	fe := &fakeExecer{listResp: []byte(`[{"number":87,"url":"https://github.com/Automaat/sybra/issues/87","state":"CLOSED","body":"renamed\n<!-- sybra-incident:v1:incident:abc -->\n<!-- sybra-incident-revision:v1:incident:abc:4:active -->","comments":[]}]`)}
+	s := newTestSink(fe)
+
+	created, artifact, err := s.ApplyIncident(context.Background(), in, IncidentOpened, "active desired state from a fresh ledger")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created || artifact.Number != 87 {
+		t.Fatalf("unexpected artifact: created=%v %+v", created, artifact)
+	}
+	reopens := fe.callsMatching("issue", "reopen")
+	if len(reopens) != 1 || reopens[0][2] != "87" {
+		t.Fatalf("wanted one reopen of marker-matched issue 87, got %v", reopens)
+	}
+}
+
+func TestGHIssueSink_IncidentRevisionMarkerPreventsDuplicateComment(t *testing.T) {
+	in := Incident{Fingerprint: "incident:abc", FailureCode: "lost_agent", Revision: 4, State: IncidentActive}
+	marker := incidentRevisionMarker(in)
+	fe := &fakeExecer{
+		listResp: []byte(`[{"number":87,"url":"https://github.com/Automaat/sybra/issues/87","state":"OPEN","body":"<!-- sybra-incident:v1:incident:abc -->"}]`),
+		viewResp: []byte(`{"comments":[{"body":"` + marker + `"}]}`),
+	}
+	s := newTestSink(fe)
+
+	_, _, err := s.ApplyIncident(context.Background(), in, IncidentExpanded, "same revision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(fe.callsMatching("issue", "comment")); got != 0 {
+		t.Fatalf("same revision produced %d comments", got)
+	}
+}
+
+func TestGHIssueSink_IncidentConvergesMarkerDuplicatesOnOldestCanonical(t *testing.T) {
+	in := Incident{Fingerprint: "incident:abc", FailureCode: "lost_agent", Revision: 4, State: IncidentActive}
+	marker := incidentRevisionMarker(in)
+	fe := &fakeExecer{listResp: []byte(`[
+		{"number":88,"url":"https://github.com/example/repo/issues/88","state":"OPEN","body":"<!-- sybra-incident:v1:incident:abc -->"},
+		{"number":87,"url":"https://github.com/example/repo/issues/87","state":"OPEN","body":"<!-- sybra-incident:v1:incident:abc -->\n` + marker + `"}
+	]`)}
+	s := newTestSink(fe)
+	_, artifact, err := s.ApplyIncident(context.Background(), in, IncidentExpanded, "same root cause")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifact.Number != 87 {
+		t.Fatalf("canonical = %+v, want oldest #87", artifact)
+	}
+	closes := fe.callsMatching("issue", "close")
+	if len(closes) != 1 || closes[0][2] != "88" {
+		t.Fatalf("duplicate convergence calls = %v", closes)
+	}
+}
+
+func TestGHIssueSink_IncidentFindsHistoricalCanonicalOutsideRecentPage(t *testing.T) {
+	in := Incident{Fingerprint: "incident:old", FailureCode: "lost_agent", Revision: 2, State: IncidentActive}
+	marker := incidentRevisionMarker(in)
+	fe := &fakeExecer{listResps: [][]byte{
+		[]byte(`[{"number":7,"url":"https://github.com/example/repo/issues/7","state":"OPEN","body":"<!-- sybra-incident:v1:incident:old -->\n` + marker + `"}]`),
+		[]byte(`[]`),
+	}}
+	s := newTestSink(fe)
+	created, artifact, err := s.ApplyIncident(context.Background(), in, IncidentExpanded, "old recurrence")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created || artifact.Number != 7 || len(fe.callsMatching("issue", "create")) != 0 {
+		t.Fatalf("historical canonical missed: created=%v artifact=%+v calls=%v", created, artifact, fe.calls)
+	}
+}
+
+func TestGHIssueSink_IncidentMarkerSearchDoesNotRequireMutableLabel(t *testing.T) {
+	fe := &fakeExecer{listResps: [][]byte{[]byte(`[]`), []byte(`[]`)}}
+	s := newTestSink(fe)
+	_, err := s.findIncident(context.Background(), "incident:abc", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lists := fe.callsMatching("issue", "list")
+	if len(lists) < 2 {
+		t.Fatalf("list calls = %v, want marker and recent-page searches", lists)
+	}
+	if slices.Contains(lists[0], "--label") {
+		t.Fatalf("marker lookup depends on mutable label: %v", lists[0])
+	}
+	if !slices.Contains(lists[1], "--label") {
+		t.Fatalf("recent-page convergence lost label bound: %v", lists[1])
+	}
+}
+
+func TestGHIssueSink_IncidentSerializesConcurrentLocalUpserts(t *testing.T) {
+	fe := &convergingIncidentExecer{}
+	s := &GHIssueSink{exec: fe, label: "monitor"}
+	in := Incident{Fingerprint: "incident:concurrent", FailureCode: "lost_agent", Revision: 1, State: IncidentActive}
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() {
+			if _, _, err := s.ApplyIncident(context.Background(), in, IncidentOpened, "body"); err != nil {
+				t.Errorf("ApplyIncident: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	fe.mu.Lock()
+	created := fe.created
+	fe.mu.Unlock()
+	if created != 1 {
+		t.Fatalf("created %d canonical issues, want 1", created)
+	}
+}
+
+func TestGHIssueSink_ResolveConvergesMarkerDuplicates(t *testing.T) {
+	in := Incident{Fingerprint: "incident:abc", FailureCode: "lost_agent", Revision: 5, State: IncidentResolved}
+	fe := &fakeExecer{listResp: []byte(`[
+		{"number":88,"url":"https://github.com/example/repo/issues/88","state":"OPEN","body":"<!-- sybra-incident:v1:incident:abc -->"},
+		{"number":87,"url":"https://github.com/example/repo/issues/87","state":"OPEN","body":"<!-- sybra-incident:v1:incident:abc -->"}
+	]`), viewResp: []byte(`{"comments":[]}`)}
+	s := newTestSink(fe)
+	closed, err := s.ResolveIncident(context.Background(), in, "healthy")
+	if err != nil || !closed {
+		t.Fatalf("ResolveIncident: closed=%v err=%v", closed, err)
+	}
+	closes := fe.callsMatching("issue", "close")
+	if len(closes) != 2 || closes[0][2] != "88" || closes[1][2] != "87" {
+		t.Fatalf("resolve did not converge duplicate then canonical: %v", closes)
+	}
+}
+
+func TestGHIssueSink_CreateDoesNotLatchWhenPostCreateReconcileFails(t *testing.T) {
+	in := Incident{Fingerprint: "incident:retry", FailureCode: "lost_agent", Revision: 1, State: IncidentActive}
+	fe := &fakeExecer{
+		listResps:  [][]byte{[]byte(`[]`), []byte(`[]`), nil},
+		listErrs:   []error{nil, nil, errors.New("temporary list failure")},
+		createResp: []byte("https://github.com/example/repo/issues/1\n"),
+	}
+	s := newTestSink(fe)
+	created, artifact, err := s.ApplyIncident(context.Background(), in, IncidentOpened, "body")
+	if err == nil || created || artifact.URL != "" {
+		t.Fatalf("post-create failure was latched: created=%v artifact=%+v err=%v", created, artifact, err)
+	}
+	creates := fe.callsMatching("issue", "create")
+	if len(creates) != 1 || !containsLabelArgs(creates[0], "monitor", "bug") || containsPair(creates[0], "--label", "monitor,bug") {
+		t.Fatalf("incident create labels were not passed separately: %v", creates)
+	}
 }
 
 func (f *fakeExecer) callsMatching(prefix ...string) [][]string {

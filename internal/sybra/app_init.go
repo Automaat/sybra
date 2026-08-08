@@ -47,6 +47,7 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/sybra/verification"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/watcher"
@@ -492,6 +493,9 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 		SandboxHome: a.sandboxes.SybraHomeDir,
 		ControlHome: config.HomeDir(),
 		GhShimDir:   filepath.Join(config.HomeDir(), "shims"),
+		ControlEvent: func(kind string, data map[string]any) {
+			a.logAudit(kind, "", "", data)
+		},
 	}
 	if a.cfg.SurviveRestartEnabled() {
 		cfg.SurviveRestartDir = config.AgentsDir()
@@ -1547,14 +1551,66 @@ func (a *App) configurePlanAutoApproval() {
 func (a *App) configureAdmissionPolicy() {
 	a.workflowEngine.SetAdmissionConfig(a.cfg.Admission)
 	a.workflowEngine.SetAdmissionDecisionHook(func(t workflow.TaskInfo, d workflow.AdmissionDecision) {
-		a.logAudit(audit.EventAdmissionDecided, t.ID, "", map[string]any{
+		data := map[string]any{
 			"outcome":         d.Outcome,
 			"risk_tier":       d.RiskTier,
 			"permission_tier": d.PermissionTier,
 			"blocker_kind":    d.BlockerKind,
 			"reason":          d.Reason,
-		})
+			"failure_code":    d.FailureCode,
+			"task_generation": t.Generation,
+		}
+		if d.Outcome == string(taskstatus.Blocked) {
+			data["preflight_detectable"] = true
+			if a.stats != nil {
+				cost, tokens, runs, usageKnown := preflightUsage(a.stats.AllForTask(t.ID), t.ID, t.Generation)
+				data["usage_known"], data["cost_usd"], data["tokens"], data["prior_runs"] = usageKnown, cost, tokens, runs
+			} else {
+				data["usage_known"], data["cost_usd"], data["tokens"], data["prior_runs"] = false, 0.0, 0, 0
+			}
+		}
+		a.logAudit(audit.EventAdmissionDecided, t.ID, "", data)
 	})
+}
+
+func preflightUsage(records []stats.RunRecord, taskID string, generation int64) (cost float64, tokens, runs int, known bool) {
+	legacyUnattributed := false
+	var cohort uint64
+	cohortKnown := false
+	for i := range records {
+		record := &records[i]
+		if record.TaskID != taskID {
+			continue
+		}
+		if !record.TaskGenerationKnown || generation < 0 {
+			legacyUnattributed = true
+			continue
+		}
+		// #nosec G115 -- the negative generation case is rejected above.
+		if record.TaskGeneration > uint64(generation) {
+			continue
+		}
+		if !cohortKnown || record.TaskGeneration > cohort {
+			cohort, cohortKnown = record.TaskGeneration, true
+		}
+	}
+	known = !legacyUnattributed
+	for i := range records {
+		record := &records[i]
+		if !cohortKnown || record.TaskID != taskID || !record.TaskGenerationKnown || record.TaskGeneration != cohort {
+			continue
+		}
+		runs++
+		cost += record.CostUSD
+		tokens += record.InputTokens + record.OutputTokens + record.CacheCreationInputTokens + record.CacheReadInputTokens + record.ReasoningTokens
+		if record.CostUSD == 0 && record.InputTokens == 0 && record.OutputTokens == 0 && record.CacheCreationInputTokens == 0 && record.CacheReadInputTokens == 0 && record.ReasoningTokens == 0 && record.PremiumRequests == 0 {
+			known = false
+		}
+	}
+	if runs == 0 {
+		known = !legacyUnattributed
+	}
+	return cost, tokens, runs, known
 }
 
 // configureEvidencePolicy wires the require_evidence step's config and its

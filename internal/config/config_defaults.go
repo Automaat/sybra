@@ -1829,6 +1829,12 @@ func applyMonitorDefaults(cfg *Config, file *FileConfig) {
 	if cfg.Monitor.LostAgentAutoCloseAfterClears <= 0 {
 		cfg.Monitor.LostAgentAutoCloseAfterClears = 3
 	}
+	if (file == nil || !file.Has("monitor", "incident_resolve_grace_minutes")) && cfg.Monitor.IncidentResolveGraceMinutes <= 0 {
+		cfg.Monitor.IncidentResolveGraceMinutes = 15
+	}
+	if (file == nil || !file.Has("monitor", "incident_reopen_grace_minutes")) && cfg.Monitor.IncidentReopenGraceMinutes <= 0 {
+		cfg.Monitor.IncidentReopenGraceMinutes = 30
+	}
 	if cfg.Monitor.BottleneckHours == nil {
 		cfg.Monitor.BottleneckHours = map[string]float64{}
 	}
@@ -2003,6 +2009,11 @@ func ArtifactsDir() string {
 // the service owns.
 func SelfMonitorDir() string {
 	return filepath.Join(HomeDir(), "selfmonitor")
+}
+
+// MonitorIncidentsDir holds the durable root-cause incident ledger.
+func MonitorIncidentsDir() string {
+	return filepath.Join(HomeDir(), "monitor", "incidents")
 }
 
 // HarnessEvolveDir is the local store for governed harness-evolution proposal

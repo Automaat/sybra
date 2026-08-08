@@ -1189,6 +1189,24 @@ func TestLoadMonitorPRGapGraceDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadMonitorIncidentGracePreservesExplicitZero(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SYBRA_HOME", dir)
+
+	yaml := []byte("monitor:\n  incident_resolve_grace_minutes: 0\n  incident_reopen_grace_minutes: 0\n")
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Monitor.IncidentResolveGraceMinutes != 0 || cfg.Monitor.IncidentReopenGraceMinutes != 0 {
+		t.Fatalf("explicit zero incident grace overwritten: resolve=%d reopen=%d", cfg.Monitor.IncidentResolveGraceMinutes, cfg.Monitor.IncidentReopenGraceMinutes)
+	}
+}
+
 func TestLoadHarnessEvolutionDefaults(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SYBRA_HOME", dir)

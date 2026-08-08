@@ -69,6 +69,11 @@ type Anomaly struct {
 	Fingerprint string         `json:"fingerprint"`
 	Evidence    map[string]any `json:"evidence,omitempty"`
 	DetectedAt  time.Time      `json:"detectedAt"`
+	// IncidentScope is a public project ID, "fleet", or an opaque work key.
+	// Confidential forces deterministic local routing even without TaskID.
+	IncidentScope  string `json:"incidentScope,omitempty"`
+	IncidentTaskID string `json:"incidentTaskId,omitempty"`
+	Confidential   bool   `json:"confidential,omitempty"`
 }
 
 // Counts is a snapshot of board status counts at the moment of detection.
@@ -88,12 +93,13 @@ type Counts struct {
 // Report is the result of one tick. Anomalies is the raw detector output;
 // Remediated/Dispatched/Issues are filled in by the Service after side effects.
 type Report struct {
-	GeneratedAt   time.Time `json:"generatedAt"`
-	Counts        Counts    `json:"counts"`
-	Anomalies     []Anomaly `json:"anomalies"`
-	Remediated    []string  `json:"remediated"`
-	Dispatched    []string  `json:"dispatched"`
-	IssuesOpened  int       `json:"issuesOpened"`
-	IssuesUpdated int       `json:"issuesUpdated"`
-	IssuesClosed  int       `json:"issuesClosed"`
+	GeneratedAt   time.Time  `json:"generatedAt"`
+	Counts        Counts     `json:"counts"`
+	Anomalies     []Anomaly  `json:"anomalies"`
+	Remediated    []string   `json:"remediated"`
+	Dispatched    []string   `json:"dispatched"`
+	IssuesOpened  int        `json:"issuesOpened"`
+	IssuesUpdated int        `json:"issuesUpdated"`
+	IssuesClosed  int        `json:"issuesClosed"`
+	Incidents     []Incident `json:"incidents,omitempty"`
 }

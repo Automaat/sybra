@@ -44,19 +44,23 @@ func IsTerminalOutcome(outcome string) bool {
 // (e.g. 1.07M cache reads vs 24 uncached input tokens in a single result
 // event), so plain InputTokens alone looks misleadingly small.
 type RunRecord struct {
-	ID              string `json:"id"`
-	TaskID          string `json:"taskId"`
-	ProjectID       string `json:"projectId,omitempty"`
-	Mode            string `json:"mode"`
-	Role            string `json:"role"`
-	Model           string `json:"model,omitempty"`
-	Provider        string `json:"provider,omitempty"`
-	ReasoningEffort string `json:"reasoningEffort,omitempty"`
-	ExperimentID    string `json:"experimentId,omitempty"`
-	VariantID       string `json:"variantId,omitempty"`
-	RoutingReason   string `json:"routingReason,omitempty"`
-	AssignmentUnit  string `json:"assignmentUnit,omitempty"`
-	AssignmentKey   string `json:"assignmentKey,omitempty"`
+	ID             string `json:"id"`
+	TaskID         string `json:"taskId"`
+	TaskGeneration uint64 `json:"taskGeneration,omitempty"`
+	// TaskGenerationKnown distinguishes a new generation-0 record from a
+	// legacy record written before exact attempt attribution was available.
+	TaskGenerationKnown bool   `json:"taskGenerationKnown,omitempty"`
+	ProjectID           string `json:"projectId,omitempty"`
+	Mode                string `json:"mode"`
+	Role                string `json:"role"`
+	Model               string `json:"model,omitempty"`
+	Provider            string `json:"provider,omitempty"`
+	ReasoningEffort     string `json:"reasoningEffort,omitempty"`
+	ExperimentID        string `json:"experimentId,omitempty"`
+	VariantID           string `json:"variantId,omitempty"`
+	RoutingReason       string `json:"routingReason,omitempty"`
+	AssignmentUnit      string `json:"assignmentUnit,omitempty"`
+	AssignmentKey       string `json:"assignmentKey,omitempty"`
 	// RoutingDecisionVersion is the internal/routing overlay generation (if
 	// any) that set this run's variant weight — 0 for a run assigned under
 	// plain operator-configured weights with no routing overlay applied.

@@ -567,6 +567,9 @@ type AdmissionDecision struct {
 	// false, no checks ran) on an "admitted" outcome — never empty, so
 	// consumers can distinguish a real pass from a skipped check.
 	Reason string
+	// FailureCode is a stable categorical code for every outcome; Reason
+	// remains display-only.
+	FailureCode string
 }
 
 // defaultTestAttempts is the generous absolute backstop for the testing →

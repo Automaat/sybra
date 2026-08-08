@@ -107,6 +107,7 @@ type Agent struct {
 	// that set this run's variant weight, 0 when none applied.
 	DecisionVersion         int `json:"decisionVersion,omitempty"`
 	attemptIntent           AttemptIntent
+	attemptTaskGenKnown     bool
 	attemptLease            AttemptLease
 	attemptCompleteOnce     sync.Once
 	ReasoningEffort         string `json:"reasoningEffort,omitempty"`
@@ -570,6 +571,7 @@ func fromRecord(r Record) *Agent {
 			WorktreeGeneration: r.AttemptWorkGen, Access: r.AttemptAccess,
 			Role: r.Role, Provider: r.Provider, CapabilityCertified: true,
 		},
+		attemptTaskGenKnown:     r.AttemptTaskKey != "",
 		attemptLease:            AttemptLease{ID: r.AttemptLeaseID, Version: r.AttemptVersion},
 		PID:                     r.PID,
 		SessionID:               r.SessionID,
@@ -1178,6 +1180,18 @@ func (a *Agent) GetSubagentCallCount() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.SubagentCallCount
+}
+
+// GetAttemptTaskGeneration returns the generation fenced into this run's
+// durable admission intent. Every newly launched task run has known=true,
+// including the valid zero generation; legacy reattached records do not.
+func (a *Agent) GetAttemptTaskGeneration() (generation uint64, known bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if !a.attemptTaskGenKnown {
+		return 0, false
+	}
+	return a.attemptIntent.TaskGeneration, true
 }
 
 // NoteToolSignature feeds the next assistant event's tool-call signature into
@@ -2132,6 +2146,11 @@ type RunConfig struct {
 	// intra-package before buildHeadlessInvocation; cleared by defer after the
 	// subprocess exits. Never set by callers.
 	outputSchemaPath string
+	// promptFallback marks the one-shot retry after stream-json prompt
+	// delivery failed. Unlike ordinary one-shot runs, its prompt write must
+	// succeed: this is the recovery attempt's only way to deliver the task.
+	// It is runner-private and never set by callers.
+	promptFallback bool
 	// HeadlessSteerable, when true, launches a claude headless run with the
 	// stdin/stream-json shape (mirroring the conversational invocation)
 	// instead of the legacy one-shot `-p <prompt>` invocation, so the running

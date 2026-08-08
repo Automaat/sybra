@@ -112,7 +112,7 @@ func (d *agentDispatcher) Dispatch(ctx context.Context, a Anomaly) (string, erro
 		Name:         name,
 		Role:         agent.RoleMonitor,
 		Mode:         "headless",
-		Prompt:       DispatchPrompt(a, d.issueRepo, project.PushRemote(ctx, dir)),
+		Prompt:       dispatchPromptForAnomaly(a, d.issueRepo, project.PushRemote(ctx, dir)),
 		AllowedTools: []string{"Bash", "Read"},
 		Dir:          dir,
 		Model:        d.model,
