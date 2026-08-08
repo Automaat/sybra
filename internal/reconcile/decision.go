@@ -25,7 +25,7 @@ func Decide(s Snapshot) Plan {
 			LeaseID:        s.Lease.ID,
 			ObservedSHA:    s.Git.HeadSHA,
 			NoDirtyWork:    s.Git.Available && s.Git.Healthy && !s.Git.Dirty && !s.Git.Staged && s.Git.Operation == "",
-			NoLocalOnlyWork: s.Git.Available && s.Git.Healthy &&
+			NoLocalOnlyWork: s.Git.Available && s.Git.Healthy && s.Git.HeadExists &&
 				((s.Git.RemoteSHA != "" && s.Git.Ahead == 0 && (s.Git.RemoteSHA == s.Git.HeadSHA || s.Git.Behind > 0)) ||
 					(s.Git.RemoteSHA == "" && s.Git.BaseSHA != "" && s.Git.HeadSHA == s.Git.BaseSHA)),
 		},
