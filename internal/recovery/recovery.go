@@ -95,6 +95,9 @@ type Recovery struct {
 	// 0 disables size-based enforcement.
 	LogMaxTotalBytes int64
 	OrphanRoots      []string
+	// OwnedOrphanRoots may be shared with operator-run provider processes.
+	// Recovery only reaps processes carrying Sybra's explicit owner marker.
+	OwnedOrphanRoots []string
 
 	DispatchGate func(task.Task) bool
 
@@ -130,10 +133,19 @@ func (r *Recovery) RunStartupCleanup(ctx context.Context) {
 	if reattached := r.Agents.ReattachAllContext(ctx); len(reattached) > 0 {
 		r.Logger.Info("recovery.reattach", "count", len(reattached))
 	}
-	if reaped := r.Agents.ReapOrphanProviderProcesses(ctx, r.OrphanRoots); reaped > 0 {
+	reaped, dedicatedConfirmed := r.Agents.ReapOrphanProviderProcessesConfirmed(ctx, r.OrphanRoots)
+	ownedReaped, ownedConfirmed := r.Agents.ReapOwnedOrphanProviderProcessesConfirmed(ctx, r.OwnedOrphanRoots)
+	if reaped += ownedReaped; reaped > 0 {
 		r.Logger.Info("recovery.orphan_reap", "count", reaped)
 	}
 	r.Worktrees.RepairAll(ctx)
+	// Only after unregistered owned processes are gone and their worktrees have
+	// been repaired is an expired ledger-only attempt safe to finalize.
+	if dedicatedConfirmed && ownedConfirmed {
+		r.Agents.ReconcileAttemptLeases(ctx)
+	} else {
+		r.Logger.Error("recovery.attempt_reconcile.deferred", "reason", "orphan termination unconfirmed")
+	}
 	r.cleanStaleRuns()
 	if r.WorkflowEngine != nil {
 		// Ordered ahead of the replay: reattach above has established which
