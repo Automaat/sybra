@@ -157,10 +157,17 @@ func apiServiceName(urlPath string) string {
 }
 
 // newBoardProxy forwards to the attached board under its own credentials.
-func newBoardProxy(opts Options) *httputil.ReverseProxy {
+//
+// An origin that will not parse refuses every request rather than returning a
+// proxy that dereferences a nil target and takes the handler goroutine with it
+// on the first call.
+func newBoardProxy(opts Options) http.Handler {
 	target, err := url.Parse(opts.Proxy.Origin)
-	if err != nil {
+	if err != nil || target.Host == "" {
 		opts.Logger.Error("board.proxy.target", "origin", opts.Proxy.Origin, "err", err)
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "attached board origin is unusable", http.StatusBadGateway)
+		})
 	}
 	token := opts.Proxy.Token
 	return &httputil.ReverseProxy{
@@ -266,29 +273,27 @@ func PprofEnabled() bool {
 }
 
 func staticHandler(opts Options) http.Handler {
+	root := opts.StaticFS
 	if opts.StaticDir != "" {
 		sub, err := fs.Sub(os.DirFS(opts.StaticDir), ".")
 		if err != nil {
 			opts.Logger.Error("static.dir", "err", err)
 			return nil
 		}
-		return SPAHandler{FS: http.FileServer(http.FS(sub)), Dir: opts.StaticDir}
+		root = sub
 	}
-	if opts.StaticFS != nil {
-		return SPAHandler{FS: http.FileServer(http.FS(opts.StaticFS)), Embedded: opts.StaticFS}
+	if root == nil {
+		return nil
 	}
-	return nil
+	return SPAHandler{FS: http.FileServer(http.FS(root)), Root: root}
 }
 
 // SPAHandler serves static files and falls back to index.html for unknown paths
 // (supports client-side routing).
 type SPAHandler struct {
 	FS http.Handler
-	// Dir is the on-disk root, consulted to tell a missing file from an SPA
-	// route. Empty when the bundle is embedded.
-	Dir string
-	// Embedded is the in-binary root, used for the same test when Dir is empty.
-	Embedded fs.FS
+	// Root is the bundle, consulted to tell a missing file from an SPA route.
+	Root fs.FS
 }
 
 func (h SPAHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -312,19 +317,18 @@ func (h SPAHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.FS.ServeHTTP(w, r)
 }
 
+// exists asks the bundle, never the host filesystem by name. Joining the
+// request path onto a directory string would let "/../etc/passwd" report on
+// files outside the bundle; fs.Stat rejects such a name outright.
 func (h SPAHandler) exists(urlPath string) bool {
-	if h.Dir != "" {
-		_, err := os.Stat(h.Dir + urlPath)
-		return !os.IsNotExist(err)
-	}
-	if h.Embedded == nil {
+	if h.Root == nil {
 		return false
 	}
 	name := strings.TrimPrefix(urlPath, "/")
 	if name == "" {
 		name = "."
 	}
-	_, err := fs.Stat(h.Embedded, name)
+	_, err := fs.Stat(h.Root, name)
 	return err == nil
 }
 
@@ -430,7 +434,10 @@ func isSSEPath(p string) bool {
 	return p == "/events" || strings.HasPrefix(p, "/api/events/")
 }
 
-// TokensEqual compares two secrets without leaking their prefix length.
+// TokensEqual compares two secrets in time independent of how many leading
+// bytes match, so a caller cannot search for the token one byte at a time. It
+// does not hide the length: subtle.ConstantTimeCompare returns as soon as the
+// lengths differ.
 func TokensEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }

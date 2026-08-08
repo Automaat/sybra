@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -266,3 +268,58 @@ func TestAttachedBoardIsProxiedSameOrigin(t *testing.T) {
 type stubBrowser struct{}
 
 func (s *stubBrowser) OpenExternal(_ string) error { return nil }
+
+// TestSPARoutingDoesNotProbeTheHost covers the existence check behind the SPA
+// fallback. It drives SPAHandler directly rather than through a client,
+// because net/http cleans a traversal out of the path before the mux dispatches
+// it — the concatenation was still wrong, and SPAHandler is exported, so the
+// check answers about the bundle alone now.
+func TestSPARoutingDoesNotProbeTheHost(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>app</html>"), 0o600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	outside := filepath.Join(dir, "..", "outside-the-bundle.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(outside) })
+
+	handler, _ := httpserve.BuildMux(httpserve.Options{Logger: testLogger(), StaticDir: dir}).
+		Handler(httptest.NewRequest(http.MethodGet, "/", http.NoBody))
+	if handler == nil {
+		t.Fatal("no static handler mounted")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+	req.URL.Path = "/../outside-the-bundle.txt"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if strings.Contains(rec.Body.String(), "secret") {
+		t.Fatalf("served a file from outside the bundle: %s", rec.Body.String())
+	}
+}
+
+// TestAttachedBoardRefusesAnUnusableOrigin keeps a bad target from taking the
+// handler goroutine down: a nil parse result would panic inside the proxy on
+// the first call rather than answering it.
+func TestAttachedBoardRefusesAnUnusableOrigin(t *testing.T) {
+	opts := httpserve.Options{
+		Logger:   testLogger(),
+		Services: map[string]httpapi.Service{},
+		Proxy:    &httpserve.ProxyTarget{Origin: "://not-a-url", Token: "t"},
+		StaticFS: bundle(),
+	}
+	srv := httptest.NewServer(httpserve.BuildMux(opts))
+	t.Cleanup(srv.Close)
+
+	resp, err := srv.Client().Post(srv.URL+"/api/InfoService/GetVersion", "application/json", strings.NewReader(`[]`))
+	if err != nil {
+		t.Fatalf("POST GetVersion: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadGateway)
+	}
+}
