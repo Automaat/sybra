@@ -43,6 +43,8 @@ import (
 	"github.com/Automaat/sybra/internal/stats"
 	"github.com/Automaat/sybra/internal/sybra/clusterlead"
 	"github.com/Automaat/sybra/internal/sybra/review"
+	"github.com/Automaat/sybra/internal/sybra/runenv"
+	"github.com/Automaat/sybra/internal/sybra/verification"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/umbrella"
@@ -372,6 +374,7 @@ func (a *App) initStats() {
 func (a *App) initLocalStores() {
 	a.initAttachments()
 	a.initArtifacts()
+	a.verification = verification.New(filepath.Join(config.HomeDir(), "verification"), a.artifacts, a.logger)
 	a.initExperience()
 	a.initIntervention()
 	a.initLearning()
@@ -494,6 +497,10 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) error {
 	approvalServer, approvalAddr := a.startApprovalServer(ctx, emit)
 	agentCfg := a.agentManagerConfig(approvalAddr)
+	if approvalServer != nil {
+		agentCfg.ControlTarget = approvalAddr
+		agentCfg.ControlToken = approvalServer.VerifierToken
+	}
 	var err error
 	a.agents, err = agent.NewManager(ctx, emit, a.logger, a.logDir, agentCfg)
 	if err != nil && agentCfg.SurviveRestartDir != "" && errors.Is(err, agent.ErrSurvivalRegistry) {
@@ -517,6 +524,7 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 		return fmt.Errorf("agent manager: %w", err)
 	}
 	a.agents.SetGHAppToken(github.CurrentAppToken)
+	a.agents.SetGHVerifierAppToken(github.CurrentVerifierAppToken)
 	// initToolLedger runs before this function, when a.agents is still nil, so
 	// its own SetToolLedger call is skipped. Without re-binding here the
 	// manager's ledger stays nil and Logger.Log's nil guard drops every record
@@ -529,6 +537,9 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 	if approvalServer != nil {
 		approvalServer.SetManager(a.agents)
 		a.agentSvc.approval = approvalServer
+		if a.verification != nil {
+			a.verification.SetGrantRevoker(approvalServer.RevokeVerifierGrantForSandbox)
+		}
 	}
 	return nil
 }
@@ -593,11 +604,67 @@ func k8sJobRunnerConfigFromConfig(cfg config.K8sJobsConfig) agent.K8sJobRunnerCo
 }
 
 func (a *App) onAgentComplete(ag *agent.Agent) {
+	var lease verification.Lease
+	var disposable bool
+	if a.verification != nil {
+		lease, disposable = a.verification.LeaseForAgent(ag.ID)
+		if disposable {
+			if lease.WorkspaceDir != "" {
+				if err := a.verification.Finalize(context.Background(), lease, nil, agentOutputText(ag), lease.CertificateID); err != nil {
+					ag.SetExitErr(err)
+				}
+			}
+		}
+	}
+	revoked := true
+	if a.agentSvc != nil && a.agentSvc.approval != nil && ag.EffectiveRole().IsVerifier() {
+		if err := a.agentSvc.approval.RevokeVerifierGrantForSandbox(ag.SandboxHomeDir()); err != nil {
+			revoked = false
+			ag.SetExitErr(fmt.Errorf("revoke verifier control grant: %w", err))
+		}
+	}
+	if disposable && revoked {
+		a.verification.Release(lease)
+	}
+	if a.runenv != nil && agentRunEnvironmentFailed(ag) {
+		a.runenv.InvalidateTask(ag.TaskID)
+	}
 	if a.agentCompletion == nil {
 		a.logger.Warn("agent.complete.unwired", "id", ag.ID, "task_id", ag.TaskID)
 		return
 	}
 	a.agentCompletion.OnComplete(ag)
+}
+
+func agentOutputText(ag *agent.Agent) string {
+	var b strings.Builder
+	outputs := ag.Output()
+	for i := range outputs {
+		event := &outputs[i]
+		if event.Content != "" {
+			b.WriteString(event.Content)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+func agentRunEnvironmentFailed(ag *agent.Agent) bool {
+	if runenv.IsEnvironmentFailure(ag.GetExitErr()) {
+		return true
+	}
+	outputs := ag.Output()
+	for i := range outputs {
+		event := &outputs[i]
+		if event.Type != "result" && event.ErrorType == "" && event.TerminalReason == "" {
+			continue
+		}
+		diagnostic := strings.Join([]string{event.Content, event.ErrorType, event.TerminalReason}, " ")
+		if runenv.IsEnvironmentFailure(errors.New(diagnostic)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) recordLimitSnapshot(snapshot limits.Snapshot) {
@@ -1417,15 +1484,17 @@ func (a *App) workflowDependencies(agentLauncher *agentAdapter) workflow.Depende
 			ContentGenerator: workflowpr.ContentGeneratorAdapter{Gen: &prcontent.FallbackGenerator{Logger: a.logger, Gate: a.providerHealth}},
 		},
 		Execution: workflow.ExecutionSurface{
-			Worktrees:        &worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees},
-			SidecarDir:       a.sandboxes.SybraHomeDir,
-			AttemptNotes:     &attemptNoteAppenderAdapter{},
-			BranchSyncer:     &branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees},
-			Checks:           &checkConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees},
-			ManualTests:      &manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees},
-			Classifier:       a.newTaskClassifierAdapter(),
-			CostBudget:       agentLauncher,
-			AttemptWorktrees: &attemptWorktreeAdapter{tasks: a.tasks, mgr: a.worktrees},
+			Worktrees:            &worktreeGetterAdapter{tasks: a.tasks, mgr: a.worktrees},
+			SidecarDir:           a.sandboxes.SybraHomeDir,
+			AttemptNotes:         &attemptNoteAppenderAdapter{},
+			BranchSyncer:         &branchSyncerAdapter{tasks: a.tasks, mgr: a.worktrees},
+			Checks:               &checkConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees},
+			ManualTests:          &manualTestConfigGetterAdapter{tasks: a.tasks, projects: a.projects, mgr: a.worktrees},
+			Classifier:           a.newTaskClassifierAdapter(),
+			CostBudget:           agentLauncher,
+			AttemptWorktrees:     &attemptWorktreeAdapter{tasks: a.tasks, mgr: a.worktrees},
+			Verification:         &verificationWorkspaceAdapter{mgr: a.verification},
+			VerificationCommands: agentLauncher,
 		},
 	}
 }
@@ -1490,13 +1559,15 @@ func (a *App) newWorkflowAgentLauncher() *agentAdapter {
 		a.agentOrch.SetPressureGate(pressureGate)
 	}
 	return &agentAdapter{
-		agents:     a.agents,
-		agentOrch:  a.agentOrch,
-		tasks:      a.tasks,
-		projects:   a.projects,
-		sandboxes:  a.sandboxes,
-		experience: a.experience,
-		pressure:   pressureGate,
+		agents:       a.agents,
+		agentOrch:    a.agentOrch,
+		tasks:        a.tasks,
+		projects:     a.projects,
+		sandboxes:    a.sandboxes,
+		experience:   a.experience,
+		pressure:     pressureGate,
+		runenv:       a.runenv,
+		verification: a.verification,
 	}
 }
 
@@ -1553,7 +1624,9 @@ func (a *App) initAgentConfig() {
 }
 
 func (a *App) startApprovalServer(ctx context.Context, emit func(string, any)) (srv *agent.ApprovalServer, addr string) {
-	srv, err := agent.NewApprovalServer(ctx, emit, a.logger, a.cfg.Agent.ApprovalPort)
+	controlDir := filepath.Join(config.HomeDir(), "control")
+	srv, err := agent.NewDurableApprovalServer(ctx, emit, a.logger, a.cfg.Agent.ApprovalPort,
+		filepath.Join(controlDir, "approval-port"), filepath.Join(controlDir, "verifier-token-hashes.json"))
 	if err != nil {
 		a.logger.Error("approval-server.init", "err", err)
 		return nil, ""

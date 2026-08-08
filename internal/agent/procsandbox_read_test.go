@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -50,8 +51,10 @@ func TestResolveSandboxReadRoots_GrantsToolchainAndEveryWriteRoot(t *testing.T) 
 	}
 	// Spelled out rather than ranged over systemReadRoots, since a test driven
 	// by the production list it pins would pass whatever that list became.
-	if !slices.Contains(roots, "/usr") {
-		t.Errorf("/usr missing from read allowlist; no provider CLI can exec without it: %v", roots)
+	for _, want := range []string{"/usr", "/dev"} {
+		if !slices.Contains(roots, want) {
+			t.Errorf("%s missing from read allowlist; basic tooling cannot run without it: %v", want, roots)
+		}
 	}
 }
 
@@ -64,6 +67,54 @@ func TestResolveSandboxReadRoots_NeverGrantsOpt(t *testing.T) {
 		// Granting it re-opens the exact root #2781 exists to close.
 		if root == "/opt" || root == "/opt/sybra" || root == "/opt/sybra/src" {
 			t.Fatalf("read allowlist grants deploy-checkout root %q", root)
+		}
+	}
+}
+
+func TestResolveSandboxReadRoots_DeterministicCommandOmitsProviderState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".config", "gh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[credential]\n\thelper = secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := newReadModeManager("enforce")
+	cfg := &RunConfig{Role: RoleTestRunner, DisableVerifierControl: true, sandbox: specWithWriteRoots(t)}
+	roots := m.resolveSandboxReadRoots(cfg)
+	for _, state := range homeStateLinks {
+		path := filepath.Join(home, state)
+		canon, _ := canonicalizeRoot(path)
+		if slices.Contains(roots, path) || (canon != "" && slices.Contains(roots, canon)) {
+			t.Fatalf("deterministic command can read provider state %q: %v", state, roots)
+		}
+	}
+	for _, state := range providerHomeRootReadFiles {
+		path := filepath.Join(home, state)
+		canon, _ := canonicalizeRoot(path)
+		if slices.Contains(roots, path) || (canon != "" && slices.Contains(roots, canon)) {
+			t.Fatalf("deterministic command can read provider credential %q: %v", state, roots)
+		}
+	}
+	for _, state := range append(append([]string(nil), githubReadSubdirs...), homeRootReadFiles...) {
+		path := filepath.Join(home, state)
+		canon, _ := canonicalizeRoot(path)
+		if slices.Contains(roots, path) || (canon != "" && slices.Contains(roots, canon)) {
+			t.Fatalf("deterministic command can read GitHub credential path %q: %v", state, roots)
+		}
+	}
+}
+
+func TestClearProviderStateRootsRemovesWritableAndReadableCredentialRoots(t *testing.T) {
+	spec := enforceSpec(t.TempDir(), nil, t.TempDir(), t.TempDir(), "", t.TempDir(), "profile", "", gitSandboxRoots{}, gitSandboxOverlay{})
+	clearProviderStateRoots(&spec)
+	if spec.claudeState != "" || spec.codexState != "" || spec.copilotState != "" || spec.opencodeState != "" || spec.toolCache != "" || spec.appSupport != "" || spec.claudeScratch != "" || len(spec.stateDenied) != 0 {
+		t.Fatalf("provider roots survived deterministic clearing: %+v", spec)
+	}
+	for _, root := range spec.writeRoots() {
+		if strings.Contains(root, ".claude") || strings.Contains(root, ".codex") || strings.Contains(root, ".copilot") {
+			t.Fatalf("provider credential root survived in writeRoots: %q", root)
 		}
 	}
 }

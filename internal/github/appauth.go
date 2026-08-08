@@ -38,10 +38,12 @@ type appTokenSource struct {
 	key    *rsa.PrivateKey
 	client *http.Client
 
-	mu      sync.RWMutex
-	token   string
-	expires time.Time
-	slug    string
+	mu              sync.RWMutex
+	token           string
+	expires         time.Time
+	verifierToken   string
+	verifierExpires time.Time
+	slug            string
 
 	// refreshMu/refreshing/refreshErr collapse concurrent mint attempts into
 	// one HTTP call. Without this, N goroutines that each observe a 401 at
@@ -49,9 +51,10 @@ type appTokenSource struct {
 	// preflights across worktrees) would each mint their own installation
 	// token — wasteful, and it defeats "force-refresh once" as a signal of
 	// what actually happened. See #2453.
-	refreshMu  sync.Mutex
-	refreshing chan struct{}
-	refreshErr error
+	refreshMu         sync.Mutex
+	refreshing        chan struct{}
+	refreshErr        error
+	verifierRefreshMu sync.Mutex
 }
 
 const appTokenRenewBefore = 5 * time.Minute
@@ -153,6 +156,30 @@ func CurrentAppToken() string {
 	return cachedAppToken()
 }
 
+// RefreshVerifierAppToken mints the least-privilege installation token used by
+// independent review agents. It can publish PR feedback but has read-only
+// repository contents, so possessing it cannot promote a verifier commit.
+func RefreshVerifierAppToken(ctx context.Context) error {
+	src := currentAppSource()
+	if src == nil {
+		return nil
+	}
+	return src.refreshVerifier(ctx)
+}
+
+func CurrentVerifierAppToken() string {
+	src := currentAppSource()
+	if src == nil {
+		return ""
+	}
+	src.mu.RLock()
+	defer src.mu.RUnlock()
+	if src.verifierToken == "" || time.Now().After(src.verifierExpires) {
+		return ""
+	}
+	return src.verifierToken
+}
+
 // AppAuthEnabled reports whether GitHub App credentials are configured.
 func AppAuthEnabled() bool {
 	return currentAppSource() != nil
@@ -226,12 +253,37 @@ func (s *appTokenSource) doRefresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	token, expires, err := s.mintInstallationToken(ctx, jwt)
+	token, expires, err := s.mintInstallationToken(ctx, jwt, nil)
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
 	s.token, s.expires = token, expires
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *appTokenSource) refreshVerifier(ctx context.Context) error {
+	s.verifierRefreshMu.Lock()
+	defer s.verifierRefreshMu.Unlock()
+	s.mu.RLock()
+	fresh := s.verifierToken != "" && time.Until(s.verifierExpires) > appTokenRenewBefore
+	s.mu.RUnlock()
+	if fresh {
+		return nil
+	}
+	jwt, err := s.signJWT(time.Now())
+	if err != nil {
+		return err
+	}
+	token, expires, err := s.mintInstallationToken(ctx, jwt, map[string]string{
+		"contents": "read", "pull_requests": "write",
+	})
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.verifierToken, s.verifierExpires = token, expires
 	s.mu.Unlock()
 	return nil
 }
@@ -255,15 +307,26 @@ func (s *appTokenSource) signJWT(now time.Time) (string, error) {
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig), nil
 }
 
-func (s *appTokenSource) mintInstallationToken(ctx context.Context, jwt string) (string, time.Time, error) {
+func (s *appTokenSource) mintInstallationToken(ctx context.Context, jwt string, permissions map[string]string) (string, time.Time, error) {
 	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", appAPIBaseURL, s.creds.InstallationID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(nil))
+	var payload []byte
+	var err error
+	if len(permissions) > 0 {
+		payload, err = json.Marshal(map[string]any{"permissions": permissions})
+		if err != nil {
+			return "", time.Time{}, err
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return "", time.Time{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if len(payload) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := s.client.Do(req)
 	if err != nil {

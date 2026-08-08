@@ -16,6 +16,54 @@ import (
 	"github.com/Automaat/sybra/internal/worktreeerr"
 )
 
+type machineStartError struct{ code string }
+
+func (f machineStartError) Error() string              { return "certification failed: " + f.code }
+func (f machineStartError) MachineFailureCode() string { return f.code }
+
+type transientMachineStartError struct{ machineStartError }
+
+func (transientMachineStartError) MachineFailureTransient() bool { return true }
+
+type credentialMachineStartError struct{ machineStartError }
+
+func (credentialMachineStartError) MachineFailureRequiresCredentials() bool { return true }
+
+func TestClassifyAgentStartFailureKeepsRunEnvironmentMachineOwned(t *testing.T) {
+	failure := ClassifyAgentStartFailure(machineStartError{code: "checkout_unhealthy"})
+	if !failure.Permanent || failure.Blocker.Kind != blocker.KindRunEnvironment || blocker.AllowsHumanRequired(failure.Blocker.Kind) {
+		t.Fatalf("classification = %#v", failure)
+	}
+	if failure.Blocker.Code != "checkout_unhealthy" {
+		t.Fatalf("blocker code = %q", failure.Blocker.Code)
+	}
+}
+
+func TestClassifyAgentStartFailureKeepsTransientEnvironmentRetryable(t *testing.T) {
+	err := transientMachineStartError{machineStartError{code: "provider_unavailable"}}
+	failure := ClassifyAgentStartFailure(err)
+	if failure.Permanent || !failure.Blocker.IsZero() {
+		t.Fatalf("classification = %#v", failure)
+	}
+	if !strings.Contains(failure.Reason, "transient run environment unavailable") {
+		t.Fatalf("reason = %q", failure.Reason)
+	}
+	if !transientAgentStartError(err) || !isDeferredNotFailed(err) {
+		t.Fatal("transient machine failure must be deferred without feeding the breaker")
+	}
+}
+
+func TestClassifyAgentStartFailureRoutesCredentialEnvironmentFailureToAuthority(t *testing.T) {
+	err := credentialMachineStartError{machineStartError{code: "github_auth_misconfigured"}}
+	failure := ClassifyAgentStartFailure(err)
+	if !failure.Permanent || failure.Blocker.Kind != blocker.KindCredentialRequired || !blocker.AllowsHumanRequired(failure.Blocker.Kind) {
+		t.Fatalf("classification = %#v", failure)
+	}
+	if failure.Blocker.Code != "github_auth_misconfigured" {
+		t.Fatalf("blocker code = %q", failure.Blocker.Code)
+	}
+}
+
 func TestClassifyAgentStartError(t *testing.T) {
 	cases := []struct {
 		name          string

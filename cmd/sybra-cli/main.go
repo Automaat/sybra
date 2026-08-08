@@ -265,6 +265,9 @@ func run(args []string) int {
 // on-disk store, so reaching some unrelated reachable server would violate that
 // contract.
 func allowHTTPForHome(homeOverride string, home homeResolution) bool {
+	if os.Getenv("SYBRA_CONTROL_API_ONLY") == "1" && homeOverride == "" && !home.fromControlHome {
+		return true
+	}
 	return homeOverride == "" && !home.fromControlHome && !home.fromSybraHome
 }
 
@@ -373,7 +376,7 @@ func shortRevision(rev string) string {
 func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager, projStore *project.Store, allowHTTP, jsonOut bool) int {
 	var api *apiClient
 	switch cmd {
-	case "create", "update", "link-pr", "delete", "pr":
+	case "get", "create", "update", "link-pr", "delete", "pr":
 		if allowHTTP {
 			if c, ok := newAPIClient(cfg); ok && c.reachable(context.Background()) {
 				api = c
@@ -384,7 +387,7 @@ func dispatch(cmd string, rest []string, cfg *config.Config, store *task.Manager
 	case "list":
 		return cmdList(store, rest, jsonOut)
 	case "get":
-		return cmdGet(store, rest, jsonOut)
+		return cmdGet(store, api, rest, jsonOut)
 	case "create":
 		return cmdCreate(store, api, rest, jsonOut)
 	case "handoff":
@@ -517,7 +520,7 @@ func dispatchTaskStoreFallback(cmd string, rest []string, jsonOut bool, loadErr 
 	case "list":
 		return cmdList(store, rest, jsonOut), true
 	case "get":
-		return cmdGet(store, rest, jsonOut), true
+		return cmdGet(store, nil, rest, jsonOut), true
 	case "create":
 		return cmdCreate(store, nil, rest, jsonOut), true
 	case "update":
@@ -601,7 +604,7 @@ func cmdList(s *task.Manager, args []string, jsonOut bool) int {
 	return 0
 }
 
-func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
+func cmdGet(s *task.Manager, api *apiClient, args []string, jsonOut bool) int {
 	fs := flag.NewFlagSet("get", flag.ContinueOnError)
 	compact := fs.Bool("compact", false, "omit planning support sidecars for implementation agents")
 	if err := fs.Parse(args); err != nil {
@@ -611,7 +614,7 @@ func cmdGet(s *task.Manager, args []string, jsonOut bool) int {
 		return fatal(jsonOut, "usage: get [--compact] <id>")
 	}
 
-	t, err := s.Get(fs.Arg(0))
+	t, err := getTaskViaAPIOrFS(s, api, fs.Arg(0))
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
 	}

@@ -26,6 +26,7 @@ import (
 	"github.com/Automaat/sybra/internal/poll"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/scrub"
+	"github.com/Automaat/sybra/internal/sybra/verification"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -58,6 +59,7 @@ type Handler struct {
 	// only available after App.initLocalStores runs — nil degrades to a no-op
 	// (see intervention.Capture).
 	intervention *intervention.Store
+	verification *verification.Manager
 	// renovatePRsFn returns Renovate-bot PRs to fold into the monitor pass.
 	// FetchReviews uses author:@me which excludes bot-authored PRs, so without
 	// this hook a Renovate PR linked to a task by pr_number/branch never gets
@@ -205,6 +207,11 @@ type Handler struct {
 	// fix workflows spend agent turns or mutate worktrees. Overridable in
 	// tests; nil falls back to project.PreflightPushCredentials.
 	pushPreflightFn func(ctx context.Context, worktreePath string) error
+}
+
+// SetVerification installs disposable verifier workspace lifecycle support.
+func (h *Handler) SetVerification(manager *verification.Manager) {
+	h.verification = manager
 }
 
 // agentLogin returns the GitHub login the fix agent posts as.
@@ -1154,7 +1161,9 @@ func (r *Handler) advanceClosedTaskPR(ctx context.Context, c github.ClosedPR, co
 			ToStatus:       landedStatus,
 			ExpectedStatus: preTask.Status,
 			Extra: task.Update{
-				Outcome: task.Ptr(base),
+				Outcome:           task.Ptr(base),
+				ClearStatusReason: task.Ptr(true),
+				ClearBlocker:      task.Ptr(true),
 			},
 		}); err != nil {
 			return err

@@ -65,17 +65,25 @@ func (a *taskAdapter) UpdateTaskStatus(id string, status taskstatus.Status, reas
 	if err != nil {
 		return err
 	}
-	u := task.Update{Status: &st}
-	if reason != "" {
-		u.StatusReason = &reason
-	}
-	if st == task.StatusHumanRequired {
-		st = task.StatusBlocked
-		u.Status = &st
-		u.Escalation = task.MachineFailure("workflow.untyped_escalation", reason)
-		u.AutonomyOutcome = task.QuarantinedOutcome()
-	}
-	_, err = a.tasks.Update(id, u)
+	_, err = a.tasks.ApplyFn(id, func(cur task.Task) (task.TransitionIntent, error) {
+		target := st
+		u := task.Update{}
+		if reason != "" {
+			u.StatusReason = &reason
+		} else if cur.Status != st && (st != task.StatusHumanRequired || cur.Status != task.StatusBlocked) {
+			u.ClearStatusReason = task.Ptr(true)
+		}
+		if st == task.StatusHumanRequired {
+			target = task.StatusBlocked
+			u.Escalation = task.MachineFailure("workflow.untyped_escalation", reason)
+			u.AutonomyOutcome = task.QuarantinedOutcome()
+		}
+		return task.TransitionIntent{
+			ToStatus: target,
+			Actor:    "workflow.engine.update_status",
+			Extra:    u,
+		}, nil
+	})
 	return err
 }
 

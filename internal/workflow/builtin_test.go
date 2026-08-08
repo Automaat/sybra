@@ -7,7 +7,56 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
+
+func TestDefinitionSemanticHash_IgnoresTimestamps(t *testing.T) {
+	t.Parallel()
+
+	def := newTestDef("hash-wf")
+	def.CreatedAt = time.Unix(10, 0).UTC()
+	def.UpdatedAt = time.Unix(20, 0).UTC()
+	h1, err := def.SemanticHash()
+	if err != nil {
+		t.Fatalf("SemanticHash: %v", err)
+	}
+
+	def.CreatedAt = time.Unix(30, 0).UTC()
+	def.UpdatedAt = time.Unix(40, 0).UTC()
+	h2, err := def.SemanticHash()
+	if err != nil {
+		t.Fatalf("SemanticHash second: %v", err)
+	}
+
+	if h1 != h2 {
+		t.Fatalf("hash changed across timestamp-only edits: %q != %q", h1, h2)
+	}
+	if len(h1) != 64 || strings.Trim(h1, "0123456789abcdef") != "" {
+		t.Fatalf("hash = %q, want lowercase sha256 hex", h1)
+	}
+}
+
+func TestDefinitionSemanticHash_ChangesOnSemanticEdit(t *testing.T) {
+	t.Parallel()
+
+	a := newTestDef("hash-a")
+	b := newTestDef("hash-a")
+	b.Steps[0].Config.Status = "done"
+
+	ah, err := a.SemanticHash()
+	if err != nil {
+		t.Fatalf("SemanticHash a: %v", err)
+	}
+	bh, err := b.SemanticHash()
+	if err != nil {
+		t.Fatalf("SemanticHash b: %v", err)
+	}
+	if ah == bh {
+		t.Fatal("semantic edit produced identical hash")
+	}
+}
 
 func TestBuiltinSimpleTaskPlan_ApprovalStartsImplementation(t *testing.T) {
 	t.Parallel()
@@ -533,9 +582,10 @@ func TestBuiltinPromptLabAuthor_OwnsPromptLabImplementation(t *testing.T) {
 
 // TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation pins the
 // implementation workflow ordering: verify_commits flows into codegen_gate,
-// then focused_checks, which must still run before detect_tampering and
-// verify_checks so downstream review/testing validate the final committed
-// branch content.
+// then the parallel_gates coordinator (which runs focused_checks,
+// detect_tampering, and verify_checks concurrently — see
+// execParallelGates) so downstream review/testing validate the final
+// committed branch content.
 func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 	t.Parallel()
 
@@ -568,20 +618,6 @@ func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 		t.Fatalf("verify_commits clean goto = %q, err=%v; want codegen_gate", got, err)
 	}
 
-	focused := impl.StepByID("focused_checks")
-	if focused == nil {
-		t.Fatal("focused_checks step not found in simple-task-implement")
-	}
-	if focused.Type != StepFocusedChecks {
-		t.Fatalf("focused_checks type = %q, want %q", focused.Type, StepFocusedChecks)
-	}
-	if got, err := ResolveTransition(focused.Next, map[string]string{"task.status": "human-required"}); err != nil || got != "" {
-		t.Fatalf("focused_checks human-required goto = %q, err=%v; want end", got, err)
-	}
-	if got, err := ResolveTransition(focused.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "detect_tampering" {
-		t.Fatalf("focused_checks clean goto = %q, err=%v; want detect_tampering", got, err)
-	}
-
 	codegen := impl.StepByID("codegen_gate")
 	if codegen == nil {
 		t.Fatal("codegen_gate step not found in simple-task-implement")
@@ -592,23 +628,34 @@ func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 	if got, err := ResolveTransition(codegen.Next, map[string]string{"task.status": "human-required"}); err != nil || got != "" {
 		t.Fatalf("codegen_gate human-required goto = %q, err=%v; want end", got, err)
 	}
-	if got, err := ResolveTransition(codegen.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "focused_checks" {
-		t.Fatalf("codegen_gate clean goto = %q, err=%v; want focused_checks", got, err)
+	if got, err := ResolveTransition(codegen.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "parallel_gates" {
+		t.Fatalf("codegen_gate clean goto = %q, err=%v; want parallel_gates", got, err)
 	}
 
-	detect := impl.StepByID("detect_tampering")
-	if detect == nil {
-		t.Fatal("detect_tampering step not found in simple-task-implement")
+	gates := impl.StepByID("parallel_gates")
+	if gates == nil {
+		t.Fatal("parallel_gates step not found in simple-task-implement")
 	}
-	if got, err := ResolveTransition(detect.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "verify_checks" {
-		t.Fatalf("detect_tampering clean goto = %q, err=%v; want verify_checks", got, err)
+	if gates.Type != StepParallelGates {
+		t.Fatalf("parallel_gates type = %q, want %q", gates.Type, StepParallelGates)
+	}
+	if got, err := ResolveTransition(gates.Next, map[string]string{"task.status": "blocked"}); err != nil || got != "" {
+		t.Fatalf("parallel_gates blocked goto = %q, err=%v; want end", got, err)
+	}
+	if got, err := ResolveTransition(gates.Next, map[string]string{"task.status": "human-required"}); err != nil || got != "" {
+		t.Fatalf("parallel_gates human-required goto = %q, err=%v; want end", got, err)
+	}
+	if got, err := ResolveTransition(gates.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "set_ready_review" {
+		t.Fatalf("parallel_gates clean goto = %q, err=%v; want set_ready_review", got, err)
 	}
 }
 
 // TestBuiltinSimpleTaskImplement_ExistingPRSkipsReadyReview pins the fix for
 // a re-fix cycle orphaning at ready-review: simple-task-review's own trigger
-// refuses pr_number != "", so verify_checks must route a PR-having task to
-// in-review directly rather than a status nothing dispatches.
+// refuses pr_number != "", so parallel_gates (which subsumed verify_checks'
+// routing when the three post-implement gates were collapsed into one
+// coordinator step) must route a PR-having task to in-review directly rather
+// than a status nothing dispatches.
 func TestBuiltinSimpleTaskImplement_ExistingPRSkipsReadyReview(t *testing.T) {
 	t.Parallel()
 
@@ -626,22 +673,22 @@ func TestBuiltinSimpleTaskImplement_ExistingPRSkipsReadyReview(t *testing.T) {
 	if impl == nil {
 		t.Fatal("simple-task-implement builtin definition not found")
 	}
-	verifyChecks := impl.StepByID("verify_checks")
-	if verifyChecks == nil {
-		t.Fatal("verify_checks step not found in simple-task-implement")
+	gates := impl.StepByID("parallel_gates")
+	if gates == nil {
+		t.Fatal("parallel_gates step not found in simple-task-implement")
 	}
 
-	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "set_ready_review" {
-		t.Fatalf("verify_checks no-PR goto = %q, err=%v; want set_ready_review", got, err)
+	if got, err := ResolveTransition(gates.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "set_ready_review" {
+		t.Fatalf("parallel_gates no-PR goto = %q, err=%v; want set_ready_review", got, err)
 	}
-	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "in-progress", "task.pr_number": "17478"}); err != nil || got != "set_ready_pr_existing" {
-		t.Fatalf("verify_checks existing-PR goto = %q, err=%v; want set_ready_pr_existing", got, err)
+	if got, err := ResolveTransition(gates.Next, map[string]string{"task.status": "in-progress", "task.pr_number": "17478"}); err != nil || got != "set_ready_pr_existing" {
+		t.Fatalf("parallel_gates existing-PR goto = %q, err=%v; want set_ready_pr_existing", got, err)
 	}
-	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "blocked", "task.pr_number": "17478"}); err != nil || got != "" {
-		t.Fatalf("verify_checks blocked goto = %q, err=%v; want end (wins over PR routing)", got, err)
+	if got, err := ResolveTransition(gates.Next, map[string]string{"task.status": "blocked", "task.pr_number": "17478"}); err != nil || got != "" {
+		t.Fatalf("parallel_gates blocked goto = %q, err=%v; want end (wins over PR routing)", got, err)
 	}
-	if got, err := ResolveTransition(verifyChecks.Next, map[string]string{"task.status": "human-required", "task.pr_number": "17478"}); err != nil || got != "" {
-		t.Fatalf("verify_checks human-required goto = %q, err=%v; want end (wins over PR routing)", got, err)
+	if got, err := ResolveTransition(gates.Next, map[string]string{"task.status": "human-required", "task.pr_number": "17478"}); err != nil || got != "" {
+		t.Fatalf("parallel_gates human-required goto = %q, err=%v; want end (wins over PR routing)", got, err)
 	}
 
 	existingPR := impl.StepByID("set_ready_pr_existing")
@@ -701,7 +748,7 @@ func TestBuiltinSimpleTask_TriageNoplanRouting(t *testing.T) {
 		},
 		{
 			name:   "terminal_status_wins_over_noplan",
-			fields: map[string]string{"task.status": "done", "task.tags": "backend,noplan"},
+			fields: map[string]string{"task.status": string(taskstatus.Done), "task.tags": "backend,noplan"},
 			want:   "",
 		},
 	}

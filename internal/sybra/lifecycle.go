@@ -206,6 +206,12 @@ func (lm *LifecycleManager) refreshAppToken(ctx context.Context) {
 	if err := github.RefreshAppToken(ctx); err != nil {
 		a.logger.Warn("github.app.token.refresh", "err", err)
 	}
+	if err := github.RefreshVerifierAppToken(ctx); err != nil {
+		a.logger.Warn("github.app.verifier-token.refresh", "err", err)
+	}
+	if err := a.agents.SyncGHVerifierAppToken(); err != nil {
+		a.logger.Warn("github.app.verifier-token.publish", "err", err)
+	}
 }
 
 // rateBudgetRefreshInterval is how often the free GET /rate_limit endpoint is

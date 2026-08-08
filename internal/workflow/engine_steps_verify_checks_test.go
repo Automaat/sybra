@@ -9,14 +9,18 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Automaat/sybra/internal/buildcache"
+	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 type fakeCheckGetter struct {
@@ -26,6 +30,84 @@ type fakeCheckGetter struct {
 	setup           []string
 	focused         []project.FocusedCheck
 	worktreeBaseRef string
+}
+
+type copyingVerificationManager struct {
+	root          string
+	released      bool
+	finalized     bool
+	validateCalls int
+	finalizeErr   error
+}
+
+func (m *copyingVerificationManager) PrepareVerification(_ context.Context, _, _, canonical string) (VerificationWorkspace, error) {
+	dir := filepath.Join(m.root, "source")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return VerificationWorkspace{}, err
+	}
+	entries, err := os.ReadDir(canonical)
+	if err != nil {
+		return VerificationWorkspace{}, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(canonical, entry.Name()))
+		if readErr != nil {
+			return VerificationWorkspace{}, readErr
+		}
+		if writeErr := os.WriteFile(filepath.Join(dir, entry.Name()), data, 0o600); writeErr != nil {
+			return VerificationWorkspace{}, writeErr
+		}
+	}
+	return VerificationWorkspace{ID: "lease", Dir: dir, SourceSHA: "source"}, nil
+}
+
+func (m *copyingVerificationManager) FinalizeVerification(context.Context, VerificationWorkspace, []string, string) error {
+	m.finalized = true
+	return m.finalizeErr
+}
+
+func (m *copyingVerificationManager) ValidateVerification(context.Context, VerificationWorkspace) error {
+	m.validateCalls++
+	return m.finalizeErr
+}
+
+func TestValidVerificationCacheHitDoesNotRefreshBeforeFinalize(t *testing.T) {
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	recorder := newFakeEvidenceRecorder()
+	originalTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	recorder.Set("t1", evidence.CompletionEvidence{Criteria: []evidence.CriterionEvidence{{
+		Criterion:  evidenceCriterionVerifyChecks,
+		ExitStatus: 0,
+		FinalRev:   "source",
+		TreeSHA:    "tree",
+		ChecksHash: "checks",
+		StepID:     "old-step",
+		Timestamp:  originalTime,
+	}}})
+	engine.SetEvidenceRecorder(recorder)
+	mgr := &copyingVerificationManager{finalizeErr: errors.New("source moved")}
+	engine.execution.Verification = mgr
+
+	_, hit, err := engine.validVerificationCacheHit("t1", newVerifyChecksStep(), VerificationWorkspace{ID: "lease"}, "source", "tree", "checks", []string{"true"})
+	if err == nil || hit {
+		t.Fatalf("cache result hit=%v err=%v, want rejected candidate", hit, err)
+	}
+	got, loadErr := recorder.Evidence("t1")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	entry, ok := got.ByCriterion(evidenceCriterionVerifyChecks)
+	if !ok || entry.Timestamp != originalTime || entry.StepID != "old-step" {
+		t.Fatalf("rejected candidate refreshed evidence: %+v", entry)
+	}
+}
+
+func (m *copyingVerificationManager) ReleaseVerification(VerificationWorkspace) {
+	m.released = true
+	_ = os.RemoveAll(m.root)
 }
 
 func (f *fakeCheckGetter) CodegenCommands(context.Context, string) []string { return f.codegen }
@@ -139,6 +221,42 @@ func TestVerifyTaskNow_CommandsPass(t *testing.T) {
 	}
 	if failedCmd != "" {
 		t.Errorf("failedCmd = %q, want empty", failedCmd)
+	}
+}
+
+func TestVerifyTaskNowUsesDisposableWorkspace(t *testing.T) {
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, _ := newVerifyChecksEngine(t, wt, []string{"touch generated-by-watchdog"})
+	mgr := &copyingVerificationManager{root: filepath.Join(t.TempDir(), "verification")}
+	engine.execution.Verification = mgr
+
+	verified, passed, _, output, err := engine.VerifyTaskNow(t.Context(), "t1")
+	if err != nil || !verified || !passed {
+		t.Fatalf("VerifyTaskNow = verified %v passed %v err %v output %q", verified, passed, err, output)
+	}
+	if _, err := os.Stat(filepath.Join(wt, "generated-by-watchdog")); !os.IsNotExist(err) {
+		t.Fatalf("watchdog mutated authoritative checkout: %v", err)
+	}
+	if !mgr.finalized || !mgr.released {
+		t.Fatalf("verification lifecycle finalized=%v released=%v", mgr.finalized, mgr.released)
+	}
+}
+
+func TestVerifyTaskNowRunsSetupInsideDisposableWorkspace(t *testing.T) {
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	engine, _ := newVerifyChecksEngineWithSetup(t, wt, []string{"test -f .env"}, []string{"touch .env"})
+	mgr := &copyingVerificationManager{root: filepath.Join(t.TempDir(), "verification")}
+	engine.execution.Verification = mgr
+
+	verified, passed, failedCmd, output, err := engine.VerifyTaskNow(t.Context(), "t1")
+	if err != nil || !verified || !passed || failedCmd != "" {
+		t.Fatalf("VerifyTaskNow = verified %v passed %v failed %q err %v output %q", verified, passed, failedCmd, err, output)
+	}
+	if _, err := os.Stat(filepath.Join(wt, ".env")); !os.IsNotExist(err) {
+		t.Fatalf("setup output escaped into authoritative checkout: %v", err)
+	}
+	if !mgr.finalized || !mgr.released {
+		t.Fatalf("verification lifecycle finalized=%v released=%v", mgr.finalized, mgr.released)
 	}
 }
 
@@ -351,6 +469,39 @@ func TestExecVerifyChecks_WorktreeEditForcesRerun(t *testing.T) {
 	}
 	if got := strings.Count(string(runs), "run"); got != 2 {
 		t.Fatalf("verify command ran %d times, want exactly 2 (tree edit should have forced a re-run)", got)
+	}
+}
+
+func TestExecVerifyChecks_EmptyCommitForcesRerun(t *testing.T) {
+	t.Parallel()
+	wt := makeBaseRepo(t, map[string]string{"README.md": "init\n"})
+	counter := filepath.Join(t.TempDir(), "count")
+	cmd := "echo run >> " + counter
+	engine, tasks := newVerifyChecksEngine(t, wt, []string{cmd})
+	engine.SetEvidenceRecorder(newFakeEvidenceRecorder())
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress})
+
+	if _, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"}); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	gitCmd := exec.Command("git", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "source identity changes")
+	gitCmd.Dir = wt
+	if out, err := gitCmd.CombinedOutput(); err != nil {
+		t.Fatalf("empty commit: %v: %s", err, out)
+	}
+	out, err := engine.execVerifyChecks("t1", newVerifyChecksStep(), nil, TaskInfo{ID: "t1"})
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if out.Output != "clean" {
+		t.Fatalf("second run output = %q, want uncached clean", out.Output)
+	}
+	runs, err := os.ReadFile(counter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(runs), "run"); got != 2 {
+		t.Fatalf("verify command ran %d times, want 2 after source commit changed", got)
 	}
 }
 
@@ -1315,6 +1466,50 @@ func TestEnsureNodeToolchain_IntactBinSkipsRepair(t *testing.T) {
 	}
 }
 
+// TestEnsureNodeToolchain_ConcurrentCallersInstallOnce covers the fan-out
+// hazard execParallelGates introduced: focused_checks and verify_checks run
+// concurrently against the SAME worktree, and an absent node_modules is left
+// alone by the pre-fan-out repair (never installed is not corruption), so both
+// gates can reach this repair path for one directory. Two `npm ci` runs each
+// delete and rewrite node_modules, tearing the install the other is about to
+// use. The repair must serialize per directory and re-check under the lock, so
+// exactly one install runs.
+func TestEnsureNodeToolchain_ConcurrentCallersInstallOnce(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, filepath.Join(dir, "package.json"), "{}")
+	// node_modules/.bin absent: the "never installed" shape both gates see.
+
+	runLog := filepath.Join(t.TempDir(), "npm-runs.log")
+	fakeBin := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"echo run >> " + runLog + "\n" +
+		"sleep 0.2\n" +
+		"mkdir -p node_modules/.bin\n" +
+		"printf '#!/bin/sh\\n' > node_modules/.bin/vite\n"
+	if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() {
+			engine.ensureNodeToolchain(context.Background(), "t1", dir, "npm run build:web", &boundedTail{max: 4096})
+		})
+	}
+	wg.Wait()
+
+	data, err := os.ReadFile(runLog)
+	if err != nil {
+		t.Fatalf("npm never ran: %v", err)
+	}
+	if runs := strings.Count(string(data), "run"); runs != 1 {
+		t.Fatalf("npm ci ran %d times, want exactly 1 — concurrent gates must not race two installs", runs)
+	}
+}
+
 func TestEnsureNodeToolchain_ResolvesCdPrefix(t *testing.T) {
 	root := t.TempDir()
 	frontend := filepath.Join(root, "frontend")
@@ -1858,6 +2053,13 @@ func TestExecVerifyChecks_RepairsCorruptedNodeModulesBeforeRunning(t *testing.T)
 	}
 }
 
+// TestBuiltinSimpleTaskImplement_VerifyChecksWiring pins verify_checks'
+// contribution to simple-task-implement now that it runs inside the
+// parallel_gates coordinator (see execParallelGates,
+// engine_steps_parallel_gates.go) alongside detect_tampering and
+// focused_checks rather than as its own serial step: a blocked or flagged
+// outcome still ends the workflow, and a clean one still proceeds to
+// set_ready_review.
 func TestBuiltinSimpleTaskImplement_VerifyChecksWiring(t *testing.T) {
 	t.Parallel()
 	defs, err := BuiltinDefinitions()
@@ -1875,27 +2077,30 @@ func TestBuiltinSimpleTaskImplement_VerifyChecksWiring(t *testing.T) {
 		t.Fatal("simple-task-implement builtin not found")
 		return
 	}
-	vc := impl.StepByID("verify_checks")
-	if vc == nil {
-		t.Fatal("verify_checks step missing from simple-task-implement")
+	gates := impl.StepByID("parallel_gates")
+	if gates == nil {
+		t.Fatal("parallel_gates step missing from simple-task-implement")
 		return
 	}
-	dt := impl.StepByID("detect_tampering")
-	if dt == nil {
-		t.Fatal("detect_tampering step missing")
+	if gates.Type != StepParallelGates {
+		t.Errorf("parallel_gates type = %q, want %q", gates.Type, StepParallelGates)
+	}
+	codegen := impl.StepByID("codegen_gate")
+	if codegen == nil {
+		t.Fatal("codegen_gate step missing")
 		return
 	}
-	if got, _ := ResolveTransition(dt.Next, map[string]string{"task.status": "in-progress"}); got != "verify_checks" {
-		t.Errorf("detect_tampering clean goto = %q, want verify_checks", got)
+	if got, _ := ResolveTransition(codegen.Next, map[string]string{"task.status": "in-progress"}); got != "parallel_gates" {
+		t.Errorf("codegen_gate clean goto = %q, want parallel_gates", got)
 	}
-	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "blocked"}); got != "" {
-		t.Errorf("blocked verify_checks goto = %q, want end", got)
+	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "blocked"}); got != "" {
+		t.Errorf("blocked parallel_gates goto = %q, want end", got)
 	}
-	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "human-required"}); got != "" {
-		t.Errorf("flagged verify_checks goto = %q, want end", got)
+	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "human-required"}); got != "" {
+		t.Errorf("flagged parallel_gates goto = %q, want end", got)
 	}
-	if got, _ := ResolveTransition(vc.Next, map[string]string{"task.status": "in-progress"}); got != "set_ready_review" {
-		t.Errorf("clean verify_checks goto = %q, want set_ready_review", got)
+	if got, _ := ResolveTransition(gates.Next, map[string]string{"task.status": "in-progress"}); got != "set_ready_review" {
+		t.Errorf("clean parallel_gates goto = %q, want set_ready_review", got)
 	}
 }
 

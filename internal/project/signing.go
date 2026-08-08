@@ -2,6 +2,11 @@ package project
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os/exec"
+	"strings"
+	"time"
 
 	"github.com/Automaat/sybra/internal/gitexec"
 )
@@ -78,6 +83,40 @@ func GPGSigningAvailable(ctx context.Context) bool {
 		return false
 	}
 	return out != ""
+}
+
+// ProbeGPGSigning performs a bounded, non-persisting signature with the exact
+// configured OpenPGP key. A configured key name alone is not proof that its
+// secret key or signing agent is usable by an unattended provider process.
+func ProbeGPGSigning(ctx context.Context) error {
+	key, err := gitexec.Output(ctx, gitexec.Options{}, "config", "--global", "--get", "user.signingkey")
+	if err != nil {
+		if code, ok := gitexec.ExitCode(err); ok && code == 1 {
+			return errors.New("resolve signing key: key is not configured")
+		}
+		return fmt.Errorf("resolve signing key: %w", err)
+	}
+	if strings.TrimSpace(key) == "" {
+		return errors.New("resolve signing key: key is not configured")
+	}
+	format, _ := gitexec.Output(ctx, gitexec.Options{}, "config", "--global", "--get", "gpg.format")
+	if format != "" && format != "openpgp" {
+		return fmt.Errorf("unsupported signing format %q for non-persisting probe", format)
+	}
+	program, _ := gitexec.Output(ctx, gitexec.Options{}, "config", "--global", "--get", "gpg.program")
+	if strings.TrimSpace(program) == "" {
+		program = "gpg"
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(probeCtx, program,
+		"--batch", "--no-tty", "--pinentry-mode", "error",
+		"--local-user", key, "--detach-sign", "--armor", "--output", "-")
+	cmd.Stdin = strings.NewReader("sybra run environment signing probe\n")
+	if output, runErr := cmd.CombinedOutput(); runErr != nil {
+		return fmt.Errorf("signing probe: %w: %s", runErr, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 // CommitSignFlags returns the git commit flags an agent should use on this

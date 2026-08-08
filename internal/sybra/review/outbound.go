@@ -462,7 +462,7 @@ func humanRequiredBlockerReconcilable(t *task.Task) (kind github.PRIssueKind, ok
 		return "", false
 	}
 	reason := strings.TrimSpace(t.StatusReason)
-	if workflow.IsTamperFlaggedReason(reason) {
+	if t.Blocker.Kind == blocker.KindTamperDetected {
 		return "", false
 	}
 	if reason == ciInfraRerunPermissionReason || reason == persistentFlakyCIReason {

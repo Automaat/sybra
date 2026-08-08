@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,8 +24,10 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/autonomy"
+	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	synapsegithub "github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
@@ -347,6 +350,15 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	logger := e2eLogger(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
+	approvalServer, err := agent.NewApprovalServer(ctx, func(string, any) {}, logger, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		_ = approvalServer.Shutdown(shutdownCtx)
+		shutdownCancel()
+	})
 
 	logDir, err := os.MkdirTemp("", "sybra-e2e-logs-*")
 	if err != nil {
@@ -357,15 +369,26 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 	var env *e2eEnv
 	var engine *workflow.Engine
 	agentMgr := newTestAgentManager(t, ctx, func(string, any) {}, logger, logDir, agent.ManagerConfig{
-		Runtime:     agent.ManagerRuntimeConfig{DefaultProvider: provider},
-		Artifacts:   artifactStore,
-		ControlHome: taskDir,
+		Runtime:       agent.ManagerRuntimeConfig{DefaultProvider: provider},
+		Artifacts:     artifactStore,
+		ControlHome:   taskDir,
+		ApprovalAddr:  approvalServer.Addr(),
+		ControlTarget: approvalServer.Addr(),
+		ControlToken:  approvalServer.VerifierToken,
 		OnComplete: func(ag *agent.Agent) {
 			env.pendingCompletions.Add(1)
 			defer env.pendingCompletions.Add(-1)
 			env.onAgentComplete(ag)
 		},
 	})
+	approvalServer.SetManager(agentMgr)
+	controlMux := http.NewServeMux()
+	httpapi.Mount(controlMux, map[string]httpapi.Service{
+		"TaskService": httpapi.NewService(&TaskService{
+			tasks: taskMgr, agents: agentMgr, logger: logger, cfg: config.DefaultConfig(),
+		}, "GetTask", "UpdateTask").WithReadOnly("GetTask"),
+	}, logger, nil)
+	approvalServer.SetVerifierControl(controlMux)
 
 	wfDir, err := os.MkdirTemp("", "sybra-e2e-wf-*")
 	if err != nil {
@@ -1345,7 +1368,12 @@ steps:
 		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
 		AutonomyOutcome: task.HumanRequiredOutcome(),
 		StatusReason:    task.Ptr(workflow.TamperFlaggedReasonPrefix + " internal/foo_test.go: added-skip"),
-		ProjectID:       task.Ptr("owner/repo"),
+		Blocker: task.Ptr(blocker.State{
+			Kind:       blocker.KindTamperDetected,
+			Actor:      blocker.ActorWorkflow,
+			NextAction: "bless_tampering",
+		}),
+		ProjectID: task.Ptr("owner/repo"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -6444,7 +6472,7 @@ func TestE2E_StepHistoryCap_KeepsLatest50(t *testing.T) {
 	}
 }
 
-func TestE2E_WorkflowReload_AppliesOnAdvance(t *testing.T) {
+func TestE2E_WorkflowReload_PinnedExecutionKeepsOriginalDefinition(t *testing.T) {
 	env := setupE2E(t, "success")
 	writeWorkflowFixture(t, env, "test-reload-live", testReloadWorkflowYAML)
 
@@ -6469,8 +6497,8 @@ func TestE2E_WorkflowReload_AppliesOnAdvance(t *testing.T) {
 		return gErr == nil && tk.Workflow != nil && tk.Workflow.State == workflow.ExecCompleted
 	})
 	tk, _ := env.tasks.Get(created.ID)
-	if tk.Status != task.StatusInProgress {
-		t.Fatalf("status = %q, want in-progress from updated workflow", tk.Status)
+	if tk.Status != task.StatusDone {
+		t.Fatalf("status = %q, want done from pinned original workflow", tk.Status)
 	}
 }
 
@@ -6750,6 +6778,116 @@ func TestE2E_RestartSimulation_PersistedWaitingResumesOnce(t *testing.T) {
 	tk, _ := env.tasks.Get(created.ID)
 	if got := countStepRecords(tk, "implement"); got != 1 {
 		t.Fatalf("implement records = %d, want 1 after restart resume", got)
+	}
+}
+
+const testRestartDriftWorkflowYAMLV1 = `id: test-restart-drift
+name: Restart Drift
+trigger:
+  on: task.created
+steps:
+  - id: gate
+    name: Gate
+    type: wait_human
+    config:
+      status: human-required
+      human_actions:
+        - approve
+    next:
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: approve
+        goto: set_done
+  - id: set_done
+    name: Set Done
+    type: set_status
+    config:
+      status: done
+    next:
+      - goto: ""
+`
+
+const testRestartDriftWorkflowYAMLV2 = `id: test-restart-drift
+name: Restart Drift
+trigger:
+  on: task.created
+steps:
+  - id: gate
+    name: Gate Changed
+    type: wait_human
+    config:
+      status: human-required
+      human_actions:
+        - approve
+    next:
+      - when:
+          field: vars.human_action
+          operator: equals
+          value: approve
+        goto: set_blocked
+  - id: set_blocked
+    name: Set Blocked
+    type: set_status
+    config:
+      status: blocked
+    next:
+      - goto: ""
+`
+
+func TestE2E_RestartSimulation_PinnedDefinitionUsesOriginalWhileNewTaskUsesLatest(t *testing.T) {
+	env := setupE2E(t, "success")
+	writeWorkflowFixture(t, env, "test-restart-drift", testRestartDriftWorkflowYAMLV1)
+
+	original, err := env.tasks.Create("restart drift original", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.startWorkflow(original.ID, "test-restart-drift"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, "original task waits at gate", func() bool {
+		tk, gErr := env.tasks.Get(original.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "gate" && tk.Workflow.State == workflow.ExecWaiting
+	})
+
+	writeWorkflowFixture(t, env, "test-restart-drift", testRestartDriftWorkflowYAMLV2)
+	restored := rebuildEngineFromEnv(t, env)
+	if err := restored.HandleHumanAction(original.ID, "approve", nil); err != nil {
+		t.Fatalf("HandleHumanAction original: %v", err)
+	}
+	waitFor(t, 10*time.Second, "original task follows pinned v1", func() bool {
+		tk, gErr := env.tasks.Get(original.ID)
+		return gErr == nil && tk.Status == task.StatusDone
+	})
+	originalTask, _ := env.tasks.Get(original.ID)
+	if originalTask.Status != task.StatusDone {
+		t.Fatalf("original status = %q, want done from v1", originalTask.Status)
+	}
+
+	latest, err := env.tasks.Create("restart drift latest", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.StartWorkflowWithVars(latest.ID, "test-restart-drift", map[string]string{
+		workflow.WorkflowVarDir: env.agentDir,
+	}); err != nil {
+		t.Fatalf("StartWorkflowWithVars latest: %v", err)
+	}
+	waitFor(t, 10*time.Second, "latest task waits at gate", func() bool {
+		tk, gErr := env.tasks.Get(latest.ID)
+		return gErr == nil && tk.Workflow != nil && tk.Workflow.CurrentStep == "gate" && tk.Workflow.State == workflow.ExecWaiting
+	})
+	if err := restored.HandleHumanAction(latest.ID, "approve", nil); err != nil {
+		t.Fatalf("HandleHumanAction latest: %v", err)
+	}
+	waitFor(t, 10*time.Second, "latest task follows updated v2", func() bool {
+		tk, gErr := env.tasks.Get(latest.ID)
+		return gErr == nil && tk.Status == task.StatusBlocked
+	})
+	latestTask, _ := env.tasks.Get(latest.ID)
+	if latestTask.Status != task.StatusBlocked {
+		t.Fatalf("latest status = %q, want blocked from v2", latestTask.Status)
 	}
 }
 

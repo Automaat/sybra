@@ -313,6 +313,13 @@ export enum ExecState {
  */
 export class Execution {
     "workflowId": string;
+
+    /**
+     * DefinitionHash pins this execution to the semantic hash of the workflow
+     * definition it started under. Empty means a legacy execution created
+     * before pinning existed and should continue using the live definition.
+     */
+    "definitionHash"?: string;
     "currentStep": string;
     "state": ExecState;
     "stepHistory": StepRecord[];
@@ -405,34 +412,34 @@ export class Execution {
      * Creates a new Execution instance from a string or object.
      */
     static createFrom($$source: any = {}): Execution {
-        const $$createField3_0 = $$createType8;
-        const $$createField4_0 = $$createType9;
+        const $$createField4_0 = $$createType8;
         const $$createField5_0 = $$createType9;
-        const $$createField9_0 = $$createType12;
-        const $$createField10_0 = $$createType13;
-        const $$createField11_0 = $$createType16;
-        const $$createField12_0 = $$createType18;
+        const $$createField6_0 = $$createType9;
+        const $$createField10_0 = $$createType12;
+        const $$createField11_0 = $$createType13;
+        const $$createField12_0 = $$createType16;
+        const $$createField13_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("stepHistory" in $$parsedSource) {
-            $$parsedSource["stepHistory"] = $$createField3_0($$parsedSource["stepHistory"]);
+            $$parsedSource["stepHistory"] = $$createField4_0($$parsedSource["stepHistory"]);
         }
         if ("variables" in $$parsedSource) {
-            $$parsedSource["variables"] = $$createField4_0($$parsedSource["variables"]);
+            $$parsedSource["variables"] = $$createField5_0($$parsedSource["variables"]);
         }
         if ("agentRoutes" in $$parsedSource) {
-            $$parsedSource["agentRoutes"] = $$createField5_0($$parsedSource["agentRoutes"]);
+            $$parsedSource["agentRoutes"] = $$createField6_0($$parsedSource["agentRoutes"]);
         }
         if ("parallelInflight" in $$parsedSource) {
-            $$parsedSource["parallelInflight"] = $$createField9_0($$parsedSource["parallelInflight"]);
+            $$parsedSource["parallelInflight"] = $$createField10_0($$parsedSource["parallelInflight"]);
         }
         if ("stepCounts" in $$parsedSource) {
-            $$parsedSource["stepCounts"] = $$createField10_0($$parsedSource["stepCounts"]);
+            $$parsedSource["stepCounts"] = $$createField11_0($$parsedSource["stepCounts"]);
         }
         if ("bestOfNInflight" in $$parsedSource) {
-            $$parsedSource["bestOfNInflight"] = $$createField11_0($$parsedSource["bestOfNInflight"]);
+            $$parsedSource["bestOfNInflight"] = $$createField12_0($$parsedSource["bestOfNInflight"]);
         }
         if ("effectLog" in $$parsedSource) {
-            $$parsedSource["effectLog"] = $$createField12_0($$parsedSource["effectLog"]);
+            $$parsedSource["effectLog"] = $$createField13_0($$parsedSource["effectLog"]);
         }
         return new Execution($$parsedSource as Partial<Execution>);
     }
@@ -1129,6 +1136,17 @@ export enum StepType {
      * must re-run the missing proof, not retry the same dispatch.
      */
     StepRequireEvidence = "require_evidence",
+
+    /**
+     * StepParallelGates runs the three deterministic post-implement gates —
+     * detect_tampering, focused_checks, verify_checks — concurrently instead
+     * of serially, then routes on their joined outcome. Each gate still
+     * records its own evidence/verdict independently (see
+     * execParallelGates, engine_steps_parallel_gates.go); this only
+     * overlaps their wall-clock, it does not change what any individual gate
+     * decides. Synchronous (no run_agent children, unlike StepParallel).
+     */
+    StepParallelGates = "parallel_gates",
 };
 
 /**
