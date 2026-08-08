@@ -939,14 +939,22 @@ func TestReloadFromDisk_ABTestingPreservesRoutingOverlay(t *testing.T) {
 
 // recordHandler captures log records for assertion in tests.
 type recordHandler struct {
+	mu      sync.Mutex
 	records *[]slog.Record
 	slog.Handler
 }
 
 func (h *recordHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
 func (h *recordHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	*h.records = append(*h.records, r)
 	return nil
+}
+func (h *recordHandler) Len() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(*h.records)
 }
 func (h *recordHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
 func (h *recordHandler) WithGroup(_ string) slog.Handler      { return h }
