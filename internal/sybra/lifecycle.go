@@ -759,6 +759,11 @@ func (a *App) monitorIncidentScope(t task.Task) (projectScope, safeTaskID string
 	if t.ProjectID == "" {
 		return "fleet", t.ID, false
 	}
+	if a.projects == nil {
+		// Missing classification infrastructure is not evidence that a scoped
+		// task is public. Keep the incident local and use only an opaque key.
+		return "work-unknown", experience.WorkRecordID(t.ID), true
+	}
 	p, err := a.projects.Get(t.ProjectID)
 	if err != nil {
 		// Unknown project classification is not evidence that publishing is

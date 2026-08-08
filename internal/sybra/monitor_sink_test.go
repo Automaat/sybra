@@ -626,3 +626,15 @@ func TestMonitorArtifactTitleKeepsIncidentIdentity(t *testing.T) {
 		t.Fatalf("incident titles collapsed: %q %q", one, two)
 	}
 }
+
+func TestMonitorIncidentScopeFailsClosedWithoutProjectStore(t *testing.T) {
+	t.Parallel()
+	taskWithProject := task.Task{ID: "task-raw", ProjectID: "missing/project"}
+	scope, safeTaskID, confidential := (&App{}).monitorIncidentScope(taskWithProject)
+	if !confidential || scope != "work-unknown" {
+		t.Fatalf("scope = (%q, %q, %v), want fail-closed work scope", scope, safeTaskID, confidential)
+	}
+	if safeTaskID == "" || safeTaskID == taskWithProject.ID {
+		t.Fatalf("task ID was not pseudonymized: %q", safeTaskID)
+	}
+}
