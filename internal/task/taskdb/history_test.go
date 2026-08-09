@@ -197,3 +197,59 @@ func TestHistory_TrimLeavesCurrentStateAlone(t *testing.T) {
 		}
 	})
 }
+
+// TestTaskAt_ReportsADeletedTaskAsAbsent is the issue's "the state of any task at a past moment can be reconstructed", for the moment a task was not there.
+//
+// A deletion's snapshot is the document as it stood just before the delete. Returning it made a deleted task read back as live for the whole window it was off the board, which is precisely the reconstruction the history exists to answer.
+func TestTaskAt_ReportsADeletedTaskAsAbsent(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		store, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatalf("NewSQLStore: %v", err)
+		}
+		if err := store.Put(t.Context(), sqlTask("abc12345", "first"), nil); err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		if err := store.Delete(t.Context(), "abc12345"); err != nil {
+			t.Fatalf("delete: %v", err)
+		}
+		if _, err := store.TaskAt(t.Context(), "abc12345", time.Now().UTC().Add(time.Hour)); err == nil {
+			t.Fatal("TaskAt returned a live task for a moment the board did not hold it")
+		}
+	})
+}
+
+// TestDelete_IsIdempotent pins that a repeated delete records nothing.
+//
+// A second delete appended a change that never happened and refreshed the retention window, keeping the row past the age it should have been trimmed at.
+func TestDelete_IsIdempotent(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		store, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatalf("NewSQLStore: %v", err)
+		}
+		if err := store.Put(t.Context(), sqlTask("abc12345", "first"), nil); err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		for range 3 {
+			if err := store.Delete(t.Context(), "abc12345"); err != nil {
+				t.Fatalf("delete: %v", err)
+			}
+		}
+		entries, err := store.History(t.Context(), HistoryQuery{TaskID: "abc12345"})
+		if err != nil {
+			t.Fatalf("history: %v", err)
+		}
+		deletes := 0
+		for i := range entries {
+			if entries[i].Kind == ChangeDeleted {
+				deletes++
+			}
+		}
+		if deletes != 1 {
+			t.Fatalf("three deletes recorded %d deletion entries, want 1", deletes)
+		}
+	})
+}

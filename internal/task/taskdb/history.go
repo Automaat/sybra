@@ -153,16 +153,20 @@ func (s *SQLStore) TaskAt(ctx context.Context, id string, at time.Time) (task.Ta
 	}
 	ctx, cancel := context.WithTimeout(ctx, taskQueryTimeout)
 	defer cancel()
-	var snapshot string
+	var snapshot, kind string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT snapshot FROM task_history WHERE task_id = ? AND changed_at <= ?
+		`SELECT snapshot, kind FROM task_history WHERE task_id = ? AND changed_at <= ?
 			ORDER BY changed_at DESC, id DESC LIMIT 1`,
-		id, db.TimeValue(at)).Scan(&snapshot)
+		id, db.TimeValue(at)).Scan(&snapshot, &kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return task.Task{}, fmt.Errorf("no recorded state for task %q at %s", id, at.Format(time.RFC3339))
 	}
 	if err != nil {
 		return task.Task{}, fmt.Errorf("read history: %w", err)
+	}
+	// A deletion's snapshot is the document as it stood before the delete, so returning it here would present a task that was not on the board at that moment as if it had been. The caller asked what the board held, and the answer is nothing.
+	if kind == ChangeDeleted {
+		return task.Task{}, fmt.Errorf("task %q was deleted as of %s", id, at.Format(time.RFC3339))
 	}
 	return task.ParseBytes([]byte(snapshot))
 }
