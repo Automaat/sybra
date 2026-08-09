@@ -1,4 +1,4 @@
-package task
+package taskdb
 
 import (
 	"context"
@@ -13,6 +13,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/db"
 	"github.com/Automaat/sybra/internal/dbimport"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // ImportDomain names this domain in the import marker table.
@@ -49,14 +50,14 @@ func Import(ctx context.Context, database *db.DB, dir, scope string, logger *slo
 		written, skipped := 0, 0
 		for _, name := range names {
 			path := filepath.Join(dir, name)
-			t, err := Parse(path)
+			t, err := task.Parse(path)
 			if err != nil {
 				skipped++
 				logger.Warn("task.import.unparseable", "path", path, "err", err,
 					"reason", "this task is left on disk and not imported; every other task still imports")
 				continue
 			}
-			doc, err := MarshalStored(t)
+			doc, err := task.MarshalStored(t)
 			if err != nil {
 				skipped++
 				logger.Warn("task.import.unencodable", "task_id", t.ID, "err", err)

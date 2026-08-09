@@ -1,4 +1,4 @@
-package task
+package taskdb
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/db"
+	"github.com/Automaat/sybra/internal/task"
 )
 
 // taskQueryTimeout bounds every statement. The board is read from request
@@ -85,18 +86,18 @@ const (
 )
 
 // Put stores a task and replaces its sidecars, both in one transaction.
-func (s *SQLStore) Put(t Task, sidecars []Sidecar) error {
+func (s *SQLStore) Put(ctx context.Context, t task.Task, sidecars []Sidecar) error {
 	if s == nil {
 		return errors.New("task store is not configured")
 	}
 	if t.ID == "" {
 		return errors.New("task store: record has no id")
 	}
-	doc, err := MarshalStored(t)
+	doc, err := task.MarshalStored(t)
 	if err != nil {
 		return fmt.Errorf("marshal task: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), taskQueryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, taskQueryTimeout)
 	defer cancel()
 	return s.db.InTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(upsertTask),
@@ -120,50 +121,50 @@ func (s *SQLStore) Put(t Task, sidecars []Sidecar) error {
 }
 
 // Get returns one task and its sidecars.
-func (s *SQLStore) Get(id string) (Task, []Sidecar, error) {
+func (s *SQLStore) Get(ctx context.Context, id string) (task.Task, []Sidecar, error) {
 	if s == nil {
-		return Task{}, nil, errors.New("task store is not configured")
+		return task.Task{}, nil, errors.New("task store is not configured")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), taskQueryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, taskQueryTimeout)
 	defer cancel()
 	var doc string
 	err := s.db.QueryRowContext(ctx, selectTask, id).Scan(&doc)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Task{}, nil, fmt.Errorf("task %q not found", id)
+		return task.Task{}, nil, fmt.Errorf("task %q not found", id)
 	}
 	if err != nil {
-		return Task{}, nil, fmt.Errorf("read task: %w", err)
+		return task.Task{}, nil, fmt.Errorf("read task: %w", err)
 	}
-	t, err := ParseBytes([]byte(doc))
+	t, err := task.ParseBytes([]byte(doc))
 	if err != nil {
-		return Task{}, nil, fmt.Errorf("parse task: %w", err)
+		return task.Task{}, nil, fmt.Errorf("parse task: %w", err)
 	}
 	sidecars, err := s.sidecars(ctx, id)
 	if err != nil {
-		return Task{}, nil, err
+		return task.Task{}, nil, err
 	}
 	return t, sidecars, nil
 }
 
 // List returns every live task, ordered by id so the board is stable.
-func (s *SQLStore) List() ([]Task, error) {
+func (s *SQLStore) List(ctx context.Context) ([]task.Task, error) {
 	if s == nil {
 		return nil, errors.New("task store is not configured")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), taskQueryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, taskQueryTimeout)
 	defer cancel()
 	rows, err := s.db.QueryContext(ctx, selectTasks+s.db.OrderText("id"))
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	var out []Task
+	var out []task.Task
 	for rows.Next() {
 		var doc string
 		if err := rows.Scan(&doc); err != nil {
 			return nil, fmt.Errorf("scan task: %w", err)
 		}
-		t, err := ParseBytes([]byte(doc))
+		t, err := task.ParseBytes([]byte(doc))
 		if err != nil {
 			// Skipped as the directory listing skips a file it cannot parse,
 			// rather than costing the caller the whole board.
@@ -202,11 +203,11 @@ func (s *SQLStore) sidecars(ctx context.Context, id string) ([]Sidecar, error) {
 // Recoverable until retention passes, which is what the trash directory gave:
 // an accidental delete is the one mistake an operator cannot undo by hand once
 // the row is gone.
-func (s *SQLStore) Delete(id string) error {
+func (s *SQLStore) Delete(ctx context.Context, id string) error {
 	if s == nil {
 		return errors.New("task store is not configured")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), taskQueryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, taskQueryTimeout)
 	defer cancel()
 	if _, err := s.db.ExecContext(ctx, softDeleteTask, db.TimeValue(time.Now().UTC()), id); err != nil {
 		return fmt.Errorf("delete task: %w", err)
@@ -215,11 +216,11 @@ func (s *SQLStore) Delete(id string) error {
 }
 
 // Restore brings a deleted task back while it is still within retention.
-func (s *SQLStore) Restore(id string) error {
+func (s *SQLStore) Restore(ctx context.Context, id string) error {
 	if s == nil {
 		return errors.New("task store is not configured")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), taskQueryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, taskQueryTimeout)
 	defer cancel()
 	if _, err := s.db.ExecContext(ctx, restoreTask, id); err != nil {
 		return fmt.Errorf("restore task: %w", err)
@@ -228,11 +229,11 @@ func (s *SQLStore) Restore(id string) error {
 }
 
 // PurgeDeleted removes tasks deleted longer ago than retention.
-func (s *SQLStore) PurgeDeleted(retention time.Duration) error {
+func (s *SQLStore) PurgeDeleted(ctx context.Context, retention time.Duration) error {
 	if s == nil || retention <= 0 {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), taskQueryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, taskQueryTimeout)
 	defer cancel()
 	cutoff := time.Now().UTC().Add(-retention)
 	if _, err := s.db.ExecContext(ctx, purgeDeletedTasks, db.TimeValue(cutoff)); err != nil {
