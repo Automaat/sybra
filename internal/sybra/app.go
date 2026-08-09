@@ -559,7 +559,7 @@ func (a *App) Startup(ctx context.Context) error {
 		return err
 	}
 
-	if err := a.initLoopAgents(); err != nil {
+	if err := a.initLoopAgents(appCtx); err != nil {
 		return fmt.Errorf("loop agents: %w", err)
 	}
 	if a.emitFactory != nil {
@@ -568,7 +568,7 @@ func (a *App) Startup(ctx context.Context) error {
 		a.emit = func(string, any) {}
 	}
 	emit := a.taskEventEmitter(store)
-	a.initBgops(emit)
+	a.initBgops(appCtx, emit)
 
 	a.emitDegradedWarnings(emit)
 	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
@@ -615,7 +615,11 @@ func (a *App) Startup(ctx context.Context) error {
 	a.initRunEnvironment()
 	a.initReviewer(emit)
 
-	a.initWorkflowEngine()
+	wfStore, wfErr := a.openWorkflowStore(appCtx)
+	if wfErr != nil {
+		a.logger.Error("workflow.store.init", "err", wfErr)
+	}
+	a.initWorkflowEngine(wfStore)
 
 	a.initCluster()
 

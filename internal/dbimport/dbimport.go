@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/Automaat/sybra/internal/db"
@@ -24,26 +25,36 @@ const (
 	insertImport = `INSERT INTO schema_imports (domain, imported_at, record_count) VALUES (?, ?, ?)`
 )
 
-// Once copies a domain's files into the database the first time it is called
-// against a given database, and does nothing on every start after that.
+// Once copies one instance's files for a domain into the database the first
+// time it is called, and does nothing on every start after that.
+//
+// The marker is keyed by domain AND scope, where scope identifies the home the
+// files came from. A postgres board is shared by several machines, each with
+// its own home and its own files: a marker keyed by domain alone would let
+// whichever instance started first claim the domain, and every other machine's
+// records would sit unimported forever with nothing reporting it.
 //
 // fn reports how many records it wrote. The marker row is inserted in the same
 // transaction as those writes, so an interrupted run commits neither and the
 // next start retries from files that were never touched — fn must only read
 // them. A domain whose files are already gone is a legitimate zero.
-func Once(ctx context.Context, database *db.DB, domain string, logger *slog.Logger, fn func(context.Context, *sql.Tx) (int, error)) error {
+func Once(ctx context.Context, database *db.DB, domain, scope string, logger *slog.Logger, fn func(context.Context, *sql.Tx) (int, error)) error {
 	if database == nil {
 		return errors.New("dbimport: needs an open database")
 	}
 	if domain == "" {
 		return errors.New("dbimport: needs a domain name")
 	}
+	if strings.TrimSpace(scope) == "" {
+		return errors.New("dbimport: needs a scope naming whose files these are")
+	}
+	key := domain + "@" + scope
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
 	return database.InTxLocked(ctx, LockImport, func(tx *sql.Tx) error {
 		var count int64
-		err := tx.QueryRowContext(ctx, database.Rebind(selectImport), domain).Scan(&count)
+		err := tx.QueryRowContext(ctx, database.Rebind(selectImport), key).Scan(&count)
 		switch {
 		case err == nil:
 			return nil
@@ -56,10 +67,10 @@ func Once(ctx context.Context, database *db.DB, domain string, logger *slog.Logg
 			return fmt.Errorf("dbimport %s: %w", domain, err)
 		}
 		if _, err := tx.ExecContext(ctx, database.Rebind(insertImport),
-			domain, db.TimeValue(time.Now().UTC()), int64(written)); err != nil {
+			key, db.TimeValue(time.Now().UTC()), int64(written)); err != nil {
 			return fmt.Errorf("dbimport %s: record marker: %w", domain, err)
 		}
-		logger.Info("db.import.done", "domain", domain, "records", written)
+		logger.Info("db.import.done", "domain", domain, "scope", scope, "records", written)
 		return nil
 	})
 }
@@ -67,12 +78,12 @@ func Once(ctx context.Context, database *db.DB, domain string, logger *slog.Logg
 // Imported reports whether a domain has already been imported. It exists for
 // tests and for callers that need to order work around the import, not as a
 // substitute for the marker Once writes.
-func Imported(ctx context.Context, database *db.DB, domain string) (bool, error) {
+func Imported(ctx context.Context, database *db.DB, domain, scope string) (bool, error) {
 	if database == nil {
 		return false, errors.New("dbimport: needs an open database")
 	}
 	var count int64
-	err := database.QueryRowContext(ctx, selectImport, domain).Scan(&count)
+	err := database.QueryRowContext(ctx, selectImport, domain+"@"+scope).Scan(&count)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

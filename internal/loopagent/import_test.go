@@ -13,6 +13,7 @@ import (
 // run history and the GUI both key on them.
 func TestImport_KeepsIdsAndRunsOnce(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
 		ctx := t.Context()
 		dir := t.TempDir()
 		fileStore, err := NewStore(dir)
@@ -25,7 +26,7 @@ func TestImport_KeepsIdsAndRunsOnce(t *testing.T) {
 		}
 
 		for range 2 {
-			if err := Import(ctx, d, dir, nil); err != nil {
+			if err := Import(ctx, d, dir, "home-a", nil); err != nil {
 				t.Fatalf("import: %v", err)
 			}
 		}
@@ -54,7 +55,8 @@ func TestImport_KeepsIdsAndRunsOnce(t *testing.T) {
 
 func TestImport_EmptyDomainReadsBackEmpty(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
-		if err := Import(t.Context(), d, t.TempDir(), nil); err != nil {
+		t.Helper()
+		if err := Import(t.Context(), d, t.TempDir(), "home-a", nil); err != nil {
 			t.Fatalf("import: %v", err)
 		}
 		store, err := NewSQLStore(d)

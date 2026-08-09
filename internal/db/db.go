@@ -446,3 +446,18 @@ func scanKeywordValue(dsn string, i int) (value string, next int) {
 	}
 	return dsn[start:i], i
 }
+
+// OrderText renders an ORDER BY term that sorts by byte value on every engine.
+//
+// Postgres orders text by the server's collation, and the deploy target's
+// en_US.UTF-8 ignores punctuation at the primary level: "pr-review" sorts after
+// "prompt-lab-author" there and before it on sqlite. The file stores these
+// tables replace listed a directory, which is byte order, and the workflow
+// engine breaks priority ties on exactly that order — so without this, which
+// workflow a task dispatches depends on the engine and the server's locale.
+func (d *DB) OrderText(column string) string {
+	if d.dialect == Postgres {
+		return column + ` COLLATE "C"`
+	}
+	return column
+}

@@ -21,8 +21,8 @@ const ImportDomain = "experience"
 // The files are only read. An operator who flips the backend and dislikes the
 // result still has them, and an import interrupted halfway commits nothing, so
 // the next start retries against an untouched directory.
-func Import(ctx context.Context, database *db.DB, dir string, logger *slog.Logger) error {
-	return dbimport.Once(ctx, database, ImportDomain, logger, func(ctx context.Context, tx *sql.Tx) (int, error) {
+func Import(ctx context.Context, database *db.DB, dir, scope string, logger *slog.Logger) error {
+	return dbimport.Once(ctx, database, ImportDomain, scope, logger, func(ctx context.Context, tx *sql.Tx) (int, error) {
 		return importRecords(ctx, database, tx, dir)
 	})
 }

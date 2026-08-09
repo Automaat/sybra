@@ -18,7 +18,8 @@ func seedRecordFiles(t *testing.T, dir, projectKey string, recs []Record) {
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	for _, rec := range recs {
+	for i := range recs {
+		rec := &recs[i]
 		data, err := json.MarshalIndent(rec, "", "  ")
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
@@ -31,10 +32,16 @@ func seedRecordFiles(t *testing.T, dir, projectKey string, recs []Record) {
 
 func recordsFixture() []Record {
 	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	// The two tied records are chosen so the tiebreak actually discriminates.
+	// Byte order puts "pr-review" before "prompt-lab" (0x2d < 0x6f); glibc's
+	// en_US.UTF-8 ignores the hyphen and puts "promptlab" first. A pair that
+	// happens to agree under both — "pr-fix" and "prompt-lab" do — makes this
+	// assertion unfalsifiable.
 	return []Record{
-		{TaskID: "task-a", CreatedAt: base, ProjectID: "o/r", Title: "oldest"},
-		{TaskID: "task-c", CreatedAt: base.Add(2 * time.Hour), ProjectID: "o/r", Title: "newest"},
-		{TaskID: "task-b", CreatedAt: base.Add(time.Hour), ProjectID: "o/r", Title: "middle"},
+		{TaskID: "prompt-lab", CreatedAt: base, ProjectID: "o/r", Title: "tied-second"},
+		{TaskID: "pr-review", CreatedAt: base, ProjectID: "o/r", Title: "tied-first"},
+		{TaskID: "branch-conflict", CreatedAt: base.Add(2 * time.Hour), ProjectID: "o/r", Title: "newest"},
+		{TaskID: "pr-fix", CreatedAt: base.Add(time.Hour), ProjectID: "o/r", Title: "middle"},
 	}
 }
 
@@ -44,6 +51,7 @@ func recordsFixture() []Record {
 // production.
 func TestSQLStore_QueryMatchesTheFileStoreOrder(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
 		dir := t.TempDir()
 		fileStore, err := New(dir)
 		if err != nil {
@@ -83,8 +91,8 @@ func TestSQLStore_QueryMatchesTheFileStoreOrder(t *testing.T) {
 
 func ids(recs []Record) []string {
 	out := make([]string, 0, len(recs))
-	for _, r := range recs {
-		out = append(out, r.TaskID)
+	for i := range recs {
+		out = append(out, recs[i].TaskID)
 	}
 	return out
 }
@@ -94,6 +102,7 @@ func ids(recs []Record) []string {
 // and the originals stay on disk.
 func TestImport_IsOnceOnlyAndLeavesTheFiles(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
 		dir := t.TempDir()
 		// The directory name the file store would have written, so the import
 		// reads exactly what an upgrading install has on disk.
@@ -104,7 +113,7 @@ func TestImport_IsOnceOnlyAndLeavesTheFiles(t *testing.T) {
 		seedRecordFiles(t, dir, projectKey, recordsFixture())
 
 		for i := range 2 {
-			if err := Import(t.Context(), d, dir, nil); err != nil {
+			if err := Import(t.Context(), d, dir, "home-a", nil); err != nil {
 				t.Fatalf("import %d: %v", i, err)
 			}
 		}
@@ -117,11 +126,11 @@ func TestImport_IsOnceOnlyAndLeavesTheFiles(t *testing.T) {
 		if err != nil {
 			t.Fatalf("query: %v", err)
 		}
-		if len(got) != 3 {
-			t.Fatalf("after two imports got %d records, want 3: %v", len(got), ids(got))
+		if len(got) != len(recordsFixture()) {
+			t.Fatalf("after two imports got %d records, want %d: %v", len(got), len(recordsFixture()), ids(got))
 		}
-		if got[0].TaskID != "task-c" {
-			t.Errorf("newest record is %q, want task-c: %v", got[0].TaskID, ids(got))
+		if got[0].TaskID != "branch-conflict" {
+			t.Errorf("newest record is %q, want branch-conflict: %v", got[0].TaskID, ids(got))
 		}
 		for _, rec := range recordsFixture() {
 			path := filepath.Join(dir, projectKey, rec.TaskID+".json")
@@ -136,7 +145,8 @@ func TestImport_IsOnceOnlyAndLeavesTheFiles(t *testing.T) {
 // records yet returns empty rather than failing".
 func TestImport_EmptyDomainReadsBackEmpty(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
-		if err := Import(t.Context(), d, filepath.Join(t.TempDir(), "never-written"), nil); err != nil {
+		t.Helper()
+		if err := Import(t.Context(), d, filepath.Join(t.TempDir(), "never-written"), "home-a", nil); err != nil {
 			t.Fatalf("import: %v", err)
 		}
 		store, err := NewSQLStore(d)

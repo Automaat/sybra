@@ -34,8 +34,12 @@ CREATE TABLE IF NOT EXISTS workflow_snapshots (
 --;;
 CREATE TABLE IF NOT EXISTS background_operations (
 	id TEXT PRIMARY KEY,
+	owner TEXT NOT NULL DEFAULT '',
 	kind TEXT NOT NULL DEFAULT '',
 	status TEXT NOT NULL DEFAULT '',
 	started_at BIGINT NOT NULL DEFAULT 0,
 	doc TEXT NOT NULL
 )
+--;;
+CREATE INDEX IF NOT EXISTS background_operations_owner_idx
+	ON background_operations (owner, started_at, id)

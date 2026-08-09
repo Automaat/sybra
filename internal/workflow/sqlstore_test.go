@@ -8,6 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/Automaat/sybra/internal/db"
+	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/testutil/dbtest"
 )
 
@@ -16,7 +17,8 @@ func importFixture(t *testing.T, dir string, defs []Definition) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	for _, def := range defs {
+	for i := range defs {
+		def := &defs[i]
 		data, err := yaml.Marshal(def)
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
@@ -28,10 +30,17 @@ func importFixture(t *testing.T, dir string, defs []Definition) {
 }
 
 func definitionsFixture() []Definition {
-	step := Step{ID: "s", Type: StepSetStatus, Config: StepConfig{Status: "todo"}}
+	step := Step{ID: "s", Type: StepSetStatus, Config: StepConfig{Status: string(taskstatus.Todo)}}
+	// Ids that carry punctuation, and the shipped builtins' own shapes. Under
+	// glibc's en_US.UTF-8 the hyphen is ignored at the primary level, so
+	// "pr-review" sorts after "prompt-lab-author" — the opposite of byte order
+	// and of what the file store's directory listing gave. Ids like "wf-a"/
+	// "wf-b" sort identically under every collation and can never fail here.
 	return []Definition{
-		{ID: "wf-b", Name: "beta", Steps: []Step{step}},
-		{ID: "wf-a", Name: "alpha", Steps: []Step{step}},
+		{ID: "prompt-lab-author", Name: "author", Steps: []Step{step}},
+		{ID: "pr-review", Name: "review", Steps: []Step{step}},
+		{ID: "pr-fix", Name: "fix", Steps: []Step{step}},
+		{ID: "branch-conflict-fix", Name: "conflict", Steps: []Step{step}},
 	}
 }
 
@@ -40,6 +49,7 @@ func definitionsFixture() []Definition {
 // in one engine and reshuffles the workflow list in the other.
 func TestSQLStore_ListMatchesTheFileStoreOrder(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
 		dir := t.TempDir()
 		fileStore, err := NewStore(dir)
 		if err != nil {
@@ -82,6 +92,7 @@ func TestSQLStore_ListMatchesTheFileStoreOrder(t *testing.T) {
 // been edited.
 func TestSQLStore_SnapshotIsImmutableAndKeyedByContent(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
 		store, err := NewSQLStore(d)
 		if err != nil {
 			t.Fatalf("NewSQLStore: %v", err)
@@ -128,12 +139,13 @@ func TestSQLStore_SnapshotIsImmutableAndKeyedByContent(t *testing.T) {
 // domain reads back empty rather than failing.
 func TestImport_IsOnceOnlyAndLeavesTheFiles(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
 		dir := t.TempDir()
 		defs := definitionsFixture()
 		importFixture(t, dir, defs)
 
 		for range 2 {
-			if err := Import(t.Context(), d, dir, nil); err != nil {
+			if err := Import(t.Context(), d, dir, "home-a", nil); err != nil {
 				t.Fatalf("import: %v", err)
 			}
 		}
@@ -158,7 +170,8 @@ func TestImport_IsOnceOnlyAndLeavesTheFiles(t *testing.T) {
 
 func TestImport_EmptyDomainReadsBackEmpty(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
-		if err := Import(t.Context(), d, filepath.Join(t.TempDir(), "never-written"), nil); err != nil {
+		t.Helper()
+		if err := Import(t.Context(), d, filepath.Join(t.TempDir(), "never-written"), "home-a", nil); err != nil {
 			t.Fatalf("import: %v", err)
 		}
 		store, err := NewSQLStore(d)

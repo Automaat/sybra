@@ -24,8 +24,8 @@ const ImportDomain = "workflow"
 // It must run before builtins are seeded. Seeding writes each builtin under its own id, so an import that ran afterwards would find those rows already present and overwrite a definition the operator had edited with the shipped one.
 //
 // The files are only read; an interrupted import commits neither the rows nor the marker, so the next start retries against an untouched directory.
-func Import(ctx context.Context, database *db.DB, dir string, logger *slog.Logger) error {
-	return dbimport.Once(ctx, database, ImportDomain, logger, func(ctx context.Context, tx *sql.Tx) (int, error) {
+func Import(ctx context.Context, database *db.DB, dir, scope string, logger *slog.Logger) error {
+	return dbimport.Once(ctx, database, ImportDomain, scope, logger, func(ctx context.Context, tx *sql.Tx) (int, error) {
 		written, err := importDefinitions(ctx, database, tx, dir)
 		if err != nil {
 			return 0, err

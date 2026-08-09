@@ -19,10 +19,10 @@ func newTestTracker(t *testing.T) *Tracker {
 
 // newTestTrackerAt returns a tracker and the document it persists to, for the
 // tests that assert on the file itself.
-func newTestTrackerAt(t *testing.T) (*Tracker, string) {
+func newTestTrackerAt(t *testing.T) (tracker *Tracker, diskPath string) {
 	t.Helper()
-	diskPath := filepath.Join(t.TempDir(), "bgops.json")
-	return NewTracker(func(string, any) {}, NewFilePersistence(diskPath), nil), diskPath
+	path := filepath.Join(t.TempDir(), "bgops.json")
+	return NewTracker(func(string, any) {}, NewFilePersistence(path), nil), path
 }
 
 func TestTracker_StartCompleteFail(t *testing.T) {

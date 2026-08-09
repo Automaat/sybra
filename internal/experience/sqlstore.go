@@ -37,19 +37,7 @@ const (
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT (project_key, record_id) DO UPDATE SET created_at = excluded.created_at, doc = excluded.doc`
 
-	// Ordering matches the file store's: newest first, ties broken by record id
-	// so a re-read returns the same slice rather than whatever the engine
-	// happened to scan.
-	selectExperience = `SELECT doc FROM experience_records
-		WHERE project_key = ? ORDER BY created_at DESC, record_id ASC LIMIT ?`
-
 	deleteExperienceProject = `DELETE FROM experience_records WHERE project_key = ?`
-
-	// selectExperienceOverCap finds the records beyond the per-project cap. The
-	// file store enforces the same ceiling by deleting the oldest files, and a
-	// project that never stops producing records would otherwise grow forever.
-	selectExperienceOverCap = `SELECT record_id FROM experience_records
-		WHERE project_key = ? ORDER BY created_at DESC, record_id ASC LIMIT -1 OFFSET ?`
 
 	deleteExperienceRecord = `DELETE FROM experience_records WHERE project_key = ? AND record_id = ?`
 )
@@ -94,7 +82,7 @@ func (s *SQLStore) Query(projectID string, limit int) ([]Record, error) {
 	}
 	ctx, cancel := s.context()
 	defer cancel()
-	rows, err := s.db.QueryContext(ctx, selectExperience, key, limit)
+	rows, err := s.db.QueryContext(ctx, s.selectSQL(), key, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query experience records: %w", err)
 	}
@@ -176,15 +164,25 @@ func (s *SQLStore) enforceCapTx(ctx context.Context, tx *sql.Tx, projectKey stri
 	return nil
 }
 
-// overCapSQL returns the over-cap query for this dialect. SQLite spells an
-// offset without a limit as "LIMIT -1 OFFSET n"; postgres rejects that and
-// takes a bare OFFSET.
+// selectSQL is the ordered read. Newest first, ties broken by record id in byte
+// order so both engines return what the file store's own sort returned.
+func (s *SQLStore) selectSQL() string {
+	return `SELECT doc FROM experience_records WHERE project_key = ? ORDER BY ` + s.order() + ` LIMIT ?`
+}
+
+// overCapSQL finds the records beyond the per-project cap, which the file store
+// enforces by deleting the oldest files. SQLite spells an offset without a
+// limit as "LIMIT -1 OFFSET n"; postgres rejects that and takes a bare OFFSET.
 func (s *SQLStore) overCapSQL() string {
+	stmt := `SELECT record_id FROM experience_records WHERE project_key = ? ORDER BY ` + s.order()
 	if s.db.Dialect() == db.Postgres {
-		return `SELECT record_id FROM experience_records
-		WHERE project_key = ? ORDER BY created_at DESC, record_id ASC OFFSET ?`
+		return stmt + ` OFFSET ?`
 	}
-	return selectExperienceOverCap
+	return stmt + ` LIMIT -1 OFFSET ?`
+}
+
+func (s *SQLStore) order() string {
+	return `created_at DESC, ` + s.db.OrderText("record_id") + ` ASC`
 }
 
 // queryTimeout bounds every statement this store runs, because Repository carries no context to cancel one with. See Repository.

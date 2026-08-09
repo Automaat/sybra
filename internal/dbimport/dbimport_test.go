@@ -14,9 +14,10 @@ import (
 // guarantee every domain's import relies on.
 func TestOnce_RunsExactlyOnce(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
 		calls := 0
 		for range 3 {
-			if err := Once(t.Context(), d, "demo", nil, func(context.Context, *sql.Tx) (int, error) {
+			if err := Once(t.Context(), d, "demo", "home-a", nil, func(context.Context, *sql.Tx) (int, error) {
 				calls++
 				return 7, nil
 			}); err != nil {
@@ -36,9 +37,10 @@ func TestOnce_RunsExactlyOnce(t *testing.T) {
 // no rows (or the retry duplicates everything it already wrote).
 func TestOnce_InterruptedImportRetriesCleanly(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
 		ctx := t.Context()
 		boom := errors.New("interrupted")
-		err := Once(ctx, d, "demo", nil, func(ctx context.Context, tx *sql.Tx) (int, error) {
+		err := Once(ctx, d, "demo", "home-a", nil, func(ctx context.Context, tx *sql.Tx) (int, error) {
 			if _, err := tx.ExecContext(ctx, d.Rebind(
 				`INSERT INTO experience_records (project_key, record_id, created_at, doc) VALUES (?, ?, ?, ?)`),
 				"proj", "half-written", int64(0), "{}"); err != nil {
@@ -50,7 +52,7 @@ func TestOnce_InterruptedImportRetriesCleanly(t *testing.T) {
 			t.Fatalf("interrupted import returned %v, want the body's error", err)
 		}
 
-		done, err := Imported(ctx, d, "demo")
+		done, err := Imported(ctx, d, "demo", "home-a")
 		if err != nil {
 			t.Fatalf("imported: %v", err)
 		}
@@ -68,7 +70,7 @@ func TestOnce_InterruptedImportRetriesCleanly(t *testing.T) {
 		}
 
 		calls := 0
-		if err := Once(ctx, d, "demo", nil, func(context.Context, *sql.Tx) (int, error) {
+		if err := Once(ctx, d, "demo", "home-a", nil, func(context.Context, *sql.Tx) (int, error) {
 			calls++
 			return 1, nil
 		}); err != nil {
@@ -84,10 +86,11 @@ func TestOnce_InterruptedImportRetriesCleanly(t *testing.T) {
 // another's — every domain imports on its own schedule.
 func TestOnce_DomainsAreIndependent(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
 		ran := map[string]int{}
 		for _, domain := range []string{"alpha", "beta"} {
 			for range 2 {
-				if err := Once(t.Context(), d, domain, nil, func(context.Context, *sql.Tx) (int, error) {
+				if err := Once(t.Context(), d, domain, "home-a", nil, func(context.Context, *sql.Tx) (int, error) {
 					ran[domain]++
 					return 0, nil
 				}); err != nil {
@@ -97,6 +100,43 @@ func TestOnce_DomainsAreIndependent(t *testing.T) {
 		}
 		if ran["alpha"] != 1 || ran["beta"] != 1 {
 			t.Fatalf("ran %v, want each domain exactly once", ran)
+		}
+	})
+}
+
+// TestOnce_ScopesAreIndependent is the shared-board case.
+//
+// A postgres board is shared by several machines, each with its own home and
+// its own files. Keyed by domain alone, whichever instance started first would
+// claim the domain and every other machine's records would sit unimported
+// forever, with nothing reporting it.
+func TestOnce_ScopesAreIndependent(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		ran := map[string]int{}
+		for _, scope := range []string{"home-a", "home-b"} {
+			for range 2 {
+				if err := Once(t.Context(), d, "demo", scope, nil, func(context.Context, *sql.Tx) (int, error) {
+					ran[scope]++
+					return 0, nil
+				}); err != nil {
+					t.Fatalf("once %s: %v", scope, err)
+				}
+			}
+		}
+		if ran["home-a"] != 1 || ran["home-b"] != 1 {
+			t.Fatalf("ran %v, want each home imported exactly once", ran)
+		}
+	})
+}
+
+func TestOnce_RefusesAnEmptyScope(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		if err := Once(t.Context(), d, "demo", "  ", nil, func(context.Context, *sql.Tx) (int, error) {
+			return 0, nil
+		}); err == nil {
+			t.Fatal("accepted a blank scope; every home would share one marker")
 		}
 	})
 }

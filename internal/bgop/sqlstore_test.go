@@ -24,7 +24,8 @@ func opsFixture() []Operation {
 // is gone by being absent rather than by an explicit delete.
 func TestSQLPersistence_SaveReplacesTheSet(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
-		store, err := NewSQLPersistence(d)
+		t.Helper()
+		store, err := NewSQLPersistence(d, "instance-a")
 		if err != nil {
 			t.Fatalf("NewSQLPersistence: %v", err)
 		}
@@ -54,8 +55,8 @@ func TestSQLPersistence_SaveReplacesTheSet(t *testing.T) {
 
 func ids(ops []Operation) []string {
 	out := make([]string, 0, len(ops))
-	for _, op := range ops {
-		out = append(out, op.ID)
+	for i := range ops {
+		out = append(out, ops[i].ID)
 	}
 	return out
 }
@@ -64,6 +65,7 @@ func ids(ops []Operation) []string {
 // document this domain keeps.
 func TestImport_IsOnceOnlyAndLeavesTheFile(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
 		path := filepath.Join(t.TempDir(), "bgops.json")
 		data, err := json.MarshalIndent(opsFixture(), "", "  ")
 		if err != nil {
@@ -74,11 +76,11 @@ func TestImport_IsOnceOnlyAndLeavesTheFile(t *testing.T) {
 		}
 
 		for range 2 {
-			if err := Import(t.Context(), d, path, nil); err != nil {
+			if err := Import(t.Context(), d, path, "instance-a", nil); err != nil {
 				t.Fatalf("import: %v", err)
 			}
 		}
-		store, err := NewSQLPersistence(d)
+		store, err := NewSQLPersistence(d, "instance-a")
 		if err != nil {
 			t.Fatalf("NewSQLPersistence: %v", err)
 		}
@@ -97,10 +99,11 @@ func TestImport_IsOnceOnlyAndLeavesTheFile(t *testing.T) {
 
 func TestImport_EmptyDomainReadsBackEmpty(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
-		if err := Import(t.Context(), d, filepath.Join(t.TempDir(), "never-written.json"), nil); err != nil {
+		t.Helper()
+		if err := Import(t.Context(), d, filepath.Join(t.TempDir(), "never-written.json"), "instance-a", nil); err != nil {
 			t.Fatalf("import: %v", err)
 		}
-		store, err := NewSQLPersistence(d)
+		store, err := NewSQLPersistence(d, "instance-a")
 		if err != nil {
 			t.Fatalf("NewSQLPersistence: %v", err)
 		}
@@ -110,6 +113,59 @@ func TestImport_EmptyDomainReadsBackEmpty(t *testing.T) {
 		}
 		if len(got) != 0 {
 			t.Fatalf("got %d operations from an empty domain", len(got))
+		}
+	})
+}
+
+// TestSQLPersistence_InstancesDoNotClobberEachOther is the shared-board case a
+// postgres backend exists for.
+//
+// Each tracker hands over its whole set on every change, so a store that
+// replaced every row would make one machine's next Start delete every
+// operation the other machines were running — and the operator would watch
+// their progress panel empty itself for no visible reason.
+func TestSQLPersistence_InstancesDoNotClobberEachOther(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		storeA, err := NewSQLPersistence(d, "instance-a")
+		if err != nil {
+			t.Fatalf("NewSQLPersistence: %v", err)
+		}
+		storeB, err := NewSQLPersistence(d, "instance-b")
+		if err != nil {
+			t.Fatalf("NewSQLPersistence: %v", err)
+		}
+		trackerA := NewTracker(func(string, any) {}, storeA, nil)
+		trackerB := NewTracker(func(string, any) {}, storeB, nil)
+
+		trackerA.Start(TypeClone, "machine A clone", "o/r", "task-a")
+		trackerB.Start(TypeClone, "machine B clone", "o/r", "task-b")
+
+		ownedByA, err := storeA.Load()
+		if err != nil {
+			t.Fatalf("load A: %v", err)
+		}
+		if len(ownedByA) != 1 || ownedByA[0].Label != "machine A clone" {
+			t.Fatalf("instance A sees %v, want only its own operation", ids(ownedByA))
+		}
+		ownedByB, err := storeB.Load()
+		if err != nil {
+			t.Fatalf("load B: %v", err)
+		}
+		if len(ownedByB) != 1 || ownedByB[0].Label != "machine B clone" {
+			t.Fatalf("instance B lost its operation to the other instance: %v", ids(ownedByB))
+		}
+	})
+}
+
+// TestNewSQLPersistence_RefusesAnEmptyOwner keeps every instance from sharing
+// one blank scope, which is the clobbering case again with no symptom to
+// notice it by.
+func TestNewSQLPersistence_RefusesAnEmptyOwner(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		if _, err := NewSQLPersistence(d, "  "); err == nil {
+			t.Fatal("accepted a blank owner; every instance would share one scope")
 		}
 	})
 }

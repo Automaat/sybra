@@ -33,8 +33,6 @@ func NewSQLStore(database *db.DB) (*SQLStore, error) {
 }
 
 const (
-	selectWorkflows = `SELECT doc FROM workflow_definitions ORDER BY id`
-
 	selectWorkflow = `SELECT doc FROM workflow_definitions WHERE id = ?`
 
 	upsertWorkflow = `INSERT INTO workflow_definitions (id, name, builtin, created_at, updated_at, doc)
@@ -57,11 +55,11 @@ const (
 // Dir reports that definitions have no directory under this backend.
 func (s *SQLStore) Dir() string { return "" }
 
-// List returns every definition, ordered by id so a re-read returns the same slice. A table has no natural order.
+// List returns every definition in byte order of its id, which is what the file store's directory listing gave and what the engine breaks priority ties on.
 func (s *SQLStore) List() ([]Definition, error) {
 	ctx, cancel := s.context()
 	defer cancel()
-	rows, err := s.db.QueryContext(ctx, selectWorkflows)
+	rows, err := s.db.QueryContext(ctx, `SELECT doc FROM workflow_definitions ORDER BY `+s.db.OrderText("id"))
 	if err != nil {
 		return nil, fmt.Errorf("list workflows: %w", err)
 	}
@@ -142,11 +140,21 @@ func (s *SQLStore) Save(def Definition) error {
 }
 
 // Delete removes a definition. Its snapshots stay: a running task references one by hash, and dropping them would strand it mid-workflow.
+//
+// A missing id is an error, as it is for the file store: the GUI shows what Delete returns, and reporting success on one backend and failure on the other for the same click is worse than either answer.
 func (s *SQLStore) Delete(id string) error {
 	ctx, cancel := s.context()
 	defer cancel()
-	if _, err := s.db.ExecContext(ctx, deleteWorkflow, id); err != nil {
+	res, err := s.db.ExecContext(ctx, deleteWorkflow, id)
+	if err != nil {
 		return fmt.Errorf("delete workflow %q: %w", id, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete workflow %q: %w", id, err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("workflow %s not found", id)
 	}
 	return nil
 }
