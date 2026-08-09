@@ -586,7 +586,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.startupRecoveryPending.Store(true)
 	a.initStatusHook() //nolint:contextcheck // workflow engine uses its own e.ctx field, see Startup's contextcheck note
 	a.initLocalStores(appCtx)
-	a.cleanupProtected = cleanup.DefaultProtectedStore()
+	a.cleanupProtected = a.openProtectedStore(appCtx)
 	a.notifier = notification.New(emit)
 	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
 	a.initLimits(a.openLimitsStore(appCtx)) //nolint:contextcheck // the live poller derives from a.ctx directly, see Startup's contextcheck note
