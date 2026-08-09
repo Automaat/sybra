@@ -2,6 +2,7 @@ package attachment
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,7 +61,7 @@ func TestSQLStore_RejectsAnOversizeUploadNamingTheLimit(t *testing.T) {
 		if err == nil {
 			t.Fatal("an upload over the limit was accepted")
 		}
-		if !bytes.Contains([]byte(err.Error()), []byte("8 bytes")) {
+		if !strings.Contains(err.Error(), "8 bytes") {
 			t.Fatalf("refusal %q does not name the configured limit", err)
 		}
 	})
