@@ -8,6 +8,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/experience"
+	"github.com/Automaat/sybra/internal/loopagent"
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
@@ -124,5 +125,43 @@ func TestDatabaseBackend_ExperienceUsesTheBackend(t *testing.T) {
 	a.initExperience(t.Context())
 	if _, ok := a.experience.(*experience.SQLStore); !ok {
 		t.Fatalf("advisory memory is %T, want the database-backed store", a.experience)
+	}
+}
+
+// TestDatabaseBackend_FailedLoopAgentImportKeepsTheFiles pins the degrade path.
+//
+// Continuing to an empty table when the import failed drops every schedule the
+// operator has, for the whole uptime, while the definitions sit intact on disk
+// — and the first-boot seed then re-creates the built-in one under a new id.
+// One ERROR line is the only sign.
+func TestDatabaseBackend_FailedLoopAgentImportKeepsTheFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+
+	cfg := testConfig(t)
+	cfg.Database = config.DatabaseConfig{Backend: config.DBBackendSQLite, DSN: filepath.Join(home, "sybra.db")}
+	// A path the import cannot read, which is what a permissions slip or a
+	// stray file in the home produces.
+	cfg.LoopAgentsDir = filepath.Join(home, "loop-agents")
+	if err := os.WriteFile(cfg.LoopAgentsDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+
+	a := NewApp(discardLogger(), &slog.LevelVar{}, cfg)
+	if err := a.initDatabase(t.Context()); err != nil {
+		t.Fatalf("initDatabase: %v", err)
+	}
+	t.Cleanup(func() {
+		if a.database != nil {
+			_ = a.database.Close()
+		}
+	})
+
+	err := a.initLoopAgents(t.Context())
+	if _, ok := a.loopAgents.(*loopagent.SQLStore); ok {
+		t.Fatal("a failed import still switched to the database; every existing schedule silently stops running")
+	}
+	if err == nil && a.loopAgents == nil {
+		t.Fatal("no store at all after a failed import")
 	}
 }

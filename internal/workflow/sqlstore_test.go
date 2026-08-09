@@ -41,6 +41,12 @@ func definitionsFixture() []Definition {
 		{ID: "pr-review", Name: "review", Steps: []Step{step}},
 		{ID: "pr-fix", Name: "fix", Steps: []Step{step}},
 		{ID: "branch-conflict-fix", Name: "conflict", Steps: []Step{step}},
+		// A prefix pair. The file store sorts "<id>.yaml", so "wfx-a" comes
+		// first ('-' < '.'); ordering by the bare id puts "wfx" first because a
+		// prefix is shorter. Without this pair the parity assertion cannot see
+		// the difference.
+		{ID: "wfx", Name: "prefix", Steps: []Step{step}},
+		{ID: "wfx-a", Name: "prefixed", Steps: []Step{step}},
 	}
 }
 

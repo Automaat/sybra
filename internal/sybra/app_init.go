@@ -1755,20 +1755,21 @@ func (a *App) logAudit(eventType, taskID, agentID string, data map[string]any) {
 // the same Name already exists this is a no-op.
 func (a *App) initLoopAgents(ctx context.Context) error {
 	if a.database != nil {
-		ctx, cancel := context.WithTimeout(ctx, importTimeout)
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
 		defer cancel()
-		if err := loopagent.Import(ctx, a.database, a.cfg.LoopAgentsDir, a.importScope(), a.logger); err != nil {
-			// Not fatal: the schedules already in the database still run, and
-			// the files stay for the next start to retry from.
+		// Degrade to the files on a failed import, as every other domain does.
+		// Continuing to an empty table drops the operator's schedules for the
+		// whole uptime while their definitions sit intact on disk, and the
+		// first-boot seed then re-creates the built-in one under a new id — all
+		// behind a single log line.
+		if err := loopagent.Import(importCtx, a.database, a.cfg.LoopAgentsDir, a.importScope(), a.logger); err != nil {
 			a.logger.Error("loopagent.import", "err", err)
-		}
-		store, err := loopagent.NewSQLStore(a.database)
-		if err != nil {
+		} else if store, err := loopagent.NewSQLStore(a.database); err != nil {
 			a.logger.Error("loopagent.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
-			return err
+		} else {
+			a.loopAgents = store
+			return nil
 		}
-		a.loopAgents = store
-		return nil
 	}
 	store, err := loopagent.NewStore(a.cfg.LoopAgentsDir)
 	if err != nil {

@@ -55,11 +55,13 @@ const (
 // Dir reports that definitions have no directory under this backend.
 func (s *SQLStore) Dir() string { return "" }
 
-// List returns every definition in byte order of its id, which is what the file store's directory listing gave and what the engine breaks priority ties on.
+// List returns every definition in the order the file store's directory listing gave, which is what the engine breaks priority ties on.
+//
+// Ordered by the file NAME, not the id: the file store sorts "<id>.yaml", so "wfx-a" precedes "wfx" there ('-' < '.') while ordering by id alone puts the prefix first. Two same-priority workflows would otherwise dispatch differently depending on the backend.
 func (s *SQLStore) List() ([]Definition, error) {
 	ctx, cancel := s.context()
 	defer cancel()
-	rows, err := s.db.QueryContext(ctx, `SELECT doc FROM workflow_definitions ORDER BY `+s.db.OrderText("id"))
+	rows, err := s.db.QueryContext(ctx, `SELECT doc FROM workflow_definitions ORDER BY `+s.db.OrderText(`id || '.yaml'`))
 	if err != nil {
 		return nil, fmt.Errorf("list workflows: %w", err)
 	}
