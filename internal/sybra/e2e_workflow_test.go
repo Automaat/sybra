@@ -4,11 +4,14 @@ package sybra
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +31,7 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 	synapsegithub "github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/httpapi"
+	"github.com/Automaat/sybra/internal/httpserve"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
@@ -492,7 +496,117 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 		)
 	})
 
+	serveE2EBoard(t, taskDir, taskMgr, artifactStore)
+
 	return env
+}
+
+// serveE2EBoard gives this home a board, because the agents these tests run
+// reach task state through sybra-cli and the CLI has no filesystem path left.
+//
+// It models what a real deployment looks like: the process that owns a home
+// also serves it, so an agent's bare `sybra-cli update` finds a board for the
+// home it was pointed at. Without one every scenario that records a status or a
+// sidecar silently does nothing.
+func serveE2EBoard(t *testing.T, home string, tasks *task.Manager, artifacts *artifact.Store) {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	httpapi.Mount(mux, map[string]httpapi.Service{
+		"TaskService": httpapi.NewService(&e2eBoardTaskService{tasks: tasks, artifacts: artifacts},
+			"ListTasks", "GetTask", "CreateTask", "CreateTaskFull", "UpdateTask",
+			"UpdateTaskFields", "ApplyTransition", "TouchTask", "DeleteTask",
+			"AppendTaskProgress", "ListTaskProgress",
+		),
+	}, slog.New(slog.DiscardHandler), nil)
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		payload, err := json.Marshal(map[string]string{
+			"status": "ok", "service": httpserve.ServiceMarker, "home_id": httpserve.HomeID(home),
+		})
+		if err != nil {
+			t.Errorf("encode e2e health: %v", err)
+			return
+		}
+		_, _ = w.Write(payload)
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatalf("split e2e board host: %v", err)
+	}
+	// Recorded the way a desktop app records it, so the CLI's own discovery
+	// finds it rather than the test reaching around that path.
+	if err := os.WriteFile(filepath.Join(home, "desktop-port"), []byte(port), 0o600); err != nil {
+		t.Fatalf("write e2e desktop port: %v", err)
+	}
+	tokenPath := filepath.Join(home, "e2e-board-token")
+	if err := os.WriteFile(tokenPath, []byte("e2e-board-token"), 0o600); err != nil {
+		t.Fatalf("write e2e board token: %v", err)
+	}
+	t.Setenv("SYBRA_AUTH_TOKEN_FILE", tokenPath)
+}
+
+// e2eBoardTaskService adapts the harness stores to TaskService's wire names.
+type e2eBoardTaskService struct {
+	tasks     *task.Manager
+	artifacts *artifact.Store
+}
+
+func (s *e2eBoardTaskService) ListTasks() ([]task.Task, error) { return s.tasks.List() }
+func (s *e2eBoardTaskService) GetTask(id string) (task.Task, error) {
+	return s.tasks.Get(id)
+}
+
+func (s *e2eBoardTaskService) CreateTask(title, body, mode string) (task.Task, error) {
+	return s.tasks.Create(title, body, mode)
+}
+
+func (s *e2eBoardTaskService) CreateTaskFull(title, body, mode, status string, init task.Update) (task.Task, error) {
+	if status == "" {
+		return s.tasks.CreateFull(title, body, mode, init)
+	}
+	st, err := task.ValidateStatus(status)
+	if err != nil {
+		return task.Task{}, err
+	}
+	return s.tasks.CreateWithStatus(title, body, mode, st, init)
+}
+
+func (s *e2eBoardTaskService) UpdateTask(id string, raw map[string]any) (task.Task, error) {
+	return s.tasks.UpdateMap(id, raw)
+}
+
+func (s *e2eBoardTaskService) UpdateTaskFields(id string, u task.Update) (task.Task, error) {
+	return s.tasks.Update(id, u)
+}
+
+func (s *e2eBoardTaskService) ApplyTransition(intent task.TransitionIntent) (task.TransitionResult, error) {
+	return s.tasks.Apply(intent)
+}
+
+func (s *e2eBoardTaskService) TouchTask(id string) (task.Task, error) { return s.tasks.Touch(id) }
+func (s *e2eBoardTaskService) DeleteTask(id string) error             { return s.tasks.Delete(id) }
+
+func (s *e2eBoardTaskService) AppendTaskProgress(taskID, kind, role, message string) (artifact.ProgressEntry, error) {
+	entry := artifact.ProgressEntry{Ts: time.Now().UTC(), Kind: kind, Role: role, Message: message}
+	if err := s.artifacts.AppendProgress(taskID, entry); err != nil {
+		return artifact.ProgressEntry{}, err
+	}
+	return entry, nil
+}
+
+func (s *e2eBoardTaskService) ListTaskProgress(taskID string) ([]artifact.ProgressEntry, error) {
+	entries, err := s.artifacts.ReadProgress(taskID)
+	if err != nil {
+		return nil, err
+	}
+	if entries == nil {
+		entries = []artifact.ProgressEntry{}
+	}
+	return entries, nil
 }
 
 func unsetGitFixtureEnv(t *testing.T) {

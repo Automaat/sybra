@@ -598,10 +598,18 @@ func TestBoardEndpoints_ExternalToolFailuresStayActionable(t *testing.T) {
 // stuck task.
 func TestClassifyTask_StampsARetryableReasonOnFailure(t *testing.T) {
 	// No t.Parallel: t.Setenv below is incompatible with it.
-	// No provider CLI on PATH, so the classifier fails the way a broken
-	// provider does rather than spending real credits.
+	//
+	// Provider stubs prepended, not an emptied PATH: this suite's other tests
+	// leave background goroutines running git, and taking git away from them
+	// for the length of this test makes them retry rather than fail.
 	fakebin := t.TempDir()
-	t.Setenv("PATH", fakebin)
+	for _, name := range []string{"claude", "codex", "copilot"} {
+		stub := "#!/bin/sh\nexit 1\n"
+		if err := os.WriteFile(filepath.Join(fakebin, name), []byte(stub), 0o755); err != nil {
+			t.Fatalf("write %s stub: %v", name, err)
+		}
+	}
+	t.Setenv("PATH", fakebin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	svc, a := setupTaskService(t)
 	projects, err := project.NewStore(t.TempDir(), t.TempDir())

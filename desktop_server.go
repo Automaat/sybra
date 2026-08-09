@@ -107,9 +107,12 @@ func openAttachedBoard(ctx context.Context, cfg *config.Config, logger *slog.Log
 		openBrowser = nil
 	}
 	return serveDesktopBoard(ln, origin, logger, cfg, httpserve.Options{
-		Logger:     logger,
-		Services:   sybra.LocalBrowserServices(openBrowser),
-		StaticFS:   sub,
+		Logger:   logger,
+		Services: sybra.LocalBrowserServices(openBrowser),
+		StaticFS: sub,
+		// The home this window's local surface serves, so a CLI on this machine
+		// can tell it apart from another instance's board.
+		Home:       config.HomeDir(),
 		APIBase:    origin + "/api",
 		Token:      cfg.Server.AuthToken,
 		SelfOrigin: origin,

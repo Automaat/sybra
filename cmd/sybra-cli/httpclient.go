@@ -375,22 +375,31 @@ func (c *apiClient) reachable(ctx context.Context) bool {
 	return true
 }
 
-// servesThisHome reports a peer that both identifies as Sybra and says it
-// serves the given home.
+// servesThisHome reports a peer an inferred target may be used for.
 //
-// It is the bar for a target this client inferred rather than an operator
-// named: with no bind configured every home infers the same default port, so
-// without it an isolated SYBRA_HOME reaches whichever board happens to hold
-// that port — including the operator's real one.
+// A board that names a different home is refused: with no bind configured every
+// home infers the same default port, so otherwise an isolated SYBRA_HOME
+// reaches whichever board holds it, including the operator's real one.
+//
+// A board that names no home at all is accepted. That is a server older than
+// this field, and refusing it would break every deployment between the CLI
+// landing and the server restarting — which auto-update coalesces by up to an
+// hour, during which every agent's task CRUD would fail. The bearer token
+// remains the actual gate, and ownsHome still requires a positive match before
+// anything deletes local files.
 func (c *apiClient) servesThisHome(home string) bool {
-	return c.identified && c.ownsHome(home)
+	if c == nil {
+		return false
+	}
+	if c.boardHomeID == "" {
+		return true
+	}
+	return c.ownsHome(home)
 }
 
-// ownsHome reports that this board serves the given SYBRA_HOME.
-//
-// Address is not enough: two instances on one machine are both loopback, and
-// the one that answers may own a different home entirely. Anything that acts on
-// this machine's files has to ask which home the board actually serves.
+// ownsHome reports a board that positively claims this home. Unlike
+// servesThisHome it never accepts silence: a server too old to answer the
+// question cannot authorise deleting this machine's files.
 func (c *apiClient) ownsHome(home string) bool {
 	want := httpserve.HomeID(home)
 	if c == nil || c.boardHomeID == "" || want == "" {
