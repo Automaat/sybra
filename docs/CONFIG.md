@@ -738,11 +738,11 @@ couldn't catch).
 
 ### DatabaseConfig (`storage.database`)
 
-DatabaseConfig selects the durable-storage backend and its connection settings. Omitting the block keeps every store on the filesystem.
+DatabaseConfig selects the durable-storage backend and its connection settings. Omitting the block lands on sqlite under the Sybra home; the filesystem stores are reached only by naming "file" explicitly, and are being retired.
 
 | YAML key | Type | Default | Unit | Env override | Legacy aliases | Secret | Reload | Constraints | Description |
 |---|---|---|---|---|---|---|---|---|---|
-| `storage.database.backend` | `string` | `""` |  |  | `database.backend` | `false` | `restart` |  | Backend is "file" (filesystem stores), "sqlite" (embedded single file), or "postgres" (shared server). An unrecognized value fails validation instead of falling back, so a typo cannot silently keep writing files. |
+| `storage.database.backend` | `string` | `""` |  |  | `database.backend` | `false` | `restart` |  | Backend is "sqlite" (embedded single file, the default when unset), "postgres" (shared server), or "file" (the filesystem stores, retained for rollback and being retired). An unrecognized value fails validation instead of falling back, so a typo cannot silently change where the board lives. |
 | `storage.database.dsn` | `string` | `[redacted]` |  |  | `database.dsn` | `true` | `restart` |  | DSN is a file path for sqlite (default ~/.sybra/sybra.db), optionally with driver query parameters after a "?", and a required postgres:// URL or key=value string for postgres. |
 | `storage.database.max_open_conns` | `int` | `0` |  |  | `database.max_open_conns` | `false` | `restart` |  | MaxOpenConns caps concurrent connections; 0 uses the per-engine default (1 for sqlite, 16 for postgres). |
 | `storage.database.max_idle_conns` | `int` | `0` |  |  | `database.max_idle_conns` | `false` | `restart` |  | MaxIdleConns caps pooled idle connections; 0 uses the per-engine default. |

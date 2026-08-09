@@ -13,7 +13,7 @@ func TestNormalizeDBBackend(t *testing.T) {
 		want    string
 		wantErr string
 	}{
-		{name: "empty defaults to file", in: "", want: DBBackendFile},
+		{name: "empty defaults to sqlite", in: "", want: DBBackendSQLite},
 		{name: "explicit file", in: "file", want: DBBackendFile},
 		{name: "sqlite", in: "sqlite", want: DBBackendSQLite},
 		{name: "sqlite3 alias", in: "sqlite3", want: DBBackendSQLite},
@@ -41,13 +41,22 @@ func TestNormalizeDBBackend(t *testing.T) {
 	}
 }
 
-func TestDatabaseEnabled_UnsetKeepsFileBehavior(t *testing.T) {
+// TestDatabaseEnabled_UnsetLandsOnSQLite pins the retirement of the file stores: an install that never named a backend still gets a database, and migrates itself there through the per-domain imports on first start.
+func TestDatabaseEnabled_UnsetLandsOnSQLite(t *testing.T) {
 	var cfg Config
-	if cfg.DatabaseEnabled() {
-		t.Error("an omitted database block must keep the filesystem stores")
+	if !cfg.DatabaseEnabled() {
+		t.Error("an omitted database block must now land on a database, not the filesystem stores")
 	}
-	if cfg.DatabaseBackend() != DBBackendFile {
-		t.Errorf("DatabaseBackend() = %q, want %q", cfg.DatabaseBackend(), DBBackendFile)
+	if cfg.DatabaseBackend() != DBBackendSQLite {
+		t.Errorf("DatabaseBackend() = %q, want %q", cfg.DatabaseBackend(), DBBackendSQLite)
+	}
+}
+
+// TestDatabaseEnabled_FileStaysSelectable keeps the escape hatch honest while the file stores are still present.
+func TestDatabaseEnabled_FileStaysSelectable(t *testing.T) {
+	cfg := Config{Database: DatabaseConfig{Backend: DBBackendFile}}
+	if cfg.DatabaseEnabled() {
+		t.Error("an explicit file backend must still keep the filesystem stores")
 	}
 }
 

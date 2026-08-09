@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Database backend identifiers accepted by database.backend. An unset key resolves to DBBackendFile, so an untouched config needs no migration.
+// Database backend identifiers accepted by database.backend. An unset key resolves to DBBackendSQLite; the file stores are being retired and an untouched config migrates itself on first start.
 const (
 	DBBackendFile     = "file"
 	DBBackendSQLite   = "sqlite"
@@ -16,9 +16,9 @@ const (
 // DefaultSQLiteFileName is the database file created under the Sybra home when database.backend is sqlite and no dsn is given.
 const DefaultSQLiteFileName = "sybra.db"
 
-// DatabaseConfig selects the durable-storage backend and its connection settings. Omitting the block keeps every store on the filesystem.
+// DatabaseConfig selects the durable-storage backend and its connection settings. Omitting the block lands on sqlite under the Sybra home; the filesystem stores are reached only by naming "file" explicitly, and are being retired.
 type DatabaseConfig struct {
-	// Backend is "file" (filesystem stores), "sqlite" (embedded single file), or "postgres" (shared server). An unrecognized value fails validation instead of falling back, so a typo cannot silently keep writing files.
+	// Backend is "sqlite" (embedded single file, the default when unset), "postgres" (shared server), or "file" (the filesystem stores, retained for rollback and being retired). An unrecognized value fails validation instead of falling back, so a typo cannot silently change where the board lives.
 	Backend string `yaml:"backend,omitempty" json:"backend"`
 	// DSN is a file path for sqlite (default ~/.sybra/sybra.db), optionally with driver query parameters after a "?", and a required postgres:// URL or key=value string for postgres.
 	DSN string `yaml:"dsn,omitempty" json:"dsn" secret:"true"`
@@ -33,7 +33,10 @@ type DatabaseConfig struct {
 // NormalizeDBBackend canonicalizes a database.backend value. Casing and surrounding space are tolerated so a formatting slip never changes which engine the board lands on; unknown values are rejected.
 func NormalizeDBBackend(s string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", DBBackendFile:
+	case "":
+		// Unset lands on sqlite rather than file: the file stores are being retired, and an install that never touched this key still migrates itself on first start through the per-domain imports.
+		return DBBackendSQLite, nil
+	case DBBackendFile:
 		return DBBackendFile, nil
 	case DBBackendSQLite, "sqlite3":
 		return DBBackendSQLite, nil
@@ -45,7 +48,9 @@ func NormalizeDBBackend(s string) (string, error) {
 	}
 }
 
-// DatabaseBackend returns the resolved backend identifier. An invalid value resolves to file here because ValidateResolvedConfig already refuses to start on it, so this accessor never has to guess.
+// DatabaseBackend returns the resolved backend identifier.
+//
+// A nil receiver or an invalid value resolves to file, which is the inert answer rather than the default one: ValidateResolvedConfig already refuses to start on a bad value, and a nil config describes no install to migrate. An unset key on a real config resolves to sqlite through NormalizeDBBackend.
 func (c *Config) DatabaseBackend() string {
 	if c == nil {
 		return DBBackendFile
