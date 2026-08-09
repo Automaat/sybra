@@ -523,7 +523,7 @@ printf '%%s\n' '{"type":"result","result":"done","session_id":"sess-lifecycle","
 	if err := os.WriteFile(releaseFile, nil, 0o644); err != nil {
 		t.Fatalf("release fake claude: %v", err)
 	}
-	waitForAgentDone(t, got, 15*time.Second)
+	waitForAgentDone(t, got, scaledDeadline(15*time.Second))
 	if got.GetState() != StateStopped {
 		t.Fatalf("completed reattached state = %s, want %s", got.GetState(), StateStopped)
 	}

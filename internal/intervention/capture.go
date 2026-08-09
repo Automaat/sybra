@@ -27,7 +27,7 @@ import (
 // dependency, degrades to a no-op (never blocks the caller's own status
 // write) on any failure, and never captures work content for a work-typed
 // project without scrubbing first.
-func Capture(store *Store, cfg *config.Config, projects *project.Store, al *audit.Logger, logger *slog.Logger, cur task.Task, target, reason string, class OperatorActionClass) {
+func Capture(store *Store, cfg *config.Config, projects *project.Store, al audit.Store, logger *slog.Logger, cur task.Task, target, reason string, class OperatorActionClass) {
 	defer func() {
 		if r := recover(); r != nil && logger != nil {
 			logger.Warn("intervention.record.panic", "task_id", cur.ID, "panic", r)
@@ -77,7 +77,7 @@ func Capture(store *Store, cfg *config.Config, projects *project.Store, al *audi
 	logCapture(al, logger, audit.EventInterventionRecorded, cur.ID, data)
 }
 
-func logCapture(al *audit.Logger, logger *slog.Logger, eventType, taskID string, data map[string]any) {
+func logCapture(al audit.Store, logger *slog.Logger, eventType, taskID string, data map[string]any) {
 	if al == nil {
 		return
 	}

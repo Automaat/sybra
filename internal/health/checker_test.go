@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/audit"
+
 	"github.com/Automaat/sybra/internal/sandbox"
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -54,7 +56,7 @@ func TestCheckerIncludesDockerReclaimableFinding(t *testing.T) {
 		t.Fatalf("task.NewStore: %v", err)
 	}
 
-	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
+	c := New(auditDirReaderForTest(t.TempDir()), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
 	c.docker = func(context.Context) ([]byte, error) {
 		return []byte(`{"Size":"25GiB","Reclaimable":"20GiB (80%)"}`), nil
 	}
@@ -96,7 +98,7 @@ func TestCheckerSkipsSandboxCheckWhenUnwired(t *testing.T) {
 		t.Fatalf("task.NewStore: %v", err)
 	}
 
-	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
+	c := New(auditDirReaderForTest(t.TempDir()), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
 	c.check(t.Context())
 
 	report := c.LatestReport()
@@ -119,7 +121,7 @@ func TestCheckerIncludesSandboxCleanupFinding(t *testing.T) {
 		t.Fatalf("task.NewStore: %v", err)
 	}
 
-	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
+	c := New(auditDirReaderForTest(t.TempDir()), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
 	c.SetSandboxQuarantine(func() []sandbox.QuarantineEntry {
 		return []sandbox.QuarantineEntry{
 			{TaskID: "task-quarantined", Path: "/data/sandboxes/task-quarantined", BytesRetained: 2048, Attempts: 4, LastError: "permission denied"},
@@ -166,7 +168,7 @@ func TestCheckerIncludesUnreadableTaskFinding(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
+	c := New(auditDirReaderForTest(t.TempDir()), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
 	c.check(t.Context())
 
 	report := c.LatestReport()
@@ -205,7 +207,7 @@ func TestCheckerSkipsGHAuthCheckWhenUnwired(t *testing.T) {
 		t.Fatalf("task.NewStore: %v", err)
 	}
 
-	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
+	c := New(auditDirReaderForTest(t.TempDir()), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
 	c.check(t.Context())
 
 	report := c.LatestReport()
@@ -228,7 +230,7 @@ func TestCheckerIncludesGHAuthUnavailableFinding(t *testing.T) {
 		t.Fatalf("task.NewStore: %v", err)
 	}
 
-	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
+	c := New(auditDirReaderForTest(t.TempDir()), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
 	c.SetGHAuthProbe(func() (bool, string) { return false, "misconfigured" })
 
 	c.check(t.Context())
@@ -261,7 +263,7 @@ func TestCheckerIncludesGHAuthUnavailableFinding_TransientIsWarning(t *testing.T
 		t.Fatalf("task.NewStore: %v", err)
 	}
 
-	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
+	c := New(auditDirReaderForTest(t.TempDir()), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
 	c.SetGHAuthProbe(func() (bool, string) { return false, "unavailable" })
 
 	c.check(t.Context())
@@ -295,7 +297,7 @@ func TestCheckerIncludesPressureTelemetry(t *testing.T) {
 	}
 
 	ranAt := time.Date(2026, 7, 16, 20, 30, 0, 0, time.UTC)
-	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
+	c := New(auditDirReaderForTest(t.TempDir()), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
 	c.SetPressureStatus(func() *PressureStatus {
 		return &PressureStatus{
 			DiskFreePct:         12.5,
@@ -352,7 +354,7 @@ func TestCheckerSanitizesUnreadablePressureSample(t *testing.T) {
 		t.Fatalf("task.NewStore: %v", err)
 	}
 
-	c := New(t.TempDir(), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
+	c := New(auditDirReaderForTest(t.TempDir()), task.NewManager(store, nil), home, slog.New(slog.DiscardHandler), nil, nil)
 	c.SetPressureStatus(func() *PressureStatus {
 		return &PressureStatus{
 			DiskFreePct:         math.NaN(),
@@ -409,3 +411,13 @@ func TestCheckerSanitizesUnreadablePressureSample(t *testing.T) {
 		t.Errorf("persisted pressure = %+v, want DiskFreePct/LoadPerCPU sanitized to -1", *persisted.Pressure)
 	}
 }
+
+// auditDirReaderForTest adapts a trail directory into the reader the checker
+// takes, so these tests keep exercising the real file reader.
+func auditDirReaderForTest(dir string) auditReader {
+	return auditReaderFunc(func(q audit.Query) ([]audit.Event, error) { return audit.Read(dir, q) })
+}
+
+type auditReaderFunc func(audit.Query) ([]audit.Event, error)
+
+func (f auditReaderFunc) Read(q audit.Query) ([]audit.Event, error) { return f(q) }

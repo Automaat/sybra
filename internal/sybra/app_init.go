@@ -360,7 +360,19 @@ func (a *App) warnThinFailoverChain() {
 	}
 }
 
-func (a *App) initStats() {
+func (a *App) initStats(ctx context.Context) {
+	if a.database != nil {
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := stats.Import(importCtx, a.database, config.StatsFile(), a.importScope(), a.logger); err != nil {
+			a.logger.Error("stats.import", "err", err)
+		} else if store, err := stats.NewSQLStore(a.database, a.logger); err != nil {
+			a.logger.Error("stats.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			a.stats = store
+			return
+		}
+	}
 	statsStore, err := stats.NewStore(config.StatsFile())
 	if err != nil {
 		a.logger.Warn("stats.init.degraded", "err", err)
@@ -452,8 +464,10 @@ func (a *App) initAgentQueue() {
 	a.agentQueue = queue
 }
 
-func (a *App) initLimits() {
-	limitStore, err := limits.NewStore(config.LimitsFile())
+// initLimits opens the quota store, taking the store the caller already built
+// so the import's context belongs to startup while the live poller keeps the
+// app's own long-lived one.
+func (a *App) initLimits(limitStore *limits.Store, err error) {
 	if err != nil {
 		a.logger.Warn("limits.init.degraded", "err", err)
 		return
@@ -1272,8 +1286,8 @@ func (a *App) maybeStartWorkflowForExternalTask(path string) {
 // initToolLedger opens the always-on tool-call ledger. A failure degrades to
 // no recording rather than blocking startup: the ledger informs future policy,
 // it does not gate anything running now.
-func (a *App) initToolLedger() {
-	l, err := toolledger.New(a.cfg.ToolLedgerDir())
+func (a *App) initToolLedger(ctx context.Context) {
+	l, err := a.openToolLedger(ctx)
 	if err != nil {
 		a.logger.Warn("tool_ledger.init.degraded", "err", err)
 		return
@@ -1284,8 +1298,8 @@ func (a *App) initToolLedger() {
 	}
 }
 
-func (a *App) initAudit() {
-	al, err := audit.NewLogger(a.auditDir)
+func (a *App) initAudit(ctx context.Context) {
+	al, err := a.openAuditStore(ctx)
 	if err != nil {
 		a.logger.Warn("audit.init.degraded", "err", err)
 		// a.audit remains nil; logAudit() is a no-op when audit is nil.
@@ -1296,7 +1310,10 @@ func (a *App) initAudit() {
 	if retentionDays <= 0 {
 		retentionDays = 30
 	}
-	if err := audit.Cleanup(a.auditDir, retentionDays); err != nil {
+	// Through the store, not the package-level file cleanup: with a database
+	// backend the day-files stop growing and pruning them frees nothing, while
+	// audit_events — the highest-rate table there is — would grow forever.
+	if err := a.audit.Cleanup(retentionDays); err != nil {
 		a.logger.Warn("audit.cleanup", "err", err)
 	}
 
@@ -2025,4 +2042,67 @@ func (a *App) openBgopStore(ctx context.Context) bgop.Persistence {
 // instance's restarts and differs between instances.
 func (a *App) importScope() string {
 	return httpserve.HomeID(config.HomeDir())
+}
+
+// openAuditStore returns the audit trail for the configured backend, importing
+// the existing day-files the first time a database is used. A failed import
+// degrades to the files: the trail is what an operator reads to explain what
+// happened, and an empty one reads as "nothing happened".
+func (a *App) openAuditStore(ctx context.Context) (audit.Store, error) {
+	if a.database != nil {
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := audit.Import(importCtx, a.database, a.auditDir, a.importScope(), a.logger); err != nil {
+			a.logger.Error("audit.import", "err", err)
+		} else if store, err := audit.NewSQLStore(a.database); err != nil {
+			a.logger.Error("audit.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return store, nil
+		}
+	}
+	store, err := audit.NewLogger(a.auditDir)
+	if err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
+// openToolLedger returns the tool-call ledger for the configured backend.
+func (a *App) openToolLedger(ctx context.Context) (toolledger.Store, error) {
+	if a.database != nil {
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := toolledger.Import(importCtx, a.database, a.cfg.ToolLedgerDir(), a.importScope(), a.logger); err != nil {
+			a.logger.Error("tool_ledger.import", "err", err)
+		} else if store, err := toolledger.NewSQLStore(a.database); err != nil {
+			a.logger.Error("tool_ledger.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return store, nil
+		}
+	}
+	l, err := toolledger.New(a.cfg.ToolLedgerDir())
+	if err != nil {
+		return nil, err
+	}
+	return l, nil
+}
+
+// openLimitsStore returns the quota store for the configured backend. A failed
+// import degrades to the file: quota state gates provider selection, and
+// starting from nothing would read as unlimited headroom on every provider.
+func (a *App) openLimitsStore(ctx context.Context) (*limits.Store, error) {
+	if a.database != nil {
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := limits.Import(importCtx, a.database, config.LimitsFile(), a.importScope(), a.logger); err != nil {
+			a.logger.Error("limits.import", "err", err)
+		} else if persistence, err := limits.NewSQLPersistence(a.database); err != nil {
+			a.logger.Error("limits.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else if store, err := limits.NewStoreWith(persistence); err != nil {
+			a.logger.Error("limits.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return store, nil
+		}
+	}
+	return limits.NewStore(config.LimitsFile())
 }

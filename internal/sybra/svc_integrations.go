@@ -26,7 +26,7 @@ type IntegrationService struct {
 	projects       *project.Store
 	agents         *agent.Manager
 	worktrees      *worktree.Manager
-	audit          *audit.Logger
+	audit          audit.Store
 	cfg            *config.Config
 	currentConfig  func() *config.Config
 	logger         *slog.Logger

@@ -49,7 +49,7 @@ type TaskService struct {
 	attachments    *attachment.Store
 	wg             *sync.WaitGroup
 	logger         *slog.Logger
-	audit          *audit.Logger
+	audit          audit.Store
 	cfg            *config.Config
 	currentConfig  func() *config.Config
 	// projects and intervention back recordInterventionOnUnblock only; nil in
@@ -365,7 +365,10 @@ func (s *TaskService) ListTaskAuditEvents(taskID string, days int) ([]TaskAuditE
 	}
 	until := time.Now().UTC().Add(time.Minute)
 	since := until.AddDate(0, 0, -days)
-	events, err := audit.Read(cfg.AuditDir(), audit.Query{
+	if s.audit == nil {
+		return []TaskAuditEventDTO{}, nil
+	}
+	events, err := s.audit.Read(audit.Query{
 		Since:  since,
 		Until:  until,
 		TaskID: taskID,

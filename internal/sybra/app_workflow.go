@@ -729,7 +729,7 @@ type taskClassifierAdapter struct {
 	tasks             *task.Manager
 	projects          *project.Store
 	classifier        triage.Classifier
-	audit             *audit.Logger
+	audit             audit.Store
 	sybraBugProjectID string
 }
 

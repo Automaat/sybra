@@ -139,7 +139,7 @@ func selectOrchestratorSingleton(currentID string, agents []*agent.Agent) (keepI
 // OrchestratorService exposes orchestrator session operations as Wails-bound methods.
 type OrchestratorService struct {
 	agents    *agent.Manager
-	audit     *audit.Logger
+	audit     audit.Store
 	logger    *slog.Logger
 	emit      func(string, any)
 	abTesting abtest.Config

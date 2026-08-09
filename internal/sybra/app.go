@@ -102,7 +102,7 @@ type App struct {
 	watcher           *watcher.Watcher
 	configWatcher     *confighot.Watcher
 	notifier          *notification.Emitter
-	audit             *audit.Logger
+	audit             audit.Store
 	attachments       *attachment.Store
 	artifacts         *artifact.Store
 	evidenceStore     *evidence.Store
@@ -111,7 +111,7 @@ type App struct {
 	cleanupProtected  *cleanup.ProtectedStore
 	learning          *learning.Store
 	agentQueue        *agentqueue.Queue
-	stats             *stats.Store
+	stats             stats.Repository
 	limits            *limits.Store
 	tasksDir          string
 	skillsDir         string
@@ -143,7 +143,7 @@ type App struct {
 	workflowStore     workflow.Repository
 	pressureGate      *pressure.Gate
 	diskReclaimer     *diskreclaim.Reclaimer
-	toolLedger        *toolledger.Logger
+	toolLedger        toolledger.Store
 	renovate          *renovateCoordinator
 	promptLab         *promptLabCoordinator
 	triage            *triageCoordinator
@@ -534,13 +534,16 @@ func (a *App) Startup(ctx context.Context) error {
 	appCtx, schedulerCtx, watcherCtx := a.initLifecycle(ctx)
 	a.logger.Info("app.starting")
 
-	a.initAudit()
-	a.initToolLedger()
-	a.initStats()
-
+	// Before the stores that can live in it: each picks its backend at
+	// construction, and a database opened afterwards would leave every one of
+	// them on files for the whole run with nothing reporting it.
 	if err := a.initDatabase(appCtx); err != nil {
 		return err
 	}
+
+	a.initAudit(appCtx)
+	a.initToolLedger(appCtx)
+	a.initStats(appCtx)
 
 	store, err := task.NewStore(a.tasksDir)
 	if err != nil {
@@ -586,7 +589,7 @@ func (a *App) Startup(ctx context.Context) error {
 	a.cleanupProtected = cleanup.DefaultProtectedStore()
 	a.notifier = notification.New(emit)
 	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
-	a.initLimits() //nolint:contextcheck // backfill derives from a.ctx directly, see Startup's contextcheck note
+	a.initLimits(a.openLimitsStore(appCtx)) //nolint:contextcheck // the live poller derives from a.ctx directly, see Startup's contextcheck note
 	// initSandboxes has no agent-manager dependency and must run before
 	// initAgentManager so ManagerConfig.SandboxHome can be wired at construction.
 	a.initSandboxes()

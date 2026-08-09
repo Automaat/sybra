@@ -39,7 +39,7 @@ const stalePRDispatchGateAge = 15 * time.Minute
 // Handler manages PR review task creation, agent dispatch, and status tracking.
 type Handler struct {
 	logger         *slog.Logger
-	audit          *audit.Logger
+	audit          audit.Store
 	emit           func(string, any)
 	tasks          *task.Manager
 	projects       *project.Store
@@ -302,7 +302,7 @@ func New(
 	tasks *task.Manager,
 	projects *project.Store,
 	agents *agent.Manager,
-	al *audit.Logger,
+	al audit.Store,
 	logger *slog.Logger,
 	prTracker *github.IssueTracker,
 	emit func(string, any),

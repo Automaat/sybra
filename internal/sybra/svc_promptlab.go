@@ -55,6 +55,7 @@ type PromptLabService struct {
 	artifacts      *artifact.Store
 	projects       *project.Store
 	workflowEngine *workflow.Engine
+	stats          stats.Repository
 	currentConfig  func() *config.Config
 }
 
@@ -272,9 +273,12 @@ func (s *PromptLabService) RunPromptLab(lookbackSeconds int64, minSamples int, f
 	if cfg == nil || s.tasks == nil {
 		return PromptLabRunDTO{}, unavailableError("prompt lab unavailable")
 	}
-	statsStore, err := stats.NewStore(config.StatsFile())
-	if err != nil {
-		return PromptLabRunDTO{}, err
+	// The board's own history, not a second store over the file: under a
+	// database backend that file stops growing, so a lab run would mine only
+	// pre-migration lines and report "min samples not met" for ever.
+	statsStore := s.stats
+	if statsStore == nil {
+		return PromptLabRunDTO{}, unavailableError("run history unavailable")
 	}
 	lookback := time.Duration(lookbackSeconds) * time.Second
 	if lookback <= 0 {

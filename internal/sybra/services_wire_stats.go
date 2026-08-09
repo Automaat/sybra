@@ -5,10 +5,10 @@ func (a *App) wireStatsService() {
 	a.statsSvc.limits = a.limits
 	a.statsSvc.projects = a.projects
 	a.statsSvc.tasks = a.tasks
-	a.statsSvc.auditDir = a.auditDir
+	a.statsSvc.audit = a.audit
 	a.statsSvc.policy = a.limitPolicy
 	a.statsSvc.currentConfig = a.currentConfig
-	a.auditSvc.auditDir = a.auditDir
+	a.auditSvc.audit = a.audit
 	a.selfMonSvc.tasks = a.tasks
 	a.selfMonSvc.logger = a.logger
 	a.selfMonSvc.currentConfig = a.currentConfig

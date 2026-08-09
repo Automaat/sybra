@@ -36,7 +36,7 @@ func AuditDirReader(dir string) auditReader {
 	return auditFunc(func(q audit.Query) ([]audit.Event, error) { return audit.Read(dir, q) })
 }
 
-// auditWriter is the subset of *audit.Logger the digest service needs to
+// auditWriter is the subset of audit.Store the digest service needs to
 // record its own generation/failure events.
 type auditWriter interface {
 	Log(audit.Event) error
@@ -429,4 +429,20 @@ func (s *Service) interval() time.Duration {
 		interval = 24 * time.Hour
 	}
 	return interval
+}
+
+// AuditStoreReader adapts the board's audit store into a reader.
+//
+// The directory-backed reader above only sees what a file-backed trail wrote.
+// Under a database backend the day-files stop growing, so a consumer left on
+// the directory reads an empty trail and reports the fleet as idle.
+func AuditStoreReader(store interface {
+	Read(audit.Query) ([]audit.Event, error)
+}) auditReader {
+	return auditFunc(func(q audit.Query) ([]audit.Event, error) {
+		if store == nil {
+			return nil, nil
+		}
+		return store.Read(q)
+	})
 }

@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/toolledger"
 )
 
 // TestPrepareRunConfig_SandboxHome_Injected pins the core #1576 fix: a
@@ -712,4 +714,16 @@ func TestPrepareRunConfig_UnnamedBoardKeepsTheControlHome(t *testing.T) {
 	if strings.Contains(joined, "SYBRA_SERVER_TARGET") {
 		t.Errorf("named a target with no board set: %v", cfg.ExtraEnv)
 	}
+}
+
+// TestRecordToolCall_UnsetLedgerDoesNotPanic pins a hazard the interface
+// introduced.
+//
+// The field used to be a *toolledger.Logger whose own methods tolerated a nil
+// receiver. As an interface an unset ledger is a nil interface, and calling
+// through it panics — on the provider stream path, which takes the whole run
+// with it. Every manager built without a ledger is in this state.
+func TestRecordToolCall_UnsetLedgerDoesNotPanic(t *testing.T) {
+	m, _ := newTestManager(t, ManagerConfig{})
+	m.recordToolCall(toolledger.Record{AgentID: "ag1", Tool: "Bash"})
 }

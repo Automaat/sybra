@@ -21,7 +21,7 @@ import (
 type promptLabCoordinator struct {
 	tasks             *task.Manager
 	projects          *project.Store
-	stats             *stats.Store
+	stats             stats.Repository
 	logger            *slog.Logger
 	cfg               *config.Config
 	allowsProjectType func(project.ProjectType) bool
@@ -40,7 +40,7 @@ const promptLabNoProjectErr = "prompt-lab approval unavailable: project " + prom
 func newPromptLabCoordinator(
 	tasks *task.Manager,
 	projects *project.Store,
-	statsStore *stats.Store,
+	statsStore stats.Repository,
 	logger *slog.Logger,
 	cfg *config.Config,
 	allowsProjectType func(project.ProjectType) bool,

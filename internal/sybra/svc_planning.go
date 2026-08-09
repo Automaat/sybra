@@ -16,7 +16,7 @@ type PlanningService struct {
 	engine *workflow.Engine
 	tasks  *task.Manager
 	agents *agent.Manager
-	audit  *audit.Logger
+	audit  audit.Store
 }
 
 // TriageTask starts the triage workflow for the given task. Idempotent:

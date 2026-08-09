@@ -26,7 +26,7 @@ func TestInitAgentManagerBindsToolLedger(t *testing.T) {
 		agentSvc: &AgentService{},
 	}
 
-	a.initToolLedger()
+	a.initToolLedger(t.Context())
 	if a.toolLedger == nil {
 		t.Fatal("initToolLedger did not open a ledger")
 	}
@@ -54,7 +54,7 @@ func TestToolLedgerDirAloneProvesNothing(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	a := &App{cfg: cfg, logger: discardLogger(), logDir: t.TempDir()}
-	a.initToolLedger()
+	a.initToolLedger(t.Context())
 
 	dir := cfg.ToolLedgerDir()
 	if _, err := os.Stat(dir); err != nil {

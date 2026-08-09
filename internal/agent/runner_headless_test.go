@@ -1554,7 +1554,7 @@ func TestGuardrails_CostKillRaceSetsExitErr(t *testing.T) {
 	// finalizeRun (and the close of ag.done) must not block on the slow
 	// subprocess reap — it happens on the shrunk drainTimeout, well before
 	// the real SIGKILL escalation (stopSIGINTGrace) would land.
-	waitForAgentDone(t, ag, 3*time.Second)
+	waitForAgentDone(t, ag, scaledDeadline(3*time.Second))
 
 	if !ag.WasStopped() {
 		t.Fatal("expected WasStopped=true after guardrail kill")
@@ -1608,7 +1608,7 @@ func TestGuardrails_CostHardStop_CompletedTurnIsNotAFailure(t *testing.T) {
 		}
 	})
 
-	waitForAgentDone(t, ag, 3*time.Second)
+	waitForAgentDone(t, ag, scaledDeadline(3*time.Second))
 
 	if !ag.WasStopped() {
 		t.Fatal("expected WasStopped=true after guardrail kill")

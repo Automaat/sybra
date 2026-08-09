@@ -97,7 +97,7 @@ type humanReviewHandler struct {
 	abTesting func() abtest.Config
 	tasks     *task.Manager
 	agents    humanReviewAgentRunner
-	audit     *audit.Logger
+	audit     audit.Store
 	logger    *slog.Logger
 	homeDir   string
 	logFile   string
@@ -197,7 +197,7 @@ func newHumanReviewHandler(
 	cfg *config.Config,
 	tasks *task.Manager,
 	agents humanReviewAgentRunner,
-	al *audit.Logger,
+	al audit.Store,
 	logger *slog.Logger,
 	homeDir, logFile string,
 	workCtx func(projectID string) *WorkScrubContext,

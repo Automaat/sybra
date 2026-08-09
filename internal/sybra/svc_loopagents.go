@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Automaat/sybra/internal/audit"
+
 	"github.com/Automaat/sybra/internal/loopagent"
 )
 
@@ -20,11 +22,11 @@ import (
 // methods. The scheduler owns the actual ticking goroutines; this service
 // is the persistence + GUI surface.
 type LoopAgentService struct {
-	ctx      context.Context //nolint:containedctx // bound methods take no context; see wireLoopAgentService
-	store    loopagent.Repository
-	sched    *loopagent.Scheduler
-	auditDir string
-	logger   *slog.Logger
+	ctx    context.Context //nolint:containedctx // bound methods take no context; see wireLoopAgentService
+	store  loopagent.Repository
+	sched  *loopagent.Scheduler
+	audit  audit.Store
+	logger *slog.Logger
 }
 
 // LoopAgentRun is a single fire of a loop agent, materialized from the
@@ -116,29 +118,59 @@ func (s *LoopAgentService) ListLoopAgentRuns(id string, limit int) ([]LoopAgentR
 	}
 	agentName := la.AgentName()
 
-	files, err := auditFilesNewestFirst(s.auditDir)
+	// Through the store, not the day-files: under a database backend those
+	// stop growing, and a run list built from them would show nothing after
+	// the flip while the schedule kept running.
+	if s.audit == nil {
+		return []LoopAgentRun{}, nil
+	}
+	until := time.Now().UTC().Add(time.Minute)
+	events, err := s.audit.Read(audit.Query{
+		Since: until.AddDate(0, 0, -loopAgentRunLookbackDays),
+		Until: until,
+		Type:  "agent.completed",
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	runs := make([]LoopAgentRun, 0, limit)
-	for _, f := range files {
-		if len(runs) >= limit {
-			break
-		}
-		fileRuns, err := scanAuditFileForRuns(f, agentName)
-		if err != nil {
-			s.logger.Warn("loopagent.audit.scan", "file", f, "err", err)
-			continue
-		}
-		runs = append(runs, fileRuns...)
-	}
+	runs := runsFromAuditEvents(events, agentName)
 
 	slices.SortFunc(runs, func(a, b LoopAgentRun) int { return b.FinishedAt.Compare(a.FinishedAt) })
 	if len(runs) > limit {
 		runs = runs[:limit]
 	}
 	return runs, nil
+}
+
+// loopAgentRunLookbackDays bounds the window a run list is built from. The
+// file scan walked every day-file it had; a bounded query is what lets the
+// database read only the rows it needs.
+const loopAgentRunLookbackDays = 30
+
+// runsFromAuditEvents extracts this agent's completed runs from a trail slice.
+func runsFromAuditEvents(events []audit.Event, agentName string) []LoopAgentRun {
+	out := make([]LoopAgentRun, 0, len(events))
+	for i := range events {
+		ev := events[i]
+		if ev.Type != "agent.completed" {
+			continue
+		}
+		if name, _ := ev.Data["name"].(string); name != agentName {
+			continue
+		}
+		costFloat, _ := ev.Data["cost_usd"].(float64)
+		duration, _ := ev.Data["duration_s"].(float64)
+		state, _ := ev.Data["state"].(string)
+		out = append(out, LoopAgentRun{
+			AgentID:    ev.AgentID,
+			StartedAt:  ev.Timestamp.Add(-time.Duration(duration * float64(time.Second))),
+			FinishedAt: ev.Timestamp,
+			CostUSD:    costFloat,
+			State:      state,
+			DurationS:  duration,
+		})
+	}
+	return out
 }
 
 // auditFilesNewestFirst returns the audit log files (one per day) sorted
