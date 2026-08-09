@@ -155,7 +155,10 @@ func CloneUsable(p Project) bool {
 		return false
 	}
 	info, err := os.Stat(p.ClonePath)
-	return err == nil && info.IsDir()
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
 }
 
 var _ Persistence = (*SQLStore)(nil)
