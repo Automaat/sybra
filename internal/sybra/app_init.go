@@ -543,9 +543,16 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 		providerLimits[name] = a.cfg.Providers.Limits.MaxInFlightPerProvider
 	}
 	var err error
+	var ledger dispatch.Persistence
+	if a.database != nil {
+		ledger, err = a.openAttemptLedger(ctx)
+		if err != nil {
+			return fmt.Errorf("dispatch admission: %w", err)
+		}
+	}
 	a.attempts, err = dispatch.New(ctx, dispatch.Options{
 		Dir:   config.AttemptLeasesDir(),
-		Store: a.openAttemptLedger(ctx),
+		Store: ledger,
 		Limits: dispatch.Limits{
 			Global:     a.cfg.Agent.MaxConcurrent,
 			ByProvider: providerLimits,
@@ -2115,25 +2122,30 @@ func (a *App) openLimitsStore(ctx context.Context) (*limits.Store, error) {
 // openAttemptLedger returns the admission ledger for the configured backend,
 // importing the existing document the first time a database is used.
 //
-// A failed import returns nil, which leaves dispatch.New on its own YAML
-// document. Starting on an empty ledger would read as no work in flight and
-// admit a second agent onto every task one is already running.
-func (a *App) openAttemptLedger(ctx context.Context) dispatch.Persistence {
+// It fails closed rather than degrading. Every other store here falls back to
+// files when its backend cannot be opened, because a degraded advisory store
+// costs an operator information. This one is coordination: on a board shared by
+// several machines, one instance falling back to its own file while the others
+// use the database means two ledgers deciding admission independently — which
+// is precisely the double-dispatch this backend exists to prevent, and worse
+// than not starting.
+//
+// Call it only with a database configured; the file-backed deployment keeps the
+// YAML ledger and never reaches here.
+func (a *App) openAttemptLedger(ctx context.Context) (dispatch.Persistence, error) {
 	if a.database == nil {
-		return nil
+		return nil, errors.New("attempt lease store: no database configured")
 	}
 	importCtx, cancel := context.WithTimeout(ctx, importTimeout)
 	defer cancel()
 	if err := dispatch.Import(importCtx, a.database, config.AttemptLeasesDir(), a.importScope(), a.logger); err != nil {
-		a.logger.Error("attemptlease.import", "err", err)
-		return nil
+		return nil, fmt.Errorf("attempt lease import: %w", err)
 	}
 	store, err := dispatch.NewSQLPersistence(a.database)
 	if err != nil {
-		a.logger.Error("attemptlease.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
-		return nil
+		return nil, fmt.Errorf("attempt lease store: %w", err)
 	}
-	return store
+	return store, nil
 }
 
 // openAgentQueueStore returns the queue's durability mirror for the configured

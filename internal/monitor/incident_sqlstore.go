@@ -30,8 +30,9 @@ const incidentQueryTimeout = 30 * time.Second
 type SQLIncidentStore struct {
 	db *db.DB
 
-	mu sync.Mutex
-	tx *sql.Tx
+	mu     sync.Mutex
+	tx     *sql.Tx
+	failed bool
 }
 
 // NewSQLIncidentStore returns the database-backed incident ledger.
@@ -56,10 +57,12 @@ const (
 
 // Lock begins the transaction a read-modify-write runs in.
 //
-// The returned release commits it, or rolls it back when the caller's own work
-// failed and left the transaction unusable. Nothing else may touch the store
-// until it is called, which the process-local mutex enforces here and the
-// advisory lock enforces against every other process.
+// The returned release commits it, unless a Save inside the cycle failed — then
+// it rolls back, so a cycle that could not finish leaves the ledger at its
+// previous value rather than committing the half of it that worked. Nothing
+// else may touch the store until release is called, which the process-local
+// mutex enforces here and the advisory lock enforces against every other
+// process.
 func (s *SQLIncidentStore) Lock() (func() error, error) {
 	s.mu.Lock()
 	ctx, cancel := context.WithTimeout(context.Background(), incidentQueryTimeout)
@@ -79,13 +82,22 @@ func (s *SQLIncidentStore) Lock() (func() error, error) {
 		}
 	}
 	s.tx = tx
+	s.failed = false
 
 	return func() error {
+		failed := s.failed
 		defer func() {
 			s.tx = nil
+			s.failed = false
 			cancel()
 			s.mu.Unlock()
 		}()
+		if failed {
+			if err := tx.Rollback(); err != nil {
+				return fmt.Errorf("incident store: roll back: %w", err)
+			}
+			return errors.New("incident store: cycle rolled back after a failed write")
+		}
 		return tx.Commit()
 	}, nil
 }
@@ -127,6 +139,7 @@ func (s *SQLIncidentStore) Save(in Incident) error {
 	defer cancel()
 	if _, err := s.tx.ExecContext(ctx, s.db.Rebind(upsertIncident),
 		in.Fingerprint, string(in.State), in.FailureCode, db.TimeValue(in.LastSeen), string(doc)); err != nil {
+		s.failed = true
 		return fmt.Errorf("incident store: write: %w", err)
 	}
 	return nil
