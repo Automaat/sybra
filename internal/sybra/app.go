@@ -85,19 +85,19 @@ type App struct {
 	backgroundMu    sync.Mutex // serializes tracked background work with drain
 	wg              sync.WaitGroup
 	// fetchPRHeadSHA overrides the PR-head lookup in tests; nil uses GitHub.
-	fetchPRHeadSHA    func(ctx context.Context, repo string, number int) (string, error)
-	fetchPR           func(ctx context.Context, repo string, number int) (github.PullRequest, error)
-	tasks             *task.Manager
-	projects          *project.Store
-	database          *db.DB
-	loopAgents        loopagent.Repository
-	loopSched         *loopagent.Scheduler
-	agents            *agent.Manager
+	fetchPRHeadSHA func(ctx context.Context, repo string, number int) (string, error)
+	fetchPR        func(ctx context.Context, repo string, number int) (github.PullRequest, error)
+	tasks          *task.Manager
+	projects       *project.Store
+	database       *db.DB
+	loopAgents     loopagent.Repository
+	loopSched      *loopagent.Scheduler
+	agents         *agent.Manager
 	// boardTarget/boardToken/boardCA name the board task-scoped agents reach,
 	// held here because SetAgentBoard runs before Startup builds the manager.
-	boardTarget string
-	boardToken  string
-	boardCA     string
+	boardTarget       string
+	boardToken        string
+	boardCA           string
 	attempts          *dispatch.Controller
 	watcher           *watcher.Watcher
 	configWatcher     *confighot.Watcher

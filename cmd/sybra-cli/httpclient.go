@@ -251,14 +251,14 @@ func localOrigin(cfg *config.Config, host, port string) string {
 // boardTokenFromFile reads the credential a sandboxed agent is given, or "" when
 // none was named. It is a file rather than an env var because argv and the
 // environment of a process are readable by anything running as the same user.
-func boardTokenFromFile() (string, bool, error) {
+func boardTokenFromFile() (token string, named bool, err error) {
 	path := strings.TrimSpace(os.Getenv("SYBRA_AUTH_TOKEN_FILE"))
 	if path == "" {
 		return "", false, nil
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", true, fmt.Errorf("read %s: %w", "SYBRA_AUTH_TOKEN_FILE", err)
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		return "", true, fmt.Errorf("read %s: %w", "SYBRA_AUTH_TOKEN_FILE", readErr)
 	}
 	return strings.TrimSpace(string(data)), true, nil
 }
