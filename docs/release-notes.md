@@ -8,8 +8,8 @@ section), so "release" here means "reached `main`," not a tagged version.
 
 An install that has never set `database.backend` in `config.yaml` now lands
 on `sqlite` the next time it starts, instead of the per-domain filesystem
-stores under `~/.sybra` it used before. This happens automatically — nothing
-needs adding to the config file.
+stores under `SYBRA_HOME` (`~/.sybra` by default) it used before. This
+happens automatically — nothing needs adding to the config file.
 
 - **The original files are left in place.** Each data domain's one-time
   import (`internal/dbimport`) copies rows out of the existing files and
