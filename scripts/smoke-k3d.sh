@@ -110,8 +110,30 @@ k3d cluster create "$CLUSTER" --agents 0 --wait \
   --kubeconfig-update-default=false --kubeconfig-switch-context=false
 k3d kubeconfig get "$CLUSTER" > "$KUBECONFIG"
 
+# `k3d cluster create --wait` returns once the server container reports ready,
+# which is earlier than k3s having containerd listening and the API server
+# serving its openapi document. Importing then fails with "cannot access socket
+# /run/k3s/containerd/containerd.sock", and the next kubectl fails validation
+# against an API server that is "currently unable to handle the request" — an
+# intermittent red on a job that has nothing to do with the change under test.
+log "Waiting for the node to be ready"
+kubectl wait --for=condition=Ready node --all --timeout=180s
+until kubectl get --raw /openapi/v2 >/dev/null 2>&1; do
+  [ "$SECONDS" -lt 300 ] || fail "the API server never served its openapi document"
+  sleep 2
+done
+
 log "Importing $IMAGE"
-k3d image import "$IMAGE" -c "$CLUSTER"
+# Retried: the socket can still be a moment behind a Ready node, and re-importing
+# an image already present is a no-op.
+for attempt in 1 2 3; do
+  if k3d image import "$IMAGE" -c "$CLUSTER"; then
+    break
+  fi
+  [ "$attempt" -lt 3 ] || fail "could not import $IMAGE into $CLUSTER"
+  log "import attempt $attempt failed; retrying"
+  sleep 10
+done
 
 # Resolve the config BEFORE anything is applied. The old order applied the
 # kustomization (starting a pod on the default config), swapped the ConfigMap,
