@@ -541,7 +541,7 @@ func serveE2EBoard(t *testing.T, agents *agent.Manager, home string, tasks *task
 	// under the process sandbox, whose reads are deny-by-default, so the port
 	// file a CLI would find a board from is not reliably readable from inside
 	// a run. This is the same route production takes.
-	agents.SetBoard(net.JoinHostPort("127.0.0.1", port), "e2e-board-token")
+	agents.SetBoard(net.JoinHostPort("127.0.0.1", port), "e2e-board-token", "")
 }
 
 // e2eBoardTaskService adapts the harness stores to TaskService's wire names.

@@ -467,6 +467,7 @@ func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal, c
 	tried := make([]string, 0, len(candidates))
 	unusable := make([]string, 0, len(candidates))
 	foreign := make([]string, 0, len(candidates))
+	notBoard := make([]string, 0, len(candidates))
 	causes := make([]string, 0, len(candidates))
 	for _, target := range candidates {
 		c, err := newLocalAPIClient(cfg, target)
@@ -488,6 +489,10 @@ func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal, c
 		// the same default port, so a board that answers there may be serving a
 		// different home entirely — the operator's real one. It has to say it
 		// serves this one before the token goes anywhere near it.
+		if !c.isBoard() {
+			notBoard = append(notBoard, c.baseURL)
+			continue
+		}
 		if !c.servesThisHome(home) {
 			foreign = append(foreign, c.baseURL)
 			continue
@@ -504,6 +509,9 @@ func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal, c
 	case len(foreign) > 0:
 		why = fmt.Sprintf("the server at %s does not serve %s; start one for this home, or set %s to the board you meant",
 			strings.Join(foreign, ", "), home, serverTargetEnv)
+	case len(notBoard) > 0:
+		why = fmt.Sprintf("what answered at %s is not a Sybra board; start one for this home, or set %s to the board you meant",
+			strings.Join(notBoard, ", "), serverTargetEnv)
 	case len(tried) == 0 && len(unusable) > 0:
 		why = "this home's board cannot be addressed: " + strings.Join(unusable, "; ")
 	case len(tried) == 0:

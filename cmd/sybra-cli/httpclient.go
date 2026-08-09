@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/config"
+	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/httpserve"
 )
 
@@ -56,6 +57,12 @@ const serverTargetEnv = "SYBRA_SERVER_TARGET"
 // remote board's token is not in this machine's config by definition.
 const serverTokenEnv = "SYBRA_SERVER_TOKEN"
 
+// serverCAEnv names the certificate to pin a TLS board against. A board serving
+// TLS signs its own certificate, so the system roots reject it; a caller that
+// cannot read the operator's copy — an agent under the process sandbox — is
+// handed one it can.
+const serverCAEnv = "SYBRA_SERVER_CA"
+
 type apiClient struct {
 	baseURL string
 	token   string
@@ -63,6 +70,14 @@ type apiClient struct {
 	// probeErr is why the last reachability probe failed, when it failed for a
 	// reason worth telling an operator about.
 	probeErr error
+	// sandboxed records that the credential came from a file the runner wrote
+	// into an agent's sandbox home, which is the one caller that is not an
+	// operator at a terminal. Requests then decline the methods that act on
+	// the serving host — opening an editor, a terminal, or a worktree there.
+	sandboxed bool
+	// boardService is what the peer called itself in its health response, or
+	// "" when it named nothing. See reachable.
+	boardService string
 	// boardHomeID digests the SYBRA_HOME the board reported serving, learned
 	// during the reachability probe. Empty until that probe has run.
 	boardHomeID string
@@ -115,8 +130,17 @@ func newAPIClient(cfg *config.Config) (*apiClient, error) {
 		// A named https target that is this machine's own TLS board still needs
 		// the pin: its certificate is self-signed, so the system roots reject
 		// it and the escape hatch every refusal recommends would dead-end.
-		if !c.remote && cfg.ServesTLS() {
-			transport, tlsErr := pinnedTransport(cfg.Cluster.TLS.CertFile)
+		//
+		// SYBRA_SERVER_CA first. An agent cannot read the operator config this
+		// path would otherwise take the certificate from — it is not on the
+		// sandbox read allowlist — so the runner copies the certificate into
+		// the sandbox home and names it here.
+		certFile := strings.TrimSpace(os.Getenv(serverCAEnv))
+		if certFile == "" && !c.remote && cfg.ServesTLS() {
+			certFile = cfg.Cluster.TLS.CertFile
+		}
+		if certFile != "" {
+			transport, tlsErr := pinnedTransport(certFile)
 			if tlsErr != nil {
 				return nil, tlsErr
 			}
@@ -224,6 +248,21 @@ func localOrigin(cfg *config.Config, host, port string) string {
 // newTLSAPIClient targets a board over TLS. The token has to come from the
 // environment: a board on another machine does not keep its token in this
 // machine's config, by definition.
+// boardTokenFromFile reads the credential a sandboxed agent is given, or "" when
+// none was named. It is a file rather than an env var because argv and the
+// environment of a process are readable by anything running as the same user.
+func boardTokenFromFile() (string, bool, error) {
+	path := strings.TrimSpace(os.Getenv("SYBRA_AUTH_TOKEN_FILE"))
+	if path == "" {
+		return "", false, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", true, fmt.Errorf("read %s: %w", "SYBRA_AUTH_TOKEN_FILE", err)
+	}
+	return strings.TrimSpace(string(data)), true, nil
+}
+
 func newTLSAPIClient(raw, source, localToken string) (*apiClient, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
@@ -232,23 +271,32 @@ func newTLSAPIClient(raw, source, localToken string) (*apiClient, error) {
 	if path := strings.TrimSpace(u.EscapedPath()); path != "" && path != "/" {
 		return nil, fmt.Errorf("%s=%q must carry no path", source, raw)
 	}
-	token := strings.TrimSpace(os.Getenv(serverTokenEnv))
+	// The file first: a sandboxed agent is handed one, and it cannot read the
+	// config this machine's token would otherwise come from.
+	token, fromFile, err := boardTokenFromFile()
+	if err != nil {
+		return nil, err
+	}
+	if !fromFile {
+		token = strings.TrimSpace(os.Getenv(serverTokenEnv))
+	}
 	if token == "" && localToken != "" {
 		// This machine's own TLS board keeps its token in this machine's
 		// config; only another machine's does not.
 		token = localToken
 	}
 	if token == "" {
-		return nil, fmt.Errorf("%s=%q requires %s", source, raw, serverTokenEnv)
+		return nil, fmt.Errorf("%s=%q requires %s or SYBRA_AUTH_TOKEN_FILE", source, raw, serverTokenEnv)
 	}
 	host, _, splitErr := net.SplitHostPort(u.Host)
 	if splitErr != nil {
 		host = u.Host
 	}
 	return &apiClient{
-		baseURL: "https://" + u.Host,
-		token:   token,
-		http:    &http.Client{},
+		baseURL:   "https://" + u.Host,
+		token:     token,
+		http:      &http.Client{},
+		sandboxed: fromFile,
 		// A TLS board on this machine is still this machine's board, so the
 		// filesystem stores remain a correct fallback for it.
 		remote: !isLoopbackHost(host),
@@ -271,25 +319,24 @@ func newCleartextAPIClient(cfg *config.Config, raw, source string) (*apiClient, 
 		return nil, fmt.Errorf("%s=%q is not loopback; use https:// with %s rather than sending the token in cleartext",
 			source, raw, serverTokenEnv)
 	}
-	token := strings.TrimSpace(cfg.Server.AuthToken)
-	tokenPath := strings.TrimSpace(os.Getenv("SYBRA_AUTH_TOKEN_FILE"))
-	if tokenPath != "" {
-		data, err := os.ReadFile(tokenPath)
-		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", "SYBRA_AUTH_TOKEN_FILE", err)
-		}
-		token = strings.TrimSpace(string(data))
+	token, fromFile, err := boardTokenFromFile()
+	if err != nil {
+		return nil, err
+	}
+	if !fromFile {
+		token = strings.TrimSpace(cfg.Server.AuthToken)
 	}
 	if token == "" {
 		return nil, fmt.Errorf("%s=%q needs an auth token in config or SYBRA_AUTH_TOKEN_FILE", source, raw)
 	}
-	if tokenPath == "" && cfg.ServesTLS() {
+	if !fromFile && cfg.ServesTLS() {
 		return nil, fmt.Errorf("%s=%q is cleartext but this instance serves TLS", source, raw)
 	}
 	return &apiClient{
-		baseURL: "http://" + net.JoinHostPort(host, port),
-		token:   token,
-		http:    &http.Client{},
+		baseURL:   "http://" + net.JoinHostPort(host, port),
+		token:     token,
+		http:      &http.Client{},
+		sandboxed: fromFile,
 	}, nil
 }
 
@@ -371,7 +418,25 @@ func (c *apiClient) reachable(ctx context.Context) bool {
 		return false
 	}
 	c.boardHomeID = health.HomeID
+	c.boardService = health.Service
 	return true
+}
+
+// isBoard reports a peer an inferred target may commit to.
+//
+// A peer that names no service is accepted: a server older than these fields
+// answers exactly {"status":"ok"}, which cannot be told from a process that is
+// not Sybra at all, and refusing it would break every agent's task CRUD until
+// that server restarts. A peer that names something *else* is a different
+// matter — it has identified itself as not being a board, and the verifier
+// control channel is exactly that: it answers on loopback and serves two
+// methods for one task, so a client that commits to it sends the board's token
+// and then 404s on everything it asks for.
+func (c *apiClient) isBoard() bool {
+	if c == nil {
+		return false
+	}
+	return c.boardService == "" || c.boardService == httpserve.ServiceMarker
 }
 
 // servesThisHome reports a peer an inferred target may be used for.
@@ -427,6 +492,12 @@ func (c *apiClient) callWithin(ctx context.Context, timeout time.Duration, servi
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.token)
+	if c.sandboxed {
+		// An agent holds the board's token but is not the operator at this
+		// machine, and the local-only methods act on the host serving the
+		// board. Declared so the board refuses them.
+		req.Header.Set(httpapi.SandboxedCallerHeader, "1")
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err

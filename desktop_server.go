@@ -46,10 +46,7 @@ const desktopPortFile = "desktop-port"
 // desktopBoard is the origin the window loads the UI from.
 type desktopBoard struct {
 	url string
-	// target is the host:port an agent's sybra-cli is pointed at, which is the
-	// same listener without the scheme or trailing slash.
-	target string
-	srv    *http.Server
+	srv *http.Server
 }
 
 // openDesktopBoard serves the window this process's own board.
@@ -57,12 +54,8 @@ type desktopBoard struct {
 // The window runs the same bundle a browser gets from sybra-server and reaches
 // state over the same HTTP and SSE endpoints, so there is one transport to keep
 // working rather than two that drift.
-func openDesktopBoard(ctx context.Context, cfg *config.Config, logger *slog.Logger, broker *sse.Broker, app *sybra.App) (*desktopBoard, error) {
+func openDesktopBoard(ln net.Listener, cfg *config.Config, logger *slog.Logger, broker *sse.Broker, app *sybra.App) (*desktopBoard, error) {
 	sub, err := desktopAssets()
-	if err != nil {
-		return nil, err
-	}
-	ln, err := listenDesktop(ctx, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +133,7 @@ func serveDesktopBoard(ln net.Listener, origin string, logger *slog.Logger, cfg 
 		}
 	}()
 	logger.Info("desktop.board.listen", "origin", origin)
-	return &desktopBoard{url: origin + "/", target: strings.TrimPrefix(origin, "http://"), srv: srv}, nil
+	return &desktopBoard{url: origin + "/", srv: srv}, nil
 }
 
 // shutdown bounds the wait. http.Server.Shutdown never cancels a handler, and

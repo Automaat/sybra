@@ -593,3 +593,123 @@ func TestPrepareRunConfig_GolangciCache_SystemRunSkips(t *testing.T) {
 		}
 	}
 }
+
+// TestPrepareRunConfig_NamedBoardReplacesTheControlHome pins the shape a
+// task-scoped agent's CLI depends on.
+//
+// SYBRA_CONTROL_HOME must be absent once a board is named. It points the CLI at
+// the operator home, whose config the CLI loads before it ever looks at a
+// target — and that home is off the sandbox read allowlist for every role but
+// monitor, so under an enforcing read sandbox the CLI dies on the config file
+// and never reaches the board it was handed.
+func TestPrepareRunConfig_NamedBoardReplacesTheControlHome(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	sandboxDir := t.TempDir()
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return sandboxDir, nil },
+		ControlHome: "/real/home",
+	})
+	m.SetBoard("127.0.0.1:9931", "board-secret", "")
+
+	cfg, _, err := m.prepareRunConfig(RunConfig{
+		TaskID:   "task-1",
+		Mode:     "headless",
+		Dir:      t.TempDir(),
+		ExtraEnv: []string{"SYBRA_SERVER_TARGET=192.0.2.9:1", "SYBRA_CONTROL_HOME=/attacker"},
+	})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	joined := strings.Join(cfg.ExtraEnv, "\n")
+
+	tokenPath := filepath.Join(sandboxDir, boardTokenFile)
+	for _, want := range []string{
+		"SYBRA_SERVER_TARGET=127.0.0.1:9931",
+		"SYBRA_AUTH_TOKEN_FILE=" + tokenPath,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("environment lacks %q: %v", want, cfg.ExtraEnv)
+		}
+	}
+	if strings.Contains(joined, "SYBRA_CONTROL_HOME") {
+		t.Errorf("named board still exported a control home; the CLI loads that home's config first: %v", cfg.ExtraEnv)
+	}
+	if strings.Contains(joined, "192.0.2.9") || strings.Contains(joined, "/attacker") {
+		t.Errorf("caller-supplied target survived: %v", cfg.ExtraEnv)
+	}
+	if strings.Contains(joined, "board-secret") {
+		t.Errorf("board token leaked into the process environment, which is world-readable: %v", cfg.ExtraEnv)
+	}
+
+	data, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatalf("read board token: %v", err)
+	}
+	if string(data) != "board-secret" {
+		t.Errorf("board token = %q, want %q", data, "board-secret")
+	}
+	info, err := os.Stat(tokenPath)
+	if err != nil {
+		t.Fatalf("stat board token: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("board token mode = %04o, want 0600", perm)
+	}
+}
+
+// TestPrepareRunConfig_TLSBoardShipsTheCertificateIntoTheSandbox pins the other
+// half: a board serving TLS signs its own certificate, and an agent cannot read
+// the operator's copy, so it is copied in beside the token.
+func TestPrepareRunConfig_TLSBoardShipsTheCertificateIntoTheSandbox(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	sandboxDir := t.TempDir()
+	certSrc := filepath.Join(t.TempDir(), "board.pem")
+	if err := os.WriteFile(certSrc, []byte("-----BEGIN CERTIFICATE-----\nnot-a-real-cert\n"), 0o600); err != nil {
+		t.Fatalf("write certificate: %v", err)
+	}
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return sandboxDir, nil },
+		ControlHome: "/real/home",
+	})
+	m.SetBoard("https://127.0.0.1:8443", "board-secret", certSrc)
+
+	cfg, _, err := m.prepareRunConfig(RunConfig{TaskID: "task-1", Mode: "headless", Dir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	caPath := filepath.Join(sandboxDir, boardCAFile)
+	if !slices.Contains(cfg.ExtraEnv, "SYBRA_SERVER_CA="+caPath) {
+		t.Fatalf("environment lacks the certificate the agent must pin: %v", cfg.ExtraEnv)
+	}
+	got, err := os.ReadFile(caPath)
+	if err != nil {
+		t.Fatalf("read copied certificate: %v", err)
+	}
+	if !strings.Contains(string(got), "not-a-real-cert") {
+		t.Errorf("copied certificate = %q, want the board's", got)
+	}
+}
+
+// TestPrepareRunConfig_UnnamedBoardKeepsTheControlHome pins the fallback: with
+// no board named there is nothing to point the CLI at, so the control home is
+// still the only thing that resolves one.
+func TestPrepareRunConfig_UnnamedBoardKeepsTheControlHome(t *testing.T) {
+	t.Setenv("SYBRA_HOME", t.TempDir())
+	sandboxDir := t.TempDir()
+	m, _ := newTestManager(t, ManagerConfig{
+		SandboxHome: func(string) (string, error) { return sandboxDir, nil },
+		ControlHome: "/real/home",
+	})
+
+	cfg, _, err := m.prepareRunConfig(RunConfig{TaskID: "task-1", Mode: "headless", Dir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("prepareRunConfig: %v", err)
+	}
+	joined := strings.Join(cfg.ExtraEnv, "\n")
+	if !strings.Contains(joined, "SYBRA_CONTROL_HOME=/real/home") {
+		t.Errorf("environment lacks the control home: %v", cfg.ExtraEnv)
+	}
+	if strings.Contains(joined, "SYBRA_SERVER_TARGET") {
+		t.Errorf("named a target with no board set: %v", cfg.ExtraEnv)
+	}
+}

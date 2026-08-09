@@ -160,7 +160,20 @@ func admittedMethod(w http.ResponseWriter, logger *slog.Logger, r *http.Request,
 // the request crossed a proxy and its origin is not this host.
 var forwardedHeaders = []string{"X-Forwarded-For", "X-Forwarded-Host", "X-Real-Ip", "Forwarded"}
 
+// SandboxedCallerHeader marks a request from a sandboxed agent's own CLI.
+//
+// Such a caller dials loopback and carries the board's token, so the address
+// says nothing about who it is. It is a model working inside a task, not an
+// operator at this machine, and the local-only methods act on the machine
+// serving the board — opening an editor, a terminal, a worktree, or shelling
+// out to a provider CLI there. The agent declares itself so the board can
+// refuse; a caller that lies gains only what the token already gave it.
+const SandboxedCallerHeader = "X-Sybra-Sandboxed"
+
 func fromLoopback(r *http.Request) bool {
+	if r.Header.Get(SandboxedCallerHeader) != "" {
+		return false
+	}
 	for _, h := range forwardedHeaders {
 		if r.Header.Get(h) != "" {
 			return false

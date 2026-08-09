@@ -753,23 +753,48 @@ func (m *Manager) injectSandboxHome(cfg *RunConfig) error {
 				"SYBRA_AUTH_TOKEN_FILE="+tokenPath,
 			)
 		}
-	} else if controlHome != "" {
-		cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_CONTROL_HOME="+controlHome)
-		// Named, not inferred: the CLI has no filesystem path to the board
-		// any more, and the port file it would otherwise discover one from
-		// lives in the operator home — off the read allowlist for every role
-		// but monitor, so under an enforcing read sandbox discovery cannot
-		// see it. The token goes in the sandbox home, which is readable by
-		// construction, the way the verifier channel does it.
-		if target, token := m.board(); target != "" && token != "" {
-			tokenPath := filepath.Join(dir, "board-token")
-			if err := os.WriteFile(tokenPath, []byte(token), 0o600); err != nil {
-				return fmt.Errorf("agent.Run: write board token: %w", err)
+	} else if target, token, ca := m.board(); target != "" && token != "" {
+		// Named, not inferred. The CLI has no filesystem path to a board any
+		// more, and everything it would infer one from — the recorded port
+		// file, the config beside it — lives in the operator home, which is
+		// off the read allowlist for every role but monitor. Under an
+		// enforcing read sandbox the CLI cannot even load that config, so it
+		// dies before it looks at a target.
+		//
+		// SYBRA_CONTROL_HOME is therefore deliberately not exported here: its
+		// only job was to point the CLI at the operator home, and a named
+		// board makes that pointer worse than useless. The token and the CA
+		// go in the sandbox home, readable by construction, exactly as the
+		// verifier channel does it.
+		tokenPath := filepath.Join(dir, boardTokenFile)
+		if err := os.WriteFile(tokenPath, []byte(token), 0o600); err != nil {
+			return fmt.Errorf("agent.Run: write board token: %w", err)
+		}
+		cfg.ExtraEnv = append(cfg.ExtraEnv,
+			"SYBRA_SERVER_TARGET="+target,
+			"SYBRA_AUTH_TOKEN_FILE="+tokenPath,
+		)
+		if ca != "" {
+			// A board serving TLS signs its own certificate, so the system
+			// roots reject it and the agent has no way to read the operator's
+			// copy. Copied in rather than pointed at for the same reason.
+			caPath := filepath.Join(dir, boardCAFile)
+			pem, readErr := os.ReadFile(ca)
+			if readErr != nil {
+				return fmt.Errorf("agent.Run: read board certificate: %w", readErr)
 			}
-			cfg.ExtraEnv = append(cfg.ExtraEnv,
-				"SYBRA_SERVER_TARGET="+target,
-				"SYBRA_AUTH_TOKEN_FILE="+tokenPath,
-			)
+			if err := os.WriteFile(caPath, pem, 0o600); err != nil {
+				return fmt.Errorf("agent.Run: write board certificate: %w", err)
+			}
+			cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_SERVER_CA="+caPath)
+		}
+	} else {
+		// No board named. The CLI will refuse every call the agent makes, so
+		// say which run it was rather than leaving a paid run to fail with
+		// nothing in the log tying it to this.
+		m.logger.Warn("agent.board.unnamed", "task_id", cfg.TaskID, "role", string(cfg.Role))
+		if controlHome != "" {
+			cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_CONTROL_HOME="+controlHome)
 		}
 	}
 	cfg.resolvedSandboxHome = dir

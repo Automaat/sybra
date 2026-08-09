@@ -186,11 +186,12 @@ type Manager struct {
 	controlTarget string
 	controlToken  func(taskID, sandboxHome string) string
 
-	// boardMu guards the board address, which is only known once this
-	// instance's own HTTP surface is listening — after the manager exists.
+	// boardMu guards the board an agent's own CLI is pointed at, which the
+	// process wiring sets after the manager exists.
 	boardMu     sync.RWMutex
 	boardTarget string
 	boardToken  string
+	boardCA     string
 
 	ghAppToken         func() string
 	ghVerifierAppToken func() string
@@ -1278,14 +1279,31 @@ func (m *Manager) ToolLedger() *toolledger.Logger {
 // not reliably readable from inside a run. The address is only known once this
 // instance is listening, which is after the manager is built, so it is set
 // rather than configured.
-func (m *Manager) SetBoard(target, token string) {
+// SetBoard names the board every task-scoped agent's sybra-cli talks to.
+//
+// ca is the path to the board's certificate, and is required when target is an
+// https origin: a board serving TLS signs its own certificate, so a client that
+// cannot read that file has no way to verify it. Empty for a cleartext board.
+//
+// Call it before any agent can be dispatched. A run that starts before this
+// lands gets no target at all, and every CLI call it makes refuses — which is a
+// whole paid run producing nothing.
+func (m *Manager) SetBoard(target, token, ca string) {
 	m.boardMu.Lock()
 	defer m.boardMu.Unlock()
-	m.boardTarget, m.boardToken = target, token
+	m.boardTarget, m.boardToken, m.boardCA = target, token, ca
 }
 
-func (m *Manager) board() (target, token string) {
+func (m *Manager) board() (target, token, ca string) {
 	m.boardMu.RLock()
 	defer m.boardMu.RUnlock()
-	return m.boardTarget, m.boardToken
+	return m.boardTarget, m.boardToken, m.boardCA
 }
+
+// boardTokenFile and boardCAFile are the credentials an agent's CLI reads from
+// its own sandbox home, which is the only directory it is guaranteed to be
+// able to read under an enforcing sandbox.
+const (
+	boardTokenFile = "board-token"
+	boardCAFile    = "board-ca.pem"
+)

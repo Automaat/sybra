@@ -22,9 +22,14 @@ import (
 
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/fsutil"
-	"github.com/Automaat/sybra/internal/httpserve"
 	"github.com/Automaat/sybra/internal/toolledger"
 )
+
+// VerifierControlServiceMarker identifies the verifier control channel in its
+// health response. It is distinct from httpserve.ServiceMarker so a client that
+// merely inferred this port declines it rather than committing the board's
+// token to a peer that serves two methods for one task.
+const VerifierControlServiceMarker = "sybra-verifier-control"
 
 // ApprovalServer runs an HTTP server that handles PreToolUse hook requests
 // from Claude CLI. When a tool needs approval, the hook POSTs to this server,
@@ -129,12 +134,15 @@ func newApprovalServer(ctx context.Context, emit EmitFunc, logger *slog.Logger, 
 	mux := http.NewServeMux()
 	// The verifier's own CLI probes this before it will send its task-scoped
 	// token, and an empty body is indistinguishable from a process that is not
-	// Sybra at all. No home is claimed: this channel fronts two TaskService
-	// methods for one task, not a board, and it is only ever reached through a
-	// target the runner names outright.
+	// Sybra at all — so every verifier CRUD call refused.
+	//
+	// Its own marker, deliberately not the board's: this channel fronts two
+	// TaskService methods for one task. A client that inferred this port and
+	// took it for a board would send the board's token and then 404 on
+	// everything it asked for, so it has to be able to tell them apart.
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"status":"ok","service":%q}`, httpserve.ServiceMarker)
+		_, _ = fmt.Fprintf(w, `{"status":"ok","service":%q}`, VerifierControlServiceMarker)
 	})
 	mux.HandleFunc("/hooks/pre-tool-use", s.handlePreToolUse)
 	mux.HandleFunc("POST /api/TaskService/{method}", s.handleVerifierControl)

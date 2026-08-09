@@ -115,6 +115,19 @@ func run() (int, error) {
 
 	v3openBrowser = func(url string) { openInAppBrowser(v3app, url) }
 
+	// Bound before Startup so the board can be named before Startup's recovery
+	// pass dispatches anything: an agent that starts unnamed spends a whole run
+	// on CLI calls that every one of them refuses. Nothing is served on this
+	// listener until openDesktopBoard mounts a handler on it below.
+	ln, err := listenDesktop(ctx, logger)
+	if err != nil {
+		return 1, err
+	}
+	// Agents reach task state through sybra-cli, which has no filesystem path
+	// to it and cannot discover this port from inside the process sandbox. The
+	// desktop board is always cleartext loopback, so it pins no certificate.
+	sybraApp.SetAgentBoard(ln.Addr().String(), cfg.Server.AuthToken, "")
+
 	if err := sybraApp.Startup(ctx); err != nil {
 		logger.Error("app.startup.fatal", "err", err)
 		return 1, fmt.Errorf("sybra startup: %w", err)
@@ -124,15 +137,11 @@ func run() (int, error) {
 		return autoupdate.RestartExitCode, nil
 	}
 
-	board, err := openDesktopBoard(ctx, cfg, logger, broker, sybraApp)
+	board, err := openDesktopBoard(ln, cfg, logger, broker, sybraApp)
 	if err != nil {
 		return 1, err
 	}
 	defer board.shutdown(ctx)
-
-	// Agents reach task state through sybra-cli, which has no filesystem path
-	// to it and cannot discover this port from inside the process sandbox.
-	sybraApp.SetAgentBoard(board.target, cfg.Server.AuthToken)
 
 	openMainWindow(v3app, board.url)
 

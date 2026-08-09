@@ -93,6 +93,11 @@ type App struct {
 	loopAgents        loopagent.Repository
 	loopSched         *loopagent.Scheduler
 	agents            *agent.Manager
+	// boardTarget/boardToken/boardCA name the board task-scoped agents reach,
+	// held here because SetAgentBoard runs before Startup builds the manager.
+	boardTarget string
+	boardToken  string
+	boardCA     string
 	attempts          *dispatch.Controller
 	watcher           *watcher.Watcher
 	configWatcher     *confighot.Watcher
@@ -974,12 +979,20 @@ func (a *App) HTTPAdmission(service, method string, meta httpapi.MethodMeta) err
 
 // SetAgentBoard tells task-scoped agents which board to reach.
 //
-// Called once this instance is listening: an agent's sybra-cli has no
-// filesystem path to task state, and cannot reliably discover a board from
-// inside the process sandbox, so it is given the address instead.
-func (a *App) SetAgentBoard(target, token string) {
-	if a == nil || a.agents == nil {
+// An agent's sybra-cli has no filesystem path to task state and cannot
+// discover a board from inside the process sandbox, so it is given the address
+// instead. Call this before Startup: the recovery pass dispatches agents for
+// runs it finds stale, and one that starts unnamed burns a whole run on CLI
+// calls that all refuse. The address comes from configuration, so it is known
+// before anything listens.
+func (a *App) SetAgentBoard(target, token, ca string) {
+	if a == nil {
 		return
 	}
-	a.agents.SetBoard(target, token)
+	a.boardTarget, a.boardToken, a.boardCA = target, token, ca
+	// Startup has not run yet in the ordinary case; initAgents applies it to
+	// the manager it builds. Applied here too so a later call still lands.
+	if a.agents != nil {
+		a.agents.SetBoard(target, token, ca)
+	}
 }
