@@ -156,12 +156,15 @@ export function RunLearningDigestNow(): $CancellablePromise<learning$0.Digest> {
 /**
  * SetAgentBoard tells task-scoped agents which board to reach.
  * 
- * Called once this instance is listening: an agent's sybra-cli has no
- * filesystem path to task state, and cannot reliably discover a board from
- * inside the process sandbox, so it is given the address instead.
+ * An agent's sybra-cli has no filesystem path to task state and cannot
+ * discover a board from inside the process sandbox, so it is given the address
+ * instead. Call this before Startup: the recovery pass dispatches agents for
+ * runs it finds stale, and one that starts unnamed burns a whole run on CLI
+ * calls that all refuse. The address comes from configuration, so it is known
+ * before anything listens.
  */
-export function SetAgentBoard(target: string, token: string): $CancellablePromise<void> {
-    return $Call.ByID(907973346, target, token);
+export function SetAgentBoard(target: string, token: string, ca: string): $CancellablePromise<void> {
+    return $Call.ByID(907973346, target, token, ca);
 }
 
 /**
