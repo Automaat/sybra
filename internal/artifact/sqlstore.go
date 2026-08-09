@@ -2,7 +2,9 @@ package artifact
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,11 +36,13 @@ func NewSQLStore(database *db.DB, maxSizeBytes int64) (*SQLStore, error) {
 	return &SQLStore{db: database, maxSizeBytes: maxSizeBytes}, nil
 }
 
+// created_at is in the conflict update so an overwriting Put stores the timestamp it returns to its caller; a stream Append keeps the original by passing the value it just read back in.
 const (
 	upsertArtifact = `INSERT INTO task_artifacts (task_id, name, kind, size_bytes, created_at, updated_at, content)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (task_id, name) DO UPDATE SET
 			kind = excluded.kind, size_bytes = excluded.size_bytes,
+			created_at = excluded.created_at,
 			updated_at = excluded.updated_at, content = excluded.content`
 
 	selectArtifact = `SELECT kind, size_bytes, created_at, content
@@ -94,10 +98,7 @@ func (s *SQLStore) Put(taskID string, a Artifact) (Meta, error) {
 
 // Append adds one JSON event line to a stream artifact.
 //
-// Append-only and atomic: the row's content is extended in one statement inside
-// a transaction, so a restart mid-stream leaves every line committed before it
-// and never a partial one. The file store got this from O_APPEND; here it comes
-// from the update being a single statement.
+// Append-only and atomic: the read and the write run in one transaction under a per-stream advisory lock, so a restart mid-stream leaves every line committed before it and never a partial one, and a concurrent append waits rather than overwriting. The file store got both from O_APPEND.
 func (s *SQLStore) Append(taskID string, kind Kind, event any) error {
 	if s == nil {
 		return errors.New("artifact store is not configured")
@@ -114,7 +115,7 @@ func (s *SQLStore) Append(taskID string, kind Kind, event any) error {
 	name := kind.defaultName()
 	ctx, cancel := context.WithTimeout(context.Background(), artifactQueryTimeout)
 	defer cancel()
-	return s.db.InTx(ctx, func(tx *sql.Tx) error {
+	return s.db.InTxLocked(ctx, appendLockKey(taskID, name), func(tx *sql.Tx) error {
 		var existing []byte
 		var createdAt int64
 		err := tx.QueryRowContext(ctx, s.db.Rebind(
@@ -254,4 +255,16 @@ func (s *SQLStore) validateSize(size int64) error {
 			size, s.maxSizeBytes)
 	}
 	return nil
+}
+
+// appendLockKey serializes concurrent appends to one artifact stream.
+//
+// A plain transaction is not enough for the row-missing case: under READ COMMITTED two appends both read no row, both insert, and ON CONFLICT DO UPDATE resolves the collision by overwriting, so one agent's line is dropped with no error. The key is per stream rather than one shared key so two tasks' streams still append in parallel.
+//
+// The digest is split into two 32-bit halves rather than truncated to one, because a stream is named by task and kind and those collide far more readily on a short key than random ids would.
+func appendLockKey(taskID, name string) db.LockKey {
+	sum := sha256.Sum256([]byte(taskID + "\x00" + name))
+	high := int64(binary.BigEndian.Uint32(sum[0:4]))
+	low := int64(binary.BigEndian.Uint32(sum[4:8]))
+	return db.LockKey(high<<32 | low)
 }

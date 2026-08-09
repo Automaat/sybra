@@ -3,6 +3,7 @@ package artifact
 import (
 	"bytes"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/db"
@@ -151,4 +152,43 @@ func names(list []Meta) []string {
 		out = append(out, list[i].Name)
 	}
 	return out
+}
+
+// TestSQLStore_ConcurrentAppendsKeepEveryLine is the case a shared board exists for.
+//
+// Append is a read-modify-write. A plain transaction does not serialize it on postgres: two appends to a stream that does not exist yet both read no row, both insert, and the conflict clause resolves the collision by overwriting — so one agent's line vanishes with no error. Under a per-stream advisory lock the second append waits and reads the first one's row.
+func TestSQLStore_ConcurrentAppendsKeepEveryLine(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		store, err := NewSQLStore(d, 0)
+		if err != nil {
+			t.Fatalf("NewSQLStore: %v", err)
+		}
+
+		const writers, perWriter = 4, 15
+		var wg sync.WaitGroup
+		for w := range writers {
+			wg.Go(func() {
+				for i := range perWriter {
+					if err := store.Append("task-append", KindTrace, map[string]any{"w": w, "i": i}); err != nil {
+						t.Errorf("append(%d,%d): %v", w, i, err)
+						return
+					}
+				}
+			})
+		}
+		wg.Wait()
+
+		content, meta, err := store.Read("task-append", KindTrace.defaultName())
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		lines := bytes.Count(content, []byte("\n"))
+		if want := writers * perWriter; lines != want {
+			t.Fatalf("stream holds %d lines, want %d; concurrent appends dropped %d", lines, want, want-lines)
+		}
+		if meta.Size != int64(len(content)) {
+			t.Errorf("recorded size %d does not match the %d bytes stored", meta.Size, len(content))
+		}
+	})
 }

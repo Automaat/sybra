@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/db"
+	"github.com/Automaat/sybra/internal/fsutil"
 )
 
 // attachmentQueryTimeout bounds every statement. Uploads and downloads run from
@@ -56,8 +57,19 @@ func (s *SQLStore) Put(taskID string, meta Attachment, data []byte) (Attachment,
 	if s == nil {
 		return Attachment{}, errors.New("attachment store is not configured")
 	}
+	// The same guards the file store applies. The primary key is (task_id, id), so a blank id is not rejected by the database — it collides with every other blank one and silently overwrites another task's attachment. The filename is sanitized because it is handed back to callers that build a download name from it.
+	if err := fsutil.ValidateKey(taskID); err != nil {
+		return Attachment{}, fmt.Errorf("task id: %w", err)
+	}
+	if err := fsutil.ValidateKey(meta.ID); err != nil {
+		return Attachment{}, fmt.Errorf("attachment id: %w", err)
+	}
 	if err := s.validateSize(data); err != nil {
 		return Attachment{}, err
+	}
+	meta.FileName = sanitizeFileName(meta.FileName)
+	if meta.FileName == "" {
+		return Attachment{}, errors.New("attachment filename is required")
 	}
 	meta.SizeBytes = int64(len(data))
 	// Emptied deliberately: nothing on disk backs this record, and a stale path

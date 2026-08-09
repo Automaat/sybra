@@ -31,7 +31,8 @@ func (s *ClusterAttachmentService) ExportAttachment(taskID, attachmentID string)
 	}
 	data, _, err := s.attachments.Content(taskID, attachmentID)
 	if err != nil {
-		return nil, validationError(err.Error())
+		// The task already lists this attachment, so a read that still fails is a backend fault rather than a bad request, and its message describes storage the caller cannot act on.
+		return nil, fmt.Errorf("read attachment %q: %w", attachmentID, err)
 	}
 	return data, nil
 }
