@@ -540,7 +540,8 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 	}
 	var err error
 	a.attempts, err = dispatch.New(ctx, dispatch.Options{
-		Dir: config.AttemptLeasesDir(),
+		Dir:   config.AttemptLeasesDir(),
+		Store: a.openAttemptLedger(ctx),
 		Limits: dispatch.Limits{
 			Global:     a.cfg.Agent.MaxConcurrent,
 			ByProvider: providerLimits,
@@ -2105,4 +2106,28 @@ func (a *App) openLimitsStore(ctx context.Context) (*limits.Store, error) {
 		}
 	}
 	return limits.NewStore(config.LimitsFile())
+}
+
+// openAttemptLedger returns the admission ledger for the configured backend,
+// importing the existing document the first time a database is used.
+//
+// A failed import returns nil, which leaves dispatch.New on its own YAML
+// document. Starting on an empty ledger would read as no work in flight and
+// admit a second agent onto every task one is already running.
+func (a *App) openAttemptLedger(ctx context.Context) dispatch.Persistence {
+	if a.database == nil {
+		return nil
+	}
+	importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+	defer cancel()
+	if err := dispatch.Import(importCtx, a.database, config.AttemptLeasesDir(), a.importScope(), a.logger); err != nil {
+		a.logger.Error("attemptlease.import", "err", err)
+		return nil
+	}
+	store, err := dispatch.NewSQLPersistence(a.database)
+	if err != nil {
+		a.logger.Error("attemptlease.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		return nil
+	}
+	return store
 }

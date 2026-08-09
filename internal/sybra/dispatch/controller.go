@@ -13,9 +13,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
-	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/google/uuid"
-	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -46,6 +44,9 @@ type Options struct {
 	Limits Limits
 	TTL    time.Duration
 	Now    func() time.Time
+	// Store persists the ledger. Nil keeps the YAML document under Dir, which
+	// is what an install with no database backend configured uses.
+	Store Persistence
 }
 
 // Record is the persisted admission state exposed to restart reconciliation.
@@ -76,6 +77,7 @@ type Controller struct {
 	mu     sync.Mutex
 	dir    string
 	path   string
+	store  Persistence
 	owner  string
 	limits Limits
 	ttl    time.Duration
@@ -115,8 +117,13 @@ func New(ctx context.Context, opts Options) (*Controller, error) {
 	if now == nil {
 		now = time.Now
 	}
+	path := filepath.Join(dir, "attempt-leases.yaml")
+	store := opts.Store
+	if store == nil {
+		store = newFilePersistence(path)
+	}
 	c := &Controller{
-		dir: dir, path: filepath.Join(dir, "attempt-leases.yaml"), owner: owner,
+		dir: dir, path: path, owner: owner, store: store,
 		limits: Limits{Global: opts.Limits.Global, ByProvider: cloneLimits(opts.Limits.ByProvider)},
 		ttl:    opts.TTL, now: now,
 	}
@@ -481,50 +488,22 @@ func (c *Controller) update(ctx context.Context, fn func(*diskState, time.Time) 
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	unlock, err := fsutil.LockFileContext(ctx, c.path)
-	if err != nil {
-		return fmt.Errorf("lock attempt lease store: %w", err)
-	}
-	defer func() { _ = unlock() }()
-	s, err := c.load()
+	var opErr error
+	err := c.store.Critical(ctx, func() error {
+		s, err := c.store.Load(ctx)
+		if err != nil {
+			return err
+		}
+		var changed bool
+		changed, opErr = fn(&s, c.now().UTC())
+		if !changed {
+			return nil
+		}
+		s.Revision++
+		return c.store.Save(ctx, s)
+	})
 	if err != nil {
 		return err
 	}
-	changed, opErr := fn(&s, c.now().UTC())
-	if changed {
-		s.Revision++
-		if err := c.save(s); err != nil {
-			return err
-		}
-	}
 	return opErr
-}
-
-func (c *Controller) load() (diskState, error) {
-	data, err := os.ReadFile(c.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return diskState{SchemaVersion: 1}, nil
-	}
-	if err != nil {
-		return diskState{}, fmt.Errorf("read attempt lease store: %w", err)
-	}
-	var s diskState
-	if err := yaml.Unmarshal(data, &s); err != nil {
-		return diskState{}, fmt.Errorf("decode attempt lease store: %w", err)
-	}
-	if s.SchemaVersion != 1 {
-		return diskState{}, fmt.Errorf("unsupported attempt lease schema %d", s.SchemaVersion)
-	}
-	return s, nil
-}
-
-func (c *Controller) save(s diskState) error {
-	data, err := yaml.Marshal(s)
-	if err != nil {
-		return fmt.Errorf("encode attempt lease store: %w", err)
-	}
-	if err := fsutil.AtomicWrite(c.path, data); err != nil {
-		return fmt.Errorf("persist attempt lease store: %w", err)
-	}
-	return nil
 }
