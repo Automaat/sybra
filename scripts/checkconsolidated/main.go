@@ -79,6 +79,7 @@ func buildAllowances() map[allowanceKey]allowance { //nolint:funlen // The expli
 	add(kindStringTruncation, "cmd/gen-config-docs/main.go", "Generated Go/YAML identifiers are normalized ASCII; the slice changes first-letter case.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "cmd/gen-events/main.go", "Generated event function identifiers are ASCII; the slice changes first-letter case.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "cmd/sybra-cli/main.go", "Git revisions are hexadecimal ASCII and this produces a display-only short SHA.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/monitor/issueoutbox.go", "The value is a slice of outbox records capped to a flush batch, not text; the store returns it through an interface so its element type is unresolved here.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/agent/discovery.go", "Provider session identifiers are ASCII protocol tokens and are shortened only for display.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/agent/k8s_job_runner.go", "The value is an already-normalized ASCII Kubernetes DNS label.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/agent/tool_result_bound.go", "The value is a hexadecimal digest used in an artifact filename.", map[string]int{"slice": 1})
