@@ -46,6 +46,9 @@ type Options struct {
 	// The boost is applied only inside PopReady's snapshot re-rank via an
 	// injected clock; it never mutates the heap's own clock-free ordering.
 	StarvationBoostAfter time.Duration
+	// Store mirrors the queue for durability. Nil keeps the per-item YAML files
+	// under dir, which is what an install with no database backend uses.
+	Store Persistence
 }
 
 // queueHeap implements container/heap.Interface ordered by Less, and keeps
@@ -88,7 +91,7 @@ func (h *queueHeap) Pop() any {
 type Queue struct {
 	mu    sync.Mutex
 	h     *queueHeap
-	store *store
+	store Persistence
 	log   *slog.Logger
 	now   func() time.Time
 	opts  Options
@@ -109,9 +112,13 @@ func New(dir string, opts Options, log *slog.Logger) (*Queue, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	st, err := newStore(dir)
-	if err != nil {
-		return nil, fmt.Errorf("agentqueue: init store: %w", err)
+	st := opts.Store
+	if st == nil {
+		fileStore, err := newStore(dir)
+		if err != nil {
+			return nil, fmt.Errorf("agentqueue: init store: %w", err)
+		}
+		st = fileStore
 	}
 
 	q := &Queue{

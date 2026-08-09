@@ -132,6 +132,19 @@ func (s *issueOutboxStore) load(log *slog.Logger) []outboxItem {
 	return out
 }
 
+// get reads one pending filing from its file.
+func (s *issueOutboxStore) get(fingerprint string) (outboxItem, bool) {
+	data, err := os.ReadFile(s.filePath(fingerprint))
+	if err != nil {
+		return outboxItem{}, false
+	}
+	var it outboxItem
+	if err := yaml.Unmarshal(data, &it); err != nil {
+		return outboxItem{}, false
+	}
+	return it, true
+}
+
 func (s *issueOutboxStore) depth() int {
 	paths, err := fsutil.ListFiles(s.dir, ".yaml")
 	if err != nil {
@@ -153,7 +166,7 @@ func (s *issueOutboxStore) depth() int {
 // returned to the caller unchanged without consuming outbox space.
 type DurableGHIssueSink struct {
 	inner    issueSubmitter
-	store    *issueOutboxStore
+	store    IssueOutboxPersistence
 	logger   *slog.Logger
 	name     string      // sink identity for logs, e.g. "monitor" or "human-review"
 	auditLog audit.Store // optional; nil in tests that construct the struct directly
@@ -187,7 +200,16 @@ func NewDurableGHIssueSink(inner *GHIssueSink, dir, name string, logger *slog.Lo
 	if err != nil {
 		return nil, err
 	}
-	return &DurableGHIssueSink{inner: inner, store: store, logger: logger, name: name, auditLog: auditLog}, nil
+	return NewDurableGHIssueSinkWith(inner, store, name, logger, auditLog), nil
+}
+
+// NewDurableGHIssueSinkWith returns a sink persisting through store rather than
+// to files.
+func NewDurableGHIssueSinkWith(inner *GHIssueSink, store IssueOutboxPersistence, name string, logger *slog.Logger, auditLog audit.Store) *DurableGHIssueSink {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &DurableGHIssueSink{inner: inner, store: store, logger: logger, name: name, auditLog: auditLog}
 }
 
 // Submit implements IssueSink.
@@ -469,15 +491,7 @@ func (d *DurableGHIssueSink) persistIncident(operation string, in Incident, chan
 }
 
 func (d *DurableGHIssueSink) lookup(fingerprint string) (outboxItem, bool) {
-	data, err := os.ReadFile(d.store.filePath(fingerprint))
-	if err != nil {
-		return outboxItem{}, false
-	}
-	var it outboxItem
-	if err := yaml.Unmarshal(data, &it); err != nil {
-		return outboxItem{}, false
-	}
-	return it, true
+	return d.store.get(fingerprint)
 }
 
 // redactedErrorString returns err's message with GitHub token-shaped
