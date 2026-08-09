@@ -1,5 +1,5 @@
 // Package dbimport moves a domain's existing files into the database exactly
-// once, so flipping storage.database.backend does not silently start from an
+// once, so flipping database.backend does not silently start from an
 // empty board.
 package dbimport
 

@@ -144,11 +144,12 @@ The content-security policy comes from the response header `internal/httpserve` 
 
 ### Durable Storage Backend
 
-`storage.database.backend` selects where durable state lives: `file` (the
-default — the per-domain filesystem stores Sybra has always used), `sqlite`
-(embedded single file, one machine alone), or `postgres` (shared server,
-several machines on one board). Omitting the block changes nothing, so no
-existing install needs migrating.
+`database.backend` selects where durable state lives: `sqlite` (embedded
+single file, the default when unset, one machine alone), `postgres` (shared
+server, several machines on one board), or `file` (the per-domain filesystem
+stores Sybra has always used, retained for rollback and being retired). An
+install that never named this key migrates itself to sqlite on first start;
+the original files are left in place.
 
 `internal/db` opens the handle, applies the embedded per-dialect migrations in
 `internal/db/migrations/<dialect>/`, and is the only place that knows a dialect.
