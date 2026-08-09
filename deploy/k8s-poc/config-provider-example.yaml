@@ -5,6 +5,13 @@ metadata:
   namespace: sybra-poc
 data:
   config.yaml: |
+    # The smoke seeds its project by writing a YAML into the projects directory
+    # after the server is up, which only the file backend reads: a database
+    # store reads rows, and the one-time file import has already run by then.
+    # This suite exercises the Kubernetes job runner, not storage, so it pins
+    # the backend it was written against rather than changing how it seeds.
+    database:
+      backend: file
     agent:
       provider: opencode
       model: openrouter/deepseek/deepseek-v4-flash
