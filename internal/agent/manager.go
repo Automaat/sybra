@@ -174,7 +174,7 @@ type Manager struct {
 
 	// toolLedger records every tool call every agent makes, whatever the
 	// permission posture. Nil disables recording; Logger.Log tolerates it.
-	toolLedger *toolledger.Logger
+	toolLedger toolledger.Store
 	// sandboxHome resolves the per-task sandbox SYBRA_HOME for a task-scoped
 	// run. Required (non-nil) for any Run/StartAgent call with a non-empty
 	// TaskID — see prepareRunConfig. nil is only valid when every caller is a
@@ -1249,7 +1249,7 @@ func (m *Manager) QueueNudge() <-chan struct{} {
 // SetToolLedger late-binds the tool-call ledger. Separate from construction
 // because the ledger's directory is resolved from config the Manager does not
 // own.
-func (m *Manager) SetToolLedger(l *toolledger.Logger) {
+func (m *Manager) SetToolLedger(l toolledger.Store) {
 	if m == nil {
 		return
 	}
@@ -1262,7 +1262,7 @@ func (m *Manager) SetToolLedger(l *toolledger.Logger) {
 // otherwise invisible: Logger.Log guards its own nil receiver, so an unwired
 // manager drops every record without erroring, and only a direct read of the
 // binding can tell a live ledger from a silent one.
-func (m *Manager) ToolLedger() *toolledger.Logger {
+func (m *Manager) ToolLedger() toolledger.Store {
 	if m == nil {
 		return nil
 	}

@@ -2409,6 +2409,12 @@ func (m *Manager) recordToolCall(r toolledger.Record) {
 	m.mu.RLock()
 	ledger := m.toolLedger
 	m.mu.RUnlock()
+	// Checked here, not left to a nil-receiver guard inside the store: the
+	// field is an interface, so an unset ledger is a nil interface and calling
+	// through it panics — on the stream path, taking the whole run with it.
+	if ledger == nil {
+		return
+	}
 	if err := ledger.Log(r); err != nil {
 		m.logger.Warn("agent.tool_ledger.write_failed", "agent_id", r.AgentID, "tool", r.Tool, "err", err)
 	}

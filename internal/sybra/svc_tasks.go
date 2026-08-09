@@ -49,7 +49,7 @@ type TaskService struct {
 	attachments    *attachment.Store
 	wg             *sync.WaitGroup
 	logger         *slog.Logger
-	audit          *audit.Logger
+	audit          audit.Store
 	cfg            *config.Config
 	currentConfig  func() *config.Config
 	// projects and intervention back recordInterventionOnUnblock only; nil in

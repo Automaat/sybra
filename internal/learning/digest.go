@@ -36,7 +36,7 @@ func AuditDirReader(dir string) auditReader {
 	return auditFunc(func(q audit.Query) ([]audit.Event, error) { return audit.Read(dir, q) })
 }
 
-// auditWriter is the subset of *audit.Logger the digest service needs to
+// auditWriter is the subset of audit.Store the digest service needs to
 // record its own generation/failure events.
 type auditWriter interface {
 	Log(audit.Event) error

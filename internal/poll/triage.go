@@ -31,7 +31,7 @@ type TriageHandler struct {
 	projects   *project.Store
 	cfg        *config.TriageConfig
 	logger     *slog.Logger
-	audit      *audit.Logger
+	audit      audit.Store
 	gate       provider.HealthGate
 	factory    classifierFactory
 	perTaskTTL time.Duration
@@ -42,7 +42,7 @@ type TriageHandler struct {
 func NewTriageHandler(
 	tasks *task.Manager,
 	projects *project.Store,
-	al *audit.Logger,
+	al audit.Store,
 	logger *slog.Logger,
 	cfg *config.TriageConfig,
 ) *TriageHandler {

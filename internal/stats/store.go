@@ -237,17 +237,27 @@ func (s *Store) Query() StatsResponse {
 func (s *Store) QueryAt(now time.Time) StatsResponse {
 	s.syncForRead()
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	runs := slices.Clone(s.runs)
+	s.mu.Unlock()
+	return Aggregate(runs, now)
+}
 
+// Aggregate builds the stats response from a set of runs.
+//
+// Split out of QueryAt so the database-backed store produces byte-identical
+// figures rather than a second implementation that drifts from this one. The
+// windows are computed here because "this month" depends on now, not on what
+// the caller happened to load.
+func Aggregate(runs []RunRecord, now time.Time) StatsResponse {
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	weekStart := todayStart.AddDate(0, 0, -int(todayStart.Weekday()))
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
 
-	// Preallocate to len(s.runs): `all` is exactly that size, the time-window
+	// Preallocate to len(runs): `all` is exactly that size, the time-window
 	// subsets are bounded by it. Measured at 5k records: -23% wall, -17%
 	// bytes, -35% allocs vs uncapped append. Query runs on every stats UI
 	// open.
-	n := len(s.runs)
+	n := len(runs)
 	all := make([]RunRecord, 0, n)
 	today := make([]RunRecord, 0, n)
 	week := make([]RunRecord, 0, n)
@@ -259,8 +269,8 @@ func (s *Store) QueryAt(now time.Time) StatsResponse {
 	byProvider := map[string][]RunRecord{}
 	bySkillExecutionMode := map[string][]RunRecord{}
 
-	for i := range s.runs {
-		r := normalizedRunRecord(s.runs[i])
+	for i := range runs {
+		r := normalizedRunRecord(runs[i])
 		all = append(all, r)
 
 		if !r.Timestamp.Before(todayStart) {
@@ -313,13 +323,13 @@ func (s *Store) QueryAt(now time.Time) StatsResponse {
 		ByModel:              groupedStats(byModel),
 		ByProvider:           groupedStats(byProvider),
 		BySkillExecutionMode: groupedStats(bySkillExecutionMode),
-		ReviewRounds:         reviewRoundsByModel(s.runs),
+		ReviewRounds:         reviewRoundsByModel(runs),
 	}
 
 	// Recent runs: last 50, newest first
-	recent := make([]RunRecord, len(s.runs))
-	for i := range s.runs {
-		recent[i] = normalizedRunRecord(s.runs[i])
+	recent := make([]RunRecord, len(runs))
+	for i := range runs {
+		recent[i] = normalizedRunRecord(runs[i])
 	}
 	slices.SortFunc(recent, func(a, b RunRecord) int { return b.Timestamp.Compare(a.Timestamp) })
 	if len(recent) > 50 {

@@ -155,8 +155,8 @@ type DurableGHIssueSink struct {
 	inner    issueSubmitter
 	store    *issueOutboxStore
 	logger   *slog.Logger
-	name     string        // sink identity for logs, e.g. "monitor" or "human-review"
-	auditLog *audit.Logger // optional; nil in tests that construct the struct directly
+	name     string      // sink identity for logs, e.g. "monitor" or "human-review"
+	auditLog audit.Store // optional; nil in tests that construct the struct directly
 
 	// mu serializes outbox mutation (flushPending/persist) so a
 	// recovery-triggered ReplayPending racing with a normal SubmitIssue's own
@@ -179,7 +179,7 @@ type DurableGHIssueSink struct {
 // (no audit event is emitted, only the log line) — callers that want the
 // failure surfaced as a health.Finding (see internal/health's
 // checkGHIssueAuthFailure) must pass a non-nil logger.
-func NewDurableGHIssueSink(inner *GHIssueSink, dir, name string, logger *slog.Logger, auditLog *audit.Logger) (*DurableGHIssueSink, error) {
+func NewDurableGHIssueSink(inner *GHIssueSink, dir, name string, logger *slog.Logger, auditLog audit.Store) (*DurableGHIssueSink, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}

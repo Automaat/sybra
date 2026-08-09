@@ -16,7 +16,7 @@ import (
 type triageCoordinator struct {
 	tasks          *task.Manager
 	projects       *project.Store
-	auditLog       *audit.Logger
+	auditLog       audit.Store
 	logger         *slog.Logger
 	cfg            *config.Config
 	providerHealth *provider.Checker
@@ -26,7 +26,7 @@ type triageCoordinator struct {
 func newTriageCoordinator(
 	tasks *task.Manager,
 	projects *project.Store,
-	auditLog *audit.Logger,
+	auditLog audit.Store,
 	logger *slog.Logger,
 	cfg *config.Config,
 	providerHealth *provider.Checker,

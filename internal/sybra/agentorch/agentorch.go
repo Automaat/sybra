@@ -199,7 +199,7 @@ type Orchestrator struct {
 	sandboxes *sandbox.Manager
 	bgops     *bgop.Tracker
 	logger    *slog.Logger
-	audit     *audit.Logger
+	audit     audit.Store
 	// pressureGate defers new work when the local host is short on disk,
 	// memory, or CPU headroom. Late-bound via SetPressureGate so startup can
 	// construct it from config after New returns. Nil disables gating.
@@ -247,7 +247,7 @@ func New(
 	tasks *task.Manager,
 	projects *project.Store,
 	agents *agent.Manager,
-	al *audit.Logger,
+	al audit.Store,
 	logger *slog.Logger,
 	worktrees *worktree.Manager,
 	cfg *config.Config,

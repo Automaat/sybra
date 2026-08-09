@@ -55,7 +55,7 @@ func TestAdversarial_LiveBackgroundTaskAtResultDoesNotCompleteCleanly(t *testing
 		t.Fatalf("Run: %v", err)
 	}
 
-	waitForAgentDone(t, ag, 5*time.Second)
+	waitForAgentDone(t, ag, scaledDeadline(5*time.Second))
 
 	if ag.GetState() == StateStopped && ag.GetExitErr() == nil && ag.HasBackgroundTasks() {
 		t.Fatalf("agent completed cleanly despite live background task: state=%s exitErr=%v hasBackgroundTasks=%v logs=%s",

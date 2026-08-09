@@ -19,7 +19,7 @@ import (
 
 // StatsService exposes statistics as Wails-bound methods.
 type StatsService struct {
-	stats    *stats.Store
+	stats    stats.Repository
 	limits   *limits.Store
 	projects *project.Store
 	tasks    *task.Manager

@@ -61,14 +61,14 @@ const (
 // (a subsystem that failed to start) can leave it unset.
 type Config struct {
 	Logger *slog.Logger
-	Audit  *audit.Logger
+	Audit  audit.Store
 	Emit   func(string, any)
 
 	Tasks          *task.Manager
 	Worktrees      *worktree.Manager
 	Sandboxes      *sandbox.Manager
 	WorkflowEngine workflow.CompletionWorkflow
-	Stats          *stats.Store
+	Stats          stats.Repository
 	Limits         *limits.Store
 	LoopSched      *loopagent.Scheduler
 	PRTracker      *github.IssueTracker
@@ -101,14 +101,14 @@ type WorkScrubContext struct {
 // wires only the deps the scenario exercises.
 type Handler struct {
 	logger *slog.Logger
-	audit  *audit.Logger
+	audit  audit.Store
 	emit   func(string, any)
 
 	tasks          *task.Manager
 	worktrees      *worktree.Manager
 	sandboxes      *sandbox.Manager
 	workflowEngine workflow.CompletionWorkflow
-	stats          *stats.Store
+	stats          stats.Repository
 	limits         *limits.Store
 	loopSched      *loopagent.Scheduler
 	prTracker      *github.IssueTracker
