@@ -174,6 +174,7 @@ func buildAllowances() map[allowanceKey]allowance { //nolint:funlen // The expli
 	add(kindStringTruncation, "internal/issueref/issueref.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/limits/live.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/llmjob/llmjob.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/project/sqlstore.go", "The value is a SHA-256 digest split into two halves to build an advisory lock key, not text.", map[string]int{"slice": 2})
 	add(kindStringTruncation, "internal/monitor/issueoutbox.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/monitor/issuesink.go", "Pre-existing parser/protocol string slice retained as an exact audited baseline; count changes require migration review.", map[string]int{"slice": 8})
 	add(kindStringTruncation, "internal/notes/notes_test.go", "Existing test fixture slices controlled parser/protocol text at a deliberate byte boundary.", map[string]int{"slice": 1})

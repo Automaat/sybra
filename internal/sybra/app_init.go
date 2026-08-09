@@ -1812,10 +1812,7 @@ func (a *App) initLoopAgents(ctx context.Context) error {
 // initProjects opens the project metadata store and applies the resolved
 // commit-signing policy to it and to the workflows no dispatcher seeds.
 func (a *App) initProjects(ctx context.Context) error {
-	projStore, err := project.NewStore(
-		filepath.Join(config.HomeDir(), "projects"),
-		filepath.Join(config.HomeDir(), "clones"),
-	)
+	projStore, err := a.openProjectStore(ctx)
 	if err != nil {
 		a.logger.Error("project.store.init", "err", err)
 		return fmt.Errorf("project store: %w", err)
@@ -2117,6 +2114,29 @@ func (a *App) openLimitsStore(ctx context.Context) (*limits.Store, error) {
 		}
 	}
 	return limits.NewStore(config.LimitsFile())
+}
+
+// openProjectStore returns the project records for the configured backend,
+// importing the existing files the first time a database is used.
+//
+// Clones stay on disk either way; only the record moves. A failed import
+// degrades to the files: an empty project list reads as "nothing is
+// registered", and every task carrying a project id would lose its repository.
+func (a *App) openProjectStore(ctx context.Context) (*project.Store, error) {
+	dir := filepath.Join(config.HomeDir(), "projects")
+	clones := filepath.Join(config.HomeDir(), "clones")
+	if a.database != nil {
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := project.Import(importCtx, a.database, dir, a.importScope(), a.logger); err != nil {
+			a.logger.Error("project.import", "err", err)
+		} else if store, err := project.NewSQLStore(a.database); err != nil {
+			a.logger.Error("project.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return project.NewStoreWith(dir, clones, store)
+		}
+	}
+	return project.NewStore(dir, clones)
 }
 
 // openAttemptLedger returns the admission ledger for the configured backend,
