@@ -36,6 +36,7 @@ var ErrProjectNotRegistered = errors.New("project not registered locally")
 type Store struct {
 	dir       string
 	clonesDir string
+	store     Persistence
 	locker    *fsutil.KeyedLocker
 	cloneBare func(context.Context, string, string) error
 	// signing is atomic because SetSigningPolicy runs on the config-reload
@@ -60,6 +61,19 @@ func (s *Store) SigningPolicy() SigningPolicy {
 
 // NewStore creates dir and clonesDir if they do not exist and returns a
 // Store rooted there.
+// NewStoreWith returns a store whose records live in p. Clones still live under
+// clonesDir on disk; only the metadata moves.
+func NewStoreWith(dir, clonesDir string, p Persistence) (*Store, error) {
+	s, err := NewStore(dir, clonesDir)
+	if err != nil {
+		return nil, err
+	}
+	if p != nil {
+		s.store = p
+	}
+	return s, nil
+}
+
 func NewStore(dir, clonesDir string) (*Store, error) {
 	for _, d := range []string{dir, clonesDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -77,6 +91,13 @@ func NewStore(dir, clonesDir string) (*Store, error) {
 // lock acquires the per-project write lock for id's Get-modify-writeFile
 // critical section.
 func (s *Store) lock(id string) (func(), error) {
+	if s.store != nil {
+		return s.store.Lock(id)
+	}
+	return s.lockFile(id)
+}
+
+func (s *Store) lockFile(id string) (func(), error) {
 	unlock, err := s.locker.Lock(id, s.filePath(id))
 	if err != nil {
 		return nil, fmt.Errorf("lock project %s: %w", id, err)
@@ -170,6 +191,16 @@ func (s *Store) disableAutoMaintenanceLocked(ctx context.Context, id, snapshotCl
 // List returns every registered project. A file that fails to parse is
 // silently skipped rather than failing the whole call.
 func (s *Store) List() ([]Project, error) {
+	if s.store != nil {
+		raw, err := s.store.List()
+		if err != nil {
+			return nil, err
+		}
+		for i := range raw {
+			applyProjectDefaults(&raw[i])
+		}
+		return raw, nil
+	}
 	paths, err := fsutil.ListFiles(s.dir, ".yaml")
 	if err != nil {
 		return nil, fmt.Errorf("read projects dir: %w", err)
@@ -190,6 +221,14 @@ func (s *Store) List() ([]Project, error) {
 // ErrProjectNotRegistered (checkable via errors.Is) if no such project has
 // been created.
 func (s *Store) Get(id string) (Project, error) {
+	if s.store != nil {
+		p, err := s.store.Read(id)
+		if err != nil {
+			return Project{}, err
+		}
+		applyProjectDefaults(&p)
+		return p, nil
+	}
 	path := s.filePath(id)
 	return s.readFile(path)
 }
@@ -199,6 +238,15 @@ func (s *Store) Get(id string) (Project, error) {
 // a work project whose type field is absent or unknown is never mistaken for
 // pet and routed to an untrusted follower.
 func (s *Store) RawType(id string) (ProjectType, error) {
+	if s.store != nil {
+		// Read, not Get: no defaulting, so an absent type stays absent rather
+		// than reading as pet.
+		p, err := s.store.Read(id)
+		if err != nil {
+			return "", err
+		}
+		return p.Type, nil
+	}
 	data, err := os.ReadFile(s.filePath(id))
 	if err != nil {
 		return "", err
@@ -520,6 +568,21 @@ func (s *Store) filePath(id string) string {
 	return filepath.Join(s.dir, safe+".yaml")
 }
 
+// applyProjectDefaults fills the fields an older record may omit. Both backends
+// apply it on the read paths that want it, so a project stored either way
+// behaves identically.
+func applyProjectDefaults(p *Project) {
+	if p.Type == "" {
+		p.Type = ProjectTypePet
+	}
+	if p.Status == "" {
+		p.Status = ProjectStatusReady
+	}
+	if p.WorktreeBaseRef == "" {
+		p.WorktreeBaseRef = WorktreeBaseRefFresh
+	}
+}
+
 func (s *Store) readFile(path string) (Project, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -545,6 +608,9 @@ func (s *Store) readFile(path string) (Project, error) {
 }
 
 func (s *Store) writeFile(p Project) error {
+	if s.store != nil {
+		return s.store.Write(p)
+	}
 	data, err := yaml.Marshal(p)
 	if err != nil {
 		return fmt.Errorf("marshal project: %w", err)
