@@ -46,7 +46,10 @@ const desktopPortFile = "desktop-port"
 // desktopBoard is the origin the window loads the UI from.
 type desktopBoard struct {
 	url string
-	srv *http.Server
+	// target is the host:port an agent's sybra-cli is pointed at, which is the
+	// same listener without the scheme or trailing slash.
+	target string
+	srv    *http.Server
 }
 
 // openDesktopBoard serves the window this process's own board.
@@ -137,7 +140,7 @@ func serveDesktopBoard(ln net.Listener, origin string, logger *slog.Logger, cfg 
 		}
 	}()
 	logger.Info("desktop.board.listen", "origin", origin)
-	return &desktopBoard{url: origin + "/", srv: srv}, nil
+	return &desktopBoard{url: origin + "/", target: strings.TrimPrefix(origin, "http://"), srv: srv}, nil
 }
 
 // shutdown bounds the wait. http.Server.Shutdown never cancels a handler, and

@@ -186,6 +186,12 @@ type Manager struct {
 	controlTarget string
 	controlToken  func(taskID, sandboxHome string) string
 
+	// boardMu guards the board address, which is only known once this
+	// instance's own HTTP surface is listening — after the manager exists.
+	boardMu     sync.RWMutex
+	boardTarget string
+	boardToken  string
+
 	ghAppToken         func() string
 	ghVerifierAppToken func() string
 	artifacts          *artifact.Store
@@ -1262,4 +1268,24 @@ func (m *Manager) ToolLedger() *toolledger.Logger {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.toolLedger
+}
+
+// SetBoard names this instance's own board, so a task-scoped agent's sybra-cli
+// is told where to go rather than left to infer it.
+//
+// Inference does not survive the process sandbox: reads are deny-by-default
+// against an allowlist, so the port file the CLI would discover a board from is
+// not reliably readable from inside a run. The address is only known once this
+// instance is listening, which is after the manager is built, so it is set
+// rather than configured.
+func (m *Manager) SetBoard(target, token string) {
+	m.boardMu.Lock()
+	defer m.boardMu.Unlock()
+	m.boardTarget, m.boardToken = target, token
+}
+
+func (m *Manager) board() (target, token string) {
+	m.boardMu.RLock()
+	defer m.boardMu.RUnlock()
+	return m.boardTarget, m.boardToken
 }

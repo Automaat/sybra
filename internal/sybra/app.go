@@ -971,3 +971,15 @@ func (a *App) Context() context.Context { return a.ctx }
 func (a *App) HTTPAdmission(service, method string, meta httpapi.MethodMeta) error {
 	return a.httpAdmission(service, method, meta)
 }
+
+// SetAgentBoard tells task-scoped agents which board to reach.
+//
+// Called once this instance is listening: an agent's sybra-cli has no
+// filesystem path to task state, and cannot reliably discover a board from
+// inside the process sandbox, so it is given the address instead.
+func (a *App) SetAgentBoard(target, token string) {
+	if a == nil || a.agents == nil {
+		return
+	}
+	a.agents.SetBoard(target, token)
+}

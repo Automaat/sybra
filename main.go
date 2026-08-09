@@ -130,6 +130,10 @@ func run() (int, error) {
 	}
 	defer board.shutdown(ctx)
 
+	// Agents reach task state through sybra-cli, which has no filesystem path
+	// to it and cannot discover this port from inside the process sandbox.
+	sybraApp.SetAgentBoard(board.target, cfg.Server.AuthToken)
+
 	openMainWindow(v3app, board.url)
 
 	if err := v3app.Run(); err != nil {

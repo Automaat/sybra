@@ -496,7 +496,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 		)
 	})
 
-	serveE2EBoard(t, taskDir, taskMgr, artifactStore)
+	serveE2EBoard(t, agentMgr, taskDir, taskMgr, artifactStore)
 
 	return env
 }
@@ -508,7 +508,7 @@ func setupE2EProvider(t *testing.T, provider, scenario string) *e2eEnv {
 // also serves it, so an agent's bare `sybra-cli update` finds a board for the
 // home it was pointed at. Without one every scenario that records a status or a
 // sidecar silently does nothing.
-func serveE2EBoard(t *testing.T, home string, tasks *task.Manager, artifacts *artifact.Store) {
+func serveE2EBoard(t *testing.T, agents *agent.Manager, home string, tasks *task.Manager, artifacts *artifact.Store) {
 	t.Helper()
 
 	mux := http.NewServeMux()
@@ -537,16 +537,11 @@ func serveE2EBoard(t *testing.T, home string, tasks *task.Manager, artifacts *ar
 	if err != nil {
 		t.Fatalf("split e2e board host: %v", err)
 	}
-	// Recorded the way a desktop app records it, so the CLI's own discovery
-	// finds it rather than the test reaching around that path.
-	if err := os.WriteFile(filepath.Join(home, "desktop-port"), []byte(port), 0o600); err != nil {
-		t.Fatalf("write e2e desktop port: %v", err)
-	}
-	tokenPath := filepath.Join(home, "e2e-board-token")
-	if err := os.WriteFile(tokenPath, []byte("e2e-board-token"), 0o600); err != nil {
-		t.Fatalf("write e2e board token: %v", err)
-	}
-	t.Setenv("SYBRA_AUTH_TOKEN_FILE", tokenPath)
+	// Named to the agent manager rather than left to discovery: an agent runs
+	// under the process sandbox, whose reads are deny-by-default, so the port
+	// file a CLI would find a board from is not reliably readable from inside
+	// a run. This is the same route production takes.
+	agents.SetBoard(net.JoinHostPort("127.0.0.1", port), "e2e-board-token")
 }
 
 // e2eBoardTaskService adapts the harness stores to TaskService's wire names.

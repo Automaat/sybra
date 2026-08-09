@@ -178,6 +178,11 @@ func run() (int, error) {
 		return 1, err
 	}
 
+	// Agents reach task state through sybra-cli, which has no filesystem path
+	// to it. Name the board now that it is listening; loopback, so the token
+	// never leaves the host.
+	app.SetAgentBoard(agentBoardTarget(cfg), cfg.Server.AuthToken)
+
 	select {
 	case sig := <-signalCh:
 		logger.Info("server.signal", "signal", sig.String())
@@ -289,6 +294,26 @@ var (
 	corsMiddleware = httpserve.CORSMiddleware
 	authMiddleware = httpserve.AuthMiddleware
 )
+
+// agentBoardTarget is the loopback address of the board this process serves.
+// A wildcard or unset bind answers on loopback; a concrete one does not, so an
+// operator who locked the control plane to an interface is named there.
+func agentBoardTarget(cfg *config.Config) string {
+	addrs, _ := cfg.ListenAddrs(os.Getenv("SYBRA_HOST"), os.Getenv("SYBRA_PORT"))
+	host, port := "127.0.0.1", config.DefaultServerPort
+	if len(addrs) > 0 {
+		if h, p, err := net.SplitHostPort(addrs[0]); err == nil && strings.TrimSpace(p) != "" {
+			port = p
+			if strings.TrimSpace(h) != "" && h != "0.0.0.0" && h != "::" {
+				host = h
+			}
+		}
+	}
+	if cfg.ServesTLS() {
+		return "https://" + net.JoinHostPort(host, port)
+	}
+	return net.JoinHostPort(host, port)
+}
 
 type slogWriter struct{ logger *slog.Logger }
 

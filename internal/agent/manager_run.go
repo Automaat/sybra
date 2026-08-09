@@ -755,6 +755,22 @@ func (m *Manager) injectSandboxHome(cfg *RunConfig) error {
 		}
 	} else if controlHome != "" {
 		cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_CONTROL_HOME="+controlHome)
+		// Named, not inferred: the CLI has no filesystem path to the board
+		// any more, and the port file it would otherwise discover one from
+		// lives in the operator home — off the read allowlist for every role
+		// but monitor, so under an enforcing read sandbox discovery cannot
+		// see it. The token goes in the sandbox home, which is readable by
+		// construction, the way the verifier channel does it.
+		if target, token := m.board(); target != "" && token != "" {
+			tokenPath := filepath.Join(dir, "board-token")
+			if err := os.WriteFile(tokenPath, []byte(token), 0o600); err != nil {
+				return fmt.Errorf("agent.Run: write board token: %w", err)
+			}
+			cfg.ExtraEnv = append(cfg.ExtraEnv,
+				"SYBRA_SERVER_TARGET="+target,
+				"SYBRA_AUTH_TOKEN_FILE="+tokenPath,
+			)
+		}
 	}
 	cfg.resolvedSandboxHome = dir
 	return nil

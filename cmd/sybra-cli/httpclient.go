@@ -63,9 +63,6 @@ type apiClient struct {
 	// probeErr is why the last reachability probe failed, when it failed for a
 	// reason worth telling an operator about.
 	probeErr error
-	// identified records that the peer answered the health probe as a Sybra
-	// control plane rather than merely answering.
-	identified bool
 	// boardHomeID digests the SYBRA_HOME the board reported serving, learned
 	// during the reachability probe. Empty until that probe has run.
 	boardHomeID string
@@ -338,12 +335,15 @@ func isLoopbackHost(h string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// reachable reports that a Sybra control plane answers, not merely that
-// something does.
+// reachable reports that something answered the health probe with a document a
+// board could have written, and records what it claimed.
 //
-// The identity check is what keeps the bearer token off an unrelated process:
-// the next request carries it, and a port this client inferred rather than an
-// operator named may belong to anything.
+// It deliberately does not require the service marker. A server older than the
+// home field answers exactly {"status":"ok"}, which no check can tell from a
+// process that is not Sybra at all, and refusing it would break every agent's
+// task CRUD between this CLI landing and that server restarting. What keeps
+// the bearer token off an unrelated process is the home the peer claims —
+// see servesThisHome, and ownsHome for the paths that delete files.
 func (c *apiClient) reachable(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -371,7 +371,6 @@ func (c *apiClient) reachable(ctx context.Context) bool {
 		return false
 	}
 	c.boardHomeID = health.HomeID
-	c.identified = health.Service == httpserve.ServiceMarker
 	return true
 }
 

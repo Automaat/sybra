@@ -22,6 +22,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/httpserve"
 	"github.com/Automaat/sybra/internal/toolledger"
 )
 
@@ -126,7 +127,15 @@ func newApprovalServer(ctx context.Context, emit EmitFunc, logger *slog.Logger, 
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	// The verifier's own CLI probes this before it will send its task-scoped
+	// token, and an empty body is indistinguishable from a process that is not
+	// Sybra at all. No home is claimed: this channel fronts two TaskService
+	// methods for one task, not a board, and it is only ever reached through a
+	// target the runner names outright.
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"status":"ok","service":%q}`, httpserve.ServiceMarker)
+	})
 	mux.HandleFunc("/hooks/pre-tool-use", s.handlePreToolUse)
 	mux.HandleFunc("POST /api/TaskService/{method}", s.handleVerifierControl)
 
