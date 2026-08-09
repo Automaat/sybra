@@ -15,7 +15,6 @@ package agentgrant
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -101,28 +100,22 @@ func (s *Store) Mint(taskID string) (string, error) {
 
 // Verify resolves a presented credential.
 //
-// The comparison is constant-time so a caller cannot learn a stored digest by
-// timing, and a lapsed grant is refused rather than pruned here — pruning takes
-// the write path, and a read must not become one.
+// The lookup is keyed by the digest of the presented token, so a caller that does not already hold a token cannot reach a stored grant without a SHA-256 preimage, and no scan over stored digests is needed. A lapsed grant is refused rather than pruned here — pruning takes the write path, and a read must not become one.
 func (s *Store) Verify(token string) (Grant, bool) {
 	if s == nil || strings.TrimSpace(token) == "" {
 		return Grant{}, false
 	}
-	want := digest(token)
-	now := time.Now().UTC()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for stored, grant := range s.grants {
-		if subtle.ConstantTimeCompare([]byte(stored), []byte(want)) != 1 {
-			continue
-		}
-		if now.After(grant.ExpiresAt) {
-			return Grant{}, false
-		}
-		return grant, true
+	grant, ok := s.grants[digest(token)]
+	if !ok {
+		return Grant{}, false
 	}
-	return Grant{}, false
+	if time.Now().UTC().After(grant.ExpiresAt) {
+		return Grant{}, false
+	}
+	return grant, true
 }
 
 // Revoke drops every grant issued for a task, which is what the end of its run

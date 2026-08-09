@@ -99,3 +99,35 @@ func TestAuthMiddlewareWith_UnknownCredentialIsRefused(t *testing.T) {
 }
 
 func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }
+
+// TestAuthMiddlewareWith_ClearsCallerSuppliedSandboxedHeader pins that the mark travels from the credential and nowhere else. Leaving an inbound copy in place let a caller classify itself: the middleware only ever set the header, so one arriving on an operator-token request survived untouched into the dispatcher.
+func TestAuthMiddlewareWith_ClearsCallerSuppliedSandboxedHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name, bearer string
+		wantMarked   bool
+	}{
+		{"operator token cannot mark itself sandboxed", "board-token", false},
+		{"grant stays sandboxed regardless of the inbound copy", "run-grant", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var sawSandboxed string
+			next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				sawSandboxed = r.Header.Get(httpapi.SandboxedCallerHeader)
+			})
+			handler := AuthMiddlewareWith("board-token", stubGrants{token: "run-grant", taskID: "task-a"}, discard(), next)
+
+			req := httptest.NewRequest(http.MethodPost, "/api/TaskService/ListTasks", http.NoBody)
+			req.Header.Set("Authorization", "Bearer "+tc.bearer)
+			req.Header.Set(httpapi.SandboxedCallerHeader, "1")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code == http.StatusUnauthorized {
+				t.Fatalf("%s was refused", tc.bearer)
+			}
+			if marked := sawSandboxed != ""; marked != tc.wantMarked {
+				t.Fatalf("sandboxed mark reached the dispatcher as %q, want marked=%v", sawSandboxed, tc.wantMarked)
+			}
+		})
+	}
+}

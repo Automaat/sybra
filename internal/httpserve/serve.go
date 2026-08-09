@@ -456,6 +456,8 @@ func AuthMiddlewareWith(token string, grants GrantVerifier, logger *slog.Logger,
 			next.ServeHTTP(w, r)
 			return
 		}
+		// This header is the middleware's own statement about the presented credential, so an inbound copy is cleared first and a caller can never classify itself by setting it.
+		r.Header.Del(httpapi.SandboxedCallerHeader)
 		authorized, sandboxed := RequestAuthorizedWith(r, token, grants)
 		if sandboxed {
 			r.Header.Set(httpapi.SandboxedCallerHeader, "1")
