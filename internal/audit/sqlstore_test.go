@@ -49,6 +49,12 @@ func TestSQLStore_ReadMatchesTheFileTrail(t *testing.T) {
 			{Since: base.Add(-time.Hour), Until: base.Add(6 * time.Hour)},
 			{Since: base.Add(-time.Hour), Until: base.Add(6 * time.Hour), TaskID: "task-a"},
 			{Since: base.Add(-time.Hour), Until: base.Add(6 * time.Hour), Type: "agent.started"},
+			// A prefix, which is what the contract is: the file reader matches
+			// with HasPrefix and the statistics backfill asks for exactly this.
+			// Exact-match equality returns none of them, and "agent.started" on
+			// its own is the one shape where both agree.
+			{Since: base.Add(-time.Hour), Until: base.Add(6 * time.Hour), Type: "agent."},
+			{Since: base.Add(-time.Hour), Until: base.Add(6 * time.Hour), Type: "agent"},
 			{Since: base.Add(90 * time.Minute), Until: base.Add(6 * time.Hour)},
 		} {
 			fromFiles, err := files.Read(q)
@@ -87,7 +93,7 @@ func TestSQLStore_LoggingIsIdempotentPerEvent(t *testing.T) {
 				t.Fatalf("log: %v", err)
 			}
 		}
-		got, err := store.Read(Query{})
+		got, err := store.Read(Query{Since: e.Timestamp.Add(-time.Hour), Until: e.Timestamp.Add(time.Hour)})
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}
@@ -117,7 +123,8 @@ func TestSQLStore_CleanupHonoursRetention(t *testing.T) {
 		if err := store.Cleanup(30); err != nil {
 			t.Fatalf("cleanup: %v", err)
 		}
-		got, err := store.Read(Query{})
+		window := Query{Since: now.AddDate(0, 0, -365), Until: now.Add(time.Hour)}
+		got, err := store.Read(window)
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}
@@ -129,7 +136,7 @@ func TestSQLStore_CleanupHonoursRetention(t *testing.T) {
 		if err := store.Cleanup(0); err != nil {
 			t.Fatalf("cleanup(0): %v", err)
 		}
-		got, err = store.Read(Query{})
+		got, err = store.Read(window)
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}
@@ -166,7 +173,7 @@ func TestImport_ResumesWithoutDuplicating(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewSQLStore: %v", err)
 		}
-		got, err := store.Read(Query{})
+		got, err := store.Read(Query{Since: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Until: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)})
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}
@@ -191,7 +198,7 @@ func TestImport_EmptyDomainReadsBackEmpty(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewSQLStore: %v", err)
 		}
-		got, err := store.Read(Query{})
+		got, err := store.Read(Query{Since: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Until: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)})
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}

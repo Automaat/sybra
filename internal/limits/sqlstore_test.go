@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -143,4 +144,69 @@ func TestImport_EmptyDomainReadsBackEmpty(t *testing.T) {
 			t.Fatalf("got %d snapshots and %d events from an empty domain", len(snapshots), len(events))
 		}
 	})
+}
+
+// TestSQLPersistence_ConcurrentInstancesDoNotLoseSnapshots is the case a shared
+// board exists for.
+//
+// The cross-process file lock made load-mutate-save atomic. Replacing it with a
+// no-op left two instances interleaving as load/load/save/save, and because
+// Save replaces the snapshot set, the second write dropped the first
+// instance's provider entirely — a provider that is actually rate-limited then
+// reads back as untouched headroom and dispatch routes into it.
+func TestSQLPersistence_ConcurrentInstancesDoNotLoseSnapshots(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		persistence, err := NewSQLPersistence(d)
+		if err != nil {
+			t.Fatalf("NewSQLPersistence: %v", err)
+		}
+		one, err := NewStoreWith(persistence)
+		if err != nil {
+			t.Fatalf("NewStoreWith: %v", err)
+		}
+		two, err := NewStoreWith(persistence)
+		if err != nil {
+			t.Fatalf("NewStoreWith: %v", err)
+		}
+
+		const rounds = 60
+		var wg sync.WaitGroup
+		for _, pair := range []struct {
+			store    *Store
+			provider string
+		}{{one, providerid.Claude}, {two, providerid.Codex}} {
+			wg.Go(func() {
+				for i := range rounds {
+					if err := pair.store.UpdateSnapshot(Snapshot{
+						Provider:   pair.provider,
+						PlanType:   "max",
+						CapturedAt: time.Now().UTC().Add(time.Duration(i) * time.Millisecond),
+					}); err != nil {
+						t.Errorf("UpdateSnapshot(%s): %v", pair.provider, err)
+						return
+					}
+				}
+			})
+		}
+		wg.Wait()
+
+		got, _, err := persistence.Load()
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		for _, provider := range []string{providerid.Claude, providerid.Codex} {
+			if _, ok := got[provider]; !ok {
+				t.Fatalf("%s's snapshot was lost to the other instance; board holds %v", provider, keys(got))
+			}
+		}
+	})
+}
+
+func keys(m map[string]Snapshot) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

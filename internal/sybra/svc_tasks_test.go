@@ -306,6 +306,9 @@ func TestTaskService_ListTaskAuditEventsNewestFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer al.Close()
+	// The service reads the trail through its store now, not by opening the
+	// directory, so that a database-backed board is readable at all.
+	svc.audit = al
 	if err := al.Log(audit.Event{Type: audit.EventTaskCreated, TaskID: "task-a"}); err != nil {
 		t.Fatal(err)
 	}

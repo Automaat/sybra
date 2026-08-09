@@ -175,6 +175,13 @@ func Resumable(ctx context.Context, database *db.DB, domain, scope string, logge
 			logger.Info("db.import.done", "domain", domain, "scope", scope)
 			return nil
 		}
+		if batch.Cursor == cursor {
+			// A batch that neither finishes nor advances would spin forever
+			// holding the import lock, so no other domain could import and
+			// nothing would say why. That is a defect in the domain's own
+			// next, and it is better reported than waited on.
+			return fmt.Errorf("dbimport %s: batch did not advance past cursor %q", domain, cursor)
+		}
 		logger.Info("db.import.batch", "domain", domain, "scope", scope, "records", batch.Count, "cursor", batch.Cursor)
 	}
 }

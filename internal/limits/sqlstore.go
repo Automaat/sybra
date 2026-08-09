@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/db"
@@ -19,6 +20,36 @@ const queryTimeout = 15 * time.Second
 // A snapshot is one row per provider and a usage event is one row, so an update writes what changed rather than rewriting the whole document under a cross-process file lock — which is what made every quota update proportional to the length of the history.
 type SQLPersistence struct {
 	db *db.DB
+
+	// mu serializes critical sections in this process; the advisory lock the
+	// transaction takes serializes them against every other process. tx is the
+	// transaction a critical section is running in, and is nil outside one.
+	mu sync.Mutex
+	tx *sql.Tx
+}
+
+// LockQuota serializes quota read-modify-writes across processes. Distinct
+// from every other advisory key so a quota update never waits on an import.
+const LockQuota db.LockKey = 6_215_034_129_004
+
+// Critical runs fn as one atomic read-modify-write.
+func (p *SQLPersistence) Critical(fn func() error) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	defer cancel()
+	return p.db.InTxLocked(ctx, LockQuota, func(tx *sql.Tx) error {
+		p.tx = tx
+		defer func() { p.tx = nil }()
+		return fn()
+	})
+}
+
+func (p *SQLPersistence) query(ctx context.Context, stmt string, args ...any) (*sql.Rows, error) {
+	if p.tx != nil {
+		return p.tx.QueryContext(ctx, p.db.Rebind(stmt), args...)
+	}
+	return p.db.QueryContext(ctx, stmt, args...)
 }
 
 // NewSQLPersistence returns the database-backed quota store.
@@ -47,7 +78,7 @@ func (p *SQLPersistence) Load() (map[string]Snapshot, []UsageEvent, error) {
 	defer cancel()
 
 	snapshots := map[string]Snapshot{}
-	rows, err := p.db.QueryContext(ctx, `SELECT doc FROM provider_quota_snapshots`)
+	rows, err := p.query(ctx, `SELECT doc FROM provider_quota_snapshots`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read quota snapshots: %w", err)
 	}
@@ -73,7 +104,7 @@ func (p *SQLPersistence) Load() (map[string]Snapshot, []UsageEvent, error) {
 		return nil, nil, fmt.Errorf("close quota snapshot scan: %w", err)
 	}
 
-	eventRows, err := p.db.QueryContext(ctx,
+	eventRows, err := p.query(ctx,
 		`SELECT doc FROM provider_quota_usage ORDER BY ts, `+p.db.OrderText("id"))
 	if err != nil {
 		return nil, nil, fmt.Errorf("read quota usage: %w", err)
@@ -103,31 +134,38 @@ func (p *SQLPersistence) Load() (map[string]Snapshot, []UsageEvent, error) {
 func (p *SQLPersistence) Save(snapshots map[string]Snapshot, events []UsageEvent) error {
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
+	if p.tx != nil {
+		return p.save(ctx, p.tx, snapshots, events)
+	}
 	return p.db.InTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, p.db.Rebind(deleteMissingSnapshots)); err != nil {
-			return fmt.Errorf("clear quota snapshots: %w", err)
-		}
-		for provider := range snapshots {
-			s := snapshots[provider]
-			doc, err := json.Marshal(&s)
-			if err != nil {
-				return fmt.Errorf("marshal quota snapshot: %w", err)
-			}
-			if _, err := tx.ExecContext(ctx, p.db.Rebind(upsertQuotaSnapshot),
-				s.Provider, db.TimeValue(s.CapturedAt), string(doc)); err != nil {
-				return fmt.Errorf("write quota snapshot: %w", err)
-			}
-		}
-		if err := insertEventsTx(ctx, p.db, tx, events); err != nil {
-			return err
-		}
-		// Retention by age, matching the file store's own cutoff.
-		cutoff := time.Now().UTC().Add(-eventMaxAge)
-		if _, err := tx.ExecContext(ctx, p.db.Rebind(deleteUsageBefore), db.TimeValue(cutoff)); err != nil {
-			return fmt.Errorf("prune quota usage: %w", err)
-		}
-		return nil
+		return p.save(ctx, tx, snapshots, events)
 	})
+}
+
+func (p *SQLPersistence) save(ctx context.Context, tx *sql.Tx, snapshots map[string]Snapshot, events []UsageEvent) error {
+	if _, err := tx.ExecContext(ctx, p.db.Rebind(deleteMissingSnapshots)); err != nil {
+		return fmt.Errorf("clear quota snapshots: %w", err)
+	}
+	for provider := range snapshots {
+		s := snapshots[provider]
+		doc, err := json.Marshal(&s)
+		if err != nil {
+			return fmt.Errorf("marshal quota snapshot: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, p.db.Rebind(upsertQuotaSnapshot),
+			s.Provider, db.TimeValue(s.CapturedAt), string(doc)); err != nil {
+			return fmt.Errorf("write quota snapshot: %w", err)
+		}
+	}
+	if err := insertEventsTx(ctx, p.db, tx, events); err != nil {
+		return err
+	}
+	// Retention by age, matching the file store's own cutoff.
+	cutoff := time.Now().UTC().Add(-eventMaxAge)
+	if _, err := tx.ExecContext(ctx, p.db.Rebind(deleteUsageBefore), db.TimeValue(cutoff)); err != nil {
+		return fmt.Errorf("prune quota usage: %w", err)
+	}
+	return nil
 }
 
 func insertEventsTx(ctx context.Context, database *db.DB, tx *sql.Tx, events []UsageEvent) error {

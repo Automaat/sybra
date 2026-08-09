@@ -82,9 +82,25 @@ func newStore(path string, p Persistence) (*Store, error) {
 // returns a no-op rather than locking a path that does not exist.
 func (s *Store) lock() (func() error, error) {
 	if s.persistence != nil {
+		// Serialized by critical() instead, which is a database transaction:
+		// there is no document to flock, and returning a no-op here on its own
+		// would leave load/mutate/save interleaving between two instances and
+		// silently dropping one's snapshot.
 		return func() error { return nil }, nil
 	}
 	return fsutil.LockFileWithin(s.path, storeLockTimeout)
+}
+
+// critical runs a read-modify-write as one atomic unit.
+//
+// With a database backend that is a transaction holding an advisory lock, so
+// two instances sharing a board serialize; with the file backend the caller's
+// flock already did it and this only runs fn.
+func (s *Store) critical(fn func() error) error {
+	if s.persistence != nil {
+		return s.persistence.Critical(fn)
+	}
+	return fn()
 }
 
 // UpdateSnapshot, RecordUsage, and Import are read-modify-write against the
@@ -106,13 +122,15 @@ func (s *Store) UpdateSnapshot(snapshot Snapshot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.reloadLocked(); err != nil {
-		return err
-	}
-	if !s.updateSnapshotLocked(snapshot) {
-		return nil
-	}
-	return s.flushLocked()
+	return s.critical(func() error {
+		if err := s.reloadLocked(); err != nil {
+			return err
+		}
+		if !s.updateSnapshotLocked(snapshot) {
+			return nil
+		}
+		return s.flushLocked()
+	})
 }
 
 func (s *Store) RecordUsage(e UsageEvent) error {
@@ -124,13 +142,15 @@ func (s *Store) RecordUsage(e UsageEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.reloadLocked(); err != nil {
-		return err
-	}
-	if !s.recordUsageLocked(e) {
-		return nil
-	}
-	return s.flushLocked()
+	return s.critical(func() error {
+		if err := s.reloadLocked(); err != nil {
+			return err
+		}
+		if !s.recordUsageLocked(e) {
+			return nil
+		}
+		return s.flushLocked()
+	})
 }
 
 // Import records a batch of parsed session-file data and flushes at most once.
@@ -143,20 +163,22 @@ func (s *Store) Import(events []UsageEvent, snapshots []Snapshot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.reloadLocked(); err != nil {
-		return err
-	}
-	changed := false
-	for i := range snapshots {
-		changed = s.updateSnapshotLocked(snapshots[i]) || changed
-	}
-	for i := range events {
-		changed = s.recordUsageLocked(events[i]) || changed
-	}
-	if !changed {
-		return nil
-	}
-	return s.flushLocked()
+	return s.critical(func() error {
+		if err := s.reloadLocked(); err != nil {
+			return err
+		}
+		changed := false
+		for i := range snapshots {
+			changed = s.updateSnapshotLocked(snapshots[i]) || changed
+		}
+		for i := range events {
+			changed = s.recordUsageLocked(events[i]) || changed
+		}
+		if !changed {
+			return nil
+		}
+		return s.flushLocked()
+	})
 }
 
 // InvalidateLiveExactSnapshot demotes a current live-poll snapshot to
@@ -171,16 +193,18 @@ func (s *Store) InvalidateLiveExactSnapshot(provider string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.reloadLocked(); err != nil {
-		return err
-	}
-	snap, ok := s.snapshots[provider]
-	if !ok || snap.Source != SourceLivePoll || snap.Confidence != ConfidenceExact {
-		return nil
-	}
-	snap.Confidence = ConfidenceEstimated
-	s.snapshots[provider] = snap
-	return s.flushLocked()
+	return s.critical(func() error {
+		if err := s.reloadLocked(); err != nil {
+			return err
+		}
+		snap, ok := s.snapshots[provider]
+		if !ok || snap.Source != SourceLivePoll || snap.Confidence != ConfidenceExact {
+			return nil
+		}
+		snap.Confidence = ConfidenceEstimated
+		s.snapshots[provider] = snap
+		return s.flushLocked()
+	})
 }
 
 // reloadLocked re-reads s.path into s.snapshots/s.events/s.seen.

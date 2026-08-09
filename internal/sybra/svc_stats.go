@@ -23,7 +23,7 @@ type StatsService struct {
 	limits   *limits.Store
 	projects *project.Store
 	tasks    *task.Manager
-	auditDir string
+	audit    audit.Store
 	policy   func() limits.Policy
 	// currentConfig reads one live snapshot, so a config reload reaches the
 	// evaluation scan without re-wiring the service.
@@ -57,7 +57,7 @@ func aggregateTasksDone(resp *stats.StatsResponse, done []doneTaskClosure, now t
 	}
 }
 
-func doneTaskClosures(list []task.Task, auditDir string, now time.Time) []doneTaskClosure {
+func doneTaskClosures(list []task.Task, trail audit.Store, now time.Time) []doneTaskClosure {
 	byID := map[string]doneTaskClosure{}
 	liveIDs := map[string]struct{}{}
 	for i := range list {
@@ -71,7 +71,7 @@ func doneTaskClosures(list []task.Task, auditDir string, now time.Time) []doneTa
 		}
 		byID[id] = doneTaskClosure{id: id, closedAt: taskCloseTime(list[i])}
 	}
-	for _, d := range auditDoneTaskClosures(auditDir, now) {
+	for _, d := range auditDoneTaskClosures(trail, now) {
 		if _, ok := liveIDs[d.id]; ok {
 			continue
 		}
@@ -91,11 +91,11 @@ type auditTaskStatus struct {
 	changedAt time.Time
 }
 
-func auditDoneTaskClosures(auditDir string, now time.Time) []doneTaskClosure {
-	if auditDir == "" {
+func auditDoneTaskClosures(trail audit.Store, now time.Time) []doneTaskClosure {
+	if trail == nil {
 		return nil
 	}
-	events, err := audit.Read(auditDir, audit.Query{
+	events, err := trail.Read(audit.Query{
 		Since: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
 		Until: now.Add(24 * time.Hour),
 		Type:  audit.EventTaskStatusChanged,
@@ -166,7 +166,7 @@ func (s *StatsService) GetStats() stats.StatsResponse {
 
 	if s.tasks != nil {
 		if list, err := s.tasks.List(); err == nil {
-			done := doneTaskClosures(list, s.auditDir, now)
+			done := doneTaskClosures(list, s.audit, now)
 			aggregateTasksDone(&resp, done, now)
 			resp.ClosedTasksDaily = closedTasksDaily(done, now)
 		} else {
@@ -277,7 +277,7 @@ func (s *StatsService) ScanEvaluation() (evaluation.Report, error) {
 		Cfg:       cfg.Evaluation,
 		ABTesting: cfg.ABTesting,
 		Stats:     s.stats,
-		Audit:     evaluation.AuditDirReader(s.auditDir),
+		Audit:     evaluation.AuditStoreReader(s.audit),
 	})
 	return svc.Scan(context.Background())
 }

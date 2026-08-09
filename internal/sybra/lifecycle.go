@@ -69,7 +69,7 @@ func (lm *LifecycleManager) StartManagers(ctx context.Context, emit func(string,
 		a.logger.Info("watchdog.disabled")
 	}
 
-	hcheck := health.New(a.cfg.AuditDir(), a.tasks, config.HomeDir(), a.logger, emit, func() health.OwnedProcesses {
+	hcheck := health.New(a.audit, a.tasks, config.HomeDir(), a.logger, emit, func() health.OwnedProcesses {
 		owned := health.OwnedProcesses{
 			PIDs:          map[int]bool{},
 			ProcessGroups: map[int]bool{},
@@ -705,7 +705,7 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 	svc := monitor.NewService(monitor.Deps{
 		Cfg:          a.cfg.Monitor,
 		Tasks:        a.tasks,
-		Audit:        monitor.AuditDirReader(a.cfg.AuditDir()),
+		Audit:        monitor.AuditStoreReader(a.audit),
 		Agents:       newMonitorAgentLister(a.agents, a.clusterRoster, a.logger),
 		ObserverOnly: a.cfg.IsFollower(),
 		Dispatcher:   disp,
@@ -852,7 +852,7 @@ func (lm *LifecycleManager) startEvaluationService(ctx context.Context, emit fun
 	deps := evaluation.Deps{
 		Cfg:        a.cfg.Evaluation,
 		ABTesting:  a.abTestingConfig(),
-		Audit:      evaluation.AuditDirReader(a.cfg.AuditDir()),
+		Audit:      evaluation.AuditStoreReader(a.audit),
 		Emit:       emit,
 		Logger:     a.logger,
 		ReportPath: config.EvaluationReportPath(),
@@ -883,7 +883,7 @@ func (lm *LifecycleManager) startLearningDigestService(ctx context.Context, emit
 	deps := learning.Deps{
 		Cfg:       a.cfg.LearningDigest,
 		ABTesting: a.abTestingConfig(),
-		Audit:     learning.AuditDirReader(a.cfg.AuditDir()),
+		Audit:     learning.AuditStoreReader(a.audit),
 		AuditLog:  a.audit,
 		Store:     a.learning,
 		Blocklist: a.fleetWorkBlocklist,

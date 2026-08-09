@@ -12,15 +12,15 @@ import (
 // lifecycle` both reduce the same event stream, so both go through this one
 // query rather than a report endpoint each.
 type AuditService struct {
-	auditDir string
+	audit audit.Store
 }
 
 // QueryAuditEvents returns the events in the window that match the filters.
 func (s *AuditService) QueryAuditEvents(q audit.Query) ([]audit.Event, error) {
-	if s.auditDir == "" {
+	if s.audit == nil {
 		return nil, unavailableError("audit log unavailable")
 	}
-	events, err := audit.Read(s.auditDir, q)
+	events, err := s.audit.Read(q)
 	if err != nil {
 		return nil, err
 	}

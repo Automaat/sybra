@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -65,6 +66,13 @@ func (s *SQLStore) Read(q Query) ([]Event, error) {
 	if s == nil {
 		return nil, nil
 	}
+	// An unbounded query is not what the file trail answered: with no window it
+	// formats both bounds as year one, matches no day-file, and returns
+	// nothing. Returning the whole table instead would load an unbounded
+	// history into memory for a caller that forgot a window.
+	if q.Since.IsZero() && q.Until.IsZero() && strings.TrimSpace(q.Type) == "" && strings.TrimSpace(q.TaskID) == "" {
+		return nil, nil
+	}
 	stmt := `SELECT doc FROM audit_events WHERE 1 = 1`
 	var args []any
 	if !q.Since.IsZero() {
@@ -75,9 +83,21 @@ func (s *SQLStore) Read(q Query) ([]Event, error) {
 		stmt += ` AND ts <= ?`
 		args = append(args, db.TimeValue(q.Until))
 	}
-	if strings.TrimSpace(q.Type) != "" {
-		stmt += ` AND event_type = ?`
-		args = append(args, q.Type)
+	if prefix := strings.TrimSpace(q.Type); prefix != "" {
+		// A prefix, not an equality: the file reader matches with HasPrefix, the
+		// CLI flag is documented as a prefix, and the statistics backfill asks
+		// for "agent." expecting every agent event. Equality returned none of
+		// them.
+		//
+		// Expressed as a range rather than LIKE so the index is usable and no
+		// wildcard in the caller's string is interpreted.
+		// Collated, like the ordering is: a range comparison follows the
+		// server's collation too, and the deploy target's en_US.UTF-8 ignores
+		// the dot in "agent." at the primary level — so the bounds admit and
+		// exclude the wrong rows. Byte order is what HasPrefix means.
+		col := s.db.OrderText("event_type")
+		stmt += ` AND ` + col + ` >= ? AND ` + col + ` < ?`
+		args = append(args, prefix, prefixUpperBound(prefix))
 	}
 	if strings.TrimSpace(q.TaskID) != "" {
 		stmt += ` AND task_id = ?`
@@ -110,6 +130,22 @@ func (s *SQLStore) Read(q Query) ([]Event, error) {
 		return nil, fmt.Errorf("iterate audit events: %w", err)
 	}
 	return out, nil
+}
+
+// prefixUpperBound returns the first string greater than every string starting
+// with prefix, so a range scan expresses "has this prefix" exactly.
+//
+// A prefix whose bytes are all 0xff has no such bound; the caller falls back to
+// an open upper end, which over-matches nothing because nothing sorts above it.
+func prefixUpperBound(prefix string) string {
+	b := []byte(prefix)
+	for i, c := range slices.Backward(b) {
+		if c < 0xff {
+			b[i]++
+			return string(b[:i+1])
+		}
+	}
+	return prefix + "\xff"
 }
 
 // Cleanup removes events older than retentionDays.

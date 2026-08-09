@@ -140,3 +140,75 @@ func TestOnce_RefusesAnEmptyScope(t *testing.T) {
 		}
 	})
 }
+
+// TestResumable_PartialImportResumesFromItsCursor is the issue's "a partial
+// import resumes without duplicating rows".
+//
+// Running an import twice to completion does not test this: the second run
+// reads done=1 and returns before calling next at all, so such a test passes
+// even if the cursor is never persisted, never read, or reset on every start.
+// Here the first run fails mid-way, and the second must pick up where it
+// stopped rather than restarting from nothing.
+func TestResumable_PartialImportResumesFromItsCursor(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		ctx := t.Context()
+		boom := errors.New("interrupted")
+
+		var seen []string
+		next := func(stopAt int) func(context.Context, *sql.Tx, string) (Batch, error) {
+			return func(_ context.Context, _ *sql.Tx, cursor string) (Batch, error) {
+				seen = append(seen, cursor)
+				n := 0
+				if cursor != "" {
+					n = len(cursor)
+				}
+				if n == stopAt {
+					return Batch{}, boom
+				}
+				if n >= 4 {
+					return Batch{Cursor: cursor, Count: 1, Done: true}, nil
+				}
+				return Batch{Cursor: cursor + "x", Count: 1}, nil
+			}
+		}
+
+		if err := Resumable(ctx, d, "demo", "home-a", nil, next(3)); !errors.Is(err, boom) {
+			t.Fatalf("first run returned %v, want the body's error", err)
+		}
+		if len(seen) == 0 || seen[0] != "" {
+			t.Fatalf("first run started at %q, want the empty cursor", seen)
+		}
+		firstRun := append([]string(nil), seen...)
+		seen = nil
+
+		if err := Resumable(ctx, d, "demo", "home-a", nil, next(-1)); err != nil {
+			t.Fatalf("second run: %v", err)
+		}
+		if len(seen) == 0 {
+			t.Fatal("second run never called next; the domain was marked done by an interrupted import")
+		}
+		if seen[0] == "" {
+			t.Fatalf("second run restarted from nothing (%v) after %v; the cursor was not read back", seen, firstRun)
+		}
+		if want := firstRun[len(firstRun)-1]; seen[0] != want {
+			t.Fatalf("second run resumed at %q, want the last committed cursor %q", seen[0], want)
+		}
+	})
+}
+
+// TestResumable_RefusesABatchThatDoesNotAdvance keeps a defective domain from
+// spinning forever while holding the import lock, which would block every
+// other domain's import with nothing in the log to say why.
+func TestResumable_RefusesABatchThatDoesNotAdvance(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		err := Resumable(t.Context(), d, "demo", "home-a", nil,
+			func(context.Context, *sql.Tx, string) (Batch, error) {
+				return Batch{Cursor: "", Count: 1}, nil
+			})
+		if err == nil {
+			t.Fatal("a batch that never advances was accepted; the import spins forever")
+		}
+	})
+}

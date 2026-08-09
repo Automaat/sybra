@@ -1310,7 +1310,10 @@ func (a *App) initAudit(ctx context.Context) {
 	if retentionDays <= 0 {
 		retentionDays = 30
 	}
-	if err := audit.Cleanup(a.auditDir, retentionDays); err != nil {
+	// Through the store, not the package-level file cleanup: with a database
+	// backend the day-files stop growing and pruning them frees nothing, while
+	// audit_events — the highest-rate table there is — would grow forever.
+	if err := a.audit.Cleanup(retentionDays); err != nil {
 		a.logger.Warn("audit.cleanup", "err", err)
 	}
 

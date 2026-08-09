@@ -38,7 +38,7 @@ func TestAggregateTasksDone(t *testing.T) {
 	list[1].ClosedAt = &t2ClosedAt
 
 	var resp stats.StatsResponse
-	aggregateTasksDone(&resp, doneTaskClosures(list, "", now), now)
+	aggregateTasksDone(&resp, doneTaskClosures(list, nil, now), now)
 
 	// AllTime: 5 done tasks
 	if resp.AllTime.TasksDone != 5 {
@@ -78,7 +78,7 @@ func TestClosedTasksDaily(t *testing.T) {
 		{Status: task.StatusInProgress, UpdatedAt: now},
 	}
 
-	got := closedTasksDaily(doneTaskClosures(list, "", now), now)
+	got := closedTasksDaily(doneTaskClosures(list, nil, now), now)
 	want := []stats.TaskSeriesPoint{
 		{Date: "2026-06-13", Count: 1},
 		{Date: "2026-06-14", Count: 2},
@@ -102,7 +102,7 @@ func TestClosedTasksDailyUsesBackendLocalDateKeys(t *testing.T) {
 	closed := time.Date(2026, 6, 1, 22, 30, 0, 0, time.UTC)
 	list := []task.Task{{Status: task.StatusDone, UpdatedAt: time.Date(2026, 6, 1, 1, 0, 0, 0, time.UTC), ClosedAt: &closed}}
 
-	got := closedTasksDaily(doneTaskClosures(list, "", now), now)
+	got := closedTasksDaily(doneTaskClosures(list, nil, now), now)
 	want := []stats.TaskSeriesPoint{{Date: "2026-06-02", Count: 1}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("closedTasksDaily() = %+v, want %+v", got, want)
@@ -216,7 +216,7 @@ func TestStatsServiceGetStatsCountsAuditDoneTasksMissingFromLiveList(t *testing.
 		},
 	})
 
-	resp := (&StatsService{stats: statsStore, tasks: taskMgr, auditDir: auditDir}).GetStats()
+	resp := (&StatsService{stats: statsStore, tasks: taskMgr, audit: mustAuditStore(t, auditDir)}).GetStats()
 	if resp.AllTime.TasksDone != 2 {
 		t.Fatalf("AllTime.TasksDone = %d, want 2 (live done + deleted done, excluding reopened/live non-done)", resp.AllTime.TasksDone)
 	}
@@ -401,3 +401,14 @@ func writeStatsAuditFile(t *testing.T, dir, name string, events []audit.Event) {
 }
 
 func nearly(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
+
+// mustAuditStore opens the file trail as the store the service now takes.
+func mustAuditStore(t *testing.T, dir string) audit.Store {
+	t.Helper()
+	store, err := audit.NewLogger(dir)
+	if err != nil {
+		t.Fatalf("audit.NewLogger: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}

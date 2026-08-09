@@ -333,3 +333,19 @@ func (s *Service) persist(r Report) error {
 	}
 	return fsutil.AtomicWrite(s.reportPath, data)
 }
+
+// AuditStoreReader adapts the board's audit store into a reader.
+//
+// The directory-backed reader above only sees what a file-backed trail wrote.
+// Under a database backend the day-files stop growing, so a consumer left on
+// the directory reads an empty trail and reports the fleet as idle.
+func AuditStoreReader(store interface {
+	Read(audit.Query) ([]audit.Event, error)
+}) auditReader {
+	return auditFunc(func(q audit.Query) ([]audit.Event, error) {
+		if store == nil {
+			return nil, nil
+		}
+		return store.Read(q)
+	})
+}
