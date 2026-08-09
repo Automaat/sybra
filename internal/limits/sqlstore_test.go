@@ -8,17 +8,18 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/db"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/testutil/dbtest"
 )
 
 func quotaFixture(now time.Time) (map[string]Snapshot, []UsageEvent) {
 	snapshots := map[string]Snapshot{
-		"claude": {Provider: "claude", PlanType: "max", CapturedAt: now.Add(-time.Minute)},
-		"codex":  {Provider: "codex", PlanType: "pro", CapturedAt: now.Add(-2 * time.Minute)},
+		providerid.Claude: {Provider: providerid.Claude, PlanType: "max", CapturedAt: now.Add(-time.Minute)},
+		providerid.Codex:  {Provider: providerid.Codex, PlanType: "pro", CapturedAt: now.Add(-2 * time.Minute)},
 	}
 	events := []UsageEvent{
-		{ID: "e1", Provider: "claude", Source: "run", CostUSD: 1, Timestamp: now.Add(-time.Hour)},
-		{ID: "e2", Provider: "codex", Source: "run", CostUSD: 2, Timestamp: now.Add(-30 * time.Minute)},
+		{ID: "e1", Provider: providerid.Claude, Source: "run", CostUSD: 1, Timestamp: now.Add(-time.Hour)},
+		{ID: "e2", Provider: providerid.Codex, Source: "run", CostUSD: 2, Timestamp: now.Add(-30 * time.Minute)},
 	}
 	return snapshots, events
 }
@@ -40,7 +41,7 @@ func TestSQLPersistence_RoundTrips(t *testing.T) {
 		if err != nil {
 			t.Fatalf("load: %v", err)
 		}
-		if len(gotSnapshots) != 2 || gotSnapshots["claude"].PlanType != "max" {
+		if len(gotSnapshots) != 2 || gotSnapshots[providerid.Claude].PlanType != "max" {
 			t.Fatalf("snapshots round-tripped as %+v", gotSnapshots)
 		}
 		if len(gotEvents) != 2 || gotEvents[0].ID != "e1" {
@@ -71,8 +72,8 @@ func TestSQLPersistence_PrunesEventsPastRetention(t *testing.T) {
 		}
 		now := time.Now().UTC()
 		events := []UsageEvent{
-			{ID: "old", Provider: "claude", Timestamp: now.Add(-eventMaxAge - time.Hour)},
-			{ID: "fresh", Provider: "claude", Timestamp: now.Add(-time.Hour)},
+			{ID: "old", Provider: providerid.Claude, Timestamp: now.Add(-eventMaxAge - time.Hour)},
+			{ID: "fresh", Provider: providerid.Claude, Timestamp: now.Add(-time.Hour)},
 		}
 		if err := store.Save(map[string]Snapshot{}, events); err != nil {
 			t.Fatalf("save: %v", err)

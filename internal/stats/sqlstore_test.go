@@ -10,17 +10,18 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/db"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/testutil/dbtest"
 )
 
 func runsFixture(now time.Time) []RunRecord {
 	return []RunRecord{
 		{ID: "run-1", TaskID: "task-a", ProjectID: "o/r", Mode: "headless", Role: "implementation",
-			Provider: "claude", Model: "sonnet", CostUSD: 1.5, DurationS: 10, Timestamp: now.Add(-2 * time.Hour)},
+			Provider: providerid.Claude, Model: "sonnet", CostUSD: 1.5, DurationS: 10, Timestamp: now.Add(-2 * time.Hour)},
 		{ID: "run-2", TaskID: "task-a", ProjectID: "o/r", Mode: "headless", Role: "review",
-			Provider: "codex", Model: "gpt", CostUSD: 0.5, DurationS: 5, Timestamp: now.Add(-time.Hour)},
+			Provider: providerid.Codex, Model: "gpt", CostUSD: 0.5, DurationS: 5, Timestamp: now.Add(-time.Hour)},
 		{ID: "run-3", TaskID: "task-b", ProjectID: "o/r", Mode: "headless", Role: "implementation",
-			Provider: "claude", Model: "sonnet", CostUSD: 2, DurationS: 20, Timestamp: now.Add(-40 * 24 * time.Hour)},
+			Provider: providerid.Claude, Model: "sonnet", CostUSD: 2, DurationS: 20, Timestamp: now.Add(-40 * 24 * time.Hour)},
 	}
 }
 
