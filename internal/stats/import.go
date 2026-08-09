@@ -86,7 +86,14 @@ func importBatch(ctx context.Context, database *db.DB, tx *sql.Tx, path, cursor 
 	if legacy, ok, err := readLegacyArray(f); err != nil {
 		return dbimport.Batch{}, err
 	} else if ok {
+		written := 0
 		for i := range legacy {
+			if legacy[i].ID == "" {
+				// The same rule the ndjson path applies: a record with no id
+				// would take the empty primary key, and the next such record
+				// would collide with it rather than be stored.
+				continue
+			}
 			doc, err := json.Marshal(legacy[i])
 			if err != nil {
 				return dbimport.Batch{}, fmt.Errorf("encode run record: %w", err)
@@ -94,8 +101,9 @@ func importBatch(ctx context.Context, database *db.DB, tx *sql.Tx, path, cursor 
 			if err := insertRunTx(ctx, database, tx, legacy[i], doc); err != nil {
 				return dbimport.Batch{}, err
 			}
+			written++
 		}
-		return dbimport.Batch{Cursor: strconv.Itoa(len(legacy)), Count: len(legacy), Done: true}, nil
+		return dbimport.Batch{Cursor: strconv.Itoa(len(legacy)), Count: written, Done: true}, nil
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return dbimport.Batch{}, fmt.Errorf("rewind run history: %w", err)

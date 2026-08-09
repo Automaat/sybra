@@ -89,3 +89,36 @@ func TestImport_WarnsWhenAHistoryFileContributesNothing(t *testing.T) {
 		}
 	})
 }
+
+// TestImport_LegacySkipsRecordsWithNoID keeps the legacy path on the same rule
+// as the ndjson one. An id-less record takes the empty primary key, and the
+// next one collides with it rather than being stored.
+func TestImport_LegacySkipsRecordsWithNoID(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+		runs := []RunRecord{
+			{ID: "", TaskID: "t-0", CostUSD: 1, Timestamp: now},
+			{ID: "", TaskID: "t-1", CostUSD: 2, Timestamp: now},
+			{ID: "legacy-ok", TaskID: "t-2", CostUSD: 3, Timestamp: now},
+		}
+		data, err := json.Marshal(runs)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		path := filepath.Join(t.TempDir(), "stats.json")
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if err := Import(t.Context(), d, path, "home-a", nil); err != nil {
+			t.Fatalf("import: %v", err)
+		}
+		store, err := NewSQLStore(d, nil)
+		if err != nil {
+			t.Fatalf("NewSQLStore: %v", err)
+		}
+		if n := store.Len(); n != 1 {
+			t.Fatalf("import stored %d records, want only the one carrying an id", n)
+		}
+	})
+}
