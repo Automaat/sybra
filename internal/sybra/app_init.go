@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/backoff"
 	"github.com/Automaat/sybra/internal/bgop"
+	"github.com/Automaat/sybra/internal/cleanup"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/db"
 	"github.com/Automaat/sybra/internal/diskreclaim"
@@ -2199,4 +2200,26 @@ func (a *App) newDurableIssueSink(ctx context.Context, inner *monitor.GHIssueSin
 		}
 	}
 	return monitor.NewDurableGHIssueSink(inner, dir, name, a.logger, a.audit)
+}
+
+// openProtectedStore returns the protected-findings ledger for the configured
+// backend, importing the existing document the first time a database is used.
+//
+// A failed import degrades to the document: an empty ledger reads as nothing
+// protected, and the next cleanup pass is then free to delete the very paths
+// the findings existed to hold.
+func (a *App) openProtectedStore(ctx context.Context) *cleanup.ProtectedStore {
+	path := cleanup.DefaultProtectedStorePath()
+	if a.database != nil {
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := cleanup.ImportProtected(importCtx, a.database, path, a.importScope(), a.logger); err != nil {
+			a.logger.Error("protectedfindings.import", "err", err)
+		} else if store, err := cleanup.NewSQLProtectedStore(a.database); err != nil {
+			a.logger.Error("protectedfindings.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return cleanup.NewProtectedStoreWith(path, store)
+		}
+	}
+	return cleanup.NewProtectedStore(path)
 }
