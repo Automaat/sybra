@@ -87,6 +87,15 @@ const (
 
 // Put stores a task and replaces its sidecars, both in one transaction.
 func (s *SQLStore) Put(ctx context.Context, t task.Task, sidecars []Sidecar) error {
+	return s.PutBy(ctx, t, sidecars, "", nil)
+}
+
+// PutBy stores a task, its sidecars, and the history entry for the change.
+//
+// actor names who made the change and changed lists the fields they touched;
+// both are recorded in the same transaction as the write, so a change that
+// landed always has a matching history entry and one that did not has none.
+func (s *SQLStore) PutBy(ctx context.Context, t task.Task, sidecars []Sidecar, actor string, changed []string) error {
 	if s == nil {
 		return errors.New("task store is not configured")
 	}
@@ -100,6 +109,14 @@ func (s *SQLStore) Put(ctx context.Context, t task.Task, sidecars []Sidecar) err
 	ctx, cancel := context.WithTimeout(ctx, taskQueryTimeout)
 	defer cancel()
 	return s.db.InTx(ctx, func(tx *sql.Tx) error {
+		var existing bool
+		var seen string
+		switch err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT id FROM tasks WHERE id = ?`), t.ID).Scan(&seen); {
+		case err == nil:
+			existing = true
+		case !errors.Is(err, sql.ErrNoRows):
+			return fmt.Errorf("read task: %w", err)
+		}
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(upsertTask),
 			t.ID, string(t.Status), t.ProjectID, t.Title,
 			db.TimeValue(t.CreatedAt), db.TimeValue(t.UpdatedAt), int64(0), string(doc)); err != nil {
@@ -116,8 +133,19 @@ func (s *SQLStore) Put(ctx context.Context, t task.Task, sidecars []Sidecar) err
 				return fmt.Errorf("write sidecar %s: %w", sc.Kind, err)
 			}
 		}
-		return nil
+		return appendHistoryTx(ctx, s.db, tx, HistoryEntry{
+			TaskID: t.ID, Actor: actor, Kind: kindFor(existing), Fields: changed,
+			Snapshot: string(doc),
+		})
 	})
+}
+
+// kindFor names the change from whether the task was already there.
+func kindFor(existed bool) string {
+	if existed {
+		return ChangeUpdated
+	}
+	return ChangeCreated
 }
 
 // Get returns one task and its sidecars.
@@ -209,10 +237,20 @@ func (s *SQLStore) Delete(ctx context.Context, id string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, taskQueryTimeout)
 	defer cancel()
-	if _, err := s.db.ExecContext(ctx, softDeleteTask, db.TimeValue(time.Now().UTC()), id); err != nil {
-		return fmt.Errorf("delete task: %w", err)
-	}
-	return nil
+	return s.db.InTx(ctx, func(tx *sql.Tx) error {
+		doc, deleted, found, err := s.lockedTask(ctx, tx, id)
+		if err != nil || !found {
+			return err
+		}
+		// Already deleted: a second delete would append a change that did not happen and push the retention window out, keeping the row past the age it should have been trimmed at.
+		if deleted {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(softDeleteTask), db.TimeValue(time.Now().UTC()), id); err != nil {
+			return fmt.Errorf("delete task: %w", err)
+		}
+		return appendHistoryTx(ctx, s.db, tx, HistoryEntry{TaskID: id, Kind: ChangeDeleted, Snapshot: doc})
+	})
 }
 
 // Restore brings a deleted task back while it is still within retention.
@@ -222,10 +260,20 @@ func (s *SQLStore) Restore(ctx context.Context, id string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, taskQueryTimeout)
 	defer cancel()
-	if _, err := s.db.ExecContext(ctx, restoreTask, id); err != nil {
-		return fmt.Errorf("restore task: %w", err)
-	}
-	return nil
+	return s.db.InTx(ctx, func(tx *sql.Tx) error {
+		doc, deleted, found, err := s.lockedTask(ctx, tx, id)
+		if err != nil || !found {
+			return err
+		}
+		// Restoring a task that was never deleted records a transition the board did not make.
+		if !deleted {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(restoreTask), id); err != nil {
+			return fmt.Errorf("restore task: %w", err)
+		}
+		return appendHistoryTx(ctx, s.db, tx, HistoryEntry{TaskID: id, Kind: ChangeRestored, Snapshot: doc})
+	})
 }
 
 // PurgeDeleted removes tasks deleted longer ago than retention.
@@ -240,4 +288,23 @@ func (s *SQLStore) PurgeDeleted(ctx context.Context, retention time.Duration) er
 		return fmt.Errorf("purge deleted tasks: %w", err)
 	}
 	return nil
+}
+
+// lockedTask reads a task's document and deletion state for a read-modify-write, taking the row's write lock on the way in.
+//
+// Without FOR UPDATE, postgres' READ COMMITTED lets a concurrent PutBy commit between this read and the matching write, so the history entry would carry a snapshot that was already superseded — a deletion record showing a state the task had left. SQLite takes the same exclusion from its immediate transaction. found is false when no such task exists, which every caller treats as nothing to do.
+func (s *SQLStore) lockedTask(ctx context.Context, tx *sql.Tx, id string) (doc string, deleted, found bool, err error) {
+	stmt := `SELECT doc, deleted_at FROM tasks WHERE id = ?`
+	if s.db.Dialect() == db.Postgres {
+		stmt += ` FOR UPDATE`
+	}
+	// Live rows carry 0 rather than NULL, so deletion is a positive timestamp and not merely a non-null column.
+	var deletedAt int64
+	if err := tx.QueryRowContext(ctx, s.db.Rebind(stmt), id).Scan(&doc, &deletedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, false, nil
+		}
+		return "", false, false, fmt.Errorf("read task: %w", err)
+	}
+	return doc, deletedAt > 0, true, nil
 }
