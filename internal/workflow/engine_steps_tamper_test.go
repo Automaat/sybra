@@ -996,6 +996,12 @@ func makeBaseRepo(t *testing.T, baseFiles map[string]string) string {
 	gitRun(t, dir, "init", "-b", "main")
 	gitRun(t, dir, "config", "user.email", "test@test.com")
 	gitRun(t, dir, "config", "user.name", "Test")
+	// Auto-maintenance detaches a process that keeps writing under
+	// .git/objects after the command returns, and t.TempDir's RemoveAll then
+	// races it: "unlinkat .../.git/objects: directory not empty" fails a test
+	// that already passed.
+	gitRun(t, dir, "config", "gc.auto", "0")
+	gitRun(t, dir, "config", "maintenance.auto", "false")
 	for path, content := range baseFiles {
 		writeRepoFile(t, dir, path, content)
 	}
