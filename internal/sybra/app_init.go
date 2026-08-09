@@ -2157,3 +2157,24 @@ func (a *App) openAgentQueueStore(ctx context.Context) agentqueue.Persistence {
 	}
 	return store
 }
+
+// openIncidentStore returns the incident ledger for the configured backend,
+// importing the existing files the first time a database is used.
+//
+// A failed import degrades to the files: an empty ledger reads as "nothing has
+// ever failed", so the monitor would re-file every open incident as new.
+func (a *App) openIncidentStore(ctx context.Context) (*monitor.IncidentStore, error) {
+	dir := config.MonitorIncidentsDir()
+	if a.database != nil {
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := monitor.ImportIncidents(importCtx, a.database, dir, a.importScope(), a.logger); err != nil {
+			a.logger.Error("incidents.import", "err", err)
+		} else if store, err := monitor.NewSQLIncidentStore(a.database); err != nil {
+			a.logger.Error("incidents.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return monitor.NewIncidentStoreWith(dir, store)
+		}
+	}
+	return monitor.NewIncidentStore(dir)
+}

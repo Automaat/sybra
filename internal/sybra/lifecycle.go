@@ -698,7 +698,7 @@ func (lm *LifecycleManager) startMonitorService(ctx context.Context, emit func(s
 			}
 		})
 	}, a.logger)
-	incidentStore, incidentErr := monitor.NewIncidentStore(config.MonitorIncidentsDir())
+	incidentStore, incidentErr := a.openIncidentStore(ctx)
 	if incidentErr != nil {
 		a.logger.Error("monitor.incident_store.init_failed", "err", incidentErr)
 	}

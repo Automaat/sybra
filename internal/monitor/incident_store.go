@@ -5,13 +5,9 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"slices"
 	"sync"
 	"time"
-
-	"github.com/Automaat/sybra/internal/fsutil"
-	"gopkg.in/yaml.v3"
 )
 
 const incidentVersion = 1
@@ -20,8 +16,17 @@ const maxAffectedTasks = 256
 const maxRemediationAttempts = 100
 
 type IncidentStore struct {
-	dir string
-	mu  sync.Mutex
+	dir   string
+	store IncidentPersistence
+	mu    sync.Mutex
+}
+
+// NewIncidentStoreWith returns a store persisting through p rather than to files.
+func NewIncidentStoreWith(dir string, p IncidentPersistence) (*IncidentStore, error) {
+	if p == nil {
+		return nil, errors.New("incident store: nil persistence")
+	}
+	return &IncidentStore{dir: dir, store: p}, nil
 }
 
 func NewIncidentStore(dir string) (*IncidentStore, error) {
@@ -31,11 +36,11 @@ func NewIncidentStore(dir string) (*IncidentStore, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("incident store: mkdir: %w", err)
 	}
-	return &IncidentStore{dir: dir}, nil
+	return &IncidentStore{dir: dir, store: newIncidentFiles(dir)}, nil
 }
 
 func (s *IncidentStore) Observe(a Anomaly, cause RootCause, safeTaskID string) (Incident, IncidentChange, error) {
-	unlock, err := fsutil.LockFileWithin(filepath.Join(s.dir, "ledger"), incidentStoreLockTimeout)
+	unlock, err := s.store.Lock()
 	if err != nil {
 		return Incident{}, IncidentUnchanged, err
 	}
@@ -119,7 +124,7 @@ func (s *IncidentStore) Observe(a Anomaly, cause RootCause, safeTaskID string) (
 }
 
 func (s *IncidentStore) RecordRemediation(fp, kind, result string, at time.Time) error {
-	unlock, err := fsutil.LockFileWithin(filepath.Join(s.dir, "ledger"), incidentStoreLockTimeout)
+	unlock, err := s.store.Lock()
 	if err != nil {
 		return err
 	}
@@ -139,7 +144,7 @@ func (s *IncidentStore) RecordRemediation(fp, kind, result string, at time.Time)
 }
 
 func (s *IncidentStore) ReconcileHealthy(seen, observableScopes, coveredFailureCodes map[string]bool, configGenerations map[string]string, now time.Time, grace, reopenGrace time.Duration) ([]Incident, error) {
-	unlock, err := fsutil.LockFileWithin(filepath.Join(s.dir, "ledger"), incidentStoreLockTimeout)
+	unlock, err := s.store.Lock()
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +214,7 @@ func (s *IncidentStore) ReconcileHealthy(seen, observableScopes, coveredFailureC
 }
 
 func (s *IncidentStore) Link(fp, issueURL, prURL string, duplicates []int) error {
-	unlock, err := fsutil.LockFileWithin(filepath.Join(s.dir, "ledger"), incidentStoreLockTimeout)
+	unlock, err := s.store.Lock()
 	if err != nil {
 		return err
 	}
@@ -238,7 +243,7 @@ func (s *IncidentStore) Link(fp, issueURL, prURL string, duplicates []int) error
 }
 
 func (s *IncidentStore) Get(fp string) (Incident, bool, error) {
-	unlock, err := fsutil.LockFileWithin(filepath.Join(s.dir, "ledger"), incidentStoreLockTimeout)
+	unlock, err := s.store.Lock()
 	if err != nil {
 		return Incident{}, false, err
 	}
@@ -249,7 +254,7 @@ func (s *IncidentStore) Get(fp string) (Incident, bool, error) {
 }
 
 func (s *IncidentStore) List() ([]Incident, error) {
-	unlock, err := fsutil.LockFileWithin(filepath.Join(s.dir, "ledger"), incidentStoreLockTimeout)
+	unlock, err := s.store.Lock()
 	if err != nil {
 		return nil, err
 	}
@@ -259,56 +264,11 @@ func (s *IncidentStore) List() ([]Incident, error) {
 	return s.list()
 }
 
-func (s *IncidentStore) path(fp string) string { return filepath.Join(s.dir, fp+".yaml") }
+func (s *IncidentStore) load(fp string) (Incident, bool, error) { return s.store.Load(fp) }
 
-func (s *IncidentStore) load(fp string) (Incident, bool, error) {
-	data, err := os.ReadFile(s.path(fp))
-	if errors.Is(err, fs.ErrNotExist) {
-		return Incident{}, false, nil
-	}
-	if err != nil {
-		return Incident{}, false, fmt.Errorf("incident store: read: %w", err)
-	}
-	var in Incident
-	if err := yaml.Unmarshal(data, &in); err != nil {
-		return Incident{}, false, fmt.Errorf("incident store: decode: %w", err)
-	}
-	return in, true, nil
-}
+func (s *IncidentStore) save(in Incident) error { return s.store.Save(in) }
 
-func (s *IncidentStore) save(in Incident) error {
-	data, err := yaml.Marshal(in)
-	if err != nil {
-		return fmt.Errorf("incident store: encode: %w", err)
-	}
-	if err := fsutil.AtomicWriteMode(s.path(in.Fingerprint), data, 0o600); err != nil {
-		return fmt.Errorf("incident store: write: %w", err)
-	}
-	return nil
-}
-
-func (s *IncidentStore) list() ([]Incident, error) {
-	entries, err := os.ReadDir(s.dir)
-	if err != nil {
-		return nil, fmt.Errorf("incident store: list: %w", err)
-	}
-	out := make([]Incident, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(s.dir, entry.Name()))
-		if err != nil {
-			return nil, err
-		}
-		var in Incident
-		if err := yaml.Unmarshal(data, &in); err != nil {
-			return nil, err
-		}
-		out = append(out, in)
-	}
-	return out, nil
-}
+func (s *IncidentStore) list() ([]Incident, error) { return s.store.List() }
 
 func slicesSortInts(values []int) {
 	for i := 1; i < len(values); i++ {
