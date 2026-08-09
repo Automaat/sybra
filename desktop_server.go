@@ -54,12 +54,8 @@ type desktopBoard struct {
 // The window runs the same bundle a browser gets from sybra-server and reaches
 // state over the same HTTP and SSE endpoints, so there is one transport to keep
 // working rather than two that drift.
-func openDesktopBoard(ctx context.Context, cfg *config.Config, logger *slog.Logger, broker *sse.Broker, app *sybra.App) (*desktopBoard, error) {
+func openDesktopBoard(ln net.Listener, cfg *config.Config, logger *slog.Logger, broker *sse.Broker, app *sybra.App) (*desktopBoard, error) {
 	sub, err := desktopAssets()
-	if err != nil {
-		return nil, err
-	}
-	ln, err := listenDesktop(ctx, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -72,6 +68,7 @@ func openDesktopBoard(ctx context.Context, cfg *config.Config, logger *slog.Logg
 		Admit:       app.HTTPAdmission,
 		StaticFS:    sub,
 		EnablePprof: httpserve.PprofEnabled(),
+		Home:        config.HomeDir(),
 		APIBase:     origin + "/api",
 		Token:       cfg.Server.AuthToken,
 		SelfOrigin:  origin,
@@ -106,9 +103,12 @@ func openAttachedBoard(ctx context.Context, cfg *config.Config, logger *slog.Log
 		openBrowser = nil
 	}
 	return serveDesktopBoard(ln, origin, logger, cfg, httpserve.Options{
-		Logger:     logger,
-		Services:   sybra.LocalBrowserServices(openBrowser),
-		StaticFS:   sub,
+		Logger:   logger,
+		Services: sybra.LocalBrowserServices(openBrowser),
+		StaticFS: sub,
+		// The home this window's local surface serves, so a CLI on this machine
+		// can tell it apart from another instance's board.
+		Home:       config.HomeDir(),
 		APIBase:    origin + "/api",
 		Token:      cfg.Server.AuthToken,
 		SelfOrigin: origin,

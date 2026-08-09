@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -194,7 +193,7 @@ func TestDispatch_RefusesToFallBackToLocalFilesForARemoteBoard(t *testing.T) {
 	}
 
 	code, _ := captureStdout(t, func() int {
-		return dispatch("update", []string{created.ID, "--title", "edited"}, cfg, mgr, nil, true, true)
+		return dispatch("update", []string{created.ID, "--title", "edited"}, cfg, true)
 	})
 	if code == 0 {
 		t.Fatal("dispatch reported success against an unreachable remote board")
@@ -216,7 +215,7 @@ func TestDispatch_ConfigStillRunsWithAnUnreachableRemoteBoard(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	code, _ := captureStdout(t, func() int {
-		return dispatch("config", []string{"dump"}, cfg, nil, nil, true, true)
+		return dispatch("config", []string{"dump"}, cfg, true)
 	})
 	if code != 0 {
 		t.Errorf("config dump exit = %d, want 0 with the board down", code)
@@ -272,7 +271,9 @@ func TestNewAPIClient_TargetContract(t *testing.T) {
 		{name: "cleartext to another machine refused", target: "http://board.example:8080", token: "secret", wantErr: true},
 		{name: "https without its token refused", target: "https://board.example:8443", wantErr: true},
 		{name: "path refused", target: "https://board.example:8443/api", token: "secret", wantErr: true},
-		{name: "unset", target: "", token: "secret"},
+		// Unset is not in this table: it no longer means "no client", it means
+		// this machine's own board. TestNewAPIClient_FallsBackToThisMachinesBoard
+		// covers that resolution.
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -283,12 +284,6 @@ func TestNewAPIClient_TargetContract(t *testing.T) {
 			cfg.Server.AuthToken = "config-token"
 
 			client, err := newAPIClient(cfg)
-			if tt.target == "" {
-				if !errors.Is(err, errNoServerTarget) || client != nil {
-					t.Fatalf("unset target = %#v, %v; want the unset sentinel", client, err)
-				}
-				return
-			}
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("target %q was accepted or silently ignored: %#v", tt.target, client)
@@ -322,10 +317,9 @@ func TestNewAPIClient_TargetContract(t *testing.T) {
 // the task it describes lives on the board that just got touched.
 func TestCmdProgressAdd_WritesThroughTheServer(t *testing.T) {
 	rec := newRecordingServer(t, map[string]any{"kind": "decision", "message": "chose headless"})
-	board := newAPITaskBoard(rec.client())
 
 	code, _ := captureStdout(t, func() int {
-		return cmdProgressAdd(board, nil, rec.client(), nil,
+		return cmdProgressAdd(rec.client(),
 			[]string{"t1", "--kind", "decision", "--message", "chose headless"}, true)
 	})
 	if code != 0 {
@@ -342,7 +336,7 @@ func TestCmdProgressList_ReadsThroughTheServer(t *testing.T) {
 	rec := newRecordingServer(t, []map[string]any{{"kind": "progress", "message": "started"}})
 
 	code, _ := captureStdout(t, func() int {
-		return cmdProgressList(rec.client(), nil, []string{"t1"}, true)
+		return cmdProgressList(rec.client(), []string{"t1"}, true)
 	})
 	if code != 0 {
 		t.Fatalf("progress list exit = %d, want 0", code)

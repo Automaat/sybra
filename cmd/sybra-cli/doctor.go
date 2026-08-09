@@ -12,10 +12,18 @@ import (
 	"github.com/Automaat/sybra/internal/config"
 )
 
-// cmdDoctor dispatches `sybra-cli doctor <sub>`. Currently only `cleanup`.
-func cmdDoctor(cfg *config.Config, store taskBoard, args []string, jsonOut bool) int {
+// cmdDoctor inspects and repairs this machine's own disk.
+//
+// It runs with no server so an operator can reach for it when the server is
+// what broke, but every path it would delete belongs to a live task, and only
+// the board knows which those are. Without one it reports and refuses to
+// delete, rather than treating every worktree as an orphan.
+func cmdDoctor(cfg *config.Config, store taskBoard, ownsHome bool, cause string, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: doctor <cleanup>")
+	}
+	if store == nil || !ownsHome {
+		return cmdDoctorWithoutBoard(cfg, store, ownsHome, cause, args, jsonOut)
 	}
 	switch sub, rest := args[0], args[1:]; sub {
 	case "cleanup":
@@ -234,6 +242,11 @@ func cmdDoctorCleanupFindings(store taskBoard, args []string, jsonOut bool) int 
 		if strings.TrimSpace(*taskID) == "" {
 			return fatalUsage(jsonOut, "--task is required")
 		}
+		// The only findings subcommand that reads a task, so it is the only one
+		// that needs a board. The rest answer from this machine's own file.
+		if store == nil {
+			return fatal(jsonOut, "reattach needs the board to confirm task %q exists, and no Sybra server is reachable", *taskID)
+		}
 		if _, err := store.Get(*taskID); err != nil {
 			return fatal(jsonOut, "reattach target task %q: %v", *taskID, err)
 		}
@@ -341,4 +354,44 @@ func fatalUsage(jsonOut bool, format string, args ...any) int {
 		fmt.Fprintf(os.Stderr, "error: %s\n", msg)
 	}
 	return 2
+}
+
+// cmdDoctorWithoutBoard answers the doctor subcommands that need no board, and
+// refuses the scan by name rather than running it against a task list that does
+// not describe this disk — which classifies every live worktree as an orphan
+// and offers to delete it.
+func cmdDoctorWithoutBoard(cfg *config.Config, store taskBoard, ownsHome bool, cause string, args []string, jsonOut bool) int {
+	if args[0] != "cleanup" {
+		return fatal(jsonOut, "unknown doctor command: %s", args[0])
+	}
+	// The protected-findings record is this machine's own file, so reading it
+	// needs no board at all — and it is exactly what an operator asks for when
+	// the server is what broke and the disk is filling up.
+	if len(args) > 1 && args[1] == "findings" && !needsBoard(args, 2) {
+		return cmdDoctorCleanupFindings(store, args[2:], jsonOut)
+	}
+	// Order matters: with no board at all, ownsHome is false too, and reporting
+	// a mismatched target would tell an operator to unset something they never
+	// set.
+	if store == nil {
+		// cause names what actually stopped the board being usable — a
+		// certificate that does not match, a bind with no route — which is the
+		// whole reason an operator ran doctor.
+		if strings.TrimSpace(cause) != "" {
+			return fatal(jsonOut, "doctor cleanup needs the board to tell a live worktree from an orphan: %s", cause)
+		}
+		return fatal(jsonOut,
+			"doctor cleanup needs the board to tell a live worktree from an orphan, and no Sybra server is reachable; start one, or set %s",
+			serverTargetEnv)
+	}
+	return fatal(jsonOut,
+		"doctor cleanup deletes paths under %s, and the board that answered serves a different home, whose tasks do not describe them; point the CLI at this home's own board",
+		config.HomeDir())
+}
+
+// needsBoard reports the findings subcommands that read a task, which is the
+// only part of that subtree a board is required for. from is where the findings
+// subcommand starts in args.
+func needsBoard(args []string, from int) bool {
+	return len(args) > from && args[from] == "reattach"
 }

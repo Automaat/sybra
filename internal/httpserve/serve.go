@@ -9,7 +9,9 @@
 package httpserve
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -21,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -29,6 +32,42 @@ import (
 	"github.com/Automaat/sybra/internal/metrics"
 	"github.com/Automaat/sybra/internal/sse"
 )
+
+// ServiceMarker identifies a Sybra control plane in its health response, so a
+// client can tell one from whatever else happens to answer on a port.
+const ServiceMarker = "sybra"
+
+// HomeID digests the home a board serves, for a client deciding whether that
+// board owns the files on this disk.
+//
+// The digest rather than the path: /health carries no authentication, so the
+// path would hand the operator's username and data layout to anyone who can
+// reach the port — and to a local process that cannot read the home at all but
+// could then echo it back to collect the bearer token. A caller that already
+// knows the path can still compare; one that does not, learns nothing.
+//
+// The path is made absolute before anything else. A relative home digests the
+// bare string otherwise, so two processes started from different directories
+// with the same relative SYBRA_HOME agree they serve one home while owning
+// different disks — and a cleanup then deletes the other's live state.
+//
+// Symlinks are resolved next, so a home reached through /var and /private/var
+// digests the same.
+func HomeID(home string) string {
+	if strings.TrimSpace(home) == "" {
+		return ""
+	}
+	absolute, err := filepath.Abs(home)
+	if err != nil {
+		return ""
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		resolved = absolute
+	}
+	sum := sha256.Sum256([]byte(filepath.Clean(resolved)))
+	return hex.EncodeToString(sum[:])
+}
 
 // Options describes one instance's HTTP surface.
 type Options struct {
@@ -57,6 +96,11 @@ type Options struct {
 	// process served from any other page on the host. Empty disables the
 	// token disclosure entirely.
 	SelfOrigin string
+	// Home is the SYBRA_HOME this instance serves. Its digest, never the path
+	// itself, is reported in the health response: a client asking which board
+	// owns a directory on this machine cannot tell two instances apart by
+	// address alone, since both are loopback.
+	Home string
 	// Proxy forwards the API and event stream to a board on another machine.
 	//
 	// The UI stays same-origin with the instance that served it, so no CORS
@@ -77,9 +121,24 @@ func BuildMux(opts Options) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	// Health check endpoint for container orchestration.
+	//
+	// The service marker is not decoration: a client dials a port it inferred
+	// rather than one an operator named, and it sends a bearer token on the
+	// next request. Without something identifying the peer, any local process
+	// answering 200 here collects that token.
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"status":"ok"}`)
+		payload, err := json.Marshal(map[string]string{
+			"status":  "ok",
+			"service": ServiceMarker,
+			"home_id": HomeID(opts.Home),
+		})
+		if err != nil {
+			opts.Logger.Error("health.encode", "err", err)
+			http.Error(w, "", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(payload)
 	})
 
 	// Prometheus scrape endpoint (opt-in via config.metrics.enabled). The

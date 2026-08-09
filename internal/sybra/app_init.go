@@ -551,6 +551,10 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 	}
 	a.agents.SetGHAppToken(github.CurrentAppToken)
 	a.agents.SetGHVerifierAppToken(github.CurrentVerifierAppToken)
+	// Applied at construction, not after Startup returns: the recovery pass
+	// below dispatches agents, and one that starts before its board is named
+	// spends a whole run on CLI calls that every one of them refuses.
+	a.agents.SetBoard(a.boardTarget, a.boardToken, a.boardCA)
 	// initToolLedger runs before this function, when a.agents is still nil, so
 	// its own SetToolLedger call is skipped. Without re-binding here the
 	// manager's ledger stays nil and Logger.Log's nil guard drops every record

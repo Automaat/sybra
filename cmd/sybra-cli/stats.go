@@ -41,7 +41,7 @@ func cmdStatsLifecycle(cfg *config.Config, api *apiClient, args []string, jsonOu
 	// Read status history wider than the cohort window so a task that landed
 	// in-window but started earlier is fully reconstructed.
 	histSince := sinceTime.Add(-2 * now.Sub(sinceTime))
-	evts, err := readAuditEvents(cfg, api, audit.Query{Since: histSince, Until: now})
+	evts, err := readAuditEvents(api, audit.Query{Since: histSince, Until: now})
 	if err != nil {
 		return fatal(jsonOut, "read audit: %v", err)
 	}

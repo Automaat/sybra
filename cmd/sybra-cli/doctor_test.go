@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -283,5 +285,73 @@ func TestDoctorCleanupApplyPartialFailureExitsOne(t *testing.T) {
 	}
 	if len(report.Results) != 1 || len(report.Results[0].Errors) == 0 {
 		t.Fatalf("expected a recorded delete error, got %+v", report.Results)
+	}
+}
+
+// TestDoctorCleanupFindingsRunWithoutABoard covers the query an operator makes
+// precisely when the server is what broke: what did cleanup protect, and why is
+// the disk full. It reads this machine's own findings file and needs no board.
+func TestDoctorCleanupFindingsRunWithoutABoard(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv(serverTargetEnv, "")
+	writeClosedPortFile(t, home)
+
+	code, out := runCLI(t, "--json", "doctor", "cleanup", "findings", "list")
+	if code != 0 {
+		t.Fatalf("findings list exit %d with no server: %s", code, out)
+	}
+}
+
+// TestDoctorCleanupRefusesABoardServingAnotherHome is the guard on an
+// irreversible delete, and it is not hypothetical: two instances on one machine
+// are both loopback, so an address check passed and a cleanup deleted a live
+// sandbox belonging to the other one.
+//
+// Every path cleanup removes is under this home, and only the board serving
+// this home holds the tasks that describe them.
+func TestDoctorCleanupRefusesABoardServingAnotherHome(t *testing.T) {
+	home := t.TempDir()
+	otherHome := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
+	t.Setenv("SYBRA_CONTROL_HOME", "")
+	t.Setenv(serverTargetEnv, "")
+
+	// A board that answers on loopback but serves a different home.
+	srv := startTestBoard(t, otherHome)
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse board URL: %v", err)
+	}
+	_, port, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		t.Fatalf("split board host: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, desktopPortFile), []byte(port), 0o600); err != nil {
+		t.Fatalf("write desktop port: %v", err)
+	}
+
+	// State the cleanup would delete if it believed this board owned the home.
+	sandbox := filepath.Join(home, "sandboxes", "live-task")
+	if err := os.MkdirAll(sandbox, 0o755); err != nil {
+		t.Fatalf("seed sandbox: %v", err)
+	}
+	marker := filepath.Join(sandbox, "state.json")
+	if err := os.WriteFile(marker, []byte("live agent state"), 0o600); err != nil {
+		t.Fatalf("seed sandbox state: %v", err)
+	}
+
+	code, _, stderr := runCLIWithStderr(t, "--json", "doctor", "cleanup", "--apply")
+	if code == 0 {
+		t.Fatal("doctor cleanup --apply exit 0 against a board serving another home")
+	}
+	// A board that serves another home is refused before it is ever used, so
+	// the command reports having found none for this home.
+	if !strings.Contains(stderr, "no Sybra server is reachable") && !strings.Contains(stderr, "does not serve") {
+		t.Errorf("stderr = %q, want a refusal naming the missing board for this home", stderr)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("live sandbox state was deleted: %v", err)
 	}
 }

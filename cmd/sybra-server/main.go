@@ -144,6 +144,13 @@ func run() (int, error) {
 		sybra.WithRestartRequest(newRestartRequest(shutdownCh, &restartRequested)),
 	)
 
+	// Before Startup, not after: Startup's recovery pass dispatches agents for
+	// runs it finds stale, and an agent that starts before its board is named
+	// gets no target at all — a whole paid run whose every CLI call refuses.
+	// The address comes from configuration, not from the listener, so it is
+	// known this early; the listener follows a few lines down.
+	app.SetAgentBoard(agentBoardTarget(cfg), cfg.Server.AuthToken, agentBoardCA(cfg))
+
 	if err := app.Startup(rootCtx); err != nil {
 		return 1, fmt.Errorf("startup: %w", err)
 	}
@@ -178,6 +185,9 @@ func run() (int, error) {
 		return 1, err
 	}
 
+	// Agents reach task state through sybra-cli, which has no filesystem path
+	// to it. Name the board now that it is listening; loopback, so the token
+	// never leaves the host.
 	select {
 	case sig := <-signalCh:
 		logger.Info("server.signal", "signal", sig.String())
@@ -276,6 +286,7 @@ func serveOptions(logger *slog.Logger, broker *sse.Broker, app *sybra.App) https
 		Admit:       app.HTTPAdmission,
 		StaticDir:   os.Getenv("SYBRA_STATIC_DIR"),
 		EnablePprof: httpserve.PprofEnabled(),
+		Home:        config.HomeDir(),
 		// No SelfOrigin and no Token: a browser reaching this over the network
 		// gets the origin alone and asks its operator for the token.
 	}
@@ -288,6 +299,68 @@ var (
 	corsMiddleware = httpserve.CORSMiddleware
 	authMiddleware = httpserve.AuthMiddleware
 )
+
+// agentBoardTarget is the address of the board this process serves, as an
+// agent's own sybra-cli should dial it.
+//
+// Loopback first among several binds, so the token an agent sends never leaves
+// the machine. Taking merely the first listed skipped a usable loopback
+// listener sitting behind a LAN one and left every agent on that deployment
+// refusing its own task CRUD, because a cleartext client declines a
+// non-loopback target outright.
+//
+// A wildcard or unset bind answers on loopback; a concrete one does not, so an
+// operator who locked the control plane to one interface is named there.
+func agentBoardTarget(cfg *config.Config) string {
+	addrs, _ := cfg.ListenAddrs(os.Getenv("SYBRA_HOST"), os.Getenv("SYBRA_PORT"))
+	host, port := "127.0.0.1", config.DefaultServerPort
+	if addr := preferredBoardBind(addrs); addr != "" {
+		if h, p, err := net.SplitHostPort(addr); err == nil && strings.TrimSpace(p) != "" {
+			port = p
+			if strings.TrimSpace(h) != "" && h != "0.0.0.0" && h != "::" {
+				host = h
+			}
+		}
+	}
+	if cfg.ServesTLS() {
+		return "https://" + net.JoinHostPort(host, port)
+	}
+	return net.JoinHostPort(host, port)
+}
+
+// preferredBoardBind picks the bind an agent should dial: a loopback or
+// wildcard one if this process listens on any, else the first.
+func preferredBoardBind(addrs []string) string {
+	for _, addr := range addrs {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			continue
+		}
+		host = strings.Trim(strings.TrimSpace(host), "[]")
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			return addr
+		}
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			return addr
+		}
+		if strings.EqualFold(host, "localhost") {
+			return addr
+		}
+	}
+	if len(addrs) > 0 {
+		return addrs[0]
+	}
+	return ""
+}
+
+// agentBoardCA is the certificate an agent must pin to reach a TLS board, or
+// empty when the board serves cleartext.
+func agentBoardCA(cfg *config.Config) string {
+	if !cfg.ServesTLS() {
+		return ""
+	}
+	return cfg.Cluster.TLS.CertFile
+}
 
 type slogWriter struct{ logger *slog.Logger }
 

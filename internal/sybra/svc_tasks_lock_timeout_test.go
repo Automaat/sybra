@@ -15,6 +15,12 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
+// assertRetryableTaskLockError checks what a client is given for a contended
+// record: a 503 it retries, and nothing about where the server keeps its files.
+//
+// It used to require the lock path and holder pid in the message. Those are the
+// server's own absolute path and process — a client on another machine can act
+// on neither, and both now stay in the server log.
 func assertRetryableTaskLockError(t *testing.T, err error, lockPath string) {
 	t.Helper()
 	if err == nil {
@@ -27,11 +33,14 @@ func assertRetryableTaskLockError(t *testing.T, err error, lockPath string) {
 	if ce.HTTPStatus() != http.StatusServiceUnavailable {
 		t.Fatalf("HTTPStatus = %d, want %d", ce.HTTPStatus(), http.StatusServiceUnavailable)
 	}
-	if !strings.Contains(err.Error(), lockPath) {
-		t.Fatalf("error %q missing lock path %q", err, lockPath)
+	if !strings.Contains(err.Error(), "locked") {
+		t.Fatalf("error %q does not say the record was locked", err)
 	}
-	if !strings.Contains(err.Error(), strconv.Itoa(os.Getpid())) {
-		t.Fatalf("error %q missing holder pid %d", err, os.Getpid())
+	if strings.Contains(err.Error(), lockPath) {
+		t.Fatalf("error %q leaks the server's lock path %q", err, lockPath)
+	}
+	if strings.Contains(err.Error(), strconv.Itoa(os.Getpid())) {
+		t.Fatalf("error %q leaks the holder pid %d", err, os.Getpid())
 	}
 }
 

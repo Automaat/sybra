@@ -55,7 +55,7 @@ func TestCmdUmbrella_SendsTheModelToTheServer(t *testing.T) {
 
 	api := &apiClient{baseURL: srv.URL, token: "t", http: srv.Client()}
 	code, _ := captureStdout(t, func() int {
-		return cmdUmbrella(config.DefaultConfig(), api, nil, nil,
+		return cmdUmbrella(config.DefaultConfig(), api,
 			[]string{"--model", "claude-opus-5", "https://github.com/o/r/issues/1"}, true)
 	})
 	if code != 0 {

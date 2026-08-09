@@ -2,12 +2,14 @@ package httpapi_test
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/Automaat/sybra/internal/httpapi"
 )
 
@@ -130,5 +132,34 @@ func TestContextArgIsNotCountedInArgArity(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "expects 1 args, got 2") {
 		t.Fatalf("body = %s, want arity message", rec.Body.String())
+	}
+}
+
+// lockedSvc returns the error a contended record produces.
+type lockedSvc struct{}
+
+func (s *lockedSvc) UpdateTask(_ string) error {
+	return fmt.Errorf("acquire lock on /home/board/tasks/abc.md.lock: %w", fsutil.ErrLockTimeout)
+}
+
+// TestLockTimeoutIsRetryableNotAFault pins the status a contended record comes
+// back as. sybra-cli turns 503 into exit 75 so an agent retries; as the default
+// 500 the same contention read as a hard failure and the agent abandoned work
+// it only had to repeat.
+func TestLockTimeoutIsRetryableNotAFault(t *testing.T) {
+	mux := http.NewServeMux()
+	httpapi.Mount(mux, map[string]httpapi.Service{
+		"TaskService": httpapi.NewService(&lockedSvc{}, "UpdateTask"),
+	}, testLogger(), nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/TaskService/UpdateTask", strings.NewReader(`["abc"]`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d (body %s)", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "/home/board/tasks") {
+		t.Fatalf("body %s leaks the board's lock path", rec.Body.String())
 	}
 }

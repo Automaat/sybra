@@ -9,13 +9,16 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/triage"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -584,4 +587,72 @@ func TestBoardEndpoints_ExternalToolFailuresStayActionable(t *testing.T) {
 			t.Errorf("body %s does not name the bound", body)
 		}
 	})
+}
+
+// TestClassifyTask_StampsARetryableReasonOnFailure moves coverage that used to
+// live in sybra-cli, which reimplemented classify locally and marked the stamp
+// itself. That path is gone — the CLI calls this — so the guarantee has to be
+// pinned where it now happens.
+//
+// The stamp is what the workflow engine reads to re-run a triage rather than
+// park the task, so losing it turns every transient classifier failure into a
+// stuck task.
+func TestClassifyTask_StampsARetryableReasonOnFailure(t *testing.T) {
+	// No t.Parallel: t.Setenv below is incompatible with it.
+	//
+	// Provider stubs prepended, not an emptied PATH: this suite's other tests
+	// leave background goroutines running git, and taking git away from them
+	// for the length of this test makes them retry rather than fail.
+	fakebin := t.TempDir()
+	// Every provider, not the three this test happens to need: a provider added
+	// later would otherwise be the one real CLI on PATH and the classifier
+	// would reach it.
+	for _, name := range providerid.All() {
+		stub := "#!/bin/sh\nexit 1\n"
+		if err := os.WriteFile(filepath.Join(fakebin, name), []byte(stub), 0o755); err != nil {
+			t.Fatalf("write %s stub: %v", name, err)
+		}
+	}
+	t.Setenv("PATH", fakebin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	svc, a := setupTaskService(t)
+	projects, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("project.NewStore: %v", err)
+	}
+	svc.projects = projects
+	a.taskSvc = svc
+
+	created, err := svc.tasks.Create("keep original title", "keep body", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	tags := []string{"backend", "bug"}
+	fresh := task.StatusNew
+	created, err = svc.tasks.Update(created.ID, task.Update{Tags: &tags, Status: &fresh})
+	if err != nil {
+		t.Fatalf("update tags: %v", err)
+	}
+
+	_, classifyErr := svc.ClassifyTask(created.ID, "no-such-model")
+	if classifyErr == nil {
+		t.Fatal("ClassifyTask succeeded with no provider available; want the classifier's failure")
+	}
+
+	got, err := svc.tasks.Get(created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !strings.HasPrefix(got.StatusReason, triage.RetryableStatusReasonPrefix) {
+		t.Fatalf("status_reason = %q, want the retryable prefix %q", got.StatusReason, triage.RetryableStatusReasonPrefix)
+	}
+	if got.Status == task.StatusHumanRequired {
+		t.Error("status = human-required; a classifier failure must stay re-runnable")
+	}
+	if got.Title != created.Title {
+		t.Errorf("title = %q, want it preserved as %q", got.Title, created.Title)
+	}
+	if !slices.Equal(got.Tags, created.Tags) {
+		t.Errorf("tags = %v, want them preserved as %v", got.Tags, created.Tags)
+	}
 }

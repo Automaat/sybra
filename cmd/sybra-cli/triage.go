@@ -1,17 +1,12 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"flag"
 	"fmt"
-	"log/slog"
 	"os"
 	"time"
 
-	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/config"
-	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/triage"
 )
@@ -26,8 +21,6 @@ func cmdTriage(
 	cfg *config.Config,
 	api *apiClient,
 	board taskBoard,
-	store *task.Manager,
-	projStore *project.Store,
 	args []string,
 	jsonOut bool,
 ) int {
@@ -37,7 +30,7 @@ func cmdTriage(
 	sub, rest := args[0], args[1:]
 	switch sub {
 	case "classify":
-		return cmdTriageClassify(cfg, api, board, store, projStore, rest, jsonOut)
+		return cmdTriageClassify(cfg, api, board, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "unknown triage command: %s", sub)
 	}
@@ -47,8 +40,6 @@ func cmdTriageClassify(
 	cfg *config.Config,
 	api *apiClient,
 	board taskBoard,
-	store *task.Manager,
-	projStore *project.Store,
 	args []string,
 	jsonOut bool,
 ) int {
@@ -59,15 +50,6 @@ func cmdTriageClassify(
 	if err := fs.Parse(args); err != nil {
 		return fatal(jsonOut, "%v", err)
 	}
-
-	projects, err := projStore.List()
-	if err != nil {
-		return fatal(jsonOut, "list projects: %v", err)
-	}
-
-	logger := slog.New(slog.DiscardHandler)
-	classifier := &triage.FallbackClassifier{Model: *model, Logger: logger}
-	al, _ := audit.NewLogger(cfg.AuditDir())
 
 	var targets []task.Task
 	switch {
@@ -113,7 +95,7 @@ func cmdTriageClassify(
 	results := make([]triageResult, 0, len(targets))
 	var hadErr bool
 	for i := range targets {
-		result, classErr := classifyOne(api, classifier, store, al, targets[i], projects, *timeout, *model)
+		result, classErr := classifyOne(api, targets[i], *timeout, *model)
 		if classErr != nil {
 			hadErr = true
 			if jsonOut {
@@ -155,39 +137,8 @@ func reportTriageResults(jsonOut, all bool, results []triageResult) {
 	_ = printJSON(results)
 }
 
-func classifyOne(
-	api *apiClient,
-	classifier triage.Classifier,
-	store *task.Manager,
-	al *audit.Logger,
-	t task.Task,
-	projects []project.Project,
-	timeout time.Duration,
-	model string,
-) (triageResult, error) {
-	// Classification applies its verdict atomically; a reachable server runs
-	// the whole operation so the apply lands under the locks it holds.
-	if api != nil {
-		return callAPIWithin[triageResult](api, max(timeout, apiCallTimeout), taskServiceName, "ClassifyTask", t.ID, model)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	v, updated, err := triage.ClassifyAndApply(ctx, classifier, store, al, t, projects)
-	if err != nil {
-		// A triage failure is retryable — stamp a magic StatusReason the
-		// workflow engine's triage retry-coercion path recognises so the
-		// task is re-run rather than parked.
-		if markErr := markTriageRetryable(store, t, err); markErr != nil {
-			return triageResult{}, errors.Join(err, fmt.Errorf("mark retryable triage failure: %w", markErr))
-		}
-		return triageResult{}, err
-	}
-	return triageResult{Verdict: v, Task: updated}, nil
-}
-
-func markTriageRetryable(store *task.Manager, t task.Task, err error) error {
-	reason := triage.RetryableStatusReason(err)
-	_, updateErr := store.Update(t.ID, task.Update{StatusReason: &reason})
-	return updateErr
+// classifyOne applies its verdict atomically, so the server runs the whole
+// operation and the apply lands under the locks it holds.
+func classifyOne(api *apiClient, t task.Task, timeout time.Duration, model string) (triageResult, error) {
+	return callAPIWithin[triageResult](api, max(timeout, apiCallTimeout), taskServiceName, "ClassifyTask", t.ID, model)
 }

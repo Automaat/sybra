@@ -542,9 +542,32 @@ config   dump | doctor
 ```
 
 - `--json` for machine-parseable output (used by skills)
-- Reuses `internal/task.Store` + `internal/config.Load()` — same validation as GUI
 - `mise run dev` auto-installs latest CLI before launching the desktop app
 - `config dump` prints the resolved `~/.sybra/config.yaml` (env overrides applied, `server.auth_token` redacted); `config doctor` sanity-checks data dirs, `agent.provider`, `agent.headless_permission_mode`, and enabled integrations missing required credentials. See `docs/CONFIG.md` (generated from `internal/config` struct tags via `go generate ./internal/config/...`) for the full key reference.
+
+**The CLI is a client and nothing else.** It never opens the board's files — that made it a second writer behind whichever instance owned them, and a stale target turned an ordinary edit into a change the owner later overwrote. Every command that touches board state resolves a server and **refuses** when none answers, naming it.
+
+Target resolution — loopback wherever the configuration allows one, so the token stays off the wire. A home whose only bind is a LAN address is refused outright unless `cluster.tls` is configured, because there is no route to it that keeps the token off the network:
+
+1. `SYBRA_SERVER_TARGET` (+ `SYBRA_SERVER_TOKEN` for a board on another machine)
+2. else the port the desktop app recorded in `$SYBRA_HOME/desktop-port`
+3. else the configured server port
+
+`SYBRA_HOST`, `SYBRA_PORT`, and `SYBRA_BIND_ADDR` are deliberately **not** consulted. They name where a server should *listen*; letting one steer a client aims it — and the bearer token it sends next — at whatever answers there. Read `cfg.Cluster` directly, never `ListenAddrs`, which honours `SYBRA_BIND_ADDR` internally.
+
+`--home` / `SYBRA_CONTROL_HOME` / `SYBRA_HOME` select **which board's** config and recorded port to read — they no longer mean "edit files instead". `config`, `health`, `install-skills`, and `cluster` (its `gen-cert`/`nodes` halves touch no board; `reassign` refuses for itself) still run with no server. So does `doctor`, because it is what an operator reaches for when the server is what broke, but it refuses to delete.
+
+**A board is trusted with this disk only when it serves this home.** `GET /health` reports `home_id`, a digest of the home an instance serves — never the path, since that endpoint carries no authentication and the path would hand over the operator's username and layout. The CLI compares it against `httpserve.HomeID(config.HomeDir())`. Loopback is not the question: two instances on one machine are both loopback and own different homes, and an address-only check let a cleanup delete a live sandbox belonging to the other one. Anything that acts on local files must ask `apiClient.ownsHome`, never `!remote`.
+
+**An agent is told where its board is; it never infers one.** The runner writes the credential into the run's sandbox home and sets `SYBRA_SERVER_TARGET` + `SYBRA_AUTH_TOKEN_FILE` (plus `SYBRA_SERVER_CA` for a TLS board, whose self-signed certificate is copied in beside the token), the way the verifier control channel already did. It deliberately does **not** also set `SYBRA_CONTROL_HOME`: that points the CLI at the operator home, whose config the CLI loads *before* it looks at any target, and that directory is off the sandbox read allowlist for every role but monitor — so exporting both makes the whole mechanism inert under `enforce`. Name the board before `App.Startup`, because Startup's recovery pass dispatches agents and one that starts unnamed spends a whole paid run on calls that every one of them refuses.
+
+The board an agent is handed is currently the instance's own token, which is more authority than an agent needs — per-run credentials are #3258. What is closed already: an agent's calls carry `httpapi.SandboxedCallerHeader`, and the `.WithLocalOnly(...)` methods (open an editor, a terminal, a worktree, shell out to a provider CLI on the serving host) are refused for such a caller.
+
+The verifier control channel answers `GET /health` with its **own** marker, `agent.VerifierControlServiceMarker`, never `httpserve.ServiceMarker`. It serves two TaskService methods for one task, so a client that merely inferred that port and took it for a board would send the board's token and then 404 on everything. An inferred target that names no service at all is still accepted — a server predating the field answers exactly `{"status":"ok"}`, which nothing can tell from a process that is not Sybra.
+
+A contended record comes back as `503` and the CLI exits **75**, which is what an agent retries on. Never map it to a plain failure — the agent then abandons work it only had to repeat.
+
+Tests get a board, not a directory: `startTestBoard` (`cmd/sybra-cli/testboard_test.go`) mounts the real stores on the real dispatcher, so a test still asserts against files on disk and a missing task is still a 404. Add a service there when a command starts calling a new one.
 
 ### Skills
 

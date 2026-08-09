@@ -85,14 +85,19 @@ type App struct {
 	backgroundMu    sync.Mutex // serializes tracked background work with drain
 	wg              sync.WaitGroup
 	// fetchPRHeadSHA overrides the PR-head lookup in tests; nil uses GitHub.
-	fetchPRHeadSHA    func(ctx context.Context, repo string, number int) (string, error)
-	fetchPR           func(ctx context.Context, repo string, number int) (github.PullRequest, error)
-	tasks             *task.Manager
-	projects          *project.Store
-	database          *db.DB
-	loopAgents        loopagent.Repository
-	loopSched         *loopagent.Scheduler
-	agents            *agent.Manager
+	fetchPRHeadSHA func(ctx context.Context, repo string, number int) (string, error)
+	fetchPR        func(ctx context.Context, repo string, number int) (github.PullRequest, error)
+	tasks          *task.Manager
+	projects       *project.Store
+	database       *db.DB
+	loopAgents     loopagent.Repository
+	loopSched      *loopagent.Scheduler
+	agents         *agent.Manager
+	// boardTarget/boardToken/boardCA name the board task-scoped agents reach,
+	// held here because SetAgentBoard runs before Startup builds the manager.
+	boardTarget       string
+	boardToken        string
+	boardCA           string
 	attempts          *dispatch.Controller
 	watcher           *watcher.Watcher
 	configWatcher     *confighot.Watcher
@@ -970,4 +975,24 @@ func (a *App) Context() context.Context { return a.ctx }
 // HTTPAdmission decides whether one HTTP API method may run.
 func (a *App) HTTPAdmission(service, method string, meta httpapi.MethodMeta) error {
 	return a.httpAdmission(service, method, meta)
+}
+
+// SetAgentBoard tells task-scoped agents which board to reach.
+//
+// An agent's sybra-cli has no filesystem path to task state and cannot
+// discover a board from inside the process sandbox, so it is given the address
+// instead. Call this before Startup: the recovery pass dispatches agents for
+// runs it finds stale, and one that starts unnamed burns a whole run on CLI
+// calls that all refuse. The address comes from configuration, so it is known
+// before anything listens.
+func (a *App) SetAgentBoard(target, token, ca string) {
+	if a == nil {
+		return
+	}
+	a.boardTarget, a.boardToken, a.boardCA = target, token, ca
+	// Startup has not run yet in the ordinary case; initAgents applies it to
+	// the manager it builds. Applied here too so a later call still lands.
+	if a.agents != nil {
+		a.agents.SetBoard(target, token, ca)
+	}
 }

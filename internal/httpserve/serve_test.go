@@ -355,3 +355,84 @@ func TestAttachedBoardWithABrokerStillStarts(t *testing.T) {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 }
+
+// TestHealthDoesNotDiscloseTheHomePath keeps an unauthenticated endpoint from
+// handing out the operator's filesystem layout.
+//
+// The digest is what a client compares to decide whether a board owns this
+// disk. The path itself would tell anyone who can reach the port the operator's
+// username and data layout — and would let a local process that cannot read the
+// home echo it back to collect the bearer token.
+func TestHealthDoesNotDiscloseTheHomePath(t *testing.T) {
+	home := t.TempDir()
+	srv := httptest.NewServer(httpserve.BuildMux(httpserve.Options{Logger: testLogger(), Home: home}))
+	t.Cleanup(srv.Close)
+
+	resp, err := srv.Client().Get(srv.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if strings.Contains(string(body), home) {
+		t.Fatalf("health disclosed the home path: %s", body)
+	}
+	if !strings.Contains(string(body), httpserve.HomeID(home)) {
+		t.Fatalf("health carries no home digest: %s", body)
+	}
+}
+
+// TestHomeIDResolvesSymlinks pins the comparison a client makes: a home reached
+// through /var and /private/var is one home, and must digest the same.
+func TestHomeIDResolvesSymlinks(t *testing.T) {
+	actual := t.TempDir()
+	link := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(actual, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if httpserve.HomeID(actual) != httpserve.HomeID(link) {
+		t.Fatal("a home reached through a symlink digests differently")
+	}
+	if httpserve.HomeID(actual) == httpserve.HomeID(t.TempDir()) {
+		t.Fatal("two different homes digest the same")
+	}
+	if httpserve.HomeID("") != "" {
+		t.Fatal("an unset home produced a digest")
+	}
+}
+
+// TestHomeIDDistinguishesRelativeHomes is a data-loss regression. A relative
+// SYBRA_HOME used to digest the bare string, so two processes started from
+// different directories agreed they served one home while owning different
+// disks — and a cleanup then deleted the other's live state.
+func TestHomeIDDistinguishesRelativeHomes(t *testing.T) {
+	base := t.TempDir()
+	for _, side := range []string{"relA", "relB"} {
+		if err := os.MkdirAll(filepath.Join(base, side, "myhome"), 0o755); err != nil {
+			t.Fatalf("seed %s: %v", side, err)
+		}
+	}
+
+	digest := func(dir string) string {
+		t.Helper()
+		t.Chdir(dir)
+		return httpserve.HomeID("myhome")
+	}
+	a := digest(filepath.Join(base, "relA"))
+	b := digest(filepath.Join(base, "relB"))
+
+	if a == "" || b == "" {
+		t.Fatal("a relative home produced no digest")
+	}
+	if a == b {
+		t.Fatal("two different directories reached by the same relative home digest the same")
+	}
+	// And the relative form still matches its own absolute form.
+	t.Chdir(filepath.Join(base, "relA"))
+	if httpserve.HomeID("myhome") != httpserve.HomeID(filepath.Join(base, "relA", "myhome")) {
+		t.Fatal("a relative home does not match the absolute path it names")
+	}
+}

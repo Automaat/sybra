@@ -35,12 +35,10 @@ import (
 	"github.com/Automaat/sybra/internal/monitor"
 	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/provider"
-	"github.com/Automaat/sybra/internal/scrub"
 	"github.com/Automaat/sybra/internal/skills"
 	"github.com/Automaat/sybra/internal/skillsync"
 	"github.com/Automaat/sybra/internal/sybra"
 	"github.com/Automaat/sybra/internal/task"
-	"github.com/Automaat/sybra/internal/tasksnapshot"
 	"github.com/Automaat/sybra/internal/workflow"
 	"gopkg.in/yaml.v3"
 )
@@ -227,7 +225,7 @@ func run(args []string) int {
 		if schemaErr != nil && !isConfigDoctor(rest) {
 			return fatal(jsonOut, "load config: %v", schemaErr)
 		}
-		return cmdConfig(cfg, rest, jsonOut, allowHTTPForHome(homeOverride, home), schemaErr)
+		return cmdConfig(cfg, rest, jsonOut, true, schemaErr)
 	}
 
 	cfg, err := loadCLIConfig()
@@ -235,9 +233,6 @@ func run(args []string) int {
 		if isHook {
 			fmt.Fprintf(os.Stderr, "hook: load config: %v (continuing fail-open)\n", err)
 			return 0
-		}
-		if code, handled := dispatchTaskStoreFallback(cmd, rest, jsonOut, err); handled {
-			return code
 		}
 		return fatal(jsonOut, "load config: %v", err)
 	}
@@ -253,24 +248,7 @@ func run(args []string) int {
 		return cmdGithubAppToken(cfg, jsonOut)
 	}
 
-	store, projStore, err := openStores(cfg)
-	if err != nil {
-		return fatal(jsonOut, "%v", err)
-	}
-
-	return dispatch(cmd, rest, cfg, store, projStore, allowHTTPForHome(homeOverride, home), jsonOut)
-}
-
-// allowHTTPForHome reports whether HTTP auto-detect is safe. It is only safe on
-// the untouched default path. Any resolved home override — --home,
-// SYBRA_CONTROL_HOME, or SYBRA_HOME — means the caller explicitly targeted an
-// on-disk store, so reaching some unrelated reachable server would violate that
-// contract.
-func allowHTTPForHome(homeOverride string, home homeResolution) bool {
-	if os.Getenv("SYBRA_CONTROL_API_ONLY") == "1" && homeOverride == "" && !home.fromControlHome {
-		return true
-	}
-	return homeOverride == "" && !home.fromControlHome && !home.fromSybraHome
+	return dispatch(cmd, rest, cfg, jsonOut)
 }
 
 func isReadOnlyConfigCommand(cmd string) bool {
@@ -375,20 +353,18 @@ func shortRevision(rev string) string {
 
 // dispatch routes a parsed subcommand (with its own args and the global
 // --json flag already extracted) to the matching cmdXxx handler.
-func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Manager, localProjects *project.Store, allowHTTP, jsonOut bool) int {
-	api, refusal := resolveBoardAPI(cmd, cfg, allowHTTP)
+func dispatch(cmd string, rest []string, cfg *config.Config, jsonOut bool) int {
+	api, refusal, cause := resolveBoardAPI(cmd, cfg)
 	if refusal != "" {
 		return fatal(jsonOut, "%s", refusal)
 	}
-	// Every board command runs against a reachable server. The filesystem
-	// stores stay behind the same seam so a command still works with no
-	// server running; #3238 removes that half.
-	var store taskBoard = localTasks
-	var projStore projectBoard = localProjects
-	if api != nil {
-		store = newAPITaskBoard(api)
-		projStore = newAPIProjectBoard(api)
+	// api is nil only for the commands that inspect this machine, and those are
+	// dispatched separately so no board command can be handed a nil board.
+	if api == nil {
+		return dispatchWithoutBoard(cmd, rest, cfg, cause, jsonOut)
 	}
+	store := newAPITaskBoard(api)
+	projStore := newAPIProjectBoard(api)
 	switch cmd {
 	case "list":
 		return cmdList(store, rest, jsonOut)
@@ -399,7 +375,7 @@ func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Ma
 	case "handoff":
 		return cmdHandoff(store, projStore, rest, jsonOut)
 	case "umbrella":
-		return cmdUmbrella(cfg, api, localTasks, localProjects, rest, jsonOut)
+		return cmdUmbrella(cfg, api, rest, jsonOut)
 	case "update":
 		return cmdUpdate(store, api, rest, jsonOut)
 	case "link-pr":
@@ -413,7 +389,7 @@ func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Ma
 	case "project":
 		return cmdProject(projStore, rest, jsonOut)
 	case "cluster":
-		return cmdCluster(cfg, api, localTasks, localProjects, rest, jsonOut)
+		return cmdCluster(cfg, api, rest, jsonOut)
 	case "audit":
 		return cmdAudit(cfg, api, rest, jsonOut)
 	case "board":
@@ -421,9 +397,9 @@ func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Ma
 	case "health":
 		return cmdHealth(cfg, rest, jsonOut)
 	case "triage":
-		return cmdTriage(cfg, api, store, localTasks, localProjects, rest, jsonOut)
+		return cmdTriage(cfg, api, store, rest, jsonOut)
 	case "monitor":
-		return cmdMonitor(cfg, api, localTasks, rest, jsonOut)
+		return cmdMonitor(cfg, api, rest, jsonOut)
 	case "selfmonitor":
 		return cmdSelfmonitor(cfg, api, store, rest, jsonOut)
 	case "evaluation":
@@ -439,14 +415,15 @@ func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Ma
 	case "artifact":
 		return cmdArtifact(api, rest, jsonOut)
 	case "progress":
-		return cmdProgress(store, projStore, api, rest, jsonOut)
+		return cmdProgress(api, rest, jsonOut)
 	case "config":
-		return cmdConfig(cfg, rest, jsonOut, allowHTTP, nil)
+		return cmdConfig(cfg, rest, jsonOut, api != nil, nil)
 	case "doctor":
-		// Deliberately the local board: every path doctor cleanup deletes
-		// comes from this machine's home, so reading the protection set from
-		// a server would classify every live local worktree as an orphan.
-		return cmdDoctor(cfg, localTasks, rest, jsonOut)
+		// ownsThisHome, not just "a board": every path cleanup deletes is under
+		// this home, and a board on another machine holds none of these task
+		// ids — so it would report every live worktree as an orphan and offer
+		// to delete it, agents included.
+		return cmdDoctor(cfg, store, ownsThisHome(api), "", rest, jsonOut)
 	case "trash":
 		return cmdTrash(store, rest, jsonOut)
 	case "tasks-history":
@@ -456,47 +433,153 @@ func dispatch(cmd string, rest []string, cfg *config.Config, localTasks *task.Ma
 	}
 }
 
-// resolveBoardAPI picks the server a command runs against, and refuses to fall back when a board on another machine does not answer. A loopback target is not that case: that server shares this machine's home, so its files are the same board.
-func resolveBoardAPI(cmd string, cfg *config.Config, allowHTTP bool) (api *apiClient, refusal string) {
-	if !allowHTTP {
-		return nil, ""
+// resolveBoardAPI picks the server a command runs against.
+//
+// Every command that touches board state needs one. There is no second way to
+// reach a board: opening its files behind the instance that owns them made the
+// CLI a silent concurrent writer, and a stale target turned an ordinary edit
+// into a change the owning instance later overwrote.
+func resolveBoardAPI(cmd string, cfg *config.Config) (api *apiClient, refusal, cause string) {
+	if raw := strings.TrimSpace(os.Getenv(serverTargetEnv)); raw != "" {
+		c, err := newAPIClient(cfg)
+		if err != nil {
+			return nil, err.Error(), err.Error()
+		}
+		// A named target is the operator's choice, including a board serving
+		// another home, so answering the probe is enough. An older server that
+		// predates the service marker still works.
+		if c.reachable(context.Background()) {
+			return c, "", ""
+		}
+		why := fmt.Sprintf("no Sybra server is reachable at %s (%s)%s; start it, or point %s elsewhere",
+			c.baseURL, serverTargetEnv, probeCause(c), serverTargetEnv)
+		if runsWithoutServer(cmd) {
+			return nil, "", why
+		}
+		return nil, why, why
 	}
-	c, err := newAPIClient(cfg)
-	if errors.Is(err, errNoServerTarget) {
-		return nil, ""
+
+	// No target named, so every board this machine might be running is tried.
+	// The desktop app's recorded port is kept across restarts, so a stale entry
+	// must not shadow a server that is up.
+	home := config.HomeDir()
+	candidates := localBoardCandidates(cfg)
+	tried := make([]string, 0, len(candidates))
+	unusable := make([]string, 0, len(candidates))
+	foreign := make([]string, 0, len(candidates))
+	notBoard := make([]string, 0, len(candidates))
+	causes := make([]string, 0, len(candidates))
+	for _, target := range candidates {
+		c, err := newLocalAPIClient(cfg, target)
+		if err != nil {
+			// Kept rather than dropped: a bind this client cannot address is
+			// the whole reason nothing was reachable, and swallowing it left
+			// the operator with a refusal naming no cause at all.
+			unusable = append(unusable, err.Error())
+			continue
+		}
+		tried = append(tried, c.baseURL)
+		if !c.reachable(context.Background()) {
+			if cause := probeCause(c); cause != "" {
+				causes = append(causes, cause)
+			}
+			continue
+		}
+		// Nobody named this target. With no bind configured every home infers
+		// the same default port, so a board that answers there may be serving a
+		// different home entirely — the operator's real one. It has to say it
+		// serves this one before the token goes anywhere near it.
+		if !c.isBoard() {
+			notBoard = append(notBoard, c.baseURL)
+			continue
+		}
+		if !c.servesThisHome(home) {
+			foreign = append(foreign, c.baseURL)
+			continue
+		}
+		return c, "", ""
 	}
-	if err != nil {
-		return nil, err.Error()
+	// The cause is computed before the runs-without-server exit, so a command
+	// whose whole purpose is diagnosing an unreachable board can say why. A pin
+	// mismatch and an unreadable bind are both "a board answered, or would
+	// have" — reporting them as "nothing is listening" sends an operator to
+	// restart a server that is already running.
+	var why string
+	switch {
+	case len(foreign) > 0:
+		why = fmt.Sprintf("the server at %s does not serve %s; start one for this home, or set %s to the board you meant",
+			strings.Join(foreign, ", "), home, serverTargetEnv)
+	case len(notBoard) > 0:
+		why = fmt.Sprintf("what answered at %s is not a Sybra board; start one for this home, or set %s to the board you meant",
+			strings.Join(notBoard, ", "), serverTargetEnv)
+	case len(tried) == 0 && len(unusable) > 0:
+		why = "this home's board cannot be addressed: " + strings.Join(unusable, "; ")
+	case len(tried) == 0:
+		why = fmt.Sprintf("no Sybra server could be located for this home; start one, or set %s", serverTargetEnv)
+	default:
+		why = fmt.Sprintf("no Sybra server is reachable (tried %s)%s; start one, or set %s",
+			strings.Join(tried, ", "), strings.Join(causes, ""), serverTargetEnv)
 	}
-	if c.reachable(context.Background()) {
-		return c, ""
+	// A command that never reads the board runs regardless of what answered:
+	// refusing gen-cert because some other home's server holds the port would
+	// mean needing a server before the node that serves one can exist. It still
+	// gets the cause, so doctor can name it.
+	if runsWithoutServer(cmd) {
+		return nil, "", why
 	}
-	if c.remote && !runsWithoutServer(cmd) {
-		return nil, fmt.Sprintf("board at %s is unreachable; refusing to edit this machine's files instead", c.baseURL)
+	return nil, why, why
+}
+
+// probeCause renders why a reachability probe failed, when the reason is
+// something other than nothing listening. A certificate mismatch reported as
+// "no server is reachable" sends an operator to restart a running one.
+func probeCause(c *apiClient) string {
+	if c == nil || c.probeErr == nil {
+		return ""
 	}
-	return nil, ""
+	return ": " + c.probeErr.Error()
+}
+
+// ownsThisHome reports that the resolved board serves this SYBRA_HOME.
+//
+// Loopback is not the question. Two instances on one machine are both loopback
+// and own different homes, so a board that answers here may hold none of the
+// tasks describing this disk — which is how a cleanup deleted a live sandbox
+// belonging to the other one.
+func ownsThisHome(api *apiClient) bool {
+	return api.ownsHome(config.HomeDir())
+}
+
+// dispatchWithoutBoard routes the commands that reached here with no server.
+// Only runsWithoutServer names get this far, and none of them reads the board.
+func dispatchWithoutBoard(cmd string, rest []string, cfg *config.Config, cause string, jsonOut bool) int {
+	switch cmd {
+	case "config":
+		return cmdConfig(cfg, rest, jsonOut, false, nil)
+	case "doctor":
+		return cmdDoctor(cfg, nil, false, cause, rest, jsonOut)
+	case "health":
+		return cmdHealth(cfg, rest, jsonOut)
+	case "install-skills":
+		return cmdInstallSkills(cfg, jsonOut)
+	case "cluster":
+		// gen-cert writes a keypair and nodes reads config; only reassign needs
+		// a board, and it refuses for itself. gen-cert in particular is the
+		// prerequisite for standing up a TLS follower, so requiring a server
+		// would mean needing one before the node that serves it can exist.
+		return cmdCluster(cfg, nil, rest, jsonOut)
+	default:
+		return fatal(jsonOut, "%s needs a Sybra server and none is reachable", cmd)
+	}
 }
 
 // runsWithoutServer reports the commands that inspect or repair this machine alone. They stay usable when the board they would otherwise talk to is down, which is what makes them the ones an operator reaches for to find out why it is down.
 func runsWithoutServer(cmd string) bool {
 	switch cmd {
-	case "config", "doctor", "health", "install-skills":
+	case "config", "doctor", "health", "install-skills", "cluster":
 		return true
 	}
 	return false
-}
-
-func openStores(cfg *config.Config) (*task.Manager, *project.Store, error) {
-	rawStore, err := task.NewStore(cfg.TasksDir)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open store: %w", err)
-	}
-	projStore, err := project.NewStore(cfg.ProjectsDir, cfg.ClonesDir)
-	if err != nil {
-		return nil, nil, fmt.Errorf("open project store: %w", err)
-	}
-	projStore.SetSigningPolicy(project.NormalizeSigningPolicy(cfg.CommitSigning()))
-	return task.NewManager(rawStore, nil), projStore, nil
 }
 
 func cmdGithubAppToken(cfg *config.Config, jsonOut bool) int {
@@ -528,76 +611,6 @@ func cmdGithubAppToken(cfg *config.Config, jsonOut bool) int {
 	}
 	fmt.Fprintln(os.Stdout, token)
 	return 0
-}
-
-func dispatchTaskStoreFallback(cmd string, rest []string, jsonOut bool, loadErr error) (code int, handled bool) {
-	if !supportsTaskStoreFallback(cmd) {
-		return 0, false
-	}
-	// An unknown key says nothing about whether the server is reachable, so
-	// the fallback's premise does not hold. Its write path is also the one an
-	// agent cannot use: agents run `sybra-cli update` from inside a sandboxed
-	// worktree where the task store is read-only. Failing here names the key;
-	// falling back turned one stale key into agents that could not update
-	// their own tasks.
-	if errors.Is(loadErr, config.ErrUnknownConfigKey) {
-		return 0, false
-	}
-	store, tasksDir, err := openFallbackTaskStore()
-	if err != nil {
-		return fatal(jsonOut, "load config: %v (fallback task store: %v)", loadErr, err), true
-	}
-	fmt.Fprintf(os.Stderr,
-		"warning: load config: %v; falling back to direct task store at %s for `%s`\n",
-		loadErr, tasksDir, cmd)
-	// Dispatched directly (not via dispatch()) so this path never carries a
-	// nil cfg/projStore into the shared switch — nilaway can't correlate
-	// supportsTaskStoreFallback's allowlist with dispatch()'s cases, so
-	// routing through it flags every cfg/projStore-using branch as a
-	// potential nil deref even though none of these commands touch them.
-	switch cmd {
-	case "list":
-		return cmdList(store, rest, jsonOut), true
-	case "get":
-		return cmdGet(store, rest, jsonOut), true
-	case "create":
-		return cmdCreate(store, rest, jsonOut), true
-	case "update":
-		return cmdUpdate(store, nil, rest, jsonOut), true
-	case "delete":
-		return cmdDelete(store, rest, jsonOut), true
-	case "reopen":
-		return cmdReopen(store, nil, rest, jsonOut), true
-	case "link-pr":
-		return cmdLinkPR(store, nil, rest, jsonOut), true
-	case "board":
-		return cmdBoard(store, jsonOut), true
-	case "trash":
-		return cmdTrash(store, rest, jsonOut), true
-	default:
-		return 0, false
-	}
-}
-
-func supportsTaskStoreFallback(cmd string) bool {
-	switch cmd {
-	case "list", "get", "create", "update", "delete", "reopen", "link-pr", "board", "trash":
-		return true
-	default:
-		return false
-	}
-}
-
-func openFallbackTaskStore() (manager taskBoard, tasksDir string, err error) {
-	tasksDir = strings.TrimSpace(os.Getenv("SYBRA_TASKS_DIR"))
-	if tasksDir == "" {
-		tasksDir = filepath.Join(config.HomeDir(), "tasks")
-	}
-	rawStore, err := task.NewStore(tasksDir)
-	if err != nil {
-		return nil, "", fmt.Errorf("open store %q: %w", tasksDir, err)
-	}
-	return task.NewManager(rawStore, nil), tasksDir, nil
 }
 
 func cmdList(s taskBoard, args []string, jsonOut bool) int {
@@ -806,7 +819,7 @@ func cmdCreate(s taskBoard, args []string, jsonOut bool) int {
 		updates["depends_on_conditions"] = depConds
 	}
 	if len(updates) > 0 {
-		t, _, err = updateTask(s, t.ID, updates)
+		t, err = updateTask(s, t.ID, updates)
 		if err != nil {
 			return fatal(jsonOut, "update after create: %v", err)
 		}
@@ -869,45 +882,10 @@ func createTask(s taskBoard, title, body, mode string) (task.Task, error) {
 	return s.Create(title, body, mode)
 }
 
-// updateTask applies a field edit through the board. viaHTTP reports whether
-// the board is server-backed, which callers use to decide whether the server
-// already logged the decision.
-func updateTask(s taskBoard, id string, updates map[string]any) (updated task.Task, viaHTTP bool, err error) {
-	if _, serverBacked := s.(*apiTaskBoard); serverBacked {
-		t, err := s.UpdateMap(id, updates)
-		return t, true, err
-	}
-	if statusText, hasStatus := updates["status"].(string); hasStatus {
-		localUpdates := make(map[string]any, len(updates)-1)
-		for key, value := range updates {
-			if key != "status" {
-				localUpdates[key] = value
-			}
-		}
-		extra, err := task.UpdateFromMap(localUpdates)
-		if err != nil {
-			return task.Task{}, false, err
-		}
-		status, err := task.ValidateStatus(statusText)
-		if err != nil {
-			return task.Task{}, false, err
-		}
-		if status == task.StatusHumanRequired {
-			display := "operator moved task to human-required"
-			if extra.StatusReason != nil && strings.TrimSpace(*extra.StatusReason) != "" {
-				display = *extra.StatusReason
-			}
-			extra.Escalation = task.OperatorDecisionEvidence("operator.cli_status_change", display)
-			extra.AutonomyOutcome = task.HumanRequiredOutcome()
-		}
-		result, err := s.Apply(task.TransitionIntent{
-			TaskID: id, ToStatus: status, Actor: "sybra-cli.update",
-			Extra: extra, OperatorOverride: true,
-		})
-		return result.Task, false, err
-	}
-	t, err := s.UpdateMap(id, updates)
-	return t, false, err
+// updateTask sends the field map to the board. The board is the only writer:
+// there is no local path left, so no branch on which one is in play.
+func updateTask(s taskBoard, id string, updates map[string]any) (task.Task, error) {
+	return s.UpdateMap(id, updates)
 }
 
 // appendManualDecisionProgress records the operator's status change beside the board that took it. A reachable server owns the artifact store for the task it just updated, so writing to this machine's disk instead would file the decision where the owning instance never reads it.
@@ -916,17 +894,8 @@ func appendManualDecisionProgress(api *apiClient, taskID, from, to, reason strin
 		return
 	}
 	message := artifact.ManualDecisionMessage(from, to, reason)
-	var err error
-	if api != nil {
-		_, err = callAPI[artifact.ProgressEntry](api, taskServiceName, "AppendTaskProgress",
-			taskID, artifact.ProgressKindDecision, "", message)
-	} else {
-		store := artifact.New(config.ArtifactsDir())
-		err = store.AppendProgress(taskID, artifact.ProgressEntry{
-			Kind:    artifact.ProgressKindDecision,
-			Message: message,
-		})
-	}
+	_, err := callAPI[artifact.ProgressEntry](api, taskServiceName, "AppendTaskProgress",
+		taskID, artifact.ProgressKindDecision, "", message)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: progress decision log append failed for task %s: %v\n", taskID, err)
 	}
@@ -1449,17 +1418,11 @@ func cmdUpdate(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 		}
 	}
 
-	before, err := getTask(s, id)
+	// No pre-read: the board owns the decision entry a human-required exit
+	// records, so the only thing this fetch bought was a second round trip.
+	t, err := updateTask(s, id, updates)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
-	}
-
-	t, handledByAPI, err := updateTask(s, id, updates)
-	if err != nil {
-		return fatal(jsonOut, "%v", err)
-	}
-	if !handledByAPI && before.Status == task.StatusHumanRequired && t.Status != task.StatusHumanRequired {
-		appendManualDecisionProgress(api, t.ID, string(before.Status), string(t.Status), t.StatusReason)
 	}
 
 	if jsonOut {
@@ -1881,13 +1844,9 @@ func cmdLinkPR(s taskBoard, api *apiClient, args []string, jsonOut bool) int {
 		updates["status_reason"] = ""
 	}
 
-	prev := t
-	t, handledByAPI, err := updateTask(s, id, updates)
+	t, err = updateTask(s, id, updates)
 	if err != nil {
 		return fatal(jsonOut, "%v", err)
-	}
-	if !handledByAPI && prev.Status == task.StatusHumanRequired && t.Status != task.StatusHumanRequired {
-		appendManualDecisionProgress(api, t.ID, string(prev.Status), string(t.Status), t.StatusReason)
 	}
 
 	if jsonOut {
@@ -2504,13 +2463,13 @@ func formatHealthNumber(v float64, digits int) string {
 	return fmt.Sprintf("%.*f", digits, v)
 }
 
-func cmdMonitor(cfg *config.Config, api *apiClient, store *task.Manager, args []string, jsonOut bool) int {
+func cmdMonitor(cfg *config.Config, api *apiClient, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "usage: monitor <scan|map-duplicates> [--json]")
 	}
 	switch args[0] {
 	case "scan":
-		return cmdMonitorScan(cfg, api, store, jsonOut)
+		return cmdMonitorScan(api, jsonOut)
 	case "map-duplicates":
 		return cmdMonitorMapDuplicates(cfg, api, args[1:], jsonOut)
 	default:
@@ -2543,43 +2502,14 @@ func cmdMonitorMapDuplicates(cfg *config.Config, api *apiClient, args []string, 
 	}
 	slices.Sort(duplicates)
 	duplicates = slices.Compact(duplicates)
-	// The ledger and the issue repo are both the owning instance's, so a
-	// reachable server runs the whole mapping rather than this process
-	// reading one machine's incident and editing another's issues.
-	if api != nil {
-		res, err := callAPI[monitorMapDuplicatesDTO](api, taskServiceName, "MapDuplicateIncidents", *fingerprint, duplicates, *coverage)
-		if err != nil {
-			return fatal(jsonOut, "monitor map-duplicates: %v", err)
-		}
-		return reportMapDuplicates(jsonOut, res.Fingerprint, res.Canonical, res.Duplicates)
-	}
-
-	ledger, err := monitor.NewIncidentStore(config.MonitorIncidentsDir())
+	// The ledger and the issue repo are both the owning instance's, so the
+	// server runs the whole mapping rather than this process reading one
+	// machine's incident and editing another's issues.
+	res, err := callAPI[monitorMapDuplicatesDTO](api, taskServiceName, "MapDuplicateIncidents", *fingerprint, duplicates, *coverage)
 	if err != nil {
 		return fatal(jsonOut, "monitor map-duplicates: %v", err)
 	}
-	in, ok, err := ledger.Get(*fingerprint)
-	if err != nil || !ok {
-		return fatal(jsonOut, "monitor map-duplicates: incident not found: %v", err)
-	}
-	if in.IsConfidential() {
-		return fatal(jsonOut, "monitor map-duplicates: confidential incidents cannot mutate public issues")
-	}
-	_, canonicalNumber := github.ParseIssueURL(in.IssueURL)
-	if canonicalNumber == 0 {
-		return fatal(jsonOut, "monitor map-duplicates: incident has no canonical GitHub issue")
-	}
-	if slices.Contains(duplicates, canonicalNumber) {
-		return fatal(jsonOut, "monitor map-duplicates: canonical issue #%d cannot be mapped as its own duplicate", canonicalNumber)
-	}
-	sink := monitor.NewGHIssueSink(cfg.Monitor.IssueLabel, cfg.Monitor.IssueRepo)
-	if err := sink.MapDuplicateIncidents(context.Background(), in, duplicates, *coverage); err != nil {
-		return fatal(jsonOut, "monitor map-duplicates: %v", err)
-	}
-	if err := ledger.Link(in.Fingerprint, "", "", duplicates); err != nil {
-		return fatal(jsonOut, "monitor map-duplicates: persist mapping: %v", err)
-	}
-	return reportMapDuplicates(jsonOut, in.Fingerprint, in.IssueURL, duplicates)
+	return reportMapDuplicates(jsonOut, res.Fingerprint, res.Canonical, res.Duplicates)
 }
 
 // monitorMapDuplicatesDTO mirrors the server's wire shape for a duplicate mapping.
@@ -2597,25 +2527,10 @@ func reportMapDuplicates(jsonOut bool, fingerprint, canonical string, duplicates
 	return 0
 }
 
-func cmdMonitorScan(cfg *config.Config, api *apiClient, store *task.Manager, jsonOut bool) int {
-	// A scan run here would report what a second reader of the same files
-	// sees, not what the running instance sees, so a reachable server scans.
-	if api != nil {
-		report, err := callAPIWithin[monitor.Report](api, apiSlowCallTimeout, taskServiceName, "ScanMonitor")
-		if err != nil {
-			return fatal(jsonOut, "scan: %v", err)
-		}
-		return reportMonitorScan(jsonOut, report)
-	}
-	svc := monitor.NewService(monitor.Deps{
-		Cfg:        cfg.Monitor,
-		Tasks:      store,
-		Audit:      monitor.AuditDirReader(cfg.AuditDir()),
-		Agents:     nil,
-		Dispatcher: monitor.NoopDispatcher(),
-		Sink:       monitor.NoopSink(),
-	})
-	report, err := svc.Scan(context.Background())
+// cmdMonitorScan asks the server to scan. A scan run here would report what a
+// second reader of the same files sees, not what the running instance sees.
+func cmdMonitorScan(api *apiClient, jsonOut bool) int {
+	report, err := callAPIWithin[monitor.Report](api, apiSlowCallTimeout, taskServiceName, "ScanMonitor")
 	if err != nil {
 		return fatal(jsonOut, "scan: %v", err)
 	}
@@ -2682,7 +2597,7 @@ func cmdAudit(cfg *config.Config, api *apiClient, args []string, jsonOut bool) i
 		TaskID: *taskID,
 	}
 
-	events, err := readAuditEvents(cfg, api, q)
+	events, err := readAuditEvents(api, q)
 	if err != nil {
 		return fatal(jsonOut, "read audit: %v", err)
 	}
@@ -2989,25 +2904,24 @@ func cmdArtifact(api *apiClient, args []string, jsonOut bool) int {
 		return fatal(jsonOut, "artifact: subcommand required (list|get|reindex)")
 	}
 	sub, rest := args[0], args[1:]
-	store := artifact.New(config.ArtifactsDir())
 	switch sub {
 	case "list":
-		return cmdArtifactList(api, store, rest, jsonOut)
+		return cmdArtifactList(api, rest, jsonOut)
 	case "get":
-		return cmdArtifactGet(api, store, rest)
+		return cmdArtifactGet(api, rest)
 	case "reindex":
-		return cmdArtifactReindex(api, store, rest, jsonOut)
+		return cmdArtifactReindex(api, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "artifact: unknown subcommand %q", sub)
 	}
 }
 
-func cmdArtifactList(api *apiClient, store *artifact.Store, args []string, jsonOut bool) int {
+func cmdArtifactList(api *apiClient, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "artifact list: task-id required")
 	}
 	taskID := args[0]
-	metas, err := listArtifacts(api, store, taskID)
+	metas, err := listArtifacts(api, taskID)
 	if err != nil {
 		return fatal(jsonOut, "artifact list: %v", err)
 	}
@@ -3028,13 +2942,13 @@ func cmdArtifactList(api *apiClient, store *artifact.Store, args []string, jsonO
 	return 0
 }
 
-func cmdArtifactGet(api *apiClient, store *artifact.Store, args []string) int {
+func cmdArtifactGet(api *apiClient, args []string) int {
 	if len(args) < 2 {
 		fmt.Fprintln(os.Stderr, "artifact get: task-id and name required")
 		return 1
 	}
 	taskID, name := args[0], args[1]
-	data, err := readArtifact(api, store, taskID, name)
+	data, err := readArtifact(api, taskID, name)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -3043,12 +2957,12 @@ func cmdArtifactGet(api *apiClient, store *artifact.Store, args []string) int {
 	return 0
 }
 
-func cmdArtifactReindex(api *apiClient, store *artifact.Store, args []string, jsonOut bool) int {
+func cmdArtifactReindex(api *apiClient, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "artifact reindex: task-id required")
 	}
 	taskID := args[0]
-	if err := reindexArtifacts(api, store, taskID); err != nil {
+	if err := reindexArtifacts(api, taskID); err != nil {
 		return fatal(jsonOut, "artifact reindex: %v", err)
 	}
 	if jsonOut {
@@ -3059,23 +2973,22 @@ func cmdArtifactReindex(api *apiClient, store *artifact.Store, args []string, js
 }
 
 // cmdProgress reads and writes the progress log through a reachable server. The artifact store sits beside the board it belongs to, so a client appending to its own disk while touching another machine's task would write the entry where the owning instance never reads it.
-func cmdProgress(s taskBoard, projStore projectBoard, api *apiClient, args []string, jsonOut bool) int {
+func cmdProgress(api *apiClient, args []string, jsonOut bool) int {
 	if len(args) == 0 {
 		return fatal(jsonOut, "progress: subcommand required (add|list)")
 	}
 	sub, rest := args[0], args[1:]
-	store := artifact.New(config.ArtifactsDir())
 	switch sub {
 	case "add":
-		return cmdProgressAdd(s, projStore, api, store, rest, jsonOut)
+		return cmdProgressAdd(api, rest, jsonOut)
 	case "list":
-		return cmdProgressList(api, store, rest, jsonOut)
+		return cmdProgressList(api, rest, jsonOut)
 	default:
 		return fatal(jsonOut, "progress: unknown subcommand %q", sub)
 	}
 }
 
-func cmdProgressAdd(s taskBoard, projStore projectBoard, api *apiClient, store *artifact.Store, args []string, jsonOut bool) int {
+func cmdProgressAdd(api *apiClient, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "progress add: task-id required")
 	}
@@ -3094,36 +3007,10 @@ func cmdProgressAdd(s taskBoard, projStore projectBoard, api *apiClient, store *
 		return fatal(jsonOut, "progress add: invalid --kind %q (want %s)", *kind, strings.Join(artifact.ProgressKinds(), "|"))
 	}
 
-	if api != nil {
-		entry, err := callAPI[artifact.ProgressEntry](api, taskServiceName, "AppendTaskProgress", taskID, *kind, *role, *message)
-		if err != nil {
-			return fatal(jsonOut, "progress add: %v", err)
-		}
-		return reportProgressAdd(jsonOut, taskID, entry)
-	}
-
-	t, err := s.Get(taskID)
+	entry, err := callAPI[artifact.ProgressEntry](api, taskServiceName, "AppendTaskProgress", taskID, *kind, *role, *message)
 	if err != nil {
 		return fatal(jsonOut, "progress add: %v", err)
 	}
-
-	msg := *message
-	if t.ProjectID != "" && projStore != nil {
-		if p, pErr := projStore.Get(t.ProjectID); pErr == nil {
-			if bl := p.WorkBlocklist(); bl != nil {
-				msg, _ = scrub.Scrub(msg, bl)
-			}
-		}
-	}
-
-	entry := artifact.ProgressEntry{Ts: time.Now().UTC(), Kind: *kind, Role: *role, Message: msg}
-	if err := store.AppendProgress(taskID, entry); err != nil {
-		return fatal(jsonOut, "progress add: %v", err)
-	}
-	if _, tErr := s.Touch(taskID); tErr != nil {
-		slog.Warn("progress.add.touch", "task_id", taskID, "err", tErr)
-	}
-
 	return reportProgressAdd(jsonOut, taskID, entry)
 }
 
@@ -3135,12 +3022,12 @@ func reportProgressAdd(jsonOut bool, taskID string, entry artifact.ProgressEntry
 	return 0
 }
 
-func cmdProgressList(api *apiClient, store *artifact.Store, args []string, jsonOut bool) int {
+func cmdProgressList(api *apiClient, args []string, jsonOut bool) int {
 	if len(args) < 1 {
 		return fatal(jsonOut, "progress list: task-id required")
 	}
 	taskID := args[0]
-	entries, err := readProgress(api, store, taskID)
+	entries, err := readProgress(api, taskID)
 	if err != nil {
 		return fatal(jsonOut, "progress list: %v", err)
 	}
@@ -3161,21 +3048,14 @@ func cmdProgressList(api *apiClient, store *artifact.Store, args []string, jsonO
 	return 0
 }
 
-func readProgress(api *apiClient, store *artifact.Store, taskID string) ([]artifact.ProgressEntry, error) {
-	if api != nil {
-		entries, err := callAPI[[]artifact.ProgressEntry](api, taskServiceName, "ListTaskProgress", taskID)
-		return nilIfEmpty(entries), err
-	}
-	return store.ReadProgress(taskID)
+func readProgress(api *apiClient, taskID string) ([]artifact.ProgressEntry, error) {
+	entries, err := callAPI[[]artifact.ProgressEntry](api, taskServiceName, "ListTaskProgress", taskID)
+	return nilIfEmpty(entries), err
 }
 
-// nilIfEmpty restores the filesystem-backed form's JSON for an empty result.
-//
-// ListTaskProgress normalises to an empty slice because the GUI wants an array,
-// but the local read returns nil, which marshals to null. A script piping
-// `--json` through jq sees a different type depending on whether a server is
-// up, so the CLI undoes the normalisation rather than changing what those
-// scripts already parse.
+// nilIfEmpty keeps the JSON shape scripts already parse: ListTaskProgress
+// normalises to an empty slice because the GUI wants an array, and a task with
+// no progress would otherwise change type from null to [] under `--json`.
 func nilIfEmpty[T any](values []T) []T {
 	if len(values) == 0 {
 		return nil
@@ -3325,50 +3205,10 @@ func cmdTasksHistory(cfg *config.Config, api *apiClient, args []string, jsonOut 
 		*limit = 20
 	}
 
-	if api != nil {
-		entries, err := callAPI[[]taskHistoryEntry](api, taskServiceName, "ListTaskSnapshotHistory", *limit)
-		if err != nil {
-			return fatal(jsonOut, "%v", err)
-		}
-		return reportTaskHistory(jsonOut, entries)
+	entries, err := callAPI[[]taskHistoryEntry](api, taskServiceName, "ListTaskSnapshotHistory", *limit)
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
 	}
-
-	ctx := context.Background()
-	gitDir := config.TaskSnapshotGitDir()
-	// Reuse the snapshotter's env builder so an inherited GIT_WORK_TREE can't
-	// leak in and break git commands; the work-tree value itself is unused by
-	// the read-only commands below but must be set consistently.
-	env := tasksnapshot.BuildEnv(gitDir, cfg.TasksDir)
-
-	opts := gitexec.Options{Env: env}
-	if err := gitexec.Run(ctx, opts, "rev-parse", "--git-dir"); err != nil {
-		return fatal(jsonOut, "tasks snapshot history unavailable — snapshotting is disabled or has not run yet (%v)", err)
-	}
-
-	// Detect an empty repo by HEAD resolvability, not a locale-dependent
-	// stderr string: `rev-parse --verify --quiet HEAD` exits non-zero with no
-	// output when no commits exist yet, which is a valid empty history.
-	hasCommits := gitexec.RunQuiet(ctx, opts, "rev-parse", "--verify", "--quiet", "HEAD") == nil
-
-	var entries []taskHistoryEntry
-	if hasCommits {
-		const sep = "\x1f"
-		stdout, err := gitexec.RawOutput(ctx, opts, "log", "--date=iso-strict", "--pretty=format:%h"+sep+"%ad"+sep+"%s", fmt.Sprintf("-n%d", *limit))
-		if err != nil {
-			return fatal(jsonOut, "tasks snapshot history unavailable: %v", err)
-		}
-		for line := range strings.SplitSeq(strings.TrimRight(string(stdout), "\n"), "\n") {
-			if line == "" {
-				continue
-			}
-			parts := strings.SplitN(line, sep, 3)
-			if len(parts) != 3 {
-				continue
-			}
-			entries = append(entries, taskHistoryEntry{SHA: parts[0], Date: parts[1], Subject: parts[2]})
-		}
-	}
-
 	return reportTaskHistory(jsonOut, entries)
 }
 
@@ -4001,35 +3841,22 @@ func addPathPermFinding(add func(severity, format string, a ...any), label, path
 }
 
 // readAuditEvents reads the audit log of whichever instance owns the board. The log is a directory of daily files under that instance's home, so reading this machine's copy would answer the question about the wrong machine.
-func readAuditEvents(cfg *config.Config, api *apiClient, q audit.Query) ([]audit.Event, error) {
-	if api != nil {
-		return callAPI[[]audit.Event](api, auditServiceName, "QueryAuditEvents", q)
-	}
-	return audit.Read(cfg.AuditDir(), q)
+func readAuditEvents(api *apiClient, q audit.Query) ([]audit.Event, error) {
+	return callAPI[[]audit.Event](api, auditServiceName, "QueryAuditEvents", q)
 }
 
 // The artifact store sits beside the board it belongs to, so these read the
 // instance that owns the task rather than this machine's copy.
 
-func listArtifacts(api *apiClient, store *artifact.Store, taskID string) ([]artifact.Meta, error) {
-	if api != nil {
-		return callAPI[[]artifact.Meta](api, taskServiceName, "ListTaskArtifactMetas", taskID)
-	}
-	return store.List(taskID)
+func listArtifacts(api *apiClient, taskID string) ([]artifact.Meta, error) {
+	return callAPI[[]artifact.Meta](api, taskServiceName, "ListTaskArtifactMetas", taskID)
 }
 
-func readArtifact(api *apiClient, store *artifact.Store, taskID, name string) ([]byte, error) {
-	if api != nil {
-		return callAPI[[]byte](api, taskServiceName, "ReadTaskArtifact", taskID, name)
-	}
-	data, _, err := store.Read(taskID, name)
-	return data, err
+func readArtifact(api *apiClient, taskID, name string) ([]byte, error) {
+	return callAPI[[]byte](api, taskServiceName, "ReadTaskArtifact", taskID, name)
 }
 
-func reindexArtifacts(api *apiClient, store *artifact.Store, taskID string) error {
-	if api != nil {
-		_, err := callAPI[struct{}](api, taskServiceName, "ReindexTaskArtifacts", taskID)
-		return err
-	}
-	return store.Reindex(taskID)
+func reindexArtifacts(api *apiClient, taskID string) error {
+	_, err := callAPI[struct{}](api, taskServiceName, "ReindexTaskArtifacts", taskID)
+	return err
 }

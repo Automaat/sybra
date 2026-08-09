@@ -7,11 +7,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/httpapi"
+	"github.com/Automaat/sybra/internal/httpserve"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -47,7 +49,7 @@ func startFakeAPIServer(t *testing.T, tasksDir string) string {
 		"TaskService": httpapi.NewService(svc, "GetTask", "UpdateTask", "CreateTask", "DeleteTask"),
 	}, slog.Default(), nil)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok","service":"` + httpserve.ServiceMarker + `"}`))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -74,7 +76,7 @@ func startFailingAPIServer(t *testing.T, tasksDir string) string {
 		"TaskService": httpapi.NewService(svc, "GetTask", "UpdateTask", "CreateTask", "DeleteTask"),
 	}, slog.Default(), nil)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok","service":"` + httpserve.ServiceMarker + `"}`))
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -166,61 +168,57 @@ func TestNewAPIClientVerifierTokenRequiresLoopback(t *testing.T) {
 	}
 }
 
-func TestUpdate_UsesHTTPModeWhenFilesystemIsReadOnly(t *testing.T) {
+// TestCLI_NeverTouchesTheBoardsFiles replaces a test that proved HTTP mode
+// still worked when the local task dir was read-only. With no filesystem path
+// left the interesting claim is stronger: a full create/update/list cycle works
+// against a board while this machine's own task directory stays unwritable, so
+// nothing in the CLI is reaching for it.
+func TestCLI_NeverTouchesTheBoardsFiles(t *testing.T) {
 	home := t.TempDir()
 	tasksDir := useDefaultHTTPCLIHome(t, home)
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 
-	code, out := runCLI(t, "--json", "create", "--title", "http mode target")
-	if code != 0 {
-		t.Fatalf("create exit %d: %s", code, out)
-	}
-
-	tasks, err := task.NewStore(tasksDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	list, err := tasks.List()
-	if err != nil || len(list) != 1 {
-		t.Fatalf("expected exactly one seeded task, got %v (err=%v)", list, err)
-	}
-	id := list[0].ID
-
 	serverTasksDir := t.TempDir()
-	taskFile := id + ".md"
-	seeded, err := os.ReadFile(filepath.Join(tasksDir, taskFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(serverTasksDir, taskFile), seeded, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
 	port := startFakeAPIServer(t, serverTasksDir)
 	t.Setenv(serverTargetEnv, "127.0.0.1:"+port)
 
 	lockdownDir(t, tasksDir)
 
-	code, out = runCLI(t, "--json", "update", id, "--status", "todo", "--status-reason", "via http")
+	code, out := runCLI(t, "--json", "create", "--title", "board only")
 	if code != 0 {
-		t.Fatalf("update over HTTP mode should succeed against a read-only task dir, got exit %d: %s", code, out)
+		t.Fatalf("create exit %d: %s", code, out)
 	}
-	if !strings.Contains(out, "via http") {
-		t.Fatalf("update output = %q, want it to reflect the applied status_reason", out)
-	}
-
 	served, err := task.NewStore(serverTasksDir)
 	if err != nil {
 		t.Fatal(err)
+	}
+	list, err := served.List()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("board holds %v (err=%v), want the created task", list, err)
+	}
+	id := list[0].ID
+
+	code, out = runCLI(t, "--json", "update", id, "--status", "todo", "--status-reason", "via the board")
+	if code != 0 {
+		t.Fatalf("update exit %d: %s", code, out)
 	}
 	got, err := served.Get(id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != task.StatusTodo || got.StatusReason != "via http" {
-		t.Fatalf("server-side task = %+v, want the update to have landed via HTTP", got)
+	if got.Status != task.StatusTodo || got.StatusReason != "via the board" {
+		t.Fatalf("board task = %+v, want the update to have landed there", got)
+	}
+
+	// The unwritable local directory is still empty: nothing wrote beside it.
+	entries, err := os.ReadDir(tasksDir)
+	if err != nil {
+		t.Fatalf("read local task dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("local task dir holds %d entries; the CLI wrote board files", len(entries))
 	}
 }
 
@@ -282,36 +280,37 @@ func TestLinkPR_UsesHTTPModeWhenTaskOnlyExistsOnServer(t *testing.T) {
 	}
 }
 
-func TestUpdate_FailsClosedWhenNoServerAndFilesystemReadOnly(t *testing.T) {
+// TestUpdate_FailsClosedWithNoServer keeps the refusal on the write path
+// specifically: a read is obviously impossible without a board, but an update
+// used to be the case that silently landed in this machine's files.
+func TestUpdate_FailsClosedWithNoServer(t *testing.T) {
 	home := t.TempDir()
 	tasksDir := useDefaultHTTPCLIHome(t, home)
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 
-	code, out := runCLI(t, "--json", "create", "--title", "no server target")
-	if code != 0 {
-		t.Fatalf("create exit %d: %s", code, out)
-	}
+	writeClosedPortFile(t, home)
 
-	tasks, err := task.NewStore(tasksDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	list, err := tasks.List()
-	if err != nil || len(list) != 1 {
-		t.Fatalf("expected exactly one seeded task, got %v (err=%v)", list, err)
-	}
-	id := list[0].ID
-
-	lockdownDir(t, tasksDir)
-
-	code, _ = runCLI(t, "--json", "update", id, "--status", "todo")
+	code, _, stderr := runCLIWithStderr(t, "--json", "update", "task-anything", "--status", "todo")
 	if code == 0 {
-		t.Fatal("update against a read-only task dir with no server reachable should fail, not silently succeed")
+		t.Fatal("update exit 0 with no server reachable")
+	}
+	if !strings.Contains(stderr, "no Sybra server is reachable") {
+		t.Errorf("stderr = %q, want it to name the unreachable server", stderr)
+	}
+	entries, err := os.ReadDir(tasksDir)
+	if err != nil {
+		t.Fatalf("read local task dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("local task dir holds %d entries; the refused update wrote files", len(entries))
 	}
 }
 
+// TestUpdate_ServerErrorNeverFallsBackToFilesystem keeps a 5xx a failure. The
+// dangerous outcome is not the error but a silent local write behind it, which
+// leaves this machine's files disagreeing with the board that refused.
 func TestUpdate_ServerErrorNeverFallsBackToFilesystem(t *testing.T) {
 	home := t.TempDir()
 	tasksDir := useDefaultHTTPCLIHome(t, home)
@@ -319,43 +318,28 @@ func TestUpdate_ServerErrorNeverFallsBackToFilesystem(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	code, out := runCLI(t, "--json", "create", "--title", "server error target")
-	if code != 0 {
-		t.Fatalf("create exit %d: %s", code, out)
-	}
-
-	tasks, err := task.NewStore(tasksDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	list, err := tasks.List()
-	if err != nil || len(list) != 1 {
-		t.Fatalf("expected exactly one seeded task, got %v (err=%v)", list, err)
-	}
-	id := list[0].ID
-	before, err := tasks.Get(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	port := startFailingAPIServer(t, t.TempDir())
 	t.Setenv(serverTargetEnv, "127.0.0.1:"+port)
 
-	code, out = runCLI(t, "--json", "update", id, "--status", "todo")
+	code, out := runCLI(t, "--json", "update", "task-anything", "--status", "todo")
 	if code == 0 {
 		t.Fatalf("update must surface a real server error, not silently fall back to filesystem: exit 0, out=%s", out)
 	}
 
-	after, err := tasks.Get(id)
+	entries, err := os.ReadDir(tasksDir)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read local task dir: %v", err)
 	}
-	if after.Status != before.Status {
-		t.Fatalf("filesystem task status changed to %q despite the server call failing — HTTP 5xx must not fall back to a direct write", after.Status)
+	if len(entries) != 0 {
+		t.Fatalf("local task dir holds %d entries; a server error fell back to a direct write", len(entries))
 	}
 }
 
-func TestUpdate_HomeFlagForcesFilesystemModeEvenWithServerRunning(t *testing.T) {
+// TestHomeFlag_SelectsTheBoardNotTheFiles replaces a test asserting --home
+// forced filesystem mode. A home now names which board's config and recorded
+// port to read, so an explicit target still wins over it — the operator said
+// where to go.
+func TestHomeFlag_SelectsTheBoardNotTheFiles(t *testing.T) {
 	home := t.TempDir()
 	tasksDir := filepath.Join(home, "tasks")
 	if err := os.MkdirAll(tasksDir, 0o700); err != nil {
@@ -363,53 +347,104 @@ func TestUpdate_HomeFlagForcesFilesystemModeEvenWithServerRunning(t *testing.T) 
 	}
 	isolateHTTPCLITestHome(t, home)
 
-	code, out := runCLI(t, "--json", "--home", home, "create", "--title", "home flag target")
-	if code != 0 {
-		t.Fatalf("create exit %d: %s", code, out)
-	}
-
-	tasks, err := task.NewStore(tasksDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	list, err := tasks.List()
-	if err != nil || len(list) != 1 {
-		t.Fatalf("expected exactly one seeded task, got %v (err=%v)", list, err)
-	}
-	id := list[0].ID
-
-	port := startFakeAPIServer(t, tasksDir)
+	serverTasksDir := t.TempDir()
+	port := startFakeAPIServer(t, serverTasksDir)
 	t.Setenv(serverTargetEnv, "127.0.0.1:"+port)
 
 	lockdownDir(t, tasksDir)
 
-	code, _ = runCLI(t, "--json", "--home", home, "update", id, "--status", "todo")
-	if code == 0 {
-		t.Fatal("--home must force filesystem mode even when a server is reachable; update against a read-only dir should fail")
+	code, out := runCLI(t, "--json", "--home", home, "create", "--title", "home flag target")
+	if code != 0 {
+		t.Fatalf("create exit %d: %s", code, out)
+	}
+	served, err := task.NewStore(serverTasksDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := served.List()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("board holds %v (err=%v), want the created task", list, err)
 	}
 }
 
-func TestNewAPIClient_RequiresExplicitServerTarget(t *testing.T) {
+// TestNewAPIClient_FallsBackToThisMachinesBoard replaces a pair of tests that
+// asserted an unset target yields no client at all. That answer only made sense
+// while "no client" meant "edit the files instead"; with no filesystem path
+// left it would mean every command fails on a machine whose own board is up.
+// TestLocalBoardCandidates_OrdersThisMachinesBoards replaces a pair of tests
+// asserting an unset target yields no client at all. That answer only made
+// sense while "no client" meant "edit the files instead".
+//
+// It is a list, not one answer: the desktop app's recorded port is kept across
+// restarts on purpose, so a stale entry must not shadow a server that is up.
+func TestLocalBoardCandidates_OrdersThisMachinesBoards(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("SYBRA_HOME", home)
 	t.Setenv(serverTargetEnv, "")
-	cfg := config.DefaultConfig()
-	cfg.Server.AuthToken = "token"
+	portFile := filepath.Join(home, desktopPortFile)
 
-	client, err := newAPIClient(cfg)
-	if client != nil || !errors.Is(err, errNoServerTarget) {
-		t.Fatalf("newAPIClient() = %#v, %v, want the unset sentinel without %s", client, err, serverTargetEnv)
-	}
-}
+	t.Run("recorded desktop port is tried before the configured one", func(t *testing.T) {
+		if err := os.WriteFile(portFile, []byte("51234\n"), 0o600); err != nil {
+			t.Fatalf("write desktop port: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Remove(portFile) })
+		got := localBoardCandidates(config.DefaultConfig())
+		want := []string{"127.0.0.1:51234", "127.0.0.1:" + config.DefaultServerPort}
+		if !slices.Equal(got, want) {
+			t.Fatalf("candidates = %v, want %v", got, want)
+		}
+	})
 
-func TestNewAPIClient_IgnoresSYBRAPortWithoutDedicatedTarget(t *testing.T) {
-	t.Setenv(serverTargetEnv, "")
-	t.Setenv("SYBRA_PORT", "8080")
-	cfg := config.DefaultConfig()
-	cfg.Server.AuthToken = "token"
+	t.Run("configured port alone when nothing was recorded", func(t *testing.T) {
+		got := localBoardCandidates(config.DefaultConfig())
+		want := []string{"127.0.0.1:" + config.DefaultServerPort}
+		if !slices.Equal(got, want) {
+			t.Fatalf("candidates = %v, want %v", got, want)
+		}
+	})
 
-	client, err := newAPIClient(cfg)
-	if client != nil || !errors.Is(err, errNoServerTarget) {
-		t.Fatalf("newAPIClient() = %#v, %v, want the unset sentinel when only SYBRA_PORT is set", client, err)
-	}
+	t.Run("a corrupt port file is ignored rather than dialled", func(t *testing.T) {
+		if err := os.WriteFile(portFile, []byte("not-a-port"), 0o600); err != nil {
+			t.Fatalf("write desktop port: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Remove(portFile) })
+		got := localBoardCandidates(config.DefaultConfig())
+		want := []string{"127.0.0.1:" + config.DefaultServerPort}
+		if !slices.Equal(got, want) {
+			t.Fatalf("candidates = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("a bind locked to one interface is dialled there, not on loopback", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Cluster.BindAddrs = []string{"100.64.1.5:8080"}
+		got := localBoardCandidates(cfg)
+		if !slices.Equal(got, []string{"100.64.1.5:8080"}) {
+			t.Fatalf("candidates = %v, want the configured bind; nothing listens on loopback there", got)
+		}
+	})
+
+	t.Run("a TLS control plane is addressed over https", func(t *testing.T) {
+		cfg := config.DefaultConfig()
+		cfg.Cluster.TLS.CertFile = "/tmp/cert.pem"
+		cfg.Cluster.TLS.KeyFile = "/tmp/key.pem"
+		got := localBoardCandidates(cfg)
+		if len(got) != 1 || !strings.HasPrefix(got[0], "https://") {
+			t.Fatalf("candidates = %v, want an https target; a TLS board refuses a cleartext hop", got)
+		}
+	})
+
+	t.Run("ambient SYBRA_HOST and SYBRA_PORT do not steer the dial", func(t *testing.T) {
+		// An unrelated unit shell exporting these must not aim the CLI — and
+		// the bearer token it sends next — at whatever answers there.
+		t.Setenv("SYBRA_HOST", "127.0.0.1")
+		t.Setenv("SYBRA_PORT", "9999")
+		got := localBoardCandidates(config.DefaultConfig())
+		want := []string{"127.0.0.1:" + config.DefaultServerPort}
+		if !slices.Equal(got, want) {
+			t.Fatalf("candidates = %v, want %v", got, want)
+		}
+	})
 }
 
 func TestNewAPIClient_UsesDedicatedServerTargetEnv(t *testing.T) {
@@ -431,7 +466,8 @@ func TestNewAPIClient_RejectsInvalidDedicatedServerTarget(t *testing.T) {
 		name string
 		raw  string
 	}{
-		{name: "empty", raw: ""},
+		// "empty" is absent on purpose: an unset target resolves to this
+		// machine's board rather than being rejected.
 		{name: "missing-host", raw: "8080"},
 		{name: "blank-host", raw: ":8080"},
 		{name: "wildcard-host", raw: "0.0.0.0:8080"},
