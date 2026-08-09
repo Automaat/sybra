@@ -71,6 +71,13 @@ func (m *Manager) PrepareAttempt(ctx context.Context, t task.Task, attemptID str
 	if err != nil {
 		return "", "", fmt.Errorf("get project: %w", err)
 	}
+	// Asked before the clone is used, not discovered through whatever git says
+	// first: the record and the clone are written separately, so a crash
+	// between them leaves a project that reads ready with nothing behind it.
+	if !project.CloneUsable(proj) {
+		return "", "", fmt.Errorf("project %s has no usable clone at %q; re-add the project to restore it",
+			proj.ID, proj.ClonePath)
+	}
 	if err := project.FetchOrigin(ctx, proj.ClonePath); err != nil {
 		return "", "", fmt.Errorf("fetch origin: %w", err)
 	}

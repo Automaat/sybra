@@ -555,6 +555,13 @@ func (s *Store) Delete(id string) error {
 		_ = os.RemoveAll(p.ClonePath)
 	}
 
+	if s.store != nil {
+		// The record lives in the database, and there is no file to remove.
+		// Removing one and leaving the row would relist a project whose clone
+		// this call just deleted — the exact disagreement this change exists
+		// to prevent.
+		return s.store.Delete(id)
+	}
 	path := s.filePath(id)
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("delete project file: %w", err)

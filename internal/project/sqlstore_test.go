@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -179,4 +180,105 @@ func TestImport_KeepsClonesMatchedAndReportsMissingOnes(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestStore_DeleteRemovesTheRecordNotAFile pins what Copilot caught: with the
+// database backend there is no file to remove, and removing one while leaving
+// the row relists a project whose clone the same call just deleted.
+func TestStore_DeleteRemovesTheRecordNotAFile(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		backend, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatalf("NewSQLStore: %v", err)
+		}
+		clones := t.TempDir()
+		store, err := NewStoreWith(t.TempDir(), clones, backend)
+		if err != nil {
+			t.Fatalf("NewStoreWith: %v", err)
+		}
+		p := projectFixture(t, clones)[0]
+		if err := backend.Write(p); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+
+		if err := store.Delete(p.ID); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		list, err := store.List()
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		for i := range list {
+			if list[i].ID == p.ID {
+				t.Fatalf("a deleted project still lists: %v", ids(list))
+			}
+		}
+		if _, err := os.Stat(p.ClonePath); err == nil {
+			t.Error("the clone survived the delete")
+		}
+	})
+}
+
+// TestSQLStore_LockedCyclesDoNotOverlapPerProject is the cross-process property
+// an in-process mutex could not give.
+//
+// Two instances editing one project would otherwise interleave
+// read-modify-write and lose an edit. Different projects must still proceed in
+// parallel, which is what the per-id key buys.
+func TestSQLStore_LockedCyclesDoNotOverlapPerProject(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		var (
+			mu      sync.Mutex
+			inside  int
+			overlap bool
+		)
+		var wg sync.WaitGroup
+		for range 4 {
+			store, err := NewSQLStore(d)
+			if err != nil {
+				t.Fatalf("NewSQLStore: %v", err)
+			}
+			wg.Go(func() {
+				for range 6 {
+					release, err := store.Lock("owner/contended")
+					if err != nil {
+						t.Errorf("Lock: %v", err)
+						return
+					}
+					mu.Lock()
+					inside++
+					if inside > 1 {
+						overlap = true
+					}
+					mu.Unlock()
+					time.Sleep(time.Millisecond)
+					mu.Lock()
+					inside--
+					mu.Unlock()
+					release()
+				}
+			})
+		}
+		wg.Wait()
+		if overlap {
+			t.Fatal("two instances held one project at once; concurrent edits can overwrite each other")
+		}
+	})
+}
+
+// TestLockKeyFor_DistinguishesProjects keeps two projects off one key, which
+// would serialize unrelated work behind each other.
+func TestLockKeyFor_DistinguishesProjects(t *testing.T) {
+	if lockKeyFor("owner/a") == lockKeyFor("owner/b") {
+		t.Fatal("two projects hash to one advisory key")
+	}
+	first, second := lockKeyFor("owner/a"), lockKeyFor("owner/a")
+	if first != second {
+		t.Fatalf("one project hashed to %d then %d", first, second)
+	}
+	if first < 0 {
+		t.Fatalf("advisory key %d is negative; the signed column would take a different value", first)
+	}
 }
