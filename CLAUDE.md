@@ -149,7 +149,8 @@ single file, the default when unset, one machine alone), `postgres` (shared
 server, several machines on one board), or `file` (the per-domain filesystem
 stores Sybra has always used, retained for rollback and being retired). An
 install that never named this key migrates itself to sqlite on first start;
-the original files are left in place.
+the original files are left in place. See `docs/release-notes.md` for what
+that migration means for an operator's config and existing files.
 
 `internal/db` opens the handle, applies the embedded per-dialect migrations in
 `internal/db/migrations/<dialect>/`, and is the only place that knows a dialect.
