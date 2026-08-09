@@ -154,6 +154,17 @@ export function RunLearningDigestNow(): $CancellablePromise<learning$0.Digest> {
 }
 
 /**
+ * SetAgentBoard tells task-scoped agents which board to reach.
+ * 
+ * Called once this instance is listening: an agent's sybra-cli has no
+ * filesystem path to task state, and cannot reliably discover a board from
+ * inside the process sandbox, so it is given the address instead.
+ */
+export function SetAgentBoard(target: string, token: string): $CancellablePromise<void> {
+    return $Call.ByID(907973346, target, token);
+}
+
+/**
  * SetDesktopNotifications enables or disables macOS desktop notifications.
  */
 export function SetDesktopNotifications(enabled: boolean): $CancellablePromise<void> {
