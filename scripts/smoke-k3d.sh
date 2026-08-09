@@ -201,7 +201,7 @@ SRC=/tmp/k8s-testbed-src
 BARE="$HOME_DIR/clones/$OWNER/$REPO.git"
 
 rm -rf "$SRC" "$BARE"
-mkdir -p "$HOME_DIR/clones/$OWNER" "$HOME_DIR/projects"
+mkdir -p "$HOME_DIR/clones/$OWNER"
 git init -b main "$SRC"
 git -C "$SRC" config user.email fake-repo@example.invalid
 git -C "$SRC" config user.name "Fake Repo"
@@ -213,19 +213,7 @@ git --git-dir="$BARE" config remote.origin.url "$BARE"
 git --git-dir="$BARE" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
 git --git-dir="$BARE" config receive.denyCurrentBranch updateInstead
 git --git-dir="$BARE" update-ref refs/remotes/origin/main "$(git --git-dir="$BARE" rev-parse refs/heads/main)"
-cat > "$HOME_DIR/projects/$OWNER--$REPO.yaml" <<YAML
-id: $OWNER/$REPO
-name: $REPO
-owner: $OWNER
-repo: $REPO
-url: https://github.com/$OWNER/$REPO.git
-clone_path: $BARE
-type: pet
-status: ready
-worktree_base_ref: fresh
-created_at: "2026-07-14T00:00:00Z"
-updated_at: "2026-07-14T00:00:00Z"
-YAML
+sybra-cli project adopt --url "https://github.com/$OWNER/$REPO.git" --clone-path "$BARE" --type pet
 '
 fi
 
