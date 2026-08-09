@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { load as parseYAML } from "js-yaml";
 
 import { isolatedSybraHome } from "./lib/sybra-home";
+import { apiCall } from "./lib/api";
 
 const SYBRA_HOME = isolatedSybraHome();
 const FIXTURE_ID = "wf-editor-e2e";
-const API_BASE = "http://localhost:8080";
 
 /**
  * Seed and read the fixture through the API rather than the workflows
@@ -20,41 +20,8 @@ const API_BASE = "http://localhost:8080";
  * suite stayed green. Going through the API exercises whichever backend is
  * configured.
  */
-/**
- * The bearer token this home's server runs with.
- *
- * CI writes an explicit `server.auth_token` into the home's config, while a
- * local run leaves it empty and the server generates one into
- * `server_auth_token`. Both are checked so the suite works either way.
- */
-async function authToken(): Promise<string> {
-  try {
-    const cfg = parseYAML(
-      await readFile(join(SYBRA_HOME, "config.yaml"), "utf8"),
-    ) as { server?: { auth_token?: string } } | undefined;
-    const fromConfig = cfg?.server?.auth_token?.trim();
-    if (fromConfig) {
-      return fromConfig;
-    }
-  } catch {
-    /* no config file, fall through to the generated token */
-  }
-  return (await readFile(join(SYBRA_HOME, "server_auth_token"), "utf8")).trim();
-}
-
 async function api(method: string, args: unknown[]): Promise<Response> {
-  const res = await fetch(`${API_BASE}/api/WorkflowService/${method}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${await authToken()}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(args),
-  });
-  if (!res.ok) {
-    throw new Error(`${method} failed: ${res.status} ${await res.text()}`);
-  }
-  return res;
+  return apiCall(SYBRA_HOME, "WorkflowService", method, args);
 }
 
 async function ensureFixture() {
