@@ -33,3 +33,18 @@ CREATE TABLE IF NOT EXISTS monitor_incidents (
 )
 --;;
 CREATE INDEX IF NOT EXISTS monitor_incidents_state_idx ON monitor_incidents (state, last_seen)
+--;;
+CREATE TABLE IF NOT EXISTS issue_outbox (
+	fingerprint TEXT PRIMARY KEY,
+	operation TEXT NOT NULL DEFAULT '',
+	attempts BIGINT NOT NULL DEFAULT 0,
+	first_failed_at BIGINT NOT NULL DEFAULT 0,
+	doc TEXT NOT NULL
+)
+--;;
+CREATE TABLE IF NOT EXISTS cleanup_protected (
+	key TEXT PRIMARY KEY,
+	kind TEXT NOT NULL DEFAULT '',
+	recorded_at BIGINT NOT NULL DEFAULT 0,
+	doc TEXT NOT NULL
+)

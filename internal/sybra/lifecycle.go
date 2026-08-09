@@ -609,7 +609,7 @@ func providerHealthMetrics(
 func (lm *LifecycleManager) buildMonitorIssueSink(ctx context.Context) monitor.IssueSink {
 	a := lm.app
 	innerSink := monitor.NewGHIssueSink(a.cfg.Monitor.IssueLabel, a.cfg.Monitor.IssueRepo)
-	durableSink, err := monitor.NewDurableGHIssueSink(innerSink, filepath.Join(config.GHIssueOutboxDir(), "monitor"), "monitor", a.logger, a.audit)
+	durableSink, err := a.newDurableIssueSink(ctx, innerSink, "monitor")
 	if err != nil {
 		a.logger.Error("monitor.issue_outbox.init_failed", "err", err)
 		return innerSink

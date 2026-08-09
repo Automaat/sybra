@@ -2178,3 +2178,25 @@ func (a *App) openIncidentStore(ctx context.Context) (*monitor.IncidentStore, er
 	}
 	return monitor.NewIncidentStore(dir)
 }
+
+// newDurableIssueSink returns the retrying GitHub issue sink for the configured
+// backend, importing the pending outbox the first time a database is used.
+//
+// A failed import degrades to the files: an empty outbox reads as nothing
+// pending, so a filing stranded by an expired credential would never be
+// retried and the incident it belongs to would go unreported.
+func (a *App) newDurableIssueSink(ctx context.Context, inner *monitor.GHIssueSink, name string) (*monitor.DurableGHIssueSink, error) {
+	dir := filepath.Join(config.GHIssueOutboxDir(), name)
+	if a.database != nil {
+		ctx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := monitor.ImportIssueOutbox(ctx, a.database, dir, a.importScope(), a.logger); err != nil {
+			a.logger.Error("issueoutbox.import", "err", err)
+		} else if store, err := monitor.NewSQLIssueOutbox(a.database, a.logger); err != nil {
+			a.logger.Error("issueoutbox.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return monitor.NewDurableGHIssueSinkWith(inner, store, name, a.logger, a.audit), nil
+		}
+	}
+	return monitor.NewDurableGHIssueSink(inner, dir, name, a.logger, a.audit)
+}
