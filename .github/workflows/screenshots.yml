@@ -27,9 +27,8 @@ jobs:
 
       - name: Seed fixtures
         run: |
-          mkdir -p "$SYBRA_HOME/tasks" "$SYBRA_HOME/workflows"
+          mkdir -p "$SYBRA_HOME/tasks"
           cp frontend/e2e/fixtures/*.md "$SYBRA_HOME/tasks/"
-          cp frontend/e2e/fixtures/wf-editor-e2e.yaml "$SYBRA_HOME/workflows/"
           # Marker proving this is a disposable e2e home; the suite refuses
           # destructive task cleanup without it (#1576).
           touch "$SYBRA_HOME/.sybra-e2e-home"
