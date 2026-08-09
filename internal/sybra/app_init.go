@@ -394,7 +394,7 @@ func (a *App) initLocalStores(ctx context.Context) {
 	a.initExperience(ctx)
 	a.initIntervention()
 	a.initLearning()
-	a.initAgentQueue()
+	a.initAgentQueue(ctx)
 }
 
 func (a *App) initAttachments() {
@@ -455,8 +455,11 @@ func (a *App) initLearning() {
 	a.learning = store
 }
 
-func (a *App) initAgentQueue() {
-	queue, err := agentqueue.New(config.AgentQueueDir(), agentqueue.Options{MaxDepth: a.cfg.Agent.Queue.MaxDepth}, a.logger)
+func (a *App) initAgentQueue(ctx context.Context) {
+	queue, err := agentqueue.New(config.AgentQueueDir(), agentqueue.Options{
+		MaxDepth: a.cfg.Agent.Queue.MaxDepth,
+		Store:    a.openAgentQueueStore(ctx),
+	}, a.logger)
 	if err != nil {
 		a.logger.Warn("agentqueue.init.degraded", "err", err)
 		return
@@ -2127,6 +2130,29 @@ func (a *App) openAttemptLedger(ctx context.Context) dispatch.Persistence {
 	store, err := dispatch.NewSQLPersistence(a.database)
 	if err != nil {
 		a.logger.Error("attemptlease.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		return nil
+	}
+	return store
+}
+
+// openAgentQueueStore returns the queue's durability mirror for the configured
+// backend, importing the existing item files the first time a database is used.
+//
+// A failed import returns nil, which leaves the queue on its files. Starting on
+// an empty mirror would drop every queued item on the next restart.
+func (a *App) openAgentQueueStore(ctx context.Context) agentqueue.Persistence {
+	if a.database == nil {
+		return nil
+	}
+	importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+	defer cancel()
+	if err := agentqueue.Import(importCtx, a.database, config.AgentQueueDir(), a.importScope(), a.logger); err != nil {
+		a.logger.Error("agentqueue.import", "err", err)
+		return nil
+	}
+	store, err := agentqueue.NewSQLStore(a.database, a.logger)
+	if err != nil {
+		a.logger.Error("agentqueue.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
 		return nil
 	}
 	return store

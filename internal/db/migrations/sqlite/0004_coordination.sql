@@ -15,3 +15,11 @@ CREATE TABLE IF NOT EXISTS ledger_revisions (
 	ledger TEXT PRIMARY KEY,
 	revision INTEGER NOT NULL DEFAULT 0
 )
+--;;
+CREATE TABLE IF NOT EXISTS agent_queue_items (
+	task_id TEXT PRIMARY KEY,
+	role TEXT NOT NULL DEFAULT '',
+	priority TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT '',
+	doc TEXT NOT NULL
+)
