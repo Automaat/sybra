@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/artifact"
 	"github.com/Automaat/sybra/internal/httpapi"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/triage"
 	"github.com/Automaat/sybra/internal/umbrella"
@@ -603,7 +604,10 @@ func TestClassifyTask_StampsARetryableReasonOnFailure(t *testing.T) {
 	// leave background goroutines running git, and taking git away from them
 	// for the length of this test makes them retry rather than fail.
 	fakebin := t.TempDir()
-	for _, name := range []string{"claude", "codex", "copilot"} {
+	// Every provider, not the three this test happens to need: a provider added
+	// later would otherwise be the one real CLI on PATH and the classifier
+	// would reach it.
+	for _, name := range providerid.All() {
 		stub := "#!/bin/sh\nexit 1\n"
 		if err := os.WriteFile(filepath.Join(fakebin, name), []byte(stub), 0o755); err != nil {
 			t.Fatalf("write %s stub: %v", name, err)
