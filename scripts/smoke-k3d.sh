@@ -118,8 +118,11 @@ k3d kubeconfig get "$CLUSTER" > "$KUBECONFIG"
 # intermittent red on a job that has nothing to do with the change under test.
 log "Waiting for the node to be ready"
 kubectl wait --for=condition=Ready node --all --timeout=180s
+# A deadline from the clock, not $SECONDS: that counts from shell start and the
+# image build already ran, so the guard would fire before the first attempt.
+openapi_deadline=$(( $(date +%s) + 180 ))
 until kubectl get --raw /openapi/v2 >/dev/null 2>&1; do
-  [ "$SECONDS" -lt 300 ] || fail "the API server never served its openapi document"
+  [ "$(date +%s)" -lt "$openapi_deadline" ] || fail "the API server never served its openapi document"
   sleep 2
 done
 
