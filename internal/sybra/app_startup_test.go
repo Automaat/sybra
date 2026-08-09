@@ -119,7 +119,11 @@ func TestAppStartup_PrimesRoutingBeforeReturning(t *testing.T) {
 		t.Fatalf("routing overlay version = %d, want 1", overlay.Version)
 	}
 
-	auditEvents, err := audit.Read(cfg.AuditDir(), audit.Query{
+	// Through the store the app actually writes to, not the audit directory: the default backend is a database, so reading the files asserts against a location nothing writes to and the check passes vacuously or fails for the wrong reason.
+	if app.audit == nil {
+		t.Fatal("audit store = nil after Startup, want one to read the bootstrap event from")
+	}
+	auditEvents, err := app.audit.Read(audit.Query{
 		Since: time.Now().Add(-time.Minute),
 		Until: time.Now().Add(time.Minute),
 		Type:  audit.EventRoutingReweighted,
