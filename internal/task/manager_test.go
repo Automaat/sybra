@@ -702,3 +702,35 @@ func TestManagerOnExternalUpdateWaitsForBusyWriterAndStillFires(t *testing.T) {
 		t.Fatalf("hook calls = %v, want [todo->in-progress]", fired)
 	}
 }
+
+// TestMutationTransportIdentityStableAcrossTaskUpdate pins that an ordinary
+// task write does not invalidate the certificate the identity guards.
+//
+// The identity deliberately omits the store directory's mtime and size because
+// the probe's own create-remove write changes them. The task file needed the
+// same treatment for the same reason: a run patches its task constantly, so
+// including the file's size and mtime made every status change look like the
+// mutation route had been replaced underneath a healthy run.
+func TestMutationTransportIdentityStableAcrossTaskUpdate(t *testing.T) {
+	m, _ := newTestManager(t)
+	created, err := m.Create("mutation identity", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := m.MutationTransportIdentity(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := StatusInProgress
+	body := created.Body + "\n\nmore body so the file size changes too"
+	if _, err := m.Update(created.ID, Update{Status: &status, Body: &body}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := m.MutationTransportIdentity(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("an ordinary task update changed the mutation identity\nbefore: %q\nafter:  %q", before, after)
+	}
+}
