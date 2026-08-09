@@ -281,13 +281,10 @@ func (s *TaskService) GetAttachmentURL(taskID, attachmentID string) (string, err
 		return "", validationError(fmt.Sprintf("attachment %q not found", attachmentID))
 	}
 	att := t.Attachments[idx]
-	path, err := s.attachments.Path(taskID, attachmentID)
+	data, _, err := s.attachments.Content(taskID, attachmentID)
 	if err != nil {
-		return "", validationError(err.Error())
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read attachment: %w", err)
+		// The task already lists this attachment, so a read that still fails is a backend fault rather than a bad request, and its message describes storage the caller cannot act on.
+		return "", fmt.Errorf("read attachment %q: %w", attachmentID, err)
 	}
 	return "data:" + att.ContentType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }

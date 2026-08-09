@@ -14,7 +14,7 @@ PORT="${SYBRA_TEST_PG_PORT:-55432}"
 # while the deploy target is Ubuntu, where en_US.UTF-8 ignores punctuation and
 # reorders exactly the ids the builtin workflows ship with.
 IMAGE="postgres:17@sha256:7958605b474b3d264a969cb3a123d6aa00ad1e1fe9da8a69984dabb704d93317"
-PACKAGES=("./internal/db/..." "./internal/dbimport/..." "./internal/loopagent/..." "./internal/experience/..." "./internal/workflow/..." "./internal/bgop/..." "./internal/audit/..." "./internal/toolledger/..." "./internal/stats/..." "./internal/limits/..." "./internal/sybra/dispatch/..." "./internal/agentqueue/..." "./internal/monitor/..." "./internal/cleanup/..." "./internal/project/..." "./internal/task/taskdb/..." "./internal/testutil/dbtest/...")
+PACKAGES=("./internal/db/..." "./internal/dbimport/..." "./internal/loopagent/..." "./internal/experience/..." "./internal/workflow/..." "./internal/bgop/..." "./internal/audit/..." "./internal/toolledger/..." "./internal/stats/..." "./internal/limits/..." "./internal/sybra/dispatch/..." "./internal/agentqueue/..." "./internal/monitor/..." "./internal/cleanup/..." "./internal/attachment/..." "./internal/artifact/..." "./internal/task/taskdb/..." "./internal/project/..." "./internal/testutil/dbtest/...")
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker is required to run the postgres engine leg" >&2

@@ -3,7 +3,6 @@ package sybra
 import (
 	"fmt"
 	"log/slog"
-	"os"
 	"slices"
 
 	"github.com/Automaat/sybra/internal/attachment"
@@ -30,13 +29,10 @@ func (s *ClusterAttachmentService) ExportAttachment(taskID, attachmentID string)
 	if !slices.ContainsFunc(t.Attachments, func(att task.Attachment) bool { return att.ID == attachmentID }) {
 		return nil, validationError(fmt.Sprintf("attachment %q not found", attachmentID))
 	}
-	path, err := s.attachments.Path(taskID, attachmentID)
+	data, _, err := s.attachments.Content(taskID, attachmentID)
 	if err != nil {
-		return nil, validationError(err.Error())
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read attachment: %w", err)
+		// The task already lists this attachment, so a read that still fails is a backend fault rather than a bad request, and its message describes storage the caller cannot act on.
+		return nil, fmt.Errorf("read attachment %q: %w", attachmentID, err)
 	}
 	return data, nil
 }

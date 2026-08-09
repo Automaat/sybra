@@ -98,6 +98,7 @@ func buildAllowances() map[allowanceKey]allowance { //nolint:funlen // The expli
 	add(kindStringTruncation, "internal/task/comment.go", "UUID strings are canonical ASCII tokens; this slice selects the fixed-width short comment identifier.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/task/store.go", "UUID strings are canonical ASCII tokens; this slice selects the fixed-width short task identifier.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/db/db.go", "libpq keyword/value DSNs are ASCII; these slices cut at parser-discovered key, value, and quote boundaries while redacting a password.", map[string]int{"slice": 5})
+	add(kindStringTruncation, "internal/artifact/sqlstore.go", "The value is a SHA-256 sum, not text; the two slices read its first and second 32-bit halves to build an advisory lock key.", map[string]int{"slice": 2})
 
 	add(kindStringTruncation, "internal/agent/procsandbox_darwin_integration_test.go", "Integration fixtures split fixed-format sandbox profile text and byte buffers.", map[string]int{"slice": 3})
 	add(kindStringTruncation, "internal/project/repair_test.go", "Git-repair fixtures deliberately mutate fixed-format object/ref data.", map[string]int{"slice": 5})

@@ -198,6 +198,33 @@ func (s *Store) List(taskID string) ([]Attachment, error) {
 	return out, nil
 }
 
+// Content returns one attachment's bytes and metadata.
+//
+// Callers take content rather than a path: a path only means something to a
+// process on the same machine, which is what made an attachment unreachable
+// from a board reached over the network.
+func (s *Store) Content(taskID, attachmentID string) ([]byte, Attachment, error) {
+	if s == nil {
+		return nil, Attachment{}, errors.New("attachment store is not configured")
+	}
+	dir, err := s.attachmentDir(taskID, attachmentID)
+	if err != nil {
+		return nil, Attachment{}, err
+	}
+	meta, err := s.readMeta(dir)
+	if err != nil {
+		return nil, Attachment{}, err
+	}
+	if !fsutil.Within(dir, meta.Path) {
+		return nil, Attachment{}, fmt.Errorf("attachment path escapes task dir: %s", attachmentID)
+	}
+	data, err := os.ReadFile(meta.Path)
+	if err != nil {
+		return nil, Attachment{}, fmt.Errorf("read attachment blob: %w", err)
+	}
+	return data, meta, nil
+}
+
 // Path returns the validated blob path for a task attachment.
 func (s *Store) Path(taskID, attachmentID string) (string, error) {
 	if s == nil {
