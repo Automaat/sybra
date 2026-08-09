@@ -13,8 +13,16 @@ import (
 
 func newTestTracker(t *testing.T) *Tracker {
 	t.Helper()
+	tr, _ := newTestTrackerAt(t)
+	return tr
+}
+
+// newTestTrackerAt returns a tracker and the document it persists to, for the
+// tests that assert on the file itself.
+func newTestTrackerAt(t *testing.T) (*Tracker, string) {
+	t.Helper()
 	diskPath := filepath.Join(t.TempDir(), "bgops.json")
-	return NewTracker(func(string, any) {}, diskPath, nil)
+	return NewTracker(func(string, any) {}, NewFilePersistence(diskPath), nil), diskPath
 }
 
 func TestTracker_StartCompleteFail(t *testing.T) {
@@ -132,17 +140,17 @@ func TestTracker_List_KeepsRunningRegardlessOfAge(t *testing.T) {
 }
 
 func TestTracker_SaveAndLoadFromDisk_RoundTrip(t *testing.T) {
-	tr := newTestTracker(t)
+	tr, trPath := newTestTrackerAt(t)
 
 	id := tr.Start(TypeClone, "cloning", "proj1", "task1")
 	tr.Complete(id)
 
-	if _, err := os.Stat(tr.diskPath); err != nil {
-		t.Fatalf("expected persisted file at %s: %v", tr.diskPath, err)
+	if _, err := os.Stat(trPath); err != nil {
+		t.Fatalf("expected persisted file at %s: %v", trPath, err)
 	}
 
 	// Fresh tracker sharing the same disk path should restore the op.
-	tr2 := NewTracker(func(string, any) {}, tr.diskPath, nil)
+	tr2 := NewTracker(func(string, any) {}, NewFilePersistence(trPath), nil)
 	tr2.LoadFromDisk()
 
 	ops := tr2.List()
@@ -179,7 +187,7 @@ func TestTracker_LoadFromDisk_MarksRunningOpsFailed(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	tr := NewTracker(func(string, any) {}, diskPath, nil)
+	tr := NewTracker(func(string, any) {}, NewFilePersistence(diskPath), nil)
 	tr.LoadFromDisk()
 
 	loaded := tr.List()
@@ -241,7 +249,7 @@ func TestTracker_LoadFromDisk_DiscardsExpiredCompletions(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	tr := NewTracker(func(string, any) {}, diskPath, nil)
+	tr := NewTracker(func(string, any) {}, NewFilePersistence(diskPath), nil)
 	tr.LoadFromDisk()
 
 	loaded := tr.List()
@@ -266,7 +274,7 @@ func TestTracker_LoadFromDisk_DiscardsExpiredCompletions(t *testing.T) {
 }
 
 func TestTracker_SaveToDisk_DropsTransientState(t *testing.T) {
-	tr := newTestTracker(t)
+	tr, trPath := newTestTrackerAt(t)
 
 	id := tr.Start(TypeClone, "cloning", "proj1", "task1")
 	tr.UpdatePhase(id, "fetching")
@@ -286,7 +294,7 @@ func TestTracker_SaveToDisk_DropsTransientState(t *testing.T) {
 	tr.UpdatePhase(doneID, "phase should not persist")
 	tr.Complete(doneID)
 
-	data, err := os.ReadFile(tr.diskPath)
+	data, err := os.ReadFile(trPath)
 	if err != nil {
 		t.Fatalf("read persisted file: %v", err)
 	}
@@ -313,7 +321,7 @@ func TestTracker_LoadFromDisk_MissingFile_NoErrorLogged(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	tr := NewTracker(func(string, any) {}, diskPath, logger)
+	tr := NewTracker(func(string, any) {}, NewFilePersistence(diskPath), logger)
 	tr.LoadFromDisk()
 
 	if ops := tr.List(); len(ops) != 0 {
@@ -332,7 +340,7 @@ func TestTracker_LoadFromDisk_CorruptedJSON_LogsAndKeepsRunning(t *testing.T) {
 
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
-	tr := NewTracker(func(string, any) {}, diskPath, logger)
+	tr := NewTracker(func(string, any) {}, NewFilePersistence(diskPath), logger)
 
 	// Should not panic on corrupted data.
 	tr.LoadFromDisk()
@@ -358,7 +366,7 @@ func TestTracker_SaveToDisk_WriteFailureIsLogged(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	tr := NewTracker(func(string, any) {}, diskPath, logger)
+	tr := NewTracker(func(string, any) {}, NewFilePersistence(diskPath), logger)
 	tr.Start(TypeClone, "cloning", "proj1", "task1")
 
 	if logBuf.Len() == 0 {

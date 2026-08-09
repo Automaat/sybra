@@ -451,7 +451,7 @@ type pendingRecovery struct {
 
 // Engine executes workflow definitions against tasks.
 type Engine struct {
-	store            *Store
+	store            Repository
 	tasks            TaskProvider
 	agents           AgentLauncher
 	pr               PRSurface
@@ -604,7 +604,7 @@ type Dependencies struct {
 // NewEngine creates a production workflow engine. Every collaborator whose
 // absence would skip or disable workflow behavior is validated before the
 // engine is returned.
-func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger, deps Dependencies) (*Engine, error) {
+func NewEngine(store Repository, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger, deps Dependencies) (*Engine, error) {
 	missing := missingDependencyNames(
 		namedDependency{"Store", store},
 		namedDependency{"Tasks", tasks},
@@ -621,7 +621,7 @@ func NewEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *s
 // NewTestEngine creates a deliberately partial engine for focused tests. Tests
 // can bind only the collaborators they exercise through the documented test
 // seams; production must use NewEngine so missing dependencies fail at startup.
-func NewTestEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger) *Engine {
+func NewTestEngine(store Repository, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger) *Engine {
 	return newEngine(store, tasks, agents, logger, Dependencies{
 		Execution: ExecutionSurface{
 			BranchSyncer: skippedBranchSyncer{},
@@ -632,7 +632,7 @@ func NewTestEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logge
 	})
 }
 
-func newEngine(store *Store, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger, deps Dependencies) *Engine {
+func newEngine(store Repository, tasks TaskProvider, agents AgentLauncher, logger *slog.Logger, deps Dependencies) *Engine {
 	e := &Engine{
 		store:            store,
 		tasks:            tasks,
@@ -767,7 +767,7 @@ func (e *Engine) SetAdmissionDecisionHook(hook func(TaskInfo, AdmissionDecision)
 }
 
 // Defs returns the workflow definition store.
-func (e *Engine) Defs() *Store { return e.store }
+func (e *Engine) Defs() Repository { return e.store }
 
 // PRSurface is the pull-request dependency group: every collaborator the
 // engine needs to open, find, link, close and re-review a PR. NewEngine

@@ -9,7 +9,7 @@ import (
 // WorkflowService exposes workflow operations as Wails-bound methods.
 type WorkflowService struct {
 	engine *workflow.Engine
-	store  *workflow.Store
+	store  workflow.Repository
 }
 
 // ListWorkflows returns all workflow definitions.

@@ -165,7 +165,7 @@ func validateHandoffBuiltinVariant(variant handoffBuiltinVariant) error {
 //     match triggers with stale prompts or sidecar contracts.
 //   - If a stored version exists with Builtin=false (user cleared the flag
 //     to opt out of sync), it is preserved.
-func SyncBuiltins(store *Store) error {
+func SyncBuiltins(store Repository) error {
 	defs, err := BuiltinDefinitions()
 	if err != nil {
 		return err

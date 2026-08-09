@@ -1075,7 +1075,7 @@ type agentAdapter struct {
 	tasks        *task.Manager
 	projects     *project.Store
 	sandboxes    *sandbox.Manager
-	experience   *experience.Store
+	experience   experience.Repository
 	pressure     *pressure.Gate
 	runenv       *runenv.Service
 	verification *verification.Manager

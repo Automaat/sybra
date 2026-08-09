@@ -173,7 +173,7 @@ type startupDegradedEvent struct {
 }
 
 func (a *App) initBgops(emit func(string, any)) {
-	a.bgops = bgop.NewTracker(emit, filepath.Join(config.HomeDir(), "bgops.json"), a.logger)
+	a.bgops = bgop.NewTracker(emit, a.openBgopStore(), a.logger)
 	a.bgops.LoadFromDisk()
 }
 
@@ -374,11 +374,11 @@ func (a *App) initStats() {
 
 // initLocalStores wires the small local-only data stores that degrade to nil
 // on failure rather than blocking startup.
-func (a *App) initLocalStores() {
+func (a *App) initLocalStores(ctx context.Context) {
 	a.initAttachments()
 	a.initArtifacts()
 	a.verification = verification.New(filepath.Join(config.HomeDir(), "verification"), a.artifacts, a.logger)
-	a.initExperience()
+	a.initExperience(ctx)
 	a.initIntervention()
 	a.initLearning()
 	a.initAgentQueue()
@@ -398,8 +398,22 @@ func (a *App) initAttachments() {
 	})
 }
 
-func (a *App) initExperience() {
-	store, err := experience.New(a.cfg.ExperiencesDir())
+func (a *App) initExperience(ctx context.Context) {
+	dir := a.cfg.ExperiencesDir()
+	if a.database != nil {
+		if err := experience.Import(ctx, a.database, dir, a.logger); err != nil {
+			// Degrade to files rather than start on a half-populated table: an
+			// empty advisory memory reads as "this project has no history",
+			// which is a worse answer than the one the files still hold.
+			a.logger.Error("experience.import", "err", err)
+		} else if store, err := experience.NewSQLStore(a.database); err != nil {
+			a.logger.Error("experience.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			a.experience = store
+			return
+		}
+	}
+	store, err := experience.New(dir)
 	if err != nil {
 		a.logger.Warn("experience.init.degraded", "err", err)
 		return
@@ -1392,12 +1406,15 @@ func (a *App) initWorkflowEngine() {
 		a.agentOrch.SetQueue(q)
 	}
 
-	wfStore, err := workflow.NewStore(config.WorkflowsDir())
+	wfStore, err := a.openWorkflowStore()
 	if err != nil {
 		a.logger.Error("workflow.store.init", "err", err)
 		return
 	}
 	a.workflowStore = wfStore
+	// After the import, never before: seeding writes each builtin under its own
+	// id, so an import that followed it would overwrite an operator's edited
+	// copy with the shipped one.
 	if syncErr := workflow.SyncBuiltins(wfStore); syncErr != nil {
 		a.logger.Error("workflow.sync-builtins", "err", syncErr)
 	}
@@ -1737,6 +1754,13 @@ func (a *App) logAudit(eventType, taskID, agentID string, data map[string]any) {
 // the same Name already exists this is a no-op.
 func (a *App) initLoopAgents() error {
 	if a.database != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), workflowImportTimeout)
+		defer cancel()
+		if err := loopagent.Import(ctx, a.database, a.cfg.LoopAgentsDir, a.logger); err != nil {
+			// Not fatal: the schedules already in the database still run, and
+			// the files stay for the next start to retry from.
+			a.logger.Error("loopagent.import", "err", err)
+		}
 		store, err := loopagent.NewSQLStore(a.database)
 		if err != nil {
 			a.logger.Error("loopagent.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
@@ -1936,4 +1960,45 @@ func (a *App) syncSkillsBundle(signing project.SigningPolicy) {
 		UserHomeDir:          userHome,
 		DowngradeCommitFlags: !signing.SignsCommits(context.Background()),
 	})
+}
+
+// openWorkflowStore returns the definition store for the configured backend, importing the existing files the first time a database is used.
+//
+// A failed import falls back to files rather than starting on a half-populated table: an empty workflow set means no task can dispatch at all.
+func (a *App) openWorkflowStore() (workflow.Repository, error) {
+	dir := config.WorkflowsDir()
+	if a.database != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), workflowImportTimeout)
+		defer cancel()
+		if err := workflow.Import(ctx, a.database, dir, a.logger); err != nil {
+			a.logger.Error("workflow.import", "err", err)
+		} else if store, err := workflow.NewSQLStore(a.database); err != nil {
+			a.logger.Error("workflow.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return store, nil
+		}
+	}
+	return workflow.NewStore(dir)
+}
+
+// workflowImportTimeout bounds the one-off copy of workflow files into the database. initWorkflowEngine has no context to pass and a stalled backend must not hold startup open forever.
+const workflowImportTimeout = 2 * time.Minute
+
+// openBgopStore returns where background operations survive a restart, importing the existing document the first time a database is used.
+//
+// A failed import degrades to the file: these records drive a progress panel, and losing them costs an operator visibility rather than work.
+func (a *App) openBgopStore() bgop.Persistence {
+	path := filepath.Join(config.HomeDir(), "bgops.json")
+	if a.database != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), workflowImportTimeout)
+		defer cancel()
+		if err := bgop.Import(ctx, a.database, path, a.logger); err != nil {
+			a.logger.Error("bgop.import", "err", err)
+		} else if store, err := bgop.NewSQLPersistence(a.database); err != nil {
+			a.logger.Error("bgop.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return store
+		}
+	}
+	return bgop.NewFilePersistence(path)
 }

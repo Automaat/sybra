@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.."
 CONTAINER="${SYBRA_TEST_PG_CONTAINER:-sybra-test-postgres}"
 PORT="${SYBRA_TEST_PG_PORT:-55432}"
 IMAGE="postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193"
-PACKAGES=("./internal/db/..." "./internal/loopagent/..." "./internal/testutil/dbtest/...")
+PACKAGES=("./internal/db/..." "./internal/dbimport/..." "./internal/loopagent/..." "./internal/experience/..." "./internal/workflow/..." "./internal/bgop/..." "./internal/testutil/dbtest/...")
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker is required to run the postgres engine leg" >&2
