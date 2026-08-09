@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -203,6 +204,229 @@ func TestStoreCreateDuplicate(t *testing.T) {
 	_, err = store.Create("https://github.com/owner/repo", ProjectTypePet)
 	if err == nil {
 		t.Fatal("expected error for duplicate project")
+	}
+}
+
+// newBareRepoUnder inits a bare git repo at dir/name and returns its path,
+// for tests that need a clone Adopt will accept (under the store's clonesDir).
+func newBareRepoUnder(t *testing.T, dir, name string) string {
+	t.Helper()
+	clonePath := filepath.Join(dir, name)
+	if err := gitexec.Run(context.Background(), gitexec.Options{}, "init", "--bare", clonePath); err != nil {
+		t.Fatalf("init bare repo: %v", err)
+	}
+	return clonePath
+}
+
+func TestStoreAdopt(t *testing.T) {
+	t.Parallel()
+	clonesDir := t.TempDir()
+	store, err := NewStore(t.TempDir(), clonesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clonePath := newBareRepoUnder(t, clonesDir, "existing.git")
+
+	p, err := store.Adopt("https://github.com/owner/repo", ProjectTypePet, clonePath)
+	if err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+	if p.ID != "owner/repo" || p.Owner != "owner" || p.Repo != "repo" {
+		t.Fatalf("unexpected identity: %+v", p)
+	}
+	if p.ClonePath != clonePath {
+		t.Fatalf("ClonePath = %q, want %q", p.ClonePath, clonePath)
+	}
+	if p.Status != ProjectStatusReady {
+		t.Fatalf("Status = %q, want ready", p.Status)
+	}
+
+	got, err := store.Get("owner/repo")
+	if err != nil {
+		t.Fatalf("Get after Adopt: %v", err)
+	}
+	if got.ClonePath != clonePath {
+		t.Fatalf("persisted ClonePath = %q, want %q", got.ClonePath, clonePath)
+	}
+
+	// Spot-check two of CloneBare's setup steps landed too, so an adopted
+	// clone is reachable by agent dispatch exactly as a Create'd one is.
+	fetchspec, err := gitexec.Output(context.Background(), gitexec.Options{Dir: clonePath}, "config", "remote.origin.fetch")
+	if err != nil {
+		t.Fatalf("read remote.origin.fetch: %v", err)
+	}
+	if strings.TrimSpace(fetchspec) != "+refs/heads/*:refs/remotes/origin/*" {
+		t.Fatalf("remote.origin.fetch = %q, want the standard refspec", fetchspec)
+	}
+	maintAuto, err := gitexec.Output(context.Background(), gitexec.Options{Dir: clonePath}, "config", "maintenance.auto")
+	if err != nil {
+		t.Fatalf("read maintenance.auto: %v", err)
+	}
+	if strings.TrimSpace(maintAuto) != "false" {
+		t.Fatalf("maintenance.auto = %q, want false", maintAuto)
+	}
+}
+
+func TestStoreAdoptInvalidURL(t *testing.T) {
+	t.Parallel()
+	clonesDir := t.TempDir()
+	store, err := NewStore(t.TempDir(), clonesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clonePath := newBareRepoUnder(t, clonesDir, "existing.git")
+
+	_, err = store.Adopt("https://gitlab.com/owner/repo", ProjectTypePet, clonePath)
+	if err == nil {
+		t.Fatal("expected error for non-github URL")
+	}
+}
+
+func TestStoreAdoptNotAGitDir(t *testing.T) {
+	t.Parallel()
+	clonesDir := t.TempDir()
+	store, err := NewStore(t.TempDir(), clonesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	notAGitDir := filepath.Join(clonesDir, "not-a-repo")
+	if err := os.MkdirAll(notAGitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Adopt("https://github.com/owner/repo", ProjectTypePet, notAGitDir)
+	if err == nil {
+		t.Fatal("expected error for a clone path that is not a git repository")
+	}
+}
+
+// TestStoreAdoptNonBareRejected proves Adopt refuses a normal working-tree
+// checkout. Every downstream worktree operation treats ClonePath as the
+// shared canonical repo; adopting someone's working copy would let Sybra
+// mutate its refs as ordinary task lifecycle churn.
+func TestStoreAdoptNonBareRejected(t *testing.T) {
+	t.Parallel()
+	clonesDir := t.TempDir()
+	store, err := NewStore(t.TempDir(), clonesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nonBare := filepath.Join(clonesDir, "working-copy")
+	if err := gitexec.Run(context.Background(), gitexec.Options{}, "init", nonBare); err != nil {
+		t.Fatalf("init non-bare repo: %v", err)
+	}
+
+	_, err = store.Adopt("https://github.com/owner/repo", ProjectTypePet, nonBare)
+	if err == nil {
+		t.Fatal("expected error for a non-bare clone path")
+	}
+}
+
+// TestStoreAdoptOutsideClonesDirRejected proves Adopt refuses a clone path
+// outside clonesDir. Delete runs an unconditional os.RemoveAll(ClonePath);
+// every other registration path only ever writes a clonesDir-rooted
+// ClonePath, which is what makes that safe. Accepting an arbitrary path here
+// would let a caller adopt a project pointing anywhere on the serving host
+// and then delete it.
+func TestStoreAdoptOutsideClonesDirRejected(t *testing.T) {
+	t.Parallel()
+	store, err := NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outside := newBareRepoUnder(t, t.TempDir(), "existing.git")
+
+	_, err = store.Adopt("https://github.com/owner/repo", ProjectTypePet, outside)
+	if err == nil {
+		t.Fatal("expected error for a clone path outside clonesDir")
+	}
+}
+
+func TestStoreAdoptDuplicate(t *testing.T) {
+	t.Parallel()
+	clonesDir := t.TempDir()
+	store, err := NewStore(t.TempDir(), clonesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clonePath := newBareRepoUnder(t, clonesDir, "existing.git")
+
+	p := Project{ID: "owner/repo", Owner: "owner", Repo: "repo"}
+	if err := store.writeFile(p); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.Adopt("https://github.com/owner/repo", ProjectTypePet, clonePath)
+	if err == nil {
+		t.Fatal("expected error for duplicate project")
+	}
+}
+
+// TestStoreAdoptClonePathAlreadyInUseRejected proves two project IDs can
+// never alias one physical repo — cleanup for either would then run against
+// the other's refs and worktrees with nothing aware of the aliasing.
+func TestStoreAdoptClonePathAlreadyInUseRejected(t *testing.T) {
+	t.Parallel()
+	clonesDir := t.TempDir()
+	store, err := NewStore(t.TempDir(), clonesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clonePath := newBareRepoUnder(t, clonesDir, "shared.git")
+
+	if _, err := store.Adopt("https://github.com/owner/repo", ProjectTypePet, clonePath); err != nil {
+		t.Fatalf("first Adopt: %v", err)
+	}
+
+	_, err = store.Adopt("https://github.com/other/repo", ProjectTypePet, clonePath)
+	if err == nil {
+		t.Fatal("expected error for a clone path already registered to another project")
+	}
+}
+
+// TestStoreAdoptConcurrentDifferentIDsSameClonePathSerializes proves the
+// clonePath-keyed lock, not just the id-keyed one, guards
+// rejectClonePathInUse: two different owner/repo IDs racing to Adopt the
+// same clonePath acquire disjoint id locks, so without a second lock keyed
+// on clonePath both could pass the List-based check before either writes.
+func TestStoreAdoptConcurrentDifferentIDsSameClonePathSerializes(t *testing.T) {
+	t.Parallel()
+	clonesDir := t.TempDir()
+	store, err := NewStore(t.TempDir(), clonesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clonePath := newBareRepoUnder(t, clonesDir, "shared.git")
+
+	const n = 10
+	var wg sync.WaitGroup
+	wg.Add(n)
+	successes := make([]bool, n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			url := fmt.Sprintf("https://github.com/owner%d/repo", i)
+			_, err := store.Adopt(url, ProjectTypePet, clonePath)
+			successes[i] = err == nil
+		}(i)
+	}
+	wg.Wait()
+
+	count := 0
+	for _, ok := range successes {
+		if ok {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("%d of %d concurrent Adopt calls for the same clonePath succeeded, want exactly 1", count, n)
 	}
 }
 

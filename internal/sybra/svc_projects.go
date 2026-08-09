@@ -72,6 +72,25 @@ func (s *ProjectService) CreateProjectAndClone(url, ptype string) (project.Proje
 	return p, nil
 }
 
+// AdoptProject registers a project pointing at an already-existing local
+// clone, without cloning or contacting any remote. url is used only to
+// derive the ID/owner/repo and for display; a placeholder value works for a
+// fixture or an air-gapped install describing a repo it already has on
+// disk. Synchronous like CreateProjectAndClone: there is no background step
+// for a caller to watch, so the project is ready or the call fails.
+func (s *ProjectService) AdoptProject(url, ptype, clonePath string) (project.Project, error) {
+	s.logger.Info("project.adopt", "url", url, "type", ptype, "clone_path", clonePath)
+	p, err := s.projects.Adopt(url, project.ProjectType(ptype), clonePath)
+	if err != nil {
+		s.logger.Error("project.adopt.failed", "url", url, "err", err)
+		if reject.Is(err) {
+			return project.Project{}, validationError(err.Error())
+		}
+		return project.Project{}, err
+	}
+	return p, nil
+}
+
 // CreateProject registers a GitHub repo and starts a bare clone in the
 // background. It returns immediately with the project in cloning status.
 func (s *ProjectService) CreateProject(url, ptype string) (project.Project, error) {

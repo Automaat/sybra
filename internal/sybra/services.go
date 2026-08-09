@@ -311,6 +311,7 @@ func (a *App) projectHTTPServices() map[string]httpapi.Service {
 			// as soon as the call returns, so the async variant would report
 			// success on a repo that never cloned.
 			"CreateProjectAndClone",
+			"AdoptProject",
 			"GetProjectRawType",
 			"UpdateProject",
 			"SetProjectWorktreeBaseRef",
@@ -332,7 +333,10 @@ func (a *App) projectHTTPServices() map[string]httpapi.Service {
 			"OpenInTerminal",
 			"OpenInEditor",
 		).WithReadOnly("ListProjects", "GetProject", "GetProjectRawType", "ListWorktrees").
-			WithLocalOnly("OpenInTerminal", "OpenInEditor"),
+			// AdoptProject accepts a caller-named filesystem path and registers
+			// it as ClonePath, which DeleteProject later os.RemoveAll's — unlike
+			// every other registration path, whose ClonePath is server-derived.
+			WithLocalOnly("OpenInTerminal", "OpenInEditor", "AdoptProject"),
 		"IntegrationService": httpapi.NewService(a.intgSvc,
 			"FetchRenovatePRs",
 			"MergeRenovatePR",
