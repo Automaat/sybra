@@ -441,12 +441,28 @@ func CORSMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 // disabled" — config.Load always generates one, so an empty value here means
 // misconfiguration, not intent.
 func AuthMiddleware(token string, logger *slog.Logger, next http.Handler) http.Handler {
+	return AuthMiddlewareWith(token, nil, logger, next)
+}
+
+// AuthMiddlewareWith also accepts per-run agent grants.
+//
+// A request authorized by a grant is stamped as sandboxed before it reaches the
+// dispatcher, so the methods that act on the machine serving the board are
+// refused for it — decided here from the credential, not from a header the
+// caller sets about itself.
+func AuthMiddlewareWith(token string, grants GrantVerifier, logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !RequestRequiresAuth(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if !RequestAuthorized(r, token) {
+		// This header is the middleware's own statement about the presented credential, so an inbound copy is cleared first and a caller can never classify itself by setting it.
+		r.Header.Del(httpapi.SandboxedCallerHeader)
+		authorized, sandboxed := RequestAuthorizedWith(r, token, grants)
+		if sandboxed {
+			r.Header.Set(httpapi.SandboxedCallerHeader, "1")
+		}
+		if !authorized {
 			logger.Warn("server.auth.denied", "path", r.URL.Path, "remote", r.RemoteAddr)
 			w.Header().Set("WWW-Authenticate", `Bearer realm="sybra"`)
 			w.Header().Set("Content-Type", "application/json")
@@ -477,6 +493,42 @@ func RequestRequiresAuth(r *http.Request) bool {
 }
 
 // RequestAuthorized reports whether the request carries the shared token.
+// GrantVerifier resolves a per-run agent credential. Nil means the board
+// accepts only its own token, which is every deployment that has not issued a
+// grant yet.
+type GrantVerifier interface {
+	Verify(token string) (taskID string, ok bool)
+}
+
+// RequestAuthorizedWith accepts either the board's own token or a live per-run
+// grant, and reports which.
+//
+// The distinction is the point: a grant belongs to an agent working inside one
+// task, not to an operator at this machine, so the caller is marked sandboxed
+// here rather than by a header the caller sets about itself.
+func RequestAuthorizedWith(r *http.Request, token string, grants GrantVerifier) (authorized, sandboxed bool) {
+	if RequestAuthorized(r, token) {
+		return true, false
+	}
+	if grants == nil {
+		return false, false
+	}
+	bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		if !isSSEPath(r.URL.Path) {
+			return false, false
+		}
+		bearer = r.URL.Query().Get("token")
+	}
+	if bearer == "" {
+		return false, false
+	}
+	if _, ok := grants.Verify(bearer); ok {
+		return true, true
+	}
+	return false, false
+}
+
 func RequestAuthorized(r *http.Request, token string) bool {
 	if token == "" {
 		return false
