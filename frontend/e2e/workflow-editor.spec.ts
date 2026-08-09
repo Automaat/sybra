@@ -20,14 +20,33 @@ const API_BASE = "http://localhost:8080";
  * suite stayed green. Going through the API exercises whichever backend is
  * configured.
  */
+/**
+ * The bearer token this home's server runs with.
+ *
+ * CI writes an explicit `server.auth_token` into the home's config, while a
+ * local run leaves it empty and the server generates one into
+ * `server_auth_token`. Both are checked so the suite works either way.
+ */
+async function authToken(): Promise<string> {
+  try {
+    const cfg = parseYAML(
+      await readFile(join(SYBRA_HOME, "config.yaml"), "utf8"),
+    ) as { server?: { auth_token?: string } } | undefined;
+    const fromConfig = cfg?.server?.auth_token?.trim();
+    if (fromConfig) {
+      return fromConfig;
+    }
+  } catch {
+    /* no config file, fall through to the generated token */
+  }
+  return (await readFile(join(SYBRA_HOME, "server_auth_token"), "utf8")).trim();
+}
+
 async function api(method: string, args: unknown[]): Promise<Response> {
-  const token = (
-    await readFile(join(SYBRA_HOME, "server_auth_token"), "utf8")
-  ).trim();
   const res = await fetch(`${API_BASE}/api/WorkflowService/${method}`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${await authToken()}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(args),
