@@ -364,7 +364,7 @@ func TestAttachedBoardWithABrokerStillStarts(t *testing.T) {
 // username and data layout — and would let a local process that cannot read the
 // home echo it back to collect the bearer token.
 func TestHealthDoesNotDiscloseTheHomePath(t *testing.T) {
-	const home = "/Users/someone/.sybra"
+	home := t.TempDir()
 	srv := httptest.NewServer(httpserve.BuildMux(httpserve.Options{Logger: testLogger(), Home: home}))
 	t.Cleanup(srv.Close)
 
