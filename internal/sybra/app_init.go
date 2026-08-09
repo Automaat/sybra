@@ -25,6 +25,7 @@ import (
 	"github.com/Automaat/sybra/internal/evidence"
 	"github.com/Automaat/sybra/internal/experience"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/httpserve"
 	"github.com/Automaat/sybra/internal/intervention"
 	"github.com/Automaat/sybra/internal/learning"
 	"github.com/Automaat/sybra/internal/limits"
@@ -172,8 +173,8 @@ type startupDegradedEvent struct {
 	Reason    string `json:"reason"`
 }
 
-func (a *App) initBgops(emit func(string, any)) {
-	a.bgops = bgop.NewTracker(emit, filepath.Join(config.HomeDir(), "bgops.json"), a.logger)
+func (a *App) initBgops(ctx context.Context, emit func(string, any)) {
+	a.bgops = bgop.NewTracker(emit, a.openBgopStore(ctx), a.logger)
 	a.bgops.LoadFromDisk()
 }
 
@@ -374,11 +375,11 @@ func (a *App) initStats() {
 
 // initLocalStores wires the small local-only data stores that degrade to nil
 // on failure rather than blocking startup.
-func (a *App) initLocalStores() {
+func (a *App) initLocalStores(ctx context.Context) {
 	a.initAttachments()
 	a.initArtifacts()
 	a.verification = verification.New(filepath.Join(config.HomeDir(), "verification"), a.artifacts, a.logger)
-	a.initExperience()
+	a.initExperience(ctx)
 	a.initIntervention()
 	a.initLearning()
 	a.initAgentQueue()
@@ -398,8 +399,22 @@ func (a *App) initAttachments() {
 	})
 }
 
-func (a *App) initExperience() {
-	store, err := experience.New(a.cfg.ExperiencesDir())
+func (a *App) initExperience(ctx context.Context) {
+	dir := a.cfg.ExperiencesDir()
+	if a.database != nil {
+		if err := experience.Import(ctx, a.database, dir, a.importScope(), a.logger); err != nil {
+			// Degrade to files rather than start on a half-populated table: an
+			// empty advisory memory reads as "this project has no history",
+			// which is a worse answer than the one the files still hold.
+			a.logger.Error("experience.import", "err", err)
+		} else if store, err := experience.NewSQLStore(a.database); err != nil {
+			a.logger.Error("experience.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			a.experience = store
+			return
+		}
+	}
+	store, err := experience.New(dir)
 	if err != nil {
 		a.logger.Warn("experience.init.degraded", "err", err)
 		return
@@ -1382,7 +1397,9 @@ func (a *App) initAutomations(ctx context.Context, emit func(string, any)) *poll
 	return a.initIssuesFetcher(emit)
 }
 
-func (a *App) initWorkflowEngine() {
+// initWorkflowEngine wires the engine onto wfStore, which the caller opens: the
+// engine's own contexts outlive startup, so the import's belongs to the caller.
+func (a *App) initWorkflowEngine(wfStore workflow.Repository) {
 	if os.Getenv("SYBRA_DISABLE_WORKFLOWS") == "1" {
 		a.logger.Info("workflow.disabled")
 		return
@@ -1391,13 +1408,13 @@ func (a *App) initWorkflowEngine() {
 	if q != nil && a.agentOrch != nil {
 		a.agentOrch.SetQueue(q)
 	}
-
-	wfStore, err := workflow.NewStore(config.WorkflowsDir())
-	if err != nil {
-		a.logger.Error("workflow.store.init", "err", err)
+	if wfStore == nil {
 		return
 	}
 	a.workflowStore = wfStore
+	// After the import, never before: seeding writes each builtin under its own
+	// id, so an import that followed it would overwrite an operator's edited
+	// copy with the shipped one.
 	if syncErr := workflow.SyncBuiltins(wfStore); syncErr != nil {
 		a.logger.Error("workflow.sync-builtins", "err", syncErr)
 	}
@@ -1405,7 +1422,7 @@ func (a *App) initWorkflowEngine() {
 	if a.sandboxes == nil {
 		panic("wire workflow engine: sandbox manager is nil")
 	}
-	a.workflowEngine, err = workflow.NewEngine(
+	engine, err := workflow.NewEngine(
 		wfStore,
 		&taskAdapter{tasks: a.tasks, projects: a.projects},
 		agentLauncher,
@@ -1415,6 +1432,7 @@ func (a *App) initWorkflowEngine() {
 	if err != nil {
 		panic("wire workflow engine: " + err.Error())
 	}
+	a.workflowEngine = engine
 	a.configureWorkflowPolicies()
 	if a.cfg.Evaluation.Offline.Enabled {
 		gate := prompteval.NewGate(prompteval.New(config.PromptEvalDir()), a.cfg.Evaluation.Offline)
@@ -1735,15 +1753,23 @@ func (a *App) logAudit(eventType, taskID, agentID string, data map[string]any) {
 // first boot only. It is disabled by default so the user can review the
 // configuration in the GUI before enabling. Idempotent: if a record with
 // the same Name already exists this is a no-op.
-func (a *App) initLoopAgents() error {
+func (a *App) initLoopAgents(ctx context.Context) error {
 	if a.database != nil {
-		store, err := loopagent.NewSQLStore(a.database)
-		if err != nil {
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		// Degrade to the files on a failed import, as every other domain does.
+		// Continuing to an empty table drops the operator's schedules for the
+		// whole uptime while their definitions sit intact on disk, and the
+		// first-boot seed then re-creates the built-in one under a new id — all
+		// behind a single log line.
+		if err := loopagent.Import(importCtx, a.database, a.cfg.LoopAgentsDir, a.importScope(), a.logger); err != nil {
+			a.logger.Error("loopagent.import", "err", err)
+		} else if store, err := loopagent.NewSQLStore(a.database); err != nil {
 			a.logger.Error("loopagent.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
-			return err
+		} else {
+			a.loopAgents = store
+			return nil
 		}
-		a.loopAgents = store
-		return nil
 	}
 	store, err := loopagent.NewStore(a.cfg.LoopAgentsDir)
 	if err != nil {
@@ -1936,4 +1962,67 @@ func (a *App) syncSkillsBundle(signing project.SigningPolicy) {
 		UserHomeDir:          userHome,
 		DowngradeCommitFlags: !signing.SignsCommits(context.Background()),
 	})
+}
+
+// openWorkflowStore returns the definition store for the configured backend, importing the existing files the first time a database is used.
+//
+// A failed import falls back to files rather than starting on a half-populated table: an empty workflow set means no task can dispatch at all.
+func (a *App) openWorkflowStore(ctx context.Context) (workflow.Repository, error) {
+	dir := config.WorkflowsDir()
+	if a.database != nil {
+		ctx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := workflow.Import(ctx, a.database, dir, a.importScope(), a.logger); err != nil {
+			a.logger.Error("workflow.import", "err", err)
+		} else if store, err := workflow.NewSQLStore(a.database); err != nil {
+			a.logger.Error("workflow.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return store, nil
+		}
+	}
+	store, err := workflow.NewStore(dir)
+	if err != nil {
+		// Returned as a nil interface, not a nil *Store: a typed nil is a
+		// non-nil interface, so every caller's nil check passes it through and
+		// the first method call panics on the nil receiver.
+		return nil, err
+	}
+	return store, nil
+}
+
+// importTimeout bounds a one-off copy of a domain's files into the database, on top of the startup context it derives from, so a stalled backend cannot hold startup open forever even while nothing has cancelled it.
+const importTimeout = 2 * time.Minute
+
+// openBgopStore returns where background operations survive a restart, importing the existing document the first time a database is used.
+//
+// A failed import degrades to the file: these records drive a progress panel, and losing them costs an operator visibility rather than work.
+func (a *App) openBgopStore(ctx context.Context) bgop.Persistence {
+	path := filepath.Join(config.HomeDir(), "bgops.json")
+	if a.database != nil {
+		ctx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		// The home this instance serves, digested: stable across its restarts so
+		// it reclaims its own rows, and different from any other instance
+		// sharing the board so it never deletes theirs.
+		owner := a.importScope()
+		if err := bgop.Import(ctx, a.database, path, owner, a.logger); err != nil {
+			a.logger.Error("bgop.import", "err", err)
+		} else if store, err := bgop.NewSQLPersistence(a.database, owner); err != nil {
+			a.logger.Error("bgop.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return store
+		}
+	}
+	return bgop.NewFilePersistence(path)
+}
+
+// importScope identifies whose files an import is copying in.
+//
+// A postgres board is shared by several machines, each with its own home and
+// its own files. Keyed by domain alone, whichever instance started first would
+// claim the domain and every other machine's records would sit unimported
+// forever with nothing reporting it. The digest is stable across this
+// instance's restarts and differs between instances.
+func (a *App) importScope() string {
+	return httpserve.HomeID(config.HomeDir())
 }

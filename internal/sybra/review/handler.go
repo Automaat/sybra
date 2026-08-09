@@ -52,7 +52,7 @@ type Handler struct {
 	// SetSigningPolicy. Empty means "not late-bound", not "auto".
 	signing    atomic.Value
 	abTesting  func() abtest.Config
-	experience *experience.Store
+	experience experience.Repository
 	// intervention captures a genuine human-required unblock through the two
 	// automated exit paths this package owns (reconcileHumanRequiredBlockers,
 	// advanceClosedTaskPR). Late-bound via SetInterventionStore since it is
@@ -309,7 +309,7 @@ func New(
 	worktrees *worktree.Manager,
 	renovatePRsFn func() []github.PullRequest,
 	cfg *config.Config,
-	experienceStore *experience.Store,
+	experienceStore experience.Repository,
 ) *Handler {
 	return &Handler{
 		audit:               al,

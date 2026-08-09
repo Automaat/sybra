@@ -171,6 +171,18 @@ Rules for a store that moves to the backend:
   DSN's `_txlock=immediate`). A plain read inside a transaction does not
   serialize: postgres loses the other writer's edit silently, sqlite fails with
   `SQLITE_BUSY_SNAPSHOT`.
+- Give the domain an import, and run it before anything seeds. `dbimport.Once`
+  copies the existing files in the first time a database is used and never
+  again; the marker row commits in the *same* transaction as the rows it
+  covers, so an interrupted run leaves neither and the next start retries. A
+  store that swaps implementations without one starts empty and the operator
+  silently loses every existing record — which is exactly what
+  `initLoopAgents` did between #3235 and #3239.
+- Import reads the files and never moves or deletes them. The operator decides
+  when the originals go.
+- Order the read explicitly. A table has no natural order, so a store that
+  reproduces a directory listing needs an `ORDER BY` matching what the file
+  store sorted by, and a test that compares both listings over one fixture.
 - Never edit a migration that has shipped — the runner records a checksum and
   refuses to start on a changed file, because the edit reaches a fresh database
   and silently misses every existing one.

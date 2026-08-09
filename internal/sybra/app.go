@@ -106,7 +106,7 @@ type App struct {
 	attachments       *attachment.Store
 	artifacts         *artifact.Store
 	evidenceStore     *evidence.Store
-	experience        *experience.Store
+	experience        experience.Repository
 	intervention      *intervention.Store
 	cleanupProtected  *cleanup.ProtectedStore
 	learning          *learning.Store
@@ -140,7 +140,7 @@ type App struct {
 	clusterRoster     *cluster.Roster
 	clusterSvc        *ClusterService
 	workflowEngine    *workflow.Engine
-	workflowStore     *workflow.Store
+	workflowStore     workflow.Repository
 	pressureGate      *pressure.Gate
 	diskReclaimer     *diskreclaim.Reclaimer
 	toolLedger        *toolledger.Logger
@@ -559,7 +559,7 @@ func (a *App) Startup(ctx context.Context) error {
 		return err
 	}
 
-	if err := a.initLoopAgents(); err != nil {
+	if err := a.initLoopAgents(appCtx); err != nil {
 		return fmt.Errorf("loop agents: %w", err)
 	}
 	if a.emitFactory != nil {
@@ -568,7 +568,7 @@ func (a *App) Startup(ctx context.Context) error {
 		a.emit = func(string, any) {}
 	}
 	emit := a.taskEventEmitter(store)
-	a.initBgops(emit)
+	a.initBgops(appCtx, emit)
 
 	a.emitDegradedWarnings(emit)
 	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
@@ -582,7 +582,7 @@ func (a *App) Startup(ctx context.Context) error {
 	// startLifecycle and startupRecoveryPending's doc comment).
 	a.startupRecoveryPending.Store(true)
 	a.initStatusHook() //nolint:contextcheck // workflow engine uses its own e.ctx field, see Startup's contextcheck note
-	a.initLocalStores()
+	a.initLocalStores(appCtx)
 	a.cleanupProtected = cleanup.DefaultProtectedStore()
 	a.notifier = notification.New(emit)
 	a.notifier.SetDesktop(a.cfg.Notification.Desktop)
@@ -615,7 +615,11 @@ func (a *App) Startup(ctx context.Context) error {
 	a.initRunEnvironment()
 	a.initReviewer(emit)
 
-	a.initWorkflowEngine()
+	wfStore, wfErr := a.openWorkflowStore(appCtx)
+	if wfErr != nil {
+		a.logger.Error("workflow.store.init", "err", wfErr)
+	}
+	a.initWorkflowEngine(wfStore)
 
 	a.initCluster()
 

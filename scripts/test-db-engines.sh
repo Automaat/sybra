@@ -9,8 +9,12 @@ cd "$(dirname "$0")/.."
 
 CONTAINER="${SYBRA_TEST_PG_CONTAINER:-sybra-test-postgres}"
 PORT="${SYBRA_TEST_PG_PORT:-55432}"
-IMAGE="postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193"
-PACKAGES=("./internal/db/..." "./internal/loopagent/..." "./internal/testutil/dbtest/...")
+# The glibc image, not alpine. musl collates text byte-wise, so an alpine
+# server agrees with sqlite for free and an ordering test cannot fail on it —
+# while the deploy target is Ubuntu, where en_US.UTF-8 ignores punctuation and
+# reorders exactly the ids the builtin workflows ship with.
+IMAGE="postgres:17@sha256:7958605b474b3d264a969cb3a123d6aa00ad1e1fe9da8a69984dabb704d93317"
+PACKAGES=("./internal/db/..." "./internal/dbimport/..." "./internal/loopagent/..." "./internal/experience/..." "./internal/workflow/..." "./internal/bgop/..." "./internal/testutil/dbtest/...")
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker is required to run the postgres engine leg" >&2

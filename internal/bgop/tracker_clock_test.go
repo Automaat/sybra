@@ -13,7 +13,7 @@ import (
 // only be exercised by sleeping past it, so it was not exercised at all.
 func TestListDropsCompletedOpsPastTheTTLWithoutSleeping(t *testing.T) {
 	fake := clock.NewFake(time.Time{})
-	tracker := NewTracker(func(string, any) {}, filepath.Join(t.TempDir(), "ops.json"), nil)
+	tracker := NewTracker(func(string, any) {}, NewFilePersistence(filepath.Join(t.TempDir(), "ops.json")), nil)
 	tracker.SetClock(fake)
 
 	done := tracker.Start(TypeClone, "finished", "owner/repo", "task-1")
@@ -42,7 +42,7 @@ func TestListDropsCompletedOpsPastTheTTLWithoutSleeping(t *testing.T) {
 // A failed op is subject to the same window as a completed one.
 func TestListDropsFailedOpsPastTheTTL(t *testing.T) {
 	fake := clock.NewFake(time.Time{})
-	tracker := NewTracker(func(string, any) {}, filepath.Join(t.TempDir(), "ops.json"), nil)
+	tracker := NewTracker(func(string, any) {}, NewFilePersistence(filepath.Join(t.TempDir(), "ops.json")), nil)
 	tracker.SetClock(fake)
 
 	id := tracker.Start(TypeClone, "doomed", "owner/repo", "task-1")
@@ -58,7 +58,7 @@ func TestListDropsFailedOpsPastTheTTL(t *testing.T) {
 }
 
 func TestTrackerDefaultsToTheSystemClock(t *testing.T) {
-	tracker := NewTracker(func(string, any) {}, filepath.Join(t.TempDir(), "ops.json"), nil)
+	tracker := NewTracker(func(string, any) {}, NewFilePersistence(filepath.Join(t.TempDir(), "ops.json")), nil)
 	before := time.Now().UTC()
 	id := tracker.Start(TypeClone, "now", "owner/repo", "task-1")
 	after := time.Now().UTC()

@@ -1,16 +1,12 @@
 package bgop
 
 import (
-	"encoding/json"
-	"errors"
 	"log/slog"
-	"os"
 	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/clock"
 	"github.com/Automaat/sybra/internal/events"
-	"github.com/Automaat/sybra/internal/fsutil"
 	"github.com/google/uuid"
 )
 
@@ -20,11 +16,11 @@ const completionTTL = 5 * time.Minute
 // Tracker manages in-memory background operations and persists them to disk so
 // the frontend can restore state after an app restart.
 type Tracker struct {
-	mu       sync.RWMutex
-	ops      map[string]*Operation
-	emit     func(string, any)
-	diskPath string
-	logger   *slog.Logger
+	mu     sync.RWMutex
+	ops    map[string]*Operation
+	emit   func(string, any)
+	store  Persistence
+	logger *slog.Logger
 
 	// clock is read without the mutex, including from methods that already
 	// hold it. Set it once at construction time, before the tracker is
@@ -34,16 +30,16 @@ type Tracker struct {
 
 // NewTracker creates a Tracker that broadcasts events via emit and persists to diskPath.
 // A nil logger falls back to slog.Default().
-func NewTracker(emit func(string, any), diskPath string, logger *slog.Logger) *Tracker {
+func NewTracker(emit func(string, any), store Persistence, logger *slog.Logger) *Tracker {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Tracker{
-		ops:      make(map[string]*Operation),
-		emit:     emit,
-		diskPath: diskPath,
-		logger:   logger,
-		clock:    clock.System{},
+		ops:    make(map[string]*Operation),
+		emit:   emit,
+		store:  store,
+		logger: logger,
+		clock:  clock.System{},
 	}
 }
 
@@ -156,16 +152,12 @@ func (t *Tracker) List() []Operation {
 // survived a restart are marked failed (they cannot be resumed). Ops older
 // than completionTTL are discarded.
 func (t *Tracker) LoadFromDisk() {
-	data, err := os.ReadFile(t.diskPath)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			t.logger.Error("bgop.load.read", "path", t.diskPath, "err", err)
-		}
+	if t.store == nil {
 		return
 	}
-	var ops []Operation
-	if err := json.Unmarshal(data, &ops); err != nil {
-		t.logger.Error("bgop.load.unmarshal", "path", t.diskPath, "err", err)
+	ops, err := t.store.Load()
+	if err != nil {
+		t.logger.Error("bgop.load", "err", err)
 		return
 	}
 	cutoff := t.now().Add(-completionTTL)
@@ -210,12 +202,10 @@ func (t *Tracker) saveToDisk() {
 	}
 	t.mu.Unlock()
 
-	data, err := json.MarshalIndent(ops, "", "  ")
-	if err != nil {
-		t.logger.Error("bgop.save.marshal", "path", t.diskPath, "err", err)
+	if t.store == nil {
 		return
 	}
-	if err := fsutil.AtomicWrite(t.diskPath, data); err != nil {
-		t.logger.Error("bgop.save.write", "path", t.diskPath, "err", err)
+	if err := t.store.Save(ops); err != nil {
+		t.logger.Error("bgop.save", "err", err)
 	}
 }
