@@ -466,9 +466,13 @@ func (s *Store) Adopt(rawURL string, ptype ProjectType, clonePath string) (Proje
 	return p, nil
 }
 
-// resolveAdoptableClonePath cleans clonePath to an absolute path and
-// confirms it sits under clonesDir, the only root Delete's os.RemoveAll is
-// safe to run against.
+// resolveAdoptableClonePath cleans clonePath to an absolute, symlink-resolved
+// path and confirms it sits under clonesDir, the only root Delete's
+// os.RemoveAll is safe to run against. Resolving symlinks on both sides
+// closes a lexical-only check's gap: a symlink planted inside clonesDir
+// pointing outside it would otherwise pass a string-prefix comparison while
+// every git command run with Dir: clonePath (and Delete's RemoveAll) follows
+// the link to wherever it actually points.
 func (s *Store) resolveAdoptableClonePath(clonePath string) (string, error) {
 	clonePath = strings.TrimSpace(clonePath)
 	if clonePath == "" {
@@ -478,11 +482,19 @@ func (s *Store) resolveAdoptableClonePath(clonePath string) (string, error) {
 	if err != nil {
 		return "", reject.New("resolve clone path %s: %w", clonePath, err)
 	}
-	rel, err := filepath.Rel(s.clonesDir, abs)
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", reject.New("clone path %s: %w", abs, err)
+	}
+	clonesDirResolved, err := filepath.EvalSymlinks(s.clonesDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve clones dir %s: %w", s.clonesDir, err)
+	}
+	rel, err := filepath.Rel(clonesDirResolved, resolved)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", reject.New("clone path %s must be under %s", abs, s.clonesDir)
 	}
-	return abs, nil
+	return resolved, nil
 }
 
 // rejectClonePathInUse refuses an Adopt whose clonePath already backs a

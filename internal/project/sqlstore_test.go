@@ -240,6 +240,10 @@ func TestStoreAdopt_SQLBackend(t *testing.T) {
 			t.Fatalf("NewStoreWith: %v", err)
 		}
 		clonePath := newBareRepoUnder(t, clonesDir, "existing.git")
+		wantClonePath, err := filepath.EvalSymlinks(clonePath)
+		if err != nil {
+			t.Fatalf("EvalSymlinks: %v", err)
+		}
 
 		type result struct {
 			p   Project
@@ -256,8 +260,8 @@ func TestStoreAdopt_SQLBackend(t *testing.T) {
 			if r.err != nil {
 				t.Fatalf("Adopt: %v", r.err)
 			}
-			if r.p.ClonePath != clonePath {
-				t.Fatalf("ClonePath = %q, want %q", r.p.ClonePath, clonePath)
+			if r.p.ClonePath != wantClonePath {
+				t.Fatalf("ClonePath = %q, want %q", r.p.ClonePath, wantClonePath)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("Adopt did not return within 10s — likely deadlocked on nested locking")

@@ -227,6 +227,12 @@ func TestStoreAdopt(t *testing.T) {
 	}
 
 	clonePath := newBareRepoUnder(t, clonesDir, "existing.git")
+	// EvalSymlinks: macOS resolves TMPDIR through /var -> /private/var, and
+	// Adopt now stores the resolved path, so the expectation must too.
+	wantClonePath, err := filepath.EvalSymlinks(clonePath)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
 
 	p, err := store.Adopt("https://github.com/owner/repo", ProjectTypePet, clonePath)
 	if err != nil {
@@ -235,8 +241,8 @@ func TestStoreAdopt(t *testing.T) {
 	if p.ID != "owner/repo" || p.Owner != "owner" || p.Repo != "repo" {
 		t.Fatalf("unexpected identity: %+v", p)
 	}
-	if p.ClonePath != clonePath {
-		t.Fatalf("ClonePath = %q, want %q", p.ClonePath, clonePath)
+	if p.ClonePath != wantClonePath {
+		t.Fatalf("ClonePath = %q, want %q", p.ClonePath, wantClonePath)
 	}
 	if p.Status != ProjectStatusReady {
 		t.Fatalf("Status = %q, want ready", p.Status)
@@ -246,8 +252,8 @@ func TestStoreAdopt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get after Adopt: %v", err)
 	}
-	if got.ClonePath != clonePath {
-		t.Fatalf("persisted ClonePath = %q, want %q", got.ClonePath, clonePath)
+	if got.ClonePath != wantClonePath {
+		t.Fatalf("persisted ClonePath = %q, want %q", got.ClonePath, wantClonePath)
 	}
 
 	// Spot-check two of CloneBare's setup steps landed too, so an adopted
@@ -343,6 +349,31 @@ func TestStoreAdoptOutsideClonesDirRejected(t *testing.T) {
 	_, err = store.Adopt("https://github.com/owner/repo", ProjectTypePet, outside)
 	if err == nil {
 		t.Fatal("expected error for a clone path outside clonesDir")
+	}
+}
+
+// TestStoreAdoptSymlinkEscapeRejected proves Adopt refuses a clone path that
+// only lexically sits under clonesDir: a symlink inside clonesDir pointing
+// at a bare repo outside it must not pass the containment check, because
+// every git command run with Dir: clonePath — and Delete's os.RemoveAll —
+// follows the link to wherever it actually points.
+func TestStoreAdoptSymlinkEscapeRejected(t *testing.T) {
+	t.Parallel()
+	clonesDir := t.TempDir()
+	store, err := NewStore(t.TempDir(), clonesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outside := newBareRepoUnder(t, t.TempDir(), "existing.git")
+	linkPath := filepath.Join(clonesDir, "escape.git")
+	if err := os.Symlink(outside, linkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, err = store.Adopt("https://github.com/owner/repo", ProjectTypePet, linkPath)
+	if err == nil {
+		t.Fatal("expected error for a clone path that escapes clonesDir via a symlink")
 	}
 }
 
