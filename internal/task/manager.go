@@ -239,7 +239,8 @@ func (m *Manager) MutationTransportIdentity(id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	parts = append(parts, fmt.Sprintf("%s|%s|%d|%d", resolvedTask, taskInfo.Mode(), taskInfo.Size(), taskInfo.ModTime().UnixNano()))
+	// Omit the task file's mtime and size for the same reason as the directory above: a run patches its own task constantly, so an ordinary status or body write would otherwise read as the mutation route having been replaced underneath a healthy run.
+	parts = append(parts, fmt.Sprintf("%s|%s", resolvedTask, taskInfo.Mode()))
 	return strings.Join(parts, "\x00"), nil
 }
 
