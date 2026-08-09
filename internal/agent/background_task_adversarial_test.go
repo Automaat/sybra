@@ -55,7 +55,12 @@ func TestAdversarial_LiveBackgroundTaskAtResultDoesNotCompleteCleanly(t *testing
 		t.Fatalf("Run: %v", err)
 	}
 
-	waitForAgentDone(t, ag, scaledDeadline(5*time.Second))
+	// Fifteen seconds, not five. scaledDeadline samples the host load once per
+	// process, and this package's tests start while the rest of a full run is
+	// still going — so the factor resolves before the load it exists to absorb
+	// arrives, and stays 1. The wait polls, so a larger ceiling costs nothing
+	// when the agent stops promptly and only tells a slow host from a stuck one.
+	waitForAgentDone(t, ag, scaledDeadline(15*time.Second))
 
 	if ag.GetState() == StateStopped && ag.GetExitErr() == nil && ag.HasBackgroundTasks() {
 		t.Fatalf("agent completed cleanly despite live background task: state=%s exitErr=%v hasBackgroundTasks=%v logs=%s",

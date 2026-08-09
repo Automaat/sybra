@@ -18,6 +18,7 @@ import (
 	"github.com/Automaat/sybra/internal/audit"
 	"github.com/Automaat/sybra/internal/backoff"
 	"github.com/Automaat/sybra/internal/bgop"
+	"github.com/Automaat/sybra/internal/cleanup"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/db"
 	"github.com/Automaat/sybra/internal/diskreclaim"
@@ -394,7 +395,7 @@ func (a *App) initLocalStores(ctx context.Context) {
 	a.initExperience(ctx)
 	a.initIntervention()
 	a.initLearning()
-	a.initAgentQueue()
+	a.initAgentQueue(ctx)
 }
 
 func (a *App) initAttachments() {
@@ -455,8 +456,11 @@ func (a *App) initLearning() {
 	a.learning = store
 }
 
-func (a *App) initAgentQueue() {
-	queue, err := agentqueue.New(config.AgentQueueDir(), agentqueue.Options{MaxDepth: a.cfg.Agent.Queue.MaxDepth}, a.logger)
+func (a *App) initAgentQueue(ctx context.Context) {
+	queue, err := agentqueue.New(config.AgentQueueDir(), agentqueue.Options{
+		MaxDepth: a.cfg.Agent.Queue.MaxDepth,
+		Store:    a.openAgentQueueStore(ctx),
+	}, a.logger)
 	if err != nil {
 		a.logger.Warn("agentqueue.init.degraded", "err", err)
 		return
@@ -539,8 +543,16 @@ func (a *App) initAgentManager(ctx context.Context, emit func(string, any)) erro
 		providerLimits[name] = a.cfg.Providers.Limits.MaxInFlightPerProvider
 	}
 	var err error
+	var ledger dispatch.Persistence
+	if a.database != nil {
+		ledger, err = a.openAttemptLedger(ctx)
+		if err != nil {
+			return fmt.Errorf("dispatch admission: %w", err)
+		}
+	}
 	a.attempts, err = dispatch.New(ctx, dispatch.Options{
-		Dir: config.AttemptLeasesDir(),
+		Dir:   config.AttemptLeasesDir(),
+		Store: ledger,
 		Limits: dispatch.Limits{
 			Global:     a.cfg.Agent.MaxConcurrent,
 			ByProvider: providerLimits,
@@ -2125,4 +2137,121 @@ func (a *App) openProjectStore(ctx context.Context) (*project.Store, error) {
 		}
 	}
 	return project.NewStore(dir, clones)
+}
+
+// openAttemptLedger returns the admission ledger for the configured backend,
+// importing the existing document the first time a database is used.
+//
+// It fails closed rather than degrading. Every other store here falls back to
+// files when its backend cannot be opened, because a degraded advisory store
+// costs an operator information. This one is coordination: on a board shared by
+// several machines, one instance falling back to its own file while the others
+// use the database means two ledgers deciding admission independently — which
+// is precisely the double-dispatch this backend exists to prevent, and worse
+// than not starting.
+//
+// Call it only with a database configured; the file-backed deployment keeps the
+// YAML ledger and never reaches here.
+func (a *App) openAttemptLedger(ctx context.Context) (dispatch.Persistence, error) {
+	if a.database == nil {
+		return nil, errors.New("attempt lease store: no database configured")
+	}
+	importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+	defer cancel()
+	if err := dispatch.Import(importCtx, a.database, config.AttemptLeasesDir(), a.importScope(), a.logger); err != nil {
+		return nil, fmt.Errorf("attempt lease import: %w", err)
+	}
+	store, err := dispatch.NewSQLPersistence(a.database)
+	if err != nil {
+		return nil, fmt.Errorf("attempt lease store: %w", err)
+	}
+	return store, nil
+}
+
+// openAgentQueueStore returns the queue's durability mirror for the configured
+// backend, importing the existing item files the first time a database is used.
+//
+// A failed import returns nil, which leaves the queue on its files. Starting on
+// an empty mirror would drop every queued item on the next restart.
+func (a *App) openAgentQueueStore(ctx context.Context) agentqueue.Persistence {
+	if a.database == nil {
+		return nil
+	}
+	importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+	defer cancel()
+	if err := agentqueue.Import(importCtx, a.database, config.AgentQueueDir(), a.importScope(), a.logger); err != nil {
+		a.logger.Error("agentqueue.import", "err", err)
+		return nil
+	}
+	store, err := agentqueue.NewSQLStore(a.database, a.logger)
+	if err != nil {
+		a.logger.Error("agentqueue.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		return nil
+	}
+	return store
+}
+
+// openIncidentStore returns the incident ledger for the configured backend,
+// importing the existing files the first time a database is used.
+//
+// A failed import degrades to the files: an empty ledger reads as "nothing has
+// ever failed", so the monitor would re-file every open incident as new.
+func (a *App) openIncidentStore(ctx context.Context) (*monitor.IncidentStore, error) {
+	dir := config.MonitorIncidentsDir()
+	if a.database != nil {
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := monitor.ImportIncidents(importCtx, a.database, dir, a.importScope(), a.logger); err != nil {
+			a.logger.Error("incidents.import", "err", err)
+		} else if store, err := monitor.NewSQLIncidentStore(a.database); err != nil {
+			a.logger.Error("incidents.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return monitor.NewIncidentStoreWith(dir, store)
+		}
+	}
+	return monitor.NewIncidentStore(dir)
+}
+
+// newDurableIssueSink returns the retrying GitHub issue sink for the configured
+// backend, importing the pending outbox the first time a database is used.
+//
+// A failed import degrades to the files: an empty outbox reads as nothing
+// pending, so a filing stranded by an expired credential would never be
+// retried and the incident it belongs to would go unreported.
+func (a *App) newDurableIssueSink(ctx context.Context, inner *monitor.GHIssueSink, name string) (*monitor.DurableGHIssueSink, error) {
+	dir := filepath.Join(config.GHIssueOutboxDir(), name)
+	if a.database != nil {
+		ctx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := monitor.ImportIssueOutbox(ctx, a.database, dir, a.importScope(), a.logger); err != nil {
+			a.logger.Error("issueoutbox.import", "err", err)
+		} else if store, err := monitor.NewSQLIssueOutbox(a.database, a.logger); err != nil {
+			a.logger.Error("issueoutbox.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return monitor.NewDurableGHIssueSinkWith(inner, store, name, a.logger, a.audit), nil
+		}
+	}
+	return monitor.NewDurableGHIssueSink(inner, dir, name, a.logger, a.audit)
+}
+
+// openProtectedStore returns the protected-findings ledger for the configured
+// backend, importing the existing document the first time a database is used.
+//
+// A failed import degrades to the document: an empty ledger reads as nothing
+// protected, and the next cleanup pass is then free to delete the very paths
+// the findings existed to hold.
+func (a *App) openProtectedStore(ctx context.Context) *cleanup.ProtectedStore {
+	path := cleanup.DefaultProtectedStorePath()
+	if a.database != nil {
+		importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+		defer cancel()
+		if err := cleanup.ImportProtected(importCtx, a.database, path, a.importScope(), a.logger); err != nil {
+			a.logger.Error("protectedfindings.import", "err", err)
+		} else if store, err := cleanup.NewSQLProtectedStore(a.database); err != nil {
+			a.logger.Error("protectedfindings.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		} else {
+			return cleanup.NewProtectedStoreWith(path, store)
+		}
+	}
+	return cleanup.NewProtectedStore(path)
 }

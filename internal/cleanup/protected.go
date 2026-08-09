@@ -108,13 +108,41 @@ type protectedFile struct {
 
 var protectedStoreLocker = fsutil.NewKeyedLocker()
 
+// protectedFiles keeps the ledger in one JSON document, serialized by a lock
+// keyed on that document's path.
+type protectedFiles struct {
+	path string
+}
+
 type ProtectedStore struct {
 	path           string
+	store          ProtectedPersistence
 	reminderWindow time.Duration
 
 	// clock drives the reminder window. Read without a lock; set once at
 	// construction or during test setup.
 	clock clock.Clock
+}
+
+func (s *ProtectedStore) lock() (func(), error) {
+	if s == nil || s.store == nil {
+		return func() {}, nil
+	}
+	return s.store.Lock()
+}
+
+func (s *ProtectedStore) read() (protectedFile, error) {
+	if s == nil || s.store == nil {
+		return protectedFile{}, nil
+	}
+	return s.store.Read()
+}
+
+func (s *ProtectedStore) write(rec protectedFile) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	return s.store.Write(rec)
 }
 
 func DefaultProtectedStorePath() string {
@@ -126,14 +154,22 @@ func DefaultProtectedStore() *ProtectedStore {
 }
 
 func NewProtectedStore(path string) *ProtectedStore {
+	return NewProtectedStoreWith(path, &protectedFiles{path: path})
+}
+
+// NewProtectedStoreWith returns a store persisting through p rather than to the
+// JSON document at path. path is kept for the messages that name where findings
+// live.
+func NewProtectedStoreWith(path string, p ProtectedPersistence) *ProtectedStore {
 	return &ProtectedStore{
 		path:           path,
+		store:          p,
 		reminderWindow: DefaultReminderWindow,
 		clock:          clock.System{},
 	}
 }
 
-func (s *ProtectedStore) lock() (func(), error) {
+func (s *protectedFiles) Lock() (func(), error) {
 	if s == nil {
 		return func() {}, nil
 	}
@@ -155,7 +191,7 @@ func (s *ProtectedStore) lock() (func(), error) {
 	return unlock, nil
 }
 
-func (s *ProtectedStore) read() (protectedFile, error) {
+func (s *protectedFiles) Read() (protectedFile, error) {
 	if s == nil || strings.TrimSpace(s.path) == "" {
 		return protectedFile{}, nil
 	}
@@ -173,7 +209,7 @@ func (s *ProtectedStore) read() (protectedFile, error) {
 	return rec, nil
 }
 
-func (s *ProtectedStore) write(rec protectedFile) error {
+func (s *protectedFiles) Write(rec protectedFile) error {
 	if s == nil || strings.TrimSpace(s.path) == "" {
 		return nil
 	}
