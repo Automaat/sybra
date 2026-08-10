@@ -1731,6 +1731,17 @@ func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 			}
 		}
 	}
+	// A provider launcher can live outside the fixed toolchain roots. On
+	// macOS, for example, Homebrew installs Codex below /opt/homebrew and puts
+	// a symlink in its bin directory. Grant only the selected executable's
+	// spelling and resolved target: granting /opt wholesale would expose the
+	// protected server checkout below /opt/sybra, while granting neither makes
+	// sandbox-exec report the existing binary as ENOENT.
+	if !cfg.DisableVerifierControl && cfg.provider != nil {
+		for _, root := range providerExecutableReadRoots(cfg.provider.Name()) {
+			add(root)
+		}
+	}
 	add(cfg.sandbox.readOnlyDir)
 	for _, p := range cfg.ReadOnlyPaths {
 		add(p)
@@ -1750,6 +1761,52 @@ func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 		add(p)
 	}
 	return dedupeRoots(roots...)
+}
+
+// providerExecutableReadRoots returns the narrow external installation roots
+// needed to start providerName. The launcher itself is always included; add()
+// grants both its spelling and its resolved target. An npm launcher also needs
+// its package's adjacent metadata and optional platform package, so grant the
+// containing vendor scope (for example @openai) or unscoped package only.
+func providerExecutableReadRoots(providerName string) []string {
+	executable, err := exec.LookPath(providerName)
+	if err != nil {
+		return nil
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return nil
+	}
+	roots := []string{executable}
+	resolved, err := canonicalizeRoot(executable)
+	if err != nil {
+		return roots
+	}
+	if packageRoot := nodeModulesProviderRoot(resolved); packageRoot != "" {
+		roots = append(roots, packageRoot)
+	}
+	return roots
+}
+
+func nodeModulesProviderRoot(path string) string {
+	marker := string(filepath.Separator) + "node_modules" + string(filepath.Separator)
+	idx := strings.LastIndex(path, marker)
+	if idx < 0 {
+		return ""
+	}
+	prefix := path[:idx+len(marker)]
+	rest := path[idx+len(marker):]
+	parts := strings.Split(rest, string(filepath.Separator))
+	if len(parts) == 0 || parts[0] == "" {
+		return ""
+	}
+	if strings.HasPrefix(parts[0], "@") {
+		if len(parts) < 2 || parts[1] == "" {
+			return ""
+		}
+		return filepath.Clean(prefix + parts[0])
+	}
+	return filepath.Clean(prefix + parts[0])
 }
 
 // providerAppSupportRoot returns the macOS per-user application-data root, or

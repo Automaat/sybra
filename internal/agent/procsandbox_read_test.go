@@ -126,6 +126,55 @@ func TestResolveSandboxReadRoots_NativeClaudeInstallIsProviderOnly(t *testing.T)
 	}
 }
 
+func TestResolveSandboxReadRoots_ExternalProviderExecutableIsProviderOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	installDir := t.TempDir()
+	providerScope := filepath.Join(installDir, "node_modules", "@openai")
+	target := filepath.Join(providerScope, providerid.Codex, "bin", providerid.Codex)
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	launcher := filepath.Join(binDir, providerid.Codex)
+	if err := os.Symlink(target, launcher); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(filepath.Dir(binDir))
+	t.Setenv("PATH", filepath.Base(binDir))
+	t.Setenv("GODEBUG", "execerrdot=0")
+
+	m := newReadModeManager("enforce")
+	codex := providerByName(providerid.Codex)
+	resolvedTarget, err := canonicalizeRoot(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedScope, err := canonicalizeRoot(providerScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerRoots := m.resolveSandboxReadRoots(&RunConfig{
+		Role: RoleReview, provider: codex, sandbox: specWithWriteRoots(t),
+	})
+	for _, want := range []string{launcher, resolvedTarget, resolvedScope} {
+		if !slices.Contains(providerRoots, want) {
+			t.Fatalf("provider executable root %q missing from %v", want, providerRoots)
+		}
+	}
+	deterministicRoots := m.resolveSandboxReadRoots(&RunConfig{
+		Role: RoleTestRunner, provider: codex, DisableVerifierControl: true, sandbox: specWithWriteRoots(t),
+	})
+	for _, denied := range []string{launcher, resolvedTarget, resolvedScope} {
+		if slices.Contains(deterministicRoots, denied) {
+			t.Fatalf("provider executable root %q leaked into deterministic read roots: %v", denied, deterministicRoots)
+		}
+	}
+}
+
 func TestClearProviderStateRootsRemovesWritableAndReadableCredentialRoots(t *testing.T) {
 	spec := enforceSpec(t.TempDir(), nil, t.TempDir(), t.TempDir(), "", t.TempDir(), "profile", "", gitSandboxRoots{}, gitSandboxOverlay{})
 	clearProviderStateRoots(&spec)
