@@ -5113,3 +5113,30 @@ func TestTailFileBoundsLinesAndBytes(t *testing.T) {
 		t.Fatal("tail retained lines older than the line limit")
 	}
 }
+
+func TestTailFileReadsOnlyBoundedSuffixOfLargeLog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large-sybra.log")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(32 << 20); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt([]byte("newest log line\n"), (32<<20)-int64(len("newest log line\n"))); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got := tailFile(path, humanReviewLogTail, humanReviewLogTailBytes)
+	if !strings.HasSuffix(got, "newest log line") {
+		t.Fatalf("tail = %q, want newest sparse-file line", got)
+	}
+	if len(got) > humanReviewLogTailBytes {
+		t.Fatalf("tail length = %d, want <= %d", len(got), humanReviewLogTailBytes)
+	}
+}

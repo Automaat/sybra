@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -2283,11 +2284,26 @@ func verdictAlreadyRendered(t task.Task) bool {
 // tailFile reads the bounded tail of path. Best-effort: returns "" on error or
 // when the file is missing (server containers often don't ship the log).
 func tailFile(path string, maxLines, maxBytes int) string {
-	if path == "" {
+	if path == "" || maxLines <= 0 || maxBytes <= 0 {
 		return ""
 	}
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	// The final output cannot depend on bytes earlier than this window: when
+	// the last maxLines lines exceed maxBytes, TailBytes discards their prefix;
+	// when they do not, all of them already fit in this window. The extra byte
+	// lets TrimRight consume a trailing newline without reducing the payload
+	// budget and gives TailBytes room to repair a split UTF-8 rune.
+	readSize := min(info.Size(), int64(maxBytes)+1)
+	data := make([]byte, readSize)
+	if _, err := f.ReadAt(data, info.Size()-readSize); err != nil && !errors.Is(err, io.EOF) {
 		return ""
 	}
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
