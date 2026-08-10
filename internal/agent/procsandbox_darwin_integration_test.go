@@ -67,6 +67,68 @@ func TestSandboxReadEnforce_AllowsNativeClaudeInstall(t *testing.T) {
 	}
 }
 
+func TestSandboxReadEnforce_AllowsExternalProviderExecutable(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
+	}
+	_, wt := setupLinkedWorktree(t)
+	cfg := buildEnforceCfg(t, wt)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	providerScope := filepath.Join(home, ".provider-install", "node_modules", "@openai")
+	packageDir := filepath.Join(providerScope, providerid.Codex)
+	platformDir := filepath.Join(providerScope, "codex-darwin-arm64")
+	target := filepath.Join(packageDir, "bin", providerid.Codex)
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatalf("create provider install fixture: %v", err)
+	}
+	if err := os.MkdirAll(platformDir, 0o700); err != nil {
+		t.Fatalf("create provider platform fixture: %v", err)
+	}
+	packageFile := filepath.Join(packageDir, "package.json")
+	platformFile := filepath.Join(platformDir, "binary")
+	if err := os.WriteFile(packageFile, []byte("PACKAGE\n"), 0o600); err != nil {
+		t.Fatalf("write provider package fixture: %v", err)
+	}
+	if err := os.WriteFile(platformFile, []byte("PLATFORM\n"), 0o600); err != nil {
+		t.Fatalf("write provider platform fixture: %v", err)
+	}
+	script := fmt.Sprintf("#!/bin/sh\n/bin/cat %q %q\n", packageFile, platformFile)
+	if err := os.WriteFile(target, []byte(script), 0o700); err != nil {
+		t.Fatalf("write provider install fixture: %v", err)
+	}
+	binDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatalf("create provider launcher directory: %v", err)
+	}
+	launcher := filepath.Join(binDir, providerid.Codex)
+	if err := os.Symlink(target, launcher); err != nil {
+		t.Fatalf("link provider launcher fixture: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+	m := newReadModeManager("enforce")
+	cfg.Role = RoleReview
+	cfg.provider = providerByName(providerid.Codex)
+	profilePath, err := buildReadProfile(cfg.sandbox.profilePath, m.resolveSandboxReadRoots(cfg), wt)
+	if err != nil {
+		t.Fatalf("build read profile: %v", err)
+	}
+	cfg.sandbox.profilePath = profilePath
+
+	cmd := newDarwinSandboxCmd(cfg, providerid.Codex, "--version")
+	cmd.Dir = wt
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("external provider startup under read sandbox: %v: %s", err, stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "PACKAGE\nPLATFORM" {
+		t.Fatalf("external provider fixture output = %q, want package and platform data", got)
+	}
+}
+
 func TestSandboxEnforce_DarwinCommitSurvivesSandboxReset(t *testing.T) {
 	if !sandboxExecAvailable() {
 		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
