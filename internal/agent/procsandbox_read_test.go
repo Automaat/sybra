@@ -183,6 +183,28 @@ func TestResolveSandboxReadRoots_ExternalProviderExecutableIsProviderOnly(t *tes
 	}
 }
 
+func TestProviderExecutableReadRoots_RejectsSymlinkedCodexCompanion(t *testing.T) {
+	installDir := t.TempDir()
+	target := filepath.Join(installDir, providerid.Codex)
+	if err := os.WriteFile(target, []byte("provider"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(t.TempDir(), "external-host")
+	if err := os.WriteFile(external, []byte("host"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	companion := filepath.Join(installDir, "codex-code-mode-host")
+	if err := os.Symlink(external, companion); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", installDir)
+
+	roots := providerExecutableReadRoots(providerid.Codex)
+	if slices.Contains(roots, companion) || slices.Contains(roots, external) {
+		t.Fatalf("symlinked Codex companion leaked into provider roots: %v", roots)
+	}
+}
+
 func TestClearProviderStateRootsRemovesWritableAndReadableCredentialRoots(t *testing.T) {
 	spec := enforceSpec(t.TempDir(), nil, t.TempDir(), t.TempDir(), "", t.TempDir(), "profile", "", gitSandboxRoots{}, gitSandboxOverlay{})
 	clearProviderStateRoots(&spec)

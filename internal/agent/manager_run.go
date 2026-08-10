@@ -1789,7 +1789,10 @@ func providerExecutableReadRoots(providerName string) []string {
 	}
 	if providerName == providerid.Codex {
 		companion := filepath.Join(filepath.Dir(resolved), "codex-code-mode-host")
-		if info, statErr := os.Stat(companion); statErr == nil && !info.IsDir() {
+		// The trusted Codex distributions ship the host as a regular sibling.
+		// Do not follow an adjacent symlink: add() canonicalizes every root, so
+		// accepting one here could grant its target outside the installation.
+		if info, statErr := os.Lstat(companion); statErr == nil && info.Mode().IsRegular() {
 			roots = append(roots, companion)
 		}
 	}
