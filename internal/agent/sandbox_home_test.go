@@ -36,9 +36,6 @@ func TestPrepareRunConfig_SandboxHome_Injected(t *testing.T) {
 		"SYBRA_HOME=" + sandboxDir,
 		"SYBRA_CONTROL_HOME=/real/home",
 		"SYBRA_SCRATCH_HOME=" + filepath.Join(sandboxDir, "scratch-home"),
-		"TMPDIR=" + filepath.Join(sandboxDir, "tmp"),
-		"TMP=" + filepath.Join(sandboxDir, "tmp"),
-		"TEMP=" + filepath.Join(sandboxDir, "tmp"),
 		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
 		"GOCACHE=" + filepath.Join(base, "go-build", "task-1"),
 		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
@@ -73,9 +70,6 @@ func TestPrepareRunConfig_ScratchEnvironmentStaysOutsideWorktree(t *testing.T) {
 
 	want := map[string]string{
 		"SYBRA_SCRATCH_HOME": filepath.Join(sandboxDir, "scratch-home"),
-		"TMPDIR":             filepath.Join(sandboxDir, "tmp"),
-		"TMP":                filepath.Join(sandboxDir, "tmp"),
-		"TEMP":               filepath.Join(sandboxDir, "tmp"),
 	}
 	for key, wantPath := range want {
 		var values []string
@@ -93,6 +87,9 @@ func TestPrepareRunConfig_ScratchEnvironmentStaysOutsideWorktree(t *testing.T) {
 		if info, statErr := os.Stat(wantPath); statErr != nil || !info.IsDir() {
 			t.Errorf("%s directory %q was not created: %v", key, wantPath, statErr)
 		}
+	}
+	if !slices.Contains(cfg.ExtraEnv, "TMPDIR="+filepath.Join(worktreeDir, "tmp")) {
+		t.Fatalf("caller TMPDIR was replaced: %v", cfg.ExtraEnv)
 	}
 	if !strings.Contains(cfg.Prompt, "$SYBRA_SCRATCH_HOME") || !strings.Contains(cfg.Prompt, "outside the Git worktree") {
 		t.Fatalf("prompt lacks scratch-home guidance: %q", cfg.Prompt)
@@ -227,9 +224,6 @@ func TestPrepareRunConfig_SandboxHome_IsolatedSystemRun(t *testing.T) {
 		"SYBRA_HOME=" + sandboxDir,
 		"SYBRA_CONTROL_HOME=/real/home",
 		"SYBRA_SCRATCH_HOME=" + filepath.Join(sandboxDir, "scratch-home"),
-		"TMPDIR=" + filepath.Join(sandboxDir, "tmp"),
-		"TMP=" + filepath.Join(sandboxDir, "tmp"),
-		"TEMP=" + filepath.Join(sandboxDir, "tmp"),
 		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
 		"GOCACHE=" + filepath.Join(base, "go-build", "system-sybra-orchestrator"),
 		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
@@ -365,13 +359,13 @@ func TestPrepareRunConfig_SandboxHome_StripsDuplicateCallerEnv(t *testing.T) {
 	}
 	base := sharedBuildCacheDir()
 	want := []string{
+		"TMPDIR=/attacker/controlled",
+		"TMP=/attacker/controlled",
+		"TEMP=/attacker/controlled",
 		"OTHER=keep-me",
 		"SYBRA_HOME=" + sandboxDir,
 		"SYBRA_CONTROL_HOME=/real/home",
 		"SYBRA_SCRATCH_HOME=" + filepath.Join(sandboxDir, "scratch-home"),
-		"TMPDIR=" + filepath.Join(sandboxDir, "tmp"),
-		"TMP=" + filepath.Join(sandboxDir, "tmp"),
-		"TEMP=" + filepath.Join(sandboxDir, "tmp"),
 		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
 		"GOCACHE=" + filepath.Join(base, "go-build", "task-1"),
 		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
@@ -409,9 +403,6 @@ func TestPrepareRunConfig_SandboxHome_EmptyControlHomeOmitsVar(t *testing.T) {
 	want := []string{
 		"SYBRA_HOME=" + sandboxDir,
 		"SYBRA_SCRATCH_HOME=" + filepath.Join(sandboxDir, "scratch-home"),
-		"TMPDIR=" + filepath.Join(sandboxDir, "tmp"),
-		"TMP=" + filepath.Join(sandboxDir, "tmp"),
-		"TEMP=" + filepath.Join(sandboxDir, "tmp"),
 		"GOLANGCI_LINT_CACHE=" + filepath.Join(sandboxDir, "golangci-lint-cache"),
 		"GOCACHE=" + filepath.Join(base, "go-build", "task-1"),
 		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
