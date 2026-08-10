@@ -429,10 +429,12 @@ func (a *taskAdapter) ConsumeSupervisorSteer(taskID, prompt string) (string, err
 }
 
 func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
-	if name, ok := strings.CutPrefix(kind, "plan_draft."); ok {
-		return a.tasks.PlanDrafts().Write(id, name, content)
-	}
 	var u task.Update
+	if name, ok := strings.CutPrefix(kind, "plan_draft."); ok {
+		u.PlanDraftWrite = &task.PlanDraftEntry{Name: name, Content: content}
+		_, err := a.tasks.UpdateBy(id, "workflow.engine.write_sidecar", u)
+		return err
+	}
 	switch kind {
 	case "plan":
 		u.Plan = &content

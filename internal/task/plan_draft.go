@@ -107,6 +107,15 @@ func (s *PlanDraftStore) sidecarPath(taskID, name string) string {
 // directory or produce ambiguous filenames (collisions with the suffix
 // scheme used by IsSidecarFile).
 func (s *PlanDraftStore) validate(name string) error {
+	return ValidatePlanDraftName(name)
+}
+
+// ValidatePlanDraftName is PlanDraftStore's own name guard, exported so a
+// caller that writes a draft through a Persistence backend other than the
+// file store — which never touches PlanDraftStore, so never gets this check
+// for free — can enforce the same "safe on every backend" invariant on an
+// Update before it reaches either one.
+func ValidatePlanDraftName(name string) error {
 	if name == "" {
 		return errors.New("plan draft name is empty")
 	}

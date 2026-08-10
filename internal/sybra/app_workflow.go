@@ -685,13 +685,15 @@ func (a *taskAdapter) ConsumeSupervisorSteer(taskID, prompt string) (string, err
 }
 
 func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
+	var u task.Update
 	// Plan drafts are namespaced "plan_draft.<name>" so the workflow can fan
 	// out to N parallel planners without growing the static sidecar enum.
 	// The engine derives <name> from the parallel child step ID.
 	if name, ok := strings.CutPrefix(kind, "plan_draft."); ok {
-		return a.tasks.PlanDrafts().Write(id, name, content)
+		u.PlanDraftWrite = &task.PlanDraftEntry{Name: name, Content: content}
+		_, err := a.tasks.UpdateBy(id, "workflow.engine.write_sidecar", u)
+		return err
 	}
-	var u task.Update
 	switch kind {
 	case "plan":
 		u.Plan = &content

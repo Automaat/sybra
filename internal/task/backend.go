@@ -51,7 +51,9 @@ func buildNewTask(title, body, mode string, init Update) (Task, error) {
 		return Task{}, err
 	}
 	t.TamperFlagged = isTamperFlagged(t.Status, t.Blocker)
-	applySidecarUpdateFields(&t, init)
+	if err := applySidecarUpdateFields(&t, init); err != nil {
+		return Task{}, err
+	}
 	return t, nil
 }
 
@@ -115,12 +117,14 @@ func ApplyUpdate(cur Task, u Update) (next Task, changed []string, err error) {
 		t.StatusChangedAt = statusChangedBackfill
 	}
 	t.TamperFlagged = isTamperFlagged(t.Status, t.Blocker)
-	applySidecarUpdateFields(&t, u)
+	if err := applySidecarUpdateFields(&t, u); err != nil {
+		return Task{}, nil, err
+	}
 	return t, changedFields(u), nil
 }
 
-// applySidecarUpdateFields is writeSidecars' field-assignment half without the file write: a Persistence implementation persists the ten planning/review strings as part of the whole Task it stores (folded into the doc for the file backend via its own sidecar files, or into taskdb's sidecar rows via taskdb.SidecarsFromTask) rather than as a separate side-effecting write here.
-func applySidecarUpdateFields(t *Task, u Update) {
+// applySidecarUpdateFields is writeSidecars' field-assignment half without the file write: a Persistence implementation persists the ten planning/review strings as part of the whole Task it stores (folded into the doc for the file backend via its own sidecar files, or into taskdb's sidecar rows via taskdb.SidecarsFromTask) rather than as a separate side-effecting write here. Returns an error only for PlanDraftWrite: the file backend's own PlanDraftStore.Write validates the name before it becomes part of a filename, and a Persistence implementation that skips PlanDraftStore entirely (taskdb writes straight to a column) would otherwise accept a name the file backend rejects, making a single Update's validity depend on which backend happens to be configured.
+func applySidecarUpdateFields(t *Task, u Update) error {
 	if u.Plan != nil {
 		t.Plan = *u.Plan
 	}
@@ -151,6 +155,16 @@ func applySidecarUpdateFields(t *Task, u Update) {
 	if u.SpecDecision != nil {
 		t.SpecDecision = *u.SpecDecision
 	}
+	if u.PlanDraftWrite != nil {
+		if err := ValidatePlanDraftName(u.PlanDraftWrite.Name); err != nil {
+			return err
+		}
+		if t.PlanDrafts == nil {
+			t.PlanDrafts = make(map[string]string)
+		}
+		t.PlanDrafts[u.PlanDraftWrite.Name] = u.PlanDraftWrite.Content
+	}
+	return nil
 }
 
 // changedFields names u's non-nil fields for the history entry, using the same wire-facing names UpdateFromMap accepts, so a query against history and a mutation through the API describe a field the same way.
@@ -207,6 +221,7 @@ func changedFields(u Update) []string {
 	add(u.CurrentTestFailures != nil, "current_test_failures")
 	add(u.AcceptanceLedger != nil, "acceptance_ledger")
 	add(u.SpecDecision != nil, "spec_decision")
+	add(u.PlanDraftWrite != nil, "plan_draft")
 	add(u.CodeReviewVerdict != nil, "code_review_verdict")
 	add(u.MaxTurns != nil, "max_turns")
 	add(u.ForkSubagent != nil, "fork_subagent")

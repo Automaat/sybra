@@ -741,3 +741,79 @@ func TestMutationTransportIdentityStableAcrossTaskUpdate(t *testing.T) {
 		t.Fatalf("an ordinary task update changed the mutation identity\nbefore: %q\nafter:  %q", before, after)
 	}
 }
+
+// TestUpdateByPlanDraftWriteRoundTrips proves a named plan draft set through
+// UpdateBy's PlanDraftWrite is both persisted (readable via PlanDrafts()
+// directly, the file store's own accessor) and reflected on the returned
+// and re-read Task's PlanDrafts map — the file backend's counterpart to the
+// database backend's taskdb.SidecarsFromTask/ApplySidecars round trip.
+func TestUpdateByPlanDraftWriteRoundTrips(t *testing.T) {
+	m, _ := newTestManager(t)
+	created, err := m.Create("plan draft task", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	saved, err := m.UpdateBy(created.ID, "test", Update{
+		PlanDraftWrite: &PlanDraftEntry{Name: "claude", Content: "first draft"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateBy: %v", err)
+	}
+	if saved.PlanDrafts["claude"] != "first draft" {
+		t.Fatalf("returned task PlanDrafts = %+v, want claude=first draft", saved.PlanDrafts)
+	}
+
+	got, err := m.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.PlanDrafts["claude"] != "first draft" {
+		t.Fatalf("re-read PlanDrafts = %+v, want claude=first draft", got.PlanDrafts)
+	}
+
+	// A second draft under a different name must not clobber the first —
+	// PlanDraftWrite is a merge-add, not a whole-map replace.
+	saved, err = m.UpdateBy(created.ID, "test", Update{
+		PlanDraftWrite: &PlanDraftEntry{Name: "codex", Content: "second draft"},
+	})
+	if err != nil {
+		t.Fatalf("second UpdateBy: %v", err)
+	}
+	if saved.PlanDrafts["claude"] != "first draft" || saved.PlanDrafts["codex"] != "second draft" {
+		t.Fatalf("PlanDrafts after second write = %+v, want both entries", saved.PlanDrafts)
+	}
+}
+
+// TestCreateFullByPlanDraftWriteWritesSidecarFile proves a plan draft set at
+// create time (via CreateFullBy's init Update, not a follow-up UpdateBy) is
+// actually written to its own sidecar file — CreatePrebuilt's own path,
+// separate from UpdateWithPrev, must not silently drop it.
+func TestCreateFullByPlanDraftWriteWritesSidecarFile(t *testing.T) {
+	m, _ := newTestManager(t)
+	created, err := m.CreateFullBy("plan draft at create", "body", "headless", "test", Update{
+		PlanDraftWrite: &PlanDraftEntry{Name: "claude", Content: "draft content"},
+	})
+	if err != nil {
+		t.Fatalf("CreateFullBy: %v", err)
+	}
+	if created.PlanDrafts["claude"] != "draft content" {
+		t.Fatalf("returned task PlanDrafts = %+v, want claude=draft content", created.PlanDrafts)
+	}
+
+	drafts, err := m.PlanDrafts().List(created.ID)
+	if err != nil {
+		t.Fatalf("PlanDrafts().List: %v", err)
+	}
+	if drafts["claude"] != "draft content" {
+		t.Fatalf("PlanDraftStore has %+v, want claude=draft content — sidecar file was not written", drafts)
+	}
+
+	got, err := m.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.PlanDrafts["claude"] != "draft content" {
+		t.Fatalf("re-read PlanDrafts = %+v, want claude=draft content", got.PlanDrafts)
+	}
+}
