@@ -573,19 +573,30 @@ func attachmentEquivalent(a, b task.Attachment) bool {
 		a.CreatedAt.Equal(b.CreatedAt)
 }
 
-// writeSidecars compensates for PutBy/PutFnBy's file-backend gap: the file
-// Store's plain whole-task write never touches the sidecar files, so the
-// caller writes them separately here. On the database backend this write
-// would be pure waste — taskdb's PutBy/PutFnBy already persist every
-// sidecar field in the same transaction as the task write via
+// writeSidecars compensates for PutBy/PutFnBy's file-backend gap for the
+// periodic reconcile path — see WriteMergedSidecars, which does the actual
+// work and is exported so the same compensation applies to every other
+// caller that merges a follower's reported task with clusterlead.Merge and
+// persists it via PutBy/PutFnBy (see internal/sybra/svc_tasks.go's
+// request-triggered forwarding paths).
+func (m *Mirror) writeSidecars(t task.Task) error {
+	return WriteMergedSidecars(m.tasks, t)
+}
+
+// WriteMergedSidecars compensates for PutBy/PutFnBy's file-backend gap: the
+// file Store's plain whole-task write never touches the sidecar files, so a
+// caller that merges a follower's reported task with Merge and persists the
+// result via PutBy/PutFnBy must write them separately here. On the database
+// backend this write would be pure waste — taskdb's PutBy/PutFnBy already
+// persist every sidecar field in the same transaction as the task write via
 // SidecarsFromTask — and worse, it would leave stray, never-read files on
 // disk under a backend that no longer treats the tasks directory as
 // authoritative for this content, so it is skipped entirely there.
-func (m *Mirror) writeSidecars(t task.Task) error {
-	if m.tasks == nil || !m.tasks.PersistsToFile() {
+func WriteMergedSidecars(tasks *task.Manager, t task.Task) error {
+	if tasks == nil || !tasks.PersistsToFile() {
 		return nil
 	}
-	store := m.tasks.Store()
+	store := tasks.Store()
 	if err := store.Plans().Write(t.ID, t.Plan); err != nil {
 		return err
 	}

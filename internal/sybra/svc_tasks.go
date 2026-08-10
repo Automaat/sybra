@@ -467,6 +467,13 @@ func translateTaskLockTimeout(err error) error {
 	return unavailableError("resource is locked; retry")
 }
 
+// writeMergedSidecarsOrWarn writes t's sidecar content to the file backend after a request-triggered forward already merged and persisted it via PutFnBy — PutFnBy's plain whole-task write never touches sidecar files. A failure here must not fail the whole RPC, since the task's primary fields already committed; it only logs, the same tradeoff the periodic mirror reconcile already makes for the identical write. That tradeoff carries a known, pre-existing gap shared with the periodic path and not fixed here: once Merge's staleness guard has advanced past this follower update, nothing retries a failed sidecar write until the follower's task state changes again, so this is not a guaranteed eventual catch-up — see #3308.
+func (s *TaskService) writeMergedSidecarsOrWarn(op, taskID, node string, t task.Task) {
+	if err := clusterlead.WriteMergedSidecars(s.tasks, t); err != nil {
+		s.logger.Warn("cluster.task."+op+".sidecar_failed", "task_id", taskID, "node", node, "err", err)
+	}
+}
+
 // BlessTampering records a human bless for a tamper-flagged task and sends it
 // back to the review workflow.
 func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
@@ -502,6 +509,7 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 			if putErr != nil {
 				return task.Task{}, translateTaskLockTimeout(putErr)
 			}
+			s.writeMergedSidecarsOrWarn("tamper_bless", taskID, current.AssignedNode, result)
 			s.logger.Info("cluster.task.tamper_bless.forwarded", "task_id", taskID, "node", current.AssignedNode)
 			return result, nil
 		}
@@ -1029,6 +1037,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 				if putErr != nil {
 					return cur, translateTaskLockTimeout(putErr)
 				}
+				s.writeMergedSidecarsOrWarn("status_update", id, cur.AssignedNode, t)
 				s.logger.Info("cluster.task.status_update.forwarded", "task_id", id, "node", cur.AssignedNode, "status", status)
 				return t, nil
 			}
@@ -1298,10 +1307,12 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 				}
 				return merged, nil
 			})
-			s.followerStatusMu.Unlock()
 			if localErr != nil {
+				s.followerStatusMu.Unlock()
 				return task.Task{}, translateTaskLockTimeout(localErr)
 			}
+			s.writeMergedSidecarsOrWarn("dispatch_human_required", id, cur.AssignedNode, local)
+			s.followerStatusMu.Unlock()
 			s.logDispatchAudit(id, target, string(cur.Status), reason, "forwarded")
 			return local, nil
 		}
