@@ -233,6 +233,7 @@ func recordMappingRecord(started time.Time) Record {
 		AttemptIntentID:         "intent-map",
 		AttemptTaskKey:          "task-map",
 		AttemptTaskGen:          4,
+		AttemptWorktree:         "/tmp/sybra/worktrees/task-map",
 		AttemptWorkGen:          5,
 		AttemptAccess:           AttemptAccessObserve,
 		AttemptLeaseID:          "lease-map",
