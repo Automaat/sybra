@@ -1773,6 +1773,10 @@ func providerExecutableReadRoots(providerName string) []string {
 	if err != nil {
 		return nil
 	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return nil
+	}
 	roots := []string{executable}
 	resolved, err := canonicalizeRoot(executable)
 	if err != nil {

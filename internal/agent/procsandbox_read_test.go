@@ -143,7 +143,9 @@ func TestResolveSandboxReadRoots_ExternalProviderExecutableIsProviderOnly(t *tes
 	if err := os.Symlink(target, launcher); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", binDir)
+	t.Chdir(filepath.Dir(binDir))
+	t.Setenv("PATH", filepath.Base(binDir))
+	t.Setenv("GODEBUG", "execerrdot=0")
 
 	m := newReadModeManager("enforce")
 	codex := providerByName(providerid.Codex)
