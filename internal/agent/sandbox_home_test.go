@@ -44,7 +44,7 @@ func TestPrepareRunConfig_SandboxHome_Injected(t *testing.T) {
 		"GOMODCACHE=" + filepath.Join(base, "go-mod"),
 		"npm_config_cache=" + filepath.Join(base, "npm"),
 	}
-	if len(cfg.ExtraEnv) != len(want) || cfg.ExtraEnv[0] != want[0] || cfg.ExtraEnv[1] != want[1] || cfg.ExtraEnv[2] != want[2] {
+	if !slices.Equal(cfg.ExtraEnv, want) {
 		t.Fatalf("ExtraEnv = %v, want %v", cfg.ExtraEnv, want)
 	}
 }
