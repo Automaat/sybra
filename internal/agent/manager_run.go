@@ -1649,6 +1649,12 @@ var homeRootReadFiles = []string{".gitconfig"}
 // deterministic commands deliberately do not.
 var providerHomeRootReadFiles = []string{".claude.json"}
 
+// providerReadSubdirs hold provider executables installed outside mise's
+// toolchain tree. Claude's native installer places the versioned Bun binary
+// here and ~/.local/bin/claude points into it; granting only the symlink lets
+// exec start but makes Bun fail immediately when it reads its own image.
+var providerReadSubdirs = []string{filepath.Join(".local", "share", "claude")}
+
 // homeStateLinks are the provider state dirs as spelled in the home
 // directory. They are added *uncanonicalized*, in addition to their resolved
 // targets, because on the server ~/.claude is a symlink to /data/sybra/claude:
@@ -1714,6 +1720,9 @@ func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 			}
 		}
 		if !cfg.DisableVerifierControl {
+			for _, sub := range providerReadSubdirs {
+				add(filepath.Join(home, sub))
+			}
 			for _, f := range providerHomeRootReadFiles {
 				add(filepath.Join(home, f))
 			}

@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"bytes"
 	"compress/zlib"
 	"context"
 	"fmt"
@@ -13,6 +14,50 @@ import (
 	"strings"
 	"testing"
 )
+
+// TestSandboxReadEnforce_AllowsNativeClaudeInstall reproduces the native
+// Claude installer layout: ~/.local/bin/claude points at a versioned Bun
+// executable under ~/.local/share/claude. The symlink alone is insufficient;
+// Bun reads its own image during startup and exits with EPERM before NDJSON
+// when the resolved install root is absent from the production allowlist.
+func TestSandboxReadEnforce_AllowsNativeClaudeInstall(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
+	}
+	_, wt := setupLinkedWorktree(t)
+	cfg := buildEnforceCfg(t, wt)
+	claudePath, err := exec.LookPath("claude")
+	if err != nil {
+		t.Skip("claude not installed; Bun stderr path unexercised on this host")
+	}
+	claudeTarget, err := filepath.EvalSymlinks(claudePath)
+	if err != nil {
+		t.Fatalf("resolve claude executable: %v", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve user home: %v", err)
+	}
+	nativeInstall := filepath.Join(home, ".local", "share", "claude")
+	if !strings.HasPrefix(claudeTarget, nativeInstall+string(filepath.Separator)) {
+		t.Skipf("claude resolves outside native install root: %s", claudeTarget)
+	}
+	m := newReadModeManager("enforce")
+	cfg.Role = RoleReview
+	profilePath, err := buildReadProfile(cfg.sandbox.profilePath, m.resolveSandboxReadRoots(cfg), wt)
+	if err != nil {
+		t.Fatalf("build read profile: %v", err)
+	}
+	cfg.sandbox.profilePath = profilePath
+
+	cmd := newDarwinSandboxCmd(cfg, claudePath, "--version")
+	cmd.Dir = wt
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("native Claude/Bun startup under read sandbox: %v: %s", err, stderr.String())
+	}
+}
 
 func TestSandboxEnforce_DarwinCommitSurvivesSandboxReset(t *testing.T) {
 	if !sandboxExecAvailable() {

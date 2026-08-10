@@ -106,6 +106,24 @@ func TestResolveSandboxReadRoots_DeterministicCommandOmitsProviderState(t *testi
 	}
 }
 
+func TestResolveSandboxReadRoots_NativeClaudeInstallIsProviderOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	install := filepath.Join(home, ".local", "share", "claude")
+	if err := os.MkdirAll(install, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	m := newReadModeManager("enforce")
+	providerRoots := m.resolveSandboxReadRoots(&RunConfig{Role: RoleReview, sandbox: specWithWriteRoots(t)})
+	if !slices.Contains(providerRoots, install) {
+		t.Fatalf("native Claude install missing from provider read roots: %v", providerRoots)
+	}
+	deterministicRoots := m.resolveSandboxReadRoots(&RunConfig{Role: RoleTestRunner, DisableVerifierControl: true, sandbox: specWithWriteRoots(t)})
+	if slices.Contains(deterministicRoots, install) {
+		t.Fatalf("native Claude install leaked into deterministic read roots: %v", deterministicRoots)
+	}
+}
+
 func TestClearProviderStateRootsRemovesWritableAndReadableCredentialRoots(t *testing.T) {
 	spec := enforceSpec(t.TempDir(), nil, t.TempDir(), t.TempDir(), "", t.TempDir(), "profile", "", gitSandboxRoots{}, gitSandboxOverlay{})
 	clearProviderStateRoots(&spec)
