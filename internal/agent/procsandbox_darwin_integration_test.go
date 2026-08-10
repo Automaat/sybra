@@ -87,13 +87,17 @@ func TestSandboxReadEnforce_AllowsExternalProviderExecutable(t *testing.T) {
 	}
 	packageFile := filepath.Join(packageDir, "package.json")
 	platformFile := filepath.Join(platformDir, "binary")
+	companion := filepath.Join(filepath.Dir(target), "codex-code-mode-host")
 	if err := os.WriteFile(packageFile, []byte("PACKAGE\n"), 0o600); err != nil {
 		t.Fatalf("write provider package fixture: %v", err)
 	}
 	if err := os.WriteFile(platformFile, []byte("PLATFORM\n"), 0o600); err != nil {
 		t.Fatalf("write provider platform fixture: %v", err)
 	}
-	script := fmt.Sprintf("#!/bin/sh\n/bin/cat %q %q\n", packageFile, platformFile)
+	if err := os.WriteFile(companion, []byte("#!/bin/sh\necho HOST\n"), 0o700); err != nil {
+		t.Fatalf("write provider companion fixture: %v", err)
+	}
+	script := fmt.Sprintf("#!/bin/sh\n/bin/cat %q %q\nresolved=$(/usr/bin/readlink \"$0\")\ndir=$(/usr/bin/dirname \"$resolved\")\n\"$dir/codex-code-mode-host\"\n", packageFile, platformFile)
 	if err := os.WriteFile(target, []byte(script), 0o700); err != nil {
 		t.Fatalf("write provider install fixture: %v", err)
 	}
@@ -124,8 +128,8 @@ func TestSandboxReadEnforce_AllowsExternalProviderExecutable(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("external provider startup under read sandbox: %v: %s", err, stderr.String())
 	}
-	if got := strings.TrimSpace(stdout.String()); got != "PACKAGE\nPLATFORM" {
-		t.Fatalf("external provider fixture output = %q, want package and platform data", got)
+	if got := strings.TrimSpace(stdout.String()); got != "PACKAGE\nPLATFORM\nHOST" {
+		t.Fatalf("external provider fixture output = %q, want package, platform, and companion data", got)
 	}
 }
 

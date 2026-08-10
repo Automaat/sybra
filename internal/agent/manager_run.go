@@ -1765,9 +1765,11 @@ func (m *Manager) resolveSandboxReadRoots(cfg *RunConfig) []string {
 
 // providerExecutableReadRoots returns the narrow external installation roots
 // needed to start providerName. The launcher itself is always included; add()
-// grants both its spelling and its resolved target. An npm launcher also needs
-// its package's adjacent metadata and optional platform package, so grant the
-// containing vendor scope (for example @openai) or unscoped package only.
+// grants both its spelling and its resolved target. Codex also ships a sibling
+// code-mode host that it execs after startup, so grant that exact executable
+// when present. An npm launcher needs its package's adjacent metadata and
+// optional platform package, so grant the containing vendor scope (for example
+// @openai) or unscoped package only.
 func providerExecutableReadRoots(providerName string) []string {
 	executable, err := exec.LookPath(providerName)
 	if err != nil {
@@ -1784,6 +1786,12 @@ func providerExecutableReadRoots(providerName string) []string {
 	}
 	if packageRoot := nodeModulesProviderRoot(resolved); packageRoot != "" {
 		roots = append(roots, packageRoot)
+	}
+	if providerName == providerid.Codex {
+		companion := filepath.Join(filepath.Dir(resolved), "codex-code-mode-host")
+		if info, statErr := os.Stat(companion); statErr == nil && !info.IsDir() {
+			roots = append(roots, companion)
+		}
 	}
 	return roots
 }
