@@ -224,6 +224,10 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 			return fmt.Errorf("prepare disposable staff-review workspace: %w", prepErr)
 		}
 		release = func() { r.verification.Release(lease) }
+		// The disposable clone is the execution cwd, not the durable identity
+		// of this review attempt. Preserve the canonical worktree for admission
+		// so restart/retry replay remains stable across fresh verifier clones.
+		cfg.AdmissionWorktree = dir
 		cfg.Dir = lease.WorkspaceDir
 		cfg.EphemeralSandboxHome = lease.ScratchDir
 		cfg.ReadOnlyDir = false

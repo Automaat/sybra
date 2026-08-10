@@ -509,6 +509,7 @@ func (a *Agent) toRecord() Record {
 		AttemptIntentID:         a.attemptIntent.IntentID,
 		AttemptTaskKey:          a.attemptIntent.TaskID,
 		AttemptTaskGen:          a.attemptIntent.TaskGeneration,
+		AttemptWorktree:         a.attemptIntent.Worktree,
 		AttemptWorkGen:          a.attemptIntent.WorktreeGeneration,
 		AttemptAccess:           a.attemptIntent.Access,
 		AttemptLeaseID:          a.attemptLease.ID,
@@ -567,7 +568,7 @@ func fromRecord(r Record) *Agent {
 		DecisionVersion: r.DecisionVersion,
 		attemptIntent: AttemptIntent{
 			IntentID: r.AttemptIntentID, TaskID: firstNonEmpty(r.AttemptTaskKey, r.TaskID),
-			TaskGeneration: r.AttemptTaskGen, Worktree: r.CWD,
+			TaskGeneration: r.AttemptTaskGen, Worktree: firstNonEmpty(r.AttemptWorktree, r.CWD),
 			WorktreeGeneration: r.AttemptWorkGen, Access: r.AttemptAccess,
 			Role: r.Role, Provider: r.Provider, CapabilityCertified: true,
 		},
@@ -2002,8 +2003,12 @@ type RunConfig struct {
 	// valid legacy generation. AttemptAccess selects mutation or observation;
 	// ReadOnlyDir also forces observation so a sandbox-read-only run can never
 	// acquire mutation ownership.
-	IntentID           string
-	AdmissionTaskKey   string
+	IntentID         string
+	AdmissionTaskKey string
+	// AdmissionWorktree is the stable logical worktree used for durable
+	// attempt identity. It can differ from Dir when a verifier executes in a
+	// disposable clone of the canonical task worktree.
+	AdmissionWorktree  string
 	AttemptAccess      AttemptAccess
 	TaskGeneration     uint64
 	WorktreeGeneration uint64

@@ -35,6 +35,7 @@ type Record struct {
 	AttemptIntentID string        `yaml:"attempt_intent_id,omitempty"`
 	AttemptTaskKey  string        `yaml:"attempt_task_key,omitempty"`
 	AttemptTaskGen  uint64        `yaml:"attempt_task_generation,omitempty"`
+	AttemptWorktree string        `yaml:"attempt_worktree,omitempty"`
 	AttemptWorkGen  uint64        `yaml:"attempt_worktree_generation,omitempty"`
 	AttemptAccess   AttemptAccess `yaml:"attempt_access,omitempty"`
 	AttemptLeaseID  string        `yaml:"attempt_lease_id,omitempty"`

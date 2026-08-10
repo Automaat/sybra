@@ -138,7 +138,7 @@ func attemptIntentForRun(cfg RunConfig, providerName string) AttemptIntent {
 	}
 	return AttemptIntent{
 		IntentID: intentID, TaskID: firstNonEmpty(cfg.AdmissionTaskKey, cfg.TaskID), TaskGeneration: cfg.TaskGeneration,
-		Worktree: cfg.Dir, WorktreeGeneration: cfg.WorktreeGeneration,
+		Worktree: firstNonEmpty(cfg.AdmissionWorktree, cfg.Dir), WorktreeGeneration: cfg.WorktreeGeneration,
 		Access: access, Role: cfg.Role, Provider: providerName,
 		CapabilityCertified: true,
 	}
@@ -337,7 +337,7 @@ func attemptIntentFromRecord(r Record) AttemptIntent {
 	}
 	return AttemptIntent{
 		IntentID: intentID, TaskID: firstNonEmpty(r.AttemptTaskKey, r.TaskID),
-		TaskGeneration: r.AttemptTaskGen, Worktree: r.CWD,
+		TaskGeneration: r.AttemptTaskGen, Worktree: firstNonEmpty(r.AttemptWorktree, r.CWD),
 		WorktreeGeneration: r.AttemptWorkGen, Access: access,
 		Role: r.Role, Provider: r.Provider, CapabilityCertified: true,
 	}
