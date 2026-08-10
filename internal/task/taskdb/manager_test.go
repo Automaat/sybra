@@ -443,12 +443,12 @@ func TestManager_SQLBackend_PlanDraftWriteRoundTripsAndSurvivesUnrelatedUpdate(t
 		}
 
 		saved, err := mgr.UpdateBy(created.ID, "workflow.engine.write_sidecar", task.Update{
-			PlanDraftWrite: &task.PlanDraftEntry{Name: "claude", Content: "draft content"},
+			PlanDraftWrite: &task.PlanDraftEntry{Name: "alpha", Content: "draft content"},
 		})
 		if err != nil {
 			t.Fatalf("UpdateBy: %v", err)
 		}
-		if saved.PlanDrafts["claude"] != "draft content" {
+		if saved.PlanDrafts["alpha"] != "draft content" {
 			t.Fatalf("returned task PlanDrafts = %+v, want claude=draft content", saved.PlanDrafts)
 		}
 
@@ -456,7 +456,7 @@ func TestManager_SQLBackend_PlanDraftWriteRoundTripsAndSurvivesUnrelatedUpdate(t
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
-		if got.PlanDrafts["claude"] != "draft content" {
+		if got.PlanDrafts["alpha"] != "draft content" {
 			t.Fatalf("re-read PlanDrafts = %+v, want claude=draft content — the draft never reached the database", got.PlanDrafts)
 		}
 
@@ -468,7 +468,7 @@ func TestManager_SQLBackend_PlanDraftWriteRoundTripsAndSurvivesUnrelatedUpdate(t
 		// that map already carries every existing entry before the new one
 		// is merged in, not just the one this specific call is writing.
 		if _, err := mgr.UpdateBy(created.ID, "workflow.engine.write_sidecar", task.Update{
-			PlanDraftWrite: &task.PlanDraftEntry{Name: "codex", Content: "second draft"},
+			PlanDraftWrite: &task.PlanDraftEntry{Name: "beta", Content: "second draft"},
 		}); err != nil {
 			t.Fatalf("second draft UpdateBy: %v", err)
 		}
@@ -476,7 +476,7 @@ func TestManager_SQLBackend_PlanDraftWriteRoundTripsAndSurvivesUnrelatedUpdate(t
 		if err != nil {
 			t.Fatalf("Get after second draft: %v", err)
 		}
-		if afterSecondDraft.PlanDrafts["claude"] != "draft content" || afterSecondDraft.PlanDrafts["codex"] != "second draft" {
+		if afterSecondDraft.PlanDrafts["alpha"] != "draft content" || afterSecondDraft.PlanDrafts["beta"] != "second draft" {
 			t.Fatalf("PlanDrafts after second draft = %+v, want both entries", afterSecondDraft.PlanDrafts)
 		}
 
@@ -489,7 +489,7 @@ func TestManager_SQLBackend_PlanDraftWriteRoundTripsAndSurvivesUnrelatedUpdate(t
 		if err != nil {
 			t.Fatalf("Get after unrelated update: %v", err)
 		}
-		if afterUnrelated.PlanDrafts["claude"] != "draft content" || afterUnrelated.PlanDrafts["codex"] != "second draft" {
+		if afterUnrelated.PlanDrafts["alpha"] != "draft content" || afterUnrelated.PlanDrafts["beta"] != "second draft" {
 			t.Fatalf("PlanDrafts after unrelated update = %+v, want both drafts still present", afterUnrelated.PlanDrafts)
 		}
 	})

@@ -755,12 +755,12 @@ func TestUpdateByPlanDraftWriteRoundTrips(t *testing.T) {
 	}
 
 	saved, err := m.UpdateBy(created.ID, "test", Update{
-		PlanDraftWrite: &PlanDraftEntry{Name: "claude", Content: "first draft"},
+		PlanDraftWrite: &PlanDraftEntry{Name: "alpha", Content: "first draft"},
 	})
 	if err != nil {
 		t.Fatalf("UpdateBy: %v", err)
 	}
-	if saved.PlanDrafts["claude"] != "first draft" {
+	if saved.PlanDrafts["alpha"] != "first draft" {
 		t.Fatalf("returned task PlanDrafts = %+v, want claude=first draft", saved.PlanDrafts)
 	}
 
@@ -768,19 +768,19 @@ func TestUpdateByPlanDraftWriteRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.PlanDrafts["claude"] != "first draft" {
+	if got.PlanDrafts["alpha"] != "first draft" {
 		t.Fatalf("re-read PlanDrafts = %+v, want claude=first draft", got.PlanDrafts)
 	}
 
 	// A second draft under a different name must not clobber the first —
 	// PlanDraftWrite is a merge-add, not a whole-map replace.
 	saved, err = m.UpdateBy(created.ID, "test", Update{
-		PlanDraftWrite: &PlanDraftEntry{Name: "codex", Content: "second draft"},
+		PlanDraftWrite: &PlanDraftEntry{Name: "beta", Content: "second draft"},
 	})
 	if err != nil {
 		t.Fatalf("second UpdateBy: %v", err)
 	}
-	if saved.PlanDrafts["claude"] != "first draft" || saved.PlanDrafts["codex"] != "second draft" {
+	if saved.PlanDrafts["alpha"] != "first draft" || saved.PlanDrafts["beta"] != "second draft" {
 		t.Fatalf("PlanDrafts after second write = %+v, want both entries", saved.PlanDrafts)
 	}
 }
@@ -792,12 +792,12 @@ func TestUpdateByPlanDraftWriteRoundTrips(t *testing.T) {
 func TestCreateFullByPlanDraftWriteWritesSidecarFile(t *testing.T) {
 	m, _ := newTestManager(t)
 	created, err := m.CreateFullBy("plan draft at create", "body", "headless", "test", Update{
-		PlanDraftWrite: &PlanDraftEntry{Name: "claude", Content: "draft content"},
+		PlanDraftWrite: &PlanDraftEntry{Name: "alpha", Content: "draft content"},
 	})
 	if err != nil {
 		t.Fatalf("CreateFullBy: %v", err)
 	}
-	if created.PlanDrafts["claude"] != "draft content" {
+	if created.PlanDrafts["alpha"] != "draft content" {
 		t.Fatalf("returned task PlanDrafts = %+v, want claude=draft content", created.PlanDrafts)
 	}
 
@@ -805,7 +805,7 @@ func TestCreateFullByPlanDraftWriteWritesSidecarFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanDrafts().List: %v", err)
 	}
-	if drafts["claude"] != "draft content" {
+	if drafts["alpha"] != "draft content" {
 		t.Fatalf("PlanDraftStore has %+v, want claude=draft content — sidecar file was not written", drafts)
 	}
 
@@ -813,7 +813,7 @@ func TestCreateFullByPlanDraftWriteWritesSidecarFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.PlanDrafts["claude"] != "draft content" {
+	if got.PlanDrafts["alpha"] != "draft content" {
 		t.Fatalf("re-read PlanDrafts = %+v, want claude=draft content", got.PlanDrafts)
 	}
 }
