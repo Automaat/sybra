@@ -47,10 +47,7 @@ type DeleteHook func(taskID string)
 // mirror's direct sidecar writes (Store()), and the file-watcher concerns
 // (OnExternalUpdate/ProbeMutationTransport/MutationTransportIdentity) are
 // not part of Persistence yet — see the follow-up issue linked from #3268.
-// commentPersist is the same seam for Comments specifically: nil until
-// SetCommentPersistence is called, in which case Comments() falls back to
-// store.Comments(), the file backend. A Manager always has store regardless
-// of which Persistence or CommentPersistence backs it.
+// commentPersist is the same seam for Comments specifically: nil (and Comments() falling back to store.Comments(), the file backend) until SetCommentPersistence is called. A Manager always has store regardless of which Persistence or CommentPersistence backs it.
 type Manager struct {
 	store          *Store
 	persist        Persistence
