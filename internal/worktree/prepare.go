@@ -699,7 +699,10 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 			return wtPath, nil
 		}
 		if t.WorktreeDir != "" {
-			return "", fmt.Errorf("adopted review worktree is not at current PR head %s", targetCommit)
+			if headErr != nil {
+				return "", fmt.Errorf("inspect adopted review worktree HEAD: %w", headErr)
+			}
+			return "", fmt.Errorf("adopted review worktree is at %s, not current PR head %s", currentCommit, targetCommit)
 		}
 		if m.hasLiveAgentOnly != nil && m.hasLiveAgentOnly(t.ID) {
 			return "", fmt.Errorf("refresh review worktree: %w", ErrAgentRunning)

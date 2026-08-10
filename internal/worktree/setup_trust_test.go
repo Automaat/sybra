@@ -192,6 +192,93 @@ func TestPrepareForReview_RefreshesAdvancedPRHead(t *testing.T) {
 	}
 }
 
+func TestPrepareForReview_AdoptedWorktreeMismatchReportsBothCommits(t *testing.T) {
+	h := prepareHarness(t, nil, 0)
+	srcGit := func(args ...string) string {
+		t.Helper()
+		full := append([]string{"-C", h.src}, args...)
+		out, err := exec.Command("git", full...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	const prNumber = 78
+	adoptedCommit := srcGit("rev-parse", "HEAD")
+	adoptedPath := filepath.Join(t.TempDir(), "adopted-review")
+	if out, err := exec.Command("git", "-c", "safe.bareRepository=all", "-C", h.proj.ClonePath, "worktree", "add", "--detach", adoptedPath, adoptedCommit).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(h.src, "new-head.txt"), []byte("new head\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", "new-head.txt")
+	srcGit("commit", "-m", "advance adopted review target")
+	targetCommit := srcGit("rev-parse", "HEAD")
+	srcGit("update-ref", "refs/pull/78/head", targetCommit)
+	h.m.prBranch = func(_ string, _ int) (string, error) { return "feature", nil }
+
+	tk, err := h.tasks.Create("adopted review mismatch", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id":   h.proj.ID,
+		"pr_number":    prNumber,
+		"worktree_dir": adoptedPath,
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	_, err = h.m.PrepareForReview(context.Background(), tk)
+	if err == nil {
+		t.Fatal("PrepareForReview: want adopted worktree mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), adoptedCommit) || !strings.Contains(err.Error(), targetCommit) {
+		t.Fatalf("PrepareForReview error = %q, want current %s and target %s", err, adoptedCommit, targetCommit)
+	}
+}
+
+func TestPrepareForReview_AdoptedWorktreeHeadFailurePreservesCause(t *testing.T) {
+	h := prepareHarness(t, nil, 0)
+	srcGit := func(args ...string) string {
+		t.Helper()
+		full := append([]string{"-C", h.src}, args...)
+		out, err := exec.Command("git", full...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	const prNumber = 79
+	srcGit("update-ref", "refs/pull/79/head", srcGit("rev-parse", "HEAD"))
+	h.m.prBranch = func(_ string, _ int) (string, error) { return "feature", nil }
+
+	tk, err := h.tasks.Create("invalid adopted review", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{
+		"project_id":   h.proj.ID,
+		"pr_number":    prNumber,
+		"worktree_dir": t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	_, err = h.m.PrepareForReview(context.Background(), tk)
+	if err == nil {
+		t.Fatal("PrepareForReview: want adopted HEAD inspection error, got nil")
+	}
+	if !strings.Contains(err.Error(), "inspect adopted review worktree HEAD") || !strings.Contains(err.Error(), "not a git repository") {
+		t.Fatalf("PrepareForReview error = %q, want contextualized git failure", err)
+	}
+}
+
 // TestPrepareForReview_SkipsDesktopBuildSetup is the regression for issue
 // #1527: PrepareForReview is read-only and never builds anything, so the
 // desktop production build step other roles' .sybra.yaml setup pulls in
