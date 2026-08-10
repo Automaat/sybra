@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"sync"
 	"testing"
@@ -131,6 +132,44 @@ func TestDispatchFromHumanRequiredForwardsToAssignedFollower(t *testing.T) {
 	}
 }
 
+// TestDispatchFromHumanRequiredForwardWritesSidecarFile is #3300's regression
+// test for the dispatch-from-human-required forwarding path, the sibling of
+// TestBlessTamperingForwardWritesSidecarFile — the two call sites are
+// hand-copied near-duplicates, so each needs its own coverage to catch a
+// future edit that swaps in the pre-merge task by mistake.
+func TestDispatchFromHumanRequiredForwardWritesSidecarFile(t *testing.T) {
+	stub := &followerPushStub{live: task.Task{
+		ID: "task-human-sidecar", Status: task.StatusHumanRequired, ProjectID: "owner/pet", AssignedNode: "pet-box",
+		Escalation:      *task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: *task.HumanRequiredOutcome(),
+		Plan:            "plan body",
+	}}
+	srv := stub.server(t)
+	cfg := &config.Config{Cluster: config.ClusterConfig{Role: config.ClusterRoleLeader, Followers: []config.Follower{{Name: "pet-box", Endpoints: []string{srv.URL}, Homes: []string{"owner/pet"}}}}}
+	roster, err := clusterlead.NewRoster(cfg, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaderTasks := newTaskManagerForMonitorCluster(t)
+	if _, _, err := leaderTasks.Put(stub.live); err != nil {
+		t.Fatal(err)
+	}
+	svc := &TaskService{tasks: leaderTasks, cfg: cfg, assigner: clusterlead.NewAssigner(cfg, leaderTasks, roster, func(string) bool { return false }, nil, discardLogger()), logger: discardLogger(), wg: &sync.WaitGroup{}}
+
+	if _, err := svc.DispatchFromHumanRequired("task-human-sidecar", "done", "completed remotely"); err != nil {
+		t.Fatalf("DispatchFromHumanRequired: %v", err)
+	}
+
+	planFile := leaderTasks.Store().Dir() + "/task-human-sidecar.plan.md"
+	data, err := os.ReadFile(planFile)
+	if err != nil {
+		t.Fatalf("plan sidecar file not written after forwarded dispatch: %v", err)
+	}
+	if string(data) != "plan body" {
+		t.Fatalf("plan sidecar content = %q, want %q", data, "plan body")
+	}
+}
+
 func TestUpdateTaskForwardsStatusToAssignedFollowerBeforeLeaderMirror(t *testing.T) {
 	stub := &followerPushStub{live: task.Task{ID: "task-status", Status: task.StatusInProgress, ProjectID: "owner/pet", AssignedNode: "pet-box"}}
 	srv := stub.server(t)
@@ -154,6 +193,42 @@ func TestUpdateTaskForwardsStatusToAssignedFollowerBeforeLeaderMirror(t *testing
 	}
 	if got.Status != task.StatusInReview || stub.live.Status != task.StatusInReview {
 		t.Fatalf("leader/follower status = %q/%q, want in-review", got.Status, stub.live.Status)
+	}
+}
+
+// TestUpdateTaskStatusForwardWritesSidecarFile is #3300's regression test for
+// the status-update forwarding path inside UpdateTask, the third of the
+// three hand-copied call sites — see
+// TestDispatchFromHumanRequiredForwardWritesSidecarFile's doc comment for why
+// each needs its own coverage.
+func TestUpdateTaskStatusForwardWritesSidecarFile(t *testing.T) {
+	stub := &followerPushStub{live: task.Task{
+		ID: "task-status-sidecar", Status: task.StatusInProgress, ProjectID: "owner/pet", AssignedNode: "pet-box",
+		Plan: "plan body",
+	}}
+	srv := stub.server(t)
+	cfg := &config.Config{Cluster: config.ClusterConfig{Role: config.ClusterRoleLeader, Followers: []config.Follower{{Name: "pet-box", Endpoints: []string{srv.URL}, Homes: []string{"owner/pet"}}}}}
+	roster, err := clusterlead.NewRoster(cfg, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaderTasks := newTaskManagerForMonitorCluster(t)
+	if _, _, err := leaderTasks.Put(stub.live); err != nil {
+		t.Fatal(err)
+	}
+	svc := &TaskService{tasks: leaderTasks, cfg: cfg, assigner: clusterlead.NewAssigner(cfg, leaderTasks, roster, func(string) bool { return false }, nil, discardLogger()), logger: discardLogger(), wg: &sync.WaitGroup{}}
+
+	if _, err := svc.UpdateTask("task-status-sidecar", map[string]any{"status": string(task.StatusInReview)}); err != nil {
+		t.Fatalf("UpdateTask: %v", err)
+	}
+
+	planFile := leaderTasks.Store().Dir() + "/task-status-sidecar.plan.md"
+	data, err := os.ReadFile(planFile)
+	if err != nil {
+		t.Fatalf("plan sidecar file not written after forwarded status update: %v", err)
+	}
+	if string(data) != "plan body" {
+		t.Fatalf("plan sidecar content = %q, want %q", data, "plan body")
 	}
 }
 
@@ -314,6 +389,59 @@ func TestBlessTamperingForwardsTransitionToAssignedFollower(t *testing.T) {
 	}
 	if got.Status != task.StatusReadyReview || !slices.Contains(got.Tags, workflow.TamperBlessedTag) {
 		t.Fatalf("leader result = status %q tags %v, want ready-review with %q", got.Status, got.Tags, workflow.TamperBlessedTag)
+	}
+}
+
+// TestBlessTamperingForwardWritesSidecarFile is #3300's regression test:
+// PutFnBy's plain whole-task write never touches sidecar files on the file
+// backend, so a request-triggered forwarding path that merges a follower's
+// reported task must write them separately, the same way the periodic
+// mirror reconcile already does — otherwise the follower's plan/review
+// content the merge just accepted is missing from disk until the next
+// reconcile tick catches up.
+func TestBlessTamperingForwardWritesSidecarFile(t *testing.T) {
+	stub := &followerPushStub{live: task.Task{
+		ID:              "task-bless-sidecar",
+		Status:          task.StatusHumanRequired,
+		StatusReason:    workflow.TamperFlaggedReasonPrefix + " added-skip",
+		ProjectID:       "owner/pet",
+		AssignedNode:    "pet-box",
+		Plan:            "plan body",
+		Escalation:      *task.PolicyRequired("test.fixture_tamper_review", "test fixture"),
+		AutonomyOutcome: *task.HumanRequiredOutcome(),
+	}}
+	srv := stub.server(t)
+
+	cfg := &config.Config{Cluster: config.ClusterConfig{
+		Role:      config.ClusterRoleLeader,
+		Followers: []config.Follower{{Name: "pet-box", Endpoints: []string{srv.URL}, Homes: []string{"owner/pet"}}},
+	}}
+	roster, err := clusterlead.NewRoster(cfg, discardLogger())
+	if err != nil || roster == nil {
+		t.Fatalf("NewRoster: roster=%v err=%v", roster, err)
+	}
+	leaderTasks := newTaskManagerForMonitorCluster(t)
+	if _, _, err := leaderTasks.Put(stub.live); err != nil {
+		t.Fatalf("seed leader task: %v", err)
+	}
+	svc := &TaskService{
+		tasks:    leaderTasks,
+		cfg:      cfg,
+		assigner: clusterlead.NewAssigner(cfg, leaderTasks, roster, func(string) bool { return false }, nil, discardLogger()),
+		logger:   discardLogger(),
+	}
+
+	if _, err := svc.BlessTampering("task-bless-sidecar"); err != nil {
+		t.Fatalf("BlessTampering: %v", err)
+	}
+
+	planFile := leaderTasks.Store().Dir() + "/task-bless-sidecar.plan.md"
+	data, err := os.ReadFile(planFile)
+	if err != nil {
+		t.Fatalf("plan sidecar file not written after forwarded bless: %v", err)
+	}
+	if string(data) != "plan body" {
+		t.Fatalf("plan sidecar content = %q, want %q", data, "plan body")
 	}
 }
 
