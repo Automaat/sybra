@@ -424,3 +424,140 @@ func TestManager_SQLBackend_UnrelatedTaskUpdatePreservesComments(t *testing.T) {
 		}
 	})
 }
+
+// TestManager_SQLBackend_PlanDraftWriteRoundTripsAndSurvivesUnrelatedUpdate
+// is #3293's regression test, matching the shape #3287 added for comments:
+// a plan draft set via UpdateBy's PlanDraftWrite must reach the database
+// (not just a local file) and must still be there after an unrelated field
+// write, since PutFnBy recomputes every sidecar row from the in-memory
+// Task's current state — a plan draft that was never merged into that
+// state would silently vanish on the very next status/title/etc. update.
+func TestManager_SQLBackend_PlanDraftWriteRoundTripsAndSurvivesUnrelatedUpdate(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		mgr := newTestManager(t, d)
+
+		created, err := mgr.CreateBy("task", "body", "", "creator")
+		if err != nil {
+			t.Fatalf("CreateBy: %v", err)
+		}
+
+		saved, err := mgr.UpdateBy(created.ID, "workflow.engine.write_sidecar", task.Update{
+			PlanDraftWrite: &task.PlanDraftEntry{Name: "alpha", Content: "draft content"},
+		})
+		if err != nil {
+			t.Fatalf("UpdateBy: %v", err)
+		}
+		if saved.PlanDrafts["alpha"] != "draft content" {
+			t.Fatalf("returned task PlanDrafts = %+v, want alpha=draft content", saved.PlanDrafts)
+		}
+
+		got, err := mgr.Get(created.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.PlanDrafts["alpha"] != "draft content" {
+			t.Fatalf("re-read PlanDrafts = %+v, want alpha=draft content — the draft never reached the database", got.PlanDrafts)
+		}
+
+		// A second draft under a different name — the actual scenario this
+		// feature exists for, N parallel planners each writing their own
+		// draft for the same task — must not clobber the first: the
+		// database backend's write recomputes every sidecar row from the
+		// task's current in-memory PlanDrafts map, so this only holds if
+		// that map already carries every existing entry before the new one
+		// is merged in, not just the one this specific call is writing.
+		if _, err := mgr.UpdateBy(created.ID, "workflow.engine.write_sidecar", task.Update{
+			PlanDraftWrite: &task.PlanDraftEntry{Name: "beta", Content: "second draft"},
+		}); err != nil {
+			t.Fatalf("second draft UpdateBy: %v", err)
+		}
+		afterSecondDraft, err := mgr.Get(created.ID)
+		if err != nil {
+			t.Fatalf("Get after second draft: %v", err)
+		}
+		if afterSecondDraft.PlanDrafts["alpha"] != "draft content" || afterSecondDraft.PlanDrafts["beta"] != "second draft" {
+			t.Fatalf("PlanDrafts after second draft = %+v, want both entries", afterSecondDraft.PlanDrafts)
+		}
+
+		newTitle := "renamed"
+		if _, err := mgr.UpdateBy(created.ID, "operator", task.Update{Title: &newTitle}); err != nil {
+			t.Fatalf("unrelated UpdateBy: %v", err)
+		}
+
+		afterUnrelated, err := mgr.Get(created.ID)
+		if err != nil {
+			t.Fatalf("Get after unrelated update: %v", err)
+		}
+		if afterUnrelated.PlanDrafts["alpha"] != "draft content" || afterUnrelated.PlanDrafts["beta"] != "second draft" {
+			t.Fatalf("PlanDrafts after unrelated update = %+v, want both drafts still present", afterUnrelated.PlanDrafts)
+		}
+	})
+}
+
+// TestManager_SQLBackend_PlanDraftWriteRejectsUnsafeName proves the database
+// backend enforces the same name guard the file backend's PlanDraftStore.Write
+// always has — the file backend rejects a name that isn't safe as a
+// filename component, and a Persistence implementation that never touches
+// PlanDraftStore at all must not silently accept what the other backend
+// refuses.
+func TestManager_SQLBackend_PlanDraftWriteRejectsUnsafeName(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		mgr := newTestManager(t, d)
+		created, err := mgr.CreateBy("task", "body", "", "creator")
+		if err != nil {
+			t.Fatalf("CreateBy: %v", err)
+		}
+		_, err = mgr.UpdateBy(created.ID, "workflow.engine.write_sidecar", task.Update{
+			PlanDraftWrite: &task.PlanDraftEntry{Name: "a/b", Content: "x"},
+		})
+		if err == nil {
+			t.Fatal("expected an error for an unsafe plan draft name")
+		}
+	})
+}
+
+// TestManager_SQLBackend_PlanDraftWriteEmptyContentClearsEntry proves an
+// empty-content PlanDraftWrite deletes the map entry on the database backend
+// too, matching taskdb.SidecarsFromTask's own convention of omitting
+// empty-content sidecar rows — an in-memory Task that kept a "" entry would
+// diverge from what a fresh Get returns from the database.
+func TestManager_SQLBackend_PlanDraftWriteEmptyContentClearsEntry(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		mgr := newTestManager(t, d)
+		created, err := mgr.CreateBy("task", "body", "", "creator")
+		if err != nil {
+			t.Fatalf("CreateBy: %v", err)
+		}
+
+		saved, err := mgr.UpdateBy(created.ID, "workflow.engine.write_sidecar", task.Update{
+			PlanDraftWrite: &task.PlanDraftEntry{Name: "alpha", Content: "first draft"},
+		})
+		if err != nil {
+			t.Fatalf("UpdateBy write: %v", err)
+		}
+		if saved.PlanDrafts["alpha"] != "first draft" {
+			t.Fatalf("PlanDrafts after write = %+v, want alpha=first draft", saved.PlanDrafts)
+		}
+
+		saved, err = mgr.UpdateBy(created.ID, "workflow.engine.write_sidecar", task.Update{
+			PlanDraftWrite: &task.PlanDraftEntry{Name: "alpha", Content: ""},
+		})
+		if err != nil {
+			t.Fatalf("UpdateBy clear: %v", err)
+		}
+		if _, ok := saved.PlanDrafts["alpha"]; ok {
+			t.Fatalf("PlanDrafts after clear = %+v, want no alpha key", saved.PlanDrafts)
+		}
+
+		got, err := mgr.Get(created.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if _, ok := got.PlanDrafts["alpha"]; ok {
+			t.Fatalf("re-read PlanDrafts = %+v, want no alpha key", got.PlanDrafts)
+		}
+	})
+}

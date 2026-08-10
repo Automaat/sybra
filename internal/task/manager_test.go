@@ -741,3 +741,120 @@ func TestMutationTransportIdentityStableAcrossTaskUpdate(t *testing.T) {
 		t.Fatalf("an ordinary task update changed the mutation identity\nbefore: %q\nafter:  %q", before, after)
 	}
 }
+
+// TestUpdateByPlanDraftWriteRoundTrips proves a named plan draft set through
+// UpdateBy's PlanDraftWrite is both persisted (readable via PlanDrafts()
+// directly, the file store's own accessor) and reflected on the returned
+// and re-read Task's PlanDrafts map — the file backend's counterpart to the
+// database backend's taskdb.SidecarsFromTask/ApplySidecars round trip.
+func TestUpdateByPlanDraftWriteRoundTrips(t *testing.T) {
+	m, _ := newTestManager(t)
+	created, err := m.Create("plan draft task", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	saved, err := m.UpdateBy(created.ID, "test", Update{
+		PlanDraftWrite: &PlanDraftEntry{Name: "alpha", Content: "first draft"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateBy: %v", err)
+	}
+	if saved.PlanDrafts["alpha"] != "first draft" {
+		t.Fatalf("returned task PlanDrafts = %+v, want claude=first draft", saved.PlanDrafts)
+	}
+
+	got, err := m.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.PlanDrafts["alpha"] != "first draft" {
+		t.Fatalf("re-read PlanDrafts = %+v, want claude=first draft", got.PlanDrafts)
+	}
+
+	// A second draft under a different name must not clobber the first —
+	// PlanDraftWrite is a merge-add, not a whole-map replace.
+	saved, err = m.UpdateBy(created.ID, "test", Update{
+		PlanDraftWrite: &PlanDraftEntry{Name: "beta", Content: "second draft"},
+	})
+	if err != nil {
+		t.Fatalf("second UpdateBy: %v", err)
+	}
+	if saved.PlanDrafts["alpha"] != "first draft" || saved.PlanDrafts["beta"] != "second draft" {
+		t.Fatalf("PlanDrafts after second write = %+v, want both entries", saved.PlanDrafts)
+	}
+}
+
+// TestCreateFullByPlanDraftWriteWritesSidecarFile proves a plan draft set at
+// create time (via CreateFullBy's init Update, not a follow-up UpdateBy) is
+// actually written to its own sidecar file — CreatePrebuilt's own path,
+// separate from UpdateWithPrev, must not silently drop it.
+func TestCreateFullByPlanDraftWriteWritesSidecarFile(t *testing.T) {
+	m, _ := newTestManager(t)
+	created, err := m.CreateFullBy("plan draft at create", "body", "headless", "test", Update{
+		PlanDraftWrite: &PlanDraftEntry{Name: "alpha", Content: "draft content"},
+	})
+	if err != nil {
+		t.Fatalf("CreateFullBy: %v", err)
+	}
+	if created.PlanDrafts["alpha"] != "draft content" {
+		t.Fatalf("returned task PlanDrafts = %+v, want alpha=draft content", created.PlanDrafts)
+	}
+
+	drafts, err := m.PlanDrafts().List(created.ID)
+	if err != nil {
+		t.Fatalf("PlanDrafts().List: %v", err)
+	}
+	if drafts["alpha"] != "draft content" {
+		t.Fatalf("PlanDraftStore has %+v, want alpha=draft content — sidecar file was not written", drafts)
+	}
+
+	got, err := m.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.PlanDrafts["alpha"] != "draft content" {
+		t.Fatalf("re-read PlanDrafts = %+v, want alpha=draft content", got.PlanDrafts)
+	}
+}
+
+// TestUpdateByPlanDraftWriteEmptyContentClearsEntry proves an empty-content
+// PlanDraftWrite deletes the map entry rather than leaving a "" value behind
+// — PlanDraftStore.Write already deletes the sidecar file for empty content,
+// so the in-memory Task must agree or a caller inspecting the returned
+// snapshot sees a draft that the sidecar store itself no longer has.
+func TestUpdateByPlanDraftWriteEmptyContentClearsEntry(t *testing.T) {
+	m, _ := newTestManager(t)
+	created, err := m.Create("plan draft clear task", "body", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	saved, err := m.UpdateBy(created.ID, "test", Update{
+		PlanDraftWrite: &PlanDraftEntry{Name: "alpha", Content: "first draft"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateBy write: %v", err)
+	}
+	if saved.PlanDrafts["alpha"] != "first draft" {
+		t.Fatalf("PlanDrafts after write = %+v, want alpha=first draft", saved.PlanDrafts)
+	}
+
+	saved, err = m.UpdateBy(created.ID, "test", Update{
+		PlanDraftWrite: &PlanDraftEntry{Name: "alpha", Content: ""},
+	})
+	if err != nil {
+		t.Fatalf("UpdateBy clear: %v", err)
+	}
+	if _, ok := saved.PlanDrafts["alpha"]; ok {
+		t.Fatalf("PlanDrafts after clear = %+v, want no alpha key", saved.PlanDrafts)
+	}
+
+	got, err := m.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if _, ok := got.PlanDrafts["alpha"]; ok {
+		t.Fatalf("re-read PlanDrafts = %+v, want no alpha key", got.PlanDrafts)
+	}
+}

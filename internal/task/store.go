@@ -660,10 +660,23 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 // field construction above), minting its ID with the same atomic
 // collision-retry createNewTask always uses. sidecarInit carries only the
 // non-nil pointers for fields CreatePrebuilt should also write to their own
-// sidecar files — the values themselves are already set on t.
+// sidecar files — the values themselves are already set on t. PlanDrafts is
+// handled separately from sidecarInit because it is a map that can already
+// carry more than one entry on t (unlike every other sidecar field, whose
+// single Update pointer sidecarInit can forward directly), so each entry is
+// written straight from t.PlanDrafts instead of round-tripping through the
+// one-entry-at-a-time PlanDraftWrite field.
 func (s *Store) CreatePrebuilt(t Task, sidecarInit Update) (Task, error) {
 	if err := s.createNewTask(&t, func() error {
-		return s.writeSidecars(t.ID, sidecarInit, &t)
+		if err := s.writeSidecars(t.ID, sidecarInit, &t); err != nil {
+			return err
+		}
+		for name, content := range t.PlanDrafts {
+			if err := s.planDrafts.Write(t.ID, name, content); err != nil {
+				return fmt.Errorf("write plan draft %s: %w", name, err)
+			}
+		}
+		return nil
 	}); err != nil {
 		return Task{}, err
 	}
@@ -1065,6 +1078,19 @@ func (s *Store) writeSidecars(id string, u Update, t *Task) error {
 			return fmt.Errorf("write spec decision: %w", err)
 		}
 		t.SpecDecision = *u.SpecDecision
+	}
+	if u.PlanDraftWrite != nil {
+		if err := s.planDrafts.Write(id, u.PlanDraftWrite.Name, u.PlanDraftWrite.Content); err != nil {
+			return fmt.Errorf("write plan draft %s: %w", u.PlanDraftWrite.Name, err)
+		}
+		if u.PlanDraftWrite.Content == "" {
+			delete(t.PlanDrafts, u.PlanDraftWrite.Name)
+		} else {
+			if t.PlanDrafts == nil {
+				t.PlanDrafts = make(map[string]string)
+			}
+			t.PlanDrafts[u.PlanDraftWrite.Name] = u.PlanDraftWrite.Content
+		}
 	}
 	return nil
 }

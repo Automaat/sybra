@@ -13,6 +13,15 @@ import (
 	"github.com/Automaat/sybra/internal/workflow"
 )
 
+// PlanDraftEntry names the one plan draft PlanDraftWrite sets. Unlike every
+// other sidecar field, PlanDrafts is a map (one entry per parallel planner),
+// so a single Update can only ever add or replace one named entry, never
+// express the whole map at once.
+type PlanDraftEntry struct {
+	Name    string
+	Content string
+}
+
 // Update carries optional field changes for Store.Update.
 // A nil pointer means "leave unchanged"; a non-nil pointer applies the new value.
 // For Workflow: nil = unchanged; non-nil = overwrite. A clear goes through ClearWorkflow instead: a non-nil Workflow holding a nil inner pointer works in-process but not over the API, so it is never the right encoding.
@@ -64,6 +73,7 @@ type Update struct {
 	CurrentTestFailures   *string
 	AcceptanceLedger      *string
 	SpecDecision          *string
+	PlanDraftWrite        *PlanDraftEntry
 	CodeReviewVerdict     *string
 	MaxTurns              *int
 	ForkSubagent          *bool
@@ -87,7 +97,8 @@ func (u Update) writesSidecar() bool {
 		u.CodeReview != nil ||
 		u.CurrentTestFailures != nil ||
 		u.AcceptanceLedger != nil ||
-		u.SpecDecision != nil
+		u.SpecDecision != nil ||
+		u.PlanDraftWrite != nil
 }
 
 // Ptr returns a pointer to v. Convenience for building Update literals.
