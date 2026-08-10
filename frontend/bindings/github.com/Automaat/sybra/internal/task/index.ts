@@ -5,6 +5,7 @@ export {
     AgentRun,
     Attachment,
     DepCondition,
+    PlanDraftEntry,
     Priority,
     ReviewComment,
     Task,

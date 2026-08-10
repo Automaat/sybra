@@ -276,6 +276,37 @@ export class DepCondition {
 }
 
 /**
+ * PlanDraftEntry names the one plan draft PlanDraftWrite sets. Unlike every
+ * other sidecar field, PlanDrafts is a map (one entry per parallel planner),
+ * so a single Update can only ever add or replace one named entry, never
+ * express the whole map at once.
+ */
+export class PlanDraftEntry {
+    "Name": string;
+    "Content": string;
+
+    /** Creates a new PlanDraftEntry instance. */
+    constructor($$source: Partial<PlanDraftEntry> = {}) {
+        if (!("Name" in $$source)) {
+            this["Name"] = "";
+        }
+        if (!("Content" in $$source)) {
+            this["Content"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new PlanDraftEntry instance from a string or object.
+     */
+    static createFrom($$source: any = {}): PlanDraftEntry {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new PlanDraftEntry($$parsedSource as Partial<PlanDraftEntry>);
+    }
+}
+
+/**
  * Priority is a task's dispatch priority. PriorityNone (the empty string) is
  * treated as the lowest priority, distinct from an unset/invalid value.
  */
@@ -1060,6 +1091,7 @@ export class Update {
     "CurrentTestFailures": string | null;
     "AcceptanceLedger": string | null;
     "SpecDecision": string | null;
+    "PlanDraftWrite": PlanDraftEntry | null;
     "CodeReviewVerdict": string | null;
     "MaxTurns": number | null;
     "ForkSubagent": boolean | null;
@@ -1212,6 +1244,9 @@ export class Update {
         if (!("SpecDecision" in $$source)) {
             this["SpecDecision"] = null;
         }
+        if (!("PlanDraftWrite" in $$source)) {
+            this["PlanDraftWrite"] = null;
+        }
         if (!("CodeReviewVerdict" in $$source)) {
             this["CodeReviewVerdict"] = null;
         }
@@ -1259,8 +1294,9 @@ export class Update {
         const $$createField13_0 = $$createType19;
         const $$createField17_0 = $$createType18;
         const $$createField35_0 = $$createType20;
-        const $$createField55_0 = $$createType21;
-        const $$createField56_0 = $$createType22;
+        const $$createField46_0 = $$createType22;
+        const $$createField56_0 = $$createType23;
+        const $$createField57_0 = $$createType24;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("Escalation" in $$parsedSource) {
             $$parsedSource["Escalation"] = $$createField5_0($$parsedSource["Escalation"]);
@@ -1280,11 +1316,14 @@ export class Update {
         if ("Workflow" in $$parsedSource) {
             $$parsedSource["Workflow"] = $$createField35_0($$parsedSource["Workflow"]);
         }
+        if ("PlanDraftWrite" in $$parsedSource) {
+            $$parsedSource["PlanDraftWrite"] = $$createField46_0($$parsedSource["PlanDraftWrite"]);
+        }
         if ("Attachments" in $$parsedSource) {
-            $$parsedSource["Attachments"] = $$createField55_0($$parsedSource["Attachments"]);
+            $$parsedSource["Attachments"] = $$createField56_0($$parsedSource["Attachments"]);
         }
         if ("EffectLog" in $$parsedSource) {
-            $$parsedSource["EffectLog"] = $$createField56_0($$parsedSource["EffectLog"]);
+            $$parsedSource["EffectLog"] = $$createField57_0($$parsedSource["EffectLog"]);
         }
         return new Update($$parsedSource as Partial<Update>);
     }
@@ -1312,5 +1351,7 @@ const $$createType17 = $Create.Nullable($$createType2);
 const $$createType18 = $Create.Nullable($$createType0);
 const $$createType19 = $Create.Nullable($$createType4);
 const $$createType20 = $Create.Nullable($$createType12);
-const $$createType21 = $Create.Nullable($$createType6);
-const $$createType22 = $Create.Nullable($$createType10);
+const $$createType21 = PlanDraftEntry.createFrom;
+const $$createType22 = $Create.Nullable($$createType21);
+const $$createType23 = $Create.Nullable($$createType6);
+const $$createType24 = $Create.Nullable($$createType10);
