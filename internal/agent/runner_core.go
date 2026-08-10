@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/Automaat/sybra/internal/events"
@@ -26,6 +27,7 @@ import (
 // prepareRunConfig; a nil cfg spawns unwrapped (e.g. in tests that construct a
 // command directly).
 func newProviderCmd(ctx context.Context, cfg *RunConfig, detached bool, name string, args ...string) *exec.Cmd {
+	name = canonicalProviderCommand(name, cfg)
 	wrappedName, wrappedArgs := wrapInvocation(name, args, cfg)
 	var cmd *exec.Cmd
 	if detached {
@@ -37,6 +39,32 @@ func newProviderCmd(ctx context.Context, cfg *RunConfig, detached bool, name str
 		configureGracefulShutdown(cmd)
 	}
 	return cmd
+}
+
+// canonicalProviderCommand launches an enforce-mode provider through its real
+// executable rather than a symlink spelling. Some providers locate mandatory
+// sibling helpers relative to argv[0]; Homebrew's Codex launcher is a symlink
+// while codex-code-mode-host exists only beside its resolved target. Keep
+// deterministic verifier commands untouched: cfg.provider identifies the
+// provider selected for this run, while DisableVerifierControl marks commands
+// such as git/tests that happen to share the process constructor.
+func canonicalProviderCommand(name string, cfg *RunConfig) string {
+	if cfg == nil || cfg.sandbox.mode != "enforce" || cfg.DisableVerifierControl || cfg.provider == nil || name != cfg.provider.Name() {
+		return name
+	}
+	executable, err := exec.LookPath(name)
+	if err != nil {
+		return name
+	}
+	abs, err := filepath.Abs(executable)
+	if err != nil {
+		return name
+	}
+	resolved, err := canonicalizeRoot(abs)
+	if err != nil {
+		return name
+	}
+	return resolved
 }
 
 // sandboxSpec carries the resolved OS-level process-sandbox posture and

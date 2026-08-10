@@ -97,7 +97,10 @@ func TestSandboxReadEnforce_AllowsExternalProviderExecutable(t *testing.T) {
 	if err := os.WriteFile(companion, []byte("#!/bin/sh\necho HOST\n"), 0o700); err != nil {
 		t.Fatalf("write provider companion fixture: %v", err)
 	}
-	script := fmt.Sprintf("#!/bin/sh\n/bin/cat %q %q\nresolved=$(/usr/bin/readlink \"$0\")\ndir=$(/usr/bin/dirname \"$resolved\")\n\"$dir/codex-code-mode-host\"\n", packageFile, platformFile)
+	// Match Codex's sibling discovery: derive the Code Mode host from the
+	// invoked executable spelling. newProviderCmd must therefore replace the
+	// public launcher symlink with target before entering Seatbelt.
+	script := fmt.Sprintf("#!/bin/sh\n/bin/cat %q %q\ndir=$(/usr/bin/dirname \"$0\")\n\"$dir/codex-code-mode-host\"\n", packageFile, platformFile)
 	if err := os.WriteFile(target, []byte(script), 0o700); err != nil {
 		t.Fatalf("write provider install fixture: %v", err)
 	}
