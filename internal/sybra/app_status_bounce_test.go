@@ -11,14 +11,14 @@ func TestStatusBounceTrippedRequiresRepeatedReciprocalTransitions(t *testing.T) 
 	const id = "task-bounce"
 
 	for range statusBounceLimit - 1 {
-		if a.statusBounceTripped(id, "human-required", "in-review") {
+		if a.statusBounceTripped(id, string(task.StatusHumanRequired), string(task.StatusInReview)) {
 			t.Fatal("tripped before both directions repeated")
 		}
-		if a.statusBounceTripped(id, "in-review", "human-required") {
+		if a.statusBounceTripped(id, string(task.StatusInReview), string(task.StatusHumanRequired)) {
 			t.Fatal("tripped before the repeated transition limit")
 		}
 	}
-	if !a.statusBounceTripped(id, "human-required", "in-review") {
+	if !a.statusBounceTripped(id, string(task.StatusHumanRequired), string(task.StatusInReview)) {
 		t.Fatal("did not trip after repeated reciprocal transitions")
 	}
 }
@@ -26,10 +26,10 @@ func TestStatusBounceTrippedRequiresRepeatedReciprocalTransitions(t *testing.T) 
 func TestStatusBounceTrippedIgnoresOneWayAndBlockedTransitions(t *testing.T) {
 	var a App
 	for range statusBounceLimit + 2 {
-		if a.statusBounceTripped("task-one-way", "todo", "in-progress") {
+		if a.statusBounceTripped("task-one-way", string(task.StatusTodo), string(task.StatusInProgress)) {
 			t.Fatal("one-way transition unexpectedly tripped")
 		}
-		if a.statusBounceTripped("task-blocked", "blocked", "in-progress") {
+		if a.statusBounceTripped("task-blocked", string(task.StatusBlocked), string(task.StatusInProgress)) {
 			t.Fatal("blocked transition unexpectedly tripped")
 		}
 	}
