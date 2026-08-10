@@ -204,6 +204,11 @@ type App struct {
 	// to the one that is still true.
 	deferredStatusMu      sync.Mutex
 	deferredStatusChanges map[string]struct{}
+	// statusBounce tracks reciprocal status transitions seen by this process.
+	// It is a circuit breaker for automation loops; the persisted audit trail
+	// remains the cross-restart diagnostic record.
+	statusBounceMu sync.Mutex
+	statusBounces  map[string]*statusBounceState
 	// maintenanceCleanupRunning prevents slow git cleanup from stacking across
 	// maintenance ticks. Cleanup itself runs outside the orchestrator loop.
 	maintenanceCleanupRunning atomic.Bool

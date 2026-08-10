@@ -63,13 +63,21 @@ type Manager struct {
 	logger       *slog.Logger
 	grantRevoker func(string) error
 	mu           sync.Mutex
+	// pending records leases prepared by this process which have not yet been
+	// bound to the agent created for them. Startup reconciliation runs in a
+	// goroutine and can otherwise remove that short-lived, intentionally
+	// unbound lease between Prepare and BeforeStart/BindAgent.
+	//
+	// This is deliberately process-local: after a restart an unbound lease is
+	// abandoned and Reconcile must clean it up as before.
+	pending map[string]struct{}
 }
 
 func New(root string, artifacts *artifact.Store, logger *slog.Logger) *Manager {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Manager{root: root, artifacts: artifacts, logger: logger}
+	return &Manager{root: root, artifacts: artifacts, logger: logger, pending: make(map[string]struct{})}
 }
 
 // SetGrantRevoker installs the durable-control cleanup used before an
@@ -127,6 +135,7 @@ func (m *Manager) Prepare(ctx context.Context, taskID, purpose, canonicalDir str
 		_ = os.RemoveAll(runDir)
 		return Lease{}, err
 	}
+	m.pending[lease.ID] = struct{}{}
 	return lease, nil
 }
 
@@ -148,6 +157,7 @@ func (m *Manager) PrepareScratch(taskID, purpose string) (Lease, error) {
 		_ = os.RemoveAll(runDir)
 		return Lease{}, err
 	}
+	m.pending[lease.ID] = struct{}{}
 	return lease, nil
 }
 
@@ -159,7 +169,11 @@ func (m *Manager) BindAgent(leaseID, agentID string) error {
 		return err
 	}
 	lease.AgentID = agentID
-	return m.saveLease(lease)
+	if err := m.saveLease(lease); err != nil {
+		return err
+	}
+	delete(m.pending, leaseID)
+	return nil
 }
 
 func (m *Manager) Lease(id string) (Lease, error) {
@@ -344,6 +358,7 @@ func captureWorkspaceDiff(ctx context.Context, workspaceDir, sourceSHA string) (
 func (m *Manager) Release(lease Lease) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	delete(m.pending, lease.ID)
 	m.removeLeaseRun(lease)
 	_ = os.Remove(m.leasePath(lease.ID))
 }
@@ -374,6 +389,9 @@ func (m *Manager) Reconcile(activeAgentIDs map[string]struct{}) {
 		lease, err := m.loadLease(strings.TrimSuffix(entry.Name(), ".json"))
 		if err != nil {
 			_ = os.Remove(filepath.Join(m.root, "leases", entry.Name()))
+			continue
+		}
+		if _, pending := m.pending[lease.ID]; pending {
 			continue
 		}
 		if _, ok := activeAgentIDs[lease.AgentID]; ok && lease.AgentID != "" {

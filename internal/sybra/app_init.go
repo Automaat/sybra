@@ -843,6 +843,9 @@ func (a *App) initStatusHook() {
 			}
 		}
 		a.logAudit(audit.EventTaskStatusChanged, taskID, "", data)
+		if a.maybeQuarantineStatusBounce(taskID, from, to) {
+			return
+		}
 
 		local := true
 		runsNoAgent := false
@@ -940,6 +943,59 @@ func (a *App) initStatusHook() {
 			}
 		}
 	})
+}
+
+func (a *App) maybeQuarantineStatusBounce(taskID, from, to string) bool {
+	if !a.statusBounceTripped(taskID, from, to) {
+		return false
+	}
+	reason := fmt.Sprintf("automatic status loop detected (%s → %s repeated); task paused", from, to)
+	if _, err := a.tasks.Apply(task.TransitionIntent{
+		TaskID: taskID, ToStatus: task.StatusBlocked, Actor: "app.status-bounce",
+		ExpectedStatus: task.Ptr(task.Status(to)),
+		Extra: task.Update{
+			StatusReason:    task.Ptr(reason),
+			Escalation:      task.MachineFailure("workflow.status_bounce", reason),
+			AutonomyOutcome: task.QuarantinedOutcome(),
+		},
+		OperatorOverride: true,
+	}); err != nil {
+		a.logger.Error("task.status-bounce.pause-failed", "task_id", taskID, "err", err)
+	} else {
+		a.logger.Warn("task.status-bounce.paused", "task_id", taskID, "from", from, "to", to)
+	}
+	return true
+}
+
+const statusBounceLimit = 3
+
+type statusBounceState struct {
+	edges map[string]int
+}
+
+// statusBounceTripped reports whether this transition completes a repeated
+// reciprocal loop (A→B and B→A). A single repeated transition is not enough:
+// bulk status edits and legitimate retries can repeat one direction, whereas
+// a reciprocal pair is the distinctive signature of competing automations.
+func (a *App) statusBounceTripped(taskID, from, to string) bool {
+	if taskID == "" || from == "" || to == "" || from == to ||
+		from == string(task.StatusBlocked) || to == string(task.StatusBlocked) {
+		return false
+	}
+	key := from + "\x00" + to
+	reverse := to + "\x00" + from
+	a.statusBounceMu.Lock()
+	defer a.statusBounceMu.Unlock()
+	if a.statusBounces == nil {
+		a.statusBounces = make(map[string]*statusBounceState)
+	}
+	state := a.statusBounces[taskID]
+	if state == nil {
+		state = &statusBounceState{edges: make(map[string]int)}
+		a.statusBounces[taskID] = state
+	}
+	state.edges[key]++
+	return state.edges[key] >= statusBounceLimit && state.edges[reverse] >= statusBounceLimit-1
 }
 
 func (a *App) closeLinkedIssueOnDone(taskID string) {

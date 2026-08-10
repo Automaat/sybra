@@ -95,3 +95,35 @@ func TestUpdateTask_InProgressNoWorkflowNoOp(t *testing.T) {
 		t.Errorf("status = %q, want in-progress", got.Status)
 	}
 }
+
+func TestUpdateTask_ReadyReviewDispatchesTerminalWorkflowByTrigger(t *testing.T) {
+	svc, a := setupTaskService(t)
+	tk, err := a.tasks.Create("retry review", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := &workflow.Execution{WorkflowID: "simple-task", State: workflow.ExecFailed}
+	if _, err := a.tasks.Update(tk.ID, task.Update{Workflow: &stale}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.tasks.Update(tk.ID, task.Update{
+		Status:          task.Ptr(task.StatusHumanRequired),
+		Escalation:      task.OperatorDecisionEvidence("test.fixture_human_required", "test fixture"),
+		AutonomyOutcome: task.HumanRequiredOutcome(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.UpdateTask(tk.ID, map[string]any{"status": string(task.StatusReadyReview)}); err != nil {
+		t.Fatal(err)
+	}
+	svc.wg.Wait()
+
+	got, err := a.tasks.Get(tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow == nil || got.Workflow.WorkflowID != "simple-task-review" {
+		t.Fatalf("workflow = %+v, want simple-task-review selected by ready-review trigger", got.Workflow)
+	}
+}

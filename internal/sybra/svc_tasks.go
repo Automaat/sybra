@@ -949,9 +949,9 @@ func (s *TaskService) startCreatedWorkflow(t task.Task) {
 // the testing workflow needs a clean slate (no in-flight agents or pending
 // human steps) so the user can't accidentally lose context by dragging.
 //
-// Moving a task to "in-progress" when its workflow is terminal (completed or
-// failed) and no agent is running restarts the workflow — allowing the user to
-// retry implementation after a human-required escalation.
+// Moving a task to a dispatching stage when its workflow is terminal (completed
+// or failed) and no agent is running restarts the workflow — allowing the user
+// to retry implementation, review, testing, or PR creation after a failed run.
 //
 //nolint:funlen // Field decoding and one atomic transition are intentionally audited together.
 func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, error) {
@@ -1075,17 +1075,16 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 		})
 	}
 
-	// When manually moved to in-progress with a terminal workflow and no live
-	// agent, dispatch via task.status_changed so the trigger system picks the
-	// right workflow for the new status. Naively restarting cur.Workflow.WorkflowID
-	// would replay whatever flow ran before — for tasks created on the
-	// pre-split monolithic `simple-task` (commit 3764ed9) this re-ran triage
-	// and flipped status back to `planning` instead of running implement.
-	// DispatchEvent matches against current trigger conditions, which is what
-	// the user wants: in-progress → simple-task-implement.
+	// When manually moved to a dispatching stage with a terminal workflow and
+	// no live agent, dispatch via task.status_changed so the trigger system
+	// picks the right workflow for the new status. Naively restarting
+	// cur.Workflow.WorkflowID would replay whatever flow ran before, rather
+	// than the workflow appropriate for the stage the operator selected.
+	// This backstop is needed when the local status hook was unavailable (for
+	// example, an update forwarded from another board process).
 	if s.workflowEngine != nil && s.workflowEngine.AutoDispatchEnabled() {
 		if newStatus, ok := updates["status"].(string); ok &&
-			newStatus == string(task.StatusInProgress) &&
+			isManualDispatchStatus(newStatus) &&
 			cur.Workflow != nil &&
 			(cur.Workflow.State == workflow.ExecCompleted || cur.Workflow.State == workflow.ExecFailed) &&
 			!s.agents.HasRunningAgentForTask(id) {
@@ -1107,6 +1106,15 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 	}
 
 	return t, nil
+}
+
+func isManualDispatchStatus(status string) bool {
+	switch task.Status(status) {
+	case task.StatusInProgress, task.StatusReadyReview, task.StatusTesting, task.StatusReadyPR:
+		return true
+	default:
+		return false
+	}
 }
 
 // fieldPushTimeout bounds pushFieldEditToFollower's remote round trip so an
