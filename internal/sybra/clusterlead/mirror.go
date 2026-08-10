@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"slices"
@@ -615,6 +616,34 @@ func (m *Mirror) writeSidecars(t task.Task) error {
 	if err := store.SpecDecisions().Write(t.ID, t.SpecDecision); err != nil {
 		return err
 	}
+	return writePlanDraftSidecars(store, t)
+}
+
+// writePlanDraftSidecars mirrors t.PlanDrafts onto the leader's local
+// PlanDraftStore files: unlike every other sidecar field above, a plan
+// draft is one of N entries in a map rather than a single string, so
+// bringing the leader's files in line with the follower's reported state
+// needs both writing what the follower has and deleting what it no longer
+// does — a name dropped by the follower (e.g. a re-plan's DeleteAll) must
+// not linger as a stale file the leader keeps serving.
+func writePlanDraftSidecars(store *task.Store, t task.Task) error {
+	existing, err := store.PlanDrafts().List(t.ID)
+	if err != nil {
+		return err
+	}
+	for name, content := range t.PlanDrafts {
+		if err := store.PlanDrafts().Write(t.ID, name, content); err != nil {
+			return err
+		}
+	}
+	for name := range existing {
+		if _, ok := t.PlanDrafts[name]; ok {
+			continue
+		}
+		if err := store.PlanDrafts().Delete(t.ID, name); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -661,6 +690,7 @@ func Merge(canonical, follower task.Task) (task.Task, bool) {
 	out.CurrentTestFailures = follower.CurrentTestFailures
 	out.AcceptanceLedger = follower.AcceptanceLedger
 	out.SpecDecision = follower.SpecDecision
+	out.PlanDrafts = maps.Clone(follower.PlanDrafts)
 	out.Attachments = follower.Attachments
 
 	out.MirrorRev = canonical.MirrorRev + 1
