@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"slices"
@@ -689,7 +690,7 @@ func Merge(canonical, follower task.Task) (task.Task, bool) {
 	out.CurrentTestFailures = follower.CurrentTestFailures
 	out.AcceptanceLedger = follower.AcceptanceLedger
 	out.SpecDecision = follower.SpecDecision
-	out.PlanDrafts = follower.PlanDrafts
+	out.PlanDrafts = maps.Clone(follower.PlanDrafts)
 	out.Attachments = follower.Attachments
 
 	out.MirrorRev = canonical.MirrorRev + 1
