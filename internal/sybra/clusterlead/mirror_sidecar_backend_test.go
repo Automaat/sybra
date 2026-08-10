@@ -266,7 +266,7 @@ func TestWriteMergedSidecarsSkipsStaleSupersededMerge(t *testing.T) {
 		t.Fatalf("WriteMergedSidecars(stale): %v", err)
 	}
 
-	planFile := tasks.Store().Dir() + "/task-stale-merge.plan.md"
+	planFile := filepath.Join(tasks.Store().Dir(), "task-stale-merge.plan.md")
 	data, err := os.ReadFile(planFile)
 	if err != nil {
 		t.Fatalf("plan sidecar file missing: %v", err)
@@ -323,7 +323,7 @@ func TestWriteMergedSidecarsRetriesTransientFailure(t *testing.T) {
 		t.Fatalf("sleeps = %d, want 1 (between attempt 1 and attempt 2)", sleeps)
 	}
 
-	planFile := tasks.Store().Dir() + "/task-retry.plan.md"
+	planFile := filepath.Join(tasks.Store().Dir(), "task-retry.plan.md")
 	data, err := os.ReadFile(planFile)
 	if err != nil {
 		t.Fatalf("plan sidecar file not written after retry: %v", err)
@@ -414,7 +414,7 @@ func TestWriteMergedSidecarsRetryDetectsSupersedingMergeMidRetry(t *testing.T) {
 		t.Fatalf("write attempts = %d, want 1 — the retry must have been skipped once superseded", attempts)
 	}
 
-	planFile := tasks.Store().Dir() + "/task-mid-retry-race.plan.md"
+	planFile := filepath.Join(tasks.Store().Dir(), "task-mid-retry-race.plan.md")
 	data, err := os.ReadFile(planFile)
 	if err != nil {
 		t.Fatalf("plan sidecar file missing: %v", err)
