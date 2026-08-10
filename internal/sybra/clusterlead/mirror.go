@@ -583,6 +583,23 @@ func (m *Mirror) writeSidecars(t task.Task) error {
 	return WriteMergedSidecars(m.tasks, t)
 }
 
+// sidecarWriteMaxAttempts/sidecarWriteRetryDelay bound WriteMergedSidecars'
+// retry of a failed write. Every write it does is idempotent (Write always
+// overwrites, Delete ignores not-exist), so retrying the whole sequence is
+// safe — this exists to ride out a transient I/O blip rather than leave t's
+// content permanently missing from disk, since #3308 found that nothing
+// else ever retries this write once Merge's staleness guard has moved past
+// the follower update that carried it.
+const sidecarWriteMaxAttempts = 3
+const sidecarWriteRetryDelay = 50 * time.Millisecond
+
+// sidecarWriteSleep and doWriteMergedSidecarsOnce are seams overridden in
+// tests so retry behavior (attempt counts, forced failures, a superseding
+// write landing mid-retry) can be exercised deterministically instead of by
+// racing real timers against real filesystem permission errors.
+var sidecarWriteSleep = time.Sleep
+var doWriteMergedSidecarsOnce = writeMergedSidecarsOnce
+
 // WriteMergedSidecars compensates for PutBy/PutFnBy's file-backend gap: the
 // file Store's plain whole-task write never touches the sidecar files, so a
 // caller that merges a follower's reported task with Merge and persists the
@@ -592,11 +609,55 @@ func (m *Mirror) writeSidecars(t task.Task) error {
 // SidecarsFromTask — and worse, it would leave stray, never-read files on
 // disk under a backend that no longer treats the tasks directory as
 // authoritative for this content, so it is skipped entirely there.
+//
+// The periodic mirror reconcile and any one of the three request-triggered
+// forwarding paths in internal/sybra/svc_tasks.go can call this for the
+// same task at once — those three RPC paths serialize against each other
+// via TaskService.followerStatusMu, but nothing serializes any of them
+// against the periodic reconcile's Mirror.applyMu, and Merge's staleness
+// guard only orders which merge wins the primary record, not which merge's
+// sidecar write finishes last. Before every attempt, including a retry,
+// this re-reads the task and skips entirely if a newer merge has already
+// landed (t.MirrorUpdatedAt is now behind the stored MirrorUpdatedAt):
+// re-checking on every attempt, not just once before the loop, is what
+// closes the window a retry's own sleep would otherwise reopen — a fresh
+// write landing during that sleep must still win over the stale one that
+// is about to retry. A Get that fails because the task no longer exists
+// (e.g. reconcileMissing trashed it in the same race) skips the write
+// outright rather than resurrecting orphaned sidecar files for a dead
+// task; any other Get error is treated as transient and retried like a
+// write failure would be.
 func WriteMergedSidecars(tasks *task.Manager, t task.Task) error {
 	if tasks == nil || !tasks.PersistsToFile() {
 		return nil
 	}
-	store := tasks.Store()
+	var lastErr error
+	for attempt := range sidecarWriteMaxAttempts {
+		if attempt > 0 {
+			sidecarWriteSleep(sidecarWriteRetryDelay)
+		}
+		if t.MirrorUpdatedAt != nil {
+			current, err := tasks.Get(t.ID)
+			switch {
+			case errors.Is(err, os.ErrNotExist):
+				return nil
+			case err != nil:
+				lastErr = err
+				continue
+			case current.MirrorUpdatedAt != nil && current.MirrorUpdatedAt.After(*t.MirrorUpdatedAt):
+				return nil
+			}
+		}
+		if err := doWriteMergedSidecarsOnce(tasks.Store(), t); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
+func writeMergedSidecarsOnce(store *task.Store, t task.Task) error {
 	if err := store.Plans().Write(t.ID, t.Plan); err != nil {
 		return err
 	}
