@@ -248,7 +248,11 @@ export function ListTaskSnapshotHistory(limit: number): $CancellablePromise<$mod
 }
 
 /**
- * ListTasks returns all tasks from the store.
+ * ListTasks returns the board projection of every task. Historical prompt and
+ * result text is intentionally omitted: cards need run metadata for cost/count
+ * badges, while TaskDetail immediately calls GetTask for the selected task.
+ * Returning that text here made every board refresh serialize the complete
+ * lifetime prompt history of every task (hundreds of MiB on a mature board).
  */
 export function ListTasks(): $CancellablePromise<task$0.Task[]> {
     return $Call.ByID(3360976520).then(($result: any) => {
