@@ -93,6 +93,7 @@ func buildAllowances() map[allowanceKey]allowance { //nolint:funlen // The expli
 	add(kindStringTruncation, "internal/task/slug.go", "Task slugs are regex-normalized to lowercase ASCII before enforcing the identifier limit.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/worktree/attempt.go", "Git revisions are hexadecimal ASCII and this produces a branch suffix.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/agent/manager_run.go", "UUID strings are canonical ASCII tokens; this slice selects the fixed-width short agent identifier.", map[string]int{"slice": 1})
+	add(kindStringTruncation, "internal/agent/manager_run.go", "Canonical filesystem paths are sliced only at ASCII filepath-separator boundaries returned by strings.LastIndex.", map[string]int{"slice": 2})
 	add(kindStringTruncation, "internal/loopagent/store.go", "UUID strings are canonical ASCII tokens; this slice selects the fixed-width short loop-agent identifier.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/sybra/app.go", "UUID strings are canonical ASCII tokens; this slice selects the fixed-width Kubernetes smoke-test identifier.", map[string]int{"slice": 1})
 	add(kindStringTruncation, "internal/task/comment.go", "UUID strings are canonical ASCII tokens; this slice selects the fixed-width short comment identifier.", map[string]int{"slice": 1})
