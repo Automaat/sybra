@@ -143,11 +143,11 @@ func TestHistory_SurvivesDeleteAndRestore(t *testing.T) {
 		if err := store.PutBy(t.Context(), sqlTask("abc12345", "kept"), nil, "operator", nil); err != nil {
 			t.Fatalf("PutBy: %v", err)
 		}
-		if err := store.Delete(t.Context(), "abc12345"); err != nil {
-			t.Fatalf("Delete: %v", err)
+		if err := store.DeleteBy(t.Context(), "abc12345", "deleter"); err != nil {
+			t.Fatalf("DeleteBy: %v", err)
 		}
-		if err := store.Restore(t.Context(), "abc12345"); err != nil {
-			t.Fatalf("Restore: %v", err)
+		if err := store.RestoreBy(t.Context(), "abc12345", "restorer"); err != nil {
+			t.Fatalf("RestoreBy: %v", err)
 		}
 
 		entries, err := store.History(t.Context(), HistoryQuery{TaskID: "abc12345"})
@@ -162,6 +162,12 @@ func TestHistory_SurvivesDeleteAndRestore(t *testing.T) {
 		}
 		if entries[1].Kind != ChangeDeleted || entries[2].Kind != ChangeRestored {
 			t.Errorf("kinds are %q then %q", entries[1].Kind, entries[2].Kind)
+		}
+		if entries[1].Actor != "deleter" {
+			t.Errorf("delete actor = %q, want %q", entries[1].Actor, "deleter")
+		}
+		if entries[2].Actor != "restorer" {
+			t.Errorf("restore actor = %q, want %q", entries[2].Actor, "restorer")
 		}
 	})
 }
@@ -250,6 +256,46 @@ func TestDelete_IsIdempotent(t *testing.T) {
 		}
 		if deletes != 1 {
 			t.Fatalf("three deletes recorded %d deletion entries, want 1", deletes)
+		}
+	})
+}
+
+// TestDeleteBy_IsIdempotentPerActor proves a no-op repeated DeleteBy drops
+// the later actor rather than recording it: the early return on an
+// already-deleted task skips appendHistoryTx entirely, before actor is ever
+// used.
+func TestDeleteBy_IsIdempotentPerActor(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		store, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatalf("NewSQLStore: %v", err)
+		}
+		if err := store.Put(t.Context(), sqlTask("abc12345", "first"), nil); err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		if err := store.DeleteBy(t.Context(), "abc12345", "first-deleter"); err != nil {
+			t.Fatalf("DeleteBy: %v", err)
+		}
+		if err := store.DeleteBy(t.Context(), "abc12345", "second-deleter"); err != nil {
+			t.Fatalf("DeleteBy: %v", err)
+		}
+
+		entries, err := store.History(t.Context(), HistoryQuery{TaskID: "abc12345"})
+		if err != nil {
+			t.Fatalf("history: %v", err)
+		}
+		var deletes []HistoryEntry
+		for i := range entries {
+			if entries[i].Kind == ChangeDeleted {
+				deletes = append(deletes, entries[i])
+			}
+		}
+		if len(deletes) != 1 {
+			t.Fatalf("two DeleteBy calls recorded %d deletion entries, want 1", len(deletes))
+		}
+		if deletes[0].Actor != "first-deleter" {
+			t.Errorf("delete actor = %q, want %q (second-deleter must not overwrite it)", deletes[0].Actor, "first-deleter")
 		}
 	})
 }

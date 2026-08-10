@@ -226,12 +226,20 @@ func (s *SQLStore) sidecars(ctx context.Context, id string) ([]Sidecar, error) {
 	return out, nil
 }
 
-// Delete marks a task deleted without removing it.
+// Delete marks a task deleted without removing it, recording no actor.
+// Mirrors the Put/PutBy split: a caller not attributing the change to anyone
+// uses this, a real mutation should call DeleteBy.
+func (s *SQLStore) Delete(ctx context.Context, id string) error {
+	return s.DeleteBy(ctx, id, "")
+}
+
+// DeleteBy marks a task deleted without removing it, and names actor in the
+// history entry the same way PutBy does for an ordinary write.
 //
 // Recoverable until retention passes, which is what the trash directory gave:
 // an accidental delete is the one mistake an operator cannot undo by hand once
 // the row is gone.
-func (s *SQLStore) Delete(ctx context.Context, id string) error {
+func (s *SQLStore) DeleteBy(ctx context.Context, id, actor string) error {
 	if s == nil {
 		return errors.New("task store is not configured")
 	}
@@ -249,12 +257,21 @@ func (s *SQLStore) Delete(ctx context.Context, id string) error {
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(softDeleteTask), db.TimeValue(time.Now().UTC()), id); err != nil {
 			return fmt.Errorf("delete task: %w", err)
 		}
-		return appendHistoryTx(ctx, s.db, tx, HistoryEntry{TaskID: id, Kind: ChangeDeleted, Snapshot: doc})
+		return appendHistoryTx(ctx, s.db, tx, HistoryEntry{TaskID: id, Actor: actor, Kind: ChangeDeleted, Snapshot: doc})
 	})
 }
 
-// Restore brings a deleted task back while it is still within retention.
+// Restore brings a deleted task back while it is still within retention,
+// recording no actor. Mirrors the Put/PutBy split: a caller not attributing
+// the change to anyone uses this, a real mutation should call RestoreBy.
 func (s *SQLStore) Restore(ctx context.Context, id string) error {
+	return s.RestoreBy(ctx, id, "")
+}
+
+// RestoreBy brings a deleted task back while it is still within retention,
+// and names actor in the history entry the same way PutBy does for an
+// ordinary write.
+func (s *SQLStore) RestoreBy(ctx context.Context, id, actor string) error {
 	if s == nil {
 		return errors.New("task store is not configured")
 	}
@@ -272,7 +289,7 @@ func (s *SQLStore) Restore(ctx context.Context, id string) error {
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(restoreTask), id); err != nil {
 			return fmt.Errorf("restore task: %w", err)
 		}
-		return appendHistoryTx(ctx, s.db, tx, HistoryEntry{TaskID: id, Kind: ChangeRestored, Snapshot: doc})
+		return appendHistoryTx(ctx, s.db, tx, HistoryEntry{TaskID: id, Actor: actor, Kind: ChangeRestored, Snapshot: doc})
 	})
 }
 
