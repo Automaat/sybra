@@ -180,7 +180,14 @@ func (s *SQLStore) Write(p Project) error {
 func (s *SQLStore) List() ([]Project, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), projectQueryTimeout)
 	defer cancel()
-	rows, err := s.db.QueryContext(ctx, selectProjects+s.db.OrderText("id"))
+	query := selectProjects + s.db.OrderText("id")
+	var rows *sql.Rows
+	var err error
+	if tx := s.active(); tx != nil {
+		rows, err = tx.QueryContext(ctx, s.db.Rebind(query))
+	} else {
+		rows, err = s.db.QueryContext(ctx, query)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}

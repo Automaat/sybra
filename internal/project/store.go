@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/fsutil"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/reject"
 	"gopkg.in/yaml.v3"
 )
@@ -348,6 +349,169 @@ func (s *Store) CreateMeta(rawURL string, ptype ProjectType) (Project, error) {
 		return Project{}, err
 	}
 	return p, nil
+}
+
+// localGitDirCheckTimeout bounds the rev-parse Adopt uses to confirm
+// clonePath is a real git directory. It is a local filesystem check, not a
+// network operation, so it needs nowhere near networkGitTimeout's budget.
+const localGitDirCheckTimeout = 5 * time.Second
+
+// Adopt registers a project pointing at an already-existing local bare
+// clone, without running a clone or contacting any remote. rawURL is
+// parsed the same way Create/CreateMeta parse it, to derive the ID/owner/repo
+// and for display — it is never dereferenced as a reachable remote, so a
+// placeholder value works for a fixture or an air-gapped install describing
+// a repo it already has on disk.
+//
+// clonePath must resolve under clonesDir, the same root Create computes a
+// clone path into. Every other registration path only ever writes a
+// server-derived ClonePath there, which is what makes Delete's unconditional
+// os.RemoveAll(p.ClonePath) safe; accepting an arbitrary caller-supplied path
+// here would let a caller adopt a project pointing anywhere on the serving
+// host and then delete it, RemoveAll and all. Bound to WithLocalOnly in
+// internal/sybra/services.go for the same reason: dispatched-agent callers
+// must not be able to reach this even scoped to clonesDir.
+//
+// Fails if a project with the same ID already exists, clonePath is already
+// registered against a different project, or clonePath is not a bare git
+// repository. A non-bare repo is rejected because every worktree operation
+// downstream treats ClonePath as the shared canonical repo and mutates its
+// refs as ordinary task lifecycle churn — adopting someone's working copy
+// would let Sybra do that to it.
+func (s *Store) Adopt(rawURL string, ptype ProjectType, clonePath string) (Project, error) {
+	owner, repo, err := ParseGitHubURL(rawURL)
+	if err != nil {
+		return Project{}, reject.New("%w", err)
+	}
+	if ptype == "" {
+		ptype = ProjectTypePet
+	}
+	if ptype != ProjectTypePet && ptype != ProjectTypeWork {
+		return Project{}, reject.New("invalid project type: %s (must be pet or work)", ptype)
+	}
+	clonePath, err = s.resolveAdoptableClonePath(clonePath)
+	if err != nil {
+		return Project{}, err
+	}
+
+	checkCtx, cancelCheck := context.WithTimeout(context.Background(), localGitDirCheckTimeout)
+	isBare, err := gitexec.Output(checkCtx, gitexec.Options{Dir: clonePath}, "rev-parse", "--is-bare-repository")
+	cancelCheck()
+	if err != nil {
+		return Project{}, reject.New("clone path %s is not a git repository: %w", clonePath, err)
+	}
+	if strings.TrimSpace(isBare) != "true" {
+		return Project{}, reject.New("clone path %s is not a bare git repository", clonePath)
+	}
+
+	id := owner + "/" + repo
+	unlockID, err := s.lock(id)
+	if err != nil {
+		return Project{}, err
+	}
+	defer unlockID()
+	// LockLocal keyed by clonePath serializes different IDs racing to adopt the same clone; not s.lock, whose DB-backed form holds one transaction per Store value and would self-deadlock nested under sqlite's single connection.
+	unlockClonePath := s.locker.LockLocal("clonepath:" + clonePath)
+	defer unlockClonePath()
+
+	if _, err := s.Get(id); err == nil {
+		return Project{}, reject.New("project %s already exists", id)
+	}
+	if err := s.rejectClonePathInUse(clonePath); err != nil {
+		return Project{}, err
+	}
+
+	// Its own context per call, not the rev-parse budget above: this is
+	// several sequential subprocesses plus the lock wait already spent, and
+	// tying it to a "confirm a local git dir" timeout produced spurious
+	// failures on a loaded host even though clonePath was perfectly valid.
+	setupCtx, cancelSetup := context.WithTimeout(context.Background(), networkGitTimeout)
+	defer cancelSetup()
+	if err := InstallSignoffHook(setupCtx, clonePath); err != nil {
+		return Project{}, fmt.Errorf("install signoff hook: %w", err)
+	}
+	if err := ConfigureCommitIdentity(setupCtx, clonePath); err != nil {
+		return Project{}, fmt.Errorf("configure commit identity: %w", err)
+	}
+	if err := DisableAutoMaintenance(setupCtx, clonePath); err != nil {
+		return Project{}, fmt.Errorf("disable auto maintenance: %w", err)
+	}
+	if err := ConfigureCommitSigning(setupCtx, clonePath, s.SigningPolicy()); err != nil {
+		return Project{}, fmt.Errorf("configure commit signing: %w", err)
+	}
+	// A bare clone with no remote.origin.fetch refspec leaves later `git fetch
+	// origin` calls a no-op against refs/remotes/origin/*, the same gap
+	// CloneBare closes for a freshly cloned repo.
+	if err := runBare(setupCtx, clonePath, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+		return Project{}, fmt.Errorf("configure origin fetch refspec: %w", err)
+	}
+
+	now := time.Now().UTC()
+	p := Project{
+		ID:              id,
+		Name:            repo,
+		Owner:           owner,
+		Repo:            repo,
+		URL:             rawURL,
+		ClonePath:       clonePath,
+		Type:            ptype,
+		Status:          ProjectStatusReady,
+		WorktreeBaseRef: WorktreeBaseRefFresh,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := s.writeFile(p); err != nil {
+		return Project{}, err
+	}
+	return p, nil
+}
+
+// resolveAdoptableClonePath cleans clonePath to an absolute, symlink-resolved
+// path and confirms it sits under clonesDir, the only root Delete's
+// os.RemoveAll is safe to run against. Resolving symlinks on both sides
+// closes a lexical-only check's gap: a symlink planted inside clonesDir
+// pointing outside it would otherwise pass a string-prefix comparison while
+// every git command run with Dir: clonePath (and Delete's RemoveAll) follows
+// the link to wherever it actually points.
+func (s *Store) resolveAdoptableClonePath(clonePath string) (string, error) {
+	clonePath = strings.TrimSpace(clonePath)
+	if clonePath == "" {
+		return "", reject.New("clone path is required")
+	}
+	abs, err := filepath.Abs(clonePath)
+	if err != nil {
+		return "", reject.New("resolve clone path %s: %w", clonePath, err)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", reject.New("clone path %s: %w", abs, err)
+	}
+	clonesDirResolved, err := filepath.EvalSymlinks(s.clonesDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve clones dir %s: %w", s.clonesDir, err)
+	}
+	rel, err := filepath.Rel(clonesDirResolved, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", reject.New("clone path %s must be under %s", abs, s.clonesDir)
+	}
+	return resolved, nil
+}
+
+// rejectClonePathInUse refuses an Adopt whose clonePath already backs a
+// different registered project, so two IDs can never alias one physical
+// repo — cleanup for either would then run against the other's refs and
+// worktrees with nothing aware of the aliasing.
+func (s *Store) rejectClonePathInUse(clonePath string) error {
+	projects, err := s.List()
+	if err != nil {
+		return fmt.Errorf("check clone path in use: %w", err)
+	}
+	for i := range projects {
+		if projects[i].ClonePath == clonePath {
+			return reject.New("clone path %s is already registered to project %s", clonePath, projects[i].ID)
+		}
+	}
+	return nil
 }
 
 // publishClone atomically makes a completed temporary clone visible only if

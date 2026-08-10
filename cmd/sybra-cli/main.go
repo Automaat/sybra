@@ -1995,7 +1995,7 @@ func filterProject(tasks []task.Task, projectID string) []task.Task {
 
 func cmdProject(ps projectBoard, args []string, jsonOut bool) int {
 	if len(args) == 0 {
-		return fatal(jsonOut, "usage: project <list|get|create|update|delete> [flags]")
+		return fatal(jsonOut, "usage: project <list|get|create|adopt|update|delete> [flags]")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
@@ -2005,6 +2005,8 @@ func cmdProject(ps projectBoard, args []string, jsonOut bool) int {
 		return cmdProjectGet(ps, rest, jsonOut)
 	case "create":
 		return cmdProjectCreate(ps, rest, jsonOut)
+	case "adopt":
+		return cmdProjectAdopt(ps, rest, jsonOut)
 	case "update":
 		return cmdProjectUpdate(ps, rest, jsonOut)
 	case "delete":
@@ -2068,6 +2070,36 @@ func cmdProjectCreate(ps projectBoard, args []string, jsonOut bool) int {
 		return printJSON(p)
 	}
 	fmt.Printf("Created project %s\n", p.ID)
+	return 0
+}
+
+// cmdProjectAdopt registers a project pointing at a clone that already
+// exists on disk, without cloning or contacting a remote — for a fixture or
+// an air-gapped install describing a repo it already has locally. --url is
+// still required: it is the only source of the owner/repo ID, but it is
+// never dereferenced as a reachable remote.
+func cmdProjectAdopt(ps projectBoard, args []string, jsonOut bool) int {
+	fs := flag.NewFlagSet("project adopt", flag.ContinueOnError)
+	url := fs.String("url", "", "GitHub-shaped repository URL, used only to derive the owner/repo ID (required)")
+	clonePath := fs.String("clone-path", "", "path to an existing local git clone (required)")
+	ptype := fs.String("type", "pet", "project type: pet|work")
+	if err := fs.Parse(args); err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if *url == "" {
+		return fatal(jsonOut, "url is required")
+	}
+	if *clonePath == "" {
+		return fatal(jsonOut, "clone-path is required")
+	}
+	p, err := ps.Adopt(*url, project.ProjectType(*ptype), *clonePath)
+	if err != nil {
+		return fatal(jsonOut, "%v", err)
+	}
+	if jsonOut {
+		return printJSON(p)
+	}
+	fmt.Printf("Adopted project %s\n", p.ID)
 	return 0
 }
 
@@ -2829,6 +2861,9 @@ func usageProjectAndOps() {
 	fmt.Fprintf(os.Stderr, `  project list
   project get <id>
   project create --url <github-url> [--type pet|work]
+  project adopt --url <github-url> --clone-path <path> [--type pet|work]
+           registers a project pointing at a clone that already exists on
+           disk; url only names the owner/repo, no remote is contacted
   project update <id> --type pet|work
   project delete <id>
 

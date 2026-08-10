@@ -220,6 +220,55 @@ func TestStore_DeleteRemovesTheRecordNotAFile(t *testing.T) {
 	})
 }
 
+// TestStoreAdopt_SQLBackend pins Adopt against a real database-backed store,
+// not just the file-backed one: SQLStore.Lock holds one transaction per
+// Store value rather than a stack, and sqlite caps the pool at a single
+// connection, so a second s.lock call nested inside the first would block
+// forever on a connection the still-open first transaction holds. A run
+// against the file backend alone cannot catch that, because file-backed
+// locking has no such single-connection ceiling.
+func TestStoreAdopt_SQLBackend(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		backend, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatalf("NewSQLStore: %v", err)
+		}
+		clonesDir := t.TempDir()
+		store, err := NewStoreWith(t.TempDir(), clonesDir, backend)
+		if err != nil {
+			t.Fatalf("NewStoreWith: %v", err)
+		}
+		clonePath := newBareRepoUnder(t, clonesDir, "existing.git")
+		wantClonePath, err := filepath.EvalSymlinks(clonePath)
+		if err != nil {
+			t.Fatalf("EvalSymlinks: %v", err)
+		}
+
+		type result struct {
+			p   Project
+			err error
+		}
+		done := make(chan result, 1)
+		go func() {
+			p, err := store.Adopt("https://github.com/owner/repo", ProjectTypePet, clonePath)
+			done <- result{p, err}
+		}()
+
+		select {
+		case r := <-done:
+			if r.err != nil {
+				t.Fatalf("Adopt: %v", r.err)
+			}
+			if r.p.ClonePath != wantClonePath {
+				t.Fatalf("ClonePath = %q, want %q", r.p.ClonePath, wantClonePath)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("Adopt did not return within 10s — likely deadlocked on nested locking")
+		}
+	})
+}
+
 // TestSQLStore_LockedCyclesDoNotOverlapPerProject is the cross-process property
 // an in-process mutex could not give.
 //

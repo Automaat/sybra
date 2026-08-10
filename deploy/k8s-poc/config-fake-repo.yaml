@@ -5,13 +5,12 @@ metadata:
   namespace: sybra-poc
 data:
   config.yaml: |
-    # The smoke seeds its project by writing a YAML into the projects directory
-    # after the server is up, which only the file backend reads: a database
-    # store reads rows, and the one-time file import has already run by then.
-    # This suite exercises the Kubernetes job runner, not storage, so it pins
-    # the backend it was written against rather than changing how it seeds.
+    # Exercises the Kubernetes job runner against the same backend a real
+    # deployment runs: the fixture project is registered through
+    # `sybra-cli project adopt` (see scripts/smoke-k3d.sh), not by writing a
+    # file into the projects directory, so it works on any backend.
     database:
-      backend: file
+      backend: sqlite
     agent:
       provider: claude
       model: sonnet

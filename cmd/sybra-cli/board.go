@@ -39,6 +39,7 @@ type projectBoard interface {
 	Get(id string) (project.Project, error)
 	RawType(id string) (project.ProjectType, error)
 	Create(rawURL string, ptype project.ProjectType) (project.Project, error)
+	Adopt(rawURL string, ptype project.ProjectType, clonePath string) (project.Project, error)
 	Update(id string, ptype project.ProjectType) (project.Project, error)
 	SetSetupCommands(id string, cmds []string) (project.Project, error)
 	Delete(id string) error
@@ -175,6 +176,13 @@ func (b *apiProjectBoard) RawType(id string) (project.ProjectType, error) {
 // command printed `ready`.
 func (b *apiProjectBoard) Create(rawURL string, ptype project.ProjectType) (project.Project, error) {
 	return callAPIWithin[project.Project](b.api, apiCloneTimeout, projectServiceName, "CreateProjectAndClone", rawURL, string(ptype))
+}
+
+// Adopt registers a project pointing at an already-existing local clone.
+// Synchronous like Create: there is no background step for the CLI to
+// watch, so the call either returns a ready project or fails.
+func (b *apiProjectBoard) Adopt(rawURL string, ptype project.ProjectType, clonePath string) (project.Project, error) {
+	return callAPI[project.Project](b.api, projectServiceName, "AdoptProject", rawURL, string(ptype), clonePath)
 }
 
 func (b *apiProjectBoard) Update(id string, ptype project.ProjectType) (project.Project, error) {
