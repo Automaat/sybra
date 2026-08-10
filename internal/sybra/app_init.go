@@ -523,11 +523,12 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 			t, err := a.tasks.Get(taskID)
 			return t.Generation, err == nil
 		},
-		LimitSink:   a.recordLimitSnapshot,
-		Artifacts:   a.artifacts,
-		SandboxHome: a.sandboxes.SybraHomeDir,
-		ControlHome: config.HomeDir(),
-		GhShimDir:   filepath.Join(config.HomeDir(), "shims"),
+		LimitSink:              a.recordLimitSnapshot,
+		Artifacts:              a.artifacts,
+		SandboxHome:            a.sandboxes.SybraHomeDir,
+		ControlHome:            config.HomeDir(),
+		GhShimDir:              filepath.Join(config.HomeDir(), "shims"),
+		AllowAmbientReviewAuth: a.cfg.GitHub.AllowAmbientReviewAuth,
 		ControlEvent: func(kind string, data map[string]any) {
 			a.logAudit(kind, "", "", data)
 		},

@@ -107,6 +107,47 @@ func TestTaskScopedReviewFailsWithoutRestrictedGitHubToken(t *testing.T) {
 	}
 }
 
+func TestTaskScopedReviewAllowsAmbientGitHubAuthWhenConfigured(t *testing.T) {
+	shimDir := t.TempDir()
+	m := &Manager{allowAmbientReviewAuth: true, ghShimDir: shimDir, logger: discardLogger()}
+	cfg := RunConfig{
+		TaskID: "task-review", Role: RoleReview, Dir: t.TempDir(), resolvedSandboxHome: t.TempDir(),
+		ExtraEnv: []string{"GH_TOKEN=operator-token", "GITHUB_TOKEN=operator-token"},
+	}
+	if err := m.injectGitAccess(&cfg); err != nil {
+		t.Fatalf("injectGitAccess() error = %v", err)
+	}
+	if got := verificationEnvValue(cfg.ExtraEnv, "GH_TOKEN"); got != "operator-token" {
+		t.Fatalf("GH_TOKEN = %q, want ambient operator credential", got)
+	}
+	for _, key := range []string{"GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1"} {
+		if got := verificationEnvValue(cfg.ExtraEnv, key); got != "" {
+			t.Fatalf("%s = %q, want no Sybra credential-helper override", key, got)
+		}
+	}
+}
+
+func TestTaskScopedReviewPrefersRestrictedGitHubTokenOverAmbientAuth(t *testing.T) {
+	m := &Manager{
+		allowAmbientReviewAuth: true,
+		ghVerifierAppToken:     func() string { return "restricted-token" },
+		logger:                 discardLogger(),
+	}
+	cfg := RunConfig{
+		TaskID: "task-review", Role: RoleReview, Dir: t.TempDir(), resolvedSandboxHome: t.TempDir(),
+		ExtraEnv: []string{"GH_TOKEN=operator-token", "GITHUB_TOKEN=operator-token"},
+	}
+	if err := m.injectGitAccess(&cfg); err != nil {
+		t.Fatalf("injectGitAccess() error = %v", err)
+	}
+	if got := verificationEnvValue(cfg.ExtraEnv, "GH_TOKEN"); got != "restricted-token" {
+		t.Fatalf("GH_TOKEN = %q, want restricted verifier credential", got)
+	}
+	if got := verificationEnvValue(cfg.ExtraEnv, "GIT_CONFIG_GLOBAL"); got != "/dev/null" {
+		t.Fatalf("GIT_CONFIG_GLOBAL = %q, want verifier credential isolation", got)
+	}
+}
+
 func verificationEnvValue(env []string, key string) string {
 	prefix := key + "="
 	value := ""

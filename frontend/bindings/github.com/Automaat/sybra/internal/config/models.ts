@@ -762,6 +762,15 @@ export class GitHubConfig {
     "app": GitHubAppConfig;
 
     /**
+     * AllowAmbientReviewAuth permits PR-review agents to use the machine's
+     * existing gh authentication when no restricted GitHub App verifier token
+     * is available. It is off by default: enabling it deliberately gives a
+     * verifier the operator's GitHub authority, although Sybra still blocks
+     * approval submissions and disables the verifier workspace's push remote.
+     */
+    "allowAmbientReviewAuth": boolean;
+
+    /**
      * NativeAutoMerge is a kill-switch for arming GitHub's native
      * `gh pr merge --auto` on pet-project PRs once Sybra's own review/fix
      * cycle is done and the base branch's protection supports it. It is an
@@ -855,6 +864,9 @@ export class GitHubConfig {
         }
         if (!("app" in $$source)) {
             this["app"] = (new GitHubAppConfig());
+        }
+        if (!("allowAmbientReviewAuth" in $$source)) {
+            this["allowAmbientReviewAuth"] = false;
         }
         if (!("nativeAutoMerge" in $$source)) {
             this["nativeAutoMerge"] = false;

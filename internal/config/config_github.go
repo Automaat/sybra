@@ -80,6 +80,12 @@ type GitHubConfig struct {
 	// agent gh shim, raising the REST ceiling to 15k/hr without parking stale
 	// tokens in long-lived agent environments. Unset = fall back to gh's own auth.
 	App GitHubAppConfig `yaml:"app" json:"app"`
+	// AllowAmbientReviewAuth permits PR-review agents to use the machine's
+	// existing gh authentication when no restricted GitHub App verifier token
+	// is available. It is off by default: enabling it deliberately gives a
+	// verifier the operator's GitHub authority, although Sybra still blocks
+	// approval submissions and disables the verifier workspace's push remote.
+	AllowAmbientReviewAuth bool `yaml:"allow_ambient_review_auth" json:"allowAmbientReviewAuth"`
 	// NativeAutoMerge is a kill-switch for arming GitHub's native
 	// `gh pr merge --auto` on pet-project PRs once Sybra's own review/fix
 	// cycle is done and the base branch's protection supports it. It is an

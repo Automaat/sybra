@@ -76,11 +76,14 @@ type Manager struct {
 	defaultProv   string
 	approvalAddr  string // localhost:port for the HTTP tool approval server
 	ghShimDir     string // dir holding the gh approval-guard shim, prepended to agent PATH
-	guardrails    Guardrails
-	bashTimeoutMs int
-	retryWatchdog int
-	defaultModel  string
-	fallbackModel string
+	// allowAmbientReviewAuth is an explicit operator opt-in for review agents
+	// to use the host's gh credentials instead of a restricted App token.
+	allowAmbientReviewAuth bool
+	guardrails             Guardrails
+	bashTimeoutMs          int
+	retryWatchdog          int
+	defaultModel           string
+	fallbackModel          string
 	// headlessSteerable gates whether headless claude runs launch with the
 	// stdin/stream-json shape that accepts mid-run steer messages. See
 	// RunConfig.HeadlessSteerable.
@@ -299,6 +302,10 @@ type ManagerConfig struct {
 	// agent's sandbox write roots (typically under config.HomeDir()) so a run
 	// cannot overwrite its own guard. Empty disables the shim.
 	GhShimDir string
+	// AllowAmbientReviewAuth lets review agents use the host's gh credentials
+	// when no restricted GitHub App verifier token is configured. This is an
+	// explicit opt-in because those credentials may have broader authority.
+	AllowAmbientReviewAuth bool
 }
 
 // ManagerRuntimeConfig holds settings that affect future runs and may change
@@ -365,6 +372,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		logDir:                 logDir,
 		approvalAddr:           cfg.ApprovalAddr,
 		ghShimDir:              resolveGhShimDir(cfg.GhShimDir, logger),
+		allowAmbientReviewAuth: cfg.AllowAmbientReviewAuth,
 		defaultProv:            defaultProv,
 		defaultModel:           cfg.Runtime.DefaultModel,
 		maxConcurrent:          cfg.Runtime.MaxConcurrent,
