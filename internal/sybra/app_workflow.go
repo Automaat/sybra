@@ -1282,6 +1282,11 @@ func (a *agentAdapter) launchDirectWithVerification(t task.Task, role agent.Role
 		}()
 		cfg.EphemeralSandboxHome = lease.ScratchDir
 		if lease.WorkspaceDir != "" {
+			// The verifier executes in a per-run clone, but durable admission
+			// identifies the workflow effect against its canonical worktree.
+			// Replaying the same effect with a fresh clone must not look like a
+			// different intent to the attempt ledger.
+			cfg.AdmissionWorktree = canonicalDir
 			cfg.Dir = lease.WorkspaceDir
 			// The clone is deliberately writable: its entire mutation footprint is
 			// captured and discarded, while the canonical checkout stays outside
