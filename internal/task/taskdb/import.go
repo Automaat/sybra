@@ -88,17 +88,23 @@ func Import(ctx context.Context, database *db.DB, dir, scope string, logger *slo
 // sidecarsOnDisk collects a task's companion documents by their filename
 // suffix, which is how the file store recognized them.
 func sidecarsOnDisk(dir, taskID string, logger *slog.Logger) []Sidecar {
+	// Suffixes must match sidecarSpecs/CommentStore's actual on-disk names
+	// (store.go, comment.go) exactly, not a guessed convention — three of
+	// these previously didn't (.plan-contract.md vs the real .json, .code-
+	// review.md vs the real .review.md, .spec-decisions.md vs the real
+	// singular .spec-decision.md), so PlanContract/CodeReview/SpecDecision
+	// silently never imported into the database for any existing install.
 	suffixes := map[string]string{
 		".plan.md":                  SidecarPlan,
-		".plan-contract.md":         SidecarPlanContract,
+		".plan-contract.json":       SidecarPlanContract,
 		".plan-critique.md":         SidecarPlanCritique,
 		".plan-research.md":         SidecarPlanResearch,
 		".plan-decisions.md":        SidecarPlanDecision,
 		".plan-brief.md":            SidecarPlanBrief,
-		".code-review.md":           SidecarCodeReview,
+		".review.md":                SidecarCodeReview,
 		".current-test-failures.md": SidecarCurrentTestFailures,
 		".acceptance-ledger.md":     SidecarAcceptanceLedger,
-		".spec-decisions.md":        SidecarSpecDecision,
+		".spec-decision.md":         SidecarSpecDecision,
 		".comments.json":            SidecarComments,
 	}
 	var out []Sidecar

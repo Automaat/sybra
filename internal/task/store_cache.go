@@ -237,7 +237,7 @@ func isOwnedListCacheFile(base, id string) bool {
 	if base == id+".md" || strings.HasPrefix(base, id+PlanDraftSidecarPrefix) {
 		return true
 	}
-	for _, suffix := range sidecarFileSuffixes {
+	for _, suffix := range SidecarFileSuffixes {
 		if base == id+suffix {
 			return true
 		}

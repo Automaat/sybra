@@ -30,6 +30,20 @@ func newTestManager(t *testing.T, d *db.DB) *task.Manager {
 // task mutation in the running application records a history entry" and "a
 // recorded change names the actor that made it", exercised through the real
 // Manager the app constructs, not the persistence layer directly.
+// TestManager_SQLBackend_PersistsToFileIsFalse proves a DB-backed Manager
+// correctly reports it is not file-backed — the discriminator
+// internal/sybra/clusterlead/mirror.go's writeSidecars uses to decide
+// whether its compensating direct-file sidecar write is still needed.
+func TestManager_SQLBackend_PersistsToFileIsFalse(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		mgr := newTestManager(t, d)
+		if mgr.PersistsToFile() {
+			t.Fatal("PersistsToFile() = true for a DB-backed Manager, want false")
+		}
+	})
+}
+
 func TestManager_SQLBackend_CreateRecordsHistoryWithActor(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
 		t.Helper()

@@ -572,8 +572,16 @@ func attachmentEquivalent(a, b task.Attachment) bool {
 		a.CreatedAt.Equal(b.CreatedAt)
 }
 
+// writeSidecars compensates for PutBy/PutFnBy's file-backend gap: the file
+// Store's plain whole-task write never touches the sidecar files, so the
+// caller writes them separately here. On the database backend this write
+// would be pure waste — taskdb's PutBy/PutFnBy already persist every
+// sidecar field in the same transaction as the task write via
+// SidecarsFromTask — and worse, it would leave stray, never-read files on
+// disk under a backend that no longer treats the tasks directory as
+// authoritative for this content, so it is skipped entirely there.
 func (m *Mirror) writeSidecars(t task.Task) error {
-	if m.tasks == nil {
+	if m.tasks == nil || !m.tasks.PersistsToFile() {
 		return nil
 	}
 	store := m.tasks.Store()

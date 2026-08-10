@@ -48,6 +48,13 @@ func newTestManager(t *testing.T) (*Manager, *recordingEmitter) {
 	return NewManager(store, emitter), emitter
 }
 
+func TestManager_PersistsToFileIsTrue(t *testing.T) {
+	m, _ := newTestManager(t)
+	if !m.PersistsToFile() {
+		t.Fatal("PersistsToFile() = false for a file-backed Manager, want true")
+	}
+}
+
 func TestMutationTransportIdentityStableAcrossProbeAndTracksPermissions(t *testing.T) {
 	m, _ := newTestManager(t)
 	created, err := m.Create("mutation identity", "body", "headless")
