@@ -28,21 +28,22 @@ func TestSandboxReadEnforce_AllowsNativeClaudeInstall(t *testing.T) {
 	}
 	_, wt := setupLinkedWorktree(t)
 	cfg := buildEnforceCfg(t, wt)
-	claudePath, err := exec.LookPath(providerid.Claude)
-	if err != nil {
-		t.Skip("claude not installed; Bun stderr path unexercised on this host")
-	}
-	claudeTarget, err := filepath.EvalSymlinks(claudePath)
-	if err != nil {
-		t.Fatalf("resolve claude executable: %v", err)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("resolve user home: %v", err)
-	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	nativeInstall := filepath.Join(home, ".local", "share", providerid.Claude)
-	if !strings.HasPrefix(claudeTarget, nativeInstall+string(filepath.Separator)) {
-		t.Skipf("claude resolves outside native install root: %s", claudeTarget)
+	claudeTarget := filepath.Join(nativeInstall, "versions", "test")
+	if err := os.MkdirAll(filepath.Dir(claudeTarget), 0o700); err != nil {
+		t.Fatalf("create native install fixture: %v", err)
+	}
+	if err := os.WriteFile(claudeTarget, []byte("#!/bin/sh\necho CLAUDE_OK\n"), 0o700); err != nil {
+		t.Fatalf("write native install fixture: %v", err)
+	}
+	claudePath := filepath.Join(home, ".local", "bin", providerid.Claude)
+	if err := os.MkdirAll(filepath.Dir(claudePath), 0o700); err != nil {
+		t.Fatalf("create native launcher fixture: %v", err)
+	}
+	if err := os.Symlink(claudeTarget, claudePath); err != nil {
+		t.Fatalf("link native launcher fixture: %v", err)
 	}
 	m := newReadModeManager("enforce")
 	cfg.Role = RoleReview
@@ -54,10 +55,15 @@ func TestSandboxReadEnforce_AllowsNativeClaudeInstall(t *testing.T) {
 
 	cmd := newDarwinSandboxCmd(cfg, claudePath, "--version")
 	cmd.Dir = wt
+	var stdout bytes.Buffer
 	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("native Claude/Bun startup under read sandbox: %v: %s", err, stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "CLAUDE_OK" {
+		t.Fatalf("native Claude fixture output = %q, want CLAUDE_OK", got)
 	}
 }
 
