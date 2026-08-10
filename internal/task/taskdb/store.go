@@ -78,6 +78,17 @@ const (
 		ON CONFLICT (task_id, kind, name) DO UPDATE SET
 			updated_at = excluded.updated_at, content = excluded.content`
 
+	// insertSidecarIfAbsent is upsertSidecar's non-clobbering twin: a
+	// backfill inserting a row it computed from a point-in-time read (e.g.
+	// an on-disk file that may be stale by the time the write lands) must
+	// never win a race against a concurrent legitimate writer's ON CONFLICT
+	// DO UPDATE — checking absence first and inserting second is not atomic
+	// against a writer that commits in between, so this makes "insert only
+	// if truly still absent" a single statement instead.
+	insertSidecarIfAbsent = `INSERT INTO task_sidecars (task_id, kind, name, updated_at, content)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (task_id, kind, name) DO NOTHING`
+
 	selectSidecars = `SELECT kind, name, content FROM task_sidecars WHERE task_id = ? ORDER BY kind, `
 
 	softDeleteTask = `UPDATE tasks SET deleted_at = ? WHERE id = ?`

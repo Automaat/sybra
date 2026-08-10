@@ -232,7 +232,7 @@ func TestImport_ReportsUnparseableAndStillCompletes(t *testing.T) {
 			t.Fatalf("write bad: %v", err)
 		}
 		// Sidecars belonging to the first task.
-		for suffix, want := range map[string]string{".plan.md": "# Plan\n", ".code-review.md": "# Review\n"} {
+		for suffix, want := range map[string]string{".plan.md": "# Plan\n", ".review.md": "# Review\n"} {
 			if err := os.WriteFile(filepath.Join(dir, "aaa11111"+suffix), []byte(want), 0o600); err != nil {
 				t.Fatalf("write sidecar: %v", err)
 			}
@@ -270,6 +270,61 @@ func TestImport_ReportsUnparseableAndStillCompletes(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(dir, "abb00000.md")); err != nil {
 			t.Errorf("the unreadable file was removed: %v", err)
+		}
+	})
+}
+
+// TestImport_MatchesEveryRealSidecarSuffix proves sidecarsOnDisk's suffix
+// map matches every actual on-disk filename the file store writes, not a
+// guessed convention. Three entries previously didn't: .plan-contract.md
+// (the file store writes .json), .code-review.md (the file store writes
+// .review.md), and .spec-decisions.md (the file store writes the singular
+// .spec-decision.md) — each one meant that sidecar kind silently never
+// imported into the database for any existing file-backed install.
+func TestImport_MatchesEveryRealSidecarSuffix(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		dir := t.TempDir()
+		data, err := task.MarshalStored(sqlTask("aaa11111", "task with every sidecar"))
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "aaa11111.md"), data, 0o600); err != nil {
+			t.Fatalf("write task: %v", err)
+		}
+		wantContent := map[string]string{
+			".plan.md":                  "plan",
+			".plan-contract.json":       `{"contract":true}`,
+			".plan-critique.md":         "critique",
+			".plan-research.md":         "research",
+			".plan-decisions.md":        "decisions",
+			".plan-brief.md":            "brief",
+			".review.md":                "review",
+			".current-test-failures.md": "failures",
+			".acceptance-ledger.md":     "ledger",
+			".spec-decision.md":         "spec decision",
+			".comments.json":            "[]",
+		}
+		for suffix, content := range wantContent {
+			if err := os.WriteFile(filepath.Join(dir, "aaa11111"+suffix), []byte(content), 0o600); err != nil {
+				t.Fatalf("write sidecar %s: %v", suffix, err)
+			}
+		}
+
+		if err := Import(t.Context(), d, dir, "home-a", slog.New(slog.DiscardHandler)); err != nil {
+			t.Fatalf("import: %v", err)
+		}
+
+		store, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatalf("NewSQLStore: %v", err)
+		}
+		_, sidecars, err := store.Get(t.Context(), "aaa11111")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if len(sidecars) != len(wantContent) {
+			t.Fatalf("imported %d sidecars, want %d (one per suffix on disk) — a suffix mismatch silently drops its sidecar kind", len(sidecars), len(wantContent))
 		}
 	})
 }

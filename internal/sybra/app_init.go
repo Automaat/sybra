@@ -2135,6 +2135,22 @@ func (a *App) openTaskPersistence(ctx context.Context) task.Persistence {
 		a.logger.Error("task.import", "err", err)
 		return nil
 	}
+	// A board that already ran the import above under the sidecarsOnDisk
+	// suffix bug fixed alongside this call is missing PlanContract/CodeReview/
+	// SpecDecision sidecars permanently otherwise, since dbimport.Once never
+	// retries a domain that already completed. This runs under its own
+	// marker so it costs nothing once it has caught every affected task up;
+	// a failure here does not fall back to the file backend the way the
+	// import above does — the core task data already imported correctly, so
+	// missing three sidecar kinds is a gap to log and retry next start, not
+	// a reason to abandon the whole database backend. Own timeout, not
+	// importCtx's already-derived deadline: a large first-time import can
+	// spend most of that budget before this even starts scanning.
+	backfillCtx, backfillCancel := context.WithTimeout(ctx, importTimeout)
+	defer backfillCancel()
+	if err := taskdb.BackfillMissingSidecarKinds(backfillCtx, a.database, a.tasksDir, a.importScope(), a.logger); err != nil {
+		a.logger.Error("task.import.sidecar_backfill", "err", err)
+	}
 	sqlStore, err := taskdb.NewSQLStore(a.database)
 	if err != nil {
 		a.logger.Error("task.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)

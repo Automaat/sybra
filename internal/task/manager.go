@@ -130,6 +130,12 @@ func eventPath(t Task) string {
 // Store returns the underlying Store. Use for operations not covered by Manager.
 func (m *Manager) Store() *Store { return m.store }
 
+// PersistsToFile reports whether task field mutations land on the local filesystem rather than a database. A caller that needs to know cannot use a Task's own FilePath for this — mirror.go's writeSidecars receives a Task reported by a peer over the network, and FilePath there reflects whichever backend the REPORTING node used, not this process's own configured backend — so this asks Manager directly instead.
+func (m *Manager) PersistsToFile() bool {
+	_, ok := m.persist.(*fileBackend)
+	return ok
+}
+
 // OnExternalUpdate is invoked by the file watcher when a task file is
 // modified outside this Manager — typically by `sybra-cli` running in
 // a separate process. It invalidates the store cache and, when the
