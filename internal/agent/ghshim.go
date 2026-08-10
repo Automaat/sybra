@@ -334,6 +334,17 @@ func (m *Manager) injectVerifierGhShim(cfg *RunConfig) {
 	cfg.ExtraEnv = prependPATH(cfg.ExtraEnv, filepath.Join(m.ghShimDir, "verifier"))
 }
 
+// injectAmbientReviewGhShim keeps the PR-approval guard while deliberately
+// preserving the operator's gh and Git credential configuration. Unlike the
+// regular shim, it must not inject Sybra's App-token credential helper.
+func (m *Manager) injectAmbientReviewGhShim(cfg *RunConfig) {
+	if m.ghShimDir == "" {
+		m.logger.Warn("agent.gh-shim.unguarded", "task_id", cfg.TaskID, "reason", "no ambient review gh shim")
+		return
+	}
+	cfg.ExtraEnv = prependPATH(cfg.ExtraEnv, m.ghShimDir)
+}
+
 func (m *Manager) syncGHVerifierAppToken() error {
 	if m.ghShimDir == "" {
 		return nil

@@ -624,11 +624,11 @@ func (m *Manager) resolveAttemptGeneration(cfg *RunConfig) error {
 
 func (m *Manager) injectGitAccess(cfg *RunConfig) error {
 	if cfg.Role.IsVerifier() {
-		if cfg.Role == RoleReview && m.allowsAmbientReviewAuth() {
+		if cfg.Role == RoleReview && m.allowsAmbientReviewAuth() && !m.hasVerifierGitHubToken() {
 			// This is a deliberately explicit escape hatch for an operator's
-			// local gh login. Keep the standard shim: it still blocks APPROVE,
+			// local gh login. Keep the approval guard: it still blocks APPROVE,
 			// while the disposable verifier workspace has its push remote disabled.
-			m.injectGhShim(cfg)
+			m.injectAmbientReviewGhShim(cfg)
 			return nil
 		}
 		if err := isolateVerifierGitCredentials(cfg); err != nil {
@@ -652,6 +652,13 @@ func (m *Manager) allowsAmbientReviewAuth() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.allowAmbientReviewAuth
+}
+
+func (m *Manager) hasVerifierGitHubToken() bool {
+	m.mu.RLock()
+	tokenFn := m.ghVerifierAppToken
+	m.mu.RUnlock()
+	return tokenFn != nil && tokenFn() != ""
 }
 
 func (m *Manager) injectVerifierGitHubToken(cfg *RunConfig) error {
