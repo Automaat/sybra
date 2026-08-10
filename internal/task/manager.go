@@ -697,7 +697,10 @@ func (m *Manager) RestoreBy(id, actor string) (Task, error) {
 	return t, nil
 }
 
-// ListTrash returns every trashed task generation, newest first.
+// ListTrash returns every trashed task generation, newest first. Always the
+// file store regardless of which Persistence backs task CRUD — the
+// database backend deliberately has no generation-directory equivalent
+// (see CLAUDE.md's "Task Trash-Generation History" decision, #3288).
 func (m *Manager) ListTrash() ([]TrashEntry, error) {
 	return m.store.ListTrash()
 }
