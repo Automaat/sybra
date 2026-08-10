@@ -289,7 +289,8 @@ func TestReconcileAdoptsLiveLeaseAndCleansAbandonedLease(t *testing.T) {
 }
 
 func TestReconcileRetainsLeasePreparedByThisProcessUntilBound(t *testing.T) {
-	mgr := New(filepath.Join(t.TempDir(), "verification"), nil, nil)
+	root := filepath.Join(t.TempDir(), "verification")
+	mgr := New(root, nil, nil)
 	lease, err := mgr.PrepareScratch("task-pending", "review")
 	if err != nil {
 		t.Fatal(err)
@@ -307,7 +308,7 @@ func TestReconcileRetainsLeasePreparedByThisProcessUntilBound(t *testing.T) {
 
 	// A fresh manager has no in-memory reservation, so an unbound lease from a
 	// previous process remains eligible for abandoned-lease cleanup.
-	fresh := New(filepath.Join(filepath.Dir(filepath.Dir(lease.ScratchDir))), nil, nil)
+	fresh := New(root, nil, nil)
 	fresh.Reconcile(nil)
 	if _, err := fresh.Lease(lease.ID); !os.IsNotExist(err) {
 		t.Fatalf("abandoned lease retained after restart: %v", err)

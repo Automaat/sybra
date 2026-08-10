@@ -843,22 +843,7 @@ func (a *App) initStatusHook() {
 			}
 		}
 		a.logAudit(audit.EventTaskStatusChanged, taskID, "", data)
-		if a.statusBounceTripped(taskID, from, to) {
-			reason := fmt.Sprintf("automatic status loop detected (%s → %s repeated); task paused", from, to)
-			if _, err := a.tasks.Apply(task.TransitionIntent{
-				TaskID: taskID, ToStatus: task.StatusBlocked, Actor: "app.status-bounce",
-				ExpectedStatus: task.Ptr(task.Status(to)),
-				Extra: task.Update{
-					StatusReason:    task.Ptr(reason),
-					Escalation:      task.MachineFailure("workflow.status_bounce", reason),
-					AutonomyOutcome: task.QuarantinedOutcome(),
-				},
-				OperatorOverride: true,
-			}); err != nil {
-				a.logger.Error("task.status-bounce.pause-failed", "task_id", taskID, "err", err)
-			} else {
-				a.logger.Warn("task.status-bounce.paused", "task_id", taskID, "from", from, "to", to)
-			}
+		if a.maybeQuarantineStatusBounce(taskID, from, to) {
 			return
 		}
 
@@ -958,6 +943,28 @@ func (a *App) initStatusHook() {
 			}
 		}
 	})
+}
+
+func (a *App) maybeQuarantineStatusBounce(taskID, from, to string) bool {
+	if !a.statusBounceTripped(taskID, from, to) {
+		return false
+	}
+	reason := fmt.Sprintf("automatic status loop detected (%s → %s repeated); task paused", from, to)
+	if _, err := a.tasks.Apply(task.TransitionIntent{
+		TaskID: taskID, ToStatus: task.StatusBlocked, Actor: "app.status-bounce",
+		ExpectedStatus: task.Ptr(task.Status(to)),
+		Extra: task.Update{
+			StatusReason:    task.Ptr(reason),
+			Escalation:      task.MachineFailure("workflow.status_bounce", reason),
+			AutonomyOutcome: task.QuarantinedOutcome(),
+		},
+		OperatorOverride: true,
+	}); err != nil {
+		a.logger.Error("task.status-bounce.pause-failed", "task_id", taskID, "err", err)
+	} else {
+		a.logger.Warn("task.status-bounce.paused", "task_id", taskID, "from", from, "to", to)
+	}
+	return true
 }
 
 const statusBounceLimit = 3

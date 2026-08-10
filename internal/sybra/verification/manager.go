@@ -358,6 +358,7 @@ func captureWorkspaceDiff(ctx context.Context, workspaceDir, sourceSHA string) (
 func (m *Manager) Release(lease Lease) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	delete(m.pending, lease.ID)
 	m.removeLeaseRun(lease)
 	_ = os.Remove(m.leasePath(lease.ID))
 }

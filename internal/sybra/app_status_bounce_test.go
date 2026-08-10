@@ -1,8 +1,8 @@
 package sybra
 
-import "testing"
-
 import (
+	"testing"
+
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -10,7 +10,7 @@ func TestStatusBounceTrippedRequiresRepeatedReciprocalTransitions(t *testing.T) 
 	var a App
 	const id = "task-bounce"
 
-	for i := 0; i < statusBounceLimit-1; i++ {
+	for range statusBounceLimit - 1 {
 		if a.statusBounceTripped(id, "human-required", "in-review") {
 			t.Fatal("tripped before both directions repeated")
 		}
@@ -25,7 +25,7 @@ func TestStatusBounceTrippedRequiresRepeatedReciprocalTransitions(t *testing.T) 
 
 func TestStatusBounceTrippedIgnoresOneWayAndBlockedTransitions(t *testing.T) {
 	var a App
-	for i := 0; i < statusBounceLimit+2; i++ {
+	for range statusBounceLimit + 2 {
 		if a.statusBounceTripped("task-one-way", "todo", "in-progress") {
 			t.Fatal("one-way transition unexpectedly tripped")
 		}
@@ -42,7 +42,7 @@ func TestStatusHookBlocksRepeatedReciprocalLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < statusBounceLimit; i++ {
+	for range statusBounceLimit {
 		if _, err := a.tasks.Apply(task.TransitionIntent{
 			TaskID: tk.ID, ToStatus: task.StatusHumanRequired, Actor: "test.status-bounce",
 			Extra: task.Update{
@@ -51,12 +51,12 @@ func TestStatusHookBlocksRepeatedReciprocalLoop(t *testing.T) {
 			},
 			OperatorOverride: true,
 		}); err != nil {
-			t.Fatalf("transition to human-required (%d): %v", i, err)
+			t.Fatalf("transition to human-required: %v", err)
 		}
 		if _, err := a.tasks.Apply(task.TransitionIntent{
 			TaskID: tk.ID, ToStatus: task.StatusInReview, Actor: "test.status-bounce", OperatorOverride: true,
 		}); err != nil {
-			t.Fatalf("transition to in-review (%d): %v", i, err)
+			t.Fatalf("transition to in-review: %v", err)
 		}
 	}
 	got, err := a.tasks.Get(tk.ID)
