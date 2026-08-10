@@ -574,7 +574,12 @@ func (a *App) Startup(ctx context.Context) error {
 	a.initBgops(appCtx, emit)
 
 	a.emitDegradedWarnings(emit)
-	a.tasks = task.NewManager(store, task.EmitterFunc(emit))
+	taskPersist := a.openTaskPersistence(appCtx)
+	if taskPersist != nil {
+		a.tasks = task.NewManagerWithPersistence(store, taskPersist, task.EmitterFunc(emit))
+	} else {
+		a.tasks = task.NewManager(store, task.EmitterFunc(emit))
+	}
 	// Arm the dispatch gate before the status hook is wired — initStatusHook's
 	// handler reaches dispatchStatusWorkflow/dispatchTaskCreatedWorkflow, and
 	// the file watcher (initFileWatcher, later in startLifecycle) also observes

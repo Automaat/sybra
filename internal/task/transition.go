@@ -18,6 +18,11 @@ import (
 // re-read the task and decide again rather than retry the same intent.
 var ErrTransitionConflict = errors.New("transition: precondition does not match current task state")
 
+// errIdempotentReplay is applyLocked's internal signal that the compute
+// callback recognized an already-consumed IdempotencyKey and the write must
+// be skipped — never returned to a caller of Apply/ApplyFn.
+var errIdempotentReplay = errors.New("transition: idempotent replay")
+
 // TransitionIntent is a request to move a task to ToStatus through the
 // single sanctioned status-mutation entrypoint, Manager.Apply. It is the
 // narrow command object every production status writer (workflow, review,
@@ -139,14 +144,7 @@ func (m *Manager) Apply(intent TransitionIntent) (TransitionResult, error) {
 	}
 
 	unlock := m.lock(id)
-
-	cur, err := m.store.Get(id)
-	if err != nil {
-		unlock()
-		return TransitionResult{}, err
-	}
-
-	outcome, err := m.applyLocked(cur, intent)
+	outcome, err := m.applyLocked(id, intent)
 	unlock()
 	if err != nil {
 		return TransitionResult{}, err
@@ -172,7 +170,7 @@ func (m *Manager) ApplyFn(id string, fn func(cur Task) (TransitionIntent, error)
 
 	unlock := m.lock(id)
 
-	cur, err := m.store.Get(id)
+	cur, err := m.persist.Get(id)
 	if err != nil {
 		unlock()
 		return TransitionResult{}, err
@@ -184,7 +182,7 @@ func (m *Manager) ApplyFn(id string, fn func(cur Task) (TransitionIntent, error)
 	}
 	intent.TaskID = id
 
-	outcome, err := m.applyLocked(cur, intent)
+	outcome, err := m.applyLocked(id, intent)
 	unlock()
 	if err != nil {
 		return TransitionResult{}, err
@@ -213,85 +211,97 @@ func (m *Manager) fireApplyOutcome(id string, outcome applyOutcome) {
 	}
 	if outcome.result.Applied {
 		metrics.TaskUpdated()
-		m.emitter.Emit(events.TaskUpdated, outcome.result.Task.FilePath)
+		m.emitter.Emit(events.TaskUpdated, eventPath(outcome.result.Task))
 	}
 }
 
-// applyLocked is Apply/ApplyFn's shared core. cur must be the task the caller
-// already read under its per-task lock, held for the duration of this call —
-// applyLocked performs the precondition checks and the store write, but never
-// fires the status hook or emits an event itself (see applyOutcome).
-func (m *Manager) applyLocked(cur Task, intent TransitionIntent) (applyOutcome, error) {
-	if intent.ToStatus == "" {
-		return applyOutcome{}, fmt.Errorf("transition: to_status is required")
-	}
-	actor := strings.TrimSpace(intent.Actor)
-	if actor == "" {
-		return applyOutcome{}, fmt.Errorf("transition: actor is required")
-	}
-	if intent.Extra.Status != nil {
-		return applyOutcome{}, fmt.Errorf("transition: intent.Extra.Status must be nil; set ToStatus instead")
-	}
-
-	if intent.ExpectedGeneration != nil && cur.Generation != *intent.ExpectedGeneration {
-		return applyOutcome{}, &ConflictError{
-			TaskID:             cur.ID,
-			ExpectedGeneration: intent.ExpectedGeneration,
-			ActualGeneration:   cur.Generation,
+// applyLocked is Apply/ApplyFn's shared core, run under the caller's per-task
+// lock. The precondition checks, the idempotency check, and the EffectLog
+// bookkeeping all run inside persist.UpdateFieldsBy's compute callback —
+// against cur as UpdateFieldsBy's own atomic locked read produces it, not a
+// value the caller read earlier — so a cross-process writer that landed
+// between Apply's entry and this call can never be raced: the precondition
+// either sees that writer's effect and reports a genuine conflict, or the
+// backend's row lock serializes behind it. compute signals an idempotent
+// replay by returning errIdempotentReplay; capturedCur (set on every
+// invocation, before any check can fail) is what Applied:false reports back.
+func (m *Manager) applyLocked(id string, intent TransitionIntent) (applyOutcome, error) {
+	var capturedCur Task
+	saved, prev, err := m.persist.UpdateFieldsBy(id, strings.TrimSpace(intent.Actor), func(cur Task) (Update, error) {
+		capturedCur = cur
+		if intent.ToStatus == "" {
+			return Update{}, fmt.Errorf("transition: to_status is required")
 		}
-	}
-	if intent.ExpectedStatus != nil && cur.Status != *intent.ExpectedStatus {
-		return applyOutcome{}, &ConflictError{
-			TaskID:         cur.ID,
-			ExpectedStatus: intent.ExpectedStatus,
-			ActualStatus:   cur.Status,
+		actor := strings.TrimSpace(intent.Actor)
+		if actor == "" {
+			return Update{}, fmt.Errorf("transition: actor is required")
 		}
-	}
-
-	if !intent.OperatorOverride && !IsTransitionAllowed(cur.Status, intent.ToStatus) {
-		return applyOutcome{}, &IllegalTransitionError{
-			TaskID: cur.ID,
-			From:   cur.Status,
-			To:     intent.ToStatus,
-			Actor:  actor,
+		if intent.Extra.Status != nil {
+			return Update{}, fmt.Errorf("transition: intent.Extra.Status must be nil; set ToStatus instead")
 		}
-	}
 
-	stepID := strings.TrimSpace(intent.IdempotencyKey)
-	if stepID != "" && statusEffectApplied(cur.EffectLog, cur.Generation-1, stepID) {
-		return applyOutcome{result: TransitionResult{Task: cur, Applied: false}}, nil
-	}
-	if err := validateHumanRequiredTransition(cur.Status, intent.ToStatus, intent.Extra); err != nil {
-		return applyOutcome{}, err
-	}
-
-	u := intent.Extra
-	toStatus := intent.ToStatus
-	u.Status = &toStatus
-
-	if stepID != "" {
-		now := time.Now().UTC()
-		log := slices.Clone(cur.EffectLog)
-		idempotencyID, ok := statusEffectIDForStep(log, cur.Generation, stepID)
-		if !ok {
-			idempotencyID = workflow.EffectID{
-				Generation: cur.Generation,
-				StepSeq:    nextStatusEffectSeq(cur),
-				StepID:     stepID,
-				Pos:        0,
+		if intent.ExpectedGeneration != nil && cur.Generation != *intent.ExpectedGeneration {
+			return Update{}, &ConflictError{
+				TaskID:             cur.ID,
+				ExpectedGeneration: intent.ExpectedGeneration,
+				ActualGeneration:   cur.Generation,
 			}
 		}
-		record := workflow.EffectRecord{ID: idempotencyID, IntentAt: now}
-		record.CompletedAt = &now
-		log = append(log, record)
-		if len(log) > maxTaskEffectLog {
-			log = log[len(log)-maxTaskEffectLog:]
+		if intent.ExpectedStatus != nil && cur.Status != *intent.ExpectedStatus {
+			return Update{}, &ConflictError{
+				TaskID:         cur.ID,
+				ExpectedStatus: intent.ExpectedStatus,
+				ActualStatus:   cur.Status,
+			}
 		}
-		u.EffectLog = &log
-	}
 
-	t, prev, err := m.store.UpdateWithPrev(cur.ID, u)
+		if !intent.OperatorOverride && !IsTransitionAllowed(cur.Status, intent.ToStatus) {
+			return Update{}, &IllegalTransitionError{
+				TaskID: cur.ID,
+				From:   cur.Status,
+				To:     intent.ToStatus,
+				Actor:  actor,
+			}
+		}
+
+		stepID := strings.TrimSpace(intent.IdempotencyKey)
+		if stepID != "" && statusEffectApplied(cur.EffectLog, cur.Generation-1, stepID) {
+			return Update{}, errIdempotentReplay
+		}
+		if err := validateHumanRequiredTransition(cur.Status, intent.ToStatus, intent.Extra); err != nil {
+			return Update{}, err
+		}
+
+		u := intent.Extra
+		toStatus := intent.ToStatus
+		u.Status = &toStatus
+
+		if stepID != "" {
+			now := time.Now().UTC()
+			log := slices.Clone(cur.EffectLog)
+			idempotencyID, ok := statusEffectIDForStep(log, cur.Generation, stepID)
+			if !ok {
+				idempotencyID = workflow.EffectID{
+					Generation: cur.Generation,
+					StepSeq:    nextStatusEffectSeq(cur),
+					StepID:     stepID,
+					Pos:        0,
+				}
+			}
+			record := workflow.EffectRecord{ID: idempotencyID, IntentAt: now}
+			record.CompletedAt = &now
+			log = append(log, record)
+			if len(log) > maxTaskEffectLog {
+				log = log[len(log)-maxTaskEffectLog:]
+			}
+			u.EffectLog = &log
+		}
+		return u, nil
+	})
 	if err != nil {
+		if errors.Is(err, errIdempotentReplay) {
+			return applyOutcome{result: TransitionResult{Task: capturedCur, Applied: false}}, nil
+		}
 		return applyOutcome{}, err
 	}
 
@@ -301,14 +311,14 @@ func (m *Manager) applyLocked(cur Task, intent TransitionIntent) (applyOutcome, 
 	)
 	if m.onStatusHook != nil {
 		prevStatus = string(prev)
-		newStat = string(t.Status)
+		newStat = string(saved.Status)
 		fireHook = newStat != prevStatus
 	}
 	if fireHook {
-		m.recordFiredStatus(cur.ID, newStat)
+		m.recordFiredStatus(id, newStat)
 	}
 	return applyOutcome{
-		result:     TransitionResult{Task: t, Applied: true},
+		result:     TransitionResult{Task: saved, Applied: true},
 		fireHook:   fireHook,
 		prevStatus: prevStatus,
 		newStatus:  newStat,
