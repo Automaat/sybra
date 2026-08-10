@@ -1083,10 +1083,14 @@ func (s *Store) writeSidecars(id string, u Update, t *Task) error {
 		if err := s.planDrafts.Write(id, u.PlanDraftWrite.Name, u.PlanDraftWrite.Content); err != nil {
 			return fmt.Errorf("write plan draft %s: %w", u.PlanDraftWrite.Name, err)
 		}
-		if t.PlanDrafts == nil {
-			t.PlanDrafts = make(map[string]string)
+		if u.PlanDraftWrite.Content == "" {
+			delete(t.PlanDrafts, u.PlanDraftWrite.Name)
+		} else {
+			if t.PlanDrafts == nil {
+				t.PlanDrafts = make(map[string]string)
+			}
+			t.PlanDrafts[u.PlanDraftWrite.Name] = u.PlanDraftWrite.Content
 		}
-		t.PlanDrafts[u.PlanDraftWrite.Name] = u.PlanDraftWrite.Content
 	}
 	return nil
 }

@@ -449,7 +449,7 @@ func TestManager_SQLBackend_PlanDraftWriteRoundTripsAndSurvivesUnrelatedUpdate(t
 			t.Fatalf("UpdateBy: %v", err)
 		}
 		if saved.PlanDrafts["alpha"] != "draft content" {
-			t.Fatalf("returned task PlanDrafts = %+v, want claude=draft content", saved.PlanDrafts)
+			t.Fatalf("returned task PlanDrafts = %+v, want alpha=draft content", saved.PlanDrafts)
 		}
 
 		got, err := mgr.Get(created.ID)
@@ -457,7 +457,7 @@ func TestManager_SQLBackend_PlanDraftWriteRoundTripsAndSurvivesUnrelatedUpdate(t
 			t.Fatalf("Get: %v", err)
 		}
 		if got.PlanDrafts["alpha"] != "draft content" {
-			t.Fatalf("re-read PlanDrafts = %+v, want claude=draft content — the draft never reached the database", got.PlanDrafts)
+			t.Fatalf("re-read PlanDrafts = %+v, want alpha=draft content — the draft never reached the database", got.PlanDrafts)
 		}
 
 		// A second draft under a different name — the actual scenario this
@@ -514,6 +514,50 @@ func TestManager_SQLBackend_PlanDraftWriteRejectsUnsafeName(t *testing.T) {
 		})
 		if err == nil {
 			t.Fatal("expected an error for an unsafe plan draft name")
+		}
+	})
+}
+
+// TestManager_SQLBackend_PlanDraftWriteEmptyContentClearsEntry proves an
+// empty-content PlanDraftWrite deletes the map entry on the database backend
+// too, matching taskdb.SidecarsFromTask's own convention of omitting
+// empty-content sidecar rows — an in-memory Task that kept a "" entry would
+// diverge from what a fresh Get returns from the database.
+func TestManager_SQLBackend_PlanDraftWriteEmptyContentClearsEntry(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		mgr := newTestManager(t, d)
+		created, err := mgr.CreateBy("task", "body", "", "creator")
+		if err != nil {
+			t.Fatalf("CreateBy: %v", err)
+		}
+
+		saved, err := mgr.UpdateBy(created.ID, "workflow.engine.write_sidecar", task.Update{
+			PlanDraftWrite: &task.PlanDraftEntry{Name: "alpha", Content: "first draft"},
+		})
+		if err != nil {
+			t.Fatalf("UpdateBy write: %v", err)
+		}
+		if saved.PlanDrafts["alpha"] != "first draft" {
+			t.Fatalf("PlanDrafts after write = %+v, want alpha=first draft", saved.PlanDrafts)
+		}
+
+		saved, err = mgr.UpdateBy(created.ID, "workflow.engine.write_sidecar", task.Update{
+			PlanDraftWrite: &task.PlanDraftEntry{Name: "alpha", Content: ""},
+		})
+		if err != nil {
+			t.Fatalf("UpdateBy clear: %v", err)
+		}
+		if _, ok := saved.PlanDrafts["alpha"]; ok {
+			t.Fatalf("PlanDrafts after clear = %+v, want no alpha key", saved.PlanDrafts)
+		}
+
+		got, err := mgr.Get(created.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if _, ok := got.PlanDrafts["alpha"]; ok {
+			t.Fatalf("re-read PlanDrafts = %+v, want no alpha key", got.PlanDrafts)
 		}
 	})
 }

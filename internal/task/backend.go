@@ -159,15 +159,19 @@ func applySidecarUpdateFields(t *Task, u Update) error {
 		if err := ValidatePlanDraftName(u.PlanDraftWrite.Name); err != nil {
 			return err
 		}
-		if t.PlanDrafts == nil {
-			t.PlanDrafts = make(map[string]string)
+		if u.PlanDraftWrite.Content == "" {
+			delete(t.PlanDrafts, u.PlanDraftWrite.Name)
+		} else {
+			if t.PlanDrafts == nil {
+				t.PlanDrafts = make(map[string]string)
+			}
+			t.PlanDrafts[u.PlanDraftWrite.Name] = u.PlanDraftWrite.Content
 		}
-		t.PlanDrafts[u.PlanDraftWrite.Name] = u.PlanDraftWrite.Content
 	}
 	return nil
 }
 
-// changedFields names u's non-nil fields for the history entry, using the same wire-facing names UpdateFromMap accepts, so a query against history and a mutation through the API describe a field the same way.
+// changedFields names u's non-nil fields for the history entry, using the same snake_case names UpdateFromMap accepts wherever a field is settable over that boundary at all, so a query against history and a mutation through the API describe a field the same way — a handful of fields (escalation, autonomy_outcome, clear_workflow, reconcile_failures, plan_draft) are written only by in-process callers and use their history name here with no UpdateFromMap counterpart to match.
 func changedFields(u Update) []string {
 	var out []string
 	add := func(set bool, name string) {
