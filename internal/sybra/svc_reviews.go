@@ -1,11 +1,13 @@
 package sybra
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/sybra/review"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // ReviewService exposes PR review operations as Wails-bound methods.
@@ -23,7 +25,13 @@ func (s *ReviewService) StartReview(taskID string) error {
 	if t.ProjectID == "" || t.PRNumber == 0 {
 		return fmt.Errorf("task %s has no linked PR", taskID)
 	}
-	return s.reviewer.StartReviewAgent(t, true)
+	if err := s.reviewer.StartReviewAgent(t, true); err != nil {
+		if errors.Is(err, workflow.ErrDispatchInFlight) {
+			return conflictError("review is already preparing for this task")
+		}
+		return err
+	}
+	return nil
 }
 
 // StartFixReview starts a headless fix-review agent that applies unresolved

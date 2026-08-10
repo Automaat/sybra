@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/github"
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/workflow"
@@ -1299,7 +1301,44 @@ func TestTaskService_EnrichFromPR_BranchAlreadyOwnedSkipsBranch(t *testing.T) {
 }
 
 func TestTaskService_EnrichFromPR_NotMyPRStartsPRReviewWorkflow(t *testing.T) {
-	svc, _ := setupTaskService(t)
+	svc, app := setupTaskService(t)
+
+	// pr-review now requires a certified PR-head checkout. Seed the smallest
+	// real local remote that exposes GitHub's refs/pull/<N>/head shape so this
+	// integration test still proves the workflow reaches agent dispatch.
+	src := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-b", "main", src},
+		{"-C", src, "config", "user.name", "Test"},
+		{"-C", src, "config", "user.email", "test@example.invalid"},
+		{"-C", src, "config", "commit.gpgsign", "false"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(src, "README.md"), []byte("review fixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"-C", src, "add", "README.md"},
+		{"-C", src, "commit", "-m", "seed review fixture"},
+		{"-C", src, "update-ref", "refs/pull/7/head", "HEAD"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	proj, err := app.projects.CreateMeta("https://github.com/owner/repo", project.ProjectTypePet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := project.CloneBare(context.Background(), src, proj.ClonePath); err != nil {
+		t.Fatalf("clone synthetic review project: %v", err)
+	}
+	if err := app.projects.MarkReady(proj.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	svc.fetchPR = func(string, int) (github.PullRequest, error) {
 		return github.PullRequest{

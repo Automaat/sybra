@@ -1356,6 +1356,16 @@ func CurrentCommit(ctx context.Context, worktreePath string) (string, error) {
 	return strings.TrimSpace(sha), nil
 }
 
+// CommitAtRef resolves ref to a full commit SHA in either a bare repository or
+// a worktree. The ^{commit} suffix rejects refs that do not peel to a commit.
+func CommitAtRef(ctx context.Context, repoPath, ref string) (string, error) {
+	sha, err := gitexec.Output(ctx, gitexec.Options{Dir: repoPath}, "rev-parse", "--verify", ref+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(sha), nil
+}
+
 // RemoteBranchHead returns the live head SHA of branch on remote via
 // `git ls-remote`. Returns ("", nil) when the remote branch does not exist.
 func RemoteBranchHead(ctx context.Context, worktreePath, remote, branch string) (string, error) {

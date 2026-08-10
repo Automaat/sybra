@@ -661,9 +661,6 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 	}
 
 	wtPath := m.PathFor(t)
-	if _, statErr := os.Stat(wtPath); statErr == nil {
-		return wtPath, nil
-	}
 
 	// The branch name is only a log annotation now (the checkout uses the PR
 	// head ref below), so a transient gh failure must not block worktree
@@ -691,6 +688,31 @@ func (m *Manager) PrepareForReview(ctx context.Context, t task.Task) (string, er
 			return "", fmt.Errorf("%w: fetch pr head: %w", ErrTransientFetch, err)
 		}
 		return "", fmt.Errorf("fetch pr head: %w", err)
+	}
+	targetCommit, err := project.CommitAtRef(ctx, proj.ClonePath, ref)
+	if err != nil {
+		return "", fmt.Errorf("resolve pr head: %w", err)
+	}
+	if _, statErr := os.Stat(wtPath); statErr == nil {
+		currentCommit, headErr := project.CurrentCommit(ctx, wtPath)
+		if headErr == nil && currentCommit == targetCommit {
+			return wtPath, nil
+		}
+		if t.WorktreeDir != "" {
+			if headErr != nil {
+				return "", fmt.Errorf("inspect adopted review worktree HEAD: %w", headErr)
+			}
+			return "", fmt.Errorf("adopted review worktree is at %s, not current PR head %s", currentCommit, targetCommit)
+		}
+		if m.hasLiveAgentOnly != nil && m.hasLiveAgentOnly(t.ID) {
+			return "", fmt.Errorf("refresh review worktree: %w", ErrAgentRunning)
+		}
+		if err := project.RemoveWorktreeReconcile(ctx, proj.ClonePath, wtPath); err != nil {
+			return "", fmt.Errorf("remove stale review worktree: %w", err)
+		}
+		m.logger.Info("review.worktree.refresh", "task_id", t.ID, "path", wtPath, "from", currentCommit, "to", targetCommit)
+	} else if !os.IsNotExist(statErr) {
+		return "", fmt.Errorf("stat review worktree: %w", statErr)
 	}
 	if err := project.CreateWorktreeDetached(ctx, proj.ClonePath, wtPath, ref); err != nil {
 		return "", fmt.Errorf("create review worktree: %w", err)

@@ -1,10 +1,12 @@
 package review
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 )
 
 // TestStartFixReviewAgentSkipsWhenDispatchClaimHeld guards the fix for the
@@ -126,4 +128,39 @@ func mustReviewTask(t *testing.T, tasks *task.Manager, title string) task.Task {
 		t.Fatal(err)
 	}
 	return updated
+}
+
+func TestStartReviewAgentReportsDispatchInFlight(t *testing.T) {
+	r, tasks := newOutboundTestHandler(t)
+
+	created, err := tasks.Create("Review PR", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := tasks.Update(created.ID, task.Update{
+		ProjectID: task.Ptr("Automaat/sybra"),
+		PRNumber:  task.Ptr(7),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	claim, ok := r.agents.TryClaimDispatch(updated.ID)
+	if !ok {
+		t.Fatal("claim dispatch")
+	}
+	defer claim.Release()
+
+	err = r.StartReviewAgent(updated, true)
+	if !errors.Is(err, workflow.ErrDispatchInFlight) {
+		t.Fatalf("StartReviewAgent() error = %v, want ErrDispatchInFlight", err)
+	}
+
+	fresh, err := tasks.Get(updated.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fresh.AgentRuns) != 0 {
+		t.Fatalf("AgentRuns = %d, want 0: a review agent must not start while another dispatch claim is held", len(fresh.AgentRuns))
+	}
 }

@@ -1403,6 +1403,13 @@ func (a *agentAdapter) cleanRetryWorktreeReady(t task.Task, taskID string, role 
 }
 
 func (a *agentAdapter) providedWorktreeNeedsRepair(t task.Task, taskID string, role agent.Role, dir string) (bool, error) {
+	// PR review retries carry the previous step's _dir. Even when that
+	// checkout is healthy, the PR may have advanced since the prior attempt;
+	// route it back through PrepareForReview so the detached HEAD is compared
+	// with the freshly fetched refs/pull/<N>/head.
+	if role == agent.RoleReview && t.PRNumber != 0 {
+		return true, nil
+	}
 	if !role.AuthorsCode() || strings.TrimSpace(t.Branch) == "" {
 		return false, nil
 	}
