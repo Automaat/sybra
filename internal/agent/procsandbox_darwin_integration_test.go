@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"bytes"
 	"compress/zlib"
 	"context"
 	"fmt"
@@ -12,7 +13,59 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
+
+// TestSandboxReadEnforce_AllowsNativeClaudeInstall reproduces the native
+// Claude installer layout: ~/.local/bin/claude points at a versioned Bun
+// executable under ~/.local/share/claude. The symlink alone is insufficient;
+// Bun reads its own image during startup and exits with EPERM before NDJSON
+// when the resolved install root is absent from the production allowlist.
+func TestSandboxReadEnforce_AllowsNativeClaudeInstall(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
+	}
+	_, wt := setupLinkedWorktree(t)
+	cfg := buildEnforceCfg(t, wt)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	nativeInstall := filepath.Join(home, ".local", "share", providerid.Claude)
+	claudeTarget := filepath.Join(nativeInstall, "versions", "test")
+	if err := os.MkdirAll(filepath.Dir(claudeTarget), 0o700); err != nil {
+		t.Fatalf("create native install fixture: %v", err)
+	}
+	if err := os.WriteFile(claudeTarget, []byte("#!/bin/sh\necho CLAUDE_OK\n"), 0o700); err != nil {
+		t.Fatalf("write native install fixture: %v", err)
+	}
+	claudePath := filepath.Join(home, ".local", "bin", providerid.Claude)
+	if err := os.MkdirAll(filepath.Dir(claudePath), 0o700); err != nil {
+		t.Fatalf("create native launcher fixture: %v", err)
+	}
+	if err := os.Symlink(claudeTarget, claudePath); err != nil {
+		t.Fatalf("link native launcher fixture: %v", err)
+	}
+	m := newReadModeManager("enforce")
+	cfg.Role = RoleReview
+	profilePath, err := buildReadProfile(cfg.sandbox.profilePath, m.resolveSandboxReadRoots(cfg), wt)
+	if err != nil {
+		t.Fatalf("build read profile: %v", err)
+	}
+	cfg.sandbox.profilePath = profilePath
+
+	cmd := newDarwinSandboxCmd(cfg, claudePath, "--version")
+	cmd.Dir = wt
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("native Claude/Bun startup under read sandbox: %v: %s", err, stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "CLAUDE_OK" {
+		t.Fatalf("native Claude fixture output = %q, want CLAUDE_OK", got)
+	}
+}
 
 func TestSandboxEnforce_DarwinCommitSurvivesSandboxReset(t *testing.T) {
 	if !sandboxExecAvailable() {

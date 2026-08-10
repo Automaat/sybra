@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 func newReadModeManager(readMode string) *Manager {
@@ -103,6 +105,24 @@ func TestResolveSandboxReadRoots_DeterministicCommandOmitsProviderState(t *testi
 		if slices.Contains(roots, path) || (canon != "" && slices.Contains(roots, canon)) {
 			t.Fatalf("deterministic command can read GitHub credential path %q: %v", state, roots)
 		}
+	}
+}
+
+func TestResolveSandboxReadRoots_NativeClaudeInstallIsProviderOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	install := filepath.Join(home, ".local", "share", providerid.Claude)
+	if err := os.MkdirAll(install, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	m := newReadModeManager("enforce")
+	providerRoots := m.resolveSandboxReadRoots(&RunConfig{Role: RoleReview, sandbox: specWithWriteRoots(t)})
+	if !slices.Contains(providerRoots, install) {
+		t.Fatalf("native Claude install missing from provider read roots: %v", providerRoots)
+	}
+	deterministicRoots := m.resolveSandboxReadRoots(&RunConfig{Role: RoleTestRunner, DisableVerifierControl: true, sandbox: specWithWriteRoots(t)})
+	if slices.Contains(deterministicRoots, install) {
+		t.Fatalf("native Claude install leaked into deterministic read roots: %v", deterministicRoots)
 	}
 }
 
