@@ -46,7 +46,11 @@ type DB struct {
 }
 
 const (
-	defaultSQLiteMaxOpenConns   = 1
+	// WAL lets readers proceed while a writer is active. Keeping SQLite at one
+	// connection defeats that benefit and makes every board refresh queue behind
+	// workflow/audit writes, so keep a small pool while _txlock=immediate still
+	// serializes write transactions safely.
+	defaultSQLiteMaxOpenConns   = 4
 	defaultPostgresMaxOpenConns = 16
 )
 
@@ -236,7 +240,19 @@ func resolveDriver(backend string) (Dialect, string, error) {
 // synchronous are per-connection settings, so a post-Open PRAGMA would apply
 // to whichever connection happened to serve it and silently miss the rest of
 // a pool sized above one.
-var sqlitePragmas = []string{"busy_timeout(5000)", "foreign_keys(1)", "synchronous(NORMAL)"}
+var sqlitePragmas = []string{
+	"busy_timeout(5000)",
+	"foreign_keys(1)",
+	"synchronous(NORMAL)",
+	// The default cache is only ~8 MiB and mmap is disabled. Sybra's task rows
+	// contain sizeable durable workflow/run documents, so repeated board reads
+	// otherwise churn through filesystem pages. These are per-connection caps;
+	// mmap pages are shared by the process rather than copied into every pool
+	// connection.
+	"cache_size(-16384)",
+	"mmap_size(268435456)",
+	"temp_store(MEMORY)",
+}
 
 // prepareDSN normalizes a DSN and rejects the empty case per dialect.
 func prepareDSN(dialect Dialect, dsn string) (string, error) {
@@ -331,6 +347,14 @@ func applyPool(sqlDB *sql.DB, dialect Dialect, opts Options) {
 			maxOpen = defaultSQLiteMaxOpenConns
 		}
 	}
+	// SQLite's private in-memory databases exist per connection. A pool larger
+	// than one would intermittently see an empty schema whenever database/sql
+	// selected a different connection. Callers that explicitly choose
+	// cache=shared keep the configured pool because their DSN opts into one
+	// shared in-memory database.
+	if dialect == SQLite && sqlitePrivateMemoryDSN(opts.DSN) {
+		maxOpen = 1
+	}
 	sqlDB.SetMaxOpenConns(maxOpen)
 	idle := opts.MaxIdleConns
 	if idle <= 0 {
@@ -340,6 +364,23 @@ func applyPool(sqlDB *sql.DB, dialect Dialect, opts Options) {
 	if opts.ConnMaxLifetime > 0 {
 		sqlDB.SetConnMaxLifetime(opts.ConnMaxLifetime)
 	}
+}
+
+func sqlitePrivateMemoryDSN(dsn string) bool {
+	dsn = strings.TrimSpace(dsn)
+	if dsn == ":memory:" {
+		return true
+	}
+	if !strings.HasPrefix(dsn, "file:") {
+		return false
+	}
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return false
+	}
+	query := u.Query()
+	isMemory := u.Path == ":memory:" || strings.EqualFold(query.Get("mode"), "memory")
+	return isMemory && !strings.EqualFold(query.Get("cache"), "shared")
 }
 
 // RedactDSN strips any password from a DSN so it can appear in an error or a log line.

@@ -5094,3 +5094,22 @@ func TestHumanReviewSpawn_RebuiltWarningReachesTheAgent(t *testing.T) {
 		})
 	}
 }
+
+func TestTailFileBoundsLinesAndBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sybra.log")
+	content := strings.Repeat("old\n", 250) + strings.Repeat("x", 2*humanReviewLogTailBytes) + "\nlast\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := tailFile(path, humanReviewLogTail, humanReviewLogTailBytes)
+	if len(got) > humanReviewLogTailBytes {
+		t.Fatalf("tail length = %d, want <= %d", len(got), humanReviewLogTailBytes)
+	}
+	if !strings.HasSuffix(got, "last") {
+		t.Fatalf("tail lost newest line: suffix %q", got[max(0, len(got)-16):])
+	}
+	if strings.Contains(got, "old") {
+		t.Fatal("tail retained lines older than the line limit")
+	}
+}

@@ -22,7 +22,7 @@ type DatabaseConfig struct {
 	Backend string `yaml:"backend,omitempty" json:"backend"`
 	// DSN is a file path for sqlite (default ~/.sybra/sybra.db), optionally with driver query parameters after a "?", and a required postgres:// URL or key=value string for postgres.
 	DSN string `yaml:"dsn,omitempty" json:"dsn" secret:"true"`
-	// MaxOpenConns caps concurrent connections; 0 uses the per-engine default (1 for sqlite, 16 for postgres).
+	// MaxOpenConns caps concurrent connections; 0 uses the per-engine default (4 for sqlite, 16 for postgres).
 	MaxOpenConns int `yaml:"max_open_conns,omitempty" json:"maxOpenConns"`
 	// MaxIdleConns caps pooled idle connections; 0 uses the per-engine default.
 	MaxIdleConns int `yaml:"max_idle_conns,omitempty" json:"maxIdleConns"`

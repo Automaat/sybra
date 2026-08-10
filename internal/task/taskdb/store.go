@@ -381,7 +381,7 @@ func (s *SQLStore) PurgeDeleted(ctx context.Context, retention time.Duration) er
 // inside one transaction rather than a separately held lock spanning several
 // calls, so there is no second lock primitive to nest under PutBy/DeleteBy's
 // own and no risk of the self-deadlock a held-lock-plus-separate-query design
-// hits on sqlite's single-connection pool.
+// hits on SQLite's immediate write transaction.
 //
 // fn receives the sidecar-populated task exactly as Get would return it, so
 // callers that mutate plain Task fields never need to know sidecars are

@@ -152,9 +152,23 @@ type TaskAuditEventDTO struct {
 
 const taskDiagnosticReadLimit = 256 * 1024
 
-// ListTasks returns all tasks from the store.
+// ListTasks returns the board projection of every task. Historical prompt and
+// result text is intentionally omitted: cards need run metadata for cost/count
+// badges, while TaskDetail immediately calls GetTask for the selected task.
+// Returning that text here made every board refresh serialize the complete
+// lifetime prompt history of every task (hundreds of MiB on a mature board).
 func (s *TaskService) ListTasks() ([]task.Task, error) {
-	return s.tasks.List()
+	tasks, err := s.tasks.List()
+	if err != nil {
+		return nil, err
+	}
+	for i := range tasks {
+		for j := range tasks[i].AgentRuns {
+			tasks[i].AgentRuns[j].Prompt = ""
+			tasks[i].AgentRuns[j].Result = ""
+		}
+	}
+	return tasks, nil
 }
 
 // mirrorStaleTerminalWindow bounds how long a terminal (done/cancelled) task

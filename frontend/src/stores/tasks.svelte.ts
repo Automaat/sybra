@@ -67,6 +67,23 @@ class TaskStore extends EntityStore<Task> {
     this.items = v
   }
 
+  protected override mergeLoadedItem(item: Task, previous: Task | undefined): Task {
+    if (!previous || !previous.agentRuns?.length || !item.agentRuns?.length) return item
+    const previousRuns = new Map(previous.agentRuns.map((run) => [run.agentId, run]))
+    return Task.createFrom({
+      ...item,
+      agentRuns: item.agentRuns.map((run) => {
+        const hydrated = previousRuns.get(run.agentId)
+        if (!hydrated) return run
+        return {
+          ...run,
+          prompt: run.prompt || hydrated.prompt,
+          result: run.result || hydrated.result,
+        }
+      }),
+    })
+  }
+
   byStatus(status: string): Task[] {
     if (status === 'all') return this.list
     return this.list.filter((t) => t.status === status)

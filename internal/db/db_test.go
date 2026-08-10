@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Automaat/sybra/internal/db"
 	"github.com/Automaat/sybra/internal/testutil/dbtest"
@@ -191,9 +193,108 @@ func TestSQLitePragmasApplyToEveryPooledConnection(t *testing.T) {
 		if foreignKeys != 1 {
 			t.Errorf("connection %d has foreign_keys=%d, want 1", i, foreignKeys)
 		}
+		var cacheSize, mmapSize, tempStore int64
+		if err := conn.QueryRowContext(t.Context(), "PRAGMA cache_size").Scan(&cacheSize); err != nil {
+			t.Fatalf("read cache_size on connection %d: %v", i, err)
+		}
+		if err := conn.QueryRowContext(t.Context(), "PRAGMA mmap_size").Scan(&mmapSize); err != nil {
+			t.Fatalf("read mmap_size on connection %d: %v", i, err)
+		}
+		if err := conn.QueryRowContext(t.Context(), "PRAGMA temp_store").Scan(&tempStore); err != nil {
+			t.Fatalf("read temp_store on connection %d: %v", i, err)
+		}
+		if cacheSize != -16384 || mmapSize != 268435456 || tempStore != 2 {
+			t.Errorf("connection %d tuning = cache_size %d, mmap_size %d, temp_store %d", i, cacheSize, mmapSize, tempStore)
+		}
 		if err := conn.Close(); err != nil {
 			t.Errorf("close connection %d: %v", i, err)
 		}
+	}
+}
+
+func TestSQLiteDefaultPoolAllowsConcurrentReaders(t *testing.T) {
+	d, err := db.Open(t.Context(), db.Options{
+		Backend: "sqlite",
+		DSN:     filepath.Join(t.TempDir(), "sybra.db"),
+	})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	if got := d.SQL().Stats().MaxOpenConnections; got != 4 {
+		t.Fatalf("MaxOpenConnections = %d, want 4", got)
+	}
+}
+
+func TestSQLiteDefaultPoolReadDoesNotQueueBehindWriter(t *testing.T) {
+	d, err := db.Open(t.Context(), db.Options{
+		Backend: "sqlite",
+		DSN:     filepath.Join(t.TempDir(), "sybra.db"),
+	})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	if _, err := d.ExecContext(t.Context(), `CREATE TABLE pool_probe (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+
+	writer, err := d.SQL().BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback()
+	if _, err := writer.ExecContext(t.Context(), `INSERT INTO pool_probe (id) VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	readCtx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	var count int
+	if err := d.QueryRowContext(readCtx, `SELECT COUNT(*) FROM pool_probe`).Scan(&count); err != nil {
+		t.Fatalf("read queued behind active writer: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("reader saw uncommitted row: count=%d", count)
+	}
+}
+
+func TestSQLitePrivateMemoryPoolStaysOnOneConnection(t *testing.T) {
+	d, err := db.Open(t.Context(), db.Options{Backend: "sqlite", DSN: ":memory:"})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	if got := d.SQL().Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("MaxOpenConnections = %d, want 1 for a private in-memory database", got)
+	}
+	if _, err := d.ExecContext(t.Context(), `CREATE TABLE memory_probe (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(t.Context(), `INSERT INTO memory_probe (id) VALUES (1)`); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := d.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM memory_probe`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+}
+
+func TestSQLiteSharedMemoryPoolKeepsConfiguredConcurrency(t *testing.T) {
+	d, err := db.Open(t.Context(), db.Options{
+		Backend:      "sqlite",
+		DSN:          "file:shared-pool?mode=memory&cache=shared",
+		MaxOpenConns: 3,
+	})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	if got := d.SQL().Stats().MaxOpenConnections; got != 3 {
+		t.Fatalf("MaxOpenConnections = %d, want configured shared-memory pool of 3", got)
 	}
 }
 

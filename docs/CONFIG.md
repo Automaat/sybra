@@ -745,7 +745,7 @@ DatabaseConfig selects the durable-storage backend and its connection settings. 
 |---|---|---|---|---|---|---|---|---|---|
 | `storage.database.backend` | `string` | `""` |  |  | `database.backend` | `false` | `restart` |  | Backend is "sqlite" (embedded single file, the default when unset), "postgres" (shared server), or "file" (the filesystem stores, retained for rollback and being retired). An unrecognized value fails validation instead of falling back, so a typo cannot silently change where the board lives. |
 | `storage.database.dsn` | `string` | `[redacted]` |  |  | `database.dsn` | `true` | `restart` |  | DSN is a file path for sqlite (default ~/.sybra/sybra.db), optionally with driver query parameters after a "?", and a required postgres:// URL or key=value string for postgres. |
-| `storage.database.max_open_conns` | `int` | `0` |  |  | `database.max_open_conns` | `false` | `restart` |  | MaxOpenConns caps concurrent connections; 0 uses the per-engine default (1 for sqlite, 16 for postgres). |
+| `storage.database.max_open_conns` | `int` | `0` |  |  | `database.max_open_conns` | `false` | `restart` |  | MaxOpenConns caps concurrent connections; 0 uses the per-engine default (4 for sqlite, 16 for postgres). |
 | `storage.database.max_idle_conns` | `int` | `0` |  |  | `database.max_idle_conns` | `false` | `restart` |  | MaxIdleConns caps pooled idle connections; 0 uses the per-engine default. |
 | `storage.database.conn_max_lifetime_seconds` | `int` | `0` |  |  | `database.conn_max_lifetime_seconds` | `false` | `restart` |  | ConnMaxLifetimeSeconds retires a pooled connection after this age; 0 keeps it until the driver drops it. |
 

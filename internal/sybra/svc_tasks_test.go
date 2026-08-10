@@ -1648,3 +1648,41 @@ func TestTaskService_DeleteTaskRemovesAttachmentBlobs(t *testing.T) {
 		t.Fatalf("attachment blob still exists after task delete: %v", err)
 	}
 }
+
+func TestTaskServiceListOmitsHeavyRunTextButGetKeepsIt(t *testing.T) {
+	svc, _ := setupTaskService(t)
+	created, err := svc.tasks.Create("compact board task", "body stays available", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.tasks.AddRun(created.ID, task.AgentRun{
+		AgentID: "agent-heavy", Mode: "headless", State: "stopped",
+		StartedAt: time.Now().UTC(), CostUSD: 1.25,
+		Prompt: "large historical prompt", Result: "large historical result",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := svc.ListTasks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || len(listed[0].AgentRuns) != 1 {
+		t.Fatalf("ListTasks runs = %+v", listed)
+	}
+	run := listed[0].AgentRuns[0]
+	if run.Prompt != "" || run.Result != "" {
+		t.Fatalf("ListTasks retained heavy text: prompt=%q result=%q", run.Prompt, run.Result)
+	}
+	if run.AgentID != "agent-heavy" || run.CostUSD != 1.25 {
+		t.Fatalf("ListTasks dropped card metadata: %+v", run)
+	}
+
+	got, err := svc.GetTask(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AgentRuns[0].Prompt != "large historical prompt" || got.AgentRuns[0].Result != "large historical result" {
+		t.Fatalf("GetTask lost run text: %+v", got.AgentRuns[0])
+	}
+}
