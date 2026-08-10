@@ -328,3 +328,85 @@ func TestManager_SQLBackend_ApplyIdempotentReplaySkipsWrite(t *testing.T) {
 		}
 	})
 }
+
+// TestManager_SQLBackend_CommentsRoundTripThroughSetCommentPersistence
+// exercises the exact wiring app.go's Startup uses — a Manager built with
+// SetCommentPersistence called separately from construction, the same
+// two-step sequence Startup uses since a Manager must already exist before
+// it can be told about a Persistence — proving Manager.Comments() actually
+// reaches the database once wired rather than silently falling back to the
+// file store.
+func TestManager_SQLBackend_CommentsRoundTripThroughSetCommentPersistence(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		mgr := newTestManager(t, d)
+		mgr.SetCommentPersistence(NewCommentStore(d))
+
+		created, err := mgr.CreateBy("task", "body", "", "creator")
+		if err != nil {
+			t.Fatalf("CreateBy: %v", err)
+		}
+
+		added, err := mgr.Comments().Add(created.ID, 5, "looks good")
+		if err != nil {
+			t.Fatalf("Comments().Add: %v", err)
+		}
+
+		got, err := mgr.Comments().List(created.ID)
+		if err != nil {
+			t.Fatalf("Comments().List: %v", err)
+		}
+		if len(got) != 1 || got[0].ID != added.ID {
+			t.Fatalf("comments = %+v, want just %+v", got, added)
+		}
+
+		// Confirm this actually landed in the database's task_sidecars row,
+		// not just in some in-memory fallback: a fresh SQLStore-backed
+		// CommentStore over the same *db.DB must see it too.
+		sameDB := NewCommentStore(d)
+		viaFreshHandle, err := sameDB.List(created.ID)
+		if err != nil {
+			t.Fatalf("List via fresh handle: %v", err)
+		}
+		if len(viaFreshHandle) != 1 || viaFreshHandle[0].ID != added.ID {
+			t.Fatalf("comments via fresh handle = %+v, want just %+v", viaFreshHandle, added)
+		}
+	})
+}
+
+// TestManager_SQLBackend_UnrelatedTaskUpdatePreservesComments proves an
+// ordinary task-field write does not wipe a task's comments. Comments live
+// in the same task_sidecars row PutBy/PutFnBy manage for a task's own
+// sidecar fields (Plan, CodeReview, ...); those methods clear every
+// existing sidecar row for the task before reinserting only what
+// SidecarsFromTask computes from the Task struct, which never includes
+// comments — a plain unscoped delete would silently drop every review
+// comment on the very next unrelated status/body/tag write.
+func TestManager_SQLBackend_UnrelatedTaskUpdatePreservesComments(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		mgr := newTestManager(t, d)
+		mgr.SetCommentPersistence(NewCommentStore(d))
+
+		created, err := mgr.CreateBy("task", "body", "", "creator")
+		if err != nil {
+			t.Fatalf("CreateBy: %v", err)
+		}
+		if _, err := mgr.Comments().Add(created.ID, 5, "please fix this"); err != nil {
+			t.Fatalf("Comments().Add: %v", err)
+		}
+
+		newTitle := "renamed"
+		if _, err := mgr.UpdateBy(created.ID, "operator", task.Update{Title: &newTitle}); err != nil {
+			t.Fatalf("UpdateBy: %v", err)
+		}
+
+		got, err := mgr.Comments().List(created.ID)
+		if err != nil {
+			t.Fatalf("Comments().List after unrelated update: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("comments after unrelated update = %+v, want the original comment still present", got)
+		}
+	})
+}

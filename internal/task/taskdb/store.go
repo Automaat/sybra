@@ -70,7 +70,8 @@ const (
 
 	selectTasks = `SELECT doc FROM tasks WHERE deleted_at = 0 ORDER BY `
 
-	deleteTaskSidecars = `DELETE FROM task_sidecars WHERE task_id = ?`
+	// Comments are excluded: they are not a task.Task field, so SidecarsFromTask never reinserts them, and a plain "delete every sidecar row for this task" would wipe every review comment on the very next unrelated field write.
+	deleteTaskSidecars = `DELETE FROM task_sidecars WHERE task_id = ? AND kind != ?`
 
 	upsertSidecar = `INSERT INTO task_sidecars (task_id, kind, name, updated_at, content)
 		VALUES (?, ?, ?, ?, ?)
@@ -177,7 +178,7 @@ func (s *SQLStore) PutBy(ctx context.Context, t task.Task, sidecars []Sidecar, a
 			db.TimeValue(t.CreatedAt), db.TimeValue(t.UpdatedAt), int64(0), string(doc)); err != nil {
 			return fmt.Errorf("write task: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, s.db.Rebind(deleteTaskSidecars), t.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(deleteTaskSidecars), t.ID, SidecarComments); err != nil {
 			return fmt.Errorf("clear sidecars: %w", err)
 		}
 		now := db.TimeValue(time.Now().UTC())
@@ -414,7 +415,7 @@ func (s *SQLStore) PutFnBy(ctx context.Context, id, actor string, fn func(cur ta
 			db.TimeValue(next.CreatedAt), db.TimeValue(next.UpdatedAt), int64(0), string(nextDoc)); err != nil {
 			return fmt.Errorf("write task: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, s.db.Rebind(deleteTaskSidecars), next.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(deleteTaskSidecars), next.ID, SidecarComments); err != nil {
 			return fmt.Errorf("clear sidecars: %w", err)
 		}
 		now := db.TimeValue(time.Now().UTC())
