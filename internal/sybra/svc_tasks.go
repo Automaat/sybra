@@ -467,7 +467,7 @@ func translateTaskLockTimeout(err error) error {
 	return unavailableError("resource is locked; retry")
 }
 
-// writeMergedSidecarsOrWarn writes t's sidecar content to the file backend after a request-triggered forward already merged and persisted it via PutFnBy — PutFnBy's plain whole-task write never touches sidecar files. A failure here must not fail the whole RPC, since the task's primary fields already committed; it only logs, the same tradeoff the periodic mirror reconcile already makes for the identical write. That tradeoff carries a known, pre-existing gap shared with the periodic path and not fixed here: once Merge's staleness guard has advanced past this follower update, nothing retries a failed sidecar write until the follower's task state changes again, so this is not a guaranteed eventual catch-up — see #3308.
+// writeMergedSidecarsOrWarn writes t's sidecar content to the file backend after a request-triggered forward already merged and persisted it via PutFnBy — PutFnBy's plain whole-task write never touches sidecar files. A failure here must not fail the whole RPC, since the task's primary fields already committed; it only logs. WriteMergedSidecars itself retries a transient write failure and skips a stale write superseded by a newer merge (#3308); what a warning here still means is every retry inside that call was exhausted, which for a healthy disk should be rare.
 func (s *TaskService) writeMergedSidecarsOrWarn(op, taskID, node string, t task.Task) {
 	if err := clusterlead.WriteMergedSidecars(s.tasks, t); err != nil {
 		s.logger.Warn("cluster.task."+op+".sidecar_failed", "task_id", taskID, "node", node, "err", err)
