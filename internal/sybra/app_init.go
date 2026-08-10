@@ -50,6 +50,7 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/sybra/verification"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/task/taskdb"
 	"github.com/Automaat/sybra/internal/taskstatus"
 	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/umbrella"
@@ -2114,6 +2115,32 @@ func (a *App) openLimitsStore(ctx context.Context) (*limits.Store, error) {
 		}
 	}
 	return limits.NewStore(config.LimitsFile())
+}
+
+// openTaskPersistence returns the task.Persistence Manager's CRUD runs against for the configured backend, importing existing task files the first time a database is used, or nil when the caller should build the Manager with task.NewManager(fileStore, ...) instead. That constructor wires fileStore through its own file-backed Persistence adapter internally, so a nil return here is never itself passed to task.NewManagerWithPersistence, which requires a non-nil Persistence.
+//
+// fileStore is still required either way: Comments/Plans/PlanDrafts, the
+// trash-generation history, and the leader-follower mirror's direct sidecar
+// writes are not part of Persistence yet (see the follow-up issue linked
+// from #3268), so Manager keeps reaching the file store for those regardless
+// of which Persistence backs task CRUD. A failed import degrades to the
+// files the same way every other domain's does here.
+func (a *App) openTaskPersistence(ctx context.Context) task.Persistence {
+	if a.database == nil {
+		return nil
+	}
+	importCtx, cancel := context.WithTimeout(ctx, importTimeout)
+	defer cancel()
+	if err := taskdb.Import(importCtx, a.database, a.tasksDir, a.importScope(), a.logger); err != nil {
+		a.logger.Error("task.import", "err", err)
+		return nil
+	}
+	sqlStore, err := taskdb.NewSQLStore(a.database)
+	if err != nil {
+		a.logger.Error("task.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
+		return nil
+	}
+	return taskdb.NewPersistence(sqlStore)
 }
 
 // openProjectStore returns the project records for the configured backend,

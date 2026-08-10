@@ -2,6 +2,7 @@ package taskdb
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -69,6 +70,90 @@ func TestSQLStore_TaskAndSidecarsWriteTogether(t *testing.T) {
 		}
 		if len(gotSidecars) != 1 || gotSidecars[0].Kind != SidecarPlan {
 			t.Fatalf("rewrite left %+v, want only the plan", gotSidecars)
+		}
+	})
+}
+
+// TestSQLStore_PutFnByRoundTripsSidecarsAndRecordsHistory proves PutFnBy
+// hands fn a fully sidecar-populated Task (matching Get), writes back both
+// the row and the sidecar set fn changed, and records the actor and changed
+// fields in the same transaction.
+func TestSQLStore_PutFnByRoundTripsSidecarsAndRecordsHistory(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		store, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatalf("NewSQLStore: %v", err)
+		}
+		record := sqlTask("abc12345", "first")
+		if err := store.Put(t.Context(), record, []Sidecar{{Kind: SidecarPlan, Content: "# Plan\n"}}); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+
+		var sawPlan string
+		saved, err := store.PutFnBy(t.Context(), "abc12345", "operator", func(cur task.Task) (task.Task, []string, error) {
+			sawPlan = cur.Plan
+			cur.Title = "renamed"
+			cur.CodeReview = "# Review\n"
+			return cur, []string{"title", "code_review"}, nil
+		})
+		if err != nil {
+			t.Fatalf("PutFnBy: %v", err)
+		}
+		if sawPlan != "# Plan\n" {
+			t.Fatalf("fn saw Plan = %q, want the sidecar Put wrote", sawPlan)
+		}
+		if saved.Title != "renamed" || saved.CodeReview != "# Review\n" {
+			t.Fatalf("returned task = %+v, want the fn's edits applied", saved)
+		}
+
+		gotTask, gotSidecars, err := store.Get(t.Context(), "abc12345")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if gotTask.Title != "renamed" {
+			t.Fatalf("Title = %q, want renamed", gotTask.Title)
+		}
+		byKind := map[string]string{}
+		for _, sc := range gotSidecars {
+			byKind[sc.Kind] = sc.Content
+		}
+		if byKind[SidecarPlan] != "# Plan\n" {
+			t.Fatalf("plan sidecar = %q, want it kept", byKind[SidecarPlan])
+		}
+		if byKind[SidecarCodeReview] != "# Review\n" {
+			t.Fatalf("code_review sidecar = %q, want the fn's new value", byKind[SidecarCodeReview])
+		}
+
+		entries, err := store.History(t.Context(), HistoryQuery{TaskID: "abc12345"})
+		if err != nil {
+			t.Fatalf("History: %v", err)
+		}
+		last := entries[len(entries)-1]
+		if last.Actor != "operator" {
+			t.Errorf("history actor = %q, want operator", last.Actor)
+		}
+		if len(last.Fields) != 2 || last.Fields[0] != "title" || last.Fields[1] != "code_review" {
+			t.Errorf("history fields = %v, want [title code_review]", last.Fields)
+		}
+	})
+}
+
+// TestSQLStore_PutFnByMissingTaskErrors proves PutFnBy refuses to invent a
+// task that was never written, the same as UpdateFn against a nonexistent id.
+func TestSQLStore_PutFnByMissingTaskErrors(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		store, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatalf("NewSQLStore: %v", err)
+		}
+		_, err = store.PutFnBy(t.Context(), "missing0001", "operator", func(cur task.Task) (task.Task, []string, error) {
+			t.Fatal("fn must not run for a task that does not exist")
+			return cur, nil, nil
+		})
+		if err == nil {
+			t.Fatal("expected an error for a missing task")
 		}
 	})
 }
@@ -185,6 +270,63 @@ func TestImport_ReportsUnparseableAndStillCompletes(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(dir, "abb00000.md")); err != nil {
 			t.Errorf("the unreadable file was removed: %v", err)
+		}
+	})
+}
+
+// TestSQLStore_CreateByRefusesCollision proves CreateBy never silently
+// overwrites an existing row the way PutBy's upsert would, so a caller can
+// tell "the candidate ID is taken, try another" from a real write failure.
+func TestSQLStore_CreateByRefusesCollision(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		store, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatalf("NewSQLStore: %v", err)
+		}
+		first := sqlTask("abc12345", "first")
+		if _, err := store.CreateBy(t.Context(), first, nil, "operator"); err != nil {
+			t.Fatalf("first CreateBy: %v", err)
+		}
+		second := sqlTask("abc12345", "second")
+		_, err = store.CreateBy(t.Context(), second, nil, "operator")
+		if !errors.Is(err, ErrIDCollision) {
+			t.Fatalf("second CreateBy err = %v, want ErrIDCollision", err)
+		}
+		got, _, err := store.Get(t.Context(), "abc12345")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.Title != "first" {
+			t.Fatalf("Title = %q, the collision must not have overwritten the original", got.Title)
+		}
+	})
+}
+
+// TestSQLStore_NotFoundErrorsSatisfyOsErrNotExist proves Get and PutFnBy
+// answer a missing id the same way the file backend's Store.read does —
+// wrapping os.ErrNotExist — because internal/sybra/svc_tasks_board.go's
+// boardRejectionFor maps only errors.Is(err, os.ErrNotExist) to a clean 404;
+// an unwrapped "not found" string previously fell through to a generic 500,
+// hiding the real reason from every API client.
+func TestSQLStore_NotFoundErrorsSatisfyOsErrNotExist(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		store, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatalf("NewSQLStore: %v", err)
+		}
+
+		_, _, err = store.Get(t.Context(), "missing99")
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("Get err = %v, want it to satisfy errors.Is(err, os.ErrNotExist)", err)
+		}
+
+		_, err = store.PutFnBy(t.Context(), "missing99", "operator", func(cur task.Task) (task.Task, []string, error) {
+			return cur, nil, nil
+		})
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("PutFnBy err = %v, want it to satisfy errors.Is(err, os.ErrNotExist)", err)
 		}
 	})
 }

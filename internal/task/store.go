@@ -655,6 +655,22 @@ func (s *Store) CreateFull(title, body, mode string, init Update) (Task, error) 
 	return t, nil
 }
 
+// CreatePrebuilt persists a task whose fields a caller has already computed
+// (task.buildNewTask, the Persistence-backed equivalent of this method's own
+// field construction above), minting its ID with the same atomic
+// collision-retry createNewTask always uses. sidecarInit carries only the
+// non-nil pointers for fields CreatePrebuilt should also write to their own
+// sidecar files — the values themselves are already set on t.
+func (s *Store) CreatePrebuilt(t Task, sidecarInit Update) (Task, error) {
+	if err := s.createNewTask(&t, func() error {
+		return s.writeSidecars(t.ID, sidecarInit, &t)
+	}); err != nil {
+		return Task{}, err
+	}
+	s.storeTaskCache(t)
+	return t, nil
+}
+
 // createNewTask locks a candidate ID, invokes beforePublish while no task file
 // is visible, then exclusively publishes the primary task file. The lock spans
 // the whole operation so a failed sidecar write can be rolled back before

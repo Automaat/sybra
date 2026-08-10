@@ -39,8 +39,18 @@ type DeleteHook func(taskID string)
 
 // Manager is the single entrypoint for task mutations. It wraps Store with
 // per-task mutual exclusion and emits events on mutations.
+//
+// store and persist are separate seams on purpose. persist is where task
+// CRUD actually lands — the file Store or a database adapter, chosen once at
+// construction — but store stays the file Store unconditionally, because
+// Comments/Plans/PlanDrafts, the trash-generation history, the leader-
+// follower mirror's direct sidecar writes (Store()), and the file-watcher
+// concerns (OnExternalUpdate/ProbeMutationTransport/MutationTransportIdentity)
+// are not part of Persistence yet — see the follow-up issue linked from
+// #3268. A Manager always has both regardless of which Persistence backs it.
 type Manager struct {
 	store        *Store
+	persist      Persistence
 	emitter      EventEmitter
 	locks        fsutil.KeyedLocker
 	onStatusHook StatusChangeHook
@@ -68,13 +78,47 @@ func (m *Manager) SetDeleteHook(h DeleteHook) {
 	m.onDeleteHook = append(m.onDeleteHook, h)
 }
 
-// NewManager constructs a Manager over the given Store. If emitter is nil,
-// events are discarded.
+// NewManager constructs a Manager over the given Store, using it as both the
+// file-specific store and the Persistence CRUD runs against. If emitter is
+// nil, events are discarded.
 func NewManager(store *Store, emitter EventEmitter) *Manager {
+	return NewManagerWithPersistence(store, newFileBackend(store), emitter)
+}
+
+// NewManagerWithPersistence is NewManager for a caller that wants task CRUD
+// to run against a different Persistence than store's own file backend —
+// e.g. a database adapter, when database.backend selects one. store is still
+// required and still backs Comments/Plans/PlanDrafts/trash/the file-watcher
+// methods regardless.
+func NewManagerWithPersistence(store *Store, persist Persistence, emitter EventEmitter) *Manager {
 	if emitter == nil {
 		emitter = NoopEmitter()
 	}
-	return &Manager{store: store, emitter: emitter}
+	return &Manager{store: store, persist: persist, emitter: emitter}
+}
+
+// requireActor refuses a blank actor rather than silently recording an
+// anonymous change — the same rule TransitionIntent's Actor already
+// enforces, applied here so a mutation that goes through Manager directly
+// (not via a status transition) gets the same guarantee.
+func requireActor(actor string) error {
+	if strings.TrimSpace(actor) == "" {
+		return fmt.Errorf("task: actor is required")
+	}
+	return nil
+}
+
+// eventPath returns the string emitted as a task:created/updated/deleted
+// event's data. The file backend always populates FilePath; the DB backend
+// never does (no file exists), so a synthetic "<id>.md" stands in — every
+// consumer of this event (taskEventEmitter, OnExternalUpdate,
+// maybeStartWorkflowForExternalTask) only ever extracts the id from the
+// basename, never reads the string as a real path.
+func eventPath(t Task) string {
+	if t.FilePath != "" {
+		return t.FilePath
+	}
+	return t.ID + ".md"
 }
 
 // Store returns the underlying Store. Use for operations not covered by Manager.
@@ -179,24 +223,29 @@ func (m *Manager) lock(id string) func() {
 }
 
 // List returns all tasks (lock-free).
-func (m *Manager) List() ([]Task, error) { return m.store.List() }
+func (m *Manager) List() ([]Task, error) { return m.persist.List() }
 
 // Get returns a single task by ID (lock-free).
-func (m *Manager) Get(id string) (Task, error) { return m.store.Get(id) }
+func (m *Manager) Get(id string) (Task, error) { return m.persist.Get(id) }
 
 // ProbeMutationTransport verifies that the task exists and that the same
 // process-local plus cross-process lock used by every Manager mutation can be
 // acquired. Its temporary write verifies real directory mutability without
 // changing task contents/timestamps or emitting lifecycle events.
+//
+// Existence is checked through persist, the backend actually receiving this task's mutations. The lock and directory-write checks stay on store's task directory unconditionally, since Comments/Plans/sidecars still write there for every task regardless of backend, but the per-task flock is skipped for a DB-backed task (empty FilePath, no file at rest), because store.lockTask opens the task path with the create flag and would otherwise leave a stray empty <id>.md next to a task that has no file, and the DB backend's mutation atomicity already comes from its own row lock rather than this flock.
 func (m *Manager) ProbeMutationTransport(id string) error {
-	if _, err := m.store.Get(id); err != nil {
-		return err
-	}
-	unlock, err := m.store.lockTask(id)
+	t, err := m.persist.Get(id)
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	if t.FilePath != "" {
+		unlock, err := m.store.lockTask(id)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+	}
 	probe, err := os.CreateTemp(m.store.Dir(), ".sybra-task-mutation-probe-")
 	if err != nil {
 		return err
@@ -213,8 +262,10 @@ func (m *Manager) ProbeMutationTransport(id string) error {
 // store path used by ProbeMutationTransport. Permission or replacement
 // changes therefore invalidate a run-environment certificate without exposing
 // Store mutation authority to the certifier.
+//
+// A DB-backed task (empty FilePath) has no per-task file to fingerprint, unlike a task directory the DB connection is established once at process start rather than a filesystem path an attacker can swap out from under a running agent, so its identity is the directory fingerprint alone, which still matters because Comments/Plans/sidecars keep writing there under every backend.
 func (m *Manager) MutationTransportIdentity(id string) (string, error) {
-	t, err := m.store.Get(id)
+	t, err := m.persist.Get(id)
 	if err != nil {
 		return "", err
 	}
@@ -226,11 +277,11 @@ func (m *Manager) MutationTransportIdentity(id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Do not include directory mtime/size: ProbeMutationTransport's own
-	// create-remove write changes them. Path + permission mode still detects
-	// the route changes certification needs to invalidate (replacement through
-	// a symlink and writable/read-only transitions).
+	// Do not include directory mtime/size: ProbeMutationTransport's own create-remove write changes them. Path + permission mode still detects the route changes certification needs to invalidate (replacement through a symlink and writable/read-only transitions).
 	parts := []string{fmt.Sprintf("%s|%s", resolvedDir, dirInfo.Mode())}
+	if t.FilePath == "" {
+		return strings.Join(parts, "\x00"), nil
+	}
 	resolvedTask, err := filepath.EvalSymlinks(t.FilePath)
 	if err != nil {
 		return "", err
@@ -244,21 +295,29 @@ func (m *Manager) MutationTransportIdentity(id string) (string, error) {
 	return strings.Join(parts, "\x00"), nil
 }
 
-// Create persists a new task and emits task:created.
+// Create persists a new task and emits task:created, attributed to
+// LegacyActor. Prefer CreateBy for a caller that can name a real actor.
 func (m *Manager) Create(title, body, mode string) (Task, error) {
-	t, err := m.store.Create(title, body, mode)
-	if err != nil {
-		return t, err
-	}
-	metrics.TaskCreated()
-	m.recordFiredStatus(t.ID, string(t.Status))
-	m.emitter.Emit(events.TaskCreated, t.FilePath)
-	return t, nil
+	return m.CreateBy(title, body, mode, LegacyActor)
+}
+
+// CreateBy is Create naming actor, refused if blank.
+func (m *Manager) CreateBy(title, body, mode, actor string) (Task, error) {
+	return m.CreateFullBy(title, body, mode, actor, Update{})
 }
 
 // CreateFull persists a new task with initial field overrides applied atomically
 // before the first emit, ensuring file-watchers see a complete task from the start.
+// Attributed to LegacyActor; prefer CreateFullBy for a caller that can name a real actor.
 func (m *Manager) CreateFull(title, body, mode string, init Update) (Task, error) {
+	return m.CreateFullBy(title, body, mode, LegacyActor, init)
+}
+
+// CreateFullBy is CreateFull naming actor, refused if blank.
+func (m *Manager) CreateFullBy(title, body, mode, actor string, init Update) (Task, error) {
+	if err := requireActor(actor); err != nil {
+		return Task{}, err
+	}
 	if err := validateTypedAutonomyEvidence(init); err != nil {
 		return Task{}, fmt.Errorf("task: create-full: %w", err)
 	}
@@ -267,13 +326,17 @@ func (m *Manager) CreateFull(title, body, mode string, init Update) (Task, error
 			return Task{}, fmt.Errorf("task: create-full: %w", err)
 		}
 	}
-	t, err := m.store.CreateFull(title, body, mode, init)
+	built, err := buildNewTask(title, body, mode, init)
+	if err != nil {
+		return Task{}, err
+	}
+	t, err := mintAndCreateBy(m.persist, built, actor)
 	if err != nil {
 		return t, err
 	}
 	metrics.TaskCreated()
 	m.recordFiredStatus(t.ID, string(t.Status))
-	m.emitter.Emit(events.TaskCreated, t.FilePath)
+	m.emitter.Emit(events.TaskCreated, eventPath(t))
 	return t, nil
 }
 
@@ -286,8 +349,13 @@ func (m *Manager) CreateFull(title, body, mode string, init Update) (Task, error
 // precondition/idempotency machinery (there is no task to Get yet), but it
 // should still never reach for Update.Status directly — extra.Status must be
 // nil, keeping that field production-write-free everywhere outside this
-// package. See #2726.
+// package. See #2726. Attributed to LegacyActor; prefer CreateWithStatusBy.
 func (m *Manager) CreateWithStatus(title, body, mode string, status Status, extra Update) (Task, error) {
+	return m.CreateWithStatusBy(title, body, mode, LegacyActor, status, extra)
+}
+
+// CreateWithStatusBy is CreateWithStatus naming actor, refused if blank.
+func (m *Manager) CreateWithStatusBy(title, body, mode, actor string, status Status, extra Update) (Task, error) {
 	if extra.Status != nil {
 		return Task{}, fmt.Errorf("task: create-with-status: extra.status must be nil; pass status instead")
 	}
@@ -295,7 +363,7 @@ func (m *Manager) CreateWithStatus(title, body, mode string, status Status, extr
 		return Task{}, fmt.Errorf("task: create-with-status: %w", err)
 	}
 	extra.Status = &status
-	return m.CreateFull(title, body, mode, extra)
+	return m.CreateFullBy(title, body, mode, actor, extra)
 }
 
 // Put writes a fully-formed task verbatim (upsert by ID) and drives the same
@@ -310,11 +378,19 @@ func (m *Manager) CreateWithStatus(title, body, mode string, status Status, extr
 // reports whether the task was newly created (vs an in-place update). See
 // Store.Put.
 func (m *Manager) Put(t Task) (Task, bool, error) {
+	return m.PutBy(t, LegacyActor)
+}
+
+// PutBy is Put naming actor, refused if blank.
+func (m *Manager) PutBy(t Task, actor string) (Task, bool, error) {
+	if err := requireActor(actor); err != nil {
+		return Task{}, false, err
+	}
 	unlock := m.lock(t.ID)
 
-	prev, getErr := m.store.read(t.ID)
+	prev, getErr := m.persist.Get(t.ID)
 	existed := getErr == nil
-	saved, err := m.store.Put(t)
+	saved, err := m.persist.PutBy(t, actor, nil)
 	if err != nil {
 		unlock()
 		return saved, false, err
@@ -333,10 +409,10 @@ func (m *Manager) Put(t Task) (Task, bool, error) {
 
 	if existed {
 		metrics.TaskUpdated()
-		m.emitter.Emit(events.TaskUpdated, saved.FilePath)
+		m.emitter.Emit(events.TaskUpdated, eventPath(saved))
 	} else {
 		metrics.TaskCreated()
-		m.emitter.Emit(events.TaskCreated, saved.FilePath)
+		m.emitter.Emit(events.TaskCreated, eventPath(saved))
 	}
 	if fireHook {
 		m.onStatusHook(saved.ID, prevStatus, newStatus, saved)
@@ -346,19 +422,37 @@ func (m *Manager) Put(t Task) (Task, bool, error) {
 
 // PutFn atomically reads an existing task and writes the fully-formed
 // replacement computed by fn. The callback runs under both Manager's per-task
-// mutex and Store's cross-process task lock, making it safe to merge a stale
-// long-running operation with the latest leader-side edit immediately before
-// the write. It preserves Put's lifecycle events and status-hook behaviour.
+// mutex and the backend's own atomicity for the same cycle, making it safe to
+// merge a stale long-running operation with the latest leader-side edit
+// immediately before the write. It preserves Put's lifecycle events and
+// status-hook behaviour. Attributed to LegacyActor; prefer PutFnBy.
 func (m *Manager) PutFn(id string, fn func(cur Task) (Task, error)) (Task, bool, error) {
+	return m.PutFnBy(id, LegacyActor, fn)
+}
+
+// PutFnBy is PutFn naming actor, refused if blank.
+func (m *Manager) PutFnBy(id, actor string, fn func(cur Task) (Task, error)) (Task, bool, error) {
+	if err := requireActor(actor); err != nil {
+		return Task{}, false, err
+	}
 	unlock := m.lock(id)
 
-	saved, prev, err := m.store.PutFn(id, fn)
+	// prevStatus comes from inside PutFnBy's own locked read (the cur it
+	// hands fn), not a separate pre-fetch: a pre-fetch would race a
+	// cross-process writer landing between it and the locked read that
+	// actually produces saved, reporting a prevStatus that was already stale
+	// by the time this call's own write happened.
+	var prevStatus string
+	saved, err := m.persist.PutFnBy(id, actor, func(cur Task) (Task, []string, error) {
+		prevStatus = string(cur.Status)
+		next, ferr := fn(cur)
+		return next, nil, ferr
+	})
 	if err != nil {
 		unlock()
 		return saved, false, err
 	}
 
-	prevStatus := string(prev.Status)
 	newStatus := string(saved.Status)
 	fireHook := m.onStatusHook != nil && newStatus != prevStatus
 	if fireHook {
@@ -367,7 +461,7 @@ func (m *Manager) PutFn(id string, fn func(cur Task) (Task, error)) (Task, bool,
 	unlock()
 
 	metrics.TaskUpdated()
-	m.emitter.Emit(events.TaskUpdated, saved.FilePath)
+	m.emitter.Emit(events.TaskUpdated, eventPath(saved))
 	if fireHook {
 		m.onStatusHook(saved.ID, prevStatus, newStatus, saved)
 	}
@@ -383,39 +477,49 @@ func (m *Manager) PutFn(id string, fn func(cur Task) (Task, error)) (Task, bool,
 // workflow field via taskAdapter.SetWorkflow → Manager.Update). Calling
 // the hook while still holding the lock would deadlock that re-entry.
 func (m *Manager) Update(id string, u Update) (Task, error) {
-	return m.UpdateFn(id, func(Task) (Update, error) { return u, nil })
+	return m.UpdateBy(id, LegacyActor, u)
+}
+
+// UpdateBy is Update naming actor, refused if blank.
+func (m *Manager) UpdateBy(id, actor string, u Update) (Task, error) {
+	return m.UpdateFnBy(id, actor, func(Task) (Update, error) { return u, nil })
 }
 
 // UpdateFn atomically reads the current task and applies the Update computed
 // by fn, under the same per-task lock — for read-modify-write callers (e.g. a
 // tag merge gated on the current status) that would otherwise race with a
 // concurrent Update for the same id between their read and their write.
+// Attributed to LegacyActor; prefer UpdateFnBy.
 func (m *Manager) UpdateFn(id string, fn func(cur Task) (Update, error)) (Task, error) {
+	return m.UpdateFnBy(id, LegacyActor, fn)
+}
+
+// UpdateFnBy is UpdateFn naming actor, refused if blank.
+func (m *Manager) UpdateFnBy(id, actor string, fn func(cur Task) (Update, error)) (Task, error) {
+	if err := requireActor(actor); err != nil {
+		return Task{}, err
+	}
 	unlock := m.lock(id)
 
-	cur, err := m.store.Get(id)
-	if err != nil {
-		unlock()
-		return cur, err
-	}
-	u, err := fn(cur)
-	if err != nil {
-		unlock()
-		return cur, err
-	}
-	if u.Status != nil {
-		if err := validateHumanRequiredTransition(cur.Status, *u.Status, u); err != nil {
-			unlock()
-			return cur, fmt.Errorf("task: update: %w", err)
+	// statusSet is captured from inside compute, which runs against UpdateFieldsBy's own locked read — see PutFnBy for why a separate pre-fetch would race a cross-process writer instead.
+	var statusSet bool
+	t, prev, err := m.persist.UpdateFieldsBy(id, actor, func(cur Task) (Update, error) {
+		u, err := fn(cur)
+		if err != nil {
+			return Update{}, err
 		}
-	} else if cur.Status == StatusHumanRequired && u.AutonomyOutcome != nil {
-		if err := validateHumanRequiredTransition(cur.Status, cur.Status, u); err != nil {
-			unlock()
-			return cur, fmt.Errorf("task: update: %w", err)
+		statusSet = u.Status != nil
+		if u.Status != nil {
+			if err := validateHumanRequiredTransition(cur.Status, *u.Status, u); err != nil {
+				return Update{}, fmt.Errorf("task: update: %w", err)
+			}
+		} else if cur.Status == StatusHumanRequired && u.AutonomyOutcome != nil {
+			if err := validateHumanRequiredTransition(cur.Status, cur.Status, u); err != nil {
+				return Update{}, fmt.Errorf("task: update: %w", err)
+			}
 		}
-	}
-
-	t, prev, err := m.store.UpdateWithPrev(id, u)
+		return u, nil
+	})
 	if err != nil {
 		unlock()
 		return t, err
@@ -424,16 +528,12 @@ func (m *Manager) UpdateFn(id string, fn func(cur Task) (Update, error)) (Task, 
 		fireHook            bool
 		prevStatus, newStat string
 	)
-	if u.Status != nil && m.onStatusHook != nil {
+	if statusSet && m.onStatusHook != nil {
 		prevStatus = string(prev)
 		newStat = string(t.Status)
 		fireHook = newStat != prevStatus
 	}
-	// Record the dedupe entry before releasing the per-task lock, still
-	// covering the same critical section as the write above. Otherwise the
-	// file watcher this write wakes (OnExternalUpdate, serialized on the same
-	// lock) can read the new status and win the dedupe race before this
-	// goroutine gets to record it, double-firing the hook.
+	// Record the dedupe entry before releasing the per-task lock, still covering the same critical section as the write above — otherwise the file watcher this write wakes (OnExternalUpdate, serialized on the same lock) can read the new status and win the dedupe race before this goroutine gets to record it, double-firing the hook.
 	if fireHook {
 		m.recordFiredStatus(id, newStat)
 	}
@@ -443,13 +543,18 @@ func (m *Manager) UpdateFn(id string, fn func(cur Task) (Update, error)) (Task, 
 		m.onStatusHook(id, prevStatus, newStat, t)
 	}
 	metrics.TaskUpdated()
-	m.emitter.Emit(events.TaskUpdated, t.FilePath)
+	m.emitter.Emit(events.TaskUpdated, eventPath(t))
 	return t, nil
 }
 
 // UpdateMap converts raw to a typed Update and applies it.
 // Returns an error on unknown keys or wrong value types.
 func (m *Manager) UpdateMap(id string, raw map[string]any) (Task, error) {
+	return m.UpdateMapBy(id, LegacyActor, raw)
+}
+
+// UpdateMapBy is UpdateMap naming actor, refused if blank.
+func (m *Manager) UpdateMapBy(id, actor string, raw map[string]any) (Task, error) {
 	u, err := UpdateFromMap(raw)
 	if err != nil {
 		return Task{}, err
@@ -466,7 +571,7 @@ func (m *Manager) UpdateMap(id string, raw map[string]any) (Task, error) {
 		u.Escalation = OperatorDecisionEvidence("operator.raw_status_change", message)
 		u.AutonomyOutcome = HumanRequiredOutcome()
 	}
-	return m.UpdateFn(id, func(cur Task) (Update, error) {
+	return m.UpdateFnBy(id, actor, func(cur Task) (Update, error) {
 		if u.Status != nil {
 			if err := validateHumanRequiredTransition(cur.Status, *u.Status, u); err != nil {
 				return Update{}, fmt.Errorf("task: update-map: %w", err)
@@ -477,82 +582,101 @@ func (m *Manager) UpdateMap(id string, raw map[string]any) (Task, error) {
 }
 
 // AppendBody appends markdown to a task body under the per-task mutation lock.
+// Attributed to LegacyActor; prefer AppendBodyBy.
 func (m *Manager) AppendBody(id, content string) (Task, error) {
+	return m.AppendBodyBy(id, LegacyActor, content)
+}
+
+// AppendBodyBy is AppendBody naming actor, refused if blank.
+func (m *Manager) AppendBodyBy(id, actor, content string) (Task, error) {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return m.Get(id)
 	}
-	unlock := m.lock(id)
-	t, err := m.store.Get(id)
-	if err != nil {
-		unlock()
-		return Task{}, err
-	}
-	body := strings.TrimRight(t.Body, "\n")
-	if body != "" {
-		body += "\n\n"
-	}
-	body += content + "\n"
-	t, _, err = m.store.UpdateWithPrev(id, Update{Body: &body})
-	unlock()
-	if err != nil {
-		return t, err
-	}
-	// Emit after releasing the lock — see UpdateFn/AddRunWithStatus for why:
-	// this Manager is its own emitter's target (app.go routes task:updated
-	// back into OnExternalUpdate), so firing while still holding the lock
-	// self-deadlocks the goroutine on its own non-reentrant mutex.
-	metrics.TaskUpdated()
-	m.emitter.Emit(events.TaskUpdated, t.FilePath)
-	return t, nil
+	return m.UpdateFnBy(id, actor, func(cur Task) (Update, error) {
+		body := strings.TrimRight(cur.Body, "\n")
+		if body != "" {
+			body += "\n\n"
+		}
+		body += content + "\n"
+		return Update{Body: &body}, nil
+	})
 }
 
 // Touch bumps a task's updated_at and emits task:updated without changing any
 // field. Used to wake the file watcher so out-of-process writers (e.g. a CLI
 // appending a progress entry) can signal the desktop app to refetch.
+// Attributed to LegacyActor; prefer TouchBy.
 func (m *Manager) Touch(id string) (Task, error) {
-	return m.Update(id, Update{})
+	return m.UpdateBy(id, LegacyActor, Update{})
 }
 
-// Delete removes a task and emits task:deleted.
+// TouchBy is Touch naming actor, refused if blank.
+func (m *Manager) TouchBy(id, actor string) (Task, error) {
+	return m.UpdateBy(id, actor, Update{})
+}
+
+// Delete removes a task and emits task:deleted. Attributed to LegacyActor;
+// prefer DeleteBy.
 func (m *Manager) Delete(id string) error {
+	return m.DeleteBy(id, LegacyActor)
+}
+
+// DeleteBy is Delete naming actor, refused if blank. The emit and delete
+// hooks fire after unlock deliberately: this Manager is its own emitter's
+// target, so firing while still holding the per-task mutex self-deadlocks
+// the goroutine on OnExternalUpdate's re-entrant lock attempt.
+func (m *Manager) DeleteBy(id, actor string) error {
+	if err := requireActor(actor); err != nil {
+		return err
+	}
 	unlock := m.lock(id)
-	t, err := m.store.Get(id)
+	t, err := m.persist.Get(id)
 	if err != nil {
 		unlock()
 		return err
 	}
-	if err := m.store.Delete(id); err != nil {
+	if err := m.persist.DeleteBy(id, actor); err != nil {
 		unlock()
 		return err
 	}
 	m.forgetFiredStatus(id)
 	unlock()
-	// Emit/hook after releasing the lock — see UpdateFn/AddRunWithStatus for
-	// why: this Manager is its own emitter's target (app.go routes
-	// task:updated back into OnExternalUpdate), so firing while still holding
-	// the lock self-deadlocks the goroutine on its own non-reentrant mutex.
 	metrics.TaskDeleted()
-	m.emitter.Emit(events.TaskDeleted, t.FilePath)
+	m.emitter.Emit(events.TaskDeleted, eventPath(t))
 	for _, hook := range m.onDeleteHook {
 		hook(id)
 	}
 	return nil
 }
 
-// RestoreFromTrash restores id's newest trash generation and emits
-// task:created — restored tasks re-enter the system the same way a fresh
-// Create does, so watchers (file watcher, workflow engine) treat it as a
-// new task rather than an update to one that "already existed".
+// RestoreFromTrash restores id and emits task:created — restored tasks
+// re-enter the system the same way a fresh Create does, so watchers (file
+// watcher, workflow engine) treat it as a new task rather than an update to
+// one that "already existed". Attributed to LegacyActor; prefer RestoreBy.
 func (m *Manager) RestoreFromTrash(id string) (Task, error) {
+	return m.RestoreBy(id, LegacyActor)
+}
+
+// RestoreBy is RestoreFromTrash naming actor, refused if blank.
+func (m *Manager) RestoreBy(id, actor string) (Task, error) {
+	if err := requireActor(actor); err != nil {
+		return Task{}, err
+	}
 	unlock := m.lock(id)
-	t, err := m.store.RestoreFromTrash(id)
+	err := m.persist.RestoreBy(id, actor)
+	if err != nil {
+		unlock()
+		return Task{}, err
+	}
+	// RestoreBy returns only an error, not the restored Task, so the id must still resolve before unlock — a concurrent DeleteBy for the same id, released to run right after unlock, would otherwise make a restore that fully succeeded report a not-found error instead.
+	t, err := m.persist.Get(id)
 	unlock()
 	if err != nil {
 		return Task{}, err
 	}
 	m.recordFiredStatus(t.ID, string(t.Status))
-	m.emitter.Emit(events.TaskCreated, t.FilePath)
+	m.emitter.Emit(events.TaskCreated, eventPath(t))
 	return t, nil
 }
 
@@ -579,65 +703,88 @@ func (m *Manager) PruneAllTrash() (TrashPruneReport, error) {
 	return m.store.PruneAllTrash()
 }
 
-// AddRun appends an agent run to the task and emits task:updated.
+// AddRun appends an agent run to the task and emits task:updated. Attributed
+// to LegacyActor; prefer AddRunBy.
 func (m *Manager) AddRun(taskID string, run AgentRun) error {
-	return m.AddRunWithStatus(taskID, run, nil)
+	return m.AddRunWithStatusBy(taskID, LegacyActor, run, nil)
 }
 
-// AddRunWithStatus appends an agent run and optionally changes task status in one write.
+// AddRunBy is AddRun naming actor, refused if blank.
+func (m *Manager) AddRunBy(taskID, actor string, run AgentRun) error {
+	return m.AddRunWithStatusBy(taskID, actor, run, nil)
+}
+
+// AddRunWithStatus appends an agent run and optionally changes task status
+// in one write. Attributed to LegacyActor; prefer AddRunWithStatusBy.
 func (m *Manager) AddRunWithStatus(taskID string, run AgentRun, status *Status) error {
-	unlock := m.lock(taskID)
-	var prevStatus string
-	if status != nil {
-		if prev, getErr := m.store.Get(taskID); getErr == nil {
-			prevStatus = string(prev.Status)
-		}
-	}
-	if err := m.store.AddRunWithStatus(taskID, run, status); err != nil {
-		unlock()
+	return m.AddRunWithStatusBy(taskID, LegacyActor, run, status)
+}
+
+// AddRunWithStatusBy is AddRunWithStatus naming actor, refused if blank. The
+// emit and status hook fire after unlock — see DeleteBy for why.
+func (m *Manager) AddRunWithStatusBy(taskID, actor string, run AgentRun, status *Status) error {
+	if err := requireActor(actor); err != nil {
 		return err
 	}
-	t, err := m.store.Get(taskID)
+	unlock := m.lock(taskID)
+	var prevStatus Status
+	_, err := m.persist.PutFnBy(taskID, actor, func(cur Task) (Task, []string, error) {
+		prevStatus = cur.Status
+		next, ferr := applyAddRun(cur, run, status)
+		return next, nil, ferr
+	})
+	var t Task
+	if err == nil {
+		// A full re-read rather than PutFnBy's own return value: the file backend's PutFnBy runs against a parse-only cur with no sidecars loaded (the same optimization the file watcher's read path uses), so its returned Task would otherwise hand the status hook and the emitted event a snapshot with every plan/review sidecar field zeroed even though the on-disk sidecar files themselves were never touched.
+		t, err = m.persist.Get(taskID)
+	}
 	var (
 		fireHook  bool
 		newStatus string
 	)
-	if status != nil && m.onStatusHook != nil && err == nil {
+	if err == nil && status != nil && m.onStatusHook != nil {
 		newStatus = string(t.Status)
-		fireHook = newStatus != prevStatus
+		fireHook = newStatus != string(prevStatus)
 	}
-	// Record before unlocking — see UpdateFn for why this must stay inside
-	// the per-task critical section that also covers the write.
 	if fireHook {
 		m.recordFiredStatus(taskID, newStatus)
 	}
 	unlock()
-	// Emit after releasing the lock, same as UpdateFn: OnExternalUpdate takes
-	// the same per-task lock, and this Manager is its own emitter's target
-	// (app.go routes task:updated back into OnExternalUpdate), so firing
-	// while still holding the lock self-deadlocks the goroutine on its own
-	// non-reentrant mutex.
-	if err == nil {
-		m.emitter.Emit(events.TaskUpdated, t.FilePath)
+	if err != nil {
+		return err
 	}
+	m.emitter.Emit(events.TaskUpdated, eventPath(t))
 	if fireHook {
-		m.onStatusHook(taskID, prevStatus, newStatus, t)
+		m.onStatusHook(taskID, string(prevStatus), newStatus, t)
 	}
 	return nil
 }
 
 // UpdateRun updates fields on a specific agent run and emits task:updated.
+// Attributed to LegacyActor; prefer UpdateRunBy.
 func (m *Manager) UpdateRun(taskID, agentID string, patch RunPatch) error {
-	unlock := m.lock(taskID)
-	if err := m.store.UpdateRun(taskID, agentID, patch); err != nil {
-		unlock()
+	return m.UpdateRunBy(taskID, LegacyActor, agentID, patch)
+}
+
+// UpdateRunBy is UpdateRun naming actor, refused if blank.
+func (m *Manager) UpdateRunBy(taskID, actor, agentID string, patch RunPatch) error {
+	if err := requireActor(actor); err != nil {
 		return err
 	}
-	t, err := m.store.Get(taskID)
-	unlock()
-	// Emit after releasing the lock — see AddRunWithStatus for why.
+	unlock := m.lock(taskID)
+	_, err := m.persist.PutFnBy(taskID, actor, func(cur Task) (Task, []string, error) {
+		next, ferr := applyRunUpdate(cur, agentID, patch)
+		return next, nil, ferr
+	})
+	var t Task
 	if err == nil {
-		m.emitter.Emit(events.TaskUpdated, t.FilePath)
+		// Same full re-read AddRunWithStatusBy takes, and for the same reason: PutFnBy's own return value would otherwise carry the file backend's parse-only cur forward with every sidecar field zeroed.
+		t, err = m.persist.Get(taskID)
 	}
+	unlock()
+	if err != nil {
+		return err
+	}
+	m.emitter.Emit(events.TaskUpdated, eventPath(t))
 	return nil
 }

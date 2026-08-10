@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/Automaat/sybra/internal/db"
@@ -83,7 +84,61 @@ const (
 	restoreTask = `UPDATE tasks SET deleted_at = 0 WHERE id = ?`
 
 	purgeDeletedTasks = `DELETE FROM tasks WHERE deleted_at > 0 AND deleted_at < ?`
+
+	insertTaskIfAbsent = `INSERT INTO tasks (id, status, project_id, title, created_at, updated_at, deleted_at, doc)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (id) DO NOTHING`
 )
+
+// ErrIDCollision reports that CreateBy's candidate ID is already taken. The
+// caller mints a fresh one and retries — the same shape Store.createNewTask's
+// own collision-retry loop gives the file backend.
+var ErrIDCollision = errors.New("task id already exists")
+
+// CreateBy inserts t as a brand-new task, refusing to silently overwrite an
+// existing row the way PutBy's upsert would — the guarantee Create needs
+// that Update/Put do not. t.ID is the caller's candidate; on ErrIDCollision
+// the caller mints a new one and calls again.
+func (s *SQLStore) CreateBy(ctx context.Context, t task.Task, sidecars []Sidecar, actor string) (task.Task, error) {
+	if s == nil {
+		return task.Task{}, errors.New("task store is not configured")
+	}
+	if t.ID == "" {
+		return task.Task{}, errors.New("task store: record has no id")
+	}
+	doc, err := task.MarshalStored(t)
+	if err != nil {
+		return task.Task{}, fmt.Errorf("marshal task: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, taskQueryTimeout)
+	defer cancel()
+	err = s.db.InTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, s.db.Rebind(insertTaskIfAbsent),
+			t.ID, string(t.Status), t.ProjectID, t.Title,
+			db.TimeValue(t.CreatedAt), db.TimeValue(t.UpdatedAt), int64(0), string(doc))
+		if err != nil {
+			return fmt.Errorf("write task: %w", err)
+		}
+		if n, err := res.RowsAffected(); err == nil && n == 0 {
+			return ErrIDCollision
+		}
+		now := db.TimeValue(time.Now().UTC())
+		for i := range sidecars {
+			sc := &sidecars[i]
+			if _, err := tx.ExecContext(ctx, s.db.Rebind(upsertSidecar),
+				t.ID, sc.Kind, sc.Name, now, sc.Content); err != nil {
+				return fmt.Errorf("write sidecar %s: %w", sc.Kind, err)
+			}
+		}
+		return appendHistoryTx(ctx, s.db, tx, HistoryEntry{
+			TaskID: t.ID, Actor: actor, Kind: ChangeCreated, Snapshot: string(doc),
+		})
+	})
+	if err != nil {
+		return task.Task{}, err
+	}
+	return t, nil
+}
 
 // Put stores a task and replaces its sidecars, both in one transaction.
 func (s *SQLStore) Put(ctx context.Context, t task.Task, sidecars []Sidecar) error {
@@ -158,7 +213,7 @@ func (s *SQLStore) Get(ctx context.Context, id string) (task.Task, []Sidecar, er
 	var doc string
 	err := s.db.QueryRowContext(ctx, selectTask, id).Scan(&doc)
 	if errors.Is(err, sql.ErrNoRows) {
-		return task.Task{}, nil, fmt.Errorf("task %q not found", id)
+		return task.Task{}, nil, fmt.Errorf("task %q not found: %w", id, os.ErrNotExist)
 	}
 	if err != nil {
 		return task.Task{}, nil, fmt.Errorf("read task: %w", err)
@@ -307,21 +362,122 @@ func (s *SQLStore) PurgeDeleted(ctx context.Context, retention time.Duration) er
 	return nil
 }
 
-// lockedTask reads a task's document and deletion state for a read-modify-write, taking the row's write lock on the way in.
+// PutFnBy atomically reads a task and its sidecars, lets fn compute the
+// replacement, and writes both back with a matching history entry — the same
+// read-under-lock-then-write atomicity DeleteBy/RestoreBy give a fixed
+// transition, generalized to an arbitrary field change. The whole cycle runs
+// inside one transaction rather than a separately held lock spanning several
+// calls, so there is no second lock primitive to nest under PutBy/DeleteBy's
+// own and no risk of the self-deadlock a held-lock-plus-separate-query design
+// hits on sqlite's single-connection pool.
+//
+// fn receives the sidecar-populated task exactly as Get would return it, so
+// callers that mutate plain Task fields never need to know sidecars are
+// stored separately; changed is the field-name list recorded in history.
+func (s *SQLStore) PutFnBy(ctx context.Context, id, actor string, fn func(cur task.Task) (next task.Task, changed []string, err error)) (task.Task, error) {
+	if s == nil {
+		return task.Task{}, errors.New("task store is not configured")
+	}
+	ctx, cancel := context.WithTimeout(ctx, taskQueryTimeout)
+	defer cancel()
+	var result task.Task
+	err := s.db.InTx(ctx, func(tx *sql.Tx) error {
+		doc, deletedAt, found, err := s.lockedTaskRow(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if !found || deletedAt > 0 {
+			return fmt.Errorf("task %q not found: %w", id, os.ErrNotExist)
+		}
+		cur, err := task.ParseBytes([]byte(doc))
+		if err != nil {
+			return fmt.Errorf("parse task: %w", err)
+		}
+		sidecars, err := s.sidecarsTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		ApplySidecars(&cur, sidecars)
+
+		next, changed, err := fn(cur)
+		if err != nil {
+			return err
+		}
+		next.ID = id
+
+		nextDoc, err := task.MarshalStored(next)
+		if err != nil {
+			return fmt.Errorf("marshal task: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(upsertTask),
+			next.ID, string(next.Status), next.ProjectID, next.Title,
+			db.TimeValue(next.CreatedAt), db.TimeValue(next.UpdatedAt), int64(0), string(nextDoc)); err != nil {
+			return fmt.Errorf("write task: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(deleteTaskSidecars), next.ID); err != nil {
+			return fmt.Errorf("clear sidecars: %w", err)
+		}
+		now := db.TimeValue(time.Now().UTC())
+		for _, sc := range SidecarsFromTask(next) {
+			if _, err := tx.ExecContext(ctx, s.db.Rebind(upsertSidecar),
+				next.ID, sc.Kind, sc.Name, now, sc.Content); err != nil {
+				return fmt.Errorf("write sidecar %s: %w", sc.Kind, err)
+			}
+		}
+		if err := appendHistoryTx(ctx, s.db, tx, HistoryEntry{
+			TaskID: next.ID, Actor: actor, Kind: ChangeUpdated, Fields: changed,
+			Snapshot: string(nextDoc),
+		}); err != nil {
+			return err
+		}
+		result = next
+		return nil
+	})
+	return result, err
+}
+
+// sidecarsTx is sidecars run inside an already-open transaction, for callers
+// (PutFnBy) that need a consistent read alongside the row lock they are
+// already holding rather than a second, unlocked connection.
+func (s *SQLStore) sidecarsTx(ctx context.Context, tx *sql.Tx, id string) ([]Sidecar, error) {
+	rows, err := tx.QueryContext(ctx, s.db.Rebind(selectSidecars+s.db.OrderText("name")), id)
+	if err != nil {
+		return nil, fmt.Errorf("read sidecars: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Sidecar
+	for rows.Next() {
+		var sc Sidecar
+		if err := rows.Scan(&sc.Kind, &sc.Name, &sc.Content); err != nil {
+			return nil, fmt.Errorf("scan sidecar: %w", err)
+		}
+		out = append(out, sc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sidecars: %w", err)
+	}
+	return out, nil
+}
+
+// lockedTaskRow reads a task's document and deletion state for a read-modify-write, taking the row's write lock on the way in.
 //
 // Without FOR UPDATE, postgres' READ COMMITTED lets a concurrent PutBy commit between this read and the matching write, so the history entry would carry a snapshot that was already superseded — a deletion record showing a state the task had left. SQLite takes the same exclusion from its immediate transaction. found is false when no such task exists, which every caller treats as nothing to do.
-func (s *SQLStore) lockedTask(ctx context.Context, tx *sql.Tx, id string) (doc string, deleted, found bool, err error) {
+func (s *SQLStore) lockedTaskRow(ctx context.Context, tx *sql.Tx, id string) (doc string, deletedAt int64, found bool, err error) {
 	stmt := `SELECT doc, deleted_at FROM tasks WHERE id = ?`
 	if s.db.Dialect() == db.Postgres {
 		stmt += ` FOR UPDATE`
 	}
-	// Live rows carry 0 rather than NULL, so deletion is a positive timestamp and not merely a non-null column.
-	var deletedAt int64
 	if err := tx.QueryRowContext(ctx, s.db.Rebind(stmt), id).Scan(&doc, &deletedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", false, false, nil
+			return "", 0, false, nil
 		}
-		return "", false, false, fmt.Errorf("read task: %w", err)
+		return "", 0, false, fmt.Errorf("read task: %w", err)
 	}
-	return doc, deletedAt > 0, true, nil
+	return doc, deletedAt, true, nil
+}
+
+// lockedTask is lockedTaskRow's boolean-deleted shape, kept for DeleteBy/RestoreBy.
+func (s *SQLStore) lockedTask(ctx context.Context, tx *sql.Tx, id string) (doc string, deleted, found bool, err error) {
+	doc, deletedAt, found, err := s.lockedTaskRow(ctx, tx, id)
+	return doc, deletedAt > 0, found, err
 }
