@@ -43,18 +43,19 @@ type DeleteHook func(taskID string)
 // store and persist are separate seams on purpose. persist is where task
 // CRUD actually lands — the file Store or a database adapter, chosen once at
 // construction — but store stays the file Store unconditionally, because
-// Comments/Plans/PlanDrafts, the trash-generation history, the leader-
-// follower mirror's direct sidecar writes (Store()), and the file-watcher
-// concerns (OnExternalUpdate/ProbeMutationTransport/MutationTransportIdentity)
-// are not part of Persistence yet — see the follow-up issue linked from
-// #3268. A Manager always has both regardless of which Persistence backs it.
+// Plans/PlanDrafts, the trash-generation history, the leader-follower
+// mirror's direct sidecar writes (Store()), and the file-watcher concerns
+// (OnExternalUpdate/ProbeMutationTransport/MutationTransportIdentity) are
+// not part of Persistence yet — see the follow-up issue linked from #3268.
+// commentPersist is the same seam for Comments specifically: nil (and Comments() falling back to store.Comments(), the file backend) until SetCommentPersistence is called. A Manager always has store regardless of which Persistence or CommentPersistence backs it.
 type Manager struct {
-	store        *Store
-	persist      Persistence
-	emitter      EventEmitter
-	locks        fsutil.KeyedLocker
-	onStatusHook StatusChangeHook
-	onDeleteHook []DeleteHook
+	store          *Store
+	persist        Persistence
+	commentPersist CommentPersistence
+	emitter        EventEmitter
+	locks          fsutil.KeyedLocker
+	onStatusHook   StatusChangeHook
+	onDeleteHook   []DeleteHook
 
 	// firedMu/firedStatus tracks the most recent status value that has
 	// triggered onStatusHook. OnExternalUpdate uses it to dedupe repeated
@@ -67,6 +68,11 @@ type Manager struct {
 // SetStatusChangeHook registers a callback fired on every status transition.
 // Passing nil disables the hook.
 func (m *Manager) SetStatusChangeHook(h StatusChangeHook) { m.onStatusHook = h }
+
+// SetCommentPersistence selects a non-file backend for Comments(). Passing
+// nil (the zero value, also the default before this is ever called) falls
+// back to store.Comments(), the file backend — see the Manager doc comment.
+func (m *Manager) SetCommentPersistence(cp CommentPersistence) { m.commentPersist = cp }
 
 // SetDeleteHook registers a callback fired after a task is successfully deleted.
 // Passing nil clears every registered delete hook.
@@ -210,7 +216,12 @@ func (m *Manager) forgetFiredStatus(id string) {
 }
 
 // Comments returns the underlying CommentStore.
-func (m *Manager) Comments() *CommentStore { return m.store.Comments() }
+func (m *Manager) Comments() CommentPersistence {
+	if m.commentPersist != nil {
+		return m.commentPersist
+	}
+	return m.store.Comments()
+}
 
 // Plans returns the underlying plan sidecar store.
 func (m *Manager) Plans() *PlanningSidecarStore { return m.store.Plans() }

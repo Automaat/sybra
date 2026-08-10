@@ -66,6 +66,7 @@ import (
 	"github.com/Automaat/sybra/internal/sybra/runenv"
 	"github.com/Automaat/sybra/internal/sybra/verification"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/task/taskdb"
 	"github.com/Automaat/sybra/internal/tasksnapshot"
 	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/watcher"
@@ -577,6 +578,7 @@ func (a *App) Startup(ctx context.Context) error {
 	taskPersist := a.openTaskPersistence(appCtx)
 	if taskPersist != nil {
 		a.tasks = task.NewManagerWithPersistence(store, taskPersist, task.EmitterFunc(emit))
+		a.tasks.SetCommentPersistence(taskdb.NewCommentStore(a.database))
 	} else {
 		a.tasks = task.NewManager(store, task.EmitterFunc(emit))
 	}
