@@ -192,6 +192,45 @@ Rules for a store that moves to the backend:
   so it runs on both engines, and to `scripts/test-db-engines.sh`'s package
   list so `mise run test:db` and CI cover it.
 
+### Task Trash-Generation History (decision, #3288)
+
+The file backend keeps every past deletion and restoration of a task as its
+own dated generation directory under `TrashDir()` (`Store.newTrashGeneration`,
+`internal/task/store_trash.go`) — the full task file plus every sidecar it
+owned at that moment, restorable individually, so a task deleted and
+restored more than once still has each earlier generation's content on disk.
+`internal/task/taskdb` deliberately does not build an equivalent: a task row
+carries a single `deleted_at` column, and restoring simply clears it —
+there is no generation table, and `Manager.ListTrash`/`PruneTrash`/
+`DeleteTrashedGeneration`/`PruneAllTrash` stay routed to the file `*Store`
+unconditionally regardless of which backend is configured for everything
+else.
+
+This is deliberate, not an oversight: `taskdb`'s `task_history` table
+(`internal/task/taskdb/history.go`) already records every delete and every
+restore as its own actor-attributed, timestamped entry with the task's full
+document snapshot at that moment (`HistoryEntry{Kind: ChangeDeleted, ...}` /
+`ChangeRestored`, written in the same transaction as the state change) — the
+question a trash generation answers ("what did this look like, and who
+changed it, before the Nth restore") already has a queryable answer on the
+database backend, just shaped as an append-only log rather than a
+recoverable directory tree. What `task_history` does *not* capture is
+sidecar content (Plan, CodeReview, ...) at each generation, only the primary
+task fields — recovering a specific historical plan or review body still
+needs the file backend's actual generation directories.
+
+Given that overlap, replicating trash's directory-snapshot model in SQL —
+a second, differently-shaped history mechanism answering a question
+`task_history` already answers for every field but the ten sidecar strings —
+is not worth the schema and query-surface it would add right now. The file
+backend remains fully supported specifically as the rollback path, so an
+operator who needs full generation fidelity (sidecars included) always has
+it by selecting `database.backend: file`. Revisit only if a real recovery
+need for sidecar-level content across generations shows up on the database
+backend specifically; `task_history` is not yet exposed through `sybra-cli`
+or the API to any operator, either, which is worth doing before trash
+parity would be (tracked separately, not part of this decision).
+
 ### Task Format
 
 Tasks are YAML frontmatter + GFM markdown files in `tasks/`:
