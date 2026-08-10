@@ -281,6 +281,8 @@ func TestImport_ReportsUnparseableAndStillCompletes(t *testing.T) {
 // .review.md), and .spec-decisions.md (the file store writes the singular
 // .spec-decision.md) — each one meant that sidecar kind silently never
 // imported into the database for any existing file-backed install.
+//
+// Suffixes come from task.SidecarFileSuffixes, the file store's own single source of truth for what a fixed-name sidecar file is named (internal/task/store.go), not a second hand-maintained list here — a future sidecar kind added there is covered by this test automatically instead of silently passing while still missing from taskdb's own suffix map.
 func TestImport_MatchesEveryRealSidecarSuffix(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
 		t.Helper()
@@ -292,20 +294,13 @@ func TestImport_MatchesEveryRealSidecarSuffix(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "aaa11111.md"), data, 0o600); err != nil {
 			t.Fatalf("write task: %v", err)
 		}
-		wantContent := map[string]string{
-			".plan.md":                  "plan",
-			".plan-contract.json":       `{"contract":true}`,
-			".plan-critique.md":         "critique",
-			".plan-research.md":         "research",
-			".plan-decisions.md":        "decisions",
-			".plan-brief.md":            "brief",
-			".review.md":                "review",
-			".current-test-failures.md": "failures",
-			".acceptance-ledger.md":     "ledger",
-			".spec-decision.md":         "spec decision",
-			".comments.json":            "[]",
-		}
-		for suffix, content := range wantContent {
+		for _, suffix := range task.SidecarFileSuffixes {
+			content := "content for " + suffix
+			if suffix == ".comments.json" {
+				content = "[]"
+			} else if strings.HasSuffix(suffix, ".json") {
+				content = `{"content":"` + suffix + `"}`
+			}
 			if err := os.WriteFile(filepath.Join(dir, "aaa11111"+suffix), []byte(content), 0o600); err != nil {
 				t.Fatalf("write sidecar %s: %v", suffix, err)
 			}
@@ -323,8 +318,8 @@ func TestImport_MatchesEveryRealSidecarSuffix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Get: %v", err)
 		}
-		if len(sidecars) != len(wantContent) {
-			t.Fatalf("imported %d sidecars, want %d (one per suffix on disk) — a suffix mismatch silently drops its sidecar kind", len(sidecars), len(wantContent))
+		if len(sidecars) != len(task.SidecarFileSuffixes) {
+			t.Fatalf("imported %d sidecars, want %d (one per suffix on disk) — a suffix mismatch silently drops its sidecar kind", len(sidecars), len(task.SidecarFileSuffixes))
 		}
 	})
 }

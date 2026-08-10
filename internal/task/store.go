@@ -203,12 +203,12 @@ func (s *Store) lockNewTask(id string) (func(), error) {
 	return unlock, nil
 }
 
-// sidecarFileSuffixes lists every fixed-name (non-plan-draft) sidecar
+// SidecarFileSuffixes lists every fixed-name (non-plan-draft) sidecar
 // suffix a task can own. Single source of truth for both IsSidecarFile and
 // Store.taskFiles, so a new fixed-name sidecar kind only needs to be added
 // here. Plan drafts use caller-chosen names (see IsPlanDraftFile) and so
 // can't be enumerated as fixed suffixes.
-var sidecarFileSuffixes = []string{
+var SidecarFileSuffixes = []string{
 	".comments.json",
 	".plan.md",
 	".plan-contract.json",
@@ -224,13 +224,13 @@ var sidecarFileSuffixes = []string{
 
 // IsSidecarFile reports whether a filename (basename) belongs to a sidecar
 // store rather than a primary task file. Centralized so adding a new
-// sidecar kind only requires updating sidecarFileSuffixes (or, for
+// sidecar kind only requires updating SidecarFileSuffixes (or, for
 // caller-named sidecars like plan drafts, IsPlanDraftFile).
 func IsSidecarFile(base string) bool {
 	if IsPlanDraftFile(base) {
 		return true
 	}
-	for _, suffix := range sidecarFileSuffixes {
+	for _, suffix := range SidecarFileSuffixes {
 		if strings.HasSuffix(base, suffix) {
 			return true
 		}
@@ -974,7 +974,7 @@ func validateWriteTask(t Task) error {
 // id (comments, plans, contracts, critiques, research, decisions, brief,
 // code reviews, plan drafts) — the primary "<id>.md" is not included, since
 // Delete/RestoreFromTrash handle it separately. Checks each fixed-name
-// suffix in sidecarFileSuffixes directly (bounded, ~8 stat calls) rather
+// suffix in SidecarFileSuffixes directly (bounded, ~8 stat calls) rather
 // than scanning the whole tasks directory, so cost scales with the sidecar
 // kinds that exist, not with the number of live tasks in the store. Plan
 // drafts go through planDrafts.List, which has its own negative-cache index
@@ -984,7 +984,7 @@ func (s *Store) taskFiles(id string) ([]string, error) {
 		return nil, err
 	}
 	var out []string
-	for _, suffix := range sidecarFileSuffixes {
+	for _, suffix := range SidecarFileSuffixes {
 		base := id + suffix
 		if _, err := os.Stat(filepath.Join(s.dir, base)); err == nil {
 			out = append(out, base)
