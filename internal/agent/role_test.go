@@ -161,11 +161,11 @@ func TestRole_SupportsHeadlessSteer(t *testing.T) {
 		{RoleHumanReview, false},
 		{RoleLoop, false},
 		{RoleMonitor, false},
+		{RolePRFix, false},
 		{RoleFixReview, false},
 		// Roles a human may actively watch and steer from the GUI.
 		{RoleImplementation, true},
 		{RolePlan, true},
-		{RolePRFix, true},
 		{RoleTestFix, true},
 		{Role(""), true}, // empty maps to implementation
 	}
