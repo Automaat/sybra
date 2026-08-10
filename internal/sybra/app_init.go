@@ -180,7 +180,11 @@ func (a *App) initBgops(ctx context.Context, emit func(string, any)) {
 	a.bgops.LoadFromDisk()
 }
 
+// initFileWatcher starts the tasks-directory watcher only for the file backend: every Manager mutation already emits task:created/updated/deleted directly (see eventPath's doc comment), so on the database backend there is no file for the watcher to see and nothing it would be first to notice.
 func (a *App) initFileWatcher(ctx context.Context, emit func(string, any)) {
+	if a.currentConfig().DatabaseEnabled() {
+		return
+	}
 	w := watcher.New(a.tasksDir, emit, a.logger)
 	if err := w.Start(ctx); err != nil {
 		a.logger.Error("watcher.start", "err", err)

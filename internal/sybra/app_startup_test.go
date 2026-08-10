@@ -460,8 +460,12 @@ func assertStartupCoreWiring(t *testing.T, app *App, logger *slog.Logger, cfg *c
 	if app.evaluationSvc == nil || app.routingSvc == nil {
 		t.Fatal("evaluation/routing services were not initialized before Startup returned")
 	}
-	if app.watcher == nil || app.configWatcher == nil {
-		t.Fatal("file/config watchers were not started")
+	if app.configWatcher == nil {
+		t.Fatal("config watcher was not started")
+	}
+	wantTaskWatcher := !cfg.DatabaseEnabled()
+	if (app.watcher != nil) != wantTaskWatcher {
+		t.Fatalf("task watcher started = %v, want %v (database.backend = %q)", app.watcher != nil, wantTaskWatcher, cfg.DatabaseBackend())
 	}
 	if app.notifier == nil || app.artifacts == nil || app.experience == nil || app.stats == nil || app.limits == nil {
 		t.Fatal("support stores were not initialized")

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/config"
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/httpapi"
 )
@@ -257,5 +258,25 @@ func TestTaskWatcherStaysAliveUntilAgentShutdownFinishes(t *testing.T) {
 	case <-a.watcher.Done():
 	case <-time.After(time.Second):
 		t.Fatal("task watcher did not stop after explicit shutdown")
+	}
+}
+
+// TestInitFileWatcherSkippedOnDatabaseBackend proves the tasks-directory
+// watcher never starts on a database-backed board: nothing writes a task
+// file for it to see, so starting it would only ever watch an empty
+// directory and do nothing useful.
+func TestInitFileWatcherSkippedOnDatabaseBackend(t *testing.T) {
+	a := &App{
+		tasksDir: t.TempDir(),
+		logger:   discardLogger(),
+		emit:     func(string, any) {},
+		cfg:      &config.Config{Database: config.DatabaseConfig{Backend: config.DBBackendSQLite}},
+	}
+	a.initLifecycle(context.Background())
+	a.initFileWatcher(a.watcherCtx, func(string, any) {})
+	t.Cleanup(a.stopFileWatcher)
+
+	if a.watcher != nil {
+		t.Fatal("watcher started on the database backend, want nil")
 	}
 }
