@@ -556,6 +556,9 @@ func (m *Manager) prepareRunConfig(cfg RunConfig) (RunConfig, Provider, error) {
 	if err := m.injectSandboxHome(&cfg); err != nil {
 		return cfg, nil, err
 	}
+	if err := injectScratchEnvironment(&cfg); err != nil {
+		return cfg, nil, err
+	}
 
 	if err := m.injectGitAccess(&cfg); err != nil {
 		return cfg, nil, err
@@ -854,6 +857,38 @@ func systemSandboxKey(cfg *RunConfig) string {
 		return "system-run"
 	}
 	return key
+}
+
+const scratchHomePrompt = `## Temporary files
+
+When a command or test needs a disposable HOME, use $SYBRA_SCRATCH_HOME. It
+lives outside the Git worktree. Never create fake homes, caches, or other
+runtime state inside the worktree.`
+
+// injectScratchEnvironment gives every sandbox-home-backed run an explicit
+// place for fake user homes outside the Git worktree. HOME itself deliberately
+// remains unchanged: provider CLIs use it to find their authenticated
+// ~/.claude, ~/.codex, or ~/.copilot state.
+func injectScratchEnvironment(cfg *RunConfig) error {
+	if strings.TrimSpace(cfg.resolvedSandboxHome) == "" {
+		return nil
+	}
+	scratchHome := filepath.Join(cfg.resolvedSandboxHome, "scratch-home")
+	if err := os.MkdirAll(scratchHome, 0o700); err != nil {
+		return fmt.Errorf("agent.Run: create task scratch directory %q: %w", scratchHome, err)
+	}
+	// Do not replace TMPDIR/TMP/TEMP here. Provider and harness control files
+	// may already live beneath the caller's process temp root; changing that
+	// root makes those paths fail validation and can change CLI behaviour.
+	cfg.ExtraEnv = stripEnvKeys(cfg.ExtraEnv, "SYBRA_SCRATCH_HOME")
+	cfg.ExtraEnv = append(cfg.ExtraEnv, "SYBRA_SCRATCH_HOME="+scratchHome)
+	if !strings.Contains(cfg.Prompt, scratchHomePrompt) {
+		if cfg.Prompt != "" {
+			cfg.Prompt = strings.TrimRight(cfg.Prompt, "\n") + "\n\n"
+		}
+		cfg.Prompt += scratchHomePrompt
+	}
+	return nil
 }
 
 func (m *Manager) injectGitHubToken(cfg *RunConfig) {

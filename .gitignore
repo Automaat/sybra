@@ -53,6 +53,7 @@ core.*
 .sybra-manual-*
 /.tmp-test-fakebin/
 .tmp-sybra-home*/
+/fakehome/
 server_auth_token
 deploy/k8s-poc/.env
 
