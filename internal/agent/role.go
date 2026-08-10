@@ -243,8 +243,8 @@ func (r Role) WorkloadClass() WorkloadClass {
 // launched with the stdin/stream-json steerable transport
 // (RunConfig.HeadlessSteerable). Steering exists so a human watching a live
 // run from the GUI can send follow-up guidance; verifier/system roles
-// (review, test-runner, eval, triage, plan-critic, human-review) and
-// fix-review are dispatched unattended by pollers/watchers with
+// (review, test-runner, eval, triage, plan-critic, human-review), PR-fix,
+// and fix-review are dispatched unattended by pollers/watchers with
 // Mode hardcoded to "headless" independent of the originating task's own
 // AgentMode (see internal/sybra/review/inbound.go, app_human_review.go) —
 // nothing ever writes a steer message to them. Forcing the steerable
@@ -264,7 +264,7 @@ func (r Role) SupportsHeadlessSteer() bool {
 	if r.IsVerifier() || r.IsSystem() {
 		return false
 	}
-	return r != RoleFixReview
+	return r != RolePRFix && r != RoleFixReview
 }
 
 // ParseRoleFromName extracts the Role from a prefixed agent name.

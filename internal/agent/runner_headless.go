@@ -557,7 +557,6 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 	}
 	a.SetCmd(cmd)
 	a.setDetached(true)
-	m.saveRegistry(ctx, a)
 	if steerable {
 		// setFinalizing(false) in startHeadlessProcessSurviveStdin refreshed
 		// CanSteer; emit so the UI shows steer controls as soon as the FIFO
@@ -596,6 +595,11 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 			return nil, writeErr
 		}
 	}
+	// The provider has a short no-input deadline. Do not place a durable write
+	// between Start and its first prompt: a slow task/attempt store can otherwise
+	// let the child exit before it ever receives work. Persist immediately after
+	// successful delivery so restart adoption still sees only live agents.
+	m.saveRegistry(ctx, a)
 	return cmd, nil
 }
 

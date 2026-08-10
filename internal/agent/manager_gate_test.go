@@ -321,7 +321,9 @@ func TestPrepareRunConfig_HeadlessSteerableGatedByRole(t *testing.T) {
 		{RoleImplementation.AgentName("Impl"), true},
 		{"", true}, // legacy unprefixed name maps to implementation
 		{RolePlan.AgentName("Plan"), true},
-		{RolePRFix.AgentName("PR Fix"), true},
+		// PR fixes are dispatched by the PR monitor; nobody is attached to
+		// steer their initial turn, so they must use the one-shot transport.
+		{RolePRFix.AgentName("PR Fix"), false},
 		{RoleReview.AgentName("Review"), false},
 		{RoleFixReview.AgentName("Fix"), false},
 		{RoleHumanReview.AgentName("Diagnose"), false},
