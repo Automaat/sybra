@@ -272,6 +272,26 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 	a := setupApp(t)
 	var wg sync.WaitGroup
 
+	// Workflow run_agent steps that declare needs_worktree use the same
+	// project-aware adapter wiring as production. Individual tests can seed a
+	// synthetic project through a.projects when they expect such a step to
+	// launch; tests without one exercise the fail-closed preparation path.
+	projects, err := project.NewStore(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wm := worktree.New(worktree.Config{
+		WorktreesDir:     t.TempDir(),
+		Projects:         projects,
+		Tasks:            a.tasks,
+		Logger:           a.logger,
+		AgentChecker:     a.agents.HasRunningAgentForTask,
+		LiveAgentChecker: a.agents.HasLiveRegisteredAgentForTask,
+	})
+	a.projects = projects
+	a.worktrees = wm
+	a.agentOrch = agentorch.New(a.tasks, projects, a.agents, nil, a.logger, wm, nil)
+
 	wfDir := t.TempDir()
 	wfStore, err := workflow.NewStore(wfDir)
 	if err != nil {
@@ -281,7 +301,7 @@ func setupTaskService(t *testing.T) (*TaskService, *App) {
 		t.Fatal(err)
 	}
 	ta := &taskAdapter{tasks: a.tasks}
-	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks}
+	aa := &agentAdapter{agents: a.agents, agentOrch: a.agentOrch, tasks: a.tasks, projects: projects}
 	engine := workflow.NewTestEngine(wfStore, ta, aa, a.logger)
 	// Bind the test context so a background workflow (spawned by CreateTask)
 	// unwinds when the test ends — otherwise classify_task's retry backoff can

@@ -69,6 +69,10 @@ steps:
       mode: headless
       model: sonnet
       provider: cross
+      # The review skill needs a real checkout. Without this, direct-dispatch
+      # verifier setup falls back to an empty temporary cwd and checkout
+      # validation fails before an agent is registered.
+      needs_worktree: true
       prompt: >-
         Run /adversarial-review on https://github.com/{{.Task.ProjectID}}/pull/{{.Task.PRNumber}}
 
@@ -134,6 +138,9 @@ steps:
       # was the priciest shape in the fleet (review = 34% of spend).
       model: sonnet
       provider: cross
+      # Keep this aligned with review_simple: staff review must start from the
+      # fetched PR head, never from the process-wide fallback directory.
+      needs_worktree: true
       prompt: >-
         Run /staff-code-review on https://github.com/{{.Task.ProjectID}}/pull/{{.Task.PRNumber}}
 

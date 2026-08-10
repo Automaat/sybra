@@ -901,6 +901,22 @@ func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForReview(t *testing.
 	}
 }
 
+func TestProvidedReviewWorktreeAlwaysRechecksPRHead(t *testing.T) {
+	adapter := &agentAdapter{}
+	repair, err := adapter.providedWorktreeNeedsRepair(
+		task.Task{PRNumber: 42},
+		"review-task",
+		agent.RoleReview,
+		t.TempDir(),
+	)
+	if err != nil {
+		t.Fatalf("providedWorktreeNeedsRepair: %v", err)
+	}
+	if !repair {
+		t.Fatal("provided PR review worktree was accepted without rechecking the current PR head")
+	}
+}
+
 func TestAgentAdapterStartAgentRepreparesMissingProvidedDirForFixReview(t *testing.T) {
 	h := setupProvidedDirRecoveryHarness(t, agent.RoleFixReview)
 	if err := os.RemoveAll(h.dir); err != nil {

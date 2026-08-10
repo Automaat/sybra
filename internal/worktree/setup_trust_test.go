@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Automaat/sybra/internal/project"
 	"github.com/Automaat/sybra/internal/task"
 )
 
@@ -134,6 +135,60 @@ func TestPrepareForReview_UntrustedRepoSetupNotExecuted(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(wtPath, "trusted-marker")); err != nil {
 		t.Errorf("trusted default-branch setup command did not run: %v", err)
+	}
+}
+
+func TestPrepareForReview_RefreshesAdvancedPRHead(t *testing.T) {
+	h := prepareHarness(t, nil, 0)
+	srcGit := func(args ...string) string {
+		t.Helper()
+		full := append([]string{"-C", h.src}, args...)
+		out, err := exec.Command("git", full...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	const prNumber = 77
+	firstSHA := srcGit("rev-parse", "HEAD")
+	srcGit("update-ref", "refs/pull/77/head", firstSHA)
+	h.m.prBranch = func(_ string, _ int) (string, error) { return "feature", nil }
+
+	tk, err := h.tasks.Create("review advancing pr", "", task.AgentModeHeadless)
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	tk, err = h.tasks.UpdateMap(tk.ID, map[string]any{"project_id": h.proj.ID, "pr_number": prNumber})
+	if err != nil {
+		t.Fatalf("update task: %v", err)
+	}
+
+	wtPath, err := h.m.PrepareForReview(context.Background(), tk)
+	if err != nil {
+		t.Fatalf("first PrepareForReview: %v", err)
+	}
+	if got, err := project.CurrentCommit(context.Background(), wtPath); err != nil || got != firstSHA {
+		t.Fatalf("initial worktree HEAD = %q, %v; want %q", got, err, firstSHA)
+	}
+
+	if err := os.WriteFile(filepath.Join(h.src, "advanced.txt"), []byte("new head\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srcGit("add", "advanced.txt")
+	srcGit("commit", "-m", "advance pr")
+	secondSHA := srcGit("rev-parse", "HEAD")
+	srcGit("update-ref", "refs/pull/77/head", secondSHA)
+
+	refreshedPath, err := h.m.PrepareForReview(context.Background(), tk)
+	if err != nil {
+		t.Fatalf("second PrepareForReview: %v", err)
+	}
+	if refreshedPath != wtPath {
+		t.Fatalf("refreshed path = %q, want %q", refreshedPath, wtPath)
+	}
+	if got, err := project.CurrentCommit(context.Background(), refreshedPath); err != nil || got != secondSHA {
+		t.Fatalf("refreshed worktree HEAD = %q, %v; want %q", got, err, secondSHA)
 	}
 }
 

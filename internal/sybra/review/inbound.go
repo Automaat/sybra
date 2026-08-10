@@ -16,6 +16,7 @@ import (
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/sybra/agentorch"
 	"github.com/Automaat/sybra/internal/task"
+	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
@@ -177,7 +178,7 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 		claim, ok := r.agents.TryClaimDispatch(current.ID)
 		if !ok {
 			r.logger.Info("review.agent-skip", "task_id", current.ID, "pr", current.PRNumber, "reason", "dispatch_in_progress")
-			return nil
+			return workflow.ErrDispatchInFlight
 		}
 		defer claim.Release()
 	}
@@ -199,24 +200,18 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 		return postureErr
 	}
 
-	dir := config.HomeDir()
-	if current.ProjectID != "" {
-		// context.Background(): same dead end as StartFixReviewAgent above —
-		// reached from a Wails-bound service method with no ctx.
-		d, err := r.worktrees.PrepareForReview(context.Background(), current)
-		switch {
-		case errors.Is(err, worktree.ErrPreparationInFlight):
-			// Never fall back to the operator's real Sybra home for a
-			// condition that clears on its own — the next tick prepares the
-			// task's own worktree instead of pointing a review agent at the
-			// live board (#1576).
-			r.logger.Info("review.worktree.busy", "task_id", current.ID, "err", err)
-			return nil
-		case err != nil:
-			r.logger.Error("review.worktree", "task_id", current.ID, "err", err)
-		default:
-			dir = d
-		}
+	// context.Background(): same dead end as StartFixReviewAgent above —
+	// reached from a Wails-bound service method with no ctx. A review without
+	// its PR checkout is not useful and can inspect unrelated files, so fail
+	// closed instead of falling back to the Sybra home directory.
+	dir, err := r.worktrees.PrepareForReview(context.Background(), current)
+	switch {
+	case errors.Is(err, worktree.ErrPreparationInFlight):
+		r.logger.Info("review.worktree.busy", "task_id", current.ID, "err", err)
+		return workflow.ErrDispatchInFlight
+	case err != nil:
+		r.logger.Error("review.worktree", "task_id", current.ID, "err", err)
+		return fmt.Errorf("prepare review worktree: %w", err)
 	}
 
 	prompt := StaffCodeReviewPrompt(current.ProjectID, current.PRNumber)

@@ -686,6 +686,21 @@ func TestBuiltinPRReview_StaffPassUsesSonnet(t *testing.T) {
 	}
 }
 
+func TestBuiltinPRReview_UsesPreparedWorktree(t *testing.T) {
+	t.Parallel()
+
+	pr := defByID(t, "pr-review")
+	for _, stepID := range []string{"review_simple", "review_staff"} {
+		step := pr.StepByID(stepID)
+		if step == nil {
+			t.Fatalf("%s step not found in pr-review", stepID)
+		}
+		if !step.Config.NeedsWorktree {
+			t.Fatalf("%s needs_worktree = false, want true: inbound reviews must run from the fetched PR checkout", stepID)
+		}
+	}
+}
+
 func TestBuiltinPRReview_AuthorizesVisibleReviewAction(t *testing.T) {
 	t.Parallel()
 
