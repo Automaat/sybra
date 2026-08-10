@@ -234,7 +234,7 @@ func (a *taskAdapter) UpdateTaskStatus(id string, status taskstatus.Status, reas
 
 func (a *taskAdapter) ClearTaskStatusReasonIf(id string, expectedStatus taskstatus.Status, expectedReason string) (bool, error) {
 	cleared := false
-	_, err := a.tasks.UpdateFn(id, func(cur task.Task) (task.Update, error) {
+	_, err := a.tasks.UpdateFnBy(id, "workflow.engine.clear_status_reason", func(cur task.Task) (task.Update, error) {
 		if cur.Status != expectedStatus || cur.StatusReason != expectedReason {
 			return task.Update{}, errWorkflowStatusReasonNoLongerMatches
 		}
@@ -355,23 +355,23 @@ func fallbackHumanRequiredReasonFromRun(t task.Task, run task.AgentRun) string {
 }
 
 func (a *taskAdapter) UpdateTaskPR(id string, prNumber int) error {
-	_, err := a.tasks.Update(id, task.Update{PRNumber: &prNumber})
+	_, err := a.tasks.UpdateBy(id, "workflow.engine.update_pr", task.Update{PRNumber: &prNumber})
 	return err
 }
 
 func (a *taskAdapter) MarkTaskReviewed(id string) error {
 	reviewed := true
-	_, err := a.tasks.Update(id, task.Update{Reviewed: &reviewed})
+	_, err := a.tasks.UpdateBy(id, "workflow.engine.mark_reviewed", task.Update{Reviewed: &reviewed})
 	return err
 }
 
 func (a *taskAdapter) SetCodeReviewVerdict(id, verdict string) error {
-	_, err := a.tasks.Update(id, task.Update{CodeReviewVerdict: &verdict})
+	_, err := a.tasks.UpdateBy(id, "workflow.engine.set_code_review_verdict", task.Update{CodeReviewVerdict: &verdict})
 	return err
 }
 
 func (a *taskAdapter) MarkAgentRunProtocolViolation(taskID, agentID, violation string) error {
-	return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{ProtocolViolation: task.Ptr(violation)})
+	return a.tasks.UpdateRunBy(taskID, "workflow.engine.mark_protocol_violation", agentID, task.RunPatch{ProtocolViolation: task.Ptr(violation)})
 }
 
 func (a *taskAdapter) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerprint string) error {
@@ -379,7 +379,7 @@ func (a *taskAdapter) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerpr
 	if fingerprint != "" {
 		patch.TestFailureFingerprint = task.Ptr(fingerprint)
 	}
-	return a.tasks.UpdateRun(taskID, agentID, patch)
+	return a.tasks.UpdateRunBy(taskID, "workflow.engine.mark_test_outcome", agentID, patch)
 }
 
 // MarkAgentRunIncomplete corrects a run's recorded outcome after the fact. The
@@ -387,7 +387,7 @@ func (a *taskAdapter) MarkAgentRunTestOutcome(taskID, agentID, outcome, fingerpr
 // whether a code-author run produced commits is only known later, once the
 // branch is inspected.
 func (a *taskAdapter) MarkAgentRunIncomplete(taskID, agentID string) error {
-	return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{Outcome: task.Ptr(task.RunOutcomeIncomplete)})
+	return a.tasks.UpdateRunBy(taskID, "workflow.engine.mark_run_incomplete", agentID, task.RunPatch{Outcome: task.Ptr(task.RunOutcomeIncomplete)})
 }
 
 func (a *taskAdapter) RecordAgentRunFinalCommit(taskID, agentID, headSHA, source string) error {
@@ -398,16 +398,16 @@ func (a *taskAdapter) RecordAgentRunFinalCommit(taskID, agentID, headSHA, source
 	if source != "" {
 		patch.FinalCommitSource = task.Ptr(source)
 	}
-	return a.tasks.UpdateRun(taskID, agentID, patch)
+	return a.tasks.UpdateRunBy(taskID, "workflow.engine.record_final_commit", agentID, patch)
 }
 
 func (a *taskAdapter) AppendTaskBody(id, content string) error {
-	_, err := a.tasks.AppendBody(id, content)
+	_, err := a.tasks.AppendBodyBy(id, "workflow.engine.append_body", content)
 	return err
 }
 
 func (a *taskAdapter) ReplaceTaskBody(id, body string) error {
-	_, err := a.tasks.Update(id, task.Update{Body: &body})
+	_, err := a.tasks.UpdateBy(id, "workflow.engine.replace_body", task.Update{Body: &body})
 	return err
 }
 
@@ -716,7 +716,7 @@ func (a *taskAdapter) WriteSidecar(id, kind, content string) error {
 	default:
 		return fmt.Errorf("unknown sidecar kind %q (want plan|plan_contract|code_review|plan_critique|plan_research|plan_decisions|plan_brief|current_test_failures|acceptance_ledger|spec_decision|plan_draft.<name>)", kind)
 	}
-	_, err := a.tasks.Update(id, u)
+	_, err := a.tasks.UpdateBy(id, "workflow.engine.write_sidecar", u)
 	return err
 }
 
@@ -1674,7 +1674,7 @@ func (a *agentAdapter) recordSystemAgentStart(taskID, role, mode string, cfg age
 	if cur, rerr := a.tasks.Get(taskID); rerr == nil && cur.Status == task.StatusHumanRequired {
 		nextStatus = task.Ptr(task.StatusInProgress)
 	}
-	if addErr := a.tasks.AddRunWithStatus(taskID, task.AgentRun{
+	if addErr := a.tasks.AddRunWithStatusBy(taskID, "workflow.engine.record_agent_start", task.AgentRun{
 		AgentID:                 ag.ID,
 		Role:                    role,
 		Mode:                    mode,

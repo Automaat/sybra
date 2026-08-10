@@ -222,7 +222,7 @@ func (s *TaskService) UploadAttachment(taskID, fileName string, data []byte) (ta
 	if err != nil {
 		return task.Attachment{}, validationError(err.Error())
 	}
-	_, err = s.tasks.UpdateFn(taskID, func(cur task.Task) (task.Update, error) {
+	_, err = s.tasks.UpdateFnBy(taskID, "svc.tasks.upload_attachment", func(cur task.Task) (task.Update, error) {
 		next := slices.Clone(cur.Attachments)
 		next = append(next, meta)
 		return task.Update{Attachments: &next}, nil
@@ -249,7 +249,7 @@ func (s *TaskService) DeleteAttachment(taskID, attachmentID string) error {
 	if s.attachments == nil {
 		return validationError("attachments are unavailable")
 	}
-	_, err := s.tasks.UpdateFn(taskID, func(cur task.Task) (task.Update, error) {
+	_, err := s.tasks.UpdateFnBy(taskID, "svc.tasks.delete_attachment", func(cur task.Task) (task.Update, error) {
 		idx := slices.IndexFunc(cur.Attachments, func(att task.Attachment) bool { return att.ID == attachmentID })
 		if idx < 0 {
 			return task.Update{}, validationError(fmt.Sprintf("attachment %q not found", attachmentID))
@@ -472,7 +472,7 @@ func (s *TaskService) BlessTampering(taskID string) (task.Task, error) {
 		if err != nil {
 			return task.Task{}, err
 		} else if forwarded {
-			result, _, putErr := s.tasks.PutFn(taskID, func(local task.Task) (task.Task, error) {
+			result, _, putErr := s.tasks.PutFnBy(taskID, "svc.tasks.bless_tampering", func(local task.Task) (task.Task, error) {
 				if local.AssignedNode != current.AssignedNode || local.AssignmentRev != current.AssignmentRev {
 					return task.Task{}, conflictError("task ownership changed while follower tamper blessing was in flight")
 				}
@@ -589,7 +589,7 @@ func (s *TaskService) withEstimatedAgentRunCosts(t task.Task) task.Task {
 				patch.Provider = task.Ptr(estimate.Provider)
 				run.Provider = estimate.Provider
 			}
-			if err := s.tasks.UpdateRun(t.ID, run.AgentID, patch); err != nil && s.logger != nil {
+			if err := s.tasks.UpdateRunBy(t.ID, "svc.tasks.estimate_run_cost", run.AgentID, patch); err != nil && s.logger != nil {
 				s.logger.Debug("task.agent-run-cost.persist-skipped", "task_id", t.ID, "agent_id", run.AgentID, "err", err)
 			}
 		}
@@ -743,7 +743,7 @@ func (s *TaskService) AssignTask(t task.Task) error {
 	// plain staleness guard.
 	t.MirrorRev = 0
 	t.MirrorUpdatedAt = nil
-	saved, created, err := s.tasks.Put(t)
+	saved, created, err := s.tasks.PutBy(t, "cluster.task.assign")
 	if err != nil {
 		return translateTaskLockTimeout(fmt.Errorf("assign task: %w", err))
 	}
@@ -776,7 +776,7 @@ func (s *TaskService) RecoverLostAgent(taskID string) error {
 		return boardRejectionFor("task", taskID, err)
 	}
 	reason := "monitor: agent lost; recovery will resume"
-	if _, err := s.tasks.Update(taskID, task.Update{StatusReason: &reason}); err != nil && s.logger != nil {
+	if _, err := s.tasks.UpdateBy(taskID, "cluster.task.recover", task.Update{StatusReason: &reason}); err != nil && s.logger != nil {
 		s.logger.Warn("cluster.task.recover.status-reason.failed", "task_id", taskID, "err", err)
 	}
 	if t, err := s.tasks.Get(taskID); err == nil {
@@ -784,7 +784,7 @@ func (s *TaskService) RecoverLostAgent(taskID string) error {
 			if t.AgentRuns[i].State != string(agent.StateRunning) {
 				continue
 			}
-			if err := s.tasks.UpdateRun(taskID, t.AgentRuns[i].AgentID, task.RunPatch{
+			if err := s.tasks.UpdateRunBy(taskID, "cluster.task.recover", t.AgentRuns[i].AgentID, task.RunPatch{
 				State: task.Ptr(string(agent.StateStopped)),
 			}); err != nil && s.logger != nil {
 				s.logger.Warn("cluster.task.recover.update-run.failed", "task_id", taskID, "agent_id", t.AgentRuns[i].AgentID, "err", err)
@@ -1002,7 +1002,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 				// clock watermark, instead of rebuilding just status locally. A
 				// delayed mirror poll from before this RPC is then stale by
 				// construction and cannot undo the accepted transition.
-				t, _, putErr := s.tasks.PutFn(id, func(local task.Task) (task.Task, error) {
+				t, _, putErr := s.tasks.PutFnBy(id, "svc.tasks.update", func(local task.Task) (task.Task, error) {
 					if local.AssignedNode != cur.AssignedNode || local.AssignmentRev != cur.AssignmentRev {
 						return task.Task{}, conflictError("task ownership changed while follower status update was in flight")
 					}
@@ -1051,7 +1051,7 @@ func (s *TaskService) UpdateTask(id string, updates map[string]any) (task.Task, 
 		})
 		t, err = result.Task, applyErr
 	} else {
-		t, err = s.tasks.UpdateMap(id, updates)
+		t, err = s.tasks.UpdateMapBy(id, "svc.tasks.update", updates)
 	}
 	if err != nil {
 		return t, boardRejectionFor("task", id, translateTaskLockTimeout(err))
@@ -1266,7 +1266,7 @@ func (s *TaskService) dispatchFromHumanRequiredLockedAllowingAgent(id, target, r
 			return task.Task{}, forwardErr
 		}
 		if forwarded {
-			local, _, localErr := s.tasks.PutFn(id, func(current task.Task) (task.Task, error) {
+			local, _, localErr := s.tasks.PutFnBy(id, "svc.tasks.dispatch-human-required", func(current task.Task) (task.Task, error) {
 				if current.AssignedNode != cur.AssignedNode || current.AssignmentRev != cur.AssignmentRev {
 					return task.Task{}, conflictError("task ownership changed while follower dispatch was in flight")
 				}
@@ -1445,7 +1445,7 @@ func (s *TaskService) DeleteTask(id string) error {
 		s.logger.Error("task.delete.failed", "task_id", id, "err", err)
 		return boardRejectionFor("task", id, err)
 	}
-	if err := s.tasks.Delete(id); err != nil {
+	if err := s.tasks.DeleteBy(id, "svc.tasks.delete"); err != nil {
 		s.logger.Error("task.delete.failed", "task_id", id, "err", err)
 		return boardRejectionFor("task", id, translateTaskLockTimeout(err))
 	}
@@ -1521,7 +1521,7 @@ func (s *TaskService) enrichFromPR(taskID, repo string, number int) {
 	// Not my PR: add review tag and let the pr-review workflow own dispatch.
 	labels = append(labels, "review")
 	u.Tags = &labels
-	if _, err := s.tasks.Update(taskID, u); err != nil {
+	if _, err := s.tasks.UpdateBy(taskID, "svc.tasks.enrich_pr.review", u); err != nil {
 		s.logger.Error("enrich-pr.update", "task_id", taskID, "err", err)
 		return
 	}
@@ -1604,7 +1604,7 @@ func (s *TaskService) enrichFromIssue(taskID, repo string, number int) {
 		})
 		updated, err = result.Task, applyErr
 	} else {
-		updated, err = s.tasks.Update(taskID, u)
+		updated, err = s.tasks.UpdateBy(taskID, "svc.tasks.enrich_issue", u)
 	}
 	if err != nil {
 		s.logger.Error("enrich-issue.update", "task_id", taskID, "err", err)
@@ -1826,7 +1826,7 @@ func (s *TaskService) enrichUmbrellaStub(taskID, repo string, issue github.Issue
 		u.Body = task.Ptr(issue.Body)
 	}
 	u.Tags = &labels
-	if _, err := s.tasks.Update(taskID, u); err != nil {
+	if _, err := s.tasks.UpdateBy(taskID, "svc.tasks.enrich_umbrella_stub", u); err != nil {
 		s.logger.Error("enrich-issue.umbrella-stub-enrich", "task_id", taskID, "err", err)
 	}
 }

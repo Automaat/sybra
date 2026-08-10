@@ -155,7 +155,7 @@ func (r *Handler) StartFixReviewAgent(t task.Task) error {
 	if err != nil {
 		return err
 	}
-	if err := r.tasks.AddRun(t.ID, task.AgentRun{
+	if err := r.tasks.AddRunBy(t.ID, "review.inbound.start_fix_review_agent", task.AgentRun{
 		AgentID: ag.ID, Role: string(agent.RoleFixReview), Mode: "headless", State: string(agent.StateRunning), StartedAt: ag.StartedAt,
 		Prompt: prompt,
 	}); err != nil {
@@ -241,7 +241,7 @@ func (r *Handler) StartReviewAgent(t task.Task, force bool) error {
 		}
 		return err
 	}
-	if err := r.tasks.AddRun(current.ID, task.AgentRun{
+	if err := r.tasks.AddRunBy(current.ID, "review.inbound.start_review_agent", task.AgentRun{
 		AgentID:         ag.ID,
 		Role:            string(agent.RoleReview),
 		Mode:            "headless",
@@ -458,7 +458,7 @@ func (r *Handler) recordReconcileFailure(t *task.Task, err error) {
 
 	attempts := t.ReconcileFailures + 1
 	if attempts < reconcileFailureLimit {
-		if _, uerr := r.tasks.Update(t.ID, task.Update{ReconcileFailures: task.Ptr(attempts)}); uerr != nil {
+		if _, uerr := r.tasks.UpdateBy(t.ID, "review.inbound.record_reconcile_failure", task.Update{ReconcileFailures: task.Ptr(attempts)}); uerr != nil {
 			r.logger.Error("review.reconcile.count", "task_id", t.ID, "err", uerr)
 		}
 		r.logger.Warn("review.my-state", "task_id", t.ID, "err", err, "attempts", attempts)
@@ -494,7 +494,7 @@ func (r *Handler) clearReconcileFailure(t *task.Task) {
 	if t == nil || t.ReconcileFailures == 0 {
 		return
 	}
-	if _, err := r.tasks.Update(t.ID, task.Update{ReconcileFailures: task.Ptr(0)}); err != nil {
+	if _, err := r.tasks.UpdateBy(t.ID, "review.inbound.clear_reconcile_failure", task.Update{ReconcileFailures: task.Ptr(0)}); err != nil {
 		r.logger.Error("review.reconcile.clear", "task_id", t.ID, "err", err)
 		return
 	}
@@ -819,7 +819,7 @@ func (r *Handler) applyReviewPhase(t *task.Task, res reviewPhaseResult) {
 			r.logger.Error("review.phase-update", "task_id", t.ID, "phase", res.Phase, "err", err)
 			return
 		}
-	} else if _, err := r.tasks.Update(t.ID, u); err != nil {
+	} else if _, err := r.tasks.UpdateBy(t.ID, "review.phase-update", u); err != nil {
 		r.logger.Error("review.phase-update", "task_id", t.ID, "phase", res.Phase, "err", err)
 		return
 	}

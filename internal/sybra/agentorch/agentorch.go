@@ -457,7 +457,7 @@ func PrependSupervisorSteer(tasks *task.Manager, taskID, prompt string) (string,
 	if steer == "" {
 		return prompt, nil
 	}
-	if _, uErr := tasks.Update(taskID, task.Update{SupervisorSteer: task.Ptr("")}); uErr != nil {
+	if _, uErr := tasks.UpdateBy(taskID, "agentorch.consume_supervisor_steer", task.Update{SupervisorSteer: task.Ptr("")}); uErr != nil {
 		return prompt, fmt.Errorf("clear supervisor steer: %w", uErr)
 	}
 	return "Supervisor course-correction: " + steer + "\n\n" + prompt, nil
@@ -1254,7 +1254,7 @@ func (o *Orchestrator) recordImplAgentStart(ag *agent.Agent, t task.Task, taskID
 	if t.Status != task.StatusInProgress {
 		nextStatus = task.Ptr(task.StatusInProgress)
 	}
-	if err := o.tasks.AddRunWithStatus(taskID, task.AgentRun{
+	if err := o.tasks.AddRunWithStatusBy(taskID, "agentorch.record_impl_agent_start", task.AgentRun{
 		AgentID:                 ag.ID,
 		Role:                    string(agent.RoleImplementation),
 		Mode:                    effMode,
@@ -1334,7 +1334,7 @@ func (o *Orchestrator) AutoAssignProject(t task.Task) (task.Task, error) {
 	}
 	assigned := t
 	assigned.ProjectID = projectID
-	if _, err := o.tasks.Update(t.ID, task.Update{ProjectID: task.Ptr(assigned.ProjectID)}); err != nil {
+	if _, err := o.tasks.UpdateBy(t.ID, "agentorch.assign_project", task.Update{ProjectID: task.Ptr(assigned.ProjectID)}); err != nil {
 		o.logger.Error("auto-assign-project", "task_id", t.ID, "err", err)
 		return t, fmt.Errorf("persist auto-assigned project %q for task %s: %w", projectID, t.ID, err)
 	} else {
@@ -1441,7 +1441,7 @@ func (o *Orchestrator) StartPRFixAgent(taskID string) error {
 		"allowed_tools": t.AllowedTools, "require_permissions": requirePerm, "skip_permissions": skipPerm,
 		"permission_posture": posture, "prompt_hash": ag.GetPromptHash(),
 	})
-	if err := o.tasks.AddRun(taskID, task.AgentRun{
+	if err := o.tasks.AddRunBy(taskID, "agentorch.start_pr_fix_agent", task.AgentRun{
 		AgentID: ag.ID, Role: string(agent.RolePRFix), Mode: effMode,
 		Provider: ag.Provider, Model: ag.Model, RoutingReason: ag.RoutingReason,
 		State: string(agent.StateRunning), StartedAt: ag.StartedAt,

@@ -487,7 +487,7 @@ func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) 
 		}
 		if strings.EqualFold(pr.HeadRepo, t.ProjectID) && pr.HeadRefName != "" {
 			t.Branch = pr.HeadRefName
-			if _, err := a.tasks.Update(taskID, task.Update{Branch: task.Ptr(pr.HeadRefName)}); err != nil {
+			if _, err := a.tasks.UpdateBy(taskID, "workflow.dispatch_inbound_review", task.Update{Branch: task.Ptr(pr.HeadRefName)}); err != nil {
 				a.logger.Error("workflow.dispatch.inbound-review.branch-stamp", "task_id", taskID, "err", err)
 			}
 			if ownerID := a.activeNonReviewPROwner(t); ownerID != "" {
@@ -556,7 +556,7 @@ func (a *App) dispatchInboundReviewWorkflow(ctx context.Context, taskID string) 
 	// Charge only once a run is underway. A run that then crashes or loops still
 	// burns its attempt, which is what bounds the loop.
 	attempt := budget.NextAttempt(t.ReviewedHeadSHA, t.ReviewedHeadAttempts, head)
-	if _, err := a.tasks.Update(taskID, task.Update{
+	if _, err := a.tasks.UpdateBy(taskID, "workflow.dispatch_inbound_review", task.Update{
 		ReviewedHeadSHA:      task.Ptr(head),
 		ReviewedHeadAttempts: task.Ptr(attempt),
 	}); err != nil {

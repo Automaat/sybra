@@ -79,7 +79,7 @@ func (s *monitorRoutingSink) Submit(ctx context.Context, a monitor.Anomaly, body
 
 	if existing, ok := s.findOpen(title, a.Fingerprint); ok {
 		appended := appendRedetectedNote(existing.Body, scrubbedBody, s.now())
-		if _, err := s.tasks.Update(existing.ID, task.Update{Body: &appended}); err != nil {
+		if _, err := s.tasks.UpdateBy(existing.ID, "monitor.routing.submit", task.Update{Body: &appended}); err != nil {
 			s.logger.Warn("monitor.routing.local.append", "task_id", existing.ID, "err", err)
 			return false, err
 		}
@@ -89,7 +89,7 @@ func (s *monitorRoutingSink) Submit(ctx context.Context, a monitor.Anomaly, body
 		return false, nil
 	}
 
-	newTask, err := s.tasks.Create(title, scrubbedBody, task.AgentModeHeadless)
+	newTask, err := s.tasks.CreateBy(title, scrubbedBody, task.AgentModeHeadless, "monitor.routing.submit")
 	if err != nil {
 		s.logger.Error("monitor.routing.local.create", "src_task_id", a.TaskID, "kind", a.Kind, "err", err)
 		return false, err
@@ -100,7 +100,7 @@ func (s *monitorRoutingSink) Submit(ctx context.Context, a monitor.Anomaly, body
 		pid := s.projectID
 		update.ProjectID = &pid
 	}
-	if _, err := s.tasks.Update(newTask.ID, update); err != nil {
+	if _, err := s.tasks.UpdateBy(newTask.ID, "monitor.routing.submit", update); err != nil {
 		s.logger.Warn("monitor.routing.local.tag", "new_task_id", newTask.ID, "err", err)
 	}
 	s.dispatchCreatedWorkflow(newTask.ID)

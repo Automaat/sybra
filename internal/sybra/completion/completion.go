@@ -266,7 +266,7 @@ func (h *Handler) OnComplete(ag *agent.Agent) {
 	h.emitPromptRenderedAudit(ag)
 
 	runUpdates := h.buildRunPatch(ag, state, cost, premiumRequests, resultContent, exitErr)
-	if err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates); err != nil {
+	if err := h.tasks.UpdateRunBy(ag.TaskID, "completion.record_run_result", ag.ID, runUpdates); err != nil {
 		if errors.Is(err, fsutil.ErrLockTimeout) {
 			h.logger.Warn("task.update-run.deferred", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 			go h.retryUpdateRunCompletion(ag, runUpdates, resultContent, exitErr)
@@ -281,7 +281,7 @@ func (h *Handler) retryUpdateRunCompletion(ag *agent.Agent, runUpdates task.RunP
 	for attempt := 1; ; attempt++ {
 		delay := backoff.ForAttempt(attempt, completionUpdateRunRetryInitialDelay, completionUpdateRunRetryMaxDelay).Delay
 		time.Sleep(delay)
-		err := h.tasks.UpdateRun(ag.TaskID, ag.ID, runUpdates)
+		err := h.tasks.UpdateRunBy(ag.TaskID, "completion.record_run_result", ag.ID, runUpdates)
 		if err == nil {
 			h.logger.Info("task.update-run.deferred.persisted", "task_id", ag.TaskID, "agent_id", ag.ID)
 			h.afterRunPersisted(ag, resultContent, exitErr)
@@ -778,7 +778,7 @@ func (h *Handler) markCompletedReview(ag *agent.Agent, exitErr error) {
 		return
 	}
 	reviewed := true
-	if _, err := h.tasks.Update(ag.TaskID, task.Update{Reviewed: &reviewed}); err != nil {
+	if _, err := h.tasks.UpdateBy(ag.TaskID, "completion.mark_completed_review", task.Update{Reviewed: &reviewed}); err != nil {
 		h.logger.Warn("task.mark-reviewed", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
 }
@@ -809,7 +809,7 @@ func (h *Handler) salvageInterruptedReview(ag *agent.Agent) {
 	}
 	b.WriteString(transcript)
 	content := b.String()
-	if _, err := h.tasks.Update(ag.TaskID, task.Update{CodeReview: &content}); err != nil {
+	if _, err := h.tasks.UpdateBy(ag.TaskID, "completion.salvage_interrupted_review", task.Update{CodeReview: &content}); err != nil {
 		h.logger.Warn("review.interrupted.write", "task_id", ag.TaskID, "agent_id", ag.ID, "err", err)
 	}
 }

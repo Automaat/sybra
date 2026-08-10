@@ -458,7 +458,7 @@ func (r *Recovery) convergeReviewOnPlanWorkflow(t *task.Task) bool {
 		// happened, so the marker that triggered this tick's rediscovery
 		// doesn't linger and mislead the next one.
 		reason := "recovered: converged review task from stale plan workflow to pr-review"
-		if _, updErr := r.Tasks.Update(taskID, task.Update{StatusReason: task.Ptr(reason)}); updErr != nil {
+		if _, updErr := r.Tasks.UpdateBy(taskID, "recovery.restart_stale.review_on_plan_converged", task.Update{StatusReason: task.Ptr(reason)}); updErr != nil {
 			r.Logger.Error("restart-stale.review-on-plan.reason-failed", "task_id", taskID, "err", updErr)
 		}
 	})
@@ -603,7 +603,7 @@ func (r *Recovery) recoverStaleInteractive(ctx context.Context, t *task.Task) {
 		return
 	}
 	if lr.State == string(agent.StateRunning) {
-		if err := r.Tasks.UpdateRun(t.ID, lr.AgentID, task.RunPatch{
+		if err := r.Tasks.UpdateRunBy(t.ID, "recovery.stale.recover_stale_interactive", lr.AgentID, task.RunPatch{
 			State:  task.Ptr(string(agent.StateStopped)),
 			Result: task.Ptr("stale: agent gone, auto-recovered"),
 		}); err != nil {

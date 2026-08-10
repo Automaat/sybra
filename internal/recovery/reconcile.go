@@ -68,7 +68,7 @@ func (r *Recovery) reconcileLandedTask(t *task.Task, prNumber int) {
 }
 
 func (r *Recovery) reconcileBackfillPR(t *task.Task, prNumber int) {
-	if _, err := r.Tasks.Update(t.ID, task.Update{PRNumber: task.Ptr(prNumber)}); err != nil {
+	if _, err := r.Tasks.UpdateBy(t.ID, "recovery.reconcile_lost_pr.backfill", task.Update{PRNumber: task.Ptr(prNumber)}); err != nil {
 		r.Logger.Error("reconcile-lost-pr.backfill", "task_id", t.ID, "pr", prNumber, "err", err)
 		return
 	}

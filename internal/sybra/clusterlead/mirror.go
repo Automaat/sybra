@@ -235,7 +235,7 @@ func (m *Mirror) reconcileMissing(ctx context.Context, node string, client *clus
 					m.clearMissingStreak(node, t.ID)
 					continue
 				}
-				if derr := m.tasks.Delete(t.ID); derr != nil {
+				if derr := m.tasks.DeleteBy(t.ID, "clusterlead.mirror.reconcile_missing"); derr != nil {
 					unlock()
 					m.logger.Warn("cluster.mirror.reconcile_missing.trash_failed", "node", node, "task", t.ID, "err", derr)
 					continue
@@ -333,7 +333,7 @@ func (m *Mirror) applyFollowerTaskWithContext(ctx context.Context, node string, 
 	if !ok {
 		return false
 	}
-	saved, _, err := m.tasks.PutFn(follower.ID, func(cur task.Task) (task.Task, error) {
+	saved, _, err := m.tasks.PutFnBy(follower.ID, "clusterlead.mirror.apply_follower_task", func(cur task.Task) (task.Task, error) {
 		latest, err := mergeFollowerForNode(cur, node, follower)
 		if err != nil {
 			return task.Task{}, err
@@ -389,7 +389,7 @@ func (m *Mirror) adoptFollowerTask(ctx context.Context, node string, follower ta
 	followerUpdated := adopted.UpdatedAt
 	adopted.MirrorUpdatedAt = &followerUpdated
 	adopted.UpdatedAt = time.Now().UTC()
-	if _, _, err := m.tasks.Put(adopted); err != nil {
+	if _, _, err := m.tasks.PutBy(adopted, "clusterlead.mirror.adopt"); err != nil {
 		m.logger.Warn("cluster.mirror.adopt.failed", "node", node, "task", adopted.ID, "err", err)
 		return false
 	}

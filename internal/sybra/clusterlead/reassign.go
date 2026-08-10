@@ -125,7 +125,7 @@ func (a *Assigner) pinOverride(taskID, override string) error {
 		return nil
 	}
 	cur.NodeOverride = override
-	if _, _, err := a.tasks.Put(cur); err != nil {
+	if _, _, err := a.tasks.PutBy(cur, "clusterlead.assigner.pin_override"); err != nil {
 		return fmt.Errorf("clusterlead: pin node on %s: %w", taskID, err)
 	}
 	return nil
@@ -145,7 +145,7 @@ func (a *Assigner) stampNode(taskID, override, assigned string) (task.Task, erro
 	cur.UpdatedAt = time.Now().UTC()
 	cur.MirrorRev = 0
 	cur.MirrorUpdatedAt = nil
-	saved, _, err := a.tasks.Put(cur)
+	saved, _, err := a.tasks.PutBy(cur, "clusterlead.assigner.stamp_node")
 	if err != nil {
 		return task.Task{}, fmt.Errorf("clusterlead: stamp node on %s: %w", taskID, err)
 	}
@@ -170,7 +170,7 @@ func (a *Assigner) rollbackNode(taskID string, previous, moved task.Task) {
 	cur.WorktreeDir = previous.WorktreeDir
 	cur.MirrorRev = previous.MirrorRev
 	cur.MirrorUpdatedAt = previous.MirrorUpdatedAt
-	if _, _, err := a.tasks.Put(cur); err != nil {
+	if _, _, err := a.tasks.PutBy(cur, "clusterlead.assigner.rollback_node"); err != nil {
 		a.logger.Error("cluster.reassign.rollback.failed", "task", taskID, "err", err)
 		return
 	}

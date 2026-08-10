@@ -287,7 +287,7 @@ func (a *Assigner) route(ctx context.Context, t task.Task, force bool) (routed b
 	if err := client.AssignTask(ctx, push); err != nil {
 		return false, fmt.Errorf("clusterlead: assign %s to %s: %w", t.ID, home.Name, err)
 	}
-	_, _, err = a.tasks.PutFn(t.ID, func(cur task.Task) (task.Task, error) {
+	_, _, err = a.tasks.PutFnBy(t.ID, "clusterlead.assigner.route", func(cur task.Task) (task.Task, error) {
 		// The push may take seconds. Do not let a route planned from an old
 		// snapshot overwrite an intervening operator reassignment.
 		if cur.AssignedNode != t.AssignedNode || cur.AssignmentRev != t.AssignmentRev {

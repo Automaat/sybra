@@ -104,7 +104,7 @@ func (s *TaskService) ClassifyTask(id, model string) (TriageResultDTO, error) {
 		// stamping its own copy would leave the owning instance's task with
 		// no retryable marker, and the workflow engine parks it.
 		reason := triage.RetryableStatusReason(err)
-		if _, markErr := s.tasks.Update(id, task.Update{StatusReason: &reason}); markErr != nil {
+		if _, markErr := s.tasks.UpdateBy(id, "svc.tasks.classify_retry", task.Update{StatusReason: &reason}); markErr != nil {
 			return TriageResultDTO{}, errors.Join(err, fmt.Errorf("mark retryable triage failure: %w", markErr))
 		}
 		return TriageResultDTO{}, err
