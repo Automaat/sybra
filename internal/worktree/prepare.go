@@ -321,7 +321,7 @@ func (m *Manager) resolveTaskBranch(ctx context.Context, t task.Task, clonePath,
 	}
 	m.logger.Warn("worktree.branch-collision.rederive",
 		"task_id", t.ID, "stored", wtBranch, "other", other, "rederived", unique)
-	if _, uErr := m.tasks.Update(t.ID, task.Update{Branch: task.Ptr(unique)}); uErr != nil {
+	if _, uErr := m.tasks.UpdateBy(t.ID, "worktree.prepare.rederive_branch", task.Update{Branch: task.Ptr(unique)}); uErr != nil {
 		m.logger.Warn("worktree.branch-collision.persist", "task_id", t.ID, "err", uErr)
 	}
 	return unique

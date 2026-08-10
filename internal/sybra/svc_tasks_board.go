@@ -86,7 +86,7 @@ func (s *TaskService) UpdateTaskFields(id string, u task.Update) (task.Task, err
 	if s.tasks == nil {
 		return task.Task{}, unavailableError("task store unavailable")
 	}
-	updated, err := s.tasks.Update(id, u)
+	updated, err := s.tasks.UpdateBy(id, "svc.tasks.update_fields", u)
 	return updated, boardRejectionFor("task", id, err)
 }
 
@@ -106,7 +106,7 @@ func (s *TaskService) TouchTask(id string) (task.Task, error) {
 	if s.tasks == nil {
 		return task.Task{}, unavailableError("task store unavailable")
 	}
-	touched, err := s.tasks.Touch(id)
+	touched, err := s.tasks.TouchBy(id, "svc.tasks.touch")
 	return touched, boardRejectionFor("task", id, err)
 }
 
@@ -143,7 +143,7 @@ func (s *TaskService) AppendTaskProgress(taskID, kind, role, message string) (ar
 	if err := s.artifacts.AppendProgress(taskID, entry); err != nil {
 		return artifact.ProgressEntry{}, err
 	}
-	if _, err := s.tasks.Touch(taskID); err != nil && s.logger != nil {
+	if _, err := s.tasks.TouchBy(taskID, "svc.tasks.append_progress"); err != nil && s.logger != nil {
 		s.logger.Warn("task.progress.touch_failed", "task_id", taskID, "err", err)
 	}
 	return entry, nil
@@ -162,7 +162,7 @@ func (s *TaskService) RestoreFromTrash(id string) (task.Task, error) {
 	if s.tasks == nil {
 		return task.Task{}, unavailableError("task store unavailable")
 	}
-	restored, err := s.tasks.RestoreFromTrash(id)
+	restored, err := s.tasks.RestoreBy(id, "svc.tasks.restore_from_trash")
 	return restored, boardRejectionFor("trashed task", id, err)
 }
 

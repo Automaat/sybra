@@ -515,7 +515,7 @@ func (a *App) agentManagerConfig(approvalAddr string) agent.ManagerConfig {
 		OnComplete:   a.onAgentComplete,
 		ApprovalAddr: approvalAddr,
 		SessionSink: func(taskID, agentID, sessionID string) error {
-			return a.tasks.UpdateRun(taskID, agentID, task.RunPatch{SessionID: task.Ptr(sessionID)})
+			return a.tasks.UpdateRunBy(taskID, "agentorch.record_session", agentID, task.RunPatch{SessionID: task.Ptr(sessionID)})
 		},
 		TaskExists: a.taskExistsForAgent,
 		TaskStatus: a.taskStatusForAgent,

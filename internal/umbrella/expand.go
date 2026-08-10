@@ -633,7 +633,7 @@ func upsertExpandTracker(tasks *task.Manager, tracker existingTracker, umb githu
 		}
 		return existingTrackerFromTask(created), nil
 	}
-	updated, err := tasks.UpdateFn(tracker.id, func(cur task.Task) (task.Update, error) {
+	updated, err := tasks.UpdateFnBy(tracker.id, "umbrella.expand.upsert_tracker", func(cur task.Task) (task.Update, error) {
 		baseBody := cur.Body
 		if strings.TrimSpace(baseBody) == "" {
 			baseBody = umb.Body
@@ -685,7 +685,7 @@ func upsertExpandTracker(tasks *task.Manager, tracker existingTracker, umb githu
 }
 
 func setExpandTrackerPhase(tasks *task.Manager, trackerID string, phase ExpandPhase) error {
-	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+	_, err := tasks.UpdateFnBy(trackerID, "umbrella.expand.set_phase", func(cur task.Task) (task.Update, error) {
 		nextTags := ReplaceTagPrefix(cur.Tags, ExpandPhaseTagPrefix, ExpandPhaseTag(phase))
 		if slices.Equal(cur.Tags, nextTags) {
 			return task.Update{}, errSkipUpdate
@@ -787,7 +787,7 @@ func createChildren(tasks *task.Manager, umb github.Issue, specs []ChildSpec, by
 // already present, so a repeated degraded re-expansion against the same
 // tracker doesn't emit a spurious task:updated event.
 func tagTrackerDegraded(tasks *task.Manager, trackerID string) error {
-	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+	_, err := tasks.UpdateFnBy(trackerID, "umbrella.expand.tag_degraded", func(cur task.Task) (task.Update, error) {
 		if slices.Contains(cur.Tags, FallbackTag) {
 			return task.Update{}, errSkipUpdate
 		}
@@ -805,7 +805,7 @@ func tagTrackerDegraded(tasks *task.Manager, trackerID string) error {
 }
 
 func markTrackerExpanding(tasks *task.Manager, trackerID string) error {
-	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+	_, err := tasks.UpdateFnBy(trackerID, "umbrella.expand.mark_expanding", func(cur task.Task) (task.Update, error) {
 		if slices.Contains(cur.Tags, ExpandingTag) {
 			return task.Update{}, errSkipUpdate
 		}
@@ -821,7 +821,7 @@ func markTrackerExpanding(tasks *task.Manager, trackerID string) error {
 }
 
 func clearTrackerExpanding(tasks *task.Manager, trackerID string) error {
-	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+	_, err := tasks.UpdateFnBy(trackerID, "umbrella.expand.clear_expanding", func(cur task.Task) (task.Update, error) {
 		if !slices.Contains(cur.Tags, ExpandingTag) {
 			return task.Update{}, errSkipUpdate
 		}
@@ -844,7 +844,7 @@ func clearTrackerExpanding(tasks *task.Manager, trackerID string) error {
 // life as a recordExpandFailure placeholder. Read-then-write, so a tracker
 // that already carries the tag (the common case) is left untouched.
 func ensureMaxParallelTag(tasks *task.Manager, trackerID string, n int) error {
-	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+	_, err := tasks.UpdateFnBy(trackerID, "umbrella.expand.ensure_max_parallel_tag", func(cur task.Task) (task.Update, error) {
 		if HasMaxParallelTag(cur.Tags) {
 			return task.Update{}, errSkipUpdate
 		}
@@ -927,7 +927,7 @@ func recordExpandFailure(tasks *task.Manager, umb github.Issue, tracker existing
 // are only crash-resume state; keeping them after success would make later
 // expansions trust a stale sub-issue snapshot.
 func clearExpandFailure(tasks *task.Manager, trackerID string) error {
-	_, err := tasks.UpdateFn(trackerID, func(cur task.Task) (task.Update, error) {
+	_, err := tasks.UpdateFnBy(trackerID, "umbrella.expand.clear_failure", func(cur task.Task) (task.Update, error) {
 		nextBody := removeExpandCheckpointBody(cur.Body)
 		if ParseExpandFailCount(cur.Tags) == 0 &&
 			!HasActiveExpandPhase(cur.Tags) &&

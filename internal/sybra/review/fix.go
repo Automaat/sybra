@@ -1473,7 +1473,7 @@ func (r *Handler) recoverTaskBranchConflict(ctx context.Context, t task.Task, sp
 		return false
 	}
 	if spec.branchOverride != "" && t.Branch != spec.branchOverride {
-		if _, err := r.tasks.Update(taskID, task.Update{Branch: task.Ptr(spec.branchOverride)}); err != nil {
+		if _, err := r.tasks.UpdateBy(taskID, "review.fix.recover_branch_conflict", task.Update{Branch: task.Ptr(spec.branchOverride)}); err != nil {
 			r.logger.Warn("pr-monitor.branch-conflict.branch-override", "task_id", taskID, "branch", spec.branchOverride, "err", err)
 			return false
 		}

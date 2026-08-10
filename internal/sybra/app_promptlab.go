@@ -188,7 +188,7 @@ func (c *promptLabCoordinator) maybeAutoApprove(ctx context.Context, t task.Task
 }
 
 func (c *promptLabCoordinator) setStatusReason(taskID, reason string) {
-	if _, err := c.tasks.Update(taskID, task.Update{StatusReason: &reason}); err != nil {
+	if _, err := c.tasks.UpdateBy(taskID, "promptlab.set_status_reason", task.Update{StatusReason: &reason}); err != nil {
 		c.logger.Warn("promptlab.status_reason.failed", "task_id", taskID, "err", err)
 	}
 }

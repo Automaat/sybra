@@ -220,7 +220,7 @@ func hasStartedImplementation(t *task.Task) bool {
 // for any other Tags/DependsOn edit — a missed push just leaves Mirror's
 // drift backstop to repair it on the next reconcile.
 func (a *App) persistCrossProgramDeps(ctx context.Context, t *task.Task, merged []string) {
-	updated, err := a.tasks.Update(t.ID, task.Update{DependsOn: task.Ptr(merged)})
+	updated, err := a.tasks.UpdateBy(t.ID, "umbrella.gate.persist_cross_program_deps", task.Update{DependsOn: task.Ptr(merged)})
 	if err != nil {
 		a.logger.Error("umbrella.gate.cross_program_blocker.persist_failed", "task_id", t.ID, "err", err)
 		return
@@ -291,7 +291,7 @@ func (a *App) flagCrossProgramBlockers(refsByTask map[string][]string, nodes []u
 		if t.StatusReason == reason {
 			continue
 		}
-		if _, err := a.tasks.Update(id, task.Update{StatusReason: task.Ptr(reason)}); err != nil {
+		if _, err := a.tasks.UpdateBy(id, "umbrella.gate.flag_cross_program_blocker", task.Update{StatusReason: task.Ptr(reason)}); err != nil {
 			a.logger.Error("umbrella.gate.cross_program_blocker.flag_failed", "task_id", id, "err", err)
 			continue
 		}
@@ -415,7 +415,7 @@ func (a *App) holdSelfHealingCondition(t *task.Task, reason string) {
 	if t.StatusReason == reason {
 		return
 	}
-	if _, err := a.tasks.Update(t.ID, task.Update{StatusReason: task.Ptr(reason)}); err != nil {
+	if _, err := a.tasks.UpdateBy(t.ID, "umbrella.gate.hold_self_healing_condition", task.Update{StatusReason: task.Ptr(reason)}); err != nil {
 		a.logger.Error("umbrella.gate.condition.hold_failed", "task_id", t.ID, "err", err)
 		return
 	}
@@ -687,7 +687,7 @@ func (a *App) clearGateTagOnHandedOffChildren(tasks []task.Task) {
 		newTags := slices.DeleteFunc(slices.Clone(t.Tags), func(s string) bool {
 			return s == umbrellaGatedTag
 		})
-		if _, err := a.tasks.Update(t.ID, task.Update{Tags: &newTags}); err != nil {
+		if _, err := a.tasks.UpdateBy(t.ID, "umbrella.gate.clear_handed_off_tag", task.Update{Tags: &newTags}); err != nil {
 			a.logger.Warn("umbrella.gate.stale-tag-clear", "task_id", t.ID, "err", err)
 			continue
 		}
@@ -872,7 +872,7 @@ func (a *App) rollupTrackers(states map[string]*umbrellaState, cyclic map[string
 			desired, _, doClose := trackerRollup(st, cyclic[key], settled)
 			if desired == task.StatusDone && doClose &&
 				st.tracker.StatusReason != blockedTrackerChildrenCompleteReason {
-				if _, err := a.tasks.Update(st.tracker.ID, task.Update{
+				if _, err := a.tasks.UpdateBy(st.tracker.ID, "umbrella.gate.tracker_blocked_complete", task.Update{
 					StatusReason: task.Ptr(blockedTrackerChildrenCompleteReason),
 				}); err != nil {
 					a.logger.Error("umbrella.tracker.blocked_complete.update.failed", "task_id", st.tracker.ID, "err", err)
@@ -882,7 +882,7 @@ func (a *App) rollupTrackers(states map[string]*umbrellaState, cyclic map[string
 		}
 		desired, reason, doClose := trackerRollup(st, cyclic[key], settled)
 		if body := umbrellaTrackerBody(st.tracker.Body, st.children); body != st.tracker.Body {
-			if _, err := a.tasks.Update(st.tracker.ID, task.Update{
+			if _, err := a.tasks.UpdateBy(st.tracker.ID, "umbrella.gate.tracker_progress_update", task.Update{
 				Body: task.Ptr(body),
 			}); err != nil {
 				a.logger.Error("umbrella.tracker.progress.update.failed", "task_id", st.tracker.ID, "err", err)

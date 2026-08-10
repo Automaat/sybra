@@ -15,9 +15,9 @@ import (
 type taskAPI interface {
 	List() ([]task.Task, error)
 	Get(id string) (task.Task, error)
-	Update(id string, u task.Update) (task.Task, error)
+	UpdateBy(id, actor string, u task.Update) (task.Task, error)
 	ApplyStatusEffect(id string, eff task.StatusEffect) (task.Task, error)
-	UpdateRun(taskID, agentID string, patch task.RunPatch) error
+	UpdateRunBy(taskID, actor, agentID string, patch task.RunPatch) error
 }
 
 // remediator runs the in-process actions for anomalies that don't need LLM
@@ -76,7 +76,7 @@ func (r *remediator) resetLostAgent(ctx context.Context, a Anomaly) (string, err
 	upd := task.Update{
 		StatusReason: task.Ptr("monitor: agent lost; recovery will resume"),
 	}
-	if _, err := r.tasks.Update(a.TaskID, upd); err != nil {
+	if _, err := r.tasks.UpdateBy(a.TaskID, "monitor.remediator.reset_lost_agent", upd); err != nil {
 		return "", fmt.Errorf("mark lost_agent task %s for recovery: %w", a.TaskID, err)
 	}
 	if r.recoverLostAgent != nil {
@@ -92,7 +92,7 @@ func (r *remediator) tagUntriaged(a Anomaly) (string, error) {
 	upd := task.Update{
 		StatusReason: task.Ptr("monitor: awaiting triage"),
 	}
-	if _, err := r.tasks.Update(a.TaskID, upd); err != nil {
+	if _, err := r.tasks.UpdateBy(a.TaskID, "monitor.remediator.tag_untriaged", upd); err != nil {
 		return "", fmt.Errorf("tag untriaged task %s: %w", a.TaskID, err)
 	}
 	return string(a.Kind) + ":" + a.TaskID, nil
@@ -157,7 +157,7 @@ func (r *remediator) landMergedPR(ctx context.Context, t task.Task) (bool, error
 func (r *remediator) refreshHumanRequiredStuck(a Anomaly) (string, error) {
 	// Empty update: preserve existing StatusReason; Marshal stamps new UpdatedAt.
 	upd := task.Update{}
-	if _, err := r.tasks.Update(a.TaskID, upd); err != nil {
+	if _, err := r.tasks.UpdateBy(a.TaskID, "monitor.remediator.refresh_human_required_stuck", upd); err != nil {
 		return "", fmt.Errorf("tag human-required task %s stalled: %w", a.TaskID, err)
 	}
 	return string(a.Kind) + ":" + a.TaskID, nil

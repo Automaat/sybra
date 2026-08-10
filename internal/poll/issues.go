@@ -449,7 +449,7 @@ func (f *IssuesFetcher) syncFlatIssue(issue *github.Issue, issueURLs map[string]
 				Extra:    u,
 			})
 		} else {
-			_, err = f.tasks.Update(taskID, u)
+			_, err = f.tasks.UpdateBy(taskID, "poll.issues.enrich", u)
 		}
 		if err != nil {
 			f.logger.Error("issue-sync.enrich", "task_id", taskID, "err", err)

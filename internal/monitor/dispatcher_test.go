@@ -58,13 +58,13 @@ func (d dispatcherTasksStub) Get(id string) (task.Task, error) {
 	}
 	return d.task, nil
 }
-func (d dispatcherTasksStub) Update(string, task.Update) (task.Task, error) {
+func (d dispatcherTasksStub) UpdateBy(string, string, task.Update) (task.Task, error) {
 	return task.Task{}, errors.New("not implemented")
 }
 func (d dispatcherTasksStub) ApplyStatusEffect(string, task.StatusEffect) (task.Task, error) {
 	return task.Task{}, errors.New("not implemented")
 }
-func (d dispatcherTasksStub) UpdateRun(string, string, task.RunPatch) error {
+func (d dispatcherTasksStub) UpdateRunBy(string, string, string, task.RunPatch) error {
 	return errors.New("not implemented")
 }
 

@@ -382,7 +382,7 @@ func (r *Handler) applyPRPhase(t *task.Task, phase string) {
 		return
 	}
 	prev := t.PRPhase
-	if _, err := r.tasks.Update(t.ID, task.Update{PRPhase: task.Ptr(phase)}); err != nil {
+	if _, err := r.tasks.UpdateBy(t.ID, "review.outbound.apply_pr_phase", task.Update{PRPhase: task.Ptr(phase)}); err != nil {
 		r.logger.Error("pr-monitor.phase-update", "task_id", t.ID, "phase", phase, "err", err)
 		return
 	}

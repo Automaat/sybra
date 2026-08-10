@@ -1211,7 +1211,7 @@ func (r *Handler) advanceClosedTaskPR(ctx context.Context, c github.ClosedPR, co
 		refine = true
 	}
 	if refine {
-		if _, err := r.tasks.Update(c.TaskID, upd); err != nil {
+		if _, err := r.tasks.UpdateBy(c.TaskID, "review.handler.advance_closed_pr", upd); err != nil {
 			r.logger.Warn("pr-monitor.outcome-refine", "task_id", c.TaskID, "err", err)
 		}
 	}
@@ -1474,7 +1474,7 @@ func (r *Handler) scanForReverts(ctx context.Context, tasks []task.Task) {
 			if !isReverted(t.MergeCommit, t.ProjectID, t.PRNumber, msgs) {
 				continue
 			}
-			if _, err := r.tasks.Update(t.ID, task.Update{Outcome: task.Ptr("reverted")}); err != nil {
+			if _, err := r.tasks.UpdateBy(t.ID, "review.handler.revert_pr", task.Update{Outcome: task.Ptr("reverted")}); err != nil {
 				r.logger.Warn("pr-monitor.revert-update", "task_id", t.ID, "err", err)
 				continue
 			}
@@ -2084,7 +2084,7 @@ func (r *Handler) adoptOrphanMergedPR(ctx context.Context, t *task.Task) {
 		refine = true
 	}
 	if refine {
-		if _, err := r.tasks.Update(taskID, upd); err != nil {
+		if _, err := r.tasks.UpdateBy(taskID, "review.handler.adopt_orphan_merged_pr", upd); err != nil {
 			r.logger.Warn("pr-monitor.orphan-merged-refine", "task_id", taskID, "err", err)
 		}
 	}

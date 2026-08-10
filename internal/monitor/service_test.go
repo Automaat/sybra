@@ -26,8 +26,9 @@ type fakeTasks struct {
 }
 
 type taskUpdate struct {
-	id string
-	u  task.Update
+	id    string
+	actor string
+	u     task.Update
 }
 
 type runUpdate struct {
@@ -55,13 +56,13 @@ func (f *fakeTasks) Get(id string) (task.Task, error) {
 	return task.Task{}, errNotFound
 }
 
-func (f *fakeTasks) Update(id string, u task.Update) (task.Task, error) {
+func (f *fakeTasks) UpdateBy(id, actor string, u task.Update) (task.Task, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.updateErr[id]; err != nil {
 		return task.Task{}, err
 	}
-	f.updates = append(f.updates, taskUpdate{id: id, u: u})
+	f.updates = append(f.updates, taskUpdate{id: id, actor: actor, u: u})
 	for i := range f.tasks {
 		if f.tasks[i].ID != id {
 			continue
@@ -95,10 +96,10 @@ func (f *fakeTasks) Update(id string, u task.Update) (task.Task, error) {
 func (f *fakeTasks) ApplyStatusEffect(id string, eff task.StatusEffect) (task.Task, error) {
 	u := eff.Extra
 	u.Status = &eff.ToStatus
-	return f.Update(id, u)
+	return f.UpdateBy(id, "effect:"+eff.Source, u)
 }
 
-func (f *fakeTasks) UpdateRun(taskID, agentID string, patch task.RunPatch) error {
+func (f *fakeTasks) UpdateRunBy(taskID, actor, agentID string, patch task.RunPatch) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.runUpdates = append(f.runUpdates, runUpdate{taskID: taskID, agentID: agentID, patch: patch})

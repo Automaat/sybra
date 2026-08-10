@@ -1000,7 +1000,7 @@ const supervisorNudgePrefix = "⚠️ Supervisor: "
 // recovery resumes it rather than parking it for a human.
 func (w *Watchdog) headlessNudge(ag *agent.Agent, steer string) {
 	if ag.TaskID != "" {
-		if _, err := w.tasks.Update(ag.TaskID, task.Update{SupervisorSteer: task.Ptr(steer)}); err != nil {
+		if _, err := w.tasks.UpdateBy(ag.TaskID, "watchdog.agent.steer", task.Update{SupervisorSteer: task.Ptr(steer)}); err != nil {
 			w.logger.Error("agent.watchdog.nudge.steer", "task_id", ag.TaskID, "err", err)
 		}
 	}

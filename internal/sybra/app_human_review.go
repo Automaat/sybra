@@ -630,7 +630,7 @@ func (h *humanReviewHandler) spawnReviewConfig(t task.Task, taskID, prompt, dir 
 }
 
 func (h *humanReviewHandler) recordSpawnedRun(taskID string, ag *agent.Agent, prompt string) {
-	if err := h.tasks.AddRun(taskID, task.AgentRun{
+	if err := h.tasks.AddRunBy(taskID, "human_review.spawn_run", task.AgentRun{
 		AgentID:         ag.ID,
 		Role:            string(agent.RoleHumanReview),
 		Mode:            "headless",
@@ -912,7 +912,7 @@ func (h *humanReviewHandler) recoveryVerdictStillLatest(taskID, agentID string, 
 
 func (h *humanReviewHandler) rejectUnblockedRecovery(current task.Task, agentID, note string, startupReplay bool) {
 	if startupReplay {
-		_, _, err := h.tasks.PutFn(current.ID, func(latest task.Task) (task.Task, error) {
+		_, _, err := h.tasks.PutFnBy(current.ID, "human_review.reject_unblocked_recovery", func(latest task.Task) (task.Task, error) {
 			if !strandedHumanReviewRecoveryCandidate(latest) {
 				return task.Task{}, errHumanReviewRecoverySuperseded
 			}
@@ -982,7 +982,7 @@ func (h *humanReviewHandler) finalizeDoneRecovery(taskID string, prNumber int, m
 			update.PRNumber = task.Ptr(prNumber)
 		}
 	}
-	_, err := h.tasks.Update(taskID, update)
+	_, err := h.tasks.UpdateBy(taskID, "human_review.finalize_done_recovery", update)
 	return err
 }
 
@@ -1183,7 +1183,7 @@ func (h *humanReviewHandler) ensureTaskTag(taskID, tag string) error {
 	if tag == "" {
 		return nil
 	}
-	_, err := h.tasks.UpdateFn(taskID, func(cur task.Task) (task.Update, error) {
+	_, err := h.tasks.UpdateFnBy(taskID, "human_review.ensure_task_tag", func(cur task.Task) (task.Update, error) {
 		if slices.Contains(cur.Tags, tag) {
 			return task.Update{}, errHumanReviewTagAlreadyPresent
 		}
@@ -1782,7 +1782,7 @@ func (h *humanReviewHandler) appendNote(taskID, header, body string) bool {
 		return false
 	}
 	content := appendSection("", header, body)
-	if _, err := h.tasks.AppendBody(taskID, content); err != nil {
+	if _, err := h.tasks.AppendBodyBy(taskID, "human_review.append_note", content); err != nil {
 		h.logger.Error("human-review.append.task-update", "task_id", taskID, "err", err)
 		return false
 	}
@@ -1793,7 +1793,7 @@ func (h *humanReviewHandler) appendNote(taskID, header, body string) bool {
 // that onComplete applied all side-effects. verdictAlreadyRendered reads this
 // field as the durable rendered-marker.
 func (h *humanReviewHandler) markVerdictRendered(taskID, agentID string) {
-	if err := h.tasks.UpdateRun(taskID, agentID, task.RunPatch{VerdictRendered: task.Ptr(true)}); err != nil {
+	if err := h.tasks.UpdateRunBy(taskID, "human_review.mark_verdict_rendered", agentID, task.RunPatch{VerdictRendered: task.Ptr(true)}); err != nil {
 		h.logger.Warn("human-review.mark-rendered", "task_id", taskID, "agent_id", agentID, "err", err)
 	}
 }
