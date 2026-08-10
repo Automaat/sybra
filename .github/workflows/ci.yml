@@ -528,6 +528,9 @@ jobs:
           # destructive task cleanup without it (#1576).
           touch "$SYBRA_HOME/.sybra-e2e-home"
           cat > "$SYBRA_HOME/config.yaml" <<EOF
+          # This suite seeds fixtures by writing files into the tasks directory, both before startup and, for the watcher test, while the server is already running, and expects a file written directly to disk to be noticed live. A database store only reads rows, not the tasks directory, so it pins the backend it was written against.
+          database:
+            backend: file
           agent:
             provider: ${{ matrix.provider }}
             # sybra-server refuses to start without an explicit posture, so a
