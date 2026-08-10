@@ -3558,6 +3558,90 @@ esac
 	}
 }
 
+// blockingSurvivalRegistry makes the launch-time persistence path wait until
+// the test releases it. It models a slow durable store without making the
+// provider itself slow.
+type blockingSurvivalRegistry struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingSurvivalRegistry) Save(Record) error {
+	r.once.Do(func() { close(r.entered) })
+	<-r.release
+	return nil
+}
+
+func (*blockingSurvivalRegistry) List() ([]Record, error) { return nil, nil }
+func (*blockingSurvivalRegistry) Delete(string) error     { return nil }
+
+// TestStartHeadlessSurviveProcess_DeliversPromptBeforeRegistrySave pins the
+// launch ordering. Claude exits quickly when stdin remains empty; persisting
+// the detached process before the first write therefore made a slow registry
+// turn a healthy launch into a prompt_undelivered failure.
+func TestStartHeadlessSurviveProcess_DeliversPromptBeforeRegistrySave(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "prompt-received")
+	script := `#!/bin/bash
+cat >/dev/null
+: > "$SYBRA_TEST_PROMPT_MARKER"
+echo '{"type":"result","subtype":"success","session_id":"s-1","total_cost_usd":0.01,"usage":{"input_tokens":1,"output_tokens":1}}'
+`
+	if err := os.WriteFile(filepath.Join(dir, providerid.Claude), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	m, _ := newTestManager(t)
+	registry := &blockingSurvivalRegistry{entered: make(chan struct{}), release: make(chan struct{})}
+	m.surviveRestart = true
+	m.reg = registry
+	a := &Agent{ID: "a1", TaskID: "task-1", Mode: "headless", Provider: providerid.Claude, State: StateRunning}
+	out, err := os.CreateTemp(t.TempDir(), "agent-output-*.ndjson")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Close() }()
+
+	type started struct {
+		cmd *exec.Cmd
+		err error
+	}
+	startedCh := make(chan started, 1)
+	go func() {
+		cmd, startErr := m.startHeadlessSurviveProcess(context.Background(), a,
+			RunConfig{Prompt: "deliver before persistence", ExtraEnv: []string{"SYBRA_TEST_PROMPT_MARKER=" + marker}},
+			out, providerid.Claude, []string{"-p"}, nil, "claude -p")
+		startedCh <- started{cmd: cmd, err: startErr}
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			close(registry.release)
+			t.Fatal("provider did not receive prompt before registry save unblocked")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	close(registry.release)
+	got := <-startedCh
+	if got.err != nil {
+		t.Fatalf("startHeadlessSurviveProcess: %v", got.err)
+	}
+	if err := got.cmd.Wait(); err != nil {
+		t.Fatalf("provider exit: %v", err)
+	}
+	select {
+	case <-registry.entered:
+	default:
+		t.Fatal("registry save was not attempted")
+	}
+}
+
 // A checkpoint handoff commits the run's work and sets escalation reason
 // "checkpoint"; internal/sybra/completion routes RescheduleCheckpointedAgent
 // off that exact value. The terminal result event lands after the checkpoint
