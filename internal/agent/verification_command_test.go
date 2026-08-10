@@ -107,6 +107,23 @@ func TestTaskScopedReviewFailsWithoutRestrictedGitHubToken(t *testing.T) {
 	}
 }
 
+func TestTaskScopedReviewAllowsAmbientGitHubAuthWhenConfigured(t *testing.T) {
+	m := &Manager{allowAmbientReviewAuth: true, logger: discardLogger()}
+	cfg := RunConfig{
+		TaskID: "task-review", Role: RoleReview, Dir: t.TempDir(), resolvedSandboxHome: t.TempDir(),
+		ExtraEnv: []string{"GH_TOKEN=operator-token", "GITHUB_TOKEN=operator-token"},
+	}
+	if err := m.injectGitAccess(&cfg); err != nil {
+		t.Fatalf("injectGitAccess() error = %v", err)
+	}
+	if got := verificationEnvValue(cfg.ExtraEnv, "GH_TOKEN"); got != "operator-token" {
+		t.Fatalf("GH_TOKEN = %q, want ambient operator credential", got)
+	}
+	if got := verificationEnvValue(cfg.ExtraEnv, "GIT_CONFIG_GLOBAL"); got != "" {
+		t.Fatalf("GIT_CONFIG_GLOBAL = %q, want no verifier credential isolation", got)
+	}
+}
+
 func verificationEnvValue(env []string, key string) string {
 	prefix := key + "="
 	value := ""
