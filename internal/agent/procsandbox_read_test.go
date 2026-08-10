@@ -138,6 +138,10 @@ func TestResolveSandboxReadRoots_ExternalProviderExecutableIsProviderOnly(t *tes
 	if err := os.WriteFile(target, []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	companion := filepath.Join(filepath.Dir(target), "codex-code-mode-host")
+	if err := os.WriteFile(companion, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	binDir := t.TempDir()
 	launcher := filepath.Join(binDir, providerid.Codex)
 	if err := os.Symlink(target, launcher); err != nil {
@@ -157,10 +161,14 @@ func TestResolveSandboxReadRoots_ExternalProviderExecutableIsProviderOnly(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
+	resolvedCompanion, err := canonicalizeRoot(companion)
+	if err != nil {
+		t.Fatal(err)
+	}
 	providerRoots := m.resolveSandboxReadRoots(&RunConfig{
 		Role: RoleReview, provider: codex, sandbox: specWithWriteRoots(t),
 	})
-	for _, want := range []string{launcher, resolvedTarget, resolvedScope} {
+	for _, want := range []string{launcher, resolvedTarget, resolvedScope, resolvedCompanion} {
 		if !slices.Contains(providerRoots, want) {
 			t.Fatalf("provider executable root %q missing from %v", want, providerRoots)
 		}
@@ -168,10 +176,32 @@ func TestResolveSandboxReadRoots_ExternalProviderExecutableIsProviderOnly(t *tes
 	deterministicRoots := m.resolveSandboxReadRoots(&RunConfig{
 		Role: RoleTestRunner, provider: codex, DisableVerifierControl: true, sandbox: specWithWriteRoots(t),
 	})
-	for _, denied := range []string{launcher, resolvedTarget, resolvedScope} {
+	for _, denied := range []string{launcher, resolvedTarget, resolvedScope, resolvedCompanion} {
 		if slices.Contains(deterministicRoots, denied) {
 			t.Fatalf("provider executable root %q leaked into deterministic read roots: %v", denied, deterministicRoots)
 		}
+	}
+}
+
+func TestProviderExecutableReadRoots_RejectsSymlinkedCodexCompanion(t *testing.T) {
+	installDir := t.TempDir()
+	target := filepath.Join(installDir, providerid.Codex)
+	if err := os.WriteFile(target, []byte("provider"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(t.TempDir(), "external-host")
+	if err := os.WriteFile(external, []byte("host"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	companion := filepath.Join(installDir, "codex-code-mode-host")
+	if err := os.Symlink(external, companion); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", installDir)
+
+	roots := providerExecutableReadRoots(providerid.Codex)
+	if slices.Contains(roots, companion) || slices.Contains(roots, external) {
+		t.Fatalf("symlinked Codex companion leaked into provider roots: %v", roots)
 	}
 }
 
