@@ -1653,7 +1653,7 @@ var providerHomeRootReadFiles = []string{".claude.json"}
 // toolchain tree. Claude's native installer places the versioned Bun binary
 // here and ~/.local/bin/claude points into it; granting only the symlink lets
 // exec start but makes Bun fail immediately when it reads its own image.
-var providerReadSubdirs = []string{filepath.Join(".local", "share", "claude")}
+var providerReadSubdirs = []string{filepath.Join(".local", "share", providerid.Claude)}
 
 // homeStateLinks are the provider state dirs as spelled in the home
 // directory. They are added *uncanonicalized*, in addition to their resolved

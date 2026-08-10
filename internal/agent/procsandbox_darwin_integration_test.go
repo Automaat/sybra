@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 // TestSandboxReadEnforce_AllowsNativeClaudeInstall reproduces the native
@@ -26,7 +28,7 @@ func TestSandboxReadEnforce_AllowsNativeClaudeInstall(t *testing.T) {
 	}
 	_, wt := setupLinkedWorktree(t)
 	cfg := buildEnforceCfg(t, wt)
-	claudePath, err := exec.LookPath("claude")
+	claudePath, err := exec.LookPath(providerid.Claude)
 	if err != nil {
 		t.Skip("claude not installed; Bun stderr path unexercised on this host")
 	}
@@ -38,7 +40,7 @@ func TestSandboxReadEnforce_AllowsNativeClaudeInstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve user home: %v", err)
 	}
-	nativeInstall := filepath.Join(home, ".local", "share", "claude")
+	nativeInstall := filepath.Join(home, ".local", "share", providerid.Claude)
 	if !strings.HasPrefix(claudeTarget, nativeInstall+string(filepath.Separator)) {
 		t.Skipf("claude resolves outside native install root: %s", claudeTarget)
 	}

@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 func newReadModeManager(readMode string) *Manager {
@@ -109,7 +111,7 @@ func TestResolveSandboxReadRoots_DeterministicCommandOmitsProviderState(t *testi
 func TestResolveSandboxReadRoots_NativeClaudeInstallIsProviderOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	install := filepath.Join(home, ".local", "share", "claude")
+	install := filepath.Join(home, ".local", "share", providerid.Claude)
 	if err := os.MkdirAll(install, 0o700); err != nil {
 		t.Fatal(err)
 	}
