@@ -390,9 +390,9 @@ export function TouchTask(id: string): $CancellablePromise<task$0.Task> {
  * the testing workflow needs a clean slate (no in-flight agents or pending
  * human steps) so the user can't accidentally lose context by dragging.
  * 
- * Moving a task to "in-progress" when its workflow is terminal (completed or
- * failed) and no agent is running restarts the workflow — allowing the user to
- * retry implementation after a human-required escalation.
+ * Moving a task to a dispatching stage when its workflow is terminal (completed
+ * or failed) and no agent is running restarts the workflow — allowing the user
+ * to retry implementation, review, testing, or PR creation after a failed run.
  */
 export function UpdateTask(id: string, updates: { [_ in string]?: any }): $CancellablePromise<task$0.Task> {
     return $Call.ByID(3948756754, id, updates).then(($result: any) => {
