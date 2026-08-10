@@ -114,6 +114,9 @@ type AgentRunInfo struct {
 	AgentID                string
 	Role                   string
 	Provider               string
+	Mode                   string
+	State                  string
+	Outcome                string
 	RequestedSkill         string
 	SkillExecutionMode     string
 	SkillConformance       string

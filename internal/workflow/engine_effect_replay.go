@@ -89,6 +89,12 @@ func (e *Engine) replayPersistedEffectsTask(t *TaskInfo) bool {
 	if !ok {
 		return false
 	}
+	if currentStepHasTerminalHeadlessRunPendingRecovery(*t) {
+		e.resumeSkip.Log(e.logger, "workflow.effect-replay.skip", t.ID,
+			"terminal_run_pending_recovery|"+step.ID+"|"+rec.ID.String(),
+			"task_id", t.ID, "reason", "terminal_run_pending_recovery", "step", step.ID, "effect", rec.ID.String())
+		return false
+	}
 	if rec.CompletedAt == nil && e.resumePreflightConsumesTick(t, step, "workflow.effect-replay.skip") {
 		return true
 	}
@@ -182,6 +188,30 @@ func (e *Engine) effectReplayConsumedRetry(t *TaskInfo, step *Step, claimTaskID 
 	if e.handleWatchdogRateLimitRetry(t, step) {
 		e.clearResumeDispatching(claimTaskID)
 		return true
+	}
+	return false
+}
+
+func currentStepHasTerminalHeadlessRunPendingRecovery(t TaskInfo) bool {
+	if t.Workflow == nil || t.Workflow.CurrentStep == "" {
+		return false
+	}
+	if t.Workflow.RecordForStep(t.Workflow.CurrentStep) != nil {
+		return false
+	}
+	for i := len(t.AgentRuns) - 1; i >= 0; i-- {
+		run := t.AgentRuns[i]
+		if run.AgentID == "" {
+			continue
+		}
+		stepID, ok := t.Workflow.AgentRoute(run.AgentID)
+		if !ok || stepID != t.Workflow.CurrentStep {
+			continue
+		}
+		if run.Mode != "headless" || run.State != "stopped" {
+			return false
+		}
+		return run.Outcome == "success" || run.Outcome == "failure"
 	}
 	return false
 }
