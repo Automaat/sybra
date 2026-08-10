@@ -2117,11 +2117,7 @@ func (a *App) openLimitsStore(ctx context.Context) (*limits.Store, error) {
 	return limits.NewStore(config.LimitsFile())
 }
 
-// openTaskPersistence returns the task.Persistence Manager's CRUD runs
-// against for the configured backend, importing existing task files the
-// first time a database is used, or nil to fall back to fileStore itself —
-// task.NewManagerWithPersistence(fileStore, nil, ...) is what
-// task.NewManager already does.
+// openTaskPersistence returns the task.Persistence Manager's CRUD runs against for the configured backend, importing existing task files the first time a database is used, or nil when the caller should build the Manager with task.NewManager(fileStore, ...) instead. That constructor wires fileStore through its own file-backed Persistence adapter internally, so a nil return here is never itself passed to task.NewManagerWithPersistence, which requires a non-nil Persistence.
 //
 // fileStore is still required either way: Comments/Plans/PlanDrafts, the
 // trash-generation history, and the leader-follower mirror's direct sidecar

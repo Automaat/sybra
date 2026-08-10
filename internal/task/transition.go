@@ -215,16 +215,11 @@ func (m *Manager) fireApplyOutcome(id string, outcome applyOutcome) {
 	}
 }
 
-// applyLocked is Apply/ApplyFn's shared core, run under the caller's per-task
-// lock. The precondition checks, the idempotency check, and the EffectLog
-// bookkeeping all run inside persist.UpdateFieldsBy's compute callback —
-// against cur as UpdateFieldsBy's own atomic locked read produces it, not a
-// value the caller read earlier — so a cross-process writer that landed
-// between Apply's entry and this call can never be raced: the precondition
-// either sees that writer's effect and reports a genuine conflict, or the
-// backend's row lock serializes behind it. compute signals an idempotent
-// replay by returning errIdempotentReplay; capturedCur (set on every
-// invocation, before any check can fail) is what Applied:false reports back.
+// applyLocked is Apply/ApplyFn's shared core, run under the caller's per-task lock. The precondition checks, the idempotency check, and the EffectLog bookkeeping all run inside persist.UpdateFieldsBy's compute callback, against cur as UpdateFieldsBy's own read produces it there rather than a value the caller read earlier.
+//
+// For the SQL backend that read is inside the same transaction as the write it feeds, under the row lock, so a cross-process writer that landed between Apply's entry and this call can never be raced: the precondition either sees that writer's effect and reports a genuine conflict, or the row lock serializes behind it. The file backend's UpdateFieldsBy still reads (Store.Get) and writes (Store.UpdateWithPrev) as two separate steps with no lock spanning both, the same window Store.UpdateWithPrev already had before this change, so a concurrent out-of-process file write in that window is not caught here; only Manager's own in-process per-task lock protects it there.
+//
+// An idempotent replay is signaled by returning errIdempotentReplay from the compute callback below; capturedCur, set on every invocation before any check can fail, is what the Applied:false case reports back to the caller.
 func (m *Manager) applyLocked(id string, intent TransitionIntent) (applyOutcome, error) {
 	var capturedCur Task
 	saved, prev, err := m.persist.UpdateFieldsBy(id, strings.TrimSpace(intent.Actor), func(cur Task) (Update, error) {
