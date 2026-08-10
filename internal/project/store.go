@@ -410,7 +410,7 @@ func (s *Store) Adopt(rawURL string, ptype ProjectType, clonePath string) (Proje
 		return Project{}, err
 	}
 	defer unlockID()
-	// LockLocal keyed by clonePath serializes different IDs racing to adopt the same clone; not s.lock, whose DB-backed form holds one transaction per Store value and would self-deadlock nested under sqlite's single connection.
+	// LockLocal keyed by clonePath serializes different IDs racing to adopt the same clone; not s.lock, whose DB-backed form holds an immediate write transaction per Store value and would self-deadlock nested under SQLite's write lock.
 	unlockClonePath := s.locker.LockLocal("clonepath:" + clonePath)
 	defer unlockClonePath()
 

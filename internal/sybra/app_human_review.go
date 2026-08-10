@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -32,10 +33,12 @@ import (
 	"github.com/Automaat/sybra/internal/worktree"
 )
 
-// humanReviewPromptHeadTail bounds how many lines of the host log file are
-// pulled into the review prompt. Keeps the prompt size predictable.
+// The human-review context bounds both lines and bytes from the host log. A
+// line count alone is not a size bound: structured log lines can contain a
+// large prompt or provider payload.
 const (
 	humanReviewLogTail        = 200
+	humanReviewLogTailBytes   = 64 << 10
 	humanReviewMaxAgentRuns   = 5
 	humanReviewMaxAgentTurns  = 40
 	humanReviewMaxAgentResult = 4000
@@ -2163,7 +2166,7 @@ func (h *humanReviewHandler) buildPrompt(ctx context.Context, t task.Task, dir s
 		b.WriteString("\n")
 	}
 
-	if tail := tailFile(h.logFile, humanReviewLogTail); tail != "" {
+	if tail := tailFile(h.logFile, humanReviewLogTail, humanReviewLogTailBytes); tail != "" {
 		b.WriteString("## Sybra host log (tail)\n```\n")
 		b.WriteString(tail)
 		b.WriteString("\n```\n\n")
@@ -2278,19 +2281,34 @@ func verdictAlreadyRendered(t task.Task) bool {
 	return false
 }
 
-// tailFile reads the last n lines of path. Best-effort: returns "" on error
-// or when the file is missing (server containers often don't ship the log).
-func tailFile(path string, n int) string {
-	if path == "" {
+// tailFile reads the bounded tail of path. Best-effort: returns "" on error or
+// when the file is missing (server containers often don't ship the log).
+func tailFile(path string, maxLines, maxBytes int) string {
+	if path == "" || maxLines <= 0 || maxBytes <= 0 {
 		return ""
 	}
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return ""
 	}
-	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return ""
 	}
-	return strings.Join(lines, "\n")
+	// The final output cannot depend on bytes earlier than this window: when
+	// the last maxLines lines exceed maxBytes, TailBytes discards their prefix;
+	// when they do not, all of them already fit in this window. The extra byte
+	// lets TrimRight consume a trailing newline without reducing the payload
+	// budget and gives TailBytes room to repair a split UTF-8 rune.
+	readSize := min(info.Size(), int64(maxBytes)+1)
+	data := make([]byte, readSize)
+	if _, err := f.ReadAt(data, info.Size()-readSize); err != nil && !errors.Is(err, io.EOF) {
+		return ""
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	return strings.ToValidUTF8(textutil.TailBytes(strings.Join(lines, "\n"), maxBytes), "")
 }

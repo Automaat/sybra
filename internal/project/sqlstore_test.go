@@ -222,11 +222,11 @@ func TestStore_DeleteRemovesTheRecordNotAFile(t *testing.T) {
 
 // TestStoreAdopt_SQLBackend pins Adopt against a real database-backed store,
 // not just the file-backed one: SQLStore.Lock holds one transaction per
-// Store value rather than a stack, and sqlite caps the pool at a single
-// connection, so a second s.lock call nested inside the first would block
-// forever on a connection the still-open first transaction holds. A run
+// Store value rather than a stack. SQLite begins every transaction as an
+// immediate writer, so a second s.lock call nested inside the first would
+// block on the write lock the still-open first transaction holds. A run
 // against the file backend alone cannot catch that, because file-backed
-// locking has no such single-connection ceiling.
+// locking has no database-wide writer ceiling.
 func TestStoreAdopt_SQLBackend(t *testing.T) {
 	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
 		t.Helper()

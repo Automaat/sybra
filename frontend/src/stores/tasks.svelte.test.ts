@@ -114,6 +114,31 @@ describe('TaskStore', () => {
       expect(taskStore.loading).toBe(false)
     })
 
+    it('does not let a compact board poll erase hydrated run text', async () => {
+      vi.useFakeTimers()
+      try {
+        const run = {
+          agentId: 'agent-1', role: 'implementation', mode: 'headless', state: 'stopped',
+          startedAt: '2026-04-01T00:00:00Z', costUsd: 1.25,
+          prompt: 'full prompt', result: 'full result', logFile: '',
+        }
+        taskStore.tasks = new Map([['t1', makeTask({ id: 't1', agentRuns: [run] })]])
+        mockListTasks.mockResolvedValue([
+          makeTask({ id: 't1', status: 'done', agentRuns: [{ ...run, prompt: '', result: '' }] }),
+        ])
+
+        await taskStore.load()
+        await vi.advanceTimersByTimeAsync(500)
+
+        const loaded = taskStore.tasks.get('t1')!
+        expect(loaded.status).toBe('done')
+        expect(loaded.agentRuns[0].prompt).toBe('full prompt')
+        expect(loaded.agentRuns[0].result).toBe('full result')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it('runs a trailing fetch when throttled instead of dropping the load', async () => {
       vi.useFakeTimers()
       try {
