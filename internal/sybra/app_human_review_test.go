@@ -5107,7 +5107,7 @@ func TestTailFileBoundsLinesAndBytes(t *testing.T) {
 		t.Fatalf("tail length = %d, want <= %d", len(got), humanReviewLogTailBytes)
 	}
 	if !strings.HasSuffix(got, "last") {
-		t.Fatalf("tail lost newest line: suffix %q", got[max(0, len(got)-16):])
+		t.Fatalf("tail lost newest line (length %d)", len(got))
 	}
 	if strings.Contains(got, "old") {
 		t.Fatal("tail retained lines older than the line limit")
