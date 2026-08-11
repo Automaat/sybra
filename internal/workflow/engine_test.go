@@ -526,6 +526,66 @@ steps:
 			t.Fatalf("StartAgent calls = %d, want 0 while terminal run is pending stale recovery", len(agents.calls))
 		}
 	})
+
+	t.Run("legacy terminal verifier run without route defers replay to stale recovery", func(t *testing.T) {
+		store := newInlineTestStore(t, "replay-review", `
+id: replay-review
+name: Replay Review
+trigger:
+  on: task.created
+steps:
+  - id: review
+    name: Review
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      model: sonnet
+      prompt: "Review {{.Task.ID}}"
+`)
+		tasks := &memTasks{tasks: map[string]*TaskInfo{
+			"t1": {
+				ID:         "t1",
+				Generation: 1,
+				Status:     "in-progress",
+				Workflow: &Execution{
+					WorkflowID:  "replay-review",
+					CurrentStep: "review",
+					State:       ExecWaiting,
+					EffectLog: []EffectRecord{{
+						ID:       EffectID{Generation: 1, StepSeq: 0, StepID: "review", Pos: effectPosStepAction},
+						IntentAt: time.Now().UTC(),
+					}},
+				},
+				AgentRuns: []AgentRunInfo{{
+					AgentID:   "review-legacy",
+					Role:      "review",
+					Mode:      "headless",
+					State:     "stopped",
+					Outcome:   "failure",
+					StartedAt: time.Now().Add(-10 * time.Minute),
+				}},
+			},
+		}, gets: map[string]int{}}
+		agents := newMockAgents()
+		engine := NewTestEngine(store, tasks, agents, discardLogger())
+
+		if consumed := engine.ReplayPersistedEffectsForTask("t1"); consumed {
+			t.Fatal("ReplayPersistedEffectsForTask consumed tick, want stale recovery to own legacy verifier migration")
+		}
+		if len(agents.calls) != 0 {
+			t.Fatalf("StartAgent calls after effect replay = %d, want 0 for legacy verifier recovery", len(agents.calls))
+		}
+
+		engine.ResumeStalled()
+
+		if len(agents.calls) != 1 {
+			t.Fatalf("StartAgent calls after ResumeStalled = %d, want 1", len(agents.calls))
+		}
+		if got := agents.calls[0].Role; got != "review" {
+			t.Fatalf("resumed role = %q, want review", got)
+		}
+	})
 }
 
 func workflowMetricValue(t *testing.T, name string, labels []string) float64 {
