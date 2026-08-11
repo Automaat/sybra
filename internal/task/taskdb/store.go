@@ -101,7 +101,7 @@ const (
 
 	softDeleteTask = `UPDATE tasks SET deleted_at = ? WHERE id = ?`
 
-	restoreTask = `UPDATE tasks SET deleted_at = 0 WHERE id = ?`
+	restoreTask = `UPDATE tasks SET deleted_at = 0, board_doc = ?, assigned_node = ?, closed_at = ? WHERE id = ?`
 
 	purgeDeletedTasks = `DELETE FROM tasks WHERE deleted_at > 0 AND deleted_at < ?`
 
@@ -109,7 +109,7 @@ const (
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO NOTHING`
 
-	selectMissingBoardProjections = `SELECT id, doc FROM tasks WHERE board_doc = '' ORDER BY id LIMIT 25`
+	selectMissingBoardProjections = `SELECT id, doc FROM tasks WHERE deleted_at = 0 AND board_doc = '' ORDER BY id LIMIT 25`
 	backfillBoardProjection       = `UPDATE tasks SET board_doc = ?, assigned_node = ?, closed_at = ? WHERE id = ? AND board_doc = ''`
 )
 
@@ -168,7 +168,10 @@ func (s *SQLStore) BackfillBoardProjections(ctx context.Context) error {
 			return nil
 		}
 		for _, p := range batch {
-			boardDoc, assignedNode, closedAt := p.doc, "", int64(0)
+			// A malformed legacy document is already invisible to List. Store a
+			// tiny non-parseable sentinel so backfill makes progress without
+			// duplicating an unbounded transcript-heavy document.
+			boardDoc, assignedNode, closedAt := "\n", "", int64(0)
 			if parsed, err := task.ParseBytes([]byte(p.doc)); err == nil {
 				_, projected, marshalErr := marshalTaskDocuments(parsed)
 				if marshalErr != nil {
@@ -177,11 +180,6 @@ func (s *SQLStore) BackfillBoardProjections(ctx context.Context) error {
 				boardDoc = string(projected)
 				assignedNode = parsed.AssignedNode
 				closedAt = taskClosedAtValue(parsed)
-			}
-			if boardDoc == "" {
-				// Mark an invalid empty legacy document as visited. ListBoard will
-				// continue to skip it just as List does, without looping forever.
-				boardDoc = "\n"
 			}
 			if _, err := s.db.ExecContext(ctx, s.db.Rebind(backfillBoardProjection), boardDoc, assignedNode, closedAt, p.id); err != nil {
 				return fmt.Errorf("backfill task %s: %w", p.id, err)
@@ -482,7 +480,17 @@ func (s *SQLStore) RestoreBy(ctx context.Context, id, actor string) error {
 		if !deleted {
 			return nil
 		}
-		if _, err := tx.ExecContext(ctx, s.db.Rebind(restoreTask), id); err != nil {
+		boardDoc, assignedNode, closedAt := "\n", "", int64(0)
+		if parsed, parseErr := task.ParseBytes([]byte(doc)); parseErr == nil {
+			_, projected, marshalErr := marshalTaskDocuments(parsed)
+			if marshalErr != nil {
+				return fmt.Errorf("marshal restored task board projection: %w", marshalErr)
+			}
+			boardDoc = string(projected)
+			assignedNode = parsed.AssignedNode
+			closedAt = taskClosedAtValue(parsed)
+		}
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(restoreTask), boardDoc, assignedNode, closedAt, id); err != nil {
 			return fmt.Errorf("restore task: %w", err)
 		}
 		return appendHistoryTx(ctx, s.db, tx, HistoryEntry{TaskID: id, Actor: actor, Kind: ChangeRestored, Snapshot: doc})

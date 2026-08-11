@@ -146,6 +146,26 @@ func TestSQLStore_BackfillsLegacyBoardProjection(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		_, err := d.ExecContext(t.Context(), d.Rebind(`INSERT INTO tasks
+			(id, status, project_id, title, created_at, updated_at, deleted_at, doc)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), "0000001b", string(task.StatusTodo), "", "malformed",
+			db.TimeValue(time.Now()), db.TimeValue(time.Now()), int64(0), "MALFORMED SECRET TRANSCRIPT")
+		if err != nil {
+			t.Fatal(err)
+		}
+		deleted := sqlTask("0000001c", "deleted legacy")
+		deleted.AssignedNode = "home-nas"
+		deletedDoc, err := task.MarshalStored(deleted)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = d.ExecContext(t.Context(), d.Rebind(`INSERT INTO tasks
+			(id, status, project_id, title, created_at, updated_at, deleted_at, doc)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), deleted.ID, string(deleted.Status), deleted.ProjectID, deleted.Title,
+			db.TimeValue(deleted.CreatedAt), db.TimeValue(deleted.UpdatedAt), db.TimeValue(time.Now()), string(deletedDoc))
+		if err != nil {
+			t.Fatal(err)
+		}
 		store, err := NewSQLStore(d)
 		if err != nil {
 			t.Fatal(err)
@@ -166,6 +186,27 @@ func TestSQLStore_BackfillsLegacyBoardProjection(t *testing.T) {
 		}
 		if boardDoc == "" || strings.Contains(boardDoc, "OLD SECRET") || assignedNode != "home-nas" {
 			t.Fatalf("board_doc=%q assigned_node=%q", boardDoc, assignedNode)
+		}
+		if err := d.QueryRowContext(t.Context(), `SELECT board_doc FROM tasks WHERE id = '0000001b'`).Scan(&boardDoc); err != nil {
+			t.Fatal(err)
+		}
+		if boardDoc != "\n" {
+			t.Fatalf("malformed board_doc = %q, want tiny sentinel", boardDoc)
+		}
+		if err := d.QueryRowContext(t.Context(), `SELECT board_doc FROM tasks WHERE id = '0000001c'`).Scan(&boardDoc); err != nil {
+			t.Fatal(err)
+		}
+		if boardDoc != "" {
+			t.Fatalf("deleted task was unnecessarily backfilled: %q", boardDoc)
+		}
+		if err := store.Restore(t.Context(), deleted.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.QueryRowContext(t.Context(), `SELECT board_doc, assigned_node FROM tasks WHERE id = '0000001c'`).Scan(&boardDoc, &assignedNode); err != nil {
+			t.Fatal(err)
+		}
+		if boardDoc == "" || assignedNode != "home-nas" {
+			t.Fatalf("restored board_doc=%q assigned_node=%q", boardDoc, assignedNode)
 		}
 	})
 }
