@@ -61,7 +61,8 @@ func TestCleanCanonicalSanitizationDoesNotInvalidateConcurrentLeases(t *testing.
 			t.Fatalf("prepare lease %d: %v", i, err)
 		}
 		leases[i] = lease
-		t.Cleanup(func() { mgr.Release(lease) })
+		cleanupLease := lease
+		t.Cleanup(func() { mgr.Release(cleanupLease) })
 	}
 
 	for range 3 {
@@ -197,9 +198,14 @@ func TestFinalizeRejectsABASourceMovement(t *testing.T) {
 	git(t, canonical, "add", "source.txt")
 	git(t, canonical, "commit", "-m", "temporary movement")
 	git(t, canonical, "reset", "--hard", lease.SourceSHA)
-	if err := mgr.Finalize(t.Context(), lease, nil, "", ""); !errors.Is(err, ErrSourceMoved) {
+	err = mgr.Finalize(t.Context(), lease, nil, "", "")
+	if !errors.Is(err, ErrSourceMoved) {
 		t.Fatalf("Finalize error = %v, want ErrSourceMoved after A-B-A movement", err)
-	} else if !strings.Contains(err.Error(), "ref history changed while HEAD remained") {
+	}
+	if err == nil {
+		t.Fatal("Finalize returned nil after A-B-A movement")
+	}
+	if !strings.Contains(err.Error(), "ref history changed while HEAD remained") {
 		t.Fatalf("Finalize error = %q, want ref-history diagnostic", err)
 	}
 }
