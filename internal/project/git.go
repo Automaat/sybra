@@ -1303,13 +1303,16 @@ func WorktreeOperation(ctx context.Context, worktreePath string) string {
 }
 
 // HasUnpushedCommits reports whether HEAD in worktreePath holds commits that
-// no remote-tracking ref locally knows about. Errs toward true: if the count
-// cannot be determined (not a git repo, missing dir, git failure), callers
-// deciding whether a worktree/sandbox is safe to reap must treat it as unsafe
-// rather than silently destroying possibly-unpushed work (see #2593, where a
-// completed implementation was lost this way).
+// neither a remote-tracking ref nor a fetched Sybra PR ref locally knows about.
+// FetchPRHead deliberately stores fork PR heads outside refs/remotes, but those
+// commits have still reached GitHub and are safe to recreate from the PR ref.
+// Errs toward true: if the count cannot be determined (not a git repo, missing
+// dir, git failure), callers deciding whether a worktree/sandbox is safe to
+// reap must treat it as unsafe rather than silently destroying possibly-
+// unpushed work (see #2593, where a completed implementation was lost this
+// way).
 func HasUnpushedCommits(ctx context.Context, worktreePath string) bool {
-	out, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "rev-list", "--count", "HEAD", "--not", "--remotes")
+	out, err := gitexec.Output(ctx, gitexec.Options{Dir: worktreePath}, "rev-list", "--count", "HEAD", "--not", "--remotes", "--glob=refs/sybra/pr/*")
 	if err != nil {
 		return true
 	}

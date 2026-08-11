@@ -3551,6 +3551,24 @@ func TestFetchPRHead(t *testing.T) {
 	if err := CreateWorktreeDetached(context.Background(), bare, wtPath, ref); err != nil {
 		t.Fatalf("CreateWorktreeDetached from PR head: %v", err)
 	}
+	if HasUnpushedCommits(context.Background(), wtPath) {
+		t.Fatal("fetched PR head must count as published")
+	}
+
+	// A local commit on top of the fetched head remains protected even though
+	// its parent is reachable through refs/sybra/pr/*.
+	for _, args := range [][]string{
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+		{"commit", "--allow-empty", "-m", "local work"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", wtPath}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if !HasUnpushedCommits(context.Background(), wtPath) {
+		t.Fatal("local commit on fetched PR head must remain unpushed")
+	}
 }
 
 func TestListTrackedFiles(t *testing.T) {
