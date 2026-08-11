@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
+import { SvelteSet } from 'svelte/reactivity'
 
 const mockTasksNeedingPlanApproval = vi.fn()
 const mockApprovePlan = vi.fn()
@@ -11,13 +12,19 @@ const mockCommentLoad = vi.fn()
 const mockUnresolvedCount = vi.fn()
 
 const taskItemsMap = new Map<string, any>()
+const hydratedTaskIds = new SvelteSet<string>()
 
 vi.mock('../stores/tasks.svelte.js', () => ({
   taskStore: {
     get items() { return taskItemsMap },
     detail: (id: string) => taskItemsMap.get(id),
+    isDetailHydrated: (id: string) => hydratedTaskIds.has(id),
     retainDetail: () => () => {},
-    get: (...args: unknown[]) => mockGetTask(...args),
+    get: async (...args: unknown[]) => {
+      const result = await mockGetTask(...args)
+      hydratedTaskIds.add(String(args[0]))
+      return result
+    },
     tasksNeedingPlanApproval: (...args: unknown[]) => mockTasksNeedingPlanApproval(...args),
     approvePlan: (...args: unknown[]) => mockApprovePlan(...args),
     rejectPlan: (...args: unknown[]) => mockRejectPlan(...args),
@@ -71,6 +78,7 @@ describe('Reviews', () => {
     mockUnresolvedCount.mockReturnValue(0)
     mockTasksNeedingPlanApproval.mockReturnValue([])
     taskItemsMap.clear()
+    hydratedTaskIds.clear()
   })
 
   afterEach(() => {
@@ -152,6 +160,22 @@ describe('Reviews', () => {
     await vi.waitFor(() => expect(screen.getByText('Unable to load the complete plan.')).toBeDefined())
     expect(screen.getByText('Approve').getAttribute('disabled')).not.toBeNull()
     expect(screen.getByText('Reject').getAttribute('disabled')).not.toBeNull()
+  })
+
+  it('recovers when a retained detail is hydrated after the initial fetch fails', async () => {
+    const task = makeTask({ id: 't1', title: 'Reconnect plan' })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
+    taskItemsMap.set('t1', task)
+    mockGetTask.mockRejectedValue(new Error('offline'))
+    render(Reviews)
+    await fireEvent.click(screen.getByText('Reconnect plan'))
+    await vi.waitFor(() => expect(screen.getByText('Unable to load the complete plan.')).toBeDefined())
+
+    hydratedTaskIds.add('t1')
+
+    await vi.waitFor(() => expect(screen.queryByText('Unable to load the complete plan.')).toBeNull())
+    expect(screen.getByText('Approve').getAttribute('disabled')).toBeNull()
+    expect(screen.getByText('Reject').getAttribute('disabled')).toBeNull()
   })
 
   it('calls approvePlan and clears selection on Approve', async () => {

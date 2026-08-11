@@ -96,6 +96,10 @@ class TaskStore extends EntityStore<Task> {
     return this.detailItems.get(id) ?? this.items.get(id)
   }
 
+  isDetailHydrated(id: string): boolean {
+    return this.detailItems.has(id)
+  }
+
   retainDetail(id: string): () => void {
     this.#detailRefs.set(id, (this.#detailRefs.get(id) ?? 0) + 1)
     return () => {

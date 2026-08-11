@@ -24,6 +24,7 @@ vi.mock('../stores/tasks.svelte.js', () => ({
   taskStore: {
     tasks: mockTasksMap,
     detail: (id: string) => mockTasksMap.get(id),
+    isDetailHydrated: (id: string) => mockTasksMap.has(id),
     retainDetail: () => () => {},
     get list() {
       return [...mockTasksMap.values()]

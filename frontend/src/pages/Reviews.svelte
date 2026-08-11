@@ -16,15 +16,16 @@
   let actionLoading = $state(false)
   let feedbackRef = $state<HTMLTextAreaElement | null>(null)
   let errorMsg = $state('')
+  let detailError = $state('')
   let hasLiveAgent = $state(false)
   let detailLoading = $state(false)
-  let detailReady = $state(false)
 
   const allReviewTasks = $derived(taskStore.tasksNeedingPlanApproval())
 
   const selectedTask = $derived(
     selectedId ? taskStore.detail(selectedId) ?? null : null,
   )
+  const detailReady = $derived(selectedId ? taskStore.isDetailHydrated(selectedId) : false)
 
   const renderedCritique = $derived(renderMarkdown(selectedTask?.planCritique))
 
@@ -32,21 +33,27 @@
     const id = selectedId
     if (!id) return
     const release = taskStore.retainDetail(id)
-    detailLoading = true
-    detailReady = false
+    detailLoading = !taskStore.isDetailHydrated(id)
+    detailError = ''
     hasLiveAgent = false
     void commentStore.load(id)
     void refreshLiveAgent(id)
     void taskStore.get(id).then(() => {
       if (selectedId !== id) return
       detailLoading = false
-      detailReady = true
+      detailError = ''
     }).catch((e) => {
       if (selectedId !== id) return
       detailLoading = false
-      errorMsg = String(e)
+      if (!taskStore.isDetailHydrated(id)) detailError = String(e)
     })
     return release
+  })
+
+  $effect(() => {
+    if (!detailReady) return
+    detailLoading = false
+    detailError = ''
   })
 
   async function refreshLiveAgent(id: string) {
@@ -281,7 +288,7 @@
       {#if detailLoading}
         <div class="flex flex-1 items-center justify-center text-sm text-surface-400">Loading plan…</div>
       {:else if !detailReady}
-        <div class="flex flex-1 items-center justify-center text-sm text-error-500">Unable to load the complete plan.</div>
+        <div class="flex flex-1 items-center justify-center text-sm text-error-500" title={detailError}>Unable to load the complete plan.</div>
       {:else}
       <div class="flex-1 overflow-y-auto px-6 py-4">
         <div class="mb-4">
