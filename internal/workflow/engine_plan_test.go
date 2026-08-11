@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 func TestPlanReject_ThenApprove(t *testing.T) {
@@ -588,7 +590,7 @@ func TestExecRequireSidecar_CodeReviewMissingFlipsHumanRequired(t *testing.T) {
 func TestExecRequireSidecar_RetriesProducerBeforeHumanRequired(t *testing.T) {
 	tasks := newMemTasks()
 	wf := &Execution{WorkflowID: "test-simple", CurrentStep: "require", State: ExecRunning, Variables: map[string]string{}}
-	tasks.Put(TaskInfo{ID: "t1", Status: "planning", Workflow: wf})
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.Planning, Workflow: wf})
 	engine := newEngineForEval(t, tasks)
 	step := newRequireSidecarStep("plan")
 	step.Config.RetryStep = "plan"
@@ -606,7 +608,7 @@ func TestExecRequireSidecar_RetriesProducerBeforeHumanRequired(t *testing.T) {
 			t.Fatalf("attempt %d err = %v, want errStepParked", attempt, err)
 		}
 		got, _ := tasks.GetTask("t1")
-		if got.Status == "human-required" || got.Workflow.CurrentStep != "plan" || got.Workflow.State != ExecWaiting {
+		if got.Status == taskstatus.HumanRequired || got.Workflow.CurrentStep != "plan" || got.Workflow.State != ExecWaiting {
 			t.Fatalf("attempt %d task = %+v, want producer re-armed", attempt, got)
 		}
 	}
@@ -625,7 +627,7 @@ func TestExecRequireSidecar_RetriesProducerBeforeHumanRequired(t *testing.T) {
 		t.Fatalf("exhausted output = %+v", out)
 	}
 	got, _ := tasks.GetTask("t1")
-	if got.Status != "human-required" {
+	if got.Status != taskstatus.HumanRequired {
 		t.Fatalf("status = %q, want human-required after retry exhaustion", got.Status)
 	}
 }
