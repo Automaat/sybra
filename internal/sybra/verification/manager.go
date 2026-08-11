@@ -256,13 +256,19 @@ func (m *Manager) Finalize(ctx context.Context, lease Lease, commands []string, 
 		return fmt.Errorf("record verification evidence: %w", err)
 	}
 	if report.Status == "stale" {
+		if observedErr != nil {
+			return fmt.Errorf("inspect authoritative source HEAD: %w", observedErr)
+		}
+		if refStateErr != nil {
+			return fmt.Errorf("inspect authoritative source ref history: %w", refStateErr)
+		}
 		if canonicalStatusErr != nil {
 			return fmt.Errorf("inspect authoritative source status: %w", canonicalStatusErr)
 		}
 		if canonicalStatus != "" {
 			return fmt.Errorf("%w: %s", ErrSourceDirty, bounded(canonicalStatus, 4<<10))
 		}
-		return fmt.Errorf("%w: expected %s, observed %s", ErrSourceMoved, lease.SourceSHA, observed)
+		return sourceMovedError(lease, observed, observedRefState)
 	}
 	if workspaceErr != nil {
 		return fmt.Errorf("inspect verification workspace HEAD: %w", workspaceErr)
@@ -296,9 +302,19 @@ func (m *Manager) ValidateSource(ctx context.Context, lease Lease) error {
 		return fmt.Errorf("%w: %s", ErrSourceDirty, bounded(status, 4<<10))
 	}
 	if observed != lease.SourceSHA || refState != lease.SourceRefState {
-		return fmt.Errorf("%w: expected %s, observed %s", ErrSourceMoved, lease.SourceSHA, observed)
+		return sourceMovedError(lease, observed, refState)
 	}
 	return nil
+}
+
+func sourceMovedError(lease Lease, observed, observedRefState string) error {
+	if observed != lease.SourceSHA {
+		return fmt.Errorf("%w: HEAD changed: expected %s, observed %s", ErrSourceMoved, lease.SourceSHA, observed)
+	}
+	if observedRefState != lease.SourceRefState {
+		return fmt.Errorf("%w: ref history changed while HEAD remained at %s", ErrSourceMoved, observed)
+	}
+	return ErrSourceMoved
 }
 
 func gitRefState(ctx context.Context, dir string) (string, error) {

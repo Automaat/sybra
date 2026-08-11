@@ -1021,6 +1021,74 @@ func TestSanitizeWorktree_AutoCommitsUncommitted(t *testing.T) {
 	}
 }
 
+func TestSanitizeWorktree_CleanCheckoutPreservesRefHistory(t *testing.T) {
+	t.Parallel()
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+
+	wtPath := filepath.Join(t.TempDir(), "wt")
+	branch, _ := DefaultBranch(context.Background(), bare)
+	if err := CreateWorktree(context.Background(), bare, wtPath, "sybra/test", branch); err != nil {
+		t.Fatalf("worktree: %v", err)
+	}
+
+	refHistory := func() string {
+		t.Helper()
+		cmd := exec.Command("git", "reflog", "show", "--format=%H%x00%gD%x00%gs", "HEAD")
+		cmd.Dir = wtPath
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("read HEAD reflog: %v: %s", err, out)
+		}
+		return string(out)
+	}
+
+	before := refHistory()
+	for range 3 {
+		if err := SanitizeWorktree(context.Background(), wtPath); err != nil {
+			t.Fatalf("SanitizeWorktree: %v", err)
+		}
+	}
+	if after := refHistory(); after != before {
+		t.Fatalf("clean sanitization changed HEAD reflog:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestSanitizeWorktree_ClearsCleanLookingOperationState(t *testing.T) {
+	t.Parallel()
+	repo := initRepoWithCommit(t)
+	gitPath := exec.Command("git", "rev-parse", "--git-path", "CHERRY_PICK_HEAD")
+	gitPath.Dir = repo
+	rawPath, err := gitPath.CombinedOutput()
+	if err != nil {
+		t.Fatalf("resolve CHERRY_PICK_HEAD: %v: %s", err, rawPath)
+	}
+	marker := strings.TrimSpace(string(rawPath))
+	if !filepath.IsAbs(marker) {
+		marker = filepath.Join(repo, marker)
+	}
+	headCmd := exec.Command("git", "rev-parse", "HEAD")
+	headCmd.Dir = repo
+	rawHead, err := headCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("resolve HEAD: %v: %s", err, rawHead)
+	}
+	head := strings.TrimSpace(string(rawHead))
+	if err := os.WriteFile(marker, []byte(head+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SanitizeWorktree(context.Background(), repo); err != nil {
+		t.Fatalf("SanitizeWorktree: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("CHERRY_PICK_HEAD remains after sanitize: %v", err)
+	}
+}
+
 func TestCheckpointCommit(t *testing.T) {
 	t.Run("dirty tree commits", func(t *testing.T) {
 		t.Parallel()
