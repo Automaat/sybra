@@ -588,13 +588,23 @@ func pushK8sGitWorkspace(ctx context.Context, dir string, workspace k8sGitWorksp
 	if workspace.Remote == "" || workspace.Branch == "" {
 		return nil
 	}
-	if !project.HasUnpushedCommits(ctx, dir) {
+	if !k8sGitWorkspaceNeedsPush(ctx, dir) {
 		return nil
 	}
 	if _, err := gitOutput(ctx, dir, "push", "-u", "origin", "HEAD:"+workspace.Branch); err != nil {
 		return fmt.Errorf("push k8s workspace branch: %w", err)
 	}
 	return nil
+}
+
+// k8sGitWorkspaceNeedsPush deliberately considers only remote-tracking refs.
+// The Job clones the remote and cannot see locally fetched refs/sybra/pr/*, so
+// a PR head reachable only through one of those refs must still be pushed.
+// Fail closed: attempting the push is safer than dispatching from the wrong
+// commit when reachability cannot be determined.
+func k8sGitWorkspaceNeedsPush(ctx context.Context, dir string) bool {
+	out, err := gitOutput(ctx, dir, "rev-list", "--count", "HEAD", "--not", "--remotes")
+	return err != nil || out != "0"
 }
 
 func syncK8sGitWorkspace(ctx context.Context, dir string) error {

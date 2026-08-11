@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -48,6 +49,28 @@ func TestGitOutputUsesWorkspaceDirectoryAndDisablesPrompts(t *testing.T) {
 	}
 	if !os.SameFile(actualInfo, wantInfo) {
 		t.Fatalf("working directory = %q, want %q", lines[0], workspace)
+	}
+}
+
+func TestK8sGitWorkspaceNeedsPushIgnoresLocalPRRef(t *testing.T) {
+	repo := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	runGit("init")
+	runGit("config", "user.email", "test@test.com")
+	runGit("config", "user.name", "Test")
+	runGit("config", "commit.gpgsign", "false")
+	runGit("commit", "--allow-empty", "-m", "base")
+	runGit("update-ref", "refs/remotes/origin/main", "HEAD")
+	runGit("commit", "--allow-empty", "-m", "pr head")
+	runGit("update-ref", "refs/sybra/pr/42", "HEAD")
+
+	if !k8sGitWorkspaceNeedsPush(t.Context(), repo) {
+		t.Fatal("PR head absent from remote-tracking refs must still be pushed")
 	}
 }
 
