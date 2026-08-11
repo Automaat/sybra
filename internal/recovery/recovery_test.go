@@ -2213,6 +2213,86 @@ func TestRestartStaleRecoverCompletedHeadlessRunLegacyVerifierWithoutRouteBypass
 	}
 }
 
+func TestRestartStaleRecoverCompletedHeadlessRunLegacyVerifierWithRoute(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("review me", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusInProgress
+	tags := []string{"review"}
+	wf := &workflow.Execution{
+		WorkflowID:  "pr-review",
+		State:       workflow.ExecWaiting,
+		CurrentStep: "review_simple",
+		StartedAt:   time.Now(),
+		AgentRoutes: map[string]string{"review-legacy": "review_simple"},
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:   &status,
+		Tags:     &tags,
+		Workflow: &wf,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{
+		AgentID:   "review-legacy",
+		Role:      "review",
+		Mode:      "headless",
+		State:     string(agent.StateStopped),
+		Outcome:   task.RunOutcomeFailure,
+		Result:    "review failed before restart",
+		StartedAt: time.Now().Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	wfStub := &stubWorkflowEngine{currentStepRole: "review"}
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		Orchestrator:   &stub,
+		WorkflowEngine: wfStub,
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if len(wfStub.completions) != 1 {
+		t.Fatalf("HandleAgentComplete called %d times; want 1 for routed legacy verifier recovery", len(wfStub.completions))
+	}
+	if wfStub.completions[0].Success {
+		t.Fatal("HandleAgentComplete replayed routed legacy verifier failure as success")
+	}
+	if stub.startCalls != 0 {
+		t.Fatalf("StartAgent called %d times; want 0 while routed legacy verifier recovery reconciles the failed run", stub.startCalls)
+	}
+}
+
 // TestRestartStaleRecoverCompletedHeadlessRunSkipsVerifyAutoFixRewind proves
 // recovery does not re-consume the original successful implementation run
 // after verify_checks rewound simple-task-implement back to implement with a

@@ -60,6 +60,32 @@ func TestAcquireReplayAndMutationExclusivity(t *testing.T) {
 	}
 }
 
+func TestAcquireReplayAllowsLegacyVerifierWorktreeMigration(t *testing.T) {
+	clock := &fakeClock{t: time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)}
+	c := newTestController(t, clock, "epoch-1", Limits{})
+	disposable := filepath.Join(t.TempDir(), "verification", "runs", "review-1", "source")
+	canonical := filepath.Join(t.TempDir(), "worktree")
+	first, err := c.Acquire(t.Context(), agent.AttemptIntent{
+		IntentID: "intent-1", TaskID: "task-1", Worktree: disposable,
+		Provider: providerid.Claude, Access: agent.AttemptAccessMutate,
+		Role: agent.RoleReview, CapabilityCertified: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := c.Acquire(t.Context(), agent.AttemptIntent{
+		IntentID: "intent-1", TaskID: "task-1", Worktree: canonical,
+		Provider: providerid.Claude, Access: agent.AttemptAccessMutate,
+		Role: agent.RoleReview, CapabilityCertified: true,
+	})
+	if err != nil {
+		t.Fatalf("legacy verifier replay error = %v", err)
+	}
+	if replay.ID != first.ID || replay.Version != first.Version || !replay.Existing {
+		t.Fatalf("replay = %+v, want existing lease matching %+v", replay, first)
+	}
+}
+
 func TestObserversAreExplicitAndCompatible(t *testing.T) {
 	clock := &fakeClock{t: time.Now().UTC()}
 	c := newTestController(t, clock, "epoch", Limits{})

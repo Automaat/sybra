@@ -164,7 +164,7 @@ func (c *Controller) Acquire(ctx context.Context, intent agent.AttemptIntent) (a
 	err = c.update(ctx, func(s *diskState, now time.Time) (bool, error) {
 		changed := expireLeases(s, now)
 		if rec := findIntent(s, intent.IntentID); rec != nil {
-			if !reflect.DeepEqual(rec.Intent, intent) {
+			if !sameReplayIntent(rec.Intent, intent) {
 				return changed, fmt.Errorf("%w: %s", ErrIntentReplayMismatch, intent.IntentID)
 			}
 			switch rec.Status {
@@ -271,7 +271,7 @@ func (c *Controller) Adopt(ctx context.Context, intent agent.AttemptIntent, leas
 		if rec.Version != lease.Version {
 			return changed, staleVersion(rec, lease)
 		}
-		if !reflect.DeepEqual(rec.Intent, intent) {
+		if !sameReplayIntent(rec.Intent, intent) {
 			return changed, fmt.Errorf("%w: %s", ErrIntentReplayMismatch, intent.IntentID)
 		}
 		if rec.Status == StatusCompleted {
@@ -442,6 +442,24 @@ func normalizeIntent(intent agent.AttemptIntent) (agent.AttemptIntent, error) {
 		intent.Worktree = abs
 	}
 	return intent, nil
+}
+
+func sameReplayIntent(recorded, replayed agent.AttemptIntent) bool {
+	if reflect.DeepEqual(recorded, replayed) {
+		return true
+	}
+	return legacyVerifierReplayIntent(recorded, replayed)
+}
+
+func legacyVerifierReplayIntent(recorded, replayed agent.AttemptIntent) bool {
+	if !recorded.Role.IsVerifier() || !replayed.Role.IsVerifier() {
+		return false
+	}
+	recorded.Worktree = ""
+	recorded.WorktreeGeneration = 0
+	replayed.Worktree = ""
+	replayed.WorktreeGeneration = 0
+	return reflect.DeepEqual(recorded, replayed)
 }
 
 func expireLeases(s *diskState, now time.Time) bool {
