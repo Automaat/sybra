@@ -145,6 +145,10 @@ export function needsPlanApproval(task: {
   status?: string
   workflow?: { currentStep?: string; state?: string } | null
 }): boolean {
+  // Terminal status wins over stale workflow metadata. Old completed tasks can
+  // retain the last waiting step in their execution snapshot, but they no
+  // longer represent a decision the operator can take.
+  if (task.status === 'done' || task.status === 'cancelled') return false
   const wf = task.workflow
   if (wf?.currentStep && wf?.state) {
     return wf.currentStep === 'review_plan' && wf.state === 'waiting'

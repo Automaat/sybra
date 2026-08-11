@@ -111,6 +111,7 @@ export function startAppLifecycle(hooks: AppLifecycleHooks): () => void {
   // whatever it held when the server went away. Refetch on the way back.
   const stopReconnect = connectionStore.onReconnect(() => {
     taskStore.load()
+    taskStore.refreshRetainedDetails()
     agentStore.load()
     projectStore.load()
     clusterStore.load()
