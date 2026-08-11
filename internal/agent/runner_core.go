@@ -83,6 +83,7 @@ type sandboxSpec struct {
 	gitShared   []string
 	gitReadonly []string
 	sandboxHome string
+	sidecarDir  string
 	// stateDenied are paths re-locked read-only *after* the writable roots,
 	// so one run cannot change how later runs behave. claude's state dir has
 	// to stay writable — a real run writes plugins/, sessions/, session-env/,
@@ -205,7 +206,7 @@ type sandboxSpec struct {
 // are dropped by the caller's dedupeRoots.
 func (s sandboxSpec) writeRoots() []string {
 	roots := []string{
-		s.worktree, s.sandboxHome, s.tmp, s.tmpAlias, s.sharedCache,
+		s.worktree, s.sandboxHome, s.sidecarDir, s.tmp, s.tmpAlias, s.sharedCache,
 		s.claudeState, s.codexState, s.copilotState, s.opencodeState, s.toolCache,
 		s.appSupport, s.claudeScratch,
 		s.gitAdminDir, s.gitCommonDir, s.gitWorktrees, s.gitObjectDir,

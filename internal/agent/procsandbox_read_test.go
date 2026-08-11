@@ -326,6 +326,15 @@ func TestSandboxSpecWriteRoots_CoversGitOverlay(t *testing.T) {
 	}
 }
 
+func TestSandboxSpecWriteRoots_CoversWorkflowSidecarDir(t *testing.T) {
+	t.Parallel()
+	sidecar := t.TempDir()
+	spec := sandboxSpec{sidecarDir: sidecar}
+	if !slices.Contains(spec.writeRoots(), sidecar) {
+		t.Fatalf("writeRoots() = %v, want workflow sidecar dir %q", spec.writeRoots(), sidecar)
+	}
+}
+
 func TestResolveSandboxReadRoots_KeepsSymlinkSpellingAndTarget(t *testing.T) {
 	base := t.TempDir()
 	target := filepath.Join(base, "target")

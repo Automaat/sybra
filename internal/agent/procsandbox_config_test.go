@@ -55,6 +55,7 @@ func TestPrepareRunConfig_Sandbox_OffModeSkipsResolution(t *testing.T) {
 func TestPrepareRunConfig_Sandbox_EnforceResolvesRoots(t *testing.T) {
 	sandboxDir := t.TempDir()
 	worktreeDir := t.TempDir()
+	sidecarDir := t.TempDir()
 	m, _ := newTestManager(t, ManagerConfig{
 		SandboxHome: func(string) (string, error) { return sandboxDir, nil },
 	})
@@ -63,6 +64,7 @@ func TestPrepareRunConfig_Sandbox_EnforceResolvesRoots(t *testing.T) {
 		TaskID:      "task-1",
 		Mode:        "headless",
 		Dir:         worktreeDir,
+		SidecarDir:  sidecarDir,
 		SandboxMode: "enforce",
 	})
 	if err != nil {
@@ -73,6 +75,13 @@ func TestPrepareRunConfig_Sandbox_EnforceResolvesRoots(t *testing.T) {
 	}
 	if cfg.sandbox.worktree == "" || cfg.sandbox.sandboxHome == "" || cfg.sandbox.tmp == "" || cfg.sandbox.profilePath == "" {
 		t.Fatalf("cfg.sandbox incomplete: %+v", cfg.sandbox)
+	}
+	wantSidecarDir, err := canonicalizeRoot(sidecarDir)
+	if err != nil {
+		t.Fatalf("canonicalize sidecar dir: %v", err)
+	}
+	if cfg.sandbox.sidecarDir != wantSidecarDir {
+		t.Fatalf("cfg.sandbox.sidecarDir = %q, want %q", cfg.sandbox.sidecarDir, wantSidecarDir)
 	}
 }
 

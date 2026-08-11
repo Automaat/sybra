@@ -13,6 +13,10 @@
 (allow file-write*
   (subpath (param "WORKTREE"))
   (subpath (param "SANDBOX_HOME"))
+  ;; Disposable verifier runs keep provider state in an ephemeral home, but
+  ;; workflow sidecars must survive until the host imports them. This is the
+  ;; exact per-task sidecar directory, never the operator board root.
+  (subpath (param "SIDECAR_DIR"))
   (subpath (param "TMP"))
   ;; TMP_ALIAS_PATTERN grants only Claude Code's provider-owned cwd markers
   ;; below macOS's /tmp target. Do not grant all of /private/tmp: it is shared

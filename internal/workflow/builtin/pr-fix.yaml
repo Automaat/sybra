@@ -51,11 +51,16 @@ steps:
           value: human-required
         goto: ""
       - when:
+          field: vars.step.fix.pr_fix_verdict
+          operator: equals
+          value: continue
+        goto: push_fixed_branch
+      - when:
           field: task.status
           operator: equals
           value: in-review
         goto: ""
-      - goto: verify_commits
+      - goto: push_fixed_branch
 
   # Bounded, single-shot follow-up: route_pr_fix_result redirects here only
   # when the pr-fix agent named specific non-merge test failures instead of
@@ -122,9 +127,29 @@ steps:
           value: human-required
         goto: ""
       - when:
+          field: vars.step.test_fix.pr_fix_verdict
+          operator: equals
+          value: continue
+        goto: push_fixed_branch
+      - when:
           field: task.status
           operator: equals
           value: in-review
+        goto: ""
+      - goto: push_fixed_branch
+
+  # Agents are asked to push, but their prose is not a publication proof. A
+  # successful local fix must pass through the same deterministic, fork-aware,
+  # non-force push used by PR creation and branch-conflict recovery before the
+  # task returns to review.
+  - id: push_fixed_branch
+    name: Push Fixed PR Branch
+    type: push_branch
+    next:
+      - when:
+          field: task.status
+          operator: equals
+          value: human-required
         goto: ""
       - goto: verify_commits
 
