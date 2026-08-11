@@ -91,7 +91,7 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		}
 	}
 
-	status := e.importOrAdoptSidecarStatus(taskID, spawnedStep, t, c, &defs)
+	status, result := e.importOrAdoptSidecarStatus(taskID, spawnedStep, t, c, &defs)
 
 	e.recordAgentCompletionTrace(taskID, spawnedStep, c, status)
 
@@ -101,6 +101,9 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 		Output:   c.Result,
 		AgentID:  c.AgentID,
 		Provider: c.Provider,
+	}
+	if result.Output != "" {
+		out.Output = result.Output
 	}
 	if !c.Success && c.EscalationReason == "checkpoint_failed" {
 		out.TerminalStatus = taskstatus.HumanRequired
@@ -139,20 +142,32 @@ func (e *Engine) HandleAgentComplete(taskID string, c AgentCompletion) {
 // after all plan files were saved), adopting them turns the step into a
 // completed one instead of burning a retry attempt re-doing already-finished
 // work.
-func (e *Engine) importOrAdoptSidecarStatus(taskID, spawnedStep string, t TaskInfo, c AgentCompletion, defs *completionDefinitionCache) string {
+type sidecarCompletionResult struct {
+	Output string
+}
+
+func (e *Engine) importOrAdoptSidecarStatus(taskID, spawnedStep string, t TaskInfo, c AgentCompletion, defs *completionDefinitionCache) (string, sidecarCompletionResult) {
 	if c.Success {
 		if def, ok := defs.get(); ok {
-			e.importSidecarIfConfiguredFromDef(taskID, spawnedStep, t, def)
+			if failure := e.importRequiredSidecarsForCompletion(taskID, spawnedStep, t, def); failure != nil {
+				if t.Workflow != nil {
+					t.Workflow.SetVar(watchdogReaskNoteVar, requiredImportRetryNote(*failure))
+					if err := e.tasks.SetWorkflow(taskID, t.Workflow); err != nil {
+						e.logger.Warn("workflow.import-sidecar.retry-note.persist", "task_id", taskID, "step", spawnedStep, "err", err)
+					}
+				}
+				return "failed", sidecarCompletionResult{Output: requiredImportRetryReason(*failure)}
+			}
 		} else {
 			e.logger.Info("workflow.agent-complete.bail",
 				"task_id", taskID, "agent_id", c.AgentID, "reason", "workflow-definition-unavailable", "current_step", spawnedStep)
 		}
-		return "completed"
+		return "completed", sidecarCompletionResult{}
 	}
 	if def, ok := defs.get(); ok && e.adoptSidecarsFromFailedRun(taskID, spawnedStep, t, def) {
-		return "completed"
+		return "completed", sidecarCompletionResult{}
 	}
-	return "failed"
+	return "failed", sidecarCompletionResult{}
 }
 
 func (e *Engine) handleAgentCompleteInitialBail(taskID string, t TaskInfo, c AgentCompletion) bool {

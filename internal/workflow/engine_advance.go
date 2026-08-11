@@ -101,6 +101,7 @@ func (e *Engine) AdvanceStep(taskID string, output StepOutput) error {
 		// same step ID) starts from a full budget instead of inheriting an
 		// already-exhausted counter from a prior round (#2229 stop-and-reset).
 		clearWatchdogRetryCounters(wfExec, output.StepID)
+		delete(wfExec.Variables, watchdogReaskNoteVar)
 	}
 	if output.Output != "" {
 		wfExec.SetVar("step."+output.StepID+".output", textutil.TruncateBytes(output.Output, 2000, "\n... (truncated)"))
@@ -226,6 +227,9 @@ func (e *Engine) retryFailedStepIfConfigured(taskID string, def *Definition, cur
 	e.logger.Warn("workflow.retry.exhausted", "task_id", taskID, "step", output.StepID,
 		"attempts", retries)
 	if done, bErr := e.blockRetryExhaustedTriageIfNeeded(taskID, currentStep, wfExec, output.Output); done || bErr != nil {
+		return true, bErr
+	}
+	if done, bErr := e.blockRetryExhaustedRequiredImportIfNeeded(taskID, currentStep, wfExec, output.Output, retries); done || bErr != nil {
 		return true, bErr
 	}
 	if done, bErr := e.blockRetryExhaustedPlanningIfNeeded(taskID, def, currentStep, wfExec, output.Output, retries); done || bErr != nil {
@@ -1046,5 +1050,20 @@ func (e *Engine) blockRetryExhaustedPlanningIfNeeded(taskID string, def *Definit
 	wfExec.CompletedAt = &now
 	wfExec.CurrentStep = ""
 	escalation := autonomy.NewEscalation("planning.retry_exhausted", autonomy.FailureOwnerSpecification, autonomy.ProvenanceControlPlane, reason)
+	return true, e.tasks.SetEscalationAndWorkflow(taskID, string(taskstatus.HumanRequired), reason, escalation, autonomy.OutcomeHumanRequired, wfExec)
+}
+
+func (e *Engine) blockRetryExhaustedRequiredImportIfNeeded(taskID string, step *Step, wfExec *Execution, output string, attempts int) (bool, error) {
+	failure, ok := parseRequiredImportRetryReason(output)
+	if !ok {
+		return false, nil
+	}
+	reason := requiredImportFailureReason(failure) + fmt.Sprintf(" — retry budget exhausted after %d attempt(s)", attempts)
+	now := time.Now().UTC()
+	wfExec.State = ExecFailed
+	wfExec.CompletedAt = &now
+	wfExec.CurrentStep = ""
+	delete(wfExec.Variables, watchdogReaskNoteVar)
+	escalation := autonomy.NewEscalation("required_sidecar.retry_exhausted", autonomy.FailureOwnerMachine, autonomy.ProvenanceControlPlane, reason)
 	return true, e.tasks.SetEscalationAndWorkflow(taskID, string(taskstatus.HumanRequired), reason, escalation, autonomy.OutcomeHumanRequired, wfExec)
 }

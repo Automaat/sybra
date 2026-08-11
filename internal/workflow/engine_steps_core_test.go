@@ -769,6 +769,273 @@ steps:
 	}
 }
 
+func TestHandleAgentComplete_RequiredSidecarMissingRetriesRunAgent(t *testing.T) {
+	store := newInlineTestStore(t, "sidecar-retry", `id: sidecar-retry
+name: Sidecar Retry
+trigger:
+  on: task.created
+steps:
+  - id: review
+    name: Review
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      provider: codex
+      max_retries: 2
+      prompt: "review"
+      import_sidecar:
+        from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
+        kind: code_review
+        required: true
+    next:
+      - goto: require_review
+  - id: require_review
+    name: Require Review
+    type: require_sidecar
+    config:
+      sidecar: code_review
+    next:
+      - goto: done
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: done
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+
+	worktree := t.TempDir()
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow: &Execution{
+			WorkflowID:  "sidecar-retry",
+			CurrentStep: "review",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				WorkflowVarDir: worktree,
+			},
+		},
+	})
+	setWorkflowAgentRoute(t, tasks, "t1", "agent-1", "review")
+
+	engine.HandleAgentComplete("t1", AgentCompletion{
+		AgentID:  "agent-1",
+		Provider: "codex",
+		Result:   `{"verdict":"CLEAN"}`,
+		Success:  true,
+	})
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "in-progress" {
+		t.Fatalf("Status = %q, want in-progress during retry", ti.Status)
+	}
+	if ti.CodeReview != "" {
+		t.Fatalf("CodeReview = %q, want empty until a retry writes the sidecar", ti.CodeReview)
+	}
+	if ti.Workflow == nil {
+		t.Fatal("Workflow = nil")
+	}
+	if ti.Workflow.CurrentStep != "review" || ti.Workflow.State != ExecWaiting {
+		t.Fatalf("workflow = %+v, want review/ExecWaiting for retried run_agent", ti.Workflow)
+	}
+	if got := ti.Workflow.Variables[watchdogReaskNoteVar]; !strings.Contains(got, "required code review sidecar") {
+		t.Fatalf("watchdog reask note = %q, want sidecar guidance", got)
+	}
+	if len(ti.Workflow.StepHistory) != 1 || ti.Workflow.StepHistory[0].Status != "failed" {
+		t.Fatalf("StepHistory = %+v, want one failed review attempt", ti.Workflow.StepHistory)
+	}
+	if got := len(agents.calls); got != 1 {
+		t.Fatalf("StartAgent calls = %d, want 1 retry dispatch", got)
+	}
+}
+
+func TestHandleAgentComplete_RequiredSidecarLaterAttemptCompletes(t *testing.T) {
+	store := newInlineTestStore(t, "sidecar-retry", `id: sidecar-retry
+name: Sidecar Retry
+trigger:
+  on: task.created
+steps:
+  - id: review
+    name: Review
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      provider: codex
+      max_retries: 2
+      prompt: "review"
+      import_sidecar:
+        from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
+        kind: code_review
+        required: true
+    next:
+      - goto: require_review
+  - id: require_review
+    name: Require Review
+    type: require_sidecar
+    config:
+      sidecar: code_review
+    next:
+      - goto: done
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: done
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+
+	worktree := t.TempDir()
+	reviewPath := filepath.Join(worktree, ".sybra-review-t1.md")
+	reviewBody := "Review Verdict: CLEAN\n\nNo findings.\n"
+	if err := os.WriteFile(reviewPath, []byte(reviewBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wf := &Execution{
+		WorkflowID:  "sidecar-retry",
+		CurrentStep: "review",
+		State:       ExecWaiting,
+		Variables: map[string]string{
+			WorkflowVarDir:       worktree,
+			watchdogReaskNoteVar: "stale retry guidance",
+		},
+	}
+	wf.RecordStep(StepRecord{StepID: "review", Status: "failed", StartedAt: time.Now().UTC(), EndedAt: time.Now().UTC()})
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow:  wf,
+	})
+	setWorkflowAgentRoute(t, tasks, "t1", "agent-2", "review")
+
+	engine.HandleAgentComplete("t1", AgentCompletion{
+		AgentID:  "agent-2",
+		Provider: "codex",
+		Result:   `{"verdict":"CLEAN"}`,
+		Success:  true,
+	})
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "done" {
+		t.Fatalf("Status = %q, want done", ti.Status)
+	}
+	if ti.CodeReview != reviewBody {
+		t.Fatalf("CodeReview = %q, want imported sidecar", ti.CodeReview)
+	}
+	if ti.Workflow == nil {
+		t.Fatal("Workflow = nil")
+	}
+	if got := ti.Workflow.Variables[watchdogReaskNoteVar]; got != "" {
+		t.Fatalf("watchdog reask note = %q, want cleared after success", got)
+	}
+	if len(agents.calls) != 0 {
+		t.Fatalf("StartAgent calls = %d, want no extra retry after sidecar import succeeds", len(agents.calls))
+	}
+}
+
+func TestHandleAgentComplete_RequiredSidecarExhaustionEscalatesHumanRequired(t *testing.T) {
+	store := newInlineTestStore(t, "sidecar-retry", `id: sidecar-retry
+name: Sidecar Retry
+trigger:
+  on: task.created
+steps:
+  - id: review
+    name: Review
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      provider: codex
+      max_retries: 2
+      prompt: "review"
+      import_sidecar:
+        from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
+        kind: code_review
+        required: true
+    next:
+      - goto: require_review
+  - id: require_review
+    name: Require Review
+    type: require_sidecar
+    config:
+      sidecar: code_review
+    next:
+      - goto: done
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: done
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+
+	wf := &Execution{
+		WorkflowID:  "sidecar-retry",
+		CurrentStep: "review",
+		State:       ExecWaiting,
+		Variables: map[string]string{
+			WorkflowVarDir:       t.TempDir(),
+			watchdogReaskNoteVar: "retry guidance",
+		},
+	}
+	now := time.Now().UTC()
+	wf.RecordStep(StepRecord{StepID: "review", Status: "failed", StartedAt: now, EndedAt: now})
+	wf.RecordStep(StepRecord{StepID: "review", Status: "failed", StartedAt: now, EndedAt: now})
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "headless",
+		Workflow:  wf,
+	})
+	setWorkflowAgentRoute(t, tasks, "t1", "agent-3", "review")
+
+	engine.HandleAgentComplete("t1", AgentCompletion{
+		AgentID:  "agent-3",
+		Provider: "codex",
+		Result:   `{"verdict":"CLEAN"}`,
+		Success:  true,
+	})
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "human-required" {
+		t.Fatalf("Status = %q, want human-required after retry exhaustion", ti.Status)
+	}
+	if !strings.Contains(ti.StatusReason, "required code review sidecar missing after step review") {
+		t.Fatalf("StatusReason = %q, want missing-sidecar reason", ti.StatusReason)
+	}
+	if !strings.Contains(ti.StatusReason, "retry budget exhausted after 3 attempt(s)") {
+		t.Fatalf("StatusReason = %q, want retry-exhausted suffix", ti.StatusReason)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecFailed || ti.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow = %+v, want failed terminal workflow", ti.Workflow)
+	}
+	if got := ti.Workflow.Variables[watchdogReaskNoteVar]; got != "" {
+		t.Fatalf("watchdog reask note = %q, want cleared on exhaustion", got)
+	}
+	if len(agents.calls) != 0 {
+		t.Fatalf("StartAgent calls = %d, want no further retry after exhaustion", len(agents.calls))
+	}
+}
+
 // TestHandleAgentComplete_UnverifiedSkillExhaustionAllowsFreshWorkflowStart
 // covers the human-review recovery handoff: once skill-receipt exhaustion
 // marks a task human-required, a subsequent recovery attempt must be able to

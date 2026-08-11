@@ -19,6 +19,14 @@ import (
 	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
+const requiredImportRetryReasonPrefix = "required sidecar import retryable: "
+
+type requiredImportFailure struct {
+	stepID string
+	kind   string
+	state  string
+}
+
 // importSidecarIfConfigured reads the file the agent produced (template
 // rendered from step.config.import_sidecar.from) and stores its content
 // as the configured task sidecar. Called from HandleAgentComplete on
@@ -46,7 +54,9 @@ func (e *Engine) importSidecarIfConfiguredFromDef(taskID, stepID string, info Ta
 		return
 	}
 	for _, cfg := range step.Config.sidecarImports() {
-		e.importOneSidecar(taskID, stepID, step, info, cfg)
+		if failure := e.importOneSidecar(taskID, stepID, step, info, cfg); failure != nil {
+			e.failRequiredImport(taskID, *failure)
+		}
 	}
 }
 
@@ -142,7 +152,23 @@ func (c StepConfig) sidecarImports() []ImportSidecar {
 
 var worktreeDirTemplatePattern = regexp.MustCompile(`\{\{\s*getvar\s+\.Vars\s+"` + WorkflowVarDir + `"\s*\}\}`)
 
-func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskInfo, cfg ImportSidecar) {
+func (e *Engine) importRequiredSidecarsForCompletion(taskID, stepID string, info TaskInfo, def *Definition) *requiredImportFailure {
+	if info.Workflow == nil || def == nil {
+		return nil
+	}
+	step := def.StepByID(stepID)
+	if step == nil || step.Type != StepRunAgent {
+		return nil
+	}
+	for _, cfg := range step.Config.sidecarImports() {
+		if failure := e.importOneSidecar(taskID, stepID, step, info, cfg); failure != nil {
+			return failure
+		}
+	}
+	return nil
+}
+
+func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskInfo, cfg ImportSidecar) *requiredImportFailure {
 	path, rErr := RenderTemplate(cfg.From, TemplateContext{
 		Task:     info,
 		Step:     *step,
@@ -151,7 +177,7 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 	})
 	if rErr != nil {
 		e.logger.Warn("workflow.import-sidecar.render", "task_id", taskID, "step", stepID, "err", rErr)
-		return
+		return nil
 	}
 	content, readErr := os.ReadFile(path)
 	if readErr != nil {
@@ -174,17 +200,15 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 				// Surface the empty-dir-var case distinctly so it isn't
 				// misread as "review missing" when investigating.
 				if dirVarUnresolved {
-					e.failRequiredImport(taskID, stepID, cfg.Kind, "unresolved: worktree dir variable was empty at render time")
-				} else {
-					e.failRequiredImport(taskID, stepID, cfg.Kind, "missing")
+					return &requiredImportFailure{stepID: stepID, kind: cfg.Kind, state: "unresolved: worktree dir variable was empty at render time"}
 				}
+				return &requiredImportFailure{stepID: stepID, kind: cfg.Kind, state: "missing"}
 			}
-			return
+			return nil
 		}
 	}
 	if cfg.Required && strings.TrimSpace(string(content)) == "" {
-		e.failRequiredImport(taskID, stepID, cfg.Kind, "empty")
-		return
+		return &requiredImportFailure{stepID: stepID, kind: cfg.Kind, state: "empty"}
 	}
 	// Convention: a bare "plan_draft" kind is auto-namespaced by the step
 	// ID so a single workflow can fan out to N parallel planners without
@@ -196,7 +220,7 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 	}
 	if writeErr := e.tasks.WriteSidecar(taskID, kind, string(content)); writeErr != nil {
 		e.logger.Error("workflow.import-sidecar.write", "task_id", taskID, "step", stepID, "kind", kind, "err", writeErr)
-		return
+		return nil
 	}
 	e.logger.Info("workflow.import-sidecar", "task_id", taskID, "step", stepID, "kind", kind, "path", path, "bytes", len(content))
 
@@ -216,6 +240,7 @@ func (e *Engine) importOneSidecar(taskID, stepID string, step *Step, info TaskIn
 			e.logger.Warn("artifact.record.failed", "kind", "plan_contract", "task_id", taskID, "step", stepID, "err", recErr)
 		}
 	}
+	return nil
 }
 
 // recoverSidecarFromTaskWorktree resolves the task's worktree dir from task
@@ -267,13 +292,57 @@ func (e *Engine) recoverSidecarFromTaskWorktree(taskID, stepID string, step *Ste
 	return recoveredPath, data, true
 }
 
-func (e *Engine) failRequiredImport(taskID, stepID, kind, state string) {
-	reason := fmt.Sprintf("required %s sidecar %s", strings.ReplaceAll(kind, "_", " "), state)
-	if stepID != "" {
-		reason += " after step " + stepID
+func requiredImportFailureReason(failure requiredImportFailure) string {
+	reason := fmt.Sprintf("required %s sidecar %s", strings.ReplaceAll(failure.kind, "_", " "), failure.state)
+	if failure.stepID != "" {
+		reason += " after step " + failure.stepID
 	}
+	return reason
+}
+
+func requiredImportRetryReason(failure requiredImportFailure) string {
+	return requiredImportRetryReasonPrefix + requiredImportFailureReason(failure)
+}
+
+func requiredImportRetryNote(failure requiredImportFailure) string {
+	return "Your previous run returned success before writing the required " +
+		strings.ReplaceAll(failure.kind, "_", " ") + " sidecar (" + failure.state + "). " +
+		"Before finishing this retry, write the sidecar file with non-empty content and verify it exists on disk. " +
+		"If you cannot produce it, stop and mark the task human-required with the blocker instead of claiming success."
+}
+
+func parseRequiredImportRetryReason(output string) (requiredImportFailure, bool) {
+	trimmed := strings.TrimSpace(output)
+	if !strings.HasPrefix(trimmed, requiredImportRetryReasonPrefix) {
+		return requiredImportFailure{}, false
+	}
+	body := strings.TrimPrefix(trimmed, requiredImportRetryReasonPrefix)
+	if !strings.HasPrefix(body, "required ") || !strings.Contains(body, " sidecar ") {
+		return requiredImportFailure{}, false
+	}
+	body = strings.TrimPrefix(body, "required ")
+	parts := strings.SplitN(body, " sidecar ", 2)
+	if len(parts) != 2 {
+		return requiredImportFailure{}, false
+	}
+	kind := strings.ReplaceAll(parts[0], " ", "_")
+	rest := parts[1]
+	stepID := ""
+	if before, after, ok := strings.Cut(rest, " after step "); ok {
+		rest = before
+		stepID = strings.TrimSpace(after)
+	}
+	return requiredImportFailure{
+		stepID: stepID,
+		kind:   kind,
+		state:  strings.TrimSpace(rest),
+	}, true
+}
+
+func (e *Engine) failRequiredImport(taskID string, failure requiredImportFailure) {
+	reason := requiredImportFailureReason(failure)
 	if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
-		e.logger.Error("workflow.import-sidecar.required.status", "task_id", taskID, "step", stepID, "kind", kind, "err", statusErr)
+		e.logger.Error("workflow.import-sidecar.required.status", "task_id", taskID, "step", failure.stepID, "kind", failure.kind, "err", statusErr)
 	}
 }
 
