@@ -6,6 +6,7 @@ import {
   agentPluginErrors,
 } from '../lib/events.js'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
+import { SvelteMap } from 'svelte/reactivity'
 import { taskStore } from '../stores/tasks.svelte.js'
 
 const mockTasks = taskStore.tasks as Map<string, unknown>
@@ -13,6 +14,7 @@ const mockTasks = taskStore.tasks as Map<string, unknown>
 const mockStop = vi.fn()
 const mockUpdateAgent = vi.fn()
 const mockRespondEscalation = vi.fn()
+const mockGetAgentForNode = vi.fn()
 
 type Handler = (data: unknown) => void
 const eventHandlers: Record<string, Handler> = {}
@@ -22,7 +24,7 @@ const mockEventsOn = vi.fn((channel: string, cb: Handler) => {
   return vi.fn()
 })
 
-const mockAgents = new Map()
+const mockAgents = new SvelteMap<string, any>()
 
 vi.mock('../stores/agents.svelte.js', () => ({
   agentStore: {
@@ -44,6 +46,10 @@ vi.mock('../stores/tasks.svelte.js', () => ({
 vi.mock('$lib/api', () => ({
   EventsOn: (...args: any[]) => mockEventsOn(...(args as [string, Handler])),
   RespondEscalation: (...args: unknown[]) => mockRespondEscalation(...args),
+}))
+
+vi.mock('$lib/api-cluster', () => ({
+  getAgentForNode: (...args: unknown[]) => mockGetAgentForNode(...args),
 }))
 
 vi.mock('../components/StreamOutput.svelte', () => ({ default: () => {} }))
@@ -70,6 +76,7 @@ const mockAgent = {
 describe('AgentDetail', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockGetAgentForNode.mockRejectedValue(new Error('agent detail unavailable'))
     mockAgents.clear()
     mockTasks.clear()
     for (const k of Object.keys(eventHandlers)) delete eventHandlers[k]
@@ -94,6 +101,48 @@ describe('AgentDetail', () => {
     await vi.waitFor(() => {
       expect(screen.getByRole('heading', { level: 1 })).toBeDefined()
     })
+  })
+
+  it('hydrates detail-only fields when the list snapshot is compact', async () => {
+    mockAgents.set('agent-1', { ...mockAgent, command: '' })
+    mockGetAgentForNode.mockResolvedValue({ ...mockAgent })
+    render(AgentDetail, {
+      props: { agentId: 'agent-1', onback: vi.fn(), onviewtask: vi.fn() },
+    })
+    await vi.waitFor(() => {
+      expect(mockGetAgentForNode).toHaveBeenCalledWith(undefined, 'agent-1')
+      expect(screen.getByText('claude -p test')).toBeDefined()
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(mockGetAgentForNode).toHaveBeenCalledTimes(1)
+  })
+
+  it('hydrates a remote agent through its owning node', async () => {
+    mockAgents.set('agent-1', { ...mockAgent, node: 'worker-1', command: '' })
+    mockGetAgentForNode.mockResolvedValue({ ...mockAgent, node: 'worker-1' })
+    render(AgentDetail, {
+      props: { agentId: 'agent-1', onback: vi.fn(), onviewtask: vi.fn() },
+    })
+    await vi.waitFor(() => {
+      expect(mockGetAgentForNode).toHaveBeenCalledWith('worker-1', 'agent-1')
+      expect(mockUpdateAgent).toHaveBeenCalledWith('agent-1', expect.objectContaining({ node: 'worker-1' }))
+    })
+  })
+
+  it('applies remote polling updates without repeating detail hydration', async () => {
+    mockAgents.set('agent-1', { ...mockAgent, node: 'worker-1', command: '' })
+    mockGetAgentForNode.mockResolvedValue({ ...mockAgent, node: 'worker-1' })
+    render(AgentDetail, {
+      props: { agentId: 'agent-1', onback: vi.fn(), onviewtask: vi.fn() },
+    })
+    await vi.waitFor(() => expect(screen.getByText('claude -p test')).toBeDefined())
+
+    mockAgents.set('agent-1', { ...mockAgent, node: 'worker-1', state: 'stopped', command: '' })
+    await vi.waitFor(() => {
+      expect(screen.queryByText('Stop')).toBeNull()
+      expect(screen.getByText('claude -p test')).toBeDefined()
+    })
+    expect(mockGetAgentForNode).toHaveBeenCalledTimes(1)
   })
 
   it('shows the session name as the title', async () => {

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"slices"
 	"time"
 
 	"github.com/Automaat/sybra/internal/db"
@@ -118,12 +117,7 @@ func marshalTaskDocuments(t task.Task) (doc, boardDoc []byte, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	board := t
-	board.AgentRuns = slices.Clone(t.AgentRuns)
-	for i := range board.AgentRuns {
-		board.AgentRuns[i].Prompt = ""
-		board.AgentRuns[i].Result = ""
-	}
+	board := task.BoardProjection(t)
 	boardDoc, err = task.MarshalStored(board)
 	return doc, boardDoc, err
 }

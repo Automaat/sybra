@@ -441,12 +441,21 @@ func (c *Client) StopAgent(ctx context.Context, agentID string) error {
 // ListAgents returns the agents currently live on a follower. The leader's own
 // agent manager never holds a follower's agents, so this is the only way the
 // aggregated board can see — and therefore control — a remote run.
-func (c *Client) ListAgents(ctx context.Context) ([]*agent.Agent, error) {
+func (c *Client) ListAgents(ctx context.Context) ([]agent.View, error) {
 	raw, err := c.callIdempotent(ctx, "AgentService", "ListAgents")
 	if err != nil {
 		return nil, err
 	}
-	return decode[[]*agent.Agent](raw)
+	return decode[[]agent.View](raw)
+}
+
+// GetAgent returns a complete snapshot of one follower agent.
+func (c *Client) GetAgent(ctx context.Context, agentID string) (agent.View, error) {
+	raw, err := c.callIdempotent(ctx, "AgentService", "GetAgent", agentID)
+	if err != nil {
+		return agent.View{}, err
+	}
+	return decode[agent.View](raw)
 }
 
 // GetAgentOutput reads a follower agent's headless stream buffer.

@@ -98,6 +98,7 @@ func (a *App) coreAppHTTPServices() map[string]httpapi.Service {
 			"StopAgent",
 			"ListAgents",
 			"DiscoverAgents",
+			"GetAgent",
 			"GetAgentOutput",
 			"SendMessage",
 			"RespondApproval",
@@ -109,6 +110,7 @@ func (a *App) coreAppHTTPServices() map[string]httpapi.Service {
 			"OpenWorktree",
 		).WithReadOnly(
 			"ListAgents",
+			"GetAgent",
 			"GetAgentOutput",
 			"GetConvoOutput",
 			"GetAgentRunLog",
@@ -241,6 +243,7 @@ func (a *App) coreInfraHTTPServices() map[string]httpapi.Service {
 		"ClusterService": httpapi.NewService(a.clusterSvc,
 			"GetNodes",
 			"ListNodeAgents",
+			"GetAgentOnNode",
 			"ReassignTask",
 			"GetAgentOutputOnNode",
 			"GetConvoOutputOnNode",
@@ -252,6 +255,7 @@ func (a *App) coreInfraHTTPServices() map[string]httpapi.Service {
 		).WithReadOnly(
 			"GetNodes",
 			"ListNodeAgents",
+			"GetAgentOnNode",
 			"GetAgentOutputOnNode",
 			"GetConvoOutputOnNode",
 		),

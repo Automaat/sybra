@@ -31,12 +31,22 @@ export function ApprovePlanOnNode(node: string, taskID: string): $CancellablePro
 }
 
 /**
+ * GetAgentOnNode returns a complete follower-agent snapshot. Preserve the node
+ * stamp so a hydrated detail view keeps routing controls back to its owner.
+ */
+export function GetAgentOnNode(node: string, agentID: string): $CancellablePromise<agent$0.View> {
+    return $Call.ByID(2197106385, node, agentID).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
  * GetAgentOutputOnNode reads a follower agent's headless stream buffer so the
  * board can render a remote run's output.
  */
 export function GetAgentOutputOnNode(node: string, agentID: string): $CancellablePromise<agent$0.StreamEvent[]> {
     return $Call.ByID(2160804420, node, agentID).then(($result: any) => {
-        return $$createType1($result);
+        return $$createType2($result);
     });
 }
 
@@ -46,7 +56,7 @@ export function GetAgentOutputOnNode(node: string, agentID: string): $Cancellabl
  */
 export function GetConvoOutputOnNode(node: string, agentID: string): $CancellablePromise<agent$0.ConvoEvent[]> {
     return $Call.ByID(2592187350, node, agentID).then(($result: any) => {
-        return $$createType3($result);
+        return $$createType4($result);
     });
 }
 
@@ -57,7 +67,7 @@ export function GetConvoOutputOnNode(node: string, agentID: string): $Cancellabl
  */
 export function GetNodes(): $CancellablePromise<$models.ClusterNodeDTO[]> {
     return $Call.ByID(387005392).then(($result: any) => {
-        return $$createType5($result);
+        return $$createType6($result);
     });
 }
 
@@ -69,9 +79,9 @@ export function GetNodes(): $CancellablePromise<$models.ClusterNodeDTO[]> {
  * rather than failing the whole aggregation: one offline follower must not
  * blank out the board's agent list.
  */
-export function ListNodeAgents(): $CancellablePromise<(agent$0.Agent | null)[]> {
+export function ListNodeAgents(): $CancellablePromise<agent$0.View[]> {
     return $Call.ByID(589298399).then(($result: any) => {
-        return $$createType6($result);
+        return $$createType7($result);
     });
 }
 
@@ -117,10 +127,11 @@ export function StopAgentOnNode(node: string, agentID: string): $CancellableProm
 }
 
 // Private type creation functions
-const $$createType0 = agent$0.StreamEvent.createFrom;
-const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = agent$0.ConvoEvent.createFrom;
-const $$createType3 = $Create.Array($$createType2);
-const $$createType4 = $models.ClusterNodeDTO.createFrom;
-const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = $Create.Array($Create.Any);
+const $$createType0 = agent$0.View.createFrom;
+const $$createType1 = agent$0.StreamEvent.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = agent$0.ConvoEvent.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = $models.ClusterNodeDTO.createFrom;
+const $$createType6 = $Create.Array($$createType5);
+const $$createType7 = $Create.Array($$createType0);

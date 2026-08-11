@@ -194,8 +194,9 @@ func (a *Assigner) drainTask(ctx context.Context, node string, t task.Task) {
 		a.logger.Warn("cluster.reassign.drain.unreachable", "task", t.ID, "node", node, "err", err)
 		return
 	}
-	for _, ag := range agents {
-		if ag == nil || ag.TaskID != t.ID {
+	for i := range agents {
+		ag := &agents[i]
+		if ag.TaskID != t.ID {
 			continue
 		}
 		if err := client.StopAgent(drainCtx, ag.ID); err != nil {

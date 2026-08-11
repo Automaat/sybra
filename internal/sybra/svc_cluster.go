@@ -192,12 +192,12 @@ func (s *ClusterService) relayFollowerError(node string, err error) error {
 // approve — a run executing on a follower. An unreachable node is skipped
 // rather than failing the whole aggregation: one offline follower must not
 // blank out the board's agent list.
-func (s *ClusterService) ListNodeAgents() ([]*agent.Agent, error) {
+func (s *ClusterService) ListNodeAgents() ([]agent.View, error) {
 	r := s.getRoster()
 	if r == nil {
-		return []*agent.Agent{}, nil
+		return []agent.View{}, nil
 	}
-	out := []*agent.Agent{}
+	out := []agent.View{}
 	for _, name := range r.Names() {
 		c, ok := r.Client(name)
 		if !ok || c == nil {
@@ -210,15 +210,28 @@ func (s *ClusterService) ListNodeAgents() ([]*agent.Agent, error) {
 			s.logger.Warn("cluster.list_agents.failed", "node", name, "err", err)
 			continue
 		}
-		for _, a := range agents {
-			if a == nil {
-				continue
-			}
-			a.Node = name
-			out = append(out, a)
+		for i := range agents {
+			agents[i].Node = name
 		}
+		out = append(out, agents...)
 	}
 	return out, nil
+}
+
+// GetAgentOnNode returns a complete follower-agent snapshot. Preserve the node
+// stamp so a hydrated detail view keeps routing controls back to its owner.
+func (s *ClusterService) GetAgentOnNode(node, agentID string) (agent.View, error) {
+	var view agent.View
+	err := s.withClient(node, func(ctx context.Context, c *cluster.Client) error {
+		var callErr error
+		view, callErr = c.GetAgent(ctx, agentID)
+		return callErr
+	})
+	if err != nil {
+		return agent.View{}, err
+	}
+	view.Node = node
+	return view, nil
 }
 
 // GetAgentOutputOnNode reads a follower agent's headless stream buffer so the

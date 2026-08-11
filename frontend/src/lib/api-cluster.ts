@@ -14,6 +14,10 @@ export async function listRemoteAgents(): Promise<Agent[]> {
   }
 }
 
+export function getAgentForNode(node: string | undefined, agentID: string): Promise<Agent> {
+  return node ? api.GetAgentOnNode(node, agentID) : api.GetAgent(agentID)
+}
+
 export function getAgentOutputForNode(node: string | undefined, agentID: string) {
   return node ? api.GetAgentOutputOnNode(node, agentID) : api.GetAgentOutput(agentID)
 }

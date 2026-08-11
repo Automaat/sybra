@@ -425,6 +425,16 @@ func (a *Agent) View() View {
 	return a.viewLocked(hasStdinPipe)
 }
 
+// ListView omits fields that are large and only useful after an agent is
+// opened. AgentService.GetAgent returns the complete View on demand.
+func (a *Agent) ListView() View {
+	v := a.View()
+	v.Prompt = ""
+	v.Command = ""
+	v.LogPath = ""
+	return v
+}
+
 func (a *Agent) viewLocked(hasStdinPipe bool) View {
 	return View{
 		ID:                       a.ID,

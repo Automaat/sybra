@@ -36,14 +36,32 @@ func (s *AgentService) StopAgent(agentID string) error {
 	return s.agents.StopAgent(agentID)
 }
 
-// ListAgents returns all in-memory agents (managed and external).
-func (s *AgentService) ListAgents() []*agent.Agent {
-	return s.agents.ListAgents()
+// ListAgents returns compact in-memory agent cards. Large prompts and command
+// lines are fetched only when the operator opens one agent.
+func (s *AgentService) ListAgents() []agent.View {
+	return listAgentViews(s.agents.ListAgents())
 }
 
 // DiscoverAgents scans running Claude processes and refreshes state.
-func (s *AgentService) DiscoverAgents() []*agent.Agent {
-	return s.agents.DiscoverAgents()
+func (s *AgentService) DiscoverAgents() []agent.View {
+	return listAgentViews(s.agents.DiscoverAgents())
+}
+
+func listAgentViews(agents []*agent.Agent) []agent.View {
+	views := make([]agent.View, 0, len(agents))
+	for _, ag := range agents {
+		views = append(views, ag.ListView())
+	}
+	return views
+}
+
+// GetAgent returns the complete live snapshot for the detail view.
+func (s *AgentService) GetAgent(agentID string) (agent.View, error) {
+	ag, err := s.agents.GetAgent(agentID)
+	if err != nil {
+		return agent.View{}, err
+	}
+	return ag.View(), nil
 }
 
 // GetAgentOutput returns buffered stream events for a headless agent.

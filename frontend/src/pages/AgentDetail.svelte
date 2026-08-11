@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import { ChevronLeft } from '@lucide/svelte'
   import type { Agent } from '../../bindings/github.com/Automaat/sybra/internal/agent/models.js'
   import { EventsOn, RespondEscalation } from '$lib/api'
+  import { getAgentForNode } from '$lib/api-cluster'
   import { agentStore } from '../stores/agents.svelte.js'
   import { taskStore } from '../stores/tasks.svelte.js'
   import { agentState, agentEscalation, agentError, agentPluginErrors } from '../lib/events.js'
@@ -94,30 +96,55 @@
   })
 
   $effect(() => {
+    const id = agentId
+    const cached = agentStore.agents.get(id)
+    if (!cached) return
+    const current = untrack(() => a)
+    a = {
+      ...current,
+      ...cached,
+      prompt: cached.prompt || current?.prompt,
+      command: cached.command || current?.command,
+      logPath: cached.logPath || current?.logPath,
+    } as Agent
+    pluginErrors = cached.pluginErrors ?? []
+  })
+
+  $effect(() => {
+    const id = agentId
     pluginErrors = []
-    const cached = agentStore.agents.get(agentId)
+    const cached = untrack(() => agentStore.agents.get(id))
+    a = cached
     if (cached) {
-      a = cached
       pluginErrors = cached.pluginErrors ?? []
     }
-
-    const unsubState = EventsOn(agentState(agentId), (data: Agent) => {
+    void getAgentForNode(cached?.node, id).then((data) => {
+      if (agentId !== id) return
       a = data
-      agentStore.updateAgent(agentId, data)
+      agentStore.updateAgent(id, data)
+      pluginErrors = data.pluginErrors ?? []
+    }).catch(() => { /* retained agents may expire before detail hydration */ })
+  })
+
+  $effect(() => {
+    const id = agentId
+    const unsubState = EventsOn(agentState(id), (data: Agent) => {
+      a = data
+      agentStore.updateAgent(id, data)
       pluginErrors = data.pluginErrors ?? []
     })
 
-    const unsubError = EventsOn(agentError(agentId), (data: AgentErrorEvent) => {
+    const unsubError = EventsOn(agentError(id), (data: AgentErrorEvent) => {
       agentErr = data
       errorDismissed = false
     })
 
-    const unsubEscalation = EventsOn(agentEscalation(agentId), (data: EscalationEvent) => {
+    const unsubEscalation = EventsOn(agentEscalation(id), (data: EscalationEvent) => {
       escalation = data
       escalationResponding = false
     })
 
-    const unsubPluginErrors = EventsOn(agentPluginErrors(agentId), (data: PluginErrorsEvent) => {
+    const unsubPluginErrors = EventsOn(agentPluginErrors(id), (data: PluginErrorsEvent) => {
       pluginErrors = data.errors ?? []
       pluginErrorsDismissed = false
     })

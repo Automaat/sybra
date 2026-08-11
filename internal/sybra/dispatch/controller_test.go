@@ -60,6 +60,59 @@ func TestAcquireReplayAndMutationExclusivity(t *testing.T) {
 	}
 }
 
+func TestVerifierReplayAcceptsLegacyDisposableWorktree(t *testing.T) {
+	clock := &fakeClock{t: time.Now().UTC()}
+	c := newTestController(t, clock, "epoch", Limits{})
+	legacy := intent("verifier", "task", filepath.Join(t.TempDir(), "verification", "runs", "old", "source"), providerid.Claude, agent.AttemptAccessObserve)
+	legacy.Role = agent.RoleReview
+	first, err := c.Acquire(t.Context(), legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	replay := legacy
+	replay.Worktree = filepath.Join(t.TempDir(), "canonical")
+	got, err := c.Acquire(t.Context(), replay)
+	if err != nil || !got.Existing || got.ID != first.ID {
+		t.Fatalf("verifier replay = %+v, %v; want existing lease %+v", got, err, first)
+	}
+
+	mutating := replay
+	mutating.Access = agent.AttemptAccessMutate
+	mutating.Role = agent.RoleImplementation
+	if _, err := c.Acquire(t.Context(), mutating); !errors.Is(err, ErrIntentReplayMismatch) {
+		t.Fatalf("mutating worktree replay error = %v, want %v", err, ErrIntentReplayMismatch)
+	}
+}
+
+func TestAdoptVerifierAcceptsLegacyDisposableWorktree(t *testing.T) {
+	dir := t.TempDir()
+	clock := &fakeClock{t: time.Now().UTC()}
+	original, err := New(t.Context(), Options{Dir: dir, Owner: "old", TTL: time.Minute, Now: clock.now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := intent("verifier", "task", filepath.Join(t.TempDir(), "verification", "runs", "old", "source"), providerid.Claude, agent.AttemptAccessObserve)
+	legacy.Role = agent.RoleTestRunner
+	lease, err := original.Acquire(t.Context(), legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := original.Bind(t.Context(), lease, agent.AttemptBinding{AgentID: "agent", ObservedAt: clock.now()}); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := New(t.Context(), Options{Dir: dir, Owner: "epoch-next", TTL: time.Minute, Now: clock.now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay := legacy
+	replay.Worktree = filepath.Join(t.TempDir(), "canonical")
+	if _, err := restarted.Adopt(t.Context(), replay, lease, agent.AttemptBinding{AgentID: "agent", ObservedAt: clock.now()}); err != nil {
+		t.Fatalf("adopt verifier replay: %v", err)
+	}
+}
+
 func TestObserversAreExplicitAndCompatible(t *testing.T) {
 	clock := &fakeClock{t: time.Now().UTC()}
 	c := newTestController(t, clock, "epoch", Limits{})
