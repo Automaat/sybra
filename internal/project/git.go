@@ -805,10 +805,15 @@ func SanitizeWorktree(ctx context.Context, wtPath string) error {
 	// on the branch rather than destroying it.
 	AutoCommitUncommitted(ctx, wtPath, "wip: auto-commit uncommitted agent work\n\nSanitizeWorktree preserved uncommitted changes before reset.")
 
-	// Discard any remaining working-tree dirt (e.g. ignored files, failed
-	// commit) so the rebase can proceed cleanly. Committed work on the branch
-	// is preserved.
-	_ = gitexec.RunQuiet(ctx, gitexec.Options{Dir: wtPath}, "reset", "--hard", "HEAD")
+	// Discard any remaining tracked dirt (for example after a failed commit) so
+	// the rebase can proceed cleanly. Do not run a no-op reset on an already
+	// clean checkout: reset appends to the worktree HEAD reflog even when HEAD
+	// stays at the same commit, which invalidates live verification leases that
+	// deliberately track ref history to detect A-B-A source movement.
+	trackedStatus, statusErr := gitexec.Output(ctx, gitexec.Options{Dir: wtPath}, "status", "--porcelain", "--untracked-files=no")
+	if operation := WorktreeOperation(ctx, wtPath); statusErr != nil || trackedStatus != "" || operation != "" {
+		_ = gitexec.RunQuiet(ctx, gitexec.Options{Dir: wtPath}, "reset", "--hard", "HEAD")
+	}
 	_ = gitexec.RunQuiet(ctx, gitexec.Options{Dir: wtPath}, "clean", "-fd")
 
 	// Delete local branches that shadow remote tracking refs.

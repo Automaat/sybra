@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Automaat/sybra/internal/artifact"
+	"github.com/Automaat/sybra/internal/project"
 )
 
 func TestConcurrentVerificationWorkspacesAreIndependent(t *testing.T) {
@@ -47,6 +48,32 @@ func TestConcurrentVerificationWorkspacesAreIndependent(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(canonical, "only-first")); !os.IsNotExist(err) {
 		t.Fatalf("write reached canonical worktree: %v", err)
+	}
+}
+
+func TestCleanCanonicalSanitizationDoesNotInvalidateConcurrentLeases(t *testing.T) {
+	canonical := initRepo(t)
+	mgr := New(filepath.Join(t.TempDir(), "verification"), nil, nil)
+	leases := make([]Lease, 3)
+	for i := range leases {
+		lease, err := mgr.Prepare(t.Context(), "task-parallel", "verify", canonical)
+		if err != nil {
+			t.Fatalf("prepare lease %d: %v", i, err)
+		}
+		leases[i] = lease
+		cleanupLease := lease
+		t.Cleanup(func() { mgr.Release(cleanupLease) })
+	}
+
+	for range 3 {
+		if err := project.SanitizeWorktree(t.Context(), canonical); err != nil {
+			t.Fatalf("sanitize clean canonical worktree: %v", err)
+		}
+	}
+	for i, lease := range leases {
+		if err := mgr.Finalize(t.Context(), lease, nil, "ok", ""); err != nil {
+			t.Fatalf("finalize lease %d after clean sanitization: %v", i, err)
+		}
 	}
 }
 
@@ -171,8 +198,15 @@ func TestFinalizeRejectsABASourceMovement(t *testing.T) {
 	git(t, canonical, "add", "source.txt")
 	git(t, canonical, "commit", "-m", "temporary movement")
 	git(t, canonical, "reset", "--hard", lease.SourceSHA)
-	if err := mgr.Finalize(t.Context(), lease, nil, "", ""); !errors.Is(err, ErrSourceMoved) {
+	err = mgr.Finalize(t.Context(), lease, nil, "", "")
+	if !errors.Is(err, ErrSourceMoved) {
 		t.Fatalf("Finalize error = %v, want ErrSourceMoved after A-B-A movement", err)
+	}
+	if err == nil {
+		t.Fatal("Finalize returned nil after A-B-A movement")
+	}
+	if !strings.Contains(err.Error(), "ref history changed while HEAD remained") {
+		t.Fatalf("Finalize error = %q, want ref-history diagnostic", err)
 	}
 }
 
