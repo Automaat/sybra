@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import { FileText, ChevronLeft } from '@lucide/svelte'
   import { renderMarkdown } from '../lib/markdown.js'
   import { taskStore } from '../stores/tasks.svelte.js'
@@ -33,7 +34,10 @@
     const id = selectedId
     if (!id) return
     const release = taskStore.retainDetail(id)
-    detailLoading = !taskStore.isDetailHydrated(id)
+    // Retention changes detailItems. Keep that reactive map out of this
+    // selection-owned effect or every successful hydration would clean up,
+    // retain again, and launch another GetTask forever.
+    detailLoading = !untrack(() => taskStore.isDetailHydrated(id))
     detailError = ''
     hasLiveAgent = false
     void commentStore.load(id)

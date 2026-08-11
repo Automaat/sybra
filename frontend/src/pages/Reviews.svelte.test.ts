@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte'
-import { SvelteSet } from 'svelte/reactivity'
+import { SvelteMap } from 'svelte/reactivity'
 
 const mockTasksNeedingPlanApproval = vi.fn()
 const mockApprovePlan = vi.fn()
@@ -12,17 +12,20 @@ const mockCommentLoad = vi.fn()
 const mockUnresolvedCount = vi.fn()
 
 const taskItemsMap = new Map<string, any>()
-const hydratedTaskIds = new SvelteSet<string>()
+const hydratedTasks = new SvelteMap<string, object>()
 
 vi.mock('../stores/tasks.svelte.js', () => ({
   taskStore: {
     get items() { return taskItemsMap },
     detail: (id: string) => taskItemsMap.get(id),
-    isDetailHydrated: (id: string) => hydratedTaskIds.has(id),
+    isDetailHydrated: (id: string) => hydratedTasks.has(id),
     retainDetail: () => () => {},
     get: async (...args: unknown[]) => {
       const result = await mockGetTask(...args)
-      hydratedTaskIds.add(String(args[0]))
+      // Match production setTask: every successful fetch writes a fresh value,
+      // even when this id was already hydrated. A selection effect that tracks
+      // this map will therefore expose itself as an unbounded fetch loop.
+      hydratedTasks.set(String(args[0]), {})
       return result
     },
     tasksNeedingPlanApproval: (...args: unknown[]) => mockTasksNeedingPlanApproval(...args),
@@ -78,7 +81,7 @@ describe('Reviews', () => {
     mockUnresolvedCount.mockReturnValue(0)
     mockTasksNeedingPlanApproval.mockReturnValue([])
     taskItemsMap.clear()
-    hydratedTaskIds.clear()
+    hydratedTasks.clear()
   })
 
   afterEach(() => {
@@ -134,6 +137,7 @@ describe('Reviews', () => {
     const titles = screen.getAllByText('Auth refactor plan')
     expect(titles.length).toBeGreaterThanOrEqual(1)
     expect(mockGetTask).toHaveBeenCalledWith('t1')
+    expect(mockGetTask).toHaveBeenCalledTimes(1)
   })
 
   it('shows Approve and Reject buttons after selecting a task', async () => {
@@ -171,7 +175,7 @@ describe('Reviews', () => {
     await fireEvent.click(screen.getByText('Reconnect plan'))
     await vi.waitFor(() => expect(screen.getByText('Unable to load the complete plan.')).toBeDefined())
 
-    hydratedTaskIds.add('t1')
+    hydratedTasks.set('t1', {})
 
     await vi.waitFor(() => expect(screen.queryByText('Unable to load the complete plan.')).toBeNull())
     expect(screen.getByText('Approve').getAttribute('disabled')).toBeNull()
