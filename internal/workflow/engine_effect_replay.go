@@ -223,5 +223,14 @@ func legacyTerminalRunMatchesCurrentStep(run AgentRunInfo, currentStepRole strin
 	if run.Role == "" || currentStepRole == "" {
 		return false
 	}
-	return run.Role == currentStepRole
+	return run.Role == currentStepRole && runRoleIsVerifier(run.Role)
+}
+
+func runRoleIsVerifier(role string) bool {
+	switch role {
+	case "review", "test-runner", "eval":
+		return true
+	default:
+		return false
+	}
 }

@@ -586,6 +586,60 @@ steps:
 			t.Fatalf("resumed role = %q, want review", got)
 		}
 	})
+
+	t.Run("legacy terminal non-verifier run without route stays replay-owned", func(t *testing.T) {
+		store := newInlineTestStore(t, "replay-implement", `
+id: replay-implement
+name: Replay Implement
+trigger:
+  on: task.created
+steps:
+  - id: implement
+    name: Implement
+    type: run_agent
+    config:
+      role: implementation
+      mode: headless
+      model: sonnet
+      prompt: "Implement {{.Task.ID}}"
+`)
+		tasks := &memTasks{tasks: map[string]*TaskInfo{
+			"t1": {
+				ID:         "t1",
+				Generation: 1,
+				Status:     "in-progress",
+				Workflow: &Execution{
+					WorkflowID:  "replay-implement",
+					CurrentStep: "implement",
+					State:       ExecWaiting,
+					EffectLog: []EffectRecord{{
+						ID:       EffectID{Generation: 1, StepSeq: 0, StepID: "implement", Pos: effectPosStepAction},
+						IntentAt: time.Now().UTC(),
+					}},
+				},
+				AgentRuns: []AgentRunInfo{{
+					AgentID:   "impl-legacy",
+					Role:      "implementation",
+					Mode:      "headless",
+					State:     "stopped",
+					Outcome:   "failure",
+					StartedAt: time.Now().Add(-10 * time.Minute),
+				}},
+			},
+		}, gets: map[string]int{}}
+		agents := newMockAgents()
+		engine := NewTestEngine(store, tasks, agents, discardLogger())
+
+		if consumed := engine.ReplayPersistedEffectsForTask("t1"); !consumed {
+			t.Fatal("ReplayPersistedEffectsForTask returned false, want replay to keep ownership for non-verifier route-less runs")
+		}
+		if len(agents.calls) != 1 {
+			t.Fatalf("StartAgent calls after effect replay = %d, want 1", len(agents.calls))
+		}
+		if got := agents.calls[0].Role; got != "implementation" {
+			t.Fatalf("replayed role = %q, want implementation", got)
+		}
+	})
 }
 
 func workflowMetricValue(t *testing.T, name string, labels []string) float64 {
