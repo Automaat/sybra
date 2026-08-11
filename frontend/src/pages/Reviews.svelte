@@ -17,11 +17,13 @@
   let feedbackRef = $state<HTMLTextAreaElement | null>(null)
   let errorMsg = $state('')
   let hasLiveAgent = $state(false)
+  let detailLoading = $state(false)
+  let detailReady = $state(false)
 
   const allReviewTasks = $derived(taskStore.tasksNeedingPlanApproval())
 
   const selectedTask = $derived(
-    selectedId ? taskStore.items.get(selectedId) ?? null : null,
+    selectedId ? taskStore.detail(selectedId) ?? null : null,
   )
 
   const renderedCritique = $derived(renderMarkdown(selectedTask?.planCritique))
@@ -29,9 +31,22 @@
   $effect(() => {
     const id = selectedId
     if (!id) return
+    const release = taskStore.retainDetail(id)
+    detailLoading = true
+    detailReady = false
     hasLiveAgent = false
     void commentStore.load(id)
     void refreshLiveAgent(id)
+    void taskStore.get(id).then(() => {
+      if (selectedId !== id) return
+      detailLoading = false
+      detailReady = true
+    }).catch((e) => {
+      if (selectedId !== id) return
+      detailLoading = false
+      errorMsg = String(e)
+    })
+    return release
   })
 
   async function refreshLiveAgent(id: string) {
@@ -51,7 +66,7 @@
   }
 
   async function approve() {
-    if (!selectedId) return
+    if (!selectedId || !detailReady) return
     actionLoading = true
     errorMsg = ''
     try {
@@ -65,7 +80,7 @@
   }
 
   async function reject() {
-    if (!selectedId) return
+    if (!selectedId || !detailReady) return
     actionLoading = true
     errorMsg = ''
     try {
@@ -80,7 +95,7 @@
   }
 
   async function sendMessage() {
-    if (!selectedId || !rejectFeedback.trim()) return
+    if (!selectedId || !detailReady || !rejectFeedback.trim()) return
     actionLoading = true
     errorMsg = ''
     try {
@@ -94,7 +109,7 @@
   }
 
   async function requestRevision(message: string) {
-    if (!selectedId) return
+    if (!selectedId || !detailReady) return
     actionLoading = true
     errorMsg = ''
     try {
@@ -108,7 +123,7 @@
   }
 
   async function sendDecisionMessage(message: string) {
-    if (!selectedId) return
+    if (!selectedId || !detailReady) return
     actionLoading = true
     errorMsg = ''
     try {
@@ -263,11 +278,16 @@
       </div>
 
       <!-- Plan content -->
+      {#if detailLoading}
+        <div class="flex flex-1 items-center justify-center text-sm text-surface-400">Loading plan…</div>
+      {:else if !detailReady}
+        <div class="flex flex-1 items-center justify-center text-sm text-error-500">Unable to load the complete plan.</div>
+      {:else}
       <div class="flex-1 overflow-y-auto px-6 py-4">
         <div class="mb-4">
           <PlanDecisionReview
             task={selectedTask}
-            disabled={actionLoading}
+            disabled={actionLoading || !detailReady}
             {hasLiveAgent}
             onrequest={requestRevision}
             onmessage={sendDecisionMessage}
@@ -292,6 +312,7 @@
           <PlanFileView taskId={selectedTask.id} planBody={selectedTask.plan || selectedTask.body} />
         </div>
       </div>
+      {/if}
 
       <!-- Approve / Reject bar -->
       <div class="sticky bottom-0 border-t border-surface-300 bg-surface-50 px-3 pt-3 pb-safe dark:border-surface-700 dark:bg-surface-900 md:px-6 md:py-4">
@@ -305,25 +326,26 @@
             rows="2"
             placeholder="Rejection feedback (optional)..."
             bind:value={rejectFeedback}
+            disabled={!detailReady}
           ></textarea>
           <div class="grid grid-cols-2 gap-2 md:flex md:shrink-0 md:flex-col">
             <button
               type="button"
               class="tap rounded-lg bg-success-500 px-4 py-3 text-sm font-medium text-white active:bg-success-700 disabled:opacity-50"
               onclick={approve}
-              disabled={actionLoading}
+              disabled={actionLoading || !detailReady}
             >Approve</button>
             <button
               type="button"
               class="tap rounded-lg bg-error-500 px-4 py-3 text-sm font-medium text-white active:bg-error-700 disabled:opacity-50"
               onclick={reject}
-              disabled={actionLoading}
+              disabled={actionLoading || !detailReady}
             >Reject</button>
             <button
               type="button"
               class="tap col-span-2 rounded-lg bg-primary-500 px-4 py-3 text-sm font-medium text-white active:bg-primary-700 disabled:opacity-50"
               onclick={sendMessage}
-              disabled={actionLoading || !rejectFeedback.trim() || !hasLiveAgent}
+              disabled={actionLoading || !detailReady || !rejectFeedback.trim() || !hasLiveAgent}
               title={hasLiveAgent ? 'Send message to live agent' : 'No live agent'}
             >Send Message</button>
           </div>

@@ -35,7 +35,7 @@
 
   const { taskId, onback, onviewagent, ondelete, onreviewplan, onselecttask }: Props = $props()
 
-  const t = $derived(taskStore.tasks.get(taskId) ?? null)
+  const t = $derived(taskStore.detail(taskId) ?? null)
   let error = $state('')
   // The detail body is split into tabs so a big task (plan + review + many runs)
   // is scannable instead of a single long scroll. Default is always Overview.
@@ -89,7 +89,9 @@
   }
 
   $effect(() => {
-    loadTask()
+    const release = taskStore.retainDetail(taskId)
+    void loadTask()
+    return release
   })
 
   async function loadTask() {

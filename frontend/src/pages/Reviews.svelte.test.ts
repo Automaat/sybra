@@ -6,6 +6,7 @@ const mockApprovePlan = vi.fn()
 const mockRejectPlan = vi.fn()
 const mockSendPlanMessage = vi.fn()
 const mockHasLivePlanAgent = vi.fn()
+const mockGetTask = vi.fn()
 const mockCommentLoad = vi.fn()
 const mockUnresolvedCount = vi.fn()
 
@@ -14,6 +15,9 @@ const taskItemsMap = new Map<string, any>()
 vi.mock('../stores/tasks.svelte.js', () => ({
   taskStore: {
     get items() { return taskItemsMap },
+    detail: (id: string) => taskItemsMap.get(id),
+    retainDetail: () => () => {},
+    get: (...args: unknown[]) => mockGetTask(...args),
     tasksNeedingPlanApproval: (...args: unknown[]) => mockTasksNeedingPlanApproval(...args),
     approvePlan: (...args: unknown[]) => mockApprovePlan(...args),
     rejectPlan: (...args: unknown[]) => mockRejectPlan(...args),
@@ -62,6 +66,7 @@ describe('Reviews', () => {
     mockRejectPlan.mockReset()
     mockSendPlanMessage.mockReset()
     mockHasLivePlanAgent.mockResolvedValue(false)
+    mockGetTask.mockImplementation(async (id: string) => taskItemsMap.get(id))
     mockCommentLoad.mockResolvedValue(undefined)
     mockUnresolvedCount.mockReturnValue(0)
     mockTasksNeedingPlanApproval.mockReturnValue([])
@@ -120,6 +125,7 @@ describe('Reviews', () => {
     // Task title appears in the detail panel header
     const titles = screen.getAllByText('Auth refactor plan')
     expect(titles.length).toBeGreaterThanOrEqual(1)
+    expect(mockGetTask).toHaveBeenCalledWith('t1')
   })
 
   it('shows Approve and Reject buttons after selecting a task', async () => {
@@ -132,6 +138,20 @@ describe('Reviews', () => {
       expect(screen.getByText('Approve')).toBeDefined()
       expect(screen.getByText('Reject')).toBeDefined()
     })
+  })
+
+  it('keeps review actions disabled when the complete task cannot be loaded', async () => {
+    const task = makeTask({ id: 't1', title: 'Unavailable plan' })
+    mockTasksNeedingPlanApproval.mockReturnValue([task])
+    taskItemsMap.set('t1', task)
+    mockGetTask.mockRejectedValue(new Error('detail unavailable'))
+    render(Reviews)
+
+    await fireEvent.click(screen.getByText('Unavailable plan'))
+
+    await vi.waitFor(() => expect(screen.getByText('Unable to load the complete plan.')).toBeDefined())
+    expect(screen.getByText('Approve').getAttribute('disabled')).not.toBeNull()
+    expect(screen.getByText('Reject').getAttribute('disabled')).not.toBeNull()
   })
 
   it('calls approvePlan and clears selection on Approve', async () => {

@@ -63,6 +63,7 @@ describe('TaskStore', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     taskStore.tasks = new Map()
+    taskStore.detailItems = new Map()
     taskStore.error = ''
     taskStore.loading = false
   })
@@ -139,6 +140,29 @@ describe('TaskStore', () => {
       }
     })
 
+    it('does not let a compact board poll erase a retained task plan', async () => {
+      vi.useFakeTimers()
+      const release = taskStore.retainDetail('t1')
+      try {
+        const hydrated = makeTask({ id: 't1', plan: '## Complete plan', planCritique: 'CLEAN' })
+        mockGetTask.mockResolvedValue(hydrated)
+        await taskStore.get('t1')
+
+        mockListTasks.mockResolvedValue([makeTask({ id: 't1', plan: '', planCritique: '' })])
+        // Make this an initial collection load so the store's cross-test
+        // throttle timestamp cannot defer the projection fetch.
+        taskStore.tasks = new Map()
+        await taskStore.load()
+
+        expect(taskStore.tasks.get('t1')?.plan).toBe('')
+        expect(taskStore.detail('t1')?.plan).toBe('## Complete plan')
+        expect(taskStore.detail('t1')?.planCritique).toBe('CLEAN')
+      } finally {
+        release()
+        vi.useRealTimers()
+      }
+    })
+
     it('runs a trailing fetch when throttled instead of dropping the load', async () => {
       vi.useFakeTimers()
       try {
@@ -194,6 +218,21 @@ describe('TaskStore', () => {
   })
 
   describe('patchOne', () => {
+    it('updates a retained detail when a sidecar is cleared', async () => {
+      const release = taskStore.retainDetail('t1')
+      try {
+        mockGetTask.mockResolvedValueOnce(makeTask({ id: 't1', plan: 'old plan' }))
+        await taskStore.get('t1')
+        mockGetTask.mockResolvedValueOnce(makeTask({ id: 't1', plan: '' }))
+
+        await taskStore.patchOne('t1')
+
+        expect(taskStore.detail('t1')?.plan).toBe('')
+      } finally {
+        release()
+      }
+    })
+
     it('reloads the board when an edited task becomes unreadable', async () => {
       const degraded = makeTask({ id: 'unreadable:a1b2c3d4', status: 'human-required', title: 'Unreadable task file: t1.md' })
       mockGetTask.mockRejectedValue(new Error('parse task t1.md: invalid frontmatter'))

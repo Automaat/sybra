@@ -23,6 +23,8 @@ const mockGetAttachmentURL = vi.fn()
 vi.mock('../stores/tasks.svelte.js', () => ({
   taskStore: {
     tasks: mockTasksMap,
+    detail: (id: string) => mockTasksMap.get(id),
+    retainDetail: () => () => {},
     get list() {
       return [...mockTasksMap.values()]
     },
