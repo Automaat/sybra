@@ -705,7 +705,8 @@ func (r *Recovery) recoverCompletedHeadlessRun(ctx context.Context, t *task.Task
 	if r.Agents.HasRunningAgentForTask(t.ID) {
 		return false
 	}
-	if !r.reconcileBeforeAdvance(ctx, t.ID, lr.AgentID, reconcile.IntentStaleRun) {
+	legacyVerifierWithoutRoute := legacyVerifierRunWithoutRoute(t, lr, currentStepRole)
+	if !legacyVerifierWithoutRoute && !r.reconcileBeforeAdvance(ctx, t.ID, lr.AgentID, reconcile.IntentStaleRun) {
 		return true
 	}
 	success := lr.Outcome == task.RunOutcomeSuccess
@@ -794,6 +795,18 @@ func latestTrackedCurrentStepRun(t *task.Task, currentStepRole string) *task.Age
 		return run
 	}
 	return nil
+}
+
+func legacyVerifierRunWithoutRoute(t *task.Task, run *task.AgentRun, currentStepRole string) bool {
+	if t == nil || t.Workflow == nil || run == nil {
+		return false
+	}
+	if currentStepRole == "" || strings.TrimSpace(run.Role) != currentStepRole ||
+		!agent.Role(run.Role).IsVerifier() {
+		return false
+	}
+	_, tracked := t.Workflow.AgentRoute(run.AgentID)
+	return !tracked
 }
 
 func recoverySkippedForVerifyAutoFixRewind(t *task.Task, lr *task.AgentRun) bool {

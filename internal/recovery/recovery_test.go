@@ -23,8 +23,10 @@ import (
 	"github.com/Automaat/sybra/internal/blocker"
 	"github.com/Automaat/sybra/internal/logging"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/reconcile"
 	"github.com/Automaat/sybra/internal/recovery"
 	"github.com/Automaat/sybra/internal/sandbox"
+	"github.com/Automaat/sybra/internal/sybra/reconciliation"
 	"github.com/Automaat/sybra/internal/task"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
@@ -2101,6 +2103,100 @@ func TestRestartStaleRecoverCompletedHeadlessRunLegacyVerifierWithoutRoute(t *te
 		Throttle:       logging.NewErrorThrottle(),
 		WG:             &wg,
 		LogDir:         t.TempDir(),
+	}
+
+	r.RestartStaleInProgress(context.Background())
+	wg.Wait()
+
+	if len(wfStub.completions) != 1 {
+		t.Fatalf("HandleAgentComplete called %d times; want 1 for legacy verifier recovery", len(wfStub.completions))
+	}
+	if wfStub.completions[0].Success {
+		t.Fatal("HandleAgentComplete replayed legacy verifier failure as success")
+	}
+	if stub.startCalls != 0 {
+		t.Fatalf("StartAgent called %d times; want 0 while workflow recovery reconciles the legacy verifier run", stub.startCalls)
+	}
+}
+
+func TestRestartStaleRecoverCompletedHeadlessRunLegacyVerifierWithoutRouteBypassesStaleLeaseHold(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	dir := t.TempDir()
+	store, err := task.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewManager(store, nil)
+	logger := discardLogger()
+	agents := newTestAgentManager(t, ctx, func(string, any) {}, logger, t.TempDir())
+	wm := worktree.New(worktree.Config{
+		WorktreesDir: t.TempDir(),
+		Tasks:        tasks,
+		Logger:       logger,
+		AgentChecker: agents.HasRunningAgentForTask,
+	})
+
+	created, err := tasks.Create("review me", "", "headless")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := task.StatusInProgress
+	tags := []string{"review"}
+	wf := &workflow.Execution{
+		WorkflowID:  "pr-review",
+		State:       workflow.ExecWaiting,
+		CurrentStep: "review_simple",
+		StartedAt:   time.Now(),
+		EffectLog: []workflow.EffectRecord{{
+			ID:       workflow.EffectID{Generation: 1, StepSeq: 0, StepID: "review_simple", Pos: 0},
+			IntentAt: time.Now().UTC(),
+		}},
+	}
+	if _, err := tasks.Update(created.ID, task.Update{
+		Status:   &status,
+		Tags:     &tags,
+		Workflow: &wf,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tasks.AddRun(created.ID, task.AgentRun{
+		AgentID:   "review-legacy",
+		Role:      "review",
+		Mode:      "headless",
+		State:     string(agent.StateStopped),
+		Outcome:   task.RunOutcomeFailure,
+		Result:    "review failed before restart",
+		StartedAt: time.Now().Add(-10 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	stub := stubOrchestrator{}
+	wfStub := &stubWorkflowEngine{currentStepRole: "review"}
+	r := &recovery.Recovery{
+		Tasks:          tasks,
+		Agents:         agents,
+		Worktrees:      wm,
+		Orchestrator:   &stub,
+		WorkflowEngine: wfStub,
+		Reconciler:     reconciliation.New(reconciliation.Config{Tasks: tasks}),
+		Logger:         logger,
+		Throttle:       logging.NewErrorThrottle(),
+		WG:             &wg,
+		LogDir:         t.TempDir(),
+	}
+
+	plan, err := r.Reconciler.Reconcile(context.Background(), reconcile.Request{
+		TaskID: created.ID, RunID: "review-legacy", Intent: reconcile.IntentStaleRun,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Action != reconcile.ActionWait || plan.Reason != "stale or missing attempt lease" {
+		t.Fatalf("legacy verifier precondition plan = %#v", plan)
 	}
 
 	r.RestartStaleInProgress(context.Background())
