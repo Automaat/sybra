@@ -249,6 +249,8 @@ steps:
     type: require_sidecar
     config:
       sidecar: code_review
+      retry_step_var: review_verdict_source_step
+      max_retries: 2
     next:
       - when:
           field: task.status

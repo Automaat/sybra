@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/Automaat/sybra/internal/db"
@@ -59,16 +60,23 @@ func NewSQLStore(database *db.DB) (*SQLStore, error) {
 }
 
 const (
-	upsertTask = `INSERT INTO tasks (id, status, project_id, title, created_at, updated_at, deleted_at, doc)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	upsertTask = `INSERT INTO tasks (id, status, project_id, title, created_at, updated_at, deleted_at, doc, board_doc, assigned_node, closed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET
 			status = excluded.status, project_id = excluded.project_id,
 			title = excluded.title, updated_at = excluded.updated_at,
-			deleted_at = excluded.deleted_at, doc = excluded.doc`
+			deleted_at = excluded.deleted_at, doc = excluded.doc,
+			board_doc = excluded.board_doc, assigned_node = excluded.assigned_node,
+			closed_at = excluded.closed_at`
 
 	selectTask = `SELECT doc FROM tasks WHERE id = ? AND deleted_at = 0`
 
-	selectTasks = `SELECT doc FROM tasks WHERE deleted_at = 0 ORDER BY `
+	selectTasks        = `SELECT doc FROM tasks WHERE deleted_at = 0 ORDER BY `
+	selectBoardTasks   = `SELECT CASE WHEN board_doc = '' THEN doc ELSE board_doc END FROM tasks WHERE deleted_at = 0 ORDER BY `
+	selectTasksForNode = `SELECT doc FROM tasks
+		WHERE deleted_at = 0 AND (assigned_node = ? OR assigned_node = '')
+		AND (status NOT IN (?, ?) OR closed_at = 0 OR closed_at >= ?)
+		ORDER BY `
 
 	// Comments are excluded: they are not a task.Task field, so SidecarsFromTask never reinserts them, and a plain "delete every sidecar row for this task" would wipe every review comment on the very next unrelated field write.
 	deleteTaskSidecars = `DELETE FROM task_sidecars WHERE task_id = ? AND kind != ?`
@@ -93,14 +101,92 @@ const (
 
 	softDeleteTask = `UPDATE tasks SET deleted_at = ? WHERE id = ?`
 
-	restoreTask = `UPDATE tasks SET deleted_at = 0 WHERE id = ?`
+	restoreTask = `UPDATE tasks SET deleted_at = 0, board_doc = ?, assigned_node = ?, closed_at = ? WHERE id = ?`
 
 	purgeDeletedTasks = `DELETE FROM tasks WHERE deleted_at > 0 AND deleted_at < ?`
 
-	insertTaskIfAbsent = `INSERT INTO tasks (id, status, project_id, title, created_at, updated_at, deleted_at, doc)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	insertTaskIfAbsent = `INSERT INTO tasks (id, status, project_id, title, created_at, updated_at, deleted_at, doc, board_doc, assigned_node, closed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO NOTHING`
+
+	selectMissingBoardProjections = `SELECT id, doc FROM tasks WHERE deleted_at = 0 AND board_doc = '' ORDER BY id LIMIT 25`
+	backfillBoardProjection       = `UPDATE tasks SET board_doc = ?, assigned_node = ?, closed_at = ? WHERE id = ? AND board_doc = ''`
 )
+
+func marshalTaskDocuments(t task.Task) (doc, boardDoc []byte, err error) {
+	doc, err = task.MarshalStored(t)
+	if err != nil {
+		return nil, nil, err
+	}
+	board := t
+	board.AgentRuns = slices.Clone(t.AgentRuns)
+	for i := range board.AgentRuns {
+		board.AgentRuns[i].Prompt = ""
+		board.AgentRuns[i].Result = ""
+	}
+	boardDoc, err = task.MarshalStored(board)
+	return doc, boardDoc, err
+}
+
+func taskClosedAtValue(t task.Task) int64 {
+	if t.ClosedAt == nil {
+		return 0
+	}
+	return db.TimeValue(*t.ClosedAt)
+}
+
+// BackfillBoardProjections upgrades rows written before board_doc and the
+// node-filter columns existed. It pages legacy documents so transcript-heavy
+// boards do not duplicate their complete corpus in memory during startup.
+// Each conditional update is race-safe with a concurrent task write: a fresh
+// writer fills board_doc and wins permanently. Callers may safely retry after
+// cancellation; every completed row is its own checkpoint.
+func (s *SQLStore) BackfillBoardProjections(ctx context.Context) error {
+	type pending struct{ id, doc string }
+	for {
+		rows, err := s.db.QueryContext(ctx, selectMissingBoardProjections)
+		if err != nil {
+			return err
+		}
+		batch := make([]pending, 0, 25)
+		for rows.Next() {
+			var p pending
+			if err := rows.Scan(&p.id, &p.doc); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			batch = append(batch, p)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if len(batch) == 0 {
+			return nil
+		}
+		for _, p := range batch {
+			// A malformed legacy document is already invisible to List. Store a
+			// tiny non-parseable sentinel so backfill makes progress without
+			// duplicating an unbounded transcript-heavy document.
+			boardDoc, assignedNode, closedAt := "\n", "", int64(0)
+			if parsed, err := task.ParseBytes([]byte(p.doc)); err == nil {
+				_, projected, marshalErr := marshalTaskDocuments(parsed)
+				if marshalErr != nil {
+					return fmt.Errorf("marshal task %s board projection: %w", p.id, marshalErr)
+				}
+				boardDoc = string(projected)
+				assignedNode = parsed.AssignedNode
+				closedAt = taskClosedAtValue(parsed)
+			}
+			if _, err := s.db.ExecContext(ctx, s.db.Rebind(backfillBoardProjection), boardDoc, assignedNode, closedAt, p.id); err != nil {
+				return fmt.Errorf("backfill task %s: %w", p.id, err)
+			}
+		}
+	}
+}
 
 // ErrIDCollision reports that CreateBy's candidate ID is already taken. The
 // caller mints a fresh one and retries — the same shape Store.createNewTask's
@@ -118,7 +204,7 @@ func (s *SQLStore) CreateBy(ctx context.Context, t task.Task, sidecars []Sidecar
 	if t.ID == "" {
 		return task.Task{}, errors.New("task store: record has no id")
 	}
-	doc, err := task.MarshalStored(t)
+	doc, boardDoc, err := marshalTaskDocuments(t)
 	if err != nil {
 		return task.Task{}, fmt.Errorf("marshal task: %w", err)
 	}
@@ -127,7 +213,7 @@ func (s *SQLStore) CreateBy(ctx context.Context, t task.Task, sidecars []Sidecar
 	err = s.db.InTx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, s.db.Rebind(insertTaskIfAbsent),
 			t.ID, string(t.Status), t.ProjectID, t.Title,
-			db.TimeValue(t.CreatedAt), db.TimeValue(t.UpdatedAt), int64(0), string(doc))
+			db.TimeValue(t.CreatedAt), db.TimeValue(t.UpdatedAt), int64(0), string(doc), string(boardDoc), t.AssignedNode, taskClosedAtValue(t))
 		if err != nil {
 			return fmt.Errorf("write task: %w", err)
 		}
@@ -169,7 +255,7 @@ func (s *SQLStore) PutBy(ctx context.Context, t task.Task, sidecars []Sidecar, a
 	if t.ID == "" {
 		return errors.New("task store: record has no id")
 	}
-	doc, err := task.MarshalStored(t)
+	doc, boardDoc, err := marshalTaskDocuments(t)
 	if err != nil {
 		return fmt.Errorf("marshal task: %w", err)
 	}
@@ -186,7 +272,7 @@ func (s *SQLStore) PutBy(ctx context.Context, t task.Task, sidecars []Sidecar, a
 		}
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(upsertTask),
 			t.ID, string(t.Status), t.ProjectID, t.Title,
-			db.TimeValue(t.CreatedAt), db.TimeValue(t.UpdatedAt), int64(0), string(doc)); err != nil {
+			db.TimeValue(t.CreatedAt), db.TimeValue(t.UpdatedAt), int64(0), string(doc), string(boardDoc), t.AssignedNode, taskClosedAtValue(t)); err != nil {
 			return fmt.Errorf("write task: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(deleteTaskSidecars), t.ID, SidecarComments); err != nil {
@@ -266,6 +352,47 @@ func (s *SQLStore) List(ctx context.Context) ([]task.Task, error) {
 			continue
 		}
 		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate tasks: %w", err)
+	}
+	return out, nil
+}
+
+// ListBoard returns the compact document persisted for board cards. Unlike
+// List, it never transfers or parses lifetime prompt/result transcripts.
+func (s *SQLStore) ListBoard(ctx context.Context) ([]task.Task, error) {
+	return s.listDocuments(ctx, selectBoardTasks+s.db.OrderText("id"))
+}
+
+// ListForNode filters in SQL before loading full task documents, so cluster
+// reconciliation cost follows a node's active work rather than board history.
+func (s *SQLStore) ListForNode(ctx context.Context, node string, closedSince time.Time) ([]task.Task, error) {
+	query := selectTasksForNode + s.db.OrderText("id")
+	return s.listDocuments(ctx, query, node, string(task.StatusDone), string(task.StatusCancelled), db.TimeValue(closedSince))
+}
+
+func (s *SQLStore) listDocuments(ctx context.Context, query string, args ...any) ([]task.Task, error) {
+	if s == nil {
+		return nil, errors.New("task store is not configured")
+	}
+	ctx, cancel := context.WithTimeout(ctx, taskQueryTimeout)
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx, s.db.Rebind(query), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list task documents: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []task.Task
+	for rows.Next() {
+		var doc string
+		if err := rows.Scan(&doc); err != nil {
+			return nil, fmt.Errorf("scan task: %w", err)
+		}
+		t, err := task.ParseBytes([]byte(doc))
+		if err == nil {
+			out = append(out, t)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate tasks: %w", err)
@@ -353,7 +480,17 @@ func (s *SQLStore) RestoreBy(ctx context.Context, id, actor string) error {
 		if !deleted {
 			return nil
 		}
-		if _, err := tx.ExecContext(ctx, s.db.Rebind(restoreTask), id); err != nil {
+		boardDoc, assignedNode, closedAt := "\n", "", int64(0)
+		if parsed, parseErr := task.ParseBytes([]byte(doc)); parseErr == nil {
+			_, projected, marshalErr := marshalTaskDocuments(parsed)
+			if marshalErr != nil {
+				return fmt.Errorf("marshal restored task board projection: %w", marshalErr)
+			}
+			boardDoc = string(projected)
+			assignedNode = parsed.AssignedNode
+			closedAt = taskClosedAtValue(parsed)
+		}
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(restoreTask), boardDoc, assignedNode, closedAt, id); err != nil {
 			return fmt.Errorf("restore task: %w", err)
 		}
 		return appendHistoryTx(ctx, s.db, tx, HistoryEntry{TaskID: id, Actor: actor, Kind: ChangeRestored, Snapshot: doc})
@@ -417,13 +554,13 @@ func (s *SQLStore) PutFnBy(ctx context.Context, id, actor string, fn func(cur ta
 		}
 		next.ID = id
 
-		nextDoc, err := task.MarshalStored(next)
+		nextDoc, boardDoc, err := marshalTaskDocuments(next)
 		if err != nil {
 			return fmt.Errorf("marshal task: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(upsertTask),
 			next.ID, string(next.Status), next.ProjectID, next.Title,
-			db.TimeValue(next.CreatedAt), db.TimeValue(next.UpdatedAt), int64(0), string(nextDoc)); err != nil {
+			db.TimeValue(next.CreatedAt), db.TimeValue(next.UpdatedAt), int64(0), string(nextDoc), string(boardDoc), next.AssignedNode, taskClosedAtValue(next)); err != nil {
 			return fmt.Errorf("write task: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(deleteTaskSidecars), next.ID, SidecarComments); err != nil {

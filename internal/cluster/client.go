@@ -384,7 +384,17 @@ func (c *Client) GetTask(ctx context.Context, id string) (task.Task, error) {
 	if err != nil {
 		return task.Task{}, err
 	}
-	return decode[task.Task](raw)
+	t, err := decode[task.Task](raw)
+	if err != nil {
+		return task.Task{}, err
+	}
+	if err := task.ValidateID(t.ID); err != nil {
+		return task.Task{}, fmt.Errorf("cluster: node %q returned invalid task for %q: %w", c.node.Name, id, err)
+	}
+	if t.ID != id {
+		return task.Task{}, fmt.Errorf("cluster: node %q returned task %q for requested task %q", c.node.Name, t.ID, id)
+	}
+	return t, nil
 }
 
 // ListTasks fetches the follower's tasks relevant to this node's mirror —
@@ -408,7 +418,18 @@ func (c *Client) ListTasks(ctx context.Context) ([]task.Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decode[[]task.Task](raw)
+	tasks, err := decode[[]task.Task](raw)
+	if err != nil {
+		return nil, err
+	}
+	for i := range tasks {
+		if err := task.ValidateID(tasks[i].ID); err != nil {
+			// Refuse the whole snapshot. Treating a partial list as authoritative
+			// would make reconcileMissing infer that valid omitted tasks vanished.
+			return nil, fmt.Errorf("cluster: node %q returned invalid task at index %d: %w", c.node.Name, i, err)
+		}
+	}
+	return tasks, nil
 }
 
 // StopAgent proxies a stop request for a running agent to the follower.
@@ -480,8 +501,8 @@ func (c *Client) RejectPlan(ctx context.Context, id, feedback string) (task.Task
 
 func decode[T any](raw json.RawMessage) (T, error) {
 	var v T
-	if len(raw) == 0 {
-		return v, nil
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return v, errors.New("cluster: empty response body")
 	}
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return v, fmt.Errorf("cluster: decode response: %w", err)

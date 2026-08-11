@@ -703,6 +703,20 @@ export class StepConfig {
     "allowMissing": boolean;
 
     /**
+     * RetryStep identifies the run_agent step that produced a required sidecar.
+     * When the agent reports success without the artifact, require_sidecar
+     * rewinds there up to MaxRetries times before escalating.
+     */
+    "retryStep"?: string;
+
+    /**
+     * RetryStepVar resolves the producer step from a workflow variable when
+     * several agent steps converge on one guard (for example simple/staff
+     * review). Mutually exclusive with RetryStep.
+     */
+    "retryStepVar"?: string;
+
+    /**
      * clear_plan_artifacts: which sidecars to clear before the cycle that
      * follows. Same values as Sidecar.
      */
@@ -855,11 +869,11 @@ export class StepConfig {
         const $$createField5_0 = $$createType27;
         const $$createField7_0 = $$createType27;
         const $$createField10_0 = $$createType29;
-        const $$createField18_0 = $$createType27;
-        const $$createField19_0 = $$createType27;
-        const $$createField20_0 = $$createType31;
-        const $$createField21_0 = $$createType32;
-        const $$createField24_0 = $$createType27;
+        const $$createField20_0 = $$createType27;
+        const $$createField21_0 = $$createType27;
+        const $$createField22_0 = $$createType31;
+        const $$createField23_0 = $$createType32;
+        const $$createField26_0 = $$createType27;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("allowedTools" in $$parsedSource) {
             $$parsedSource["allowedTools"] = $$createField5_0($$parsedSource["allowedTools"]);
@@ -871,19 +885,19 @@ export class StepConfig {
             $$parsedSource["check"] = $$createField10_0($$parsedSource["check"]);
         }
         if ("clearSidecars" in $$parsedSource) {
-            $$parsedSource["clearSidecars"] = $$createField18_0($$parsedSource["clearSidecars"]);
+            $$parsedSource["clearSidecars"] = $$createField20_0($$parsedSource["clearSidecars"]);
         }
         if ("clearWorktreeGlobs" in $$parsedSource) {
-            $$parsedSource["clearWorktreeGlobs"] = $$createField19_0($$parsedSource["clearWorktreeGlobs"]);
+            $$parsedSource["clearWorktreeGlobs"] = $$createField21_0($$parsedSource["clearWorktreeGlobs"]);
         }
         if ("importSidecar" in $$parsedSource) {
-            $$parsedSource["importSidecar"] = $$createField20_0($$parsedSource["importSidecar"]);
+            $$parsedSource["importSidecar"] = $$createField22_0($$parsedSource["importSidecar"]);
         }
         if ("importSidecars" in $$parsedSource) {
-            $$parsedSource["importSidecars"] = $$createField21_0($$parsedSource["importSidecars"]);
+            $$parsedSource["importSidecars"] = $$createField23_0($$parsedSource["importSidecars"]);
         }
         if ("attemptProviders" in $$parsedSource) {
-            $$parsedSource["attemptProviders"] = $$createField24_0($$parsedSource["attemptProviders"]);
+            $$parsedSource["attemptProviders"] = $$createField26_0($$parsedSource["attemptProviders"]);
         }
         return new StepConfig($$parsedSource as Partial<StepConfig>);
     }

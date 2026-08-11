@@ -1,10 +1,13 @@
 package workflow
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 func TestPlanReject_ThenApprove(t *testing.T) {
@@ -581,6 +584,51 @@ func TestExecRequireSidecar_CodeReviewMissingFlipsHumanRequired(t *testing.T) {
 	}
 	if !strings.Contains(tasks.Reason("t1"), "code review") {
 		t.Errorf("reason = %q, want substring 'code review'", tasks.Reason("t1"))
+	}
+}
+
+func TestExecRequireSidecar_RetriesProducerBeforeHumanRequired(t *testing.T) {
+	tasks := newMemTasks()
+	wf := &Execution{WorkflowID: "test-simple", CurrentStep: "require", State: ExecRunning, Variables: map[string]string{}}
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.Planning, Workflow: wf})
+	engine := newEngineForEval(t, tasks)
+	step := newRequireSidecarStep("plan")
+	step.Config.RetryStep = "plan"
+	step.Config.MaxRetries = 2
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		current, _ := tasks.GetTask("t1")
+		current.Workflow.CurrentStep = "require"
+		current.Workflow.State = ExecRunning
+		if err := tasks.SetWorkflow("t1", current.Workflow); err != nil {
+			t.Fatal(err)
+		}
+		_, err := engine.execRequireSidecarWithExec("t1", step, current.Workflow, current)
+		if !errors.Is(err, errStepParked) {
+			t.Fatalf("attempt %d err = %v, want errStepParked", attempt, err)
+		}
+		got, _ := tasks.GetTask("t1")
+		if got.Status == taskstatus.HumanRequired || got.Workflow.CurrentStep != "plan" || got.Workflow.State != ExecWaiting {
+			t.Fatalf("attempt %d task = %+v, want producer re-armed", attempt, got)
+		}
+	}
+
+	current, _ := tasks.GetTask("t1")
+	current.Workflow.CurrentStep = "require"
+	current.Workflow.State = ExecRunning
+	if err := tasks.SetWorkflow("t1", current.Workflow); err != nil {
+		t.Fatal(err)
+	}
+	out, err := engine.execRequireSidecarWithExec("t1", step, current.Workflow, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Status != "completed" {
+		t.Fatalf("exhausted output = %+v", out)
+	}
+	got, _ := tasks.GetTask("t1")
+	if got.Status != taskstatus.HumanRequired {
+		t.Fatalf("status = %q, want human-required after retry exhaustion", got.Status)
 	}
 }
 

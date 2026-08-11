@@ -2217,6 +2217,14 @@ func (a *App) openTaskPersistence(ctx context.Context) task.Persistence {
 		a.logger.Error("task.store.init", "backend", a.cfg.DatabaseBackend(), "err", err)
 		return nil
 	}
+	projectionCtx, projectionCancel := context.WithTimeout(ctx, importTimeout)
+	defer projectionCancel()
+	if err := sqlStore.BackfillBoardProjections(projectionCtx); err != nil {
+		// Core task rows remain usable through doc while every completed
+		// projection row is already checkpointed. Keep the database backend and
+		// retry the remaining legacy rows next start instead of failing startup.
+		a.logger.Error("task.board_projection.backfill", "err", err)
+	}
 	return taskdb.NewPersistence(sqlStore)
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Automaat/sybra/internal/task"
 )
@@ -41,6 +42,18 @@ func (p *Persistence) List() ([]task.Task, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), taskCallTimeout)
 	defer cancel()
 	return p.store.List(ctx)
+}
+
+func (p *Persistence) ListBoard() ([]task.Task, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), taskCallTimeout)
+	defer cancel()
+	return p.store.ListBoard(ctx)
+}
+
+func (p *Persistence) ListForNode(node string, closedSince time.Time) ([]task.Task, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), taskCallTimeout)
+	defer cancel()
+	return p.store.ListForNode(ctx, node, closedSince)
 }
 
 func (p *Persistence) PutBy(t task.Task, actor string, changed []string) (task.Task, error) {
