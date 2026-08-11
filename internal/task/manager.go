@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -249,18 +248,21 @@ func (m *Manager) List() ([]Task, error) { return m.persist.List() }
 // transcript fields in memory.
 func (m *Manager) ListBoard() ([]Task, error) {
 	if p, ok := m.persist.(interface{ ListBoard() ([]Task, error) }); ok {
-		return p.ListBoard()
+		tasks, err := p.ListBoard()
+		if err != nil {
+			return nil, err
+		}
+		for i := range tasks {
+			tasks[i] = BoardProjection(tasks[i])
+		}
+		return tasks, nil
 	}
 	tasks, err := m.persist.List()
 	if err != nil {
 		return nil, err
 	}
 	for i := range tasks {
-		tasks[i].AgentRuns = slices.Clone(tasks[i].AgentRuns)
-		for j := range tasks[i].AgentRuns {
-			tasks[i].AgentRuns[j].Prompt = ""
-			tasks[i].AgentRuns[j].Result = ""
-		}
+		tasks[i] = BoardProjection(tasks[i])
 	}
 	return tasks, nil
 }

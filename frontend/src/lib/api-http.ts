@@ -97,6 +97,7 @@ async function call<T>(service: string, method: string, ...args: unknown[]): Pro
 // AgentService
 export function DiscoverAgents(): Promise<Array<Agent>> { return call('AgentService', 'DiscoverAgents') }
 export function GetAgentDiff(arg1: string): Promise<string> { return call('AgentService', 'GetAgentDiff', arg1) }
+export function GetAgent(arg1: string): Promise<Agent> { return call('AgentService', 'GetAgent', arg1) }
 export function GetAgentOutput(arg1: string): Promise<Array<StreamEvent>> { return call('AgentService', 'GetAgentOutput', arg1) }
 export function GetAgentRunConvoLog(arg1: string, arg2: string): Promise<Array<ConvoEvent>> { return call('AgentService', 'GetAgentRunConvoLog', arg1, arg2) }
 export function GetAgentRunLog(arg1: string, arg2: string): Promise<Array<StreamEvent>> { return call('AgentService', 'GetAgentRunLog', arg1, arg2) }
@@ -269,6 +270,7 @@ export function StartWorkflow(arg1: string, arg2: string): Promise<void> { retur
 
 // ClusterService
 export function GetNodes(): Promise<Array<ClusterNodeDTO>> { return call('ClusterService', 'GetNodes') }
+export function GetAgentOnNode(arg1: string, arg2: string): Promise<Agent> { return call('ClusterService', 'GetAgentOnNode', arg1, arg2) }
 export function StopAgentOnNode(arg1: string, arg2: string): Promise<void> { return call('ClusterService', 'StopAgentOnNode', arg1, arg2) }
 export function SendMessageToNode(arg1: string, arg2: string, arg3: string): Promise<void> { return call('ClusterService', 'SendMessageToNode', arg1, arg2, arg3) }
 export function RespondApprovalOnNode(arg1: string, arg2: string, arg3: boolean): Promise<void> { return call('ClusterService', 'RespondApprovalOnNode', arg1, arg2, arg3) }

@@ -17,8 +17,17 @@ import * as agent$0 from "../agent/models.js";
 /**
  * DiscoverAgents scans running Claude processes and refreshes state.
  */
-export function DiscoverAgents(): $CancellablePromise<(agent$0.Agent | null)[]> {
+export function DiscoverAgents(): $CancellablePromise<agent$0.View[]> {
     return $Call.ByID(2190468291).then(($result: any) => {
+        return $$createType1($result);
+    });
+}
+
+/**
+ * GetAgent returns the complete live snapshot for the detail view.
+ */
+export function GetAgent(agentID: string): $CancellablePromise<agent$0.View> {
+    return $Call.ByID(3000346791, agentID).then(($result: any) => {
         return $$createType0($result);
     });
 }
@@ -38,7 +47,7 @@ export function GetAgentDiff(taskID: string): $CancellablePromise<string> {
  */
 export function GetAgentOutput(agentID: string): $CancellablePromise<agent$0.StreamEvent[]> {
     return $Call.ByID(3157016970, agentID).then(($result: any) => {
-        return $$createType2($result);
+        return $$createType3($result);
     });
 }
 
@@ -54,7 +63,7 @@ export function GetAgentOutput(agentID: string): $CancellablePromise<agent$0.Str
  */
 export function GetAgentRunConvoLog(taskID: string, agentID: string): $CancellablePromise<agent$0.ConvoEvent[]> {
     return $Call.ByID(3723387787, taskID, agentID).then(($result: any) => {
-        return $$createType4($result);
+        return $$createType5($result);
     });
 }
 
@@ -69,7 +78,7 @@ export function GetAgentRunConvoLog(taskID: string, agentID: string): $Cancellab
  */
 export function GetAgentRunLog(taskID: string, agentID: string): $CancellablePromise<agent$0.StreamEvent[]> {
     return $Call.ByID(3316322818, taskID, agentID).then(($result: any) => {
-        return $$createType2($result);
+        return $$createType3($result);
     });
 }
 
@@ -78,16 +87,17 @@ export function GetAgentRunLog(taskID: string, agentID: string): $CancellablePro
  */
 export function GetConvoOutput(agentID: string): $CancellablePromise<agent$0.ConvoEvent[]> {
     return $Call.ByID(3984332340, agentID).then(($result: any) => {
-        return $$createType4($result);
+        return $$createType5($result);
     });
 }
 
 /**
- * ListAgents returns all in-memory agents (managed and external).
+ * ListAgents returns compact in-memory agent cards. Large prompts and command
+ * lines are fetched only when the operator opens one agent.
  */
-export function ListAgents(): $CancellablePromise<(agent$0.Agent | null)[]> {
+export function ListAgents(): $CancellablePromise<agent$0.View[]> {
     return $Call.ByID(11576428).then(($result: any) => {
-        return $$createType0($result);
+        return $$createType1($result);
     });
 }
 
@@ -131,8 +141,9 @@ export function StopAgent(agentID: string): $CancellablePromise<void> {
 }
 
 // Private type creation functions
-const $$createType0 = $Create.Array($Create.Any);
-const $$createType1 = agent$0.StreamEvent.createFrom;
-const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = agent$0.ConvoEvent.createFrom;
-const $$createType4 = $Create.Array($$createType3);
+const $$createType0 = agent$0.View.createFrom;
+const $$createType1 = $Create.Array($$createType0);
+const $$createType2 = agent$0.StreamEvent.createFrom;
+const $$createType3 = $Create.Array($$createType2);
+const $$createType4 = agent$0.ConvoEvent.createFrom;
+const $$createType5 = $Create.Array($$createType4);

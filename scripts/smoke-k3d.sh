@@ -285,6 +285,13 @@ while :; do
 done
 [ "$AGENT" != "null" ] && [ -n "$AGENT" ] || fail "no agent recorded for task $TASK_ID"
 
+# ListAgents is intentionally a compact collection snapshot. Hydrate the one
+# selected agent before asserting detail-only fields such as the Job command.
+AGENT_ID=$(echo "$AGENT" | jq -r '.id')
+AGENT=$(in_pod curl -sS -X POST 'http://127.0.0.1:8080/api/AgentService/GetAgent' \
+  -H 'Authorization: Bearer poc-token' -H 'Content-Type: application/json' \
+  --data "[\"$AGENT_ID\"]")
+
 log "Asserting"
 echo "$AGENT" | jq .
 

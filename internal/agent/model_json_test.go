@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/limits"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 func TestAgentJSONKeySet(t *testing.T) {
@@ -320,6 +321,26 @@ func TestConvoEventJSONZeroValueKeySet(t *testing.T) {
 		"timestamp",
 		"type",
 	})
+}
+
+func TestAgentListViewOmitsDetailOnlyFields(t *testing.T) {
+	a := &Agent{
+		ID: "agent", TaskID: "task", State: StateRunning,
+		Prompt: "large prompt", Command: "provider --many-arguments", LogPath: "/tmp/agent.ndjson",
+		Provider: providerid.Claude, Role: RoleReview, CostUSD: 1.25,
+	}
+
+	list := a.ListView()
+	if list.Prompt != "" || list.Command != "" || list.LogPath != "" {
+		t.Fatalf("list view retained detail-only fields: %+v", list)
+	}
+	if list.ID != "agent" || list.TaskID != "task" || list.Provider != providerid.Claude || list.Role != RoleReview || list.CostUSD != 1.25 {
+		t.Fatalf("list view dropped card metadata: %+v", list)
+	}
+	full := a.View()
+	if full.Prompt == "" || full.Command == "" || full.LogPath == "" {
+		t.Fatalf("full view lost detail fields: %+v", full)
+	}
 }
 
 func assertJSONKeys(t *testing.T, value any, want []string) {

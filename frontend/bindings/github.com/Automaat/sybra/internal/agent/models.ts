@@ -121,6 +121,51 @@ export class PlanStep {
     }
 }
 
+/**
+ * Role identifies the purpose of an agent run.
+ */
+export enum Role {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    RoleTriage = "triage",
+    RolePlan = "plan",
+    RolePlanCritic = "plan-critic",
+    RoleEval = "eval",
+    RoleLoop = "loop",
+    RoleMonitor = "monitor",
+    RoleOrchestrator = "orchestrator",
+    RolePRFix = "pr-fix",
+    RoleReview = "review",
+    RoleFixReview = "fix-review",
+    RoleTestRunner = "test-runner",
+    RoleImplementation = "implementation",
+    RoleHumanReview = "human-review",
+
+    /**
+     * RoleTestFix is pr-fix's bounded follow-up: given the specific failing
+     * tests pr-fix already found (PRFixVerdictVar's sibling failing-tests
+     * var), fix only those and nothing else. Dispatched at most once per
+     * pr-fix run — see pr-fix.yaml's test_fix/route_test_fix_result steps.
+     */
+    RoleTestFix = "test-fix",
+};
+
+export enum State {
+    /**
+     * The Go zero value for the underlying type of the enum.
+     */
+    $zero = "",
+
+    StateIdle = "idle",
+    StateQueued = "queued",
+    StateRunning = "running",
+    StatePaused = "paused",
+    StateStopped = "stopped",
+};
+
 export class StreamEvent {
     "type": string;
     "content"?: string;
@@ -286,6 +331,113 @@ export class ToolUseBlock {
             $$parsedSource["input"] = $$createField2_0($$parsedSource["input"]);
         }
         return new ToolUseBlock($$parsedSource as Partial<ToolUseBlock>);
+    }
+}
+
+/**
+ * View is a point-in-time, concurrency-safe snapshot of an Agent's exported
+ * state, mirroring Agent's JSON shape field-for-field. Every path that
+ * serializes an *Agent for a consumer outside its own runner goroutine
+ * (Wails bindings, SSE/broker emit, the HTTP API shim) must serialize a View,
+ * never the live *Agent — reading Agent's fields directly races the runner,
+ * watchdog, and approval-server goroutines that mutate them under a.mu.
+ * MarshalJSON builds and encodes a View so every existing json.Marshal(agent)
+ * call site gets this for free without having to be individually rewritten.
+ */
+export class View {
+    "id": string;
+    "taskId": string;
+    "mode": string;
+    "state": State;
+    "sessionId": string;
+    "costUsd": number;
+    "inputTokens"?: number;
+    "outputTokens"?: number;
+    "cacheCreationInputTokens"?: number;
+    "cacheReadInputTokens"?: number;
+    "reasoningTokens"?: number;
+    "premiumRequests"?: number;
+    "startedAt": string;
+    "lastEventAt": string;
+    "logPath"?: string;
+    "external": boolean;
+    "pid"?: number;
+    "command"?: string;
+    "name"?: string;
+    "role"?: Role;
+    "project"?: string;
+    "provider"?: string;
+    "node"?: string;
+    "model"?: string;
+    "experimentId"?: string;
+    "variantId"?: string;
+    "assignmentUnit"?: string;
+    "assignmentKey"?: string;
+    "decisionVersion"?: number;
+    "reasoningEffort"?: string;
+    "skillExecutionMode"?: string;
+    "requestedSkill"?: string;
+    "resolvedSkillSourceHash"?: string;
+    "skillConformance"?: string;
+    "prompt"?: string;
+    "turnCount"?: number;
+    "toolCalls"?: number;
+    "subagentCallCount"?: number;
+    "maxTurns"?: number;
+    "pluginErrors"?: string[];
+    "escalationReason"?: string;
+    "errorKind"?: string;
+    "errorMsg"?: string;
+    "awaitingApproval"?: boolean;
+    "canSteer": boolean;
+    "resumable"?: boolean;
+
+    /** Creates a new View instance. */
+    constructor($$source: Partial<View> = {}) {
+        if (!("id" in $$source)) {
+            this["id"] = "";
+        }
+        if (!("taskId" in $$source)) {
+            this["taskId"] = "";
+        }
+        if (!("mode" in $$source)) {
+            this["mode"] = "";
+        }
+        if (!("state" in $$source)) {
+            this["state"] = State.$zero;
+        }
+        if (!("sessionId" in $$source)) {
+            this["sessionId"] = "";
+        }
+        if (!("costUsd" in $$source)) {
+            this["costUsd"] = 0;
+        }
+        if (!("startedAt" in $$source)) {
+            this["startedAt"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("lastEventAt" in $$source)) {
+            this["lastEventAt"] = "0001-01-01T00:00:00.000Z";
+        }
+        if (!("external" in $$source)) {
+            this["external"] = false;
+        }
+        if (!("canSteer" in $$source)) {
+            this["canSteer"] = false;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new View instance from a string or object.
+     */
+    static createFrom($$source: any = {}): View {
+        const $$createField39_0 = $$createType6;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("pluginErrors" in $$parsedSource) {
+            $$parsedSource["pluginErrors"] = $$createField39_0($$parsedSource["pluginErrors"]);
+        }
+        return new View($$parsedSource as Partial<View>);
     }
 }
 
