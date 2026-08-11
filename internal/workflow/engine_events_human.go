@@ -254,10 +254,23 @@ func (e *Engine) HandleStatusChange(taskID, newStatus string) {
 	e.logger.Info("workflow.status-advance",
 		"task_id", taskID, "step", step.ID, "status", newStatus)
 
+	status := "completed"
+	output := "status:" + newStatus
+	if failure := e.importRequiredSidecarsForCompletion(taskID, step.ID, t, &def); failure != nil {
+		if t.Workflow != nil {
+			t.Workflow.SetVar(watchdogReaskNoteVar, requiredImportRetryNote(*failure))
+			if err := e.tasks.SetWorkflow(taskID, t.Workflow); err != nil {
+				e.logger.Warn("workflow.status-advance.retry-note.persist", "task_id", taskID, "step", step.ID, "err", err)
+			}
+		}
+		status = "failed"
+		output = requiredImportRetryReason(*failure)
+	}
+
 	if err := e.AdvanceStep(taskID, StepOutput{
 		StepID: step.ID,
-		Status: "completed",
-		Output: "status:" + newStatus,
+		Status: status,
+		Output: output,
 	}); err != nil {
 		e.logger.Error("workflow.status-advance.err", "task_id", taskID, "err", err)
 	}

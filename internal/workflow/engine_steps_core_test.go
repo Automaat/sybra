@@ -1210,6 +1210,167 @@ func TestHandleStatusChange_AdvancesRunAgentWhenWaitForStatusMatches(t *testing.
 	}
 }
 
+func TestHandleStatusChange_WaitForStatusRequiredSidecarRetriesThenRecovers(t *testing.T) {
+	store := newInlineTestStore(t, "wait-status-required-sidecar", `id: wait-status-required-sidecar
+name: Wait Status Required Sidecar
+steps:
+  - id: review
+    name: Review
+    type: run_agent
+    config:
+      role: review
+      mode: interactive
+      wait_for_status: review-ready
+      max_retries: 1
+      prompt: "review"
+      import_sidecar:
+        from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
+        kind: code_review
+        required: true
+    next:
+      - goto: done
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: done
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+
+	worktree := t.TempDir()
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "interactive",
+		Workflow: &Execution{
+			WorkflowID:  "wait-status-required-sidecar",
+			CurrentStep: "review",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				WorkflowVarDir:       worktree,
+				watchdogReaskNoteVar: "stale guidance",
+			},
+		},
+	})
+
+	engine.HandleStatusChange("t1", "review-ready")
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "in-progress" {
+		t.Fatalf("Status after missing sidecar = %q, want in-progress while retrying", ti.Status)
+	}
+	if ti.Workflow == nil || ti.Workflow.CurrentStep != "review" || ti.Workflow.State != ExecWaiting {
+		t.Fatalf("workflow after retry = %+v, want waiting on same step", ti.Workflow)
+	}
+	if got := ti.Workflow.CountStep("review"); got != 1 {
+		t.Fatalf("review attempts after first miss = %d, want 1", got)
+	}
+	if got := ti.Workflow.Variables[watchdogReaskNoteVar]; !strings.Contains(got, "required code review sidecar") {
+		t.Fatalf("watchdog note = %q, want required-sidecar retry guidance", got)
+	}
+	if len(agents.calls) != 1 {
+		t.Fatalf("StartAgent calls after retry = %d, want 1", len(agents.calls))
+	}
+
+	reviewBody := "Review Verdict: CLEAN\n\nNo findings.\n"
+	reviewPath := filepath.Join(worktree, ".sybra-review-t1.md")
+	if err := os.WriteFile(reviewPath, []byte(reviewBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	engine.HandleStatusChange("t1", "review-ready")
+
+	ti, err = tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "done" {
+		t.Fatalf("Status after recovered retry = %q, want done", ti.Status)
+	}
+	if ti.CodeReview != reviewBody {
+		t.Fatalf("CodeReview = %q, want imported sidecar", ti.CodeReview)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecCompleted || ti.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow after recovered retry = %+v, want completed terminal workflow", ti.Workflow)
+	}
+	if got := ti.Workflow.Variables[watchdogReaskNoteVar]; got != "" {
+		t.Fatalf("watchdog note after recovered retry = %q, want cleared", got)
+	}
+}
+
+func TestHandleStatusChange_WaitForStatusRequiredSidecarExhaustionEscalates(t *testing.T) {
+	store := newInlineTestStore(t, "wait-status-required-sidecar", `id: wait-status-required-sidecar
+name: Wait Status Required Sidecar
+steps:
+  - id: review
+    name: Review
+    type: run_agent
+    config:
+      role: review
+      mode: interactive
+      wait_for_status: review-ready
+      max_retries: 1
+      prompt: "review"
+      import_sidecar:
+        from: '{{getvar .Vars "_dir"}}/.sybra-review-{{.Task.ID}}.md'
+        kind: code_review
+        required: true
+    next:
+      - goto: done
+  - id: done
+    name: Done
+    type: set_status
+    config:
+      status: done
+`)
+	tasks := newMemTasks()
+	agents := newMockAgents()
+	engine := NewTestEngine(store, tasks, agents, discardLogger())
+
+	tasks.Put(TaskInfo{
+		ID:        "t1",
+		Status:    "in-progress",
+		AgentMode: "interactive",
+		Workflow: &Execution{
+			WorkflowID:  "wait-status-required-sidecar",
+			CurrentStep: "review",
+			State:       ExecWaiting,
+			Variables: map[string]string{
+				WorkflowVarDir:       t.TempDir(),
+				watchdogReaskNoteVar: "retry guidance",
+			},
+		},
+	})
+
+	engine.HandleStatusChange("t1", "review-ready")
+	engine.HandleStatusChange("t1", "review-ready")
+
+	ti, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.Status != "human-required" {
+		t.Fatalf("Status = %q, want human-required after retry exhaustion", ti.Status)
+	}
+	if !strings.Contains(ti.StatusReason, "required code review sidecar missing after step review") {
+		t.Fatalf("StatusReason = %q, want missing-sidecar reason", ti.StatusReason)
+	}
+	if !strings.Contains(ti.StatusReason, "retry budget exhausted after 2 attempt(s)") {
+		t.Fatalf("StatusReason = %q, want retry exhaustion detail", ti.StatusReason)
+	}
+	if ti.Workflow == nil || ti.Workflow.State != ExecFailed || ti.Workflow.CurrentStep != "" {
+		t.Fatalf("workflow = %+v, want failed terminal workflow", ti.Workflow)
+	}
+	if got := ti.Workflow.Variables[watchdogReaskNoteVar]; got != "" {
+		t.Fatalf("watchdog note = %q, want cleared on exhaustion", got)
+	}
+}
+
 func TestHandleStatusChange_NoOp(t *testing.T) {
 	tests := []struct {
 		name      string
