@@ -197,13 +197,17 @@ func currentStepHasTerminalHeadlessRunPendingRecovery(t TaskInfo, step *Step) bo
 		return false
 	}
 	record := t.Workflow.RecordForStep(t.Workflow.CurrentStep)
+	currentStepRole := ""
+	if record == nil && step.Type == StepRunAgent {
+		currentStepRole = step.Config.Role
+	}
 	for i := len(t.AgentRuns) - 1; i >= 0; i-- {
 		run := t.AgentRuns[i]
 		if run.AgentID == "" {
 			continue
 		}
 		if stepID, ok := t.Workflow.AgentRoute(run.AgentID); !ok || stepID != t.Workflow.CurrentStep {
-			if !legacyTerminalRunMatchesCurrentStep(run, record, step) {
+			if !legacyTerminalRunMatchesCurrentStep(run, currentStepRole) {
 				continue
 			}
 		}
@@ -215,12 +219,9 @@ func currentStepHasTerminalHeadlessRunPendingRecovery(t TaskInfo, step *Step) bo
 	return false
 }
 
-func legacyTerminalRunMatchesCurrentStep(run AgentRunInfo, record *StepRecord, step *Step) bool {
-	if record != nil || step == nil || step.Type != StepRunAgent {
+func legacyTerminalRunMatchesCurrentStep(run AgentRunInfo, currentStepRole string) bool {
+	if run.Role == "" || currentStepRole == "" {
 		return false
 	}
-	if run.Role == "" || step.Config.Role == "" {
-		return false
-	}
-	return run.Role == step.Config.Role
+	return run.Role == currentStepRole
 }
