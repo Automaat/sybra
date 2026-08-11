@@ -1111,6 +1111,20 @@ func assignmentAttemptAccess(assignment workflow.AgentAssignment) agent.AttemptA
 	return ""
 }
 
+func (a *agentAdapter) directRunInputs(taskID string, role agent.Role) (task.Task, string, error) {
+	t, err := a.tasks.Get(taskID)
+	if err != nil {
+		return task.Task{}, "", err
+	}
+	// Each test runner starts an isolated real-app/cluster sandbox, so cap
+	// that load independently of the general agent concurrency limit.
+	if err := a.ensureTestRunnerCapacity(role); err != nil {
+		return task.Task{}, "", err
+	}
+	posture, err := agentorch.ResolveHeadlessPermissionMode(t, a.agentOrch.Cfg())
+	return t, posture, err
+}
+
 func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, dir string, allowedTools []string, needsWorktree, oneShot bool, outputSchema, cleanRetryRef string, assignment workflow.AgentAssignment) (agentID, startedDir, baselineRef string, err error) {
 	// "interactive" is no longer a dispatchable agent.RunConfig.Mode, but a
 	// run_agent step whose mode templates off {{.Task.AgentMode}} (e.g.
@@ -1156,23 +1170,9 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 	}
 	defer claim.Release()
 
-	t, err := a.tasks.Get(taskID)
+	t, posture, err := a.directRunInputs(taskID, r)
 	if err != nil {
 		return "", "", "", err
-	}
-
-	// Cap concurrent test-runner agents per machine — each one starts an
-	// isolated real-app/cluster sandbox, so this bounds sandbox load
-	// independently of Agent.MaxConcurrent. The benign race (two dispatches
-	// passing the check at once) is acceptable: the workflow step parks on
-	// ErrTestRunnerBusy and ResumeStalled retries when a slot frees.
-	if err := a.ensureTestRunnerCapacity(r); err != nil {
-		return "", "", "", err
-	}
-
-	posture, postureErr := agentorch.ResolveHeadlessPermissionMode(t, a.agentOrch.Cfg())
-	if postureErr != nil {
-		return "", "", "", postureErr
 	}
 
 	cfg := agent.RunConfig{
@@ -1221,6 +1221,13 @@ func (a *agentAdapter) StartAgent(taskID, role, mode, model, provider, prompt, d
 		// verifier has no need for the parallelism it buys an implementer.
 		ForkSubagent: t.ForkSubagent && r.AuthorsCode(),
 		OutputSchema: outputSchema,
+	}
+	if r.IsVerifier() && a.sandboxes != nil {
+		sidecarDir, sidecarErr := a.sandboxes.SybraHomeDir(taskID)
+		if sidecarErr != nil {
+			return "", "", "", fmt.Errorf("prepare verifier sidecar directory: %w", sidecarErr)
+		}
+		cfg.SidecarDir = sidecarDir
 	}
 	a.withExperiencePrompt(&cfg, r, t)
 

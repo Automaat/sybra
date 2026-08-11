@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 func TestBuildReadProfile_EmptyRootsKeepsBaseProfile(t *testing.T) {
@@ -173,7 +175,7 @@ func TestWrapInvocation_GrantsAppSupportRoot(t *testing.T) {
 		appSupport:  appSupport,
 	}}
 
-	_, args := wrapInvocation("codex", []string{"exec"}, cfg)
+	_, args := wrapInvocation(providerid.Codex, []string{"exec"}, cfg)
 	if len(args) < 2 {
 		t.Fatalf("wrapInvocation returned too few arguments: %v", args)
 	}
@@ -202,6 +204,24 @@ func TestSandboxProfile_ReferencesAppSupport(t *testing.T) {
 func TestSandboxProfile_ReferencesTmpAlias(t *testing.T) {
 	if !strings.Contains(string(agentSandboxProfile), `(regex (param "TMP_ALIAS_PATTERN"))`) {
 		t.Fatal("profile has no narrow TMP_ALIAS_PATTERN write rule")
+	}
+}
+
+func TestWrapInvocation_GrantsWorkflowSidecarDir(t *testing.T) {
+	const sidecarDir = "/data/tasks/task-1/sidecars"
+	cfg := &RunConfig{sandbox: sandboxSpec{mode: "enforce", sidecarDir: sidecarDir}}
+	_, args := wrapInvocation("codex", []string{"exec"}, cfg)
+	for i := range len(args) - 1 {
+		if args[i] == "-D" && args[i+1] == "SIDECAR_DIR="+sidecarDir {
+			return
+		}
+	}
+	t.Fatalf("SIDECAR_DIR grant missing from sandbox invocation: %v", args)
+}
+
+func TestSandboxProfile_ReferencesWorkflowSidecarDir(t *testing.T) {
+	if !strings.Contains(string(agentSandboxProfile), `(subpath (param "SIDECAR_DIR"))`) {
+		t.Fatal("profile has no SIDECAR_DIR write rule")
 	}
 }
 

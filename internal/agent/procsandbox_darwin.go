@@ -239,6 +239,7 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 	params := [][2]string{
 		{"WORKTREE", cfg.sandbox.worktree},
 		{"SANDBOX_HOME", home},
+		{"SIDECAR_DIR", cfg.sandbox.sidecarDir},
 		{"TMP", cfg.sandbox.tmp},
 		{"TMP_ALIAS_PATTERN", cfg.sandbox.tmpAlias},
 		{"SHARED_CACHE", cfg.sandbox.sharedCache},

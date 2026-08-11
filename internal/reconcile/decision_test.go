@@ -31,7 +31,12 @@ func TestDecideMatrix(t *testing.T) {
 		{"local ahead pushes", func(s *Snapshot) { s.Git.RemoteSHA = "old"; s.Git.Ahead = 1 }, ActionPush},
 		{"remote ahead adopts", func(s *Snapshot) { s.Git.RemoteSHA = "remote-new-sha"; s.Git.Behind = 1 }, ActionAdoptRemote},
 		{"diverged repairs", func(s *Snapshot) { s.Git.RemoteSHA = "other" }, ActionRepair},
-		{"empty equivalent repairs", func(s *Snapshot) { s.Git.TreeEquivalentToBase = true; s.Git.TaskWorkReachable = false }, ActionRepair},
+		{"successful empty equivalent advances to workflow policy", func(s *Snapshot) { s.Git.TreeEquivalentToBase = true; s.Git.TaskWorkReachable = false }, ActionAdvance},
+		{"failed empty equivalent delivers bounded workflow repair", func(s *Snapshot) {
+			s.Git.TreeEquivalentToBase = true
+			s.Git.TaskWorkReachable = false
+			s.Run.Success = false
+		}, ActionRepair},
 		{"reachable equivalent advances", func(s *Snapshot) { s.Git.TreeEquivalentToBase = true }, ActionAdvance},
 		{"mergeable no-op resumes", func(s *Snapshot) {
 			s.PR = PRState{Number: 1, State: "OPEN", Mergeable: "MERGEABLE", HeadSHA: "head"}

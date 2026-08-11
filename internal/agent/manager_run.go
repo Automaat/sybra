@@ -1105,6 +1105,14 @@ func (m *Manager) buildEnforceSpec(cfg *RunConfig, gitCtx context.Context, workt
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
 		return fmt.Errorf("agent.Run: sandbox home root: %w", err)
 	}
+	canonSidecarDir := ""
+	if strings.TrimSpace(cfg.SidecarDir) != "" {
+		canonSidecarDir, err = canonicalizeRoot(cfg.SidecarDir)
+		if err != nil {
+			m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
+			return fmt.Errorf("agent.Run: sandbox sidecar root: %w", err)
+		}
+	}
 	canonTmp, err := canonicalizeRoot(tmp)
 	if err != nil {
 		m.logger.Error("agent.sandbox.failed", "task_id", cfg.TaskID, "err", err)
@@ -1134,6 +1142,7 @@ func (m *Manager) buildEnforceSpec(cfg *RunConfig, gitCtx context.Context, workt
 		return fmt.Errorf("agent.Run: sandbox profile: %w", err)
 	}
 	cfg.sandbox = enforceSpec(canonWorktree, gitMetadata, canonSandboxHome, canonTmp, sandboxTmpAlias(canonTmp), canonSharedCache, profilePath, "", gitRoots, gitOverlay)
+	cfg.sandbox.sidecarDir = canonSidecarDir
 	if cfg.DisableVerifierControl {
 		clearProviderStateRoots(&cfg.sandbox)
 	}
@@ -1141,7 +1150,7 @@ func (m *Manager) buildEnforceSpec(cfg *RunConfig, gitCtx context.Context, workt
 		return err
 	}
 	m.logger.Info("agent.sandbox.enforce", "task_id", cfg.TaskID,
-		"worktree", canonWorktree, "sandbox_home", canonSandboxHome, "tmp", canonTmp,
+		"worktree", canonWorktree, "sandbox_home", canonSandboxHome, "sidecar_dir", canonSidecarDir, "tmp", canonTmp,
 		"tmp_alias", cfg.sandbox.tmpAlias,
 		"git_metadata", cfg.sandbox.gitMetadata,
 		"git_shared", cfg.sandbox.gitShared,

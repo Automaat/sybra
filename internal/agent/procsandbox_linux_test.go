@@ -15,6 +15,7 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 		gitMetadata:            []string{"/data/clones/repo.git/worktrees/task", "/data/clones/repo.git"},
 		gitReadonly:            []string{"/data/clones/repo.git/objects"},
 		sandboxHome:            "/data/home",
+		sidecarDir:             "/data/tasks/task-1/sidecars",
 		tmp:                    "/tmp",
 		sharedCache:            "/data/cache",
 		gitAdminDir:            "/data/clones/repo.git/worktrees/task",
@@ -53,7 +54,7 @@ func TestWrapInvocation_Linux_EnforceBindsOnlyWriteRoots(t *testing.T) {
 	}
 	for _, root := range []string{
 		"/data/wt",
-		"/data/home", "/tmp", "/data/cache",
+		"/data/home", "/data/tasks/task-1/sidecars", "/tmp", "/data/cache",
 		"/data/sybra/claude", "/data/sybra/codex", "/data/sybra/copilot", "/data/sybra/opencode", "/home/sybra/.cache",
 	} {
 		if !strings.Contains(joined, "--bind "+root+" "+root) {

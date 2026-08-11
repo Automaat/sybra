@@ -981,8 +981,24 @@ func TestBuiltinPRFix_RoutesAgentHumanRequiredBeforePRRelink(t *testing.T) {
 	if got, err := ResolveTransition(route.Next, map[string]string{"task.status": "human-required"}); err != nil || got != "" {
 		t.Fatalf("human-required route next = %q, err=%v; want end", got, err)
 	}
-	if got, err := ResolveTransition(route.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "verify_commits" {
-		t.Fatalf("default route next = %q, err=%v; want verify_commits", got, err)
+	if got, err := ResolveTransition(route.Next, map[string]string{
+		"vars.step.fix.pr_fix_verdict": "continue",
+		"task.status":                  string(taskstatus.HumanRequired),
+	}); err != nil || got != "" {
+		t.Fatalf("review-hold override route next = %q, err=%v; want end", got, err)
+	}
+	if got, err := ResolveTransition(route.Next, map[string]string{
+		"vars.step.fix.pr_fix_verdict": "continue",
+		"task.status":                  string(taskstatus.InReview),
+	}); err != nil || got != "push_fixed_branch" {
+		t.Fatalf("continue plus agent-mutated in-review route next = %q, err=%v; want push_fixed_branch", got, err)
+	}
+	if got, err := ResolveTransition(route.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "push_fixed_branch" {
+		t.Fatalf("default route next = %q, err=%v; want push_fixed_branch", got, err)
+	}
+	push := prfix.StepByID("push_fixed_branch")
+	if push == nil || push.Type != StepPushBranch {
+		t.Fatalf("push_fixed_branch = %+v, want deterministic push_branch step", push)
 	}
 }
 
@@ -1052,8 +1068,20 @@ func TestBuiltinPRFix_TestFixEligibleRoutesBeforeHumanRequired(t *testing.T) {
 	if got, err := ResolveTransition(routeTestFix.Next, map[string]string{"task.status": "human-required"}); err != nil || got != "" {
 		t.Fatalf("route_test_fix_result human-required next = %q, err=%v; want end", got, err)
 	}
-	if got, err := ResolveTransition(routeTestFix.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "verify_commits" {
-		t.Fatalf("route_test_fix_result default next = %q, err=%v; want verify_commits", got, err)
+	if got, err := ResolveTransition(routeTestFix.Next, map[string]string{
+		"vars.step.test_fix.pr_fix_verdict": "continue",
+		"task.status":                       string(taskstatus.HumanRequired),
+	}); err != nil || got != "" {
+		t.Fatalf("test-fix review-hold override next = %q, err=%v; want end", got, err)
+	}
+	if got, err := ResolveTransition(routeTestFix.Next, map[string]string{
+		"vars.step.test_fix.pr_fix_verdict": "continue",
+		"task.status":                       string(taskstatus.InReview),
+	}); err != nil || got != "push_fixed_branch" {
+		t.Fatalf("test-fix continue plus agent-mutated in-review next = %q, err=%v; want push_fixed_branch", got, err)
+	}
+	if got, err := ResolveTransition(routeTestFix.Next, map[string]string{"task.status": "in-progress"}); err != nil || got != "push_fixed_branch" {
+		t.Fatalf("route_test_fix_result default next = %q, err=%v; want push_fixed_branch", got, err)
 	}
 
 	// A pure wiring assertion can't catch a template syntax typo or a wrong

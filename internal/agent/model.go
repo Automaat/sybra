@@ -2085,6 +2085,11 @@ type RunConfig struct {
 	// EphemeralSandboxHome overrides the ordinary per-task sandbox home for a
 	// disposable local verification command. The verification lease owns it.
 	EphemeralSandboxHome string
+	// SidecarDir grants one additional task-scoped writable directory for
+	// workflow artifacts. Disposable verifier runs use an ephemeral sandbox
+	// home, while their prompts and the host-side importer intentionally share
+	// the durable per-task sidecar directory. Empty grants nothing.
+	SidecarDir string
 	// DisableVerifierControl withholds the task mutation credential from local
 	// deterministic checks, whose admission certificate has no such capability.
 	DisableVerifierControl bool

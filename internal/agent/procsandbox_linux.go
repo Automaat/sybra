@@ -87,6 +87,7 @@ func wrapInvocation(name string, args []string, cfg *RunConfig) (wrappedName str
 	roots := dedupeRoots(
 		cfg.sandbox.worktree,
 		cfg.sandbox.sandboxHome,
+		cfg.sandbox.sidecarDir,
 		cfg.sandbox.tmp,
 		cfg.sandbox.sharedCache,
 		cfg.sandbox.claudeState,

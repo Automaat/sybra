@@ -123,7 +123,15 @@ func decide(s Snapshot, plan Plan) Plan {
 		return withAction(plan, ActionRepair, "local and remote branch histories diverged")
 	}
 	if s.Git.TreeEquivalentToBase && !s.Git.TaskWorkReachable {
-		return withAction(plan, ActionRepair, "base-equivalent tree contains no reachable task work")
+		if s.Run.Success {
+			// A clean successful author run with no repository delta is not a Git
+			// conflict. Deliver it to the workflow, whose verify_commits step owns
+			// the bounded retry/escalation policy for no-commit outcomes. Treating
+			// it as repair launches branch-conflict recovery against a clean tree
+			// and loops forever for intentionally external/no-code tasks.
+			return withDelivery(plan, ActionAdvance, "successful run produced no repository changes; workflow owns no-commit policy")
+		}
+		return withDelivery(plan, ActionRepair, "terminal author run failed without preserving task work")
 	}
 	if !s.Run.Success {
 		return withDelivery(plan, ActionRepair, "terminal author run failed")
