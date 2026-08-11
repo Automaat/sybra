@@ -190,6 +190,14 @@ func (e *Engine) execRerequestReview(taskID string, step *Step, t TaskInfo) (Ste
 // Catches the codex-sandbox-blocked class of failure where the agent
 // exits cleanly without producing its expected output file.
 func (e *Engine) execRequireSidecar(taskID string, step *Step, t TaskInfo) (StepOutput, error) {
+	wfExec := t.Workflow
+	if wfExec == nil {
+		wfExec = &Execution{Variables: map[string]string{}}
+	}
+	return e.execRequireSidecarWithExec(taskID, step, wfExec, t)
+}
+
+func (e *Engine) execRequireSidecarWithExec(taskID string, step *Step, wfExec *Execution, t TaskInfo) (StepOutput, error) {
 	var content, label string
 	sk := step.Config.Sidecar
 	switch {
@@ -231,6 +239,37 @@ func (e *Engine) execRequireSidecar(taskID string, step *Step, t TaskInfo) (Step
 		if step.Config.AllowMissing {
 			e.logger.Warn("workflow.require-sidecar.missing-soft", "task_id", taskID, "sidecar", step.Config.Sidecar)
 			return StepOutput{StepID: step.ID, Status: "completed", Output: reason + " — skipped"}, nil
+		}
+		producer := step.Config.RetryStep
+		if producer == "" && step.Config.RetryStepVar != "" {
+			producer = wfExec.Variables[step.Config.RetryStepVar]
+		}
+		if producer != "" && step.Config.MaxRetries > 0 {
+			def, defErr := e.store.Get(wfExec.WorkflowID)
+			if defErr != nil {
+				return StepOutput{}, defErr
+			}
+			producerStep := def.StepByID(producer)
+			if producerStep == nil || producerStep.Type != StepRunAgent {
+				return StepOutput{}, fmt.Errorf("require_sidecar: retry producer %q is not a run_agent step", producer)
+			}
+			armed, attempt, retryErr := e.rewindRetry(taskID, wfExec, t, rewindRetryPolicy{
+				counterKey: "step." + producer + ".missing_sidecar_retry",
+				max:        step.Config.MaxRetries,
+				rewindStep: producer,
+				backoff:    func(int) time.Duration { return 10 * time.Second },
+				reason: func(attempt int) string {
+					return fmt.Sprintf("re-running %s: required %s was missing (attempt %d/%d)", producer, label, attempt, step.Config.MaxRetries)
+				},
+			})
+			if retryErr != nil {
+				return StepOutput{}, retryErr
+			}
+			if armed {
+				e.logger.Warn("workflow.require-sidecar.retry", "task_id", taskID, "sidecar", step.Config.Sidecar,
+					"producer", producer, "attempt", attempt, "max", step.Config.MaxRetries)
+				return StepOutput{}, errStepParked
+			}
 		}
 		if statusErr := e.tasks.UpdateTaskStatus(taskID, taskstatus.HumanRequired, reason); statusErr != nil {
 			e.logger.Error("workflow.require-sidecar.status", "task_id", taskID, "err", statusErr)

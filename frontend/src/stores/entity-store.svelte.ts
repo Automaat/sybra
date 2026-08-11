@@ -73,7 +73,6 @@ export class EntityStore<T extends { id: string }> {
 
   private runLoad(isInitial: boolean): Promise<void> {
     if (isInitial) this.loading = true
-    this.error = ''
     this.inFlight = (async () => {
       try {
         const result = await this.loadFn()
@@ -82,6 +81,10 @@ export class EntityStore<T extends { id: string }> {
           map.set(item.id, this.mergeLoadedItem(item, this.items.get(item.id)))
         }
         this.items = map
+        // Keep a prior refresh error visible until data has actually become
+        // fresh again. Clearing it at request start exposed stale cards for
+        // the whole duration of every doomed retry.
+        this.error = ''
       } catch (e) {
         this.error = String(e)
       } finally {

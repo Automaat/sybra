@@ -98,6 +98,22 @@ describe('TaskStore', () => {
       expect(taskStore.error).toBe('Error: connection failed')
     })
 
+    it('keeps a refresh error visible until a later load succeeds', async () => {
+      mockListTasks.mockRejectedValueOnce(new Error('timed out'))
+      await taskStore.load()
+      expect(taskStore.error).toBe('Error: timed out')
+
+      let resolveLoad!: (tasks: Task[]) => void
+      mockListTasks.mockImplementationOnce(() => new Promise<Task[]>((resolve) => { resolveLoad = resolve }))
+      const retry = taskStore.load()
+      expect(taskStore.error).toBe('Error: timed out')
+      resolveLoad([makeTask({ id: 'fresh' })])
+      await retry
+
+      expect(taskStore.error).toBe('')
+      expect(taskStore.tasks.has('fresh')).toBe(true)
+    })
+
     it('sets loading flag', async () => {
       mockListTasks.mockResolvedValue([])
 

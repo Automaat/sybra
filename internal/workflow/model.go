@@ -291,7 +291,7 @@ func init() {
 		StepVerifyCommits:        {sync: bindSyncExecTaskInfoStep((*Engine).execVerifyCommits), reducer: stepReducerDispatch},
 		StepLinkPRAndReview:      {sync: bindSyncExecTaskInfoStep((*Engine).execLinkPRAndReview), reducer: stepReducerDispatch},
 		StepEvaluate:             {sync: bindSyncExecTaskInfoStep((*Engine).execEvaluate), reducer: stepReducerDispatch},
-		StepRequireSidecar:       {sync: bindSyncTaskInfoStep((*Engine).execRequireSidecar), reducer: stepReducerDispatch},
+		StepRequireSidecar:       {sync: bindSyncExecTaskInfoStep((*Engine).execRequireSidecarWithExec), reducer: stepReducerDispatch},
 		StepClearPlanArtifacts:   {sync: bindSyncTaskInfoStep((*Engine).execClearPlanArtifacts), reducer: stepReducerDispatch},
 		StepValidatePlan:         {sync: bindSyncTaskInfoStep((*Engine).execValidatePlan), reducer: stepReducerDispatch},
 		StepValidatePlanContract: {sync: bindSyncTaskInfoStep((*Engine).execValidatePlanContract), reducer: stepReducerDispatch},
@@ -463,6 +463,14 @@ type StepConfig struct {
 	// AllowMissing turns require_sidecar into a soft gate: the step records a
 	// warning output instead of flipping the task to human-required.
 	AllowMissing bool `yaml:"allow_missing,omitempty" json:"allowMissing"`
+	// RetryStep identifies the run_agent step that produced a required sidecar.
+	// When the agent reports success without the artifact, require_sidecar
+	// rewinds there up to MaxRetries times before escalating.
+	RetryStep string `yaml:"retry_step,omitempty" json:"retryStep,omitempty"`
+	// RetryStepVar resolves the producer step from a workflow variable when
+	// several agent steps converge on one guard (for example simple/staff
+	// review). Mutually exclusive with RetryStep.
+	RetryStepVar string `yaml:"retry_step_var,omitempty" json:"retryStepVar,omitempty"`
 
 	// clear_plan_artifacts: which sidecars to clear before the cycle that
 	// follows. Same values as Sidecar.
@@ -568,6 +576,27 @@ func (d *Definition) Validate() error {
 	}
 	if err := d.ValidateFields(); err != nil {
 		return err
+	}
+	for i := range d.Steps {
+		s := &d.Steps[i]
+		if s.Type != StepRequireSidecar {
+			continue
+		}
+		if s.Config.RetryStep != "" && s.Config.RetryStepVar != "" {
+			return fmt.Errorf("step %q: retry_step and retry_step_var are mutually exclusive", s.ID)
+		}
+		if s.Config.RetryStep == "" && s.Config.RetryStepVar == "" {
+			continue
+		}
+		if s.Config.MaxRetries <= 0 {
+			return fmt.Errorf("step %q: sidecar retry requires max_retries > 0", s.ID)
+		}
+		if s.Config.RetryStep != "" {
+			producer := d.StepByID(s.Config.RetryStep)
+			if producer == nil || producer.Type != StepRunAgent {
+				return fmt.Errorf("step %q: retry_step %q must name a run_agent step", s.ID, s.Config.RetryStep)
+			}
+		}
 	}
 	return nil
 }

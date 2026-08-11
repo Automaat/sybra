@@ -158,17 +158,7 @@ const taskDiagnosticReadLimit = 256 * 1024
 // Returning that text here made every board refresh serialize the complete
 // lifetime prompt history of every task (hundreds of MiB on a mature board).
 func (s *TaskService) ListTasks() ([]task.Task, error) {
-	tasks, err := s.tasks.List()
-	if err != nil {
-		return nil, err
-	}
-	for i := range tasks {
-		for j := range tasks[i].AgentRuns {
-			tasks[i].AgentRuns[j].Prompt = ""
-			tasks[i].AgentRuns[j].Result = ""
-		}
-	}
-	return tasks, nil
+	return s.tasks.ListBoard()
 }
 
 // mirrorStaleTerminalWindow bounds how long a terminal (done/cancelled) task
@@ -193,7 +183,7 @@ const mirrorStaleTerminalWindow = 10 * time.Minute
 // name onto a task it created itself, so without this, such a task is
 // permanently invisible to the leader's mirror — see cluster.mirror.adopted.
 func (s *TaskService) ListTasksForNode(node string) ([]task.Task, error) {
-	all, err := s.tasks.List()
+	all, err := s.tasks.ListForNode(node, time.Now().Add(-mirrorStaleTerminalWindow))
 	if err != nil {
 		return nil, err
 	}

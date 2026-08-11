@@ -3,6 +3,7 @@ package taskdb
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -70,6 +71,101 @@ func TestSQLStore_TaskAndSidecarsWriteTogether(t *testing.T) {
 		}
 		if len(gotSidecars) != 1 || gotSidecars[0].Kind != SidecarPlan {
 			t.Fatalf("rewrite left %+v, want only the plan", gotSidecars)
+		}
+	})
+}
+
+func TestSQLStore_BoardProjectionOmitsRunTextAndNodeListFiltersBeforeRead(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		store, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		active := sqlTask("aaa11111", "active")
+		active.AssignedNode = "home-nas"
+		active.AgentRuns = []task.AgentRun{{AgentID: "agent-1", Mode: "headless", Prompt: "SECRET PROMPT", Result: "SECRET RESULT"}}
+		if err := store.Put(t.Context(), active, nil); err != nil {
+			t.Fatal(err)
+		}
+		other := sqlTask("bbb22222", "other node")
+		other.AssignedNode = "laptop"
+		if err := store.Put(t.Context(), other, nil); err != nil {
+			t.Fatal(err)
+		}
+		closed := sqlTask("ccc33333", "old closed")
+		closed.AssignedNode = "home-nas"
+		closed.Status = task.StatusDone
+		old := time.Now().Add(-time.Hour)
+		closed.ClosedAt = &old
+		if err := store.Put(t.Context(), closed, nil); err != nil {
+			t.Fatal(err)
+		}
+
+		board, err := store.ListBoard(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(board) != 3 || board[0].AgentRuns[0].Prompt != "" || board[0].AgentRuns[0].Result != "" {
+			t.Fatalf("board projection retained heavy run text: %+v", board)
+		}
+		var boardDoc string
+		if err := d.QueryRowContext(t.Context(), `SELECT board_doc FROM tasks WHERE id = 'aaa11111'`).Scan(&boardDoc); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(boardDoc, "SECRET") {
+			t.Fatalf("persisted board projection contains transcript text: %q", boardDoc)
+		}
+
+		forNode, err := store.ListForNode(t.Context(), "home-nas", time.Now().Add(-10*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(forNode) != 1 || forNode[0].ID != active.ID || forNode[0].AgentRuns[0].Prompt != "SECRET PROMPT" {
+			t.Fatalf("ListForNode = %+v, want only full active home-nas task", forNode)
+		}
+	})
+}
+
+func TestSQLStore_BackfillsLegacyBoardProjection(t *testing.T) {
+	dbtest.Engines(t, func(t *testing.T, d *db.DB) {
+		t.Helper()
+		for i := range 26 { // Cross the 25-row backfill page boundary.
+			legacy := sqlTask(fmt.Sprintf("%08x", i+1), "legacy")
+			legacy.AssignedNode = "home-nas"
+			legacy.AgentRuns = []task.AgentRun{{AgentID: "agent-1", Mode: "headless", Prompt: "OLD SECRET"}}
+			doc, err := task.MarshalStored(legacy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = d.ExecContext(t.Context(), d.Rebind(`INSERT INTO tasks
+				(id, status, project_id, title, created_at, updated_at, deleted_at, doc)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), legacy.ID, string(legacy.Status), legacy.ProjectID,
+				legacy.Title, db.TimeValue(legacy.CreatedAt), db.TimeValue(legacy.UpdatedAt), int64(0), string(doc))
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		store, err := NewSQLStore(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.BackfillBoardProjections(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		board, err := store.ListBoard(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(board) != 26 || board[0].AgentRuns[0].Prompt != "" || board[25].AgentRuns[0].Prompt != "" {
+			t.Fatalf("backfilled board projection = %+v", board)
+		}
+		var boardDoc, assignedNode string
+		if err := d.QueryRowContext(t.Context(), `SELECT board_doc, assigned_node FROM tasks WHERE id = '0000001a'`).Scan(&boardDoc, &assignedNode); err != nil {
+			t.Fatal(err)
+		}
+		if boardDoc == "" || strings.Contains(boardDoc, "OLD SECRET") || assignedNode != "home-nas" {
+			t.Fatalf("board_doc=%q assigned_node=%q", boardDoc, assignedNode)
 		}
 	})
 }

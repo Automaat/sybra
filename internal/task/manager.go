@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/fsutil"
@@ -241,6 +243,37 @@ func (m *Manager) lock(id string) func() {
 
 // List returns all tasks (lock-free).
 func (m *Manager) List() ([]Task, error) { return m.persist.List() }
+
+// ListBoard uses a persistence-native compact projection when available.
+// File persistence falls back to its cached list and strips the same heavy
+// transcript fields in memory.
+func (m *Manager) ListBoard() ([]Task, error) {
+	if p, ok := m.persist.(interface{ ListBoard() ([]Task, error) }); ok {
+		return p.ListBoard()
+	}
+	tasks, err := m.persist.List()
+	if err != nil {
+		return nil, err
+	}
+	for i := range tasks {
+		tasks[i].AgentRuns = slices.Clone(tasks[i].AgentRuns)
+		for j := range tasks[i].AgentRuns {
+			tasks[i].AgentRuns[j].Prompt = ""
+			tasks[i].AgentRuns[j].Result = ""
+		}
+	}
+	return tasks, nil
+}
+
+// ListForNode lets database persistence filter before loading full documents.
+func (m *Manager) ListForNode(node string, closedSince time.Time) ([]Task, error) {
+	if p, ok := m.persist.(interface {
+		ListForNode(string, time.Time) ([]Task, error)
+	}); ok {
+		return p.ListForNode(node, closedSince)
+	}
+	return m.persist.List()
+}
 
 // Get returns a single task by ID (lock-free).
 func (m *Manager) Get(id string) (Task, error) { return m.persist.Get(id) }
