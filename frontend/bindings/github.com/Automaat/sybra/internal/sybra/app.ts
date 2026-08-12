@@ -29,6 +29,9 @@ import * as notification$0 from "../notification/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as application$0 from "../../../../wailsapp/wails/v3/pkg/application/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as http$0 from "../../../../../net/http/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -227,6 +230,15 @@ export function V3Services(): $CancellablePromise<application$0.Service[]> {
     return $Call.ByID(1114222916).then(($result: any) => {
         return $$createType12($result);
     });
+}
+
+/**
+ * WorkerControlHandler exposes the durable worker transport after database
+ * initialization. File-backend boards return nil because delivery state must
+ * survive a leader restart.
+ */
+export function WorkerControlHandler(): $CancellablePromise<http$0.Handler> {
+    return $Call.ByID(449685906);
 }
 
 // Private type creation functions
