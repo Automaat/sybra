@@ -6,6 +6,7 @@ CREATE TABLE worker_sessions (
     build_version TEXT NOT NULL,
     capabilities_json TEXT NOT NULL,
     state TEXT NOT NULL,
+    lease_seconds BIGINT NOT NULL,
     lease_expires_at BIGINT NOT NULL,
     last_command_ack BIGINT NOT NULL DEFAULT 0,
     created_at BIGINT NOT NULL,

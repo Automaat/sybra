@@ -163,6 +163,57 @@ func TestSessionLeaseAndProtocolFailuresAreExplicit(t *testing.T) {
 	}
 }
 
+func TestNegotiatedLeaseIsStableAndSafelyCapped(t *testing.T) {
+	database := dbtest.SQLite(t)
+	service := New(database)
+	now := time.Now().UTC()
+	service.now = func() time.Time { return now }
+	long, err := service.Register(t.Context(), RegisterRequest{
+		WorkerID: "worker-long-lease", LeaseSeconds: 300,
+		Negotiation: executioncontract.Negotiation{
+			ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return now.Add(10 * time.Second) }
+	renewed, err := service.Heartbeat(t.Context(), long.SessionID, nil)
+	if err != nil || !renewed.LeaseExpiresAt.Equal(now.Add(310*time.Second)) {
+		t.Fatalf("renewed long lease = %v, %v; want %v", renewed.LeaseExpiresAt, err, now.Add(310*time.Second))
+	}
+	service.now = func() time.Time { return now }
+	capped, err := service.Register(t.Context(), RegisterRequest{
+		WorkerID: "worker-capped-lease", LeaseSeconds: int(^uint(0) >> 1),
+		Negotiation: executioncontract.Negotiation{
+			ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test",
+		},
+	})
+	if err != nil || !capped.LeaseExpiresAt.Equal(now.Add(5*time.Minute)) {
+		t.Fatalf("capped lease = %v, %v", capped.LeaseExpiresAt, err)
+	}
+}
+
+func TestExpiredSessionCannotEnterDrainOrResume(t *testing.T) {
+	database := dbtest.SQLite(t)
+	service := New(database)
+	now := time.Now().UTC()
+	service.now = func() time.Time { return now }
+	session := register(t, service, "worker-expired-drain")
+	service.now = func() time.Time { return now.Add(time.Minute) }
+	if err := service.Drain(t.Context(), session.SessionID); !errors.Is(err, ErrLeaseExpired) {
+		t.Fatalf("expired drain error = %v, want ErrLeaseExpired", err)
+	}
+	if _, err := service.Register(t.Context(), RegisterRequest{
+		WorkerID: "worker-expired-drain", ResumeSessionID: session.SessionID,
+		Negotiation: executioncontract.Negotiation{
+			ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test",
+		},
+	}); err == nil {
+		t.Fatal("expired session resumed")
+	}
+}
+
 func TestDrainingSessionCanHeartbeatAndResume(t *testing.T) {
 	database := dbtest.SQLite(t)
 	service := New(database)

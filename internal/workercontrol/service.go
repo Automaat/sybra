@@ -97,7 +97,8 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 	}
 	lease := s.lease
 	if request.LeaseSeconds > 0 {
-		lease = min(time.Duration(request.LeaseSeconds)*time.Second, 5*time.Minute)
+		seconds := min(request.LeaseSeconds, int((5*time.Minute)/time.Second))
+		lease = time.Duration(seconds) * time.Second
 	}
 	now := s.now().UTC()
 	sessionID, err := randomID()
@@ -111,13 +112,15 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 	state := "active"
 	err = s.db.InTx(ctx, func(tx *sql.Tx) error {
 		if request.ResumeSessionID != "" {
-			query := `SELECT worker_id, state, last_command_ack FROM worker_sessions WHERE session_id = ?`
+			query := `SELECT worker_id, state, last_command_ack, lease_expires_at FROM worker_sessions WHERE session_id = ?`
 			if s.db.Dialect() == db.Postgres {
 				query += ` FOR UPDATE`
 			}
 			var priorWorker, priorState string
 			var priorAck, maxSequence uint64
-			if err := tx.QueryRowContext(ctx, s.db.Rebind(query), request.ResumeSessionID).Scan(&priorWorker, &priorState, &priorAck); err != nil || priorWorker != request.WorkerID || (priorState != "active" && priorState != "draining") {
+			var priorExpiry int64
+			if err := tx.QueryRowContext(ctx, s.db.Rebind(query), request.ResumeSessionID).Scan(&priorWorker, &priorState, &priorAck, &priorExpiry); err != nil ||
+				priorWorker != request.WorkerID || (priorState != "active" && priorState != "draining") || !db.TimeFrom(priorExpiry).After(now) {
 				return ErrStaleSession
 			}
 			state = priorState
@@ -136,10 +139,10 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 			return fmt.Errorf("fence prior session: %w", err)
 		}
 		_, err := tx.ExecContext(ctx, s.db.Rebind(`INSERT INTO worker_sessions
-			(session_id, worker_id, protocol_major, protocol_minor, build_version, capabilities_json, state, lease_expires_at, last_command_ack, created_at, heartbeat_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			(session_id, worker_id, protocol_major, protocol_minor, build_version, capabilities_json, state, lease_seconds, lease_expires_at, last_command_ack, created_at, heartbeat_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 			sessionID, request.WorkerID, version.Major, version.Minor, request.Negotiation.BuildVersion, string(capabilities),
-			state, db.TimeValue(now.Add(lease)), request.LastCommandAck, db.TimeValue(now), db.TimeValue(now))
+			state, int64(lease/time.Second), db.TimeValue(now.Add(lease)), request.LastCommandAck, db.TimeValue(now), db.TimeValue(now))
 		if err != nil || request.ResumeSessionID == "" {
 			return err
 		}
@@ -168,14 +171,28 @@ func (s *Service) Heartbeat(ctx context.Context, sessionID string, capabilities 
 	if err != nil {
 		return Session{}, err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE worker_sessions SET heartbeat_at = ?, lease_expires_at = ?, capabilities_json = ?
-        WHERE session_id = ? AND state IN ('active', 'draining') AND lease_expires_at > ?`, db.TimeValue(now),
-		db.TimeValue(now.Add(s.lease)), string(encoded), sessionID, db.TimeValue(now))
+	err = s.db.InTx(ctx, func(tx *sql.Tx) error {
+		query := `SELECT state, lease_expires_at, lease_seconds FROM worker_sessions WHERE session_id = ?`
+		if s.db.Dialect() == db.Postgres {
+			query += ` FOR UPDATE`
+		}
+		var state string
+		var expires, leaseSeconds int64
+		if err := tx.QueryRowContext(ctx, s.db.Rebind(query), sessionID).Scan(&state, &expires, &leaseSeconds); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrStaleSession
+			}
+			return err
+		}
+		if (state != "active" && state != "draining") || !db.TimeFrom(expires).After(now) {
+			return ErrStaleSession
+		}
+		_, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE worker_sessions SET heartbeat_at = ?, lease_expires_at = ?, capabilities_json = ? WHERE session_id = ?`),
+			db.TimeValue(now), db.TimeValue(now.Add(time.Duration(leaseSeconds)*time.Second)), string(encoded), sessionID)
+		return err
+	})
 	if err != nil {
 		return Session{}, err
-	}
-	if n, _ := result.RowsAffected(); n != 1 {
-		return Session{}, ErrStaleSession
 	}
 	return s.session(ctx, sessionID)
 }
@@ -512,14 +529,19 @@ func (s *Service) UploadArtifact(ctx context.Context, upload ArtifactUpload) err
 }
 
 func (s *Service) Drain(ctx context.Context, sessionID string) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE worker_sessions SET state = 'draining' WHERE session_id = ? AND state = 'active'`, sessionID)
-	if err != nil {
-		return err
-	}
-	if n, _ := result.RowsAffected(); n != 1 {
-		return ErrStaleSession
-	}
-	return nil
+	return s.db.InTx(ctx, func(tx *sql.Tx) error {
+		if err := s.requireSessionTx(ctx, tx, sessionID, false); err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE worker_sessions SET state = 'draining' WHERE session_id = ? AND state = 'active'`), sessionID)
+		if err != nil {
+			return err
+		}
+		if n, _ := result.RowsAffected(); n != 1 {
+			return ErrStaleSession
+		}
+		return nil
+	})
 }
 
 func (s *Service) Diagnostics(ctx context.Context) ([]Diagnostics, error) {
