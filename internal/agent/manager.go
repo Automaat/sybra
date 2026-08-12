@@ -150,6 +150,7 @@ type Manager struct {
 	executionBackend       ExecutionBackend
 	localExecutionBackend  ExecutionBackend
 	activeExecutions       map[string]activeExecution
+	executionAgents        map[ExecutionHandle]string
 	approvalResponder      func(string, bool) error
 	// warnInertCapOnce guards the one-time inert-cap warning across both New
 	// and every subsequent ReplaceRuntimeConfig call for this manager's
@@ -406,6 +407,7 @@ func NewManager(ctx context.Context, emit EmitFunc, logger *slog.Logger, logDir 
 		playwrightMCPEnabled:   cfg.Runtime.PlaywrightMCPEnabled,
 		playwrightMCPExtraArgs: cfg.Runtime.PlaywrightMCPExtraArgs,
 		activeExecutions:       make(map[string]activeExecution),
+		executionAgents:        make(map[ExecutionHandle]string),
 	}
 	m.localExecutionBackend = newCallbackExecutionBackend("local")
 	m.executionBackend = m.localExecutionBackend

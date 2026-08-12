@@ -121,7 +121,7 @@ func TestExecutionBackendFakeDrivesCompleteManagerRun(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("fake backend did not complete manager run")
 	}
-	if m.RunningCount() != 0 {
+	if !pollUntil(time.Second, time.Millisecond, func() bool { return m.RunningCount() == 0 }) {
 		t.Fatalf("running count = %d, want 0", m.RunningCount())
 	}
 	backend.mu.Lock()
@@ -182,6 +182,12 @@ func TestExecutionBackendImmediateCompletionDoesNotLeaveControlHandle(t *testing
 	}
 	if _, err := m.InspectExecution(t.Context(), a.ID); err == nil {
 		t.Fatal("completed execution retained a stale control handle")
+	}
+	m.mu.RLock()
+	indexed := len(m.executionAgents)
+	m.mu.RUnlock()
+	if indexed != 0 {
+		t.Fatalf("completed execution retained %d handle index entries", indexed)
 	}
 }
 

@@ -2124,6 +2124,7 @@ func (m *Manager) startAgentRunner(ctx context.Context, a *Agent, cfg RunConfig,
 			backend: backend, handle: handle, outputStart: sink.outputStart,
 			lastEmit: sink.lastEmit, sink: sink,
 		}
+		m.executionAgents[handle] = a.ID
 	}
 	m.mu.Unlock()
 	return nil
@@ -2146,6 +2147,9 @@ func (m *Manager) markAgentDone(ctx context.Context, a *Agent) {
 			_ = reg.Delete(a.ID)
 		}
 		m.mu.Lock()
+		if execution, ok := m.activeExecutions[a.ID]; ok {
+			delete(m.executionAgents, execution.handle)
+		}
 		delete(m.activeExecutions, a.ID)
 		if m.liveCount > 0 {
 			m.liveCount--

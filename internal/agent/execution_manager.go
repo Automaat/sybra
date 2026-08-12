@@ -137,15 +137,9 @@ func (m *Manager) executionForAgent(agentID string) (activeExecution, error) {
 // and completion callbacks.
 func (m *Manager) EmitExecutionEvent(ctx context.Context, handle ExecutionHandle, event ExecutionEvent) {
 	m.mu.RLock()
-	var execution activeExecution
-	var a *Agent
-	for agentID, candidate := range m.activeExecutions {
-		if candidate.handle == handle {
-			execution = candidate
-			a = m.agents[agentID]
-			break
-		}
-	}
+	agentID := m.executionAgents[handle]
+	execution := m.activeExecutions[agentID]
+	a := m.agents[agentID]
 	m.mu.RUnlock()
 	if a == nil {
 		// Callback adapters may report Started synchronously before Start has
