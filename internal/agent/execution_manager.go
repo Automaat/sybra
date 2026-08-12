@@ -175,6 +175,15 @@ func (m *Manager) emitExecutionEvent(ctx context.Context, _ ExecutionHandle, eve
 	return false
 }
 
+func (m *Manager) unregisterExecution(agentID string) {
+	m.mu.Lock()
+	if execution, ok := m.activeExecutions[agentID]; ok {
+		delete(m.executionAgents, execution.handle)
+	}
+	delete(m.activeExecutions, agentID)
+	m.mu.Unlock()
+}
+
 func (m *Manager) stopLocalAgent(a *Agent) {
 	if a == nil || a.GetState().IsTerminal() {
 		return

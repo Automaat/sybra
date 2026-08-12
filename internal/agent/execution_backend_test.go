@@ -400,7 +400,7 @@ func TestK8sRunnerSelectedThroughExecutionBackendContract(t *testing.T) {
 func TestLocalExecutionBackendRecoveryReceivesProviderEvents(t *testing.T) {
 	binDir := t.TempDir()
 	release := filepath.Join(t.TempDir(), "release")
-	fakeClaude := filepath.Join(binDir, "claude")
+	fakeClaude := filepath.Join(binDir, providerid.Claude)
 	script := `#!/bin/sh
 cat >/dev/null
 while [ ! -f "$SYBRA_TEST_RELEASE" ]; do sleep 0.01; done

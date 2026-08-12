@@ -526,6 +526,66 @@ func TestK8sExecutionBackendStopDeletesJobAndRecoveryObservesCancellation(t *tes
 	}
 }
 
+func TestK8sExecutionBackendAcceptsCreateBeforeStartReturns(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	createEntered := make(chan struct{})
+	releaseCreate := make(chan struct{})
+	client.PrependReactor("create", "jobs", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		close(createEntered)
+		<-releaseCreate
+		createAction := action.(k8stesting.CreateAction)
+		return false, createAction.GetObject(), nil
+	})
+	runner := newFakeK8sJobRunner(client, nil, K8sJobRunnerConfig{Namespace: "sybra-poc"})
+	backend := &k8sExecutionBackend{
+		callbackExecutionBackend: newCallbackExecutionBackend("kubernetes"),
+		runner:                   runner,
+	}
+	type startResult struct {
+		handle ExecutionHandle
+		err    error
+	}
+	result := make(chan startResult, 1)
+	go func() {
+		handle, err := backend.Start(t.Context(), ExecutionStart{
+			Spec: ExecutionSpec{ID: "accept-agent", TaskID: "task-1", Provider: providerid.Claude},
+			Sink: &recordingExecutionSink{},
+			stop: func(context.Context) error { return nil },
+			inspect: func() ExecutionInspection {
+				return ExecutionInspection{State: "running", Agent: View{ID: "accept-agent"}}
+			},
+		})
+		result <- startResult{handle: handle, err: err}
+	}()
+	<-createEntered
+	select {
+	case got := <-result:
+		t.Fatalf("Start returned before Job creation was accepted: %+v", got)
+	default:
+	}
+	close(releaseCreate)
+	got := <-result
+	if got.err != nil {
+		t.Fatalf("Start: %v", got.err)
+	}
+	if err := backend.Stop(t.Context(), got.handle); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	actions := client.Actions()
+	createIndex, deleteIndex := -1, -1
+	for i, action := range actions {
+		switch {
+		case action.GetVerb() == "create" && action.GetResource().Resource == "jobs":
+			createIndex = i
+		case action.GetVerb() == "delete" && action.GetResource().Resource == "jobs":
+			deleteIndex = i
+		}
+	}
+	if createIndex < 0 || deleteIndex <= createIndex {
+		t.Fatalf("actions = %+v, want accepted Create before Delete", actions)
+	}
+}
+
 func hasK8sAction(actions []k8stesting.Action, verb, resource string) bool {
 	for _, action := range actions {
 		if action.GetVerb() == verb && action.GetResource().Resource == resource {

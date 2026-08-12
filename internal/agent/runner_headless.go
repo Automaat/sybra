@@ -1779,6 +1779,7 @@ func (m *Manager) handleError(ctx context.Context, a *Agent, err error) {
 		return
 	}
 	a.SetState(StateStopped)
+	m.unregisterExecution(a.ID)
 	m.emit(events.AgentState(a.ID), a)
 	m.fireComplete(ctx, a, false)
 	m.markAgentDone(ctx, a)

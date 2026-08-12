@@ -287,6 +287,7 @@ func (m *Manager) runRetryLoop(ctx context.Context, a *Agent, logTag string, att
 // once runRetryLoop has broken out normally.
 func (m *Manager) finalizeRun(ctx context.Context, a *Agent, doneLogEvent string) {
 	a.SetState(StateStopped)
+	m.unregisterExecution(a.ID)
 	m.logger.Info(doneLogEvent, "id", a.ID, "cost", a.GetCostUSD())
 	m.emit(events.AgentState(a.ID), a)
 	m.fireComplete(ctx, a, a.GetExitErr() == nil)

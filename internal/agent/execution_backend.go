@@ -83,6 +83,7 @@ type ExecutionStart struct {
 	Sink     ExecutionEventSink
 
 	runExisting  func(context.Context, ExecutionEventSink, ExecutionHandle)
+	accept       func(context.Context) error
 	stop         func(context.Context) error
 	steer        func(string) error
 	approve      func(string, bool) error
@@ -177,6 +178,14 @@ func (b *callbackExecutionBackend) Start(ctx context.Context, start ExecutionSta
 		inspect: start.inspect, sink: relay,
 	}
 	b.mu.Unlock()
+	if start.accept != nil {
+		if err := start.accept(ctx); err != nil {
+			b.mu.Lock()
+			delete(b.runs, handle)
+			b.mu.Unlock()
+			return "", err
+		}
+	}
 
 	start.Sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{Kind: ExecutionStarted, Command: start.startCommand})
 	go func() {

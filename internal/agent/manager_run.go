@@ -2119,11 +2119,10 @@ func (m *Manager) startAgentRunner(ctx context.Context, a *Agent, cfg RunConfig,
 	}
 	sink.bind(ctx, backend, handle)
 	m.mu.Lock()
-	select {
-	case <-a.done:
+	if a.GetState().IsTerminal() {
 		// A sink-driven backend may complete before Start returns. markAgentDone
 		// already released the run; do not resurrect a stale control handle.
-	default:
+	} else {
 		m.activeExecutions[a.ID] = activeExecution{
 			backend: backend, handle: handle, outputStart: sink.outputStart,
 			lastEmit: sink.lastEmit, sink: sink,

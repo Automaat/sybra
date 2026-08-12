@@ -196,9 +196,21 @@ func (b *k8sExecutionBackend) Start(ctx context.Context, start ExecutionStart) (
 		return errors.Join(deleteErr, observationErr)
 	}
 	start.startCommand = "kubernetes job/" + jobName
+	start.accept = func(acceptCtx context.Context) error {
+		if b.runner == nil {
+			return fmt.Errorf("kubernetes runner is not configured")
+		}
+		if b.runner.clientErr != nil {
+			return fmt.Errorf("kubernetes client: %w", b.runner.clientErr)
+		}
+		if b.runner.jobs == nil || b.runner.pods == nil {
+			return fmt.Errorf("kubernetes runner client is unavailable")
+		}
+		return b.runner.createJob(acceptCtx, jobName, start.Spec, start.Config)
+	}
 	start.runExisting = func(runCtx context.Context, sink ExecutionEventSink, _ ExecutionHandle) {
 		start.Sink = sink
-		b.runner.Run(runCtx, handle, start)
+		b.runner.observeJob(runCtx, handle, jobName, start)
 	}
 	start.steer = nil
 	return b.callbackExecutionBackend.Start(ctx, start)
@@ -226,6 +238,14 @@ func (r *k8sJobRunner) Run(ctx context.Context, handle ExecutionHandle, start Ex
 	if err := r.createJob(ctx, jobName, spec, cfg); err != nil {
 		complete(err)
 		return
+	}
+	r.observeJob(ctx, handle, jobName, start)
+}
+
+func (r *k8sJobRunner) observeJob(ctx context.Context, handle ExecutionHandle, jobName string, start ExecutionStart) {
+	spec, cfg, sink := start.Spec, start.Config, start.Sink
+	complete := func(err error) {
+		sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{Kind: ExecutionCompleted, Err: err})
 	}
 	var logOffset int
 	var podName string
