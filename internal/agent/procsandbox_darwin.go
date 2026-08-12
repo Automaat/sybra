@@ -192,7 +192,11 @@ func buildReadProfile(base string, roots []string, dir string) (string, error) {
 	var b strings.Builder
 	b.Write(agentSandboxProfile)
 	b.WriteString("\n;; Deny-by-default reads (#2781), generated per run.\n")
-	b.WriteString("(deny file-read*)\n(allow file-read*\n")
+	b.WriteString("(deny file-read*)\n")
+	// Provider runtimes inspect inherited pipes before startup. Claude's Bun
+	// launcher calls fstat(2) on stderr while deciding whether to enable
+	// colours; metadata does not expose file contents or widen path reads.
+	b.WriteString("(allow file-read-metadata)\n(allow file-read*\n")
 	// Seatbelt checks metadata access on every ancestor while traversing to an
 	// allowed subpath. Grant the ancestors as exact literals only; without
 	// this, even /bin/sh aborts while trying to traverse "/", while using a

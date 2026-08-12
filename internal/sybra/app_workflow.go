@@ -835,6 +835,7 @@ func toRunInfos(runs []task.AgentRun) []workflow.AgentRunInfo {
 			SkillExecutionMode:     runs[i].SkillExecutionMode,
 			SkillConformance:       runs[i].SkillConformance,
 			StartedAt:              runs[i].StartedAt,
+			Outcome:                runs[i].Outcome,
 			ProtocolViolation:      runs[i].ProtocolViolation,
 			TestOutcome:            runs[i].TestOutcome,
 			TestFailureFingerprint: runs[i].TestFailureFingerprint,

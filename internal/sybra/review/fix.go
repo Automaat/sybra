@@ -81,6 +81,9 @@ type dispatchFixOptions struct {
 
 const PRFixResultContract = "\n\nBefore your final response, decide the outcome:\n" +
 	"- If you completed the fix, end with `SYBRA_PR_FIX_RESULT: continue`.\n" +
+	"- If the live PR no longer needs a change from this run, end with " +
+	"`SYBRA_PR_FIX_RESULT: no-op` and `SYBRA_PR_FIX_REASON: <what is already resolved>`. " +
+	"Reporting `no-op` is a complete outcome and returns the task to PR monitoring.\n" +
 	"- If this PR's diff is correct and CI failed for reasons unrelated to it — a " +
 	"flaky test, an infrastructure failure, or a breakage that reproduces on the " +
 	"base branch — end with `SYBRA_PR_FIX_RESULT: flake` and `SYBRA_PR_FIX_REASON: " +
@@ -725,7 +728,7 @@ func prFixLiveStateGuard(pr github.PullRequest) string {
 			"- Do not trust NOTES.md, a prior run's recorded merge commit, or an unchanged local worktree as proof the PR is still mergeable.\n"+
 			"- Treat GitHub's current `mergeable` value plus the freshly fetched `refs/remotes/origin/$LIVE_BASE` as the source of truth.\n"+
 			"- If GitHub says `mergeable=CONFLICTING`, or the refreshed base branch creates a new conflict, resolve that live conflict now instead of reporting `continue` or \"no work needed\" from stale local state.\n"+
-			"- If the live probe shows the PR no longer needs a code change from this run, stop without pushing and report `SYBRA_PR_FIX_RESULT: human-required` with a short reason describing the live remote state.",
+			"- If the live probe shows the PR no longer needs a code change from this run, stop without pushing and report `SYBRA_PR_FIX_RESULT: no-op` with `SYBRA_PR_FIX_REASON: <what is already resolved>`. This returns the task to PR monitoring; it is not a human escalation.",
 		pr.Number, repoFlag, pr.Number, repoFlag,
 	)
 }
@@ -878,7 +881,7 @@ func coalescedFixPrompt(ctx context.Context, issues []github.PRIssue, holdSuffix
 		prompt += "\n\nApproval preservation:\n" +
 			"- This PR is already approved. Do not merge/rebase/update the base branch or push a clean/base-only merge that only changes the merge-base.\n" +
 			"- Push only if you make a substantive code, test, or documentation fix for the failing CI, conflict, or review feedback.\n" +
-			"- If no substantive fix is needed, stop without pushing and report `SYBRA_PR_FIX_RESULT: human-required` with the reason."
+			"- If no substantive fix is needed, stop without pushing and report `SYBRA_PR_FIX_RESULT: no-op` with `SYBRA_PR_FIX_REASON: <what is already resolved>`."
 	}
 	return prompt
 }

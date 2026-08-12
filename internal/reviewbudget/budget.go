@@ -26,6 +26,16 @@ const ReviewRole = "review"
 type Run struct {
 	Role      string
 	StartedAt time.Time
+	Outcome   string
+	TurnCount int
+}
+
+// spent reports whether a review run consumed semantic review capacity. A
+// provider process that fails before its first assistant event never reviewed
+// the change, so charging it against either breaker can quarantine a task
+// solely because its CLI or sandbox could not start.
+func consumesBudget(run Run) bool {
+	return run.Role == ReviewRole && !(run.Outcome == "failure" && run.TurnCount == 0)
 }
 
 // Budget bounds one task's automated review-role dispatches three ways:
@@ -45,7 +55,7 @@ func (b Budget) HourlySpent(runs []Run, now time.Time) int {
 	cutoff := now.Add(-time.Hour)
 	spent := 0
 	for i := range runs {
-		if runs[i].Role != ReviewRole {
+		if !consumesBudget(runs[i]) {
 			continue
 		}
 		if runs[i].StartedAt.After(cutoff) {
@@ -67,7 +77,7 @@ func (b Budget) HourlyExceeded(runs []Run, now time.Time) bool {
 func (b Budget) LifetimeSpent(runs []Run) int {
 	spent := 0
 	for i := range runs {
-		if runs[i].Role == ReviewRole {
+		if consumesBudget(runs[i]) {
 			spent++
 		}
 	}

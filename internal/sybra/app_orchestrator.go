@@ -381,7 +381,10 @@ func (a *App) reviewBudget() reviewbudget.Budget {
 func taskReviewRuns(t task.Task) []reviewbudget.Run {
 	runs := make([]reviewbudget.Run, len(t.AgentRuns))
 	for i := range t.AgentRuns {
-		runs[i] = reviewbudget.Run{Role: t.AgentRuns[i].Role, StartedAt: t.AgentRuns[i].StartedAt}
+		runs[i] = reviewbudget.Run{
+			Role: t.AgentRuns[i].Role, StartedAt: t.AgentRuns[i].StartedAt,
+			Outcome: t.AgentRuns[i].Outcome, TurnCount: t.AgentRuns[i].TurnCount,
+		}
 	}
 	return runs
 }

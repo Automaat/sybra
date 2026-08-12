@@ -72,6 +72,9 @@ const PRFixContinue PRFixVerdict = "continue"
 // PRFixFlake means the diff is correct and CI failed for unrelated reasons.
 const PRFixFlake PRFixVerdict = "flake"
 
+// PRFixNoop means the live PR no longer has an issue for this run to fix.
+const PRFixNoop PRFixVerdict = "no-op"
+
 // PRFixHuman means the agent intentionally stopped for a human.
 const PRFixHuman PRFixVerdict = "human-required"
 
@@ -90,6 +93,17 @@ func (e *Engine) execRoutePRFixResult(taskID string, step *Step, wfExec *Executi
 	if verdict == PRFixContinue {
 		e.recordPreparedWorktreeState(taskID, wfExec, t)
 		return StepOutput{StepID: step.ID, Status: "completed", Output: "continue"}, nil
+	}
+	if verdict == PRFixNoop {
+		msg := "pr-fix: live PR no longer requires changes"
+		if reason != "" {
+			msg += ": " + reason
+		}
+		if err := e.tasks.UpdateTaskStatus(taskID, taskstatus.InReview, msg); err != nil {
+			return StepOutput{}, fmt.Errorf("route pr-fix result: set in-review after no-op: %w", err)
+		}
+		e.logger.Info("workflow.pr-fix.no-op", "task_id", taskID, "pr", t.PRNumber, "reason", reason)
+		return StepOutput{StepID: step.ID, Status: "completed", Output: msg}, nil
 	}
 	// A flake has no commit to verify, so parking or verify_commits would punish the honest answer. EXC:FILE011:load-bearing-invariant
 	if verdict == PRFixFlake {
@@ -482,7 +496,7 @@ func prFixVerdict(wfExec *Execution) (verdict PRFixVerdict, reason string) {
 	if wfExec.Variables != nil {
 		if v := wfExec.Variables["step."+stepID+"."+PRFixVerdictVar]; v != "" {
 			switch PRFixVerdict(v) {
-			case PRFixHuman, PRFixFlake:
+			case PRFixHuman, PRFixFlake, PRFixNoop:
 				return PRFixVerdict(v), wfExec.Variables["step."+stepID+".pr_fix_reason"]
 			case PRFixContinue:
 				return PRFixContinue, ""
@@ -547,8 +561,10 @@ func classifyPRFixResult(output string) (verdict PRFixVerdict, reason string) {
 		switch strings.ToLower(strings.TrimSpace(m[1])) {
 		case "human-required", "human_required", "human":
 			return PRFixHuman, extractPRFixReason(output)
-		case "flake", "no-op", "no_op", "noop":
+		case "flake":
 			return PRFixFlake, sentinelReason(output)
+		case "no-op", "no_op", "noop":
+			return PRFixNoop, sentinelReason(output)
 		case "continue", "ok", "done":
 			return PRFixContinue, ""
 		}

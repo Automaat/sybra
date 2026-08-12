@@ -11,7 +11,8 @@ func TestBudget_HourlyExceeded(t *testing.T) {
 		{Role: ReviewRole, StartedAt: now.Add(-90 * time.Minute)}, // outside the window
 		{Role: ReviewRole, StartedAt: now.Add(-30 * time.Minute)},
 		{Role: ReviewRole, StartedAt: now.Add(-10 * time.Minute)},
-		{Role: "fix-review", StartedAt: now.Add(-5 * time.Minute)}, // wrong role
+		{Role: ReviewRole, StartedAt: now.Add(-5 * time.Minute), Outcome: "failure", TurnCount: 0}, // provider never started
+		{Role: "fix-review", StartedAt: now.Add(-5 * time.Minute)},                                 // wrong role
 	}
 
 	tests := []struct {
@@ -45,6 +46,7 @@ func TestBudget_LifetimeExceeded(t *testing.T) {
 		{Role: ReviewRole, StartedAt: now.Add(-48 * time.Hour)},
 		{Role: ReviewRole, StartedAt: now.Add(-24 * time.Hour)},
 		{Role: ReviewRole, StartedAt: now.Add(-time.Hour)},
+		{Role: ReviewRole, StartedAt: now.Add(-30 * time.Minute), Outcome: "failure", TurnCount: 0},
 		{Role: "fix-review", StartedAt: now.Add(-30 * time.Minute)},
 	}
 

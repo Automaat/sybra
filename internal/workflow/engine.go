@@ -123,6 +123,7 @@ type AgentRunInfo struct {
 	SkillExecutionMode     string
 	SkillConformance       string
 	StartedAt              time.Time
+	Outcome                string
 	ProtocolViolation      string
 	TestOutcome            string
 	TestFailureFingerprint string
