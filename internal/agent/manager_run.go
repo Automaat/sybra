@@ -2107,7 +2107,8 @@ func (m *Manager) startAgentRunner(ctx context.Context, a *Agent, cfg RunConfig,
 		},
 	}
 	if backend == m.localExecutionBackend {
-		start.runExisting = func(runCtx context.Context, _ ExecutionEventSink, _ ExecutionHandle) {
+		start.runExisting = func(runCtx context.Context, eventSink ExecutionEventSink, handle ExecutionHandle) {
+			a.setExecutionSink(eventSink, handle)
 			m.runHeadless(runCtx, a, cfg)
 		}
 	}

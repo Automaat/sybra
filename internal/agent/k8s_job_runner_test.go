@@ -508,10 +508,10 @@ func TestK8sExecutionBackendStopDeletesJobAndRecoveryObservesCancellation(t *tes
 	if err := backend.Recover(t.Context(), handle, recovered); err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
-	if err := backend.Stop(t.Context(), handle); err != nil {
+	if err := backend.Stop(runCtx, handle); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if err := backend.Stop(t.Context(), handle); err != nil {
+	if err := backend.Stop(runCtx, handle); err != nil {
 		t.Fatalf("repeated Stop: %v", err)
 	}
 	if !pollUntil(time.Second, time.Millisecond, func() bool {

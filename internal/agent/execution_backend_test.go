@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -208,6 +210,16 @@ type conformanceExecutionSink struct {
 	events []ExecutionEvent
 }
 
+type forwardingExecutionSink struct {
+	*conformanceExecutionSink
+	next ExecutionEventSink
+}
+
+func (s *forwardingExecutionSink) EmitExecutionEvent(ctx context.Context, handle ExecutionHandle, event ExecutionEvent) {
+	s.conformanceExecutionSink.EmitExecutionEvent(ctx, handle, event)
+	s.next.EmitExecutionEvent(ctx, handle, event)
+}
+
 func (s *conformanceExecutionSink) EmitExecutionEvent(_ context.Context, _ ExecutionHandle, event ExecutionEvent) {
 	s.mu.Lock()
 	s.events = append(s.events, event)
@@ -382,5 +394,57 @@ func TestK8sRunnerSelectedThroughExecutionBackendContract(t *testing.T) {
 	m.mu.RUnlock()
 	if !ok {
 		t.Fatalf("execution backend = %T, want *k8sExecutionBackend", m.executionBackend)
+	}
+}
+
+func TestLocalExecutionBackendRecoveryReceivesProviderEvents(t *testing.T) {
+	binDir := t.TempDir()
+	release := filepath.Join(t.TempDir(), "release")
+	fakeClaude := filepath.Join(binDir, "claude")
+	script := `#!/bin/sh
+cat >/dev/null
+while [ ! -f "$SYBRA_TEST_RELEASE" ]; do sleep 0.01; done
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"recovered output"}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","result":"done","session_id":"recovered-session","total_cost_usd":0}'
+`
+	if err := os.WriteFile(fakeClaude, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	completed := make(chan *Agent, 1)
+	m, _ := newTestManager(t, ManagerConfig{
+		OnComplete: func(a *Agent) { completed <- a },
+		Runtime:    ManagerRuntimeConfig{DefaultProvider: providerid.Claude},
+	})
+	a, err := m.Run(RunConfig{
+		Mode: "headless", Name: "local recovery", Dir: t.TempDir(), Prompt: "test",
+		HeadlessSteerable: false, ExtraEnv: []string{"SYBRA_TEST_RELEASE=" + release},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	execution, err := m.executionForAgent(a.ID)
+	if err != nil {
+		t.Fatalf("executionForAgent: %v", err)
+	}
+	recovered := &forwardingExecutionSink{conformanceExecutionSink: &conformanceExecutionSink{}, next: execution.sink}
+	if err := execution.backend.Recover(t.Context(), execution.handle, recovered); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if err := os.WriteFile(release, []byte("go"), 0o600); err != nil {
+		t.Fatalf("release provider: %v", err)
+	}
+	select {
+	case got := <-completed:
+		if got.GetSessionID() != "recovered-session" || got.GetExitErr() != nil {
+			t.Fatalf("completed agent session=%q err=%v", got.GetSessionID(), got.GetExitErr())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("local execution did not complete through recovered sink")
+	}
+	events := recovered.snapshot()
+	if len(events) != 3 || events[0].Kind != ExecutionOutput || events[1].Kind != ExecutionOutput || events[2].Kind != ExecutionCompleted {
+		t.Fatalf("recovered events = %+v, want assistant, result, Completed", events)
 	}
 }

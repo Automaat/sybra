@@ -342,10 +342,28 @@ type Agent struct {
 	malformedToolCalls []MalformedToolCall
 	// malformedToolCorrectionAttempts bounds in-session recovery prompts.
 	malformedToolCorrectionAttempts int
+	// executionSink/Handle are manager-owned local-adapter wiring. Provider
+	// output uses them to traverse the same recoverable event boundary as
+	// portable backends without exposing this canonical Agent to a backend.
+	executionSink   ExecutionEventSink
+	executionHandle ExecutionHandle
 
 	// mu guards mutable fields touched from multiple goroutines. See the
 	// package-level note above the Agent type.
 	mu sync.RWMutex
+}
+
+func (a *Agent) setExecutionSink(sink ExecutionEventSink, handle ExecutionHandle) {
+	a.mu.Lock()
+	a.executionSink = sink
+	a.executionHandle = handle
+	a.mu.Unlock()
+}
+
+func (a *Agent) executionEventTarget() (ExecutionEventSink, ExecutionHandle) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.executionSink, a.executionHandle
 }
 
 type foregroundCommand struct {

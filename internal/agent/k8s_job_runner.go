@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -32,6 +33,7 @@ const (
 	defaultK8sWorkdir     = "/tmp/sybra-workspace/repo"
 	k8sRunnerModeFake     = "fake"
 	k8sRunnerModeProvider = "provider"
+	k8sStopTimeout        = 10 * time.Second
 )
 
 type k8sGitWorkspace struct {
@@ -184,14 +186,14 @@ func (b *k8sExecutionBackend) Start(ctx context.Context, start ExecutionStart) (
 	jobName := k8sName("sybra-agent-" + start.Spec.ID)
 	stopObservation := start.stop
 	start.stop = func(stopCtx context.Context) error {
-		var stopErr error
+		deleteCtx, cancelDelete := context.WithTimeout(context.WithoutCancel(stopCtx), k8sStopTimeout)
+		deleteErr := b.runner.deleteJob(deleteCtx, jobName)
+		cancelDelete()
+		var observationErr error
 		if stopObservation != nil {
-			stopErr = stopObservation(stopCtx)
+			observationErr = stopObservation(stopCtx)
 		}
-		if err := b.runner.deleteJob(stopCtx, jobName); err != nil {
-			return err
-		}
-		return stopErr
+		return errors.Join(deleteErr, observationErr)
 	}
 	start.startCommand = "kubernetes job/" + jobName
 	start.runExisting = func(runCtx context.Context, sink ExecutionEventSink, _ ExecutionHandle) {
