@@ -12,6 +12,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // scriptedPRStateFetcher returns a fixed state or error for every probe,
@@ -1063,7 +1064,7 @@ func TestExecRoutePRFixResult_FlakeRoutesToInReviewWithoutCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != "in-review" {
+	if got.Status != taskstatus.InReview {
 		t.Fatalf("status = %q, want in-review (a flake must never park a human)", got.Status)
 	}
 	if reason := tasks.Reason("t1"); !strings.Contains(reason, "reproduces on base") {
@@ -1427,7 +1428,7 @@ func TestAdvanceStep_PRFixHumanRequiredUsesUntruncatedOutput(t *testing.T) {
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress})
 	if err := engine.StartWorkflow("t1", "pr-fix-route-test"); err != nil {
 		t.Fatalf("start workflow: %v", err)
 	}
