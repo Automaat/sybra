@@ -4,8 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 )
+
+var sha256Digest = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
 type CommandType string
 
@@ -158,6 +162,9 @@ func (r TerminalResult) Validate() error {
 	if r.State != TerminalSucceeded && r.State != TerminalFailed && r.State != TerminalCanceled {
 		return fmt.Errorf("execution contract: invalid terminal state %q", r.State)
 	}
+	if r.State == TerminalSucceeded && ((r.ExitCode != nil && *r.ExitCode != 0) || r.Error != "") {
+		return errors.New("execution contract: succeeded result cannot contain a failure exit code or error")
+	}
 	if r.ArtifactState != ArtifactsPending && r.ArtifactState != ArtifactsReady && r.ArtifactState != ArtifactsFailed {
 		return fmt.Errorf("execution contract: invalid artifact state %q", r.ArtifactState)
 	}
@@ -202,7 +209,8 @@ func (m ArtifactManifest) Validate() error {
 		return fmt.Errorf("execution contract: invalid artifact manifest state %q", m.State)
 	}
 	for _, artifact := range m.Artifacts {
-		if artifact.Name == "" || artifact.Kind == "" || artifact.DigestSHA256 == "" || artifact.SizeBytes < 0 ||
+		if artifact.Name == "" || artifact.Kind == "" || !sha256Digest.MatchString(artifact.DigestSHA256) ||
+			strings.TrimSpace(artifact.MediaType) == "" || artifact.SizeBytes < 0 ||
 			!validRoot(artifact.Root) || !logicalPath(artifact.Path) || !validSensitivity(artifact.Sensitivity) {
 			return fmt.Errorf("execution contract: invalid artifact %q", artifact.Name)
 		}

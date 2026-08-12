@@ -17,6 +17,7 @@ var (
 	ErrUnsupportedMajor = errors.New("execution contract: unsupported protocol major")
 	windowsAbsPath      = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
 	gitObjectID         = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`)
+	invalidGitRefChar   = regexp.MustCompile(`[\x00-\x20\x7f~^:?*\[\\]`)
 )
 
 type Version struct {
@@ -206,13 +207,18 @@ func (s RunSpec) Validate() error {
 	if err := validateWorkspace(s.Workspace); err != nil {
 		return err
 	}
+	declaredRoots := make(map[LogicalRoot]struct{}, len(s.Workspace.Roots))
+	for _, root := range s.Workspace.Roots {
+		declaredRoots[root] = struct{}{}
+	}
 	for _, binding := range s.Environment {
 		if err := binding.Validate(); err != nil {
 			return err
 		}
 	}
 	for _, output := range s.ExpectedOutputs {
-		if output.Name == "" || output.Kind == "" || !validRoot(output.Root) || !logicalPath(output.Path) {
+		_, rootDeclared := declaredRoots[output.Root]
+		if output.Name == "" || output.Kind == "" || !rootDeclared || !logicalPath(output.Path) {
 			return fmt.Errorf("execution contract: invalid expected output %q", output.Name)
 		}
 		if !validSensitivity(output.Sensitivity) {
@@ -240,10 +246,21 @@ func (b EnvironmentBinding) Validate() error {
 }
 
 func masterCredentialName(name string) bool {
-	if slices.Contains([]string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GITHUB_TOKEN", "GH_TOKEN", "KUBECONFIG", "AWS_SECRET_ACCESS_KEY"}, name) {
+	if slices.Contains([]string{
+		"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "KUBECONFIG",
+		"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+	}, name) {
 		return true
 	}
-	return strings.Contains(name, "MASTER_KEY") || strings.Contains(name, "NODE_TOKEN") || strings.Contains(name, "SERVICE_ACCOUNT_TOKEN")
+	if strings.Contains(name, "MASTER_KEY") || strings.Contains(name, "NODE_TOKEN") || strings.Contains(name, "SERVICE_ACCOUNT_TOKEN") {
+		return true
+	}
+	for _, provider := range []string{"ANTHROPIC", "OPENAI", "CLAUDE", "CODEX", "COPILOT", "GITHUB", "AZURE", "GOOGLE", "GCP", "KUBE"} {
+		if strings.Contains(name, provider) && sensitiveEnvironmentName(name) {
+			return true
+		}
+	}
+	return false
 }
 
 func sensitiveEnvironmentName(name string) bool {
@@ -253,7 +270,7 @@ func sensitiveEnvironmentName(name string) bool {
 }
 
 func validateWorkspace(workspace Workspace) error {
-	if !gitObjectID.MatchString(workspace.BaseSHA) || workspace.BaseRef == "" || len(workspace.Roots) == 0 {
+	if !gitObjectID.MatchString(workspace.BaseSHA) || !validFullGitRef(workspace.BaseRef) || len(workspace.Roots) == 0 {
 		return errors.New("execution contract: workspace base SHA/ref and logical roots are required")
 	}
 	seen := map[LogicalRoot]bool{}
@@ -266,12 +283,26 @@ func validateWorkspace(workspace Workspace) error {
 	return nil
 }
 
+func validFullGitRef(ref string) bool {
+	if !strings.HasPrefix(ref, "refs/") || strings.HasSuffix(ref, "/") || strings.HasSuffix(ref, ".") ||
+		strings.Contains(ref, "..") || strings.Contains(ref, "@{") || strings.Contains(ref, "//") ||
+		invalidGitRefChar.MatchString(ref) {
+		return false
+	}
+	for component := range strings.SplitSeq(ref, "/") {
+		if component == "" || strings.HasPrefix(component, ".") || strings.HasSuffix(component, ".lock") {
+			return false
+		}
+	}
+	return true
+}
+
 func validRoot(root LogicalRoot) bool {
 	return root == RootWorktree || root == RootSidecar || root == RootArtifact || root == RootWorkingMemory
 }
 
 func logicalPath(value string) bool {
-	clean := path.Clean(strings.ReplaceAll(value, `\\`, "/"))
+	clean := path.Clean(strings.ReplaceAll(value, `\`, "/"))
 	return value != "" && clean != "." && clean != ".." && !strings.HasPrefix(clean, "../") &&
 		!strings.HasPrefix(clean, "/") && !windowsAbsPath.MatchString(value)
 }

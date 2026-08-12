@@ -97,7 +97,7 @@ func TestValidationRejectsLeaderPathsAndCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, badPath := range []string{"/leader/worktree/file", `C:\\leader\\file`, "../escape"} {
+	for _, badPath := range []string{"/leader/worktree/file", `C:\leader\file`, `..\secrets\token`, `\\server\share`, "../escape"} {
 		bad := spec
 		bad.ExpectedOutputs = append([]ExpectedOutput(nil), spec.ExpectedOutputs...)
 		bad.ExpectedOutputs[0].Path = badPath
@@ -105,7 +105,7 @@ func TestValidationRejectsLeaderPathsAndCredentials(t *testing.T) {
 			t.Fatalf("absolute/traversing path %q accepted", badPath)
 		}
 	}
-	for _, name := range []string{"OPENAI_API_KEY", "KUBECONFIG", "NODE_MASTER_KEY"} {
+	for _, name := range []string{"OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "KUBECONFIG", "NODE_MASTER_KEY"} {
 		bad := spec
 		bad.Environment = []EnvironmentBinding{{Name: name, SecretRef: &SecretRef{Name: "scoped"}}}
 		if err := bad.Validate(); err == nil {
@@ -116,6 +116,18 @@ func TestValidationRejectsLeaderPathsAndCredentials(t *testing.T) {
 	bad.Environment = []EnvironmentBinding{{Name: "DATABASE_PASSWORD", Value: "plaintext"}}
 	if err := bad.Validate(); err == nil {
 		t.Fatal("inline sensitive environment accepted")
+	}
+	for _, badRef := range []string{"/leader/private/worktrees/task-1", `C:\leader\main`, "refs/heads/../secret", "refs/heads/main.lock"} {
+		bad := spec
+		bad.Workspace.BaseRef = badRef
+		if err := bad.Validate(); err == nil {
+			t.Fatalf("invalid git ref %q accepted", badRef)
+		}
+	}
+	bad = spec
+	bad.Workspace.Roots = []LogicalRoot{RootWorktree}
+	if err := bad.Validate(); err == nil {
+		t.Fatal("output under undeclared artifact root accepted")
 	}
 }
 
@@ -136,5 +148,28 @@ func TestValidateEventOrderSupportsIdempotentReplay(t *testing.T) {
 	}
 	if err := ValidateEventOrder([]EventEnvelope{event(1, "one", EventTerminal), event(2, "two", EventOutput)}); err == nil {
 		t.Fatal("post-terminal event accepted")
+	}
+}
+
+func TestTerminalAndArtifactValidationRejectsContradictoryMetadata(t *testing.T) {
+	now := time.Now().UTC()
+	nonzero := 1
+	terminal := TerminalResult{
+		Version: CurrentVersion(), BuildVersion: "test", RunID: "run", IdempotencyKey: "terminal",
+		State: TerminalSucceeded, LastSequence: 1, ExitCode: &nonzero, ArtifactState: ArtifactsPending, CompletedAt: now,
+	}
+	if err := terminal.Validate(); err == nil {
+		t.Fatal("succeeded result with non-zero exit accepted")
+	}
+	manifest := ArtifactManifest{
+		Version: CurrentVersion(), BuildVersion: "test", RunID: "run", ManifestID: "manifest",
+		IdempotencyKey: "manifest", State: ArtifactsReady, GeneratedAt: now,
+		Artifacts: []ArtifactEntry{{
+			Name: "diff", Kind: "bundle", Root: RootArtifact, Path: "changes/run.bundle",
+			DigestSHA256: "x", MediaType: "", Sensitivity: SensitivityInternal,
+		}},
+	}
+	if err := manifest.Validate(); err == nil {
+		t.Fatal("malformed artifact integrity metadata accepted")
 	}
 }
