@@ -414,6 +414,28 @@ func TestResumePreservesCursorWhenEveryCommandWasAcknowledged(t *testing.T) {
 	}
 }
 
+func TestIdempotencyReplayCannotCrossUnrelatedSession(t *testing.T) {
+	database := dbtest.SQLite(t)
+	service := New(database)
+	sessionA := register(t, service, "worker-idempotency-a")
+	sessionB := register(t, service, "worker-idempotency-b")
+	spec, start := startContract(t, "run-idempotency", "effect-idempotency")
+	if _, err := service.Enqueue(t.Context(), sessionA.SessionID, &spec, start); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Enqueue(t.Context(), sessionB.SessionID, &spec, start); !errors.Is(err, ErrStaleSession) {
+		t.Fatalf("cross-session start replay error = %v, want ErrStaleSession", err)
+	}
+	stop := start
+	stop.CommandID, stop.IdempotencyKey, stop.Type, stop.Payload = "command:idempotency-stop", "stop:idempotency", executioncontract.CommandStop, nil
+	if _, err := service.Enqueue(t.Context(), sessionA.SessionID, nil, stop); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Enqueue(t.Context(), sessionB.SessionID, nil, stop); !errors.Is(err, ErrStaleSession) {
+		t.Fatalf("cross-session control replay error = %v, want ErrStaleSession", err)
+	}
+}
+
 func TestStartFenceAndEventStreamRejectChangedReplay(t *testing.T) {
 	database := dbtest.SQLite(t)
 	service := New(database)

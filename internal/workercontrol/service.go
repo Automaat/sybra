@@ -214,11 +214,18 @@ func (s *Service) Enqueue(ctx context.Context, sessionID string, spec *execution
 			return err
 		}
 		var existing uint64
-		var existingPayload string
-		err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT sequence, payload_json FROM worker_commands WHERE idempotency_key = ?`), envelope.IdempotencyKey).Scan(&existing, &existingPayload)
+		var existingPayload, existingSession string
+		var acknowledgedAt sql.NullInt64
+		err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT sequence, payload_json, session_id, acknowledged_at FROM worker_commands WHERE idempotency_key = ?`), envelope.IdempotencyKey).
+			Scan(&existing, &existingPayload, &existingSession, &acknowledgedAt)
 		if err == nil {
 			if existingPayload != string(payload) {
 				return errors.New("worker control: idempotency key reused for a different command")
+			}
+			if existingSession != sessionID {
+				if err := s.validateCrossSessionReplay(ctx, tx, sessionID, existing, acknowledgedAt.Valid, envelope); err != nil {
+					return err
+				}
 			}
 			sequence = existing
 			return nil
@@ -288,6 +295,20 @@ func (s *Service) Enqueue(ctx context.Context, sessionID string, spec *execution
 	}
 	s.notify()
 	return Command{Sequence: sequence, Envelope: envelope}, nil
+}
+
+func (s *Service) validateCrossSessionReplay(ctx context.Context, tx *sql.Tx, sessionID string, sequence uint64, acknowledged bool, envelope executioncontract.CommandEnvelope) error {
+	if envelope.Type != executioncontract.CommandStart || !acknowledged {
+		return ErrStaleSession
+	}
+	var owner string
+	var inheritedAck uint64
+	err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT r.session_id, s.last_command_ack FROM remote_runs r JOIN worker_sessions s ON s.session_id = r.session_id WHERE r.run_id = ?`), envelope.RunID).
+		Scan(&owner, &inheritedAck)
+	if err != nil || owner != sessionID || inheritedAck < sequence {
+		return ErrStaleSession
+	}
+	return nil
 }
 
 func validateStartDelivery(spec *executioncontract.RunSpec, envelope executioncontract.CommandEnvelope) error {
