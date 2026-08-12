@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Automaat/sybra/internal/db"
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/testutil/dbtest"
 )
@@ -166,7 +167,9 @@ func TestSessionLeaseAndProtocolFailuresAreExplicit(t *testing.T) {
 func TestNegotiatedLeaseIsStableAndSafelyCapped(t *testing.T) {
 	database := dbtest.SQLite(t)
 	service := New(database)
-	now := time.Now().UTC()
+	// Deliberately retain sub-microsecond precision so the test exercises the
+	// database timestamp seam on platforms whose wall clock is already rounded.
+	now := time.Unix(1_800_000_000, 123_456_789).UTC()
 	service.now = func() time.Time { return now }
 	long, err := service.Register(t.Context(), RegisterRequest{
 		WorkerID: "worker-long-lease", LeaseSeconds: 300,
@@ -179,8 +182,9 @@ func TestNegotiatedLeaseIsStableAndSafelyCapped(t *testing.T) {
 	}
 	service.now = func() time.Time { return now.Add(10 * time.Second) }
 	renewed, err := service.Heartbeat(t.Context(), long.SessionID, nil)
-	if err != nil || !renewed.LeaseExpiresAt.Equal(now.Add(310*time.Second)) {
-		t.Fatalf("renewed long lease = %v, %v; want %v", renewed.LeaseExpiresAt, err, now.Add(310*time.Second))
+	wantRenewed := db.StoredTime(now.Add(310 * time.Second))
+	if err != nil || !renewed.LeaseExpiresAt.Equal(wantRenewed) {
+		t.Fatalf("renewed long lease = %v, %v; want %v", renewed.LeaseExpiresAt, err, wantRenewed)
 	}
 	service.now = func() time.Time { return now }
 	capped, err := service.Register(t.Context(), RegisterRequest{
@@ -189,7 +193,7 @@ func TestNegotiatedLeaseIsStableAndSafelyCapped(t *testing.T) {
 			ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test",
 		},
 	})
-	if err != nil || !capped.LeaseExpiresAt.Equal(now.Add(5*time.Minute)) {
+	if err != nil || !capped.LeaseExpiresAt.Equal(db.StoredTime(now.Add(5*time.Minute))) {
 		t.Fatalf("capped lease = %v, %v", capped.LeaseExpiresAt, err)
 	}
 }
