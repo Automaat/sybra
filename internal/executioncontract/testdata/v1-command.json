@@ -1,0 +1,1 @@
+{"version":{"major":1,"minor":0},"buildVersion":"1.2.3","commandId":"cmd-1","runId":"run-01JREMOTE","idempotencyKey":"cmd:run-01JREMOTE:start","type":"start","sentAt":"2026-08-12T17:00:00Z","payload":{"runSpecRef":"run-01JREMOTE"},"future":"tolerated"}
