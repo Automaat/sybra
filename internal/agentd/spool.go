@@ -19,15 +19,16 @@ var ErrSpoolExhausted = errors.New("agentd: durable spool exhausted")
 const terminalEventBudgetBytes int64 = 4096
 
 type durableState struct {
-	NodeID         string                                       `json:"nodeId"`
-	SessionID      string                                       `json:"sessionId,omitempty"`
-	LastCommandAck uint64                                       `json:"lastCommandAck,omitempty"`
-	Events         map[string][]executioncontract.EventEnvelope `json:"events,omitempty"`
-	RunAgents      map[string]string                            `json:"runAgents,omitempty"`
-	RunSequences   map[string]uint64                            `json:"runSequences,omitempty"`
-	OutputCounts   map[string]uint64                            `json:"outputCounts,omitempty"`
-	Approvals      map[string]durableApproval                   `json:"approvals,omitempty"`
-	Artifacts      map[string]workercontrol.ArtifactUpload      `json:"artifacts,omitempty"`
+	NodeID           string                                       `json:"nodeId"`
+	SessionID        string                                       `json:"sessionId,omitempty"`
+	LastCommandAck   uint64                                       `json:"lastCommandAck,omitempty"`
+	Events           map[string][]executioncontract.EventEnvelope `json:"events,omitempty"`
+	RunAgents        map[string]string                            `json:"runAgents,omitempty"`
+	RunSequences     map[string]uint64                            `json:"runSequences,omitempty"`
+	OutputCounts     map[string]uint64                            `json:"outputCounts,omitempty"`
+	PendingApprovals map[string]string                            `json:"pendingApprovals,omitempty"`
+	Approvals        map[string]durableApproval                   `json:"approvals,omitempty"`
+	Artifacts        map[string]workercontrol.ArtifactUpload      `json:"artifacts,omitempty"`
 }
 
 type durableApproval struct {
@@ -75,6 +76,9 @@ func OpenSpool(root string, maxBytes int64, capacity ...int) (*Spool, error) {
 	}
 	if s.state.Approvals == nil {
 		s.state.Approvals = make(map[string]durableApproval)
+	}
+	if s.state.PendingApprovals == nil {
+		s.state.PendingApprovals = make(map[string]string)
 	}
 	if s.state.Artifacts == nil {
 		s.state.Artifacts = make(map[string]workercontrol.ArtifactUpload)
@@ -127,6 +131,8 @@ func cloneState(in durableState) durableState {
 	maps.Copy(out.OutputCounts, in.OutputCounts)
 	out.Approvals = make(map[string]durableApproval, len(in.Approvals))
 	maps.Copy(out.Approvals, in.Approvals)
+	out.PendingApprovals = make(map[string]string, len(in.PendingApprovals))
+	maps.Copy(out.PendingApprovals, in.PendingApprovals)
 	out.Artifacts = make(map[string]workercontrol.ArtifactUpload, len(in.Artifacts))
 	for id := range in.Artifacts {
 		upload := in.Artifacts[id]
@@ -167,12 +173,76 @@ func (s *Spool) ackArtifact(manifestID string) error {
 
 func (s *Spool) stageApproval(toolUseID string, decision durableApproval) error {
 	return s.updateLimit(s.nonTerminalLimit(), func(state *durableState) error {
+		if owner := state.PendingApprovals[toolUseID]; owner != decision.RunID {
+			return fmt.Errorf("agentd: approval %s belongs to run %q, not %q", toolUseID, owner, decision.RunID)
+		}
 		if prior, exists := state.Approvals[toolUseID]; exists && prior != decision {
 			return fmt.Errorf("agentd: conflicting approval replay for %s", toolUseID)
 		}
 		state.Approvals[toolUseID] = decision
 		return nil
 	})
+}
+
+func (s *Spool) appendApprovalRequest(event executioncontract.EventEnvelope, toolUseID string) error {
+	return s.updateLimit(s.nonTerminalLimit(), func(state *durableState) error {
+		if owner, exists := state.PendingApprovals[toolUseID]; exists && owner != event.RunID {
+			return fmt.Errorf("agentd: approval request %s already belongs to run %q", toolUseID, owner)
+		}
+		state.PendingApprovals[toolUseID] = event.RunID
+		event.Sequence = state.RunSequences[event.RunID] + 1
+		event.IdempotencyKey = fmt.Sprintf("%s:%d", event.RunID, event.Sequence)
+		state.Events[event.RunID] = append(state.Events[event.RunID], event)
+		state.RunSequences[event.RunID] = event.Sequence
+		return nil
+	})
+}
+
+func (s *Spool) appendTerminalAndComplete(event executioncontract.EventEnvelope) error {
+	return s.update(func(state *durableState) error {
+		event.Sequence = state.RunSequences[event.RunID] + 1
+		event.IdempotencyKey = fmt.Sprintf("%s:%d", event.RunID, event.Sequence)
+		state.Events[event.RunID] = append(state.Events[event.RunID], event)
+		state.RunSequences[event.RunID] = event.Sequence
+		completeRunState(state, event.RunID)
+		return nil
+	})
+}
+
+func (s *Spool) hasTerminal(runID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	events := s.state.Events[runID]
+	return len(events) > 0 && events[len(events)-1].Type == executioncontract.EventTerminal
+}
+
+func (s *Spool) completeExistingRun(runID string) error {
+	return s.update(func(state *durableState) error {
+		completeRunState(state, runID)
+		return nil
+	})
+}
+
+func (s *Spool) approvalIDs(runID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := make([]string, 0)
+	for toolUseID, owner := range s.state.PendingApprovals {
+		if owner == runID {
+			ids = append(ids, toolUseID)
+		}
+	}
+	return ids
+}
+
+func completeRunState(state *durableState, runID string) {
+	delete(state.RunAgents, runID)
+	for toolUseID, owner := range state.PendingApprovals {
+		if owner == runID {
+			delete(state.PendingApprovals, toolUseID)
+			delete(state.Approvals, toolUseID)
+		}
+	}
 }
 
 func (s *Spool) appendEvent(event executioncontract.EventEnvelope) error {

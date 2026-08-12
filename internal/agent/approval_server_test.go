@@ -690,6 +690,20 @@ func TestApprovalServerStageApprovalSurvivesMissingHook(t *testing.T) {
 	}
 }
 
+func TestApprovalServerUsesStagedDecisionBeforeSessionReattach(t *testing.T) {
+	srv := newTestApprovalServer(t)
+	if err := srv.StageApproval("tool-startup", true); err != nil {
+		t.Fatal(err)
+	}
+	resp := postHook(t, srv.Addr(), map[string]any{
+		"session_id": "not-reattached", "tool_name": "Bash",
+		"tool_input": map[string]any{"command": "true"}, "tool_use_id": "tool-startup",
+	})
+	if got := resp.HookSpecificOutput.PermissionDecision; got != "allow" {
+		t.Fatalf("startup staged decision = %q, want allow", got)
+	}
+}
+
 func TestIsSafeTool(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

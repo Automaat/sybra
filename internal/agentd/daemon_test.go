@@ -422,6 +422,44 @@ func TestDaemonForwardsLocalApprovalRequestAsProtocolProgress(t *testing.T) {
 		!strings.Contains(string(got[0].Payload), `"toolUseId":"tool-1"`) {
 		t.Fatalf("approval events = %+v", got)
 	}
+	if owner := spool.snapshot().PendingApprovals["tool-1"]; owner != "run" {
+		t.Fatalf("approval owner = %q, want run", owner)
+	}
+}
+
+func TestSpoolRejectsCrossRunApprovalAndCompletesAtomically(t *testing.T) {
+	spool, err := OpenSpool(t.TempDir(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := executioncontract.EventEnvelope{RunID: "run-a", Type: executioncontract.EventProgress}
+	if err := spool.appendApprovalRequest(request, "tool-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := spool.stageApproval("tool-a", durableApproval{RunID: "run-b", Approved: true}); err == nil {
+		t.Fatal("cross-run approval must fail")
+	}
+	if err := spool.stageApproval("tool-a", durableApproval{RunID: "run-a", Approved: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := spool.update(func(state *durableState) error {
+		state.RunAgents["run-a"] = "agent-a"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	terminal := executioncontract.EventEnvelope{RunID: "run-a", Type: executioncontract.EventTerminal}
+	if err := spool.appendTerminalAndComplete(terminal); err != nil {
+		t.Fatal(err)
+	}
+	state := spool.snapshot()
+	if _, ok := state.RunAgents["run-a"]; ok || state.PendingApprovals["tool-a"] != "" {
+		t.Fatalf("atomic completion retained ownership: %+v", state)
+	}
+	events := state.Events["run-a"]
+	if len(events) != 2 || events[1].Type != executioncontract.EventTerminal {
+		t.Fatalf("events = %+v", events)
+	}
 }
 
 func TestDaemonTreatsStaleControlAsIdempotentNoOp(t *testing.T) {

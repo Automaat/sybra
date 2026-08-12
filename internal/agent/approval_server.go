@@ -409,6 +409,17 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 		s.respondAllow(w, input.ToolInput)
 		return
 	}
+	// A remote decision may have been durably staged before this daemon
+	// finished reattaching the provider session. Honor it before session lookup
+	// so startup ordering cannot turn an approved retry into Unknown session.
+	if staged, ok := s.takeStagedApproval(input.ToolUseID); ok {
+		if staged.Approved {
+			s.respondAllow(w, input.ToolInput)
+		} else {
+			s.respondDeny(w, "User denied this action")
+		}
+		return
+	}
 
 	// Find the agent by session_id; deny if unknown. The stdout parser sets
 	// SessionID from the init event on a separate goroutine, with no ordering
@@ -609,6 +620,26 @@ func (s *ApprovalServer) StageApproval(toolUseID string, approved bool) error {
 	}
 	s.staged[toolUseID] = response
 	return nil
+}
+
+func (s *ApprovalServer) takeStagedApproval(toolUseID string) (ApprovalResponse, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	decision, ok := s.staged[toolUseID]
+	if ok {
+		delete(s.staged, toolUseID)
+	}
+	return decision, ok
+}
+
+// DiscardStagedApprovals removes decisions whose owning run reached a durable
+// terminal fate before the provider consumed them.
+func (s *ApprovalServer) DiscardStagedApprovals(toolUseIDs []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, toolUseID := range toolUseIDs {
+		delete(s.staged, toolUseID)
+	}
 }
 
 // findAgentBySession resolves the agent a PreToolUse hook request came from.

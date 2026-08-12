@@ -153,13 +153,18 @@ func (d *Daemon) recoverRuns(ctx context.Context, state durableState) error {
 		delete(d.runAgents, runID)
 		delete(d.agentRuns, agentID)
 		d.mu.Unlock()
-		if err := d.emit(runID, executioncontract.EventTerminal, map[string]any{
+		if d.spool.hasTerminal(runID) {
+			approvalIDs := d.spool.approvalIDs(runID)
+			if err := d.spool.completeExistingRun(runID); err != nil {
+				return err
+			}
+			d.approvals.DiscardStagedApprovals(approvalIDs)
+			continue
+		}
+		if err := d.emitCompletion(runID, map[string]any{
 			"state": executioncontract.TerminalFailed, "error": "provider process unavailable after daemon restart",
 		}); err != nil {
 			return fmt.Errorf("agentd: report unrecoverable run %s: %w", runID, err)
-		}
-		if err := d.spool.update(func(state *durableState) error { delete(state.RunAgents, runID); return nil }); err != nil {
-			return err
 		}
 	}
 	return nil
@@ -391,10 +396,9 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 		delete(d.agentRuns, agentID)
 		delete(d.runCancels, agentID)
 		d.mu.Unlock()
-		emitErr := d.emit(spec.RunID, executioncontract.EventTerminal, map[string]any{"state": executioncontract.TerminalFailed, "error": err.Error()})
-		cleanupErr := d.spool.update(func(state *durableState) error { delete(state.RunAgents, spec.RunID); return nil })
-		if emitErr != nil || cleanupErr != nil {
-			return errors.Join(err, emitErr, cleanupErr)
+		emitErr := d.emitCompletion(spec.RunID, map[string]any{"state": executioncontract.TerminalFailed, "error": err.Error()})
+		if emitErr != nil {
+			return errors.Join(err, emitErr)
 		}
 		d.logger.Error("agentd.start.failed", "run_id", spec.RunID, "err", err)
 		// The failure is now a durable terminal outcome. Treat the command as
@@ -443,7 +447,13 @@ func (d *Daemon) emitManagerEvent(name string, data any) {
 	runID := d.agentRuns[agentID]
 	d.mu.RUnlock()
 	if runID != "" {
-		if err := d.emit(runID, kind, payload); err != nil {
+		var err error
+		if request, ok := data.(agent.ApprovalRequest); kind == executioncontract.EventProgress && ok {
+			err = d.emitApprovalRequest(runID, request.ToolUseID, payload)
+		} else {
+			err = d.emit(runID, kind, payload)
+		}
+		if err != nil {
 			d.logger.Error("agentd.event.persist", "run_id", runID, "type", kind, "err", err)
 		}
 	}
@@ -481,23 +491,12 @@ func (d *Daemon) completeAgent(a *agent.Agent) {
 	} else if !a.CompletedSuccessfully() {
 		state = executioncontract.TerminalFailed
 	}
-	terminalErr := d.emit(runID, executioncontract.EventTerminal, map[string]any{"state": state, "error": errText})
+	terminalErr := d.emitCompletion(runID, map[string]any{"state": state, "error": errText})
 	if terminalErr != nil {
 		d.logger.Error("agentd.terminal.persist", "run_id", runID, "err", terminalErr)
 		// Keep the durable ownership mapping. Startup reconciliation can retry a
 		// compact terminal fate after acknowledged events free spool capacity.
 		return
-	}
-	if err := d.spool.update(func(state *durableState) error {
-		delete(state.RunAgents, runID)
-		for toolUseID, decision := range state.Approvals {
-			if decision.RunID == runID {
-				delete(state.Approvals, toolUseID)
-			}
-		}
-		return nil
-	}); err != nil {
-		d.logger.Error("agentd.run_mapping.persist", "run_id", runID, "err", err)
 	}
 }
 
@@ -520,6 +519,21 @@ func (d *Daemon) replayMissingOutput(runID string, a *agent.Agent) error {
 
 func (d *Daemon) emit(runID string, kind executioncontract.EventType, payload any) error {
 	return d.emitWith(runID, kind, payload, d.spool.appendEvent)
+}
+
+func (d *Daemon) emitApprovalRequest(runID, toolUseID string, payload any) error {
+	return d.emitWith(runID, executioncontract.EventProgress, payload, func(event executioncontract.EventEnvelope) error {
+		return d.spool.appendApprovalRequest(event, toolUseID)
+	})
+}
+
+func (d *Daemon) emitCompletion(runID string, payload any) error {
+	approvalIDs := d.spool.approvalIDs(runID)
+	if err := d.emitWith(runID, executioncontract.EventTerminal, payload, d.spool.appendTerminalAndComplete); err != nil {
+		return err
+	}
+	d.approvals.DiscardStagedApprovals(approvalIDs)
+	return nil
 }
 
 func (d *Daemon) emitAdmissionFailure(runID string, payload any) error {
