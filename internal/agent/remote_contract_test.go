@@ -41,7 +41,7 @@ func TestRemoteRunSpecRoundTripPreservesExecutionIntent(t *testing.T) {
 		},
 		Environment: []executioncontract.EnvironmentBinding{
 			{Name: "FEATURE_MODE", Value: "remote"},
-			{Name: "TASK_GRANT", SecretRef: &executioncontract.SecretRef{Name: "run/task-123/grant"}},
+			{Name: "TASK_GRANT", SecretRef: &executioncontract.SecretRef{Name: "run/run-123/grant"}},
 		},
 		ExpectedOutputs: []executioncontract.ExpectedOutput{{
 			Name: "git-diff", Kind: "git_bundle", Root: executioncontract.RootArtifact,

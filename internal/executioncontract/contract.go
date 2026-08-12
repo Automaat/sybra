@@ -215,6 +215,9 @@ func (s RunSpec) Validate() error {
 		if err := binding.Validate(); err != nil {
 			return err
 		}
+		if binding.SecretRef != nil && !strings.HasPrefix(binding.SecretRef.Name, "run/"+s.RunID+"/") {
+			return fmt.Errorf("execution contract: environment %q secret reference belongs to another run", binding.Name)
+		}
 	}
 	for _, output := range s.ExpectedOutputs {
 		_, rootDeclared := declaredRoots[output.Root]
@@ -241,11 +244,12 @@ func (b EnvironmentBinding) Validate() error {
 	}
 	if b.SecretRef != nil {
 		refName := strings.TrimSpace(b.SecretRef.Name)
-		if masterCredentialName(strings.ToUpper(refName)) {
-			return fmt.Errorf("execution contract: provider or node credential reference %q is forbidden", b.SecretRef.Name)
-		}
-		if !strings.HasPrefix(refName, "run/") || !logicalPath(refName) {
+		segments := strings.Split(refName, "/")
+		if len(segments) < 3 || segments[0] != "run" || slices.Contains(segments, "") || !logicalPath(refName) {
 			return fmt.Errorf("execution contract: environment %q requires a run-scoped secret reference", b.Name)
+		}
+		if masterCredentialName(strings.ToUpper(segments[len(segments)-1])) {
+			return fmt.Errorf("execution contract: provider or node credential reference %q is forbidden", b.SecretRef.Name)
 		}
 	}
 	return nil
