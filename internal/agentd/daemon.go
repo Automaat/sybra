@@ -287,7 +287,7 @@ func (d *Daemon) applyCommand(ctx context.Context, envelope executioncontract.Co
 		}
 		agentID, ok := d.agentForRun(envelope.RunID)
 		if !ok {
-			return errors.New("agentd: steer target is not active")
+			return nil
 		}
 		return d.manager.SendMessage(agentID, payload.Text)
 	case executioncontract.CommandApprovalResponse:
@@ -300,7 +300,7 @@ func (d *Daemon) applyCommand(ctx context.Context, envelope executioncontract.Co
 		}
 		agentID, ok := d.agentForRun(envelope.RunID)
 		if !ok {
-			return errors.New("agentd: approval target is not active")
+			return nil
 		}
 		return d.manager.RespondExecutionApproval(agentID, payload.ToolUseID, payload.Approved)
 	default:

@@ -358,6 +358,33 @@ func TestDaemonForwardsLocalApprovalRequestAsProtocolProgress(t *testing.T) {
 	}
 }
 
+func TestDaemonTreatsStaleControlAsIdempotentNoOp(t *testing.T) {
+	spool, err := OpenSpool(t.TempDir(), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon := &Daemon{
+		logger: slog.New(slog.DiscardHandler), spool: spool,
+		runAgents: make(map[string]string), agentRuns: make(map[string]string), runCancels: make(map[string]context.CancelFunc),
+	}
+	for i, envelope := range []executioncontract.CommandEnvelope{
+		{
+			Version: executioncontract.CurrentVersion(), BuildVersion: "test", CommandID: "stale-steer", RunID: "gone",
+			IdempotencyKey: "stale-steer", Type: executioncontract.CommandSteer, SentAt: time.Now().UTC(),
+			Payload: json.RawMessage(`{"text":"too late"}`),
+		},
+		{
+			Version: executioncontract.CurrentVersion(), BuildVersion: "test", CommandID: "stale-approval", RunID: "gone",
+			IdempotencyKey: "stale-approval", Type: executioncontract.CommandApprovalResponse, SentAt: time.Now().UTC(),
+			Payload: json.RawMessage(`{"toolUseId":"tool-gone","approved":true}`),
+		},
+	} {
+		if err := daemon.handleCommand(t.Context(), workercontrol.Command{Sequence: uint64(i + 1), Envelope: envelope}); err != nil {
+			t.Fatalf("stale %s = %v", envelope.Type, err)
+		}
+	}
+}
+
 func TestDaemonSteersStopsAndEnforcesLocalCapacity(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture")
