@@ -544,6 +544,12 @@ func TrackedFilesAtDefaultBranch(ctx context.Context, barePath string) ([]string
 func FetchOrigin(ctx context.Context, barePath string) error {
 	return withBareRepoLock(barePath, func() error {
 		if err := CheckBareCloneHealth(ctx, barePath); err != nil {
+			// A preparation deadline or app shutdown is not evidence of clone
+			// corruption. Repairing with the same canceled context cannot do work
+			// and only appends a misleading secondary timeout to the real cause.
+			if ctx.Err() != nil {
+				return err
+			}
 			if _, repairErr := repairBareCloneLocked(ctx, barePath, ""); repairErr != nil {
 				return fmt.Errorf("%w; repair bare clone: %w", err, repairErr)
 			}

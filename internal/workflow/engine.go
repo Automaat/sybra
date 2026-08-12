@@ -30,6 +30,11 @@ const (
 	maxSyncSteps   = 100 // depth limit for synchronous step chains
 	maxStepHistory = 50  // max step records kept per execution
 	shellTimeout   = 30 * time.Second
+	// Reconstructing a PR-tail worktree can include bare-clone connectivity
+	// verification plus a network fetch. Keep it bounded, but do not apply the
+	// lightweight shell probe budget: large healthy clones routinely need more
+	// than 30 seconds. The engine context still cancels this during shutdown.
+	prWorktreePrepareTimeout = 10 * time.Minute
 	// Deliberately generous: effect leases have no heartbeat yet, so they must
 	// outlive the longest expected synchronous step execution to avoid false
 	// reclaims mid-step.

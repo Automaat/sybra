@@ -187,7 +187,7 @@ func (e *Engine) prWorktreeAndBranch(taskID string, step *Step, t TaskInfo) (wtP
 		err error
 	)
 	if resolver, resolves := e.execution.Worktrees.(PRWorktreeResolver); resolves {
-		ctx, cancel := context.WithTimeout(e.ctx, shellTimeout)
+		ctx, cancel := context.WithTimeout(e.ctx, prWorktreePrepareTimeout)
 		defer cancel()
 		wtPath, ok, err = resolver.ResolvePRWorktree(ctx, taskID)
 	} else {

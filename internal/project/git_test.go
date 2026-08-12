@@ -329,6 +329,29 @@ func TestFetchOriginNoRemote(t *testing.T) {
 	}
 }
 
+func TestFetchOriginDoesNotRepairAfterCallerDeadline(t *testing.T) {
+	bin := t.TempDir()
+	git := filepath.Join(bin, "git")
+	if err := os.WriteFile(git, []byte("#!/bin/sh\nexec sleep 10\n"), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := FetchOrigin(ctx, t.TempDir())
+	if err == nil {
+		t.Fatal("FetchOrigin succeeded with an expired caller deadline")
+	}
+	if strings.Contains(err.Error(), "repair bare clone") {
+		t.Fatalf("FetchOrigin attempted repair with a canceled context: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > hungGitReturnCeiling {
+		t.Fatalf("FetchOrigin returned after %s, want canceled health check to return directly", elapsed)
+	}
+}
+
 func TestFetchRemoteBranchTimesOutNetworkGit(t *testing.T) {
 	oldTimeout := networkGitTimeout
 	networkGitTimeout = 20 * time.Millisecond

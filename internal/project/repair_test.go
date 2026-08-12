@@ -545,6 +545,32 @@ func TestCheckBareCloneHealth_StillDetectsMissingReachableObject(t *testing.T) {
 	}
 }
 
+func TestBareRefTipsDeduplicatesSharedLocalAndRemoteTips(t *testing.T) {
+	src := initRepoWithCommit(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	if err := CloneBare(context.Background(), src, bare); err != nil {
+		t.Fatalf("clone bare: %v", err)
+	}
+	branch, err := DefaultBranch(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("default branch: %v", err)
+	}
+	if err := runBare(context.Background(), bare, "branch", "duplicate-tip", "refs/heads/"+branch); err != nil {
+		t.Fatalf("create duplicate local tip: %v", err)
+	}
+	if err := runBare(context.Background(), bare, "update-ref", "refs/remotes/origin/"+branch, "refs/heads/"+branch); err != nil {
+		t.Fatalf("create duplicate remote tip: %v", err)
+	}
+
+	refs, err := bareRefTips(context.Background(), bare)
+	if err != nil {
+		t.Fatalf("bareRefTips: %v", err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("bareRefTips = %v, want one unique object id", refs)
+	}
+}
+
 // The index parses fine here but names a blob the object database no longer
 // has — the shape behind the "recovery commit: invalid object <sha> for
 // <path>" checkpoint failures. ls-files alone reports it healthy, so

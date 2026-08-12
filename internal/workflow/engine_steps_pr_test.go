@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/Automaat/sybra/internal/project"
@@ -175,6 +176,7 @@ type fakePRWorktreeResolver struct {
 	err          error
 	resolveCalls int
 	getCalls     int
+	deadline     time.Time
 }
 
 type failStatusTaskProvider struct {
@@ -191,9 +193,25 @@ func (f *fakePRWorktreeResolver) GetWorktreePath(string) (string, bool) {
 	return "", false
 }
 
-func (f *fakePRWorktreeResolver) ResolvePRWorktree(context.Context, string) (path string, found bool, err error) {
+func (f *fakePRWorktreeResolver) ResolvePRWorktree(ctx context.Context, _ string) (path string, found bool, err error) {
 	f.resolveCalls++
+	f.deadline, _ = ctx.Deadline()
 	return f.path, f.path != "", f.err
+}
+
+func TestPRWorktreeRecoveryUsesPreparationBudget(t *testing.T) {
+	resolver := &fakePRWorktreeResolver{path: t.TempDir()}
+	engine := NewTestEngine(newTestStore(t), newMemTasks(), newMockAgents(), discardLogger())
+	engine.SetWorktreeGetter(resolver)
+
+	started := time.Now()
+	_, _, _, done, err := engine.prWorktreeAndBranch("t1", newCreatePRStep(), TaskInfo{ID: "t1", Branch: "feat/task"})
+	if err != nil || done {
+		t.Fatalf("prWorktreeAndBranch done=%v err=%v, want resolved worktree", done, err)
+	}
+	if got := resolver.deadline.Sub(started); got < prWorktreePrepareTimeout-time.Second {
+		t.Fatalf("resolver context budget = %s, want approximately %s", got, prWorktreePrepareTimeout)
+	}
 }
 
 func TestExecPushBranch_RecoversMissingWorktreeOnce(t *testing.T) {

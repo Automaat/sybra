@@ -71,25 +71,13 @@ steps:
           operator: equals
           value: human-required
         goto: ""
-      - goto: verify_commits
-
-  # Mechanical check (no LLM): verifies the branch has at least one commit
-  # ahead of origin/main. Skips gracefully when there is no worktree.
-  - id: verify_commits
-    name: Verify Commits
-    type: verify_commits
-    next:
-      - when:
-          field: task.status
-          operator: equals
-          value: human-required
-        goto: ""
-      - when:
-          field: task.status
-          operator: equals
-          value: done
-        goto: ""
       - goto: detect_tampering
+
+  # Do not run verify_commits here. This recovery workflow repairs and pushes
+  # the branch; it does not own the interrupted stage's definition of useful
+  # work. A clean merge can legitimately be a no-op (for example, a task that
+  # records an external decision), and the resumed workflow owns whether that
+  # zero-diff result is acceptable or needs another author attempt.
 
   # Mechanical check (no LLM): scans the diff for test/CI tampering before
   # letting the task move on. A high-severity finding flips to human-required.
