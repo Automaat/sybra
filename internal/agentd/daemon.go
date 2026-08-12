@@ -30,6 +30,7 @@ type Daemon struct {
 	approvals    *agent.ApprovalServer
 	capabilities []string
 
+	approvalMu sync.Mutex
 	mu         sync.RWMutex
 	sessionID  string
 	runAgents  map[string]string
@@ -297,6 +298,8 @@ func (d *Daemon) applyCommand(ctx context.Context, envelope executioncontract.Co
 		if err := json.Unmarshal(envelope.Payload, &payload); err != nil || payload.ToolUseID == "" {
 			return errors.New("agentd: approval response requires toolUseId")
 		}
+		d.approvalMu.Lock()
+		defer d.approvalMu.Unlock()
 		if _, ok := d.agentForRun(envelope.RunID); !ok {
 			return nil
 		}
@@ -439,6 +442,8 @@ func (d *Daemon) emitManagerEvent(name string, data any) {
 		kind = executioncontract.EventOutput
 		agentID = strings.TrimPrefix(name, agentevents.AgentOutputPrefix)
 	case strings.HasPrefix(name, agentevents.AgentApprovalPrefix):
+		d.approvalMu.Lock()
+		defer d.approvalMu.Unlock()
 		kind = executioncontract.EventProgress
 		agentID = strings.TrimPrefix(name, agentevents.AgentApprovalPrefix)
 		payload = map[string]any{"kind": "approval_request", "request": data}
@@ -462,6 +467,8 @@ func (d *Daemon) emitManagerEvent(name string, data any) {
 }
 
 func (d *Daemon) completeAgent(a *agent.Agent) {
+	d.approvalMu.Lock()
+	defer d.approvalMu.Unlock()
 	d.mu.Lock()
 	runID := d.agentRuns[a.ID]
 	cancel := d.runCancels[a.ID]
