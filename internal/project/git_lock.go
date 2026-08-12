@@ -139,7 +139,7 @@ func markFetched(barePath string) {
 	lastFetchAt.Store(filepath.Clean(barePath), fetchTTLNow())
 }
 
-func cloneHealthIsFresh(barePath string, generation string) bool {
+func cloneHealthIsFresh(barePath, generation string) bool {
 	if CloneHealthTTL <= 0 {
 		return false
 	}
@@ -151,7 +151,7 @@ func cloneHealthIsFresh(barePath string, generation string) bool {
 	return ok && entry.generation == generation && fetchTTLNow().Sub(entry.checkedAt) < CloneHealthTTL
 }
 
-func markCloneHealthy(barePath string, generation string) {
+func markCloneHealthy(barePath, generation string) {
 	lastCloneHealthAt.Store(filepath.Clean(barePath), cloneHealthEntry{
 		checkedAt:  fetchTTLNow(),
 		generation: generation,
