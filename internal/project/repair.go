@@ -174,8 +174,16 @@ func bareRefTips(ctx context.Context, barePath string) ([]string, error) {
 		return nil, fmt.Errorf("list ref tips: %w", err)
 	}
 	var refs []string
+	seen := make(map[string]struct{})
 	for line := range strings.SplitSeq(out, "\n") {
 		if tip := strings.TrimSpace(line); tip != "" {
+			// Local and origin-tracking refs commonly point at the same commit.
+			// Passing duplicate roots makes fsck repeat avoidable graph walks and
+			// produced enormous command/error lines on busy shared clones.
+			if _, ok := seen[tip]; ok {
+				continue
+			}
+			seen[tip] = struct{}{}
 			refs = append(refs, tip)
 		}
 	}

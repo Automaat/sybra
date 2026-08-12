@@ -658,6 +658,22 @@ func TestBuiltinSimpleTaskImplement_CodegenPrecedesValidation(t *testing.T) {
 	}
 }
 
+func TestBuiltinBranchConflictFixResumesWithoutCommitGate(t *testing.T) {
+	t.Parallel()
+
+	def := mustBuiltinDefinition(t, "branch-conflict-fix")
+	push := def.StepByID("push_recovered_branch")
+	if push == nil {
+		t.Fatal("push_recovered_branch step not found")
+	}
+	if got, err := ResolveTransition(push.Next, map[string]string{"task.status": string(taskstatus.InProgress)}); err != nil || got != "detect_tampering" {
+		t.Fatalf("push transition = %q, err=%v; want detect_tampering", got, err)
+	}
+	if def.StepByID("verify_commits") != nil {
+		t.Fatal("branch-conflict-fix must not reject a successful base-equivalent recovery")
+	}
+}
+
 // TestBuiltinSimpleTaskImplement_ExistingPRSkipsReadyReview pins the fix for
 // a re-fix cycle orphaning at ready-review: simple-task-review's own trigger
 // refuses pr_number != "", so parallel_gates (which subsumed verify_checks'
