@@ -35,7 +35,7 @@ type Run struct {
 // the change, so charging it against either breaker can quarantine a task
 // solely because its CLI or sandbox could not start.
 func consumesBudget(run Run) bool {
-	return run.Role == ReviewRole && !(run.Outcome == "failure" && run.TurnCount == 0)
+	return run.Role == ReviewRole && (run.Outcome != "failure" || run.TurnCount != 0)
 }
 
 // Budget bounds one task's automated review-role dispatches three ways:
