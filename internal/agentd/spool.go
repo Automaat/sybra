@@ -16,14 +16,17 @@ import (
 
 var ErrSpoolExhausted = errors.New("agentd: durable spool exhausted")
 
+const terminalReserveBytes int64 = 4096
+
 type durableState struct {
-	NodeID         string                                       `json:"nodeId"`
-	SessionID      string                                       `json:"sessionId,omitempty"`
-	LastCommandAck uint64                                       `json:"lastCommandAck,omitempty"`
-	Events         map[string][]executioncontract.EventEnvelope `json:"events,omitempty"`
-	RunAgents      map[string]string                            `json:"runAgents,omitempty"`
-	RunSequences   map[string]uint64                            `json:"runSequences,omitempty"`
-	Artifacts      map[string]workercontrol.ArtifactUpload      `json:"artifacts,omitempty"`
+	NodeID          string                                       `json:"nodeId"`
+	SessionID       string                                       `json:"sessionId,omitempty"`
+	LastCommandAck  uint64                                       `json:"lastCommandAck,omitempty"`
+	Events          map[string][]executioncontract.EventEnvelope `json:"events,omitempty"`
+	RunAgents       map[string]string                            `json:"runAgents,omitempty"`
+	RunSequences    map[string]uint64                            `json:"runSequences,omitempty"`
+	Artifacts       map[string]workercontrol.ArtifactUpload      `json:"artifacts,omitempty"`
+	HandledCommands map[string]uint64                            `json:"handledCommands,omitempty"`
 }
 
 type Spool struct {
@@ -59,6 +62,9 @@ func OpenSpool(root string, maxBytes int64) (*Spool, error) {
 	if s.state.Artifacts == nil {
 		s.state.Artifacts = make(map[string]workercontrol.ArtifactUpload)
 	}
+	if s.state.HandledCommands == nil {
+		s.state.HandledCommands = make(map[string]uint64)
+	}
 	return s, nil
 }
 
@@ -69,6 +75,10 @@ func (s *Spool) snapshot() durableState {
 }
 
 func (s *Spool) update(fn func(*durableState) error) error {
+	return s.updateLimit(s.maxBytes, fn)
+}
+
+func (s *Spool) updateLimit(limit int64, fn func(*durableState) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	next := cloneState(s.state)
@@ -79,8 +89,8 @@ func (s *Spool) update(fn func(*durableState) error) error {
 	if err != nil {
 		return err
 	}
-	if int64(len(data)) > s.maxBytes {
-		return fmt.Errorf("%w: %d > %d bytes", ErrSpoolExhausted, len(data), s.maxBytes)
+	if int64(len(data)) > limit {
+		return fmt.Errorf("%w: %d > %d bytes", ErrSpoolExhausted, len(data), limit)
 	}
 	if err := fsutil.AtomicWriteMode(s.path, append(data, '\n'), 0o600); err != nil {
 		return err
@@ -105,13 +115,15 @@ func cloneState(in durableState) durableState {
 		upload.Content = append([]byte(nil), upload.Content...)
 		out.Artifacts[id] = upload
 	}
+	out.HandledCommands = make(map[string]uint64, len(in.HandledCommands))
+	maps.Copy(out.HandledCommands, in.HandledCommands)
 	return out
 }
 
 // QueueArtifact durably schedules an artifact upload. Artifact assembly is a
 // separate boundary; this method only owns bounded delivery persistence.
 func (s *Spool) QueueArtifact(upload workercontrol.ArtifactUpload) error {
-	return s.update(func(state *durableState) error {
+	return s.updateLimit(s.nonTerminalLimit(), func(state *durableState) error {
 		state.Artifacts[upload.Manifest.ManifestID] = upload
 		return nil
 	})
@@ -125,13 +137,24 @@ func (s *Spool) ackArtifact(manifestID string) error {
 }
 
 func (s *Spool) appendEvent(event executioncontract.EventEnvelope) error {
-	return s.update(func(state *durableState) error {
+	limit := s.maxBytes
+	if event.Type != executioncontract.EventTerminal {
+		limit = s.nonTerminalLimit()
+	}
+	return s.updateLimit(limit, func(state *durableState) error {
 		event.Sequence = state.RunSequences[event.RunID] + 1
 		event.IdempotencyKey = fmt.Sprintf("%s:%d", event.RunID, event.Sequence)
 		state.Events[event.RunID] = append(state.Events[event.RunID], event)
 		state.RunSequences[event.RunID] = event.Sequence
 		return nil
 	})
+}
+
+func (s *Spool) nonTerminalLimit() int64 {
+	if s.maxBytes <= terminalReserveBytes {
+		return s.maxBytes
+	}
+	return s.maxBytes - terminalReserveBytes
 }
 
 func (s *Spool) ackEvents(runID string, through uint64) error {

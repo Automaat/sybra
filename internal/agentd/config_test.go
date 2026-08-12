@@ -48,7 +48,7 @@ func TestConfigRejectsUnsafeBoundaries(t *testing.T) {
 	base := Config{
 		LeaderURL: "https://leader.example.test", TokenEnv: "AGENTD_TOKEN", Capacity: 1,
 		Providers: []string{providerid.Claude}, SandboxMode: "enforce", WorkspaceRoot: "/var/lib/agentd/workspaces",
-		StateRoot: "/var/lib/agentd/state", SpoolMaxBytes: 1024,
+		StateRoot: "/var/lib/agentd/state", SpoolMaxBytes: 1 << 20,
 	}
 
 	nonTLS := base

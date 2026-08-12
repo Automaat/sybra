@@ -83,10 +83,20 @@ func (c *leaderClient) ackCommands(ctx context.Context, sessionID string, throug
 
 func (c *leaderClient) events(ctx context.Context, batch workercontrol.EventBatch) (uint64, error) {
 	var response struct {
-		AcknowledgedThrough uint64 `json:"acknowledgedThrough"`
+		AcknowledgedThrough map[string]uint64 `json:"acknowledgedThrough"`
 	}
 	err := c.call(ctx, http.MethodPost, "/worker/v1/events", batch, &response)
-	return response.AcknowledgedThrough, err
+	if err != nil {
+		return 0, err
+	}
+	var acknowledged uint64
+	for i := range batch.Events {
+		event := &batch.Events[i]
+		if through := response.AcknowledgedThrough[event.RunID]; through > acknowledged {
+			acknowledged = through
+		}
+	}
+	return acknowledged, nil
 }
 
 func (c *leaderClient) artifact(ctx context.Context, upload workercontrol.ArtifactUpload) error {

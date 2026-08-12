@@ -1073,7 +1073,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	}
 	m.recordToolResultFailures(a, event)
 	m.recordTerminalFailure(a, event)
-	if event.Type == "result" || time.Since(*lastEmit) >= headlessEmitInterval {
+	if a.unthrottledOutputEvents || event.Type == "result" || time.Since(*lastEmit) >= headlessEmitInterval {
 		m.emit(events.AgentOutput(a.ID), event)
 		*lastEmit = time.Now()
 	}

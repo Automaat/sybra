@@ -48,6 +48,7 @@ func (a *Agent) setAssignment(cfg RunConfig) {
 	a.AssignmentUnit = cfg.AssignmentUnit
 	a.AssignmentKey = cfg.AssignmentKey
 	a.DecisionVersion = cfg.DecisionVersion
+	a.unthrottledOutputEvents = cfg.UnthrottledOutputEvents
 }
 
 func (m *Manager) Run(cfg RunConfig) (*Agent, error) {

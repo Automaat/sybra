@@ -203,7 +203,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 			// Persist the applied cursor before acknowledging it remotely. If the
 			// process dies between the side effect and the HTTP acknowledgement,
 			// registration resumes from this cursor instead of replaying control.
-			if err := d.spool.update(func(state *durableState) error { state.LastCommandAck = command.Sequence; return nil }); err != nil {
+			if err := d.spool.update(func(state *durableState) error {
+				state.LastCommandAck = command.Sequence
+				for commandID, sequence := range state.HandledCommands {
+					if sequence <= command.Sequence {
+						delete(state.HandledCommands, commandID)
+					}
+				}
+				return nil
+			}); err != nil {
 				d.logger.Error("agentd.command_cursor.persist", "sequence", command.Sequence, "err", err)
 				break
 			}
@@ -245,6 +253,22 @@ func (d *Daemon) handleCommand(ctx context.Context, command workercontrol.Comman
 	if err := envelope.Validate(); err != nil {
 		return err
 	}
+	if envelope.Type != executioncontract.CommandStart {
+		alreadyHandled, err := d.beginControlCommand(command.Envelope.CommandID, command.Sequence)
+		if err != nil || alreadyHandled {
+			return err
+		}
+	}
+	err := d.applyCommand(ctx, envelope)
+	if err != nil && envelope.Type != executioncontract.CommandStart {
+		if clearErr := d.clearControlCommand(command.Envelope.CommandID); clearErr != nil {
+			return errors.Join(err, clearErr)
+		}
+	}
+	return err
+}
+
+func (d *Daemon) applyCommand(ctx context.Context, envelope executioncontract.CommandEnvelope) error {
 	switch envelope.Type {
 	case executioncontract.CommandStart:
 		return d.start(ctx, envelope)
@@ -282,6 +306,29 @@ func (d *Daemon) handleCommand(ctx context.Context, command workercontrol.Comman
 	default:
 		return fmt.Errorf("agentd: unsupported command %q", envelope.Type)
 	}
+}
+
+// beginControlCommand durably claims a one-shot control effect before it is
+// applied. A replay after a crash is acknowledged without repeating steering,
+// signaling, or an approval decision. Failed effects clear the claim so the
+// leader can retry them.
+func (d *Daemon) beginControlCommand(commandID string, sequence uint64) (bool, error) {
+	already := false
+	err := d.spool.update(func(state *durableState) error {
+		_, already = state.HandledCommands[commandID]
+		if !already {
+			state.HandledCommands[commandID] = sequence
+		}
+		return nil
+	})
+	return already, err
+}
+
+func (d *Daemon) clearControlCommand(commandID string) error {
+	return d.spool.update(func(state *durableState) error {
+		delete(state.HandledCommands, commandID)
+		return nil
+	})
 }
 
 func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEnvelope) error {
@@ -346,7 +393,7 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 		RequestedSkill: spec.Options.RequestedSkill, SkillExecutionMode: spec.Options.SkillExecutionMode,
 		SeedWorkingMemory: spec.Options.SeedWorkingMemory, ResumeSessionID: spec.Options.ResumeSessionID,
 		SandboxMode: d.cfg.SandboxMode, DisableProviderFailover: true, SkipDispatchJitter: true,
-		ExtraEnv: runEnv, StripEnvKeys: []string{d.cfg.TokenEnv},
+		ExtraEnv: runEnv, StripEnvKeys: d.secretEnvironmentKeys(), UnthrottledOutputEvents: true,
 		BeforeStart: func(agentID string) error {
 			d.mu.Lock()
 			d.runAgents[spec.RunID], d.agentRuns[agentID] = agentID, spec.RunID
@@ -377,6 +424,15 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 		return nil
 	}
 	return nil
+}
+
+func (d *Daemon) secretEnvironmentKeys() []string {
+	keys := make([]string, 0, len(d.cfg.SecretEnv)+1)
+	keys = append(keys, d.cfg.TokenEnv)
+	for _, envName := range d.cfg.SecretEnv {
+		keys = append(keys, envName)
+	}
+	return keys
 }
 
 func (d *Daemon) rejectStart(runID string, cause error) error {
@@ -439,8 +495,12 @@ func (d *Daemon) completeAgent(a *agent.Agent) {
 			errText = err.Error()
 		}
 	}
-	if err := d.emit(runID, executioncontract.EventTerminal, map[string]any{"state": state, "error": errText, "agent": a.View()}); err != nil {
-		d.logger.Error("agentd.terminal.persist", "run_id", runID, "err", err)
+	terminalErr := d.emit(runID, executioncontract.EventTerminal, map[string]any{"state": state, "error": errText})
+	if terminalErr != nil {
+		d.logger.Error("agentd.terminal.persist", "run_id", runID, "err", terminalErr)
+		// Keep the durable ownership mapping. Startup reconciliation can retry a
+		// compact terminal fate after acknowledged events free spool capacity.
+		return
 	}
 	if err := d.spool.update(func(state *durableState) error { delete(state.RunAgents, runID); return nil }); err != nil {
 		d.logger.Error("agentd.run_mapping.persist", "run_id", runID, "err", err)

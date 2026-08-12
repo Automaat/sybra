@@ -345,8 +345,9 @@ type Agent struct {
 	// executionSink/Handle are manager-owned local-adapter wiring. Provider
 	// output uses them to traverse the same recoverable event boundary as
 	// portable backends without exposing this canonical Agent to a backend.
-	executionSink   ExecutionEventSink
-	executionHandle ExecutionHandle
+	executionSink           ExecutionEventSink
+	executionHandle         ExecutionHandle
+	unthrottledOutputEvents bool
 
 	// mu guards mutable fields touched from multiple goroutines. See the
 	// package-level note above the Agent type.
@@ -2109,6 +2110,9 @@ type RunConfig struct {
 	// appended. It is a denylist at the shared provider spawn seam, so every
 	// headless launch shape (pipe and restart-surviving) applies it equally.
 	StripEnvKeys []string
+	// UnthrottledOutputEvents disables the UI-oriented 100ms event coalescing
+	// for execution owners that durably persist every provider observation.
+	UnthrottledOutputEvents bool
 	// EphemeralSandboxHome overrides the ordinary per-task sandbox home for a
 	// disposable local verification command. The verification lease owns it.
 	EphemeralSandboxHome string

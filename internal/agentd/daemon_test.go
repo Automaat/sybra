@@ -34,7 +34,7 @@ func TestDaemonExecutesFakeProviderThroughDurableProtocol(t *testing.T) {
 	}
 	claude := filepath.Join(bin, providerid.Claude)
 	script := `#!/bin/sh
-if [ -n "${AGENTD_TEST_TOKEN:-}" ]; then
+if [ -n "${AGENTD_TEST_TOKEN:-}" ] || [ -n "${AGENTD_UNUSED_RUN_SECRET:-}" ]; then
   printf '%s\n' '{"type":"result","subtype":"error","result":"leader credential leaked"}'
   exit 9
 fi
@@ -47,6 +47,7 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"agentd-session","t
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("AGENTD_TEST_TOKEN", "secret")
+	t.Setenv("AGENTD_UNUSED_RUN_SECRET", "scoped-secret")
 
 	database := dbtest.SQLite(t)
 	control := workercontrol.New(database)
@@ -56,6 +57,7 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"agentd-session","t
 		LeaderURL: server.URL, TokenEnv: "AGENTD_TEST_TOKEN", NodeID: "node-test", Capacity: 1,
 		Providers: []string{providerid.Claude}, SandboxMode: "report", WorkspaceRoot: filepath.Join(root, "workspaces"),
 		StateRoot: filepath.Join(root, "state"), SpoolMaxBytes: 1 << 20, LeaseSeconds: 30, PollSeconds: 1,
+		SecretEnv: map[string]string{"run/unused/input": "AGENTD_UNUSED_RUN_SECRET"},
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -105,6 +107,9 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"agentd-session","t
 	if events[0].Type != executioncontract.EventStarted || events[1].Type != executioncontract.EventOutput || events[len(events)-1].Type != executioncontract.EventTerminal {
 		t.Fatalf("event order = %+v", events)
 	}
+	if !strings.Contains(string(events[2].Payload), "remote output") {
+		t.Fatalf("fast assistant event was not delivered: %+v", events)
+	}
 	if err := executioncontract.ValidateEventOrder(events); err != nil {
 		t.Fatal(err)
 	}
@@ -134,6 +139,33 @@ func TestSpoolExhaustionIsExplicitAndPreservesPriorState(t *testing.T) {
 	}
 	if got := spool.snapshot().RunSequences["run"]; got != 0 {
 		t.Fatalf("failed append advanced sequence to %d", got)
+	}
+}
+
+func TestSpoolReservesRoomForTerminalFate(t *testing.T) {
+	spool, err := OpenSpool(t.TempDir(), 8192)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		err = spool.appendEvent(executioncontract.EventEnvelope{
+			Version: executioncontract.CurrentVersion(), BuildVersion: "test", RunID: "run",
+			EventID: "output", Type: executioncontract.EventOutput, ObservedAt: time.Now().UTC(),
+			Payload: json.RawMessage(`{"value":"` + strings.Repeat("x", 512) + `"}`),
+		})
+		if errors.Is(err, ErrSpoolExhausted) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := spool.appendEvent(executioncontract.EventEnvelope{
+		Version: executioncontract.CurrentVersion(), BuildVersion: "test", RunID: "run",
+		EventID: "terminal", Type: executioncontract.EventTerminal, ObservedAt: time.Now().UTC(),
+		Payload: json.RawMessage(`{"state":"failed","error":"durable spool exhausted"}`),
+	}); err != nil {
+		t.Fatalf("terminal fate did not fit reserved capacity: %v", err)
 	}
 }
 
@@ -374,6 +406,18 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"steer-session"}'
 	}
 	if err := daemon.handleCommand(ctx, workercontrol.Command{Sequence: 2, Envelope: steer}); err != nil {
 		t.Fatal(err)
+	}
+	if err := daemon.handleCommand(ctx, workercontrol.Command{Sequence: 2, Envelope: steer}); err != nil {
+		t.Fatal(err)
+	}
+	userInputs := 0
+	for _, event := range daemon.spool.snapshot().Events["run-steer"] {
+		if strings.Contains(string(event.Payload), `"type":"user_input"`) {
+			userInputs++
+		}
+	}
+	if userInputs != 1 {
+		t.Fatalf("replayed steer produced %d user-input events, want 1", userInputs)
 	}
 	waitForTerminal(t, daemon.spool, "run-steer")
 	waitForRunningCount(t, daemon, 0)
