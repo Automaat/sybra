@@ -240,9 +240,14 @@ func (s *Service) Enqueue(ctx context.Context, sessionID string, spec *execution
 				return err
 			}
 		}
-		if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT COALESCE(MAX(sequence), 0) + 1 FROM worker_commands WHERE session_id = ?`), sessionID).Scan(&sequence); err != nil {
+		var lastAck, maxSequence uint64
+		if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT last_command_ack FROM worker_sessions WHERE session_id = ?`), sessionID).Scan(&lastAck); err != nil {
 			return err
 		}
+		if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT COALESCE(MAX(sequence), 0) FROM worker_commands WHERE session_id = ?`), sessionID).Scan(&maxSequence); err != nil {
+			return err
+		}
+		sequence = max(lastAck, maxSequence) + 1
 		_, err = tx.ExecContext(ctx, s.db.Rebind(`INSERT INTO worker_commands
             (session_id, sequence, command_id, run_id, idempotency_key, command_type, payload_json, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), sessionID, sequence, envelope.CommandID, envelope.RunID,
@@ -310,11 +315,14 @@ func (s *Service) AckCommands(ctx context.Context, sessionID string, through uin
 		if err := s.requireSessionTx(ctx, tx, sessionID, true); err != nil {
 			return err
 		}
-		var maxSequence uint64
+		var maxSequence, lastAck uint64
 		if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT COALESCE(MAX(sequence), 0) FROM worker_commands WHERE session_id = ?`), sessionID).Scan(&maxSequence); err != nil {
 			return err
 		}
-		if through > maxSequence {
+		if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT last_command_ack FROM worker_sessions WHERE session_id = ?`), sessionID).Scan(&lastAck); err != nil {
+			return err
+		}
+		if through > max(maxSequence, lastAck) {
 			return errors.New("worker control: command acknowledgement exceeds delivered cursor")
 		}
 		now := db.TimeValue(s.now().UTC())

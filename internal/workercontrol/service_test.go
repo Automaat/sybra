@@ -246,6 +246,45 @@ func TestResumeRejectsStaleSessionAndInvalidCursor(t *testing.T) {
 	}
 }
 
+func TestResumePreservesCursorWhenEveryCommandWasAcknowledged(t *testing.T) {
+	database := dbtest.SQLite(t)
+	service := New(database)
+	session := register(t, service, "worker-acked-resume")
+	spec, start := startContract(t, "run-acked-resume", "effect-acked-resume")
+	first, err := service.Enqueue(t.Context(), session.SessionID, &spec, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.AckCommands(t.Context(), session.SessionID, first.Sequence); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := service.Register(t.Context(), RegisterRequest{
+		WorkerID: "worker-acked-resume", ResumeSessionID: session.SessionID, LastCommandAck: first.Sequence,
+		Negotiation: executioncontract.Negotiation{
+			ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.AckCommands(t.Context(), replacement.SessionID, first.Sequence); err != nil {
+		t.Fatalf("idempotent acknowledgement of inherited cursor: %v", err)
+	}
+	stop := start
+	stop.CommandID, stop.IdempotencyKey, stop.Type, stop.Payload = "command:after-resume", "stop:after-resume", executioncontract.CommandStop, nil
+	next, err := service.Enqueue(t.Context(), replacement.SessionID, nil, stop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Sequence != first.Sequence+1 {
+		t.Fatalf("next sequence = %d, want %d", next.Sequence, first.Sequence+1)
+	}
+	commands, err := service.PollCommands(t.Context(), replacement.SessionID, first.Sequence, 10, 0)
+	if err != nil || len(commands) != 1 || commands[0].Sequence != next.Sequence {
+		t.Fatalf("commands after inherited cursor = %+v, %v", commands, err)
+	}
+}
+
 func TestStartFenceAndEventStreamRejectChangedReplay(t *testing.T) {
 	database := dbtest.SQLite(t)
 	service := New(database)
