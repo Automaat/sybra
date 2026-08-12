@@ -188,7 +188,7 @@ func (s RunSpec) Validate() error {
 	if strings.TrimSpace(s.BuildVersion) == "" {
 		return errors.New("execution contract: build version is required")
 	}
-	if s.RunID == "" || s.EffectID == "" || s.IdempotencyKey == "" {
+	if !contractID.MatchString(s.RunID) || !contractID.MatchString(s.EffectID) || !contractID.MatchString(s.IdempotencyKey) {
 		return errors.New("execution contract: run, effect, and idempotency identities are required")
 	}
 	if s.Fence.TaskID == "" || s.Fence.WorkflowID == "" || s.Fence.StepID == "" || s.Fence.WorkflowGeneration < 0 {
@@ -233,7 +233,8 @@ func (s RunSpec) Validate() error {
 
 func (b EnvironmentBinding) Validate() error {
 	name := strings.ToUpper(strings.TrimSpace(b.Name))
-	if name == "" || (b.Value == "") == (b.SecretRef == nil) {
+	hasValue, hasSecretRef := strings.TrimSpace(b.Value) != "", b.SecretRef != nil
+	if name == "" || hasValue == hasSecretRef {
 		return fmt.Errorf("execution contract: environment %q must set exactly one of value or secretRef", b.Name)
 	}
 	if masterCredentialName(name) {
@@ -327,6 +328,9 @@ func validSensitivity(value Sensitivity) bool {
 }
 
 func DecodeRunSpec(data []byte) (RunSpec, error) {
+	if err := rejectProcessLocalFields(data); err != nil {
+		return RunSpec{}, err
+	}
 	var spec RunSpec
 	if err := json.Unmarshal(data, &spec); err != nil {
 		return RunSpec{}, fmt.Errorf("decode run spec: %w", err)
@@ -335,4 +339,27 @@ func DecodeRunSpec(data []byte) (RunSpec, error) {
 		return RunSpec{}, err
 	}
 	return spec, nil
+}
+
+func rejectProcessLocalFields(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return fmt.Errorf("decode execution contract object: %w", err)
+	}
+	for name := range fields {
+		if processLocalField(name) {
+			return fmt.Errorf("execution contract: process-local field %q is forbidden", name)
+		}
+	}
+	return nil
+}
+
+func processLocalField(name string) bool {
+	normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(name))
+	switch normalized {
+	case "dir", "sidecardir", "extraenv", "beforestart", "process", "processobject", "manager", "agent", "runconfig":
+		return true
+	default:
+		return false
+	}
 }

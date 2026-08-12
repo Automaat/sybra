@@ -40,7 +40,8 @@ func (e CommandEnvelope) Validate() error {
 	if err := e.Version.Validate(); err != nil {
 		return err
 	}
-	if e.BuildVersion == "" || e.CommandID == "" || e.RunID == "" || e.IdempotencyKey == "" || e.SentAt.IsZero() {
+	if strings.TrimSpace(e.BuildVersion) == "" || !contractID.MatchString(e.CommandID) || !contractID.MatchString(e.RunID) ||
+		!contractID.MatchString(e.IdempotencyKey) || e.SentAt.IsZero() {
 		return errors.New("execution contract: command identity, run, idempotency key, and sent time are required")
 	}
 	switch e.Type {
@@ -67,9 +68,7 @@ func validateStartCommandPayload(runID string, data json.RawMessage) error {
 		return errors.New("execution contract: start command requires an object payload")
 	}
 	for name := range fields {
-		normalized := strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(name))
-		switch normalized {
-		case "dir", "sidecardir", "extraenv", "beforestart", "process", "processobject", "manager", "agent":
+		if processLocalField(name) {
 			return fmt.Errorf("execution contract: process-local start field %q is forbidden", name)
 		}
 	}
@@ -121,7 +120,8 @@ func (e EventEnvelope) Validate() error {
 	if err := e.Version.Validate(); err != nil {
 		return err
 	}
-	if e.BuildVersion == "" || e.RunID == "" || e.Sequence == 0 || e.EventID == "" || e.IdempotencyKey == "" || e.ObservedAt.IsZero() {
+	if strings.TrimSpace(e.BuildVersion) == "" || !contractID.MatchString(e.RunID) || e.Sequence == 0 ||
+		!contractID.MatchString(e.EventID) || !contractID.MatchString(e.IdempotencyKey) || e.ObservedAt.IsZero() {
 		return errors.New("execution contract: event run, positive sequence, identities, and observation time are required")
 	}
 	switch e.Type {
@@ -216,7 +216,8 @@ func (r TerminalResult) Validate() error {
 	if err := r.Version.Validate(); err != nil {
 		return err
 	}
-	if r.BuildVersion == "" || r.RunID == "" || r.IdempotencyKey == "" || r.LastSequence == 0 || r.CompletedAt.IsZero() {
+	if strings.TrimSpace(r.BuildVersion) == "" || !contractID.MatchString(r.RunID) || !contractID.MatchString(r.IdempotencyKey) ||
+		r.LastSequence == 0 || r.CompletedAt.IsZero() {
 		return errors.New("execution contract: incomplete terminal result")
 	}
 	if r.State != TerminalSucceeded && r.State != TerminalFailed && r.State != TerminalCanceled {
@@ -225,11 +226,17 @@ func (r TerminalResult) Validate() error {
 	if r.State == TerminalSucceeded && ((r.ExitCode != nil && *r.ExitCode != 0) || r.Error != "") {
 		return errors.New("execution contract: succeeded result cannot contain a failure exit code or error")
 	}
+	if r.ExitCode != nil && *r.ExitCode < 0 {
+		return errors.New("execution contract: exit code must be non-negative")
+	}
 	if r.ArtifactState != ArtifactsPending && r.ArtifactState != ArtifactsReady && r.ArtifactState != ArtifactsFailed {
 		return fmt.Errorf("execution contract: invalid artifact state %q", r.ArtifactState)
 	}
 	if r.ArtifactState == ArtifactsReady && r.ArtifactManifestID == "" {
 		return errors.New("execution contract: ready artifacts require a manifest id")
+	}
+	if r.ArtifactManifestID != "" && !contractID.MatchString(r.ArtifactManifestID) {
+		return errors.New("execution contract: invalid artifact manifest id")
 	}
 	return nil
 }
@@ -262,14 +269,15 @@ func (m ArtifactManifest) Validate() error {
 	if err := m.Version.Validate(); err != nil {
 		return err
 	}
-	if m.BuildVersion == "" || m.RunID == "" || m.ManifestID == "" || m.IdempotencyKey == "" || m.GeneratedAt.IsZero() {
+	if strings.TrimSpace(m.BuildVersion) == "" || !contractID.MatchString(m.RunID) || !contractID.MatchString(m.ManifestID) ||
+		!contractID.MatchString(m.IdempotencyKey) || m.GeneratedAt.IsZero() {
 		return errors.New("execution contract: incomplete artifact manifest")
 	}
 	if m.State != ArtifactsPending && m.State != ArtifactsReady && m.State != ArtifactsFailed {
 		return fmt.Errorf("execution contract: invalid artifact manifest state %q", m.State)
 	}
 	for _, artifact := range m.Artifacts {
-		if artifact.Name == "" || artifact.Kind == "" || !sha256Digest.MatchString(artifact.DigestSHA256) ||
+		if strings.TrimSpace(artifact.Name) == "" || strings.TrimSpace(artifact.Kind) == "" || !sha256Digest.MatchString(artifact.DigestSHA256) ||
 			strings.TrimSpace(artifact.MediaType) == "" || artifact.SizeBytes < 0 ||
 			!validRoot(artifact.Root) || !logicalPath(artifact.Path) || !validSensitivity(artifact.Sensitivity) {
 			return fmt.Errorf("execution contract: invalid artifact %q", artifact.Name)

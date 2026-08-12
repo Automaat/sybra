@@ -127,6 +127,11 @@ func TestValidationRejectsLeaderPathsAndCredentials(t *testing.T) {
 	if err := bad.Validate(); err == nil {
 		t.Fatal("inline sensitive environment accepted")
 	}
+	bad = spec
+	bad.Environment = []EnvironmentBinding{{Name: "FEATURE_MODE", Value: "  \t"}}
+	if err := bad.Validate(); err == nil {
+		t.Fatal("whitespace-only environment value accepted")
+	}
 	for _, badRef := range []string{"/leader/private/worktrees/task-1", `C:\leader\main`, "refs/heads/../secret", "refs/heads/main.lock"} {
 		bad := spec
 		bad.Workspace.BaseRef = badRef
@@ -148,6 +153,47 @@ func TestValidationRejectsLeaderPathsAndCredentials(t *testing.T) {
 		if err := bad.Validate(); err == nil {
 			t.Fatal("identity-less workflow fence accepted")
 		}
+	}
+}
+
+func TestDecodeRunSpecRejectsKnownProcessLocalFields(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "v1-run-spec.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"dir", "sidecar_dir", "Extra-Env", "runConfig"} {
+		fields[name] = json.RawMessage(`"/leader/private"`)
+		encoded, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := DecodeRunSpec(encoded); err == nil {
+			t.Fatalf("known process-local field %q accepted", name)
+		}
+		delete(fields, name)
+	}
+}
+
+func TestEnvelopeIdentifiersRejectPathLikeValues(t *testing.T) {
+	now := time.Now().UTC()
+	command := CommandEnvelope{
+		Version: CurrentVersion(), BuildVersion: "test", CommandID: "../command", RunID: "run",
+		IdempotencyKey: "start", Type: CommandStart, SentAt: now, Payload: json.RawMessage(`{"runSpecRef":"run"}`),
+	}
+	if err := command.Validate(); err == nil {
+		t.Fatal("path-like command id accepted")
+	}
+	negative := -1
+	terminal := TerminalResult{
+		Version: CurrentVersion(), BuildVersion: "test", RunID: "run", IdempotencyKey: "terminal",
+		State: TerminalFailed, LastSequence: 1, ExitCode: &negative, ArtifactState: ArtifactsPending, CompletedAt: now,
+	}
+	if err := terminal.Validate(); err == nil {
+		t.Fatal("negative exit code accepted")
 	}
 }
 
