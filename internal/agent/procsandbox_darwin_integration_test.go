@@ -12,10 +12,39 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/Automaat/sybra/internal/providerid"
 )
+
+func TestSandboxReadEnforce_AllowsInheritedStderrMetadata(t *testing.T) {
+	if os.Getenv("SYBRA_TEST_FSTAT_STDERR") == "1" {
+		var stat syscall.Stat_t
+		if err := syscall.Fstat(2, &stat); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "fstat stderr: %v", err)
+			os.Exit(2)
+		}
+		return
+	}
+	if !sandboxExecAvailable() {
+		t.Skip("sandbox-exec not installed; enforce path unexercised on this host")
+	}
+	_, wt := setupLinkedWorktree(t)
+	cfg := buildEnforceCfg(t, wt)
+	profilePath, err := buildReadProfile(cfg.sandbox.profilePath, []string{os.Args[0]}, wt)
+	if err != nil {
+		t.Fatalf("build read profile: %v", err)
+	}
+	cfg.sandbox.profilePath = profilePath
+	cmd := newDarwinSandboxCmd(cfg, os.Args[0], "-test.run=^TestSandboxReadEnforce_AllowsInheritedStderrMetadata$")
+	cmd.Env = append(cmd.Env, "SYBRA_TEST_FSTAT_STDERR=1")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("fstat inherited stderr under read sandbox: %v: %s", err, stderr.String())
+	}
+}
 
 // TestSandboxReadEnforce_AllowsNativeClaudeInstall reproduces the native
 // Claude installer layout: ~/.local/bin/claude points at a versioned Bun

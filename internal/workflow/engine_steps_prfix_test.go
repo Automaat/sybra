@@ -12,6 +12,7 @@ import (
 
 	"github.com/Automaat/sybra/internal/github"
 	"github.com/Automaat/sybra/internal/project"
+	"github.com/Automaat/sybra/internal/taskstatus"
 )
 
 // scriptedPRStateFetcher returns a fixed state or error for every probe,
@@ -56,9 +57,9 @@ func TestClassifyPRFixResult(t *testing.T) {
 			wantReason:  "e2e provisioning timeout, reproduces on base",
 		},
 		{
-			name:        "sentinel no-op alias maps to flake",
+			name:        "sentinel no-op has its own outcome",
 			output:      "Nothing to change.\nSYBRA_PR_FIX_RESULT: no-op\n",
-			wantVerdict: PRFixFlake,
+			wantVerdict: PRFixNoop,
 		},
 		{
 			name:            "flake without a reason sentinel reports no reason",
@@ -1063,7 +1064,7 @@ func TestExecRoutePRFixResult_FlakeRoutesToInReviewWithoutCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != "in-review" {
+	if got.Status != taskstatus.InReview {
 		t.Fatalf("status = %q, want in-review (a flake must never park a human)", got.Status)
 	}
 	if reason := tasks.Reason("t1"); !strings.Contains(reason, "reproduces on base") {
@@ -1138,6 +1139,41 @@ func TestExecRoutePRFixResult_ReProbesResolvedRemotePR(t *testing.T) {
 	}
 	if out.Output == "continue" {
 		t.Fatal("route output = continue, want resolved-on-remote message")
+	}
+	got, err := tasks.GetTask("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "in-review" {
+		t.Fatalf("status = %q, want in-review", got.Status)
+	}
+}
+
+func TestExecRoutePRFixResult_NoopReturnsToReviewWhileCIPending(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	tasks := newMemTasks()
+	engine := NewTestEngine(store, tasks, newMockAgents(), discardLogger())
+	// OPEN+UNKNOWN is deliberately not Resolved(): unlike the remote re-probe
+	// fallback, an explicit no-op outcome must not depend on CI/mergeability.
+	engine.setPRStateFetcherForTest(scriptedPRStateFetcher{state: github.PRState{State: "OPEN", Mergeable: "UNKNOWN"}})
+	wf := &Execution{
+		WorkflowID: "pr-fix", CurrentStep: "route_pr_fix_result", State: ExecRunning,
+		StepHistory: []StepRecord{{
+			StepID: "fix", Status: "completed",
+			Output:  "No unresolved current comments remain.\nSYBRA_PR_FIX_RESULT: no-op\nSYBRA_PR_FIX_REASON: current review threads are resolved",
+			AgentID: "agent-1",
+		}},
+	}
+	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress", ProjectID: "acme/widgets", PRNumber: 1178, Workflow: wf})
+
+	out, err := engine.execRoutePRFixResult("t1", &Step{ID: "route_pr_fix_result"}, wf, TaskInfo{ID: "t1", ProjectID: "acme/widgets", PRNumber: 1178})
+	if err != nil {
+		t.Fatalf("execRoutePRFixResult: %v", err)
+	}
+	if !strings.Contains(out.Output, "live PR no longer requires changes") {
+		t.Fatalf("output = %q, want no-op message", out.Output)
 	}
 	got, err := tasks.GetTask("t1")
 	if err != nil {
@@ -1392,7 +1428,7 @@ func TestAdvanceStep_PRFixHumanRequiredUsesUntruncatedOutput(t *testing.T) {
 	tasks := newMemTasks()
 	agents := newMockAgents()
 	engine := NewTestEngine(store, tasks, agents, discardLogger())
-	tasks.Put(TaskInfo{ID: "t1", Status: "in-progress"})
+	tasks.Put(TaskInfo{ID: "t1", Status: taskstatus.InProgress})
 	if err := engine.StartWorkflow("t1", "pr-fix-route-test"); err != nil {
 		t.Fatalf("start workflow: %v", err)
 	}

@@ -74,11 +74,28 @@ func TestCoalescedFixPrompt_RequiresLivePRReprobeBeforeNoOp(t *testing.T) {
 		"gh pr view 7 --repo o/r --json state,mergeable,baseRefName",
 		"Do not trust NOTES.md",
 		"mergeable=CONFLICTING",
-		"SYBRA_PR_FIX_RESULT: human-required",
+		"SYBRA_PR_FIX_RESULT: no-op",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+}
+
+func TestCoalescedFixPrompt_ApprovedNoopDoesNotRequestHuman(t *testing.T) {
+	t.Parallel()
+
+	pr := github.PullRequest{
+		Number: 7, Repository: "o/r", HeadRefName: "feat", URL: "https://github.com/o/r/pull/7",
+		ReviewDecision: "APPROVED",
+	}
+	prompt := coalescedFixPrompt(context.Background(), []github.PRIssue{{Kind: github.PRIssueCIFailure, PR: pr}}, "", project.SigningAuto)
+
+	if !strings.Contains(prompt, "Approval preservation") || !strings.Contains(prompt, "SYBRA_PR_FIX_RESULT: no-op") {
+		t.Fatalf("approved PR prompt missing no-op approval guard:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "If no substantive fix is needed, stop without pushing and report `SYBRA_PR_FIX_RESULT: human-required`") {
+		t.Fatalf("approved PR prompt retains contradictory human-required no-op instruction:\n%s", prompt)
 	}
 }
 
