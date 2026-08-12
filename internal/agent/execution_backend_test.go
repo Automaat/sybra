@@ -22,6 +22,25 @@ type sinkDrivenFakeBackend struct {
 	answers []ApprovalResponse
 }
 
+type rejectingExecutionBackend struct{ err error }
+
+func (b rejectingExecutionBackend) Start(context.Context, ExecutionStart) (ExecutionHandle, error) {
+	return "", b.err
+}
+func (rejectingExecutionBackend) Stop(context.Context, ExecutionHandle) error { return nil }
+func (rejectingExecutionBackend) Steer(context.Context, ExecutionHandle, string) error {
+	return ErrExecutionControlUnsupported
+}
+func (rejectingExecutionBackend) RespondApproval(context.Context, ExecutionHandle, string, bool) error {
+	return ErrExecutionControlUnsupported
+}
+func (rejectingExecutionBackend) Inspect(context.Context, ExecutionHandle) (ExecutionInspection, error) {
+	return ExecutionInspection{}, ErrExecutionControlUnsupported
+}
+func (rejectingExecutionBackend) Recover(context.Context, ExecutionHandle, ExecutionEventSink) error {
+	return ErrExecutionControlUnsupported
+}
+
 func newSinkDrivenFakeBackend() *sinkDrivenFakeBackend {
 	return &sinkDrivenFakeBackend{release: make(chan struct{})}
 }
@@ -133,6 +152,33 @@ func TestExecutionBackendFakeDrivesCompleteManagerRun(t *testing.T) {
 	}
 	if len(backend.answers) != 1 || backend.answers[0].ToolUseID != "tool-1" || !backend.answers[0].Approved {
 		t.Fatalf("answers = %+v", backend.answers)
+	}
+}
+
+func TestExecutionBackendStartFailureLeavesNoRunningAgent(t *testing.T) {
+	m, _ := newTestManager(t)
+	wantErr := errors.New("kubernetes create rejected")
+	m.SetExecutionBackend(rejectingExecutionBackend{err: wantErr})
+
+	a, err := m.Run(RunConfig{
+		Mode: "headless", Name: "rejected", TaskID: "task-rejected",
+		Dir: t.TempDir(), Prompt: "unused",
+	})
+	if !errors.Is(err, wantErr) || a != nil {
+		t.Fatalf("Run agent=%v err=%v, want nil and %v", a, err, wantErr)
+	}
+	if m.HasRunningAgentForTask("task-rejected") {
+		t.Fatal("failed backend acceptance retained a running task agent")
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.agents) != 1 {
+		t.Fatalf("agents = %d, want retained terminal snapshot", len(m.agents))
+	}
+	for _, retained := range m.agents {
+		if retained.GetState() != StateStopped || !errors.Is(retained.GetExitErr(), wantErr) {
+			t.Fatalf("retained agent state=%s err=%v", retained.GetState(), retained.GetExitErr())
+		}
 	}
 }
 
@@ -399,10 +445,13 @@ func TestK8sRunnerSelectedThroughExecutionBackendContract(t *testing.T) {
 
 func TestLocalExecutionBackendRecoveryReceivesProviderEvents(t *testing.T) {
 	binDir := t.TempDir()
-	release := filepath.Join(t.TempDir(), "release")
+	controlDir := t.TempDir()
+	ready := filepath.Join(controlDir, "ready")
+	release := filepath.Join(controlDir, "release")
 	fakeClaude := filepath.Join(binDir, providerid.Claude)
 	script := `#!/bin/sh
 cat >/dev/null
+touch "$SYBRA_TEST_READY"
 while [ ! -f "$SYBRA_TEST_RELEASE" ]; do sleep 0.01; done
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"recovered output"}]}}'
 printf '%s\n' '{"type":"result","subtype":"success","result":"done","session_id":"recovered-session","total_cost_usd":0}'
@@ -419,10 +468,17 @@ printf '%s\n' '{"type":"result","subtype":"success","result":"done","session_id"
 	})
 	a, err := m.Run(RunConfig{
 		Mode: "headless", Name: "local recovery", Dir: t.TempDir(), Prompt: "test",
-		HeadlessSteerable: false, ExtraEnv: []string{"SYBRA_TEST_RELEASE=" + release},
+		HeadlessSteerable: false,
+		ExtraEnv:          []string{"SYBRA_TEST_READY=" + ready, "SYBRA_TEST_RELEASE=" + release},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+	}
+	if !pollUntil(5*time.Second, time.Millisecond, func() bool {
+		_, statErr := os.Stat(ready)
+		return statErr == nil
+	}) {
+		t.Fatal("local provider did not become ready")
 	}
 	execution, err := m.executionForAgent(a.ID)
 	if err != nil {

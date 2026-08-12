@@ -108,8 +108,11 @@ func (m *Manager) RunContext(ctx context.Context, cfg RunConfig) (*Agent, error)
 	m.logger.Info("agent.start", "id", id, "taskID", cfg.TaskID, "mode", cfg.Mode, "provider", a.Provider, "model", a.Model)
 
 	if err := m.startAgentRunner(ctx, a, cfg, prov, cancel); err != nil {
+		a.SetExitErr(err)
+		a.SetState(StateStopped)
 		m.completeAttempt(ctx, a, "start_failed")
 		m.markAgentDone(ctx, a)
+		m.emit(events.AgentState(id), a)
 		return nil, err
 	}
 	m.startAttemptHeartbeat(ctx, a)
