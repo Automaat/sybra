@@ -263,14 +263,21 @@ func TestBuiltinPRReview_RequiresPRNumber(t *testing.T) {
 	t.Parallel()
 
 	pr := defByID(t, "pr-review")
+	plan := defByID(t, "simple-task-plan")
 
 	noPR := map[string]string{"task.tags": "backend,review,medium,bug"}
 	if EvalConditions(pr.Trigger.Conditions, noPR) {
 		t.Fatalf("pr-review must not match a category 'review' tag with no pr_number; conditions=%+v", pr.Trigger.Conditions)
 	}
+	if !EvalConditions(plan.Trigger.Conditions, noPR) {
+		t.Fatalf("simple-task-plan must pick up a category 'review' tag with no pr_number; conditions=%+v", plan.Trigger.Conditions)
+	}
 
 	withPR := map[string]string{"task.tags": "review", "task.pr_number": "2599"}
 	if !EvalConditions(pr.Trigger.Conditions, withPR) {
 		t.Fatalf("pr-review must still match a real PR-review task; conditions=%+v", pr.Trigger.Conditions)
+	}
+	if EvalConditions(plan.Trigger.Conditions, withPR) {
+		t.Fatalf("simple-task-plan must leave a real PR-review task to pr-review; conditions=%+v", plan.Trigger.Conditions)
 	}
 }
