@@ -76,7 +76,14 @@ func Prepare(ctx context.Context, root, source string, spec executioncontract.Ru
 	if _, err := gitexec.Output(ctx, gitexec.Options{Dir: worktree}, "rev-parse", "--verify", spec.Workspace.BaseSHA+"^{commit}"); err != nil {
 		return Layout{}, fmt.Errorf("agent workspace: immutable base is unavailable: %w", err)
 	}
-	if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "merge-base", "--is-ancestor", spec.Workspace.BaseSHA, spec.Workspace.BaseRef); err != nil {
+	baseRef := spec.Workspace.BaseRef
+	if strings.HasPrefix(baseRef, "refs/heads/") {
+		remoteRef := "refs/remotes/origin/" + strings.TrimPrefix(baseRef, "refs/heads/")
+		if _, err := gitexec.Output(ctx, gitexec.Options{Dir: worktree}, "rev-parse", "--verify", remoteRef+"^{commit}"); err == nil {
+			baseRef = remoteRef
+		}
+	}
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "merge-base", "--is-ancestor", spec.Workspace.BaseSHA, baseRef); err != nil {
 		return Layout{}, fmt.Errorf("agent workspace: base SHA is not an ancestor of base ref: %w", err)
 	}
 	if err := gitexec.Run(ctx, gitexec.Options{Dir: worktree}, "checkout", "--detach", spec.Workspace.BaseSHA); err != nil {
@@ -256,9 +263,13 @@ func Collect(ctx context.Context, layout Layout, spec executioncontract.RunSpec,
 	if err != nil {
 		return executioncontract.ArtifactManifest{}, nil, err
 	}
+	manifestDigest := sha256.New()
+	_, _ = manifestDigest.Write([]byte(spec.RunID))
+	_, _ = manifestDigest.Write([]byte{0})
+	_, _ = manifestDigest.Write(content)
 	manifest := executioncontract.ArtifactManifest{
 		Version: executioncontract.CurrentVersion(), BuildVersion: build, RunID: spec.RunID,
-		ManifestID: "manifest-" + fmt.Sprintf("%x", sha256.Sum256(content)), IdempotencyKey: spec.RunID + ":artifacts:v1",
+		ManifestID: "manifest-" + fmt.Sprintf("%x", manifestDigest.Sum(nil)), IdempotencyKey: spec.RunID + ":artifacts:v1",
 		State: executioncontract.ArtifactsReady, GeneratedAt: time.Now().UTC(), Fence: spec.Fence,
 		Workspace: executioncontract.WorkspaceHandback{RepositoryID: spec.Workspace.RepositoryID, BaseSHA: spec.Workspace.BaseSHA, BaseRef: spec.Workspace.BaseRef, FinalSHA: finalSHA},
 		Artifacts: entries,

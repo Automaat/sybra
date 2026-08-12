@@ -68,6 +68,17 @@ func TestPrepareUsesImmutableBaseAndCollectsDeterministicHandback(t *testing.T) 
 	if !reflect.DeepEqual(manifest1, manifest2) || !reflect.DeepEqual(content1, content2) {
 		t.Fatal("repeated collection was not deterministic")
 	}
+	otherRun := spec
+	otherRun.RunID = "run-other"
+	otherRun.EffectID = "effect-other"
+	otherRun.IdempotencyKey = "intent-other"
+	manifest3, content3, err := Collect(t.Context(), layout, otherRun, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(content1, content3) || manifest1.ManifestID == manifest3.ManifestID {
+		t.Fatal("identical cross-run packages did not receive run-scoped manifest ids")
+	}
 	if strings.Contains(string(content1), "PRIVATE CANARY") {
 		t.Fatal("private working memory leaked into handback")
 	}
@@ -78,6 +89,21 @@ func TestPrepareUsesImmutableBaseAndCollectsDeterministicHandback(t *testing.T) 
 	}
 	if !reflect.DeepEqual(gotPaths, wantPaths) {
 		t.Fatalf("member paths = %v, want %v", gotPaths, wantPaths)
+	}
+}
+
+func TestPrepareResolvesNonDefaultBranchThroughOrigin(t *testing.T) {
+	source, base := repository(t)
+	git(t, source, "branch", "release", base)
+	spec := runSpec(base, false)
+	spec.Workspace.BaseRef = "refs/heads/release"
+	layout, err := Prepare(t.Context(), filepath.Join(t.TempDir(), "runs"), source, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := gitexec.Output(t.Context(), gitexec.Options{Dir: layout.Worktree}, "rev-parse", "HEAD")
+	if err != nil || head != base {
+		t.Fatalf("release checkout = %q, %v", head, err)
 	}
 }
 

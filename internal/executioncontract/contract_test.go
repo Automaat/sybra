@@ -321,4 +321,29 @@ func TestRunSpecKeepsWorkingMemoryPrivateToAuthors(t *testing.T) {
 	if err := spec.Validate(); err == nil || !strings.Contains(err.Error(), "working-memory") {
 		t.Fatalf("undeclared memory channel error = %v", err)
 	}
+	spec.Role = "implementation"
+	spec.Options.SeedWorkingMemory = true
+	spec.ExpectedOutputs[len(spec.ExpectedOutputs)-1].Sensitivity = SensitivityPublic
+	if err := spec.Validate(); err == nil || !strings.Contains(err.Error(), "remain secret") {
+		t.Fatalf("public working memory error = %v", err)
+	}
+}
+
+func TestRunSpecRejectsDaemonRootEnvironmentOverridesAndDuplicates(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "v1-run-spec.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := DecodeRunSpec(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Environment = []EnvironmentBinding{{Name: "SYBRA_ARTIFACT_ROOT", Value: "/tmp/elsewhere"}}
+	if err := spec.Validate(); err == nil || !strings.Contains(err.Error(), "daemon-owned") {
+		t.Fatalf("root override error = %v", err)
+	}
+	spec.Environment = []EnvironmentBinding{{Name: "FEATURE", Value: "one"}, {Name: "feature", Value: "two"}}
+	if err := spec.Validate(); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("duplicate environment error = %v", err)
+	}
 }

@@ -220,10 +220,16 @@ func (s RunSpec) Validate() error {
 	for _, root := range s.Workspace.Roots {
 		declaredRoots[root] = struct{}{}
 	}
+	seenEnvironment := map[string]bool{}
 	for _, binding := range s.Environment {
 		if err := binding.Validate(); err != nil {
 			return err
 		}
+		name := strings.ToUpper(strings.TrimSpace(binding.Name))
+		if seenEnvironment[name] {
+			return fmt.Errorf("execution contract: duplicate environment binding %q", binding.Name)
+		}
+		seenEnvironment[name] = true
 		if binding.SecretRef != nil && !strings.HasPrefix(binding.SecretRef.Name, "run/"+s.RunID+"/") {
 			return fmt.Errorf("execution contract: environment %q secret reference belongs to another run", binding.Name)
 		}
@@ -253,6 +259,9 @@ func (s RunSpec) Validate() error {
 		if output.Root == RootWorkingMemory && !s.Options.SeedWorkingMemory {
 			return errors.New("execution contract: working-memory output requires author memory seeding")
 		}
+		if output.Root == RootWorkingMemory && output.Sensitivity != SensitivitySecret {
+			return errors.New("execution contract: working-memory output must remain secret")
+		}
 	}
 	return nil
 }
@@ -271,6 +280,9 @@ func (b EnvironmentBinding) Validate() error {
 	hasValue, hasSecretRef := strings.TrimSpace(b.Value) != "", b.SecretRef != nil
 	if name == "" || hasValue == hasSecretRef {
 		return fmt.Errorf("execution contract: environment %q must set exactly one of value or secretRef", b.Name)
+	}
+	if slices.Contains([]string{"SYBRA_WORKTREE_ROOT", "SYBRA_SIDECAR_ROOT", "SYBRA_ARTIFACT_ROOT", "SYBRA_WORKING_MEMORY_ROOT"}, name) {
+		return fmt.Errorf("execution contract: daemon-owned environment %q is forbidden", b.Name)
 	}
 	if masterCredentialName(name) {
 		return fmt.Errorf("execution contract: provider or node credential %q is forbidden", b.Name)
