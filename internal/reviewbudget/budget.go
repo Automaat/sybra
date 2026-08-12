@@ -30,7 +30,7 @@ type Run struct {
 	TurnCount int
 }
 
-// spent reports whether a review run consumed semantic review capacity. A
+// consumesBudget reports whether a review run consumed semantic review capacity. A
 // provider process that fails before its first assistant event never reviewed
 // the change, so charging it against either breaker can quarantine a task
 // solely because its CLI or sandbox could not start.

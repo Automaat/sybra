@@ -195,7 +195,9 @@ func buildReadProfile(base string, roots []string, dir string) (string, error) {
 	b.WriteString("(deny file-read*)\n")
 	// Provider runtimes inspect inherited pipes before startup. Claude's Bun
 	// launcher calls fstat(2) on stderr while deciding whether to enable
-	// colours; metadata does not expose file contents or widen path reads.
+	// colours. Seatbelt cannot target inherited descriptors here, so this
+	// intentionally permits metadata probes for paths outside roots; content
+	// reads remain restricted to the explicit allowlist below.
 	b.WriteString("(allow file-read-metadata)\n(allow file-read*\n")
 	// Seatbelt checks metadata access on every ancestor while traversing to an
 	// allowed subpath. Grant the ancestors as exact literals only; without
