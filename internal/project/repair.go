@@ -65,13 +65,16 @@ func CheckBareCloneHealth(ctx context.Context, barePath string) error {
 	if err != nil {
 		return fmt.Errorf("bare clone health check failed: %w", err)
 	}
-	objectsGeneration, err := cloneObjectStoreGeneration(filepath.Join(barePath, "objects"))
-	if err != nil {
-		return fmt.Errorf("bare clone health check failed: fingerprint object store: %w", err)
-	}
-	generation := strings.Join(refs, "\n") + "\x00" + objectsGeneration
-	if cloneHealthIsFresh(barePath, generation) {
-		return nil
+	generation := ""
+	if CloneHealthTTL > 0 {
+		objectsGeneration, fingerprintErr := cloneObjectStoreGeneration(filepath.Join(barePath, "objects"))
+		if fingerprintErr != nil {
+			return fmt.Errorf("bare clone health check failed: fingerprint object store: %w", fingerprintErr)
+		}
+		generation = strings.Join(refs, "\n") + "\x00" + objectsGeneration
+		if cloneHealthIsFresh(barePath, generation) {
+			return nil
+		}
 	}
 	if len(refs) == 0 {
 		// No refs to scope to (fresh or fully quarantined clone). Nothing has

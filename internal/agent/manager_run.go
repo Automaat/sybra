@@ -447,6 +447,9 @@ func (m *Manager) jitterRunDispatchContext(ctx context.Context, cfg RunConfig) e
 	if cfg.Mode != "headless" || cfg.SkipDispatchJitter {
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return m.jitterDispatchContext(ctx)
 }
 

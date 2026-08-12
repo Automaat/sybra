@@ -152,6 +152,9 @@ func cloneHealthIsFresh(barePath, generation string) bool {
 }
 
 func markCloneHealthy(barePath, generation string) {
+	if CloneHealthTTL <= 0 {
+		return
+	}
 	lastCloneHealthAt.Store(filepath.Clean(barePath), cloneHealthEntry{
 		checkedAt:  fetchTTLNow(),
 		generation: generation,
