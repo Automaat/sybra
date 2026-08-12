@@ -164,15 +164,22 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 		m.mu.Unlock()
 
 		m.logger.Info("agent.reattach", "id", a.ID, "pid", a.PID, "task", a.TaskID, "events", len(a.Output()))
-		if !m.notifyReattach(ctx, a) {
+		if !m.finishReattach(ctx, a, startOffset, r.ProcStartedAt) {
 			continue
 		}
-		m.startAttemptHeartbeat(ctx, a)
-		go m.reattachHeadless(ctx, a, startOffset, r.ProcStartedAt)
-		m.emit(events.AgentState(a.ID), a)
 		out = append(out, a)
 	}
 	return out
+}
+
+func (m *Manager) finishReattach(ctx context.Context, a *Agent, startOffset int64, procStartedAt string) bool {
+	if !m.notifyReattach(ctx, a) {
+		return false
+	}
+	m.startAttemptHeartbeat(ctx, a)
+	go m.reattachHeadless(ctx, a, startOffset, procStartedAt)
+	m.emit(events.AgentState(a.ID), a)
+	return true
 }
 
 func (m *Manager) notifyReattach(ctx context.Context, a *Agent) bool {

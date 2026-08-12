@@ -420,16 +420,7 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 	// finished reattaching the provider session. Honor it before session lookup
 	// so startup ordering cannot turn an approved retry into Unknown session.
 	fingerprint := approvalFingerprint(input)
-	if staged, ok := s.lookupStagedApproval(input.ToolUseID); ok {
-		if staged.Fingerprint != fingerprint {
-			s.respondDeny(w, "Approval request does not match the authorized tool invocation")
-			return
-		}
-		if staged.Response.Approved {
-			s.respondAllow(w, input.ToolInput)
-		} else {
-			s.respondDeny(w, "User denied this action")
-		}
+	if s.respondFromStagedApproval(w, input, fingerprint) {
 		return
 	}
 
@@ -647,6 +638,22 @@ func (s *ApprovalServer) lookupStagedApproval(toolUseID string) (stagedApproval,
 	defer s.mu.Unlock()
 	decision, ok := s.staged[toolUseID]
 	return decision, ok
+}
+
+func (s *ApprovalServer) respondFromStagedApproval(w http.ResponseWriter, input hookInput, fingerprint string) bool {
+	staged, ok := s.lookupStagedApproval(input.ToolUseID)
+	if !ok {
+		return false
+	}
+	switch {
+	case staged.Fingerprint != fingerprint:
+		s.respondDeny(w, "Approval request does not match the authorized tool invocation")
+	case staged.Response.Approved:
+		s.respondAllow(w, input.ToolInput)
+	default:
+		s.respondDeny(w, "User denied this action")
+	}
+	return true
 }
 
 func approvalFingerprint(input hookInput) string {
