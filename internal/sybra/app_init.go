@@ -55,6 +55,7 @@ import (
 	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/umbrella"
 	"github.com/Automaat/sybra/internal/watcher"
+	"github.com/Automaat/sybra/internal/workercontrol"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/workflowpr"
 )
@@ -1917,6 +1918,7 @@ func (a *App) initDatabase(ctx context.Context) error {
 		return fmt.Errorf("database: %w", err)
 	}
 	a.database = database
+	a.workerControl = workercontrol.New(database)
 	a.logger.Info("db.ready", "backend", backend, "dsn", db.RedactDSN(dsn), "schema_version", version)
 	return nil
 }
@@ -1929,6 +1931,7 @@ func (a *App) closeDatabase() {
 		a.logger.Warn("db.close", "err", err)
 	}
 	a.database = nil
+	a.workerControl = nil
 }
 
 func (a *App) initLoopScheduler(ctx context.Context, emit func(string, any)) {

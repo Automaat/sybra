@@ -62,16 +62,17 @@ func openDesktopBoard(ln net.Listener, cfg *config.Config, logger *slog.Logger, 
 	origin := "http://" + ln.Addr().String()
 
 	return serveDesktopBoard(ln, origin, logger, cfg, httpserve.Options{
-		Logger:      logger,
-		Broker:      broker,
-		Services:    sybra.ServiceRegistry(app),
-		Admit:       app.HTTPAdmission,
-		StaticFS:    sub,
-		EnablePprof: httpserve.PprofEnabled(),
-		Home:        config.HomeDir(),
-		APIBase:     origin + "/api",
-		Token:       cfg.Server.AuthToken,
-		SelfOrigin:  origin,
+		Logger:        logger,
+		Broker:        broker,
+		Services:      sybra.ServiceRegistry(app),
+		Admit:         app.HTTPAdmission,
+		StaticFS:      sub,
+		EnablePprof:   httpserve.PprofEnabled(),
+		Home:          config.HomeDir(),
+		APIBase:       origin + "/api",
+		Token:         cfg.Server.AuthToken,
+		SelfOrigin:    origin,
+		WorkerControl: app.WorkerControlHandler(),
 	})
 }
 
