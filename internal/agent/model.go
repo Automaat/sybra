@@ -1174,7 +1174,7 @@ func (a *Agent) BeginPendingPromptDispatch() (string, bool) {
 func (a *Agent) CommitPendingPromptDispatch() {
 	a.mu.Lock()
 	if len(a.convo.pendingPrompts) > 0 {
-		a.convo.pendingPrompts = a.convo.pendingPrompts[1:]
+		a.convo.pendingPrompts = slices.Delete(a.convo.pendingPrompts, 0, 1)
 	}
 	a.steerDispatching = false
 	a.mu.Unlock()
