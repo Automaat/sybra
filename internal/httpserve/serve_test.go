@@ -20,6 +20,28 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
 
+func TestWorkerControlRouteRequiresAuthentication(t *testing.T) {
+	if !httpserve.RequestRequiresAuth(httptest.NewRequest(http.MethodPost, "/worker/v1/register", http.NoBody)) {
+		t.Fatal("worker control route was left outside bearer authentication")
+	}
+	worker := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	// StaticFS enables the SPA's GET / catch-all. Worker control must coexist
+	// with it without triggering a ServeMux pattern-conflict panic.
+	handler := httpserve.Handler(httpserve.Options{Logger: testLogger(), WorkerControl: worker, StaticFS: bundle()}, "secret", nil)
+	unauthorized := httptest.NewRecorder()
+	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost, "/worker/v1/register", http.NoBody))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d", unauthorized.Code)
+	}
+	authorizedRequest := httptest.NewRequest(http.MethodPost, "/worker/v1/register", http.NoBody)
+	authorizedRequest.Header.Set("Authorization", "Bearer secret")
+	authorized := httptest.NewRecorder()
+	handler.ServeHTTP(authorized, authorizedRequest)
+	if authorized.Code != http.StatusNoContent {
+		t.Fatalf("authorized status = %d", authorized.Code)
+	}
+}
+
 func bundle() fstest.MapFS {
 	return fstest.MapFS{
 		"index.html":     &fstest.MapFile{Data: []byte("<html>app</html>")},

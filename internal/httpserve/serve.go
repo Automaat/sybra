@@ -108,6 +108,9 @@ type Options struct {
 	// loopback port an attaching window will pick — and its bearer token is
 	// added here rather than handed to the page.
 	Proxy *ProxyTarget
+	// WorkerControl serves the durable outbound worker protocol. It is nil on
+	// attached desktops and file-backend boards that cannot persist delivery.
+	WorkerControl http.Handler
 }
 
 // ProxyTarget is the board an attached UI's calls are forwarded to.
@@ -173,6 +176,13 @@ func BuildMux(opts Options) *http.ServeMux {
 	}
 
 	mountAPI(mux, opts)
+	if opts.WorkerControl != nil && opts.Proxy == nil {
+		// Keep the outer patterns method-specific. A method-agnostic subtree
+		// conflicts with the SPA's "GET /" catch-all under Go's ServeMux
+		// specificity rules and panics during server startup.
+		mux.Handle("GET /worker/v1/", opts.WorkerControl)
+		mux.Handle("POST /worker/v1/", opts.WorkerControl)
+	}
 
 	mux.HandleFunc("GET /runtime-config.js", runtimeConfig(opts))
 
@@ -484,6 +494,8 @@ func RequestRequiresAuth(r *http.Request) bool {
 	case r.URL.Path == "/metrics":
 		return true
 	case strings.HasPrefix(r.URL.Path, "/api/"):
+		return true
+	case strings.HasPrefix(r.URL.Path, "/worker/v1/"):
 		return true
 	case strings.HasPrefix(r.URL.Path, "/debug/pprof/"):
 		return true

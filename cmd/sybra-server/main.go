@@ -280,13 +280,14 @@ func buildMux(logger *slog.Logger, broker *sse.Broker, app *sybra.App) *http.Ser
 
 func serveOptions(logger *slog.Logger, broker *sse.Broker, app *sybra.App) httpserve.Options {
 	return httpserve.Options{
-		Logger:      logger,
-		Broker:      broker,
-		Services:    sybra.ServiceRegistry(app),
-		Admit:       app.HTTPAdmission,
-		StaticDir:   os.Getenv("SYBRA_STATIC_DIR"),
-		EnablePprof: httpserve.PprofEnabled(),
-		Home:        config.HomeDir(),
+		Logger:        logger,
+		Broker:        broker,
+		Services:      sybra.ServiceRegistry(app),
+		Admit:         app.HTTPAdmission,
+		StaticDir:     os.Getenv("SYBRA_STATIC_DIR"),
+		EnablePprof:   httpserve.PprofEnabled(),
+		Home:          config.HomeDir(),
+		WorkerControl: sybra.WorkerControlHandler(app),
 		// No SelfOrigin and no Token: a browser reaching this over the network
 		// gets the origin alone and asks its operator for the token.
 	}

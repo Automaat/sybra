@@ -70,6 +70,7 @@ import (
 	"github.com/Automaat/sybra/internal/tasksnapshot"
 	"github.com/Automaat/sybra/internal/toolledger"
 	"github.com/Automaat/sybra/internal/watcher"
+	"github.com/Automaat/sybra/internal/workercontrol"
 	"github.com/Automaat/sybra/internal/workflow"
 	"github.com/Automaat/sybra/internal/worktree"
 	"github.com/google/uuid"
@@ -91,6 +92,7 @@ type App struct {
 	tasks          *task.Manager
 	projects       *project.Store
 	database       *db.DB
+	workerControl  *workercontrol.Service
 	loopAgents     loopagent.Repository
 	loopSched      *loopagent.Scheduler
 	agents         *agent.Manager
