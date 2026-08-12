@@ -239,8 +239,14 @@ func (b EnvironmentBinding) Validate() error {
 	if b.Value != "" && sensitiveEnvironmentName(name) {
 		return fmt.Errorf("execution contract: sensitive environment %q must use a secret reference", b.Name)
 	}
-	if b.SecretRef != nil && strings.TrimSpace(b.SecretRef.Name) == "" {
-		return fmt.Errorf("execution contract: environment %q has an empty secret reference", b.Name)
+	if b.SecretRef != nil {
+		refName := strings.TrimSpace(b.SecretRef.Name)
+		if masterCredentialName(strings.ToUpper(refName)) {
+			return fmt.Errorf("execution contract: provider or node credential reference %q is forbidden", b.SecretRef.Name)
+		}
+		if !strings.HasPrefix(refName, "run/") || !logicalPath(refName) {
+			return fmt.Errorf("execution contract: environment %q requires a run-scoped secret reference", b.Name)
+		}
 	}
 	return nil
 }
@@ -249,6 +255,7 @@ func masterCredentialName(name string) bool {
 	if slices.Contains([]string{
 		"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GITHUB_TOKEN", "GH_TOKEN", "KUBECONFIG",
 		"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+		"SYBRA_AUTH_TOKEN", "SYBRA_SERVER_TOKEN", "SYBRA_FOLLOWER_TOKEN",
 	}, name) {
 		return true
 	}

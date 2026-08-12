@@ -112,6 +112,13 @@ func TestValidationRejectsLeaderPathsAndCredentials(t *testing.T) {
 			t.Fatalf("credential %q accepted", name)
 		}
 	}
+	for _, ref := range []string{"OPENAI_API_KEY", "SYBRA_SERVER_TOKEN", "../shared/master", "global/provider-key"} {
+		bad := spec
+		bad.Environment = []EnvironmentBinding{{Name: "SCOPED_INPUT", SecretRef: &SecretRef{Name: ref}}}
+		if err := bad.Validate(); err == nil {
+			t.Fatalf("unscoped or master credential reference %q accepted", ref)
+		}
+	}
 	bad := spec
 	bad.Environment = []EnvironmentBinding{{Name: "DATABASE_PASSWORD", Value: "plaintext"}}
 	if err := bad.Validate(); err == nil {
