@@ -12,6 +12,7 @@ import (
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/notes"
+	"github.com/Automaat/sybra/internal/providerid"
 )
 
 func TestPrepareUsesImmutableBaseAndCollectsDeterministicHandback(t *testing.T) {
@@ -149,7 +150,7 @@ func runSpec(base string, memory bool) executioncontract.RunSpec {
 	return executioncontract.RunSpec{
 		Version: executioncontract.CurrentVersion(), BuildVersion: "test", RunID: "run-test", EffectID: "effect-test", IdempotencyKey: "intent-test",
 		Fence: executioncontract.GenerationFence{TaskID: "task", TaskGeneration: 1, WorkflowID: "ship", WorkflowGeneration: 1, StepID: "implement"},
-		Role:  "implementation", Provider: executioncontract.ProviderIntent{Provider: "claude", Model: "sonnet"}, Prompt: executioncontract.Prompt{Text: "work"}, Deadline: time.Now().Add(time.Hour),
+		Role:  "implementation", Provider: executioncontract.ProviderIntent{Provider: providerid.Claude, Model: "sonnet"}, Prompt: executioncontract.Prompt{Text: "work"}, Deadline: time.Now().Add(time.Hour),
 		Options:   executioncontract.ExecutionOptions{SeedWorkingMemory: memory},
 		Workspace: executioncontract.Workspace{RepositoryID: "repo", BaseSHA: base, BaseRef: "refs/heads/main", Roots: []executioncontract.LogicalRoot{executioncontract.RootWorktree, executioncontract.RootArtifact, executioncontract.RootSidecar, executioncontract.RootWorkingMemory}},
 	}

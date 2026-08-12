@@ -270,9 +270,11 @@ func Collect(ctx context.Context, layout Layout, spec executioncontract.RunSpec,
 }
 
 func splitNUL(data []byte) []string {
-	parts := strings.Split(string(data), "\x00")
-	if len(parts) > 0 && parts[len(parts)-1] == "" {
-		parts = parts[:len(parts)-1]
+	parts := make([]string, 0)
+	for part := range strings.SplitSeq(string(data), "\x00") {
+		if part != "" {
+			parts = append(parts, part)
+		}
 	}
 	return parts
 }

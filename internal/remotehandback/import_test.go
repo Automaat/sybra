@@ -11,6 +11,7 @@ import (
 	"github.com/Automaat/sybra/internal/agentworkspace"
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/gitexec"
+	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/remotehandback"
 )
 
@@ -134,5 +135,5 @@ func git(t *testing.T, dir string, args ...string) {
 	}
 }
 func spec(base string) executioncontract.RunSpec {
-	return executioncontract.RunSpec{Version: executioncontract.CurrentVersion(), BuildVersion: "test", RunID: "run", EffectID: "effect", IdempotencyKey: "intent", Fence: executioncontract.GenerationFence{TaskID: "task", TaskGeneration: 1, WorkflowID: "ship", WorkflowGeneration: 1, StepID: "implement"}, Role: "implementation", Provider: executioncontract.ProviderIntent{Provider: "claude", Model: "sonnet"}, Prompt: executioncontract.Prompt{Text: "work"}, Deadline: time.Now().Add(time.Hour), Workspace: executioncontract.Workspace{RepositoryID: "repo", BaseSHA: base, BaseRef: "refs/heads/main", Roots: []executioncontract.LogicalRoot{executioncontract.RootWorktree, executioncontract.RootArtifact}}}
+	return executioncontract.RunSpec{Version: executioncontract.CurrentVersion(), BuildVersion: "test", RunID: "run", EffectID: "effect", IdempotencyKey: "intent", Fence: executioncontract.GenerationFence{TaskID: "task", TaskGeneration: 1, WorkflowID: "ship", WorkflowGeneration: 1, StepID: "implement"}, Role: "implementation", Provider: executioncontract.ProviderIntent{Provider: providerid.Claude, Model: "sonnet"}, Prompt: executioncontract.Prompt{Text: "work"}, Deadline: time.Now().Add(time.Hour), Workspace: executioncontract.Workspace{RepositoryID: "repo", BaseSHA: base, BaseRef: "refs/heads/main", Roots: []executioncontract.LogicalRoot{executioncontract.RootWorktree, executioncontract.RootArtifact}}}
 }
