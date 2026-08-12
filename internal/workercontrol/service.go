@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/Automaat/sybra/internal/db"
@@ -73,16 +74,20 @@ type Service struct {
 	db       *db.DB
 	now      func() time.Time
 	lease    time.Duration
+	notifyMu sync.Mutex
 	notifyCh chan struct{}
 }
 
 func New(database *db.DB) *Service {
-	return &Service{db: database, now: time.Now, lease: 45 * time.Second, notifyCh: make(chan struct{}, 1)}
+	return &Service{db: database, now: time.Now, lease: 45 * time.Second, notifyCh: make(chan struct{})}
 }
 
 func (s *Service) Register(ctx context.Context, request RegisterRequest) (Session, error) {
 	if request.WorkerID == "" || request.Negotiation.BuildVersion == "" {
 		return Session{}, errors.New("worker control: worker and build identities are required")
+	}
+	if request.ResumeSessionID == "" && request.LastCommandAck != 0 {
+		return Session{}, errors.New("worker control: a fresh session cannot claim a command cursor")
 	}
 	version, err := executioncontract.Negotiate(executioncontract.Negotiation{
 		ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "leader",
@@ -103,6 +108,7 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 	if err != nil {
 		return Session{}, fmt.Errorf("encode capabilities: %w", err)
 	}
+	state := "active"
 	err = s.db.InTx(ctx, func(tx *sql.Tx) error {
 		if request.ResumeSessionID != "" {
 			query := `SELECT worker_id, state, last_command_ack FROM worker_sessions WHERE session_id = ?`
@@ -111,9 +117,10 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 			}
 			var priorWorker, priorState string
 			var priorAck, maxSequence uint64
-			if err := tx.QueryRowContext(ctx, s.db.Rebind(query), request.ResumeSessionID).Scan(&priorWorker, &priorState, &priorAck); err != nil || priorWorker != request.WorkerID || priorState != "active" {
+			if err := tx.QueryRowContext(ctx, s.db.Rebind(query), request.ResumeSessionID).Scan(&priorWorker, &priorState, &priorAck); err != nil || priorWorker != request.WorkerID || (priorState != "active" && priorState != "draining") {
 				return ErrStaleSession
 			}
+			state = priorState
 			if err := tx.QueryRowContext(ctx, s.db.Rebind(`SELECT COALESCE(MAX(sequence), 0) FROM worker_commands WHERE session_id = ?`), request.ResumeSessionID).Scan(&maxSequence); err != nil {
 				return err
 			}
@@ -121,14 +128,18 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 				return errors.New("worker control: resume command cursor is outside the durable range")
 			}
 		}
-		if _, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE worker_sessions SET state = 'replaced' WHERE worker_id = ? AND state = 'active'`), request.WorkerID); err != nil {
+		fenceQuery, fenceArg := `UPDATE worker_sessions SET state = 'replaced' WHERE worker_id = ? AND state = 'active'`, request.WorkerID
+		if state == "draining" {
+			fenceQuery, fenceArg = `UPDATE worker_sessions SET state = 'replaced' WHERE session_id = ? AND state = 'draining'`, request.ResumeSessionID
+		}
+		if _, err := tx.ExecContext(ctx, s.db.Rebind(fenceQuery), fenceArg); err != nil {
 			return fmt.Errorf("fence prior session: %w", err)
 		}
 		_, err := tx.ExecContext(ctx, s.db.Rebind(`INSERT INTO worker_sessions
 			(session_id, worker_id, protocol_major, protocol_minor, build_version, capabilities_json, state, lease_expires_at, last_command_ack, created_at, heartbeat_at)
-			VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`),
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 			sessionID, request.WorkerID, version.Major, version.Minor, request.Negotiation.BuildVersion, string(capabilities),
-			db.TimeValue(now.Add(lease)), request.LastCommandAck, db.TimeValue(now), db.TimeValue(now))
+			state, db.TimeValue(now.Add(lease)), request.LastCommandAck, db.TimeValue(now), db.TimeValue(now))
 		if err != nil || request.ResumeSessionID == "" {
 			return err
 		}
@@ -148,7 +159,7 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 		return Session{}, fmt.Errorf("register worker: %w", err)
 	}
 	return Session{SessionID: sessionID, WorkerID: request.WorkerID, Version: version, BuildVersion: request.Negotiation.BuildVersion,
-		Capabilities: request.Capabilities, State: "active", LeaseExpiresAt: now.Add(lease), LastCommandAck: request.LastCommandAck}, nil
+		Capabilities: request.Capabilities, State: state, LeaseExpiresAt: now.Add(lease), LastCommandAck: request.LastCommandAck}, nil
 }
 
 func (s *Service) Heartbeat(ctx context.Context, sessionID string, capabilities []string) (Session, error) {
@@ -158,7 +169,8 @@ func (s *Service) Heartbeat(ctx context.Context, sessionID string, capabilities 
 		return Session{}, err
 	}
 	result, err := s.db.ExecContext(ctx, `UPDATE worker_sessions SET heartbeat_at = ?, lease_expires_at = ?, capabilities_json = ?
-        WHERE session_id = ? AND state = 'active'`, db.TimeValue(now), db.TimeValue(now.Add(s.lease)), string(encoded), sessionID)
+        WHERE session_id = ? AND state IN ('active', 'draining') AND lease_expires_at > ?`, db.TimeValue(now),
+		db.TimeValue(now.Add(s.lease)), string(encoded), sessionID, db.TimeValue(now))
 	if err != nil {
 		return Session{}, err
 	}
@@ -296,6 +308,7 @@ func (s *Service) PollCommands(ctx context.Context, sessionID string, after uint
 	deadline := time.NewTimer(min(max(wait, 0), 25*time.Second))
 	defer deadline.Stop()
 	for {
+		notified := s.notification()
 		commands, err := s.commands(ctx, sessionID, after, limit)
 		if err != nil || len(commands) > 0 || wait <= 0 {
 			return commands, err
@@ -305,7 +318,7 @@ func (s *Service) PollCommands(ctx context.Context, sessionID string, after uint
 			return nil, ctx.Err()
 		case <-deadline.C:
 			return []Command{}, nil
-		case <-s.notifyCh:
+		case <-notified:
 		}
 	}
 }
@@ -607,10 +620,16 @@ func (s *Service) requireSessionTx(ctx context.Context, tx *sql.Tx, sessionID st
 }
 
 func (s *Service) notify() {
-	select {
-	case s.notifyCh <- struct{}{}:
-	default:
-	}
+	s.notifyMu.Lock()
+	close(s.notifyCh)
+	s.notifyCh = make(chan struct{})
+	s.notifyMu.Unlock()
+}
+
+func (s *Service) notification() <-chan struct{} {
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+	return s.notifyCh
 }
 
 func randomID() (string, error) {

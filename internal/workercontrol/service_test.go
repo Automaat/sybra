@@ -149,6 +149,9 @@ func TestSessionLeaseAndProtocolFailuresAreExplicit(t *testing.T) {
 	if _, err := service.PollCommands(t.Context(), session.SessionID, 0, 10, 0); !errors.Is(err, ErrLeaseExpired) {
 		t.Fatalf("expired lease error = %v", err)
 	}
+	if _, err := service.Heartbeat(t.Context(), session.SessionID, nil); !errors.Is(err, ErrStaleSession) {
+		t.Fatalf("expired heartbeat error = %v, want ErrStaleSession", err)
+	}
 	_, err := service.Register(t.Context(), RegisterRequest{
 		WorkerID: "worker-future",
 		Negotiation: executioncontract.Negotiation{
@@ -157,6 +160,44 @@ func TestSessionLeaseAndProtocolFailuresAreExplicit(t *testing.T) {
 	})
 	if !errors.Is(err, executioncontract.ErrUnsupportedMajor) {
 		t.Fatalf("unsupported protocol error = %v", err)
+	}
+}
+
+func TestDrainingSessionCanHeartbeatAndResume(t *testing.T) {
+	database := dbtest.SQLite(t)
+	service := New(database)
+	now := time.Now().UTC()
+	service.now = func() time.Time { return now }
+	session := register(t, service, "worker-drain")
+	spec, start := startContract(t, "run-drain", "effect-drain")
+	if _, err := service.Enqueue(t.Context(), session.SessionID, &spec, start); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Drain(t.Context(), session.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return now.Add(40 * time.Second) }
+	renewed, err := service.Heartbeat(t.Context(), session.SessionID, []string{"draining"})
+	if err != nil || renewed.State != "draining" {
+		t.Fatalf("draining heartbeat = %+v, %v", renewed, err)
+	}
+	service.now = func() time.Time { return now.Add(60 * time.Second) }
+	replacement, err := service.Register(t.Context(), RegisterRequest{
+		WorkerID: "worker-drain", ResumeSessionID: session.SessionID,
+		Negotiation: executioncontract.Negotiation{
+			ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test",
+		},
+	})
+	if err != nil || replacement.State != "draining" {
+		t.Fatalf("draining resume = %+v, %v", replacement, err)
+	}
+	if _, err := service.AppendEvents(t.Context(), EventBatch{SessionID: replacement.SessionID, Events: []executioncontract.EventEnvelope{event("run-drain", 1, executioncontract.EventTerminal)}}); err != nil {
+		t.Fatalf("draining replacement could not complete run: %v", err)
+	}
+	stop := start
+	stop.CommandID, stop.IdempotencyKey, stop.Type, stop.Payload = "command:drain-stop", "stop:drain", executioncontract.CommandStop, nil
+	if _, err := service.Enqueue(t.Context(), replacement.SessionID, nil, stop); !errors.Is(err, ErrStaleSession) {
+		t.Fatalf("draining replacement accepted new command: %v", err)
 	}
 }
 
@@ -181,6 +222,35 @@ func TestCommandLongPollWakesWithoutDropping(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("long poll did not wake")
+	}
+}
+
+func TestCommandNotificationWakesEveryWorkerPoll(t *testing.T) {
+	database := dbtest.SQLite(t)
+	service := New(database)
+	sessionA := register(t, service, "worker-poll-a")
+	sessionB := register(t, service, "worker-poll-b")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	resultA, resultB := make(chan []Command, 1), make(chan []Command, 1)
+	for session, result := range map[string]chan []Command{sessionA.SessionID: resultA, sessionB.SessionID: resultB} {
+		go func() {
+			commands, _ := service.PollCommands(ctx, session, 0, 10, 2*time.Second)
+			result <- commands
+		}()
+	}
+	time.Sleep(20 * time.Millisecond)
+	spec, command := startContract(t, "run-poll-b", "effect-poll-b")
+	if _, err := service.Enqueue(t.Context(), sessionB.SessionID, &spec, command); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case commands := <-resultB:
+		if len(commands) != 1 {
+			t.Fatalf("worker B commands = %+v", commands)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker B poll was not woken")
 	}
 }
 
@@ -220,6 +290,14 @@ func TestResumeRejectsStaleSessionAndInvalidCursor(t *testing.T) {
 	database := dbtest.SQLite(t)
 	service := New(database)
 	session := register(t, service, "worker-resume")
+	if _, err := service.Register(t.Context(), RegisterRequest{
+		WorkerID: "worker-fresh-cursor", LastCommandAck: 100,
+		Negotiation: executioncontract.Negotiation{
+			ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "worker-test",
+		},
+	}); err == nil {
+		t.Fatal("fresh session accepted a nonzero acknowledgement cursor")
+	}
 	spec, start := startContract(t, "run-resume", "effect-resume")
 	if _, err := service.Enqueue(t.Context(), session.SessionID, &spec, start); err != nil {
 		t.Fatal(err)
