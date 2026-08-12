@@ -50,6 +50,7 @@ type Record struct {
 	StdinPath               string        `yaml:"stdin_path,omitempty"`      // FIFO for interactive survival
 	PendingPrompts          []string      `yaml:"pending_prompts,omitempty"` // queued follow-up turns
 	SteerCommandIDs         []string      `yaml:"steer_command_ids,omitempty"`
+	SteerDispatching        bool          `yaml:"steer_dispatching,omitempty"`
 	UnthrottledOutputEvents bool          `yaml:"unthrottled_output_events,omitempty"`
 	OneShot                 bool          `yaml:"one_shot,omitempty"`
 	MaxTurns                int           `yaml:"max_turns,omitempty"`

@@ -26,7 +26,13 @@ type durableState struct {
 	RunAgents      map[string]string                            `json:"runAgents,omitempty"`
 	RunSequences   map[string]uint64                            `json:"runSequences,omitempty"`
 	OutputCounts   map[string]uint64                            `json:"outputCounts,omitempty"`
+	Approvals      map[string]durableApproval                   `json:"approvals,omitempty"`
 	Artifacts      map[string]workercontrol.ArtifactUpload      `json:"artifacts,omitempty"`
+}
+
+type durableApproval struct {
+	RunID    string `json:"runId"`
+	Approved bool   `json:"approved"`
 }
 
 type Spool struct {
@@ -66,6 +72,9 @@ func OpenSpool(root string, maxBytes int64, capacity ...int) (*Spool, error) {
 	}
 	if s.state.OutputCounts == nil {
 		s.state.OutputCounts = make(map[string]uint64)
+	}
+	if s.state.Approvals == nil {
+		s.state.Approvals = make(map[string]durableApproval)
 	}
 	if s.state.Artifacts == nil {
 		s.state.Artifacts = make(map[string]workercontrol.ArtifactUpload)
@@ -116,6 +125,8 @@ func cloneState(in durableState) durableState {
 	maps.Copy(out.RunSequences, in.RunSequences)
 	out.OutputCounts = make(map[string]uint64, len(in.OutputCounts))
 	maps.Copy(out.OutputCounts, in.OutputCounts)
+	out.Approvals = make(map[string]durableApproval, len(in.Approvals))
+	maps.Copy(out.Approvals, in.Approvals)
 	out.Artifacts = make(map[string]workercontrol.ArtifactUpload, len(in.Artifacts))
 	for id := range in.Artifacts {
 		upload := in.Artifacts[id]
@@ -154,6 +165,16 @@ func (s *Spool) ackArtifact(manifestID string) error {
 	})
 }
 
+func (s *Spool) stageApproval(toolUseID string, decision durableApproval) error {
+	return s.updateLimit(s.nonTerminalLimit(), func(state *durableState) error {
+		if prior, exists := state.Approvals[toolUseID]; exists && prior != decision {
+			return fmt.Errorf("agentd: conflicting approval replay for %s", toolUseID)
+		}
+		state.Approvals[toolUseID] = decision
+		return nil
+	})
+}
+
 func (s *Spool) appendEvent(event executioncontract.EventEnvelope) error {
 	limit := s.maxBytes
 	if event.Type != executioncontract.EventTerminal {
@@ -167,6 +188,18 @@ func (s *Spool) appendEvent(event executioncontract.EventEnvelope) error {
 		if event.Type == executioncontract.EventOutput {
 			state.OutputCounts[event.RunID]++
 		}
+		return nil
+	})
+}
+
+// appendAdmissionEvent records a terminal rejection without spending capacity
+// reserved for the fates of already-admitted provider runs.
+func (s *Spool) appendAdmissionEvent(event executioncontract.EventEnvelope) error {
+	return s.updateLimit(s.nonTerminalLimit(), func(state *durableState) error {
+		event.Sequence = state.RunSequences[event.RunID] + 1
+		event.IdempotencyKey = fmt.Sprintf("%s:%d", event.RunID, event.Sequence)
+		state.Events[event.RunID] = append(state.Events[event.RunID], event)
+		state.RunSequences[event.RunID] = event.Sequence
 		return nil
 	})
 }

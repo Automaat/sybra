@@ -665,6 +665,31 @@ func TestApprovalServer_RespondApproval_DoubleSendDoesNotBlock(t *testing.T) {
 	}
 }
 
+func TestApprovalServerStageApprovalSurvivesMissingHook(t *testing.T) {
+	srv := newTestApprovalServer(t)
+	if err := srv.StageApproval("tool-retry", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := srv.staged["tool-retry"]; !got.Approved {
+		t.Fatalf("staged decision = %+v", got)
+	}
+	if err := srv.StageApproval("tool-retry", true); err != nil {
+		t.Fatalf("idempotent replay: %v", err)
+	}
+	if err := srv.StageApproval("tool-retry", false); err == nil {
+		t.Fatal("conflicting replay must fail")
+	}
+
+	ch := make(chan ApprovalResponse, 1)
+	srv.pending["tool-live"] = ch
+	if err := srv.StageApproval("tool-live", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-ch; got.Approved || got.ToolUseID != "tool-live" {
+		t.Fatalf("live decision = %+v", got)
+	}
+}
+
 func TestIsSafeTool(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

@@ -349,6 +349,7 @@ type Agent struct {
 	executionHandle         ExecutionHandle
 	unthrottledOutputEvents bool
 	steerCommandIDs         map[string]struct{}
+	steerDispatching        bool
 
 	// mu guards mutable fields touched from multiple goroutines. See the
 	// package-level note above the Agent type.
@@ -562,6 +563,7 @@ func (a *Agent) toRecordLocked() Record {
 		StdinPath:               a.convo.stdinPath,
 		PendingPrompts:          pendingPrompts,
 		SteerCommandIDs:         steerCommandIDs,
+		SteerDispatching:        a.steerDispatching,
 		UnthrottledOutputEvents: a.unthrottledOutputEvents,
 		OneShot:                 a.oneShot,
 		MaxTurns:                a.MaxTurns,
@@ -627,6 +629,7 @@ func fromRecord(r Record) *Agent {
 		oneShot:                 r.OneShot,
 		convo:                   convoIO{stdinPath: r.StdinPath, pendingPrompts: slices.Clone(r.PendingPrompts)},
 		unthrottledOutputEvents: r.UnthrottledOutputEvents,
+		steerDispatching:        r.SteerDispatching,
 		requirePermissions:      r.RequirePermissions,
 		sandboxMode:             r.SandboxMode,
 		ReasoningEffort:         r.ReasoningEffort,
@@ -1152,6 +1155,35 @@ func (a *Agent) PopPendingPromptOrBeginFinalizing() (string, bool) {
 	a.mu.Unlock()
 	a.refreshCanSteer()
 	return "", false
+}
+
+// BeginPendingPromptDispatch marks the next steer as durably ambiguous before
+// it crosses the FIFO boundary. Recovery fails such a run explicitly instead
+// of silently delivering the same command twice.
+func (a *Agent) BeginPendingPromptDispatch() (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.convo.pendingPrompts) == 0 {
+		a.finalizing = true
+		return "", false
+	}
+	a.steerDispatching = true
+	return a.convo.pendingPrompts[0], true
+}
+
+func (a *Agent) CommitPendingPromptDispatch() {
+	a.mu.Lock()
+	if len(a.convo.pendingPrompts) > 0 {
+		a.convo.pendingPrompts = a.convo.pendingPrompts[1:]
+	}
+	a.steerDispatching = false
+	a.mu.Unlock()
+}
+
+func (a *Agent) HasAmbiguousSteerDispatch() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.steerDispatching
 }
 
 // PendingPromptCount returns the size of the pending prompt queue.

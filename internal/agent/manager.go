@@ -772,27 +772,26 @@ func (m *Manager) registryDir() string {
 // survival: a deployment may disable process reattachment while still using
 // durable leases for dispatch ownership and capacity.
 func (m *Manager) saveRegistry(ctx context.Context, a *Agent) {
+	if err := m.persistRegistry(ctx, a); err != nil && a != nil {
+		m.logger.Warn("agent.registry.save", "id", a.ID, "task_id", a.TaskID, "err", err)
+	}
+}
+
+func (m *Manager) persistRegistry(ctx context.Context, a *Agent) error {
 	reg := m.registry()
 	if a == nil {
-		return
+		return nil
 	}
 	rec := a.toRecord()
 	rec.ProcStartedAt = processStartString(ctx, rec.PID)
 	m.bindAndHeartbeatAttempt(ctx, a, rec.ProcStartedAt)
 	if reg == nil {
-		return
+		return nil
 	}
 	if err := reg.Save(rec); err != nil {
-		m.logger.Warn(
-			"agent.registry.save",
-			"id", rec.ID,
-			"task_id", rec.TaskID,
-			"mode", rec.Mode,
-			"pid", rec.PID,
-			"log_path", rec.LogPath,
-			"err", err,
-		)
+		return err
 	}
+	return nil
 }
 
 // signalKill terminates an agent's subprocess. Prefers the *exec.Cmd

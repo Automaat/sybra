@@ -77,6 +77,11 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Daemon, error) 
 	}()
 	d.approvals = approvals
 	state := spool.snapshot()
+	for toolUseID, decision := range state.Approvals {
+		if err := approvals.StageApproval(toolUseID, decision.Approved); err != nil {
+			return nil, fmt.Errorf("agentd: restore approval %s: %w", toolUseID, err)
+		}
+	}
 	switch {
 	case cfg.NodeID != "":
 		d.cfg.NodeID = cfg.NodeID
@@ -98,6 +103,9 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Daemon, error) 
 		},
 		OnComplete: d.completeAgent,
 		OnReattach: func(a *agent.Agent) error {
+			if a.HasAmbiguousSteerDispatch() {
+				return errors.New("agentd: provider state is ambiguous after interrupted steer delivery")
+			}
 			return d.replayMissingOutput(a.TaskID, a)
 		},
 		ApprovalAddr:      approvals.Addr(),
@@ -284,15 +292,13 @@ func (d *Daemon) applyCommand(ctx context.Context, envelope executioncontract.Co
 		if err := json.Unmarshal(envelope.Payload, &payload); err != nil || payload.ToolUseID == "" {
 			return errors.New("agentd: approval response requires toolUseId")
 		}
-		agentID, ok := d.agentForRun(envelope.RunID)
-		if !ok {
+		if _, ok := d.agentForRun(envelope.RunID); !ok {
 			return nil
 		}
-		err := d.manager.RespondExecutionApproval(agentID, payload.ToolUseID, payload.Approved)
-		if err != nil && strings.Contains(err.Error(), "already consumed") {
-			return nil
+		if err := d.spool.stageApproval(payload.ToolUseID, durableApproval{RunID: envelope.RunID, Approved: payload.Approved}); err != nil {
+			return err
 		}
-		return err
+		return d.approvals.StageApproval(payload.ToolUseID, payload.Approved)
 	default:
 		return fmt.Errorf("agentd: unsupported command %q", envelope.Type)
 	}
@@ -314,17 +320,17 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 		return nil
 	}
 	if draining {
-		return d.emit(envelope.RunID, executioncontract.EventTerminal, map[string]any{
+		return d.emitAdmissionFailure(envelope.RunID, map[string]any{
 			"state": executioncontract.TerminalFailed, "error": "worker is draining",
 		})
 	}
 	if d.manager.RunningCount() >= d.cfg.Capacity {
-		return d.emit(envelope.RunID, executioncontract.EventTerminal, map[string]any{
+		return d.emitAdmissionFailure(envelope.RunID, map[string]any{
 			"state": executioncontract.TerminalFailed, "error": agent.ErrMaxConcurrentReached.Error(),
 		})
 	}
 	if errors.Is(d.spool.capacityError(), ErrSpoolExhausted) {
-		return d.emit(envelope.RunID, executioncontract.EventTerminal, map[string]any{
+		return d.emitAdmissionFailure(envelope.RunID, map[string]any{
 			"state": executioncontract.TerminalFailed, "error": ErrSpoolExhausted.Error(),
 		})
 	}
@@ -408,7 +414,7 @@ func (d *Daemon) secretEnvironmentKeys() []string {
 }
 
 func (d *Daemon) rejectStart(runID string, cause error) error {
-	emitErr := d.emit(runID, executioncontract.EventTerminal, map[string]any{
+	emitErr := d.emitAdmissionFailure(runID, map[string]any{
 		"state": executioncontract.TerminalFailed, "error": cause.Error(),
 	})
 	if emitErr != nil {
@@ -467,13 +473,13 @@ func (d *Daemon) completeAgent(a *agent.Agent) {
 	errText := ""
 	if err := a.GetExitErr(); errors.Is(err, ErrSpoolExhausted) {
 		state, errText = executioncontract.TerminalFailed, err.Error()
+	} else if err := a.GetExitErr(); err != nil {
+		state = executioncontract.TerminalFailed
+		errText = err.Error()
 	} else if a.WasStopped() {
 		state = executioncontract.TerminalCanceled
-	} else if err := a.GetExitErr(); err != nil || !a.CompletedSuccessfully() {
+	} else if !a.CompletedSuccessfully() {
 		state = executioncontract.TerminalFailed
-		if err != nil {
-			errText = err.Error()
-		}
 	}
 	terminalErr := d.emit(runID, executioncontract.EventTerminal, map[string]any{"state": state, "error": errText})
 	if terminalErr != nil {
@@ -482,7 +488,15 @@ func (d *Daemon) completeAgent(a *agent.Agent) {
 		// compact terminal fate after acknowledged events free spool capacity.
 		return
 	}
-	if err := d.spool.update(func(state *durableState) error { delete(state.RunAgents, runID); return nil }); err != nil {
+	if err := d.spool.update(func(state *durableState) error {
+		delete(state.RunAgents, runID)
+		for toolUseID, decision := range state.Approvals {
+			if decision.RunID == runID {
+				delete(state.Approvals, toolUseID)
+			}
+		}
+		return nil
+	}); err != nil {
 		d.logger.Error("agentd.run_mapping.persist", "run_id", runID, "err", err)
 	}
 }
@@ -505,6 +519,14 @@ func (d *Daemon) replayMissingOutput(runID string, a *agent.Agent) error {
 }
 
 func (d *Daemon) emit(runID string, kind executioncontract.EventType, payload any) error {
+	return d.emitWith(runID, kind, payload, d.spool.appendEvent)
+}
+
+func (d *Daemon) emitAdmissionFailure(runID string, payload any) error {
+	return d.emitWith(runID, executioncontract.EventTerminal, payload, d.spool.appendAdmissionEvent)
+}
+
+func (d *Daemon) emitWith(runID string, kind executioncontract.EventType, payload any, appendEvent func(executioncontract.EventEnvelope) error) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -518,7 +540,7 @@ func (d *Daemon) emit(runID string, kind executioncontract.EventType, payload an
 		EventID: id, Type: kind,
 		ObservedAt: time.Now().UTC(), Payload: body,
 	}
-	if err := d.spool.appendEvent(event); err != nil {
+	if err := appendEvent(event); err != nil {
 		if errors.Is(err, ErrSpoolExhausted) {
 			d.mu.RLock()
 			agentID := d.runAgents[runID]

@@ -1677,6 +1677,26 @@ func TestSendMessage_HeadlessRejectsAfterEmptyBoundary(t *testing.T) {
 	}
 }
 
+func TestPendingSteerDispatchIsCrashVisibleUntilCommitted(t *testing.T) {
+	a := &Agent{ID: "steer-crash"}
+	a.EnqueuePrompt("once")
+	next, ok := a.BeginPendingPromptDispatch()
+	if !ok || next != "once" {
+		t.Fatalf("dispatch = %q, %v", next, ok)
+	}
+	if !a.HasAmbiguousSteerDispatch() || a.PendingPromptCount() != 1 {
+		t.Fatal("dispatch intent must retain the prompt and mark restart ambiguity")
+	}
+	restored := fromRecord(a.toRecord())
+	if !restored.HasAmbiguousSteerDispatch() || restored.PendingPromptCount() != 1 {
+		t.Fatal("registry round-trip lost ambiguous steer state")
+	}
+	a.CommitPendingPromptDispatch()
+	if a.HasAmbiguousSteerDispatch() || a.PendingPromptCount() != 0 {
+		t.Fatal("committed dispatch must clear ambiguity and consume one prompt")
+	}
+}
+
 // assertConflictClientError verifies err implements httpapi.ClientError
 // (structurally: error + HTTPStatus() int) with a 409 status, so the HTTP
 // API surfaces it as a clear rejection instead of a generic 500 — see

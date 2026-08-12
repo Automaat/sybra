@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http/httptest"
 	"os"
@@ -168,6 +169,45 @@ func TestSpoolReservesRoomForTerminalFate(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("terminal fate for %s did not fit capacity-aware reserve: %v", runID, err)
 		}
+	}
+}
+
+func TestAdmissionRejectionCannotSpendActiveRunTerminalReserve(t *testing.T) {
+	spool, err := OpenSpool(t.TempDir(), 8192, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		err = spool.appendEvent(executioncontract.EventEnvelope{
+			Version: executioncontract.CurrentVersion(), BuildVersion: "test", RunID: "active",
+			Type: executioncontract.EventOutput, ObservedAt: time.Now().UTC(),
+			Payload: json.RawMessage(`{"value":"` + strings.Repeat("x", 256) + `"}`),
+		})
+		if errors.Is(err, ErrSpoolExhausted) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	rejection := executioncontract.EventEnvelope{
+		Version: executioncontract.CurrentVersion(), BuildVersion: "test", RunID: "unadmitted",
+		Type: executioncontract.EventTerminal, ObservedAt: time.Now().UTC(), Payload: json.RawMessage(`{"state":"failed"}`),
+	}
+	for i := 0; ; i++ {
+		rejection.RunID = fmt.Sprintf("unadmitted-%d", i)
+		err = spool.appendAdmissionEvent(rejection)
+		if errors.Is(err, ErrSpoolExhausted) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	terminal := rejection
+	terminal.RunID = "active"
+	if err := spool.appendEvent(terminal); err != nil {
+		t.Fatalf("active run terminal did not fit reserve: %v", err)
 	}
 }
 
@@ -463,14 +503,16 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"steer-session"}'
 	if err := daemon.handleCommand(ctx, workercontrol.Command{Sequence: 2, Envelope: steer}); err != nil {
 		t.Fatal(err)
 	}
-	userInputs := 0
-	for _, event := range daemon.spool.snapshot().Events["run-steer"] {
-		if strings.Contains(string(event.Payload), `"type":"user_input"`) {
-			userInputs++
-		}
+	agentID, ok := daemon.agentForRun("run-steer")
+	if !ok {
+		t.Fatal("steered run is not active")
 	}
-	if userInputs != 1 {
-		t.Fatalf("replayed steer produced %d user-input events, want 1", userInputs)
+	active, err := daemon.manager.GetAgent(agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := active.PendingPromptCount(); got != 1 {
+		t.Fatalf("replayed steer queued %d prompts, want 1", got)
 	}
 	waitForTerminal(t, daemon.spool, "run-steer")
 	waitForRunningCount(t, daemon, 0)

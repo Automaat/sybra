@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"github.com/Automaat/sybra/internal/events"
 )
 
 // SendPromptToAgent delivers a follow-up prompt to a steerable headless
@@ -97,9 +95,6 @@ func (m *Manager) SendMessageOnce(ctx context.Context, agentID, commandID, text 
 	a.mu.Unlock()
 
 	m.logger.Info("agent.headless.message_queued", "id", a.ID, "queue_len", queueLen)
-	ev := StreamEvent{Type: "user_input", Content: text, Timestamp: time.Now().UTC()}
-	a.AppendOutput(ev)
-	m.emit(events.AgentOutput(a.ID), ev)
 	return nil
 }
 

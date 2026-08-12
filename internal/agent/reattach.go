@@ -181,7 +181,9 @@ func (m *Manager) notifyReattach(ctx context.Context, a *Agent) bool {
 	}
 	if err := m.onReattach(a); err != nil {
 		m.logger.Error("agent.reattach.callback", "id", a.ID, "task", a.TaskID, "err", err)
+		a.SetExitErr(err)
 		m.stopLocalAgent(a)
+		m.fireComplete(ctx, a, false)
 		m.markAgentDone(ctx, a)
 		return false
 	}

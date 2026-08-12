@@ -34,6 +34,7 @@ pending_prompts:
 steer_command_ids:
     - command-a
     - command-b
+steer_dispatching: true
 unthrottled_output_events: true
 one_shot: true
 max_turns: 7

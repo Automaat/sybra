@@ -37,6 +37,7 @@ const VerifierControlServiceMarker = "sybra-verifier-control"
 type ApprovalServer struct {
 	mu                sync.Mutex
 	pending           map[string]chan ApprovalResponse // keyed by tool_use_id
+	staged            map[string]ApprovalResponse      // durable remote decisions awaiting a hook retry
 	emit              EmitFunc
 	logger            *slog.Logger
 	server            *http.Server
@@ -124,6 +125,7 @@ func newApprovalServer(ctx context.Context, emit EmitFunc, logger *slog.Logger, 
 
 	s := &ApprovalServer{
 		pending:           make(map[string]chan ApprovalResponse),
+		staged:            make(map[string]ApprovalResponse),
 		emit:              emit,
 		logger:            logger,
 		listener:          listener,
@@ -425,6 +427,10 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 	ch := make(chan ApprovalResponse, 1)
 	s.mu.Lock()
 	s.pending[input.ToolUseID] = ch
+	if staged, ok := s.staged[input.ToolUseID]; ok {
+		ch <- staged
+		delete(s.staged, input.ToolUseID)
+	}
 	s.mu.Unlock()
 
 	defer func() {
@@ -578,6 +584,31 @@ func (s *ApprovalServer) RespondApproval(toolUseID string, approved bool) error 
 	default:
 		return fmt.Errorf("approval for tool_use_id %s already consumed or channel full", toolUseID)
 	}
+}
+
+// StageApproval makes a remote approval decision retry-safe. If the hook is
+// currently blocked it is delivered immediately; otherwise it is retained
+// until the provider retries the same tool_use_id after daemon restart.
+func (s *ApprovalServer) StageApproval(toolUseID string, approved bool) error {
+	response := ApprovalResponse{ToolUseID: toolUseID, Approved: approved}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if prior, ok := s.staged[toolUseID]; ok {
+		if prior.Approved != approved {
+			return fmt.Errorf("conflicting approval decision for tool_use_id %s", toolUseID)
+		}
+		return nil
+	}
+	if ch, ok := s.pending[toolUseID]; ok {
+		select {
+		case ch <- response:
+			return nil
+		default:
+			return nil
+		}
+	}
+	s.staged[toolUseID] = response
+	return nil
 }
 
 // findAgentBySession resolves the agent a PreToolUse hook request came from.
