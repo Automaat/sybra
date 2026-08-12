@@ -3,7 +3,6 @@ package workercontrol
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -124,11 +123,11 @@ func (s *Service) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 func decode(w http.ResponseWriter, r *http.Request, target any) bool {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<20))
 	if err := decoder.Decode(target); err != nil {
-		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid request")
 		return false
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		http.Error(w, `{"error":"invalid request"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid request")
 		return false
 	}
 	return true
@@ -137,12 +136,16 @@ func decode(w http.ResponseWriter, r *http.Request, target any) bool {
 func respond(w http.ResponseWriter, value any, err error) {
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
-		status := http.StatusBadRequest
-		if errors.Is(err, ErrStaleSession) || errors.Is(err, ErrLeaseExpired) {
+		status, message := http.StatusInternalServerError, "internal server error"
+		switch {
+		case errors.Is(err, ErrStaleSession), errors.Is(err, ErrLeaseExpired):
 			status = http.StatusConflict
+			message = err.Error()
+		case errors.Is(err, ErrInvalidRequest), errors.Is(err, ErrEventGap):
+			status = http.StatusBadRequest
+			message = err.Error()
 		}
-		w.WriteHeader(status)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		writeJSONError(w, status, message)
 		return
 	}
 	_ = json.NewEncoder(w).Encode(value)
@@ -155,7 +158,13 @@ func uintQuery(r *http.Request, name string) (uint64, error) {
 	}
 	parsed, err := strconv.ParseUint(value, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("worker control: invalid %s cursor", name)
+		return 0, invalidf("invalid %s cursor", name)
 	}
 	return parsed, nil
+}
+
+func writeJSONError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }

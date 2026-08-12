@@ -17,9 +17,10 @@ import (
 )
 
 var (
-	ErrStaleSession = errors.New("worker control: stale session")
-	ErrLeaseExpired = errors.New("worker control: session lease expired")
-	ErrEventGap     = errors.New("worker control: event sequence gap")
+	ErrStaleSession   = errors.New("worker control: stale session")
+	ErrLeaseExpired   = errors.New("worker control: session lease expired")
+	ErrEventGap       = errors.New("worker control: event sequence gap")
+	ErrInvalidRequest = errors.New("worker control: invalid request")
 )
 
 type RegisterRequest struct {
@@ -84,16 +85,16 @@ func New(database *db.DB) *Service {
 
 func (s *Service) Register(ctx context.Context, request RegisterRequest) (Session, error) {
 	if request.WorkerID == "" || request.Negotiation.BuildVersion == "" {
-		return Session{}, errors.New("worker control: worker and build identities are required")
+		return Session{}, invalidf("worker and build identities are required")
 	}
 	if request.ResumeSessionID == "" && request.LastCommandAck != 0 {
-		return Session{}, errors.New("worker control: a fresh session cannot claim a command cursor")
+		return Session{}, invalidf("a fresh session cannot claim a command cursor")
 	}
 	version, err := executioncontract.Negotiate(executioncontract.Negotiation{
 		ProtocolMin: executioncontract.CurrentVersion(), ProtocolMax: executioncontract.CurrentVersion(), BuildVersion: "leader",
 	}, request.Negotiation)
 	if err != nil {
-		return Session{}, err
+		return Session{}, fmt.Errorf("%w: %w", ErrInvalidRequest, err)
 	}
 	lease := s.lease
 	if request.LeaseSeconds > 0 {
@@ -128,7 +129,7 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 				return err
 			}
 			if request.LastCommandAck < priorAck || request.LastCommandAck > max(maxSequence, priorAck) {
-				return errors.New("worker control: resume command cursor is outside the durable range")
+				return invalidf("resume command cursor is outside the durable range")
 			}
 		}
 		fenceQuery, fenceArg := `UPDATE worker_sessions SET state = 'replaced' WHERE worker_id = ? AND state = 'active'`, request.WorkerID
@@ -199,7 +200,7 @@ func (s *Service) Heartbeat(ctx context.Context, sessionID string, capabilities 
 
 func (s *Service) Enqueue(ctx context.Context, sessionID string, spec *executioncontract.RunSpec, envelope executioncontract.CommandEnvelope) (Command, error) {
 	if err := envelope.Validate(); err != nil {
-		return Command{}, err
+		return Command{}, fmt.Errorf("%w: %w", ErrInvalidRequest, err)
 	}
 	if err := validateStartDelivery(spec, envelope); err != nil {
 		return Command{}, err
@@ -220,7 +221,7 @@ func (s *Service) Enqueue(ctx context.Context, sessionID string, spec *execution
 			Scan(&existing, &existingPayload, &existingSession, &acknowledgedAt)
 		if err == nil {
 			if existingPayload != string(payload) {
-				return errors.New("worker control: idempotency key reused for a different command")
+				return invalidf("idempotency key reused for a different command")
 			}
 			if existingSession != sessionID {
 				if err := s.validateCrossSessionReplay(ctx, tx, sessionID, existing, acknowledgedAt.Valid, envelope); err != nil {
@@ -250,7 +251,7 @@ func (s *Service) Enqueue(ctx context.Context, sessionID string, spec *execution
 			switch {
 			case err == nil:
 				if priorRun != spec.RunID || priorSpec != string(specJSON) {
-					return errors.New("worker control: effect id already belongs to another fenced run")
+					return invalidf("effect id already belongs to another fenced run")
 				}
 				var startSession string
 				var startAcknowledged sql.NullInt64
@@ -315,27 +316,27 @@ func (s *Service) validateCrossSessionReplay(ctx context.Context, tx *sql.Tx, se
 func validateStartDelivery(spec *executioncontract.RunSpec, envelope executioncontract.CommandEnvelope) error {
 	if spec == nil {
 		if envelope.Type == executioncontract.CommandStart {
-			return errors.New("worker control: start command requires a durable run spec")
+			return invalidf("start command requires a durable run spec")
 		}
 		return nil
 	}
 	if err := spec.Validate(); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrInvalidRequest, err)
 	}
 	if envelope.Type != executioncontract.CommandStart {
-		return errors.New("worker control: run spec is only valid for a start command")
+		return invalidf("run spec is only valid for a start command")
 	}
 	if spec.RunID != envelope.RunID {
-		return errors.New("worker control: command and run spec identities differ")
+		return invalidf("command and run spec identities differ")
 	}
 	var start executioncontract.StartCommandPayload
 	if err := json.Unmarshal(envelope.Payload, &start); err != nil || start.Spec == nil {
-		return errors.New("worker control: durable start delivery requires an inline run spec")
+		return invalidf("durable start delivery requires an inline run spec")
 	}
 	provided, _ := json.Marshal(spec)
 	embedded, _ := json.Marshal(start.Spec)
 	if !bytes.Equal(provided, embedded) {
-		return errors.New("worker control: command payload and run spec differ")
+		return invalidf("command payload and run spec differ")
 	}
 	return nil
 }
@@ -375,7 +376,7 @@ func (s *Service) AckCommands(ctx context.Context, sessionID string, through uin
 			return err
 		}
 		if through > max(maxSequence, lastAck) {
-			return errors.New("worker control: command acknowledgement exceeds delivered cursor")
+			return invalidf("command acknowledgement exceeds delivered cursor")
 		}
 		now := db.TimeValue(s.now().UTC())
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE worker_commands SET acknowledged_at = COALESCE(acknowledged_at, ?) WHERE session_id = ? AND sequence <= ?`), now, sessionID, through); err != nil {
@@ -395,7 +396,7 @@ func (s *Service) AppendEvents(ctx context.Context, batch EventBatch) (map[strin
 		for i := range batch.Events {
 			event := batch.Events[i]
 			if err := event.Validate(); err != nil {
-				return err
+				return fmt.Errorf("%w: %w", ErrInvalidRequest, err)
 			}
 			var current uint64
 			var ownerSession, state string
@@ -412,7 +413,7 @@ func (s *Service) AppendEvents(ctx context.Context, batch EventBatch) (map[strin
 				}
 				encoded, _ := json.Marshal(event)
 				if stored != string(encoded) {
-					return errors.New("worker control: replayed event differs from durable event")
+					return invalidf("replayed event differs from durable event")
 				}
 				acks[event.RunID] = current
 				continue
@@ -421,7 +422,7 @@ func (s *Service) AppendEvents(ctx context.Context, batch EventBatch) (map[strin
 				return ErrEventGap
 			}
 			if state == "terminal" {
-				return errors.New("worker control: event follows terminal event")
+				return invalidf("event follows terminal event")
 			}
 			if current > 0 {
 				var previousJSON string
@@ -433,7 +434,7 @@ func (s *Service) AppendEvents(ctx context.Context, batch EventBatch) (map[strin
 					return err
 				}
 				if previous.Version != event.Version || previous.BuildVersion != event.BuildVersion {
-					return errors.New("worker control: event stream mixes build or protocol identities")
+					return invalidf("event stream mixes build or protocol identities")
 				}
 			}
 			encoded, err := json.Marshal(event)
@@ -497,7 +498,7 @@ func (s *Service) AckEvents(ctx context.Context, sessionID, runID string, throug
 			return err
 		}
 		if through > delivered {
-			return errors.New("worker control: event acknowledgement exceeds durable cursor")
+			return invalidf("event acknowledgement exceeds durable cursor")
 		}
 		now := db.TimeValue(s.now().UTC())
 		if _, err := tx.ExecContext(ctx, s.db.Rebind(`UPDATE worker_events SET acknowledged_at = COALESCE(acknowledged_at, ?) WHERE run_id = ? AND sequence <= ?`), now, runID, through); err != nil {
@@ -510,7 +511,7 @@ func (s *Service) AckEvents(ctx context.Context, sessionID, runID string, throug
 
 func (s *Service) UploadArtifact(ctx context.Context, upload ArtifactUpload) error {
 	if err := upload.Manifest.Validate(); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrInvalidRequest, err)
 	}
 	return s.db.InTx(ctx, func(tx *sql.Tx) error {
 		if err := s.requireSessionTx(ctx, tx, upload.SessionID, true); err != nil {
@@ -530,7 +531,7 @@ func (s *Service) UploadArtifact(ctx context.Context, upload ArtifactUpload) err
 			upload.Manifest.IdempotencyKey).Scan(&existingManifest, &existingRun, &existingContent)
 		if err == nil {
 			if existingManifest != string(encoded) || existingRun != upload.Manifest.RunID || !bytes.Equal(existingContent, upload.Content) {
-				return errors.New("worker control: artifact idempotency key reused for different content")
+				return invalidf("artifact idempotency key reused for different content")
 			}
 			return nil
 		}
@@ -682,4 +683,8 @@ func randomID() (string, error) {
 		return "", err
 	}
 	return "session-" + hex.EncodeToString(value[:]), nil
+}
+
+func invalidf(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrInvalidRequest, fmt.Sprintf(format, args...))
 }
