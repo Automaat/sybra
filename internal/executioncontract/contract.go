@@ -191,7 +191,7 @@ func (s RunSpec) Validate() error {
 	if s.RunID == "" || s.EffectID == "" || s.IdempotencyKey == "" {
 		return errors.New("execution contract: run, effect, and idempotency identities are required")
 	}
-	if s.Fence.TaskID == "" || s.Fence.WorkflowGeneration < 0 {
+	if s.Fence.TaskID == "" || s.Fence.WorkflowID == "" || s.Fence.StepID == "" || s.Fence.WorkflowGeneration < 0 {
 		return errors.New("execution contract: invalid task/workflow generation fence")
 	}
 	if s.Role == "" || s.Provider.Provider == "" || s.Provider.Model == "" || s.Prompt.Text == "" {

@@ -139,6 +139,16 @@ func TestValidationRejectsLeaderPathsAndCredentials(t *testing.T) {
 	if err := bad.Validate(); err == nil {
 		t.Fatal("output under undeclared artifact root accepted")
 	}
+	for _, clear := range []func(*RunSpec){
+		func(spec *RunSpec) { spec.Fence.WorkflowID = "" },
+		func(spec *RunSpec) { spec.Fence.StepID = "" },
+	} {
+		bad := spec
+		clear(&bad)
+		if err := bad.Validate(); err == nil {
+			t.Fatal("identity-less workflow fence accepted")
+		}
+	}
 }
 
 func TestValidateEventOrderSupportsIdempotentReplay(t *testing.T) {
