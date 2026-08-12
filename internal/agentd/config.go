@@ -19,14 +19,17 @@ import (
 )
 
 type Config struct {
-	LeaderURL     string            `yaml:"leader_url"`
-	TokenEnv      string            `yaml:"token_env"`
-	NodeID        string            `yaml:"node_id,omitempty"`
-	Labels        map[string]string `yaml:"labels,omitempty"`
-	Capacity      int               `yaml:"capacity"`
-	Providers     []string          `yaml:"providers"`
-	Models        []string          `yaml:"models,omitempty"`
-	SecretEnv     map[string]string `yaml:"secret_env,omitempty"`
+	LeaderURL string            `yaml:"leader_url"`
+	TokenEnv  string            `yaml:"token_env"`
+	NodeID    string            `yaml:"node_id,omitempty"`
+	Labels    map[string]string `yaml:"labels,omitempty"`
+	Capacity  int               `yaml:"capacity"`
+	Providers []string          `yaml:"providers"`
+	Models    []string          `yaml:"models,omitempty"`
+	SecretEnv map[string]string `yaml:"secret_env,omitempty"`
+	// Repositories maps opaque wire identities to daemon-local clone sources.
+	// Sources and credentials never cross the worker protocol.
+	Repositories  map[string]string `yaml:"repositories,omitempty"`
 	TrustedWork   bool              `yaml:"trusted_work,omitempty"`
 	SandboxMode   string            `yaml:"sandbox_mode"`
 	WorkspaceRoot string            `yaml:"workspace_root"`
@@ -34,6 +37,9 @@ type Config struct {
 	SpoolMaxBytes int64             `yaml:"spool_max_bytes"`
 	LeaseSeconds  int               `yaml:"lease_seconds,omitempty"`
 	PollSeconds   int               `yaml:"poll_seconds,omitempty"`
+	// WorkspaceRetentionHours bounds completed diagnostic handbacks that the
+	// leader never acknowledges (for example after reassignment).
+	WorkspaceRetentionHours int `yaml:"workspace_retention_hours,omitempty"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -95,11 +101,25 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("agentd config: leader token environment cannot be exposed as run secret %q", ref)
 		}
 	}
+	for repositoryID, source := range c.Repositories {
+		if strings.TrimSpace(repositoryID) == "" || strings.TrimSpace(source) == "" {
+			return fmt.Errorf("agentd config: repository mapping %q is incomplete", repositoryID)
+		}
+		if parsed, parseErr := url.Parse(source); parseErr == nil && parsed.User != nil {
+			return fmt.Errorf("agentd config: repository %q source must not embed credentials", repositoryID)
+		}
+	}
 	if c.LeaseSeconds <= 0 {
 		c.LeaseSeconds = 45
 	}
 	if c.PollSeconds <= 0 || c.PollSeconds > 25 {
 		c.PollSeconds = 20
+	}
+	if c.WorkspaceRetentionHours < 0 {
+		return errors.New("agentd config: workspace_retention_hours must be non-negative")
+	}
+	if c.WorkspaceRetentionHours == 0 {
+		c.WorkspaceRetentionHours = 168
 	}
 	return nil
 }

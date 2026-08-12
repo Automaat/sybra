@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Automaat/sybra/internal/agent"
+	"github.com/Automaat/sybra/internal/agentworkspace"
 	agentevents "github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/executioncontract"
 	"github.com/Automaat/sybra/internal/version"
@@ -181,6 +182,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err := d.register(ctx); err != nil {
 		return err
 	}
+	d.pruneExpiredWorkspaces()
 	heartbeat := time.NewTicker(time.Duration(max(d.cfg.LeaseSeconds/3, 1)) * time.Second)
 	defer heartbeat.Stop()
 	for {
@@ -191,6 +193,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-heartbeat.C:
+			d.pruneExpiredWorkspaces()
 			session, err := d.client.heartbeat(ctx, d.currentSession(), d.capabilities)
 			if err != nil {
 				d.logger.Warn("agentd.heartbeat", "err", err)
@@ -230,6 +233,39 @@ func (d *Daemon) Run(ctx context.Context) error {
 			if err := d.client.ackCommands(ctx, d.currentSession(), command.Sequence); err != nil {
 				break
 			}
+		}
+	}
+}
+
+func (d *Daemon) pruneExpiredWorkspaces() {
+	before := time.Now().Add(-time.Duration(d.cfg.WorkspaceRetentionHours) * time.Hour)
+	expired, err := d.spool.expireArtifacts(before)
+	if err != nil {
+		d.logger.Warn("agentd.workspace.prune", "err", err)
+		return
+	}
+	for _, runID := range expired {
+		_ = os.RemoveAll(filepath.Join(d.cfg.WorkspaceRoot, runID))
+	}
+	state := d.spool.snapshot()
+	protected := make(map[string]bool, len(state.RunAgents)+len(state.Artifacts))
+	for runID := range state.RunAgents {
+		protected[runID] = true
+	}
+	for _, upload := range state.Artifacts {
+		protected[upload.Manifest.RunID] = true
+	}
+	entries, err := os.ReadDir(d.cfg.WorkspaceRoot)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || protected[entry.Name()] {
+			continue
+		}
+		info, statErr := entry.Info()
+		if statErr == nil && info.ModTime().Before(before) {
+			_ = os.RemoveAll(filepath.Join(d.cfg.WorkspaceRoot, entry.Name()))
 		}
 	}
 }
@@ -352,11 +388,19 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 	if err := spec.Validate(); err != nil {
 		return err
 	}
-	workspace := filepath.Join(d.cfg.WorkspaceRoot, spec.RunID)
-	if err := os.MkdirAll(workspace, 0o700); err != nil {
-		return d.rejectStart(spec.RunID, err)
+	source := d.cfg.Repositories[spec.Workspace.RepositoryID]
+	layout, err := agentworkspace.Prepare(ctx, d.cfg.WorkspaceRoot, source, *spec)
+	if err != nil {
+		d.logger.Error("agentd.workspace.prepare", "run_id", spec.RunID, "err", err)
+		return d.rejectStart(spec.RunID, errors.New("workspace preparation failed"))
 	}
-	runEnv := make([]string, 0, len(spec.Environment))
+	keepWorkspace := false
+	defer func() {
+		if !keepWorkspace {
+			_ = os.RemoveAll(layout.RunRoot)
+		}
+	}()
+	runEnv := agentworkspace.Environment(layout)
 	for _, binding := range spec.Environment {
 		value := binding.Value
 		if binding.SecretRef != nil {
@@ -369,11 +413,11 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 		runEnv = append(runEnv, binding.Name+"="+value)
 	}
 	runCtx, cancel := context.WithDeadline(ctx, spec.Deadline)
-	_, err := d.manager.RunContext(runCtx, agent.RunConfig{
+	_, err = d.manager.RunContext(runCtx, agent.RunConfig{
 		TaskID: spec.RunID, AdmissionTaskKey: spec.RunID, IntentID: spec.IdempotencyKey,
 		TaskGeneration: spec.Fence.TaskGeneration, Name: spec.RunID, Role: agent.Role(spec.Role), Mode: "headless",
 		Prompt: spec.Prompt.Text, OutputSchema: spec.Prompt.OutputSchema, AllowedTools: spec.Tools.AllowedTools,
-		Dir: workspace, Provider: spec.Provider.Provider, Model: spec.Provider.Model, ReasoningEffort: spec.Provider.ReasoningEffort,
+		Dir: layout.Worktree, Provider: spec.Provider.Provider, Model: spec.Provider.Model, ReasoningEffort: spec.Provider.ReasoningEffort,
 		RequirePermissions: spec.Tools.RequirePermissions, HeadlessPermissionMode: spec.Tools.PermissionMode,
 		MaxTurns: spec.Resources.MaxTurns, BashTimeoutMs: spec.Resources.BashTimeoutMillis,
 		HeadlessSteerable: spec.Options.Steerable, ForkSubagent: spec.Options.ForkSubagent,
@@ -387,7 +431,11 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 			d.runAgents[spec.RunID], d.agentRuns[agentID] = agentID, spec.RunID
 			d.runCancels[agentID] = cancel
 			d.mu.Unlock()
-			if err := d.spool.update(func(state *durableState) error { state.RunAgents[spec.RunID] = agentID; return nil }); err != nil {
+			if err := d.spool.update(func(state *durableState) error {
+				state.RunAgents[spec.RunID] = agentID
+				state.RunSpecs[spec.RunID] = *spec
+				return nil
+			}); err != nil {
 				return err
 			}
 			return d.emit(spec.RunID, executioncontract.EventStarted, map[string]any{"agentId": agentID})
@@ -410,6 +458,7 @@ func (d *Daemon) start(ctx context.Context, envelope executioncontract.CommandEn
 		// handled so it is acknowledged rather than replayed into another attempt.
 		return nil
 	}
+	keepWorkspace = true
 	return nil
 }
 
@@ -482,6 +531,27 @@ func (d *Daemon) completeAgent(a *agent.Agent) {
 	if runID == "" {
 		return
 	}
+	artifactState := executioncontract.ArtifactsFailed
+	manifestID := ""
+	if spec, ok := d.spool.snapshot().RunSpecs[runID]; ok && !errors.Is(a.GetExitErr(), ErrSpoolExhausted) {
+		collectCtx, collectCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		layout := agentworkspace.Layout{
+			RunRoot: filepath.Join(d.cfg.WorkspaceRoot, runID), Worktree: filepath.Join(d.cfg.WorkspaceRoot, runID, "worktree"),
+			Sidecar: filepath.Join(d.cfg.WorkspaceRoot, runID, "sidecar"), Artifact: filepath.Join(d.cfg.WorkspaceRoot, runID, "artifact"),
+			WorkingMemory: filepath.Join(d.cfg.WorkspaceRoot, runID, "worktree"),
+		}
+		manifest, content, collectErr := agentworkspace.Collect(collectCtx, layout, spec, buildVersion())
+		collectCancel()
+		if collectErr == nil {
+			collectErr = d.spool.QueueArtifact(workercontrol.ArtifactUpload{Manifest: manifest, Content: content})
+		}
+		if collectErr != nil {
+			d.logger.Error("agentd.artifact.collect", "run_id", runID, "err", collectErr)
+			a.SetExitErr(errors.New("artifact collection failed"))
+		} else {
+			artifactState, manifestID = executioncontract.ArtifactsReady, manifest.ManifestID
+		}
+	}
 	if !errors.Is(a.GetExitErr(), ErrSpoolExhausted) {
 		if err := d.replayMissingOutput(runID, a); err != nil {
 			d.logger.Error("agentd.output.recover", "run_id", runID, "err", err)
@@ -500,7 +570,9 @@ func (d *Daemon) completeAgent(a *agent.Agent) {
 	} else if !a.CompletedSuccessfully() {
 		state = executioncontract.TerminalFailed
 	}
-	terminalErr := d.emitCompletion(runID, map[string]any{"state": state, "error": errText})
+	terminalErr := d.emitCompletion(runID, map[string]any{
+		"state": state, "error": errText, "artifactState": artifactState, "artifactManifestId": manifestID,
+	})
 	if terminalErr != nil {
 		d.logger.Error("agentd.terminal.persist", "run_id", runID, "err", terminalErr)
 		// Keep the durable ownership mapping. Startup reconciliation can retry a
@@ -604,6 +676,7 @@ func (d *Daemon) flushEvents(ctx context.Context) error {
 		if err := d.spool.ackArtifact(manifestID); err != nil {
 			return err
 		}
+		_ = os.RemoveAll(filepath.Join(d.cfg.WorkspaceRoot, upload.Manifest.RunID))
 	}
 	return nil
 }

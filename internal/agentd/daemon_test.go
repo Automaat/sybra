@@ -19,6 +19,7 @@ import (
 	"github.com/Automaat/sybra/internal/agent"
 	agentevents "github.com/Automaat/sybra/internal/events"
 	"github.com/Automaat/sybra/internal/executioncontract"
+	"github.com/Automaat/sybra/internal/gitexec"
 	"github.com/Automaat/sybra/internal/providerid"
 	"github.com/Automaat/sybra/internal/testutil/dbtest"
 	"github.com/Automaat/sybra/internal/workercontrol"
@@ -29,6 +30,7 @@ func TestDaemonExecutesFakeProviderThroughDurableProtocol(t *testing.T) {
 		t.Skip("shell fixture")
 	}
 	root := t.TempDir()
+	repo, baseSHA := testRepository(t, root)
 	bin := filepath.Join(root, "bin")
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)
@@ -58,7 +60,8 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"agentd-session","t
 		LeaderURL: server.URL, TokenEnv: "AGENTD_TEST_TOKEN", NodeID: "node-test", Capacity: 1,
 		Providers: []string{providerid.Claude}, SandboxMode: "report", WorkspaceRoot: filepath.Join(root, "workspaces"),
 		StateRoot: filepath.Join(root, "state"), SpoolMaxBytes: 1 << 20, LeaseSeconds: 30, PollSeconds: 1,
-		SecretEnv: map[string]string{"run/unused/input": "AGENTD_UNUSED_RUN_SECRET"},
+		SecretEnv:    map[string]string{"run/unused/input": "AGENTD_UNUSED_RUN_SECRET"},
+		Repositories: map[string]string{"repo": repo},
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -84,6 +87,7 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"agentd-session","t
 		t.Fatalf("daemon did not register: %v", err)
 	}
 	spec := validSpec("run-agentd")
+	spec.Workspace.BaseSHA = baseSHA
 	payload, _ := json.Marshal(executioncontract.StartCommandPayload{Spec: &spec})
 	command := executioncontract.CommandEnvelope{
 		Version: executioncontract.CurrentVersion(), BuildVersion: "test", CommandID: "cmd-start",
@@ -114,6 +118,28 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"agentd-session","t
 	if err := executioncontract.ValidateEventOrder(events); err != nil {
 		t.Fatal(err)
 	}
+	var handback workercontrol.ArtifactHandback
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		handback, err = control.LoadStagedArtifact(t.Context(), spec.RunID)
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil || handback.Manifest.Workspace.BaseSHA != baseSHA || len(handback.Package.Members) == 0 {
+		t.Fatalf("staged daemon handback = %+v, %v", handback, err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, statErr := os.Stat(filepath.Join(cfg.WorkspaceRoot, spec.RunID)); errors.Is(statErr, os.ErrNotExist) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, statErr := os.Stat(filepath.Join(cfg.WorkspaceRoot, spec.RunID)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("acknowledged workspace was not cleaned up: %v", statErr)
+	}
 	cancel()
 	select {
 	case err := <-done:
@@ -122,6 +148,11 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"agentd-session","t
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("daemon did not stop")
+	}
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := daemon.approvals.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -275,6 +306,7 @@ func TestDaemonRestartReadoptsLiveProviderAndReportsItsTerminalFate(t *testing.T
 		t.Skip("shell fixture")
 	}
 	root := t.TempDir()
+	repo, baseSHA := testRepository(t, root)
 	bin := filepath.Join(root, "bin")
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)
@@ -294,6 +326,7 @@ printf '%s\n' '{"type":"result","result":"after restart","session_id":"restart-s
 		LeaderURL: "http://127.0.0.1:1", TokenEnv: "AGENTD_TEST_TOKEN", NodeID: "node-restart", Capacity: 1,
 		Providers: []string{providerid.Claude}, SandboxMode: "report", WorkspaceRoot: filepath.Join(root, "workspaces"),
 		StateRoot: filepath.Join(root, "state"), SpoolMaxBytes: 1 << 20,
+		Repositories: map[string]string{"repo": repo},
 	}
 
 	firstCtx, stopFirst := context.WithCancel(t.Context())
@@ -302,7 +335,7 @@ printf '%s\n' '{"type":"result","result":"after restart","session_id":"restart-s
 		t.Fatal(err)
 	}
 	if err := first.handleCommand(firstCtx, workercontrol.Command{
-		Sequence: 1, Envelope: commandForSpec(t, validSpec("run-restart"), "restart"),
+		Sequence: 1, Envelope: commandForSpec(t, specWithBase("run-restart", baseSHA), "restart"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -336,6 +369,7 @@ printf '%s\n' '{"type":"result","result":"after restart","session_id":"restart-s
 
 func TestDaemonStartFailureBecomesAcknowledgableTerminalOutcome(t *testing.T) {
 	root := t.TempDir()
+	repo, baseSHA := testRepository(t, root)
 	t.Setenv("AGENTD_TEST_TOKEN", "secret")
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -343,11 +377,13 @@ func TestDaemonStartFailureBecomesAcknowledgableTerminalOutcome(t *testing.T) {
 		LeaderURL: "http://127.0.0.1:1", TokenEnv: "AGENTD_TEST_TOKEN", Capacity: 1,
 		Providers: []string{providerid.Claude}, SandboxMode: "report", WorkspaceRoot: filepath.Join(root, "workspaces"),
 		StateRoot: filepath.Join(root, "state"), SpoolMaxBytes: 1 << 20,
+		Repositories: map[string]string{"repo": repo},
 	}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
 	spec := validSpec("run-start-failure")
+	spec.Workspace.BaseSHA = baseSHA
 	spec.Environment = []executioncontract.EnvironmentBinding{{
 		Name: "SCOPED_INPUT", SecretRef: &executioncontract.SecretRef{Name: "run/run-start-failure/input"},
 	}}
@@ -494,6 +530,7 @@ func TestDaemonSteersStopsAndEnforcesLocalCapacity(t *testing.T) {
 		t.Skip("shell fixture")
 	}
 	root := t.TempDir()
+	repo, baseSHA := testRepository(t, root)
 	bin := filepath.Join(root, "bin")
 	if err := os.Mkdir(bin, 0o700); err != nil {
 		t.Fatal(err)
@@ -521,11 +558,12 @@ printf '%s\n' '{"type":"result","result":"done","session_id":"steer-session"}'
 		LeaderURL: "http://127.0.0.1:1", TokenEnv: "AGENTD_TEST_TOKEN", NodeID: "node-control", Capacity: 1,
 		Providers: []string{providerid.Claude}, SandboxMode: "report", WorkspaceRoot: filepath.Join(root, "workspaces"),
 		StateRoot: filepath.Join(root, "state"), SpoolMaxBytes: 1 << 20,
+		Repositories: map[string]string{"repo": repo},
 	}, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
-	start := commandForSpec(t, validSpec("run-steer"), "start-steer")
+	start := commandForSpec(t, specWithBase("run-steer", baseSHA), "start-steer")
 	if err := daemon.handleCommand(ctx, workercontrol.Command{Sequence: 1, Envelope: start}); err != nil {
 		t.Fatal(err)
 	}
@@ -565,11 +603,11 @@ sleep 30
 	if err := os.WriteFile(filepath.Join(bin, providerid.Claude), []byte(hang), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := daemon.handleCommand(ctx, workercontrol.Command{Sequence: 3, Envelope: commandForSpec(t, validSpec("run-live"), "start-live")}); err != nil {
+	if err := daemon.handleCommand(ctx, workercontrol.Command{Sequence: 3, Envelope: commandForSpec(t, specWithBase("run-live", baseSHA), "start-live")}); err != nil {
 		t.Fatal(err)
 	}
 	waitForEventCount(t, daemon.spool, "run-live", 2)
-	if err := daemon.handleCommand(ctx, workercontrol.Command{Sequence: 4, Envelope: commandForSpec(t, validSpec("run-overflow"), "start-overflow")}); err != nil {
+	if err := daemon.handleCommand(ctx, workercontrol.Command{Sequence: 4, Envelope: commandForSpec(t, specWithBase("run-overflow", baseSHA), "start-overflow")}); err != nil {
 		t.Fatal(err)
 	}
 	if daemon.manager.RunningCount() != 1 {
@@ -645,6 +683,43 @@ func validSpec(runID string) executioncontract.RunSpec {
 		Fence: executioncontract.GenerationFence{TaskID: "task", TaskGeneration: 1, WorkflowID: "workflow", WorkflowGeneration: 1, StepID: "step"},
 		Role:  "implementation", Provider: executioncontract.ProviderIntent{Provider: providerid.Claude, Model: "sonnet"},
 		Prompt: executioncontract.Prompt{Text: "do the work"}, Deadline: time.Now().Add(time.Minute).UTC(),
-		Workspace: executioncontract.Workspace{BaseSHA: "0123456789012345678901234567890123456789", BaseRef: "refs/heads/main", Roots: []executioncontract.LogicalRoot{executioncontract.RootWorktree}},
+		Workspace: executioncontract.Workspace{RepositoryID: "repo", BaseSHA: "0123456789012345678901234567890123456789", BaseRef: "refs/heads/main", Roots: []executioncontract.LogicalRoot{executioncontract.RootWorktree}},
 	}
+}
+
+func specWithBase(runID, baseSHA string) executioncontract.RunSpec {
+	spec := validSpec(runID)
+	spec.Workspace.BaseSHA = baseSHA
+	return spec
+}
+
+func testRepository(t *testing.T, root string) (string, string) {
+	t.Helper()
+	repo := filepath.Join(root, "source")
+	if err := os.MkdirAll(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	for _, args := range [][]string{{"init", "-b", "main"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.invalid"}} {
+		if err := gitexec.Run(ctx, gitexec.Options{Dir: repo}, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: repo}, "config", "commit.gpgsign", "false"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: repo}, "add", "README.md"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gitexec.Run(ctx, gitexec.Options{Dir: repo}, "commit", "-m", "base"); err != nil {
+		t.Fatal(err)
+	}
+	sha, err := gitexec.Output(ctx, gitexec.Options{Dir: repo}, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return repo, sha
 }

@@ -33,7 +33,8 @@ func TestRemoteRunSpecRoundTripPreservesExecutionIntent(t *testing.T) {
 	}
 	want, err := RemoteRunSpec(start, RemoteRunMetadata{
 		BuildVersion: "1.2.3", RunID: "run-123", EffectID: "17:4:implement:0",
-		WorkflowID: "ship", WorkflowGeneration: 6, WorkflowStepID: "implement",
+		WorkspaceRepositoryID: "repo-123",
+		WorkflowID:            "ship", WorkflowGeneration: 6, WorkflowStepID: "implement",
 		Deadline: deadline, WorkspaceBaseSHA: strings.Repeat("a", 40), WorkspaceBaseRef: "refs/heads/main",
 		WorkspaceRoots: []executioncontract.LogicalRoot{
 			executioncontract.RootWorktree, executioncontract.RootSidecar,
@@ -78,7 +79,8 @@ func TestRemoteRunSpecRoundTripPreservesExecutionIntent(t *testing.T) {
 func TestRemoteRunSpecRejectsProcessLocalInputs(t *testing.T) {
 	validMetadata := RemoteRunMetadata{
 		BuildVersion: "test", RunID: "run", EffectID: "effect", WorkflowID: "workflow", Deadline: time.Now().Add(time.Hour),
-		WorkspaceBaseSHA: strings.Repeat("a", 40), WorkspaceBaseRef: "refs/heads/main",
+		WorkspaceRepositoryID: "repo",
+		WorkspaceBaseSHA:      strings.Repeat("a", 40), WorkspaceBaseRef: "refs/heads/main",
 		WorkspaceRoots: []executioncontract.LogicalRoot{executioncontract.RootWorktree},
 	}
 	base := ExecutionStart{
