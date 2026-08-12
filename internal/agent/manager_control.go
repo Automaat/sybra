@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"github.com/Automaat/sybra/internal/events"
 )
 
 // SendPromptToAgent delivers a follow-up prompt to a steerable headless
@@ -19,6 +17,9 @@ func (m *Manager) SendPromptToAgent(agentID, text string) error {
 		return conflictError(fmt.Sprintf("agent %s is stopped", agentID))
 	}
 
+	if _, execErr := m.executionForAgent(agentID); execErr == nil {
+		return m.SendMessage(agentID, text)
+	}
 	if a.convo.hasStdinPipe() {
 		return m.SendMessage(agentID, text)
 	}
@@ -38,12 +39,16 @@ func (m *Manager) SendMessage(agentID, text string) error {
 	if err != nil {
 		return err
 	}
-	if !a.convo.hasStdinPipe() {
-		return conflictError(fmt.Sprintf("agent %s has no stdin transport for follow-up messages", agentID))
-	}
 	if a.Mode != "headless" {
 		return conflictError(fmt.Sprintf("agent %s is not in headless steerable mode", agentID))
 	}
+	if execution, execErr := m.executionForAgent(agentID); execErr == nil {
+		return execution.backend.Steer(m.ctx, execution.handle, text)
+	}
+	if !a.convo.hasStdinPipe() {
+		return conflictError(fmt.Sprintf("agent %s has no stdin transport for follow-up messages", agentID))
+	}
+	// Restart-adopted legacy executions predate backend handles.
 	return m.sendHeadlessSteerMessage(a, text)
 }
 
@@ -198,18 +203,14 @@ func (m *Manager) StopAgents(agents []*Agent) {
 			continue
 		}
 		m.logger.Info("agent.stop-for-task", "agent_id", a.ID, "task_id", a.TaskID)
-		// Detached children do not observe stdin EOF or parent ctx cancel, so
-		// signal them directly before canceling to actually free the pool slot.
-		a.MarkStopped()
-		if a.isDetached() {
-			m.signalKill(a)
+		if execution, err := m.executionForAgent(a.ID); err == nil {
+			if err := execution.backend.Stop(m.ctx, execution.handle); err != nil {
+				m.logger.Warn("agent.stop-for-task.backend", "agent_id", a.ID, "task_id", a.TaskID, "err", err)
+			}
+			continue
 		}
-		if a.cancel != nil {
-			a.cancel()
-		}
-		a.SetState(StateStopped)
-		a.convo.closeStdinPipe()
-		m.emit(events.AgentState(a.ID), a)
+		// Restart-adopted legacy executions have no backend handle yet.
+		m.stopLocalAgent(a)
 	}
 }
 
@@ -274,23 +275,11 @@ func (m *Manager) StopAgent(agentID string) error {
 	}
 
 	m.logger.Info("agent.stop", "id", agentID)
-
-	a.MarkStopped()
-	// Send SIGINT first so CC can restore terminal modes and persist the
-	// session ID for --resume. Escalate to SIGKILL only after the grace
-	// window. Detached agents (headless, or interactive whose stdin is a
-	// never-EOF O_RDWR FIFO) cannot be stopped by closing stdin, so they
-	// must be signalled by PID/handle.
-	if a.Mode == "headless" || a.isDetached() {
-		m.signalKill(a)
+	if execution, execErr := m.executionForAgent(agentID); execErr == nil {
+		return execution.backend.Stop(m.ctx, execution.handle)
 	}
-	if a.cancel != nil {
-		a.cancel()
-	}
-	a.SetState(StateStopped)
-	// Close stdin to signal the claude process to exit.
-	a.convo.closeStdinPipe()
-	m.emit(events.AgentState(agentID), a)
+	// Restart-adopted legacy executions have no backend handle yet.
+	m.stopLocalAgent(a)
 	return nil
 }
 

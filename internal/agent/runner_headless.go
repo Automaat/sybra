@@ -166,6 +166,10 @@ func (m *Manager) runHeadless(ctx context.Context, a *Agent, cfg RunConfig) {
 	if a.WasStopped() && a.GetSessionID() != "" {
 		a.SetResumable(true)
 	}
+	if sink, handle := a.executionEventTarget(); sink != nil {
+		sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{Kind: ExecutionCompleted, Err: a.GetExitErr()})
+		return
+	}
 	// finalizeRun releases the agent only after onComplete returns.
 	// HasRunningAgentForTask gates ResumeStalled; releasing it before the
 	// workflow advance handler runs lets a tight ResumeStalled loop dispatch
@@ -891,7 +895,7 @@ func (m *Manager) tailHeadlessFile(ctx context.Context, a *Agent, path string, s
 			}
 			line := buf[:i]
 			buf = buf[i+1:]
-			if m.processHeadlessLine(ctx, a, line, &lastEmit, prov) {
+			if m.processHeadlessExecutionLine(ctx, a, line, &lastEmit, prov) {
 				return true
 			}
 		}
@@ -987,7 +991,7 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 			_, _ = outFile.Write([]byte("\n"))
 		}
 
-		if m.processHeadlessLine(ctx, a, line, &lastEmit, prov) {
+		if m.processHeadlessExecutionLine(ctx, a, line, &lastEmit, prov) {
 			// Guardrail asked to stop: cancel the context so the pipe-backed
 			// subprocess is terminated, then unwind. cancel may be nil in
 			// unit tests that drive the streamer directly.
@@ -998,6 +1002,16 @@ func (m *Manager) streamHeadlessOutput(ctx context.Context, a *Agent, stdout io.
 		}
 	}
 	m.reportScannerError(a, scanner.Err())
+}
+
+func (m *Manager) processHeadlessExecutionLine(ctx context.Context, a *Agent, line []byte, lastEmit *time.Time, provider Provider) bool {
+	if sink, handle := a.executionEventTarget(); sink != nil {
+		sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{
+			Kind: ExecutionOutput, Provider: provider.Name(), Output: append([]byte(nil), line...),
+		})
+		return a.WasStopped()
+	}
+	return m.processHeadlessLine(ctx, a, line, lastEmit, provider)
 }
 
 // parseHeadlessEvent parses one raw NDJSON line into a StreamEvent using the
@@ -1758,9 +1772,14 @@ func (m *Manager) effectiveMaxTurns(a *Agent) int {
 func (m *Manager) handleError(ctx context.Context, a *Agent, err error) {
 	kind := classifyAgentError(err)
 	a.SetError(kind, err.Error())
-	a.SetState(StateStopped)
 	m.logger.Error("agent.error", "id", a.ID, "kind", kind, "err", err)
 	m.emit(events.AgentError(a.ID), ErrorEvent{Kind: kind, Msg: err.Error()})
+	if sink, handle := a.executionEventTarget(); sink != nil {
+		sink.EmitExecutionEvent(ctx, handle, ExecutionEvent{Kind: ExecutionCompleted, Err: err})
+		return
+	}
+	a.SetState(StateStopped)
+	m.unregisterExecution(a.ID)
 	m.emit(events.AgentState(a.ID), a)
 	m.fireComplete(ctx, a, false)
 	m.markAgentDone(ctx, a)
