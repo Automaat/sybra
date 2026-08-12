@@ -587,6 +587,87 @@ steps:
 		}
 	})
 
+	t.Run("legacy terminal verifier failure hands off to workflow retry", func(t *testing.T) {
+		store := newInlineTestStore(t, "replay-review", `
+id: replay-review
+name: Replay Review
+trigger:
+  on: task.created
+steps:
+  - id: review
+    name: Review
+    type: run_agent
+    config:
+      role: review
+      mode: headless
+      model: sonnet
+      max_retries: 1
+      prompt: "Review {{.Task.ID}}"
+`)
+		tasks := &memTasks{tasks: map[string]*TaskInfo{
+			"t1": {
+				ID:         "t1",
+				Generation: 1,
+				Status:     "in-progress",
+				Workflow: &Execution{
+					WorkflowID:  "replay-review",
+					CurrentStep: "review",
+					State:       ExecWaiting,
+					EffectLog: []EffectRecord{{
+						ID:       EffectID{Generation: 1, StepSeq: 0, StepID: "review", Pos: effectPosStepAction},
+						IntentAt: time.Now().UTC(),
+					}},
+				},
+				AgentRuns: []AgentRunInfo{{
+					AgentID:   "review-legacy",
+					Role:      "review",
+					Mode:      "headless",
+					State:     "stopped",
+					Outcome:   "failure",
+					StartedAt: time.Now().Add(-10 * time.Minute),
+				}},
+			},
+		}, gets: map[string]int{}}
+		agents := newMockAgents()
+		engine := NewTestEngine(store, tasks, agents, discardLogger())
+
+		if consumed := engine.ReplayPersistedEffectsForTask("t1"); consumed {
+			t.Fatal("ReplayPersistedEffectsForTask consumed tick, want stale recovery to bridge the legacy verifier failure first")
+		}
+		if len(agents.calls) != 0 {
+			t.Fatalf("StartAgent calls before stale recovery = %d, want 0", len(agents.calls))
+		}
+
+		engine.HandleAgentComplete("t1", AgentCompletion{
+			AgentID: "review-legacy",
+			Result:  "review failed before restart",
+			Success: false,
+		})
+
+		if len(agents.calls) != 1 {
+			t.Fatalf("StartAgent calls after stale recovery completion = %d, want 1 workflow retry", len(agents.calls))
+		}
+		if got := agents.calls[0].Role; got != "review" {
+			t.Fatalf("retry role = %q, want review", got)
+		}
+		got, err := tasks.GetTask("t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Workflow == nil {
+			t.Fatal("workflow = nil, want replay-review execution preserved")
+		}
+		if got.Workflow.CountStep("review") != 1 {
+			t.Fatalf("CountStep(review) = %d, want 1 failed attempt recorded before retry", got.Workflow.CountStep("review"))
+		}
+		if got.Workflow.CurrentStep != "review" {
+			t.Fatalf("current step = %q, want review re-armed for retry", got.Workflow.CurrentStep)
+		}
+		if _, tracked := got.Workflow.AgentRoute("review-legacy"); tracked {
+			t.Fatal("legacy verifier route remained tracked after workflow retry handoff")
+		}
+	})
+
 	t.Run("legacy terminal non-verifier run without route stays replay-owned", func(t *testing.T) {
 		store := newInlineTestStore(t, "replay-implement", `
 id: replay-implement
