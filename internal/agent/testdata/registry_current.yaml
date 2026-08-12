@@ -31,6 +31,11 @@ stdin_path: /tmp/sybra/agents/a-map.stdin
 pending_prompts:
     - queued turn 1
     - queued turn 2
+steer_command_ids:
+    - command-a
+    - command-b
+steer_dispatching: true
+unthrottled_output_events: true
 one_shot: true
 max_turns: 7
 require_permissions: true

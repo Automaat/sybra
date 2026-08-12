@@ -97,9 +97,10 @@ type ToolResultBlock struct {
 
 // ApprovalRequest is sent to the frontend when a tool needs user approval.
 type ApprovalRequest struct {
-	ToolUseID string         `json:"toolUseId"`
-	ToolName  string         `json:"toolName"`
-	Input     map[string]any `json:"input"`
+	ToolUseID   string         `json:"toolUseId"`
+	ToolName    string         `json:"toolName"`
+	Input       map[string]any `json:"input"`
+	Fingerprint string         `json:"fingerprint,omitempty"`
 }
 
 // ApprovalResponse carries the user's decision from the frontend.

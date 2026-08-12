@@ -331,8 +331,8 @@ func (m *Manager) runHeadlessAttemptPipe(ctx context.Context, a *Agent, cfg RunC
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
-	if len(cfg.ExtraEnv) > 0 || len(inv.env) > 0 {
-		cmd.Env = append(os.Environ(), inv.env...)
+	if len(cfg.ExtraEnv) > 0 || len(inv.env) > 0 || len(cfg.StripEnvKeys) > 0 {
+		cmd.Env = append(stripEnvKeys(os.Environ(), cfg.StripEnvKeys...), inv.env...)
 		cmd.Env = append(cmd.Env, cfg.ExtraEnv...)
 	}
 	a.SetCommand(inv.command)
@@ -508,8 +508,8 @@ func (m *Manager) startHeadlessSurviveProcess(ctx context.Context, a *Agent, cfg
 	if a.sessionCWD != "" {
 		cmd.Dir = a.sessionCWD
 	}
-	if len(cfg.ExtraEnv) > 0 || len(invokeEnv) > 0 {
-		cmd.Env = append(os.Environ(), invokeEnv...)
+	if len(cfg.ExtraEnv) > 0 || len(invokeEnv) > 0 || len(cfg.StripEnvKeys) > 0 {
+		cmd.Env = append(stripEnvKeys(os.Environ(), cfg.StripEnvKeys...), invokeEnv...)
 		cmd.Env = append(cmd.Env, cfg.ExtraEnv...)
 	}
 	a.SetCommand(command)
@@ -1073,7 +1073,7 @@ func (m *Manager) processHeadlessLine(ctx context.Context, a *Agent, line []byte
 	}
 	m.recordToolResultFailures(a, event)
 	m.recordTerminalFailure(a, event)
-	if event.Type == "result" || time.Since(*lastEmit) >= headlessEmitInterval {
+	if a.unthrottledOutputEvents || event.Type == "result" || time.Since(*lastEmit) >= headlessEmitInterval {
 		m.emit(events.AgentOutput(a.ID), event)
 		*lastEmit = time.Now()
 	}
@@ -1372,8 +1372,9 @@ func (m *Manager) drainOrCloseHeadlessSteer(a *Agent) {
 	if !a.convo.hasStdinPipe() {
 		return
 	}
-	next, ok := a.PopPendingPromptOrBeginFinalizing()
+	next, ok := a.BeginPendingPromptDispatch()
 	if !ok {
+		a.refreshCanSteer()
 		a.convo.closeStdinPipe()
 		return
 	}
@@ -1385,7 +1386,9 @@ func (m *Manager) drainOrCloseHeadlessSteer(a *Agent) {
 	// run rate-limited so the completion path's reschedule picks it back up
 	// instead of writing to a doomed session.
 	if !m.providerHealthyForSteer(a) {
-		a.RestorePendingPrompt(next)
+		a.mu.Lock()
+		a.steerDispatching = false
+		a.mu.Unlock()
 		m.saveRegistry(m.ctx, a)
 		a.SetError("rate_limit", "provider unhealthy at steer boundary")
 		m.closeHeadlessSteerForRetry(a)
@@ -1393,14 +1396,22 @@ func (m *Manager) drainOrCloseHeadlessSteer(a *Agent) {
 			"remaining", a.PendingPromptCount())
 		return
 	}
-	if writeErr := m.writeUserMessage(a, next); writeErr != nil {
-		m.logger.Error("agent.headless.steer.write", "id", a.ID, "err", writeErr)
-		a.RestorePendingPrompt(next)
-		m.saveRegistry(m.ctx, a)
+	if err := m.persistRegistry(m.ctx, a); err != nil {
+		m.logger.Error("agent.headless.steer.prepare", "id", a.ID, "err", err)
+		a.SetExitErr(fmt.Errorf("persist steer delivery intent: %w", err))
 		m.closeHeadlessSteerForRetry(a)
 		return
 	}
-	m.saveRegistry(m.ctx, a)
+	if writeErr := m.writeUserMessage(a, next); writeErr != nil {
+		m.logger.Error("agent.headless.steer.write", "id", a.ID, "err", writeErr)
+		a.SetExitErr(fmt.Errorf("ambiguous steer delivery: %w", writeErr))
+		m.closeHeadlessSteerForRetry(a)
+		return
+	}
+	a.CommitPendingPromptDispatch()
+	if err := m.persistRegistry(m.ctx, a); err != nil {
+		m.logger.Error("agent.headless.steer.commit", "id", a.ID, "err", err)
+	}
 	m.logger.Info("agent.headless.steer.flushed", "id", a.ID, "remaining", a.PendingPromptCount())
 }
 

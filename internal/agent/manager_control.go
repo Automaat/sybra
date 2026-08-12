@@ -52,6 +52,52 @@ func (m *Manager) SendMessage(agentID, text string) error {
 	return m.sendHeadlessSteerMessage(a, text)
 }
 
+// SendMessageOnce durably queues one remotely identified steer command. The
+// command identity and prompt are committed to the restart registry under the
+// same Agent lock before a result boundary can pop the prompt, so replay after
+// daemon failure neither loses nor duplicates the effect.
+func (m *Manager) SendMessageOnce(ctx context.Context, agentID, commandID, text string) error {
+	a, err := m.GetAgent(agentID)
+	if err != nil {
+		return err
+	}
+	reg := m.registry()
+	if reg == nil {
+		return fmt.Errorf("agent %s has no durable steer registry", agentID)
+	}
+	a.mu.Lock()
+	if a.Mode != "headless" || a.finalizing || !a.convo.hasPipe.Load() {
+		a.mu.Unlock()
+		return conflictError(fmt.Sprintf("agent %s has no active steer transport", agentID))
+	}
+	if _, duplicate := a.steerCommandIDs[commandID]; duplicate {
+		a.mu.Unlock()
+		return nil
+	}
+	if len(a.convo.pendingPrompts) >= MaxPendingHeadlessSteerPrompts {
+		a.mu.Unlock()
+		return conflictError(fmt.Sprintf("agent %s has too many pending steer messages (%d max)", agentID, MaxPendingHeadlessSteerPrompts))
+	}
+	if a.steerCommandIDs == nil {
+		a.steerCommandIDs = make(map[string]struct{})
+	}
+	a.steerCommandIDs[commandID] = struct{}{}
+	a.convo.pendingPrompts = append(a.convo.pendingPrompts, text)
+	rec := a.toRecordLocked()
+	rec.ProcStartedAt = processStartString(ctx, rec.PID)
+	if err := reg.Save(rec); err != nil {
+		delete(a.steerCommandIDs, commandID)
+		a.convo.pendingPrompts = a.convo.pendingPrompts[:len(a.convo.pendingPrompts)-1]
+		a.mu.Unlock()
+		return fmt.Errorf("persist steer command: %w", err)
+	}
+	queueLen := len(a.convo.pendingPrompts)
+	a.mu.Unlock()
+
+	m.logger.Info("agent.headless.message_queued", "id", a.ID, "queue_len", queueLen)
+	return nil
+}
+
 // GetConvoOutput returns the full conversation event buffer for an agent.
 func (m *Manager) GetConvoOutput(agentID string) ([]ConvoEvent, error) {
 	a, err := m.GetAgent(agentID)
@@ -546,7 +592,7 @@ func (m *Manager) ShutdownWithGrace(grace time.Duration) {
 		case <-deadline:
 			m.logger.Warn("agent.shutdown.timeout",
 				"exited", i, "remaining", len(cancelled)-i, "grace", grace)
-			m.evictShutdownAgents(cancelled[:i])
+			m.evictShutdownAgents(firstAgents(cancelled, i))
 			return
 		}
 	}
@@ -558,6 +604,17 @@ func (m *Manager) ShutdownWithGrace(grace time.Duration) {
 	// synchronously rather than leaking every agent that ever ran into a
 	// registry no one will read again.
 	m.evictShutdownAgents(cancelled)
+}
+
+func firstAgents(agents []*Agent, count int) []*Agent {
+	first := make([]*Agent, 0, count)
+	for i, agent := range agents {
+		if i == count {
+			break
+		}
+		first = append(first, agent)
+	}
+	return first
 }
 
 // evictShutdownAgents removes the given agents from the live registry,

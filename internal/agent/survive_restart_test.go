@@ -73,6 +73,9 @@ func TestAgentRecordMappingRoundTrip(t *testing.T) {
 	a.requirePermissions = true
 	a.sandboxMode = "enforce"
 	a.SetForkSubagent(true)
+	a.steerCommandIDs = map[string]struct{}{"command-a": {}, "command-b": {}}
+	a.steerDispatching = true
+	a.unthrottledOutputEvents = true
 	a.EnqueuePrompt("queued turn 1")
 	a.EnqueuePrompt("queued turn 2")
 
@@ -246,6 +249,9 @@ func recordMappingRecord(started time.Time) Record {
 		StartedAt:               started,
 		StdinPath:               "/tmp/sybra/agents/a-map.stdin",
 		PendingPrompts:          []string{"queued turn 1", "queued turn 2"},
+		SteerCommandIDs:         []string{"command-a", "command-b"},
+		SteerDispatching:        true,
+		UnthrottledOutputEvents: true,
 		OneShot:                 true,
 		MaxTurns:                7,
 		RequirePermissions:      true,

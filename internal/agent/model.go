@@ -345,8 +345,11 @@ type Agent struct {
 	// executionSink/Handle are manager-owned local-adapter wiring. Provider
 	// output uses them to traverse the same recoverable event boundary as
 	// portable backends without exposing this canonical Agent to a backend.
-	executionSink   ExecutionEventSink
-	executionHandle ExecutionHandle
+	executionSink           ExecutionEventSink
+	executionHandle         ExecutionHandle
+	unthrottledOutputEvents bool
+	steerCommandIDs         map[string]struct{}
+	steerDispatching        bool
 
 	// mu guards mutable fields touched from multiple goroutines. See the
 	// package-level note above the Agent type.
@@ -518,7 +521,16 @@ func (a *Agent) MarshalJSON() ([]byte, error) {
 func (a *Agent) toRecord() Record {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	return a.toRecordLocked()
+}
+
+func (a *Agent) toRecordLocked() Record {
 	pendingPrompts := slices.Clone(a.convo.pendingPrompts)
+	steerCommandIDs := make([]string, 0, len(a.steerCommandIDs))
+	for id := range a.steerCommandIDs {
+		steerCommandIDs = append(steerCommandIDs, id)
+	}
+	slices.Sort(steerCommandIDs)
 	return Record{
 		ID:                      a.ID,
 		TaskID:                  a.TaskID,
@@ -550,6 +562,9 @@ func (a *Agent) toRecord() Record {
 		StartedAt:               a.StartedAt,
 		StdinPath:               a.convo.stdinPath,
 		PendingPrompts:          pendingPrompts,
+		SteerCommandIDs:         steerCommandIDs,
+		SteerDispatching:        a.steerDispatching,
+		UnthrottledOutputEvents: a.unthrottledOutputEvents,
 		OneShot:                 a.oneShot,
 		MaxTurns:                a.MaxTurns,
 		RequirePermissions:      a.requirePermissions,
@@ -613,6 +628,8 @@ func fromRecord(r Record) *Agent {
 		MaxTurns:                r.MaxTurns,
 		oneShot:                 r.OneShot,
 		convo:                   convoIO{stdinPath: r.StdinPath, pendingPrompts: slices.Clone(r.PendingPrompts)},
+		unthrottledOutputEvents: r.UnthrottledOutputEvents,
+		steerDispatching:        r.SteerDispatching,
 		requirePermissions:      r.RequirePermissions,
 		sandboxMode:             r.SandboxMode,
 		ReasoningEffort:         r.ReasoningEffort,
@@ -631,6 +648,12 @@ func fromRecord(r Record) *Agent {
 		renderedSkills:          slices.Clone(r.RenderedSkills),
 		unrenderedSkills:        slices.Clone(r.UnrenderedSkills),
 		detached:                true,
+	}
+	if len(r.SteerCommandIDs) > 0 {
+		a.steerCommandIDs = make(map[string]struct{}, len(r.SteerCommandIDs))
+		for _, id := range r.SteerCommandIDs {
+			a.steerCommandIDs[id] = struct{}{}
+		}
 	}
 	if r.Mode == "headless" {
 		a.escalationCh = make(chan bool, 1)
@@ -1132,6 +1155,35 @@ func (a *Agent) PopPendingPromptOrBeginFinalizing() (string, bool) {
 	a.mu.Unlock()
 	a.refreshCanSteer()
 	return "", false
+}
+
+// BeginPendingPromptDispatch marks the next steer as durably ambiguous before
+// it crosses the FIFO boundary. Recovery fails such a run explicitly instead
+// of silently delivering the same command twice.
+func (a *Agent) BeginPendingPromptDispatch() (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.convo.pendingPrompts) == 0 {
+		a.finalizing = true
+		return "", false
+	}
+	a.steerDispatching = true
+	return a.convo.pendingPrompts[0], true
+}
+
+func (a *Agent) CommitPendingPromptDispatch() {
+	a.mu.Lock()
+	if len(a.convo.pendingPrompts) > 0 {
+		a.convo.pendingPrompts = slices.Delete(a.convo.pendingPrompts, 0, 1)
+	}
+	a.steerDispatching = false
+	a.mu.Unlock()
+}
+
+func (a *Agent) HasAmbiguousSteerDispatch() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.steerDispatching
 }
 
 // PendingPromptCount returns the size of the pending prompt queue.
@@ -2104,6 +2156,14 @@ type RunConfig struct {
 	// any caller-supplied entry for those two keys is stripped before the
 	// trusted values are appended, so it cannot override them.
 	ExtraEnv []string
+	// StripEnvKeys removes daemon/control-plane credentials from the ambient
+	// process environment before provider-specific and run-scoped values are
+	// appended. It is a denylist at the shared provider spawn seam, so every
+	// headless launch shape (pipe and restart-surviving) applies it equally.
+	StripEnvKeys []string
+	// UnthrottledOutputEvents disables the UI-oriented 100ms event coalescing
+	// for execution owners that durably persist every provider observation.
+	UnthrottledOutputEvents bool
 	// EphemeralSandboxHome overrides the ordinary per-task sandbox home for a
 	// disposable local verification command. The verification lease owns it.
 	EphemeralSandboxHome string

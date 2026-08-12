@@ -164,12 +164,37 @@ func (m *Manager) ReattachAllContext(ctx context.Context) []*Agent {
 		m.mu.Unlock()
 
 		m.logger.Info("agent.reattach", "id", a.ID, "pid", a.PID, "task", a.TaskID, "events", len(a.Output()))
-		m.startAttemptHeartbeat(ctx, a)
-		go m.reattachHeadless(ctx, a, startOffset, r.ProcStartedAt)
-		m.emit(events.AgentState(a.ID), a)
+		if !m.finishReattach(ctx, a, startOffset, r.ProcStartedAt) {
+			continue
+		}
 		out = append(out, a)
 	}
 	return out
+}
+
+func (m *Manager) finishReattach(ctx context.Context, a *Agent, startOffset int64, procStartedAt string) bool {
+	if !m.notifyReattach(ctx, a) {
+		return false
+	}
+	m.startAttemptHeartbeat(ctx, a)
+	go m.reattachHeadless(ctx, a, startOffset, procStartedAt)
+	m.emit(events.AgentState(a.ID), a)
+	return true
+}
+
+func (m *Manager) notifyReattach(ctx context.Context, a *Agent) bool {
+	if m.onReattach == nil {
+		return true
+	}
+	if err := m.onReattach(a); err != nil {
+		m.logger.Error("agent.reattach.callback", "id", a.ID, "task", a.TaskID, "err", err)
+		a.SetExitErr(err)
+		m.stopLocalAgent(a)
+		m.fireComplete(ctx, a, false)
+		m.markAgentDone(ctx, a)
+		return false
+	}
+	return true
 }
 
 func (m *Manager) reapUnsupportedSurvivor(ctx context.Context, r Record, reg survivalRegistry) bool {

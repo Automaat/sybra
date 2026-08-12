@@ -665,6 +665,72 @@ func TestApprovalServer_RespondApproval_DoubleSendDoesNotBlock(t *testing.T) {
 	}
 }
 
+func TestApprovalServerStageApprovalSurvivesMissingHook(t *testing.T) {
+	srv := newTestApprovalServer(t)
+	if err := srv.StageApproval("tool-retry", true, "fp-retry"); err != nil {
+		t.Fatal(err)
+	}
+	if got := srv.staged["tool-retry"]; !got.Response.Approved {
+		t.Fatalf("staged decision = %+v", got)
+	}
+	if err := srv.StageApproval("tool-retry", true, "fp-retry"); err != nil {
+		t.Fatalf("idempotent replay: %v", err)
+	}
+	if err := srv.StageApproval("tool-retry", false, "fp-retry"); err == nil {
+		t.Fatal("conflicting replay must fail")
+	}
+
+	ch := make(chan ApprovalResponse, 1)
+	srv.pending["tool-live"] = ch
+	srv.pendingFingerprint["tool-live"] = "fp-live"
+	if err := srv.StageApproval("tool-live", false, "fp-live"); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-ch; got.Approved || got.ToolUseID != "tool-live" {
+		t.Fatalf("live decision = %+v", got)
+	}
+	if got := srv.staged["tool-live"]; got.Fingerprint != "fp-live" || got.Response.Approved {
+		t.Fatalf("live decision was not retained for retry: %+v", got)
+	}
+}
+
+func TestApprovalServerUsesStagedDecisionBeforeSessionReattach(t *testing.T) {
+	srv := newTestApprovalServer(t)
+	input := hookInput{SessionID: "not-reattached", ToolName: "Bash", ToolInput: map[string]any{"command": "true"}, ToolUseID: "tool-startup"}
+	if err := srv.StageApproval("tool-startup", true, approvalFingerprint(input)); err != nil {
+		t.Fatal(err)
+	}
+	resp := postHook(t, srv.Addr(), map[string]any{
+		"session_id": "not-reattached", "tool_name": "Bash",
+		"tool_input": map[string]any{"command": "true"}, "tool_use_id": "tool-startup",
+	})
+	if got := resp.HookSpecificOutput.PermissionDecision; got != "allow" {
+		t.Fatalf("startup staged decision = %q, want allow", got)
+	}
+	resp = postHook(t, srv.Addr(), map[string]any{
+		"session_id": "not-reattached", "tool_name": "Bash",
+		"tool_input": map[string]any{"command": "true"}, "tool_use_id": "tool-startup",
+	})
+	if got := resp.HookSpecificOutput.PermissionDecision; got != "allow" {
+		t.Fatalf("replayed staged decision = %q, want allow", got)
+	}
+}
+
+func TestApprovalServerRejectsStagedDecisionForChangedInput(t *testing.T) {
+	srv := newTestApprovalServer(t)
+	approved := hookInput{SessionID: "session", ToolName: "Bash", ToolInput: map[string]any{"command": "true"}, ToolUseID: "tool-bound"}
+	if err := srv.StageApproval("tool-bound", true, approvalFingerprint(approved)); err != nil {
+		t.Fatal(err)
+	}
+	resp := postHook(t, srv.Addr(), map[string]any{
+		"session_id": "session", "tool_name": "Bash",
+		"tool_input": map[string]any{"command": "dangerous"}, "tool_use_id": "tool-bound",
+	})
+	if got := resp.HookSpecificOutput.PermissionDecision; got != "deny" {
+		t.Fatalf("changed input decision = %q, want deny", got)
+	}
+}
+
 func TestIsSafeTool(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
