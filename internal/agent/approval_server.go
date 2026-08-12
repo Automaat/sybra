@@ -35,17 +35,18 @@ const VerifierControlServiceMarker = "sybra-verifier-control"
 // from Claude CLI. When a tool needs approval, the hook POSTs to this server,
 // which emits a Wails event to the frontend and blocks until the user responds.
 type ApprovalServer struct {
-	mu                sync.Mutex
-	pending           map[string]chan ApprovalResponse // keyed by tool_use_id
-	staged            map[string]ApprovalResponse      // durable remote decisions awaiting a hook retry
-	emit              EmitFunc
-	logger            *slog.Logger
-	server            *http.Server
-	listener          net.Listener
-	agents            *Manager
-	verifierTokens    map[string]verifierTokenRecord // sha256(token) -> scoped, expiring grant
-	verifierTokenPath string
-	verifierControl   http.Handler
+	mu                 sync.Mutex
+	pending            map[string]chan ApprovalResponse // keyed by tool_use_id
+	pendingFingerprint map[string]string
+	staged             map[string]stagedApproval // durable remote decisions retained through hook retries
+	emit               EmitFunc
+	logger             *slog.Logger
+	server             *http.Server
+	listener           net.Listener
+	agents             *Manager
+	verifierTokens     map[string]verifierTokenRecord // sha256(token) -> scoped, expiring grant
+	verifierTokenPath  string
+	verifierControl    http.Handler
 }
 
 const verifierTokenTTL = 24 * time.Hour
@@ -56,6 +57,11 @@ type verifierTokenRecord struct {
 	TaskID      string    `json:"taskId"`
 	SandboxHome string    `json:"sandboxHome,omitempty"`
 	ExpiresAt   time.Time `json:"expiresAt"`
+}
+
+type stagedApproval struct {
+	Response    ApprovalResponse
+	Fingerprint string
 }
 
 // VerifierControlTokenPath is the lease-private credential file consumed by
@@ -124,13 +130,14 @@ func newApprovalServer(ctx context.Context, emit EmitFunc, logger *slog.Logger, 
 	}
 
 	s := &ApprovalServer{
-		pending:           make(map[string]chan ApprovalResponse),
-		staged:            make(map[string]ApprovalResponse),
-		emit:              emit,
-		logger:            logger,
-		listener:          listener,
-		verifierTokens:    tokens,
-		verifierTokenPath: tokenPath,
+		pending:            make(map[string]chan ApprovalResponse),
+		pendingFingerprint: make(map[string]string),
+		staged:             make(map[string]stagedApproval),
+		emit:               emit,
+		logger:             logger,
+		listener:           listener,
+		verifierTokens:     tokens,
+		verifierTokenPath:  tokenPath,
 	}
 
 	mux := http.NewServeMux()
@@ -412,8 +419,13 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 	// A remote decision may have been durably staged before this daemon
 	// finished reattaching the provider session. Honor it before session lookup
 	// so startup ordering cannot turn an approved retry into Unknown session.
-	if staged, ok := s.takeStagedApproval(input.ToolUseID); ok {
-		if staged.Approved {
+	fingerprint := approvalFingerprint(input)
+	if staged, ok := s.lookupStagedApproval(input.ToolUseID); ok {
+		if staged.Fingerprint != fingerprint {
+			s.respondDeny(w, "Approval request does not match the authorized tool invocation")
+			return
+		}
+		if staged.Response.Approved {
 			s.respondAllow(w, input.ToolInput)
 		} else {
 			s.respondDeny(w, "User denied this action")
@@ -438,23 +450,27 @@ func (s *ApprovalServer) handlePreToolUse(w http.ResponseWriter, r *http.Request
 	ch := make(chan ApprovalResponse, 1)
 	s.mu.Lock()
 	s.pending[input.ToolUseID] = ch
+	s.pendingFingerprint[input.ToolUseID] = fingerprint
 	if staged, ok := s.staged[input.ToolUseID]; ok {
-		ch <- staged
-		delete(s.staged, input.ToolUseID)
+		if staged.Fingerprint == fingerprint {
+			ch <- staged.Response
+		}
 	}
 	s.mu.Unlock()
 
 	defer func() {
 		s.mu.Lock()
 		delete(s.pending, input.ToolUseID)
+		delete(s.pendingFingerprint, input.ToolUseID)
 		s.mu.Unlock()
 	}()
 
 	// Emit approval request to frontend.
 	req := ApprovalRequest{
-		ToolUseID: input.ToolUseID,
-		ToolName:  input.ToolName,
-		Input:     input.ToolInput,
+		ToolUseID:   input.ToolUseID,
+		ToolName:    input.ToolName,
+		Input:       input.ToolInput,
+		Fingerprint: fingerprint,
 	}
 	s.emit(events.AgentApproval(agentID), req)
 
@@ -600,17 +616,21 @@ func (s *ApprovalServer) RespondApproval(toolUseID string, approved bool) error 
 // StageApproval makes a remote approval decision retry-safe. If the hook is
 // currently blocked it is delivered immediately; otherwise it is retained
 // until the provider retries the same tool_use_id after daemon restart.
-func (s *ApprovalServer) StageApproval(toolUseID string, approved bool) error {
+func (s *ApprovalServer) StageApproval(toolUseID string, approved bool, fingerprint string) error {
 	response := ApprovalResponse{ToolUseID: toolUseID, Approved: approved}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if prior, ok := s.staged[toolUseID]; ok {
-		if prior.Approved != approved {
+		if prior.Response.Approved != approved || prior.Fingerprint != fingerprint {
 			return fmt.Errorf("conflicting approval decision for tool_use_id %s", toolUseID)
 		}
 		return nil
 	}
 	if ch, ok := s.pending[toolUseID]; ok {
+		if s.pendingFingerprint[toolUseID] != fingerprint {
+			return fmt.Errorf("approval request fingerprint mismatch for tool_use_id %s", toolUseID)
+		}
+		s.staged[toolUseID] = stagedApproval{Response: response, Fingerprint: fingerprint}
 		select {
 		case ch <- response:
 			return nil
@@ -618,18 +638,26 @@ func (s *ApprovalServer) StageApproval(toolUseID string, approved bool) error {
 			return nil
 		}
 	}
-	s.staged[toolUseID] = response
+	s.staged[toolUseID] = stagedApproval{Response: response, Fingerprint: fingerprint}
 	return nil
 }
 
-func (s *ApprovalServer) takeStagedApproval(toolUseID string) (ApprovalResponse, bool) {
+func (s *ApprovalServer) lookupStagedApproval(toolUseID string) (stagedApproval, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	decision, ok := s.staged[toolUseID]
-	if ok {
-		delete(s.staged, toolUseID)
-	}
 	return decision, ok
+}
+
+func approvalFingerprint(input hookInput) string {
+	canonicalInput, _ := json.Marshal(input.ToolInput)
+	digest := sha256.New()
+	_, _ = io.WriteString(digest, input.SessionID)
+	_, _ = digest.Write([]byte{0})
+	_, _ = io.WriteString(digest, input.ToolName)
+	_, _ = digest.Write([]byte{0})
+	_, _ = digest.Write(canonicalInput)
+	return hex.EncodeToString(digest.Sum(nil))
 }
 
 // DiscardStagedApprovals removes decisions whose owning run reached a durable

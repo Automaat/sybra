@@ -78,7 +78,7 @@ func New(ctx context.Context, cfg Config, logger *slog.Logger) (*Daemon, error) 
 	d.approvals = approvals
 	state := spool.snapshot()
 	for toolUseID, decision := range state.Approvals {
-		if err := approvals.StageApproval(toolUseID, decision.Approved); err != nil {
+		if err := approvals.StageApproval(toolUseID, decision.Approved, decision.Fingerprint); err != nil {
 			return nil, fmt.Errorf("agentd: restore approval %s: %w", toolUseID, err)
 		}
 	}
@@ -300,10 +300,12 @@ func (d *Daemon) applyCommand(ctx context.Context, envelope executioncontract.Co
 		if _, ok := d.agentForRun(envelope.RunID); !ok {
 			return nil
 		}
-		if err := d.spool.stageApproval(payload.ToolUseID, durableApproval{RunID: envelope.RunID, Approved: payload.Approved}); err != nil {
+		request := d.spool.snapshot().PendingApprovals[payload.ToolUseID]
+		decision := durableApproval{RunID: envelope.RunID, Approved: payload.Approved, Fingerprint: request.Fingerprint}
+		if err := d.spool.stageApproval(payload.ToolUseID, decision); err != nil {
 			return err
 		}
-		return d.approvals.StageApproval(payload.ToolUseID, payload.Approved)
+		return d.approvals.StageApproval(payload.ToolUseID, payload.Approved, request.Fingerprint)
 	default:
 		return fmt.Errorf("agentd: unsupported command %q", envelope.Type)
 	}
@@ -449,7 +451,7 @@ func (d *Daemon) emitManagerEvent(name string, data any) {
 	if runID != "" {
 		var err error
 		if request, ok := data.(agent.ApprovalRequest); kind == executioncontract.EventProgress && ok {
-			err = d.emitApprovalRequest(runID, request.ToolUseID, payload)
+			err = d.emitApprovalRequest(runID, request.ToolUseID, request.Fingerprint, payload)
 		} else {
 			err = d.emit(runID, kind, payload)
 		}
@@ -521,9 +523,9 @@ func (d *Daemon) emit(runID string, kind executioncontract.EventType, payload an
 	return d.emitWith(runID, kind, payload, d.spool.appendEvent)
 }
 
-func (d *Daemon) emitApprovalRequest(runID, toolUseID string, payload any) error {
+func (d *Daemon) emitApprovalRequest(runID, toolUseID, fingerprint string, payload any) error {
 	return d.emitWith(runID, executioncontract.EventProgress, payload, func(event executioncontract.EventEnvelope) error {
-		return d.spool.appendApprovalRequest(event, toolUseID)
+		return d.spool.appendApprovalRequest(event, toolUseID, fingerprint)
 	})
 }
 
