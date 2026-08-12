@@ -181,6 +181,7 @@ func TestStartCommandRejectsProcessLocalPayload(t *testing.T) {
 		`{"runSpecRef":"run-1","process":{"pid":123}}`,
 		`{"runSpecRef":"/leader/private/run-spec.json"}`,
 		`{"runSpecRef":"../shared/run-spec"}`,
+		`{"runSpecRef":"other-run"}`,
 	} {
 		command := CommandEnvelope{
 			Version: CurrentVersion(), BuildVersion: "test", CommandID: "command", RunID: "run",

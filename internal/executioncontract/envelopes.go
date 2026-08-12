@@ -45,7 +45,7 @@ func (e CommandEnvelope) Validate() error {
 	}
 	switch e.Type {
 	case CommandStart:
-		return validateStartCommandPayload(e.Payload)
+		return validateStartCommandPayload(e.RunID, e.Payload)
 	case CommandStop, CommandSteer, CommandApprovalResponse:
 		return nil
 	default:
@@ -61,7 +61,7 @@ type StartCommandPayload struct {
 	Spec       *RunSpec `json:"spec,omitempty"`
 }
 
-func validateStartCommandPayload(data json.RawMessage) error {
+func validateStartCommandPayload(runID string, data json.RawMessage) error {
 	var fields map[string]json.RawMessage
 	if len(data) == 0 || json.Unmarshal(data, &fields) != nil {
 		return errors.New("execution contract: start command requires an object payload")
@@ -81,10 +81,16 @@ func validateStartCommandPayload(data json.RawMessage) error {
 		return errors.New("execution contract: start command requires exactly one run spec or reference")
 	}
 	if payload.Spec != nil {
+		if payload.Spec.RunID != runID {
+			return errors.New("execution contract: inline run spec identity differs from command run")
+		}
 		return payload.Spec.Validate()
 	}
 	if !contractID.MatchString(payload.RunSpecRef) {
 		return errors.New("execution contract: run spec reference must be a logical contract id")
+	}
+	if payload.RunSpecRef != runID {
+		return errors.New("execution contract: run spec reference differs from command run")
 	}
 	return nil
 }
