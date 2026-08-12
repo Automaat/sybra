@@ -163,7 +163,7 @@ func (s *Service) Register(ctx context.Context, request RegisterRequest) (Sessio
 		return Session{}, fmt.Errorf("register worker: %w", err)
 	}
 	return Session{SessionID: sessionID, WorkerID: request.WorkerID, Version: version, BuildVersion: request.Negotiation.BuildVersion,
-		Capabilities: request.Capabilities, State: state, LeaseExpiresAt: now.Add(lease), LastCommandAck: request.LastCommandAck}, nil
+		Capabilities: request.Capabilities, State: state, LeaseExpiresAt: db.StoredTime(now.Add(lease)), LastCommandAck: request.LastCommandAck}, nil
 }
 
 func (s *Service) Heartbeat(ctx context.Context, sessionID string, capabilities []string) (Session, error) {

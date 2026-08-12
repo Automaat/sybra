@@ -177,7 +177,11 @@ func BuildMux(opts Options) *http.ServeMux {
 
 	mountAPI(mux, opts)
 	if opts.WorkerControl != nil && opts.Proxy == nil {
-		mux.Handle("/worker/v1/", opts.WorkerControl)
+		// Keep the outer patterns method-specific. A method-agnostic subtree
+		// conflicts with the SPA's "GET /" catch-all under Go's ServeMux
+		// specificity rules and panics during server startup.
+		mux.Handle("GET /worker/v1/", opts.WorkerControl)
+		mux.Handle("POST /worker/v1/", opts.WorkerControl)
 	}
 
 	mux.HandleFunc("GET /runtime-config.js", runtimeConfig(opts))
