@@ -149,18 +149,23 @@ func (b *callbackExecutionBackend) Start(ctx context.Context, start ExecutionSta
 }
 
 func (b *callbackExecutionBackend) control(handle ExecutionHandle) (executionControl, error) {
-	b.mu.RLock()
-	control, ok := b.runs[handle]
-	b.mu.RUnlock()
+	control, ok := b.lookup(handle)
 	if !ok {
 		return executionControl{}, fmt.Errorf("execution backend: handle %q not found", handle)
 	}
 	return control, nil
 }
 
+func (b *callbackExecutionBackend) lookup(handle ExecutionHandle) (executionControl, bool) {
+	b.mu.RLock()
+	control, ok := b.runs[handle]
+	b.mu.RUnlock()
+	return control, ok
+}
+
 func (b *callbackExecutionBackend) Stop(_ context.Context, handle ExecutionHandle) error {
-	control, err := b.control(handle)
-	if err != nil {
+	control, ok := b.lookup(handle)
+	if !ok {
 		return nil
 	}
 	if control.stop == nil {

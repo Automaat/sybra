@@ -485,9 +485,9 @@ func (s *recordingExecutionSink) EmitExecutionEvent(_ context.Context, _ Executi
 func (s *recordingExecutionSink) completedErr() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := len(s.events) - 1; i >= 0; i-- {
-		if s.events[i].Kind == ExecutionCompleted {
-			return s.events[i].Err
+	for _, event := range slices.Backward(s.events) {
+		if event.Kind == ExecutionCompleted {
+			return event.Err
 		}
 	}
 	return nil
